@@ -190,6 +190,16 @@ class XdmfReader:
 
         for key in h5path.split("/"):
             f = f[key]
+        # The file's own extent is not bounded by the XML: refuse a dataset
+        # larger than its DataItem declares before reading it (the C++ core
+        # does the same), rather than allocate whatever a corrupt file claims.
+        if dims and int(np.prod(f.shape, dtype=object)) > int(
+            np.prod(dims, dtype=object)
+        ):
+            raise ReadError(
+                f"XDMF: HDF dataset '{h5path}' is larger than the Dimensions "
+                "its DataItem declares"
+            )
         # `[()]` gives a np.ndarray
         return f[()]
 

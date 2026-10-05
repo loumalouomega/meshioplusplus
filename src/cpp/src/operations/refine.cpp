@@ -646,6 +646,10 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         const std::size_t dim = detail::cols(points_arr);
         NDArray new_points = NDArray::Uninit(points_arr.Dtype(), {num_points_out, dim});
         std::memcpy(new_points.Data(), points_arr.Data(), points_arr.Nbytes());
+        // The appended rows only: indexed from `num_points`, stored by one
+        // Commit() instead of a dtype switch per coordinate.
+        detail::DoubleSink sink(new_points, num_points * dim, (num_points_out - num_points) * dim);
+        double* const new_xyz = sink.Data();
         parallel_for_bw(new_entities.size(), [&](std::size_t i) {
             const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
@@ -654,7 +658,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
                     sum += points[static_cast<std::size_t>(key[c]) * dim + k];
-                detail::write_double(new_points, (num_points + i) * dim + k, sum * inv);
+                new_xyz[i * dim + k] = sum * inv;
             }
         });
         // Body centres: the mean of the parent's eight corners.
@@ -678,12 +682,13 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                             const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
                             sum += points[p * dim + k];
                         }
-                        detail::write_double(new_points, static_cast<std::size_t>(body) * dim + k,
-                                             sum * inv);
+                        new_xyz[(static_cast<std::size_t>(body) - num_points) * dim + k] =
+                            sum * inv;
                     }
                 });
             }
         }
+        sink.Commit();
         out.AssignPoints(std::move(new_points));
     }
 
@@ -776,6 +781,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         shape[0] = num_points_out;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        detail::DoubleSink sink(b, num_points * ncomp, (num_points_out - num_points) * ncomp);
+        double* const new_vals = sink.Data();
         parallel_for_bw(new_entities.size(), [&](std::size_t i) {
             const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
@@ -784,7 +791,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
                     sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
-                detail::write_double(b, (num_points + i) * ncomp + k, sum * inv);
+                new_vals[i * ncomp + k] = sum * inv;
             }
         });
         if (total_bodies > 0) {
@@ -807,12 +814,13 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                             const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
                             sum += av[p * ncomp + k];
                         }
-                        detail::write_double(b, static_cast<std::size_t>(body) * ncomp + k,
-                                             sum * inv);
+                        new_vals[(static_cast<std::size_t>(body) - num_points) * ncomp + k] =
+                            sum * inv;
                     }
                 });
             }
         }
+        sink.Commit();
         out.AddPointData(name, std::move(b));
     }
 

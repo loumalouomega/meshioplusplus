@@ -565,6 +565,15 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             const bool ragged = cb.IsRagged();
             const NDArray* conn = ragged ? nullptr : &cb.Conn();
             const std::size_t npc = ragged ? 0 : cb.NodesPerCell();
+            // An n-gon fans into exactly n - 2 triangles, so the output size is
+            // known: reserve it rather than growing the connectivity cell by cell.
+            std::size_t num_tris = 0;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::size_t n = ragged ? cb.RowSize(c) : npc;
+                num_tris += n > 2 ? n - 2 : 0;
+            }
+            out.mConn.reserve(num_tris * 3);
+            parents.reserve(parents.size() + num_tris);
             for (std::size_t c = 0; c < ncells; ++c) {
                 firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 3);
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
@@ -640,16 +649,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         const std::size_t dim = detail::cols(points);
         NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
         std::memcpy(np.Data(), points.Data(), points.Nbytes());
+        // The appended rows only, stored by one Commit() (see DoubleSink).
+        detail::DoubleSink sink(np, num_points * dim, new_point_src.size() * dim);
+        double* const new_xyz = sink.Data();
         parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
             const std::vector<std::int64_t>& src = new_point_src[i];
             for (std::size_t d = 0; d < dim; ++d) {
                 double sum = 0.0;
                 for (std::int64_t nid : src)
                     sum += points_v[static_cast<std::size_t>(nid) * dim + d];
-                detail::write_double(np, (num_points + i) * dim + d,
-                                     sum / static_cast<double>(src.size()));
+                new_xyz[i * dim + d] = sum / static_cast<double>(src.size());
             }
         });
+        sink.Commit();
         out.AssignPoints(std::move(np));
     }
     for (CcellsOutBlock& block : staged)
@@ -669,16 +681,18 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             shape[0] = num_points + new_point_src.size();
             NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
             std::memcpy(b.Data(), a.Data(), a.Nbytes());
+            detail::DoubleSink sink(b, num_points * ncomp, new_point_src.size() * ncomp);
+            double* const new_vals = sink.Data();
             parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
                 const std::vector<std::int64_t>& src = new_point_src[i];
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
                     for (std::int64_t nid : src)
                         sum += a_v[static_cast<std::size_t>(nid) * ncomp + k];
-                    detail::write_double(b, (num_points + i) * ncomp + k,
-                                         sum / static_cast<double>(src.size()));
+                    new_vals[i * ncomp + k] = sum / static_cast<double>(src.size());
                 }
             });
+            sink.Commit();
             out.AddPointData(name, std::move(b));
         }
     }
@@ -822,14 +836,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
     {
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points + new_edges.size(), dim});
         std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
+        detail::DoubleSink sink(new_points, num_points * dim, new_edges.size() * dim);
+        double* const mid_xyz = sink.Data();
         parallel_for_bw(new_edges.size(), [&](std::size_t i) {
             const std::size_t a = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t b = static_cast<std::size_t>(new_edges[i].second);
-            for (std::size_t k = 0; k < dim; ++k) {
-                const double v = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
-                detail::write_double(new_points, (num_points + i) * dim + k, v);
-            }
+            for (std::size_t k = 0; k < dim; ++k)
+                mid_xyz[i * dim + k] = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
         });
+        sink.Commit();
         out.AssignPoints(std::move(new_points));
     }
 
@@ -874,14 +889,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         shape[0] = num_points + new_edges.size();
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        detail::DoubleSink sink(b, num_points * ncomp, new_edges.size() * ncomp);
+        double* const mid_vals = sink.Data();
         parallel_for_bw(new_edges.size(), [&](std::size_t i) {
             const std::size_t p = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t q = static_cast<std::size_t>(new_edges[i].second);
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                const double v = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
-                detail::write_double(b, (num_points + i) * ncomp + k, v);
-            }
+            for (std::size_t k = 0; k < ncomp; ++k)
+                mid_vals[i * ncomp + k] = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
         });
+        sink.Commit();
         out.AddPointData(name, std::move(b));
     }
 

@@ -203,7 +203,9 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     for (std::size_t k = 0; k < face.second; ++k)
                         cell[f].push_back(weld_rep[static_cast<std::size_t>(face.first[k])]);
                     if (rOpts.drop_degenerate) {
-                        std::vector<std::int64_t> u(cell[f]);
+                        // Per-thread scratch: a sorted copy to count distinct nodes.
+                        static thread_local std::vector<std::int64_t> u;
+                        u.assign(cell[f].begin(), cell[f].end());
                         std::sort(u.begin(), u.end());
                         if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
                             3)
@@ -292,13 +294,15 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
                 if (rOpts.drop_degenerate) {
-                    std::vector<std::int64_t> u(row);
+                    static thread_local std::vector<std::int64_t> u;
+                    u.assign(row.begin(), row.end());
                     std::sort(u.begin(), u.end());
                     if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
                         degenerate[c] = 1;  // fewer than three distinct nodes is not a polygon
                         return;
                     }
-                    std::vector<Vec3> coords(row.size());
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(row.size());
                     for (std::size_t k = 0; k < row.size(); ++k)
                         coords[k] = detail::read_point(
                             points, dim, rep_source[static_cast<std::size_t>(row[k])]);

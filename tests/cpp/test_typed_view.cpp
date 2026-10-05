@@ -82,3 +82,56 @@ TEST(TypedViews, EmptyAndScalarStorageKeepTheirSizes) {
         EXPECT_EQ(reals[0], 7.0);
     }
 }
+
+TEST(TypedViews, DoubleSinkStoresExactlyAsWriteDoubleDoes) {
+    // Values that exercise rounding, saturation and non-finite handling for the
+    // integer dtypes, and narrowing for float32.
+    const double input[] = {0.0,
+                            1.5,
+                            -2.5,
+                            2.4999,
+                            1e40,
+                            -1e40,
+                            1e19,
+                            std::numeric_limits<double>::infinity(),
+                            -std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN(),
+                            127.5,
+                            -128.5};
+    constexpr std::size_t n = sizeof input / sizeof input[0];
+    constexpr std::size_t first = 3;  // a prefix that the sink must leave alone
+    for (const auto dtype : tvd_dtypes) {
+        NDArray expected(dtype, {first + n});
+        NDArray actual(dtype, {first + n});
+        tvd::dispatch_dtype(dtype, [&]<class T>() {
+            for (std::size_t i = 0; i < first; ++i) {
+                expected.As<T>()[i] = static_cast<T>(i + 1);
+                actual.As<T>()[i] = static_cast<T>(i + 1);
+            }
+        });
+        for (std::size_t i = 0; i < n; ++i)
+            tvd::write_double(expected, first + i, input[i]);
+
+        tvd::DoubleSink sink(actual, first, n);
+        if (dtype == DType::Float64)
+            EXPECT_EQ(sink.Data(), actual.As<double>() + first);  // zero-copy
+        for (std::size_t i = 0; i < n; ++i)
+            sink.Data()[i] = input[i];
+        sink.Commit();
+
+        ASSERT_EQ(expected.Nbytes(), actual.Nbytes());
+        EXPECT_EQ(std::vector<std::byte>(expected.Data(), expected.Data() + expected.Nbytes()),
+                  std::vector<std::byte>(actual.Data(), actual.Data() + actual.Nbytes()))
+            << "dtype " << static_cast<int>(dtype);
+    }
+}
+
+TEST(TypedViews, DoubleSinkOfAnEmptyRangeIsANoOp) {
+    for (const auto dtype : tvd_dtypes) {
+        NDArray array(dtype, {4});
+        const std::vector<std::byte> before(array.Data(), array.Data() + array.Nbytes());
+        tvd::DoubleSink sink(array, 4, 0);
+        sink.Commit();
+        EXPECT_EQ(before, std::vector<std::byte>(array.Data(), array.Data() + array.Nbytes()));
+    }
+}

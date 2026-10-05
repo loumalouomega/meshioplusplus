@@ -21,6 +21,7 @@
 // System includes
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 // Project includes
 #include "mesh_fixtures.hpp"
@@ -51,6 +52,35 @@ TEST(Xdmf, Hdf) {
     rt(mt::tri_mesh(), "HDF");
     rt(mt::tet_mesh(), "HDF");
     rt(mt::tri_quad_mesh(), "HDF");
+}
+
+// A dataset larger than its DataItem's Dimensions is refused before it is read:
+// the file's own extent is not bounded by the XML, and a corrupt one declaring
+// millions of unwritten chunks made HDF5 1.10's H5Dread crawl (the fuzzer's
+// timeout, tests/fuzz/regressions/xdmf).
+TEST(Xdmf, HdfDatasetLargerThanItsDeclaredDimensionsIsRefused) {
+    const std::string path = mt::temp_path(".xdmf");
+    meshioplusplus::write_xdmf(path, mt::tri_mesh(), "HDF", -1);
+    std::string text;
+    {
+        std::ifstream in(path);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::size_t geometry = text.find("<Geometry");
+    ASSERT_NE(geometry, std::string::npos);
+    const std::string key = "Dimensions=\"";
+    const std::size_t begin = text.find(key, geometry);
+    ASSERT_NE(begin, std::string::npos);
+    const std::size_t value = begin + key.size();
+    text.replace(value, text.find('"', value) - value, "1 1");  // stored: at least 3 x 3
+    {
+        std::ofstream out(path);
+        out << text;
+    }
+    EXPECT_THROW(meshioplusplus::read_xdmf(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(std::filesystem::path(path).replace_extension(".h5"), ec);
 }
 #endif
 

@@ -109,9 +109,18 @@ function take(m: Module, path: string): ArrayBuffer {
     if (typeof data === 'string') {
         throw new Error(`meshio++: ${path} was read as text, not bytes`);
     }
-    // .slice() so we never transfer a view onto HEAPU8: that would detach the
-    // WASM heap and kill the module for every later request.
-    return data.slice().buffer as ArrayBuffer;
+    // Under MEMFS `readFile` already returns a fresh array that owns its whole
+    // buffer, so that buffer can be transferred as it is. A view onto the WASM
+    // heap (a future WASMFS build may return one) must never be transferred: that
+    // would detach the heap and kill the module for every later request. Such a
+    // view sits in a buffer larger than itself, and in the threaded build in a
+    // SharedArrayBuffer, so the checks below tell the two apart without needing
+    // `HEAPU8`, which the build does not export; anything else is copied.
+    const owned =
+        data.buffer instanceof ArrayBuffer &&
+        data.byteOffset === 0 &&
+        data.byteLength === data.buffer.byteLength;
+    return (owned ? data.buffer : data.slice().buffer) as ArrayBuffer;
 }
 
 function boundsOf(meta: MeshMeta): { min: Vector3; max: Vector3 } | null {
@@ -131,6 +140,11 @@ function renderPipeline(m: Module, ops: OpSpec[]): { vtp: ArrayBuffer; report: O
         // The picker needs the provenance array; the colour-by menu filters it
         // out by name, so keeping it costs nothing visible.
         keepProvenance: true,
+        // Leave the VTP zlib-compressed (the default). Do not pass
+        // `compressVtp: false` here: vtk.js reads an uncompressed array as
+        // `new Float64Array(buffer, headerBytes)`, and the writer's 4-byte
+        // header (no `header_type`) puts that at offset 4, which throws a
+        // RangeError for every 8-byte type and ends the load in "error".
     }) as OpReport;
     const vtp = take(m, SURFACE_PATH);
     unlink(m, SURFACE_PATH);

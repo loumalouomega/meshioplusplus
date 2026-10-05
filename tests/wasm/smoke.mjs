@@ -4256,6 +4256,27 @@ step('convertSurfaceOps can keep the provenance array for a picker', () => {
     assert.equal(m.readMesh('/prov2.vtp').cell_data['surface:parent_cell'], undefined);
 });
 
+step('convertSurfaceOps can write an uncompressed VTP for a caller that parses it at once', () => {
+    m.writeMesh('/zc.vtu', cube);
+    m.convertSurfaceOps('/zc.vtu', '/zc_default.vtp', []);
+    m.convertSurfaceOps('/zc.vtu', '/zc_raw.vtp', [], { compressVtp: false });
+    const text = (path) => m.FS.readFile(path, { encoding: 'utf8' });
+    // Uncompressed but still binary (base64), never ASCII: a codec without an
+    // explicit encoding would select ASCII, which is larger and slower to parse.
+    assert.ok(!/compressor=/.test(text('/zc_raw.vtp')));
+    assert.ok(/format="binary"/.test(text('/zc_raw.vtp')));
+    assert.ok(!/format="ascii"/.test(text('/zc_raw.vtp')));
+    const raw = m.readMesh('/zc_raw.vtp');
+    const def = m.readMesh('/zc_default.vtp');
+    assert.deepEqual(Array.from(raw.points), Array.from(def.points));
+    assert.deepEqual(
+        raw.cells.map((c) => Array.from(c.data)),
+        def.cells.map((c) => Array.from(c.data))
+    );
+    // A non-VTP output ignores the option rather than failing on it.
+    m.convertSurfaceOps('/zc.vtu', '/zc_out.vtu', [], { compressVtp: false });
+});
+
 step('convertSurfaceOps rejects an unknown operation by name', () => {
     m.writeMesh('/bad.vtu', cube);
     assert.throws(

@@ -183,6 +183,11 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
     std::vector<std::int64_t> conn;
     std::vector<std::int64_t> kind;
     std::vector<double> angle;
+    // crease_edges returns only boundary, non-manifold, inconsistent or sharp
+    // edges, so its size bounds what the loop below keeps.
+    conn.reserve(2 * edges.size());
+    kind.reserve(edges.size());
+    angle.reserve(edges.size());
     for (const detail::CreaseEdge& e : edges) {
         result.mNumNonManifold += e.IsNonManifold() ? 1 : 0;
         result.mNumBoundary += e.IsBoundary() ? 1 : 0;

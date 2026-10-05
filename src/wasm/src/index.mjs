@@ -205,7 +205,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string, info?: object}) => string[],
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string, encoding?: string, codec?: string, floatFormat?: string}) => string[],
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
- *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
+ *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean, compressVtp?: boolean}) => {steps: object[], warnings: string[]},
  *   runPipeline: (settings: object|string) => {steps: object[], warnings: string[]},
  *   sequenceEntries: (source: string|string[], options?: object) => object[],
  *   sequenceToTimeseries: (source: string|string[], outPath: string, outFormat?: string, options?: object) => number,
@@ -456,9 +456,17 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             inPath,
             outPath,
             ops = [],
-            { inFormat = '', outFormat = '', keepProvenance = false } = {}
+            { inFormat = '', outFormat = '', keepProvenance = false, compressVtp = true } = {}
         ) =>
-            Module.convertSurfaceOps(inPath, inFormat, outPath, outFormat, ops, keepProvenance),
+            Module.convertSurfaceOps(
+                inPath,
+                inFormat,
+                outPath,
+                outFormat,
+                ops,
+                keepProvenance,
+                compressVtp
+            ),
         // A whole settings.json pipeline (PascalCase vocabulary, see
         // doc/pipeline.md). Accepts the parsed object, the JSON text, or a
         // MEMFS path ending in ".json" -- the wasm binary carries no JSON

@@ -107,12 +107,11 @@ struct MarchingFace {
 };
 
 // Newell normal of a polygon corner ring (twin of test_skin.cpp's helper).
-Vec3 marching_newell(const std::vector<Vec3>& rRing) {
+Vec3 marching_newell(const Vec3* pRing, std::size_t k) {
     Vec3 n = {0.0, 0.0, 0.0};
-    const std::size_t k = rRing.size();
     for (std::size_t i = 0; i < k; ++i) {
-        const Vec3& a = rRing[i];
-        const Vec3& b = rRing[(i + 1) % k];
+        const Vec3& a = pRing[i];
+        const Vec3& b = pRing[(i + 1) % k];
         n[0] += (a[1] - b[1]) * (a[2] + b[2]);
         n[1] += (a[2] - b[2]) * (a[0] + b[0]);
         n[2] += (a[0] - b[0]) * (a[1] + b[1]);
@@ -410,14 +409,34 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
     MarchingOutBlock quad_blk{cell_type_name(CellType::Quad), 4, {}, {}, {}, {}};
     MarchingOutBlock line_blk{cell_type_name(CellType::Line), 2, {}, {}, {}, {}};
     const double* pts = out.Points().As<double>();
+    // The staged blocks can hold at most every face of their kind, so reserve
+    // that bound once instead of growing five vectors per block face by face.
+    {
+        std::size_t n_tri = 0, n_quad = 0, n_line = 0;
+        for (const MarchingFace& f : faces) {
+            n_tri += f.mNumVerts == 3 ? 1 : 0;
+            n_quad += f.mNumVerts == 4 ? 1 : 0;
+            n_line += f.mNumVerts < 3 ? 1 : 0;
+        }
+        const auto reserve_block = [](MarchingOutBlock& rBlk, std::size_t NumCells) {
+            rBlk.mConn.reserve(NumCells * rBlk.mNodesPerCell);
+            rBlk.mParentBlock.reserve(NumCells);
+            rBlk.mParentLocal.reserve(NumCells);
+            rBlk.mParentGlobalCell.reserve(NumCells);
+        };
+        reserve_block(tri_blk, n_tri);
+        reserve_block(quad_blk, n_quad);
+        reserve_block(line_blk, n_line);
+    }
     for (const MarchingFace& f : faces) {
         if (f.mNumVerts >= 3) {
-            std::vector<Vec3> ring(f.mNumVerts);
+            // A face has at most four corners (MarchingFace::mNodes).
+            std::array<Vec3, 4> ring;
             for (std::size_t v = 0; v < f.mNumVerts; ++v) {
                 const std::size_t nd = static_cast<std::size_t>(f.mNodes[v]);
                 ring[v] = detail::read_point(out.Points(), dim, static_cast<std::int64_t>(nd));
             }
-            const Vec3 nrm = marching_newell(ring);
+            const Vec3 nrm = marching_newell(ring.data(), f.mNumVerts);
             if (detail::vec3_norm(nrm) < area_tol)
                 continue;
             const bool flip =

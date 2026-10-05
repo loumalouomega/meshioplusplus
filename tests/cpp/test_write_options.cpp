@@ -26,6 +26,7 @@
 // System includes
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -87,6 +88,53 @@ TEST(WriteOptions, EncodingSelectsAsciiOrBinary) {
     EXPECT_EQ(meshioplusplus::registry_read(b, "vtu", {}).NumPoints(), m.NumPoints());
     std::remove(a.c_str());
     std::remove(b.c_str());
+}
+
+// `convertSurfaceOps(..., {compressVtp: false})` writes its VTP through exactly
+// this call. The browser viewer does not use it: vtk.js cannot read the 4-byte-
+// header uncompressed form this produces for ordinary meshes (roadmap 3.4.5.1).
+TEST(WriteOptions, VtpWithTheNoneCodecIsUncompressedBase64AndReadsBackIdentically) {
+    const Mesh m = mt::tri_mesh();
+    const std::string raw = mt::temp_path("_wo_vtp_none.vtp");
+    const std::string def = mt::temp_path("_wo_vtp_default.vtp");
+    WriteOptions opts;
+    opts.mEncoding = WriteEncoding::Binary;  // a codec alone would select ASCII
+    opts.mCodecSet = true;
+    opts.mCodec = meshioplusplus::detail::VtkCodec::None;
+    std::string why;
+    ASSERT_TRUE(registry_write_supports("vtp", opts, why)) << why;
+    registry_write_ex(raw, m, "vtp", opts);
+    registry_write_ex(def, m, "vtp", WriteOptions{});
+
+    const std::string raw_text = read_all(raw);
+    EXPECT_EQ(raw_text.find("compressor="), std::string::npos);
+    EXPECT_NE(raw_text.find("format=\"binary\""), std::string::npos);  // base64, not ASCII
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    EXPECT_NE(read_all(def).find("compressor=\"vtkZLibDataCompressor\""), std::string::npos);
+#endif
+
+    const Mesh a = meshioplusplus::registry_read(raw, "vtp", {});
+    const Mesh b = meshioplusplus::registry_read(def, "vtp", {});
+    ASSERT_EQ(a.NumPoints(), m.NumPoints());
+    ASSERT_EQ(a.NumPoints(), b.NumPoints());
+    ASSERT_EQ(a.Points().Nbytes(), b.Points().Nbytes());
+    EXPECT_EQ(0, std::memcmp(a.Points().Data(), b.Points().Data(), a.Points().Nbytes()));
+    ASSERT_EQ(a.NumCellBlocks(), b.NumCellBlocks());
+    for (std::size_t i = 0; i < a.NumCellBlocks(); ++i) {
+        ASSERT_EQ(a.Cells(i).Conn().Nbytes(), b.Cells(i).Conn().Nbytes());
+        EXPECT_EQ(0, std::memcmp(a.Cells(i).Conn().Data(), b.Cells(i).Conn().Data(),
+                                 a.Cells(i).Conn().Nbytes()));
+    }
+    // The trap this guards against: a codec without an encoding writes ASCII.
+    WriteOptions codec_only;
+    codec_only.mCodecSet = true;
+    codec_only.mCodec = meshioplusplus::detail::VtkCodec::None;
+    const std::string ascii = mt::temp_path("_wo_vtp_codec_only.vtp");
+    registry_write_ex(ascii, m, "vtp", codec_only);
+    EXPECT_NE(read_all(ascii).find("format=\"ascii\""), std::string::npos);
+    std::remove(ascii.c_str());
+    std::remove(raw.c_str());
+    std::remove(def.c_str());
 }
 
 TEST(WriteOptions, PcdLzfSelectsCompressedBinaryWithoutAnEncodingOverride) {

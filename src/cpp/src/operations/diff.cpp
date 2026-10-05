@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -35,6 +36,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -111,6 +113,9 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
 
     // Chunk over rows; grain 1 so even a handful of chunks dispatch in parallel.
     constexpr std::size_t kRowsPerChunk = 4096;
+    // Each array as `double` once, instead of a dtype switch per element.
+    const detail::DoubleView view_a(rA);
+    const detail::DoubleView view_b(rB);
     const DiffAcc total = parallel_reduce(
         nrows, kRowsPerChunk, DiffAcc{},
         [&](std::size_t r0, std::size_t r1) {
@@ -118,8 +123,8 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
             for (std::size_t r = r0; r < r1; ++r) {
                 const std::size_t ar = pRowMapA ? static_cast<std::size_t>(pRowMapA[r]) : r;
                 for (std::size_t c = 0; c < ncols; ++c) {
-                    const double a = detail::read_double(rA, ar * cols_a + c);
-                    const double b = detail::read_double(rB, r * cols_b + c);
+                    const double a = view_a[ar * cols_a + c];
+                    const double b = view_b[r * cols_b + c];
                     diff_acc_consider(acc, a, b, static_cast<std::int64_t>(r * ncols + c), atol,
                                       rtol);
                 }
@@ -143,8 +148,12 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
 // Collect the node ids of one cell (rectangular / polygon / polyhedron) into
 // `rOut`, optionally remapping each id through `pNodeMap` (unordered mode maps B
 // node ids into A's index space).
-void diff_cell_nodes(const Mesh::CellView& rCb, std::size_t c, const std::int64_t* pNodeMap,
-                     std::size_t nNodeMap, std::vector<std::int64_t>& rOut) {
+//
+// `pConn` is the block's rectangular connectivity as `int64_t`, taken once by the
+// caller; it is null, and unread, for a polyhedron or ragged block.
+void diff_cell_nodes(const Mesh::CellView& rCb, const std::int64_t* pConn, std::size_t c,
+                     const std::int64_t* pNodeMap, std::size_t nNodeMap,
+                     std::vector<std::int64_t>& rOut) {
     rOut.clear();
     auto push = [&](std::int64_t id) {
         if (pNodeMap && id >= 0 && static_cast<std::size_t>(id) < nNodeMap)
@@ -163,10 +172,9 @@ void diff_cell_nodes(const Mesh::CellView& rCb, std::size_t c, const std::int64_
         for (std::size_t k = 0; k < rCb.RowSize(c); ++k)
             push(row[k]);
     } else {
-        const NDArray& conn = rCb.Conn();
         const std::size_t npc = rCb.NodesPerCell();
         for (std::size_t k = 0; k < npc; ++k)
-            push(detail::read_int(conn, c * npc + k));
+            push(pConn[c * npc + k]);
     }
 }
 
@@ -188,10 +196,22 @@ BlockDiff diff_compare_block(const Mesh::CellView& rA, const Mesh::CellView& rB,
 
     const std::size_t nc = rA.NumCells();
     std::vector<char> mism(nc, 0);
+    const auto rectangular = [](const Mesh::CellView& rCb) {
+        return !rCb.IsPolyhedron() && !rCb.IsRagged();
+    };
+    // emplace(), not `cond ? std::optional(std::in_place, ...) : std::nullopt`:
+    // Int64View is not copyable and MSVC wants the copy constructor for that.
+    std::optional<detail::Int64View> conn_a, conn_b;
+    if (rectangular(rA))
+        conn_a.emplace(rA.Conn());
+    if (rectangular(rB))
+        conn_b.emplace(rB.Conn());
+    const std::int64_t* pconn_a = conn_a ? conn_a->Data() : nullptr;
+    const std::int64_t* pconn_b = conn_b ? conn_b->Data() : nullptr;
     parallel_for(nc, [&](std::size_t c) {
         std::vector<std::int64_t> na, nb;
-        diff_cell_nodes(rA, c, nullptr, 0, na);
-        diff_cell_nodes(rB, c, pNodeMap, nNodeMap, nb);
+        diff_cell_nodes(rA, pconn_a, c, nullptr, 0, na);
+        diff_cell_nodes(rB, pconn_b, c, pNodeMap, nNodeMap, nb);
         mism[c] = (na != nb) ? 1 : 0;
     });
 
@@ -273,6 +293,8 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
     const std::size_t gdim = std::min<std::size_t>(pdim, 3);
     const NDArray& pa = rA.Points();
     const NDArray& pb = rB.Points();
+    const detail::DoubleView pa_v(pa);
+    const detail::DoubleView pb_v(pb);
 
     // Bounding box + per-axis grid cell size (>= the match tolerance so a match
     // within tolerance always lands in an adjacent cell).
@@ -281,7 +303,7 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
         double mn = std::numeric_limits<double>::infinity();
         double mx = -std::numeric_limits<double>::infinity();
         for (std::size_t i = 0; i < na; ++i) {
-            const double c = detail::read_double(pa, i * pdim + d);
+            const double c = pa_v[i * pdim + d];
             mn = std::min(mn, c);
             mx = std::max(mx, c);
         }
@@ -296,10 +318,10 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
             cell = (mx > mn) ? (mx - mn) : 1.0;
         h[d] = cell;
     }
-    auto bucket_of = [&](const NDArray& p, std::size_t i, std::int64_t out[3]) {
+    auto bucket_of = [&](const detail::DoubleView& p, std::size_t i, std::int64_t out[3]) {
         for (std::size_t d = 0; d < 3; ++d) {
             if (d < gdim) {
-                const double c = detail::read_double(p, i * pdim + d);
+                const double c = p[i * pdim + d];
                 out[d] = static_cast<std::int64_t>(std::floor((c - lo[d]) / h[d]));
             } else {
                 out[d] = 0;
@@ -311,15 +333,15 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
     grid.reserve(na * 2);
     for (std::size_t i = 0; i < na; ++i) {
         std::int64_t b[3];
-        bucket_of(pa, i, b);
+        bucket_of(pa_v, i, b);
         grid[diff_bucket_key(b[0], b[1], b[2])].push_back(static_cast<std::int64_t>(i));
     }
 
     auto within_tol = [&](std::size_t ai, std::size_t bi, double& rWorst) -> bool {
         double worst = 0.0;
         for (std::size_t d = 0; d < pdim; ++d) {
-            const double a = detail::read_double(pa, ai * pdim + d);
-            const double bb = detail::read_double(pb, bi * pdim + d);
+            const double a = pa_v[ai * pdim + d];
+            const double bb = pb_v[bi * pdim + d];
             const double e = std::fabs(a - bb);
             if (e > atol + rtol * std::fabs(a))
                 return false;
@@ -333,7 +355,7 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
     std::vector<char> used(na, 0);
     for (std::size_t j = 0; j < nb; ++j) {
         std::int64_t bb[3];
-        bucket_of(pb, j, bb);
+        bucket_of(pb_v, j, bb);
         std::int64_t best = -1;
         double best_err = std::numeric_limits<double>::infinity();
         for (std::int64_t dx = -1; dx <= 1; ++dx) {

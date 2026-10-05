@@ -11291,7 +11291,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 30
+#define MESHIOPLUSPLUS_VERSION_MINOR 31
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11301,7 +11301,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.30.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.31.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -33079,10 +33079,13 @@ private:
  * `DoubleView` exactly as `detail::read_double` does -- a pointer into the
  * array itself when its dtype already is the target, otherwise one converted
  * copy made in parallel through `dispatch_dtype`. A hot loop then indexes a
- * plain pointer. Roadmap §3, "Hoist the dtype switch in operations".
+ * plain pointer. `DoubleSink` is the write-side twin: a hot loop stores into a
+ * plain `double*`, and one `Commit()` converts it exactly as `write_double`
+ * would. Roadmap §3, "Hoist the dtype switch in operations".
  */
 
 // System includes
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -33164,6 +33167,64 @@ public:
 
 private:
     const double* mpData = nullptr;
+    std::vector<double> mOwned;
+};
+
+/// One element as `write_double` stores it into a `T` array.
+template <class T>
+inline T typed_view_store(double v) {
+    if constexpr (std::is_floating_point_v<T>) {
+        return static_cast<T>(v);
+    } else {
+        if (!std::isfinite(v))
+            return static_cast<T>(0);
+        const long double r = std::round(static_cast<long double>(v));
+        const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
+        const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
+        return static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
+    }
+}
+
+/// The write-side twin of `DoubleView`: elements `[First, First + Count)` of an
+/// array, written as `double` and stored as `write_double` would store them.
+///
+/// `Data()[i]` is element `First + i`. When the array already is float64 that
+/// is the array itself and `Commit()` has nothing to do; otherwise it is an
+/// owned `double` buffer that `Commit()` converts into the array in one
+/// parallel pass. A hot loop writes a plain pointer instead of dispatching on
+/// the destination dtype for every value.
+class DoubleSink {
+public:
+    DoubleSink(NDArray& rA, std::size_t First, std::size_t Count)
+        : mrArray(rA), mFirst(First), mCount(Count) {
+        if (rA.Dtype() == DType::Float64) {
+            mpData = rA.As<double>() + First;
+        } else {
+            mOwned.resize(Count);
+            mpData = mOwned.data();
+        }
+    }
+    DoubleSink(const DoubleSink&) = delete;
+    DoubleSink& operator=(const DoubleSink&) = delete;
+
+    double* Data() { return mpData; }
+
+    /// Stores the buffered values into the array. Call once, after the loop.
+    void Commit() {
+        if (mOwned.empty())
+            return;
+        dispatch_dtype(mrArray.Dtype(), [&]<class T>() {
+            T* dst = mrArray.As<T>() + mFirst;
+            const double* src = mOwned.data();
+            parallel_for_bw(mCount, [&](std::size_t i) { dst[i] = typed_view_store<T>(src[i]); });
+        });
+    }
+
+private:
+    NDArray& mrArray;
+    std::size_t mFirst;
+    std::size_t mCount;
+    double* mpData = nullptr;
     std::vector<double> mOwned;
 };
 
@@ -54685,12 +54746,11 @@ struct MarchingFace {
 };
 
 // Newell normal of a polygon corner ring (twin of test_skin.cpp's helper).
-Vec3 marching_newell(const std::vector<Vec3>& rRing) {
+Vec3 marching_newell(const Vec3* pRing, std::size_t k) {
     Vec3 n = {0.0, 0.0, 0.0};
-    const std::size_t k = rRing.size();
     for (std::size_t i = 0; i < k; ++i) {
-        const Vec3& a = rRing[i];
-        const Vec3& b = rRing[(i + 1) % k];
+        const Vec3& a = pRing[i];
+        const Vec3& b = pRing[(i + 1) % k];
         n[0] += (a[1] - b[1]) * (a[2] + b[2]);
         n[1] += (a[2] - b[2]) * (a[0] + b[0]);
         n[2] += (a[0] - b[0]) * (a[1] + b[1]);
@@ -54988,14 +55048,34 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
     MarchingOutBlock quad_blk{cell_type_name(CellType::Quad), 4, {}, {}, {}, {}};
     MarchingOutBlock line_blk{cell_type_name(CellType::Line), 2, {}, {}, {}, {}};
     const double* pts = out.Points().As<double>();
+    // The staged blocks can hold at most every face of their kind, so reserve
+    // that bound once instead of growing five vectors per block face by face.
+    {
+        std::size_t n_tri = 0, n_quad = 0, n_line = 0;
+        for (const MarchingFace& f : faces) {
+            n_tri += f.mNumVerts == 3 ? 1 : 0;
+            n_quad += f.mNumVerts == 4 ? 1 : 0;
+            n_line += f.mNumVerts < 3 ? 1 : 0;
+        }
+        const auto reserve_block = [](MarchingOutBlock& rBlk, std::size_t NumCells) {
+            rBlk.mConn.reserve(NumCells * rBlk.mNodesPerCell);
+            rBlk.mParentBlock.reserve(NumCells);
+            rBlk.mParentLocal.reserve(NumCells);
+            rBlk.mParentGlobalCell.reserve(NumCells);
+        };
+        reserve_block(tri_blk, n_tri);
+        reserve_block(quad_blk, n_quad);
+        reserve_block(line_blk, n_line);
+    }
     for (const MarchingFace& f : faces) {
         if (f.mNumVerts >= 3) {
-            std::vector<Vec3> ring(f.mNumVerts);
+            // A face has at most four corners (MarchingFace::mNodes).
+            std::array<Vec3, 4> ring;
             for (std::size_t v = 0; v < f.mNumVerts; ++v) {
                 const std::size_t nd = static_cast<std::size_t>(f.mNodes[v]);
                 ring[v] = detail::read_point(out.Points(), dim, static_cast<std::int64_t>(nd));
             }
-            const Vec3 nrm = marching_newell(ring);
+            const Vec3 nrm = marching_newell(ring.data(), f.mNumVerts);
             if (detail::vec3_norm(nrm) < area_tol)
                 continue;
             const bool flip =
@@ -134470,6 +134550,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <optional>
@@ -134669,6 +134750,25 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     h5::SilenceErrors silence;
     fs::path full = rBaseDir / h5file;
     h5::Hid f = h5::open_file_read(full.string());
+    if (!dims.empty()) {
+        // read_dataset allocates and reads the file's own extent, which the
+        // XML does not bound: a corrupt dataset declaring millions of unwritten
+        // chunks makes H5Dread crawl (HDF5 1.10 walks every chunk). A dataset
+        // larger than its DataItem says is refused before it is read; a smaller
+        // one is read as before.
+        std::size_t stored = 1;
+        bool too_big = false;
+        for (std::size_t d : h5::dataset_shape(f, h5path)) {
+            if (d != 0 && stored > std::numeric_limits<std::size_t>::max() / d) {
+                too_big = true;
+                break;
+            }
+            stored *= d;
+        }
+        if (too_big || stored > total)
+            throw ReadError("XDMF: HDF dataset '" + h5path +
+                            "' is larger than the Dimensions its DataItem declares");
+    }
     NDArray a = h5::read_dataset(f, h5path);
     a.Reshape(dims);  // stored shape is authoritative in the XML
     return a;
@@ -139938,7 +140038,9 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     for (std::size_t k = 0; k < face.second; ++k)
                         cell[f].push_back(weld_rep[static_cast<std::size_t>(face.first[k])]);
                     if (rOpts.drop_degenerate) {
-                        std::vector<std::int64_t> u(cell[f]);
+                        // Per-thread scratch: a sorted copy to count distinct nodes.
+                        static thread_local std::vector<std::int64_t> u;
+                        u.assign(cell[f].begin(), cell[f].end());
                         std::sort(u.begin(), u.end());
                         if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
                             3)
@@ -140027,13 +140129,15 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
                 if (rOpts.drop_degenerate) {
-                    std::vector<std::int64_t> u(row);
+                    static thread_local std::vector<std::int64_t> u;
+                    u.assign(row.begin(), row.end());
                     std::sort(u.begin(), u.end());
                     if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
                         degenerate[c] = 1;  // fewer than three distinct nodes is not a polygon
                         return;
                     }
-                    std::vector<Vec3> coords(row.size());
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(row.size());
                     for (std::size_t k = 0; k < row.size(); ++k)
                         coords[k] = detail::read_point(
                             points, dim, rep_source[static_cast<std::size_t>(row[k])]);
@@ -141579,6 +141683,15 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             const bool ragged = cb.IsRagged();
             const NDArray* conn = ragged ? nullptr : &cb.Conn();
             const std::size_t npc = ragged ? 0 : cb.NodesPerCell();
+            // An n-gon fans into exactly n - 2 triangles, so the output size is
+            // known: reserve it rather than growing the connectivity cell by cell.
+            std::size_t num_tris = 0;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::size_t n = ragged ? cb.RowSize(c) : npc;
+                num_tris += n > 2 ? n - 2 : 0;
+            }
+            out.mConn.reserve(num_tris * 3);
+            parents.reserve(parents.size() + num_tris);
             for (std::size_t c = 0; c < ncells; ++c) {
                 firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 3);
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
@@ -141654,16 +141767,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         const std::size_t dim = detail::cols(points);
         NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
         std::memcpy(np.Data(), points.Data(), points.Nbytes());
+        // The appended rows only, stored by one Commit() (see DoubleSink).
+        detail::DoubleSink sink(np, num_points * dim, new_point_src.size() * dim);
+        double* const new_xyz = sink.Data();
         parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
             const std::vector<std::int64_t>& src = new_point_src[i];
             for (std::size_t d = 0; d < dim; ++d) {
                 double sum = 0.0;
                 for (std::int64_t nid : src)
                     sum += points_v[static_cast<std::size_t>(nid) * dim + d];
-                detail::write_double(np, (num_points + i) * dim + d,
-                                     sum / static_cast<double>(src.size()));
+                new_xyz[i * dim + d] = sum / static_cast<double>(src.size());
             }
         });
+        sink.Commit();
         out.AssignPoints(std::move(np));
     }
     for (CcellsOutBlock& block : staged)
@@ -141683,16 +141799,18 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             shape[0] = num_points + new_point_src.size();
             NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
             std::memcpy(b.Data(), a.Data(), a.Nbytes());
+            detail::DoubleSink sink(b, num_points * ncomp, new_point_src.size() * ncomp);
+            double* const new_vals = sink.Data();
             parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
                 const std::vector<std::int64_t>& src = new_point_src[i];
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
                     for (std::int64_t nid : src)
                         sum += a_v[static_cast<std::size_t>(nid) * ncomp + k];
-                    detail::write_double(b, (num_points + i) * ncomp + k,
-                                         sum / static_cast<double>(src.size()));
+                    new_vals[i * ncomp + k] = sum / static_cast<double>(src.size());
                 }
             });
+            sink.Commit();
             out.AddPointData(name, std::move(b));
         }
     }
@@ -141836,14 +141954,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
     {
         NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points + new_edges.size(), dim});
         std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
+        detail::DoubleSink sink(new_points, num_points * dim, new_edges.size() * dim);
+        double* const mid_xyz = sink.Data();
         parallel_for_bw(new_edges.size(), [&](std::size_t i) {
             const std::size_t a = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t b = static_cast<std::size_t>(new_edges[i].second);
-            for (std::size_t k = 0; k < dim; ++k) {
-                const double v = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
-                detail::write_double(new_points, (num_points + i) * dim + k, v);
-            }
+            for (std::size_t k = 0; k < dim; ++k)
+                mid_xyz[i * dim + k] = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
         });
+        sink.Commit();
         out.AssignPoints(std::move(new_points));
     }
 
@@ -141888,14 +142007,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
         shape[0] = num_points + new_edges.size();
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        detail::DoubleSink sink(b, num_points * ncomp, new_edges.size() * ncomp);
+        double* const mid_vals = sink.Data();
         parallel_for_bw(new_edges.size(), [&](std::size_t i) {
             const std::size_t p = static_cast<std::size_t>(new_edges[i].first);
             const std::size_t q = static_cast<std::size_t>(new_edges[i].second);
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                const double v = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
-                detail::write_double(b, (num_points + i) * ncomp + k, v);
-            }
+            for (std::size_t k = 0; k < ncomp; ++k)
+                mid_vals[i * ncomp + k] = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
         });
+        sink.Commit();
         out.AddPointData(name, std::move(b));
     }
 
@@ -146261,6 +146381,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -146342,6 +146463,9 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
 
     // Chunk over rows; grain 1 so even a handful of chunks dispatch in parallel.
     constexpr std::size_t kRowsPerChunk = 4096;
+    // Each array as `double` once, instead of a dtype switch per element.
+    const detail::DoubleView view_a(rA);
+    const detail::DoubleView view_b(rB);
     const DiffAcc total = parallel_reduce(
         nrows, kRowsPerChunk, DiffAcc{},
         [&](std::size_t r0, std::size_t r1) {
@@ -146349,8 +146473,8 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
             for (std::size_t r = r0; r < r1; ++r) {
                 const std::size_t ar = pRowMapA ? static_cast<std::size_t>(pRowMapA[r]) : r;
                 for (std::size_t c = 0; c < ncols; ++c) {
-                    const double a = detail::read_double(rA, ar * cols_a + c);
-                    const double b = detail::read_double(rB, r * cols_b + c);
+                    const double a = view_a[ar * cols_a + c];
+                    const double b = view_b[r * cols_b + c];
                     diff_acc_consider(acc, a, b, static_cast<std::int64_t>(r * ncols + c), atol,
                                       rtol);
                 }
@@ -146374,8 +146498,12 @@ ArrayDiff diff_compare_array(const NDArray& rA, const NDArray& rB, const std::in
 // Collect the node ids of one cell (rectangular / polygon / polyhedron) into
 // `rOut`, optionally remapping each id through `pNodeMap` (unordered mode maps B
 // node ids into A's index space).
-void diff_cell_nodes(const Mesh::CellView& rCb, std::size_t c, const std::int64_t* pNodeMap,
-                     std::size_t nNodeMap, std::vector<std::int64_t>& rOut) {
+//
+// `pConn` is the block's rectangular connectivity as `int64_t`, taken once by the
+// caller; it is null, and unread, for a polyhedron or ragged block.
+void diff_cell_nodes(const Mesh::CellView& rCb, const std::int64_t* pConn, std::size_t c,
+                     const std::int64_t* pNodeMap, std::size_t nNodeMap,
+                     std::vector<std::int64_t>& rOut) {
     rOut.clear();
     auto push = [&](std::int64_t id) {
         if (pNodeMap && id >= 0 && static_cast<std::size_t>(id) < nNodeMap)
@@ -146394,10 +146522,9 @@ void diff_cell_nodes(const Mesh::CellView& rCb, std::size_t c, const std::int64_
         for (std::size_t k = 0; k < rCb.RowSize(c); ++k)
             push(row[k]);
     } else {
-        const NDArray& conn = rCb.Conn();
         const std::size_t npc = rCb.NodesPerCell();
         for (std::size_t k = 0; k < npc; ++k)
-            push(detail::read_int(conn, c * npc + k));
+            push(pConn[c * npc + k]);
     }
 }
 
@@ -146419,10 +146546,22 @@ BlockDiff diff_compare_block(const Mesh::CellView& rA, const Mesh::CellView& rB,
 
     const std::size_t nc = rA.NumCells();
     std::vector<char> mism(nc, 0);
+    const auto rectangular = [](const Mesh::CellView& rCb) {
+        return !rCb.IsPolyhedron() && !rCb.IsRagged();
+    };
+    // emplace(), not `cond ? std::optional(std::in_place, ...) : std::nullopt`:
+    // Int64View is not copyable and MSVC wants the copy constructor for that.
+    std::optional<detail::Int64View> conn_a, conn_b;
+    if (rectangular(rA))
+        conn_a.emplace(rA.Conn());
+    if (rectangular(rB))
+        conn_b.emplace(rB.Conn());
+    const std::int64_t* pconn_a = conn_a ? conn_a->Data() : nullptr;
+    const std::int64_t* pconn_b = conn_b ? conn_b->Data() : nullptr;
     parallel_for(nc, [&](std::size_t c) {
         std::vector<std::int64_t> na, nb;
-        diff_cell_nodes(rA, c, nullptr, 0, na);
-        diff_cell_nodes(rB, c, pNodeMap, nNodeMap, nb);
+        diff_cell_nodes(rA, pconn_a, c, nullptr, 0, na);
+        diff_cell_nodes(rB, pconn_b, c, pNodeMap, nNodeMap, nb);
         mism[c] = (na != nb) ? 1 : 0;
     });
 
@@ -146504,6 +146643,8 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
     const std::size_t gdim = std::min<std::size_t>(pdim, 3);
     const NDArray& pa = rA.Points();
     const NDArray& pb = rB.Points();
+    const detail::DoubleView pa_v(pa);
+    const detail::DoubleView pb_v(pb);
 
     // Bounding box + per-axis grid cell size (>= the match tolerance so a match
     // within tolerance always lands in an adjacent cell).
@@ -146512,7 +146653,7 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
         double mn = std::numeric_limits<double>::infinity();
         double mx = -std::numeric_limits<double>::infinity();
         for (std::size_t i = 0; i < na; ++i) {
-            const double c = detail::read_double(pa, i * pdim + d);
+            const double c = pa_v[i * pdim + d];
             mn = std::min(mn, c);
             mx = std::max(mx, c);
         }
@@ -146527,10 +146668,10 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
             cell = (mx > mn) ? (mx - mn) : 1.0;
         h[d] = cell;
     }
-    auto bucket_of = [&](const NDArray& p, std::size_t i, std::int64_t out[3]) {
+    auto bucket_of = [&](const detail::DoubleView& p, std::size_t i, std::int64_t out[3]) {
         for (std::size_t d = 0; d < 3; ++d) {
             if (d < gdim) {
-                const double c = detail::read_double(p, i * pdim + d);
+                const double c = p[i * pdim + d];
                 out[d] = static_cast<std::int64_t>(std::floor((c - lo[d]) / h[d]));
             } else {
                 out[d] = 0;
@@ -146542,15 +146683,15 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
     grid.reserve(na * 2);
     for (std::size_t i = 0; i < na; ++i) {
         std::int64_t b[3];
-        bucket_of(pa, i, b);
+        bucket_of(pa_v, i, b);
         grid[diff_bucket_key(b[0], b[1], b[2])].push_back(static_cast<std::int64_t>(i));
     }
 
     auto within_tol = [&](std::size_t ai, std::size_t bi, double& rWorst) -> bool {
         double worst = 0.0;
         for (std::size_t d = 0; d < pdim; ++d) {
-            const double a = detail::read_double(pa, ai * pdim + d);
-            const double bb = detail::read_double(pb, bi * pdim + d);
+            const double a = pa_v[ai * pdim + d];
+            const double bb = pb_v[bi * pdim + d];
             const double e = std::fabs(a - bb);
             if (e > atol + rtol * std::fabs(a))
                 return false;
@@ -146564,7 +146705,7 @@ std::vector<std::int64_t> diff_match_points(const Mesh& rA, const Mesh& rB, doub
     std::vector<char> used(na, 0);
     for (std::size_t j = 0; j < nb; ++j) {
         std::int64_t bb[3];
-        bucket_of(pb, j, bb);
+        bucket_of(pb_v, j, bb);
         std::int64_t best = -1;
         double best_err = std::numeric_limits<double>::infinity();
         for (std::int64_t dx = -1; dx <= 1; ++dx) {
@@ -147220,6 +147361,11 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
     std::vector<std::int64_t> conn;
     std::vector<std::int64_t> kind;
     std::vector<double> angle;
+    // crease_edges returns only boundary, non-manifold, inconsistent or sharp
+    // edges, so its size bounds what the loop below keeps.
+    conn.reserve(2 * edges.size());
+    kind.reserve(edges.size());
+    angle.reserve(edges.size());
     for (const detail::CreaseEdge& e : edges) {
         result.mNumNonManifold += e.IsNonManifold() ? 1 : 0;
         result.mNumBoundary += e.IsBoundary() ? 1 : 0;
@@ -147288,6 +147434,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -147328,24 +147475,27 @@ struct GradCell {
     detail::CellRings mRings;
 };
 
-/// Reads the leading `NumCorners` connectivity entries of one cell.
-void grad_corner_nodes(const Mesh::CellView& rBlock, std::size_t Cell, std::size_t NumCorners,
-                       std::vector<std::int64_t>& rOut) {
-    rOut.clear();
-    const NDArray& conn = rBlock.Conn();
-    const std::size_t npc = rBlock.NodesPerCell();
-    for (std::size_t k = 0; k < NumCorners; ++k)
-        rOut.push_back(detail::read_int(conn, Cell * npc + k));
+/// Reads the leading `NumCorners` connectivity entries of one cell from the
+/// block's connectivity, which the caller took as `int64_t` once.
+void grad_corner_nodes(const std::int64_t* pConn, std::size_t NodesPerCell, std::size_t Cell,
+                       std::size_t NumCorners, std::vector<std::int64_t>& rOut) {
+    rOut.assign(pConn + Cell * NodesPerCell, pConn + Cell * NodesPerCell + NumCorners);
 }
 
 /// Gathers a cell's corner coordinates and field values, recentred.
+///
+/// `pXyz` is the point table and `pField` the compacted field, both as `double`;
+/// `pConn` is the block's connectivity as `int64_t` (null for a ragged or
+/// polyhedral block, which never reads it). The caller converts each array once
+/// (`DoubleView`/`Int64View`), so no dtype switch runs per node or component.
 ///
 /// `rOut.mSupported` is false when the block is ragged/polyhedron, has no corner
 /// count, or references an out-of-range node — the caller then emits NaN and
 /// counts the cell rather than guessing.
 void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArray& rPoints,
-                    std::size_t PointDim, const NDArray& rField, std::size_t NumComp,
-                    std::size_t NumPoints, std::size_t NumCorners, GradCell& rOut) {
+                    const double* pXyz, std::size_t PointDim, const std::int64_t* pConn,
+                    const double* pField, std::size_t NumComp, std::size_t NumPoints,
+                    std::size_t NumCorners, GradCell& rOut) {
     rOut.mSupported = false;
     rOut.mCorners.clear();
     rOut.mValues.clear();
@@ -147369,7 +147519,7 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
         // path further down and never reach grad_green_gauss_3d.
         if (rBlock.IsRagged() || NumCorners == 0)
             return;
-        grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+        grad_corner_nodes(pConn, rBlock.NodesPerCell(), Cell, NumCorners, nodes);
     }
     for (std::int64_t nid : nodes)
         if (nid < 0 || static_cast<std::size_t>(nid) >= NumPoints)
@@ -147378,11 +147528,16 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
 
     rOut.mCorners.reserve(ncorners);
     rOut.mValues.reserve(ncorners * NumComp);
+    const std::size_t pcols = PointDim < 3 ? PointDim : 3;
     for (std::int64_t nid : nodes) {
-        rOut.mCorners.push_back(detail::read_point(rPoints, PointDim, nid));
+        // read_point's padding: a 2D point gets z = 0.
+        Vec3 pt = {0.0, 0.0, 0.0};
+        const double* src = pXyz + static_cast<std::size_t>(nid) * PointDim;
+        for (std::size_t c = 0; c < pcols; ++c)
+            pt[c] = src[c];
+        rOut.mCorners.push_back(pt);
         for (std::size_t k = 0; k < NumComp; ++k)
-            rOut.mValues.push_back(
-                detail::read_double(rField, static_cast<std::size_t>(nid) * NumComp + k));
+            rOut.mValues.push_back(pField[static_cast<std::size_t>(nid) * NumComp + k]);
     }
 
     // Ascending corner order, left to right — the numpy twin sums identically.
@@ -147419,7 +147574,8 @@ bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOu
     if (nfaces == 0)
         return false;
 
-    std::vector<double> num(NumComp * 3, 0.0);
+    static thread_local std::vector<double> num;
+    num.assign(NumComp * 3, 0.0);
     double volume = 0.0;
     double area_scale = 0.0;
 
@@ -147507,7 +147663,8 @@ bool grad_green_gauss_2d(const GradCell& rCell, std::size_t NumComp, double* pOu
         return false;
     const Vec3 nrm = detail::vec3_scale(av, 1.0 / area);
 
-    std::vector<double> num(NumComp * 3, 0.0);
+    static thread_local std::vector<double> num;
+    num.assign(NumComp * 3, 0.0);
     for (std::size_t i = 0; i < n; ++i) {
         const std::size_t a = i;
         const std::size_t b = (i + 1) % n;
@@ -147599,7 +147756,8 @@ struct GradStencil {
 bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Dim,
                         const Vec3* pNormal, double* pOut) {
     double m[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    std::vector<double> b(NumComp * 3, 0.0);
+    static thread_local std::vector<double> b;
+    b.assign(NumComp * 3, 0.0);
     const std::size_t n = rStencil.mOffsets.size();
     for (std::size_t j = 0; j < n; ++j) {
         Vec3 d = rStencil.mOffsets[j];
@@ -147845,12 +148003,16 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
 
     NDArray work(DType::Float64, grad_shape(npoints, work_comp));
     {
+        const detail::DoubleView field_v(field);
         double* pw = work.As<double>();
         parallel_for_bw(npoints, [&](std::size_t i) {
             for (std::size_t k = 0; k < work_comp; ++k)
-                pw[i * work_comp + k] = detail::read_double(field, i * field_comp + comp_base + k);
+                pw[i * work_comp + k] = field_v[i * field_comp + comp_base + k];
         });
     }
+    const double* pwork = work.As<double>();
+    // The point table once as `double`: grad_load_cell indexes it per corner.
+    const detail::DoubleView points_v(points);
 
     // Per-block corner counts and eligibility, resolved once.
     std::vector<std::size_t> corners(nblocks, 0);
@@ -147910,9 +148072,21 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             const auto cb = rMesh.Cells(b);
             const std::size_t base = static_cast<std::size_t>(bases[b]);
             const std::size_t ncells = cb.NumCells();
+            // Rectangular blocks only: a polyhedron or ragged block has no
+            // rectangular connectivity (grad_load_cell never reads it there).
+            const bool rect = !cb.IsPolyhedron() && !cb.IsRagged();
+            // emplace(), not a conditional expression: Int64View is not
+            // copyable and MSVC wants the copy constructor for that.
+            std::optional<detail::Int64View> conn_v;
+            if (rect)
+                conn_v.emplace(cb.Conn());
+            const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
             parallel_for(ncells, [&](std::size_t c) {
-                GradCell cell;
-                grad_load_cell(cb, c, points, pdim, work, work_comp, npoints, corners[b], cell);
+                // Per-thread scratch: grad_load_cell resets every member it
+                // fills, so reuse changes no value and saves its allocations.
+                static thread_local GradCell cell;
+                grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp,
+                               npoints, corners[b], cell);
                 if (!cell.mSupported)
                     return;
                 const std::size_t g = base + c;
@@ -147953,10 +148127,21 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         const std::size_t base = static_cast<std::size_t>(bases[b]);
         const CellType type = types[b];
         const std::size_t ncorners = corners[b];
+        const bool rect = !cb.IsPolyhedron() && !cb.IsRagged();
+        std::optional<detail::Int64View> conn_v;
+        if (rect)
+            conn_v.emplace(cb.Conn());
+        const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
         parallel_for(ncells, [&](std::size_t c) {
-            std::vector<double> grad(work_comp * 3, 0.0);
-            GradCell cell;
-            grad_load_cell(cb, c, points, pdim, work, work_comp, npoints, ncorners, cell);
+            // Per-thread scratch, reset for every cell (roadmap §3.2.3): the
+            // gradient buffer, the cell and the stencil would otherwise be
+            // about eight heap blocks per cell. grad_load_cell resets every
+            // member it fills, so no value carries over between cells.
+            static thread_local std::vector<double> grad;
+            grad.assign(work_comp * 3, 0.0);
+            static thread_local GradCell cell;
+            grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp, npoints,
+                           ncorners, cell);
             cell.mType = type;
             cell.mDim = dim;
 
@@ -147965,7 +148150,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 if (rOptions.mMethod == GradientMethod::LeastSquares) {
                     static thread_local std::vector<std::int64_t> nbrs;
                     detail::cell_node_neighbors(cell_nodes, node_cells, base + c, nbrs);
-                    GradStencil stencil;
+                    static thread_local GradStencil stencil;
+                    stencil.mOffsets.clear();
+                    stencil.mDeltas.clear();
                     stencil.mOffsets.reserve(nbrs.size());
                     stencil.mDeltas.reserve(nbrs.size() * work_comp);
                     // Ascending global cell index: the neighbour order is part
@@ -157467,6 +157654,10 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         const std::size_t dim = detail::cols(points_arr);
         NDArray new_points = NDArray::Uninit(points_arr.Dtype(), {num_points_out, dim});
         std::memcpy(new_points.Data(), points_arr.Data(), points_arr.Nbytes());
+        // The appended rows only: indexed from `num_points`, stored by one
+        // Commit() instead of a dtype switch per coordinate.
+        detail::DoubleSink sink(new_points, num_points * dim, (num_points_out - num_points) * dim);
+        double* const new_xyz = sink.Data();
         parallel_for_bw(new_entities.size(), [&](std::size_t i) {
             const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
@@ -157475,7 +157666,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
                     sum += points[static_cast<std::size_t>(key[c]) * dim + k];
-                detail::write_double(new_points, (num_points + i) * dim + k, sum * inv);
+                new_xyz[i * dim + k] = sum * inv;
             }
         });
         // Body centres: the mean of the parent's eight corners.
@@ -157499,12 +157690,13 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                             const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
                             sum += points[p * dim + k];
                         }
-                        detail::write_double(new_points, static_cast<std::size_t>(body) * dim + k,
-                                             sum * inv);
+                        new_xyz[(static_cast<std::size_t>(body) - num_points) * dim + k] =
+                            sum * inv;
                     }
                 });
             }
         }
+        sink.Commit();
         out.AssignPoints(std::move(new_points));
     }
 
@@ -157597,6 +157789,8 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         shape[0] = num_points_out;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        detail::DoubleSink sink(b, num_points * ncomp, (num_points_out - num_points) * ncomp);
+        double* const new_vals = sink.Data();
         parallel_for_bw(new_entities.size(), [&](std::size_t i) {
             const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
             const std::size_t first = key[0] < 0 ? 2 : 0;
@@ -157605,7 +157799,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 double sum = 0.0;
                 for (std::size_t c = first; c < 4; ++c)
                     sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
-                detail::write_double(b, (num_points + i) * ncomp + k, sum * inv);
+                new_vals[i * ncomp + k] = sum * inv;
             }
         });
         if (total_bodies > 0) {
@@ -157628,12 +157822,13 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                             const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
                             sum += av[p * ncomp + k];
                         }
-                        detail::write_double(b, static_cast<std::size_t>(body) * ncomp + k,
-                                             sum * inv);
+                        new_vals[(static_cast<std::size_t>(body) - num_points) * ncomp + k] =
+                            sum * inv;
                     }
                 });
             }
         }
+        sink.Commit();
         out.AddPointData(name, std::move(b));
     }
 
