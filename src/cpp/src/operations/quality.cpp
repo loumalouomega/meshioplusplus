@@ -603,8 +603,10 @@ QualityReport compute_quality(const Mesh& rMesh) {
             parallel_for(nc, [&](std::size_t i) {
                 CellMetrics& v = vals[i];
                 v.fill(QUALITY_NAN);
-                detail::CellRings rings;
-                std::vector<Vec3> coords;
+                // Per-thread scratch: cell_rings clears both on entry, so each
+                // cell reuses the capacity the thread's largest cell grew.
+                static thread_local detail::CellRings rings;
+                static thread_local std::vector<Vec3> coords;
                 if (!detail::cell_rings(cb, i, points, pdim, rings, coords))
                     return;
                 const bool orientable = detail::orient_rings(rings, coords.data()) !=
@@ -635,7 +637,9 @@ QualityReport compute_quality(const Mesh& rMesh) {
             parallel_for(nc, [&](std::size_t i) {
                 CellMetrics& v = vals[i];
                 v.fill(QUALITY_NAN);
-                std::vector<Vec3> coords;
+                // Per-thread scratch (at most 8 corners): read_corner_coords
+                // clears it on entry.
+                static thread_local std::vector<Vec3> coords;
                 detail::read_corner_coords(points, pdim, conn, i * npc,
                                            static_cast<std::size_t>(corner_count), coords);
                 quality_eval_cell(family, ct, coords, is2d, eps, v.data());

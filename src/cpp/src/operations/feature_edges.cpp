@@ -95,6 +95,16 @@ void fe_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
             return Compact >= 0 && rSelected[static_cast<std::size_t>(
                                        gf.mCellToGlobal[static_cast<std::size_t>(Compact)])] != 0;
         };
+        // Count the skin faces first: the rings reserve once, at an upper
+        // bound (push drops a face naming a missing point).
+        std::size_t skin_faces = 0, skin_nodes = 0;
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+            if (in(gf.mOwner[f]) != in(gf.mNeighbour[f])) {
+                ++skin_faces;
+                skin_nodes += gf.FaceSize(f);
+            }
+        rStart.reserve(skin_faces + 1);
+        rNodes.reserve(skin_nodes);
         for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
             const bool own = in(gf.mOwner[f]);
             const bool nb = in(gf.mNeighbour[f]);

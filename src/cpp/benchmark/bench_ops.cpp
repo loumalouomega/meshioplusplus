@@ -67,6 +67,7 @@
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
+#include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
@@ -80,6 +81,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
@@ -509,6 +511,53 @@ int main(int argc, char** argv) {
                 pD->Arrays(r.mCellMaps);
             }
         });
+        // The ragged mesh with a smooth point field and one cell field per
+        // block: the per-cell and per-polyhedron scratch rows of roadmap
+        // §3.2.3 (quality, data_average, interpolate's cell_data and the SFC
+        // partition's centroids) run on it.
+        const Mesh ragged_field = [&] {
+            Mesh m = bench_ops_ragged(volume);
+            NDArray u = NDArray::Uninit(DType::Float64, {m.NumPoints()});
+            const double* p = m.Points().As<double>();
+            for (std::size_t i = 0; i < m.NumPoints(); ++i)
+                u.As<double>()[i] = p[3 * i] * p[3 * i] + p[3 * i + 1] * p[3 * i + 2];
+            m.AddPointData("u", std::move(u));
+            std::vector<NDArray> blocks;
+            for (const auto cb : m.CellRange()) {
+                NDArray c = NDArray::Uninit(DType::Float64, {cb.NumCells()});
+                for (std::size_t i = 0; i < cb.NumCells(); ++i)
+                    c.As<double>()[i] = std::sin(0.01 * static_cast<double>(i));
+                blocks.push_back(std::move(c));
+            }
+            m.AddCellData("c", std::move(blocks));
+            return m;
+        }();
+        row("quality", [&](MeshDigest* pD) { of(pD, mio::attach_quality(volume)); });
+        row("quality_ragged", [&](MeshDigest* pD) { of(pD, mio::attach_quality(ragged)); });
+        row("data_average", [&](MeshDigest* pD) { of(pD, mio::point_data_to_cell_data(with_field)); });
+        row("data_average_ragged",
+            [&](MeshDigest* pD) { of(pD, mio::point_data_to_cell_data(ragged_field)); });
+        row("interpolate_cells", [&](MeshDigest* pD) {
+            mio::InterpolateOptions o;
+            o.mArrays = {"c"};
+            o.mOnConflict = mio::InterpolateConflict::Overwrite;
+            of(pD, mio::interpolate(ragged_field, ragged_field, o));
+        });
+        row("partition_ragged", [&](MeshDigest* pD) {
+            mio::PartitionOptions o;
+            o.mNParts = 8;
+            o.mMethod = mio::PartitionMethod::SFC;
+            auto r = mio::partition(ragged, o);
+            if (pD)
+                for (const auto& piece : r.mPieces) {
+                    pD->U64(static_cast<std::uint64_t>(piece.mPartId));
+                    pD->Of(piece.mMesh);
+                    pD->Array(piece.mPointMap);
+                    pD->Arrays(piece.mCellMaps);
+                }
+        });
+        row("feature_edges_ragged",
+            [&](MeshDigest* pD) { of(pD, mio::feature_edges(ragged).mMesh); });
         // Reads of the ragged mesh through the registry: the file is written
         // once, outside the timed region. A format whose writer declines the
         // mesh is skipped, so the rows never fail the sweep.
