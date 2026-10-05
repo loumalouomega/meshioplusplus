@@ -2208,11 +2208,15 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
  *   `wasm/index.d.ts`.
  * @param keepProvenance keep `surface:parent_cell` in the output (the picker
  *   needs it; the colour-by menu must filter it out).
+ * @param compressVtp `false` writes a `.vtp` output as uncompressed base64
+ *   (`registry_write_ex` with the `None` codec) instead of the registry's zlib
+ *   default, for a caller that parses it at once in the same process and would
+ *   only deflate to inflate (the browser viewer). Other output formats ignore it.
  * @return `{steps: [{op, ...counters}], warnings: [string]}`.
  */
 val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat,
                         const std::string& rOutPath, const std::string& rOutFormat, const val& rOps,
-                        bool keepProvenance) {
+                        bool keepProvenance, bool compressVtp) {
     return with_js_errors([&]() -> val {
         std::string rfmt = resolve_format(rInPath, rInFormat);
         std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
@@ -2226,6 +2230,24 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
                 compiled_out_hint(wfmt));
+
+        // The write tail, shared by both branches below. `registry_write_ex`
+        // bounds the provenance notes itself; the registry writer needs the
+        // explicit call (see write_mesh()'s comment).
+        const auto write_out = [&](const Mesh& rOut) {
+            if (!compressVtp && wfmt == "vtp") {
+                // Binary must be explicit: with the default encoding an explicit
+                // codec selects ASCII, which is larger and slower to parse.
+                meshioplusplus::WriteOptions opts;
+                opts.mEncoding = meshioplusplus::WriteEncoding::Binary;
+                opts.mCodec = meshioplusplus::detail::VtkCodec::None;
+                opts.mCodecSet = true;
+                meshioplusplus::registry_write_ex(rOutPath, rOut, wfmt, opts);
+                return;
+            }
+            meshioplusplus::detail::provenance_begin_write();
+            wit->second(rOutPath, rOut);
+        };
 
         val steps = val::array();
         val warnings = val::array();
@@ -2251,12 +2273,10 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
             // write, called after the pipeline steps and surface ops above so
             // any notes THEY raised are dropped rather than misattributed
             // here, matching every other scope-less write entry point.
-            meshioplusplus::detail::provenance_begin_write();
-            wit->second(rOutPath, surface);
+            write_out(surface);
         } else {
-            Mesh linearized = meshioplusplus::convert_cells(mesh, linearize).mMesh;
-            meshioplusplus::detail::provenance_begin_write();
-            wit->second(rOutPath, std::move(linearized));
+            const Mesh linearized = meshioplusplus::convert_cells(mesh, linearize).mMesh;
+            write_out(linearized);
         }
 
         val out = val::object();

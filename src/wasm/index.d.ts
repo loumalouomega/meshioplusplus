@@ -1214,6 +1214,13 @@ export interface MeshioPlusPlusModule {
        * picker needs it; a colour-by menu must filter it out.
        */
       keepProvenance?: boolean;
+      /**
+       * Whether a `.vtp` output is zlib-compressed (the default, `true`).
+       * `false` writes it as uncompressed base64, for a caller that parses
+       * the file at once in the same process and would only deflate to
+       * inflate (the browser viewer does). Other output formats ignore it.
+       */
+      compressVtp?: boolean;
     }
   ): OpReport;
 

@@ -88,6 +88,8 @@ console.log(report.steps, report.warnings);
 
 Prefer it over chaining the individual operation bindings (`clean`, `smooth`, …): each of those takes and returns a JS `Mesh`, so a pipeline built from them copies the whole mesh across the boundary once per step (and, before v9.9.0, flattened every multi-component array on the first one). An **empty** pipeline is byte-identical to `convertSurface`, which is what lets a viewer use one code path for the plain and the post-operation display — and makes undo a replay of a shortened pipeline rather than a set of inverse operations.
 
+`convertSurfaceOps` takes `{ inFormat, outFormat, keepProvenance, compressVtp }` as its options. A `.vtp` output is zlib-compressed by default; `compressVtp: false` writes it as uncompressed base64 (still binary, never ASCII) for a caller that parses the file at once in the same process and would only deflate to inflate, as the viewer does. The option is ignored for every other output format.
+
 This is exactly what the [browser viewer](./viewer.md) does. It is built on this package and is worth reading as a worked example of the whole pipeline — worker, transferable buffers, and vtk.js — as well as being a live client-side format converter you can try at **<https://loumalouomega.github.io/meshioplusplus/viewer/>**.
 
 ### Running a settings pipeline
