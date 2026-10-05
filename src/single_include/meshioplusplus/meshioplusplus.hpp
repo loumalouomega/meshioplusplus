@@ -134550,6 +134550,7 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <optional>
@@ -134749,6 +134750,25 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     h5::SilenceErrors silence;
     fs::path full = rBaseDir / h5file;
     h5::Hid f = h5::open_file_read(full.string());
+    if (!dims.empty()) {
+        // read_dataset allocates and reads the file's own extent, which the
+        // XML does not bound: a corrupt dataset declaring millions of unwritten
+        // chunks makes H5Dread crawl (HDF5 1.10 walks every chunk). A dataset
+        // larger than its DataItem says is refused before it is read; a smaller
+        // one is read as before.
+        std::size_t stored = 1;
+        bool too_big = false;
+        for (std::size_t d : h5::dataset_shape(f, h5path)) {
+            if (d != 0 && stored > std::numeric_limits<std::size_t>::max() / d) {
+                too_big = true;
+                break;
+            }
+            stored *= d;
+        }
+        if (too_big || stored > total)
+            throw ReadError("XDMF: HDF dataset '" + h5path +
+                            "' is larger than the Dimensions its DataItem declares");
+    }
     NDArray a = h5::read_dataset(f, h5path);
     a.Reshape(dims);  // stored shape is authoritative in the XML
     return a;

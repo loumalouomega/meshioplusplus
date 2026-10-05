@@ -279,3 +279,35 @@ def test_python_reader_reads_quadratic_cells_in_a_mixed_topology(tmp_path):
     assert [(b.type, np.asarray(b.data).tolist()) for b in back.cells] == [
         (b.type, b.data.tolist()) for b in mesh.cells
     ]
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_hdf_dataset_larger_than_its_dimensions_is_a_read_error(tmp_path, engine):
+    # The file's own extent is not bounded by the XML: a corrupt dataset that
+    # declares millions of unwritten chunks made HDF5 1.10's H5Dread crawl (the
+    # fuzzer's timeout, tests/fuzz/regressions/xdmf). A dataset larger than its
+    # DataItem's Dimensions is refused before it is read, by both engines.
+    pytest.importorskip("h5py")
+    from meshioplusplus.xdmf.main import XdmfReader
+
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        [("triangle", [[0, 1, 2]])],
+    )
+    path = tmp_path / "big.xdmf"
+    meshioplusplus.write(path, mesh, data_format="HDF")
+    text = path.read_text()
+    geometry = text.index("<Geometry")
+    start = text.index('Dimensions="', geometry) + len('Dimensions="')
+    end = text.index('"', start)
+    path.write_text(text[:start] + "1 1" + text[end:])  # stored: 3 x 3
+    if engine == "core":
+        from meshioplusplus import _core
+
+        if not getattr(_core, "__has_hdf5__", True):
+            pytest.skip("build has no HDF5")
+        with pytest.raises(meshioplusplus.ReadError):
+            _core.xdmf_read(str(path))
+    else:
+        with pytest.raises(meshioplusplus.ReadError):
+            XdmfReader(path).read()
