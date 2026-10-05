@@ -496,6 +496,19 @@ int main(int argc, char** argv) {
                 pD->Arrays(r.mCellPermutations);
             }
         });
+        // Simplexify of the same ragged mesh: every polyhedron fans into
+        // tetrahedra and every polygon into triangles, which is where the
+        // fan paths' output vectors grow (roadmap §3.2.2).
+        row("simplexify_ragged", [&](MeshDigest* pD) {
+            mio::ConvertCellsOptions o;
+            o.mMode = mio::ConvertCellsMode::Simplexify;
+            auto r = mio::convert_cells(ragged, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->Array(r.mPointMap);
+                pD->Arrays(r.mCellMaps);
+            }
+        });
         // Reads of the ragged mesh through the registry: the file is written
         // once, outside the timed region. A format whose writer declines the
         // mesh is skipped, so the rows never fail the sweep.
@@ -653,6 +666,20 @@ int main(int argc, char** argv) {
             o.mMethod = mio::GradientMethod::GreenGauss;
             o.mLocation = mio::DataLocation::Point;
             of(pD, mio::gradient(with_field_narrow, o).mMesh);
+        });
+        // Green-Gauss on the triangulated surface: the 2-D ring path.
+        row("gradient_surface", [&](MeshDigest* pD) {
+            Mesh m = bench_ops_moved(surface, [](std::size_t, double*) {});
+            NDArray u = NDArray::Uninit(DType::Float64, {m.NumPoints()});
+            const double* p = m.Points().As<double>();
+            for (std::size_t i = 0; i < m.NumPoints(); ++i)
+                u.As<double>()[i] = p[3 * i] * p[3 * i] + p[3 * i + 1] * p[3 * i + 2];
+            m.AddPointData("u", std::move(u));
+            mio::GradientOptions o;
+            o.mArrayName = "u";
+            o.mMethod = mio::GradientMethod::GreenGauss;
+            o.mLocation = mio::DataLocation::Point;
+            of(pD, mio::gradient(m, o).mMesh);
         });
         // The ordered diff of the cube against its jittered twin: every cell
         // block is compared through diff_cell_nodes.
