@@ -17,13 +17,11 @@
 
 // System includes
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -39,6 +37,7 @@
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -104,40 +103,43 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
     return mesh;
 }
 
-bool starts_with(const std::string& rS, const char* pP) {
-    return rS.rfind(pP, 0) == 0;
+bool stl_starts_with(std::string_view S, std::string_view Prefix) {
+    return S.substr(0, Prefix.size()) == Prefix;
 }
 
-bool is_comment_line(const std::string& rS) {
-    return starts_with(rS, "solid") || starts_with(rS, "outer loop") ||
-           starts_with(rS, "endloop") || starts_with(rS, "endfacet") || starts_with(rS, "endsolid");
+bool stl_is_comment_line(std::string_view S) {
+    return stl_starts_with(S, "solid") || stl_starts_with(S, "outer loop") ||
+           stl_starts_with(S, "endloop") || stl_starts_with(S, "endfacet") ||
+           stl_starts_with(S, "endsolid");
 }
 
-std::string lstrip(const std::string& rS) {
+std::string_view stl_lstrip(std::string_view S) {
     std::size_t b = 0;
-    while (b < rS.size() && std::isspace(static_cast<unsigned char>(rS[b])))
+    while (b < S.size() && detail::text_is_blank(S[b]))
         ++b;
-    return rS.substr(b);
+    return S.substr(b);
 }
 
-Mesh read_ascii(std::ifstream& rIn) {
+// `Text` is the ASCII body: the whole file, or the file after its header line.
+// The views end where the file ends, so the numbers are parsed with the
+// bounded prefix parse, never over a view that lacks a terminator.
+Mesh read_ascii(std::string_view Text) {
     // Collect the last 3 numbers of every non-comment line; rows 0,4,8,... are
     // facet normals, the rest are vertices.
+    const std::vector<std::string_view> lines = detail::split_lines(Text);
     std::vector<double> data;
-    std::string line;
-    while (std::getline(rIn, line)) {
-        std::string s = lstrip(line);
-        if (s.empty() || is_comment_line(s))
+    // A line holds at most one row, so the line count bounds the rows.
+    data.reserve(lines.size() * 3);
+    std::vector<std::string_view> tok;
+    for (const std::string_view line : lines) {
+        const std::string_view s = stl_lstrip(line);
+        if (s.empty() || stl_is_comment_line(s))
             continue;
-        detail::TextStream iss(s);
-        std::vector<std::string> tok;
-        std::string t;
-        while (iss >> t)
-            tok.push_back(t);
+        detail::split_blanks(s, tok);
         if (tok.size() < 3)
             continue;
         for (std::size_t j = tok.size() - 3; j < tok.size(); ++j)
-            data.push_back(detail::parse_double(tok[j]));
+            data.push_back(detail::parse_double_prefix(tok[j]));
     }
     std::size_t nrows = data.size() / 3;
     if (nrows % 4 != 0)
@@ -153,16 +155,16 @@ Mesh read_ascii(std::ifstream& rIn) {
     return build_mesh(verts, DType::Float64, &normals);
 }
 
-Mesh read_binary(std::ifstream& rIn, std::uint32_t num_tri) {
+// `pTriangles` points at the first of `num_tri` 50-byte records, whose
+// presence the caller has checked against the file size.
+Mesh read_binary(const char* pTriangles, std::uint32_t num_tri) {
     std::vector<unsigned char> verts;
-    verts.reserve(num_tri * 9 * sizeof(float));
-    unsigned char tri[50];
+    verts.reserve(static_cast<std::size_t>(num_tri) * 9 * sizeof(float));
     for (std::uint32_t i = 0; i < num_tri; ++i) {
-        rIn.read(reinterpret_cast<char*>(tri), 50);
-        if (rIn.gcount() != 50)
-            throw ReadError("Truncated binary STL");
         // bytes [12, 48) are the 9 float32 vertex coords (host is little-endian).
-        verts.insert(verts.end(), tri + 12, tri + 48);
+        const char* tri = pTriangles + static_cast<std::size_t>(i) * 50;
+        verts.insert(verts.end(), reinterpret_cast<const unsigned char*>(tri + 12),
+                     reinterpret_cast<const unsigned char*>(tri + 48));
     }
     return build_mesh(verts, DType::Float32, nullptr);
 }
@@ -170,29 +172,24 @@ Mesh read_binary(std::ifstream& rIn, std::uint32_t num_tri) {
 }  // namespace
 
 Mesh read_stl(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    in.seekg(0, std::ios::end);
-    std::streamoff filesize = in.tellg();
-    in.seekg(0, std::ios::beg);
+    const detail::FileSource source =
+        detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view text = source.View();
 
-    if (filesize < 80)
-        return read_ascii(in);
+    if (text.size() < 80)
+        return read_ascii(text);
 
-    char header[80];
-    in.read(header, 80);
-    std::uint32_t num_tri = 0;
-    in.read(reinterpret_cast<char*>(&num_tri), 4);  // little-endian host
-    if (static_cast<std::streamoff>(84 + std::uint64_t(num_tri) * 50) == filesize)
-        return read_binary(in, num_tri);
+    // A file of 80..83 bytes has no complete triangle count: it is ASCII.
+    if (text.size() >= 84) {
+        std::uint32_t num_tri = 0;
+        std::memcpy(&num_tri, text.data() + 80, 4);  // little-endian host
+        if (84 + std::uint64_t(num_tri) * 50 == text.size())
+            return read_binary(text.data() + 84, num_tri);
+    }
 
-    // Fall back to ascii: rewind, skip the first line.
-    in.clear();
-    in.seekg(0, std::ios::beg);
-    std::string first;
-    std::getline(in, first);
-    return read_ascii(in);
+    // Fall back to ascii: skip the first line.
+    const std::size_t eol = text.find('\n');
+    return read_ascii(eol == std::string_view::npos ? std::string_view() : text.substr(eol + 1));
 }
 
 namespace {

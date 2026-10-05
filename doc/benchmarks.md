@@ -452,6 +452,25 @@ New `meshioplusplus_bench_ops` rows: `subdivide_ragged` (the polyhedron block of
 
 The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocate several blocks per face; those are the remaining cost and stay in the roadmap. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
 
+### The STL ASCII reader on the text cursor
+
+Roadmap §3.1.1.1. The ASCII STL reader did a `getline`, an `lstrip` that copied the line, a `std::vector<std::string>` of tokens per line and `parse_double` on a `std::string`; it already included `text_cursor.hpp`, but only for `TextStream`. It now reads the file through `open_source` (mapped above the size threshold), takes lines with `split_lines` and tokens with `split_blanks` into one reused vector of views, and parses the last three tokens of each data line with `parse_double_prefix`, the bounded form of the lenient parse it replaces. Lines are skipped by the same rule (blank, or starting after leading whitespace with `solid`, `outer loop`, `endloop`, `endfacet` or `endsolid`), a line with fewer than three tokens is skipped, and a row count that is not a multiple of four is still `Malformed ascii STL`. The binary reader takes its records from the same mapping instead of a second stream. A file of 80 to 83 bytes, too short to hold a triangle count, is read as ASCII as before (the `size >= 84` guard keeps the count read inside the mapping), and the file-size check, the skipped header line of the fallback and the under-80-byte path are unchanged. Output is byte-identical, and the change is in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged.
+
+Nine tests pin the ASCII behaviour before and after (they passed against the old reader first): exponents and signs, CRLF line endings, tabs, form feeds and blank lines, short lines, a truncated facet, the under-80-byte file, an empty solid, and files of 80, 81 and 83 bytes; a tenth checks the binary reader's single-precision vertices.
+
+**Determinism.** The `read_stl` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 12 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/stl_ascii_reader.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on a SEQ build (1,819 of 1,825; the six skips are optional codecs, locales and tools). `benchmark/bench.py` and the Python tests need the extension module, which the development container cannot build, so they were not run; the Python reader is unchanged.
+
+**SEQ is not slower; it is faster.** Interleaved old and new binaries, three rounds, each a median of seven runs, one thread:
+
+| Round | M before | M after | L before | L after |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 22.7 ms | 9.5 ms | 47.3 ms | 27.8 ms |
+| 2 | 25.0 ms | 9.6 ms | 71.0 ms | 26.6 ms |
+| 3 | 23.6 ms | 14.4 ms | 45.8 ms | 34.1 ms |
+| Mean | 23.8 ms | 11.2 ms (−53%) | 54.7 ms | 29.5 ms (−46%) |
+
+The row times the read of the surface of the M and L volume meshes (tier labels are the volume's cell counts, 162,000 and 750,000). Round 2's old L value and round 3's new values are outliers of the shared container; the medians of the three rounds are 23.6 → 9.6 ms (M) and 47.3 → 27.8 ms (L). What remains in the read is the point de-duplication (`dedup`), which keys an `unordered_map<std::string, …>` by 24 bytes per vertex row.
+
 ### CSR ragged readers and `reorder`
 
 Roadmap §3.2.1. The EnSight (`nsided`/`nfaced`), CGNS (`NGON_n`/`NFACE_n`), Tecplot (face-based zones), VTKHDF and Fluent readers, and `reorder`, build the ragged `(flat, rowOffsets, faceOffsets)` triple directly and hand it to the CSR `AddPolygonBlock`/`AddPolyhedronBlock` overloads, instead of one `std::vector` per cell and per face that the nested overload then flattened again. The `polyhedron<N>` grouping (N the unique node count, first-seen order) the EnSight and CGNS readers share is one core-private helper, `detail/polyhedron_groups.hpp`; a section whose cells all land in one group hands over its staged arrays without a copy. `reorder` computes each new cell's size serially, prefix-sums the offsets, then fills at those fixed positions in `parallel_for_bw`, so its output stays independent of the thread count. Every changed body is in a `src/cpp/src` file, so there is no ABI change.

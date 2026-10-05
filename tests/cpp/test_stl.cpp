@@ -219,3 +219,41 @@ TEST(Stl, AsciiEmptySolidHasNoCells) {
     EXPECT_EQ(m.NumCellBlocks(), 0u);
     EXPECT_EQ(m.NumPoints(), 0u);
 }
+
+TEST(Stl, FileOf80To83BytesIsAsciiWithoutATriangleCount) {
+    // Too short for a binary header's triangle count, so ASCII, whose first
+    // line is the header: nothing is left to read.
+    for (const std::size_t size : {80u, 81u, 83u}) {
+        const std::string text = std::string(size - 1, 'x') + "\n";
+        const mt::Mesh m = read_stl_text(text);
+        EXPECT_EQ(m.NumCellBlocks(), 0u) << size;
+        EXPECT_EQ(m.NumPoints(), 0u) << size;
+    }
+}
+
+TEST(Stl, BinaryKeepsEveryVertexInSinglePrecision) {
+    const mt::Mesh in = mt::tri_mesh();
+    const std::string path = mt::temp_path("_binvalues.stl");
+    meshioplusplus::write_stl(path, in, /*binary=*/true);
+    const mt::Mesh out = meshioplusplus::read_stl(path);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    ASSERT_EQ(out.Points().Dtype(), meshioplusplus::DType::Float32);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    ASSERT_EQ(out.Cells(0).NumCells(), in.Cells(0).NumCells());
+    // Every triangle corner of the result is a corner of the input (the unit
+    // square's coordinates are exact in float32).
+    const float* p = out.Points().As<float>();
+    const std::int64_t* c = out.Cells(0).Conn().As<std::int64_t>();
+    for (std::size_t i = 0; i < 3 * out.Cells(0).NumCells(); ++i) {
+        const float* v = p + 3 * static_cast<std::size_t>(c[i]);
+        bool found = false;
+        for (std::size_t k = 0; k < in.NumPoints() && !found; ++k) {
+            const double* q = in.Points().As<double>() + 3 * k;
+            found = v[0] == static_cast<float>(q[0]) && v[1] == static_cast<float>(q[1]) &&
+                    v[2] == static_cast<float>(q[2]);
+        }
+        EXPECT_TRUE(found) << "corner " << i;
+    }
+}
