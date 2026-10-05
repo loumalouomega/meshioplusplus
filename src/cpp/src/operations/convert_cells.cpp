@@ -565,6 +565,15 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             const bool ragged = cb.IsRagged();
             const NDArray* conn = ragged ? nullptr : &cb.Conn();
             const std::size_t npc = ragged ? 0 : cb.NodesPerCell();
+            // An n-gon fans into exactly n - 2 triangles, so the output size is
+            // known: reserve it rather than growing the connectivity cell by cell.
+            std::size_t num_tris = 0;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::size_t n = ragged ? cb.RowSize(c) : npc;
+                num_tris += n > 2 ? n - 2 : 0;
+            }
+            out.mConn.reserve(num_tris * 3);
+            parents.reserve(parents.size() + num_tris);
             for (std::size_t c = 0; c < ncells; ++c) {
                 firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 3);
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;

@@ -54746,12 +54746,11 @@ struct MarchingFace {
 };
 
 // Newell normal of a polygon corner ring (twin of test_skin.cpp's helper).
-Vec3 marching_newell(const std::vector<Vec3>& rRing) {
+Vec3 marching_newell(const Vec3* pRing, std::size_t k) {
     Vec3 n = {0.0, 0.0, 0.0};
-    const std::size_t k = rRing.size();
     for (std::size_t i = 0; i < k; ++i) {
-        const Vec3& a = rRing[i];
-        const Vec3& b = rRing[(i + 1) % k];
+        const Vec3& a = pRing[i];
+        const Vec3& b = pRing[(i + 1) % k];
         n[0] += (a[1] - b[1]) * (a[2] + b[2]);
         n[1] += (a[2] - b[2]) * (a[0] + b[0]);
         n[2] += (a[0] - b[0]) * (a[1] + b[1]);
@@ -55049,14 +55048,34 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
     MarchingOutBlock quad_blk{cell_type_name(CellType::Quad), 4, {}, {}, {}, {}};
     MarchingOutBlock line_blk{cell_type_name(CellType::Line), 2, {}, {}, {}, {}};
     const double* pts = out.Points().As<double>();
+    // The staged blocks can hold at most every face of their kind, so reserve
+    // that bound once instead of growing five vectors per block face by face.
+    {
+        std::size_t n_tri = 0, n_quad = 0, n_line = 0;
+        for (const MarchingFace& f : faces) {
+            n_tri += f.mNumVerts == 3 ? 1 : 0;
+            n_quad += f.mNumVerts == 4 ? 1 : 0;
+            n_line += f.mNumVerts < 3 ? 1 : 0;
+        }
+        const auto reserve_block = [](MarchingOutBlock& rBlk, std::size_t NumCells) {
+            rBlk.mConn.reserve(NumCells * rBlk.mNodesPerCell);
+            rBlk.mParentBlock.reserve(NumCells);
+            rBlk.mParentLocal.reserve(NumCells);
+            rBlk.mParentGlobalCell.reserve(NumCells);
+        };
+        reserve_block(tri_blk, n_tri);
+        reserve_block(quad_blk, n_quad);
+        reserve_block(line_blk, n_line);
+    }
     for (const MarchingFace& f : faces) {
         if (f.mNumVerts >= 3) {
-            std::vector<Vec3> ring(f.mNumVerts);
+            // A face has at most four corners (MarchingFace::mNodes).
+            std::array<Vec3, 4> ring;
             for (std::size_t v = 0; v < f.mNumVerts; ++v) {
                 const std::size_t nd = static_cast<std::size_t>(f.mNodes[v]);
                 ring[v] = detail::read_point(out.Points(), dim, static_cast<std::int64_t>(nd));
             }
-            const Vec3 nrm = marching_newell(ring);
+            const Vec3 nrm = marching_newell(ring.data(), f.mNumVerts);
             if (detail::vec3_norm(nrm) < area_tol)
                 continue;
             const bool flip =
@@ -139999,7 +140018,9 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     for (std::size_t k = 0; k < face.second; ++k)
                         cell[f].push_back(weld_rep[static_cast<std::size_t>(face.first[k])]);
                     if (rOpts.drop_degenerate) {
-                        std::vector<std::int64_t> u(cell[f]);
+                        // Per-thread scratch: a sorted copy to count distinct nodes.
+                        static thread_local std::vector<std::int64_t> u;
+                        u.assign(cell[f].begin(), cell[f].end());
                         std::sort(u.begin(), u.end());
                         if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
                             3)
@@ -140088,13 +140109,15 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                 for (std::size_t k = 0; k < cb.RowSize(c); ++k)
                     row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
                 if (rOpts.drop_degenerate) {
-                    std::vector<std::int64_t> u(row);
+                    static thread_local std::vector<std::int64_t> u;
+                    u.assign(row.begin(), row.end());
                     std::sort(u.begin(), u.end());
                     if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
                         degenerate[c] = 1;  // fewer than three distinct nodes is not a polygon
                         return;
                     }
-                    std::vector<Vec3> coords(row.size());
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(row.size());
                     for (std::size_t k = 0; k < row.size(); ++k)
                         coords[k] = detail::read_point(
                             points, dim, rep_source[static_cast<std::size_t>(row[k])]);
@@ -141640,6 +141663,15 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             const bool ragged = cb.IsRagged();
             const NDArray* conn = ragged ? nullptr : &cb.Conn();
             const std::size_t npc = ragged ? 0 : cb.NodesPerCell();
+            // An n-gon fans into exactly n - 2 triangles, so the output size is
+            // known: reserve it rather than growing the connectivity cell by cell.
+            std::size_t num_tris = 0;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::size_t n = ragged ? cb.RowSize(c) : npc;
+                num_tris += n > 2 ? n - 2 : 0;
+            }
+            out.mConn.reserve(num_tris * 3);
+            parents.reserve(parents.size() + num_tris);
             for (std::size_t c = 0; c < ncells; ++c) {
                 firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 3);
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
@@ -147309,6 +147341,11 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
     std::vector<std::int64_t> conn;
     std::vector<std::int64_t> kind;
     std::vector<double> angle;
+    // crease_edges returns only boundary, non-manifold, inconsistent or sharp
+    // edges, so its size bounds what the loop below keeps.
+    conn.reserve(2 * edges.size());
+    kind.reserve(edges.size());
+    angle.reserve(edges.size());
     for (const detail::CreaseEdge& e : edges) {
         result.mNumNonManifold += e.IsNonManifold() ? 1 : 0;
         result.mNumBoundary += e.IsBoundary() ? 1 : 0;
@@ -147517,7 +147554,8 @@ bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOu
     if (nfaces == 0)
         return false;
 
-    std::vector<double> num(NumComp * 3, 0.0);
+    static thread_local std::vector<double> num;
+    num.assign(NumComp * 3, 0.0);
     double volume = 0.0;
     double area_scale = 0.0;
 
@@ -147605,7 +147643,8 @@ bool grad_green_gauss_2d(const GradCell& rCell, std::size_t NumComp, double* pOu
         return false;
     const Vec3 nrm = detail::vec3_scale(av, 1.0 / area);
 
-    std::vector<double> num(NumComp * 3, 0.0);
+    static thread_local std::vector<double> num;
+    num.assign(NumComp * 3, 0.0);
     for (std::size_t i = 0; i < n; ++i) {
         const std::size_t a = i;
         const std::size_t b = (i + 1) % n;
@@ -147697,7 +147736,8 @@ struct GradStencil {
 bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Dim,
                         const Vec3* pNormal, double* pOut) {
     double m[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    std::vector<double> b(NumComp * 3, 0.0);
+    static thread_local std::vector<double> b;
+    b.assign(NumComp * 3, 0.0);
     const std::size_t n = rStencil.mOffsets.size();
     for (std::size_t j = 0; j < n; ++j) {
         Vec3 d = rStencil.mOffsets[j];
@@ -148022,7 +148062,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 conn_v.emplace(cb.Conn());
             const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
             parallel_for(ncells, [&](std::size_t c) {
-                GradCell cell;
+                // Per-thread scratch: grad_load_cell resets every member it
+                // fills, so reuse changes no value and saves its allocations.
+                static thread_local GradCell cell;
                 grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp,
                                npoints, corners[b], cell);
                 if (!cell.mSupported)
@@ -148071,8 +148113,13 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             conn_v.emplace(cb.Conn());
         const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
         parallel_for(ncells, [&](std::size_t c) {
-            std::vector<double> grad(work_comp * 3, 0.0);
-            GradCell cell;
+            // Per-thread scratch, reset for every cell (roadmap §3.2.3): the
+            // gradient buffer, the cell and the stencil would otherwise be
+            // about eight heap blocks per cell. grad_load_cell resets every
+            // member it fills, so no value carries over between cells.
+            static thread_local std::vector<double> grad;
+            grad.assign(work_comp * 3, 0.0);
+            static thread_local GradCell cell;
             grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp, npoints,
                            ncorners, cell);
             cell.mType = type;
@@ -148083,7 +148130,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 if (rOptions.mMethod == GradientMethod::LeastSquares) {
                     static thread_local std::vector<std::int64_t> nbrs;
                     detail::cell_node_neighbors(cell_nodes, node_cells, base + c, nbrs);
-                    GradStencil stencil;
+                    static thread_local GradStencil stencil;
+                    stencil.mOffsets.clear();
+                    stencil.mDeltas.clear();
                     stencil.mOffsets.reserve(nbrs.size());
                     stencil.mDeltas.reserve(nbrs.size() * work_comp);
                     // Ascending global cell index: the neighbour order is part
