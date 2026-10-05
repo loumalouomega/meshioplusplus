@@ -114,8 +114,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **3.2 Memory and allocation.**
 
-- **3.2.2 Output vectors that still grow without a reserve.** The audit's capacity-planning diagnostics (59 at the last count, [benchmarks](./benchmarks.md#clang-tidy-performance-audit)) are the candidate list; take a site only where the code already holds a validated or computed bound, never a count read from a file header. Known sites left: `convert_cells`' polyhedron fan (its tetrahedron count is only known per cell, so it needs a counting pass over the face rings before it can reserve), `feature_edges`' `fe_rings` and corner-list pushes, and the `new_point_src` vector of vectors, which allocates one block per new point. **S–M**
-- **3.2.3 Per-cell vectors that could be fixed-size or per-thread scratch.** `gradient`, `marching`, `clean` and the polygon fan are done. Left: `quality.cpp`'s per-cell `coords`, `data_average.cpp`'s per-cell `nodes`, and the per-polyhedron `nodes` in `interpolate.cpp` and `partition.cpp`, none of which has a `bench_ops` row yet (add one first, so the gain is measured). A fixed `std::array` fits only where the size is bounded by the cell type; otherwise reuse a `thread_local` vector, as `gradient` now does. **S–M**
+- **3.2.2 Output vectors that still grow without a reserve.** The audit's capacity-planning diagnostics (59 at the last count, [benchmarks](./benchmarks.md#clang-tidy-performance-audit)) are the candidate list; take a site only where the code already holds a validated or computed bound, never a count read from a file header. Known site left: `subdivide.cpp`'s `new_point_src`, a vector of vectors that allocates one block per new point, which `convert_cells` now stores CSR (a flat node list plus offsets); it has no `bench_ops` row yet (add one first, so the gain is measured). **S**
 
 **3.3 Serial phases inside parallel operations.**
 

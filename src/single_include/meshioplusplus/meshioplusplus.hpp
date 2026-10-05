@@ -141596,7 +141596,9 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     // existing nodes it averages -- coordinates and point_data both derive from
     // that one list, so they cannot drift apart.
     const std::size_t num_points = mesh.NumPoints();
-    std::vector<std::vector<std::int64_t>> new_point_src;
+    // Stored CSR: point i averages src_nodes[src_start[i] .. src_start[i + 1]).
+    std::vector<std::int64_t> src_nodes;
+    std::vector<std::size_t> src_start{0};
 
     const std::size_t nblocks = mesh.NumCellBlocks();
     std::vector<CcellsOutBlock> staged;
@@ -141629,6 +141631,21 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             CcellsOutBlock out;
             out.mType = cell_type_name(CellType::Tetra);
             out.mNodesPerCell = 4;
+            // Count the raw faces first so the outputs reserve once: a face of m
+            // nodes yields m tetrahedra, a cell 1 + numFaces new points, and its
+            // sources are at most its distinct nodes (<= the sum of its face
+            // sizes) plus the face rings again. A cell the loop skips for having
+            // no usable faces only makes these upper bounds.
+            std::size_t ring_nodes = 0, face_count = 0;
+            for (std::size_t c = 0; c < ncells; ++c)
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    ring_nodes += cb.Face(c, f).second;
+                    ++face_count;
+                }
+            out.mConn.reserve(4 * ring_nodes);
+            parents.reserve(ring_nodes);
+            src_start.reserve(src_start.size() + ncells + face_count);
+            src_nodes.reserve(src_nodes.size() + 2 * ring_nodes);
             detail::CellRings rings;
             std::vector<detail::Vec3> coords;
             for (std::size_t c = 0; c < ncells; ++c) {
@@ -141644,17 +141661,17 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                         "volume to decompose");
                 // One new point for the cell centroid, then one per face.
                 const std::int64_t cell_pt =
-                    static_cast<std::int64_t>(num_points + new_point_src.size());
-                new_point_src.push_back(rings.mNodes);
+                    static_cast<std::int64_t>(num_points + src_start.size() - 1);
+                src_nodes.insert(src_nodes.end(), rings.mNodes.begin(), rings.mNodes.end());
+                src_start.push_back(src_nodes.size());
                 for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
                     const std::uint32_t* ring = rings.Face(f);
                     const std::size_t m = rings.FaceSize(f);
                     const std::int64_t face_pt =
-                        static_cast<std::int64_t>(num_points + new_point_src.size());
-                    std::vector<std::int64_t> face_nodes(m);
+                        static_cast<std::int64_t>(num_points + src_start.size() - 1);
                     for (std::size_t k = 0; k < m; ++k)
-                        face_nodes[k] = rings.mNodes[ring[k]];
-                    new_point_src.push_back(std::move(face_nodes));
+                        src_nodes.push_back(rings.mNodes[ring[k]]);
+                    src_start.push_back(src_nodes.size());
                     for (std::size_t k = 0; k < m; ++k) {
                         // (cell centroid, face centroid, a, b) is positively
                         // oriented for an outward-wound face -- the same
@@ -141755,8 +141772,9 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         ++bi;
     }
 
+    const std::size_t num_new = src_start.size() - 1;
     Mesh out;
-    if (new_point_src.empty()) {
+    if (num_new == 0) {
         out.AssignPoints(detail::data_owned_copy(mesh.Points()));
     } else {
         // Originals, then one appended row per new point: the arithmetic mean
@@ -141765,18 +141783,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         const NDArray& points = mesh.Points();
         const detail::DoubleView points_v(points);
         const std::size_t dim = detail::cols(points);
-        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
+        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + num_new, dim});
         std::memcpy(np.Data(), points.Data(), points.Nbytes());
         // The appended rows only, stored by one Commit() (see DoubleSink).
-        detail::DoubleSink sink(np, num_points * dim, new_point_src.size() * dim);
+        detail::DoubleSink sink(np, num_points * dim, num_new * dim);
         double* const new_xyz = sink.Data();
-        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
-            const std::vector<std::int64_t>& src = new_point_src[i];
+        parallel_for_bw(num_new, [&](std::size_t i) {
+            const std::int64_t* src = src_nodes.data() + src_start[i];
+            const std::size_t count = src_start[i + 1] - src_start[i];
             for (std::size_t d = 0; d < dim; ++d) {
                 double sum = 0.0;
-                for (std::int64_t nid : src)
-                    sum += points_v[static_cast<std::size_t>(nid) * dim + d];
-                new_xyz[i * dim + d] = sum / static_cast<double>(src.size());
+                for (std::size_t j = 0; j < count; ++j)
+                    sum += points_v[static_cast<std::size_t>(src[j]) * dim + d];
+                new_xyz[i * dim + d] = sum / static_cast<double>(count);
             }
         });
         sink.Commit();
@@ -141784,7 +141803,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     }
     for (CcellsOutBlock& block : staged)
         ccells_emit_block(out, block, nullptr);
-    if (new_point_src.empty()) {
+    if (num_new == 0) {
         ccells_copy_point_data(mesh, out);
     } else {
         for (const std::string& name : mesh.PointDataNames()) {
@@ -141796,18 +141815,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             }
             const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
             std::vector<std::size_t> shape = a.Shape();
-            shape[0] = num_points + new_point_src.size();
+            shape[0] = num_points + num_new;
             NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
             std::memcpy(b.Data(), a.Data(), a.Nbytes());
-            detail::DoubleSink sink(b, num_points * ncomp, new_point_src.size() * ncomp);
+            detail::DoubleSink sink(b, num_points * ncomp, num_new * ncomp);
             double* const new_vals = sink.Data();
-            parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
-                const std::vector<std::int64_t>& src = new_point_src[i];
+            parallel_for_bw(num_new, [&](std::size_t i) {
+                const std::int64_t* src = src_nodes.data() + src_start[i];
+                const std::size_t count = src_start[i + 1] - src_start[i];
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
-                    for (std::int64_t nid : src)
-                        sum += a_v[static_cast<std::size_t>(nid) * ncomp + k];
-                    new_vals[i * ncomp + k] = sum / static_cast<double>(src.size());
+                    for (std::size_t j = 0; j < count; ++j)
+                        sum += a_v[static_cast<std::size_t>(src[j]) * ncomp + k];
+                    new_vals[i * ncomp + k] = sum / static_cast<double>(count);
                 }
             });
             sink.Commit();
@@ -142560,7 +142580,6 @@ CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOp
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -142629,11 +142648,13 @@ void davg_cell_nodes(const Mesh::CellView& rCell, std::size_t index,
                      std::vector<std::int64_t>& rNodes) {
     rNodes.clear();
     if (rCell.IsPolyhedron()) {
-        std::unordered_set<std::int64_t> seen;
+        // First-seen order is the summation order, so dedupe in place by
+        // linear scan (a polyhedron has a handful of distinct nodes) rather
+        // than through a hash set or a sort.
         for (std::size_t f = 0; f < rCell.NumFaces(index); ++f) {
             const auto face = rCell.Face(index, f);
             for (std::size_t i = 0; i < face.second; ++i)
-                if (seen.insert(face.first[i]).second)
+                if (std::find(rNodes.begin(), rNodes.end(), face.first[i]) == rNodes.end())
                     rNodes.push_back(face.first[i]);
         }
         return;
@@ -142748,7 +142769,7 @@ Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
             // Pure gather: each cell reads only its own nodes, so this is safe
             // to run in parallel and is genuine per-element compute.
             parallel_for(nc, [&](std::size_t c) {
-                std::vector<std::int64_t> nodes;
+                static thread_local std::vector<std::int64_t> nodes;
                 davg_cell_nodes(cb, c, nodes);
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
@@ -147273,6 +147294,16 @@ void fe_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
             return Compact >= 0 && rSelected[static_cast<std::size_t>(
                                        gf.mCellToGlobal[static_cast<std::size_t>(Compact)])] != 0;
         };
+        // Count the skin faces first: the rings reserve once, at an upper
+        // bound (push drops a face naming a missing point).
+        std::size_t skin_faces = 0, skin_nodes = 0;
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+            if (in(gf.mOwner[f]) != in(gf.mNeighbour[f])) {
+                ++skin_faces;
+                skin_nodes += gf.FaceSize(f);
+            }
+        rStart.reserve(skin_faces + 1);
+        rNodes.reserve(skin_nodes);
         for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
             const bool own = in(gf.mOwner[f]);
             const bool nb = in(gf.mNeighbour[f]);
@@ -150207,7 +150238,8 @@ std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
         const std::size_t ncells = cb.NumCells();
         if (cb.IsPolyhedron()) {
             parallel_for(ncells, [&, base](std::size_t c) {
-                std::vector<std::int64_t> nodes;
+                static thread_local std::vector<std::int64_t> nodes;
+                nodes.clear();
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     const auto face = cb.Face(c, f);
                     nodes.insert(nodes.end(), face.first, face.first + face.second);
@@ -153167,7 +153199,8 @@ std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
         const std::size_t ncells = cb.NumCells();
         if (cb.IsPolyhedron()) {
             parallel_for(ncells, [&, base](std::size_t c) {
-                std::vector<std::int64_t> nodes;
+                static thread_local std::vector<std::int64_t> nodes;
+                nodes.clear();
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     const auto face = cb.Face(c, f);
                     nodes.insert(nodes.end(), face.first, face.first + face.second);
@@ -156670,8 +156703,10 @@ QualityReport compute_quality(const Mesh& rMesh) {
             parallel_for(nc, [&](std::size_t i) {
                 CellMetrics& v = vals[i];
                 v.fill(QUALITY_NAN);
-                detail::CellRings rings;
-                std::vector<Vec3> coords;
+                // Per-thread scratch: cell_rings clears both on entry, so each
+                // cell reuses the capacity the thread's largest cell grew.
+                static thread_local detail::CellRings rings;
+                static thread_local std::vector<Vec3> coords;
                 if (!detail::cell_rings(cb, i, points, pdim, rings, coords))
                     return;
                 const bool orientable = detail::orient_rings(rings, coords.data()) !=
@@ -156702,7 +156737,9 @@ QualityReport compute_quality(const Mesh& rMesh) {
             parallel_for(nc, [&](std::size_t i) {
                 CellMetrics& v = vals[i];
                 v.fill(QUALITY_NAN);
-                std::vector<Vec3> coords;
+                // Per-thread scratch (at most 8 corners): read_corner_coords
+                // clears it on entry.
+                static thread_local std::vector<Vec3> coords;
                 detail::read_corner_coords(points, pdim, conn, i * npc,
                                            static_cast<std::size_t>(corner_count), coords);
                 quality_eval_cell(family, ct, coords, is2d, eps, v.data());

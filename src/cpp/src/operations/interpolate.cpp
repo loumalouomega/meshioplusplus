@@ -112,7 +112,8 @@ std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
         const std::size_t ncells = cb.NumCells();
         if (cb.IsPolyhedron()) {
             parallel_for(ncells, [&, base](std::size_t c) {
-                std::vector<std::int64_t> nodes;
+                static thread_local std::vector<std::int64_t> nodes;
+                nodes.clear();
                 for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                     const auto face = cb.Face(c, f);
                     nodes.insert(nodes.end(), face.first, face.first + face.second);

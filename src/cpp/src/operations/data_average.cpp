@@ -33,7 +33,6 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -111,11 +110,13 @@ void davg_cell_nodes(const Mesh::CellView& rCell, std::size_t index,
                      std::vector<std::int64_t>& rNodes) {
     rNodes.clear();
     if (rCell.IsPolyhedron()) {
-        std::unordered_set<std::int64_t> seen;
+        // First-seen order is the summation order, so dedupe in place by
+        // linear scan (a polyhedron has a handful of distinct nodes) rather
+        // than through a hash set or a sort.
         for (std::size_t f = 0; f < rCell.NumFaces(index); ++f) {
             const auto face = rCell.Face(index, f);
             for (std::size_t i = 0; i < face.second; ++i)
-                if (seen.insert(face.first[i]).second)
+                if (std::find(rNodes.begin(), rNodes.end(), face.first[i]) == rNodes.end())
                     rNodes.push_back(face.first[i]);
         }
         return;
@@ -230,7 +231,7 @@ Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
             // Pure gather: each cell reads only its own nodes, so this is safe
             // to run in parallel and is genuine per-element compute.
             parallel_for(nc, [&](std::size_t c) {
-                std::vector<std::int64_t> nodes;
+                static thread_local std::vector<std::int64_t> nodes;
                 davg_cell_nodes(cb, c, nodes);
                 for (std::size_t k = 0; k < ncomp; ++k) {
                     double sum = 0.0;
