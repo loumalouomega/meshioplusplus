@@ -165,6 +165,44 @@ Mesh bench_ops_tet_cube(std::size_t n) {
 }
 
 /**
+ * @brief A planar triangle lattice of `m x m` squares (two triangles each) at
+ * unit size, with two-component points: the 2-D input the Triangle reader
+ * needs, which the 3-D cube cannot supply.
+ */
+Mesh bench_ops_tri_plate(std::size_t m) {
+    const std::size_t np = m + 1;
+    NDArray pts = NDArray::Uninit(DType::Float64, {np * np, 2});
+    double* p = pts.As<double>();
+    for (std::size_t j = 0; j < np; ++j)
+        for (std::size_t i = 0; i < np; ++i) {
+            p[(j * np + i) * 2 + 0] = static_cast<double>(i) / static_cast<double>(m);
+            p[(j * np + i) * 2 + 1] = static_cast<double>(j) / static_cast<double>(m);
+        }
+    NDArray conn = NDArray::Uninit(DType::Int64, {2 * m * m, 3});
+    std::int64_t* c = conn.As<std::int64_t>();
+    std::size_t t = 0;
+    for (std::size_t j = 0; j < m; ++j)
+        for (std::size_t i = 0; i < m; ++i) {
+            const std::int64_t a = static_cast<std::int64_t>(j * np + i);
+            const std::int64_t b = a + 1;
+            const std::int64_t d = a + static_cast<std::int64_t>(np);
+            const std::int64_t e = d + 1;
+            c[t * 3 + 0] = a;
+            c[t * 3 + 1] = b;
+            c[t * 3 + 2] = e;
+            ++t;
+            c[t * 3 + 0] = a;
+            c[t * 3 + 1] = e;
+            c[t * 3 + 2] = d;
+            ++t;
+        }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    mesh.AddCellBlock("triangle", std::move(conn));
+    return mesh;
+}
+
+/**
  * @brief A copy of `rMesh` whose points are moved by `f(point index, xyz)`.
  * Used for the jittered cube (`optimize_volume` has nothing to flip on the
  * regular one) and the inflated surface `shrinkwrap` projects back.
@@ -595,6 +633,14 @@ int main(int argc, char** argv) {
         // The registry's STL writer is ASCII, so this times the ASCII reader
         // over a triangle surface (roadmap §3.1.1.1).
         read_row("read_stl", "stl", ".stl", surface);
+        // The text-token readers of roadmap §3.1.1.1: TetGen's `.node`/`.ele`
+        // pair over the cube with its point field (so an attribute column is
+        // parsed too), and Triangle's over a planar lattice of about as many
+        // triangles as the cube has tetrahedra.
+        read_row("read_tetgen", "tetgen", ".node", with_field);
+        const Mesh tri_plate = bench_ops_tri_plate(
+            static_cast<std::size_t>(std::sqrt(3.0 * static_cast<double>(n * n * n))));
+        read_row("read_triangle", "triangle", ".node", tri_plate);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);
