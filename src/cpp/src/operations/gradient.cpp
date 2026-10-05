@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -45,6 +46,7 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "../detail/typed_view.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -83,24 +85,27 @@ struct GradCell {
     detail::CellRings mRings;
 };
 
-/// Reads the leading `NumCorners` connectivity entries of one cell.
-void grad_corner_nodes(const Mesh::CellView& rBlock, std::size_t Cell, std::size_t NumCorners,
-                       std::vector<std::int64_t>& rOut) {
-    rOut.clear();
-    const NDArray& conn = rBlock.Conn();
-    const std::size_t npc = rBlock.NodesPerCell();
-    for (std::size_t k = 0; k < NumCorners; ++k)
-        rOut.push_back(detail::read_int(conn, Cell * npc + k));
+/// Reads the leading `NumCorners` connectivity entries of one cell from the
+/// block's connectivity, which the caller took as `int64_t` once.
+void grad_corner_nodes(const std::int64_t* pConn, std::size_t NodesPerCell, std::size_t Cell,
+                       std::size_t NumCorners, std::vector<std::int64_t>& rOut) {
+    rOut.assign(pConn + Cell * NodesPerCell, pConn + Cell * NodesPerCell + NumCorners);
 }
 
 /// Gathers a cell's corner coordinates and field values, recentred.
+///
+/// `pXyz` is the point table and `pField` the compacted field, both as `double`;
+/// `pConn` is the block's connectivity as `int64_t` (null for a ragged or
+/// polyhedral block, which never reads it). The caller converts each array once
+/// (`DoubleView`/`Int64View`), so no dtype switch runs per node or component.
 ///
 /// `rOut.mSupported` is false when the block is ragged/polyhedron, has no corner
 /// count, or references an out-of-range node — the caller then emits NaN and
 /// counts the cell rather than guessing.
 void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArray& rPoints,
-                    std::size_t PointDim, const NDArray& rField, std::size_t NumComp,
-                    std::size_t NumPoints, std::size_t NumCorners, GradCell& rOut) {
+                    const double* pXyz, std::size_t PointDim, const std::int64_t* pConn,
+                    const double* pField, std::size_t NumComp, std::size_t NumPoints,
+                    std::size_t NumCorners, GradCell& rOut) {
     rOut.mSupported = false;
     rOut.mCorners.clear();
     rOut.mValues.clear();
@@ -124,7 +129,7 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
         // path further down and never reach grad_green_gauss_3d.
         if (rBlock.IsRagged() || NumCorners == 0)
             return;
-        grad_corner_nodes(rBlock, Cell, NumCorners, nodes);
+        grad_corner_nodes(pConn, rBlock.NodesPerCell(), Cell, NumCorners, nodes);
     }
     for (std::int64_t nid : nodes)
         if (nid < 0 || static_cast<std::size_t>(nid) >= NumPoints)
@@ -133,11 +138,16 @@ void grad_load_cell(const Mesh::CellView& rBlock, std::size_t Cell, const NDArra
 
     rOut.mCorners.reserve(ncorners);
     rOut.mValues.reserve(ncorners * NumComp);
+    const std::size_t pcols = PointDim < 3 ? PointDim : 3;
     for (std::int64_t nid : nodes) {
-        rOut.mCorners.push_back(detail::read_point(rPoints, PointDim, nid));
+        // read_point's padding: a 2D point gets z = 0.
+        Vec3 pt = {0.0, 0.0, 0.0};
+        const double* src = pXyz + static_cast<std::size_t>(nid) * PointDim;
+        for (std::size_t c = 0; c < pcols; ++c)
+            pt[c] = src[c];
+        rOut.mCorners.push_back(pt);
         for (std::size_t k = 0; k < NumComp; ++k)
-            rOut.mValues.push_back(
-                detail::read_double(rField, static_cast<std::size_t>(nid) * NumComp + k));
+            rOut.mValues.push_back(pField[static_cast<std::size_t>(nid) * NumComp + k]);
     }
 
     // Ascending corner order, left to right — the numpy twin sums identically.
@@ -600,12 +610,16 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
 
     NDArray work(DType::Float64, grad_shape(npoints, work_comp));
     {
+        const detail::DoubleView field_v(field);
         double* pw = work.As<double>();
         parallel_for_bw(npoints, [&](std::size_t i) {
             for (std::size_t k = 0; k < work_comp; ++k)
-                pw[i * work_comp + k] = detail::read_double(field, i * field_comp + comp_base + k);
+                pw[i * work_comp + k] = field_v[i * field_comp + comp_base + k];
         });
     }
+    const double* pwork = work.As<double>();
+    // The point table once as `double`: grad_load_cell indexes it per corner.
+    const detail::DoubleView points_v(points);
 
     // Per-block corner counts and eligibility, resolved once.
     std::vector<std::size_t> corners(nblocks, 0);
@@ -665,9 +679,16 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             const auto cb = rMesh.Cells(b);
             const std::size_t base = static_cast<std::size_t>(bases[b]);
             const std::size_t ncells = cb.NumCells();
+            // Rectangular blocks only: a polyhedron or ragged block has no
+            // rectangular connectivity (grad_load_cell never reads it there).
+            const bool rect = !cb.IsPolyhedron() && !cb.IsRagged();
+            const std::optional<detail::Int64View> conn_v =
+                rect ? std::optional<detail::Int64View>(std::in_place, cb.Conn()) : std::nullopt;
+            const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
             parallel_for(ncells, [&](std::size_t c) {
                 GradCell cell;
-                grad_load_cell(cb, c, points, pdim, work, work_comp, npoints, corners[b], cell);
+                grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp,
+                               npoints, corners[b], cell);
                 if (!cell.mSupported)
                     return;
                 const std::size_t g = base + c;
@@ -708,10 +729,15 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         const std::size_t base = static_cast<std::size_t>(bases[b]);
         const CellType type = types[b];
         const std::size_t ncorners = corners[b];
+        const bool rect = !cb.IsPolyhedron() && !cb.IsRagged();
+        const std::optional<detail::Int64View> conn_v =
+            rect ? std::optional<detail::Int64View>(std::in_place, cb.Conn()) : std::nullopt;
+        const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
         parallel_for(ncells, [&](std::size_t c) {
             std::vector<double> grad(work_comp * 3, 0.0);
             GradCell cell;
-            grad_load_cell(cb, c, points, pdim, work, work_comp, npoints, ncorners, cell);
+            grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp, npoints,
+                           ncorners, cell);
             cell.mType = type;
             cell.mDim = dim;
 
