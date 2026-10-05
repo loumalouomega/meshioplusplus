@@ -471,6 +471,30 @@ Eight tests pin the ASCII behaviour: exponents and signs, CRLF line endings, tab
 
 The row times the read of the surface of the M and L volume meshes (tier labels are the volume's cell counts, 162,000 and 750,000). Round 2's old L value and round 3's new values are outliers of the shared container; the medians of the three rounds are 23.6 → 9.6 ms (M) and 47.3 → 27.8 ms (L). What remains in the read is the point de-duplication (`dedup`), which keys an `unordered_map<std::string, …>` by 24 bytes per vertex row.
 
+### Frozen bucket grid in DistanceQuery, ABI 23
+
+Roadmap §3.3.1.2. `build_distance_query` grouped its (bucket, triangle) pairs in parallel and then moved each bucket into a `SpatialGrid`, an `unordered_map` of one vector per cell, one at a time; every nearest-triangle query then paid one node lookup per cell its shell visited. The grid is built once and only searched, so `DistanceQuery` now holds a `BucketTable` (the new installed header `detail/bucket_table.hpp`): the keys in first-seen order, the offsets of each bucket and the ids of every bucket in flat arrays, and an open-addressing index at most half full that maps a key to its bucket. The build scans the run sizes in parallel and fills the flat id array in parallel, so there is no vector per bucket; the index is filled serially over flat memory. Shell and box traversals, the ascending ids of each bucket and the occupied box are `SpatialGrid`'s, so the triangle-id tie-break of `sd_nearest_triangle` sees the same candidates in the same order. `SpatialGrid` itself is unchanged, so `merge`, `interpolate`, `conservative_interpolate` and `periodic` are untouched. The roadmap suggested a sorted bucket table; a hash index was chosen instead because a shell visits many cells and a binary search per cell would have made queries slower.
+
+`DistanceQuery` changes layout (232 → 272 bytes), a Tier A change, so **C++ ABI 22 becomes 23** ([the ABI table](./abi.md)); `test_abi_layout.cpp` pins `DistanceQuery`, `BucketTable` (160 bytes) and `BucketView` (16), and the pins compile on the MESHIO, NATIVE and KRATOS mesh backends. The language bindings do not expose `DistanceQuery`.
+
+New `meshioplusplus_bench_ops` row: `distance_build` (the grid and normal tables of a surface's triangle soup, with the soup made outside the timed runs; in hash mode its digest walks every bucket of the occupied box, so a change of the grid cannot hide behind the normal tables).
+
+**The build was never the cost.** `distance_build` takes about 3 ms at tier M and 10 ms at tier L, against 0.04 to 9 s for the operations that call it, so the roadmap's serial map insertion is a fraction of a percent of any of them. The gain below comes from the queries: a probe over contiguous memory instead of a pointer chase per visited cell. The serial index build costs a little (the row is within noise of the old build in the interleaved runs, and a few percent either way in single sweeps).
+
+**Determinism.** The 72 rows of the six distance rows at tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 72 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/distance_grid.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on a SEQ build (1,826 of 1,832; the six skips are optional codecs, locales and tools), including seven `BucketTable` tests that compare it with a serially filled `SpatialGrid` over random shells and boxes, an empty table, one bucket, negative and 2^40-offset keys, and a thousand-bucket probe test. The Python wrappers (`compute_sdf`, `hausdorff` and the rest) need the extension module, which the development container cannot build, so their tests were not run here.
+
+**Queries are not slower.** Interleaved old and new binaries, three rounds, each a median of seven runs (five at tier L); [the raw rounds](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/distance_grid_interleaved.csv). Mean of the three rounds:
+
+| Row | SEQ, M | OpenMP 4, M | OpenMP 4, L |
+| --- | ---: | ---: | ---: |
+| `compute_sdf` | 1851 → 1703 ms (−8.0%) | 503 → 424 ms (−15.8%) | 1060 → 1000 ms (−5.7%) |
+| `hausdorff` | 933 → 899 ms (−3.7%) | 290 → 237 ms (−18.4%) | 1218 → 1167 ms (−4.2%) |
+| `sample_distance` | 835 → 796 ms (−4.8%) | 214 → 192 ms (−10.1%) | 2257 → 2006 ms (−11.1%) |
+| `distance_to_surface` | 809 → 777 ms (−3.9%) | 209 → 199 ms (−4.7%) | not run |
+| `shrinkwrap` | 45.5 → 47.1 ms (+3.6%) | 15.8 → 15.1 ms (−4.9%) | 73.5 → 67.4 ms (−8.3%) |
+
+`shrinkwrap` at SEQ tier M is the one row that reads slower on average; it is a 45 ms call whose rounds (44.7 to 45.9 ms before, 45.4 to 48.7 ms after) overlap, and it reads faster at four threads. A single earlier OpenMP sweep had shown `shrinkwrap` +12 to +18% and `hausdorff` +8% in two cells; the interleaved rounds above do not reproduce it, which marks that sweep as noise (five runs each, one container).
+
 ### CSR ragged readers and `reorder`
 
 Roadmap §3.2.1. The EnSight (`nsided`/`nfaced`), CGNS (`NGON_n`/`NFACE_n`), Tecplot (face-based zones), VTKHDF and Fluent readers, and `reorder`, build the ragged `(flat, rowOffsets, faceOffsets)` triple directly and hand it to the CSR `AddPolygonBlock`/`AddPolyhedronBlock` overloads, instead of one `std::vector` per cell and per face that the nested overload then flattened again. The `polyhedron<N>` grouping (N the unique node count, first-seen order) the EnSight and CGNS readers share is one core-private helper, `detail/polyhedron_groups.hpp`; a section whose cells all land in one group hands over its staged arrays without a copy. `reorder` computes each new cell's size serially, prefix-sums the offsets, then fills at those fixed positions in `parallel_for_bw`, so its output stays independent of the thread count. Every changed body is in a `src/cpp/src` file, so there is no ABI change.
