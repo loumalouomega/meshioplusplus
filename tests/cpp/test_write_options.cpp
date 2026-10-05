@@ -90,9 +90,9 @@ TEST(WriteOptions, EncodingSelectsAsciiOrBinary) {
     std::remove(b.c_str());
 }
 
-// The browser viewer's surface path (`convertSurfaceOps(..., {compressVtp: false})`)
-// writes its VTP through exactly this call, to skip a deflate the main thread
-// would only undo.
+// `convertSurfaceOps(..., {compressVtp: false})` writes its VTP through exactly
+// this call. The browser viewer does not use it: vtk.js cannot read the 4-byte-
+// header uncompressed form this produces for ordinary meshes (roadmap 3.4.5.1).
 TEST(WriteOptions, VtpWithTheNoneCodecIsUncompressedBase64AndReadsBackIdentically) {
     const Mesh m = mt::tri_mesh();
     const std::string raw = mt::temp_path("_wo_vtp_none.vtp");

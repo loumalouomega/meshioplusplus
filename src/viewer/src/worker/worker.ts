@@ -140,9 +140,11 @@ function renderPipeline(m: Module, ops: OpSpec[]): { vtp: ArrayBuffer; report: O
         // The picker needs the provenance array; the colour-by menu filters it
         // out by name, so keeping it costs nothing visible.
         keepProvenance: true,
-        // The surface is parsed on the main thread straight away, so deflating
-        // it here would only be inflated again there.
-        compressVtp: false,
+        // Leave the VTP zlib-compressed (the default). Do not pass
+        // `compressVtp: false` here: vtk.js reads an uncompressed array as
+        // `new Float64Array(buffer, headerBytes)`, and the writer's 4-byte
+        // header (no `header_type`) puts that at offset 4, which throws a
+        // RangeError for every 8-byte type and ends the load in "error".
     }) as OpReport;
     const vtp = take(m, SURFACE_PATH);
     unlink(m, SURFACE_PATH);
@@ -415,7 +417,6 @@ async function handle(request: Request): Promise<void> {
             const report = m.convertSurfaceOps(path, SURFACE_PATH, [], {
                 inFormat: format,
                 keepProvenance: true,
-                compressVtp: false,
             }) as OpReport;
             const vtp = take(m, SURFACE_PATH);
             unlink(m, SURFACE_PATH);

@@ -2210,8 +2210,9 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
  *   needs it; the colour-by menu must filter it out).
  * @param compressVtp `false` writes a `.vtp` output as uncompressed base64
  *   (`registry_write_ex` with the `None` codec) instead of the registry's zlib
- *   default, for a caller that parses it at once in the same process and would
- *   only deflate to inflate (the browser viewer). Other output formats ignore it.
+ *   default. Other output formats ignore it. The file has a 4-byte header
+ *   unless an array could pass 4 GiB, which vtk.js (the browser viewer's
+ *   reader) cannot read for 8-byte types, so the viewer keeps the default.
  * @return `{steps: [{op, ...counters}], warnings: [string]}`.
  */
 val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat,

@@ -143,7 +143,7 @@ file ──► Web Worker ──────────────────
          convert()        → any writable format
 ```
 
-Parsing and conversion happen in a Web Worker, and the VTP moves to the main thread as a transferable `ArrayBuffer` — no copy, and the UI stays responsive on a large file. The worker asks for the VTP uncompressed (`compressVtp: false`), because the main thread parses it at once and a deflate here would only be inflated there, and it transfers the buffer `FS.readFile` returned as it is instead of copying it first; a buffer that is not a plain `ArrayBuffer` the array spans exactly (a view onto the heap, which must never be transferred) is still copied.
+Parsing and conversion happen in a Web Worker, and the VTP moves to the main thread as a transferable `ArrayBuffer` — no copy, and the UI stays responsive on a large file. The VTP stays zlib-compressed, because vtk.js cannot read the uncompressed form the writer produces for ordinary meshes (see `compressVtp` in [WASM](./wasm.md)). The worker transfers the buffer `FS.readFile` returned as it is instead of copying it first; a buffer that is not a plain `ArrayBuffer` the array spans exactly (a view onto the heap, which must never be transferred) is still copied.
 
 `convertSurfaceOps` is one call rather than `readMesh` → *operation* → `writeMesh` for a specific reason: the JS mesh representation is flat and cannot carry a multi-component array, so a vector field would be silently dropped on the way to the renderer. Staying inside C++ keeps it — and makes undo a replay rather than an inverse.
 

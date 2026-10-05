@@ -1216,9 +1216,12 @@ export interface MeshioPlusPlusModule {
       keepProvenance?: boolean;
       /**
        * Whether a `.vtp` output is zlib-compressed (the default, `true`).
-       * `false` writes it as uncompressed base64, for a caller that parses
-       * the file at once in the same process and would only deflate to
-       * inflate (the browser viewer does). Other output formats ignore it.
+       * `false` writes it as uncompressed base64 (still binary, never
+       * ASCII). Other output formats ignore it. A VTK reader that assumes an
+       * 8-byte header for 8-byte types cannot read the result: the file
+       * carries a 4-byte header unless an array could pass 4 GiB, and
+       * vtk.js, which the browser viewer uses, throws a RangeError on it.
+       * Leave this at the default for anything that renders with vtk.js.
        */
       compressVtp?: boolean;
     }
