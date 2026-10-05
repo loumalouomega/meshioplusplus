@@ -1132,9 +1132,11 @@ jobs:
 
       # The uploads are skipped outright until CODECOV_TOKEN is configured, so a
       # repo without it still gets the tests + the lcov summary above rather than
-      # a red build. Once the token exists they are fail-loud on purpose: a
-      # silently-dropped upload is what leaves the README badge stuck on
-      # "unknown".
+      # a red build. Once the token exists a failed upload still does not fail
+      # the job (`fail_ci_if_error: false`): Codecov's own outages (an SSL
+      # handshake failure fetching its uploader, ingest.codecov.io refusing the
+      # report after retries) are not a defect in the change under test, and the
+      # action still logs the error for the badge-stuck-on-"unknown" case.
       - name: Warn if CODECOV_TOKEN is unset
         if: ${{ env.CODECOV_TOKEN == '' }}
         run: |
@@ -1147,7 +1149,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           flags: python
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
       - name: Upload C++ coverage
         if: ${{ env.CODECOV_TOKEN != '' && steps.lfs.outputs.available != 'false' }}
@@ -1156,7 +1158,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./cpp-coverage.info
           flags: cpp
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   # --------------------------------------------------------------------------
   # The desktop viewer backend (polyscope). Kept out of the per-backend C++
