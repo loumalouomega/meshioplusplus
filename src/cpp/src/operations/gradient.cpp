@@ -184,7 +184,8 @@ bool grad_green_gauss_3d(const GradCell& rCell, std::size_t NumComp, double* pOu
     if (nfaces == 0)
         return false;
 
-    std::vector<double> num(NumComp * 3, 0.0);
+    static thread_local std::vector<double> num;
+    num.assign(NumComp * 3, 0.0);
     double volume = 0.0;
     double area_scale = 0.0;
 
@@ -272,7 +273,8 @@ bool grad_green_gauss_2d(const GradCell& rCell, std::size_t NumComp, double* pOu
         return false;
     const Vec3 nrm = detail::vec3_scale(av, 1.0 / area);
 
-    std::vector<double> num(NumComp * 3, 0.0);
+    static thread_local std::vector<double> num;
+    num.assign(NumComp * 3, 0.0);
     for (std::size_t i = 0; i < n; ++i) {
         const std::size_t a = i;
         const std::size_t b = (i + 1) % n;
@@ -364,7 +366,8 @@ struct GradStencil {
 bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Dim,
                         const Vec3* pNormal, double* pOut) {
     double m[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    std::vector<double> b(NumComp * 3, 0.0);
+    static thread_local std::vector<double> b;
+    b.assign(NumComp * 3, 0.0);
     const std::size_t n = rStencil.mOffsets.size();
     for (std::size_t j = 0; j < n; ++j) {
         Vec3 d = rStencil.mOffsets[j];
@@ -689,7 +692,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 conn_v.emplace(cb.Conn());
             const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
             parallel_for(ncells, [&](std::size_t c) {
-                GradCell cell;
+                // Per-thread scratch: grad_load_cell resets every member it
+                // fills, so reuse changes no value and saves its allocations.
+                static thread_local GradCell cell;
                 grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp,
                                npoints, corners[b], cell);
                 if (!cell.mSupported)
@@ -738,8 +743,13 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             conn_v.emplace(cb.Conn());
         const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
         parallel_for(ncells, [&](std::size_t c) {
-            std::vector<double> grad(work_comp * 3, 0.0);
-            GradCell cell;
+            // Per-thread scratch, reset for every cell (roadmap §3.2.3): the
+            // gradient buffer, the cell and the stencil would otherwise be
+            // about eight heap blocks per cell. grad_load_cell resets every
+            // member it fills, so no value carries over between cells.
+            static thread_local std::vector<double> grad;
+            grad.assign(work_comp * 3, 0.0);
+            static thread_local GradCell cell;
             grad_load_cell(cb, c, points, points_v.Data(), pdim, pconn, pwork, work_comp, npoints,
                            ncorners, cell);
             cell.mType = type;
@@ -750,7 +760,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 if (rOptions.mMethod == GradientMethod::LeastSquares) {
                     static thread_local std::vector<std::int64_t> nbrs;
                     detail::cell_node_neighbors(cell_nodes, node_cells, base + c, nbrs);
-                    GradStencil stencil;
+                    static thread_local GradStencil stencil;
+                    stencil.mOffsets.clear();
+                    stencil.mDeltas.clear();
                     stencil.mOffsets.reserve(nbrs.size());
                     stencil.mDeltas.reserve(nbrs.size() * work_comp);
                     // Ascending global cell index: the neighbour order is part
