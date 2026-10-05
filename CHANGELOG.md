@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- Scratch reuse, reserved output and a CSR source list in the operations (roadmap §3.2.2, §3.2.3). `quality`, `point_data_to_cell_data`, and the polyhedron centroid helpers of `interpolate` and `partition` reuse per-thread scratch instead of a vector per cell, and the polyhedron dedupe of `point_data_to_cell_data` is a first-seen linear scan instead of a hash set. `convert_cells` Simplexify counts a polyhedron block's faces once to reserve its outputs and stores the points each new point averages as a flat list with offsets instead of one vector per point; `feature_edges` counts its skin faces before pushing them. Output is unchanged: all 132 rows of the determinism sweep carry the pre-change digests across SEQ and OpenMP at 1, 4 and 8 threads. In an interleaved SEQ A/B `point_data_to_cell_data` is 38 to 54% faster, `convert_cells` Simplexify of a polyhedron block and `quality` of one about 14 to 15%, `feature_edges` 9 to 11%, and the tetrahedral `quality` and `partition` rows are neutral. `bench_ops` gains `quality`, `quality_ragged`, `data_average`, `data_average_ragged`, `interpolate_cells`, `partition_ragged` and `feature_edges_ragged`. No installed header changes; ABI stays 22. See [benchmarks](doc/benchmarks.md#scratch-in-the-per-cell-and-per-polyhedron-loops-and-a-csr-source-list-in-convert_cells).
+
 ## v16.31.0 (2026-10-05)
 
 - Fix: an XDMF `HDF` DataItem is refused when the dataset in the file is larger than the `Dimensions` the XML declares, before it is read, in the C++ core and the Python reader. The core allocated and read the file's own extent, so a corrupt dataset of millions of unwritten chunks made HDF5 1.10's `H5Dread` crawl past the fuzzer's timeout (found by the fuzz workflow, reproduced with HDF5 1.10.6). The minimized bundle is `tests/fuzz/regressions/xdmf/`, with a native test and a Python test over both engines. A dataset smaller than declared is read as before.

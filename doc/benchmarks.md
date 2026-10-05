@@ -405,6 +405,34 @@ The gradient family gains 26 to 39 percent and reproduces in the full SEQ sweep 
 
 `thread_local` scratch keeps the capacity of the largest cell a thread has seen for the life of the thread; a cell's face rings are the only part that scales with the cell, so this is bounded by the largest polyhedron in the mesh.
 
+### Scratch in the per-cell and per-polyhedron loops, and a CSR source list in `convert_cells`
+
+Roadmap §3.2.2 and §3.2.3. Four loops allocated a vector per cell inside `parallel_for`: `quality`'s corner coordinates (and, for polyhedra, its face rings), `point_data_to_cell_data`'s node list, and the polyhedron node list of the centroid helpers in `interpolate` and `partition`. They are `thread_local` now and reset on every use (`cell_rings` and `read_corner_coords` clear their outputs on entry), so nothing carries over between cells. `davg_cell_nodes` also drops its per-polyhedron `std::unordered_set` for a linear scan that keeps first-seen order, which is the summation order, so the floating-point sums are unchanged. The `interpolate` and `partition` helpers keep their sort and unique, whose ascending order is their summation order.
+
+`convert_cells` Simplexify of a polyhedron block now counts the raw faces once and reserves the tetrahedra, parent ids and source lists from that count, and stores the points each new point averages as one flat list with offsets (CSR) instead of one `std::vector` per new point, which was one heap block per face and per cell. `feature_edges` counts its skin faces before pushing their rings. `subdivide.cpp` keeps the vector-of-vectors form: it has no `bench_ops` row, so a change there would not be measured (roadmap §3.2.2). The changes are in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged; `read_corner_coords` keeps its exported signature, which is why `quality` uses scratch vectors and not `std::array`.
+
+New `meshioplusplus_bench_ops` rows: `quality`, `quality_ragged`, `data_average`, `data_average_ragged`, `interpolate_cells` (a cell field of the ragged mesh onto itself, the path that reaches the centroid helper), `partition_ragged` (an 8-part space-filling-curve cut, so no KaHIP is needed) and `feature_edges_ragged`.
+
+**Determinism.** The 88 rows of tiers M and L plus the 44 of tier S, SEQ at one thread and OpenMP at 1, 4 and 8, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 264 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/scratch_reuse_ops_2.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on the OpenMP build (1,810 of 1,816; the six skips are optional codecs, locales and tools).
+
+**SEQ is not slower.** Interleaved old and new binaries, three rounds, each a median of seven runs, tier M, one thread:
+
+| Row (M, 162,000 cells) | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `data_average` | 8.02 ms | 4.97 ms | −38.0% |
+| `data_average_ragged` | 59.18 ms | 27.10 ms | −54.2% |
+| `simplexify_ragged` | 327.61 ms | 278.75 ms | −14.9% |
+| `quality_ragged` | 271.84 ms | 233.95 ms | −13.9% |
+| `feature_edges` | 275.47 ms | 245.94 ms | −10.7% |
+| `feature_edges_ragged` | 262.63 ms | 239.46 ms | −8.8% |
+| `interpolate_cells` | 649.63 ms | 609.13 ms | −6.2% |
+| `quality` | 53.05 ms | 49.90 ms | −5.9% |
+| `partition` / `partition_ragged` | 47.07 / 172.19 ms | 46.41 / 170.00 ms | −1.4% / −1.3% |
+
+The data-average and polyhedron rows gain the most, because they allocated per polyhedron; the tetrahedral `quality`, `partition` and `partition_ragged` rows are within noise, so those edits are kept as removed allocations that cost nothing measurable. `interpolate` read +12.6% in the same table, but its point-data path runs none of the changed code and six further interleaved rounds put it at +3% (0.239 against 0.232 s), inside the round-to-round scatter. The sweep's OpenMP rows at 4 threads are mixed at tier M (`quality` +23% in one run, −12% at L) and show no claim either way for the same reason: a 3-run median on this four-core shared container scatters by tens of percent, and the 8-thread rows oversubscribe it.
+
+`thread_local` scratch keeps the capacity of the largest cell a thread has seen for the life of the thread, so it is bounded by the largest polyhedron in the mesh.
+
 ### CSR ragged readers and `reorder`
 
 Roadmap §3.2.1. The EnSight (`nsided`/`nfaced`), CGNS (`NGON_n`/`NFACE_n`), Tecplot (face-based zones), VTKHDF and Fluent readers, and `reorder`, build the ragged `(flat, rowOffsets, faceOffsets)` triple directly and hand it to the CSR `AddPolygonBlock`/`AddPolyhedronBlock` overloads, instead of one `std::vector` per cell and per face that the nested overload then flattened again. The `polyhedron<N>` grouping (N the unique node count, first-seen order) the EnSight and CGNS readers share is one core-private helper, `detail/polyhedron_groups.hpp`; a section whose cells all land in one group hands over its staged arrays without a copy. `reorder` computes each new cell's size serially, prefix-sums the offsets, then fills at those fixed positions in `parallel_for_bw`, so its output stays independent of the thread count. Every changed body is in a `src/cpp/src` file, so there is no ABI change.
