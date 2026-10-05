@@ -114,7 +114,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **3.2 Memory and allocation.**
 
-- **3.2.2 Output vectors that still grow without a reserve.** The audit's capacity-planning diagnostics (59 at the last count, [benchmarks](./benchmarks.md#clang-tidy-performance-audit)) are the candidate list; take a site only where the code already holds a validated or computed bound, never a count read from a file header. Known site left: `subdivide.cpp`'s `new_point_src`, a vector of vectors that allocates one block per new point, which `convert_cells` now stores CSR (a flat node list plus offsets); it has no `bench_ops` row yet (add one first, so the gain is measured). **S**
+- **3.2.2 Output vectors that still grow without a reserve.** The audit's capacity-planning diagnostics (59 at the last count, [benchmarks](./benchmarks.md#clang-tidy-performance-audit)) are the candidate list; take a site only where the code already holds a validated or computed bound, never a count read from a file header. Known site left: `subdivide.cpp`'s output loop, which builds a `std::vector<std::vector<std::int64_t>>` of child faces per polyhedron, a `face_nodes` vector per face and a three-node vector per apex triangle (its source lists are already [stored CSR](./benchmarks.md#csr-source-lists-in-subdivide)); `subdivide_ragged` has a `bench_ops` row, so a flat face store (nodes plus offsets, as `SubOutBlock`'s emit step could take) is measured by it. **S**
 
 **3.3 Serial phases inside parallel operations.**
 

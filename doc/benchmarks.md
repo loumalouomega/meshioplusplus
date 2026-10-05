@@ -409,7 +409,7 @@ The gradient family gains 26 to 39 percent and reproduces in the full SEQ sweep 
 
 Roadmap §3.2.2 and §3.2.3. Four loops allocated a vector per cell inside `parallel_for`: `quality`'s corner coordinates (and, for polyhedra, its face rings), `point_data_to_cell_data`'s node list, and the polyhedron node list of the centroid helpers in `interpolate` and `partition`. They are `thread_local` now and reset on every use (`cell_rings` and `read_corner_coords` clear their outputs on entry), so nothing carries over between cells. `davg_cell_nodes` also drops its per-polyhedron `std::unordered_set` for a linear scan that keeps first-seen order, which is the summation order, so the floating-point sums are unchanged. The `interpolate` and `partition` helpers keep their sort and unique, whose ascending order is their summation order.
 
-`convert_cells` Simplexify of a polyhedron block now counts the raw faces once and reserves the tetrahedra, parent ids and source lists from that count, and stores the points each new point averages as one flat list with offsets (CSR) instead of one `std::vector` per new point, which was one heap block per face and per cell. `feature_edges` counts its skin faces before pushing their rings. `subdivide.cpp` keeps the vector-of-vectors form: it has no `bench_ops` row, so a change there would not be measured (roadmap §3.2.2). The changes are in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged; `read_corner_coords` keeps its exported signature, which is why `quality` uses scratch vectors and not `std::array`.
+`convert_cells` Simplexify of a polyhedron block now counts the raw faces once and reserves the tetrahedra, parent ids and source lists from that count, and stores the points each new point averages as one flat list with offsets (CSR) instead of one `std::vector` per new point, which was one heap block per face and per cell. `feature_edges` counts its skin faces before pushing their rings. `subdivide.cpp` kept the vector-of-vectors form until it got a `bench_ops` row; see [the next section](#csr-source-lists-in-subdivide). The changes are in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged; `read_corner_coords` keeps its exported signature, which is why `quality` uses scratch vectors and not `std::array`.
 
 New `meshioplusplus_bench_ops` rows: `quality`, `quality_ragged`, `data_average`, `data_average_ragged`, `interpolate_cells` (a cell field of the ragged mesh onto itself, the path that reaches the centroid helper), `partition_ragged` (an 8-part space-filling-curve cut, so no KaHIP is needed) and `feature_edges_ragged`.
 
@@ -432,6 +432,25 @@ New `meshioplusplus_bench_ops` rows: `quality`, `quality_ragged`, `data_average`
 The data-average and polyhedron rows gain the most, because they allocated per polyhedron; the tetrahedral `quality`, `partition` and `partition_ragged` rows are within noise, so those edits are kept as removed allocations that cost nothing measurable. `interpolate` read +12.6% in the same table, but its point-data path runs none of the changed code and six further interleaved rounds put it at +3% (0.239 against 0.232 s), inside the round-to-round scatter. The sweep's OpenMP rows at 4 threads are mixed at tier M (`quality` +23% in one run, −12% at L) and show no claim either way for the same reason: a 3-run median on this four-core shared container scatters by tens of percent, and the 8-thread rows oversubscribe it.
 
 `thread_local` scratch keeps the capacity of the largest cell a thread has seen for the life of the thread, so it is bounded by the largest polyhedron in the mesh.
+
+### CSR source lists in `subdivide`
+
+Roadmap §3.2.2. `subdivide` kept the plain-average source nodes of each new apex point as one `std::vector<std::int64_t>` per polyhedron, a heap block per cell. It now stores them as one flat node list plus offsets, the form `convert_cells` Simplexify uses, and reserves the offsets by the block's cell count (at most one apex per cell). The point-data and coordinate averages read the slices in the same order, so the sums are unchanged. The change is in a `.cpp` body: installed headers and C++ ABI 22 are unchanged.
+
+New `meshioplusplus_bench_ops` rows: `subdivide_ragged` (the polyhedron block of the ragged mesh, where every cell gets an apex) and `read_stl` (the ASCII STL reader over the surface mesh, which the registry writes as ASCII; it has no code change here and is the control for the noise below, and the baseline for the reader migration of §3.1.1.1). The registry read helper takes the mesh to write, so it also serves the surface rows.
+
+**Determinism.** `subdivide_ragged` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 24 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/subdivide_csr.csv). TBB is not installed in the development container, so its leg was skipped.
+
+**SEQ is not slower.** Interleaved old and new binaries, three rounds, each a median of seven runs, tier M, one thread:
+
+| Round | Before | After |
+| --- | ---: | ---: |
+| 1 | 473.0 ms | 440.3 ms |
+| 2 | 487.9 ms | 429.2 ms |
+| 3 | 469.1 ms | 452.8 ms |
+| Mean | 476.7 ms | 440.7 ms (−7.6%) |
+
+The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocate several blocks per face; those are the remaining cost and stay in the roadmap. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
 
 ### CSR ragged readers and `reorder`
 
