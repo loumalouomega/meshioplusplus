@@ -124713,14 +124713,13 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/tecplot.cpp =====
 // ===== begin src/cpp/src/formats/tetgen.cpp =====
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
-#include <sstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -124746,35 +124745,32 @@ std::pair<std::string, std::string> node_ele_paths(const std::string& rPath, boo
 }
 
 // First non-comment, non-blank line is the header; remaining non-comment
-// tokens (whitespace-separated, across lines) are the data stream.
+// tokens (whitespace-separated, across lines) are the data stream. The tokens
+// are views into the text they were split from, which the caller keeps alive.
 struct Parsed {
-    std::vector<std::string> mHeader;
-    std::vector<std::string> mData;
+    std::vector<std::string_view> mHeader;
+    std::vector<std::string_view> mData;
 };
 
-Parsed parse_file(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+Parsed parse_text(std::string_view Text, const std::string& rPath) {
     Parsed p;
     bool have_header = false;
-    std::string line;
-    while (std::getline(in, line)) {
+    std::vector<std::string_view> tokens;
+    detail::TextCursor cursor(Text);
+    while (!cursor.AtEnd()) {
+        const std::string_view line = cursor.Line();
         // trim leading whitespace
         std::size_t s = 0;
-        while (s < line.size() && std::isspace(static_cast<unsigned char>(line[s])))
+        while (s < line.size() && detail::text_is_blank(line[s]))
             ++s;
         if (s >= line.size() || line[s] == '#')
             continue;
-        detail::TextStream iss(line);
-        std::string tok;
         if (!have_header) {
-            while (iss >> tok)
-                p.mHeader.push_back(tok);
+            detail::split_blanks(line, p.mHeader);
             have_header = true;
         } else {
-            while (iss >> tok)
-                p.mData.push_back(tok);
+            detail::split_blanks(line, tokens);
+            p.mData.insert(p.mData.end(), tokens.begin(), tokens.end());
         }
     }
     if (!have_header)
@@ -124795,13 +124791,15 @@ Mesh read_tetgen(const std::string& rPath) {
     Mesh mesh;
 
     // ---- nodes ----
-    Parsed nf = parse_file(node_path);
+    const detail::FileSource node_source =
+        detail::open_source(node_path, "Could not open file: " + node_path);
+    const Parsed nf = parse_text(node_source.View(), node_path);
     if (nf.mHeader.size() < 4)
         throw ReadError("TetGen: malformed .node header");
-    std::int64_t npoints = std::strtoll(nf.mHeader[0].c_str(), nullptr, 10);
-    int dim = static_cast<int>(std::strtoll(nf.mHeader[1].c_str(), nullptr, 10));
-    int num_attrs = static_cast<int>(std::strtoll(nf.mHeader[2].c_str(), nullptr, 10));
-    int num_bmarkers = static_cast<int>(std::strtoll(nf.mHeader[3].c_str(), nullptr, 10));
+    std::int64_t npoints = detail::strtoll_token(nf.mHeader[0]);
+    int dim = static_cast<int>(detail::strtoll_token(nf.mHeader[1]));
+    int num_attrs = static_cast<int>(detail::strtoll_token(nf.mHeader[2]));
+    int num_bmarkers = static_cast<int>(detail::strtoll_token(nf.mHeader[3]));
     if (dim != 3)
         throw ReadError("TetGen: need 3D points");
 
@@ -124810,7 +124808,7 @@ Mesh read_tetgen(const std::string& rPath) {
         throw ReadError("TetGen: .node data size mismatch");
 
     auto at = [&](std::int64_t r, int c) -> double {
-        return detail::parse_double(nf.mData[r * ncol + c]);
+        return detail::parse_double_prefix(nf.mData[r * ncol + c]);
     };
 
     std::int64_t node_index_base = npoints > 0 ? static_cast<std::int64_t>(at(0, 0)) : 0;
@@ -124843,12 +124841,14 @@ Mesh read_tetgen(const std::string& rPath) {
     }
 
     // ---- elements ----
-    Parsed ef = parse_file(ele_path);
+    const detail::FileSource ele_source =
+        detail::open_source(ele_path, "Could not open file: " + ele_path);
+    const Parsed ef = parse_text(ele_source.View(), ele_path);
     if (ef.mHeader.size() < 3)
         throw ReadError("TetGen: malformed .ele header");
-    std::int64_t num_tets = std::strtoll(ef.mHeader[0].c_str(), nullptr, 10);
-    int npt = static_cast<int>(std::strtoll(ef.mHeader[1].c_str(), nullptr, 10));
-    int ele_attrs = static_cast<int>(std::strtoll(ef.mHeader[2].c_str(), nullptr, 10));
+    std::int64_t num_tets = detail::strtoll_token(ef.mHeader[0]);
+    int npt = static_cast<int>(detail::strtoll_token(ef.mHeader[1]));
+    int ele_attrs = static_cast<int>(detail::strtoll_token(ef.mHeader[2]));
     if (npt != 4)
         throw ReadError("TetGen: only 4-node tetrahedra supported");
 
@@ -124857,7 +124857,7 @@ Mesh read_tetgen(const std::string& rPath) {
         throw ReadError("TetGen: .ele data size mismatch");
 
     auto eat = [&](std::int64_t r, int c) -> std::int64_t {
-        return std::strtoll(ef.mData[r * ecol + c].c_str(), nullptr, 10);
+        return detail::strtoll_token(ef.mData[r * ecol + c]);
     };
 
     NDArray cells(DType::Int64, {static_cast<std::size_t>(num_tets), 4});
