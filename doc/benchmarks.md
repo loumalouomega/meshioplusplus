@@ -495,6 +495,27 @@ New `meshioplusplus_bench_ops` row: `distance_build` (the grid and normal tables
 
 `shrinkwrap` at SEQ tier M is the one row that reads slower on average; it is a 45 ms call whose rounds (44.7 to 45.9 ms before, 45.4 to 48.7 ms after) overlap, and it reads faster at four threads. A single earlier OpenMP sweep had shown `shrinkwrap` +12 to +18% and `hausdorff` +8% in two cells; the interleaved rounds above do not reproduce it, which marks that sweep as noise (five runs each, one container).
 
+### TetGen and Triangle readers on the text cursor
+
+Roadmap §3.1.1.1. Both readers opened a classic-locale stream, took each line with `getline`, split it with a `TextStream` into one `std::string` per token, kept every token of the file in a vector of strings, and parsed each with `strtoll(c_str())` or `parse_double(std::string)`. They now map the file with `FileSource`, walk it with `TextCursor::Line`, split blank-separated tokens into views (`split_blanks`) and parse them in place: TetGen with `strtoll_token` and `parse_double_prefix`, the lenient forms it replaces, and Triangle with `TextCursor::IntPrefix` and `DoublePrefix`, whose "consumed nothing" result is the old `end == begin` check. The views point into the mapped file, so TetGen keeps its two sources in `read_tetgen`'s scope beside their tokens, and Triangle's token stream owns its source on the heap, which a move of the stream cannot relocate (the buffered `FileSource` stores its bytes in a `std::string`, whose small buffer would move). The order of errors is unchanged: the `.node` file is read and checked before the `.ele` file is opened. Output is byte-identical, and the change is in `.cpp` bodies, so installed headers and C++ ABI 23 are unchanged.
+
+The two readers differ in one rule, which the tests pin so a shared tokenizer cannot blur it: Triangle strips a comment from the first `#` anywhere on a line, while TetGen skips only a line that starts with `#`, so a `#` after data on a TetGen data line adds tokens and fails the size check.
+
+New `meshioplusplus_bench_ops` rows: `read_tetgen` (the tetrahedral cube with its point field, so an attribute column is parsed) and `read_triangle` (a planar lattice of about as many triangles as the cube has tetrahedra, from a new 2-D helper, because the cube has three-component points). Both go through the registry's reader, with the `.node`/`.ele` pair written once outside the timed region.
+
+Seventeen new TetGen cases (a new `test_tetgen.cpp`) and nineteen Triangle cases pin the behaviour, and all of them passed against the old readers before either was changed: comments, blank lines, CRLF, tabs, form feeds and vertical tabs, tokens split across lines, lenient numbers (`1.5abc`, `12xyz`, a lone `+` or `-`), `nan`, `inf`, an overflow to infinity, a hexadecimal float and an underflow to zero (recorded from the reader as it was, signed NaN included), saturated integers, zero- and one-based numbering, every named `ReadError`, a lone `.node` file as a point cloud, and the `.poly` paths (inline and sibling vertices, markers, skipped holes and regions, every malformed section). The Triangle fuzz regression corpus passes before and after.
+
+**Determinism.** The `read_tetgen` and `read_triangle` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 24 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/tetgen_triangle_readers.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on a SEQ build (1,862 of 1,868; the six skips are optional codecs, locales and tools). `benchmark/bench.py` and the Python tests need the extension module, which the development container cannot build, so they were not run; the Python readers are unchanged.
+
+**SEQ is not slower; it is faster.** Interleaved old and new binaries, three rounds, each a median of seven runs, one thread; [the raw rounds](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/tetgen_triangle_readers_interleaved.csv). Mean of the three rounds:
+
+| Row | Tier M, before | Tier M, after | Tier L, before | Tier L, after |
+| --- | ---: | ---: | ---: | ---: |
+| `read_tetgen` | 62.7 ms | 32.3 ms (−48%) | 360.4 ms | 203.8 ms (−43%) |
+| `read_triangle` | 69.0 ms | 28.5 ms (−59%) | 422.6 ms | 209.2 ms (−51%) |
+
+The tier labels are the cube's cell counts (162,000 and 750,000); the Triangle lattice has about as many triangles. The remaining time of each read was not profiled.
+
 ### CSR ragged readers and `reorder`
 
 Roadmap §3.2.1. The EnSight (`nsided`/`nfaced`), CGNS (`NGON_n`/`NFACE_n`), Tecplot (face-based zones), VTKHDF and Fluent readers, and `reorder`, build the ragged `(flat, rowOffsets, faceOffsets)` triple directly and hand it to the CSR `AddPolygonBlock`/`AddPolyhedronBlock` overloads, instead of one `std::vector` per cell and per face that the nested overload then flattened again. The `polyhedron<N>` grouping (N the unique node count, first-seen order) the EnSight and CGNS readers share is one core-private helper, `detail/polyhedron_groups.hpp`; a section whose cells all land in one group hands over its staged arrays without a copy. `reorder` computes each new cell's size serially, prefix-sums the offsets, then fills at those fixed positions in `parallel_for_bw`, so its output stays independent of the thread count. Every changed body is in a `src/cpp/src` file, so there is no ABI change.

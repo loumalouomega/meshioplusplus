@@ -125381,15 +125381,14 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 // ===== end src/cpp/src/formats/tikz.cpp =====
 // ===== begin src/cpp/src/formats/triangle.cpp =====
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <fstream>
-#include <sstream>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -125399,24 +125398,26 @@ namespace meshioplusplus {
 
 namespace {
 
-// Whitespace token stream over a whole file, '#' comments stripped to EOL.
+// Whitespace token stream over a whole file, '#' comments stripped to EOL. The
+// tokens are views into the file's text, which the stream owns on the heap so
+// that moving the stream cannot relocate it.
 struct TriangleTokens {
-    std::vector<std::string> mToks;
+    std::unique_ptr<detail::FileSource> mSource;
+    std::vector<std::string_view> mToks;
     std::size_t mPos = 0;
 
     bool AtEnd() const { return mPos >= mToks.size(); }
 
-    const std::string& Next(const char* pWhat) {
+    std::string_view Next(const char* pWhat) {
         if (AtEnd())
             throw ReadError(std::string("Triangle: unexpected end of file reading ") + pWhat);
         return mToks[mPos++];
     }
 
     std::int64_t NextInt(const char* pWhat) {
-        const std::string& t = Next(pWhat);
-        char* end = nullptr;
-        const std::int64_t v = std::strtoll(t.c_str(), &end, 10);
-        if (end == t.c_str())
+        detail::TextCursor token(Next(pWhat));
+        std::int64_t v = 0;
+        if (!token.IntPrefix(v))
             throw ReadError(std::string("Triangle: expected an integer for ") + pWhat);
         return v;
     }
@@ -125428,10 +125429,9 @@ struct TriangleTokens {
     }
 
     double NextDouble(const char* pWhat) {
-        const std::string& t = Next(pWhat);
-        const char* end = nullptr;
-        const double v = detail::parse_double(t.c_str(), end);
-        if (end == t.c_str())
+        detail::TextCursor token(Next(pWhat));
+        double v = 0.0;
+        if (!token.DoublePrefix(v))
             throw ReadError(std::string("Triangle: expected a number for ") + pWhat);
         return v;
     }
@@ -125439,19 +125439,22 @@ struct TriangleTokens {
 
 TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
     TriangleTokens tokens;
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    rOk = static_cast<bool>(in);
-    if (!rOk)
+    rOk = true;
+    try {
+        tokens.mSource = std::make_unique<detail::FileSource>(rPath);
+    } catch (const ReadError&) {
+        rOk = false;
         return tokens;
-    std::string line;
-    while (std::getline(in, line)) {
+    }
+    std::vector<std::string_view> line_tokens;
+    detail::TextCursor cursor(tokens.mSource->View());
+    while (!cursor.AtEnd()) {
+        std::string_view line = cursor.Line();
         const std::size_t hash = line.find('#');
-        if (hash != std::string::npos)
-            line.resize(hash);
-        detail::TextStream iss(line);
-        std::string tok;
-        while (iss >> tok)
-            tokens.mToks.push_back(tok);
+        if (hash != std::string_view::npos)
+            line = line.substr(0, hash);
+        detail::split_blanks(line, line_tokens);
+        tokens.mToks.insert(tokens.mToks.end(), line_tokens.begin(), line_tokens.end());
     }
     return tokens;
 }
