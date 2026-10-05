@@ -682,8 +682,11 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             // Rectangular blocks only: a polyhedron or ragged block has no
             // rectangular connectivity (grad_load_cell never reads it there).
             const bool rect = !cb.IsPolyhedron() && !cb.IsRagged();
-            const std::optional<detail::Int64View> conn_v =
-                rect ? std::optional<detail::Int64View>(std::in_place, cb.Conn()) : std::nullopt;
+            // emplace(), not a conditional expression: Int64View is not
+            // copyable and MSVC wants the copy constructor for that.
+            std::optional<detail::Int64View> conn_v;
+            if (rect)
+                conn_v.emplace(cb.Conn());
             const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
             parallel_for(ncells, [&](std::size_t c) {
                 GradCell cell;
@@ -730,8 +733,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         const CellType type = types[b];
         const std::size_t ncorners = corners[b];
         const bool rect = !cb.IsPolyhedron() && !cb.IsRagged();
-        const std::optional<detail::Int64View> conn_v =
-            rect ? std::optional<detail::Int64View>(std::in_place, cb.Conn()) : std::nullopt;
+        std::optional<detail::Int64View> conn_v;
+        if (rect)
+            conn_v.emplace(cb.Conn());
         const std::int64_t* pconn = conn_v ? conn_v->Data() : nullptr;
         parallel_for(ncells, [&](std::size_t c) {
             std::vector<double> grad(work_comp * 3, 0.0);

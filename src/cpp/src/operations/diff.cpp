@@ -199,10 +199,13 @@ BlockDiff diff_compare_block(const Mesh::CellView& rA, const Mesh::CellView& rB,
     const auto rectangular = [](const Mesh::CellView& rCb) {
         return !rCb.IsPolyhedron() && !rCb.IsRagged();
     };
-    const std::optional<detail::Int64View> conn_a =
-        rectangular(rA) ? std::optional<detail::Int64View>(std::in_place, rA.Conn()) : std::nullopt;
-    const std::optional<detail::Int64View> conn_b =
-        rectangular(rB) ? std::optional<detail::Int64View>(std::in_place, rB.Conn()) : std::nullopt;
+    // emplace(), not `cond ? std::optional(std::in_place, ...) : std::nullopt`:
+    // Int64View is not copyable and MSVC wants the copy constructor for that.
+    std::optional<detail::Int64View> conn_a, conn_b;
+    if (rectangular(rA))
+        conn_a.emplace(rA.Conn());
+    if (rectangular(rB))
+        conn_b.emplace(rB.Conn());
     const std::int64_t* pconn_a = conn_a ? conn_a->Data() : nullptr;
     const std::int64_t* pconn_b = conn_b ? conn_b->Data() : nullptr;
     parallel_for(nc, [&](std::size_t c) {
