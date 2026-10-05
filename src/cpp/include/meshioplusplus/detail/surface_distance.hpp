@@ -34,6 +34,13 @@
  * roughly uniform triangle soup -- is the uniform grid's best case and the BVH's
  * worst.
  *
+ * Here the grid is built once and then only searched, so it is held as a
+ * `BucketTable` (`detail/bucket_table.hpp`, since ABI 23): the same buckets and
+ * the same shell traversal as `SpatialGrid`, in flat arrays with an
+ * open-addressing index, with no node or vector per cell. Lookups touch
+ * contiguous memory, which is where the saving is; building the table was
+ * never the cost.
+ *
  * The decisive reason, though, is not speed: **a BVH would make the accelerator
  * observable in the output.** Its build order and split heuristic determine the
  * order candidates are visited in, which determines which of two equidistant
@@ -77,6 +84,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/point_triangle.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/detail/spatial_hash.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 
@@ -190,8 +198,9 @@ MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
  */
 struct DistanceQuery {
     const TriangleSoup* mpSoup = nullptr;
-    /// The bucket grid, holding triangle ids by quantized bounding box.
-    SpatialGrid mGrid{1.0};
+    /// The bucket grid, holding triangle ids by quantized bounding box. Frozen
+    /// (a `BucketTable`) since ABI 23: built once, only searched afterwards.
+    BucketTable mGrid{1.0};
     /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
     std::vector<Vec3> mFaceNormal;
     /// Per welded vertex, the weighted sum of incident unit face normals.

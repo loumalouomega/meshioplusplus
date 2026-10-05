@@ -217,9 +217,9 @@ Nothing in the rest of this section applies to it: a C consumer compiles no mesh
 
 ```cmake
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 22)
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 23)
   message(FATAL_ERROR
-    "this project needs meshio++ ABI 22, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+    "this project needs meshio++ ABI 23, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 

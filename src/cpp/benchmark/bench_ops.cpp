@@ -63,6 +63,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/mesh_api.hpp"
+#include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -671,6 +672,35 @@ int main(int argc, char** argv) {
         });
         row("distance_to_surface",
             [&](MeshDigest* pD) { of(pD, mio::distance_to_surface(jittered, surface).mMesh); });
+        // The accelerator alone (roadmap §3.3.1.2): the bucket grid and the
+        // normal tables of a surface's triangle soup, per call. The soup is
+        // made once, by the hashed warm-up call, so it is outside the timed
+        // runs. In hash mode the digest also walks the grid -- every bucket of
+        // the occupied key box, in the traversal order queries use -- so a
+        // change of its layout cannot hide behind the tables.
+        std::optional<mio::detail::TriangleSoup> distance_soup;
+        row("distance_build", [&](MeshDigest* pD) {
+            if (!distance_soup)
+                distance_soup = mio::detail::build_triangle_soup(surface, "");
+            const mio::detail::DistanceQuery q =
+                mio::detail::build_distance_query(*distance_soup, mio::SurfaceDistanceOptions{});
+            if (!pD)
+                return;
+            pD->Bytes(&q.mCellSize, sizeof q.mCellSize);
+            pD->Bytes(q.mFaceNormal.data(), q.mFaceNormal.size() * sizeof(mio::detail::Vec3));
+            pD->Bytes(q.mVertexNormal.data(), q.mVertexNormal.size() * sizeof(mio::detail::Vec3));
+            pD->Bytes(q.mEdgeOfCorner.data(), q.mEdgeOfCorner.size() * sizeof(std::int64_t));
+            pD->Bytes(q.mEdgeNormals.data(), q.mEdgeNormals.size() * sizeof(mio::detail::Vec3));
+            const mio::detail::GridKey lo = q.mGrid.OccupiedLo();
+            const mio::detail::GridKey hi = q.mGrid.OccupiedHi();
+            pD->Bytes(&lo, sizeof lo);
+            pD->Bytes(&hi, sizeof hi);
+            q.mGrid.ForEachInBox(lo, hi, [&](const auto& rIds) {
+                pD->U64(rIds.size());
+                for (const std::int64_t t : rIds)
+                    pD->U64(static_cast<std::uint64_t>(t));
+            });
+        });
         row("isosurface", [&](MeshDigest* pD) {
             mio::IsosurfaceOptions o;
             o.mArrayName = "u";

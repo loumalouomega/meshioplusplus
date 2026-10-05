@@ -404,10 +404,15 @@ static_assert(sizeof(meshioplusplus::SmoothMethod) == 1,
 // The sort-based tables (v16.16.0, ABI 18), pinned from the release that
 // changed them from hash maps: `FaceLookup` and `FacetIndex` hold sorted
 // vectors, and `DistanceQuery` a per-corner edge-normal index instead of a map.
-// `ProvenanceSlotlessWrite` is new and stateless.
+// `ProvenanceSlotlessWrite` is new and stateless. ABI 23 (roadmap §3.3.1.2):
+// `DistanceQuery`'s bucket grid is a `BucketTable` -- keys, offsets, ids and a
+// flat index in four vectors -- instead of a `SpatialGrid`'s node map
+// (232 -> 272 bytes); `BucketTable` and `BucketView` are new and pinned here.
 MIO_ABI_LAYOUT(meshioplusplus::detail::FaceLookup, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::FacetIndex, 48, 8);
-MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 232, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::BucketTable, 160, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::BucketView, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 272, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::TriangleSoup, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceSlotlessWrite, 1, 1);
 

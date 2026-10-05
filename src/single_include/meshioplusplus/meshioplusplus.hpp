@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 22
+#define MESHIOPLUSPLUS_ABI_VERSION 23
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -6488,6 +6488,494 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/binary_stream.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
+/**
+ * @file spatial_hash.hpp
+ * @brief The integer bucket-grid spatial hash shared by `operations/merge.cpp`
+ * (point welding) and `operations/interpolate.cpp` (nearest-point and
+ * simplex-candidate lookup) — hoisted verbatim from merge's weld in v7.13.0,
+ * the way `space_filling.hpp` was hoisted from reorder in v7.6.0.
+ *
+ * A `SpatialGrid` maps a quantized cell key (`floor(coord / cell)` per axis)
+ * to the ids inserted into that cell, in insertion order. Both consumers
+ * insert ids in ascending order from a **serial** pass, which is what makes
+ * every downstream scan deterministic; the hash function only buckets — the
+ * map is key-looked-up, never iterated — so the hash cannot affect any
+ * consumer's output.
+ *
+ * Merge's contract (unchanged by the hoist, pinned by its test suites): cell
+ * size is `atol`, so two points within `atol` of each other land in the same
+ * or an adjacent cell and the fixed 3x3x3 neighbourhood (`ForEachIn27`, in
+ * ascending dz -> dy -> dx order with early exit) finds every weld candidate.
+ *
+ * Interpolate additionally needs an *expanding* search: `ForEachInShell`
+ * visits the cells at Chebyshev radius exactly `r` (r = 0 is the centre
+ * cell), and the occupied-key bounding box (`OccupiedLo`/`OccupiedHi`,
+ * maintained on insert) bounds how far a nearest-point search can ever need
+ * to expand. Any point in a cell at Chebyshev key distance `r >= 1` from a
+ * query's cell lies at least `(r - 1) * cell` away from the query, which is
+ * the search's stopping rule.
+ *
+ * `operations/conservative_interpolate.cpp` is a third consumer, and adds
+ * `ForEachInBox`: unlike a point query (one cell) or a shell (a fixed
+ * Chebyshev ring), it needs every id inserted anywhere inside a *query box*
+ * (a target simplex's own quantized bbox) — the read-side twin of
+ * `InsertBox`, whose nested loop it mirrors exactly. Because `InsertBox`
+ * inserts a source simplex's id into *every* cell its bbox spans, and the
+ * query box can itself span several cells, `ForEachInBox` will yield the same
+ * id more than once whenever the two multi-cell boxes share more than one
+ * grid cell — callers must sort-and-deduplicate before treating the result as
+ * a candidate set, exactly as `conservative_interpolate.cpp` does.
+ *
+ * `detail/` header: exempt from the operations layer's anon-namespace prefix
+ * rule. `clean.cpp` keeps its own (serial, any-dtype, FNV-hashed) welder —
+ * structurally different enough that sharing would only relocate code.
+ */
+
+// System includes
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Integer bucket-grid cell key: the quantized coordinate of a point.
+struct GridKey {
+    std::int64_t x, y, z;
+    bool operator==(const GridKey& rOther) const {
+        return x == rOther.x && y == rOther.y && z == rOther.z;
+    }
+};
+
+/// A simple, well-mixed hash combine over the three signed axes (moved
+/// verbatim from merge's weld; buckets only, never observable in output).
+struct GridKeyHash {
+    std::size_t operator()(const GridKey& rKey) const {
+        std::uint64_t h = static_cast<std::uint64_t>(rKey.x) * 0x9e3779b97f4a7c15ULL;
+        h ^= static_cast<std::uint64_t>(rKey.y) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<std::uint64_t>(rKey.z) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return static_cast<std::size_t>(h);
+    }
+};
+
+/// Quantize one coordinate to its bucket index (`floor(coord / cell)`).
+inline std::int64_t grid_quantize(double coord, double cell) {
+    return static_cast<std::int64_t>(std::floor(coord / cell));
+}
+
+/// The bucket grid: cell key -> ids in insertion order. Callers insert ids in
+/// ascending order from a serial pass, or group them in parallel and hand each
+/// bucket over ascending (`AssignBuckets`), so every bucket vector is
+/// ascending and every scan over it is deterministic.
+class SpatialGrid {
+public:
+    explicit SpatialGrid(double cellSize) : mCell(cellSize) {}
+
+    double CellSize() const { return mCell; }
+
+    /// The cell key of a (z-padded, 3-component) coordinate.
+    GridKey KeyOf(const double* pCoords) const {
+        return GridKey{grid_quantize(pCoords[0], mCell), grid_quantize(pCoords[1], mCell),
+                       grid_quantize(pCoords[2], mCell)};
+    }
+
+    /// Append `id` to the cell at `rKey`.
+    void Insert(const GridKey& rKey, std::int64_t id) {
+        mCells[rKey].push_back(id);
+        Cover(rKey);
+    }
+
+    /// Append `id` to every cell in the inclusive key box `[rLo, rHi]`
+    /// (a simplex's quantized bounding box), in ascending z -> y -> x order.
+    void InsertBox(const GridKey& rLo, const GridKey& rHi, std::int64_t id) {
+        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
+            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
+                for (std::int64_t x = rLo.x; x <= rHi.x; ++x)
+                    mCells[GridKey{x, y, z}].push_back(id);
+        Cover(rLo);
+        Cover(rHi);
+    }
+
+    /// The bulk form of `Insert`/`InsertBox` (v16.19.0), for a caller that
+    /// grouped its (key, id) pairs itself -- in parallel -- with each bucket's
+    /// ids already in the order serial inserts would have appended them:
+    /// `Ids[i]` is appended to the cell at `Keys[i]`, and the occupied box
+    /// grows to cover `[rLo, rHi]`, the bounds of every box inserted. Keys in
+    /// the order serial inserts would first have met them leave the map as
+    /// those inserts would have.
+    void AssignBuckets(std::vector<GridKey> Keys, std::vector<std::vector<std::int64_t>> Ids,
+                       const GridKey& rLo, const GridKey& rHi) {
+        for (std::size_t i = 0; i < Keys.size(); ++i) {
+            std::vector<std::int64_t>& r_bucket = mCells[Keys[i]];
+            if (r_bucket.empty())
+                r_bucket = std::move(Ids[i]);
+            else
+                r_bucket.insert(r_bucket.end(), Ids[i].begin(), Ids[i].end());
+        }
+        Cover(rLo);
+        Cover(rHi);
+    }
+
+    /// The ids in the cell at `rKey`, or nullptr if the cell is empty.
+    const std::vector<std::int64_t>* Find(const GridKey& rKey) const {
+        auto it = mCells.find(rKey);
+        return it == mCells.end() ? nullptr : &it->second;
+    }
+
+    /// Visits the 3x3x3 neighbourhood of `rCenter` in ascending dz -> dy -> dx
+    /// order (merge's exact weld-scan order), calling `fn(bucket)` for each
+    /// non-empty cell. `fn` returns false to stop early (candidate found).
+    template <class F>
+    void ForEachIn27(const GridKey& rCenter, F&& fn) const {
+        for (std::int64_t dz = -1; dz <= 1; ++dz)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dx = -1; dx <= 1; ++dx) {
+                    const std::vector<std::int64_t>* p_ids =
+                        Find(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
+                    if (p_ids != nullptr && !fn(*p_ids))
+                        return;
+                }
+    }
+
+    /// Visits the cells at Chebyshev radius exactly `r` around `rCenter`
+    /// (r = 0 is the centre cell alone), calling `fn(bucket)` for each
+    /// non-empty cell, in ascending dz -> dy -> dx order. Enumerates only the
+    /// shell (never the full cube), clamped to the occupied-key bounding box —
+    /// cells outside it are empty by construction, so skipping them cannot
+    /// change any consumer's result, and a far-away query stays O(bbox
+    /// surface) instead of O(r^2) per shell.
+    template <class F>
+    void ForEachInShell(const GridKey& rCenter, std::int64_t r, F&& fn) const {
+        if (!mCovered)
+            return;
+        const std::int64_t zl = std::max(-r, mLo.z - rCenter.z);
+        const std::int64_t zh = std::min(r, mHi.z - rCenter.z);
+        const std::int64_t yl = std::max(-r, mLo.y - rCenter.y);
+        const std::int64_t yh = std::min(r, mHi.y - rCenter.y);
+        const std::int64_t xl = std::max(-r, mLo.x - rCenter.x);
+        const std::int64_t xh = std::min(r, mHi.x - rCenter.x);
+        if (zl > zh || yl > yh || xl > xh)
+            return;
+        auto visit = [&](std::int64_t dx, std::int64_t dy, std::int64_t dz) {
+            const std::vector<std::int64_t>* p_ids =
+                Find(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
+            if (p_ids != nullptr)
+                fn(*p_ids);
+        };
+        if (r == 0) {
+            visit(0, 0, 0);
+            return;
+        }
+        for (std::int64_t dz = zl; dz <= zh; ++dz) {
+            if (dz == -r || dz == r) {
+                for (std::int64_t dy = yl; dy <= yh; ++dy)
+                    for (std::int64_t dx = xl; dx <= xh; ++dx)
+                        visit(dx, dy, dz);
+            } else {
+                for (std::int64_t dy = yl; dy <= yh; ++dy) {
+                    if (dy == -r || dy == r) {
+                        for (std::int64_t dx = xl; dx <= xh; ++dx)
+                            visit(dx, dy, dz);
+                    } else {
+                        if (xl == -r)
+                            visit(-r, dy, dz);
+                        if (xh == r)
+                            visit(r, dy, dz);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Visits every non-empty cell in the inclusive key box `[rLo, rHi]`,
+    /// calling `fn(bucket)` for each — the read-side twin of `InsertBox`, same
+    /// ascending z -> y -> x traversal. A bucket may be visited once per
+    /// id-in-that-bucket occurrence from the *inserting* side, so an id
+    /// inserted via `InsertBox` over a multi-cell box can surface more than
+    /// once here when the query box shares several cells with it; callers must
+    /// deduplicate (see the file doc comment).
+    template <class F>
+    void ForEachInBox(const GridKey& rLo, const GridKey& rHi, F&& fn) const {
+        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
+            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
+                for (std::int64_t x = rLo.x; x <= rHi.x; ++x) {
+                    const std::vector<std::int64_t>* p_ids = Find(GridKey{x, y, z});
+                    if (p_ids != nullptr)
+                        fn(*p_ids);
+                }
+    }
+
+    bool Empty() const { return mCells.empty(); }
+
+    /// The occupied-key bounding box (valid only when not `Empty()`); bounds
+    /// the maximum radius an expanding shell search can ever need.
+    const GridKey& OccupiedLo() const { return mLo; }
+    const GridKey& OccupiedHi() const { return mHi; }
+
+private:
+    void Cover(const GridKey& rKey) {
+        if (!mCovered) {
+            mLo = mHi = rKey;
+            mCovered = true;
+            return;
+        }
+        if (rKey.x < mLo.x)
+            mLo.x = rKey.x;
+        if (rKey.y < mLo.y)
+            mLo.y = rKey.y;
+        if (rKey.z < mLo.z)
+            mLo.z = rKey.z;
+        if (rKey.x > mHi.x)
+            mHi.x = rKey.x;
+        if (rKey.y > mHi.y)
+            mHi.y = rKey.y;
+        if (rKey.z > mHi.z)
+            mHi.z = rKey.z;
+    }
+
+    double mCell;
+    std::unordered_map<GridKey, std::vector<std::int64_t>, GridKeyHash> mCells;
+    bool mCovered = false;
+    GridKey mLo{0, 0, 0};
+    GridKey mHi{0, 0, 0};
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/bucket_table.hpp =====
+/**
+ * @file detail/bucket_table.hpp
+ * @brief A read-only bucket grid: the frozen counterpart of `SpatialGrid`.
+ *
+ * `SpatialGrid` (`detail/spatial_hash.hpp`) is a growable map from a quantized
+ * cell key to the ids inserted into it, one `std::vector` per cell inside an
+ * `unordered_map`. That is what `merge` needs, since it inserts as it welds.
+ * `DistanceQuery` never inserts after the build: its (cell, triangle) pairs are
+ * grouped once, in parallel, and then only searched. A `BucketTable` holds
+ * exactly that: the buckets in compressed-sparse-row form -- the keys in the
+ * order the build met them, the offsets of each bucket's ids, and the ids of
+ * every bucket in one flat array -- with a flat open-addressing index from a
+ * key to its bucket. There is no node and no vector per cell, and a lookup is
+ * a probe over contiguous memory instead of a pointer chase.
+ *
+ * What is observable is `SpatialGrid`'s contract, unchanged: every bucket lists
+ * its ids ascending (the caller hands them over that way), `ForEachInShell` and
+ * `ForEachInBox` visit cells in the same ascending dz -> dy -> dx / z -> y -> x
+ * order, and the occupied-key box is the one the caller gives. Only a *lookup*
+ * touches the index, and a lookup returns the same bucket whatever the probe
+ * order was, so the hash cannot affect any result.
+ *
+ * `detail/` header: exempt from the operations layer's anon-namespace prefix
+ * rule.
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The ids of one bucket: a borrowed, ascending range inside a `BucketTable`.
+class BucketView {
+public:
+    BucketView(const std::int64_t* pFirst, std::size_t Count) : mpFirst(pFirst), mCount(Count) {}
+
+    const std::int64_t* begin() const { return mpFirst; }
+    const std::int64_t* end() const { return mpFirst + mCount; }
+    std::size_t size() const { return mCount; }
+    bool empty() const { return mCount == 0; }
+    std::int64_t operator[](std::size_t i) const { return mpFirst[i]; }
+
+private:
+    const std::int64_t* mpFirst;
+    std::size_t mCount;
+};
+
+/// The read-only bucket grid: cell key -> ascending ids, built once.
+class BucketTable {
+public:
+    explicit BucketTable(double CellSize = 1.0) : mCell(CellSize) {}
+
+    /**
+     * @brief Take ownership of grouped buckets.
+     * @param CellSize the quantization size of `KeyOf`.
+     * @param Keys one distinct key per bucket, in the caller's bucket order.
+     * @param Offsets `Keys.size() + 1` entries: bucket `b` holds
+     *        `Ids[Offsets[b] .. Offsets[b + 1])`, ascending.
+     * @param Ids every bucket's ids, back to back.
+     * @param rLo the occupied key box's low corner (valid when `Keys` is not empty).
+     * @param rHi the occupied key box's high corner.
+     */
+    BucketTable(double CellSize, std::vector<GridKey> Keys, std::vector<std::uint64_t> Offsets,
+                std::vector<std::int64_t> Ids, const GridKey& rLo, const GridKey& rHi)
+        : mCell(CellSize),
+          mKeys(std::move(Keys)),
+          mOffsets(std::move(Offsets)),
+          mIds(std::move(Ids)),
+          mLo(rLo),
+          mHi(rHi) {
+        BuildIndex();
+    }
+
+    double CellSize() const { return mCell; }
+
+    /// The cell key of a (z-padded, 3-component) coordinate.
+    GridKey KeyOf(const double* pCoords) const {
+        return GridKey{grid_quantize(pCoords[0], mCell), grid_quantize(pCoords[1], mCell),
+                       grid_quantize(pCoords[2], mCell)};
+    }
+
+    bool Empty() const { return mKeys.empty(); }
+
+    /// The number of non-empty cells.
+    std::size_t NumBuckets() const { return mKeys.size(); }
+
+    /// The occupied-key bounding box (valid only when not `Empty()`).
+    const GridKey& OccupiedLo() const { return mLo; }
+    const GridKey& OccupiedHi() const { return mHi; }
+
+    /// The ids in the cell at `rKey`, or false (leaving @p rOut alone) if it is empty.
+    bool Find(const GridKey& rKey, BucketView& rOut) const {
+        const std::size_t b = FindBucket(rKey);
+        if (b == kNone)
+            return false;
+        rOut = Bucket(b);
+        return true;
+    }
+
+    /// Visits the cells at Chebyshev radius exactly `r` around `rCenter`
+    /// (r = 0 is the centre cell alone), calling `fn(BucketView)` for each
+    /// non-empty cell, in ascending dz -> dy -> dx order -- `SpatialGrid`'s
+    /// shell, clamped to the occupied box the same way.
+    template <class F>
+    void ForEachInShell(const GridKey& rCenter, std::int64_t r, F&& fn) const {
+        if (mKeys.empty())
+            return;
+        const std::int64_t zl = std::max(-r, mLo.z - rCenter.z);
+        const std::int64_t zh = std::min(r, mHi.z - rCenter.z);
+        const std::int64_t yl = std::max(-r, mLo.y - rCenter.y);
+        const std::int64_t yh = std::min(r, mHi.y - rCenter.y);
+        const std::int64_t xl = std::max(-r, mLo.x - rCenter.x);
+        const std::int64_t xh = std::min(r, mHi.x - rCenter.x);
+        if (zl > zh || yl > yh || xl > xh)
+            return;
+        auto visit = [&](std::int64_t dx, std::int64_t dy, std::int64_t dz) {
+            const std::size_t b =
+                FindBucket(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
+            if (b != kNone)
+                fn(Bucket(b));
+        };
+        if (r == 0) {
+            visit(0, 0, 0);
+            return;
+        }
+        for (std::int64_t dz = zl; dz <= zh; ++dz) {
+            if (dz == -r || dz == r) {
+                for (std::int64_t dy = yl; dy <= yh; ++dy)
+                    for (std::int64_t dx = xl; dx <= xh; ++dx)
+                        visit(dx, dy, dz);
+            } else {
+                for (std::int64_t dy = yl; dy <= yh; ++dy) {
+                    if (dy == -r || dy == r) {
+                        for (std::int64_t dx = xl; dx <= xh; ++dx)
+                            visit(dx, dy, dz);
+                    } else {
+                        if (xl == -r)
+                            visit(-r, dy, dz);
+                        if (xh == r)
+                            visit(r, dy, dz);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Visits every non-empty cell in the inclusive key box `[rLo, rHi]`,
+    /// calling `fn(BucketView)` for each, in ascending z -> y -> x order.
+    template <class F>
+    void ForEachInBox(const GridKey& rLo, const GridKey& rHi, F&& fn) const {
+        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
+            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
+                for (std::int64_t x = rLo.x; x <= rHi.x; ++x) {
+                    const std::size_t b = FindBucket(GridKey{x, y, z});
+                    if (b != kNone)
+                        fn(Bucket(b));
+                }
+    }
+
+private:
+    static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    static constexpr std::uint64_t kEmptySlot = ~std::uint64_t{0};
+
+    BucketView Bucket(std::size_t b) const {
+        return BucketView(mIds.data() + mOffsets[b],
+                          static_cast<std::size_t>(mOffsets[b + 1] - mOffsets[b]));
+    }
+
+    /// The slot a key starts probing at: the key's hash, mixed once more so
+    /// the low bits that the mask keeps depend on every axis.
+    std::size_t Home(const GridKey& rKey) const {
+        std::uint64_t h = static_cast<std::uint64_t>(GridKeyHash{}(rKey));
+        h ^= h >> 29;
+        h *= 0xbf58476d1ce4e5b9ULL;
+        h ^= h >> 32;
+        return static_cast<std::size_t>(h) & mMask;
+    }
+
+    std::size_t FindBucket(const GridKey& rKey) const {
+        if (mSlots.empty())
+            return kNone;
+        for (std::size_t s = Home(rKey);; s = (s + 1) & mMask) {
+            const std::uint64_t b = mSlots[s];
+            if (b == kEmptySlot)
+                return kNone;
+            if (mKeys[static_cast<std::size_t>(b)] == rKey)
+                return static_cast<std::size_t>(b);
+        }
+    }
+
+    /// A power-of-two table at most half full, so a probe is short and a miss
+    /// (most of a shell's cells are empty) ends at the first free slot.
+    void BuildIndex() {
+        if (mKeys.empty())
+            return;
+        std::size_t capacity = 8;
+        while (capacity < 2 * mKeys.size())
+            capacity *= 2;
+        mMask = capacity - 1;
+        mSlots.assign(capacity, kEmptySlot);
+        for (std::size_t b = 0; b < mKeys.size(); ++b) {
+            std::size_t s = Home(mKeys[b]);
+            while (mSlots[s] != kEmptySlot)
+                s = (s + 1) & mMask;
+            mSlots[s] = b;
+        }
+    }
+
+    double mCell;
+    std::vector<GridKey> mKeys;
+    std::vector<std::uint64_t> mOffsets;
+    std::vector<std::int64_t> mIds;
+    std::vector<std::uint64_t> mSlots;
+    std::size_t mMask = 0;
+    GridKey mLo{0, 0, 0};
+    GridKey mHi{0, 0, 0};
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/bucket_table.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/cell_adjacency.hpp =====
 /**
  * @file detail/cell_adjacency.hpp
@@ -12284,265 +12772,6 @@ inline std::vector<std::int64_t> sfc_stable_argsort(const std::vector<std::uint6
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/space_filling.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
-/**
- * @file spatial_hash.hpp
- * @brief The integer bucket-grid spatial hash shared by `operations/merge.cpp`
- * (point welding) and `operations/interpolate.cpp` (nearest-point and
- * simplex-candidate lookup) — hoisted verbatim from merge's weld in v7.13.0,
- * the way `space_filling.hpp` was hoisted from reorder in v7.6.0.
- *
- * A `SpatialGrid` maps a quantized cell key (`floor(coord / cell)` per axis)
- * to the ids inserted into that cell, in insertion order. Both consumers
- * insert ids in ascending order from a **serial** pass, which is what makes
- * every downstream scan deterministic; the hash function only buckets — the
- * map is key-looked-up, never iterated — so the hash cannot affect any
- * consumer's output.
- *
- * Merge's contract (unchanged by the hoist, pinned by its test suites): cell
- * size is `atol`, so two points within `atol` of each other land in the same
- * or an adjacent cell and the fixed 3x3x3 neighbourhood (`ForEachIn27`, in
- * ascending dz -> dy -> dx order with early exit) finds every weld candidate.
- *
- * Interpolate additionally needs an *expanding* search: `ForEachInShell`
- * visits the cells at Chebyshev radius exactly `r` (r = 0 is the centre
- * cell), and the occupied-key bounding box (`OccupiedLo`/`OccupiedHi`,
- * maintained on insert) bounds how far a nearest-point search can ever need
- * to expand. Any point in a cell at Chebyshev key distance `r >= 1` from a
- * query's cell lies at least `(r - 1) * cell` away from the query, which is
- * the search's stopping rule.
- *
- * `operations/conservative_interpolate.cpp` is a third consumer, and adds
- * `ForEachInBox`: unlike a point query (one cell) or a shell (a fixed
- * Chebyshev ring), it needs every id inserted anywhere inside a *query box*
- * (a target simplex's own quantized bbox) — the read-side twin of
- * `InsertBox`, whose nested loop it mirrors exactly. Because `InsertBox`
- * inserts a source simplex's id into *every* cell its bbox spans, and the
- * query box can itself span several cells, `ForEachInBox` will yield the same
- * id more than once whenever the two multi-cell boxes share more than one
- * grid cell — callers must sort-and-deduplicate before treating the result as
- * a candidate set, exactly as `conservative_interpolate.cpp` does.
- *
- * `detail/` header: exempt from the operations layer's anon-namespace prefix
- * rule. `clean.cpp` keeps its own (serial, any-dtype, FNV-hashed) welder —
- * structurally different enough that sharing would only relocate code.
- */
-
-// System includes
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <unordered_map>
-#include <utility>
-#include <vector>
-
-namespace meshioplusplus {
-namespace detail {
-
-/// Integer bucket-grid cell key: the quantized coordinate of a point.
-struct GridKey {
-    std::int64_t x, y, z;
-    bool operator==(const GridKey& rOther) const {
-        return x == rOther.x && y == rOther.y && z == rOther.z;
-    }
-};
-
-/// A simple, well-mixed hash combine over the three signed axes (moved
-/// verbatim from merge's weld; buckets only, never observable in output).
-struct GridKeyHash {
-    std::size_t operator()(const GridKey& rKey) const {
-        std::uint64_t h = static_cast<std::uint64_t>(rKey.x) * 0x9e3779b97f4a7c15ULL;
-        h ^= static_cast<std::uint64_t>(rKey.y) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        h ^= static_cast<std::uint64_t>(rKey.z) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return static_cast<std::size_t>(h);
-    }
-};
-
-/// Quantize one coordinate to its bucket index (`floor(coord / cell)`).
-inline std::int64_t grid_quantize(double coord, double cell) {
-    return static_cast<std::int64_t>(std::floor(coord / cell));
-}
-
-/// The bucket grid: cell key -> ids in insertion order. Callers insert ids in
-/// ascending order from a serial pass, or group them in parallel and hand each
-/// bucket over ascending (`AssignBuckets`), so every bucket vector is
-/// ascending and every scan over it is deterministic.
-class SpatialGrid {
-public:
-    explicit SpatialGrid(double cellSize) : mCell(cellSize) {}
-
-    double CellSize() const { return mCell; }
-
-    /// The cell key of a (z-padded, 3-component) coordinate.
-    GridKey KeyOf(const double* pCoords) const {
-        return GridKey{grid_quantize(pCoords[0], mCell), grid_quantize(pCoords[1], mCell),
-                       grid_quantize(pCoords[2], mCell)};
-    }
-
-    /// Append `id` to the cell at `rKey`.
-    void Insert(const GridKey& rKey, std::int64_t id) {
-        mCells[rKey].push_back(id);
-        Cover(rKey);
-    }
-
-    /// Append `id` to every cell in the inclusive key box `[rLo, rHi]`
-    /// (a simplex's quantized bounding box), in ascending z -> y -> x order.
-    void InsertBox(const GridKey& rLo, const GridKey& rHi, std::int64_t id) {
-        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
-            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
-                for (std::int64_t x = rLo.x; x <= rHi.x; ++x)
-                    mCells[GridKey{x, y, z}].push_back(id);
-        Cover(rLo);
-        Cover(rHi);
-    }
-
-    /// The bulk form of `Insert`/`InsertBox` (v16.19.0), for a caller that
-    /// grouped its (key, id) pairs itself -- in parallel -- with each bucket's
-    /// ids already in the order serial inserts would have appended them:
-    /// `Ids[i]` is appended to the cell at `Keys[i]`, and the occupied box
-    /// grows to cover `[rLo, rHi]`, the bounds of every box inserted. Keys in
-    /// the order serial inserts would first have met them leave the map as
-    /// those inserts would have.
-    void AssignBuckets(std::vector<GridKey> Keys, std::vector<std::vector<std::int64_t>> Ids,
-                       const GridKey& rLo, const GridKey& rHi) {
-        for (std::size_t i = 0; i < Keys.size(); ++i) {
-            std::vector<std::int64_t>& r_bucket = mCells[Keys[i]];
-            if (r_bucket.empty())
-                r_bucket = std::move(Ids[i]);
-            else
-                r_bucket.insert(r_bucket.end(), Ids[i].begin(), Ids[i].end());
-        }
-        Cover(rLo);
-        Cover(rHi);
-    }
-
-    /// The ids in the cell at `rKey`, or nullptr if the cell is empty.
-    const std::vector<std::int64_t>* Find(const GridKey& rKey) const {
-        auto it = mCells.find(rKey);
-        return it == mCells.end() ? nullptr : &it->second;
-    }
-
-    /// Visits the 3x3x3 neighbourhood of `rCenter` in ascending dz -> dy -> dx
-    /// order (merge's exact weld-scan order), calling `fn(bucket)` for each
-    /// non-empty cell. `fn` returns false to stop early (candidate found).
-    template <class F>
-    void ForEachIn27(const GridKey& rCenter, F&& fn) const {
-        for (std::int64_t dz = -1; dz <= 1; ++dz)
-            for (std::int64_t dy = -1; dy <= 1; ++dy)
-                for (std::int64_t dx = -1; dx <= 1; ++dx) {
-                    const std::vector<std::int64_t>* p_ids =
-                        Find(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
-                    if (p_ids != nullptr && !fn(*p_ids))
-                        return;
-                }
-    }
-
-    /// Visits the cells at Chebyshev radius exactly `r` around `rCenter`
-    /// (r = 0 is the centre cell alone), calling `fn(bucket)` for each
-    /// non-empty cell, in ascending dz -> dy -> dx order. Enumerates only the
-    /// shell (never the full cube), clamped to the occupied-key bounding box —
-    /// cells outside it are empty by construction, so skipping them cannot
-    /// change any consumer's result, and a far-away query stays O(bbox
-    /// surface) instead of O(r^2) per shell.
-    template <class F>
-    void ForEachInShell(const GridKey& rCenter, std::int64_t r, F&& fn) const {
-        if (!mCovered)
-            return;
-        const std::int64_t zl = std::max(-r, mLo.z - rCenter.z);
-        const std::int64_t zh = std::min(r, mHi.z - rCenter.z);
-        const std::int64_t yl = std::max(-r, mLo.y - rCenter.y);
-        const std::int64_t yh = std::min(r, mHi.y - rCenter.y);
-        const std::int64_t xl = std::max(-r, mLo.x - rCenter.x);
-        const std::int64_t xh = std::min(r, mHi.x - rCenter.x);
-        if (zl > zh || yl > yh || xl > xh)
-            return;
-        auto visit = [&](std::int64_t dx, std::int64_t dy, std::int64_t dz) {
-            const std::vector<std::int64_t>* p_ids =
-                Find(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
-            if (p_ids != nullptr)
-                fn(*p_ids);
-        };
-        if (r == 0) {
-            visit(0, 0, 0);
-            return;
-        }
-        for (std::int64_t dz = zl; dz <= zh; ++dz) {
-            if (dz == -r || dz == r) {
-                for (std::int64_t dy = yl; dy <= yh; ++dy)
-                    for (std::int64_t dx = xl; dx <= xh; ++dx)
-                        visit(dx, dy, dz);
-            } else {
-                for (std::int64_t dy = yl; dy <= yh; ++dy) {
-                    if (dy == -r || dy == r) {
-                        for (std::int64_t dx = xl; dx <= xh; ++dx)
-                            visit(dx, dy, dz);
-                    } else {
-                        if (xl == -r)
-                            visit(-r, dy, dz);
-                        if (xh == r)
-                            visit(r, dy, dz);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Visits every non-empty cell in the inclusive key box `[rLo, rHi]`,
-    /// calling `fn(bucket)` for each — the read-side twin of `InsertBox`, same
-    /// ascending z -> y -> x traversal. A bucket may be visited once per
-    /// id-in-that-bucket occurrence from the *inserting* side, so an id
-    /// inserted via `InsertBox` over a multi-cell box can surface more than
-    /// once here when the query box shares several cells with it; callers must
-    /// deduplicate (see the file doc comment).
-    template <class F>
-    void ForEachInBox(const GridKey& rLo, const GridKey& rHi, F&& fn) const {
-        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
-            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
-                for (std::int64_t x = rLo.x; x <= rHi.x; ++x) {
-                    const std::vector<std::int64_t>* p_ids = Find(GridKey{x, y, z});
-                    if (p_ids != nullptr)
-                        fn(*p_ids);
-                }
-    }
-
-    bool Empty() const { return mCells.empty(); }
-
-    /// The occupied-key bounding box (valid only when not `Empty()`); bounds
-    /// the maximum radius an expanding shell search can ever need.
-    const GridKey& OccupiedLo() const { return mLo; }
-    const GridKey& OccupiedHi() const { return mHi; }
-
-private:
-    void Cover(const GridKey& rKey) {
-        if (!mCovered) {
-            mLo = mHi = rKey;
-            mCovered = true;
-            return;
-        }
-        if (rKey.x < mLo.x)
-            mLo.x = rKey.x;
-        if (rKey.y < mLo.y)
-            mLo.y = rKey.y;
-        if (rKey.z < mLo.z)
-            mLo.z = rKey.z;
-        if (rKey.x > mHi.x)
-            mHi.x = rKey.x;
-        if (rKey.y > mHi.y)
-            mHi.y = rKey.y;
-        if (rKey.z > mHi.z)
-            mHi.z = rKey.z;
-    }
-
-    double mCell;
-    std::unordered_map<GridKey, std::vector<std::int64_t>, GridKeyHash> mCells;
-    bool mCovered = false;
-    GridKey mLo{0, 0, 0};
-    GridKey mHi{0, 0, 0};
-};
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/detail/spatial_hash.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/subset.hpp =====
 /**
  * @file detail/subset.hpp
@@ -12946,6 +13175,13 @@ MESHIOPLUSPLUS_API SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions&
  * roughly uniform triangle soup -- is the uniform grid's best case and the BVH's
  * worst.
  *
+ * Here the grid is built once and then only searched, so it is held as a
+ * `BucketTable` (`detail/bucket_table.hpp`, since ABI 23): the same buckets and
+ * the same shell traversal as `SpatialGrid`, in flat arrays with an
+ * open-addressing index, with no node or vector per cell. Lookups touch
+ * contiguous memory, which is where the saving is; building the table was
+ * never the cost.
+ *
  * The decisive reason, though, is not speed: **a BVH would make the accelerator
  * observable in the output.** Its build order and split heuristic determine the
  * order candidates are visited in, which determines which of two equidistant
@@ -13096,8 +13332,9 @@ MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
  */
 struct DistanceQuery {
     const TriangleSoup* mpSoup = nullptr;
-    /// The bucket grid, holding triangle ids by quantized bounding box.
-    SpatialGrid mGrid{1.0};
+    /// The bucket grid, holding triangle ids by quantized bounding box. Frozen
+    /// (a `BucketTable`) since ABI 23: built once, only searched afterwards.
+    BucketTable mGrid{1.0};
     /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
     std::vector<Vec3> mFaceNormal;
     /// Per welded vertex, the weighted sum of incident unit face normals.
@@ -58912,15 +59149,17 @@ namespace {
 // sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
 // Every bucket therefore lists its triangles in ascending order, exactly as
 // the serial inserts appended them, and the occupied box is the same.
-void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
-                         const std::vector<Vec3>& rHi) {
+BucketTable sd_build_grid(double Cell, const std::vector<Vec3>& rLo,
+                          const std::vector<Vec3>& rHi) {
     const std::size_t ntri = rLo.size();
     std::vector<GridKey> key_lo(ntri);
     std::vector<GridKey> key_hi(ntri);
     std::vector<std::uint64_t> count(ntri);
     parallel_for(ntri, [&](std::size_t t) {
-        key_lo[t] = rGrid.KeyOf(rLo[t].data());
-        key_hi[t] = rGrid.KeyOf(rHi[t].data());
+        key_lo[t] = GridKey{grid_quantize(rLo[t][0], Cell), grid_quantize(rLo[t][1], Cell),
+                            grid_quantize(rLo[t][2], Cell)};
+        key_hi[t] = GridKey{grid_quantize(rHi[t][0], Cell), grid_quantize(rHi[t][1], Cell),
+                            grid_quantize(rHi[t][2], Cell)};
         const std::int64_t nx = key_hi[t].x - key_lo[t].x + 1;
         const std::int64_t ny = key_hi[t].y - key_lo[t].y + 1;
         const std::int64_t nz = key_hi[t].z - key_lo[t].z + 1;
@@ -58958,19 +59197,30 @@ void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
         for (std::uint64_t k = 0; k < count[t]; ++k)
             tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
     });
-    // Buckets in first-seen order: the map is then built by the same sequence
-    // of key insertions as the serial loop, so it ends in the same state
-    // (bucket count, node order) and queries walk it as fast.
+    // Buckets in first-seen order, as the serial inserts met them, so the table
+    // lists them in the order the map once did. The ids of every bucket go
+    // into one flat array, each bucket at the offset the scan of the run sizes
+    // gives it, rather than into a vector per bucket.
     const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
-    std::vector<GridKey> bucket_keys(first.NumIds());
-    std::vector<std::vector<std::int64_t>> bucket_ids(first.NumIds());
-    parallel_for(first.NumIds(), [&](std::size_t b) {
+    const std::size_t nbuckets_out = first.NumIds();
+    std::vector<GridKey> bucket_keys(nbuckets_out);
+    std::vector<std::uint64_t> bucket_size(nbuckets_out);
+    parallel_for(nbuckets_out, [&](std::size_t b) {
         const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
         bucket_keys[b] = keys[runs.Head(r)];
-        std::vector<std::int64_t>& ids = bucket_ids[b];
-        ids.reserve(runs.Size(r));
+        bucket_size[b] = static_cast<std::uint64_t>(runs.Size(r));
+    });
+    std::vector<std::uint64_t> bucket_offset(nbuckets_out + 1);
+    const std::uint64_t total =
+        parallel_exclusive_scan(bucket_size.data(), nbuckets_out, bucket_offset.data(),
+                                std::uint64_t{0});
+    bucket_offset[nbuckets_out] = total;
+    std::vector<std::int64_t> bucket_ids(static_cast<std::size_t>(total));
+    parallel_for(nbuckets_out, [&](std::size_t b) {
+        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
+        std::int64_t* out = bucket_ids.data() + bucket_offset[b];
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
-            ids.push_back(tri_of[*p]);
+            *out++ = tri_of[*p];
     });
     // The occupied box: InsertBox covers every triangle's low and high key.
     GridKey lo = key_lo[0];
@@ -58983,7 +59233,8 @@ void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
                      std::max(hi.y, std::max(key_lo[t].y, key_hi[t].y)),
                      std::max(hi.z, std::max(key_lo[t].z, key_hi[t].z))};
     }
-    rGrid.AssignBuckets(std::move(bucket_keys), std::move(bucket_ids), lo, hi);
+    return BucketTable(Cell, std::move(bucket_keys), std::move(bucket_offset),
+                       std::move(bucket_ids), lo, hi);
 }
 
 }  // namespace
@@ -59065,8 +59316,7 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
     if (!(cell > 0.0))
         cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
     q.mCellSize = cell;
-    q.mGrid = SpatialGrid(cell);
-    sd_insert_triangles(q.mGrid, tri_lo, tri_hi);
+    q.mGrid = sd_build_grid(cell, tri_lo, tri_hi);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -59161,7 +59411,7 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
             if (bound > 0.0 && bound * bound > best_d2)
                 break;
         }
-        rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+        rQuery.mGrid.ForEachInShell(centre, r, [&](const BucketView& rIds) {
             for (std::int64_t t : rIds) {
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(
