@@ -20,6 +20,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 
@@ -239,20 +240,26 @@ TEST(Stl, BinaryKeepsEveryVertexInSinglePrecision) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 
-    ASSERT_EQ(out.Points().Dtype(), meshioplusplus::DType::Float32);
     ASSERT_EQ(out.NumCellBlocks(), 1u);
     ASSERT_EQ(out.Cells(0).NumCells(), in.Cells(0).NumCells());
-    // Every triangle corner of the result is a corner of the input (the unit
-    // square's coordinates are exact in float32).
-    const float* p = out.Points().As<float>();
-    const std::int64_t* c = out.Cells(0).Conn().As<std::int64_t>();
+    // Every triangle corner of the result is a corner of the input, rounded
+    // to single precision (the unit square's coordinates are exact in it).
+    // Read through the dtype-neutral helpers: a mesh backend may hold the
+    // points as float32 or widen them to float64 on assignment.
+    using meshioplusplus::detail::read_double;
+    using meshioplusplus::detail::read_int;
+    const auto& out_points = out.Points();
+    const auto& in_points = in.Points();
+    const auto& conn = out.Cells(0).Conn();
     for (std::size_t i = 0; i < 3 * out.Cells(0).NumCells(); ++i) {
-        const float* v = p + 3 * static_cast<std::size_t>(c[i]);
+        const std::size_t id = static_cast<std::size_t>(read_int(conn, i));
         bool found = false;
         for (std::size_t k = 0; k < in.NumPoints() && !found; ++k) {
-            const double* q = in.Points().As<double>() + 3 * k;
-            found = v[0] == static_cast<float>(q[0]) && v[1] == static_cast<float>(q[1]) &&
-                    v[2] == static_cast<float>(q[2]);
+            found = true;
+            for (std::size_t d = 0; d < 3; ++d)
+                found = found && read_double(out_points, 3 * id + d) ==
+                                     static_cast<double>(static_cast<float>(
+                                         read_double(in_points, 3 * k + d)));
         }
         EXPECT_TRUE(found) << "corner " << i;
     }
