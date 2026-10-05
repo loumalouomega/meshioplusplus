@@ -93,6 +93,7 @@
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
@@ -511,6 +512,14 @@ int main(int argc, char** argv) {
                 pD->Arrays(r.mCellMaps);
             }
         });
+        // Subdivide of the same ragged mesh: one apex point per polyhedron,
+        // whose source-node list is the allocation of roadmap §3.2.2.
+        row("subdivide_ragged", [&](MeshDigest* pD) {
+            auto r = mio::subdivide(ragged);
+            of(pD, r.mMesh);
+            if (pD)
+                pD->Arrays(r.mCellMaps);
+        });
         // The ragged mesh with a smooth point field and one cell field per
         // block: the per-cell and per-polyhedron scratch rows of roadmap
         // §3.2.3 (quality, data_average, interpolate's cell_data and the SFC
@@ -558,19 +567,20 @@ int main(int argc, char** argv) {
         });
         row("feature_edges_ragged",
             [&](MeshDigest* pD) { of(pD, mio::feature_edges(ragged).mMesh); });
-        // Reads of the ragged mesh through the registry: the file is written
-        // once, outside the timed region. A format whose writer declines the
-        // mesh is skipped, so the rows never fail the sweep.
-        const auto read_ragged_row = [&](const char* pOp, const char* pFormat, const char* pExt) {
+        // Reads through the registry: the file is written once, outside the
+        // timed region. A format whose writer declines the mesh is skipped, so
+        // the rows never fail the sweep.
+        const auto read_row = [&](const char* pOp, const char* pFormat, const char* pExt,
+                                  const Mesh& rSource) {
             if (!wanted(pOp))
                 return;
             const std::filesystem::path dir =
                 std::filesystem::temp_directory_path() /
-                (std::string("meshioplusplus_bench_ragged_") + pFormat);
+                (std::string("meshioplusplus_bench_read_") + pFormat);
             std::filesystem::create_directories(dir);
-            const std::string path = (dir / (std::string("ragged") + pExt)).string();
+            const std::string path = (dir / (std::string("mesh") + pExt)).string();
             try {
-                mio::registry_writers().at(pFormat)(path, ragged);
+                mio::registry_writers().at(pFormat)(path, rSource);
                 row(pOp, [&](MeshDigest* pD) {
                     of(pD, mio::registry_read(path, pFormat, mio::ReadOptions{}));
                 });
@@ -579,8 +589,11 @@ int main(int argc, char** argv) {
             }
             std::filesystem::remove_all(dir);
         };
-        read_ragged_row("read_ragged_ensight", "ensight", ".case");
-        read_ragged_row("read_ragged_tecplot", "tecplot", ".dat");
+        read_row("read_ragged_ensight", "ensight", ".case", ragged);
+        read_row("read_ragged_tecplot", "tecplot", ".dat", ragged);
+        // The registry's STL writer is ASCII, so this times the ASCII reader
+        // over a triangle surface (roadmap §3.1.1.1).
+        read_row("read_stl", "stl", ".stl", surface);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);
