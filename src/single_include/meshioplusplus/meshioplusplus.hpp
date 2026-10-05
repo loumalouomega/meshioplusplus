@@ -167363,8 +167363,12 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
 
     // Every new point's coordinates are the plain average of a list of
     // existing node ids -- resolved in one batch pass after the main loop,
-    // exactly convert_cells.cpp's own polyhedron-branch convention.
-    std::vector<std::vector<std::int64_t>> new_point_src;
+    // exactly convert_cells.cpp's own polyhedron-branch convention. Stored
+    // CSR, as there: new point i averages
+    // src_nodes[src_start[i] .. src_start[i + 1]), so a point costs a slice of
+    // one flat list rather than a heap block of its own.
+    std::vector<std::int64_t> src_nodes;
+    std::vector<std::size_t> src_start{0};
 
     std::vector<SubOutBlock> staged;
     staged.reserve(nblocks);
@@ -167390,6 +167394,9 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
             continue;
         }
 
+        // At most one apex per cell: a bound the block itself holds.
+        src_start.reserve(src_start.size() + ncells);
+
         SubOutBlock out;
         out.mType = "polyhedron";
         out.mIsRagged = true;
@@ -167409,8 +167416,9 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
             // One new interior point per cell: the plain average of the
             // cell's own corner nodes -- deliberately not poly_measure()'s
             // volume centroid, a different point. See the file docs.
-            const std::int64_t apex = static_cast<std::int64_t>(num_points + new_point_src.size());
-            new_point_src.push_back(rings.mNodes);
+            const std::int64_t apex = static_cast<std::int64_t>(num_points + src_start.size() - 1);
+            src_nodes.insert(src_nodes.end(), rings.mNodes.begin(), rings.mNodes.end());
+            src_start.push_back(src_nodes.size());
 
             for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
                 const std::uint32_t* ring = rings.Face(f);
@@ -167438,21 +167446,24 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
         staged.push_back(std::move(out));
     }
 
+    const std::size_t num_new = src_start.size() - 1;
+
     Mesh out;
-    if (new_point_src.empty()) {
+    if (num_new == 0) {
         out.AssignPoints(detail::data_owned_copy(points));
     } else {
         const std::size_t dim = pdim;
-        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
+        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + num_new, dim});
         std::memcpy(np.Data(), points.Data(), points.Nbytes());
-        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
-            const std::vector<std::int64_t>& src = new_point_src[i];
+        parallel_for_bw(num_new, [&](std::size_t i) {
+            const std::int64_t* src = src_nodes.data() + src_start[i];
+            const std::size_t count = src_start[i + 1] - src_start[i];
             for (std::size_t d = 0; d < dim; ++d) {
                 double sum = 0.0;
-                for (std::int64_t nid : src)
-                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                for (std::size_t k = 0; k < count; ++k)
+                    sum += detail::read_double(points, static_cast<std::size_t>(src[k]) * dim + d);
                 detail::write_double(np, (num_points + i) * dim + d,
-                                     sum / static_cast<double>(src.size()));
+                                     sum / static_cast<double>(count));
             }
         });
         out.AssignPoints(std::move(np));
@@ -167465,23 +167476,24 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
     // of their source nodes' values, the same convention as coordinates.
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
-        if (detail::rows(a) != num_points || new_point_src.empty()) {
+        if (detail::rows(a) != num_points || num_new == 0) {
             out.AddPointData(name, detail::data_owned_copy(a));
             continue;
         }
         const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
         std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_points + new_point_src.size();
+        shape[0] = num_points + num_new;
         NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
         std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
-            const std::vector<std::int64_t>& src = new_point_src[i];
+        parallel_for_bw(num_new, [&](std::size_t i) {
+            const std::int64_t* src = src_nodes.data() + src_start[i];
+            const std::size_t count = src_start[i + 1] - src_start[i];
             for (std::size_t k = 0; k < ncomp; ++k) {
                 double sum = 0.0;
-                for (std::int64_t nid : src)
-                    sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                for (std::size_t j = 0; j < count; ++j)
+                    sum += detail::read_double(a, static_cast<std::size_t>(src[j]) * ncomp + k);
                 detail::write_double(b, (num_points + i) * ncomp + k,
-                                     sum / static_cast<double>(src.size()));
+                                     sum / static_cast<double>(count));
             }
         });
         out.AddPointData(name, std::move(b));
