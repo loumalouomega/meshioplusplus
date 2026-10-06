@@ -682,6 +682,15 @@ int main(int argc, char** argv) {
         // OpenFOAM's ASCII polyMesh (a `.foam` marker; the case directory is
         // written beside it) over the tetrahedral cube with its point field.
         read_row("read_openfoam", "openfoam", ".foam", with_field);
+        // Elmer's text mesh (a directory of `mesh.nodes`, `mesh.elements` and
+        // `mesh.boundary`) over the cube's tetrahedra plus the triangles of its
+        // surface, so a boundary file is parsed too.
+        const Mesh elmer_mesh = [&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            m.AddCellBlock("triangle", surface.Cells(0).Conn());
+            return m;
+        }();
+        read_row("read_elmer", "elmer", ".elmer", elmer_mesh);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);
