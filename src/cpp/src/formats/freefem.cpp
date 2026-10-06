@@ -20,9 +20,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
-#include <sstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -39,15 +40,11 @@ namespace meshioplusplus {
 
 namespace {
 
-// Next non-blank line's whitespace tokens.
-bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
-    std::string line;
-    while (std::getline(rIn, line)) {
-        detail::TextStream iss(line);
-        std::string t;
-        rOut.clear();
-        while (iss >> t)
-            rOut.push_back(t);
+// Next non-blank line's whitespace tokens, as views into the text @p rCursor
+// walks (which the caller keeps alive).
+bool next_tokens(detail::TextCursor& rCursor, std::vector<std::string_view>& rOut) {
+    while (!rCursor.AtEnd()) {
+        detail::split_blanks(rCursor.Line(), rOut);
         if (!rOut.empty())
             return true;
     }
@@ -57,25 +54,24 @@ bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
 }  // namespace
 
 Mesh read_freefem(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    detail::TextCursor cursor(source.View());
 
-    std::vector<std::string> tok;
-    if (!next_tokens(in, tok) || tok.size() != 3)
+    std::vector<std::string_view> tok;
+    if (!next_tokens(cursor, tok) || tok.size() != 3)
         throw ReadError("FreeFem: expected a 3-integer header");
     // Every vertex and element is a line of at least two bytes.
-    const std::size_t max_rows = detail::file_bytes(rPath) / 2;
+    const std::size_t max_rows = source.Size() / 2;
     const auto nver = static_cast<std::int64_t>(detail::checked_count(
-        std::strtoll(tok[0].c_str(), nullptr, 10), max_rows, "FreeFem", "vertex"));
+        detail::strtoll_token(tok[0]), max_rows, "FreeFem", "vertex"));
     const auto n1 = static_cast<std::int64_t>(
-        detail::checked_count(std::max<long long>(0, std::strtoll(tok[1].c_str(), nullptr, 10)),
+        detail::checked_count(std::max<long long>(0, detail::strtoll_token(tok[1])),
                               max_rows, "FreeFem", "element"));
     const auto n2 = static_cast<std::int64_t>(
-        detail::checked_count(std::max<long long>(0, std::strtoll(tok[2].c_str(), nullptr, 10)),
+        detail::checked_count(std::max<long long>(0, detail::strtoll_token(tok[2])),
                               max_rows, "FreeFem", "element"));
 
-    if (!next_tokens(in, tok))
+    if (!next_tokens(cursor, tok))
         throw ReadError("FreeFem: missing vertices");
     const int dim = static_cast<int>(tok.size()) - 1;
     if (dim != 2 && dim != 3)
@@ -85,12 +81,12 @@ Mesh read_freefem(const std::string& rPath) {
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     NDArray pref(DType::Int64, {static_cast<std::size_t>(nver)});
     for (std::int64_t i = 0; i < nver; ++i) {
-        if (i > 0 && !next_tokens(in, tok))
+        if (i > 0 && !next_tokens(cursor, tok))
             throw ReadError("FreeFem: truncated vertices");
         detail::need_tokens(tok, static_cast<std::size_t>(dim) + 1, "FreeFem");
         for (int c = 0; c < dim; ++c)
-            pts.As<double>()[i * dim + c] = detail::parse_double(tok[c]);
-        pref.As<std::int64_t>()[i] = std::strtoll(tok[dim].c_str(), nullptr, 10);
+            pts.As<double>()[i * dim + c] = detail::parse_double_prefix(tok[c]);
+        pref.As<std::int64_t>()[i] = detail::strtoll_token(tok[dim]);
     }
     mesh.AssignPoints(std::move(pts));
     mesh.AddPointData("freefem:ref", std::move(pref));
@@ -107,13 +103,13 @@ Mesh read_freefem(const std::string& rPath) {
         NDArray data(DType::Int64, {static_cast<std::size_t>(n), static_cast<std::size_t>(lnv)});
         NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
         for (std::int64_t k = 0; k < n; ++k) {
-            if (!next_tokens(in, tok))
+            if (!next_tokens(cursor, tok))
                 throw ReadError("FreeFem: truncated elements");
             detail::need_tokens(tok, static_cast<std::size_t>(lnv) + 1, "FreeFem");
             for (int j = 0; j < lnv; ++j)
                 data.As<std::int64_t>()[k * lnv + j] =
-                    detail::zero_based(std::strtoll(tok[j].c_str(), nullptr, 10));
-            ref.As<std::int64_t>()[k] = std::strtoll(tok[lnv].c_str(), nullptr, 10);
+                    detail::zero_based(detail::strtoll_token(tok[j]));
+            ref.As<std::int64_t>()[k] = detail::strtoll_token(tok[lnv]);
         }
         mesh.AddCellBlock(type, std::move(data));
         cell_refs.push_back(std::move(ref));
