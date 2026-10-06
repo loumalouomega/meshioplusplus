@@ -641,6 +641,11 @@ int main(int argc, char** argv) {
         const Mesh tri_plate = bench_ops_tri_plate(
             static_cast<std::size_t>(std::sqrt(3.0 * static_cast<double>(n * n * n))));
         read_row("read_triangle", "triangle", ".node", tri_plate);
+        // FreeFEM's `.msh` (a name only: the registry is given the format) and
+        // UGRID's ASCII flavour (`.ugrid` carries no binary key), both over the
+        // tetrahedral cube with its point field.
+        read_row("read_freefem", "freefem", ".msh", with_field);
+        read_row("read_ugrid", "ugrid", ".ugrid", with_field);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);

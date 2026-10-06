@@ -86,11 +86,29 @@ jobs:
         run: |
           cmake --version
           printf '[platform_tool_requires]\ncmake/3.31.12\n' >> "$(conan profile path default)"
+      - name: Fetch Conan sources from ConanCenter's backup mirror first
+        # `core.*` options are only accepted in global.conf; `-c` on the command
+        # line (and a profile's [conf]) rejects them with "'core.*'
+        # configurations are not allowed in profiles".
+        run: |
+          printf 'core.sources:download_urls=["https://c3i.jfrog.io/artifactory/conan-center-backup-sources/", "origin"]\n' >> "$(conan config home)/global.conf"
+          cat "$(conan config home)/global.conf"
       - name: conan create (${{ matrix.name }})
         # Retried in case of genuine transient network flakiness elsewhere in
         # the dependency chain; a build failure that is our own (a real
         # recipe/source error) fails identically on every attempt and still
         # turns the job red.
+        #
+        # Source tarballs are fetched from ConanCenter's backup mirror first
+        # and from their original URL second (`origin`), as configured by the
+        # "Fetch Conan sources" step above. The `full` arm64 job
+        # has no prebuilt binaries for the autotools tool requirements
+        # (m4, libtool) and so downloads and builds their sources from
+        # gnu.org, which the arm64 runners have at times been unable to reach
+        # at all ("Network is unreachable", every attempt of every retry); the
+        # backup is a copy of the same files on the host the recipes
+        # themselves come from. With `origin` kept as the fallback, a source
+        # the mirror lacks is fetched exactly as before.
         run: |
           for attempt in 1 2 3; do
             if conan create . --test-folder=packages/conan --build=missing ${{ matrix.opts }}; then
