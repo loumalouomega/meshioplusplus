@@ -139731,7 +139731,11 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         if (!planar)
             continue;
         // The outline: directed edges (wound out of side a) used once.
+        std::size_t num_directed = 0;
+        for (std::size_t f : comp)
+            num_directed += rFaces.FaceSize(f);
         std::vector<std::array<std::int64_t, 2>> dir;
+        dir.reserve(num_directed);
         for (std::size_t f : comp) {
             const std::size_t n = rFaces.FaceSize(f);
             const std::int64_t* ring = rFaces.Face(f);
@@ -139747,6 +139751,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         std::vector<std::array<std::int64_t, 2>> sorted = dir;
         std::sort(sorted.begin(), sorted.end());
         std::vector<std::array<std::int64_t, 2>> outline;
+        outline.reserve(dir.size());
         for (const auto& e : dir)
             if (!std::binary_search(sorted.begin(), sorted.end(),
                                     std::array<std::int64_t, 2>{e[1], e[0]}))
@@ -139757,6 +139762,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         for (std::size_t k = 1; simple && k < outline.size(); ++k)
             simple = outline[k][0] != outline[k - 1][0];
         std::vector<std::int64_t> heads;
+        heads.reserve(outline.size());
         for (const auto& e : outline)
             heads.push_back(e[1]);
         std::sort(heads.begin(), heads.end());
@@ -139764,6 +139770,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
             simple = heads[k] != heads[k - 1];
         std::vector<std::int64_t> ring;
         if (simple) {
+            ring.reserve(outline.size());
             std::int64_t at = outline.front()[0];
             for (std::size_t steps = 0; steps < outline.size(); ++steps) {
                 ring.push_back(at);
@@ -149482,6 +149489,11 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
     std::vector<std::vector<std::int64_t>> parent_cells, parent_facets, partner_cells,
         partner_facets;
     std::vector<std::vector<double>> gaps, measures;
+    // At most one block per facet type.
+    for (auto* pList : {&parent_cells, &parent_facets, &partner_cells, &partner_facets})
+        pList->reserve(blocks.size());
+    gaps.reserve(blocks.size());
+    measures.reserve(blocks.size());
     for (const std::string& type : order) {
         const auto it = blocks.find(type);
         if (it == blocks.end())
@@ -149490,6 +149502,12 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
         std::vector<std::int64_t> conn, pc, pf, qc, qf;
         std::vector<double> gap, measure;
         const std::size_t width = cells.front().mNodes.size();
+        for (auto* pList : {&pc, &pf, &qc, &qf})
+            pList->reserve(cells.size());
+        gap.reserve(cells.size());
+        measure.reserve(cells.size());
+        if (type != "polygon")
+            conn.reserve(cells.size() * width);
         for (const IfOutputFacet& facet : cells) {
             if (type == "polygon")
                 continue;
@@ -149503,6 +149521,7 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
         }
         if (type == "polygon") {
             std::vector<std::int64_t> flat, offsets{0};
+            offsets.reserve(cells.size() + 1);
             for (const IfOutputFacet& facet : cells) {
                 flat.insert(flat.end(), facet.mNodes.begin(), facet.mNodes.end());
                 offsets.push_back(static_cast<std::int64_t>(flat.size()));
@@ -149530,12 +149549,14 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
         auto add_i64 = [&](const char* pName,
                            const std::vector<std::vector<std::int64_t>>& rValues) {
             std::vector<NDArray> arrays;
+            arrays.reserve(rValues.size());
             for (const auto& values : rValues)
                 arrays.push_back(ra_int_array(values));
             out.AddCellData(pName, std::move(arrays));
         };
         auto add_f64 = [&](const char* pName, const std::vector<std::vector<double>>& rValues) {
             std::vector<NDArray> arrays;
+            arrays.reserve(rValues.size());
             for (const auto& values : rValues)
                 arrays.push_back(ra_double_array(values));
             out.AddCellData(pName, std::move(arrays));
@@ -149755,6 +149776,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
     add_int_data("interface:parent_facet_b", facet_b_blocks);
     add_int_data("interface:shared_count", shared_blocks);
     std::vector<NDArray> measures;
+    measures.reserve(measure_blocks.size());
     for (const auto& block : measure_blocks)
         measures.push_back(ra_double_array(block));
     out.AddCellData("interface:measure", std::move(measures));
@@ -153588,7 +153610,6 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
 // System includes (KaHIP dual-graph path only)
 #include <array>
 #include <functional>
-#include <unordered_map>
 // External includes
 #include <kaHIP_interface.h>  // IWYU pragma: keep
 // Project includes (KaHIP dual-graph path only)
@@ -153962,35 +153983,62 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
         });
     }
 
-    // Phase 2: serial first-parent pairing (deterministic). Occurrences beyond
-    // the second (a non-manifold facet) all connect to the first owner.
-    std::unordered_map<PartitionFacetKey, std::int64_t, PartitionFacetKeyHash> first_owner;
-    first_owner.reserve(total_facets * 2);
-    std::vector<std::vector<std::int64_t>> adj(total);
-    for (const PartitionFacetRecord& r : recs) {
-        auto it = first_owner.find(r.mKey);
-        if (it == first_owner.end()) {
-            first_owner.emplace(r.mKey, r.mParent);
-        } else if (it->second != r.mParent) {
-            adj[static_cast<std::size_t>(it->second)].push_back(r.mParent);
-            adj[static_cast<std::size_t>(r.mParent)].push_back(it->second);
+    // Phase 2: group the records by facet key (sorted runs, detail/slot_runs.hpp).
+    // A run's head is its first record in stored order, the owner a first-seen
+    // map would keep; every later record whose parent differs from the owner
+    // adds an owner<->parent edge, so the occurrences of a non-manifold facet
+    // beyond the second all connect to the first owner.
+    const detail::SlotRuns runs = detail::group_facet_slots(
+        recs, [](const PartitionFacetRecord& rR) -> const PartitionFacetKey& { return rR.mKey; },
+        rMesh.NumPoints());
+    const std::size_t num_runs = runs.NumRuns();
+
+    // Flat adjacency with duplicates: degree count, prefix sum, fill (both serial
+    // over the runs, plain integer work, so the lists do not depend on a backend).
+    std::vector<std::int64_t> dup_start(total + 1, 0);
+    for (std::size_t r = 0; r < num_runs; ++r) {
+        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            const std::int64_t parent = recs[*p].mParent;
+            if (parent != owner) {
+                ++dup_start[static_cast<std::size_t>(owner) + 1];
+                ++dup_start[static_cast<std::size_t>(parent) + 1];
+            }
+        }
+    }
+    for (std::size_t i = 0; i < total; ++i)
+        dup_start[i + 1] += dup_start[i];
+    std::vector<std::int64_t> dup(static_cast<std::size_t>(dup_start[total]));
+    std::vector<std::int64_t> cursor(dup_start.begin(), dup_start.end() - 1);
+    for (std::size_t r = 0; r < num_runs; ++r) {
+        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            const std::int64_t parent = recs[*p].mParent;
+            if (parent != owner) {
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = parent;
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(parent)]++)] = owner;
+            }
         }
     }
 
-    // Dedupe neighbour lists (cells can share more than one facet) and pack CSR.
+    // Dedupe neighbour lists (cells can share more than one facet) in place and
+    // pack CSR. Sorting makes each list independent of the order it was filled in.
+    std::vector<std::int64_t> kept(total);
     parallel_for(total, [&](std::size_t i) {
-        std::vector<std::int64_t>& a = adj[i];
-        std::sort(a.begin(), a.end());
-        a.erase(std::unique(a.begin(), a.end()), a.end());
+        auto first = dup.begin() + dup_start[i];
+        auto last = dup.begin() + dup_start[i + 1];
+        std::sort(first, last);
+        kept[i] = static_cast<std::int64_t>(std::unique(first, last) - first);
     });
     PartitionCsr csr;
     csr.mXadj.resize(total + 1);
     csr.mXadj[0] = 0;
     for (std::size_t i = 0; i < total; ++i)
-        csr.mXadj[i + 1] = csr.mXadj[i] + static_cast<std::int64_t>(adj[i].size());
+        csr.mXadj[i + 1] = csr.mXadj[i] + kept[i];
     csr.mAdjncy.reserve(static_cast<std::size_t>(csr.mXadj[total]));
     for (std::size_t i = 0; i < total; ++i)
-        csr.mAdjncy.insert(csr.mAdjncy.end(), adj[i].begin(), adj[i].end());
+        csr.mAdjncy.insert(csr.mAdjncy.end(), dup.begin() + dup_start[i],
+                           dup.begin() + dup_start[i] + kept[i]);
     return csr;
 }
 

@@ -32,6 +32,7 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 
 namespace {
@@ -566,6 +567,26 @@ TEST(PartitionKahip, ModesAllProduceValidPartitions) {
         ASSERT_EQ(flat.size(), 36u);
         part_sizes(flat, 4);
     }
+}
+
+// The dual graph is what lets KaHIP see the mesh: two copies of a hex grid that
+// share no node form two components of it, and a balanced two-way cut of that
+// graph separates them (a graph with no edges, or edges across the copies,
+// would not give this).
+TEST(PartitionKahip, DisjointGridsLandInDifferentParts) {
+    const Mesh grid = hex_grid(2, 2, 2);  // 8 cells
+    meshioplusplus::MergeOptions merge_options;
+    merge_options.source_tag = false;
+    const Mesh two = meshioplusplus::merge({&grid, &grid}, merge_options).mMesh;
+    PartitionOptions o = opts(2, PartitionMethod::KaHIP);
+    o.mSeed = 7;
+    const std::vector<std::int64_t> flat = flat_labels(partition_labels(two, o));
+    ASSERT_EQ(flat.size(), 16u);
+    for (std::size_t i = 1; i < 8; ++i) {
+        EXPECT_EQ(flat[i], flat[0]) << "cell " << i;
+        EXPECT_EQ(flat[8 + i], flat[8]) << "cell " << 8 + i;
+    }
+    EXPECT_NE(flat[0], flat[8]);
 }
 
 TEST(PartitionKahip, InvalidImbalanceThrows) {
