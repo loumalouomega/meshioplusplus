@@ -452,9 +452,10 @@ int main(int argc, char** argv) {
                 pD->U64(static_cast<std::uint64_t>(r.mNumNodesMoved));
         });
         // A topology-preserving step feeding a facet reader: both build their own
-        // facet table over the same cells (roadmap §3.3.1.1). The row times the
-        // chain, so the cost of building that table twice is visible next to the
-        // `smooth_volume` and `extract_surface` rows it is made of.
+        // facet table over the same cells. The row times the chain, so the cost of
+        // building that table twice is visible next to the `smooth_volume` and
+        // `extract_surface` rows it is made of (doc/benchmarks.md, "Pipeline row:
+        // what a shared facet table could save").
         row("pipeline_smooth_surface", [&](MeshDigest* pD) {
             mio::PipelineStep smooth_step;
             smooth_step.mOp = "Smooth";

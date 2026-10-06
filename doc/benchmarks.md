@@ -473,6 +473,24 @@ The three vectors, and the parent ids, are reserved once per block. A polyhedron
 
 `subdivide` is serial in its output loop, so OpenMP at four threads gains nothing over one thread; the gain is the same on every backend. The sweeps were not interleaved, but the change is several times the ±10% the control row moves between sweeps.
 
+### Pipeline row: what a shared facet table could save
+
+Roadmap §3.3.1.1. A topology-preserving step followed by a step that reads the facets (`Smooth` then `ExtractSurface`) builds a facet table twice over the same cells: `smooth.cpp`'s boundary pass and `surface.cpp` each fill their own records (`SmoothFacetRecord`, `SurfaceFacetRecord`, with different payloads) and group them through `group_facet_slots`. The roadmap asked for a measurement before any layout was changed, so `meshioplusplus_bench_ops` gains the row `pipeline_smooth_surface` (a `Smooth` of ten iterations on the jittered volume, then `ExtractSurface`, through `run_pipeline_steps`). It changes no library code, so installed headers and C++ ABI 23 are unchanged.
+
+**Determinism.** The row's digests agree across SEQ and OpenMP at 1 and 4 threads, tiers M and L ([all 18 rows](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/pipeline_smooth_surface.csv), with the `extract_surface` and `smooth_volume` rows it is made of).
+
+**Medians of three runs, tier L (750,000 cells):**
+
+| Backend | `extract_surface` | `smooth_volume` | `pipeline_smooth_surface` |
+| --- | ---: | ---: | ---: |
+| SEQ | 0.535 s | 12.29 s | 13.13 s |
+| OpenMP, 1 thread | 0.527 s | 11.93 s | 12.49 s |
+| OpenMP, 4 threads | 0.359 s | 3.36 s | 3.70 s |
+
+**Where the time goes.** Temporary `steady_clock` timing around the record fill and the key grouping (not kept) gave, on SEQ at tier L, about 0.50 s of `extract_surface`'s 0.54 s (the table is the operation) and about 0.42 s of `smooth_volume`'s 12.3 s. A cache that spared the second reader its build would save at most about 0.47 s of the chain's 13.1 s on SEQ (3.6%), and at most all of `extract_surface` on four OpenMP threads (0.36 s of 3.70 s, 10%). It matters only when the step before the reader is cheap: with one smoothing iteration in place of ten (a one-off run, SEQ, tier L) the chain took 2.24 s and the table was about 0.46 s of it (20%).
+
+**Conclusion.** The saving is bounded by one table build, a few percent for the default `Smooth` and not more than a fifth at one iteration, and it needs the two operations to share one record structure first (they do not today), plus either a cache on the `Mesh`, which changes the layout `test_abi_layout.cpp` pins on all three backends (Tier A), or a cache owned by the pipeline executor and additive overloads of every reader. That is not worth an ABI bump on this evidence, so the roadmap records it under *Deliberately not*, to be reopened by a workload that chains several facet readers after cheap topology-preserving steps. The row stays, so that workload can be measured.
+
 ### The STL ASCII reader on the text cursor
 
 Roadmap §3.1.1.1. The ASCII STL reader did a `getline`, an `lstrip` that copied the line, a `std::vector<std::string>` of tokens per line and `parse_double` on a `std::string`; it already included `text_cursor.hpp`, but only for `TextStream`. It now reads the file through `open_source` (mapped above the size threshold), takes lines with `split_lines` and tokens with `split_blanks` into one reused vector of views, and parses the last three tokens of each data line with `parse_double_prefix`, the bounded form of the lenient parse it replaces. Lines are skipped by the same rule (blank, or starting after leading whitespace with `solid`, `outer loop`, `endloop`, `endfacet` or `endsolid`), a line with fewer than three tokens is skipped, and a row count that is not a multiple of four is still `Malformed ascii STL`. The binary reader takes its records from the same mapping instead of a second stream. A file of 80 to 83 bytes, too short to hold a triangle count, is read as ASCII as before (the `size >= 84` guard keeps the count read inside the mapping), and the file-size check, the skipped header line of the fallback and the under-80-byte path are unchanged. Output is byte-identical, and the change is in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged.

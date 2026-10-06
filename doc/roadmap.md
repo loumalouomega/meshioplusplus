@@ -113,9 +113,9 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **3.3 Serial phases inside parallel operations.**
 
-- **3.3.1 Waiting for an installed layout to change.** Every serial phase this section once listed inside an operation is delivered (v16.16.0 to v16.19.0, and the distance grid's [frozen bucket table](./benchmarks.md#frozen-bucket-grid-in-distancequery-abi-23) with ABI 23, in the CHANGELOG), and `test_op_goldens.cpp` pins 28 cases to digests taken from the previous implementation. What is left needs an installed layout to change, and can ride ABI 23 while it is unreleased: **M**
-  - **3.3.1.1 Caching the facet table.** Verify first: this item came from reading the code, and a code review (October 2026) found the premise weaker than it reads. There is no one facet table to cache: `extract_surface` (`surface.cpp`), `smooth`'s boundary pass (`smooth.cpp`) and `build_global_faces` (nine call sites) each build their own structure, three of them through `group_facet_slots`. Most pipeline steps return a new mesh with new topology, so only a topology-preserving step (`smooth`, `transform`, the data operations) followed by one that reads the table could reuse it, and no `bench_ops` row times a pipeline, so the N× cost is unmeasured: add that row first. A cache on the `Mesh` changes the layout `test_abi_layout.cpp` pins on all three backends; a cache owned by the pipeline executor and passed to additive overloads would not.
-- **3.3.2 Small leftovers.** `partition`'s dual graph keeps its own map (KaHIP builds only). **S**
+Every serial phase this section once listed inside an operation is delivered (v16.16.0 to v16.19.0, and the distance grid's [frozen bucket table](./benchmarks.md#frozen-bucket-grid-in-distancequery-abi-23) with ABI 23, in the CHANGELOG), and `test_op_goldens.cpp` pins 28 cases to digests taken from the previous implementation.
+
+- **3.3.1 Small leftovers.** `partition`'s dual graph keeps its own map (KaHIP builds only). **S**
 - **Serial by design**, so not re-proposed: the keep-first weld loop (chains make it order-dependent), the union sweeps of `split` and `compute_normals` (cheap, and their partitions are order-independent anyway), and `remesh`'s energy sweep (every accepted move changes what the next test reads; it has no numpy twin because a near-tie decided differently yields a different clustering).
 
 **3.4 Boundaries and startup.**
@@ -133,6 +133,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **Deliberately not**, and recorded so it is not re-proposed:
 
+- **A facet table cached across pipeline steps** — measured ([benchmarks](./benchmarks.md#pipeline-row-what-a-shared-facet-table-could-save)): in a `Smooth` then `ExtractSurface` chain a cache saves at most one table build, about 3.6% of the chain on SEQ at tier L with the default ten iterations, at most 10% on four OpenMP threads and about 20% with one iteration. `smooth` and `extract_surface` do not share a record structure, so it would also need a refactor, and a cache on the `Mesh` is a Tier A layout change. Reopen it for a workload that chains several facet readers after cheap topology-preserving steps; the `pipeline_smooth_surface` row measures it.
 - **Explicit SIMD intrinsics or `-march` flags** — portability across wheels, WASM and the release binaries is worth more than the scalar kernels cost; revisit only if the harness shows a kernel dominating.
 - **Kokkos device execution** — every `parallel_for` body captures host pointers (`parallel.hpp`); the GPU route is the DLPack/CuPy handoff ([GPU handoff](./gpu.md)).
 - **A BVH in place of the uniform grid** — the tiebreak argument above.
