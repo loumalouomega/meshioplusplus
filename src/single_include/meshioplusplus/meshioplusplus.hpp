@@ -111439,46 +111439,53 @@ std::string openfoam_strip(const std::string& rS) {
     return rS.substr(a, b - a + 1);
 }
 
-// Parse the FoamFile header for format/arch (label/scalar byte widths).
-FoamFormat detect_format(const std::string& rPath) {
+// `openfoam_strip` over a view: the same " \t\r\n" set, no copy.
+std::string_view foam_trim(std::string_view S) {
+    const std::size_t a = S.find_first_not_of(" \t\r\n");
+    if (a == std::string_view::npos)
+        return {};
+    const std::size_t b = S.find_last_not_of(" \t\r\n");
+    return S.substr(a, b - a + 1);
+}
+
+// Parse the FoamFile header for format/arch (label/scalar byte widths) from the
+// file's text, which the caller keeps mapped.
+FoamFormat detect_format(std::string_view rRaw) {
     FoamFormat fmt;
-    auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!f)
-        return fmt;
-    std::string line;
-    while (std::getline(f, line)) {
-        std::string s = openfoam_strip(line);
+    detail::TextCursor lines(rRaw);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         // format <word>;
-        std::size_t p = s.find("format");
-        if (p == 0) {
-            std::string rest = openfoam_strip(s.substr(6));
+        if (s.starts_with("format")) {
+            std::string_view rest = foam_trim(s.substr(6));
             if (!rest.empty() && rest.back() == ';')
-                rest.pop_back();
-            rest = openfoam_strip(rest);
+                rest.remove_suffix(1);
+            rest = foam_trim(rest);
             if (rest == "binary")
                 fmt.mBinary = true;
             else if (rest == "ascii")
                 fmt.mBinary = false;
         }
-        if (s.rfind("arch", 0) == 0) {
+        if (s.starts_with("arch")) {
             // OpenFOAM's own arch strings are "LSB;label=32;scalar=64" (the
             // "BSB" spelling is what a big-endian host's files would carry).
             // Binary bytes this reader decodes are always little-endian, so a
             // file naming anything else is refused by name rather than
             // silently misread.
-            if (s.find("BSB") != std::string::npos)
+            if (s.find("BSB") != std::string_view::npos)
                 throw ReadError(
                     "OpenFOAM: big-endian ('BSB') binary files are not supported, only "
                     "little-endian ('LSB')");
-            std::size_t lp = s.find("label=");
+            const std::string arch(s);
+            std::size_t lp = arch.find("label=");
             if (lp != std::string::npos) {
-                int bits = std::atoi(s.c_str() + lp + 6);
+                int bits = std::atoi(arch.c_str() + lp + 6);
                 if (bits)
                     fmt.mLabelBytes = bits / 8;
             }
-            std::size_t sp = s.find("scalar=");
+            std::size_t sp = arch.find("scalar=");
             if (sp != std::string::npos) {
-                int bits = std::atoi(s.c_str() + sp + 7);
+                int bits = std::atoi(arch.c_str() + sp + 7);
                 if (bits)
                     fmt.mScalarBytes = bits / 8;
             }
@@ -111493,12 +111500,19 @@ FoamFormat detect_format(const std::string& rPath) {
 std::string strip_comments_and_header(std::string_view rText) {
     std::string out;
     out.reserve(rText.size());
-    // remove /* */ and //
+    // remove /* */ and //; text between slashes is copied in runs
     for (std::size_t i = 0; i < rText.size();) {
-        if (i + 1 < rText.size() && rText[i] == '/' && rText[i + 1] == '*') {
+        const std::size_t slash = rText.find('/', i);
+        if (slash == std::string_view::npos) {
+            out.append(rText.substr(i));
+            break;
+        }
+        out.append(rText.substr(i, slash - i));
+        i = slash;
+        if (i + 1 < rText.size() && rText[i + 1] == '*') {
             std::size_t e = rText.find("*/", i + 2);
             i = (e == std::string::npos) ? rText.size() : e + 2;
-        } else if (i + 1 < rText.size() && rText[i] == '/' && rText[i + 1] == '/') {
+        } else if (i + 1 < rText.size() && rText[i + 1] == '/') {
             std::size_t e = rText.find('\n', i + 2);
             i = (e == std::string::npos) ? rText.size() : e;
         } else {
@@ -111506,16 +111520,17 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    detail::TextStream ss(out);
-    std::string line, result;
+    detail::TextCursor lines(out);
+    std::string result;
+    result.reserve(out.size() + 1);
     bool in_header = false;
     int depth = 0;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
-        if (s.find("FoamFile") != std::string::npos)
+    while (!lines.AtEnd()) {
+        const std::string_view line = lines.Line();
+        if (line.find("FoamFile") != std::string_view::npos)
             in_header = true;
         if (in_header) {
-            for (char c : s) {
+            for (char c : line) {
                 if (c == '{')
                     ++depth;
                 else if (c == '}')
@@ -111525,7 +111540,7 @@ std::string strip_comments_and_header(std::string_view rText) {
                 in_header = false;
             continue;
         }
-        result += line;
+        result.append(line);
         result.push_back('\n');
     }
     return result;
@@ -111536,7 +111551,7 @@ std::string strip_comments_and_header(std::string_view rText) {
 // The capacity to reserve from a list's count line: the count, capped by what
 // the body could hold at `MinBytes` bytes per entry, so a wrong count only
 // sizes the reservation and never fails a read that succeeded before.
-std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
+std::size_t openfoam_count_hint(std::string_view rCount, std::size_t BodySize,
                                 std::size_t MinBytes) {
     std::uint64_t n = 0;
     const auto r = std::from_chars(rCount.data(), rCount.data() + rCount.size(), n);
@@ -111545,17 +111560,17 @@ std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
     return static_cast<std::size_t>(std::min<std::uint64_t>(n, BodySize / MinBytes));
 }
 
-std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
+std::vector<std::array<double, 3>> parse_points_ascii(std::string_view rBody) {
     std::vector<std::array<double, 3>> pts;
-    detail::TextStream ss(rBody);
-    std::string line;
+    detail::TextCursor lines(rBody);
+    std::string t;  // one point's text with its parentheses blanked, reused
     bool in_block = false;
     bool have_n = false;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
-        if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
+        if (!have_n && s.find_first_not_of("0123456789") == std::string_view::npos) {
             have_n = true;
             pts.reserve(openfoam_count_hint(s, rBody.size(), 7));
             continue;
@@ -111568,11 +111583,11 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             break;
         if (in_block) {
             // extract up to 3 numbers from within parentheses
-            std::string t = s;
+            t.assign(s);
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            detail::TextStream ns(t);
+            detail::TextStream ns{std::string_view(t)};
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -111581,16 +111596,15 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
     return pts;
 }
 
-std::vector<Face> parse_faces_ascii(const std::string& rBody) {
+std::vector<Face> parse_faces_ascii(std::string_view rBody) {
     std::vector<Face> faces;
-    detail::TextStream ss(rBody);
-    std::string line;
+    detail::TextCursor lines(rBody);
     bool in_block = false, have_n = false;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
-        if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
+        if (!have_n && s.find_first_not_of("0123456789") == std::string_view::npos) {
             have_n = true;
             faces.reserve(openfoam_count_hint(s, rBody.size(), 8));
             continue;
@@ -111605,10 +111619,9 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             // form: <count>(<ids...>)
             std::size_t lp = s.find('(');
             std::size_t rp = s.find(')', lp);
-            if (lp == std::string::npos || rp == std::string::npos)
+            if (lp == std::string_view::npos || rp == std::string_view::npos)
                 continue;
-            std::string inside = s.substr(lp + 1, rp - lp - 1);
-            detail::TextStream ns(inside);
+            detail::TextStream ns(s.substr(lp + 1, rp - lp - 1));
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -111619,16 +111632,15 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     return faces;
 }
 
-std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
+std::vector<std::int64_t> parse_int_list_ascii(std::string_view rBody) {
     std::vector<std::int64_t> out;
-    detail::TextStream ss(rBody);
-    std::string line;
+    detail::TextCursor lines(rBody);
     bool in_block = false, have_n = false;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
-        if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
+        if (!have_n && s.find_first_not_of("0123456789") == std::string_view::npos) {
             have_n = true;
             out.reserve(openfoam_count_hint(s, rBody.size(), 2));
             continue;
@@ -112005,27 +112017,27 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
 // ---- dispatch readers ----
 
 std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
-    FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
         return read_binary_points(raw, fmt.mScalarBytes);
     return parse_points_ascii(strip_comments_and_header(raw));
 }
 
 std::vector<Face> read_faces(const fs::path& rPath) {
-    FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
         return read_binary_faces(raw, fmt.mLabelBytes);
     return parse_faces_ascii(strip_comments_and_header(raw));
 }
 
 std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
-    FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
         return read_binary_labels(raw, fmt.mLabelBytes);
     return parse_int_list_ascii(strip_comments_and_header(raw));
@@ -112363,17 +112375,16 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 /// buffer rather than a text view.
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
-    detail::TextStream ss(rText);
-    std::string line;
+    detail::TextCursor lines(rText);
     bool have_n = false;
     std::int64_t n = 0;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
         if (!have_n) {
-            if (s.find_first_not_of("0123456789") == std::string::npos) {
-                n = std::atoll(s.c_str());
+            if (s.find_first_not_of("0123456789") == std::string_view::npos) {
+                n = detail::strtoll_token(s);
                 have_n = true;
             }
             continue;
@@ -112384,17 +112395,19 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     out.mCount = n;
     out.mFlat.reserve(std::min<std::size_t>(
         static_cast<std::size_t>(n) * static_cast<std::size_t>(components), rText.size()));
-    for (std::int64_t i = 0; i < n && getline(ss, line);) {
-        std::string s = openfoam_strip(line);
+    std::string t;  // one entry's text with its parentheses blanked, reused
+    for (std::int64_t i = 0; i < n && !lines.AtEnd();) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
         if (components == 1) {
-            out.mFlat.push_back(detail::parse_double(s));
+            out.mFlat.push_back(detail::parse_double_prefix(s));
         } else {
-            for (char& c : s)
+            t.assign(s);
+            for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            detail::TextStream ls(s);
+            detail::TextStream ls{std::string_view(t)};
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -112415,9 +112428,9 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
  * own data list can introduce a stray `(` (`dimensions` uses `[...]`).
  */
 FoamField foam_read_internal_field(const fs::path& rPath, int components) {
-    const FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     const std::size_t kp = raw.find("internalField");
     if (kp == std::string::npos)
         throw ReadError("OpenFOAM: field file has no internalField: " + rPath.string());
@@ -112830,16 +112843,15 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
             const fs::path zone_path = poly / pFile;
             if (!fs::exists(zone_path))
                 return zones;
-            const FoamFormat zone_fmt = detect_format(zone_path.string());
+            const detail::FileSource source = read_whole(zone_path.string());
+            const FoamFormat zone_fmt = detect_format(source.View());
             if (zone_fmt.mBinary) {
                 // strip_comments_and_header's comment-removal pass scans the
                 // whole body and is unsafe over raw id bytes -- see
                 // parse_zone_file_binary's own doc comment.
-                const detail::FileSource source = read_whole(zone_path.string());
                 zones = parse_zone_file_binary(source.View(), pKey, zone_fmt.mLabelBytes);
             } else {
-                zones = parse_zone_file(
-                    strip_comments_and_header(read_whole(zone_path.string()).View()), pKey);
+                zones = parse_zone_file(strip_comments_and_header(source.View()), pKey);
             }
             return zones;
         };
