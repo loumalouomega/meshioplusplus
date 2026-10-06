@@ -92,7 +92,7 @@ std::int64_t obj_group(const mt::Mesh& rMesh, std::size_t Block, std::size_t Ind
     return read_int(rMesh.CellData("obj:group_ids", Block), Index);
 }
 
-// The first `Count` points of a file made of `v` lines only.
+// A file made of `v` lines only, read for its coordinates.
 mt::Mesh obj_points(const std::string& rBody) {
     return obj_read(rBody);
 }
@@ -136,11 +136,17 @@ TEST(ObjText, CommentsAndBlankLinesAreSkipped) {
     EXPECT_EQ(m.Cells(0).NumCells(), 1u);
 }
 
-TEST(ObjText, ATrailingCommentOnADataLineAddsNothing) {
-    const mt::Mesh m = obj_read("v 1 2 3 # corner\nv 4 5 6\nv 7 8 9\nf 1 2 3 # face\n");
+TEST(ObjText, ATrailingCommentOnAVertexLineAddsNothing) {
+    const mt::Mesh m = obj_read("v 1 2 3 # corner\nv 4 5 6\nv 7 8 9\nf 1 2 3\n");
     ASSERT_EQ(m.NumPoints(), 3u);
     EXPECT_EQ(obj_point(m, 0, 2), 3.0);
     EXPECT_EQ(m.Cells(0).Type(), "triangle");
+}
+
+TEST(ObjText, ATrailingCommentOnAFaceLineIsNotACommentHere) {
+    // Only a line that starts with `#` is a comment, so the `#` is a face item
+    // with no digits.
+    EXPECT_THROW(obj_read("v 0 0 0\nf 1 2 3 # face\n"), std::invalid_argument);
 }
 
 TEST(ObjText, CrlfTabsAndFormFeedsSeparateTokens) {
@@ -198,22 +204,40 @@ TEST(ObjText, ExponentsSignsAndASeparateDecimalPoint) {
     EXPECT_TRUE(std::signbit(obj_point(m, 1, 2)));
 }
 
-TEST(ObjText, NonFiniteOverflowAndUnderflowValues) {
-    const mt::Mesh m = obj_points("v inf -inf nan\nv 1e999 -1e999 1e-999\n");
-    EXPECT_TRUE(std::isinf(obj_point(m, 0, 0)));
-    EXPECT_GT(obj_point(m, 0, 0), 0.0);
-    EXPECT_TRUE(std::isinf(obj_point(m, 0, 1)));
-    EXPECT_LT(obj_point(m, 0, 1), 0.0);
-    EXPECT_TRUE(std::isnan(obj_point(m, 0, 2)));
-    EXPECT_TRUE(std::isinf(obj_point(m, 1, 0)));
-    EXPECT_TRUE(std::isinf(obj_point(m, 1, 1)));
+TEST(ObjText, NonFiniteWordsAreNotNumbers) {
+    // A stream extraction of `inf` or `nan` fails, storing 0 and ending the line.
+    const mt::Mesh m = obj_points("v inf 1 1\nv 1 -inf 1\nv 1 1 nan\n");
+    for (std::size_t c = 0; c < 3; ++c)
+        EXPECT_EQ(obj_point(m, 0, c), 0.0);
+    EXPECT_EQ(obj_point(m, 1, 0), 1.0);
+    EXPECT_EQ(obj_point(m, 1, 1), 0.0);
     EXPECT_EQ(obj_point(m, 1, 2), 0.0);
+    EXPECT_EQ(obj_point(m, 2, 0), 1.0);
+    EXPECT_EQ(obj_point(m, 2, 1), 1.0);
+    EXPECT_EQ(obj_point(m, 2, 2), 0.0);
 }
 
-TEST(ObjText, AHexadecimalFloatIsParsed) {
-    const mt::Mesh m = obj_points("v 0x1p3 0x.8 0\n");
-    EXPECT_EQ(obj_point(m, 0, 0), 8.0);
-    EXPECT_EQ(obj_point(m, 0, 1), 0.5);
+TEST(ObjText, AnOverflowStoresTheLargestFiniteValueAndEndsTheLine) {
+    const mt::Mesh m = obj_points("v 1e999 1 1\nv 1 -1e999 1\nv 1 2 1e-999\n");
+    constexpr double big = std::numeric_limits<double>::max();
+    EXPECT_EQ(obj_point(m, 0, 0), big);
+    EXPECT_EQ(obj_point(m, 0, 1), 0.0);
+    EXPECT_EQ(obj_point(m, 0, 2), 0.0);
+    EXPECT_EQ(obj_point(m, 1, 0), 1.0);
+    EXPECT_EQ(obj_point(m, 1, 1), -big);
+    EXPECT_EQ(obj_point(m, 1, 2), 0.0);
+    EXPECT_EQ(obj_point(m, 2, 1), 2.0);
+    EXPECT_EQ(obj_point(m, 2, 2), 0.0);
+}
+
+TEST(ObjText, AHexadecimalFloatIsItsLeadingZeroThenAFailure) {
+    const mt::Mesh m = obj_points("v 0x1p3 5 5\nv 1 0x.8 5\n");
+    EXPECT_EQ(obj_point(m, 0, 0), 0.0);
+    EXPECT_EQ(obj_point(m, 0, 1), 0.0);
+    EXPECT_EQ(obj_point(m, 0, 2), 0.0);
+    EXPECT_EQ(obj_point(m, 1, 0), 1.0);
+    EXPECT_EQ(obj_point(m, 1, 1), 0.0);
+    EXPECT_EQ(obj_point(m, 1, 2), 0.0);
 }
 
 TEST(ObjText, ABadCoordinateStopsTheVertexAndKeepsTheRestZero) {
