@@ -17,11 +17,13 @@
 
 // System includes
 #include <array>
-#include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
-#include <sstream>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,6 +35,7 @@
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -47,6 +50,24 @@ struct FaceBlock {
     std::size_t mCount = 0;
 };
 
+// The `vn` or `vt` rows of a file, flat. Rows may differ in width while
+// reading; one that does is refused when the array is made.
+struct AttributeRows {
+    std::vector<double> mValues;
+    std::size_t mRows = 0;
+    std::size_t mWidth = 0;
+    bool mUniform = true;
+
+    void AddRow(const double* pValues, std::size_t Count) {
+        if (mRows == 0)
+            mWidth = Count;
+        else if (Count != mWidth)
+            mUniform = false;
+        mValues.insert(mValues.end(), pValues, pValues + Count);
+        ++mRows;
+    }
+};
+
 std::string cell_type_for(std::size_t n) {
     if (n == 3)
         return "triangle";
@@ -55,69 +76,104 @@ std::string cell_type_for(std::size_t n) {
     return "polygon";
 }
 
-NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
-    std::size_t n = rRows.size();
-    std::size_t nc = n ? rRows[0].size() : 0;
-    for (const auto& row : rRows)
-        if (row.size() != nc)
-            throw ReadError("OBJ: rows of one attribute with different lengths");
-    NDArray a(DType::Float64, {n, nc});
-    double* p = a.As<double>();
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < nc; ++j)
-            p[i * nc + j] = rRows[i][j];
+NDArray make_point_data(const AttributeRows& rRows) {
+    if (!rRows.mUniform)
+        throw ReadError("OBJ: rows of one attribute with different lengths");
+    NDArray a(DType::Float64, {rRows.mRows, rRows.mWidth});
+    if (!rRows.mValues.empty())
+        std::memcpy(a.As<double>(), rRows.mValues.data(), rRows.mValues.size() * sizeof(double));
     return a;
+}
+
+// `std::stoll(std::string(Token), nullptr, 10)` over a token that holds no
+// blank: the leading integer, an optional sign included, with whatever follows
+// ignored. Like `stoll`, a token with no digit throws `std::invalid_argument`
+// and a value outside `int64` throws `std::out_of_range`.
+std::int64_t obj_stoll(std::string_view Token) {
+    std::size_t i = 0;
+    bool negative = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        negative = Token[i] == '-';
+        ++i;
+    }
+    if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
+        throw std::invalid_argument("stoll");
+    std::uint64_t magnitude = 0;
+    const auto parsed =
+        std::from_chars(Token.data() + i, Token.data() + Token.size(), magnitude);
+    constexpr auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (parsed.ec == std::errc::result_out_of_range || magnitude > maximum + (negative ? 1u : 0u))
+        throw std::out_of_range("stoll");
+    return negative ? static_cast<std::int64_t>(0 - magnitude)
+                    : static_cast<std::int64_t>(magnitude);
+}
+
+// `v`, `vn` and `vt` carry numbers until the first token that is not one.
+void obj_read_numbers(std::string_view Rest, std::vector<double>& rOut) {
+    detail::TextStream iss(Rest);
+    double x;
+    while (iss >> x)
+        rOut.push_back(x);
 }
 
 }  // namespace
 
 Mesh read_obj(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    detail::TextCursor cursor(source.View());
 
-    std::vector<std::array<double, 3>> points;
-    std::vector<std::vector<double>> vn, vt;
+    std::vector<double> points;  // flat x, y, z
+    AttributeRows vn, vt;
     std::vector<FaceBlock> blocks;
     std::int64_t group_id = -1;
+    std::vector<double> row;
+    std::vector<std::int64_t> dat;
 
-    std::string line;
-    while (std::getline(in, line)) {
-        // strip
+    while (!cursor.AtEnd()) {
+        std::string_view line = cursor.Line();
         std::size_t b = 0, e = line.size();
-        while (b < e && std::isspace(static_cast<unsigned char>(line[b])))
+        while (b < e && detail::text_is_blank(line[b]))
             ++b;
-        while (e > b && std::isspace(static_cast<unsigned char>(line[e - 1])))
+        while (e > b && detail::text_is_blank(line[e - 1]))
             --e;
         if (b == e || line[b] == '#')
             continue;
+        line = line.substr(b, e - b);
 
-        detail::TextStream iss(std::string_view(line).substr(b, e - b));
-        std::string tag;
-        iss >> tag;
+        // The tag is the first blank-separated token; the rest is its payload.
+        std::size_t t = 0;
+        while (t < line.size() && !detail::text_is_blank(line[t]))
+            ++t;
+        const std::string_view tag = line.substr(0, t);
+        const std::string_view rest = line.substr(t);
         if (tag == "v") {
+            // A vertex short of three numbers keeps zeros for the rest, and a
+            // value that does not parse ends the line, as a stream would.
             std::array<double, 3> p{0, 0, 0};
+            detail::TextStream iss(rest);
             iss >> p[0] >> p[1] >> p[2];
-            points.push_back(p);
-        } else if (tag == "vn") {
-            std::vector<double> row;
-            double x;
-            while (iss >> x)
-                row.push_back(x);
-            vn.push_back(row);
-        } else if (tag == "vt") {
-            std::vector<double> row;
-            double x;
-            while (iss >> x)
-                row.push_back(x);
-            vt.push_back(row);
+            points.insert(points.end(), p.begin(), p.end());
+        } else if (tag == "vn" || tag == "vt") {
+            row.clear();
+            obj_read_numbers(rest, row);
+            (tag == "vn" ? vn : vt).AddRow(row.data(), row.size());
         } else if (tag == "f") {
-            std::vector<std::int64_t> dat;
-            std::string item;
-            while (iss >> item) {
-                std::size_t slash = item.find('/');
-                std::string num = (slash == std::string::npos) ? item : item.substr(0, slash);
-                dat.push_back(static_cast<std::int64_t>(std::stoll(num)) - 1);
+            dat.clear();
+            std::size_t i = 0;
+            while (true) {
+                while (i < rest.size() && detail::text_is_blank(rest[i]))
+                    ++i;
+                if (i >= rest.size())
+                    break;
+                const std::size_t first = i;
+                std::size_t slash = std::string_view::npos;
+                while (i < rest.size() && !detail::text_is_blank(rest[i])) {
+                    if (rest[i] == '/' && slash == std::string_view::npos)
+                        slash = i;
+                    ++i;
+                }
+                const std::size_t last = slash == std::string_view::npos ? i : slash;
+                dat.push_back(obj_stoll(rest.substr(first, last - first)) - 1);
             }
             std::size_t sz = dat.size();
             if (blocks.empty() || (blocks.back().mCount > 0 && blocks.back().mSize != sz)) {
@@ -146,32 +202,28 @@ Mesh read_obj(const std::string& rPath) {
             nonempty.push_back(std::move(fb));
 
     Mesh mesh;
-    std::size_t np = points.size();
+    std::size_t np = points.size() / 3;
     NDArray pts(DType::Float64, {np, 3});
-    double* pp = pts.As<double>();
-    for (std::size_t i = 0; i < np; ++i)
-        for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = points[i][c];
+    if (!points.empty())
+        std::memcpy(pts.As<double>(), points.data(), points.size() * sizeof(double));
     mesh.AssignPoints(std::move(pts));
 
-    if (!vt.empty())
+    if (vt.mRows > 0)
         mesh.AddPointData("obj:vt", make_point_data(vt));
-    if (!vn.empty())
+    if (vn.mRows > 0)
         mesh.AddPointData("obj:vn", make_point_data(vn));
 
     if (!nonempty.empty()) {
         std::vector<NDArray> gid_blocks;
         for (auto& fb : nonempty) {
             NDArray data(DType::Int64, {fb.mCount, fb.mSize});
-            std::int64_t* dp = data.As<std::int64_t>();
-            for (std::size_t i = 0; i < fb.mIdx.size(); ++i)
-                dp[i] = fb.mIdx[i];
+            if (!fb.mIdx.empty())
+                std::memcpy(data.As<std::int64_t>(), fb.mIdx.data(),
+                            fb.mIdx.size() * sizeof(std::int64_t));
             mesh.AddCellBlock(cell_type_for(fb.mSize), std::move(data));
 
             NDArray g(DType::Int64, {fb.mCount});
-            std::int64_t* gp = g.As<std::int64_t>();
-            for (std::size_t i = 0; i < fb.mCount; ++i)
-                gp[i] = fb.mGids[i];
+            std::memcpy(g.As<std::int64_t>(), fb.mGids.data(), fb.mCount * sizeof(std::int64_t));
             gid_blocks.push_back(std::move(g));
         }
         mesh.AddCellData("obj:group_ids", std::move(gid_blocks));
