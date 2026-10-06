@@ -409,7 +409,7 @@ The gradient family gains 26 to 39 percent and reproduces in the full SEQ sweep 
 
 Roadmap §3.2.2 and §3.2.3. Four loops allocated a vector per cell inside `parallel_for`: `quality`'s corner coordinates (and, for polyhedra, its face rings), `point_data_to_cell_data`'s node list, and the polyhedron node list of the centroid helpers in `interpolate` and `partition`. They are `thread_local` now and reset on every use (`cell_rings` and `read_corner_coords` clear their outputs on entry), so nothing carries over between cells. `davg_cell_nodes` also drops its per-polyhedron `std::unordered_set` for a linear scan that keeps first-seen order, which is the summation order, so the floating-point sums are unchanged. The `interpolate` and `partition` helpers keep their sort and unique, whose ascending order is their summation order.
 
-`convert_cells` Simplexify of a polyhedron block now counts the raw faces once and reserves the tetrahedra, parent ids and source lists from that count, and stores the points each new point averages as one flat list with offsets (CSR) instead of one `std::vector` per new point, which was one heap block per face and per cell. `feature_edges` counts its skin faces before pushing their rings. `subdivide.cpp` keeps the vector-of-vectors form: it has no `bench_ops` row, so a change there would not be measured (roadmap §3.2.2). The changes are in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged; `read_corner_coords` keeps its exported signature, which is why `quality` uses scratch vectors and not `std::array`.
+`convert_cells` Simplexify of a polyhedron block now counts the raw faces once and reserves the tetrahedra, parent ids and source lists from that count, and stores the points each new point averages as one flat list with offsets (CSR) instead of one `std::vector` per new point, which was one heap block per face and per cell. `feature_edges` counts its skin faces before pushing their rings. `subdivide.cpp` kept the vector-of-vectors form until it got a `bench_ops` row; see [the next section](#csr-source-lists-in-subdivide). The changes are in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged; `read_corner_coords` keeps its exported signature, which is why `quality` uses scratch vectors and not `std::array`.
 
 New `meshioplusplus_bench_ops` rows: `quality`, `quality_ragged`, `data_average`, `data_average_ragged`, `interpolate_cells` (a cell field of the ragged mesh onto itself, the path that reaches the centroid helper), `partition_ragged` (an 8-part space-filling-curve cut, so no KaHIP is needed) and `feature_edges_ragged`.
 
@@ -432,6 +432,89 @@ New `meshioplusplus_bench_ops` rows: `quality`, `quality_ragged`, `data_average`
 The data-average and polyhedron rows gain the most, because they allocated per polyhedron; the tetrahedral `quality`, `partition` and `partition_ragged` rows are within noise, so those edits are kept as removed allocations that cost nothing measurable. `interpolate` read +12.6% in the same table, but its point-data path runs none of the changed code and six further interleaved rounds put it at +3% (0.239 against 0.232 s), inside the round-to-round scatter. The sweep's OpenMP rows at 4 threads are mixed at tier M (`quality` +23% in one run, −12% at L) and show no claim either way for the same reason: a 3-run median on this four-core shared container scatters by tens of percent, and the 8-thread rows oversubscribe it.
 
 `thread_local` scratch keeps the capacity of the largest cell a thread has seen for the life of the thread, so it is bounded by the largest polyhedron in the mesh.
+
+### CSR source lists in `subdivide`
+
+Roadmap §3.2.2. `subdivide` kept the plain-average source nodes of each new apex point as one `std::vector<std::int64_t>` per polyhedron, a heap block per cell. It now stores them as one flat node list plus offsets, the form `convert_cells` Simplexify uses, and reserves the offsets by the block's cell count (at most one apex per cell). The point-data and coordinate averages read the slices in the same order, so the sums are unchanged. The change is in a `.cpp` body: installed headers and C++ ABI 22 are unchanged.
+
+New `meshioplusplus_bench_ops` rows: `subdivide_ragged` (the polyhedron block of the ragged mesh, where every cell gets an apex) and `read_stl` (the ASCII STL reader over the surface mesh, which the registry writes as ASCII; it has no code change here and is the control for the noise below, and the baseline for the reader migration of §3.1.1.1). The registry read helper takes the mesh to write, so it also serves the surface rows.
+
+**Determinism.** `subdivide_ragged` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 24 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/subdivide_csr.csv). TBB is not installed in the development container, so its leg was skipped.
+
+**SEQ is not slower.** Interleaved old and new binaries, three rounds, each a median of seven runs, tier M, one thread:
+
+| Round | Before | After |
+| --- | ---: | ---: |
+| 1 | 473.0 ms | 440.3 ms |
+| 2 | 487.9 ms | 429.2 ms |
+| 3 | 469.1 ms | 452.8 ms |
+| Mean | 476.7 ms | 440.7 ms (−7.6%) |
+
+The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocate several blocks per face; those are the remaining cost and stay in the roadmap. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
+
+### The STL ASCII reader on the text cursor
+
+Roadmap §3.1.1.1. The ASCII STL reader did a `getline`, an `lstrip` that copied the line, a `std::vector<std::string>` of tokens per line and `parse_double` on a `std::string`; it already included `text_cursor.hpp`, but only for `TextStream`. It now reads the file through `open_source` (mapped above the size threshold), takes lines with `split_lines` and tokens with `split_blanks` into one reused vector of views, and parses the last three tokens of each data line with `parse_double_prefix`, the bounded form of the lenient parse it replaces. Lines are skipped by the same rule (blank, or starting after leading whitespace with `solid`, `outer loop`, `endloop`, `endfacet` or `endsolid`), a line with fewer than three tokens is skipped, and a row count that is not a multiple of four is still `Malformed ascii STL`. The binary reader takes its records from the same mapping instead of a second stream. A file of 80 to 83 bytes, too short to hold a triangle count, is read as ASCII as before (the `size >= 84` guard keeps the count read inside the mapping), and the file-size check, the skipped header line of the fallback and the under-80-byte path are unchanged. Output is byte-identical, and the change is in `.cpp` bodies, so installed headers and C++ ABI 22 are unchanged.
+
+Eight tests pin the ASCII behaviour: exponents and signs, CRLF line endings, tabs, form feeds and blank lines, short lines, a truncated facet, the under-80-byte file, an empty solid, and files of 80, 81 and 83 bytes. The first seven passed against the old reader before it was changed; the 80 to 83 byte test came with the new `size >= 84` guard. A ninth checks the binary reader's single-precision vertices.
+
+**Determinism.** The `read_stl` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 12 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/stl_ascii_reader.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on a SEQ build (1,819 of 1,825; the six skips are optional codecs, locales and tools). `benchmark/bench.py` and the Python tests need the extension module, which the development container cannot build, so they were not run; the Python reader is unchanged.
+
+**SEQ is not slower; it is faster.** Interleaved old and new binaries, three rounds, each a median of seven runs, one thread:
+
+| Round | M before | M after | L before | L after |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 22.7 ms | 9.5 ms | 47.3 ms | 27.8 ms |
+| 2 | 25.0 ms | 9.6 ms | 71.0 ms | 26.6 ms |
+| 3 | 23.6 ms | 14.4 ms | 45.8 ms | 34.1 ms |
+| Mean | 23.8 ms | 11.2 ms (−53%) | 54.7 ms | 29.5 ms (−46%) |
+
+The row times the read of the surface of the M and L volume meshes (tier labels are the volume's cell counts, 162,000 and 750,000). Round 2's old L value and round 3's new values are outliers of the shared container; the medians of the three rounds are 23.6 → 9.6 ms (M) and 47.3 → 27.8 ms (L). What remains in the read is the point de-duplication (`dedup`), which keys an `unordered_map<std::string, …>` by 24 bytes per vertex row.
+
+### Frozen bucket grid in DistanceQuery, ABI 23
+
+Roadmap §3.3.1.2. `build_distance_query` grouped its (bucket, triangle) pairs in parallel and then moved each bucket into a `SpatialGrid`, an `unordered_map` of one vector per cell, one at a time; every nearest-triangle query then paid one node lookup per cell its shell visited. The grid is built once and only searched, so `DistanceQuery` now holds a `BucketTable` (the new installed header `detail/bucket_table.hpp`): the keys in first-seen order, the offsets of each bucket and the ids of every bucket in flat arrays, and an open-addressing index at most half full that maps a key to its bucket. The build scans the run sizes in parallel and fills the flat id array in parallel, so there is no vector per bucket; the index is filled serially over flat memory. Shell and box traversals, the ascending ids of each bucket and the occupied box are `SpatialGrid`'s, so the triangle-id tie-break of `sd_nearest_triangle` sees the same candidates in the same order. `SpatialGrid` itself is unchanged, so `merge`, `interpolate`, `conservative_interpolate` and `periodic` are untouched. The roadmap suggested a sorted bucket table; a hash index was chosen instead because a shell visits many cells and a binary search per cell would have made queries slower.
+
+`DistanceQuery` changes layout (232 → 272 bytes), a Tier A change, so **C++ ABI 22 becomes 23** ([the ABI table](./abi.md)); `test_abi_layout.cpp` pins `DistanceQuery`, `BucketTable` (160 bytes) and `BucketView` (16), and the pins compile on the MESHIO, NATIVE and KRATOS mesh backends. The language bindings do not expose `DistanceQuery`.
+
+New `meshioplusplus_bench_ops` row: `distance_build` (the grid and normal tables of a surface's triangle soup, with the soup made outside the timed runs; in hash mode its digest walks every bucket of the occupied box, so a change of the grid cannot hide behind the normal tables).
+
+**The build was never the cost.** `distance_build` takes about 3 ms at tier M and 10 ms at tier L, against 0.04 to 9 s for the operations that call it, so the roadmap's serial map insertion is a fraction of a percent of any of them. The gain below comes from the queries: a probe over contiguous memory instead of a pointer chase per visited cell. The serial index build costs a little (the row is within noise of the old build in the interleaved runs, and a few percent either way in single sweeps).
+
+**Determinism.** The 72 rows of the six distance rows at tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 72 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/distance_grid.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on a SEQ build (1,826 of 1,832; the six skips are optional codecs, locales and tools), including seven `BucketTable` tests that compare it with a serially filled `SpatialGrid` over random shells and boxes, an empty table, one bucket, negative and 2^40-offset keys, and a thousand-bucket probe test. The Python wrappers (`compute_sdf`, `hausdorff` and the rest) need the extension module, which the development container cannot build, so their tests were not run here.
+
+**Queries are not slower.** Interleaved old and new binaries, three rounds, each a median of seven runs (five at tier L); [the raw rounds](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/distance_grid_interleaved.csv). Mean of the three rounds:
+
+| Row | SEQ, M | OpenMP 4, M | OpenMP 4, L |
+| --- | ---: | ---: | ---: |
+| `compute_sdf` | 1851 → 1703 ms (−8.0%) | 503 → 424 ms (−15.8%) | 1060 → 1000 ms (−5.7%) |
+| `hausdorff` | 933 → 899 ms (−3.7%) | 290 → 237 ms (−18.4%) | 1218 → 1167 ms (−4.2%) |
+| `sample_distance` | 835 → 796 ms (−4.8%) | 214 → 192 ms (−10.1%) | 2257 → 2006 ms (−11.1%) |
+| `distance_to_surface` | 809 → 777 ms (−3.9%) | 209 → 199 ms (−4.7%) | not run |
+| `shrinkwrap` | 45.5 → 47.1 ms (+3.6%) | 15.8 → 15.1 ms (−4.9%) | 73.5 → 67.4 ms (−8.3%) |
+
+`shrinkwrap` at SEQ tier M is the one row that reads slower on average; it is a 45 ms call whose rounds (44.7 to 45.9 ms before, 45.4 to 48.7 ms after) overlap, and it reads faster at four threads. A single earlier OpenMP sweep had shown `shrinkwrap` +12 to +18% and `hausdorff` +8% in two cells; the interleaved rounds above do not reproduce it, which marks that sweep as noise (five runs each, one container).
+
+### TetGen and Triangle readers on the text cursor
+
+Roadmap §3.1.1.1. Both readers opened a classic-locale stream, took each line with `getline`, split it with a `TextStream` into one `std::string` per token, kept every token of the file in a vector of strings, and parsed each with `strtoll(c_str())` or `parse_double(std::string)`. They now map the file with `FileSource`, walk it with `TextCursor::Line`, split blank-separated tokens into views (`split_blanks`) and parse them in place: TetGen with `strtoll_token` and `parse_double_prefix`, the lenient forms it replaces, and Triangle with `TextCursor::IntPrefix` and `DoublePrefix`, whose "consumed nothing" result is the old `end == begin` check. The views point into the mapped file, so TetGen keeps its two sources in `read_tetgen`'s scope beside their tokens, and Triangle's token stream owns its source on the heap, which a move of the stream cannot relocate (the buffered `FileSource` stores its bytes in a `std::string`, whose small buffer would move). The order of errors is unchanged: the `.node` file is read and checked before the `.ele` file is opened. Output is byte-identical, and the change is in `.cpp` bodies, so installed headers and C++ ABI 23 are unchanged.
+
+The two readers differ in one rule, which the tests pin so a shared tokenizer cannot blur it: Triangle strips a comment from the first `#` anywhere on a line, while TetGen skips only a line that starts with `#`, so a `#` after data on a TetGen data line adds tokens and fails the size check.
+
+New `meshioplusplus_bench_ops` rows: `read_tetgen` (the tetrahedral cube with its point field, so an attribute column is parsed) and `read_triangle` (a planar lattice of about as many triangles as the cube has tetrahedra, from a new 2-D helper, because the cube has three-component points). Both go through the registry's reader, with the `.node`/`.ele` pair written once outside the timed region.
+
+Seventeen new TetGen cases (a new `test_tetgen.cpp`) and nineteen Triangle cases pin the behaviour, and all of them passed against the old readers before either was changed: comments, blank lines, CRLF, tabs, form feeds and vertical tabs, tokens split across lines, lenient numbers (`1.5abc`, `12xyz`, a lone `+` or `-`), `nan`, `inf`, an overflow to infinity, a hexadecimal float and an underflow to zero (recorded from the reader as it was, signed NaN included), saturated integers, zero- and one-based numbering, every named `ReadError`, a lone `.node` file as a point cloud, and the `.poly` paths (inline and sibling vertices, markers, skipped holes and regions, every malformed section). The Triangle fuzz regression corpus passes before and after.
+
+**Determinism.** The `read_tetgen` and `read_triangle` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 24 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/tetgen_triangle_readers.csv). TBB is not installed in the development container, so its leg was skipped. The full C++ suite passes on a SEQ build (1,862 of 1,868; the six skips are optional codecs, locales and tools). `benchmark/bench.py` and the Python tests need the extension module, which the development container cannot build, so they were not run; the Python readers are unchanged.
+
+**SEQ is not slower; it is faster.** Interleaved old and new binaries, three rounds, each a median of seven runs, one thread; [the raw rounds](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/tetgen_triangle_readers_interleaved.csv). Mean of the three rounds:
+
+| Row | Tier M, before | Tier M, after | Tier L, before | Tier L, after |
+| --- | ---: | ---: | ---: | ---: |
+| `read_tetgen` | 62.7 ms | 32.3 ms (−48%) | 360.4 ms | 203.8 ms (−43%) |
+| `read_triangle` | 69.0 ms | 28.5 ms (−59%) | 422.6 ms | 209.2 ms (−51%) |
+
+The tier labels are the cube's cell counts (162,000 and 750,000); the Triangle lattice has about as many triangles. The remaining time of each read was not profiled.
 
 ### CSR ragged readers and `reorder`
 

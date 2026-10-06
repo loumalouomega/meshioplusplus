@@ -269,15 +269,17 @@ namespace {
 // sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
 // Every bucket therefore lists its triangles in ascending order, exactly as
 // the serial inserts appended them, and the occupied box is the same.
-void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
-                         const std::vector<Vec3>& rHi) {
+BucketTable sd_build_grid(double Cell, const std::vector<Vec3>& rLo,
+                          const std::vector<Vec3>& rHi) {
     const std::size_t ntri = rLo.size();
     std::vector<GridKey> key_lo(ntri);
     std::vector<GridKey> key_hi(ntri);
     std::vector<std::uint64_t> count(ntri);
     parallel_for(ntri, [&](std::size_t t) {
-        key_lo[t] = rGrid.KeyOf(rLo[t].data());
-        key_hi[t] = rGrid.KeyOf(rHi[t].data());
+        key_lo[t] = GridKey{grid_quantize(rLo[t][0], Cell), grid_quantize(rLo[t][1], Cell),
+                            grid_quantize(rLo[t][2], Cell)};
+        key_hi[t] = GridKey{grid_quantize(rHi[t][0], Cell), grid_quantize(rHi[t][1], Cell),
+                            grid_quantize(rHi[t][2], Cell)};
         const std::int64_t nx = key_hi[t].x - key_lo[t].x + 1;
         const std::int64_t ny = key_hi[t].y - key_lo[t].y + 1;
         const std::int64_t nz = key_hi[t].z - key_lo[t].z + 1;
@@ -315,19 +317,30 @@ void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
         for (std::uint64_t k = 0; k < count[t]; ++k)
             tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
     });
-    // Buckets in first-seen order: the map is then built by the same sequence
-    // of key insertions as the serial loop, so it ends in the same state
-    // (bucket count, node order) and queries walk it as fast.
+    // Buckets in first-seen order, as the serial inserts met them, so the table
+    // lists them in the order the map once did. The ids of every bucket go
+    // into one flat array, each bucket at the offset the scan of the run sizes
+    // gives it, rather than into a vector per bucket.
     const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
-    std::vector<GridKey> bucket_keys(first.NumIds());
-    std::vector<std::vector<std::int64_t>> bucket_ids(first.NumIds());
-    parallel_for(first.NumIds(), [&](std::size_t b) {
+    const std::size_t nbuckets_out = first.NumIds();
+    std::vector<GridKey> bucket_keys(nbuckets_out);
+    std::vector<std::uint64_t> bucket_size(nbuckets_out);
+    parallel_for(nbuckets_out, [&](std::size_t b) {
         const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
         bucket_keys[b] = keys[runs.Head(r)];
-        std::vector<std::int64_t>& ids = bucket_ids[b];
-        ids.reserve(runs.Size(r));
+        bucket_size[b] = static_cast<std::uint64_t>(runs.Size(r));
+    });
+    std::vector<std::uint64_t> bucket_offset(nbuckets_out + 1);
+    const std::uint64_t total =
+        parallel_exclusive_scan(bucket_size.data(), nbuckets_out, bucket_offset.data(),
+                                std::uint64_t{0});
+    bucket_offset[nbuckets_out] = total;
+    std::vector<std::int64_t> bucket_ids(static_cast<std::size_t>(total));
+    parallel_for(nbuckets_out, [&](std::size_t b) {
+        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
+        std::int64_t* out = bucket_ids.data() + bucket_offset[b];
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
-            ids.push_back(tri_of[*p]);
+            *out++ = tri_of[*p];
     });
     // The occupied box: InsertBox covers every triangle's low and high key.
     GridKey lo = key_lo[0];
@@ -340,7 +353,8 @@ void sd_insert_triangles(SpatialGrid& rGrid, const std::vector<Vec3>& rLo,
                      std::max(hi.y, std::max(key_lo[t].y, key_hi[t].y)),
                      std::max(hi.z, std::max(key_lo[t].z, key_hi[t].z))};
     }
-    rGrid.AssignBuckets(std::move(bucket_keys), std::move(bucket_ids), lo, hi);
+    return BucketTable(Cell, std::move(bucket_keys), std::move(bucket_offset),
+                       std::move(bucket_ids), lo, hi);
 }
 
 }  // namespace
@@ -422,8 +436,7 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
     if (!(cell > 0.0))
         cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
     q.mCellSize = cell;
-    q.mGrid = SpatialGrid(cell);
-    sd_insert_triangles(q.mGrid, tri_lo, tri_hi);
+    q.mGrid = sd_build_grid(cell, tri_lo, tri_hi);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -518,7 +531,7 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
             if (bound > 0.0 && bound * bound > best_d2)
                 break;
         }
-        rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+        rQuery.mGrid.ForEachInShell(centre, r, [&](const BucketView& rIds) {
             for (std::int64_t t : rIds) {
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(

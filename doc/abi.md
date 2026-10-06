@@ -82,6 +82,7 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 20 | v16.27.0 | **Tier A, layouts** (roadmap §4). `MdpaInfo` gains `mModelPartData`, `mTables`, `mGeometries`, `mMeshBlocks`, `mSubModelParts` and `mRawBlocks` (72 -> 216 bytes), so the blocks a `Mesh` cannot hold (top-level tables, geometries, `Mesh` blocks, sub-model-part data, text `ModelPartData`, raw blocks such as `Constraints`) travel with it; the new element types `MdpaGeometryBlock`, `MdpaMeshBlock`, `MdpaSubModelPart` and `MdpaRawBlock` are pinned in `test_abi_layout.cpp` from this release. Added in the same release: `kratos_geometry_name` in `backends/kratos_names.hpp`; `carry_regions_to_facet_mesh` in `detail/region_remap.hpp` (`remap_region` now carries side regions by containment -- a body change to an exported function, not a layout change); a ragged-aware `detail::facet_nodes`; and a `reconstruct_cells` overload in `detail/vtk_cells.hpp` that reports where each file cell landed. |
 | 21 | unreleased | **Tier A, layout**: `MdpaSubModelPart` gains `mGeometryIds` and `mConstraintIds` (80 → 128 bytes), carrying nested sub-model-part geometry/constraint membership. `MdpaInfo` remains 216 bytes, but its vector elements have changed layout. The C ABI adds array fields without changing signatures or layouts. |
 | 22 | unreleased | **Tier A, layout**: `GmshInfo` gains `mPeriodic` (24 → 48 bytes), holding `GmshPeriodicLink` records (112 bytes on the reference layout). The added 2.2 info-bearing writer overload and C metadata accessors are additive; existing C layouts stay unchanged. |
+| 23 | unreleased | **Tier A, layout** (roadmap §3.3.1.2): `DistanceQuery::mGrid` changes type from `SpatialGrid` to the new read-only `BucketTable` (232 → 272 bytes), the bucket grid held as flat keys, offsets, ids and an open-addressing index instead of an `unordered_map` of vectors. `SpatialGrid` itself is unchanged, so `merge`, `interpolate`, `conservative_interpolate` and `periodic` are unaffected. `BucketTable` and `BucketView` come from the new header `detail/bucket_table.hpp` and are pinned in `test_abi_layout.cpp`. |
 
 It reaches consumers three ways:
 
@@ -129,8 +130,8 @@ See [the C++ API page](/cpp_api#versioning-what-to-pin) for the full guidance. I
 ```cmake
 # Finer, and true: pin what actually constrains you.
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
-if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 22)
-  message(FATAL_ERROR "meshio++ ABI 22 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
+if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 23)
+  message(FATAL_ERROR "meshio++ ABI 23 required, found ${MESHIOPLUSPLUS_ABI_VERSION}")
 endif()
 ```
 

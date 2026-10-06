@@ -63,6 +63,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/mesh_api.hpp"
+#include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -93,6 +94,7 @@
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/split.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
@@ -160,6 +162,44 @@ Mesh bench_ops_tet_cube(std::size_t n) {
     m.AssignPoints(std::move(pts));
     m.AddCellBlock("tetra", std::move(conn));
     return m;
+}
+
+/**
+ * @brief A planar triangle lattice of `m x m` squares (two triangles each) at
+ * unit size, with two-component points: the 2-D input the Triangle reader
+ * needs, which the 3-D cube cannot supply.
+ */
+Mesh bench_ops_tri_plate(std::size_t m) {
+    const std::size_t np = m + 1;
+    NDArray pts = NDArray::Uninit(DType::Float64, {np * np, 2});
+    double* p = pts.As<double>();
+    for (std::size_t j = 0; j < np; ++j)
+        for (std::size_t i = 0; i < np; ++i) {
+            p[(j * np + i) * 2 + 0] = static_cast<double>(i) / static_cast<double>(m);
+            p[(j * np + i) * 2 + 1] = static_cast<double>(j) / static_cast<double>(m);
+        }
+    NDArray conn = NDArray::Uninit(DType::Int64, {2 * m * m, 3});
+    std::int64_t* c = conn.As<std::int64_t>();
+    std::size_t t = 0;
+    for (std::size_t j = 0; j < m; ++j)
+        for (std::size_t i = 0; i < m; ++i) {
+            const std::int64_t a = static_cast<std::int64_t>(j * np + i);
+            const std::int64_t b = a + 1;
+            const std::int64_t d = a + static_cast<std::int64_t>(np);
+            const std::int64_t e = d + 1;
+            c[t * 3 + 0] = a;
+            c[t * 3 + 1] = b;
+            c[t * 3 + 2] = e;
+            ++t;
+            c[t * 3 + 0] = a;
+            c[t * 3 + 1] = e;
+            c[t * 3 + 2] = d;
+            ++t;
+        }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    mesh.AddCellBlock("triangle", std::move(conn));
+    return mesh;
 }
 
 /**
@@ -511,6 +551,14 @@ int main(int argc, char** argv) {
                 pD->Arrays(r.mCellMaps);
             }
         });
+        // Subdivide of the same ragged mesh: one apex point per polyhedron,
+        // whose source-node list is the allocation of roadmap §3.2.2.
+        row("subdivide_ragged", [&](MeshDigest* pD) {
+            auto r = mio::subdivide(ragged);
+            of(pD, r.mMesh);
+            if (pD)
+                pD->Arrays(r.mCellMaps);
+        });
         // The ragged mesh with a smooth point field and one cell field per
         // block: the per-cell and per-polyhedron scratch rows of roadmap
         // §3.2.3 (quality, data_average, interpolate's cell_data and the SFC
@@ -558,19 +606,20 @@ int main(int argc, char** argv) {
         });
         row("feature_edges_ragged",
             [&](MeshDigest* pD) { of(pD, mio::feature_edges(ragged).mMesh); });
-        // Reads of the ragged mesh through the registry: the file is written
-        // once, outside the timed region. A format whose writer declines the
-        // mesh is skipped, so the rows never fail the sweep.
-        const auto read_ragged_row = [&](const char* pOp, const char* pFormat, const char* pExt) {
+        // Reads through the registry: the file is written once, outside the
+        // timed region. A format whose writer declines the mesh is skipped, so
+        // the rows never fail the sweep.
+        const auto read_row = [&](const char* pOp, const char* pFormat, const char* pExt,
+                                  const Mesh& rSource) {
             if (!wanted(pOp))
                 return;
             const std::filesystem::path dir =
                 std::filesystem::temp_directory_path() /
-                (std::string("meshioplusplus_bench_ragged_") + pFormat);
+                (std::string("meshioplusplus_bench_read_") + pFormat);
             std::filesystem::create_directories(dir);
-            const std::string path = (dir / (std::string("ragged") + pExt)).string();
+            const std::string path = (dir / (std::string("mesh") + pExt)).string();
             try {
-                mio::registry_writers().at(pFormat)(path, ragged);
+                mio::registry_writers().at(pFormat)(path, rSource);
                 row(pOp, [&](MeshDigest* pD) {
                     of(pD, mio::registry_read(path, pFormat, mio::ReadOptions{}));
                 });
@@ -579,8 +628,19 @@ int main(int argc, char** argv) {
             }
             std::filesystem::remove_all(dir);
         };
-        read_ragged_row("read_ragged_ensight", "ensight", ".case");
-        read_ragged_row("read_ragged_tecplot", "tecplot", ".dat");
+        read_row("read_ragged_ensight", "ensight", ".case", ragged);
+        read_row("read_ragged_tecplot", "tecplot", ".dat", ragged);
+        // The registry's STL writer is ASCII, so this times the ASCII reader
+        // over a triangle surface (roadmap §3.1.1.1).
+        read_row("read_stl", "stl", ".stl", surface);
+        // The text-token readers of roadmap §3.1.1.1: TetGen's `.node`/`.ele`
+        // pair over the cube with its point field (so an attribute column is
+        // parsed too), and Triangle's over a planar lattice of about as many
+        // triangles as the cube has tetrahedra.
+        read_row("read_tetgen", "tetgen", ".node", with_field);
+        const Mesh tri_plate = bench_ops_tri_plate(
+            static_cast<std::size_t>(std::sqrt(3.0 * static_cast<double>(n * n * n))));
+        read_row("read_triangle", "triangle", ".node", tri_plate);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);
@@ -658,6 +718,35 @@ int main(int argc, char** argv) {
         });
         row("distance_to_surface",
             [&](MeshDigest* pD) { of(pD, mio::distance_to_surface(jittered, surface).mMesh); });
+        // The accelerator alone (roadmap §3.3.1.2): the bucket grid and the
+        // normal tables of a surface's triangle soup, per call. The soup is
+        // made once, by the hashed warm-up call, so it is outside the timed
+        // runs. In hash mode the digest also walks the grid -- every bucket of
+        // the occupied key box, in the traversal order queries use -- so a
+        // change of its layout cannot hide behind the tables.
+        std::optional<mio::detail::TriangleSoup> distance_soup;
+        row("distance_build", [&](MeshDigest* pD) {
+            if (!distance_soup)
+                distance_soup = mio::detail::build_triangle_soup(surface, "");
+            const mio::detail::DistanceQuery q =
+                mio::detail::build_distance_query(*distance_soup, mio::SurfaceDistanceOptions{});
+            if (!pD)
+                return;
+            pD->Bytes(&q.mCellSize, sizeof q.mCellSize);
+            pD->Bytes(q.mFaceNormal.data(), q.mFaceNormal.size() * sizeof(mio::detail::Vec3));
+            pD->Bytes(q.mVertexNormal.data(), q.mVertexNormal.size() * sizeof(mio::detail::Vec3));
+            pD->Bytes(q.mEdgeOfCorner.data(), q.mEdgeOfCorner.size() * sizeof(std::int64_t));
+            pD->Bytes(q.mEdgeNormals.data(), q.mEdgeNormals.size() * sizeof(mio::detail::Vec3));
+            const mio::detail::GridKey lo = q.mGrid.OccupiedLo();
+            const mio::detail::GridKey hi = q.mGrid.OccupiedHi();
+            pD->Bytes(&lo, sizeof lo);
+            pD->Bytes(&hi, sizeof hi);
+            q.mGrid.ForEachInBox(lo, hi, [&](const auto& rIds) {
+                pD->U64(rIds.size());
+                for (const std::int64_t t : rIds)
+                    pD->U64(static_cast<std::uint64_t>(t));
+            });
+        });
         row("isosurface", [&](MeshDigest* pD) {
             mio::IsosurfaceOptions o;
             o.mArrayName = "u";

@@ -150,8 +150,11 @@ def test_the_stream_guard_actually_sees_the_factories():
             re.findall(r"\bmake_classic_\w+stream\(", path.read_text(encoding="utf-8"))
         )
     # 150+ until v16.21.0, when readers moved from per-line `istringstream`s to
-    # the stream-free `detail/text_cursor.hpp` (TextStream, split_lines).
-    assert factories >= 120, factories
+    # the stream-free `detail/text_cursor.hpp` (TextStream, split_lines); 120+
+    # until the STL, TetGen and Triangle readers moved to `FileSource` and
+    # `TextCursor` (117 then). Each reader still to move removes a call or two,
+    # so this is only a floor that proves the scan is not empty.
+    assert factories >= 100, factories
 
     for reintroduced in (
         "    std::ifstream in(rPath);",

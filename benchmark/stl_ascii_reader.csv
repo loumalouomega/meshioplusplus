@@ -1,0 +1,13 @@
+stage,backend,threads,op,cells,median_s,runs,digest
+before,seq,1,read_stl,162000,0.023384,5,dc377d88f1363e4d
+before,seq,1,read_stl,750000,0.043801,5,5115c40b9d05f34b
+before,openmp,1,read_stl,162000,0.016515,5,dc377d88f1363e4d
+before,openmp,1,read_stl,750000,0.052555,5,5115c40b9d05f34b
+before,openmp,4,read_stl,162000,0.016648,5,dc377d88f1363e4d
+before,openmp,4,read_stl,750000,0.055448,5,5115c40b9d05f34b
+after,seq,1,read_stl,162000,0.014365,5,dc377d88f1363e4d
+after,seq,1,read_stl,750000,0.027279,5,5115c40b9d05f34b
+after,openmp,1,read_stl,162000,0.009991,5,dc377d88f1363e4d
+after,openmp,1,read_stl,750000,0.034746,5,5115c40b9d05f34b
+after,openmp,4,read_stl,162000,0.010352,5,dc377d88f1363e4d
+after,openmp,4,read_stl,750000,0.028559,5,5115c40b9d05f34b
