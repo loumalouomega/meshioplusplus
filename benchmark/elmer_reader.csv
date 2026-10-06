@@ -1,0 +1,17 @@
+stage,backend,threads,op,cells,median_s,runs,digest
+before,seq,1,read_elmer,162000,0.043100,7,bb889c01c1135ad1
+before,seq,1,read_elmer,750000,0.298267,7,12d2e3b9e472b062
+before,openmp,1,read_elmer,162000,0.042726,7,bb889c01c1135ad1
+before,openmp,1,read_elmer,750000,0.305060,7,12d2e3b9e472b062
+before,openmp,4,read_elmer,162000,0.048898,7,bb889c01c1135ad1
+before,openmp,4,read_elmer,750000,0.287435,7,12d2e3b9e472b062
+before,openmp,8,read_elmer,162000,0.044851,7,bb889c01c1135ad1
+before,openmp,8,read_elmer,750000,0.277837,7,12d2e3b9e472b062
+after,seq,1,read_elmer,162000,0.056278,7,bb889c01c1135ad1
+after,seq,1,read_elmer,750000,0.258162,7,12d2e3b9e472b062
+after,openmp,1,read_elmer,162000,0.067903,7,bb889c01c1135ad1
+after,openmp,1,read_elmer,750000,0.243827,7,12d2e3b9e472b062
+after,openmp,4,read_elmer,162000,0.049730,7,bb889c01c1135ad1
+after,openmp,4,read_elmer,750000,0.287451,7,12d2e3b9e472b062
+after,openmp,8,read_elmer,162000,0.044287,7,bb889c01c1135ad1
+after,openmp,8,read_elmer,750000,0.251644,7,12d2e3b9e472b062

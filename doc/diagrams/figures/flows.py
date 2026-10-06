@@ -959,7 +959,6 @@ def roadmap_map():
         (
             "§3 performance",
             [
-                ("tokenizer: remaining readers", "S"),
                 ("reserves · per-cell scratch", "S"),
                 ("lazy submodule imports", "M"),
                 ("facet cache · grid map (next ABI)", "M"),

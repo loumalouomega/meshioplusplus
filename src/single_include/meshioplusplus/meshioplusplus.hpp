@@ -32758,6 +32758,11 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
  * and prefix-number positioning; `RecordCursor` traverses split records while
  * format adapters retain their comments, quoting and diagnostics. Roadmap §3,
  * "A shared tokenizer and number path".
+ *
+ * A view ends where the file ends, and a mapped file is not guaranteed a
+ * terminating NUL: parse a token with the bounded forms here
+ * (`parse_double_token`, `parse_double_prefix`, `strtoll_token`,
+ * `TextCursor::DoublePrefix`), never `parse_double` over a view.
  */
 
 // System includes
