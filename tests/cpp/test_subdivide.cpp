@@ -208,15 +208,15 @@ TEST(Subdivide, ChildLayoutIsPinnedForConvexNonConvexAndMixedInput) {
     // child, before the output moved to one flat node list with offsets: the
     // two must agree on every child, face and node, in order.
     const SubdivideResult l_prism = subdivide(l_prism_mesh());
-    EXPECT_EQ(polyhedron_layout_digest(l_prism.mMesh.Cells(0)), 0ull);
+    EXPECT_EQ(polyhedron_layout_digest(l_prism.mMesh.Cells(0)), 7787575696813960845ull);
 
     const SubdivideResult wedge = subdivide(mt::wedge_mesh());
-    EXPECT_EQ(polyhedron_layout_digest(wedge.mMesh.Cells(0)), 0ull);
+    EXPECT_EQ(polyhedron_layout_digest(wedge.mMesh.Cells(0)), 13969303735361267552ull);
 
     // A polyhedron block read as input, subdivided a second time: children of
     // children, with the apex ids of both rounds.
     const SubdivideResult twice = subdivide(l_prism.mMesh);
-    EXPECT_EQ(polyhedron_layout_digest(twice.mMesh.Cells(0)), 0ull);
+    EXPECT_EQ(polyhedron_layout_digest(twice.mMesh.Cells(0)), 11872297917508317833ull);
 
     // Two blocks of different input type in one mesh, so the per-block state
     // of the flat store is not shared across them.
@@ -249,8 +249,8 @@ TEST(Subdivide, ChildLayoutIsPinnedForConvexNonConvexAndMixedInput) {
     both.AddPolyhedronBlock("polyhedron12", std::move(cells));
     const SubdivideResult r_both = subdivide(both);
     ASSERT_EQ(r_both.mMesh.NumCellBlocks(), 2u);
-    EXPECT_EQ(polyhedron_layout_digest(r_both.mMesh.Cells(0)), 0ull);
-    EXPECT_EQ(polyhedron_layout_digest(r_both.mMesh.Cells(1)), 0ull);
+    EXPECT_EQ(polyhedron_layout_digest(r_both.mMesh.Cells(0)), 16330456626393318147ull);
+    EXPECT_EQ(polyhedron_layout_digest(r_both.mMesh.Cells(1)), 13590071917314834573ull);
 }
 
 // --------------------------------------------------------------------------
