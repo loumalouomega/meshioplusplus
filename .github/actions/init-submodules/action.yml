@@ -19,6 +19,10 @@ runs:
       env:
         MIO_SUBMODULE_PATHS: ${{ inputs.paths }}
       run: |
+        # actions/checkout used to add this itself when it did the submodule
+        # step; a job in a container (the manylinux wheels) has a workspace
+        # owned by another user, and git refuses it as "dubious ownership".
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         attempt=1
         while true; do
           # shellcheck disable=SC2086  # the paths are meant to word-split
