@@ -219,6 +219,89 @@ TEST(Agglomerate, TwoAdjacentHexesMergeIntoOnePolyhedronConservingVolumeExactly)
 }
 
 // --------------------------------------------------------------------------
+// The exact ragged layout -- a regression pin for the flat output store
+// --------------------------------------------------------------------------
+
+namespace {
+
+// An nx x ny x nz grid of unit hexahedra, x fastest.
+Mesh hex_grid(std::size_t nx, std::size_t ny, std::size_t nz) {
+    std::vector<std::vector<double>> pts;
+    const auto id = [&](std::size_t i, std::size_t j, std::size_t k) {
+        return static_cast<std::int64_t>((k * (ny + 1) + j) * (nx + 1) + i);
+    };
+    for (std::size_t k = 0; k <= nz; ++k)
+        for (std::size_t j = 0; j <= ny; ++j)
+            for (std::size_t i = 0; i <= nx; ++i)
+                pts.push_back(
+                    {static_cast<double>(i), static_cast<double>(j), static_cast<double>(k)});
+    std::vector<std::vector<std::int64_t>> cells;
+    for (std::size_t k = 0; k < nz; ++k)
+        for (std::size_t j = 0; j < ny; ++j)
+            for (std::size_t i = 0; i < nx; ++i)
+                cells.push_back({id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
+                                 id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
+                                 id(i, j + 1, k + 1)});
+    Mesh m;
+    m.AssignPoints(mt::points_from(pts));
+    m.AddCellBlock("hexahedron", mt::conn_from(cells));
+    return m;
+}
+
+// FNV-1a over a polyhedron block read back through `CellView`: the cell count,
+// then per cell its face count, each face's size and its node ids in order.
+std::uint64_t polyhedron_layout_digest(const Mesh::CellView& rBlock) {
+    std::uint64_t h = 14695981039346656037ull;
+    const auto mix = [&h](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v >> (8 * i)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    };
+    mix(rBlock.NumCells());
+    for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+        mix(rBlock.NumFaces(c));
+        for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
+            const auto face = rBlock.Face(c, f);
+            mix(face.second);
+            for (std::size_t k = 0; k < face.second; ++k)
+                mix(static_cast<std::uint64_t>(face.first[k]));
+        }
+    }
+    return h;
+}
+
+}  // namespace
+
+TEST(Agglomerate, MergedLayoutIsPinnedWithAndWithoutCoplanarFusion) {
+    // Digests taken from the implementation that built a nested vector per
+    // external face, before the merged block moved to one flat node list with
+    // offsets: the two must agree on every cell, face and node, in order,
+    // including the reversed winding of faces the group sees from its far side
+    // and the rings of fused coplanar patches.
+    struct Case {
+        bool mMerge;
+        std::size_t mTarget;
+        std::uint64_t mDigest;
+    };
+    const Case cases[] = {
+        {false, 2, 15994731423313902787ull}, {false, 4, 10708260906522639862ull},
+        {false, 12, 1369574336007378820ull}, {true, 2, 1323374833727562619ull},
+        {true, 4, 18196367985544503846ull},  {true, 12, 18108531758129993186ull},
+    };
+    const Mesh grid = hex_grid(3, 2, 2);
+    for (const Case& c : cases) {
+        AgglomerateOptions o;
+        o.mTargetGroupSize = c.mTarget;
+        o.mMergeCoplanarFaces = c.mMerge;
+        const AgglomerateResult r = agglomerate(grid, o);
+        ASSERT_EQ(r.mMesh.NumCellBlocks(), 1u);
+        EXPECT_EQ(polyhedron_layout_digest(r.mMesh.Cells(0)), c.mDigest)
+            << "merge=" << c.mMerge << " target=" << c.mTarget;
+    }
+}
+
+// --------------------------------------------------------------------------
 // The internal-vs-external filter, the case two cells cannot exercise
 // --------------------------------------------------------------------------
 

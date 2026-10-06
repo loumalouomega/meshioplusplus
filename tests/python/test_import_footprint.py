@@ -14,7 +14,16 @@ import sys
 #   rich -- ~17 ms; only the CLI and the three stderr helpers in _common use it.
 #   xml.sax.saxutils and what it drags in (urllib.request, http.client, ssl)
 #     -- ~12 ms, for one attribute-quoting function in _pvtk_index.
-_ABSENT = ["rich", "xml.sax.saxutils", "urllib.request", "http.client", "ssl"]
+#   meshioplusplus._cli -- ~10 ms; only the command line needs it, and the
+#     package loads it on first attribute access (see test below).
+_ABSENT = [
+    "rich",
+    "xml.sax.saxutils",
+    "urllib.request",
+    "http.client",
+    "ssl",
+    "meshioplusplus._cli",
+]
 
 
 def _imported_after_import(names):
@@ -45,3 +54,41 @@ def test_version_does_not_need_importlib_metadata():
         return
     present = _imported_after_import(["importlib.metadata"])
     assert present["importlib.metadata"] is not True
+
+
+def test_cli_loads_on_first_attribute_access_and_through_star_import():
+    code = (
+        "import sys\n"
+        "import meshioplusplus\n"
+        "assert 'meshioplusplus._cli' not in sys.modules\n"
+        "assert callable(meshioplusplus._cli.main)\n"
+        "assert 'meshioplusplus._cli' in sys.modules\n"
+        "ns = {}\n"
+        "exec('from meshioplusplus import *', ns)\n"
+        "assert ns['_cli'] is meshioplusplus._cli\n"
+        "try:\n"
+        "    meshioplusplus.no_such_attribute\n"
+        "except AttributeError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('missing attribute did not raise')\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)
+
+
+def test_extension_order_does_not_depend_on_the_cli_being_imported_first():
+    # `_cli` used to be imported first and pulled its formats in ahead of the
+    # alphabetical list, which is what put ansys, gmsh, freefem in that order.
+    code = (
+        "import json, meshioplusplus\n"
+        "from meshioplusplus._helpers import extension_to_filetypes as m\n"
+        "print(json.dumps(m['.msh']))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], check=True, capture_output=True, text=True
+    )
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == [
+        "ansys",
+        "gmsh",
+        "freefem",
+    ]

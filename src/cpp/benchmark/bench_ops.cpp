@@ -82,6 +82,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -450,6 +451,20 @@ int main(int argc, char** argv) {
             if (pD)
                 pD->U64(static_cast<std::uint64_t>(r.mNumNodesMoved));
         });
+        // A topology-preserving step feeding a facet reader: both build their own
+        // facet table over the same cells. The row times the chain, so the cost of
+        // building that table twice is visible next to the `smooth_volume` and
+        // `extract_surface` rows it is made of (doc/benchmarks.md, "Pipeline row:
+        // what a shared facet table could save").
+        row("pipeline_smooth_surface", [&](MeshDigest* pD) {
+            mio::PipelineStep smooth_step;
+            smooth_step.mOp = "Smooth";
+            smooth_step.mParams["Iterations"] = std::int64_t{10};
+            mio::PipelineStep surface_step;
+            surface_step.mOp = "ExtractSurface";
+            mio::PipelineReport report;
+            of(pD, mio::run_pipeline_steps(jittered, {smooth_step, surface_step}, report));
+        });
         row("refine", [&](MeshDigest* pD) {
             auto r = mio::refine(volume);
             of(pD, r.mMesh);
@@ -544,6 +559,19 @@ int main(int argc, char** argv) {
         row("simplexify_ragged", [&](MeshDigest* pD) {
             mio::ConvertCellsOptions o;
             o.mMode = mio::ConvertCellsMode::Simplexify;
+            auto r = mio::convert_cells(ragged, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->Array(r.mPointMap);
+                pD->Arrays(r.mCellMaps);
+            }
+        });
+        // Linearize of the same ragged mesh changes nothing in either block, so
+        // both pass through convert_cells' staging: the copy of every polyhedron
+        // and polygon into the block that is emitted.
+        row("linearize_ragged", [&](MeshDigest* pD) {
+            mio::ConvertCellsOptions o;
+            o.mMode = mio::ConvertCellsMode::Linearize;
             auto r = mio::convert_cells(ragged, o);
             of(pD, r.mMesh);
             if (pD) {

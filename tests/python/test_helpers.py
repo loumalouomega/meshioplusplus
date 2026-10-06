@@ -85,6 +85,43 @@ def test_register_and_deregister_format_roundtrip(tmp_path):
         meshioplusplus.read(p)
 
 
+def test_shared_extensions_are_tried_in_the_pinned_order():
+    from meshioplusplus._helpers import _EXTENSION_PRIORITY, extension_to_filetypes
+
+    for ext, order in _EXTENSION_PRIORITY.items():
+        assert extension_to_filetypes[ext] == list(order), ext
+    # A new collision must be given an order on purpose, not left to whichever
+    # module happens to be imported first.
+    unpinned = {
+        ext: fmts
+        for ext, fmts in extension_to_filetypes.items()
+        if len(fmts) > 1 and ext not in _EXTENSION_PRIORITY
+    }
+    assert not unpinned, f"extensions claimed by several formats, unpinned: {unpinned}"
+
+
+def test_register_format_orders_a_shared_extension_by_priority(monkeypatch):
+    from meshioplusplus import _helpers
+
+    monkeypatch.setitem(_helpers._EXTENSION_PRIORITY, ".zzzorder", ("a", "b", "c"))
+    registered = ("c", "x", "a", "y", "b")  # arrival order is deliberately scrambled
+    try:
+        for name in registered:
+            meshioplusplus.register_format(name, [".zzzorder"], None, {})
+        # Pinned names in rank order, then the others in arrival order.
+        assert _helpers.extension_to_filetypes[".zzzorder"] == [
+            "a",
+            "b",
+            "c",
+            "x",
+            "y",
+        ]
+    finally:
+        for name in registered:
+            meshioplusplus.deregister_format(name)
+        _helpers.extension_to_filetypes.pop(".zzzorder", None)
+
+
 def test_filetypes_from_path_multi_suffix():
     # `.msh` is claimed by several formats; a compound suffix still resolves the
     # trailing known extension.

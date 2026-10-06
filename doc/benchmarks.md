@@ -450,7 +450,67 @@ New `meshioplusplus_bench_ops` rows: `subdivide_ragged` (the polyhedron block of
 | 3 | 469.1 ms | 452.8 ms |
 | Mean | 476.7 ms | 440.7 ms (−7.6%) |
 
-The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocate several blocks per face; those are the remaining cost and stay in the roadmap. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
+The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocated several blocks per face; [the next section](#flat-child-faces-in-subdivide) removes those. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
+
+### Flat child faces in `subdivide`
+
+Roadmap §3.2.2. The output loop of `subdivide` built, for every parent face of `m` nodes, a `std::vector<std::vector<std::int64_t>>` of child faces, a `face_nodes` vector for the original face and one three-node vector per apex triangle: `2 + m` heap blocks per child polyhedron. It then moved the nested result into `AddPolyhedronBlock`, whose nested overload counts and flattens it a second time. The staged block now holds the CSR triple `AddPolyhedronBlock` already takes (nodes, row offsets, face offsets), appended to directly, and moves it into the CSR overload. Child order, the order of faces inside a child (the original face, then the apex triangles in ring order) and every node id are unchanged. The change is in a `.cpp` body: installed headers and C++ ABI 23 are unchanged.
+
+The three vectors, and the parent ids, are reserved once per block. A polyhedron input block states every cell's face and node counts, so its totals are summed exactly; a rectangular block repeats one cell shape, so the first cell's counts times the cell count serve as a hint. A parent cell with `F` faces and `S` ring nodes adds `F` children, `F + S` rows and `4S` nodes. No reserve is made per cell, which would defeat the geometric growth of the vectors.
+
+**Determinism.** `subdivide_ragged` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 24 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/subdivide_flat_faces.csv). A regression test, `Subdivide.ChildLayoutIsPinnedForConvexNonConvexAndMixedInput`, pins the exact layout (every child, face and node in order) of a non-convex prism, a wedge, a polyhedron block subdivided a second time and a mixed two-block mesh, with digests taken from the nested-vector implementation. TBB is not installed in the development container, so its leg was skipped.
+
+**SEQ is not slower.** Medians of five runs, one thread unless noted, before and after in separate sweeps on the same machine (the unchanged `read_stl` row is the control):
+
+| Backend | Tier | Before | After |
+| --- | --- | ---: | ---: |
+| SEQ | M (162,000 cells) | 478.8 ms | 247.2 ms (−48%) |
+| SEQ | L (750,000 cells) | 2453.3 ms | 1179.7 ms (−52%) |
+| OpenMP, 1 thread | M | 471.9 ms | 245.6 ms (−48%) |
+| OpenMP, 1 thread | L | 2114.7 ms | 1263.1 ms (−40%) |
+| OpenMP, 4 threads | M | 544.6 ms | 266.0 ms (−51%) |
+| OpenMP, 4 threads | L | 2389.3 ms | 1298.3 ms (−46%) |
+
+`subdivide` is serial in its output loop, so OpenMP at four threads gains nothing over one thread; the gain is the same on every backend. The sweeps were not interleaved, but the change is several times the ±10% the control row moves between sweeps.
+
+### CSR staging in `convert_cells`
+
+Roadmap §3.2.2. `convert_cells` staged every polygon and polyhedron block it passes through unchanged (every ragged block `Linearize`, `Elevate` and `Simplexify` do not convert) as a `std::vector<std::vector<std::int64_t>>` of rows, or a vector of vectors of vectors of faces, a heap block per row and per face, then handed the nested result to `AddPolygonBlock` or `AddPolyhedronBlock`, whose nested overloads count and flatten it again; `Linearize` also remapped every id through the nest. `CcellsOutBlock` now holds the CSR triple those functions take (nodes, row offsets, face offsets), filled straight from the input block with exact reserves (the input states every row and face size), remapped as one flat array, and moved into the CSR overloads. Rows, faces and node ids come out in the same order. The change is in a `.cpp` body: installed headers and C++ ABI 23 are unchanged.
+
+New `meshioplusplus_bench_ops` row: `linearize_ragged` (`Linearize` of the ragged mesh, where both blocks pass through, so the row is the copy and nothing else). A regression test, `ConvertCells.LinearizeRenumbersPolygonAndPolyhedronBlocksThroughThePrune`, pins the renumbering of both ragged blocks when the quadratic block beside them loses its mid-edge nodes, with expectations computed by hand and checked on the old and the new code.
+
+**Determinism.** All 48 rows of `simplexify_ragged`, `linearize_ragged`, `linearize`, `elevate`, `linearize_narrow`, `elevate_narrow`, `agglomerate` and `read_stl` (tiers M and L, SEQ at one thread and OpenMP at 1 and 4) carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/convert_cells_csr.csv). TBB is not installed in the development container, so its leg was skipped.
+
+**Medians of five runs, `linearize_ragged`:**
+
+| Backend | Tier | Before | After |
+| --- | --- | ---: | ---: |
+| SEQ | M (162,000 cells) | 82.0 ms | 16.1 ms (−80%) |
+| SEQ | L (750,000 cells) | 407.5 ms | 95.1 ms (−77%) |
+| OpenMP, 1 thread | L | 444.6 ms | 95.5 ms (−79%) |
+| OpenMP, 4 threads | L | 461.6 ms | 95.0 ms (−79%) |
+
+The other rows that go through `convert_cells` (`simplexify_ragged`, `linearize`, `elevate` and the `_narrow` pair) do not pass a large ragged block through and move within the noise of the unchanged `read_stl` control, which swings by up to ±40% between sweeps on its few-millisecond rows. `simplexify_ragged` is +2% at tier L on SEQ: it converts its polygons rather than copying them.
+
+**A null result: `agglomerate`.** The same staging struct and a nested `merged_cells` of one vector per external face are in `agglomerate.cpp`, and the roadmap listed them with this item. A rewrite to a flat store, with `agg_closed` taking a range of it, gave identical digests and a row of −5% to +2% on SEQ and OpenMP at one thread at tier L (the unchanged code ran −8% to +11% between two sweeps), so the allocations are not where `agglomerate` spends its time (the facet table and the grouping are). It was reverted rather than kept without a measured gain, and the numbers are in the CSV under `agglomerate_rewrite_reverted`. `Agglomerate.MergedLayoutIsPinnedWithAndWithoutCoplanarFusion` stays: it pins the exact layout, including fused coplanar rings and the reversed winding of faces seen from a group's far side, which no test pinned before.
+
+### Pipeline row: what a shared facet table could save
+
+Roadmap §3.3.1.1. A topology-preserving step followed by a step that reads the facets (`Smooth` then `ExtractSurface`) builds a facet table twice over the same cells: `smooth.cpp`'s boundary pass and `surface.cpp` each fill their own records (`SmoothFacetRecord`, `SurfaceFacetRecord`, with different payloads) and group them through `group_facet_slots`. The roadmap asked for a measurement before any layout was changed, so `meshioplusplus_bench_ops` gains the row `pipeline_smooth_surface` (a `Smooth` of ten iterations on the jittered volume, then `ExtractSurface`, through `run_pipeline_steps`). It changes no library code, so installed headers and C++ ABI 23 are unchanged.
+
+**Determinism.** The row's digests agree across SEQ and OpenMP at 1 and 4 threads, tiers M and L ([all 18 rows](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/pipeline_smooth_surface.csv), with the `extract_surface` and `smooth_volume` rows it is made of).
+
+**Medians of three runs, tier L (750,000 cells):**
+
+| Backend | `extract_surface` | `smooth_volume` | `pipeline_smooth_surface` |
+| --- | ---: | ---: | ---: |
+| SEQ | 0.535 s | 12.29 s | 13.13 s |
+| OpenMP, 1 thread | 0.527 s | 11.93 s | 12.49 s |
+| OpenMP, 4 threads | 0.359 s | 3.36 s | 3.70 s |
+
+**Where the time goes.** Temporary `steady_clock` timing around the record fill and the key grouping (not kept) gave, on SEQ at tier L, about 0.50 s of `extract_surface`'s 0.54 s (the table is the operation) and about 0.42 s of `smooth_volume`'s 12.3 s. A cache that spared the second reader its build would save at most about 0.47 s of the chain's 13.1 s on SEQ (3.6%), and at most all of `extract_surface` on four OpenMP threads (0.36 s of 3.70 s, 10%). It matters only when the step before the reader is cheap: with one smoothing iteration in place of ten (a one-off run, SEQ, tier L) the chain took 2.24 s and the table was about 0.46 s of it (20%).
+
+**Conclusion.** The saving is bounded by one table build, a few percent for the default `Smooth` and not more than a fifth at one iteration, and it needs the two operations to share one record structure first (they do not today), plus either a cache on the `Mesh`, which changes the layout `test_abi_layout.cpp` pins on all three backends (Tier A), or a cache owned by the pipeline executor and additive overloads of every reader. That is not worth an ABI bump on this evidence, so the roadmap records it under *Deliberately not*, to be reopened by a workload that chains several facet readers after cheap topology-preserving steps. The row stays, so that workload can be measured.
 
 ### The STL ASCII reader on the text cursor
 
