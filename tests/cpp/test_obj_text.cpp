@@ -310,6 +310,47 @@ TEST(ObjText, AnAttributeLineStopsAtTheFirstNonNumber) {
     EXPECT_EQ(read_double(m.PointData("obj:vn"), 1), 2.0);
 }
 
+TEST(ObjText, AnAttributeLineWithNoNumbersIsAZeroWidthRow) {
+    const mt::Mesh m = obj_read("vn\nvn\nvt\n");
+    ASSERT_TRUE(m.HasPointData("obj:vn"));
+    ASSERT_TRUE(m.HasPointData("obj:vt"));
+    EXPECT_EQ(m.PointData("obj:vn").Shape()[0], 2u);
+    EXPECT_EQ(m.PointData("obj:vn").Shape()[1], 0u);
+    EXPECT_EQ(m.PointData("obj:vt").Shape()[0], 1u);
+    EXPECT_EQ(m.PointData("obj:vt").Shape()[1], 0u);
+}
+
+TEST(ObjText, AnAttributeRowOfAnotherWidthIsRefusedWhereverItSits) {
+    EXPECT_EQ(obj_error("vt 0 0\nvt 1 0\nvt 2\n"),
+              "OBJ: rows of one attribute with different lengths");
+    EXPECT_EQ(obj_error("vn\nvn 1\n"), "OBJ: rows of one attribute with different lengths");
+}
+
+TEST(ObjText, AnInconsistentAttributeIsReportedAfterAFaceFailure) {
+    // The face line is parsed while reading; the attribute check comes after.
+    EXPECT_THROW(obj_read("vt 0 0\nvt 1\nf a\n"), std::invalid_argument);
+}
+
+TEST(ObjText, AnInconsistentTextureIsReportedBeforeAnInconsistentNormal) {
+    EXPECT_EQ(obj_error("vn 1\nvn 1 2\nvt 1\nvt 1 2\n"),
+              "OBJ: rows of one attribute with different lengths");
+}
+
+TEST(ObjText, TagsAreCaseSensitive) {
+    const mt::Mesh m = obj_read("V 1 2 3\nF 1 2 3\nG a\nVN 1 2 3\nv 4 5 6\n");
+    ASSERT_EQ(m.NumPoints(), 1u);
+    EXPECT_EQ(obj_point(m, 0, 0), 4.0);
+    EXPECT_EQ(m.NumCellBlocks(), 0u);
+    EXPECT_FALSE(m.HasPointData("obj:vn"));
+}
+
+TEST(ObjText, ATagOnlyEndsAtABlank) {
+    // `v,1` and `f/1` are tags of their own, not a vertex and a face.
+    const mt::Mesh m = obj_read("v,1 2 3\nf/1 2 3\n");
+    EXPECT_EQ(m.NumPoints(), 0u);
+    EXPECT_EQ(m.NumCellBlocks(), 0u);
+}
+
 TEST(ObjText, RowsOfOneAttributeWithDifferentLengthsAreRefused) {
     EXPECT_EQ(obj_error("vt 0 0\nvt 1 0 0\n"),
               "OBJ: rows of one attribute with different lengths");
