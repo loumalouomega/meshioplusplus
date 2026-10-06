@@ -353,7 +353,7 @@ The first run of this matrix stopped when its background time limit was reached 
 
 ### Dtype-hoisted gradient, diff, refine and convert_cells loops
 
-Roadmap §3.3.2. `gradient`'s per-cell loader (`grad_load_cell`) read each corner's node id, coordinates and field values through `read_int`/`read_double`, and `diff` did the same per element for its array comparison, its cell connectivity and its unordered point correspondence; `refine` and `convert_cells` (`Elevate` and the subdividing modes) wrote each new point and point-data value through `write_double`. Each of those switched on the dtype once per value. Now each array is taken once through the existing `Int64View`/`DoubleView`, and the writes go through `DoubleSink`, a new write-side twin in the core-private `detail/typed_view.hpp`: a hot loop stores into a plain `double*`, and one `Commit()` converts the appended range into the destination with exactly `write_double`'s rounding and saturation. On a float64 destination the sink is the array itself and `Commit()` does nothing. The sink covers only the appended rows, so the copied originals are never round-tripped through `double` (that would corrupt an int64 array's large values). The changes are in `.cpp` bodies and a private header; installed headers and C++ ABI 22 are unchanged. `partition`'s dual-graph map is the only leftover of the roadmap item.
+Roadmap §3.3.2. `gradient`'s per-cell loader (`grad_load_cell`) read each corner's node id, coordinates and field values through `read_int`/`read_double`, and `diff` did the same per element for its array comparison, its cell connectivity and its unordered point correspondence; `refine` and `convert_cells` (`Elevate` and the subdividing modes) wrote each new point and point-data value through `write_double`. Each of those switched on the dtype once per value. Now each array is taken once through the existing `Int64View`/`DoubleView`, and the writes go through `DoubleSink`, a new write-side twin in the core-private `detail/typed_view.hpp`: a hot loop stores into a plain `double*`, and one `Commit()` converts the appended range into the destination with exactly `write_double`'s rounding and saturation. On a float64 destination the sink is the array itself and `Commit()` does nothing. The sink covers only the appended rows, so the copied originals are never round-tripped through `double` (that would corrupt an int64 array's large values). The changes are in `.cpp` bodies and a private header; installed headers and C++ ABI 22 are unchanged. `partition`'s dual-graph map was the only leftover of the roadmap item; it is [flat](#flat-dual-graph-in-partition) now.
 
 New `meshioplusplus_bench_ops` rows give the loops something to measure: `gradient_gg` (Green-Gauss, which runs `grad_load_cell` on every cell; the existing `gradient` row is least squares), `diff` (the cube against its jittered twin), and `*_narrow` rows (`gradient_narrow`, `diff_narrow`, `refine_narrow`, `elevate_narrow`, `linearize_narrow`) that run on the same meshes stored as float32 points and data and int32 connectivity. On canonical float64/int64 input a view is zero-copy, so the gain there is only the removed per-element branch; the narrow rows are where a converted copy is made.
 
@@ -668,6 +668,47 @@ Roadmap §3.4.3. `bindings/python/np_conversions.hpp` converts a `Mesh` on every
 | tiny mesh, 20,000 calls | 0.445 s | 0.410 s |
 
 The tiny-mesh case moves by under 10 percent, within the run-to-run noise (its median ran 0.57 → 0.48 s): each call also pays the Python wrapper in `clean`, which is far larger than the lookups removed. The class cache matters to callers that go straight to a binding in a loop. Reproduce with `python benchmark/bench_boundary.py --repeats 7` on the base and on the changed build.
+
+### Flat dual graph in partition
+
+Roadmap §3.3.1. `partition_dual_graph` (the KaHIP method's input) paired facets through one serial `std::unordered_map` from facet key to first owner, appended each edge to a `std::vector<std::int64_t>` per cell, then sorted and deduplicated those lists. It now groups the facet records with `detail::group_facet_slots` (the sorted-run table that `smooth`, `surface` and `face_mesh` already use): a run's head is the first record in stored order, which is the owner the map kept, and each later record with a different parent adds an owner-parent edge, so a non-manifold facet still connects every later parent to its first owner. The neighbour lists are one flat array (degree count, prefix sum, fill), sorted and deduplicated in place per cell in `parallel_for`, then packed into the CSR the library takes. Each list is sorted before it is packed, so the graph does not depend on fill order. The change is in a `.cpp` body: installed headers and C++ ABI 23 are unchanged. The non-KaHIP path (`partition`'s shared-node ghost layers) is a different neighbour definition and is untouched.
+
+The `partition` row of `meshioplusplus_bench_ops` already runs this path in a KaHIP build (Auto resolves to KaHIP), over the tetrahedral cube into 8 parts.
+
+**Determinism.** The digest of every row equals the pre-change one on SEQ, OpenMP and TBB at 1, 4 and 8 threads, tiers M and L (`BASELINE=` sweep), against a KaHIP v3.25 build.
+
+**SEQ is not slower.** Interleaved, six rounds, tier M (162,000 cells), `OMP_NUM_THREADS=1`:
+
+| Row | Before (median / best) | After (median / best) |
+| --- | ---: | ---: |
+| `partition` | 1.002 / 0.975 s | 0.919 / 0.860 s |
+
+KaHIP's own partitioning dominates the row, so the gain is the graph build alone. The single (not interleaved) OpenMP sweeps read 12 to 15 percent faster at tier M for 1, 4 and 8 threads and 3 to 12 percent at tier L; the TBB sweep is within noise (−10.6 to +1.4 percent), so only the SEQ figure above is claimed.
+
+### Reserved output in agglomerate and interfaces
+
+Roadmap §3.2.2. The four `performance-inefficient-vector-operation` diagnostics left in `agglomerate.cpp` (the `outline` of a planar patch) and `interfaces.cpp` (the `add_i64`, `add_f64` and `measures` lists) now reserve what the code already holds: the patch's directed-edge count (the sum of its face sizes) for the edge list and the outline and heads and ring derived from it, the number of output blocks for the per-type lists and the cell-data array lists, and each block's facet count for its per-facet columns (times the block's width for the connectivity, plus one for a polygon block's offsets). The audit's diagnostics over those three files go from 24 to 20 (Clang-Tidy 18.1.3, the version in the development container; the four cleared are these). No count is read from a file header. Changes are in `.cpp` bodies: installed headers and C++ ABI 23 are unchanged.
+
+`meshioplusplus_bench_ops` gains the rows `region_adjacency` and `find_interface`, which the interface operations lacked, over the tetrahedral cube cut into a lower and an upper Cell region (a planar interface), and their digests include the report.
+
+**Determinism.** The digests of `agglomerate`, `region_adjacency` and `find_interface` equal the pre-change ones on SEQ, OpenMP and TBB at 1, 4 and 8 threads, tiers M and L.
+
+**SEQ is not slower, and not faster.** Interleaved, six rounds, tier M, median (best): `agglomerate` 0.635 (0.581) → 0.633 (0.593) s, `find_interface` 0.488 (0.447) → 0.490 (0.444) s, `region_adjacency` 0.512 (0.437) → 0.472 (0.447) s. The medians move less than the spread between rounds, so these reserves are a clean audit and a tidier allocation pattern, not a measured speedup: the vectors involved are patch- or block-sized.
+
+### Lazy format and operation imports
+
+Roadmap §3.4.2. `import meshioplusplus` used to import all 77 format subpackages, about 130 operation and helper modules and the `_core` extension: 556 modules. Formats register themselves when imported, so the package now carries a generated table of which subpackage registers which format name and extension (`_format_table.py`, written by `tools/gen_format_table.py` and checked by `test_format_table.py`), and `read` and `write` import only the subpackages their path or format name selects. The three registries are read-through: a public read (`reader_map`, `extension_to_filetypes`, `formats()`, or the error message that lists every writer) imports the rest first, so each still shows every format, in the same order for the extensions several formats share. Operations and submodules load through a module `__getattr__` (PEP 562); `__all__` is unchanged, so `from meshioplusplus import *` loads everything. Importing the package now loads 221 modules, none of them `_core`, and numpy is most of what is left.
+
+Wall time, Python 3.12, interleaved old and new in fresh interpreters, 15 each, median (best), `SKBUILD_EDITABLE_SKIP` set:
+
+| | Old | New |
+| --- | ---: | ---: |
+| `import meshioplusplus` | 328 (276) ms | 186 (159) ms |
+| import, then `read` of one PLY file | 299 (271) ms | 196 (168) ms |
+| modules loaded after the import | 556 | 221 |
+| modules loaded after the PLY read | 556 | 232 |
+
+The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The command-line tool and the MCP server import the whole package for their option lists and tool tables, so they gain nothing. `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
 ## Every format
 
