@@ -74,6 +74,7 @@
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
+#include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -730,6 +731,38 @@ int main(int argc, char** argv) {
             of(pD, r.mMesh);
             if (pD)
                 pD->Array(r.mCellMap);
+        });
+        // The tetrahedral cube cut into two Cell regions (the lower and upper
+        // halves of its cell list, a planar interface), for the interface rows.
+        const Mesh with_halves = [&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            const std::size_t half = ncells / 2;
+            for (int side = 0; side < 2; ++side) {
+                mio::Region region;
+                region.mName = side == 0 ? "lower" : "upper";
+                region.mKind = mio::RegionKind::Cell;
+                region.mDim = 3;
+                region.mTag = -1;
+                const std::size_t first = side == 0 ? 0 : half;
+                const std::size_t count = side == 0 ? half : ncells - half;
+                region.mEntries = NDArray::Uninit(DType::Int64, {count});
+                std::int64_t* e = region.mEntries.As<std::int64_t>();
+                for (std::size_t i = 0; i < count; ++i)
+                    e[i] = static_cast<std::int64_t>(first + i);
+                m.AddRegion(std::move(region));
+            }
+            return m;
+        }();
+        row("region_adjacency",
+            [&](MeshDigest* pD) { of(pD, mio::region_adjacency(with_halves)); });
+        row("find_interface", [&](MeshDigest* pD) {
+            auto r = mio::find_interface(with_halves, mio::RegionSelector{"lower"},
+                                         mio::RegionSelector{"upper"});
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mNumPairs));
+                pD->Bytes(&r.mReport.mArea, sizeof r.mReport.mArea);
+            }
         });
         row("split", [&](MeshDigest* pD) {
             auto r = mio::split(doubled, mio::SplitBy::Component);
