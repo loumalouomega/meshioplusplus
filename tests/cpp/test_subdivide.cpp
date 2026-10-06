@@ -172,6 +172,88 @@ TEST(Subdivide, ConvexHexahedronAlsoConservesVolumeAndCountsSixChildren) {
 }
 
 // --------------------------------------------------------------------------
+// The exact ragged layout -- a regression pin for the flat output store
+// --------------------------------------------------------------------------
+
+namespace {
+
+// FNV-1a over a polyhedron block read back through `CellView`: the cell count,
+// then per cell its face count, each face's size and its node ids in order. A
+// change in child order, face order within a child or winding changes it.
+std::uint64_t polyhedron_layout_digest(const Mesh::CellView& rBlock) {
+    std::uint64_t h = 14695981039346656037ull;
+    const auto mix = [&h](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v >> (8 * i)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    };
+    mix(rBlock.NumCells());
+    for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+        mix(rBlock.NumFaces(c));
+        for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
+            const auto face = rBlock.Face(c, f);
+            mix(face.second);
+            for (std::size_t k = 0; k < face.second; ++k)
+                mix(static_cast<std::uint64_t>(face.first[k]));
+        }
+    }
+    return h;
+}
+
+}  // namespace
+
+TEST(Subdivide, ChildLayoutIsPinnedForConvexNonConvexAndMixedInput) {
+    // Digests taken from the implementation that built a nested vector per
+    // child, before the output moved to one flat node list with offsets: the
+    // two must agree on every child, face and node, in order.
+    const SubdivideResult l_prism = subdivide(l_prism_mesh());
+    EXPECT_EQ(polyhedron_layout_digest(l_prism.mMesh.Cells(0)), 0ull);
+
+    const SubdivideResult wedge = subdivide(mt::wedge_mesh());
+    EXPECT_EQ(polyhedron_layout_digest(wedge.mMesh.Cells(0)), 0ull);
+
+    // A polyhedron block read as input, subdivided a second time: children of
+    // children, with the apex ids of both rounds.
+    const SubdivideResult twice = subdivide(l_prism.mMesh);
+    EXPECT_EQ(polyhedron_layout_digest(twice.mMesh.Cells(0)), 0ull);
+
+    // Two blocks of different input type in one mesh, so the per-block state
+    // of the flat store is not shared across them.
+    Mesh mixed = mt::hex_mesh();
+    const Mesh prism = l_prism_mesh();
+    const Mesh::CellView pb = prism.Cells(0);
+    std::vector<std::vector<std::vector<std::int64_t>>> cells(1);
+    for (std::size_t f = 0; f < pb.NumFaces(0); ++f) {
+        const auto face = pb.Face(0, f);
+        cells[0].emplace_back(face.first, face.first + face.second);
+    }
+    for (auto& r_face : cells[0])
+        for (auto& r_id : r_face)
+            r_id += static_cast<std::int64_t>(mixed.NumPoints());
+    NDArray pts = NDArray::Uninit(DType::Float64, {mixed.NumPoints() + prism.NumPoints(), 3});
+    for (std::size_t i = 0; i < mixed.NumPoints() * 3; ++i)
+        pts.As<double>()[i] = meshioplusplus::detail::read_double(mixed.Points(), i);
+    for (std::size_t i = 0; i < prism.NumPoints() * 3; ++i)
+        pts.As<double>()[mixed.NumPoints() * 3 + i] =
+            meshioplusplus::detail::read_double(prism.Points(), i);
+    Mesh both;
+    both.AssignPoints(std::move(pts));
+    {
+        const Mesh::CellView hb = mixed.Cells(0);
+        NDArray conn = NDArray::Uninit(DType::Int64, {hb.NumCells(), hb.NodesPerCell()});
+        for (std::size_t i = 0; i < conn.Size(); ++i)
+            conn.As<std::int64_t>()[i] = meshioplusplus::detail::read_int(hb.Conn(), i);
+        both.AddCellBlock("hexahedron", std::move(conn));
+    }
+    both.AddPolyhedronBlock("polyhedron12", std::move(cells));
+    const SubdivideResult r_both = subdivide(both);
+    ASSERT_EQ(r_both.mMesh.NumCellBlocks(), 2u);
+    EXPECT_EQ(polyhedron_layout_digest(r_both.mMesh.Cells(0)), 0ull);
+    EXPECT_EQ(polyhedron_layout_digest(r_both.mMesh.Cells(1)), 0ull);
+}
+
+// --------------------------------------------------------------------------
 // Mixed-shape children in one coherent output block -- no grouping needed
 // --------------------------------------------------------------------------
 
