@@ -473,6 +473,27 @@ The three vectors, and the parent ids, are reserved once per block. A polyhedron
 
 `subdivide` is serial in its output loop, so OpenMP at four threads gains nothing over one thread; the gain is the same on every backend. The sweeps were not interleaved, but the change is several times the ±10% the control row moves between sweeps.
 
+### CSR staging in `convert_cells`
+
+Roadmap §3.2.2. `convert_cells` staged every polygon and polyhedron block it passes through unchanged (every ragged block `Linearize`, `Elevate` and `Simplexify` do not convert) as a `std::vector<std::vector<std::int64_t>>` of rows, or a vector of vectors of vectors of faces, a heap block per row and per face, then handed the nested result to `AddPolygonBlock` or `AddPolyhedronBlock`, whose nested overloads count and flatten it again; `Linearize` also remapped every id through the nest. `CcellsOutBlock` now holds the CSR triple those functions take (nodes, row offsets, face offsets), filled straight from the input block with exact reserves (the input states every row and face size), remapped as one flat array, and moved into the CSR overloads. Rows, faces and node ids come out in the same order. The change is in a `.cpp` body: installed headers and C++ ABI 23 are unchanged.
+
+New `meshioplusplus_bench_ops` row: `linearize_ragged` (`Linearize` of the ragged mesh, where both blocks pass through, so the row is the copy and nothing else). A regression test, `ConvertCells.LinearizeRenumbersPolygonAndPolyhedronBlocksThroughThePrune`, pins the renumbering of both ragged blocks when the quadratic block beside them loses its mid-edge nodes, with expectations computed by hand and checked on the old and the new code.
+
+**Determinism.** All 48 rows of `simplexify_ragged`, `linearize_ragged`, `linearize`, `elevate`, `linearize_narrow`, `elevate_narrow`, `agglomerate` and `read_stl` (tiers M and L, SEQ at one thread and OpenMP at 1 and 4) carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/convert_cells_csr.csv). TBB is not installed in the development container, so its leg was skipped.
+
+**Medians of five runs, `linearize_ragged`:**
+
+| Backend | Tier | Before | After |
+| --- | --- | ---: | ---: |
+| SEQ | M (162,000 cells) | 82.0 ms | 16.1 ms (−80%) |
+| SEQ | L (750,000 cells) | 407.5 ms | 95.1 ms (−77%) |
+| OpenMP, 1 thread | L | 444.6 ms | 95.5 ms (−79%) |
+| OpenMP, 4 threads | L | 461.6 ms | 95.0 ms (−79%) |
+
+The other rows that go through `convert_cells` (`simplexify_ragged`, `linearize`, `elevate` and the `_narrow` pair) do not pass a large ragged block through and move within the noise of the unchanged `read_stl` control, which swings by up to ±40% between sweeps on its few-millisecond rows. `simplexify_ragged` is +2% at tier L on SEQ: it converts its polygons rather than copying them.
+
+**A null result: `agglomerate`.** The same staging struct and a nested `merged_cells` of one vector per external face are in `agglomerate.cpp`, and the roadmap listed them with this item. A rewrite to a flat store, with `agg_closed` taking a range of it, gave identical digests and a row of −5% to +2% on SEQ and OpenMP at one thread at tier L (the unchanged code ran −8% to +11% between two sweeps), so the allocations are not where `agglomerate` spends its time (the facet table and the grouping are). It was reverted rather than kept without a measured gain, and the numbers are in the CSV under `agglomerate_rewrite_reverted`. `Agglomerate.MergedLayoutIsPinnedWithAndWithoutCoplanarFusion` stays: it pins the exact layout, including fused coplanar rings and the reversed winding of faces seen from a group's far side, which no test pinned before.
+
 ### Pipeline row: what a shared facet table could save
 
 Roadmap §3.3.1.1. A topology-preserving step followed by a step that reads the facets (`Smooth` then `ExtractSurface`) builds a facet table twice over the same cells: `smooth.cpp`'s boundary pass and `surface.cpp` each fill their own records (`SmoothFacetRecord`, `SurfaceFacetRecord`, with different payloads) and group them through `group_facet_slots`. The roadmap asked for a measurement before any layout was changed, so `meshioplusplus_bench_ops` gains the row `pipeline_smooth_surface` (a `Smooth` of ten iterations on the jittered volume, then `ExtractSurface`, through `run_pipeline_steps`). It changes no library code, so installed headers and C++ ABI 23 are unchanged.

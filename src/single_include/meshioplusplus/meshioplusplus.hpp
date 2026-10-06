@@ -141720,13 +141720,17 @@ bool ccells_is_full_lagrange(CellType type) {
 
 // One staged output cell block, in whichever of the three storage shapes the
 // uniform API accepts. Emitted by ccells_emit_block, optionally through a point
-// remap.
+// remap. A ragged block is held in the CSR form AddPolygonBlock and
+// AddPolyhedronBlock take: row `r`'s nodes are
+// `mFlat[mRowOffsets[r] .. mRowOffsets[r + 1])`, and, for a polyhedron block,
+// cell `c`'s faces are rows `mFaceOffsets[c] .. mFaceOffsets[c + 1])`.
 struct CcellsOutBlock {
     std::string mType;
     std::size_t mNodesPerCell = 0;  // rectangular blocks only
     std::vector<std::int64_t> mConn;
-    std::vector<std::vector<std::int64_t>> mPolygonRows;
-    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::int64_t> mRowOffsets;
+    std::vector<std::int64_t> mFaceOffsets;
     bool mIsRagged = false;
     bool mIsPolyhedron = false;
 };
@@ -141738,19 +141742,40 @@ CcellsOutBlock ccells_stage_passthrough(const Mesh::CellView& rBlock) {
     if (rBlock.IsPolyhedron()) {
         out.mIsRagged = true;
         out.mIsPolyhedron = true;
-        out.mPolyhedronCells.resize(rBlock.NumCells());
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+        const std::size_t nc = rBlock.NumCells();
+        std::size_t num_faces = 0, num_nodes = 0;
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::size_t nf = rBlock.NumFaces(c);
+            num_faces += nf;
+            for (std::size_t f = 0; f < nf; ++f)
+                num_nodes += rBlock.Face(c, f).second;
+        }
+        out.mFlat.reserve(num_nodes);
+        out.mRowOffsets.reserve(num_faces + 1);
+        out.mFaceOffsets.reserve(nc + 1);
+        out.mRowOffsets.push_back(0);
+        out.mFaceOffsets.push_back(0);
+        for (std::size_t c = 0; c < nc; ++c) {
             for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
-                auto face = rBlock.Face(c, f);
-                out.mPolyhedronCells[c].emplace_back(face.first, face.first + face.second);
+                const auto face = rBlock.Face(c, f);
+                out.mFlat.insert(out.mFlat.end(), face.first, face.first + face.second);
+                out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mFlat.size()));
             }
+            out.mFaceOffsets.push_back(static_cast<std::int64_t>(out.mRowOffsets.size() - 1));
         }
     } else if (rBlock.IsRagged()) {
         out.mIsRagged = true;
-        out.mPolygonRows.resize(rBlock.NumCells());
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+        const std::size_t nc = rBlock.NumCells();
+        std::size_t num_nodes = 0;
+        for (std::size_t c = 0; c < nc; ++c)
+            num_nodes += rBlock.RowSize(c);
+        out.mFlat.reserve(num_nodes);
+        out.mRowOffsets.reserve(nc + 1);
+        out.mRowOffsets.push_back(0);
+        for (std::size_t c = 0; c < nc; ++c) {
             const std::int64_t* row = rBlock.Row(c);
-            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
+            out.mFlat.insert(out.mFlat.end(), row, row + rBlock.RowSize(c));
+            out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mFlat.size()));
         }
     } else {
         const NDArray& conn = rBlock.Conn();
@@ -141772,19 +141797,16 @@ void ccells_emit_block(Mesh& rOut, CcellsOutBlock& rBlock,
     auto map = [pRemap](std::int64_t id) {
         return pRemap ? (*pRemap)[static_cast<std::size_t>(id)] : id;
     };
-    if (rBlock.mIsPolyhedron) {
+    if (rBlock.mIsRagged) {
         if (pRemap)
-            for (auto& cell : rBlock.mPolyhedronCells)
-                for (auto& face : cell)
-                    for (std::int64_t& id : face)
-                        id = map(id);
-        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mPolyhedronCells));
-    } else if (rBlock.mIsRagged) {
-        if (pRemap)
-            for (auto& row : rBlock.mPolygonRows)
-                for (std::int64_t& id : row)
-                    id = map(id);
-        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
+            for (std::int64_t& id : rBlock.mFlat)
+                id = map(id);
+        if (rBlock.mIsPolyhedron)
+            rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mFlat),
+                                    std::move(rBlock.mRowOffsets), std::move(rBlock.mFaceOffsets));
+        else
+            rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mFlat),
+                                 std::move(rBlock.mRowOffsets));
     } else {
         const std::size_t npc = rBlock.mNodesPerCell;
         const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
@@ -141798,15 +141820,9 @@ void ccells_emit_block(Mesh& rOut, CcellsOutBlock& rBlock,
 // Visit every node id of a staged block (for the "which points survive" scan).
 template <class TFunc>
 void ccells_visit_block_nodes(const CcellsOutBlock& rBlock, TFunc&& rFunc) {
-    if (rBlock.mIsPolyhedron) {
-        for (const auto& cell : rBlock.mPolyhedronCells)
-            for (const auto& face : cell)
-                for (std::int64_t id : face)
-                    rFunc(id);
-    } else if (rBlock.mIsRagged) {
-        for (const auto& row : rBlock.mPolygonRows)
-            for (std::int64_t id : row)
-                rFunc(id);
+    if (rBlock.mIsRagged) {
+        for (std::int64_t id : rBlock.mFlat)
+            rFunc(id);
     } else {
         for (std::int64_t id : rBlock.mConn)
             rFunc(id);

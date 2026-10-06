@@ -112,6 +112,57 @@ TEST(ConvertCells, LinearizeTetra10KeepsCornersAndPrunesMidNodes) {
         EXPECT_EQ(pm[i], -1);
 }
 
+// Ragged blocks pass through `Linearize` unchanged, but their node ids are
+// renumbered when the quadratic block beside them loses its mid-edge nodes.
+TEST(ConvertCells, LinearizeRenumbersPolygonAndPolyhedronBlocksThroughThePrune) {
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {0, 1, 0},
+                                    {0.5, 0, 0},
+                                    {0.5, 0.5, 0},
+                                    {0, 0.5, 0},
+                                    {2, 0, 0},
+                                    {3, 0, 0},
+                                    {2, 1, 0},
+                                    {2, 0, 1}}));
+    // Nodes 3, 4 and 5 are the mid-edge nodes this prunes away.
+    m.AddCellBlock("triangle6", mt::conn_from({{0, 1, 2, 3, 4, 5}}));
+    m.AddPolygonBlock("polygon", {{6, 7, 8}, {6, 8, 9, 7, 6}});
+    m.AddPolyhedronBlock("polyhedron4",
+                         {{{6, 8, 7}, {6, 7, 9}, {7, 8, 9}, {8, 6, 9}}, {{9, 8, 7}, {9, 7, 6}}});
+
+    const ConvertCellsResult r = convert_cells(m, opts(ConvertCellsMode::Linearize));
+    ASSERT_EQ(r.mMesh.NumCellBlocks(), 3u);
+    // Surviving points are 0, 1, 2 and 6..9, renumbered 0..2 and 3..6.
+    ASSERT_EQ(r.mMesh.NumPoints(), 7u);
+
+    const Mesh::CellView poly = r.mMesh.Cells(1);
+    ASSERT_TRUE(poly.IsRagged());
+    ASSERT_EQ(poly.NumCells(), 2u);
+    const std::vector<std::vector<std::int64_t>> want_rows = {{3, 4, 5}, {3, 5, 6, 4, 3}};
+    for (std::size_t c = 0; c < want_rows.size(); ++c) {
+        ASSERT_EQ(poly.RowSize(c), want_rows[c].size()) << c;
+        for (std::size_t k = 0; k < want_rows[c].size(); ++k)
+            EXPECT_EQ(poly.Row(c)[k], want_rows[c][k]) << c << "," << k;
+    }
+
+    const Mesh::CellView hedra = r.mMesh.Cells(2);
+    ASSERT_TRUE(hedra.IsPolyhedron());
+    const std::vector<std::vector<std::vector<std::int64_t>>> want_cells = {
+        {{3, 5, 4}, {3, 4, 6}, {4, 5, 6}, {5, 3, 6}}, {{6, 5, 4}, {6, 4, 3}}};
+    ASSERT_EQ(hedra.NumCells(), want_cells.size());
+    for (std::size_t c = 0; c < want_cells.size(); ++c) {
+        ASSERT_EQ(hedra.NumFaces(c), want_cells[c].size()) << c;
+        for (std::size_t f = 0; f < want_cells[c].size(); ++f) {
+            const auto face = hedra.Face(c, f);
+            ASSERT_EQ(face.second, want_cells[c][f].size()) << c << "," << f;
+            for (std::size_t k = 0; k < face.second; ++k)
+                EXPECT_EQ(face.first[k], want_cells[c][f][k]) << c << "," << f << "," << k;
+        }
+    }
+}
+
 TEST(ConvertCells, LinearizeLeavesLinearCellsAlone) {
     Mesh m = mt::hex_mesh();
     ConvertCellsResult r = convert_cells(m, opts(ConvertCellsMode::Linearize));

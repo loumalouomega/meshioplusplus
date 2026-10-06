@@ -566,6 +566,19 @@ int main(int argc, char** argv) {
                 pD->Arrays(r.mCellMaps);
             }
         });
+        // Linearize of the same ragged mesh changes nothing in either block, so
+        // both pass through convert_cells' staging: the copy of every polyhedron
+        // and polygon into the block that is emitted.
+        row("linearize_ragged", [&](MeshDigest* pD) {
+            mio::ConvertCellsOptions o;
+            o.mMode = mio::ConvertCellsMode::Linearize;
+            auto r = mio::convert_cells(ragged, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->Array(r.mPointMap);
+                pD->Arrays(r.mCellMaps);
+            }
+        });
         // Subdivide of the same ragged mesh: one apex point per polyhedron,
         // whose source-node list is the allocation of roadmap §3.2.2.
         row("subdivide_ragged", [&](MeshDigest* pD) {
