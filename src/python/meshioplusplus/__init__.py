@@ -1,137 +1,8 @@
-from . import (
-    abaqus,
-    abaqus_fil,
-    ansys,
-    ansys_rst,
-    ansysInp,
-    avsucd,
-    cae,
-    cgns,
-    code_aster,
-    dex,
-    dolfin,
-    elmer,
-    ensight,
-    exodus,
-    febio,
-    femap,
-    flac3d,
-    flux,
-    frd,
-    freefem,
-    gid,
-    gltf,
-    gmsh,
-    h5m,
-    hmf,
-    ip,
-    libmesh,
-    lsdyna,
-    lsdyna_binout,
-    lsdyna_d3plot,
-    marc,
-    mdpa,
-    med,
-    medit,
-    mfem,
-    mff,
-    mfm,
-    mphbin,
-    mphtxt,
-    nastran,
-    nastran_h5,
-    nastran_op2,
-    netgen,
-    neuroglancer,
-    obj,
-    off,
-    openfoam,
-    patran,
-    pcd,
-    permas,
-    ply,
-    pmsh,
-    pvd,
-    pvtp,
-    pvtu,
-    radioss,
-    radioss_anim,
-    radioss_th,
-    stl,
-    su2,
-    svg,
-    szplt,
-    tecplot,
-    tetgen,
-    tikz,
-    triangle,
-    ugrid,
-    unv,
-    usd,
-    vti,
-    vtk,
-    vtkhdf,
-    vtm,
-    vtp,
-    vtr,
-    vts,
-    vtu,
-    vtx,
-    wkt,
-    xdmf,
-    xplt,
-    xyz,
-    z88,
-    zarr,
-)
+import importlib
+from typing import TYPE_CHECKING
+
 from .__about__ import __version__
-from ._agglomerate import agglomerate
-from ._blender import from_blender, has_blender, to_blender
-from ._clean import clean
-from ._conservative_interpolate import conservative_interpolate
-from ._convert_cells import convert_cells
-from ._crop import crop
-from ._curvature import compute_curvature
-from ._data_average import cell_data_to_point_data, point_data_to_cell_data
-from ._data_calc import data_calc
-from ._data_condition import data_condition
-from ._data_info import data_info
-from ._data_integrate import data_integrate
-from ._data_manage import data_drop, data_keep, data_manage, data_rename
-from ._dataset import DatasetEntry, DatasetManifest
-from ._decimate import decimate
-from ._decimate_volume import decimate_volume
-from ._diff import diff, meshes_equal
-from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
-from ._feature_edges import feature_edges
-from ._gpu import (
-    from_cupy,
-    has_cuda_device,
-    has_cupy,
-    has_jax,
-    has_torch,
-    to_cupy,
-    to_dlpack,
-    to_jax,
-    to_torch,
-)
-from ._gradient import gradient
-from ._grid import grid
-from ._grid_transfer import (
-    GridArray,
-    GridSpec,
-    PowerSpectrum,
-    expand_grid,
-    interpolate_grid,
-    power_spectrum,
-    resample_grid,
-    sample_grid,
-    scatter_grid,
-    squeeze_grid,
-)
-from ._guard import GeometryGuard, geometry_descriptors
-from ._hausdorff import hausdorff_distance
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -142,89 +13,365 @@ from ._helpers import (
     write,
     write_points_cells,
 )
-from ._hessian import hessian
-from ._interfaces import (
-    contact_pairs,
-    find_interface,
-    region_adjacency,
-    split_interface,
-)
-from ._interop import (
-    from_arrow,
-    from_pyvista,
-    from_trimesh,
-    has_arrow,
-    has_dolfinx,
-    has_open3d,
-    has_pandas,
-    has_polars,
-    has_pyvista,
-    has_trimesh,
-    read_parquet,
-    to_arrow,
-    to_pandas,
-    to_polars,
-    to_pyvista,
-    to_trimesh,
-    write_parquet,
-)
-from ._interpolate import interpolate
-from ._isosurface import isosurface
-from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
-from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
-from ._normals import compute_normals
-from ._optimize_volume import optimize_volume
-from ._partition import partition, partition_labels
-from ._periodic import match_periodic_nodes
-from ._pipeline import run_pipeline
-from ._point_budget import PointBudget, select_points, subsample_points
-from ._proximity import (
-    BistrideHierarchy,
-    bistride_hierarchy,
-    edge_vectors,
-    proximity_graph,
-)
-from ._quality import attach_quality, compute_quality
-from ._quality_gate import check_quality
-from ._refine import refine
-from ._region_ops import edit_regions
 from ._regions import Region
-from ._remesh import remesh
-from ._remesh_volume import remesh_volume
-from ._reorder import compute_bandwidth, reorder
-from ._repair import repair
-from ._sdf import (
-    compute_sdf,
-    distance_to_surface,
-    sample_distance,
-    surface_watertight_check,
-)
-from ._sequence import (
-    TimeSeries,
-    blend_steps,
-    read_sequence,
-    resample_sequence,
-    run_sequence_pipeline,
-    sequence_entries,
-    write_sequence,
-)
-from ._shrinkwrap import shrinkwrap
-from ._skin import extract_skin
-from ._slice import slice
-from ._smooth import smooth
-from ._sniff import sniff_format
-from ._sobolev_deform import sobolev_deform
-from ._split import split
-from ._stats import compute_stats
-from ._subdivide import subdivide
-from ._surface import extract_surface
-from ._tensor_invariants import tensor_invariants
-from ._tessellation import Tessellation, tessellate
-from ._transform import transform
-from ._undo_green import undo_green
-from ._viewer import has_viewer, screenshot, view
-from ._voxelize import voxelize
+
+if TYPE_CHECKING:
+    from . import (
+        abaqus,
+        abaqus_fil,
+        ansys,
+        ansys_rst,
+        ansysInp,
+        avsucd,
+        cae,
+        cgns,
+        code_aster,
+        dex,
+        dolfin,
+        elmer,
+        ensight,
+        exodus,
+        febio,
+        femap,
+        flac3d,
+        flux,
+        frd,
+        freefem,
+        gid,
+        gltf,
+        gmsh,
+        h5m,
+        hmf,
+        ip,
+        libmesh,
+        lsdyna,
+        lsdyna_binout,
+        lsdyna_d3plot,
+        marc,
+        mdpa,
+        med,
+        medit,
+        mfem,
+        mff,
+        mfm,
+        mphbin,
+        mphtxt,
+        nastran,
+        nastran_h5,
+        nastran_op2,
+        netgen,
+        neuroglancer,
+        obj,
+        off,
+        openfoam,
+        patran,
+        pcd,
+        permas,
+        ply,
+        pmsh,
+        pvd,
+        pvtp,
+        pvtu,
+        radioss,
+        radioss_anim,
+        radioss_th,
+        stl,
+        su2,
+        svg,
+        szplt,
+        tecplot,
+        tetgen,
+        tikz,
+        triangle,
+        ugrid,
+        unv,
+        usd,
+        vti,
+        vtk,
+        vtkhdf,
+        vtm,
+        vtp,
+        vtr,
+        vts,
+        vtu,
+        vtx,
+        wkt,
+        xdmf,
+        xplt,
+        xyz,
+        z88,
+        zarr,
+    )
+    from ._agglomerate import agglomerate
+    from ._blender import from_blender, has_blender, to_blender
+    from ._clean import clean
+    from ._conservative_interpolate import conservative_interpolate
+    from ._convert_cells import convert_cells
+    from ._crop import crop
+    from ._curvature import compute_curvature
+    from ._data_average import cell_data_to_point_data, point_data_to_cell_data
+    from ._data_calc import data_calc
+    from ._data_condition import data_condition
+    from ._data_info import data_info
+    from ._data_integrate import data_integrate
+    from ._data_manage import data_drop, data_keep, data_manage, data_rename
+    from ._dataset import DatasetEntry, DatasetManifest
+    from ._decimate import decimate
+    from ._decimate_volume import decimate_volume
+    from ._diff import diff, meshes_equal
+    from ._error import estimate_error
+    from ._feature_edges import feature_edges
+    from ._gpu import (
+        from_cupy,
+        has_cuda_device,
+        has_cupy,
+        has_jax,
+        has_torch,
+        to_cupy,
+        to_dlpack,
+        to_jax,
+        to_torch,
+    )
+    from ._gradient import gradient
+    from ._grid import grid
+    from ._grid_transfer import (
+        GridArray,
+        GridSpec,
+        PowerSpectrum,
+        expand_grid,
+        interpolate_grid,
+        power_spectrum,
+        resample_grid,
+        sample_grid,
+        scatter_grid,
+        squeeze_grid,
+    )
+    from ._guard import GeometryGuard, geometry_descriptors
+    from ._hausdorff import hausdorff_distance
+    from ._hessian import hessian
+    from ._interfaces import (
+        contact_pairs,
+        find_interface,
+        region_adjacency,
+        split_interface,
+    )
+    from ._interop import (
+        from_arrow,
+        from_pyvista,
+        from_trimesh,
+        has_arrow,
+        has_dolfinx,
+        has_open3d,
+        has_pandas,
+        has_polars,
+        has_pyvista,
+        has_trimesh,
+        read_parquet,
+        to_arrow,
+        to_pandas,
+        to_polars,
+        to_pyvista,
+        to_trimesh,
+        write_parquet,
+    )
+    from ._interpolate import interpolate
+    from ._isosurface import isosurface
+    from ._merge import merge
+    from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
+    from ._normals import compute_normals
+    from ._optimize_volume import optimize_volume
+    from ._partition import partition, partition_labels
+    from ._periodic import match_periodic_nodes
+    from ._pipeline import run_pipeline
+    from ._point_budget import PointBudget, select_points, subsample_points
+    from ._proximity import (
+        BistrideHierarchy,
+        bistride_hierarchy,
+        edge_vectors,
+        proximity_graph,
+    )
+    from ._quality import attach_quality, compute_quality
+    from ._quality_gate import check_quality
+    from ._refine import refine
+    from ._region_ops import edit_regions
+    from ._remesh import remesh
+    from ._remesh_volume import remesh_volume
+    from ._reorder import compute_bandwidth, reorder
+    from ._repair import repair
+    from ._sdf import (
+        compute_sdf,
+        distance_to_surface,
+        sample_distance,
+        surface_watertight_check,
+    )
+    from ._sequence import (
+        TimeSeries,
+        blend_steps,
+        read_sequence,
+        resample_sequence,
+        run_sequence_pipeline,
+        sequence_entries,
+        write_sequence,
+    )
+    from ._shrinkwrap import shrinkwrap
+    from ._skin import extract_skin
+    from ._slice import slice
+    from ._smooth import smooth
+    from ._sniff import sniff_format
+    from ._sobolev_deform import sobolev_deform
+    from ._split import split
+    from ._stats import compute_stats
+    from ._subdivide import subdivide
+    from ._surface import extract_surface
+    from ._tensor_invariants import tensor_invariants
+    from ._tessellation import Tessellation, tessellate
+    from ._transform import transform
+    from ._undo_green import undo_green
+    from ._viewer import has_viewer, screenshot, view
+    from ._voxelize import voxelize
+
+# Operations, classes and helpers are loaded on first attribute access (PEP 562)
+# rather than with the package: importing all of them costs more than the three
+# registries and ``read``/``write`` that every user needs. ``name -> module``
+# for every public name that is not imported above; format subpackages and
+# private modules need no entry, ``__getattr__`` imports a submodule of that name.
+_LAZY_ATTRS = {
+    "agglomerate": "_agglomerate",
+    "from_blender": "_blender",
+    "has_blender": "_blender",
+    "to_blender": "_blender",
+    "clean": "_clean",
+    "conservative_interpolate": "_conservative_interpolate",
+    "convert_cells": "_convert_cells",
+    "crop": "_crop",
+    "compute_curvature": "_curvature",
+    "cell_data_to_point_data": "_data_average",
+    "point_data_to_cell_data": "_data_average",
+    "data_calc": "_data_calc",
+    "data_condition": "_data_condition",
+    "data_info": "_data_info",
+    "data_integrate": "_data_integrate",
+    "data_drop": "_data_manage",
+    "data_keep": "_data_manage",
+    "data_manage": "_data_manage",
+    "data_rename": "_data_manage",
+    "DatasetEntry": "_dataset",
+    "DatasetManifest": "_dataset",
+    "decimate": "_decimate",
+    "decimate_volume": "_decimate_volume",
+    "diff": "_diff",
+    "meshes_equal": "_diff",
+    "estimate_error": "_error",
+    "feature_edges": "_feature_edges",
+    "from_cupy": "_gpu",
+    "has_cuda_device": "_gpu",
+    "has_cupy": "_gpu",
+    "has_jax": "_gpu",
+    "has_torch": "_gpu",
+    "to_cupy": "_gpu",
+    "to_dlpack": "_gpu",
+    "to_jax": "_gpu",
+    "to_torch": "_gpu",
+    "gradient": "_gradient",
+    "grid": "_grid",
+    "GridArray": "_grid_transfer",
+    "GridSpec": "_grid_transfer",
+    "PowerSpectrum": "_grid_transfer",
+    "expand_grid": "_grid_transfer",
+    "interpolate_grid": "_grid_transfer",
+    "power_spectrum": "_grid_transfer",
+    "resample_grid": "_grid_transfer",
+    "sample_grid": "_grid_transfer",
+    "scatter_grid": "_grid_transfer",
+    "squeeze_grid": "_grid_transfer",
+    "GeometryGuard": "_guard",
+    "geometry_descriptors": "_guard",
+    "hausdorff_distance": "_hausdorff",
+    "hessian": "_hessian",
+    "contact_pairs": "_interfaces",
+    "find_interface": "_interfaces",
+    "region_adjacency": "_interfaces",
+    "split_interface": "_interfaces",
+    "from_arrow": "_interop",
+    "from_pyvista": "_interop",
+    "from_trimesh": "_interop",
+    "has_arrow": "_interop",
+    "has_dolfinx": "_interop",
+    "has_open3d": "_interop",
+    "has_pandas": "_interop",
+    "has_polars": "_interop",
+    "has_pyvista": "_interop",
+    "has_trimesh": "_interop",
+    "read_parquet": "_interop",
+    "to_arrow": "_interop",
+    "to_pandas": "_interop",
+    "to_polars": "_interop",
+    "to_pyvista": "_interop",
+    "to_trimesh": "_interop",
+    "write_parquet": "_interop",
+    "interpolate": "_interpolate",
+    "isosurface": "_isosurface",
+    "merge": "_merge",
+    "FeatureMatrix": "_ml",
+    "edge_index": "_ml",
+    "feature_matrix": "_ml",
+    "has_zarr": "_ml",
+    "write_dataset": "_ml",
+    "compute_normals": "_normals",
+    "optimize_volume": "_optimize_volume",
+    "partition": "_partition",
+    "partition_labels": "_partition",
+    "match_periodic_nodes": "_periodic",
+    "run_pipeline": "_pipeline",
+    "PointBudget": "_point_budget",
+    "select_points": "_point_budget",
+    "subsample_points": "_point_budget",
+    "BistrideHierarchy": "_proximity",
+    "bistride_hierarchy": "_proximity",
+    "edge_vectors": "_proximity",
+    "proximity_graph": "_proximity",
+    "attach_quality": "_quality",
+    "compute_quality": "_quality",
+    "check_quality": "_quality_gate",
+    "refine": "_refine",
+    "edit_regions": "_region_ops",
+    "remesh": "_remesh",
+    "remesh_volume": "_remesh_volume",
+    "compute_bandwidth": "_reorder",
+    "reorder": "_reorder",
+    "repair": "_repair",
+    "compute_sdf": "_sdf",
+    "distance_to_surface": "_sdf",
+    "sample_distance": "_sdf",
+    "surface_watertight_check": "_sdf",
+    "TimeSeries": "_sequence",
+    "blend_steps": "_sequence",
+    "read_sequence": "_sequence",
+    "resample_sequence": "_sequence",
+    "run_sequence_pipeline": "_sequence",
+    "sequence_entries": "_sequence",
+    "write_sequence": "_sequence",
+    "shrinkwrap": "_shrinkwrap",
+    "extract_skin": "_skin",
+    "slice": "_slice",
+    "smooth": "_smooth",
+    "sniff_format": "_sniff",
+    "sobolev_deform": "_sobolev_deform",
+    "split": "_split",
+    "compute_stats": "_stats",
+    "subdivide": "_subdivide",
+    "extract_surface": "_surface",
+    "tensor_invariants": "_tensor_invariants",
+    "Tessellation": "_tessellation",
+    "tessellate": "_tessellation",
+    "transform": "_transform",
+    "undo_green": "_undo_green",
+    "has_viewer": "_viewer",
+    "screenshot": "_viewer",
+    "view": "_viewer",
+    "voxelize": "_voxelize",
+}
 
 __all__ = [
     "abaqus",
@@ -465,13 +612,24 @@ __all__ = [
 
 
 def __getattr__(name):
-    # ``_cli`` is loaded on first use rather than with the package: it costs
-    # about 10 ms and nothing but the command line needs it. It is still in
-    # ``__all__``, so ``from meshioplusplus import *`` loads it here. The order
-    # in which formats sharing an extension are tried no longer depends on it
-    # being first: see ``_helpers._EXTENSION_PRIORITY``.
-    if name == "_cli":
-        import importlib
-
-        return importlib.import_module("._cli", __name__)
+    # ``from meshioplusplus import *`` reaches every name in ``__all__`` here,
+    # so it still loads everything; the pinned order of formats that share an
+    # extension (``_helpers._EXTENSION_PRIORITY``) does not depend on it.
+    module = _LAZY_ATTRS.get(name)
+    if module is not None:
+        value = getattr(importlib.import_module(f".{module}", __name__), name)
+        globals()[name] = value
+        return value
+    if not name.startswith("__"):
+        # A format subpackage (``meshioplusplus.stl``), ``_cli``, or any other
+        # submodule that was an attribute while the package imported them all.
+        try:
+            return importlib.import_module(f".{name}", __name__)
+        except ModuleNotFoundError as exc:
+            if exc.name != f"{__name__}.{name}":
+                raise
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
