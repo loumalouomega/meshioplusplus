@@ -19,8 +19,10 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - name: Build wheels
         # v2.21's manylinux alias table predates _2_34, and it hardcodes cp38 for its

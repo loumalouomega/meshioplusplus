@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -80,8 +80,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Install native libraries
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f

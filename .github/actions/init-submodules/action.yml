@@ -1,0 +1,37 @@
+name: Initialise submodules
+description: >-
+  `git submodule update --init` with retries. A checkout runs with submodules
+  off and this follows it, because actions/checkout cannot retry a clone and
+  one of the submodules (Eigen) is hosted on GitLab, which now and then answers
+  "unable to handle this request due to load" for a minute or more.
+inputs:
+  paths:
+    description: >-
+      Space-separated submodule paths to initialise. Empty (the default) takes
+      every submodule, recursively.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: git submodule update --init (up to 3 attempts)
+      shell: bash
+      env:
+        MIO_SUBMODULE_PATHS: ${{ inputs.paths }}
+      run: |
+        attempt=1
+        while true; do
+          # shellcheck disable=SC2086  # the paths are meant to word-split
+          if git submodule sync --recursive &&
+             git submodule update --init --recursive --force $MIO_SUBMODULE_PATHS; then
+            exit 0
+          fi
+          if [ "$attempt" -ge 3 ]; then
+            echo "::error::git submodule update failed after $attempt attempts"
+            exit 1
+          fi
+          delay=$((attempt * 30))
+          echo "::warning::git submodule update failed (attempt $attempt); retrying in ${delay}s"
+          sleep "$delay"
+          attempt=$((attempt + 1))
+        done

@@ -66,7 +66,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -233,7 +236,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -288,7 +292,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Install native libraries
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
@@ -548,7 +553,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -659,7 +665,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -744,7 +751,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -886,7 +894,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       # shell: bash explicitly: this job also runs on windows-latest, whose
       # default shell is pwsh, but Git Bash (bundled with Git for Windows) is
       # on PATH there and both of these steps are plain POSIX shell.
@@ -990,7 +1001,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -1232,8 +1246,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - uses: actions/setup-python@v5
         with:
@@ -1321,8 +1337,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - uses: actions/setup-python@v5
         with:
@@ -1360,7 +1376,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       # The tool tests convert binary reference fixtures (.rst, .op2, d3plot),
       # which are Git LFS content: fetched as in the other test jobs.
       - name: Compute the Git LFS cache key
@@ -1411,8 +1430,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - uses: actions/setup-python@v5
         with:
@@ -1641,8 +1662,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - uses: actions/setup-python@v5
         with:
@@ -1693,7 +1716,7 @@ jobs:
   # -- Polyscope pulls in OpenGL, GLFW and X11. Its `ldd` assertion is what
   # proves the flag stayed off there; this job is what proves it works when on.
   #
-  # Note `submodules: recursive`: Polyscope vendors its own (glfw, imgui, glm,
+  # Note the recursive init (`init-submodules`): Polyscope vendors its own (glfw, imgui, glm,
   # ...), and with a plain --init the CMake EXISTS guard silently leaves the
   # viewer out, which would make this job pass while testing nothing.
   # --------------------------------------------------------------------------
@@ -1705,7 +1728,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -1801,7 +1825,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive  # vendored Eigen (MED transpose)
+      # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
@@ -1899,7 +1926,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
