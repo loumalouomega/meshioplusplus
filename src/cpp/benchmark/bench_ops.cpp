@@ -633,6 +633,39 @@ int main(int argc, char** argv) {
         // The registry's STL writer is ASCII, so this times the ASCII reader
         // over a triangle surface (roadmap §3.1.1.1).
         read_row("read_stl", "stl", ".stl", surface);
+        // OBJ over the cube's triangle surface with a normal and a texture
+        // coordinate per point, so the `vn` and `vt` lines are parsed too; the
+        // write row times the same mesh (roadmap §3.1.1.1 keeps an OBJ writer
+        // observation open, and the two rows isolate the read from it).
+        const Mesh obj_surface = [&] {
+            Mesh m = bench_ops_moved(surface, [](std::size_t, double*) {});
+            const std::size_t np = m.NumPoints();
+            const double* p = m.Points().As<double>();
+            NDArray vn = NDArray::Uninit(DType::Float64, {np, std::size_t(3)});
+            NDArray vt = NDArray::Uninit(DType::Float64, {np, std::size_t(2)});
+            for (std::size_t i = 0; i < np; ++i) {
+                for (std::size_t d = 0; d < 3; ++d)
+                    vn.As<double>()[3 * i + d] = 0.5 - p[3 * i + d];
+                vt.As<double>()[2 * i] = p[3 * i];
+                vt.As<double>()[2 * i + 1] = p[3 * i + 1];
+            }
+            m.AddPointData("obj:vn", std::move(vn));
+            m.AddPointData("obj:vt", std::move(vt));
+            return m;
+        }();
+        read_row("read_obj", "obj", ".obj", obj_surface);
+        if (wanted("write_obj")) {
+            const std::filesystem::path dir =
+                std::filesystem::temp_directory_path() / "meshioplusplus_bench_write_obj";
+            std::filesystem::create_directories(dir);
+            const std::string path = (dir / "mesh.obj").string();
+            row("write_obj", [&](MeshDigest* pD) {
+                mio::registry_writers().at("obj")(path, obj_surface);
+                if (pD)
+                    of(pD, mio::registry_read(path, "obj", mio::ReadOptions{}));
+            });
+            std::filesystem::remove_all(dir);
+        }
         // The text-token readers of roadmap §3.1.1.1: TetGen's `.node`/`.ele`
         // pair over the cube with its point field (so an attribute column is
         // parsed too), and Triangle's over a planar lattice of about as many
@@ -646,6 +679,18 @@ int main(int argc, char** argv) {
         // tetrahedral cube with its point field.
         read_row("read_freefem", "freefem", ".msh", with_field);
         read_row("read_ugrid", "ugrid", ".ugrid", with_field);
+        // OpenFOAM's ASCII polyMesh (a `.foam` marker; the case directory is
+        // written beside it) over the tetrahedral cube with its point field.
+        read_row("read_openfoam", "openfoam", ".foam", with_field);
+        // Elmer's text mesh (a directory of `mesh.nodes`, `mesh.elements` and
+        // `mesh.boundary`) over the cube's tetrahedra plus the triangles of its
+        // surface, so a boundary file is parsed too.
+        const Mesh elmer_mesh = [&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            m.AddCellBlock("triangle", surface.Cells(0).Conn());
+            return m;
+        }();
+        read_row("read_elmer", "elmer", ".elmer", elmer_mesh);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);

@@ -1,0 +1,17 @@
+stage,backend,threads,op,cells,median_s,runs,digest
+before,seq,1,read_openfoam,162000,0.287561,7,eeee87fbe3f1dd62
+before,seq,1,read_openfoam,750000,1.528818,7,c5e96c5562575218
+before,openmp,1,read_openfoam,162000,0.298840,7,eeee87fbe3f1dd62
+before,openmp,1,read_openfoam,750000,1.578602,7,c5e96c5562575218
+before,openmp,4,read_openfoam,162000,0.248338,7,eeee87fbe3f1dd62
+before,openmp,4,read_openfoam,750000,1.207375,7,c5e96c5562575218
+before,openmp,8,read_openfoam,162000,0.248552,7,eeee87fbe3f1dd62
+before,openmp,8,read_openfoam,750000,1.179224,7,c5e96c5562575218
+after,seq,1,read_openfoam,162000,0.236124,7,eeee87fbe3f1dd62
+after,seq,1,read_openfoam,750000,1.297928,7,c5e96c5562575218
+after,openmp,1,read_openfoam,162000,0.287285,7,eeee87fbe3f1dd62
+after,openmp,1,read_openfoam,750000,1.256520,7,c5e96c5562575218
+after,openmp,4,read_openfoam,162000,0.186941,7,eeee87fbe3f1dd62
+after,openmp,4,read_openfoam,750000,0.908110,7,c5e96c5562575218
+after,openmp,8,read_openfoam,162000,0.185980,7,eeee87fbe3f1dd62
+after,openmp,8,read_openfoam,750000,0.858813,7,c5e96c5562575218

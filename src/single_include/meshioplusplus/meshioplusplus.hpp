@@ -32758,6 +32758,11 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
  * and prefix-number positioning; `RecordCursor` traverses split records while
  * format adapters retain their comments, quoting and diagnostics. Roadmap §3,
  * "A shared tokenizer and number path".
+ *
+ * A view ends where the file ends, and a mapped file is not guaranteed a
+ * terminating NUL: parse a token with the bounded forms here
+ * (`parse_double_token`, `parse_double_prefix`, `strtoll_token`,
+ * `TextCursor::DoublePrefix`), never `parse_double` over a view.
  */
 
 // System includes
@@ -72207,15 +72212,14 @@ std::optional<ElmId> elm_id(std::string_view Token) {
 // Calls `rOnLine(tokens, line_number)` for every non-blank line of a file.
 template <class F>
 void elm_for_each_line(const fs::path& rFile, F&& rOnLine) {
-    auto in = detail::make_classic_ifstream(rFile.string());
-    if (!in)
-        throw ReadError("Elmer mesh: cannot open " + rFile.string());
-    std::string line;
+    const detail::FileSource source =
+        detail::open_source(rFile.string(), "Elmer mesh: cannot open " + rFile.string());
+    detail::TextCursor cursor(source.View());
     std::vector<std::string_view> tokens;
     std::size_t number = 0;
-    while (std::getline(in, line)) {
+    while (!cursor.AtEnd()) {
         ++number;
-        elm_split(line, tokens);
+        elm_split(cursor.Line(), tokens);
         if (!tokens.empty())
             rOnLine(tokens, number);
     }
@@ -72360,13 +72364,9 @@ void elm_read_nodes(const fs::path& rDir, const std::string& rStem, ElmMesh& rMe
         if (!id)
             elm_fail(file, Line, "bad node id '" + std::string(rTok[0]) + "'");
         double xyz[3];
-        for (std::size_t d = 0; d < 3; ++d) {
-            const std::string text(rTok[2 + d]);
-            const char* end = nullptr;
-            xyz[d] = detail::parse_double(text.c_str(), end);
-            if (end != text.c_str() + text.size())
-                elm_fail(file, Line, "bad coordinate '" + text + "'");
-        }
+        for (std::size_t d = 0; d < 3; ++d)
+            if (!detail::parse_double_token(rTok[2 + d], xyz[d]))
+                elm_fail(file, Line, "bad coordinate '" + std::string(rTok[2 + d]) + "'");
         add(*id, xyz);
     });
 }
@@ -72503,37 +72503,60 @@ void elm_for_each_element_id(const fs::path& rDir, const std::string& rStem, F&&
     });
 }
 
+// Whether @p Text holds @p LowerNeedle (given in lower case) when its ASCII
+// capitals are folded to lower case.
+bool elm_contains_folded(std::string_view Text, std::string_view LowerNeedle) {
+    if (Text.size() < LowerNeedle.size())
+        return false;
+    for (std::size_t at = 0; at + LowerNeedle.size() <= Text.size(); ++at) {
+        std::size_t k = 0;
+        for (; k < LowerNeedle.size(); ++k) {
+            char c = Text[at + k];
+            if (c >= 'A' && c <= 'Z')
+                c = static_cast<char>(c - 'A' + 'a');
+            if (c != LowerNeedle[k])
+                break;
+        }
+        if (k == LowerNeedle.size())
+            return true;
+    }
+    return false;
+}
+
 void elm_read_names(const fs::path& rFile, ElmMesh& rMesh) {
     std::error_code ec;
     if (!fs::is_regular_file(rFile, ec))
         return;
-    auto in = detail::make_classic_ifstream(rFile.string());
-    std::string line;
+    std::optional<detail::FileSource> source;
+    try {
+        source.emplace(rFile.string());
+    } catch (const ReadError&) {
+        return;  // as an unreadable stream gave no lines
+    }
+    detail::TextCursor cursor(source->View());
     bool bodies = true;
-    while (std::getline(in, line)) {
-        std::string lower = line;
-        for (char& c : lower)
-            if (c >= 'A' && c <= 'Z')
-                c = static_cast<char>(c - 'A' + 'a');
+    std::vector<std::string_view> tokens;
+    while (!cursor.AtEnd()) {
+        const std::string_view line = cursor.Line();
         const std::size_t dollar = line.find('$');
-        const std::size_t equals = line.find('=', dollar == std::string::npos ? 0 : dollar);
-        if (dollar == std::string::npos || equals == std::string::npos) {
-            if (lower.find("names for bound") != std::string::npos)
+        const std::size_t equals = line.find('=', dollar == std::string_view::npos ? 0 : dollar);
+        if (dollar == std::string_view::npos || equals == std::string_view::npos) {
+            if (elm_contains_folded(line, "names for bound"))
                 bodies = false;
-            else if (lower.find("names for bod") != std::string::npos)
+            else if (elm_contains_folded(line, "names for bod"))
                 bodies = true;
             continue;
         }
-        std::string name = line.substr(dollar + 1, equals - dollar - 1);
+        std::string_view name = line.substr(dollar + 1, equals - dollar - 1);
         const std::size_t first = name.find_first_not_of(" \t");
         const std::size_t last = name.find_last_not_of(" \t");
-        name = first == std::string::npos ? std::string() : name.substr(first, last - first + 1);
-        std::vector<std::string_view> tokens;
-        elm_split(std::string_view(line).substr(equals + 1), tokens);
+        name = first == std::string_view::npos ? std::string_view()
+                                               : name.substr(first, last - first + 1);
+        elm_split(line.substr(equals + 1), tokens);
         const auto id = tokens.empty() ? std::nullopt : elm_int(tokens[0]);
         if (!id || name.empty())
             continue;
-        (bodies ? rMesh.mBodyNames : rMesh.mBoundaryNames)[*id] = name;
+        (bodies ? rMesh.mBodyNames : rMesh.mBoundaryNames)[*id] = std::string(name);
     }
 }
 
@@ -110932,11 +110955,13 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 // ===== end src/cpp/src/formats/netgen.cpp =====
 // ===== begin src/cpp/src/formats/obj.cpp =====
 #include <array>
-#include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
-#include <sstream>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -110954,6 +110979,24 @@ struct FaceBlock {
     std::size_t mCount = 0;
 };
 
+// The `vn` or `vt` rows of a file, flat. Rows may differ in width while
+// reading; one that does is refused when the array is made.
+struct AttributeRows {
+    std::vector<double> mValues;
+    std::size_t mRows = 0;
+    std::size_t mWidth = 0;
+    bool mUniform = true;
+
+    void AddRow(const double* pValues, std::size_t Count) {
+        if (mRows == 0)
+            mWidth = Count;
+        else if (Count != mWidth)
+            mUniform = false;
+        mValues.insert(mValues.end(), pValues, pValues + Count);
+        ++mRows;
+    }
+};
+
 std::string cell_type_for(std::size_t n) {
     if (n == 3)
         return "triangle";
@@ -110962,69 +111005,104 @@ std::string cell_type_for(std::size_t n) {
     return "polygon";
 }
 
-NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
-    std::size_t n = rRows.size();
-    std::size_t nc = n ? rRows[0].size() : 0;
-    for (const auto& row : rRows)
-        if (row.size() != nc)
-            throw ReadError("OBJ: rows of one attribute with different lengths");
-    NDArray a(DType::Float64, {n, nc});
-    double* p = a.As<double>();
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t j = 0; j < nc; ++j)
-            p[i * nc + j] = rRows[i][j];
+NDArray make_point_data(const AttributeRows& rRows) {
+    if (!rRows.mUniform)
+        throw ReadError("OBJ: rows of one attribute with different lengths");
+    NDArray a(DType::Float64, {rRows.mRows, rRows.mWidth});
+    if (!rRows.mValues.empty())
+        std::memcpy(a.As<double>(), rRows.mValues.data(), rRows.mValues.size() * sizeof(double));
     return a;
+}
+
+// `std::stoll(std::string(Token), nullptr, 10)` over a token that holds no
+// blank: the leading integer, an optional sign included, with whatever follows
+// ignored. Like `stoll`, a token with no digit throws `std::invalid_argument`
+// and a value outside `int64` throws `std::out_of_range`.
+std::int64_t obj_stoll(std::string_view Token) {
+    std::size_t i = 0;
+    bool negative = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        negative = Token[i] == '-';
+        ++i;
+    }
+    if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
+        throw std::invalid_argument("stoll");
+    std::uint64_t magnitude = 0;
+    const auto parsed =
+        std::from_chars(Token.data() + i, Token.data() + Token.size(), magnitude);
+    constexpr auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (parsed.ec == std::errc::result_out_of_range || magnitude > maximum + (negative ? 1u : 0u))
+        throw std::out_of_range("stoll");
+    return negative ? static_cast<std::int64_t>(0 - magnitude)
+                    : static_cast<std::int64_t>(magnitude);
+}
+
+// `v`, `vn` and `vt` carry numbers until the first token that is not one.
+void obj_read_numbers(std::string_view Rest, std::vector<double>& rOut) {
+    detail::TextStream iss(Rest);
+    double x;
+    while (iss >> x)
+        rOut.push_back(x);
 }
 
 }  // namespace
 
 Mesh read_obj(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    detail::TextCursor cursor(source.View());
 
-    std::vector<std::array<double, 3>> points;
-    std::vector<std::vector<double>> vn, vt;
+    std::vector<double> points;  // flat x, y, z
+    AttributeRows vn, vt;
     std::vector<FaceBlock> blocks;
     std::int64_t group_id = -1;
+    std::vector<double> row;
+    std::vector<std::int64_t> dat;
 
-    std::string line;
-    while (std::getline(in, line)) {
-        // strip
+    while (!cursor.AtEnd()) {
+        std::string_view line = cursor.Line();
         std::size_t b = 0, e = line.size();
-        while (b < e && std::isspace(static_cast<unsigned char>(line[b])))
+        while (b < e && detail::text_is_blank(line[b]))
             ++b;
-        while (e > b && std::isspace(static_cast<unsigned char>(line[e - 1])))
+        while (e > b && detail::text_is_blank(line[e - 1]))
             --e;
         if (b == e || line[b] == '#')
             continue;
+        line = line.substr(b, e - b);
 
-        detail::TextStream iss(std::string_view(line).substr(b, e - b));
-        std::string tag;
-        iss >> tag;
+        // The tag is the first blank-separated token; the rest is its payload.
+        std::size_t t = 0;
+        while (t < line.size() && !detail::text_is_blank(line[t]))
+            ++t;
+        const std::string_view tag = line.substr(0, t);
+        const std::string_view rest = line.substr(t);
         if (tag == "v") {
+            // A vertex short of three numbers keeps zeros for the rest, and a
+            // value that does not parse ends the line, as a stream would.
             std::array<double, 3> p{0, 0, 0};
+            detail::TextStream iss(rest);
             iss >> p[0] >> p[1] >> p[2];
-            points.push_back(p);
-        } else if (tag == "vn") {
-            std::vector<double> row;
-            double x;
-            while (iss >> x)
-                row.push_back(x);
-            vn.push_back(row);
-        } else if (tag == "vt") {
-            std::vector<double> row;
-            double x;
-            while (iss >> x)
-                row.push_back(x);
-            vt.push_back(row);
+            points.insert(points.end(), p.begin(), p.end());
+        } else if (tag == "vn" || tag == "vt") {
+            row.clear();
+            obj_read_numbers(rest, row);
+            (tag == "vn" ? vn : vt).AddRow(row.data(), row.size());
         } else if (tag == "f") {
-            std::vector<std::int64_t> dat;
-            std::string item;
-            while (iss >> item) {
-                std::size_t slash = item.find('/');
-                std::string num = (slash == std::string::npos) ? item : item.substr(0, slash);
-                dat.push_back(static_cast<std::int64_t>(std::stoll(num)) - 1);
+            dat.clear();
+            std::size_t i = 0;
+            while (true) {
+                while (i < rest.size() && detail::text_is_blank(rest[i]))
+                    ++i;
+                if (i >= rest.size())
+                    break;
+                const std::size_t first = i;
+                std::size_t slash = std::string_view::npos;
+                while (i < rest.size() && !detail::text_is_blank(rest[i])) {
+                    if (rest[i] == '/' && slash == std::string_view::npos)
+                        slash = i;
+                    ++i;
+                }
+                const std::size_t last = slash == std::string_view::npos ? i : slash;
+                dat.push_back(obj_stoll(rest.substr(first, last - first)) - 1);
             }
             std::size_t sz = dat.size();
             if (blocks.empty() || (blocks.back().mCount > 0 && blocks.back().mSize != sz)) {
@@ -111053,32 +111131,28 @@ Mesh read_obj(const std::string& rPath) {
             nonempty.push_back(std::move(fb));
 
     Mesh mesh;
-    std::size_t np = points.size();
+    std::size_t np = points.size() / 3;
     NDArray pts(DType::Float64, {np, 3});
-    double* pp = pts.As<double>();
-    for (std::size_t i = 0; i < np; ++i)
-        for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = points[i][c];
+    if (!points.empty())
+        std::memcpy(pts.As<double>(), points.data(), points.size() * sizeof(double));
     mesh.AssignPoints(std::move(pts));
 
-    if (!vt.empty())
+    if (vt.mRows > 0)
         mesh.AddPointData("obj:vt", make_point_data(vt));
-    if (!vn.empty())
+    if (vn.mRows > 0)
         mesh.AddPointData("obj:vn", make_point_data(vn));
 
     if (!nonempty.empty()) {
         std::vector<NDArray> gid_blocks;
         for (auto& fb : nonempty) {
             NDArray data(DType::Int64, {fb.mCount, fb.mSize});
-            std::int64_t* dp = data.As<std::int64_t>();
-            for (std::size_t i = 0; i < fb.mIdx.size(); ++i)
-                dp[i] = fb.mIdx[i];
+            if (!fb.mIdx.empty())
+                std::memcpy(data.As<std::int64_t>(), fb.mIdx.data(),
+                            fb.mIdx.size() * sizeof(std::int64_t));
             mesh.AddCellBlock(cell_type_for(fb.mSize), std::move(data));
 
             NDArray g(DType::Int64, {fb.mCount});
-            std::int64_t* gp = g.As<std::int64_t>();
-            for (std::size_t i = 0; i < fb.mCount; ++i)
-                gp[i] = fb.mGids[i];
+            std::memcpy(g.As<std::int64_t>(), fb.mGids.data(), fb.mCount * sizeof(std::int64_t));
             gid_blocks.push_back(std::move(g));
         }
         mesh.AddCellData("obj:group_ids", std::move(gid_blocks));
@@ -111388,46 +111462,53 @@ std::string openfoam_strip(const std::string& rS) {
     return rS.substr(a, b - a + 1);
 }
 
-// Parse the FoamFile header for format/arch (label/scalar byte widths).
-FoamFormat detect_format(const std::string& rPath) {
+// `openfoam_strip` over a view: the same " \t\r\n" set, no copy.
+std::string_view foam_trim(std::string_view S) {
+    const std::size_t a = S.find_first_not_of(" \t\r\n");
+    if (a == std::string_view::npos)
+        return {};
+    const std::size_t b = S.find_last_not_of(" \t\r\n");
+    return S.substr(a, b - a + 1);
+}
+
+// Parse the FoamFile header for format/arch (label/scalar byte widths) from the
+// file's text, which the caller keeps mapped.
+FoamFormat detect_format(std::string_view rRaw) {
     FoamFormat fmt;
-    auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!f)
-        return fmt;
-    std::string line;
-    while (std::getline(f, line)) {
-        std::string s = openfoam_strip(line);
+    detail::TextCursor lines(rRaw);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         // format <word>;
-        std::size_t p = s.find("format");
-        if (p == 0) {
-            std::string rest = openfoam_strip(s.substr(6));
+        if (s.starts_with("format")) {
+            std::string_view rest = foam_trim(s.substr(6));
             if (!rest.empty() && rest.back() == ';')
-                rest.pop_back();
-            rest = openfoam_strip(rest);
+                rest.remove_suffix(1);
+            rest = foam_trim(rest);
             if (rest == "binary")
                 fmt.mBinary = true;
             else if (rest == "ascii")
                 fmt.mBinary = false;
         }
-        if (s.rfind("arch", 0) == 0) {
+        if (s.starts_with("arch")) {
             // OpenFOAM's own arch strings are "LSB;label=32;scalar=64" (the
             // "BSB" spelling is what a big-endian host's files would carry).
             // Binary bytes this reader decodes are always little-endian, so a
             // file naming anything else is refused by name rather than
             // silently misread.
-            if (s.find("BSB") != std::string::npos)
+            if (s.find("BSB") != std::string_view::npos)
                 throw ReadError(
                     "OpenFOAM: big-endian ('BSB') binary files are not supported, only "
                     "little-endian ('LSB')");
-            std::size_t lp = s.find("label=");
+            const std::string arch(s);
+            std::size_t lp = arch.find("label=");
             if (lp != std::string::npos) {
-                int bits = std::atoi(s.c_str() + lp + 6);
+                int bits = std::atoi(arch.c_str() + lp + 6);
                 if (bits)
                     fmt.mLabelBytes = bits / 8;
             }
-            std::size_t sp = s.find("scalar=");
+            std::size_t sp = arch.find("scalar=");
             if (sp != std::string::npos) {
-                int bits = std::atoi(s.c_str() + sp + 7);
+                int bits = std::atoi(arch.c_str() + sp + 7);
                 if (bits)
                     fmt.mScalarBytes = bits / 8;
             }
@@ -111442,12 +111523,19 @@ FoamFormat detect_format(const std::string& rPath) {
 std::string strip_comments_and_header(std::string_view rText) {
     std::string out;
     out.reserve(rText.size());
-    // remove /* */ and //
+    // remove /* */ and //; text between slashes is copied in runs
     for (std::size_t i = 0; i < rText.size();) {
-        if (i + 1 < rText.size() && rText[i] == '/' && rText[i + 1] == '*') {
+        const std::size_t slash = rText.find('/', i);
+        if (slash == std::string_view::npos) {
+            out.append(rText.substr(i));
+            break;
+        }
+        out.append(rText.substr(i, slash - i));
+        i = slash;
+        if (i + 1 < rText.size() && rText[i + 1] == '*') {
             std::size_t e = rText.find("*/", i + 2);
             i = (e == std::string::npos) ? rText.size() : e + 2;
-        } else if (i + 1 < rText.size() && rText[i] == '/' && rText[i + 1] == '/') {
+        } else if (i + 1 < rText.size() && rText[i + 1] == '/') {
             std::size_t e = rText.find('\n', i + 2);
             i = (e == std::string::npos) ? rText.size() : e;
         } else {
@@ -111455,16 +111543,17 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    detail::TextStream ss(out);
-    std::string line, result;
+    detail::TextCursor lines(out);
+    std::string result;
+    result.reserve(out.size() + 1);
     bool in_header = false;
     int depth = 0;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
-        if (s.find("FoamFile") != std::string::npos)
+    while (!lines.AtEnd()) {
+        const std::string_view line = lines.Line();
+        if (line.find("FoamFile") != std::string_view::npos)
             in_header = true;
         if (in_header) {
-            for (char c : s) {
+            for (char c : line) {
                 if (c == '{')
                     ++depth;
                 else if (c == '}')
@@ -111474,7 +111563,7 @@ std::string strip_comments_and_header(std::string_view rText) {
                 in_header = false;
             continue;
         }
-        result += line;
+        result.append(line);
         result.push_back('\n');
     }
     return result;
@@ -111485,7 +111574,7 @@ std::string strip_comments_and_header(std::string_view rText) {
 // The capacity to reserve from a list's count line: the count, capped by what
 // the body could hold at `MinBytes` bytes per entry, so a wrong count only
 // sizes the reservation and never fails a read that succeeded before.
-std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
+std::size_t openfoam_count_hint(std::string_view rCount, std::size_t BodySize,
                                 std::size_t MinBytes) {
     std::uint64_t n = 0;
     const auto r = std::from_chars(rCount.data(), rCount.data() + rCount.size(), n);
@@ -111494,17 +111583,17 @@ std::size_t openfoam_count_hint(const std::string& rCount, std::size_t BodySize,
     return static_cast<std::size_t>(std::min<std::uint64_t>(n, BodySize / MinBytes));
 }
 
-std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
+std::vector<std::array<double, 3>> parse_points_ascii(std::string_view rBody) {
     std::vector<std::array<double, 3>> pts;
-    detail::TextStream ss(rBody);
-    std::string line;
+    detail::TextCursor lines(rBody);
+    std::string t;  // one point's text with its parentheses blanked, reused
     bool in_block = false;
     bool have_n = false;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
-        if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
+        if (!have_n && s.find_first_not_of("0123456789") == std::string_view::npos) {
             have_n = true;
             pts.reserve(openfoam_count_hint(s, rBody.size(), 7));
             continue;
@@ -111517,11 +111606,11 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             break;
         if (in_block) {
             // extract up to 3 numbers from within parentheses
-            std::string t = s;
+            t.assign(s);
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            detail::TextStream ns(t);
+            detail::TextStream ns{std::string_view(t)};
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -111530,16 +111619,15 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
     return pts;
 }
 
-std::vector<Face> parse_faces_ascii(const std::string& rBody) {
+std::vector<Face> parse_faces_ascii(std::string_view rBody) {
     std::vector<Face> faces;
-    detail::TextStream ss(rBody);
-    std::string line;
+    detail::TextCursor lines(rBody);
     bool in_block = false, have_n = false;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
-        if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
+        if (!have_n && s.find_first_not_of("0123456789") == std::string_view::npos) {
             have_n = true;
             faces.reserve(openfoam_count_hint(s, rBody.size(), 8));
             continue;
@@ -111554,10 +111642,9 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             // form: <count>(<ids...>)
             std::size_t lp = s.find('(');
             std::size_t rp = s.find(')', lp);
-            if (lp == std::string::npos || rp == std::string::npos)
+            if (lp == std::string_view::npos || rp == std::string_view::npos)
                 continue;
-            std::string inside = s.substr(lp + 1, rp - lp - 1);
-            detail::TextStream ns(inside);
+            detail::TextStream ns(s.substr(lp + 1, rp - lp - 1));
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -111568,16 +111655,15 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     return faces;
 }
 
-std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
+std::vector<std::int64_t> parse_int_list_ascii(std::string_view rBody) {
     std::vector<std::int64_t> out;
-    detail::TextStream ss(rBody);
-    std::string line;
+    detail::TextCursor lines(rBody);
     bool in_block = false, have_n = false;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
-        if (!have_n && s.find_first_not_of("0123456789") == std::string::npos) {
+        if (!have_n && s.find_first_not_of("0123456789") == std::string_view::npos) {
             have_n = true;
             out.reserve(openfoam_count_hint(s, rBody.size(), 2));
             continue;
@@ -111807,8 +111893,20 @@ T read_le(const char* pP) {
     return v;
 }
 
+/// A binary list of @p Count entries of @p EntryBytes each, starting at
+/// @p Start, must lie inside the file: the count comes from the file's own
+/// text, so a truncated or edited file would otherwise be read past its end.
+void foam_check_binary_extent(std::string_view rRaw, std::size_t Start, std::int64_t Count,
+                              std::size_t EntryBytes, const char* pWhat) {
+    if (Count < 0 || Start > rRaw.size() ||
+        static_cast<std::uint64_t>(Count) > (rRaw.size() - Start) / EntryBytes)
+        throw ReadError(detail::format_compat(
+            "OpenFOAM: binary {} list of {} entries runs past the end of the file", pWhat, Count));
+}
+
 std::vector<std::array<double, 3>> read_binary_points(std::string_view rRaw, int scalar_bytes) {
     auto [n, start] = data_start(rRaw);
+    foam_check_binary_extent(rRaw, start, n, 3 * static_cast<std::size_t>(scalar_bytes), "points");
     std::vector<std::array<double, 3>> pts(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
     for (std::int64_t i = 0; i < n; ++i) {
@@ -111824,6 +111922,7 @@ std::vector<std::array<double, 3>> read_binary_points(std::string_view rRaw, int
 
 std::vector<std::int64_t> read_binary_labels(std::string_view rRaw, int label_bytes) {
     auto [n, start] = data_start(rRaw);
+    foam_check_binary_extent(rRaw, start, n, static_cast<std::size_t>(label_bytes), "label");
     std::vector<std::int64_t> out(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
     for (std::int64_t i = 0; i < n; ++i) {
@@ -111836,6 +111935,7 @@ std::vector<std::int64_t> read_binary_labels(std::string_view rRaw, int label_by
 
 std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
     auto [nfaces, pos] = data_start(rRaw);
+    foam_check_binary_extent(rRaw, pos, nfaces, 1, "faces");
     std::vector<Face> faces(static_cast<std::size_t>(nfaces));
     std::size_t p = pos;
     for (std::int64_t i = 0; i < nfaces; ++i) {
@@ -111844,6 +111944,8 @@ std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
             throw ReadError("OpenFOAM: missing '(' in faces");
         std::int64_t count = std::atoll(std::string(rRaw.substr(p, lp - p)).c_str());
         std::size_t blob = lp + 1;
+        foam_check_binary_extent(rRaw, blob, count, static_cast<std::size_t>(label_bytes),
+                                 "face");
         Face f(static_cast<std::size_t>(count));
         for (std::int64_t j = 0; j < count; ++j) {
             std::size_t off =
@@ -111909,6 +112011,8 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
         if (!found)
             throw ReadError("OpenFOAM: zone '" + name + "' has no count before '('");
 
+        foam_check_binary_extent(rRaw, lparen + 1, count, static_cast<std::size_t>(LabelBytes),
+                                 "zone");
         std::vector<std::int64_t> ids(static_cast<std::size_t>(count));
         const char* base = rRaw.data() + lparen + 1;
         for (std::int64_t i = 0; i < count; ++i) {
@@ -111936,27 +112040,27 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
 // ---- dispatch readers ----
 
 std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
-    FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
         return read_binary_points(raw, fmt.mScalarBytes);
     return parse_points_ascii(strip_comments_and_header(raw));
 }
 
 std::vector<Face> read_faces(const fs::path& rPath) {
-    FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
         return read_binary_faces(raw, fmt.mLabelBytes);
     return parse_faces_ascii(strip_comments_and_header(raw));
 }
 
 std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
-    FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
         return read_binary_labels(raw, fmt.mLabelBytes);
     return parse_int_list_ascii(strip_comments_and_header(raw));
@@ -111983,6 +112087,48 @@ struct RawPolyMesh {
     std::vector<Patch> mBoundary;
 };
 
+/// Refuse a polyMesh whose lists disagree, before anything indexes one list
+/// with another's values: a face naming a point that is not there, an owner or
+/// neighbour list longer than the faces, a negative owner, a cell id the lists
+/// cannot account for, a patch reaching past the last face. A short points
+/// list (one line skipped for having fewer than three numbers, or a list the
+/// parser read nothing from) used to leave the cell reconstruction reading past
+/// the points.
+void foam_check_polymesh(const RawPolyMesh& rRaw) {
+    const std::size_t n_points = rRaw.mPoints.size();
+    const std::size_t n_faces = rRaw.mFaces.size();
+    for (std::size_t f = 0; f < n_faces; ++f)
+        for (const std::int64_t id : rRaw.mFaces[f])
+            if (id < 0 || static_cast<std::uint64_t>(id) >= n_points)
+                throw ReadError(detail::format_compat(
+                    "OpenFOAM: face {} names point {}, but the mesh has {} points", f, id,
+                    n_points));
+    if (rRaw.mOwner.size() > n_faces)
+        throw ReadError(detail::format_compat(
+            "OpenFOAM: owner lists {} faces, but the mesh has {}", rRaw.mOwner.size(), n_faces));
+    if (rRaw.mNeighbour.size() > n_faces)
+        throw ReadError(detail::format_compat("OpenFOAM: neighbour lists {} faces, but the mesh has {}",
+                                              rRaw.mNeighbour.size(), n_faces));
+    const std::uint64_t n_ids = rRaw.mOwner.size() + rRaw.mNeighbour.size();
+    for (std::size_t f = 0; f < rRaw.mOwner.size(); ++f) {
+        const std::int64_t id = rRaw.mOwner[f];
+        if (id < 0 || static_cast<std::uint64_t>(id) >= n_ids)
+            throw ReadError(detail::format_compat("OpenFOAM: face {} has owner {}", f, id));
+    }
+    for (std::size_t f = 0; f < rRaw.mNeighbour.size(); ++f) {
+        const std::int64_t id = rRaw.mNeighbour[f];
+        if (id < -1 || (id >= 0 && static_cast<std::uint64_t>(id) >= n_ids))
+            throw ReadError(detail::format_compat("OpenFOAM: face {} has neighbour {}", f, id));
+    }
+    for (const Patch& patch : rRaw.mBoundary)
+        if (patch.mStartFace < 0 || patch.mNFaces < 0 ||
+            static_cast<std::uint64_t>(patch.mStartFace) + static_cast<std::uint64_t>(patch.mNFaces) >
+                n_faces)
+            throw ReadError(detail::format_compat(
+                "OpenFOAM: patch '{}' covers faces {} to {}, but the mesh has {} faces",
+                patch.mName, patch.mStartFace, patch.mStartFace + patch.mNFaces, n_faces));
+}
+
 RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
     RawPolyMesh raw;
     raw.mPoints = read_points(rPoly / "points");
@@ -111993,6 +112139,7 @@ RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
     if (fs::exists(rPoly / "boundary"))
         raw.mBoundary = parse_boundary(
             strip_comments_and_header(read_whole((rPoly / "boundary").string()).View()));
+    foam_check_polymesh(raw);
     return raw;
 }
 
@@ -112251,17 +112398,16 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 /// buffer rather than a text view.
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
-    detail::TextStream ss(rText);
-    std::string line;
+    detail::TextCursor lines(rText);
     bool have_n = false;
     std::int64_t n = 0;
-    while (getline(ss, line)) {
-        std::string s = openfoam_strip(line);
+    while (!lines.AtEnd()) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
         if (!have_n) {
-            if (s.find_first_not_of("0123456789") == std::string::npos) {
-                n = std::atoll(s.c_str());
+            if (s.find_first_not_of("0123456789") == std::string_view::npos) {
+                n = detail::strtoll_token(s);
                 have_n = true;
             }
             continue;
@@ -112270,18 +112416,21 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             break;
     }
     out.mCount = n;
-    out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
-    for (std::int64_t i = 0; i < n && getline(ss, line);) {
-        std::string s = openfoam_strip(line);
+    out.mFlat.reserve(std::min<std::size_t>(
+        static_cast<std::size_t>(n) * static_cast<std::size_t>(components), rText.size()));
+    std::string t;  // one entry's text with its parentheses blanked, reused
+    for (std::int64_t i = 0; i < n && !lines.AtEnd();) {
+        const std::string_view s = foam_trim(lines.Line());
         if (s.empty())
             continue;
         if (components == 1) {
-            out.mFlat.push_back(detail::parse_double(s));
+            out.mFlat.push_back(detail::parse_double_prefix(s));
         } else {
-            for (char& c : s)
+            t.assign(s);
+            for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            detail::TextStream ls(s);
+            detail::TextStream ls{std::string_view(t)};
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -112302,9 +112451,9 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
  * own data list can introduce a stray `(` (`dimensions` uses `[...]`).
  */
 FoamField foam_read_internal_field(const fs::path& rPath, int components) {
-    const FoamFormat fmt = detect_format(rPath.string());
     const detail::FileSource source = read_whole(rPath.string());
     const std::string_view raw = source.View();
+    const FoamFormat fmt = detect_format(raw);
     const std::size_t kp = raw.find("internalField");
     if (kp == std::string::npos)
         throw ReadError("OpenFOAM: field file has no internalField: " + rPath.string());
@@ -112324,6 +112473,10 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
         return foam_scan_nonuniform_list(raw.substr(p), components);
 
     auto [n, start] = data_start(raw);
+    foam_check_binary_extent(raw, start, n,
+                             static_cast<std::size_t>(components) *
+                                 static_cast<std::size_t>(fmt.mScalarBytes),
+                             "field");
     FoamField out;
     out.mCount = n;
     out.mFlat.resize(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
@@ -112713,16 +112866,15 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
             const fs::path zone_path = poly / pFile;
             if (!fs::exists(zone_path))
                 return zones;
-            const FoamFormat zone_fmt = detect_format(zone_path.string());
+            const detail::FileSource source = read_whole(zone_path.string());
+            const FoamFormat zone_fmt = detect_format(source.View());
             if (zone_fmt.mBinary) {
                 // strip_comments_and_header's comment-removal pass scans the
                 // whole body and is unsafe over raw id bytes -- see
                 // parse_zone_file_binary's own doc comment.
-                const detail::FileSource source = read_whole(zone_path.string());
                 zones = parse_zone_file_binary(source.View(), pKey, zone_fmt.mLabelBytes);
             } else {
-                zones = parse_zone_file(
-                    strip_comments_and_header(read_whole(zone_path.string()).View()), pKey);
+                zones = parse_zone_file(strip_comments_and_header(source.View()), pKey);
             }
             return zones;
         };
@@ -112868,6 +113020,18 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                     continue;
                 }
                 const FoamField values = foam_read_internal_field(field_path, fc.mComponents);
+                const std::size_t ncomp = static_cast<std::size_t>(fc.mComponents);
+                // A value list shorter than its declared count (a line that
+                // gave too few numbers, a truncated file) is refused here, not
+                // read past: the checks below compare the declared count only.
+                if (values.mUniform ? values.mFlat.size() < ncomp
+                                    : values.mFlat.size() !=
+                                          static_cast<std::size_t>(values.mCount) * ncomp) {
+                    log::warn("OpenFOAM: field '{}' holds {} number(s), which does not match its "
+                              "declaration; skipped",
+                              field_name, values.mFlat.size());
+                    continue;
+                }
 
                 if (fc.mIsPoint) {
                     if (!values.mUniform && static_cast<std::size_t>(values.mCount) != npts) {

@@ -1,0 +1,13 @@
+config,tier,round,stage,op,median_s
+seq-1,M,1,before,read_openfoam,0.305119
+seq-1,L,1,before,read_openfoam,1.592926
+seq-1,M,1,after,read_openfoam,0.234561
+seq-1,L,1,after,read_openfoam,1.287169
+seq-1,M,2,before,read_openfoam,0.313688
+seq-1,L,2,before,read_openfoam,1.662732
+seq-1,M,2,after,read_openfoam,0.310431
+seq-1,L,2,after,read_openfoam,1.181463
+seq-1,M,3,before,read_openfoam,0.334122
+seq-1,L,3,before,read_openfoam,1.586518
+seq-1,M,3,after,read_openfoam,0.246979
+seq-1,L,3,after,read_openfoam,1.183348
