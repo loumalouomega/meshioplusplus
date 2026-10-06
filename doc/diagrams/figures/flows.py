@@ -1018,8 +1018,9 @@ def roadmap_map():
                 ("cell encodings · PNG · .txt", "M"),
                 ("field rendering · surfaces", "M"),
                 ("interactive tui · view auto", "L"),
+                ("synthwave theme · music", "S"),
             ],
-            [(0, 1), (1, 2), (2, 3), (3, 4)],
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
         ),
     ]
     per_row = 4
