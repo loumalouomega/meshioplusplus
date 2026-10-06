@@ -14,7 +14,7 @@
 
 import { createRequire } from 'node:module';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const args = process.argv.slice(2);
@@ -30,7 +30,7 @@ if (!dir) {
     process.exit(2);
 }
 
-const req = createRequire(join(process.cwd(), vtkRoot, 'x.js'));
+const req = createRequire(join(resolve(vtkRoot), 'x.js'));
 const readerUrl = pathToFileURL(
     req.resolve('@kitware/vtk.js/IO/XML/XMLPolyDataReader.js'),
 ).href;

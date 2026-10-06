@@ -65,7 +65,9 @@ def surface_mesh(n):
     idx = np.arange((n + 1) * (n + 1)).reshape(n + 1, n + 1)
     a, b = idx[:-1, :-1].ravel(), idx[:-1, 1:].ravel()
     c, d = idx[1:, 1:].ravel(), idx[1:, :-1].ravel()
-    tris = np.concatenate([np.column_stack([a, b, c]), np.column_stack([a, c, d])]).astype(np.int64)
+    tris = np.concatenate(
+        [np.column_stack([a, b, c]), np.column_stack([a, c, d])]
+    ).astype(np.int64)
     nc = len(tris)
     rng = np.random.default_rng(0)
     return Mesh(
@@ -85,27 +87,46 @@ def _payloads(path):
     return [m.group(1).strip() for m in _ARRAY.finditer(text) if m.group(1).strip()]
 
 
-def _decode(payloads, header_size):
-    """Base64-decode every array and split its header; returns the raw pieces."""
+def _b64_len(nbytes):
+    return 4 * ((nbytes + 2) // 3)
+
+
+def _decode(payloads, header_size, compressed):
+    """Base64-decode every array.
+
+    A zlib array is two base64 runs back to back: the block header (three
+    counts, then one compressed size per block) and the concatenated blocks, so
+    the header is decoded first to learn where the second run starts.
+    """
     out = []
+    w = header_size
+    fmt = "<I" if w == 4 else "<Q"
     for p in payloads:
-        raw = base64.b64decode(p)
-        out.append(raw)
+        if not compressed:
+            out.append(base64.b64decode(p))
+            continue
+        head = base64.b64decode(p[: _b64_len(3 * w)])
+        nblocks = struct.unpack_from(fmt, head, 0)[0]
+        hlen = (3 + nblocks) * w
+        header = base64.b64decode(p[: _b64_len(hlen)])
+        out.append((header, base64.b64decode(p[_b64_len(hlen) :])))
     return out
 
 
 def _inflate(raws, header_size):
     """Inflate the blocks of every zlib array (vtk.js's second step)."""
+    w = header_size
+    fmt = "<I" if w == 4 else "<Q"
     total = 0
-    for raw in raws:
-        hdr_t = "<I" if header_size == 4 else "<Q"
-        w = struct.calcsize(hdr_t)
-        nblocks, _bs, _last = struct.unpack_from("<" + hdr_t[1] * 3, raw, 0)
-        sizes = struct.unpack_from("<" + hdr_t[1] * nblocks, raw, 3 * w)
-        pos = (3 + nblocks) * w
-        for s in sizes:
-            total += len(zlib.decompress(raw[pos : pos + s]))
-            pos += s
+    for header, data in raws:
+        nblocks = struct.unpack_from(fmt, header, 0)[0]
+        sizes = [
+            struct.unpack_from(fmt, header, (3 + i) * w)[0] for i in range(nblocks)
+        ]
+        pos = 0
+        for size in sizes:
+            total += len(zlib.decompress(data[pos : pos + size]))
+            pos += size
     return total
 
 
@@ -123,10 +144,12 @@ def measure(n, repeats, outdir):
     rows = []
     for label, kwargs, hsz, compressed in _variants():
         path = Path(outdir) / f"surf_{n}_{label}.vtp"
-        write_min, write_med = _timeit(lambda: pp.vtp.write(path, mesh, **kwargs), repeats)
+        write_min, write_med = _timeit(
+            lambda: pp.vtp.write(path, mesh, **kwargs), repeats
+        )
         payloads = _payloads(path)
-        b64_min, b64_med = _timeit(lambda: _decode(payloads, hsz), repeats)
-        raws = _decode(payloads, hsz)
+        b64_min, b64_med = _timeit(lambda: _decode(payloads, hsz, compressed), repeats)
+        raws = _decode(payloads, hsz, compressed)
         if compressed:
             inf_min, inf_med = _timeit(lambda: _inflate(raws, hsz), repeats)
         else:
@@ -153,7 +176,9 @@ def main(argv=None):
     ap.add_argument("--sizes", default="100,300,700", help="comma-separated grid sides")
     ap.add_argument("--repeats", type=int, default=5)
     ap.add_argument("--csv", help="also write the rows to this CSV file")
-    ap.add_argument("--keep", help="write the VTP files here and keep them (for vtp_inflate.js)")
+    ap.add_argument(
+        "--keep", help="write the VTP files here and keep them (for vtp_inflate.js)"
+    )
     args = ap.parse_args(argv)
 
     rows = []
@@ -166,7 +191,12 @@ def main(argv=None):
     cols = list(rows[0])
     print("  ".join(f"{c:>14}" for c in cols))
     for r in rows:
-        print("  ".join(f"{r[c]:>14.3f}" if isinstance(r[c], float) else f"{r[c]:>14}" for c in cols))
+        print(
+            "  ".join(
+                f"{r[c]:>14.3f}" if isinstance(r[c], float) else f"{r[c]:>14}"
+                for c in cols
+            )
+        )
     if args.csv:
         with open(args.csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols)
