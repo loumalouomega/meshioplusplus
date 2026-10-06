@@ -125890,7 +125890,6 @@ void write_triangle(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/triangle.cpp =====
 // ===== begin src/cpp/src/formats/ugrid.cpp =====
-#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -126189,24 +126188,25 @@ Mesh read_ugrid(const std::string& rPath) {
 
     const bool swap = ft.mBigEndian;  // host little-endian
 
-    auto next_token = [&]() -> std::string {
-        while (tok_pos < buf.size() && std::isspace(static_cast<unsigned char>(buf[tok_pos])))
+    // A view into the mapped file, which outlives every use of it here.
+    auto next_token = [&]() -> std::string_view {
+        while (tok_pos < buf.size() && detail::text_is_blank(buf[tok_pos]))
             ++tok_pos;
         std::size_t s = tok_pos;
-        while (tok_pos < buf.size() && !std::isspace(static_cast<unsigned char>(buf[tok_pos])))
+        while (tok_pos < buf.size() && !detail::text_is_blank(buf[tok_pos]))
             ++tok_pos;
         if (s == tok_pos)
             throw ReadError("UGRID: unexpected end of file");
-        return std::string(buf.substr(s, tok_pos - s));
+        return buf.substr(s, tok_pos - s);
     };
     auto next_int = [&]() -> std::int64_t {
         if (ft.mAscii)
-            return std::strtoll(next_token().c_str(), nullptr, 10);
+            return detail::strtoll_token(next_token());
         return stream_read_int(in, ft.mIntSize, swap);
     };
     auto next_float = [&]() -> double {
         if (ft.mAscii)
-            return detail::parse_double(next_token());
+            return detail::parse_double_prefix(next_token());
         char tmp[8];
         read_exact(in, tmp, static_cast<std::size_t>(ft.mFloatSize));
         if (swap)
