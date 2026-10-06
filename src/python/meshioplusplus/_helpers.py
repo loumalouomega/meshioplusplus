@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import sys
 from pathlib import Path
 from typing import Union
 
@@ -18,13 +20,110 @@ from ._files import (
     is_radioss_th_filename,
     is_z88_filename,
 )
+from ._format_table import ALL_MODULES, EXTENSION_MODULES, FORMAT_MODULES
 from ._mesh import CellBlock, Mesh
 
 _LOG = logging.getLogger("meshioplusplus")
 
-extension_to_filetypes = {}
-reader_map = {}
-_writer_map = {}
+
+def _load_format(module: str) -> None:
+    """Import one format subpackage, which registers its formats (once)."""
+    if f"{__package__}.{module}" not in sys.modules:
+        importlib.import_module(f".{module}", __package__)
+
+
+def _load_all() -> None:
+    """Import every format subpackage in the static table (``_format_table``)."""
+    global _ALL_LOADED
+    if _ALL_LOADED:
+        return
+    for module in ALL_MODULES:
+        _load_format(module)
+    _ALL_LOADED = True
+
+
+_ALL_LOADED = False
+
+
+class _Registry(dict):
+    """A format registry that is complete whenever it is read.
+
+    Format subpackages register themselves when they are imported, and
+    ``import meshioplusplus`` no longer imports them all. Every public read of
+    one of the three registries below therefore imports the rest first, so
+    ``formats()``, a CLI's ``choices`` or a plugin enumerating ``reader_map``
+    sees every format as before. ``read`` and ``write`` do not go through
+    these methods: they load only the format a path or name selects
+    (``_ensure_extension``, ``_ensure_format``) and read the dict directly.
+    Registering and writing are not wrapped, so a format subpackage can fill
+    the registry while it is being loaded.
+    """
+
+    __slots__ = ()
+
+
+def _loading(name: str):
+    method = getattr(dict, name)
+
+    def wrapper(self, *args, **kwargs):
+        _load_all()
+        return method(self, *args, **kwargs)
+
+    wrapper.__name__ = name
+    wrapper.__doc__ = method.__doc__
+    return wrapper
+
+
+for _name in (
+    "__contains__",
+    "__eq__",
+    "__getitem__",
+    "__iter__",
+    "__len__",
+    "__repr__",
+    "copy",
+    "get",
+    "items",
+    "keys",
+    "pop",
+    "values",
+):
+    setattr(_Registry, _name, _loading(_name))
+del _name
+
+# ``__eq__`` without ``__hash__`` is unhashable, as dict itself is.
+_Registry.__hash__ = None  # type: ignore[assignment]
+
+extension_to_filetypes = _Registry()
+reader_map = _Registry()
+_writer_map = _Registry()
+
+
+def _ensure_extension(ext: str) -> None:
+    """Load the format subpackages that register ``ext`` (a dotted, lowercase
+    suffix), so the registry can be read directly afterwards."""
+    for module in EXTENSION_MODULES.get(ext, ()):
+        _load_format(module)
+
+
+def _ensure_format(name: str) -> None:
+    """Load the format subpackage that registers the format or writer ``name``."""
+    module = FORMAT_MODULES.get(name)
+    if module is not None:
+        _load_format(module)
+
+
+def _get_reader(name: str):
+    """The reader registered as ``name``, or ``None``; loads only its format."""
+    _ensure_format(name)
+    return dict.get(reader_map, name)
+
+
+def _get_writer(name: str):
+    """The writer registered as ``name``, or ``None``; loads only its format."""
+    _ensure_format(name)
+    return dict.get(_writer_map, name)
+
 
 # Formats spread across sibling files, which a single in-memory buffer cannot
 # serve. "gid"'s ascii flavour writes a `.post.msh`/`.post.res` pair; its
@@ -95,10 +194,12 @@ _EXTENSION_PRIORITY: dict[str, tuple[str, ...]] = {
 def register_format(
     format_name: str, extensions: list[str], reader, writer_map
 ) -> None:
+    # ``dict`` methods throughout: a registry read through its own methods would
+    # import every format, and this runs while one is being imported.
     for ext in extensions:
-        if ext not in extension_to_filetypes:
+        if not dict.__contains__(extension_to_filetypes, ext):
             extension_to_filetypes[ext] = []
-        names = extension_to_filetypes[ext]
+        names = dict.__getitem__(extension_to_filetypes, ext)
         names.append(format_name)
         order = _EXTENSION_PRIORITY.get(ext)
         if order is not None and len(names) > 1:
@@ -108,7 +209,7 @@ def register_format(
     if reader is not None:
         reader_map[format_name] = reader
 
-    _writer_map.update(writer_map)
+    dict.update(_writer_map, writer_map)
 
 
 def deregister_format(format_name: str):
@@ -138,8 +239,9 @@ def _filetypes_from_path(path: Path) -> list[str]:
         # for any real filename -- prepend and append were indistinguishable
         # until "gid" made a shorter AND a longer suffix both match at once.
         ext = (suffix + ext).lower()
+        _ensure_extension(ext)
         try:
-            out = extension_to_filetypes[ext] + out
+            out = dict.__getitem__(extension_to_filetypes, ext) + out
         except KeyError:
             pass
 
@@ -445,11 +547,12 @@ def _read_buffer(
             f"{file_format} format is spread across multiple files "
             "and so cannot be read from a buffer"
         )
-    if file_format not in reader_map:
+    reader = _get_reader(file_format)
+    if reader is None:
         raise ReadError(f"Unknown file format '{file_format}'")
 
     return _call_reader(
-        reader_map[file_format],
+        reader,
         filename,
         points_only,
         arrays,
@@ -504,12 +607,13 @@ def _read_file(
 
     failures: list[tuple[str, ReadError]] = []
     for file_format in attempts:
-        if file_format not in reader_map:
+        reader = _get_reader(file_format)
+        if reader is None:
             raise ReadError(f"Unknown file format '{file_format}' of '{path}'.")
 
         try:
             return _call_reader(
-                reader_map[file_format],
+                reader,
                 str(path),
                 points_only,
                 arrays,
@@ -593,7 +697,7 @@ def _write_format_for_path(path, mesh=None) -> str:
     the same extension (``marc`` for ``.dat``) never shadows a writer. When no
     candidate is writable the first is returned, and ``write`` names it."""
     candidates = _filetypes_from_path(Path(path))
-    writable = [f for f in candidates if f in _writer_map]
+    writable = [f for f in candidates if _get_writer(f) is not None]
     if not writable:
         return candidates[0]
     default = _WRITE_DEFAULTS.get(Path(path).suffix.lower())
@@ -625,15 +729,14 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
             # deduce the format from the extension, among its writers
             file_format = _write_format_for_path(path, mesh)
 
-    try:
-        writer = _writer_map[file_format]
-    except KeyError:
+    writer = _get_writer(file_format)
+    if writer is None:
         formats = sorted(list(_writer_map.keys()))
         if file_format in reader_map:
             raise WriteError(
                 f"Format '{file_format}' can be read but not written. "
                 f"Pick one of {formats}"
-            ) from None
+            )
         raise WriteError(f"Unknown format '{file_format}'. Pick one of {formats}")
 
     # check cells for sanity

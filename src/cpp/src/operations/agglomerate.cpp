@@ -286,7 +286,11 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         if (!planar)
             continue;
         // The outline: directed edges (wound out of side a) used once.
+        std::size_t num_directed = 0;
+        for (std::size_t f : comp)
+            num_directed += rFaces.FaceSize(f);
         std::vector<std::array<std::int64_t, 2>> dir;
+        dir.reserve(num_directed);
         for (std::size_t f : comp) {
             const std::size_t n = rFaces.FaceSize(f);
             const std::int64_t* ring = rFaces.Face(f);
@@ -302,6 +306,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         std::vector<std::array<std::int64_t, 2>> sorted = dir;
         std::sort(sorted.begin(), sorted.end());
         std::vector<std::array<std::int64_t, 2>> outline;
+        outline.reserve(dir.size());
         for (const auto& e : dir)
             if (!std::binary_search(sorted.begin(), sorted.end(),
                                     std::array<std::int64_t, 2>{e[1], e[0]}))
@@ -312,6 +317,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         for (std::size_t k = 1; simple && k < outline.size(); ++k)
             simple = outline[k][0] != outline[k - 1][0];
         std::vector<std::int64_t> heads;
+        heads.reserve(outline.size());
         for (const auto& e : outline)
             heads.push_back(e[1]);
         std::sort(heads.begin(), heads.end());
@@ -319,6 +325,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
             simple = heads[k] != heads[k - 1];
         std::vector<std::int64_t> ring;
         if (simple) {
+            ring.reserve(outline.size());
             std::int64_t at = outline.front()[0];
             for (std::size_t steps = 0; steps < outline.size(); ++steps) {
                 ring.push_back(at);

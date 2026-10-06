@@ -38,7 +38,9 @@ jobs:
         # build can use (the MED Fortran<->C transpose, now that MED is built
         # here), and a blanket checkout would also pull the Polyscope viewer,
         # which the wasm target must never see.
-        run: git submodule update --init src/cpp/third_party/eigen
+        uses: ./.github/actions/init-submodules
+        with:
+          paths: src/cpp/third_party/eigen
 
       - name: Set up Emscripten
         uses: mymindstorm/setup-emsdk@v14

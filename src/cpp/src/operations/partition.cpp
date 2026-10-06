@@ -48,7 +48,6 @@
 // System includes (KaHIP dual-graph path only)
 #include <array>
 #include <functional>
-#include <unordered_map>
 // External includes
 #include <kaHIP_interface.h>  // IWYU pragma: keep
 // Project includes (KaHIP dual-graph path only)
@@ -56,6 +55,7 @@
 #include "meshioplusplus/detail/cell_edges.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
+#include "../detail/slot_runs.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -426,35 +426,62 @@ PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
         });
     }
 
-    // Phase 2: serial first-parent pairing (deterministic). Occurrences beyond
-    // the second (a non-manifold facet) all connect to the first owner.
-    std::unordered_map<PartitionFacetKey, std::int64_t, PartitionFacetKeyHash> first_owner;
-    first_owner.reserve(total_facets * 2);
-    std::vector<std::vector<std::int64_t>> adj(total);
-    for (const PartitionFacetRecord& r : recs) {
-        auto it = first_owner.find(r.mKey);
-        if (it == first_owner.end()) {
-            first_owner.emplace(r.mKey, r.mParent);
-        } else if (it->second != r.mParent) {
-            adj[static_cast<std::size_t>(it->second)].push_back(r.mParent);
-            adj[static_cast<std::size_t>(r.mParent)].push_back(it->second);
+    // Phase 2: group the records by facet key (sorted runs, detail/slot_runs.hpp).
+    // A run's head is its first record in stored order, the owner a first-seen
+    // map would keep; every later record whose parent differs from the owner
+    // adds an owner<->parent edge, so the occurrences of a non-manifold facet
+    // beyond the second all connect to the first owner.
+    const detail::SlotRuns runs = detail::group_facet_slots(
+        recs, [](const PartitionFacetRecord& rR) -> const PartitionFacetKey& { return rR.mKey; },
+        rMesh.NumPoints());
+    const std::size_t num_runs = runs.NumRuns();
+
+    // Flat adjacency with duplicates: degree count, prefix sum, fill (both serial
+    // over the runs, plain integer work, so the lists do not depend on a backend).
+    std::vector<std::int64_t> dup_start(total + 1, 0);
+    for (std::size_t r = 0; r < num_runs; ++r) {
+        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            const std::int64_t parent = recs[*p].mParent;
+            if (parent != owner) {
+                ++dup_start[static_cast<std::size_t>(owner) + 1];
+                ++dup_start[static_cast<std::size_t>(parent) + 1];
+            }
+        }
+    }
+    for (std::size_t i = 0; i < total; ++i)
+        dup_start[i + 1] += dup_start[i];
+    std::vector<std::int64_t> dup(static_cast<std::size_t>(dup_start[total]));
+    std::vector<std::int64_t> cursor(dup_start.begin(), dup_start.end() - 1);
+    for (std::size_t r = 0; r < num_runs; ++r) {
+        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
+            const std::int64_t parent = recs[*p].mParent;
+            if (parent != owner) {
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = parent;
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(parent)]++)] = owner;
+            }
         }
     }
 
-    // Dedupe neighbour lists (cells can share more than one facet) and pack CSR.
+    // Dedupe neighbour lists (cells can share more than one facet) in place and
+    // pack CSR. Sorting makes each list independent of the order it was filled in.
+    std::vector<std::int64_t> kept(total);
     parallel_for(total, [&](std::size_t i) {
-        std::vector<std::int64_t>& a = adj[i];
-        std::sort(a.begin(), a.end());
-        a.erase(std::unique(a.begin(), a.end()), a.end());
+        auto first = dup.begin() + dup_start[i];
+        auto last = dup.begin() + dup_start[i + 1];
+        std::sort(first, last);
+        kept[i] = static_cast<std::int64_t>(std::unique(first, last) - first);
     });
     PartitionCsr csr;
     csr.mXadj.resize(total + 1);
     csr.mXadj[0] = 0;
     for (std::size_t i = 0; i < total; ++i)
-        csr.mXadj[i + 1] = csr.mXadj[i] + static_cast<std::int64_t>(adj[i].size());
+        csr.mXadj[i + 1] = csr.mXadj[i] + kept[i];
     csr.mAdjncy.reserve(static_cast<std::size_t>(csr.mXadj[total]));
     for (std::size_t i = 0; i < total; ++i)
-        csr.mAdjncy.insert(csr.mAdjncy.end(), adj[i].begin(), adj[i].end());
+        csr.mAdjncy.insert(csr.mAdjncy.end(), dup.begin() + dup_start[i],
+                           dup.begin() + dup_start[i] + kept[i]);
     return csr;
 }
 

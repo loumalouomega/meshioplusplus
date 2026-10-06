@@ -69,8 +69,10 @@ jobs:
     container: quay.io/pypa/manylinux_2_34_x86_64
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive # vendored Eigen (unused: MED needs HDF5, OFF here) + nlohmann/json (pipeline verb)
+      # Submodules: vendored Eigen (unused: MED needs HDF5, OFF here) + nlohmann/json (pipeline verb). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - name: Install toolchain
         run: yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ cmake make
@@ -127,8 +129,10 @@ jobs:
     container: quay.io/pypa/manylinux_2_34_aarch64
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive # vendored Eigen (unused: MED needs HDF5, OFF here) + nlohmann/json (pipeline verb)
+      # Submodules: vendored Eigen (unused: MED needs HDF5, OFF here) + nlohmann/json (pipeline verb). Fetched with retries, because GitLab (Eigen)
+      # has failed whole runs by answering "unable to handle this request due to load".
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - name: Install toolchain
         run: yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ cmake make
@@ -183,8 +187,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - name: Configure
         run: |
@@ -232,8 +236,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
 
       - name: Configure
         shell: bash

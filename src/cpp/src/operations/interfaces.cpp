@@ -526,6 +526,11 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
     std::vector<std::vector<std::int64_t>> parent_cells, parent_facets, partner_cells,
         partner_facets;
     std::vector<std::vector<double>> gaps, measures;
+    // At most one block per facet type.
+    for (auto* pList : {&parent_cells, &parent_facets, &partner_cells, &partner_facets})
+        pList->reserve(blocks.size());
+    gaps.reserve(blocks.size());
+    measures.reserve(blocks.size());
     for (const std::string& type : order) {
         const auto it = blocks.find(type);
         if (it == blocks.end())
@@ -534,6 +539,12 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
         std::vector<std::int64_t> conn, pc, pf, qc, qf;
         std::vector<double> gap, measure;
         const std::size_t width = cells.front().mNodes.size();
+        for (auto* pList : {&pc, &pf, &qc, &qf})
+            pList->reserve(cells.size());
+        gap.reserve(cells.size());
+        measure.reserve(cells.size());
+        if (type != "polygon")
+            conn.reserve(cells.size() * width);
         for (const IfOutputFacet& facet : cells) {
             if (type == "polygon")
                 continue;
@@ -547,6 +558,7 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
         }
         if (type == "polygon") {
             std::vector<std::int64_t> flat, offsets{0};
+            offsets.reserve(cells.size() + 1);
             for (const IfOutputFacet& facet : cells) {
                 flat.insert(flat.end(), facet.mNodes.begin(), facet.mNodes.end());
                 offsets.push_back(static_cast<std::int64_t>(flat.size()));
@@ -574,12 +586,14 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
         auto add_i64 = [&](const char* pName,
                            const std::vector<std::vector<std::int64_t>>& rValues) {
             std::vector<NDArray> arrays;
+            arrays.reserve(rValues.size());
             for (const auto& values : rValues)
                 arrays.push_back(ra_int_array(values));
             out.AddCellData(pName, std::move(arrays));
         };
         auto add_f64 = [&](const char* pName, const std::vector<std::vector<double>>& rValues) {
             std::vector<NDArray> arrays;
+            arrays.reserve(rValues.size());
             for (const auto& values : rValues)
                 arrays.push_back(ra_double_array(values));
             out.AddCellData(pName, std::move(arrays));
@@ -799,6 +813,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
     add_int_data("interface:parent_facet_b", facet_b_blocks);
     add_int_data("interface:shared_count", shared_blocks);
     std::vector<NDArray> measures;
+    measures.reserve(measure_blocks.size());
     for (const auto& block : measure_blocks)
         measures.push_back(ra_double_array(block));
     out.AddCellData("interface:measure", std::move(measures));

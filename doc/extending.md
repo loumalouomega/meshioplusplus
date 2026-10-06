@@ -68,7 +68,7 @@ Follow the existing module layout under `src/python/meshioplusplus/`:
    register_format("myformat", [".myfmt"], read, {"myformat": write})
    ```
 
-6. **Import the module in `src/python/meshioplusplus/__init__.py`** — add it to both the import list and `__all__`.
+6. **Name the module in `src/python/meshioplusplus/__init__.py`** — add it to `__all__` and to the `TYPE_CHECKING` import list. The package does not import format modules itself: `read` and `write` load the one a path or format name needs from a generated table, so run `python tools/gen_format_table.py` to add the new format to `src/python/meshioplusplus/_format_table.py` (`tests/python/test_format_table.py` fails until you do).
 
 7. **Add `tests/python/test_<format>.py`** using `helpers.write_read`:
 
