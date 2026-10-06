@@ -74,13 +74,36 @@ def formats() -> dict:
     }
 
 
+# The order in which the formats sharing an extension are tried, for the six
+# extensions more than one format claims. It used to be an accident of import
+# order (``_cli`` came first in the package's ``from . import (...)`` and pulled
+# its formats in ahead of the alphabetical list), which is what kept ``.msh`` at
+# ansys, gmsh, freefem: Gmsh files are by far the commonest, so they must not
+# first be handed to FreeFEM. Pinned here so no import order can change it;
+# ``register_format`` inserts by this rank, and a format not named here (a
+# third-party one) goes after those that are, in the order it registered.
+_EXTENSION_PRIORITY: dict[str, tuple[str, ...]] = {
+    ".dat": ("marc", "tecplot"),
+    ".ele": ("tetgen", "triangle"),
+    ".inp": ("abaqus", "ansysInp"),
+    ".mesh": ("medit", "mfem"),
+    ".msh": ("ansys", "gmsh", "freefem"),
+    ".node": ("tetgen", "triangle"),
+}
+
+
 def register_format(
     format_name: str, extensions: list[str], reader, writer_map
 ) -> None:
     for ext in extensions:
         if ext not in extension_to_filetypes:
             extension_to_filetypes[ext] = []
-        extension_to_filetypes[ext].append(format_name)
+        names = extension_to_filetypes[ext]
+        names.append(format_name)
+        order = _EXTENSION_PRIORITY.get(ext)
+        if order is not None and len(names) > 1:
+            # Stable, so formats outside the pin keep their arrival order.
+            names.sort(key=lambda n: order.index(n) if n in order else len(order))
 
     if reader is not None:
         reader_map[format_name] = reader

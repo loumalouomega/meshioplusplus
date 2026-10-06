@@ -1,5 +1,4 @@
 from . import (
-    _cli,
     abaqus,
     abaqus_fil,
     ansys,
@@ -463,3 +462,16 @@ __all__ = [
     "topological_dimension",
     "__version__",
 ]
+
+
+def __getattr__(name):
+    # ``_cli`` is loaded on first use rather than with the package: it costs
+    # about 10 ms and nothing but the command line needs it. It is still in
+    # ``__all__``, so ``from meshioplusplus import *`` loads it here. The order
+    # in which formats sharing an extension are tried no longer depends on it
+    # being first: see ``_helpers._EXTENSION_PRIORITY``.
+    if name == "_cli":
+        import importlib
+
+        return importlib.import_module("._cli", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
