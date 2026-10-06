@@ -111858,8 +111858,20 @@ T read_le(const char* pP) {
     return v;
 }
 
+/// A binary list of @p Count entries of @p EntryBytes each, starting at
+/// @p Start, must lie inside the file: the count comes from the file's own
+/// text, so a truncated or edited file would otherwise be read past its end.
+void foam_check_binary_extent(std::string_view rRaw, std::size_t Start, std::int64_t Count,
+                              std::size_t EntryBytes, const char* pWhat) {
+    if (Count < 0 || Start > rRaw.size() ||
+        static_cast<std::uint64_t>(Count) > (rRaw.size() - Start) / EntryBytes)
+        throw ReadError(detail::format_compat(
+            "OpenFOAM: binary {} list of {} entries runs past the end of the file", pWhat, Count));
+}
+
 std::vector<std::array<double, 3>> read_binary_points(std::string_view rRaw, int scalar_bytes) {
     auto [n, start] = data_start(rRaw);
+    foam_check_binary_extent(rRaw, start, n, 3 * static_cast<std::size_t>(scalar_bytes), "points");
     std::vector<std::array<double, 3>> pts(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
     for (std::int64_t i = 0; i < n; ++i) {
@@ -111875,6 +111887,7 @@ std::vector<std::array<double, 3>> read_binary_points(std::string_view rRaw, int
 
 std::vector<std::int64_t> read_binary_labels(std::string_view rRaw, int label_bytes) {
     auto [n, start] = data_start(rRaw);
+    foam_check_binary_extent(rRaw, start, n, static_cast<std::size_t>(label_bytes), "label");
     std::vector<std::int64_t> out(static_cast<std::size_t>(n));
     const char* base = rRaw.data() + start;
     for (std::int64_t i = 0; i < n; ++i) {
@@ -111887,6 +111900,7 @@ std::vector<std::int64_t> read_binary_labels(std::string_view rRaw, int label_by
 
 std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
     auto [nfaces, pos] = data_start(rRaw);
+    foam_check_binary_extent(rRaw, pos, nfaces, 1, "faces");
     std::vector<Face> faces(static_cast<std::size_t>(nfaces));
     std::size_t p = pos;
     for (std::int64_t i = 0; i < nfaces; ++i) {
@@ -111895,6 +111909,8 @@ std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
             throw ReadError("OpenFOAM: missing '(' in faces");
         std::int64_t count = std::atoll(std::string(rRaw.substr(p, lp - p)).c_str());
         std::size_t blob = lp + 1;
+        foam_check_binary_extent(rRaw, blob, count, static_cast<std::size_t>(label_bytes),
+                                 "face");
         Face f(static_cast<std::size_t>(count));
         for (std::int64_t j = 0; j < count; ++j) {
             std::size_t off =
@@ -111960,6 +111976,8 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
         if (!found)
             throw ReadError("OpenFOAM: zone '" + name + "' has no count before '('");
 
+        foam_check_binary_extent(rRaw, lparen + 1, count, static_cast<std::size_t>(LabelBytes),
+                                 "zone");
         std::vector<std::int64_t> ids(static_cast<std::size_t>(count));
         const char* base = rRaw.data() + lparen + 1;
         for (std::int64_t i = 0; i < count; ++i) {
@@ -112364,7 +112382,8 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             break;
     }
     out.mCount = n;
-    out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
+    out.mFlat.reserve(std::min<std::size_t>(
+        static_cast<std::size_t>(n) * static_cast<std::size_t>(components), rText.size()));
     for (std::int64_t i = 0; i < n && getline(ss, line);) {
         std::string s = openfoam_strip(line);
         if (s.empty())
@@ -112418,6 +112437,10 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
         return foam_scan_nonuniform_list(raw.substr(p), components);
 
     auto [n, start] = data_start(raw);
+    foam_check_binary_extent(raw, start, n,
+                             static_cast<std::size_t>(components) *
+                                 static_cast<std::size_t>(fmt.mScalarBytes),
+                             "field");
     FoamField out;
     out.mCount = n;
     out.mFlat.resize(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
@@ -112962,6 +112985,18 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                     continue;
                 }
                 const FoamField values = foam_read_internal_field(field_path, fc.mComponents);
+                const std::size_t ncomp = static_cast<std::size_t>(fc.mComponents);
+                // A value list shorter than its declared count (a line that
+                // gave too few numbers, a truncated file) is refused here, not
+                // read past: the checks below compare the declared count only.
+                if (values.mUniform ? values.mFlat.size() < ncomp
+                                    : values.mFlat.size() !=
+                                          static_cast<std::size_t>(values.mCount) * ncomp) {
+                    log::warn("OpenFOAM: field '{}' holds {} number(s), which does not match its "
+                              "declaration; skipped",
+                              field_name, values.mFlat.size());
+                    continue;
+                }
 
                 if (fc.mIsPoint) {
                     if (!values.mUniform && static_cast<std::size_t>(values.mCount) != npts) {

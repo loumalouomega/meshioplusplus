@@ -555,3 +555,94 @@ TEST(OpenFoamCheck, AValidCaseStillReads) {
     const FoamCase c;
     EXPECT_EQ(outcome(c.File()).rfind("P12 ", 0), 0u);
 }
+
+// A binary case whose files are cut short is refused, not read past.
+namespace {
+
+fs::path binary_case(const FoamCase& rAscii) {
+    (void)rAscii;
+    const fs::path base = temp_case();
+    meshioplusplus::OpenFoamWriteOptions wopts;
+    wopts.mBinary = true;
+    meshioplusplus::write_openfoam((base / "case.foam").string(), two_hexes(),
+                                   meshioplusplus::OpenFoamInfo{}, wopts);
+    return base;
+}
+
+void truncate_file(const fs::path& rPath, std::size_t Drop) {
+    std::string t = slurp(rPath);
+    ASSERT_GT(t.size(), Drop);
+    t.resize(t.size() - Drop);
+    spit(rPath, t);
+}
+
+}  // namespace
+
+TEST(OpenFoamCheck, ABinaryCaseReadsBeforeItIsCut) {
+    const FoamCase c;
+    const fs::path base = binary_case(c);
+    EXPECT_EQ(outcome(base / "case.foam").rfind("P12 ", 0), 0u);
+    fs::remove_all(base);
+}
+
+TEST(OpenFoamCheck, ATruncatedBinaryPointsFile) {
+    const FoamCase c;
+    const fs::path base = binary_case(c);
+    truncate_file(base / "constant" / "polyMesh" / "points", 100);
+    EXPECT_EQ(outcome(base / "case.foam"),
+              "ReadError: OpenFOAM: binary points list of 12 entries runs past the end of the file");
+    fs::remove_all(base);
+}
+
+TEST(OpenFoamCheck, ATruncatedBinaryOwnerFile) {
+    const FoamCase c;
+    const fs::path base = binary_case(c);
+    truncate_file(base / "constant" / "polyMesh" / "owner", 30);
+    const std::string out = outcome(base / "case.foam");
+    EXPECT_EQ(out.rfind("ReadError: OpenFOAM: binary label list of ", 0), 0u) << out;
+    fs::remove_all(base);
+}
+
+TEST(OpenFoamCheck, ATruncatedBinaryFacesFile) {
+    const FoamCase c;
+    const fs::path base = binary_case(c);
+    truncate_file(base / "constant" / "polyMesh" / "faces", 60);
+    const std::string out = outcome(base / "case.foam");
+    EXPECT_EQ(out, "ReadError: OpenFOAM: missing '(' in faces");
+    fs::remove_all(base);
+}
+
+TEST(OpenFoamCheck, ACountBeyondTheFileIsNotAllocated) {
+    const FoamCase c;
+    const fs::path base = binary_case(c);
+    const fs::path points = base / "constant" / "polyMesh" / "points";
+    std::string t = slurp(points);
+    const std::size_t at = t.find("\n12\n");
+    ASSERT_NE(at, std::string::npos);
+    t.replace(at, 4, "\n4000000000000\n");
+    spit(points, t);
+    const std::string out = outcome(base / "case.foam");
+    EXPECT_NE(out.find("entries runs past the end of the file"), std::string::npos) << out;
+    fs::remove_all(base);
+}
+
+TEST(OpenFoamTextFields, AVectorLineWithTooFewNumbersSkipsTheField) {
+    const FoamCase c;
+    EXPECT_EQ(field_outcome(c, "U",
+                            "internalField   nonuniform List<vector>\n2\n(\n(1 2)\n(4 5 6)\n)\n;\n",
+                            "volVectorField"),
+              "none");
+}
+
+TEST(OpenFoamTextFields, AUniformVectorWithNoComponentsSkipsTheField) {
+    const FoamCase c;
+    EXPECT_EQ(field_outcome(c, "U", "internalField   uniform junk;\n", "volVectorField"), "none");
+}
+
+TEST(OpenFoamTextFields, ADeclaredCountBeyondTheListIsNotReserved) {
+    const FoamCase c;
+    EXPECT_EQ(field_outcome(c, "p",
+                            "internalField   nonuniform List<scalar>\n4000000000000\n(\n1\n)\n;\n",
+                            "volScalarField"),
+              "none");
+}
