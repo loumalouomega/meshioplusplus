@@ -72207,15 +72207,14 @@ std::optional<ElmId> elm_id(std::string_view Token) {
 // Calls `rOnLine(tokens, line_number)` for every non-blank line of a file.
 template <class F>
 void elm_for_each_line(const fs::path& rFile, F&& rOnLine) {
-    auto in = detail::make_classic_ifstream(rFile.string());
-    if (!in)
-        throw ReadError("Elmer mesh: cannot open " + rFile.string());
-    std::string line;
+    const detail::FileSource source =
+        detail::open_source(rFile.string(), "Elmer mesh: cannot open " + rFile.string());
+    detail::TextCursor cursor(source.View());
     std::vector<std::string_view> tokens;
     std::size_t number = 0;
-    while (std::getline(in, line)) {
+    while (!cursor.AtEnd()) {
         ++number;
-        elm_split(line, tokens);
+        elm_split(cursor.Line(), tokens);
         if (!tokens.empty())
             rOnLine(tokens, number);
     }
@@ -72360,13 +72359,9 @@ void elm_read_nodes(const fs::path& rDir, const std::string& rStem, ElmMesh& rMe
         if (!id)
             elm_fail(file, Line, "bad node id '" + std::string(rTok[0]) + "'");
         double xyz[3];
-        for (std::size_t d = 0; d < 3; ++d) {
-            const std::string text(rTok[2 + d]);
-            const char* end = nullptr;
-            xyz[d] = detail::parse_double(text.c_str(), end);
-            if (end != text.c_str() + text.size())
-                elm_fail(file, Line, "bad coordinate '" + text + "'");
-        }
+        for (std::size_t d = 0; d < 3; ++d)
+            if (!detail::parse_double_token(rTok[2 + d], xyz[d]))
+                elm_fail(file, Line, "bad coordinate '" + std::string(rTok[2 + d]) + "'");
         add(*id, xyz);
     });
 }
@@ -72503,37 +72498,60 @@ void elm_for_each_element_id(const fs::path& rDir, const std::string& rStem, F&&
     });
 }
 
+// Whether @p Text holds @p LowerNeedle (given in lower case) when its ASCII
+// capitals are folded to lower case.
+bool elm_contains_folded(std::string_view Text, std::string_view LowerNeedle) {
+    if (Text.size() < LowerNeedle.size())
+        return false;
+    for (std::size_t at = 0; at + LowerNeedle.size() <= Text.size(); ++at) {
+        std::size_t k = 0;
+        for (; k < LowerNeedle.size(); ++k) {
+            char c = Text[at + k];
+            if (c >= 'A' && c <= 'Z')
+                c = static_cast<char>(c - 'A' + 'a');
+            if (c != LowerNeedle[k])
+                break;
+        }
+        if (k == LowerNeedle.size())
+            return true;
+    }
+    return false;
+}
+
 void elm_read_names(const fs::path& rFile, ElmMesh& rMesh) {
     std::error_code ec;
     if (!fs::is_regular_file(rFile, ec))
         return;
-    auto in = detail::make_classic_ifstream(rFile.string());
-    std::string line;
+    std::optional<detail::FileSource> source;
+    try {
+        source.emplace(rFile.string());
+    } catch (const ReadError&) {
+        return;  // as an unreadable stream gave no lines
+    }
+    detail::TextCursor cursor(source->View());
     bool bodies = true;
-    while (std::getline(in, line)) {
-        std::string lower = line;
-        for (char& c : lower)
-            if (c >= 'A' && c <= 'Z')
-                c = static_cast<char>(c - 'A' + 'a');
+    std::vector<std::string_view> tokens;
+    while (!cursor.AtEnd()) {
+        const std::string_view line = cursor.Line();
         const std::size_t dollar = line.find('$');
-        const std::size_t equals = line.find('=', dollar == std::string::npos ? 0 : dollar);
-        if (dollar == std::string::npos || equals == std::string::npos) {
-            if (lower.find("names for bound") != std::string::npos)
+        const std::size_t equals = line.find('=', dollar == std::string_view::npos ? 0 : dollar);
+        if (dollar == std::string_view::npos || equals == std::string_view::npos) {
+            if (elm_contains_folded(line, "names for bound"))
                 bodies = false;
-            else if (lower.find("names for bod") != std::string::npos)
+            else if (elm_contains_folded(line, "names for bod"))
                 bodies = true;
             continue;
         }
-        std::string name = line.substr(dollar + 1, equals - dollar - 1);
+        std::string_view name = line.substr(dollar + 1, equals - dollar - 1);
         const std::size_t first = name.find_first_not_of(" \t");
         const std::size_t last = name.find_last_not_of(" \t");
-        name = first == std::string::npos ? std::string() : name.substr(first, last - first + 1);
-        std::vector<std::string_view> tokens;
-        elm_split(std::string_view(line).substr(equals + 1), tokens);
+        name = first == std::string_view::npos ? std::string_view()
+                                               : name.substr(first, last - first + 1);
+        elm_split(line.substr(equals + 1), tokens);
         const auto id = tokens.empty() ? std::nullopt : elm_int(tokens[0]);
         if (!id || name.empty())
             continue;
-        (bodies ? rMesh.mBodyNames : rMesh.mBoundaryNames)[*id] = name;
+        (bodies ? rMesh.mBodyNames : rMesh.mBoundaryNames)[*id] = std::string(name);
     }
 }
 
