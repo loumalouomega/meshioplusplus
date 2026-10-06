@@ -94,6 +94,10 @@ const char *mio_r_dtype_name(mio_dtype dtype);
 typedef int64_t (*mio_r_str_getter)(void *ctx, char *buf, int64_t buflen);
 SEXP mio_r_getstring(mio_r_str_getter getter, void *ctx, const char *what);
 
+/* Convert `n` elements of a typed C buffer into caller-owned doubles, adding
+ * `offset` to each (1.0 for the 1-based index shift). One pass, no temporary. */
+void mio_r_fill_real(double *dst, const void *data, mio_dtype dtype, R_xlen_t n, double offset);
+
 /* Copy a typed C buffer of `n` elements into a fresh REALSXP. */
 SEXP mio_r_copy_as_real(const void *data, mio_dtype dtype, R_xlen_t n);
 

@@ -1,0 +1,10 @@
+file,bytes,status,min_ms,median_ms
+surf_100_raw4.vtp,2142797,RangeError: start offset of Float64Array should be a multiple of 8,,
+surf_100_raw8.vtp,2142846,ok,55.55,56.92
+surf_100_zlib.vtp,1033868,ok,50.75,55.45
+surf_300_raw4.vtp,19226534,RangeError: start offset of Float64Array should be a multiple of 8,,
+surf_300_raw8.vtp,19226583,ok,529.72,561.26
+surf_300_zlib.vtp,9526361,ok,421.16,504.36
+surf_700_raw4.vtp,104593999,RangeError: start offset of Float64Array should be a multiple of 8,,
+surf_700_raw8.vtp,104594048,ok,3014.48,3191.86
+surf_700_zlib.vtp,52607770,ok,2575.92,2645.74
