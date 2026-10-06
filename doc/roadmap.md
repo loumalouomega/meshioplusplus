@@ -334,6 +334,24 @@ What changed since parity last had a section. The reader/writer triage of Septem
 
 ---
 
+## 8. Terminal rendering (TUI)
+
+*Admission: work whose shape is unknown until an investigation writes it down. Findings before code.*
+
+- **Core (7.1–7.3):** a software rasterizer built on the camera, colormap and facet-colour code the SVG and TikZ writers already share. It is deterministic, so frames are byte-identical across backends and thread counts. It draws to half-block, quadrant, sextant, Braille or ASCII cells at several colour depths, with optional Kitty, iTerm2 and Sixel graphics. One-shot outputs are `.txt`, `.ansi`, `.html`, PNG and `.cast`.
+- **Field rendering (7.4):** point and cell data, vector and tensor components, and tensor invariants. It also covers `data_calc` expressions, ranges and scales, colormaps, legends and categorical regions. Isolines, vector arrows and warping are included, with optional streamlines. Diagnostic views show quality and orientation.
+- **Interactive loop (7.5–7.7):** mouse and keyboard control, probing, a `:` command line, saved sessions and side-by-side comparison. Clip planes and cutaways, time stepping and following a live run complete it.
+- **Surfaces (7.8):** the native CLI (`tui`, `snapshot`), Python (`tui`, `render_text`, `render_image`, a software `screenshot`), the C API with Fortran/Julia/R mirrors, WASM, MCP and docs.
+
+*Things you should know before merging:*
+
+- **Release binaries:** unlike Polyscope, the TUI ships in the prebuilt release binaries, because it needs no OpenGL and no vendored dependencies.
+- **`view(backend="auto")` changes:** on a terminal with no display it now opens the TUI instead of writing an HTML file nobody can open. I flagged this as the one behaviour change in the section.
+- **Python twin:** the rasterizer's byte-identity is an explicit decision at landing. If the numpy twin can't match the core cheaply, the fallback is the MMG precedent, where Python uses the core or raises.
+- **† marks:** terminal-protocol facts, Windows requirements, tmux behaviour, colormap licences and pyte are from memory. I opened no external pages, so the section carries no external links.
+
+---
+
 ## Non-goals and decisions taken
 
 Recorded so they are not re-proposed as gaps.
