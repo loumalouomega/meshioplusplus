@@ -450,7 +450,28 @@ New `meshioplusplus_bench_ops` rows: `subdivide_ragged` (the polyhedron block of
 | 3 | 469.1 ms | 452.8 ms |
 | Mean | 476.7 ms | 440.7 ms (−7.6%) |
 
-The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocate several blocks per face; those are the remaining cost and stay in the roadmap. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
+The gain is small because the allocation was one block per polyhedron, while the per-face `child`, `face_nodes` and apex-triangle vectors of the same loop still allocated several blocks per face; [the next section](#flat-child-faces-in-subdivide) removes those. A single sweep of five runs at tier L gives 2.27 → 2.16 s on SEQ and 2.31 → 2.08 s on OpenMP at one thread, inside the noise of that harness (the unchanged `read_stl` row moves by up to ±10% between sweeps).
+
+### Flat child faces in `subdivide`
+
+Roadmap §3.2.2. The output loop of `subdivide` built, for every parent face of `m` nodes, a `std::vector<std::vector<std::int64_t>>` of child faces, a `face_nodes` vector for the original face and one three-node vector per apex triangle: `2 + m` heap blocks per child polyhedron. It then moved the nested result into `AddPolyhedronBlock`, whose nested overload counts and flattens it a second time. The staged block now holds the CSR triple `AddPolyhedronBlock` already takes (nodes, row offsets, face offsets), appended to directly, and moves it into the CSR overload. Child order, the order of faces inside a child (the original face, then the apex triangles in ring order) and every node id are unchanged. The change is in a `.cpp` body: installed headers and C++ ABI 23 are unchanged.
+
+The three vectors, and the parent ids, are reserved once per block. A polyhedron input block states every cell's face and node counts, so its totals are summed exactly; a rectangular block repeats one cell shape, so the first cell's counts times the cell count serve as a hint. A parent cell with `F` faces and `S` ring nodes adds `F` children, `F + S` rows and `4S` nodes. No reserve is made per cell, which would defeat the geometric growth of the vectors.
+
+**Determinism.** `subdivide_ragged` rows of tiers M and L, SEQ at one thread and OpenMP at 1 and 4, carry the digest of the pre-change run (`BASELINE=` sweep) and agree across backends and thread counts; [all 24 rows, before and after](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/subdivide_flat_faces.csv). A regression test, `Subdivide.ChildLayoutIsPinnedForConvexNonConvexAndMixedInput`, pins the exact layout (every child, face and node in order) of a non-convex prism, a wedge, a polyhedron block subdivided a second time and a mixed two-block mesh, with digests taken from the nested-vector implementation. TBB is not installed in the development container, so its leg was skipped.
+
+**SEQ is not slower.** Medians of five runs, one thread unless noted, before and after in separate sweeps on the same machine (the unchanged `read_stl` row is the control):
+
+| Backend | Tier | Before | After |
+| --- | --- | ---: | ---: |
+| SEQ | M (162,000 cells) | 478.8 ms | 247.2 ms (−48%) |
+| SEQ | L (750,000 cells) | 2453.3 ms | 1179.7 ms (−52%) |
+| OpenMP, 1 thread | M | 471.9 ms | 245.6 ms (−48%) |
+| OpenMP, 1 thread | L | 2114.7 ms | 1263.1 ms (−40%) |
+| OpenMP, 4 threads | M | 544.6 ms | 266.0 ms (−51%) |
+| OpenMP, 4 threads | L | 2389.3 ms | 1298.3 ms (−46%) |
+
+`subdivide` is serial in its output loop, so OpenMP at four threads gains nothing over one thread; the gain is the same on every backend. The sweeps were not interleaved, but the change is several times the ±10% the control row moves between sweeps.
 
 ### The STL ASCII reader on the text cursor
 

@@ -44,35 +44,34 @@ namespace {
 constexpr const char* kSubPrefix = "meshio++: subdivide: ";
 constexpr const char* kSubParentName = "subdivide:parent_cell";
 
-/// A staged output block: either an unchanged copy of an input block (any of
-/// its three storage shapes), or a freshly built polyhedron block.
+/// A staged output block: either an unchanged copy of an input block (a
+/// rectangular or polygon block), or a freshly built polyhedron block, held in
+/// the CSR form `AddPolyhedronBlock` takes: cell `c`'s faces are rows
+/// `mFaceOffsets[c] .. mFaceOffsets[c + 1])` of `mRowOffsets`, and row `r`'s
+/// nodes are `mFlat[mRowOffsets[r] .. mRowOffsets[r + 1])`.
 struct SubOutBlock {
     std::string mType;
     std::size_t mNodesPerCell = 0;  // rectangular pass-through only
     std::vector<std::int64_t> mConn;
     std::vector<std::vector<std::int64_t>> mPolygonRows;
-    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::int64_t> mRowOffsets{0};
+    std::vector<std::int64_t> mFaceOffsets{0};
     bool mIsRagged = false;
     bool mIsPolyhedron = false;
+
+    /// Number of polyhedron cells staged so far.
+    std::size_t NumChildren() const { return mFaceOffsets.size() - 1; }
 };
 
-/// Stage an input block unchanged -- the pass-through case, one branch per
-/// existing storage shape. Mirrors convert_cells.cpp's own staging helper;
-/// not shared with it directly, since that one is file-private there too.
+/// Stage an input block unchanged -- the pass-through case, a polygon block or
+/// a rectangular one (a polyhedron block is always eligible, so it never gets
+/// here). Mirrors convert_cells.cpp's own staging helper; not shared with it
+/// directly, since that one is file-private there too.
 SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
     SubOutBlock out;
     out.mType = std::string(rBlock.Type());
-    if (rBlock.IsPolyhedron()) {
-        out.mIsRagged = true;
-        out.mIsPolyhedron = true;
-        out.mPolyhedronCells.resize(rBlock.NumCells());
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
-            for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
-                const auto face = rBlock.Face(c, f);
-                out.mPolyhedronCells[c].emplace_back(face.first, face.first + face.second);
-            }
-        }
-    } else if (rBlock.IsRagged()) {
+    if (rBlock.IsRagged()) {
         out.mIsRagged = true;
         out.mPolygonRows.resize(rBlock.NumCells());
         for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
@@ -94,7 +93,8 @@ SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
 /// Add a staged block to `rOut`.
 void sub_emit_block(Mesh& rOut, SubOutBlock& rBlock) {
     if (rBlock.mIsPolyhedron) {
-        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mPolyhedronCells));
+        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mFlat),
+                                std::move(rBlock.mRowOffsets), std::move(rBlock.mFaceOffsets));
     } else if (rBlock.mIsRagged) {
         rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
     } else {
@@ -171,10 +171,35 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
         out.mType = "polyhedron";
         out.mIsRagged = true;
         out.mIsPolyhedron = true;
-        out.mPolyhedronCells.reserve(ncells);
+
+        // Each parent face becomes one child cell with 1 + m faces (the face
+        // itself and m apex triangles) and 4m nodes, so a parent cell with F
+        // faces and S ring nodes adds F cells, F + S rows and 4S nodes. A
+        // polyhedron block states F and S for every cell, so the whole block
+        // is reserved at once; a rectangular block repeats one cell shape, so
+        // the first cell's counts stand for all of them (a hint, not a bound
+        // anything relies on).
+        const auto reserve_children = [&out, &parents](std::size_t NumFaces, std::size_t NumNodes) {
+            parents.reserve(NumFaces);
+            out.mFaceOffsets.reserve(NumFaces + 1);
+            out.mRowOffsets.reserve(NumFaces + NumNodes + 1);
+            out.mFlat.reserve(4 * NumNodes);
+        };
+        bool reserved = false;
+        if (cb.IsPolyhedron()) {
+            std::size_t total_faces = 0, total_nodes = 0;
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::size_t nf = cb.NumFaces(c);
+                total_faces += nf;
+                for (std::size_t f = 0; f < nf; ++f)
+                    total_nodes += cb.Face(c, f).second;
+            }
+            reserve_children(total_faces, total_nodes);
+            reserved = true;
+        }
 
         for (std::size_t c = 0; c < ncells; ++c) {
-            firsts[c] = static_cast<std::int64_t>(out.mPolyhedronCells.size());
+            firsts[c] = static_cast<std::int64_t>(out.NumChildren());
             if (!detail::cell_rings(cb, c, points, pdim, rings, coords))
                 continue;  // no face topology at all: contributes nothing
             if (detail::orient_rings(rings, coords.data()) == detail::RingOrientation::Unorientable)
@@ -182,6 +207,10 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
                     std::string(kSubPrefix) + "cannot subdivide cell " + std::to_string(c) +
                     " of block '" + std::string(cb.Type()) +
                     "': its faces are not a closed orientable surface, so it bounds no volume");
+            if (!reserved) {
+                reserve_children(rings.NumFaces() * ncells, rings.mFaceNodes.size() * ncells);
+                reserved = true;
+            }
 
             // One new interior point per cell: the plain average of the
             // cell's own corner nodes -- deliberately not poly_measure()'s
@@ -194,22 +223,20 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
                 const std::uint32_t* ring = rings.Face(f);
                 const std::size_t m = rings.FaceSize(f);
 
-                std::vector<std::vector<std::int64_t>> child;
-                child.reserve(1 + m);
                 // The original face, unchanged (same global ids, same
                 // winding), so a neighbouring cell across it still sees the
                 // identical face -- this is what keeps the result conforming.
-                std::vector<std::int64_t> face_nodes(m);
                 for (std::size_t k = 0; k < m; ++k)
-                    face_nodes[k] = rings.mNodes[ring[k]];
-                child.push_back(std::move(face_nodes));
+                    out.mFlat.push_back(rings.mNodes[ring[k]]);
+                out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mFlat.size()));
                 // One new triangle per face edge, back to the apex.
                 for (std::size_t k = 0; k < m; ++k) {
-                    const std::int64_t a = rings.mNodes[ring[k]];
-                    const std::int64_t nb = rings.mNodes[ring[(k + 1) % m]];
-                    child.push_back({apex, a, nb});
+                    out.mFlat.push_back(apex);
+                    out.mFlat.push_back(rings.mNodes[ring[k]]);
+                    out.mFlat.push_back(rings.mNodes[ring[(k + 1) % m]]);
+                    out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mFlat.size()));
                 }
-                out.mPolyhedronCells.push_back(std::move(child));
+                out.mFaceOffsets.push_back(static_cast<std::int64_t>(out.mRowOffsets.size() - 1));
                 parents.push_back(static_cast<std::int64_t>(c));
             }
         }
