@@ -183,62 +183,36 @@ SEXP mio_r_getstring(mio_r_str_getter getter, void *ctx, const char *what) {
  * comes into R as `double`. That is exact to 2^53, far beyond any mesh this
  * library will meet, and it avoids a hard dependency on the bit64 package for
  * a theoretical case. Documented as a named limitation. */
-SEXP mio_r_copy_as_real(const void *data, mio_dtype dtype, R_xlen_t n) {
-    SEXP out = PROTECT(Rf_allocVector(REALSXP, n));
-    double *dst = REAL(out);
-    switch (dtype) {
-    case MIO_FLOAT32: {
-        const float *p = (const float *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_FLOAT64:
+void mio_r_fill_real(double *dst, const void *data, mio_dtype dtype, R_xlen_t n, double offset) {
+    if (dtype == MIO_FLOAT64 && offset == 0.0) {
         memcpy(dst, data, (size_t)n * sizeof(double));
-        break;
-    case MIO_INT8: {
-        const int8_t *p = (const int8_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
+        return;
     }
-    case MIO_INT16: {
-        const int16_t *p = (const int16_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_INT32: {
-        const int32_t *p = (const int32_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_INT64: {
-        const int64_t *p = (const int64_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_UINT8: {
-        const uint8_t *p = (const uint8_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_UINT16: {
-        const uint16_t *p = (const uint16_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_UINT32: {
-        const uint32_t *p = (const uint32_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
-    case MIO_UINT64: {
-        const uint64_t *p = (const uint64_t *)data;
-        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i];
-        break;
-    }
+#define MIO_R_FILL(T)                                                                              \
+    do {                                                                                           \
+        const T *p = (const T *)data;                                                              \
+        for (R_xlen_t i = 0; i < n; ++i) dst[i] = (double)p[i] + offset;                           \
+    } while (0)
+    switch (dtype) {
+    case MIO_FLOAT32: MIO_R_FILL(float); break;
+    case MIO_FLOAT64: MIO_R_FILL(double); break;
+    case MIO_INT8: MIO_R_FILL(int8_t); break;
+    case MIO_INT16: MIO_R_FILL(int16_t); break;
+    case MIO_INT32: MIO_R_FILL(int32_t); break;
+    case MIO_INT64: MIO_R_FILL(int64_t); break;
+    case MIO_UINT8: MIO_R_FILL(uint8_t); break;
+    case MIO_UINT16: MIO_R_FILL(uint16_t); break;
+    case MIO_UINT32: MIO_R_FILL(uint32_t); break;
+    case MIO_UINT64: MIO_R_FILL(uint64_t); break;
     default:
-        UNPROTECT(1);
         Rf_error("meshio++: unknown dtype %d", (int)dtype);
     }
+#undef MIO_R_FILL
+}
+
+SEXP mio_r_copy_as_real(const void *data, mio_dtype dtype, R_xlen_t n) {
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, n));
+    mio_r_fill_real(REAL(out), data, dtype, n, 0.0);
     UNPROTECT(1);
     return out;
 }

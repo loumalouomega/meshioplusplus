@@ -99,7 +99,7 @@ Because of that there is **no `_ptr` accessor at all**. The 0-based reader is na
 | `mio_connectivity(m, i)` | yes | **1-based** |
 | `mio_connectivity_raw(m, i)` | yes | **0-based** — the ABI's own |
 
-The ±1 shift happens in that copy, which is where the other two bindings put it too.
+The ±1 shift happens in that one copy (dtype conversion and shift are fused into a single pass over the result), which is where the other two bindings put it too.
 
 ## 64-bit integers
 
