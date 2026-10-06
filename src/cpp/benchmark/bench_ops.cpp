@@ -679,6 +679,9 @@ int main(int argc, char** argv) {
         // tetrahedral cube with its point field.
         read_row("read_freefem", "freefem", ".msh", with_field);
         read_row("read_ugrid", "ugrid", ".ugrid", with_field);
+        // OpenFOAM's ASCII polyMesh (a `.foam` marker; the case directory is
+        // written beside it) over the tetrahedral cube with its point field.
+        read_row("read_openfoam", "openfoam", ".foam", with_field);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);

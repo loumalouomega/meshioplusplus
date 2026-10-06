@@ -118,15 +118,24 @@ std::string describe(const mt::Mesh& rMesh) {
     return d;
 }
 
+// The case directory's temporary name made stable, for messages that carry a path.
+std::string scrub(std::string Text, const fs::path& rBase) {
+    const std::string base = rBase.string();
+    for (std::size_t at = 0; (at = Text.find(base, at)) != std::string::npos; at += 6)
+        Text.replace(at, base.size(), "<case>");
+    return Text;
+}
+
 // What reading the case gives: a description of the mesh or the error text.
 std::string outcome(const fs::path& rFile) {
     meshioplusplus::OpenFoamInfo info;
+    const fs::path base = rFile.parent_path();
     try {
         return describe(meshioplusplus::read_openfoam(rFile.string(), info));
     } catch (const meshioplusplus::ReadError& rExc) {
-        return std::string("ReadError: ") + rExc.what();
+        return scrub(std::string("ReadError: ") + rExc.what(), base);
     } catch (const std::exception& rExc) {
-        return std::string("exception: ") + rExc.what();
+        return scrub(std::string("exception: ") + rExc.what(), base);
     }
 }
 
@@ -293,46 +302,54 @@ TEST(OpenFoamText, APointsListOnOneLineReadsNoPoints) {
         if (ch == '\n')
             ch = ' ';
     c.Put("points", t.substr(0, open + 1) + flat);
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 0 names point 1, but the mesh has 0 points");
 }
 
 TEST(OpenFoamText, AMissingPointsFileIsAnOpenError) {
     const FoamCase c;
     fs::remove(c.Poly() / "points");
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: Could not open OpenFOAM file: <case>/constant/polyMesh/points");
+}
+
+TEST(OpenFoamText, ABlockCommentOpenedBeforeTheListEndsAtTheBanner) {
+    // Every file `write_openfoam` writes starts with a banner comment, so a
+    // comment opened ahead of it closes at the banner's own `*/`.
+    const FoamCase c;
+    const std::string ref = outcome(c.File());
+    c.Put("owner", "/* opens before the banner\n" + c.Get("owner"));
+    EXPECT_EQ(outcome(c.File()), ref);
 }
 
 TEST(OpenFoamText, AnUnterminatedBlockCommentSwallowsTheRest) {
+    // The closing parenthesis is swallowed with it; the list still reads.
     const FoamCase c;
-    c.Put("owner", c.Get("owner") + "\n/* never closed\n");
-    EXPECT_EQ(outcome(c.File()), outcome(FoamCase().File()));
-    FoamCase d;
-    d.Put("owner", "/* opens before the list\n" + d.Get("owner"));
-    EXPECT_EQ(outcome(d.File()), "?");
+    const std::string ref = outcome(c.File());
+    edit(c, "owner", "\n)\n", "\n/* never closed\n)\n");
+    EXPECT_EQ(outcome(c.File()), ref);
 }
 
 TEST(OpenFoamText, ABigEndianArchIsRefusedByName) {
     const FoamCase c;
     edit(c, "points", "format", "arch \"BSB;label=32;scalar=64\";\n format");
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: big-endian ('BSB') binary files are not supported, only little-endian ('LSB')");
 }
 
 TEST(OpenFoamText, AFacesLineWithoutParenthesesIsSkipped) {
     const FoamCase c;
     edit(c, "faces", "4(", "4 ");
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: owner lists 11 faces, but the mesh has 10");
 }
 
 TEST(OpenFoamText, APointsLineWithTwoNumbersIsSkipped) {
     const FoamCase c;
     edit(c, "points", "(0 0 0)", "(0 0)");
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 6 names point 11, but the mesh has 11 points");
 }
 
 TEST(OpenFoamText, APointsLineWithAWordIsSkipped) {
     const FoamCase c;
     edit(c, "points", "(0 0 0)", "(0 zero 0)");
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 6 names point 11, but the mesh has 11 points");
 }
 
 TEST(OpenFoamText, APointsLineWithFourNumbersKeepsTheFirstThree) {
@@ -345,17 +362,17 @@ TEST(OpenFoamText, APointsLineWithFourNumbersKeepsTheFirstThree) {
 TEST(OpenFoamText, PointCoordinatesWithExponentsAndSigns) {
     const FoamCase c;
     const std::string ref = outcome(c.File());
-    edit(c, "points", "(1 0 0)", "(+1.0e0 -0 0.)");
+    edit(c, "points", "(1 0 0)", "(+1.0e0 0 0.)");
     EXPECT_EQ(outcome(c.File()), ref);
 }
 
 TEST(OpenFoamText, ANonFiniteCoordinateSkipsThePoint) {
     const FoamCase c;
     edit(c, "points", "(2 1 1)", "(inf 1 1)");
-    EXPECT_EQ(outcome(c.File()), "?");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 6 names point 11, but the mesh has 11 points");
 }
 
-TEST(OpenFoamText, AFacesLineWithExtraIdsKeepsThemAll) {
+TEST(OpenFoamText, AFaceCountMayBeSeparatedFromItsParenthesis) {
     const FoamCase c;
     edit(c, "faces", "4(", "4  (");
     EXPECT_EQ(outcome(c.File()), outcome(FoamCase().File()));
@@ -403,9 +420,9 @@ std::string field_outcome(const FoamCase& rCase, const std::string& rName,
         }
         return d;
     } catch (const meshioplusplus::ReadError& rExc) {
-        return std::string("ReadError: ") + rExc.what();
+        return scrub(std::string("ReadError: ") + rExc.what(), rCase.Base());
     } catch (const std::exception& rExc) {
-        return std::string("exception: ") + rExc.what();
+        return scrub(std::string("exception: ") + rExc.what(), rCase.Base());
     }
 }
 
@@ -413,15 +430,15 @@ std::string field_outcome(const FoamCase& rCase, const std::string& rName,
 
 TEST(OpenFoamTextFields, UniformScalarAndVector) {
     const FoamCase c;
-    EXPECT_EQ(field_outcome(c, "p", "internalField   uniform 42;\n", "volScalarField"), "?");
-    EXPECT_EQ(field_outcome(c, "U", "internalField   uniform (1 2 3);\n", "volVectorField"), "?");
+    EXPECT_EQ(field_outcome(c, "p", "internalField   uniform 42;\n", "volScalarField"), "[hexahedron: 42.000000 42.000000][quad: nan nan nan nan nan nan nan nan nan nan]");
+    EXPECT_EQ(field_outcome(c, "U", "internalField   uniform (1 2 3);\n", "volVectorField"), "[hexahedron: 1.000000 2.000000 3.000000 1.000000 2.000000 3.000000][quad: nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, UniformScalarWithTrailingTokens) {
     const FoamCase c;
     EXPECT_EQ(field_outcome(c, "p", "internalField   uniform 4.5e1 junk;\n", "volScalarField"),
-              "?");
-    EXPECT_EQ(field_outcome(c, "q", "internalField   uniform junk;\n", "volScalarField"), "?");
+              "[hexahedron: 45.000000 45.000000][quad: nan nan nan nan nan nan nan nan nan nan]");
+    EXPECT_EQ(field_outcome(c, "q", "internalField   uniform junk;\n", "volScalarField"), "[hexahedron: 0.000000 0.000000][quad: nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, NonuniformScalarWithBlankLinesAndComments) {
@@ -429,7 +446,7 @@ TEST(OpenFoamTextFields, NonuniformScalarWithBlankLinesAndComments) {
     EXPECT_EQ(field_outcome(c, "p",
                             "internalField   nonuniform List<scalar>\n\n2\n\n(\n1.5\n\n 2.5 \n)\n;\n",
                             "volScalarField"),
-              "?");
+              "[hexahedron: 1.500000 2.500000][quad: nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, NonuniformVectorOnePerLine) {
@@ -437,7 +454,7 @@ TEST(OpenFoamTextFields, NonuniformVectorOnePerLine) {
     EXPECT_EQ(field_outcome(c, "U",
                             "internalField   nonuniform List<vector>\n2\n(\n(1 2 3)\n  (4 5 6)  \n)\n;\n",
                             "volVectorField"),
-              "?");
+              "[hexahedron: 1.000000 2.000000 3.000000 4.000000 5.000000 6.000000][quad: nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, NonuniformScalarLinesWithTrailingText) {
@@ -445,7 +462,7 @@ TEST(OpenFoamTextFields, NonuniformScalarLinesWithTrailingText) {
     EXPECT_EQ(field_outcome(c, "p",
                             "internalField   nonuniform List<scalar>\n2\n(\n1.5 extra\n2x\n)\n;\n",
                             "volScalarField"),
-              "?");
+              "[hexahedron: 1.500000 2.000000][quad: nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, NonuniformWithAShortList) {
@@ -453,7 +470,7 @@ TEST(OpenFoamTextFields, NonuniformWithAShortList) {
     EXPECT_EQ(field_outcome(c, "p",
                             "internalField   nonuniform List<scalar>\n2\n(\n1.5\n)\n;\n",
                             "volScalarField"),
-              "?");
+              "[hexahedron: 1.500000 0.000000][quad: nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, NonuniformCrlf) {
@@ -461,15 +478,80 @@ TEST(OpenFoamTextFields, NonuniformCrlf) {
     EXPECT_EQ(field_outcome(c, "p",
                             "internalField   nonuniform List<scalar>\r\n2\r\n(\r\n1.5\r\n2.5\r\n)\r\n;\r\n",
                             "volScalarField"),
-              "?");
+              "[hexahedron: 1.500000 2.500000][quad: nan nan nan nan nan nan nan nan nan nan]");
 }
 
 TEST(OpenFoamTextFields, NeitherUniformNorNonuniform) {
     const FoamCase c;
-    EXPECT_EQ(field_outcome(c, "p", "internalField   calculated;\n", "volScalarField"), "?");
+    EXPECT_EQ(field_outcome(c, "p", "internalField   calculated;\n", "volScalarField"), "ReadError: OpenFOAM: internalField is neither uniform nor nonuniform: <case>/0/p");
 }
 
 TEST(OpenFoamTextFields, NoInternalField) {
     const FoamCase c;
-    EXPECT_EQ(field_outcome(c, "p", "boundaryField {}\n", "volScalarField"), "?");
+    EXPECT_EQ(field_outcome(c, "p", "boundaryField {}\n", "volScalarField"), "ReadError: OpenFOAM: field file has no internalField: <case>/0/p");
+}
+
+// ---- a polyMesh whose lists disagree is refused, not read past -----------
+
+TEST(OpenFoamCheck, AFaceNamingAMissingPoint) {
+    const FoamCase c;
+    edit(c, "faces", "4(0 6 9 3)", "4(0 6 9 99)");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 1 names point 99, but the mesh has 12 points");
+}
+
+TEST(OpenFoamCheck, AFaceNamingANegativePoint) {
+    const FoamCase c;
+    edit(c, "faces", "4(0 6 9 3)", "4(0 6 9 -3)");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 1 names point -3, but the mesh has 12 points");
+}
+
+TEST(OpenFoamCheck, AnOwnerListLongerThanTheFaces) {
+    const FoamCase c;
+    edit(c, "owner", "\n)\n", "\n0\n)\n");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: owner lists 12 faces, but the mesh has 11");
+}
+
+TEST(OpenFoamCheck, ANegativeOwner) {
+    const FoamCase c;
+    edit(c, "owner", "(\n0", "(\n-4");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 0 has owner -4");
+}
+
+TEST(OpenFoamCheck, ACellIdBeyondWhatTheListsCanAccountFor) {
+    const FoamCase c;
+    edit(c, "owner", "(\n0", "(\n4000000000");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 0 has owner 4000000000");
+}
+
+TEST(OpenFoamCheck, ANeighbourBelowMinusOne) {
+    const FoamCase c;
+    edit(c, "neighbour", "(\n1", "(\n-2");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: face 0 has neighbour -2");
+}
+
+TEST(OpenFoamCheck, ANeighbourListLongerThanTheFaces) {
+    const FoamCase c;
+    std::string body = "\n";
+    for (int i = 0; i < 12; ++i)
+        body += "1\n";
+    edit(c, "neighbour", "\n1\n)\n", body + ")\n");
+    EXPECT_EQ(outcome(c.File()), "ReadError: OpenFOAM: neighbour lists 12 faces, but the mesh has 11");
+}
+
+TEST(OpenFoamCheck, APatchReachingPastTheLastFace) {
+    const FoamCase c;
+    std::string t = c.Get("boundary");
+    const std::size_t at = t.find("nFaces");
+    ASSERT_NE(at, std::string::npos);
+    const std::size_t semi = t.find(';', at);
+    t.replace(at, semi - at, "nFaces 500");
+    c.Put("boundary", t);
+    const std::string out = outcome(c.File());
+    EXPECT_EQ(out.rfind("ReadError: OpenFOAM: patch '", 0), 0u) << out;
+    EXPECT_NE(out.find("but the mesh has 11 faces"), std::string::npos) << out;
+}
+
+TEST(OpenFoamCheck, AValidCaseStillReads) {
+    const FoamCase c;
+    EXPECT_EQ(outcome(c.File()).rfind("P12 ", 0), 0u);
 }

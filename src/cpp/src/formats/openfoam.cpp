@@ -691,6 +691,48 @@ struct RawPolyMesh {
     std::vector<Patch> mBoundary;
 };
 
+/// Refuse a polyMesh whose lists disagree, before anything indexes one list
+/// with another's values: a face naming a point that is not there, an owner or
+/// neighbour list longer than the faces, a negative owner, a cell id the lists
+/// cannot account for, a patch reaching past the last face. A short points
+/// list (one line skipped for having fewer than three numbers, or a list the
+/// parser read nothing from) used to leave the cell reconstruction reading past
+/// the points.
+void foam_check_polymesh(const RawPolyMesh& rRaw) {
+    const std::size_t n_points = rRaw.mPoints.size();
+    const std::size_t n_faces = rRaw.mFaces.size();
+    for (std::size_t f = 0; f < n_faces; ++f)
+        for (const std::int64_t id : rRaw.mFaces[f])
+            if (id < 0 || static_cast<std::uint64_t>(id) >= n_points)
+                throw ReadError(detail::format_compat(
+                    "OpenFOAM: face {} names point {}, but the mesh has {} points", f, id,
+                    n_points));
+    if (rRaw.mOwner.size() > n_faces)
+        throw ReadError(detail::format_compat(
+            "OpenFOAM: owner lists {} faces, but the mesh has {}", rRaw.mOwner.size(), n_faces));
+    if (rRaw.mNeighbour.size() > n_faces)
+        throw ReadError(detail::format_compat("OpenFOAM: neighbour lists {} faces, but the mesh has {}",
+                                              rRaw.mNeighbour.size(), n_faces));
+    const std::uint64_t n_ids = rRaw.mOwner.size() + rRaw.mNeighbour.size();
+    for (std::size_t f = 0; f < rRaw.mOwner.size(); ++f) {
+        const std::int64_t id = rRaw.mOwner[f];
+        if (id < 0 || static_cast<std::uint64_t>(id) >= n_ids)
+            throw ReadError(detail::format_compat("OpenFOAM: face {} has owner {}", f, id));
+    }
+    for (std::size_t f = 0; f < rRaw.mNeighbour.size(); ++f) {
+        const std::int64_t id = rRaw.mNeighbour[f];
+        if (id < -1 || (id >= 0 && static_cast<std::uint64_t>(id) >= n_ids))
+            throw ReadError(detail::format_compat("OpenFOAM: face {} has neighbour {}", f, id));
+    }
+    for (const Patch& patch : rRaw.mBoundary)
+        if (patch.mStartFace < 0 || patch.mNFaces < 0 ||
+            static_cast<std::uint64_t>(patch.mStartFace) + static_cast<std::uint64_t>(patch.mNFaces) >
+                n_faces)
+            throw ReadError(detail::format_compat(
+                "OpenFOAM: patch '{}' covers faces {} to {}, but the mesh has {} faces",
+                patch.mName, patch.mStartFace, patch.mStartFace + patch.mNFaces, n_faces));
+}
+
 RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
     RawPolyMesh raw;
     raw.mPoints = read_points(rPoly / "points");
@@ -701,6 +743,7 @@ RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
     if (fs::exists(rPoly / "boundary"))
         raw.mBoundary = parse_boundary(
             strip_comments_and_header(read_whole((rPoly / "boundary").string()).View()));
+    foam_check_polymesh(raw);
     return raw;
 }
 
