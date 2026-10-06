@@ -1010,6 +1010,17 @@ def roadmap_map():
             ],
             [(0, 1)],
         ),
+        (
+            "§8 terminal rendering",
+            [
+                ("findings: budget · twin · ABI", "S"),
+                ("software rasterizer", "L"),
+                ("cell encodings · PNG · .txt", "M"),
+                ("field rendering · surfaces", "M"),
+                ("interactive tui · view auto", "L"),
+            ],
+            [(0, 1), (1, 2), (2, 3), (3, 4)],
+        ),
     ]
     per_row = 4
     col_w = 176
