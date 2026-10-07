@@ -30,11 +30,13 @@
 
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "meshioplusplus/operations/render.hpp"
+#include "meshioplusplus/region.hpp"
 #include "mesh_fixtures.hpp"
 
 // Project includes (private, not installed)
 #include "../../src/cpp/src/detail/png_write.hpp"
 #include "../../src/cpp/src/detail/raster.hpp"
+#include "../../src/cpp/src/detail/render_field.hpp"
 
 using namespace meshioplusplus;
 
@@ -483,4 +485,417 @@ TEST(RenderSnapshot, ChoosesTheFormByExtension) {
     t.mEncoding = TextEncoding::Kitty;
     EXPECT_THROW(write_snapshot("frame.txt", cube_quads(), RenderOptions(), t),
                  std::invalid_argument);
+}
+
+// ---------------------------------------------------------------------------
+// Field rendering (v16.34.0): the pure helpers
+// ---------------------------------------------------------------------------
+
+TEST(RenderField, ScalesAreOddAndMonotone) {
+    using detail::render_scale_forward;
+    EXPECT_DOUBLE_EQ(render_scale_forward(RenderScale::Linear, 1.0, -3.5), -3.5);
+    EXPECT_DOUBLE_EQ(render_scale_forward(RenderScale::Log, 1.0, 1000.0), 3.0);
+    EXPECT_TRUE(std::isnan(render_scale_forward(RenderScale::Log, 1.0, 0.0)));
+    EXPECT_TRUE(std::isnan(render_scale_forward(RenderScale::Log, 1.0, -1.0)));
+    EXPECT_TRUE(std::isnan(render_scale_forward(RenderScale::Linear, 1.0, std::nan(""))));
+    EXPECT_DOUBLE_EQ(render_scale_forward(RenderScale::Symlog, 1.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(render_scale_forward(RenderScale::Symlog, 1.0, 9.0), 1.0);
+    EXPECT_DOUBLE_EQ(render_scale_forward(RenderScale::Symlog, 1.0, -9.0), -1.0);
+    double last = -1e300;
+    for (double v = -100.0; v <= 100.0; v += 0.5) {
+        const double t = render_scale_forward(RenderScale::Symlog, 0.5, v);
+        EXPECT_GT(t, last);
+        last = t;
+    }
+}
+
+TEST(RenderField, PercentilesInterpolateBetweenRanks) {
+    std::vector<double> v = {5, 1, 4, 2, 3};
+    EXPECT_DOUBLE_EQ(detail::render_percentile(v, 0.0), 1.0);
+    EXPECT_DOUBLE_EQ(detail::render_percentile(v, 100.0), 5.0);
+    EXPECT_DOUBLE_EQ(detail::render_percentile(v, 50.0), 3.0);
+    EXPECT_DOUBLE_EQ(detail::render_percentile(v, 25.0), 2.0);
+    EXPECT_DOUBLE_EQ(detail::render_percentile(v, 10.0), 1.4);
+    std::vector<double> none;
+    EXPECT_TRUE(std::isnan(detail::render_percentile(none, 50.0)));
+}
+
+TEST(RenderField, LegendTicksAreRoundNumbers) {
+    using detail::render_legend_ticks;
+    EXPECT_EQ(render_legend_ticks(RenderScale::Linear, 1.0, 0.0, 1.0, 5),
+              (std::vector<double>{0.0, 0.2, 0.4, 0.6, 0.8, 1.0}));
+    EXPECT_EQ(render_legend_ticks(RenderScale::Log, 1.0, 0.5, 2000.0, 5),
+              (std::vector<double>{1.0, 10.0, 100.0, 1000.0}));
+    const std::vector<double> sym = render_legend_ticks(RenderScale::Symlog, 1.0, -120.0, 50.0, 5);
+    EXPECT_EQ(sym, (std::vector<double>{-100.0, -10.0, -1.0, 0.0, 1.0, 10.0}));
+    EXPECT_TRUE(render_legend_ticks(RenderScale::Linear, 1.0, 2.0, 2.0, 5).empty());
+}
+
+TEST(RenderField, ContourOfATriangleIsOneSegmentAndConsistentAcrossAnEdge) {
+    const double a[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    const double va[3] = {0.0, 1.0, 1.0};
+    double seg[6];
+    ASSERT_TRUE(detail::render_triangle_contour(a, va, 0.5, seg));
+    EXPECT_DOUBLE_EQ(seg[0], 0.5);  // on edge 0-1
+    EXPECT_DOUBLE_EQ(seg[3], 0.0);
+    EXPECT_DOUBLE_EQ(seg[4], 0.5);  // on edge 2-0
+    EXPECT_FALSE(detail::render_triangle_contour(a, va, 2.0, seg));
+    // A level through a vertex: the corner counts as above, so both triangles of
+    // a shared edge agree whether it is cut.
+    const double vb[3] = {0.5, 1.0, 0.0};
+    EXPECT_TRUE(detail::render_triangle_contour(a, vb, 0.5, seg));
+    const double nan3[3] = {0.0, std::nan(""), 1.0};
+    EXPECT_FALSE(detail::render_triangle_contour(a, nan3, 0.5, seg));
+}
+
+TEST(RenderField, PaletteHasTenDistinctColours) {
+    std::set<std::uint32_t> seen;
+    for (const auto& c : detail::render_category_palette())
+        seen.insert((std::uint32_t(c[0]) << 16) | (std::uint32_t(c[1]) << 8) | c[2]);
+    EXPECT_EQ(seen.size(), 10u);
+}
+
+// ---------------------------------------------------------------------------
+// Field rendering: through render()
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A unit square of n x n quads in z = 0 with a point array "x" equal to the
+// x coordinate, "y" to y, and a cell array "id" of 0..n*n-1.
+Mesh grid_square(int N) {
+    std::vector<std::vector<double>> pts;
+    for (int j = 0; j <= N; ++j)
+        for (int i = 0; i <= N; ++i)
+            pts.push_back({double(i) / N, double(j) / N, 0.0});
+    std::vector<std::vector<std::int64_t>> quads;
+    for (int j = 0; j < N; ++j)
+        for (int i = 0; i < N; ++i) {
+            const std::int64_t p = j * (N + 1) + i;
+            quads.push_back({p, p + 1, p + N + 2, p + N + 1});
+        }
+    Mesh m = make_mesh(pts, "quad", quads);
+    std::vector<std::vector<double>> xs, ys, ids;
+    for (const auto& p : pts) {
+        xs.push_back({p[0]});
+        ys.push_back({p[1]});
+    }
+    for (int c = 0; c < N * N; ++c)
+        ids.push_back({double(c)});
+    m.AddPointData("x", mt::points_from(xs));
+    m.AddPointData("y", mt::points_from(ys));
+    m.AddCellData("id", {mt::points_from(ids)});
+    return m;
+}
+
+RenderOptions top_view(int W = 64, int H = 64) {
+    RenderOptions o;
+    o.mWidth = W;
+    o.mHeight = H;
+    o.mView = "+z";
+    o.mShading = RenderShading::None;
+    return o;
+}
+
+std::size_t count_color(const Frame& rF, const RenderColor& rC) {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < rF.mRgba.size(); i += 4)
+        n += rF.mRgba[i] == rC[0] && rF.mRgba[i + 1] == rC[1] && rF.mRgba[i + 2] == rC[2] &&
+                     rF.mRgba[i + 3] == 255
+                 ? 1
+                 : 0;
+    return n;
+}
+
+NDArray cell_entries(const std::vector<std::int64_t>& rCells) {
+    NDArray a(DType::Int64, {rCells.size()});
+    for (std::size_t i = 0; i < rCells.size(); ++i)
+        a.As<std::int64_t>()[i] = rCells[i];
+    return a;
+}
+
+bool has_note(const Frame& rF, const std::string& rNeedle) {
+    for (const std::string& n : rF.mNotes)
+        if (n.find(rNeedle) != std::string::npos)
+            return true;
+    return false;
+}
+
+}  // namespace
+
+TEST(RenderFieldFrame, PercentileClipEqualsTheExplicitRange) {
+    // One huge outlier flattens the plot; clipping at 90 percent is the same
+    // picture as giving the range that percentile names.
+    Mesh m = grid_square(4);
+    std::vector<std::vector<double>> v;
+    for (int i = 0; i < 25; ++i)
+        v.push_back({i == 24 ? 1000.0 : double(i)});
+    m.AddPointData("u", mt::points_from(v));
+    RenderOptions clip = top_view();
+    clip.mColorBy = "u";
+    clip.mClipHigh = 90.0;
+    const Frame a = render(m, clip);
+    RenderOptions explicit_range = top_view();
+    explicit_range.mColorBy = "u";
+    explicit_range.mVMin = a.mVMin;
+    explicit_range.mVMax = a.mVMax;
+    const Frame b = render(m, explicit_range);
+    EXPECT_LT(a.mVMax, 100.0);
+    EXPECT_EQ(a.mRgba, b.mRgba);
+    clip.mClipLow = 90.0;
+    clip.mClipHigh = 10.0;
+    EXPECT_THROW(render(m, clip), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, SymmetricRangePutsZeroAtTheMidpoint) {
+    Mesh m = grid_square(4);
+    std::vector<std::vector<double>> v;
+    for (int i = 0; i < 25; ++i)
+        v.push_back({double(i) - 4.0});  // -4 .. 20
+    m.AddPointData("u", mt::points_from(v));
+    RenderOptions o = top_view();
+    o.mColorBy = "u";
+    o.mSymmetric = true;
+    o.mCmap = "coolwarm";
+    const Frame f = render(m, o);
+    // A face's value is the mean of its corners, so the extremes are not -4 and
+    // 20; what matters is the range is centred on zero.
+    EXPECT_GT(f.mVMax, 10.0);
+    EXPECT_DOUBLE_EQ(f.mVMin, -f.mVMax);
+}
+
+TEST(RenderFieldFrame, LogScaleRefusesANonPositiveRangeAndReportsIt) {
+    Mesh m = grid_square(2);  // four cells: cell data are drawn exactly
+    m.AddCellData("c", {mt::points_from({{1}, {10}, {100}, {1000}})});
+    RenderOptions o = top_view();
+    o.mColorBy = "c";
+    o.mScale = RenderScale::Log;
+    o.mColorbar = true;
+    const Frame f = render(m, o);
+    EXPECT_DOUBLE_EQ(f.mVMin, 1.0);
+    EXPECT_DOUBLE_EQ(f.mVMax, 1000.0);
+    EXPECT_TRUE(has_note(f, "log"));
+    EXPECT_TRUE(has_note(f, "ticks: 1, 10, 100, 1000"));
+    o.mVMin = 0.0;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, NonFiniteValuesAreCountedInTheNotes) {
+    Mesh m = grid_square(2);
+    m.AddPointData("u", mt::points_from({{1}, {2}, {3}, {std::nan("")}, {5}, {6}, {7}, {8}, {9}}));
+    RenderOptions o = top_view();
+    o.mColorBy = "u";
+    const Frame f = render(m, o);
+    EXPECT_TRUE(has_note(f, "no finite value"));
+}
+
+TEST(RenderFieldFrame, IsolinesOfXAreEquallySpacedVerticalLines) {
+    // 8 x 8 quads in the unit square, seen from +z, 80 pixels wide: the points
+    // x = 1/8 ... 7/8 are fixed by the grid, so the contour levels 1/4 .. 3/4
+    // (three of them) fall on columns a quarter, a half and three quarters of the way
+    // across the drawn square.
+    Mesh m = grid_square(8);
+    RenderOptions o = top_view(80, 80);
+    o.mColorBy = "x";
+    o.mIsolines = 3;
+    o.mIsoColor = {255, 0, 255, 255};
+    o.mCmap = "grey";
+    const Frame f = render(m, o);
+    std::vector<int> columns;
+    for (int x = 0; x < f.mWidth; ++x) {
+        int hits = 0;
+        for (int y = 0; y < f.mHeight; ++y) {
+            const std::uint8_t* p = f.mRgba.data() + (std::size_t(y) * f.mWidth + x) * 4;
+            hits += p[0] == 255 && p[1] == 0 && p[2] == 255 ? 1 : 0;
+        }
+        if (hits > f.mHeight / 2)
+            columns.push_back(x);
+    }
+    // Each line is one or two pixels wide; collapse neighbours.
+    std::vector<int> centres;
+    for (std::size_t i = 0; i < columns.size(); ++i)
+        if (i == 0 || columns[i] != columns[i - 1] + 1)
+            centres.push_back(columns[i]);
+    ASSERT_EQ(centres.size(), 3u);
+    EXPECT_NEAR(centres[1] - centres[0], centres[2] - centres[1], 1.5);
+    // They are vertical: no row of the lines is longer than a few pixels.
+    o.mIsoLevels = {0.5};
+    o.mIsolines = 0;
+    EXPECT_GT(count_color(render(m, o), {255, 0, 255, 255}), 20u);
+    // Contours of cell data are refused by name.
+    RenderOptions bad = top_view();
+    bad.mColorBy = "id";
+    bad.mIsolines = 2;
+    EXPECT_THROW(render(m, bad), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, ColoursByRegionsWithAKeyThatListsEmptyOnesToo) {
+    Mesh m = grid_square(2);  // four cells
+    m.AddRegion(Region("left", RegionKind::Cell, cell_entries({0, 2})));
+    m.AddRegion(Region("right", RegionKind::Cell, cell_entries({1, 3})));
+    m.AddRegion(Region("none", RegionKind::Cell, cell_entries({})));
+    RenderOptions o = top_view();
+    o.mColorRegions = true;
+    const Frame f = render(m, o);
+    EXPECT_TRUE(has_note(f, "region left: #0072b2 (2 cells)"));
+    // Regions come back in (kind, name) order, which fixes the palette order.
+    EXPECT_TRUE(has_note(f, "region none: #e69f00 (0 cells)"));
+    EXPECT_TRUE(has_note(f, "region right: #009e73 (2 cells)"));
+    EXPECT_GT(count_color(f, {0, 114, 178, 255}), 0u);
+    EXPECT_GT(count_color(f, {0, 158, 115, 255}), 0u);
+    EXPECT_EQ(count_color(f, {230, 159, 0, 255}), 0u);  // the empty region paints nothing
+    o.mCategoryEdges = true;
+    o.mEdgeColor = {255, 255, 255, 255};
+    EXPECT_GT(count_color(render(m, o), {255, 255, 255, 255}), 0u);
+    RenderOptions none = top_view();
+    none.mColorRegions = true;
+    EXPECT_THROW(render(grid_square(2), none), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, CategoricalDataGetsAKeyWithCounts) {
+    Mesh m = grid_square(2);
+    m.AddCellData("mat", {mt::points_from({{7}, {7}, {9}, {9}})});
+    RenderOptions o = top_view();
+    o.mColorBy = "mat";
+    o.mCategorical = true;
+    const Frame f = render(m, o);
+    EXPECT_TRUE(has_note(f, "mat = 7: #0072b2 (2 drawn faces)"));
+    EXPECT_TRUE(has_note(f, "mat = 9: #e69f00 (2 drawn faces)"));
+    EXPECT_FALSE(f.mColored);
+}
+
+TEST(RenderFieldFrame, ExpressionsAndTensorReductionsColourLikeArrays) {
+    Mesh m = grid_square(2);
+    m.AddPointData("u", mt::points_from({{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}}));
+    RenderOptions o = top_view();
+    o.mExpr = "u * 2";
+    const Frame f = render(m, o);
+    // Face values are corner means: the first quad's corners 0, 1, 3, 4 give 2,
+    // the last's 4, 5, 7, 8 give 6; doubled by the expression.
+    EXPECT_DOUBLE_EQ(f.mVMin, 4.0);
+    EXPECT_DOUBLE_EQ(f.mVMax, 12.0);
+    EXPECT_TRUE(has_note(f, "u * 2: 4 .. 12"));
+    o.mColorBy = "u";  // both: refused
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mExpr = "nope + 1";
+    o.mColorBy.clear();
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+
+    // A uniaxial tension of 5 everywhere: von Mises 5, hydrostatic 5/3, and
+    // principal values 0, 0, 5.
+    std::vector<std::vector<double>> tensor(9, {5, 0, 0, 0, 0, 0});
+    m.AddPointData("stress", mt::points_from(tensor));
+    RenderOptions r = top_view();
+    r.mColorBy = "stress";
+    r.mReduce = "mises";
+    EXPECT_NEAR(render(m, r).mVMax, 5.0, 1e-12);
+    r.mReduce = "hydrostatic";
+    EXPECT_NEAR(render(m, r).mVMax, 5.0 / 3.0, 1e-12);
+    r.mReduce = "principal";
+    EXPECT_NEAR(render(m, r).mVMax, 5.0, 1e-12);
+    r.mComponent = 0;
+    EXPECT_NEAR(render(m, r).mVMax, 0.0, 1e-12);
+    r.mReduce = "nonsense";
+    EXPECT_THROW(render(m, r), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, WarpMovesThePointsAndDrawsTheOutline) {
+    Mesh m = grid_square(2);
+    std::vector<std::vector<double>> d;
+    for (int i = 0; i < 9; ++i)
+        d.push_back({0.0, 0.0, 0.5});
+    m.AddPointData("u", mt::points_from(d));
+    RenderOptions base = top_view();
+    base.mView = "+x";  // from the side a lift in z is visible
+    const Frame before = render(m, base);
+    RenderOptions o = base;
+    o.mWarp = "u";
+    o.mWarpOutline = true;
+    o.mOutlineColor = {255, 0, 0, 255};
+    const Frame after = render(m, o);
+    EXPECT_NE(before.mRgba, after.mRgba);
+    EXPECT_GT(count_color(after, {255, 0, 0, 255}), 0u);
+    EXPECT_TRUE(has_note(after, "warp: u x 1, undeformed outline"));
+    o.mWarp = "nope";
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, VectorsDrawArrowsInTheirColour) {
+    Mesh m = grid_square(4);
+    std::vector<std::vector<double>> v(25, {0.0, 1.0, 0.0});
+    m.AddPointData("v", mt::points_from(v));
+    RenderOptions o = top_view(120, 120);
+    o.mVectors = "v";
+    o.mVectorCount = 9;
+    o.mVectorColor = {255, 0, 0, 255};
+    const Frame f = render(m, o);
+    EXPECT_GT(count_color(f, {255, 0, 0, 255}), 30u);
+    EXPECT_TRUE(has_note(f, "vectors: v, 9 arrows"));
+    o.mVectorLength = 0.05;
+    EXPECT_GT(count_color(render(m, o), {255, 0, 0, 255}), 10u);
+}
+
+TEST(RenderFieldFrame, ADiagnosticShowsAFlippedTriangle) {
+    // Two triangles on a square; the second is wound the other way, so seen
+    // from +z one is a front face and one a back face.
+    Mesh m =
+        make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "triangle", {{0, 1, 2}, {0, 2, 3}});
+    RenderOptions o = top_view();
+    o.mDiagnostic = RenderDiagnostic::Orientation;
+    Frame f = render(m, o);
+    EXPECT_GT(count_color(f, {70, 130, 230, 255}), 0u);
+    EXPECT_EQ(count_color(f, {230, 140, 40, 255}), 0u);
+    Mesh flipped =
+        make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "triangle", {{0, 1, 2}, {0, 3, 2}});
+    f = render(flipped, o);
+    EXPECT_GT(count_color(f, {70, 130, 230, 255}), 0u);
+    EXPECT_GT(count_color(f, {230, 140, 40, 255}), 0u);
+    EXPECT_TRUE(has_note(f, "orientation:"));
+}
+
+TEST(RenderFieldFrame, OtherDiagnostics) {
+    Mesh m =
+        make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "triangle", {{0, 1, 2}, {0, 2, 3}});
+    RenderOptions o = top_view();
+    o.mDiagnostic = RenderDiagnostic::FreeEdges;
+    Frame f = render(m, o);
+    EXPECT_GT(count_color(f, {235, 140, 0, 255}), 0u);  // the open boundary
+    EXPECT_TRUE(has_note(f, "free edges: 4 open"));
+
+    o = top_view();
+    o.mDiagnostic = RenderDiagnostic::EdgeLength;
+    f = render(m, o);
+    EXPECT_TRUE(f.mColored);
+    EXPECT_TRUE(has_note(f, "edge length:"));
+
+    o = top_view();
+    o.mDiagnostic = RenderDiagnostic::Quality;
+    o.mQualityMetric = "scaled_jacobian";
+    f = render(m, o);
+    EXPECT_TRUE(f.mColored);
+    o.mQualityMetric = "bogus";
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mQualityMetric.clear();
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+
+    // A triangle wound against its neighbour's orientation is "inverted" only
+    // by signed area in a 3-D sense, so just check the flag path runs and keys.
+    o = top_view();
+    o.mDiagnostic = RenderDiagnostic::Degenerate;
+    f = render(m, o);
+    EXPECT_TRUE(has_note(f, "degenerate: 0 drawn faces in red"));
+    o.mColorBy = "x";
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(RenderFieldFrame, ColoursOfTheOriginalFieldAreUnchangedByTheNewOptions) {
+    // The v16.33.0 behaviour is the default of v16.34.0: same bytes.
+    Mesh m = grid_square(4);
+    RenderOptions a = top_view();
+    a.mColorBy = "x";
+    a.mColorbar = true;
+    RenderOptions b = a;
+    b.mScale = RenderScale::Linear;
+    b.mSymmetric = false;
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
 }
