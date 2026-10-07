@@ -835,6 +835,20 @@ BASELINE=before.csv CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh after.csv "S
 
 The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and 4 threads on every pull request. The digest is also available to the C++ tests (`src/cpp/benchmark/mesh_digest.hpp`), where golden digests pin an operation's output across a rewrite.
 
+## Landing a performance change
+
+A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).
+
+Two findings frame every change. First, **the serial phases in the operations are deliberate**: each is documented in the code as a determinism pin, not an oversight — output is byte-identical across parallel backends and thread counts, which repeated-run tests and the C++-versus-numpy byte comparisons enforce — so every fix must keep that guarantee and prove it with a SEQ-versus-OpenMP diff, not assert it. Second, **every parallel item is conditional on the backend**: a SEQ build (and the `stl` fallback without TBB) runs `parallel_for` sequentially, so each change must also show that SEQ does not get slower — a parallel sort is O(n log n) where the hash map it replaces is O(n). SEQ is not a corner case: the Linux wheels and the native CLI release binaries are built SEQ, and WASM ships a SEQ build beside the threaded one, so an algorithmic win reaches every user while a parallel one reaches source, conda and threaded-WASM builds.
+
+Every change:
+
+1. Record the before on SEQ, OpenMP and TBB at 1, 4 and 8 threads: `tools/bench_ops.sh before.csv "SEQ OPENMP TBB" "1 4 8" -- --hash --ops <op> --tier M --tier L`, or `benchmark/bench.py --sizes M,L --formats <format>`.
+2. Show the output is byte-identical across backends and thread counts, and to the digests before the change: `meshioplusplus_bench_ops --hash`, with `BASELINE=before.csv` for the second sweep ([determinism check](#determinism-check)). The rows each item needs exist since v16.15.0; an item whose operation has none adds one first.
+3. Show SEQ is not slower.
+4. Classify the change by the [ABI policy](./abi.md): the body of an exported, non-inline function is free; an inline or template body in an installed header is Tier B; a new function in an installed header is additive and goes in the [ABI review](./abi_reviews.md); a changed signature, or the layout of an installed type, is Tier A. Regenerate the single header.
+5. Correct every code comment that describes the old algorithm (the items name the stale ones), and update the numbers on this page.
+
 ## Clang-Tidy performance audit
 
 `tools/performance-tidy.sh` runs the installed Clang-Tidy's built-in [`performance-*` checks](https://clang.llvm.org/extra/clang-tidy/checks/list.html) as an advisory audit, independently of `.clang-tidy`'s include-hygiene gate. It never applies fixes. Findings are candidates, not measured speedups: a cheap `CellView` value is intentional, clones must retain their ownership semantics, and changing a public enum's width, signature or installed inline body needs the [ABI policy](./abi.md), even when the tool offers a replacement.
@@ -913,7 +927,7 @@ Native C++ tests cover ASCII/binary output and an explicit triangle/quad zone on
 
 ## In CI
 
-The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Successful default-branch runs also publish immutable records with commit, run/attempt, machine, compiler, dependencies and benchmark parameters to `benchmark-data`; the [benchmark trends page](./benchmark_trends.md) plots that history through the existing Pages deployment. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every [performance](./roadmap.md#_3-performance) item on the roadmap is expected to show its before and after with these tools.
+The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Successful default-branch runs also publish immutable records with commit, run/attempt, machine, compiler, dependencies and benchmark parameters to `benchmark-data`; the [benchmark trends page](./benchmark_trends.md) plots that history through the existing Pages deployment. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every performance change is expected to show its before and after with these tools ([landing a performance change](#landing-a-performance-change)).
 
 ## Mesh-backend benchmarks
 
