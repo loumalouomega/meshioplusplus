@@ -64,6 +64,7 @@ _JS_ONLY = {
     "topologicalDimension": "bulk map; C exposes mio_cell_type_dimension per cell type",
     "convertSurface": "WASM/browser rendering convenience, no C entry point",
     "convertSurfaceOps": "WASM/browser rendering convenience, no C entry point",
+    "surfaceBuffersOps": "browser rendering: vtk.js-shaped typed arrays, no C entry point",
     "createXdmfTimeSeriesWriter": "composes mio_xdmf_series_* (see _RAW_ONLY)",
     "createExodusTimeSeriesWriter": "composes mio_exodus_series_* (see _RAW_ONLY)",
     "medMeshNames": "bulk listing over mio_med_mesh_count/mio_med_mesh_name",
