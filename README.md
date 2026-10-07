@@ -277,7 +277,7 @@ annotated = meshioplusplus.attach_quality(mesh)
 meshioplusplus.write(
     "quality.svg", annotated,
     color_by="quality:scaled_jacobian",   # or any point_data / cell_data name
-    cmap="viridis",                       # viridis / coolwarm / turbo
+    cmap="viridis",                       # viridis / coolwarm / turbo / magma / … (and *_r)
     colorbar=True,
 )
 ```
@@ -858,6 +858,29 @@ See [the viewer docs](https://loumalouomega.github.io/meshioplusplus/viewer.html
 </details>
 
 <details>
+<summary><b>Terminal rendering</b> — a deterministic software rasterizer: draw a mesh in a terminal, a PNG, HTML or asciinema recording with no display or GPU (click to expand)</summary>
+
+### Terminal rendering
+
+Where there is no window, browser or GPU — an SSH session on a login node, a container, a CI log — `snapshot` draws the mesh anyway. A dependency-free software rasterizer (depth buffer, flat or smooth shading, element or feature edges, a mapped data field with a colour bar) turns it into pixels, and the pixels into Unicode block characters with terminal colours, a PNG, an HTML page or an [asciinema](https://asciinema.org) orbit. The output is the same bytes on every platform, thread count and CLI.
+
+```sh
+meshioplusplus snapshot part.vtu -                                    # draw it in this terminal
+meshioplusplus snapshot result.vtu - --color-by temperature --colorbar --encoding braille
+meshioplusplus snapshot part.vtu part.png --edges feature --axes      # a PNG, no display needed
+```
+
+```python
+print(meshioplusplus.render_text(mesh, color_by="temperature"))      # ANSI text for this terminal
+image = meshioplusplus.render_image(mesh, 800, 600, supersample=2)   # an (H, W, 4) uint8 array
+meshioplusplus.snapshot(mesh, "part.png", edges="all")               # .png .txt .ansi .html .cast
+```
+
+It is a preview, not a replacement for the viewers above; `screenshot()` falls back to it when Polyscope is not installed, and the MCP server's `render_mesh` tool lets an agent look at a mesh. See [`doc/tui.md`](doc/tui.md).
+
+</details>
+
+<details>
 <summary><b>Interoperability</b> — PyVista/trimesh, Arrow/Parquet/pandas/polars, GPU handoff, ML graphs/features/datasets, PhysicsNeMo, grids, point clouds, proximity graphs (click to expand)</summary>
 
 ### Interoperability
@@ -1140,7 +1163,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.32.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.33.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

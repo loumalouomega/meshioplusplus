@@ -195,6 +195,7 @@ export default defineConfig({
           { text: "CLI reference", link: "/cli" },
           { text: "MCP server", link: "/mcp" },
           { text: "Interactive viewer", link: "/viewer" },
+          { text: "Terminal rendering", link: "/tui" },
         ],
       },
       {

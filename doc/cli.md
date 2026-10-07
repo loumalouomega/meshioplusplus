@@ -57,7 +57,7 @@ Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step i
 |--------|-------------|
 | `--color-by NAME` | `point_data` or `cell_data` array to colour the faces by |
 | `--component I` | Component of a multi-component array (default: its magnitude) |
-| `--cmap NAME` | `viridis` (default), `coolwarm` or `turbo` |
+| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma` or `grey`, or a reversed `_r` variant of any |
 | `--vmin V` / `--vmax V` | Colour range (default: the drawn faces' finite range) |
 | `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
 | `--colorbar` | Append a gradient bar with min/max labels (SVG/TikZ only) |
@@ -1010,6 +1010,51 @@ meshioplusplus feature-edges part.stl part_edges.vtp --angle 45
 
 ---
 
+## meshioplusplus snapshot
+
+Draw a mesh with the [software rasterizer](/tui): in this terminal, or into a `.png`, `.txt`, `.ansi`, `.html` or `.cast` file. It needs no display, GPU or browser, so it works over SSH, in a container and in a CI log, in the native release binaries as well as the Python CLI. The two CLIs take the same flags and write the same bytes.
+
+```
+meshioplusplus snapshot [options] INFILE OUTFILE
+```
+
+`OUTFILE` is `-` for this terminal; otherwise its extension picks the form.
+
+| Option | Description |
+|--------|-------------|
+| `--width N` / `--height N` | PNG size in pixels (default `800` x `600`) |
+| `--cols N` / `--rows N` | Text size in cells (this terminal's, less one row, for `-`; otherwise `100` x `40`) |
+| `--encoding NAME` | `halfblock` (default), `quadrant`, `sextant`, `braille`, `ascii`, or the graphics protocols `kitty`, `iterm2`, `sixel` |
+| `--color-depth NAME` | `auto` (from `NO_COLOR`, `COLORTERM`, `TERM`; the default for `-`), `truecolor` (the default for files), `256`, `16` or `mono` |
+| `--cell-aspect R` | Height over width of a terminal cell (default `2`, or the terminal's own when it reports its pixel size) |
+| `--tmux` | Wrap a graphics protocol for tmux passthrough; one is refused inside tmux without it |
+| `--no-notes` | Do not print the colour range and scale bar under a text picture |
+| `--view NAME` | `iso`, `+x`, `-x`, `+y`, `-y`, `+z`, `-z`: the side the camera sits on |
+| `--azimuth DEG` / `--elevation DEG` / `--roll DEG` | The camera direction (default: isometric); exclusive with `--view` |
+| `--perspective` / `--fov DEG` | A pinhole camera, and its vertical field of view (default `30`) |
+| `--zoom R` / `--pan-x R` / `--pan-y R` | Magnify the fitted view; shift it by a fraction of the frame |
+| `--shading NAME` | `none`, `flat` (default) or `smooth`; `--one-sided`, `--ambient R` (default `0.25`), `--split-angle DEG` (default `30`) |
+| `--edges NAME` | `none` (default), `all` element edges, or the `feature` edges (`--feature-angle DEG`) |
+| `--edge-color` / `--fill` / `--line-color` / `--background` | `#rrggbb`, `#rrggbbaa` or `none` (transparent) |
+| `--point-radius R` | Disc radius of drawn points, in pixels |
+| `--supersample N` | `1` (default), `2` or `4` samples per pixel along each axis |
+| `--axes` / `--scale-bar` | Draw the world axes; a scale bar (orthographic only) |
+| `--color-by NAME` | Colour by a point or cell data array; with `--component`, `--cmap`, `--vmin`, `--vmax`, `--nan-color`, `--colorbar` as for `convert` |
+| `--png-compress 1..9` | Compress a PNG through zlib (default: stored blocks, the same bytes everywhere) |
+| `--cast-frames N` / `--cast-fps R` / `--cast-degrees DEG` | An asciicast orbit: frame count (`36`), rate (`12`), sweep (`360`) |
+| `--input-format` (`-i`) | Force the input format |
+
+```sh
+meshioplusplus snapshot part.vtu -                                   # in this terminal
+meshioplusplus snapshot part.vtu part.png --edges feature --axes
+meshioplusplus snapshot result.vtu - --color-by temperature --colorbar --cmap turbo --encoding braille
+meshioplusplus snapshot part.vtu orbit.cast --cast-frames 72        # asciinema play orbit.cast
+```
+
+Without Polyscope (always, in the release binaries) `screenshot` draws its PNG through the same rasterizer, and `view` points at `snapshot`.
+
+---
+
 ## meshioplusplus hausdorff
 
 Print the Hausdorff distance between the surfaces of two meshes — how far apart they are at their worst (see [Hausdorff distance](/hausdorff)).
@@ -1635,7 +1680,7 @@ git submodule update --init --recursive     # Polyscope vendors its own submodul
 build/configure.sh --cli --with-polyscope --build
 ```
 
-They are listed in `--help` in every build; without the flag they report it rather than silently not existing. The **prebuilt release binaries do not include the viewer** — they are deliberately dependency-free single files, and Polyscope needs OpenGL, GLFW and X11. Use the Python CLI (`pip install meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you would rather not build from source.
+They are listed in `--help` in every build; without the flag `view` reports it (and points at [`snapshot`](#meshioplusplus-snapshot), which draws in a terminal with no viewer), and `screenshot` draws its PNG with the same software rasterizer instead of failing, noting that on stderr. The **prebuilt release binaries do not include the viewer** — they are deliberately dependency-free single files, and Polyscope needs OpenGL, GLFW and X11 — so they use `snapshot`. Use the Python CLI (`pip install meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you want an interactive window without building from source.
 
 ## `voxelize`
 
