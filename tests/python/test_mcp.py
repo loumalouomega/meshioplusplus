@@ -2024,20 +2024,23 @@ def test_server_error_payload_shape(tmp_path):
     assert "input file not found" in report["error"]
 
 
-def test_server_gated_tool_names_the_extra(mesh_file, tmp_path):
-    if meshioplusplus.has_viewer():
-        pytest.skip("polyscope installed; the gated error path is not reachable")
+def test_server_screenshot_falls_back_to_the_software_rasterizer(
+    mesh_file, tmp_path, monkeypatch
+):
+    # `screenshot` is polyscope-first, but without it (the common case on a
+    # server) it draws the PNG with the software rasterizer instead of failing.
+    pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus import _viewer
+
+    monkeypatch.setattr(_viewer, "has_viewer", lambda: False)
     server = _server()
-    report = _tool_json(
-        _run(
-            server.call_tool(
-                "screenshot",
-                {"input_path": mesh_file, "output_path": str(tmp_path / "s.png")},
-            )
-        )
+    out = str(tmp_path / "s.png")
+    result = _run(
+        server.call_tool("screenshot", {"input_path": mesh_file, "output_path": out})
     )
-    assert report["error_type"] == "ImportError"
-    assert "polyscope" in report["error"]
+    content = result[0] if isinstance(result, tuple) else result
+    assert any(getattr(c, "type", "") == "image" for c in content)
+    assert open(out, "rb").read(8) == b"\x89PNG\r\n\x1a\n"
 
 
 def test_server_resources():

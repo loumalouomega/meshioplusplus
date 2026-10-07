@@ -189,7 +189,7 @@ Jobs on the machine the server runs on (see [the dashboard](./dashboard#launchin
 | `data_export` | `[arrow]` | data arrays → Parquet table |
 | `export_dataset` | `[arrow]` (`[zarr]`/h5py for those layouts) | a *set* of meshes → one `mesh_id`-keyed dataset (hive Parquet / zarr / hdf5; see [ML data handling](/ml)) |
 | `export_cae` | — | a *set* of meshes → one `.npz` per case in the [CAE sample layout](/formats/cae) (pure numpy, no extra) |
-| `screenshot` | `[viewer]` | off-screen PNG render, returned as MCP image content |
+| `screenshot` | `[viewer]` | off-screen PNG render, returned as MCP image content; without the extra the software rasterizer draws it (`render_mesh` takes its options) |
 | `train_start`, `train_predict`, `predict_file` | `nvidia-physicsnemo`, plus `torch_geometric` for the `meshgraphnet` family (no pip extra, [deliberately](physicsnemo.md#installation-deliberately-no-physicsnemo-extra)) | training and inference; the other `train_*` tools only read files and need neither. `train_defaults` reports which of `torch_geometric`/`physicsnemo`/`deeponet` (the experimental `DeepONet`) the server has |
 
 ## Reports are strict JSON

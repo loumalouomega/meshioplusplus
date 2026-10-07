@@ -3110,8 +3110,9 @@ def _register_gated(server: FastMCP) -> None:
         transparent: bool = False,
     ):
         """Render an off-screen PNG screenshot of the mesh (optionally colored
-        by a data array). Needs the [viewer] extra (polyscope); a missing
-        install returns a named error."""
+        by a data array). Uses polyscope when the [viewer] extra is installed
+        (size and transparent apply to it); otherwise the software rasterizer
+        draws the picture (see render_mesh for its options)."""
         try:
             report = _tools.tool_screenshot(
                 input_path=input_path,
