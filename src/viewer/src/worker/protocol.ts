@@ -7,21 +7,23 @@
  *
  * ## Why operations are a *pipeline*, not a sequence of mutations
  *
- * Every mesh operation in the WASM API takes and returns a JS `Mesh`, whose
- * flat representation cannot carry multi-component (vector/tensor) arrays. So
- * applying an operation through that API would silently destroy exactly the
- * data the display path goes out of its way to preserve.
+ * Every mesh operation in the WASM API takes and returns a JS `Mesh`, so
+ * applying operations one by one would copy the whole mesh into JS and back on
+ * every step.
  *
  * Instead the worker keeps the **original file bytes** staged for the life of
  * the session and replays the whole pipeline in C++ on every change, through
- * one `convertSurfaceOps` call. Three consequences, all good:
+ * one `surfaceBuffersOps` call that hands back only the surface to draw, as
+ * the typed arrays a `vtkPolyData` is built from. Three consequences, all good:
  *
- * - nothing is ever lost, because no mesh crosses the JS boundary;
+ * - no volume mesh crosses the JS boundary, only the surface on its way out;
  * - **undo is exact** — pop the last op and replay from pristine bytes, with
  *   no inverse operations and no snapshots;
  * - the display path and the post-operation display path are literally the
  *   same call, so they cannot drift.
  */
+
+import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
 import type { Vector3 } from '../types';
 
@@ -247,7 +249,8 @@ export interface InitResult {
 }
 
 export interface RenderResult {
-    vtp: ArrayBuffer;
+    /** The surface to draw; every typed array's buffer is transferred. */
+    surface: SurfaceBuffers;
     meta: MeshMeta;
     format: string;
     report: OpReport;

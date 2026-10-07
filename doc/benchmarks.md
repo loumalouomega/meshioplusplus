@@ -351,6 +351,17 @@ These timings are **neutral**. Across the thirty writer cells the median change 
 
 The first run of this matrix stopped when its background time limit was reached after all fourteen main stages; the two confirmation rounds were then run from the same modules. `test_text_io_dtypes.cpp` and `test_text_io_dtypes.py` extend the earlier batches to these writers: EnSight (ASCII and binary), FLAC3D (ASCII and binary), DEX, MFM, Marc, LS-DYNA, MFEM, MFF and XYZ byte for byte, and VTP, VTKHDF, H5M and XDMF, which record dtypes in the file, by round-tripped values. H5M stores connectivity as Int32/Int64/UInt32/UInt64 only, so its round-trip test skips the other index dtypes.
 
+### WASM size after dtype hoisting
+
+Roadmap §3.1.2. Each `dispatch_dtype` site instantiates its body once per dtype, so the hoisting batches could have grown the WASM artifacts. The `wasm.yml` job's *Report artifact size* step answers it: v16.30.0, released before any batch, against v16.31.0, which carries all six.
+
+| Artifact | v16.30.0 | v16.31.0 | Change |
+| --- | ---: | ---: | ---: |
+| `meshioplusplus_wasm.wasm` (SEQ) | 12,240,518 B | 12,229,812 B | −10,706 B (−0.09%) |
+| `meshioplusplus_wasm_mt.wasm` (threaded) | 12,966,704 B | 12,961,386 B | −5,318 B (−0.04%) |
+
+Both artifacts shrank (v16.31.0 also carries the text-cursor readers, so the figure is the net of both), so no site falls back to one converting view. The figures come from the `wasm.yml` runs of the two tag pushes, 37109655002 and 37301176188.
+
 ### Dtype-hoisted gradient, diff, refine and convert_cells loops
 
 Roadmap §3.3.2. `gradient`'s per-cell loader (`grad_load_cell`) read each corner's node id, coordinates and field values through `read_int`/`read_double`, and `diff` did the same per element for its array comparison, its cell connectivity and its unordered point correspondence; `refine` and `convert_cells` (`Elevate` and the subdividing modes) wrote each new point and point-data value through `write_double`. Each of those switched on the dtype once per value. Now each array is taken once through the existing `Int64View`/`DoubleView`, and the writes go through `DoubleSink`, a new write-side twin in the core-private `detail/typed_view.hpp`: a hot loop stores into a plain `double*`, and one `Commit()` converts the appended range into the destination with exactly `write_double`'s rounding and saturation. On a float64 destination the sink is the array itself and `Commit()` does nothing. The sink covers only the appended rows, so the copied originals are never round-tripped through `double` (that would corrupt an int64 array's large values). The changes are in `.cpp` bodies and a private header; installed headers and C++ ABI 22 are unchanged. `partition`'s dual-graph map was the only leftover of the roadmap item; it is [flat](#flat-dual-graph-in-partition) now.
@@ -695,6 +706,15 @@ Roadmap §3.2.2. The four `performance-inefficient-vector-operation` diagnostics
 
 **SEQ is not slower, and not faster.** Interleaved, six rounds, tier M, median (best): `agglomerate` 0.635 (0.581) → 0.633 (0.593) s, `find_interface` 0.488 (0.447) → 0.490 (0.444) s, `region_adjacency` 0.512 (0.437) → 0.472 (0.447) s. The medians move less than the spread between rounds, so these reserves are a clean audit and a tidier allocation pattern, not a measured speedup: the vectors involved are patch- or block-sized.
 
+### Reserved output in the formats
+
+Roadmap §3.2.2, the last of it. A fresh audit of the formats (Clang-Tidy 23.1.1, 2026-10-07) still listed the 44 `performance-inefficient-vector-operation` diagnostics of the first count, in 23 translation units; each now reserves before its loop. The rule was a bound the code already holds, never a count read from a file on its own, and the sites sort into two kinds:
+
+- **39 with an exact bound in hand**: the size of the container the loop walks (a record's words in Abaqus `.fil`, the tokens of a FEBio facet, the result sets of Femap and OP2, Marc's increments, MFEM's face and element lists, the sizes of xplt's blocks, the regions or blocks of the mesh being written in LS-DYNA, VTK, VTKHDF, UNV and Tecplot, and the like), a fixed ten (an LS-DYNA element's node fields) or, for the Ansys `.rst` sector rotations, the sector count the reader already allocates two vectors of.
+- **5 from a count the file declares**, each clamped by what the input can hold: the three Ansys `.rst` DOF label lists (by the header record's length; `rst_solution` already rejects a larger count before the other two run), libMesh's `IntVector` (by the input's size over the narrowest item, `Width` bytes in XDR and two in text), MFEM's communication-group ranks (by the lexer's remaining tokens) and Radioss animation's `Texts` (by the bytes left over each text's width, the bound `Take` enforces; a new `AnimCursor::Remaining()`). A corrupt count therefore reserves no more than the file could fill, and the reader still fails where it failed before.
+
+The rescan of the changed files reports no `performance-inefficient-vector-operation` diagnostic. The meshes read back by a write and read of the 17 touched formats `benchmark/bench.py` round-trips (tier M, a point scalar, a point vector and a cell scalar added) have the same digests before and after, and so do the written files except VTKHDF's, whose HDF5 object timestamps differ between two writes of the same mesh anyway. Timings are neutral: tier M, five repeats, every read and write within ±8% both ways (measured beside a concurrent build), as expected for lists that are mostly a handful of entries. The touched readers' tests and fuzz regressions pass under AddressSanitizer and UndefinedBehaviorSanitizer. Changes are in `.cpp` bodies: installed headers and C++ ABI 23 are unchanged.
+
 ### Lazy format and operation imports
 
 Roadmap §3.4.2. `import meshioplusplus` used to import all 77 format subpackages, about 130 operation and helper modules and the `_core` extension: 556 modules. Formats register themselves when imported, so the package now carries a generated table of which subpackage registers which format name and extension (`_format_table.py`, written by `tools/gen_format_table.py` and checked by `test_format_table.py`), and `read` and `write` import only the subpackages their path or format name selects. The three registries are read-through: a public read (`reader_map`, `extension_to_filetypes`, `formats()`, or the error message that lists every writer) imports the rest first, so each still shows every format, in the same order for the extensions several formats share. Operations and submodules load through a module `__getattr__` (PEP 562); `__all__` is unchanged, so `from meshioplusplus import *` loads everything. Importing the package now loads 221 modules, none of them `_core`, and numpy is most of what is left.
@@ -727,6 +747,31 @@ Roadmap §3.4.5.1. The viewer's worker writes every operation result as a zlib-c
 | 980 000 | raw, 8-byte header | 104.6 MB | | 3014.5 ms | 3165.1 ms |
 
 The 8-byte-header file has no native writer yet (`header_type` falls back to the Python reference writer), so its write column is empty and the last column pairs its parse with the native 4-byte-header write, which differs only in the header. Two results. First, vtk.js reads the uncompressed 8-byte-header file and rejects the 4-byte one (`start offset of Float64Array should be a multiple of 8`), as the roadmap predicted. Second, skipping the inflate does not speed up the parse: vtk.js is 10 to 26% slower on the uncompressed file, because the XML text and base64 decode double with the bytes and fflate's inflate is a small part of its time. What an uncompressed file saves is the producer-side compression, 3.5 to 21% of write plus parse here. The worker's `applyOps` (read, operations, write) was not measured, because there is no WASM toolchain in the development container, and an uncompressed result is twice the size to hold and transfer.
+
+### A typed-array channel for the browser viewer
+
+Roadmap §3.4.5, which closes with it, and 3.4.5.1 above, which it supersedes: there is no VTP left on the viewer's render path to compress or not. The worker calls `surfaceBuffersOps` instead of `convertSurfaceOps`, which runs the same read, pipeline and surface extraction and returns the surface as the typed arrays a `vtkPolyData` is built from, numbered as the VTP file numbers its cells ([WASM](./wasm.md#handing-the-surface-to-a-renderer-as-arrays)). `benchmark/viewer_surface.mjs` times both paths on one WASM build and checks, before timing, that the two `vtkPolyData` hold the same points, cells and arrays value for value: the old path is `convertSurfaceOps` to a zlib VTP and `FS.readFile` in the worker, then `XMLPolyDataReader` on the main thread; the new one is `surfaceBuffersOps` in the worker, then the `vtkPolyData` built as `Renderer.loadSurface` builds it. The inputs are the zlib surfaces of the table above and `bench.py`'s tetrahedral grids at tiers M and L written as VTU with a point vector, a point scalar and a cell scalar. SEQ WASM build (Emscripten 6.0.9), Node 26, vtk.js 32.9.0, median of five, empty pipeline with `keepProvenance`:
+
+| Input | Cells drawn | Read | VTP: worker + main | Arrays: worker + main | Speed-up |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| surface, 20 000 triangles | 20 000 | 7.8 ms | 52.3 + 30.4 = 82.7 ms | 8.2 + 0.3 = 8.4 ms | 9.8× |
+| surface, 180 000 triangles | 180 000 | 72.4 ms | 491.3 + 254.1 = 745.3 ms | 75.1 + 0.2 = 75.4 ms | 9.9× |
+| surface, 980 000 triangles | 980 000 | 406.0 ms | 2724.5 + 1357.3 = 4081.7 ms | 409.6 + 0.2 = 409.8 ms | 10.0× |
+| tetrahedra, tier M (257 250) | 14 700 | 27.0 ms | 90.5 + 12.6 = 103.1 ms | 70.5 + 0.1 = 70.7 ms | 1.5× |
+| tetrahedra, tier L (998 250) | 36 300 | 101.6 ms | 326.8 + 31.7 = 358.5 ms | 276.2 + 0.2 = 276.3 ms | 1.3× |
+
+*Read* is `readMesh` of the same file, which also copies the mesh into JavaScript, so it bounds the read from above. On a surface input the new worker half is the read and little else, and the main-thread half is a fraction of a millisecond at every size: the VTP's write (zlib), its base64 and inflate and vtk.js's XML parse were nine tenths of the old path. On a volume the surface is small and the skin extraction dominates, so the gain is the VTP's share of a smaller total. The main-thread half is what a user feels as a frozen page, and it falls from 13 ms–1.36 s to under 0.3 ms.
+
+**The replay stays.** Every apply re-reads the file and replays the whole pipeline, which is what makes undo exact (a shortened pipeline replayed from pristine bytes). With the VTP gone, the read is a visible share of an apply. The same build, with `surfaceBuffersOps` timed against the read bound above:
+
+| Input | `quality` | `smooth`, 10 Laplacian passes | both |
+| --- | ---: | ---: | ---: |
+| surface, 180 000 triangles | 69% of 105 ms | 26% of 276 ms | 24% of 305 ms |
+| surface, 980 000 triangles | 69% of 566 ms | 25% of 1543 ms | 22% of 1742 ms |
+| tetrahedra, tier M | 20% of 135 ms | 2% of 1099 ms | 2% of 1159 ms |
+| tetrahedra, tier L | 20% of 518 ms | 2% of 4611 ms | 2% of 4864 ms |
+
+The read dominates only the cheapest operation on a large surface. Caching a read mesh, or a prefix of the pipeline, between applies would hold a second copy of the mesh in a 32-bit heap that MEMFS already shares with the staged file, and would make undo depend on cache invalidation; the roadmap records it as not taken.
 
 ## Every format
 
@@ -790,6 +835,20 @@ BASELINE=before.csv CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh after.csv "S
 
 The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and 4 threads on every pull request. The digest is also available to the C++ tests (`src/cpp/benchmark/mesh_digest.hpp`), where golden digests pin an operation's output across a rewrite.
 
+## Landing a performance change
+
+A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).
+
+Two findings frame every change. First, **the serial phases in the operations are deliberate**: each is documented in the code as a determinism pin, not an oversight — output is byte-identical across parallel backends and thread counts, which repeated-run tests and the C++-versus-numpy byte comparisons enforce — so every fix must keep that guarantee and prove it with a SEQ-versus-OpenMP diff, not assert it. Second, **every parallel item is conditional on the backend**: a SEQ build (and the `stl` fallback without TBB) runs `parallel_for` sequentially, so each change must also show that SEQ does not get slower — a parallel sort is O(n log n) where the hash map it replaces is O(n). SEQ is not a corner case: the Linux wheels and the native CLI release binaries are built SEQ, and WASM ships a SEQ build beside the threaded one, so an algorithmic win reaches every user while a parallel one reaches source, conda and threaded-WASM builds.
+
+Every change:
+
+1. Record the before on SEQ, OpenMP and TBB at 1, 4 and 8 threads: `tools/bench_ops.sh before.csv "SEQ OPENMP TBB" "1 4 8" -- --hash --ops <op> --tier M --tier L`, or `benchmark/bench.py --sizes M,L --formats <format>`.
+2. Show the output is byte-identical across backends and thread counts, and to the digests before the change: `meshioplusplus_bench_ops --hash`, with `BASELINE=before.csv` for the second sweep ([determinism check](#determinism-check)). The rows each item needs exist since v16.15.0; an item whose operation has none adds one first.
+3. Show SEQ is not slower.
+4. Classify the change by the [ABI policy](./abi.md): the body of an exported, non-inline function is free; an inline or template body in an installed header is Tier B; a new function in an installed header is additive and goes in the [ABI review](./abi_reviews.md); a changed signature, or the layout of an installed type, is Tier A. Regenerate the single header.
+5. Correct every code comment that describes the old algorithm (the items name the stale ones), and update the numbers on this page.
+
 ## Clang-Tidy performance audit
 
 `tools/performance-tidy.sh` runs the installed Clang-Tidy's built-in [`performance-*` checks](https://clang.llvm.org/extra/clang-tidy/checks/list.html) as an advisory audit, independently of `.clang-tidy`'s include-hygiene gate. It never applies fixes. Findings are candidates, not measured speedups: a cheap `CellView` value is intentional, clones must retain their ownership semantics, and changing a public enum's width, signature or installed inline body needs the [ABI policy](./abi.md), even when the tool offers a replacement.
@@ -836,7 +895,7 @@ The MESHIO inventory groups as follows; a location can have more than one check,
 | Candidate class | Diagnostics | Triage |
 | --- | ---: | --- |
 | Value parameters, copied initializations and moves | 287 | Review ownership first; many are pybind11 refcount suggestions, small metadata copies or necessary owned clones. |
-| Vector capacity planning | 59 | First batch: the Fluent writer's two mesh-sized lists; small metadata lists and unchecked reader counts are deferred. |
+| Vector capacity planning | 59 | Closed: the Fluent writer's two mesh-sized lists first, then the operations ([agglomerate and interfaces](#reserved-output-in-agglomerate-and-interfaces)) and the [formats](#reserved-output-in-the-formats); header counts reserve only through a bound the input enforces. |
 | String concatenation, find/character overloads and view conversion | 91 | Many are error paths or header parsing; no reader throughput win established yet. |
 | Enum width | 85 | Installed enum widths are ABI-sensitive; private enums still need evidence before narrowing. |
 
@@ -868,7 +927,7 @@ Native C++ tests cover ASCII/binary output and an explicit triangle/quad zone on
 
 ## In CI
 
-The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Successful default-branch runs also publish immutable records with commit, run/attempt, machine, compiler, dependencies and benchmark parameters to `benchmark-data`; the [benchmark trends page](./benchmark_trends.md) plots that history through the existing Pages deployment. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every [performance](./roadmap.md#_3-performance) item on the roadmap is expected to show its before and after with these tools.
+The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Successful default-branch runs also publish immutable records with commit, run/attempt, machine, compiler, dependencies and benchmark parameters to `benchmark-data`; the [benchmark trends page](./benchmark_trends.md) plots that history through the existing Pages deployment. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every performance change is expected to show its before and after with these tools ([landing a performance change](#landing-a-performance-change)).
 
 ## Mesh-backend benchmarks
 

@@ -64257,6 +64257,7 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             if (!rOpts.WantsArray(name))
                 continue;
             std::vector<double> v;
+            v.reserve(w.size());
             for (const FilWord& x : w)
                 v.push_back(fil_word_real(x, sw));
             auto [it, fresh] = nodal.emplace(name, decltype(nodal)::mapped_type{});
@@ -64334,6 +64335,7 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         if (ffresh)
             fields.push_back({name, location, {}});
         std::vector<double> v;
+        v.reserve(w.size());
         for (const FilWord& x : w)
             v.push_back(fil_word_real(x, sw));
         fields[fit->second].mValues[header->mElement][header->mPoint] = std::move(v);
@@ -66422,6 +66424,7 @@ void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         if (numdof > 0 && static_cast<std::uint64_t>(numdof) + 20 > s.mValues.size())
             rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt DOF count");
         std::vector<std::int64_t> dofs;
+        dofs.reserve(static_cast<std::size_t>(std::max<std::int64_t>(numdof, 0)));
         for (std::int64_t k = 0; k < numdof; ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
         const std::int64_t sumdof = numdof + s.Int(97);
@@ -66523,6 +66526,7 @@ void rst_reactions(RstModel& rModel, std::size_t Index, const ReadOptions& rOpti
         if (nrf <= 0 || !ptr_rf || numdof <= 0)
             continue;
         std::vector<std::int64_t> dofs;
+        dofs.reserve(std::min<std::size_t>(static_cast<std::size_t>(numdof), s.mValues.size()));
         for (std::int64_t k = 0; k < numdof; ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
         // (N - 1) * numdof + k: N the node's position in the nodal equivalence
@@ -66683,6 +66687,8 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         if (!ptr_esl)
             continue;
         std::vector<std::int64_t> dofs;
+        dofs.reserve(static_cast<std::size_t>(
+            std::clamp<std::int64_t>(s.Int(19), 0, static_cast<std::int64_t>(s.mValues.size()))));
         for (std::int64_t k = 0; k < s.Int(19); ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
         const RstRecord index = file.Record(base + ptr_esl);
@@ -66915,6 +66921,7 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
         }
     const std::size_t n_pts = old_point.size();
     std::vector<std::array<double, 9>> rotations;
+    rotations.reserve(n);
     const double pi = std::acos(-1.0);
     for (std::size_t i = 0; i < n; ++i)
         rotations.push_back(
@@ -67209,6 +67216,7 @@ RstModal rst_modal(const std::string& rPath, const ReadOptions& rOptions, const 
             out.mPoint.emplace(name, other.mMesh.PointData(name));
         for (const std::string& name : other.mMesh.CellDataNames()) {
             std::vector<NDArray> blocks;
+            blocks.reserve(other.mMesh.NumCellBlocks());
             for (std::size_t b = 0; b < other.mMesh.NumCellBlocks(); ++b)
                 blocks.push_back(other.mMesh.CellData(name, b));
             out.mCell.emplace(name, std::move(blocks));
@@ -68412,6 +68420,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 
     if (nsum > 0) {
         std::vector<std::string> names;
+        names.reserve(ndata.size());
         for (auto& p : ndata)
             names.push_back(p.first);
         std::vector<std::optional<detail::DoubleView>> node_values(ndata.size());
@@ -75243,6 +75252,7 @@ NDArray read_var(int ncid, int varid, const std::vector<std::size_t>& rStart,
     check(nc_inq_vartype(ncid, varid, &t), "inq_vartype");
     DType dt = dtype_of(t);
     std::vector<std::size_t> shape;
+    shape.reserve(rCount.size());
     for (std::size_t c : rCount)
         shape.push_back(c);
     NDArray out(dt, shape);
@@ -77160,6 +77170,7 @@ struct FebReader {
             feb_fail(std::string("a ") + rFacet.name() + " facet needs " +
                      std::to_string(type->mNodes) + " nodes");
         std::vector<std::int64_t> nodes;
+        nodes.reserve(tokens.size());
         for (std::string_view t : tokens)
             nodes.push_back(Node(feb_need_int(t, "node id")));
         return {type->mType, std::move(nodes)};
@@ -78761,6 +78772,7 @@ Mesh read_femap(const std::string& rPath, const ReadOptions& rOpts) {
 std::vector<double> femap_time_values(const std::string& rPath) {
     const FnFile f = fn_parse(rPath);
     std::vector<double> out;
+    out.reserve(f.mSets.size());
     for (const FnSet& s : f.mSets)
         out.push_back(s.mValue);
     return out;
@@ -89262,6 +89274,12 @@ public:
     std::vector<std::int64_t> IntVector(int Width) {
         const std::int64_t n = Scalar(4);
         std::vector<std::int64_t> out;
+        // A reserve bounded by the input: a count it declares cannot exceed
+        // the items it holds (XDR: `Width` bytes each; text: at least two bytes).
+        if (n > 0)
+            out.reserve(
+                std::min<std::size_t>(static_cast<std::size_t>(n),
+                                      Size() / (mXdr ? static_cast<std::size_t>(Width) : 2)));
         for (std::int64_t k = 0; k < n; ++k)
             out.push_back(StreamInt(Width));
         if (!mXdr)
@@ -91273,6 +91291,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
                 const auto g =
                     detail::split_card_view(line2.mText, lsd_layout_element(), rCtx.mMode);
                 std::vector<std::int64_t> nodes;
+                nodes.reserve(10);
                 for (std::size_t k = 0; k < 10; ++k)
                     nodes.push_back(lsd_int(g, k, where));
                 while (!nodes.empty() && nodes.back() == 0)
@@ -91424,6 +91443,7 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
         }
         const auto fields = detail::split_card_view(line.mText, lsd_layout_ids(), rCtx.mMode);
         std::vector<std::int64_t> f;
+        f.reserve(fields.size());
         for (std::size_t k = 0; k < fields.size(); ++k)
             f.push_back(lsd_int(fields, k, where));
         if (generate) {
@@ -91977,6 +91997,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("LS-DYNA writer: too many elements for 8-column ids");
 
     std::vector<const Region*> regions;
+    regions.reserve(rMesh.NumRegions());
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         regions.push_back(&rMesh.Region(i));
     std::vector<std::int64_t> pid_of;
@@ -92097,6 +92118,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
         lsd_put_int(out, sid_for(LsdFamily::Node, r->mTag), 10);
         out += '\n';
         std::vector<std::int64_t> ids;
+        ids.reserve(r->NumEntries());
         for (std::size_t k = 0; k < r->NumEntries(); ++k)
             ids.push_back(r->Entries()[k] + 1);
         lsd_write_ids(out, ids);
@@ -93873,6 +93895,7 @@ Mesh d3_build_mesh(const D3File& rF, D3Cells& rCells) {
     const auto part_ids = d3_part_user_ids(h, g);
     if (!g.mRigidBodyParts.empty()) {  // each rigid body's part (user id)
         std::vector<std::int64_t> rigid;
+        rigid.reserve(g.mRigidBodyParts.size());
         for (std::int64_t p : g.mRigidBodyParts)
             rigid.push_back(p > 0 && static_cast<std::size_t>(p) <= part_ids.size()
                                 ? part_ids[static_cast<std::size_t>(p - 1)]
@@ -95639,6 +95662,7 @@ public:
 
     std::vector<double> Times() const {
         std::vector<double> out;
+        out.reserve(mIncrements.size());
         for (const auto& inc : mIncrements)
             out.push_back(Info(inc).mTime);
         return out;
@@ -100900,6 +100924,7 @@ MfNumbering mf_number(const std::vector<MfElement>& rElements, int Dim, std::siz
         for (const MfElement& el : rElements)
             for (const auto& f : geoms[static_cast<std::size_t>(el.mGeom)].mFaces) {
                 std::vector<std::int64_t> v;
+                v.reserve(f.size());
                 for (int k : f)
                     v.push_back(el.mVertices[static_cast<std::size_t>(k)]);
                 MfKey key = mf_key(std::move(v));
@@ -101548,6 +101573,7 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
                 facets = g.mFaces;
             for (const auto& fv : facets) {
                 std::vector<std::int64_t> key;
+                key.reserve(fv.size());
                 for (int k : fv)
                     key.push_back(el.mIds[static_cast<std::size_t>(k)]);
                 std::sort(key.begin(), key.end());
@@ -101667,6 +101693,7 @@ void mf_read_groups(MfLexer& rLex, MfFile& rF) {
         if (size < 1)
             rLex.Fail("an empty communication group", rLex.Line());
         std::vector<std::int64_t> ranks;
+        ranks.reserve(std::min<std::size_t>(static_cast<std::size_t>(size), rLex.Remaining()));
         for (std::int64_t k = 0; k < size; ++k)
             ranks.push_back(rLex.Int("a rank"));
         std::sort(ranks.begin(), ranks.end());
@@ -102916,6 +102943,7 @@ MfEntities mf_entities(const std::vector<MfElement>& rElements, int Dim) {
         if (Dim == 3)
             for (const auto& f : g.mFaces) {
                 std::vector<std::int64_t> v;
+                v.reserve(f.size());
                 for (int k : f)
                     v.push_back(el.mVertices[static_cast<std::size_t>(k)]);
                 if (ent.mFaces.emplace(mf_key(v), ent.mFaces.size()).second)
@@ -103027,6 +103055,7 @@ void mf_element_dofs(const MfElement& rEl, int Dim, const MfEntities* pEnt, cons
     if (Dim == 3 && g.mDim == 3) {
         for (const auto& f : g.mFaces) {
             std::vector<std::int64_t> v;
+            v.reserve(f.size());
             for (int k : f)
                 v.push_back(rEl.mVertices[static_cast<std::size_t>(k)]);
             std::size_t base = 0;
@@ -104084,6 +104113,7 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
         std::map<std::vector<std::int64_t>, std::set<std::size_t>> owners;
         const auto key_of = [&](std::size_t Q, const MfElement& rB) {
             std::vector<std::int64_t> key;
+            key.reserve(rB.mVertices.size());
             for (std::int64_t v : rB.mVertices)
                 key.push_back(parts[Q].mGlobal[static_cast<std::size_t>(v)]);
             std::sort(key.begin(), key.end());
@@ -104121,6 +104151,7 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
                             "': a parallel mesh's grid function is named by one of its rank "
                             "files, <name>.NNNNNN");
         std::vector<MfGridData> per_rank;
+        per_rank.reserve(files.size());
         for (std::size_t q = 0; q < files.size(); ++q)
             per_rank.push_back(mf_parse_gf({g.mName, mf_rank_path(gprefix, files[q].mRank)}));
         const MfSpace& s = per_rank[0].mSpace;
@@ -104975,6 +105006,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
 
     // --- numbering and dof weights (quadratic) -------------------------------
     std::vector<MfElement> numbered;
+    numbered.reserve(elements.size());
     for (const MfOutCell& c : elements)
         numbered.push_back({c.mAttribute, c.mGeom, mfem_vertices(c), 0});
     const std::size_t nv = vertex_point.size();
@@ -108044,6 +108076,7 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             const auto eids = nh5_int_member(f, rT.mPath, "EID", Row0, Count);
             const auto elname = nh5_string_member(f, rT.mPath, "ELNAME", Row0, Count);
             std::vector<std::vector<double>> v;
+            v.reserve(floats.size());
             for (const std::string& m : floats)
                 v.push_back(nh5_float_member(f, rT.mPath, m, Row0, Count));
             const bool triplets = floats.size() == 6;
@@ -108988,6 +109021,7 @@ std::vector<detail::NastranCardRows> op2_read_elements(
         log::warn("{}: skipped element records with no cell type: {}", kOp2Who, list);
     }
     std::vector<detail::NastranCardRows> out;
+    out.reserve(cards.size());
     for (auto& [card, rows] : cards)
         out.push_back(std::move(rows));
     return out;
@@ -110349,6 +110383,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
 std::vector<double> nastran_op2_time_values(const std::string& rPath) {
     const Op2Reader r(rPath);
     std::vector<double> out;
+    out.reserve(r.mSteps.size());
     for (const Op2Step& s : r.mSteps)
         out.push_back(s.mTime);
     return out;
@@ -113244,6 +113279,7 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
     // Family ids in the reader's own order (ascending -fam == ascending patch
     // index), so an OpenFOAM round trip preserves the boundary file's order.
     std::vector<std::int64_t> fams;
+    fams.reserve(rInfo.mCellTags.size());
     for (const auto& kv : rInfo.mCellTags)
         fams.push_back(kv.first);
     std::sort(fams.begin(), fams.end(), [](std::int64_t a, std::int64_t b) { return a > b; });
@@ -115757,6 +115793,7 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
         cells.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
     mesh.AddCellBlock("vertex", std::move(cells));
     std::vector<std::string> names;
+    names.reserve(point_data.size());
     for (const auto& entry : point_data)
         names.push_back(entry.first);
     std::sort(names.begin(), names.end());
@@ -116586,6 +116623,7 @@ Mesh read_ply(const std::string& rPath) {
 
     // Vertex properties -> per-property arrays.
     std::vector<NDArray> vcols;
+    vcols.reserve(vprops.size());
     for (const auto& vp : vprops)
         vcols.emplace_back(vp.mDtype, std::vector<std::size_t>{num_verts});
 
@@ -119920,6 +119958,8 @@ class AnimCursor {
 public:
     AnimCursor(std::string_view rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
 
+    std::size_t Remaining() const { return mData.size() - mPos; }
+
     const char* Take(std::size_t N) {
         if (N > mData.size() - mPos)  // not mPos + N: that wraps for a huge N
             throw ReadError("Radioss animation: '" + mPath + "' is truncated (needs " +
@@ -119990,6 +120030,8 @@ public:
 
     std::vector<std::string> Texts(std::int64_t Count, std::size_t N) {
         std::vector<std::string> out;
+        if (Count > 0 && N > 0)  // bounded by the bytes left, as Take() checks
+            out.reserve(std::min<std::size_t>(static_cast<std::size_t>(Count), Remaining() / N));
         for (std::int64_t k = 0; k < Count; ++k)
             out.push_back(Text(N));
         return out;
@@ -124843,6 +124885,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             };
             if (ztype == "FEPOLYHEDRON") {
                 std::vector<std::int64_t> counts;
+                counts.reserve(faces.mFaces.size());
                 for (const auto& f : faces.mFaces)
                     counts.push_back(static_cast<std::int64_t>(f.size()));
                 write_ints(counts);
@@ -128285,6 +128328,7 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
                 mesh.AddPointData(name, std::move(arr));
             } else if (!block_sizes.empty()) {
                 std::vector<NDArray> arrs;
+                arrs.reserve(block_sizes.size());
                 for (std::size_t ne : block_sizes)
                     arrs.push_back(unv_nan_array(ne, nc));
                 for (const auto& [label, vals] : res.mValues) {
@@ -129344,6 +129388,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             if (nblocks == 0)
                 continue;
             std::vector<const NDArray*> ptrs;
+            ptrs.reserve(nblocks);
             for (std::size_t bi = 0; bi < nblocks; ++bi)
                 ptrs.push_back(&rMesh.CellData(name, bi));
             const NDArray& first = *ptrs.front();
@@ -130825,11 +130870,13 @@ std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKi
             all_indexed = all_indexed && h5::has_attr(b.mGroup, "Index");
         if (all_indexed) {
             std::vector<std::pair<I64, std::size_t>> keyed;
+            keyed.reserve(blocks.size());
             for (std::size_t i = 0; i < blocks.size(); ++i)
                 keyed.emplace_back(h5::read_attr_int(blocks[i].mGroup, "Index"), i);
             std::stable_sort(keyed.begin(), keyed.end(),
                              [](const auto& a, const auto& b) { return a.first < b.first; });
             std::vector<VtkhdfBlock> sorted;
+            sorted.reserve(keyed.size());
             for (const auto& kv : keyed)
                 sorted.push_back(std::move(blocks[kv.second]));
             blocks = std::move(sorted);
@@ -131339,6 +131386,7 @@ int vtkhdf_pd_category(const std::string& rType) {
 void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
                                  std::pair<int, int> Version) {
     std::vector<int> kinds;
+    kinds.reserve(rMesh.NumCellBlocks());
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi)
         kinds.push_back(vtkhdf_pd_category(rMesh.Cells(bi).Type()));
     // VTK's canonical PolyData cell order is Vertices, Lines, Polygons, Strips: regroup
@@ -137173,6 +137221,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                 const auto& carrier_cells = on_edge ? edge_cells : surface_cells;
                 if (item.mFmt == 1 || item.mFmt == 3) {
                     std::vector<std::vector<double>> blocks;
+                    blocks.reserve(sizes.size());
                     for (std::size_t n : sizes)
                         blocks.emplace_back(n * width, std::numeric_limits<double>::quiet_NaN());
                     const auto bases = detail::block_bases(mesh);
@@ -137201,6 +137250,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     if (!landed)
                         return true;
                     std::vector<NDArray> arrays;
+                    arrays.reserve(sizes.size());
                     for (std::size_t b = 0; b < sizes.size(); ++b)
                         arrays.push_back(make(sizes[b], blocks[b].data()));
                     mesh.AddCellData(item.mName, std::move(arrays));
@@ -137259,6 +137309,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     mesh.AddPointData(item.mName, make(n_points, regions.front().second.data()));
             } else if (item.mFmt == 1 || item.mFmt == 3) {
                 std::vector<std::vector<double>> blocks;
+                blocks.reserve(sizes.size());
                 for (std::size_t n : sizes)
                     blocks.emplace_back(n * width, std::numeric_limits<double>::quiet_NaN());
                 for (const auto& [rid, values] : regions) {
@@ -137274,6 +137325,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                                 item.mFmt == 3 ? values[w] : values[r * width + w];
                 }
                 std::vector<NDArray> arrays;
+                arrays.reserve(sizes.size());
                 for (std::size_t b = 0; b < sizes.size(); ++b)
                     arrays.push_back(make(sizes[b], blocks[b].data()));
                 mesh.AddCellData(item.mName, std::move(arrays));
@@ -137838,6 +137890,7 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
     };
     std::vector<std::string> names = {"x", "y", "z"};
     std::vector<Column> columns;
+    columns.reserve(3 + rMesh.NumPointData());
     NDArray zeros(DType::Float64, {n, std::size_t(1)});
     for (std::size_t a = 0; a < 3; ++a)
         columns.push_back(a < dim ? Column{&points, dim, a} : Column{&zeros, 1, 0});

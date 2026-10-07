@@ -658,6 +658,7 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             const auto eids = nh5_int_member(f, rT.mPath, "EID", Row0, Count);
             const auto elname = nh5_string_member(f, rT.mPath, "ELNAME", Row0, Count);
             std::vector<std::vector<double>> v;
+            v.reserve(floats.size());
             for (const std::string& m : floats)
                 v.push_back(nh5_float_member(f, rT.mPath, m, Row0, Count));
             const bool triplets = floats.size() == 6;

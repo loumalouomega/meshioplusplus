@@ -972,6 +972,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                 const auto& carrier_cells = on_edge ? edge_cells : surface_cells;
                 if (item.mFmt == 1 || item.mFmt == 3) {
                     std::vector<std::vector<double>> blocks;
+                    blocks.reserve(sizes.size());
                     for (std::size_t n : sizes)
                         blocks.emplace_back(n * width, std::numeric_limits<double>::quiet_NaN());
                     const auto bases = detail::block_bases(mesh);
@@ -1000,6 +1001,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     if (!landed)
                         return true;
                     std::vector<NDArray> arrays;
+                    arrays.reserve(sizes.size());
                     for (std::size_t b = 0; b < sizes.size(); ++b)
                         arrays.push_back(make(sizes[b], blocks[b].data()));
                     mesh.AddCellData(item.mName, std::move(arrays));
@@ -1058,6 +1060,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     mesh.AddPointData(item.mName, make(n_points, regions.front().second.data()));
             } else if (item.mFmt == 1 || item.mFmt == 3) {
                 std::vector<std::vector<double>> blocks;
+                blocks.reserve(sizes.size());
                 for (std::size_t n : sizes)
                     blocks.emplace_back(n * width, std::numeric_limits<double>::quiet_NaN());
                 for (const auto& [rid, values] : regions) {
@@ -1073,6 +1076,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                                 item.mFmt == 3 ? values[w] : values[r * width + w];
                 }
                 std::vector<NDArray> arrays;
+                arrays.reserve(sizes.size());
                 for (std::size_t b = 0; b < sizes.size(); ++b)
                     arrays.push_back(make(sizes[b], blocks[b].data()));
                 mesh.AddCellData(item.mName, std::move(arrays));

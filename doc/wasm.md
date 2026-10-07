@@ -4,7 +4,7 @@
 
 `createExodusTimeSeriesWriter(path)` returns a handle wrapper with `writePointsCells(mesh)`, `writeData(time, mesh)`, `flush`, `finalize`, `numSteps`, `finalized` and idempotent `close`. It uses MEMFS, fixes geometry/sets/attributes once and retains no step history. Shipped netCDF-enabled artifacts support it; custom builds without netCDF throw a named dependency error. Invalid/stale native handles fail rather than accessing freed memory. See [Exodus](./formats/exodus.md#stateful-series-writing).
 
-`runPipeline` accepts [Version 2 spatial documents](./pipeline.md#version-2-spatial-multi-mesh-steps) with per-step file `Inputs` and terminal Split/Partition `Output.Pattern` (`{key}`/`{part}`), all in MEMFS. Version 1, `convertSurfaceOps` and the browser viewer's per-mesh chip pipeline are unchanged; spatial branches and transient sequence schemas are separate.
+`runPipeline` accepts [Version 2 spatial documents](./pipeline.md#version-2-spatial-multi-mesh-steps) with per-step file `Inputs` and terminal Split/Partition `Output.Pattern` (`{key}`/`{part}`), all in MEMFS. Version 1, `convertSurfaceOps`/`surfaceBuffersOps` and the browser viewer's per-mesh chip pipeline are unchanged; spatial branches and transient sequence schemas are separate.
 
 ## Pipeline reports
 
@@ -88,7 +88,21 @@ console.log(report.steps, report.warnings);
 
 Prefer it over chaining the individual operation bindings (`clean`, `smooth`, …): each of those takes and returns a JS `Mesh`, so a pipeline built from them copies the whole mesh across the boundary once per step (and, before v9.9.0, flattened every multi-component array on the first one). An **empty** pipeline is byte-identical to `convertSurface`, which is what lets a viewer use one code path for the plain and the post-operation display — and makes undo a replay of a shortened pipeline rather than a set of inverse operations.
 
-`convertSurfaceOps` takes `{ inFormat, outFormat, keepProvenance, compressVtp }` as its options. A `.vtp` output is zlib-compressed by default; `compressVtp: false` writes it as uncompressed base64 (still binary, never ASCII). The option is ignored for every other output format. Leave it at the default for anything that renders with vtk.js, as the [browser viewer](./viewer.md) does: the uncompressed file carries a 4-byte header (a `header_type="UInt64"` only appears when an array could pass 4 GiB), and vtk.js reads an uncompressed array as `new Float64Array(buffer, headerBytes)`, which throws a `RangeError` at offset 4.
+`convertSurfaceOps` takes `{ inFormat, outFormat, keepProvenance, compressVtp }` as its options. A `.vtp` output is zlib-compressed by default; `compressVtp: false` writes it as uncompressed base64 (still binary, never ASCII). The option is ignored for every other output format. Leave it at the default for anything that renders with vtk.js: the uncompressed file carries a 4-byte header (a `header_type="UInt64"` only appears when an array could pass 4 GiB), and vtk.js reads an uncompressed array as `new Float64Array(buffer, headerBytes)`, which throws a `RangeError` at offset 4.
+
+### Handing the surface to a renderer as arrays
+
+`surfaceBuffersOps(inPath, ops, { inFormat, keepProvenance })` runs the same read, pipeline and surface extraction as `convertSurfaceOps` and returns the surface instead of writing it: `{ surface, steps, warnings }`, where `surface` is `{ points, verts, lines, polys, pointData, cellData }`, the arrays a vtk.js `vtkPolyData` is built from. `points` holds x, y and z per point (2-D meshes are padded with z = 0), as a `Float32Array` for float32 points and a `Float64Array` otherwise. `verts`, `lines` and `polys` are `Uint32Array`s in VTK's legacy cell layout (a count, then the ids), filled in the VTP writer's order: vertex blocks, then line blocks, then triangle, quad and polygon blocks, each in block order. `pointData` and `cellData` are lists of `{ name, values, components }`, sorted by name, with cell values in that same cell order. The cell ids are therefore the VTP file's, so `surface:parent_cell` and a picked cell id mean the same in both. Values keep their dtype, except that a 64-bit integer array arrives as an `Int32Array` or `Uint32Array` when every value fits and as a `Float64Array` when one does not, never as a `BigInt64Array`, which vtk.js cannot hold (vtk.js's own VTP reader keeps the low 32 bits instead). `components` is the product of an array's trailing dimensions, so a 3×3 tensor has 9. The [browser viewer](./viewer.md) renders through this call; on a 980,000-triangle surface it takes 0.41 s where writing, reading out and parsing the VTP took 4.08 s ([benchmarks](./benchmarks.md#a-typed-array-channel-for-the-browser-viewer)).
+
+```js
+const { surface } = meshio.surfaceBuffersOps('/part.msh', [{ op: 'quality' }], { keepProvenance: true });
+const polydata = vtkPolyData.newInstance();
+polydata.getPoints().setData(surface.points, 3);
+polydata.setPolys(vtkCellArray.newInstance({ values: surface.polys }));
+for (const a of surface.cellData)
+  polydata.getCellData().addArray(
+    vtkDataArray.newInstance({ name: a.name, values: a.values, numberOfComponents: a.components }));
+```
 
 This is exactly what the [browser viewer](./viewer.md) does. It is built on this package and is worth reading as a worked example of the whole pipeline — worker, transferable buffers, and vtk.js — as well as being a live client-side format converter you can try at **<https://loumalouomega.github.io/meshioplusplus/viewer/>**.
 

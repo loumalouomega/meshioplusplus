@@ -2,10 +2,11 @@
  * The vtk.js scene.
  *
  * vtk.js's only mesh data model is `vtkPolyData` — it ships no unstructured
- * grid and no XML unstructured-grid reader — which is why everything reaching
- * this module is VTP, and why a volume mesh is shown by its boundary surface.
- * The meshio++ WASM side does that extraction, so nothing here knows about
- * tetrahedra.
+ * grid and no XML unstructured-grid reader — which is why a volume mesh is
+ * shown by its boundary surface. The meshio++ WASM side does that extraction
+ * and hands the surface over as the arrays a `vtkPolyData` is built from
+ * ({@link Renderer.loadSurface}); the offline embedded page still carries a
+ * VTP ({@link Renderer.load}). Nothing here knows about tetrahedra.
  *
  * Per-module imports throughout: the umbrella `@kitware/vtk.js` entry point
  * defeats tree-shaking and multiplies the bundle size.
@@ -15,9 +16,13 @@ import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import type vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
-import type vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
+import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
+import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
 import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
+
+import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
 import type { ArrayEntry, ScalarRange, Vector3 } from '../types';
 import { DEFAULT_COLORMAP, makeColorTransferFunction } from './colormaps';
@@ -143,11 +148,38 @@ export class Renderer {
         return { min: [b[0], b[2], b[4]], max: [b[1], b[3], b[5]] };
     }
 
-    /** Replace the displayed mesh. */
+    /** Replace the displayed mesh with a VTP file's (the offline embedded page). */
     load(vtp: ArrayBuffer): LoadResult {
         const reader = vtkXMLPolyDataReader.newInstance();
         reader.parseAsArrayBuffer(vtp);
-        const polydata = reader.getOutputData(0) as vtkPolyData;
+        return this.show(reader.getOutputData(0) as vtkPolyData);
+    }
+
+    /**
+     * Replace the displayed mesh with a surface the worker built. The arrays
+     * are laid out as vtk.js's own VTP reader lays them out, so this and
+     * {@link load} produce the same `vtkPolyData` for the same surface.
+     */
+    loadSurface(surface: SurfaceBuffers): LoadResult {
+        const polydata = vtkPolyData.newInstance();
+        polydata.getPoints().setData(surface.points, 3);
+        if (surface.verts.length) polydata.setVerts(vtkCellArray.newInstance({ values: surface.verts }));
+        if (surface.lines.length) polydata.setLines(vtkCellArray.newInstance({ values: surface.lines }));
+        if (surface.polys.length) polydata.setPolys(vtkCellArray.newInstance({ values: surface.polys }));
+        for (const a of surface.pointData) {
+            polydata.getPointData().addArray(
+                vtkDataArray.newInstance({ name: a.name, values: a.values, numberOfComponents: a.components })
+            );
+        }
+        for (const a of surface.cellData) {
+            polydata.getCellData().addArray(
+                vtkDataArray.newInstance({ name: a.name, values: a.values, numberOfComponents: a.components })
+            );
+        }
+        return this.show(polydata);
+    }
+
+    private show(polydata: vtkPolyData): LoadResult {
         this.polydata = polydata;
         this.bodyMapper.setInputData(polydata);
         this.edgeMapper.setInputData(polydata);

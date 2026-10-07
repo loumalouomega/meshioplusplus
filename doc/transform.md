@@ -35,7 +35,7 @@ Several builders compose (in the fixed order units → scale → rotate → tran
 ## What changes
 
 - **Points** are transformed by `p' = M · [x, y, z, 1]`.
-- **Connectivity**, **`cell_data`**, and **`field_data`** are unchanged.
+- **Connectivity**, **`cell_data`**, and **`field_data`** are unchanged, ragged polygon and polyhedron blocks included (copied row by row; earlier releases raised on a ragged mesh instead).
 - **`point_data` and `cell_data`** are copied unchanged unless `rotate_vector_data=True`, which rotates float arrays whose trailing dimension is 3 (`R·v`) or 9 (`R·A·Rᵀ`) at either location. A vector living on a cell rotates exactly as one living on a point does; before v10.33.0 the flag reached point data only, and cell data rode through in the old frame — silently, since nothing about an array says which frame it is in. An integer array is never rotated, so a material tag is safe.
 - **`point_sets` / `cell_sets`** pass through unchanged (indices are stable).
 

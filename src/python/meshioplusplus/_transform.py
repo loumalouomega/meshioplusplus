@@ -117,6 +117,18 @@ def _rotate_point_data(arr, R, n):
     return out
 
 
+def _copy_cells(data):
+    """Copy a block's connectivity, keeping a ragged block's nesting.
+
+    Rectangular blocks are arrays; a ragged polygon block is a list of rows and
+    a polyhedron block a list of cells, each a list of faces. ``np.array`` on
+    those lists raises for an inhomogeneous shape, so they are copied row by row.
+    """
+    if isinstance(data, (list, tuple)):
+        return [_copy_cells(item) for item in data]
+    return np.array(data)
+
+
 def _transform_py(mesh, matrix, rotate_vector_data):
     m = np.asarray(matrix, dtype=np.float64).reshape(4, 4)
     pts = np.asarray(mesh.points)
@@ -136,7 +148,7 @@ def _transform_py(mesh, matrix, rotate_vector_data):
         else:
             point_data[key] = value.copy()
 
-    cells = [(cb.type, np.array(cb.data)) for cb in mesh.cells]
+    cells = [(cb.type, _copy_cells(cb.data)) for cb in mesh.cells]
     counts = [len(cb.data) for cb in mesh.cells]
     cell_data = {}
     for key, blocks in mesh.cell_data.items():

@@ -379,6 +379,12 @@ public:
     std::vector<std::int64_t> IntVector(int Width) {
         const std::int64_t n = Scalar(4);
         std::vector<std::int64_t> out;
+        // A reserve bounded by the input: a count it declares cannot exceed
+        // the items it holds (XDR: `Width` bytes each; text: at least two bytes).
+        if (n > 0)
+            out.reserve(
+                std::min<std::size_t>(static_cast<std::size_t>(n),
+                                      Size() / (mXdr ? static_cast<std::size_t>(Width) : 2)));
         for (std::int64_t k = 0; k < n; ++k)
             out.push_back(StreamInt(Width));
         if (!mXdr)

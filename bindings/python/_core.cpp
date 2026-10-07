@@ -1344,7 +1344,8 @@ PYBIND11_MODULE(_core, m) {
             if (matrix.size() != 16)
                 throw std::invalid_argument("transform: matrix must have 16 elements (4x4)");
             meshioplusplus_py::PyMeshRefs refs;
-            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
             meshioplusplus::AffineTransform xf =
                 meshioplusplus::transform_from_matrix(matrix.data());
             meshioplusplus::Mesh out =

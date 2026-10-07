@@ -89,7 +89,7 @@ In a Jupyter notebook this displays inline by default; elsewhere it writes a sel
 
 ### It draws surfaces
 
-vtk.js has no unstructured-grid model at all: `vtkPolyData` is its only mesh type. So the browser backend renders **VTP**, and a volume mesh is shown by its boundary. That is not a choice the viewer made; it is what a surface renderer can draw. If you need to see inside a solid, use the desktop backend.
+vtk.js has no unstructured-grid model at all: `vtkPolyData` is its only mesh type. So the browser backend renders a **PolyData surface**, and a volume mesh is shown by its boundary. That is not a choice the viewer made; it is what a surface renderer can draw. If you need to see inside a solid, use the desktop backend.
 
 Boundary facets inherit their owning cell's data, so colouring a solid by its per-cell material or tag works — `extract_surface` alone would drop it.
 
@@ -113,7 +113,7 @@ The viewer runs meshio++'s own operations on the mesh you opened — no server, 
 
 They compose: apply Refine then Quality and you are looking at the quality of the refined mesh — and the other way round, Quality then Refine with a threshold on `quality:*`, is adaptive refinement driven by the metric the first chip just computed. (Pick a metric that applies to the cell type: `compute_quality` reports `NaN` where one does not, and a non-finite value never matches a threshold, so `scaled_jacobian` on a quadrilateral surface selects nothing.) Each one appears as a chip you can remove, **Undo** steps back, and **Revert** clears everything.
 
-Undo is *exact*, not approximate. The worker keeps the original file bytes and replays the whole remaining pipeline through a single [`convertSurfaceOps`](/wasm) call, so nothing needs an inverse and nothing accumulates rounding. That same call is what keeps multi-component data alive: no mesh ever crosses back into JavaScript, whose flat representation cannot carry a vector or tensor array.
+Undo is *exact*, not approximate. The worker keeps the original file bytes and replays the whole remaining pipeline through a single [`surfaceBuffersOps`](/wasm#handing-the-surface-to-a-renderer-as-arrays) call, so nothing needs an inverse and nothing accumulates rounding. Only the surface to draw crosses into JavaScript, with its vector and tensor arrays as they are. Re-reading the file on every apply is the price: an upper bound of 2 to 25% of an apply that smooths, and up to 69% of one that only computes quality on a large surface ([benchmarks](./benchmarks.md#a-typed-array-channel-for-the-browser-viewer)).
 
 ::: tip Section and Isosurface are the same cutter
 Both run meshio++'s marching-tetrahedra cutter and return a surface one dimension below the cells they cut — `Section` where the distance to a plane is zero, `Isosurface` where a scalar field equals the isovalue you type. They go through meshio++ rather than vtk.js's own `ClipClosedSurface`, which cannot colour a cut correctly: it never interpolates point data onto the cut points.
@@ -138,14 +138,14 @@ Everything routes through meshio++, so all supported formats work and neither vi
 ```
 file ──► Web Worker ─────────────────────────────► main thread
          meshio++ (WASM)                           vtk.js
-         readMetadata()   → info panel             XMLPolyDataReader
-         convertSurfaceOps() → VTP ─ transferred ─►  mapper + DOM legend
+         readMetadata()   → info panel             vtkPolyData from the arrays
+         surfaceBuffersOps() → typed arrays ─ transferred ─►  mapper + DOM legend
          convert()        → any writable format
 ```
 
-Parsing and conversion happen in a Web Worker, and the VTP moves to the main thread as a transferable `ArrayBuffer` — no copy, and the UI stays responsive on a large file. The VTP stays zlib-compressed, because vtk.js cannot read the uncompressed form the writer produces for ordinary meshes (see `compressVtp` in [WASM](./wasm.md)). The worker transfers the buffer `FS.readFile` returned as it is instead of copying it first; a buffer that is not a plain `ArrayBuffer` the array spans exactly (a view onto the heap, which must never be transferred) is still copied.
+Parsing and conversion happen in a Web Worker, and the surface moves to the main thread as typed arrays — points, the Verts, Lines and Polys cell arrays and one array per data field — whose buffers are transferred, not copied, so the UI stays responsive on a large file. The arrays are laid out as vtk.js's own VTP reader would lay them out, so building the `vtkPolyData` from them takes a fraction of a millisecond at every size measured, where parsing a zlib-compressed VTP took up to 1.4 s on the main thread. Earlier releases had the worker write that VTP and read it back out of MEMFS, and vtk.js parse it (XML, base64 and inflate); the offline embedded page still carries a VTP, since it has no WebAssembly to run.
 
-`convertSurfaceOps` is one call rather than `readMesh` → *operation* → `writeMesh` for a specific reason: the JS mesh representation is flat and cannot carry a multi-component array, so a vector field would be silently dropped on the way to the renderer. Staying inside C++ keeps it — and makes undo a replay rather than an inverse.
+The worker runs one call rather than `readMesh` → *operation* → `writeMesh` because each operation binding takes and returns a JS mesh, so a chain of them would copy the whole volume mesh into JavaScript and back once per step. Staying inside C++ until the surface is ready avoids that, and makes undo a replay rather than an inverse.
 
 ### Running it locally
 

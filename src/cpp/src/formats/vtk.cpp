@@ -381,6 +381,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             if (nblocks == 0)
                 continue;
             std::vector<const NDArray*> ptrs;
+            ptrs.reserve(nblocks);
             for (std::size_t bi = 0; bi < nblocks; ++bi)
                 ptrs.push_back(&rMesh.CellData(name, bi));
             const NDArray& first = *ptrs.front();

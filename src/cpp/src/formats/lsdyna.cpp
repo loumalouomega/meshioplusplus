@@ -480,6 +480,7 @@ void lsd_read_elements(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlo
                 const auto g =
                     detail::split_card_view(line2.mText, lsd_layout_element(), rCtx.mMode);
                 std::vector<std::int64_t> nodes;
+                nodes.reserve(10);
                 for (std::size_t k = 0; k < 10; ++k)
                     nodes.push_back(lsd_int(g, k, where));
                 while (!nodes.empty() && nodes.back() == 0)
@@ -631,6 +632,7 @@ void lsd_read_set(LsdDeck& rDeck, const std::string& rKeyword, const LsdBlock& r
         }
         const auto fields = detail::split_card_view(line.mText, lsd_layout_ids(), rCtx.mMode);
         std::vector<std::int64_t> f;
+        f.reserve(fields.size());
         for (std::size_t k = 0; k < fields.size(); ++k)
             f.push_back(lsd_int(fields, k, where));
         if (generate) {
@@ -1184,6 +1186,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("LS-DYNA writer: too many elements for 8-column ids");
 
     std::vector<const Region*> regions;
+    regions.reserve(rMesh.NumRegions());
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         regions.push_back(&rMesh.Region(i));
     std::vector<std::int64_t> pid_of;
@@ -1304,6 +1307,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
         lsd_put_int(out, sid_for(LsdFamily::Node, r->mTag), 10);
         out += '\n';
         std::vector<std::int64_t> ids;
+        ids.reserve(r->NumEntries());
         for (std::size_t k = 0; k < r->NumEntries(); ++k)
             ids.push_back(r->Entries()[k] + 1);
         lsd_write_ids(out, ids);

@@ -504,6 +504,7 @@ void write_xyz(const std::string& rPath, const Mesh& rMesh, const std::string& r
     };
     std::vector<std::string> names = {"x", "y", "z"};
     std::vector<Column> columns;
+    columns.reserve(3 + rMesh.NumPointData());
     NDArray zeros(DType::Float64, {n, std::size_t(1)});
     for (std::size_t a = 0; a < 3; ++a)
         columns.push_back(a < dim ? Column{&points, dim, a} : Column{&zeros, 1, 0});
