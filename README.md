@@ -119,7 +119,7 @@ Files only their vendor's software can read — Abaqus `.odb`, MSC Marc `.t16`, 
 
 One C++ core, six language surfaces, and the tools built on them; the [architecture page](https://loumalouomega.github.io/meshioplusplus/architecture) is the map, with every box linked to the page that owns it.
 
-Release v16.31.0 is a performance release: Python releases the GIL for native reads, writes and operations, the libraries that are not thread-safe are serialised on one core lock, dozens of readers and writers read through typed views and shared cursors instead of per-element dtype switches and string copies, and the operations reuse per-thread scratch (measured on the [benchmark harness](doc/benchmarks.md)). The [roadmap](doc/roadmap.md) is reorganised around reader/writer parity, octree meshes from a skin and an optional MMG backend. C++ ABI 22 is unchanged; see the [changelog](CHANGELOG.md) for details.
+Release v16.32.0 closes the performance roadmap: the browser viewer renders from typed arrays instead of a VTP file, more readers and operations read through shared cursors and reuse scratch, `import meshioplusplus` loads formats lazily, and `transform` works on ragged meshes. C++ ABI 23 is a bump (`DistanceQuery` layout); see the [changelog](CHANGELOG.md) for details.
 
 meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP, then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`, including a bring-your-own [Kokkos](https://kokkos.org) host backend). Every format has a pure-Python fallback, so behaviour and file compatibility are identical whether or not the native libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs (install, data model, per-format options, CLI) live at [the documentation site](https://loumalouomega.github.io/meshioplusplus/) (sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/master/doc)).
 
@@ -1140,7 +1140,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.31.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.32.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

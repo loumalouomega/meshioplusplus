@@ -4,9 +4,9 @@
  * The two tests that matter most are `undo is exact` and `vectors survive an
  * operation`. The first proves the replay architecture — the worker keeps the
  * original bytes and re-runs a shortened pipeline, rather than trying to
- * invert anything. The second fails under any implementation that routes a
- * mesh through the flat JS representation, which is the entire reason
- * `convertSurfaceOps` exists.
+ * invert anything. The second fails under any implementation that drops an
+ * array's `components` between the C++ pipeline and the vtkPolyData the
+ * renderer builds from `surfaceBuffersOps`' arrays.
  */
 import { expect, test } from '@playwright/test';
 

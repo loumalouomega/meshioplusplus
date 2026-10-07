@@ -25,6 +25,8 @@ import { OpsPanel } from './ops/panel';
 import { ICONS } from './ui/icons';
 import { $, maybe, setOptions, show } from './ui/dom';
 import type { ArrayEntry, PickInfo, ScalarRange, ViewerStatus } from './types';
+import type { SurfaceBuffers } from '@meshioplusplus/wasm';
+
 import type { MeshMeta, OpSpec, RenderResult } from './worker/protocol';
 
 const renderer = new Renderer($('render'));
@@ -69,8 +71,9 @@ const legend = new Legend($('legend'), {
 
 // --- display ------------------------------------------------------------- //
 
-function show3d(vtp: ArrayBuffer, meta: MeshMeta | null, name: string): void {
-    const info = renderer.load(vtp);
+/** A worker's surface, or the VTP the offline embedded page carries. */
+function show3d(source: SurfaceBuffers | ArrayBuffer, meta: MeshMeta | null, name: string): void {
+    const info = source instanceof ArrayBuffer ? renderer.load(source) : renderer.loadSurface(source);
     arrays = info.arrays;
 
     Object.assign(window.__viewerState, {
@@ -328,7 +331,7 @@ function embeddedConfig(): { colorBy?: string } | null {
 
 /** Whatever the page was given, however it arrived. */
 function present(result: RenderResult, name: string): void {
-    show3d(result.vtp, result.meta, name);
+    show3d(result.surface, result.meta, name);
     opsPanel.showReport(result.report);
 }
 

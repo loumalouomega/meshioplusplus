@@ -14,6 +14,8 @@
  * everything wasm-side behind the shared worker.
  */
 
+import type { SurfaceBuffers } from '@meshioplusplus/wasm';
+
 import { Legend } from '../render/legend';
 import { Renderer, SOLID_COLOR, colorKey } from '../render/renderer';
 import { $, setOptions, show } from '../ui/dom';
@@ -198,8 +200,8 @@ const legend = new Legend($('legend'), {
     },
 });
 
-function show3d(vtp: ArrayBuffer): void {
-    const info = renderer.load(vtp);
+function show3d(surface: SurfaceBuffers): void {
+    const info = renderer.loadSurface(surface);
     arrays = info.arrays;
     setState({ numPoints: info.numPoints, numCells: info.numCells });
     setOptions(
@@ -516,7 +518,7 @@ async function previewStep(step: number): Promise<void> {
     if (!staged) return;
     setStatus('loading', `step ${step + 1}/${staged.plan.length}…`);
     const render = await client.previewStep(step);
-    show3d(render.vtp);
+    show3d(render.surface);
     const plan = staged.plan[step];
     $('scrub-label').textContent =
         `step ${step + 1}/${staged.plan.length} · t = ${plan?.time ?? 0} (${plan?.timeSource ?? '?'})`;
@@ -919,7 +921,7 @@ const runsPanel = new RunsPanel({
 async function previewPrediction(name: string, bytes: ArrayBuffer): Promise<void> {
     setStatus('loading', `rendering ${name}…`);
     const render = await client.openFile(new File([bytes], name));
-    show3d(render.vtp);
+    show3d(render.surface);
     // Colour by the error field the prediction carries, without guessing its
     // name from the spec: the array that IS the error is the one to show.
     const error = arrays.find((a) => a.name.endsWith('_error') && a.component <= 0);

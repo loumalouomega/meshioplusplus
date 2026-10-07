@@ -1151,6 +1151,7 @@ Mesh d3_build_mesh(const D3File& rF, D3Cells& rCells) {
     const auto part_ids = d3_part_user_ids(h, g);
     if (!g.mRigidBodyParts.empty()) {  // each rigid body's part (user id)
         std::vector<std::int64_t> rigid;
+        rigid.reserve(g.mRigidBodyParts.size());
         for (std::int64_t p : g.mRigidBodyParts)
             rigid.push_back(p > 0 && static_cast<std::size_t>(p) <= part_ids.size()
                                 ? part_ids[static_cast<std::size_t>(p - 1)]

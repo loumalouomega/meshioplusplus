@@ -2377,6 +2377,7 @@ step('every binding is reachable through the wrapper', () => {
         'convert',
         'convertSurface',
         'convertSurfaceOps',
+        'surfaceBuffersOps',
         'runPipeline',
         'numNodesPerCell',
         'topologicalDimension',
@@ -4275,6 +4276,202 @@ step('convertSurfaceOps can write an uncompressed VTP for a caller that parses i
     );
     // A non-VTP output ignores the option rather than failing on it.
     m.convertSurfaceOps('/zc.vtu', '/zc_out.vtu', [], { compressVtp: false });
+});
+
+// --- surfaceBuffersOps: the viewer's render path ------------------------- //
+
+/**
+ * Decode an uncompressed binary VTP (`compressVtp: false`) into plain arrays:
+ * points, each section's connectivity in VTK's legacy layout, and the point
+ * and cell data -- what vtk.js's own reader builds -- so `surfaceBuffersOps`
+ * can be checked against the VTP writer value for value, cell id for cell id.
+ */
+function decodeVtp(text) {
+    const header = /header_type="UInt64"/.test(text) ? 8 : 4;
+    const ctor = {
+        Float32: Float32Array,
+        Float64: Float64Array,
+        Int8: Int8Array,
+        Int16: Int16Array,
+        Int32: Int32Array,
+        Int64: BigInt64Array,
+        UInt8: Uint8Array,
+        UInt16: Uint16Array,
+        UInt32: Uint32Array,
+        UInt64: BigUint64Array,
+    };
+    const arrays = (body) => {
+        const out = {};
+        const re =
+            /<DataArray type="(\w+)" Name="([^"]*)"(?: NumberOfComponents="(\d+)")? format="binary">\s*([A-Za-z0-9+/=]*)\s*<\/DataArray>/g;
+        for (const [, type, name, ncomp, b64] of body.matchAll(re)) {
+            const bytes = Buffer.from(b64, 'base64');
+            const raw = bytes.subarray(header);
+            const copy = new Uint8Array(raw.length);
+            copy.set(raw);
+            const values = Array.from(new ctor[type](copy.buffer), Number);
+            out[name] = { type, components: ncomp ? Number(ncomp) : 1, values };
+        }
+        return out;
+    };
+    const section = (tag) => {
+        const body = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+        return body ? arrays(body[1]) : {};
+    };
+    const legacy = (tag) => {
+        const s = section(tag);
+        if (!s.offsets) return [];
+        const out = [];
+        let prev = 0;
+        for (const end of s.offsets.values) {
+            out.push(end - prev, ...s.connectivity.values.slice(prev, end));
+            prev = end;
+        }
+        return out;
+    };
+    return {
+        points: section('Points').Points,
+        verts: legacy('Verts'),
+        lines: legacy('Lines'),
+        polys: legacy('Polys'),
+        pointData: section('PointData'),
+        cellData: section('CellData'),
+    };
+}
+
+/** `surfaceBuffersOps` must hand over exactly what the VTP of it holds. */
+function assertSameAsVtp(path, ops, options = {}) {
+    const out = m.surfaceBuffersOps(path, ops, options);
+    m.convertSurfaceOps(path, '/sbo-ref.vtp', ops, { ...options, compressVtp: false });
+    const ref = decodeVtp(m.FS.readFile('/sbo-ref.vtp', { encoding: 'utf8' }));
+    const s = out.surface;
+    assert.deepEqual(Array.from(s.points), ref.points.values);
+    assert.equal(s.points.constructor.name, ref.points.type === 'Float32' ? 'Float32Array' : 'Float64Array');
+    for (const sec of ['verts', 'lines', 'polys']) {
+        assert.ok(s[sec] instanceof Uint32Array, sec);
+        assert.deepEqual(Array.from(s[sec]), ref[sec], sec);
+    }
+    for (const [mine, theirs] of [
+        [s.pointData, ref.pointData],
+        [s.cellData, ref.cellData],
+    ]) {
+        assert.deepEqual(
+            mine.map((a) => a.name),
+            Object.keys(theirs)
+        );
+        for (const a of mine) {
+            const r = theirs[a.name];
+            assert.equal(a.components, r.components, a.name);
+            assert.deepEqual(Array.from(a.values), r.values, a.name);
+            assert.ok(!(a.values instanceof BigInt64Array || a.values instanceof BigUint64Array));
+        }
+    }
+    return out;
+}
+
+step('surfaceBuffersOps matches the VTP of a skinned volume, with and without provenance', () => {
+    const solid = {
+        ...cube,
+        point_data: { disp: new Float64Array(Array.from({ length: 24 }, (_, i) => i / 7)) },
+        point_data_components: { disp: 3 },
+        cell_data: { mat: [new BigInt64Array([7n])], heat: [new Float32Array([1.5])] },
+    };
+    m.writeMesh('/sbo-solid.vtu', solid);
+    const kept = assertSameAsVtp('/sbo-solid.vtu', [], { keepProvenance: true });
+    const names = kept.surface.cellData.map((a) => a.name);
+    assert.ok(names.includes('surface:parent_cell'));
+    // An int64 array whose values fit arrives as Int32Array, as vtk.js
+    // narrows it. (Float dtypes follow the surface pipeline, which may widen
+    // them before either path sees them; assertSameAsVtp checks they agree.)
+    const mat = kept.surface.cellData.find((a) => a.name === 'mat');
+    assert.ok(mat.values instanceof Int32Array);
+    assert.deepEqual(Array.from(mat.values), [7, 7, 7, 7, 7, 7]);
+    assert.equal(kept.surface.pointData.find((a) => a.name === 'disp').components, 3);
+    const dropped = assertSameAsVtp('/sbo-solid.vtu', [], { keepProvenance: false });
+    assert.ok(!dropped.surface.cellData.some((a) => a.name === 'surface:parent_cell'));
+    assert.deepEqual(kept.steps, []);
+    assert.deepEqual(kept.warnings, []);
+});
+
+step('surfaceBuffersOps numbers mixed cells in Verts, Lines, Polys order', () => {
+    // Blocks deliberately out of VTK's order, with a ragged polygon block:
+    // the cell ids the picker reads must be the VTP file's.
+    const mixed = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0, 0, 2, 1, 0, 3, 0, 0]),
+        dim: 3,
+        cells: [
+            { type: 'quad', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 },
+            { type: 'line', data: new Int32Array([4, 5, 5, 6]), nodesPerCell: 2 },
+            { type: 'polygon', data: new Int32Array([1, 4, 5, 1, 4, 6, 5, 2]), rowOffsets: new Int32Array([0, 3, 8]) },
+            { type: 'vertex', data: new Int32Array([6]), nodesPerCell: 1 },
+            { type: 'triangle', data: new Int32Array([0, 2, 3]), nodesPerCell: 3 },
+        ],
+        point_data: {},
+        cell_data: {
+            id: [
+                new BigInt64Array([10n]),
+                new BigInt64Array([20n, 21n]),
+                new BigInt64Array([30n, 31n]),
+                new BigInt64Array([40n]),
+                new BigInt64Array([50n]),
+            ],
+        },
+    };
+    m.writeMesh('/sbo-mixed.vtu', mixed);
+    const out = assertSameAsVtp('/sbo-mixed.vtu', []);
+    const id = out.surface.cellData.find((a) => a.name === 'id');
+    assert.deepEqual(Array.from(id.values), [40, 20, 21, 10, 30, 31, 50]);
+    assert.deepEqual(Array.from(out.surface.verts), [1, 6]);
+});
+
+step('surfaceBuffersOps pads 2-D points, agrees on float32 input and never truncates an int64', () => {
+    const flat = {
+        points: new Float64Array([0, 0, 1, 0, 0, 1]),
+        dim: 2,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+        point_data: {},
+        cell_data: { big: [new BigInt64Array([2n ** 40n])] },
+    };
+    m.writeMesh('/sbo-flat.vtu', flat);
+    const out = assertSameAsVtp('/sbo-flat.vtu', []);
+    assert.deepEqual(Array.from(out.surface.points), [0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const big = out.surface.cellData.find((a) => a.name === 'big');
+    // vtk.js would keep the low 32 bits (0); the buffers keep the value.
+    assert.ok(big.values instanceof Float64Array);
+    assert.deepEqual(Array.from(big.values), [2 ** 40]);
+
+    m.FS.writeFile(
+        '/sbo-f32.vtu',
+        `<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">
+<UnstructuredGrid><Piece NumberOfPoints="3" NumberOfCells="1">
+<Points><DataArray type="Float32" NumberOfComponents="3" format="ascii">0 0 0 1 0 0 0 1 0.5</DataArray></Points>
+<Cells>
+<DataArray type="Int64" Name="connectivity" format="ascii">0 1 2</DataArray>
+<DataArray type="Int64" Name="offsets" format="ascii">3</DataArray>
+<DataArray type="UInt8" Name="types" format="ascii">5</DataArray>
+</Cells>
+</Piece></UnstructuredGrid>
+</VTKFile>`
+    );
+    assertSameAsVtp('/sbo-f32.vtu', []);
+});
+
+step('surfaceBuffersOps runs the pipeline and reports it like convertSurfaceOps', () => {
+    m.writeMesh('/sbo-ops.vtu', cube);
+    const ops = [{ op: 'refine', levels: 1 }, { op: 'quality' }];
+    const out = assertSameAsVtp('/sbo-ops.vtu', ops, { keepProvenance: true });
+    assert.deepEqual(
+        out.steps.map((s) => s.op),
+        ['refine', 'quality']
+    );
+    // One hexahedron refines to 8, whose boundary is 6*4 = 24 quads.
+    assert.equal(out.surface.polys.length, 24 * 5);
+    assert.ok(out.surface.cellData.some((a) => a.name === 'quality:scaled_jacobian'));
+    assert.throws(
+        () => m.surfaceBuffersOps('/sbo-ops.vtu', [{ op: 'teleport' }]),
+        /unknown operation 'teleport'/
+    );
 });
 
 step('convertSurfaceOps rejects an unknown operation by name', () => {

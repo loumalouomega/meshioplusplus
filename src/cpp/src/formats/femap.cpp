@@ -828,6 +828,7 @@ Mesh read_femap(const std::string& rPath, const ReadOptions& rOpts) {
 std::vector<double> femap_time_values(const std::string& rPath) {
     const FnFile f = fn_parse(rPath);
     std::vector<double> out;
+    out.reserve(f.mSets.size());
     for (const FnSet& s : f.mSets)
         out.push_back(s.mValue);
     return out;

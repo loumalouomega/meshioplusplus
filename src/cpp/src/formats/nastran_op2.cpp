@@ -667,6 +667,7 @@ std::vector<detail::NastranCardRows> op2_read_elements(
         log::warn("{}: skipped element records with no cell type: {}", kOp2Who, list);
     }
     std::vector<detail::NastranCardRows> out;
+    out.reserve(cards.size());
     for (auto& [card, rows] : cards)
         out.push_back(std::move(rows));
     return out;
@@ -2028,6 +2029,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
 std::vector<double> nastran_op2_time_values(const std::string& rPath) {
     const Op2Reader r(rPath);
     std::vector<double> out;
+    out.reserve(r.mSteps.size());
     for (const Op2Step& s : r.mSteps)
         out.push_back(s.mTime);
     return out;

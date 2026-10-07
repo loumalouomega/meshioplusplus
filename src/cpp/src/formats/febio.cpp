@@ -442,6 +442,7 @@ struct FebReader {
             feb_fail(std::string("a ") + rFacet.name() + " facet needs " +
                      std::to_string(type->mNodes) + " nodes");
         std::vector<std::int64_t> nodes;
+        nodes.reserve(tokens.size());
         for (std::string_view t : tokens)
             nodes.push_back(Node(feb_need_int(t, "node id")));
         return {type->mType, std::move(nodes)};

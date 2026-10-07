@@ -1585,6 +1585,7 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
                 mesh.AddPointData(name, std::move(arr));
             } else if (!block_sizes.empty()) {
                 std::vector<NDArray> arrs;
+                arrs.reserve(block_sizes.size());
                 for (std::size_t ne : block_sizes)
                     arrs.push_back(unv_nan_array(ne, nc));
                 for (const auto& [label, vals] : res.mValues) {

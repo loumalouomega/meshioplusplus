@@ -261,6 +261,7 @@ MfNumbering mf_number(const std::vector<MfElement>& rElements, int Dim, std::siz
         for (const MfElement& el : rElements)
             for (const auto& f : geoms[static_cast<std::size_t>(el.mGeom)].mFaces) {
                 std::vector<std::int64_t> v;
+                v.reserve(f.size());
                 for (int k : f)
                     v.push_back(el.mVertices[static_cast<std::size_t>(k)]);
                 MfKey key = mf_key(std::move(v));
@@ -909,6 +910,7 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
                 facets = g.mFaces;
             for (const auto& fv : facets) {
                 std::vector<std::int64_t> key;
+                key.reserve(fv.size());
                 for (int k : fv)
                     key.push_back(el.mIds[static_cast<std::size_t>(k)]);
                 std::sort(key.begin(), key.end());
@@ -1028,6 +1030,7 @@ void mf_read_groups(MfLexer& rLex, MfFile& rF) {
         if (size < 1)
             rLex.Fail("an empty communication group", rLex.Line());
         std::vector<std::int64_t> ranks;
+        ranks.reserve(std::min<std::size_t>(static_cast<std::size_t>(size), rLex.Remaining()));
         for (std::int64_t k = 0; k < size; ++k)
             ranks.push_back(rLex.Int("a rank"));
         std::sort(ranks.begin(), ranks.end());
@@ -2277,6 +2280,7 @@ MfEntities mf_entities(const std::vector<MfElement>& rElements, int Dim) {
         if (Dim == 3)
             for (const auto& f : g.mFaces) {
                 std::vector<std::int64_t> v;
+                v.reserve(f.size());
                 for (int k : f)
                     v.push_back(el.mVertices[static_cast<std::size_t>(k)]);
                 if (ent.mFaces.emplace(mf_key(v), ent.mFaces.size()).second)
@@ -2388,6 +2392,7 @@ void mf_element_dofs(const MfElement& rEl, int Dim, const MfEntities* pEnt, cons
     if (Dim == 3 && g.mDim == 3) {
         for (const auto& f : g.mFaces) {
             std::vector<std::int64_t> v;
+            v.reserve(f.size());
             for (int k : f)
                 v.push_back(rEl.mVertices[static_cast<std::size_t>(k)]);
             std::size_t base = 0;
@@ -3445,6 +3450,7 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
         std::map<std::vector<std::int64_t>, std::set<std::size_t>> owners;
         const auto key_of = [&](std::size_t Q, const MfElement& rB) {
             std::vector<std::int64_t> key;
+            key.reserve(rB.mVertices.size());
             for (std::int64_t v : rB.mVertices)
                 key.push_back(parts[Q].mGlobal[static_cast<std::size_t>(v)]);
             std::sort(key.begin(), key.end());
@@ -3482,6 +3488,7 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
                             "': a parallel mesh's grid function is named by one of its rank "
                             "files, <name>.NNNNNN");
         std::vector<MfGridData> per_rank;
+        per_rank.reserve(files.size());
         for (std::size_t q = 0; q < files.size(); ++q)
             per_rank.push_back(mf_parse_gf({g.mName, mf_rank_path(gprefix, files[q].mRank)}));
         const MfSpace& s = per_rank[0].mSpace;
@@ -4336,6 +4343,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
 
     // --- numbering and dof weights (quadratic) -------------------------------
     std::vector<MfElement> numbered;
+    numbered.reserve(elements.size());
     for (const MfOutCell& c : elements)
         numbered.push_back({c.mAttribute, c.mGeom, mfem_vertices(c), 0});
     const std::size_t nv = vertex_point.size();

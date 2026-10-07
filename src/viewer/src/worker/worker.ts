@@ -7,7 +7,7 @@
  *
  * The session model is the important part. The **original file bytes stay
  * staged in MEMFS** for as long as the file is open, and every pipeline change
- * replays the whole operation list against them through one `convertSurfaceOps`
+ * replays the whole operation list against them through one `surfaceBuffersOps`
  * call. That is what makes undo exact — pop an operation, replay, done — with
  * no inverse operations and no snapshots. It also means `apply` must *not*
  * unlink the staged file, which is the one place this deviates from the
@@ -28,6 +28,8 @@ import { loadMeshioPlusPlus } from '@meshioplusplus/wasm';
 import wasmUrl from '@meshioplusplus/wasm/dist/meshioplusplus_wasm.wasm?url';
 import wasmMtUrl from '@meshioplusplus/wasm/dist/meshioplusplus_wasm_mt.wasm?url';
 
+import type { SurfaceBuffers } from '@meshioplusplus/wasm';
+
 import type { Vector3 } from '../types';
 import type {
     ArraySummary,
@@ -46,7 +48,6 @@ type Module = Awaited<ReturnType<typeof loadMeshioPlusPlus>>;
 let mio: Module | null = null;
 
 const IN_DIR = '/in';
-const SURFACE_PATH = '/out.vtp';
 
 interface Session {
     path: string;
@@ -132,23 +133,43 @@ function boundsOf(meta: MeshMeta): { min: Vector3; max: Vector3 } | null {
     };
 }
 
-/** Replay `ops` against the staged file and return the renderable surface. */
-function renderPipeline(m: Module, ops: OpSpec[]): { vtp: ArrayBuffer; report: OpReport } {
-    if (!session) throw new Error('no mesh is open');
-    const report = m.convertSurfaceOps(session.path, SURFACE_PATH, ops, {
-        inFormat: session.format,
+/**
+ * Every buffer a surface holds, for the transfer list. Each typed array the
+ * binding returns was copied out of the WASM heap into a buffer of its own,
+ * so transferring one never detaches the heap.
+ */
+function surfaceTransfer(surface: SurfaceBuffers): ArrayBuffer[] {
+    const arrays = [
+        surface.points,
+        surface.verts,
+        surface.lines,
+        surface.polys,
+        ...surface.pointData.map((a) => a.values),
+        ...surface.cellData.map((a) => a.values),
+    ];
+    return arrays.map((a) => a.buffer as ArrayBuffer);
+}
+
+/** Read `path`, apply `ops` and return the renderable surface as arrays. */
+function renderSurface(
+    m: Module,
+    path: string,
+    format: string,
+    ops: OpSpec[]
+): { surface: SurfaceBuffers; report: OpReport } {
+    const { surface, steps, warnings } = m.surfaceBuffersOps(path, ops, {
+        inFormat: format,
         // The picker needs the provenance array; the colour-by menu filters it
         // out by name, so keeping it costs nothing visible.
         keepProvenance: true,
-        // Leave the VTP zlib-compressed (the default). Do not pass
-        // `compressVtp: false` here: vtk.js reads an uncompressed array as
-        // `new Float64Array(buffer, headerBytes)`, and the writer's 4-byte
-        // header (no `header_type`) puts that at offset 4, which throws a
-        // RangeError for every 8-byte type and ends the load in "error".
-    }) as OpReport;
-    const vtp = take(m, SURFACE_PATH);
-    unlink(m, SURFACE_PATH);
-    return { vtp, report };
+    });
+    return { surface, report: { steps, warnings } as OpReport };
+}
+
+/** Replay `ops` against the staged file and return the renderable surface. */
+function renderPipeline(m: Module, ops: OpSpec[]): { surface: SurfaceBuffers; report: OpReport } {
+    if (!session) throw new Error('no mesh is open');
+    return renderSurface(m, session.path, session.format, ops);
 }
 
 function post(message: Response, transfer: Transferable[] = []): void {
@@ -323,19 +344,19 @@ async function handle(request: Request): Promise<void> {
             };
 
             post({ id, type: 'progress', stage: 'surface' });
-            const { vtp, report } = renderPipeline(m, []);
+            const { surface, report } = renderPipeline(m, []);
             post(
                 {
                     id,
                     type: 'result',
                     kind: 'render',
-                    vtp,
+                    surface,
                     meta,
                     format: session.format,
                     report,
                     bounds: session.bounds,
                 },
-                [vtp]
+                surfaceTransfer(surface)
             );
             return;
         }
@@ -345,19 +366,19 @@ async function handle(request: Request): Promise<void> {
             post({ id, type: 'progress', stage: 'operations' });
             // Deliberately no unlink: the staged bytes are the pipeline's
             // input every time, which is what makes undo exact.
-            const { vtp, report } = renderPipeline(m, request.ops);
+            const { surface, report } = renderPipeline(m, request.ops);
             post(
                 {
                     id,
                     type: 'result',
                     kind: 'render',
-                    vtp,
+                    surface,
                     meta: session.meta,
                     format: session.format,
                     report,
                     bounds: session.bounds,
                 },
-                [vtp]
+                surfaceTransfer(surface)
             );
             return;
         }
@@ -414,24 +435,19 @@ async function handle(request: Request): Promise<void> {
             const { path, format } = stagedStep(request.step);
             post({ id, type: 'progress', stage: 'surface' });
             const meta = m.readMetadata(path, format) as unknown as MeshMeta;
-            const report = m.convertSurfaceOps(path, SURFACE_PATH, [], {
-                inFormat: format,
-                keepProvenance: true,
-            }) as OpReport;
-            const vtp = take(m, SURFACE_PATH);
-            unlink(m, SURFACE_PATH);
+            const { surface, report } = renderSurface(m, path, format, []);
             post(
                 {
                     id,
                     type: 'result',
                     kind: 'render',
-                    vtp,
+                    surface,
                     meta,
                     format: meta.format || format,
                     report,
                     bounds: boundsOf(meta),
                 },
-                [vtp],
+                surfaceTransfer(surface),
             );
             return;
         }

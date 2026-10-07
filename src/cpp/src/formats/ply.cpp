@@ -290,6 +290,7 @@ Mesh read_ply(const std::string& rPath) {
 
     // Vertex properties -> per-property arrays.
     std::vector<NDArray> vcols;
+    vcols.reserve(vprops.size());
     for (const auto& vp : vprops)
         vcols.emplace_back(vp.mDtype, std::vector<std::size_t>{num_verts});
 

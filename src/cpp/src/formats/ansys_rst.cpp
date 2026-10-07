@@ -811,6 +811,7 @@ void rst_solution(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         if (numdof > 0 && static_cast<std::uint64_t>(numdof) + 20 > s.mValues.size())
             rst_fail("result set " + std::to_string(Index + 1) + " has a corrupt DOF count");
         std::vector<std::int64_t> dofs;
+        dofs.reserve(static_cast<std::size_t>(std::max<std::int64_t>(numdof, 0)));
         for (std::int64_t k = 0; k < numdof; ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
         const std::int64_t sumdof = numdof + s.Int(97);
@@ -912,6 +913,7 @@ void rst_reactions(RstModel& rModel, std::size_t Index, const ReadOptions& rOpti
         if (nrf <= 0 || !ptr_rf || numdof <= 0)
             continue;
         std::vector<std::int64_t> dofs;
+        dofs.reserve(std::min<std::size_t>(static_cast<std::size_t>(numdof), s.mValues.size()));
         for (std::int64_t k = 0; k < numdof; ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
         // (N - 1) * numdof + k: N the node's position in the nodal equivalence
@@ -1072,6 +1074,8 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         if (!ptr_esl)
             continue;
         std::vector<std::int64_t> dofs;
+        dofs.reserve(static_cast<std::size_t>(
+            std::clamp<std::int64_t>(s.Int(19), 0, static_cast<std::int64_t>(s.mValues.size()))));
         for (std::int64_t k = 0; k < s.Int(19); ++k)
             dofs.push_back(s.Int(20 + static_cast<std::size_t>(k)));
         const RstRecord index = file.Record(base + ptr_esl);
@@ -1304,6 +1308,7 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
         }
     const std::size_t n_pts = old_point.size();
     std::vector<std::array<double, 9>> rotations;
+    rotations.reserve(n);
     const double pi = std::acos(-1.0);
     for (std::size_t i = 0; i < n; ++i)
         rotations.push_back(
@@ -1598,6 +1603,7 @@ RstModal rst_modal(const std::string& rPath, const ReadOptions& rOptions, const 
             out.mPoint.emplace(name, other.mMesh.PointData(name));
         for (const std::string& name : other.mMesh.CellDataNames()) {
             std::vector<NDArray> blocks;
+            blocks.reserve(other.mMesh.NumCellBlocks());
             for (std::size_t b = 0; b < other.mMesh.NumCellBlocks(); ++b)
                 blocks.push_back(other.mMesh.CellData(name, b));
             out.mCell.emplace(name, std::move(blocks));

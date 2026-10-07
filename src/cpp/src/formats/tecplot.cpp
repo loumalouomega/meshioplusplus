@@ -2592,6 +2592,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             };
             if (ztype == "FEPOLYHEDRON") {
                 std::vector<std::int64_t> counts;
+                counts.reserve(faces.mFaces.size());
                 for (const auto& f : faces.mFaces)
                     counts.push_back(static_cast<std::int64_t>(f.size()));
                 write_ints(counts);

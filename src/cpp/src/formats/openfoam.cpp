@@ -1878,6 +1878,7 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
     // Family ids in the reader's own order (ascending -fam == ascending patch
     // index), so an OpenFOAM round trip preserves the boundary file's order.
     std::vector<std::int64_t> fams;
+    fams.reserve(rInfo.mCellTags.size());
     for (const auto& kv : rInfo.mCellTags)
         fams.push_back(kv.first);
     std::sort(fams.begin(), fams.end(), [](std::int64_t a, std::int64_t b) { return a > b; });

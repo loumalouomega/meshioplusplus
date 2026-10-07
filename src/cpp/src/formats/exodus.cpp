@@ -173,6 +173,7 @@ NDArray read_var(int ncid, int varid, const std::vector<std::size_t>& rStart,
     check(nc_inq_vartype(ncid, varid, &t), "inq_vartype");
     DType dt = dtype_of(t);
     std::vector<std::size_t> shape;
+    shape.reserve(rCount.size());
     for (std::size_t c : rCount)
         shape.push_back(c);
     NDArray out(dt, shape);

@@ -415,6 +415,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 
     if (nsum > 0) {
         std::vector<std::string> names;
+        names.reserve(ndata.size());
         for (auto& p : ndata)
             names.push_back(p.first);
         std::vector<std::optional<detail::DoubleView>> node_values(ndata.size());

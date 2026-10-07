@@ -69,6 +69,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -88,6 +89,7 @@
 // Project includes
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
@@ -2188,21 +2190,270 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
 
 }  // namespace
 
+namespace {
+
+/**
+ * @brief Read `rInPath`, apply an operation pipeline, and return the renderable
+ * surface -- the shared front half of `convertSurfaceOps` and
+ * `surfaceBuffersOps`.
+ *
+ * Volume cells are skinned (with `surface:parent_cell`, dropped unless
+ * `keepProvenance`), their cell data gathered onto the facets, and the result
+ * linearized; a mesh with nothing to skin is only linearized.
+ */
+Mesh display_surface(const std::string& rInPath, const std::string& rInFormat, const val& rOps,
+                     bool keepProvenance, val& rSteps, val& rWarnings) {
+    const std::string rfmt = resolve_format(rInPath, rInFormat);
+    auto rit = registry_readers().find(rfmt);
+    if (rit == registry_readers().end())
+        throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported input format '" +
+                                        rfmt + "'" + compiled_out_hint(rfmt));
+
+    Mesh mesh = rit->second(rInPath);
+    const unsigned n = rOps["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i)
+        mesh = apply_one_op(std::move(mesh), rOps[i], rSteps, rWarnings);
+
+    // From here on this is `convert_surface`'s tail, unchanged.
+    meshioplusplus::ConvertCellsOptions linearize;
+    linearize.mMode = meshioplusplus::ConvertCellsMode::Linearize;
+
+    if (!meshioplusplus::has_skinnable_cells(mesh))
+        return meshioplusplus::convert_cells(mesh, linearize).mMesh;
+    Mesh surface = meshioplusplus::extract_surface(mesh, /*recordParentIds=*/true);
+    gather_cell_data_onto_surface(mesh, surface);
+    surface = meshioplusplus::convert_cells(surface, linearize).mMesh;
+    if (!keepProvenance)
+        surface = meshioplusplus::data_drop(surface, meshioplusplus::DataLocation::Cell,
+                                            {"surface:parent_cell"},
+                                            /*ignore_missing=*/true);
+    return surface;
+}
+
+// PolyData section of a block, in VTK's canonical cell order. The same
+// classification as the VTP writer's (`formats/vtp.cpp`), so a surface handed
+// over as buffers numbers its cells exactly as the VTP file of it does; the
+// smoke test compares the two.
+int display_section_of(const Mesh::CellView& rCb) {
+    const std::string& type = rCb.Type();
+    if (rCb.IsPolyhedron())
+        throw meshioplusplus::WriteError(
+            "meshio++ (wasm): a display surface cannot hold polyhedron cells");
+    if (type == "vertex")
+        return 0;
+    if (type == "line")
+        return 1;
+    if (type == "triangle" || type == "quad" || type == "polygon")
+        return 2;
+    throw meshioplusplus::WriteError("meshio++ (wasm): a display surface cannot hold '" + type +
+                                     "' cells");
+}
+
+// One or more same-dtype arrays, concatenated, as the typed array vtk.js's own
+// VTP reader would have made of them: the dtype unchanged, except that Int64
+// and UInt64 (which vtk.js narrows to their low 32 bits) become Int32Array or
+// Uint32Array when every value fits, and Float64Array when one does not, so
+// nothing is truncated.
+val display_typed_array(const std::vector<const NDArray*>& rParts) {
+    std::size_t total = 0;
+    for (const NDArray* p_part : rParts)
+        total += p_part->Size();
+    const DType dt = rParts.empty() ? DType::Float64 : rParts.front()->Dtype();
+    return meshioplusplus::detail::dispatch_dtype(dt, [&]<class T>() -> val {
+        if constexpr (sizeof(T) == 8 && std::is_integral_v<T>) {
+            using Narrow = std::conditional_t<std::is_signed_v<T>, std::int32_t, std::uint32_t>;
+            bool fits = true;
+            for (const NDArray* p_part : rParts) {
+                const T* src = p_part->As<T>();
+                for (std::size_t i = 0; fits && i < p_part->Size(); ++i)
+                    fits = static_cast<T>(static_cast<Narrow>(src[i])) == src[i];
+            }
+            if (fits) {
+                std::vector<Narrow> tmp;
+                tmp.reserve(total);
+                for (const NDArray* p_part : rParts) {
+                    const T* src = p_part->As<T>();
+                    for (std::size_t i = 0; i < p_part->Size(); ++i)
+                        tmp.push_back(static_cast<Narrow>(src[i]));
+                }
+                val arr =
+                    val::global(std::is_signed_v<T> ? "Int32Array" : "Uint32Array").new_(total);
+                arr.call<void>("set", val(emscripten::typed_memory_view(tmp.size(), tmp.data())));
+                return arr;
+            }
+            std::vector<double> tmp;
+            tmp.reserve(total);
+            for (const NDArray* p_part : rParts) {
+                const T* src = p_part->As<T>();
+                for (std::size_t i = 0; i < p_part->Size(); ++i)
+                    tmp.push_back(static_cast<double>(src[i]));
+            }
+            return float64_array_from(tmp.data(), tmp.size());
+        } else {
+            val arr = val::global(js_typed_array_ctor(dt)).new_(total);
+            std::size_t offset = 0;
+            for (const NDArray* p_part : rParts) {
+                arr.call<void>("set",
+                               val(emscripten::typed_memory_view(p_part->Size(), p_part->As<T>())),
+                               offset);
+                offset += p_part->Size();
+            }
+            return arr;
+        }
+    });
+}
+
+// Components of one tuple: the product of the trailing dimensions (a 3x3
+// tensor per row is nine), one for a flat array.
+std::size_t display_components(const NDArray& rA) {
+    std::size_t k = 1;
+    for (std::size_t d = 1; d < rA.Shape().size(); ++d)
+        k *= rA.Shape()[d];
+    return k;
+}
+
+val display_data_entry(const std::string& rName, val values, std::size_t Components) {
+    val entry = val::object();
+    entry.set("name", rName);
+    entry.set("values", values);
+    entry.set("components", static_cast<double>(Components));
+    return entry;
+}
+
+/**
+ * @brief A surface as the arrays a `vtkPolyData` is built from.
+ *
+ * Points are three components (2-D padded with zero z), Float32Array when the
+ * mesh's are float32 and Float64Array otherwise. Cells are three Uint32Arrays in
+ * VTK's legacy layout (a count, then the ids) for the Verts, Lines and Polys
+ * sections, filled in the VTP writer's stable partition of the block order;
+ * cell data follows that order. Arrays are listed by sorted name, as the VTP
+ * file lists them.
+ */
+val surface_to_buffers(const Mesh& rSurface) {
+    const std::size_t nblocks = rSurface.NumCellBlocks();
+    std::vector<int> section(nblocks);
+    for (std::size_t bi = 0; bi < nblocks; ++bi)
+        section[bi] = display_section_of(rSurface.Cells(bi));
+
+    std::vector<std::size_t> block_order;
+    block_order.reserve(nblocks);
+    std::vector<std::uint32_t> cells[3];
+    const auto narrow = [](std::int64_t Id) {
+        if (Id < 0 || Id > std::numeric_limits<std::uint32_t>::max())
+            throw meshioplusplus::WriteError("meshio++ (wasm): point index " + std::to_string(Id) +
+                                             " does not fit in a 32-bit cell array");
+        return static_cast<std::uint32_t>(Id);
+    };
+    for (int want = 0; want < 3; ++want)
+        for (std::size_t bi = 0; bi < nblocks; ++bi) {
+            if (section[bi] != want)
+                continue;
+            block_order.push_back(bi);
+            const Mesh::CellView cb = rSurface.Cells(bi);
+            std::vector<std::uint32_t>& out = cells[want];
+            if (cb.IsRagged()) {
+                for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                    const std::size_t sz = cb.RowSize(r);
+                    const std::int64_t* row = cb.Row(r);
+                    out.push_back(static_cast<std::uint32_t>(sz));
+                    for (std::size_t j = 0; j < sz; ++j)
+                        out.push_back(narrow(row[j]));
+                }
+                continue;
+            }
+            const NDArray& conn_array = cb.Conn();
+            const std::size_t k = cols_of(conn_array);
+            if (want == 0 && k != 1)
+                throw meshioplusplus::WriteError(
+                    "meshio++ (wasm): vertex cells must have exactly one node");
+            out.reserve(out.size() + cb.NumCells() * (k + 1));
+            meshioplusplus::detail::dispatch_dtype(conn_array.Dtype(), [&]<class T>() {
+                const T* conn = conn_array.As<T>();
+                for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                    out.push_back(static_cast<std::uint32_t>(k));
+                    for (std::size_t j = 0; j < k; ++j)
+                        out.push_back(narrow(static_cast<std::int64_t>(conn[r * k + j])));
+                }
+            });
+        }
+
+    // Points: three components, the dtype kept where vtk.js keeps it.
+    const NDArray& points = rSurface.Points();
+    const std::size_t num_points = rSurface.NumPoints();
+    const std::size_t dim = rSurface.PointDim();
+    val js_points = meshioplusplus::detail::dispatch_dtype(points.Dtype(), [&]<class T>() -> val {
+        using Out = std::conditional_t<std::is_same_v<T, float>, float, double>;
+        std::vector<Out> xyz(num_points * 3, Out(0));
+        const T* src = points.As<T>();
+        for (std::size_t r = 0; r < num_points; ++r)
+            for (std::size_t c = 0; c < dim && c < 3; ++c)
+                xyz[r * 3 + c] = static_cast<Out>(src[r * dim + c]);
+        val arr = val::global(std::is_same_v<Out, float> ? "Float32Array" : "Float64Array")
+                      .new_(xyz.size());
+        arr.call<void>("set", val(emscripten::typed_memory_view(xyz.size(), xyz.data())));
+        return arr;
+    });
+
+    val point_data = val::array();
+    for (const auto& name : rSurface.PointDataNames()) {
+        NDArray scratch;
+        const NDArray& d =
+            meshioplusplus::detail::vtu_disk_array(name, rSurface.PointData(name), scratch);
+        point_data.call<void>(
+            "push", display_data_entry(name, display_typed_array({&d}), display_components(d)));
+    }
+
+    val cell_data = val::array();
+    for (const auto& name : rSurface.CellDataNames()) {
+        const std::size_t ndblocks = rSurface.CellDataNumBlocks(name);
+        if (ndblocks == 0)
+            continue;
+        std::vector<NDArray> scratch(nblocks);
+        std::vector<const NDArray*> parts;
+        parts.reserve(block_order.size());
+        for (std::size_t bi : block_order)
+            if (bi < ndblocks)
+                parts.push_back(&meshioplusplus::detail::vtu_disk_array(
+                    name, rSurface.CellData(name, bi), scratch[bi]));
+        if (parts.empty())
+            continue;
+        cell_data.call<void>("push", display_data_entry(name, display_typed_array(parts),
+                                                        display_components(*parts.front())));
+    }
+
+    const auto uint32_cells = [&](int Section) {
+        const std::vector<std::uint32_t>& rCells = cells[Section];
+        val arr = val::global("Uint32Array").new_(rCells.size());
+        arr.call<void>("set", val(emscripten::typed_memory_view(rCells.size(), rCells.data())));
+        return arr;
+    };
+    val out = val::object();
+    out.set("points", js_points);
+    out.set("verts", uint32_cells(0));
+    out.set("lines", uint32_cells(1));
+    out.set("polys", uint32_cells(2));
+    out.set("pointData", point_data);
+    out.set("cellData", cell_data);
+    return out;
+}
+
+}  // namespace
+
 /**
  * @brief Read `rInPath`, apply an operation pipeline, and write a renderable
  * surface to `rOutPath` -- all inside C++.
  *
- * This exists because every mesh operation in the JS API takes and returns a
- * JS `Mesh`, whose flat representation cannot carry multi-component
- * (vector/tensor) arrays. Chaining operations through that API would silently
- * destroy exactly the data `convertSurface` goes out of its way to preserve.
- * Here no mesh ever crosses the boundary, so nothing is lost.
+ * Operations run in C++ on the mesh as read, so the pipeline needs no mesh to
+ * cross the JS boundary between steps, and multi-component arrays reach the
+ * output as they are.
  *
  * An **empty** pipeline is exactly `convertSurface`, which is deliberate: a
  * viewer can call this for both the plain display and the post-operation
  * display, so the two cannot drift apart. It is also what makes undo exact --
  * replaying a shortened pipeline from the original file needs no inverse
- * operations and no snapshots.
+ * operations and no snapshots. `surfaceBuffersOps` is the same pipeline with
+ * the surface returned as typed arrays instead of written.
  *
  * @param rOps JS array of `{op, ...params}`; see the `OpSpec` union in
  *   `wasm/index.d.ts`.
@@ -2212,75 +2463,77 @@ Mesh apply_one_op(Mesh mesh, const val& rSpec, val& rSteps, val& rWarnings) {
  *   (`registry_write_ex` with the `None` codec) instead of the registry's zlib
  *   default. Other output formats ignore it. The file has a 4-byte header
  *   unless an array could pass 4 GiB, which vtk.js (the browser viewer's
- *   reader) cannot read for 8-byte types, so the viewer keeps the default.
+ *   reader) cannot read for 8-byte types.
  * @return `{steps: [{op, ...counters}], warnings: [string]}`.
  */
 val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat,
                         const std::string& rOutPath, const std::string& rOutFormat, const val& rOps,
                         bool keepProvenance, bool compressVtp) {
     return with_js_errors([&]() -> val {
-        std::string rfmt = resolve_format(rInPath, rInFormat);
-        std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
-        auto rit = registry_readers().find(rfmt);
-        auto wit = registry_writers().find(wfmt);
-        if (rit == registry_readers().end())
+        // An unknown input is reported before an unknown output, as it always
+        // was; `display_surface` resolves the reader again when it reads.
+        const std::string rfmt = resolve_format(rInPath, rInFormat);
+        if (registry_readers().find(rfmt) == registry_readers().end())
             throw meshioplusplus::ReadError(
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
                 compiled_out_hint(rfmt));
+        std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
+        auto wit = registry_writers().find(wfmt);
         if (wit == registry_writers().end())
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
                 compiled_out_hint(wfmt));
 
-        // The write tail, shared by both branches below. `registry_write_ex`
-        // bounds the provenance notes itself; the registry writer needs the
-        // explicit call (see write_mesh()'s comment).
-        const auto write_out = [&](const Mesh& rOut) {
-            if (!compressVtp && wfmt == "vtp") {
-                // Binary must be explicit: with the default encoding an explicit
-                // codec selects ASCII, which is larger and slower to parse.
-                meshioplusplus::WriteOptions opts;
-                opts.mEncoding = meshioplusplus::WriteEncoding::Binary;
-                opts.mCodec = meshioplusplus::detail::VtkCodec::None;
-                opts.mCodecSet = true;
-                meshioplusplus::registry_write_ex(rOutPath, rOut, wfmt, opts);
-                return;
-            }
-            meshioplusplus::detail::provenance_begin_write();
-            wit->second(rOutPath, rOut);
-        };
-
         val steps = val::array();
         val warnings = val::array();
+        const Mesh out_mesh =
+            display_surface(rInPath, rInFormat, rOps, keepProvenance, steps, warnings);
 
-        Mesh mesh = rit->second(rInPath);
-        const unsigned n = rOps["length"].as<unsigned>();
-        for (unsigned i = 0; i < n; ++i)
-            mesh = apply_one_op(std::move(mesh), rOps[i], steps, warnings);
-
-        // From here on this is `convert_surface`'s tail, unchanged.
-        meshioplusplus::ConvertCellsOptions linearize;
-        linearize.mMode = meshioplusplus::ConvertCellsMode::Linearize;
-
-        if (meshioplusplus::has_skinnable_cells(mesh)) {
-            Mesh surface = meshioplusplus::extract_surface(mesh, /*recordParentIds=*/true);
-            gather_cell_data_onto_surface(mesh, surface);
-            surface = meshioplusplus::convert_cells(surface, linearize).mMesh;
-            if (!keepProvenance)
-                surface = meshioplusplus::data_drop(surface, meshioplusplus::DataLocation::Cell,
-                                                    {"surface:parent_cell"},
-                                                    /*ignore_missing=*/true);
-            // See write_mesh()'s comment: bound scope-less notes to this
-            // write, called after the pipeline steps and surface ops above so
-            // any notes THEY raised are dropped rather than misattributed
-            // here, matching every other scope-less write entry point.
-            write_out(surface);
+        // See write_mesh()'s comment: bound scope-less notes to this write,
+        // called after the pipeline steps and surface ops above so any notes
+        // THEY raised are dropped rather than misattributed here, matching
+        // every other scope-less write entry point. `registry_write_ex` bounds
+        // them itself.
+        if (!compressVtp && wfmt == "vtp") {
+            // Binary must be explicit: with the default encoding an explicit
+            // codec selects ASCII, which is larger and slower to parse.
+            meshioplusplus::WriteOptions opts;
+            opts.mEncoding = meshioplusplus::WriteEncoding::Binary;
+            opts.mCodec = meshioplusplus::detail::VtkCodec::None;
+            opts.mCodecSet = true;
+            meshioplusplus::registry_write_ex(rOutPath, out_mesh, wfmt, opts);
         } else {
-            const Mesh linearized = meshioplusplus::convert_cells(mesh, linearize).mMesh;
-            write_out(linearized);
+            meshioplusplus::detail::provenance_begin_write();
+            wit->second(rOutPath, out_mesh);
         }
 
         val out = val::object();
+        out.set("steps", steps);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
+ * @brief `convertSurfaceOps` without the file: the renderable surface comes
+ * back as typed arrays laid out for a `vtkPolyData` (see `surface_to_buffers`).
+ *
+ * The browser viewer's render path. Writing, base64-encoding and compressing a
+ * VTP that vtk.js then parses back on the main thread bought nothing the
+ * arrays do not carry: multi-component data crosses as `components`.
+ *
+ * @return `{surface: {points, verts, lines, polys, pointData, cellData},
+ *   steps, warnings}`.
+ */
+val surface_buffers_ops(const std::string& rInPath, const std::string& rInFormat, const val& rOps,
+                        bool keepProvenance) {
+    return with_js_errors([&]() -> val {
+        val steps = val::array();
+        val warnings = val::array();
+        const Mesh surface =
+            display_surface(rInPath, rInFormat, rOps, keepProvenance, steps, warnings);
+        val out = val::object();
+        out.set("surface", surface_to_buffers(surface));
         out.set("steps", steps);
         out.set("warnings", warnings);
         return out;
@@ -5288,6 +5541,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("convert", &convert);
     emscripten::function("convertSurface", &convert_surface);
     emscripten::function("convertSurfaceOps", &convert_surface_ops);
+    emscripten::function("surfaceBuffersOps", &surface_buffers_ops);
     emscripten::function("runPipeline", &run_pipeline_js);
     // Sequences (multi-file / transient datasets) over MEMFS paths -- the same
     // surface `convert`/`runPipeline` already work on. See doc/sequences.md.
