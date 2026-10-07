@@ -18,6 +18,8 @@
 
 // System includes
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 // External includes
 #include <gtest/gtest.h>
@@ -118,6 +120,43 @@ TEST(Transform, IntegerCellDataIsNeverRotated) {
     Mesh out = transform(m, meshioplusplus::transform_rotation(0, 0, 1, M_PI / 2.0), true);
     EXPECT_EQ(cd(out, "tag", 0), 7.0);
     EXPECT_EQ(cd(out, "tag", 1), 8.0);
+}
+
+TEST(Transform, RaggedBlocksAreCopiedUnchanged) {
+    // Polygon and polyhedron blocks pass through the per-block copy unchanged
+    // while the points move; the Python binding relies on this since it stopped
+    // refusing ragged meshes.
+    Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {0.5, 0.5, 1}},
+                           "vertex", {{0}});
+    m.AddPolygonBlock("polygon", {{0, 1, 4}, {0, 1, 2, 3}});
+    m.AddPolyhedronBlock("polyhedron5",
+                         {{{0, 3, 2, 1}, {0, 1, 5}, {1, 2, 5}, {2, 3, 5}, {3, 0, 5}}});
+    Mesh out = transform(m, meshioplusplus::transform_translation(0, 0, 1));
+    EXPECT_NEAR(px(out, 5, 2), 2.0, 1e-12);
+    ASSERT_EQ(out.NumCellBlocks(), 3u);
+
+    const Mesh::CellView poly = out.Cells(1);
+    ASSERT_TRUE(poly.IsRagged());
+    const std::vector<std::vector<std::int64_t>> want_rows = {{0, 1, 4}, {0, 1, 2, 3}};
+    ASSERT_EQ(poly.NumCells(), want_rows.size());
+    for (std::size_t c = 0; c < want_rows.size(); ++c) {
+        ASSERT_EQ(poly.RowSize(c), want_rows[c].size()) << c;
+        for (std::size_t k = 0; k < want_rows[c].size(); ++k)
+            EXPECT_EQ(poly.Row(c)[k], want_rows[c][k]) << c << "," << k;
+    }
+
+    const Mesh::CellView hedra = out.Cells(2);
+    ASSERT_TRUE(hedra.IsPolyhedron());
+    const std::vector<std::vector<std::int64_t>> want_faces = {
+        {0, 3, 2, 1}, {0, 1, 5}, {1, 2, 5}, {2, 3, 5}, {3, 0, 5}};
+    ASSERT_EQ(hedra.NumCells(), 1u);
+    ASSERT_EQ(hedra.NumFaces(0), want_faces.size());
+    for (std::size_t f = 0; f < want_faces.size(); ++f) {
+        const auto face = hedra.Face(0, f);
+        ASSERT_EQ(face.second, want_faces[f].size()) << f;
+        for (std::size_t k = 0; k < face.second; ++k)
+            EXPECT_EQ(face.first[k], want_faces[f][k]) << f << "," << k;
+    }
 }
 
 }  // namespace
