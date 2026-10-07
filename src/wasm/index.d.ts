@@ -394,10 +394,15 @@ export interface RegionSummary {
  * `WriteOptions` field on the C++ side (gzip level 4 is a fixed registry
  * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
  */
+/** A built-in colormap (shared with the SVG and TikZ writers). */
+export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey";
+/** A built-in colormap or its reversed `_r` variant. */
+export type ColormapName = ColormapBase | `${ColormapBase}_r`;
+
 /** glTF writer parameters. Components are 0-based; omitted selects magnitude. */
 export interface GltfWriteOptions {
   colorBy?: string;
-  cmap?: "viridis" | "coolwarm" | "turbo";
+  cmap?: ColormapName;
   component?: number;
   vmin?: number;
   vmax?: number;
