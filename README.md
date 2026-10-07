@@ -876,6 +876,8 @@ image = meshioplusplus.render_image(mesh, 800, 600, supersample=2)   # an (H, W,
 meshioplusplus.snapshot(mesh, "part.png", edges="all")               # .png .txt .ansi .html .cast
 ```
 
+Field rendering colours by an array, a `data_calc` expression or a tensor invariant on a linear, log or symlog scale with percentile clipping and a legend, draws categories, regions, isolines, vector arrows and a warp with its undeformed outline, and offers quality, orientation and free-edge diagnostic views. The same options reach C, Fortran, Julia, R, WebAssembly and the settings pipeline's `Snapshot` step.
+
 It is a preview, not a replacement for the viewers above; `screenshot()` falls back to it when Polyscope is not installed, and the MCP server's `render_mesh` tool lets an agent look at a mesh. See [`doc/tui.md`](doc/tui.md).
 
 </details>
@@ -1163,7 +1165,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.33.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.34.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

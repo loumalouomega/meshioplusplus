@@ -1040,6 +1040,14 @@ meshioplusplus snapshot [options] INFILE OUTFILE
 | `--supersample N` | `1` (default), `2` or `4` samples per pixel along each axis |
 | `--axes` / `--scale-bar` | Draw the world axes; a scale bar (orthographic only) |
 | `--color-by NAME` | Colour by a point or cell data array; with `--component`, `--cmap`, `--vmin`, `--vmax`, `--nan-color`, `--colorbar` as for `convert` |
+| `--expr TEXT` / `--reduce NAME` | Colour by a [`data_calc`](/data_calc) expression, or by `mises`/`hydrostatic`/`principal` of the `--color-by` tensor array |
+| `--clip LOW,HIGH` / `--symmetric` | Bound the automatic range by percentiles (either end may be empty); make it symmetric about zero |
+| `--scale NAME` / `--scale-threshold T` | `linear` (default), `log` or `symlog`, the last linear within `T` of zero |
+| `--categorical` / `--color-regions` / `--category-edges` | Colour integer data, or the named cell regions, from a fixed palette with a key; draw the edges where categories meet |
+| `--isolines N` / `--iso-levels A,B,...` / `--iso-color` | Contour lines of the point array `--color-by` |
+| `--vectors NAME` / `--vector-count N` / `--vector-length L` / `--vector-color` | Arrows for a vector point array |
+| `--warp NAME` / `--warp-scale S` / `--warp-outline` / `--outline-color` | Move the points by a displacement array; draw the undeformed outline |
+| `--diagnostic NAME` / `--quality-metric M` | `quality`, `inverted`, `degenerate`, `orientation`, `free-edges` or `edge-length` |
 | `--png-compress 1..9` | Compress a PNG through zlib (default: stored blocks, the same bytes everywhere) |
 | `--cast-frames N` / `--cast-fps R` / `--cast-degrees DEG` | An asciicast orbit: frame count (`36`), rate (`12`), sweep (`360`) |
 | `--input-format` (`-i`) | Force the input format |
@@ -1050,6 +1058,8 @@ meshioplusplus snapshot part.vtu part.png --edges feature --axes
 meshioplusplus snapshot result.vtu - --color-by temperature --colorbar --cmap turbo --encoding braille
 meshioplusplus snapshot part.vtu orbit.cast --cast-frames 72        # asciinema play orbit.cast
 ```
+
+`--cmap`, `--vmin`, `--vmax`, `--nan-color`, `--colorbar` and `--symmetric` also apply to `--expr` and to the `quality` and `edge-length` diagnostics; without any of those they are refused by name. See [terminal rendering](/tui#field-rendering) for each option.
 
 Without Polyscope (always, in the release binaries) `screenshot` draws its PNG through the same rasterizer, and `view` points at `snapshot`.
 

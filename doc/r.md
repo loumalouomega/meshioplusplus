@@ -227,6 +227,24 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## Software rendering (v16.34.0)
+
+A deterministic software rasterizer and its terminal, HTML and PNG encodings, with no display or GPU: see [terminal rendering](/tui) for what is drawn and every option. Every option is a named argument in `...`, with the C `mio_render_opts` field's name; an unknown name is an error listing the ones that exist.
+
+```r
+f <- mio_render(mesh, width = 800L, height = 600L, supersample = 2L,
+                color_by = "temperature", colorbar = TRUE, clip = c(2, 98), isolines = 8L)
+f$rgba        # integer array c(4, width, height); f$cell_ids is width x height, -1 for none
+f$range       # c(vmin, vmax), or NULL when no field is mapped; f$notes the ticks and keys
+rasterImage(mio_frame_array(f), 0, 0, 1, 1)   # numeric c(height, width, 4) in [0, 1]
+
+cat(mio_render_text(mesh, cols = 80L, rows = 24L, encoding = "braille", color_by = "temperature"))
+png <- mio_render_png(mesh, width = 800L, height = 600L)   # a raw vector
+mio_write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .cast
+```
+
+Colours are numbers `0xRRGGBBAA` (`mio_rgba(r, g, b, a)`) or `c(r, g, b[, a])`; `clip = c(2, NA)` leaves the high end alone. The text is UTF-8 whatever the session's locale. `mio_detect_color_depth(no_color, color_term, term)` returns `"truecolor"`, `"256"`, `"16"` or `"mono"`.
+
 ## v15.4.0 additions
 
 - `mio_compute_normals(mesh, point_normals = TRUE, cell_normals = FALSE, weight = "angle", split_angle = NULL, record_parent_ids = FALSE, region = "")` — point and cell normals of a surface, written as `normals` (an `(n, 3)` point-data matrix; a cell-data array with `cell_normals`). `split_angle = NULL` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Returns a list of `mesh`, `quality`, `num_isolated`, `num_undefined`, `num_degenerate`, `num_split_points` and `num_added_points`. Never reorients: check `quality$inconsistent_pairs`. See [normals](/normals).
