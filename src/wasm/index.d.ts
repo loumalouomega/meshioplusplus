@@ -677,6 +677,37 @@ export interface OpReport {
   warnings: string[];
 }
 
+/** One named point- or cell-data array of a {@link SurfaceBuffers}. */
+export interface SurfaceArray {
+  name: string;
+  /**
+   * `components` values per point or cell, in the array's own dtype, except
+   * that a 64-bit integer array arrives as `Int32Array`/`Uint32Array` when
+   * every value fits and as `Float64Array` when one does not: never a
+   * `BigInt64Array`, which vtk.js cannot hold.
+   */
+  values: Exclude<DataArray, BigInt64Array | BigUint64Array>;
+  /** Values per tuple: a vector has 3, a 3x3 tensor 9, a scalar 1. */
+  components: number;
+}
+
+/**
+ * A renderable surface as the arrays a vtk.js `vtkPolyData` is built from,
+ * numbered exactly as the VTP file of the same surface would be.
+ */
+export interface SurfaceBuffers {
+  /** x, y, z per point (2-D meshes padded with z = 0). */
+  points: Float32Array | Float64Array;
+  /** VTK legacy cell layout, `[n, id0, …, idn-1, n, …]`, per PolyData section. */
+  verts: Uint32Array;
+  lines: Uint32Array;
+  polys: Uint32Array;
+  /** Sorted by name. */
+  pointData: SurfaceArray[];
+  /** Sorted by name; values in Verts, then Lines, then Polys order. */
+  cellData: SurfaceArray[];
+}
+
 /** `gradient`'s differential operator. See doc/gradient.md. */
 export type GradientOperator = 'gradient' | 'divergence' | 'curl';
 
@@ -1180,9 +1211,8 @@ export interface MeshioPlusPlusModule {
    * node, so `triangle6` connectivity drawn verbatim is visible garbage).
    *
    * Prefer this over `readMesh` -> `extractSkin` -> `writeMesh` for anything
-   * headed to a renderer. It never materializes a JS {@link Mesh}, so
-   * multi-component (vector/tensor) arrays survive -- the flat JS
-   * representation cannot carry them.
+   * headed to a renderer. It never materializes a JS {@link Mesh}, so the
+   * mesh is not copied across the boundary and back.
    */
   convertSurface(inPath: string, outPath: string, options?: ConvertOptions): void;
 
@@ -1191,8 +1221,8 @@ export interface MeshioPlusPlusModule {
    * first — all inside C++.
    *
    * Chaining the individual operation bindings (`smooth`, `clean`, …) would
-   * route the mesh through the flat JS {@link Mesh} on every step and so
-   * destroy every multi-component array; nothing crosses the boundary here.
+   * copy the mesh into a JS {@link Mesh} and back on every step; here nothing
+   * crosses the boundary until the result is written.
    *
    * An **empty** pipeline is exactly {@link convertSurface}. That is
    * deliberate: one call serves both the plain and the post-operation display,
@@ -1226,6 +1256,29 @@ export interface MeshioPlusPlusModule {
       compressVtp?: boolean;
     }
   ): OpReport;
+
+  /**
+   * {@link convertSurfaceOps} without the file: the same pipeline and surface,
+   * returned as typed arrays ready for a vtk.js `vtkPolyData` instead of being
+   * written, base64-encoded and compressed for a VTP reader to undo. The
+   * browser viewer renders through this.
+   *
+   * Cells are numbered as the VTP file of the surface numbers them (Verts,
+   * Lines, then Polys, each in block order), so `surface:parent_cell` and a
+   * picked cell id mean the same in both.
+   *
+   * @throws {Error} on an unknown operation name, an unreadable file, or a
+   *   surface PolyData cannot hold (a polyhedron block left by an operation).
+   */
+  surfaceBuffersOps(
+    inPath: string,
+    ops?: OpSpec[],
+    options?: {
+      inFormat?: string;
+      /** Keep `surface:parent_cell` (the picker needs it). */
+      keepProvenance?: boolean;
+    }
+  ): OpReport & { surface: SurfaceBuffers };
 
   /**
    * Run a whole settings pipeline: read `Input.Path`, apply `Operations` in

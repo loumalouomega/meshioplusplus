@@ -748,6 +748,31 @@ Roadmap §3.4.5.1. The viewer's worker writes every operation result as a zlib-c
 
 The 8-byte-header file has no native writer yet (`header_type` falls back to the Python reference writer), so its write column is empty and the last column pairs its parse with the native 4-byte-header write, which differs only in the header. Two results. First, vtk.js reads the uncompressed 8-byte-header file and rejects the 4-byte one (`start offset of Float64Array should be a multiple of 8`), as the roadmap predicted. Second, skipping the inflate does not speed up the parse: vtk.js is 10 to 26% slower on the uncompressed file, because the XML text and base64 decode double with the bytes and fflate's inflate is a small part of its time. What an uncompressed file saves is the producer-side compression, 3.5 to 21% of write plus parse here. The worker's `applyOps` (read, operations, write) was not measured, because there is no WASM toolchain in the development container, and an uncompressed result is twice the size to hold and transfer.
 
+### A typed-array channel for the browser viewer
+
+Roadmap §3.4.5, which closes with it, and 3.4.5.1 above, which it supersedes: there is no VTP left on the viewer's render path to compress or not. The worker calls `surfaceBuffersOps` instead of `convertSurfaceOps`, which runs the same read, pipeline and surface extraction and returns the surface as the typed arrays a `vtkPolyData` is built from, numbered as the VTP file numbers its cells ([WASM](./wasm.md#handing-the-surface-to-a-renderer-as-arrays)). `benchmark/viewer_surface.mjs` times both paths on one WASM build and checks, before timing, that the two `vtkPolyData` hold the same points, cells and arrays value for value: the old path is `convertSurfaceOps` to a zlib VTP and `FS.readFile` in the worker, then `XMLPolyDataReader` on the main thread; the new one is `surfaceBuffersOps` in the worker, then the `vtkPolyData` built as `Renderer.loadSurface` builds it. The inputs are the zlib surfaces of the table above and `bench.py`'s tetrahedral grids at tiers M and L written as VTU with a point vector, a point scalar and a cell scalar. SEQ WASM build (Emscripten 6.0.9), Node 26, vtk.js 32.9.0, median of five, empty pipeline with `keepProvenance`:
+
+| Input | Cells drawn | Read | VTP: worker + main | Arrays: worker + main | Speed-up |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| surface, 20 000 triangles | 20 000 | 7.8 ms | 52.3 + 30.4 = 82.7 ms | 8.2 + 0.3 = 8.4 ms | 9.8× |
+| surface, 180 000 triangles | 180 000 | 72.4 ms | 491.3 + 254.1 = 745.3 ms | 75.1 + 0.2 = 75.4 ms | 9.9× |
+| surface, 980 000 triangles | 980 000 | 406.0 ms | 2724.5 + 1357.3 = 4081.7 ms | 409.6 + 0.2 = 409.8 ms | 10.0× |
+| tetrahedra, tier M (257 250) | 14 700 | 27.0 ms | 90.5 + 12.6 = 103.1 ms | 70.5 + 0.1 = 70.7 ms | 1.5× |
+| tetrahedra, tier L (998 250) | 36 300 | 101.6 ms | 326.8 + 31.7 = 358.5 ms | 276.2 + 0.2 = 276.3 ms | 1.3× |
+
+*Read* is `readMesh` of the same file, which also copies the mesh into JavaScript, so it bounds the read from above. On a surface input the new worker half is the read and little else, and the main-thread half is a fraction of a millisecond at every size: the VTP's write (zlib), its base64 and inflate and vtk.js's XML parse were nine tenths of the old path. On a volume the surface is small and the skin extraction dominates, so the gain is the VTP's share of a smaller total. The main-thread half is what a user feels as a frozen page, and it falls from 13 ms–1.36 s to under 0.3 ms.
+
+**The replay stays.** Every apply re-reads the file and replays the whole pipeline, which is what makes undo exact (a shortened pipeline replayed from pristine bytes). With the VTP gone, the read is a visible share of an apply. The same build, with `surfaceBuffersOps` timed against the read bound above:
+
+| Input | `quality` | `smooth`, 10 Laplacian passes | both |
+| --- | ---: | ---: | ---: |
+| surface, 180 000 triangles | 69% of 105 ms | 26% of 276 ms | 24% of 305 ms |
+| surface, 980 000 triangles | 69% of 566 ms | 25% of 1543 ms | 22% of 1742 ms |
+| tetrahedra, tier M | 20% of 135 ms | 2% of 1099 ms | 2% of 1159 ms |
+| tetrahedra, tier L | 20% of 518 ms | 2% of 4611 ms | 2% of 4864 ms |
+
+The read dominates only the cheapest operation on a large surface. Caching a read mesh, or a prefix of the pipeline, between applies would hold a second copy of the mesh in a 32-bit heap that MEMFS already shares with the staged file, and would make undo depend on cache invalidation; the roadmap records it as not taken.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.

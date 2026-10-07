@@ -206,6 +206,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string, encoding?: string, codec?: string, floatFormat?: string}) => string[],
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean, compressVtp?: boolean}) => {steps: object[], warnings: string[]},
+ *   surfaceBuffersOps: (inPath: string, ops?: object[], options?: {inFormat?: string, keepProvenance?: boolean}) => {surface: object, steps: object[], warnings: string[]},
  *   runPipeline: (settings: object|string) => {steps: object[], warnings: string[]},
  *   sequenceEntries: (source: string|string[], options?: object) => object[],
  *   sequenceToTimeseries: (source: string|string[], outPath: string, outFormat?: string, options?: object) => number,
@@ -443,12 +444,12 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // Like `convert`, but writes a renderable *surface*: a volume mesh
         // becomes its boundary, everything else passes through, and the result
         // is linearized. Prefer this over readMesh -> extractSkin -> writeMesh
-        // for anything headed to a renderer: it stays inside C++, so
-        // multi-component data survives, which the flat JS mesh cannot carry.
+        // for anything headed to a renderer: it stays inside C++, so the mesh
+        // is never copied into a JS object and back.
         convertSurface: (inPath, outPath, { inFormat = '', outFormat = '' } = {}) =>
             Module.convertSurface(inPath, inFormat, outPath, outFormat),
         // Like `convertSurface`, but applies a pipeline of mesh operations
-        // first -- entirely inside C++, so multi-component data survives them.
+        // first -- entirely inside C++, with no JS mesh between the steps.
         // An empty pipeline is exactly `convertSurface`, which is what lets a
         // caller use one code path for both the plain and the post-operation
         // display, and what makes undo a replay rather than an inverse.
@@ -467,6 +468,10 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 keepProvenance,
                 compressVtp
             ),
+        // `convertSurfaceOps` without the file: the surface comes back as the
+        // typed arrays a vtk.js vtkPolyData is built from (see index.d.ts).
+        surfaceBuffersOps: (inPath, ops = [], { inFormat = '', keepProvenance = false } = {}) =>
+            Module.surfaceBuffersOps(inPath, inFormat, ops, keepProvenance),
         // A whole settings.json pipeline (PascalCase vocabulary, see
         // doc/pipeline.md). Accepts the parsed object, the JSON text, or a
         // MEMFS path ending in ".json" -- the wasm binary carries no JSON

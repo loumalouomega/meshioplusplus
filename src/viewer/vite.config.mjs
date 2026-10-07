@@ -11,6 +11,7 @@ const REQUIRED_WASM_API = [
     'convert',
     'convertSurface',
     'convertSurfaceOps',
+    'surfaceBuffersOps',
     'sniffFormat',
     'availableFormats',
     'meshBackend',
