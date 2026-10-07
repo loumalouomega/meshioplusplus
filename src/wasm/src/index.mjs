@@ -255,6 +255,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
+ *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
+ *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
+ *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
  *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
  *   regionAdjacency: (mesh: Mesh, regions?: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>) => Mesh,
@@ -831,6 +834,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.featureEdges(mesh, featureAngle, feature, boundary, nonManifold,
                 inconsistent, region),
+        render: (mesh, options = {}) => Module.render(mesh, options),
+        renderText: (mesh, options = {}, text = {}) => Module.renderText(mesh, options, text),
+        renderPng: (mesh, options = {}, compress = 0) => Module.renderPng(mesh, options, compress),
         hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
             Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
         editRegions: (mesh, edits) =>

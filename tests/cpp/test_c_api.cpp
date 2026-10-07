@@ -4946,3 +4946,168 @@ TEST(CApi, ReadWithInfoKeepsTheMdpaSideChannel) {
     for (const std::string& p : {in, out, vtu})
         std::filesystem::remove(p, ec);
 }
+
+// --- software rendering (v16.33.0, field rendering v16.34.0) ------------------
+
+TEST(CApi, RenderDefaultsAreInitializedNotZero) {
+    mio_render_opts o;
+    mio_render_opts_init(&o);
+    EXPECT_EQ(o.width, 320);
+    EXPECT_EQ(o.height, 240);
+    EXPECT_EQ(o.shading, MIO_SHADING_FLAT);
+    EXPECT_EQ(o.two_sided, 1);
+    EXPECT_EQ(o.component, -1);
+    EXPECT_EQ(o.fill_color, 0xC8C5BDFFu);
+    EXPECT_DOUBLE_EQ(o.elevation, 35.264389682754654);
+    mio_text_opts t;
+    mio_text_opts_init(&t);
+    EXPECT_EQ(t.cols, 80);
+    EXPECT_EQ(t.notes, 1);
+    // An all-zero struct is not a default: its zero width is refused by name.
+    mio_render_opts zero{};
+    mio_mesh* cube = capi_cube_surface();
+    EXPECT_EQ(mio_render(cube, &zero), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("width and height"), std::string::npos);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, RenderAFrameAndEncodeIt) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_render_opts o;
+    mio_render_opts_init(&o);
+    o.width = 48;
+    o.height = 32;
+    o.background = 0xFFFFFFFFu;
+    mio_frame* f = mio_render(cube, &o);
+    ASSERT_NE(f, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_frame_width(f), 48);
+    EXPECT_EQ(mio_frame_height(f), 32);
+    ASSERT_NE(mio_frame_rgba(f), nullptr);
+    ASSERT_NE(mio_frame_cell_ids(f), nullptr);
+    EXPECT_EQ(mio_frame_range(f, nullptr, nullptr), 0);
+    std::size_t covered = 0;
+    for (int i = 0; i < 48 * 32; ++i)
+        covered += mio_frame_cell_ids(f)[i] >= 0 ? 1 : 0;
+    EXPECT_GT(covered, 100u);
+
+    // PNG: length query, then the bytes.
+    const std::int64_t need = mio_frame_png(f, 0, nullptr, 0);
+    ASSERT_GT(need, 8);
+    std::vector<std::uint8_t> png(static_cast<std::size_t>(need));
+    EXPECT_EQ(mio_frame_png(f, 0, png.data(), need), need);
+    EXPECT_EQ(std::string(png.begin(), png.begin() + 8), std::string("\x89PNG\r\n\x1a\n", 8));
+    EXPECT_EQ(mio_frame_png(f, 10, nullptr, 0), -1);
+
+    // Text: a cell encoding needs a frame sized to its grid (48 x 32 suits half blocks).
+    mio_text_opts t;
+    mio_text_opts_init(&t);
+    t.color_depth = MIO_COLOR_MONO;
+    const std::int64_t tn = mio_frame_text(f, &t, nullptr, 0);
+    ASSERT_GT(tn, 0);
+    std::string text(static_cast<std::size_t>(tn) + 1, '\0');
+    EXPECT_EQ(mio_frame_text(f, &t, text.data(), tn + 1), tn);
+    text.resize(static_cast<std::size_t>(tn));
+    EXPECT_EQ(std::count(text.begin(), text.end(), '\n'), 16);  // 32 rows of pixels = 16 cells
+    mio_frame_free(f);
+    mio_frame_free(nullptr);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, RenderTextIsSizedToTheCells) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_text_opts t;
+    mio_text_opts_init(&t);
+    t.cols = 20;
+    t.rows = 6;
+    t.color_depth = MIO_COLOR_MONO;
+    const std::int64_t n = mio_render_text(cube, nullptr, &t, nullptr, 0);
+    ASSERT_GT(n, 0) << mio_last_error();
+    std::string out(static_cast<std::size_t>(n) + 1, '\0');
+    EXPECT_EQ(mio_render_text(cube, nullptr, &t, out.data(), n + 1), n);
+    out.resize(static_cast<std::size_t>(n));
+    EXPECT_EQ(std::count(out.begin(), out.end(), '\n'), 6);
+    EXPECT_EQ(mio_render_text(nullptr, nullptr, &t, nullptr, 0), -1);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, RenderFieldOptionsAndNotes) {
+    mio_mesh* m = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::int64_t quad[] = {0, 1, 2, 3};
+    const double u[] = {0, 1, 2, 3};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 1, 4, MIO_INT64, quad), MIO_OK);
+    const std::int64_t u_shape[] = {4};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 1, u_shape, u), MIO_OK);
+    mio_render_opts o;
+    mio_render_opts_init(&o);
+    o.width = 40;
+    o.height = 40;
+    o.view = "+z";
+    o.color_by = "u";
+    o.colorbar = 1;
+    o.symmetric = 1;
+    const double levels[] = {1.0, 2.0};
+    o.iso_levels = levels;
+    o.num_iso_levels = 2;
+    mio_frame* f = mio_render(m, &o);
+    ASSERT_NE(f, nullptr) << mio_last_error();
+    double lo = 0, hi = 0;
+    EXPECT_EQ(mio_frame_range(f, &lo, &hi), 1);
+    EXPECT_DOUBLE_EQ(lo, -hi);
+    const std::int64_t notes = mio_frame_num_notes(f);
+    ASSERT_GE(notes, 2);
+    char buf[256];
+    EXPECT_GT(mio_frame_note(f, 0, buf, sizeof buf), 0);
+    EXPECT_NE(std::string(buf).find("u: "), std::string::npos);
+    EXPECT_EQ(mio_frame_note(f, notes, buf, sizeof buf), -1);
+    mio_frame_free(f);
+
+    // A bad enum, a reserved word set and a misnamed array are refused by name.
+    o.num_iso_levels = 0;
+    o.iso_levels = nullptr;
+    o.scale = 9;
+    EXPECT_EQ(mio_render(m, &o), nullptr);
+    o.scale = MIO_SCALE_LINEAR;
+    o.reserved[0] = 1;
+    EXPECT_EQ(mio_render(m, &o), nullptr);
+    o.reserved[0] = 0;
+    o.color_by = "nope";
+    EXPECT_EQ(mio_render(m, &o), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, WriteSnapshotChoosesTheFormByExtension) {
+    mio_mesh* cube = capi_cube_surface();
+    const std::string png = mt::temp_path(".png");
+    const std::string txt = mt::temp_path(".txt");
+    mio_render_opts o;
+    mio_render_opts_init(&o);
+    o.width = 32;
+    o.height = 24;
+    EXPECT_EQ(mio_write_snapshot(png.c_str(), cube, &o, nullptr, nullptr), MIO_OK)
+        << mio_last_error();
+    mio_text_opts t;
+    mio_text_opts_init(&t);
+    t.cols = 12;
+    t.rows = 4;
+    EXPECT_EQ(mio_write_snapshot(txt.c_str(), cube, nullptr, &t, nullptr), MIO_OK);
+    std::ifstream in(png, std::ios::binary);
+    char head[8];
+    in.read(head, 8);
+    EXPECT_EQ(std::string(head, 8), std::string("\x89PNG\r\n\x1a\n", 8));
+    EXPECT_NE(mio_write_snapshot("frame.vtu", cube, nullptr, nullptr, nullptr), MIO_OK);
+    mio_snapshot_opts s;
+    mio_snapshot_opts_init(&s);
+    EXPECT_EQ(s.cast_frames, 36);
+    EXPECT_NE(mio_write_snapshot(nullptr, cube, nullptr, nullptr, nullptr), MIO_OK);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, DetectColorDepth) {
+    EXPECT_EQ(mio_detect_color_depth("1", "truecolor", "xterm-256color"), MIO_COLOR_MONO);
+    EXPECT_EQ(mio_detect_color_depth(nullptr, "24bit", nullptr), MIO_COLOR_TRUECOLOR);
+    EXPECT_EQ(mio_detect_color_depth(nullptr, nullptr, "xterm-256color"), MIO_COLOR_256);
+    EXPECT_EQ(mio_detect_color_depth(nullptr, nullptr, "xterm"), MIO_COLOR_16);
+}

@@ -399,6 +399,101 @@ export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno
 /** A built-in colormap or its reversed `_r` variant. */
 export type ColormapName = ColormapBase | `${ColormapBase}_r`;
 
+/** A colour: `0xRRGGBBAA` as a number (alpha 0 is transparent), or `[r, g, b, a?]` in 0-255. */
+export type RenderColor = number | [number, number, number] | [number, number, number, number];
+
+/**
+ * Options of the software rasterizer (`render`, `renderText`, `renderPng`); every
+ * field is optional and an unknown key is an error. See doc/tui.md.
+ */
+export interface RenderOptions {
+  width?: number;
+  height?: number;
+  pixelAspect?: number;
+  /** 1, 2 or 4 samples per pixel along each axis. */
+  supersample?: number;
+  azimuth?: number;
+  elevation?: number;
+  roll?: number;
+  /** `"iso"`, `"+x"`, `"-x"`, `"+y"`, `"-y"`, `"+z"` or `"-z"`: the side the camera sits on. */
+  view?: string;
+  projection?: "orthographic" | "perspective";
+  fov?: number;
+  zoom?: number;
+  pan?: [number, number];
+  shading?: "none" | "flat" | "smooth";
+  twoSided?: boolean;
+  ambient?: number;
+  lightDir?: [number, number, number];
+  splitAngle?: number;
+  edges?: "none" | "all" | "feature";
+  featureAngle?: number;
+  edgeColor?: RenderColor;
+  fillColor?: RenderColor;
+  lineColor?: RenderColor;
+  background?: RenderColor;
+  pointRadius?: number;
+  colorBy?: string;
+  component?: number;
+  cmap?: ColormapName;
+  vmin?: number;
+  vmax?: number;
+  nanColor?: RenderColor;
+  colorbar?: boolean;
+  axes?: boolean;
+  scaleBar?: boolean;
+  /** `"mises"`, `"hydrostatic"` or `"principal"` reduction of the `colorBy` tensor array. */
+  reduce?: "mises" | "hydrostatic" | "principal";
+  /** A `dataCalc` expression to colour by instead of `colorBy`. */
+  expr?: string;
+  /** Percentiles bounding the automatic range; `null` leaves an end alone. */
+  clip?: [number | null, number | null];
+  symmetric?: boolean;
+  scale?: "linear" | "log" | "symlog";
+  scaleThreshold?: number;
+  categorical?: boolean;
+  colorRegions?: boolean;
+  categoryEdges?: boolean;
+  isolines?: number;
+  isoLevels?: number[];
+  isoColor?: RenderColor;
+  vectors?: string;
+  vectorCount?: number;
+  vectorLength?: number;
+  vectorColor?: RenderColor;
+  warp?: string;
+  warpScale?: number;
+  warpOutline?: boolean;
+  outlineColor?: RenderColor;
+  diagnostic?: "none" | "quality" | "inverted" | "degenerate" | "orientation" | "free_edges" | "edge_length";
+  qualityMetric?: string;
+}
+
+/** Options of `renderText`: the cell encodings only (the graphics protocols are CLI features). */
+export interface RenderTextOptions {
+  encoding?: "halfblock" | "quadrant" | "sextant" | "braille" | "ascii";
+  colorDepth?: "truecolor" | "256" | "16" | "mono";
+  format?: "ansi" | "plain" | "html";
+  cols?: number;
+  rows?: number;
+  cellAspect?: number;
+  notes?: boolean;
+}
+
+/** A rendered image. */
+export interface RenderedFrame {
+  width: number;
+  height: number;
+  /** RGBA, rows top to bottom, straight alpha: `new ImageData(frame.rgba, frame.width, frame.height)`. */
+  rgba: Uint8ClampedArray;
+  /** The input cell (global, block-major) drawn at each pixel; -1 for none. */
+  cellIds: Float64Array;
+  /** The mapped `[vmin, vmax]`, or `null` when no field is mapped. */
+  range: [number, number] | null;
+  /** The colour range, ticks and keys, as text. */
+  notes: string[];
+}
+
 /** glTF writer parameters. Components are 0-based; omitted selects magnitude. */
 export interface GltfWriteOptions {
   colorBy?: string;
@@ -2189,6 +2284,20 @@ export interface MeshioPlusPlusModule {
    * cover the whole surface, selected or not. See doc/feature_edges.md.
    * @throws {Error} on an angle outside [0, 180] or an unknown region.
    */
+  /**
+   * Render a mesh into an RGBA frame with a deterministic software rasterizer: no
+   * WebGL, so it works in a Node script or a server-side preview. Volume cells
+   * are drawn through their boundary skin. See doc/tui.md.
+   * @throws {Error} on an unknown option, an invalid value or an unknown array.
+   */
+  render(mesh: Mesh, options?: RenderOptions): RenderedFrame;
+  /**
+   * Render a mesh as terminal-cell text sized `cols` x `rows` (default 80 x 24).
+   * The Kitty, iTerm2 and Sixel encodings are not exported here.
+   */
+  renderText(mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions): string;
+  /** Render a mesh and encode it as an RGBA PNG; `compress` 0 stores it uncompressed (default). */
+  renderPng(mesh: Mesh, options?: RenderOptions, compress?: number): Uint8Array;
   featureEdges(
     mesh: Mesh,
     featureAngle?: number,

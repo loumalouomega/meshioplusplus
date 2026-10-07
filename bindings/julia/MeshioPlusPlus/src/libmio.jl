@@ -436,6 +436,101 @@ struct _CFeatureEdgesReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_render_opts` (v16.34.0). ABI; fill it through [`render`](@ref),
+which initializes the defaults in C and sets only what the caller names."""
+struct _CRenderOpts
+    view::Ptr{UInt8}
+    color_by::Ptr{UInt8}
+    cmap::Ptr{UInt8}
+    reduce::Ptr{UInt8}
+    expr::Ptr{UInt8}
+    vectors::Ptr{UInt8}
+    warp::Ptr{UInt8}
+    quality_metric::Ptr{UInt8}
+    iso_levels::Ptr{Float64}
+    num_iso_levels::Int64
+    pixel_aspect::Cdouble
+    azimuth::Cdouble
+    elevation::Cdouble
+    roll::Cdouble
+    fov_deg::Cdouble
+    zoom::Cdouble
+    pan_x::Cdouble
+    pan_y::Cdouble
+    ambient::Cdouble
+    light_x::Cdouble
+    light_y::Cdouble
+    light_z::Cdouble
+    split_angle::Cdouble
+    feature_angle::Cdouble
+    point_radius::Cdouble
+    vmin::Cdouble
+    vmax::Cdouble
+    clip_low::Cdouble
+    clip_high::Cdouble
+    scale_threshold::Cdouble
+    vector_length::Cdouble
+    warp_scale::Cdouble
+    width::Int32
+    height::Int32
+    supersample::Int32
+    perspective::Int32
+    shading::Int32
+    two_sided::Int32
+    edges::Int32
+    component::Int32
+    has_vmin::Int32
+    has_vmax::Int32
+    has_clip_low::Int32
+    has_clip_high::Int32
+    colorbar::Int32
+    axes::Int32
+    scale_bar::Int32
+    symmetric::Int32
+    scale::Int32
+    categorical::Int32
+    color_regions::Int32
+    category_edges::Int32
+    isolines::Int32
+    vector_count::Int32
+    warp_outline::Int32
+    diagnostic::Int32
+    edge_color::UInt32
+    fill_color::UInt32
+    line_color::UInt32
+    background::UInt32
+    nan_color::UInt32
+    iso_color::UInt32
+    vector_color::UInt32
+    outline_color::UInt32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_text_opts` (v16.34.0)."""
+struct _CTextOpts
+    cell_aspect::Cdouble
+    encoding::Int32
+    color_depth::Int32
+    format::Int32
+    cols::Int32
+    rows::Int32
+    cell_pixel_width::Int32
+    cell_pixel_height::Int32
+    tmux::Int32
+    notes::Int32
+    flags::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_snapshot_opts` (v16.34.0)."""
+struct _CSnapshotOpts
+    cast_fps::Cdouble
+    cast_degrees::Cdouble
+    png_compress::Int32
+    cast_frames::Int32
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_hausdorff_opts` (v16.23.0)."""
 struct _CHausdorffOpts
     region_a::Cstring
@@ -718,6 +813,12 @@ function _check_abi_layout()
     sizeof(_CFeatureEdgesReport) == 64 ||
         error("meshio++: mio_feature_edges_report layout mismatch " *
               "($(sizeof(_CFeatureEdgesReport)) bytes)")
+    sizeof(_CRenderOpts) == 432 ||
+        error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
+    sizeof(_CTextOpts) == 96 ||
+        error("meshio++: mio_text_opts layout mismatch ($(sizeof(_CTextOpts)) bytes)")
+    sizeof(_CSnapshotOpts) == 72 ||
+        error("meshio++: mio_snapshot_opts layout mismatch ($(sizeof(_CSnapshotOpts)) bytes)")
     sizeof(_CHausdorffOpts) == 80 ||
         error("meshio++: mio_hausdorff_opts layout mismatch ($(sizeof(_CHausdorffOpts)) bytes)")
     sizeof(_CHausdorffReport) == 152 ||

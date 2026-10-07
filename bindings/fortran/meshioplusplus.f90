@@ -62,6 +62,8 @@ module meshioplusplus
     public :: mio_surface_quality
     public :: mio_find_interface_result, mio_contact_pairs_result
     public :: mio_grid
+    public :: mio_frame, mio_render_settings, mio_text_settings, mio_rgba
+    public :: mio_detect_color_depth
     public :: mio_data_array_info
     public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
@@ -792,6 +794,101 @@ module meshioplusplus
         type(mio_region_summary), allocatable :: regions(:)
     end type
 
+    !> Interop mirror of C `mio_render_opts`. Field order/types are ABI; use the
+    !> pure-Fortran `mio_render_settings` instead of filling this by hand.
+    type, bind(c) :: mio_render_opts_t
+        type(c_ptr) :: view = c_null_ptr
+        type(c_ptr) :: color_by = c_null_ptr
+        type(c_ptr) :: cmap = c_null_ptr
+        type(c_ptr) :: reduce = c_null_ptr
+        type(c_ptr) :: expr = c_null_ptr
+        type(c_ptr) :: vectors = c_null_ptr
+        type(c_ptr) :: warp = c_null_ptr
+        type(c_ptr) :: quality_metric = c_null_ptr
+        type(c_ptr) :: iso_levels = c_null_ptr
+        integer(c_int64_t) :: num_iso_levels = 0
+        real(c_double) :: pixel_aspect = 1.0_c_double
+        real(c_double) :: azimuth = 45.0_c_double
+        real(c_double) :: elevation = 35.264389682754654_c_double
+        real(c_double) :: roll = 0.0_c_double
+        real(c_double) :: fov_deg = 30.0_c_double
+        real(c_double) :: zoom = 1.0_c_double
+        real(c_double) :: pan_x = 0.0_c_double
+        real(c_double) :: pan_y = 0.0_c_double
+        real(c_double) :: ambient = 0.25_c_double
+        real(c_double) :: light_x = 0.0_c_double
+        real(c_double) :: light_y = 0.0_c_double
+        real(c_double) :: light_z = 1.0_c_double
+        real(c_double) :: split_angle = 30.0_c_double
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: point_radius = 1.5_c_double
+        real(c_double) :: vmin = 0.0_c_double
+        real(c_double) :: vmax = 0.0_c_double
+        real(c_double) :: clip_low = 0.0_c_double
+        real(c_double) :: clip_high = 0.0_c_double
+        real(c_double) :: scale_threshold = 1.0_c_double
+        real(c_double) :: vector_length = 0.0_c_double
+        real(c_double) :: warp_scale = 1.0_c_double
+        integer(c_int32_t) :: width = 320
+        integer(c_int32_t) :: height = 240
+        integer(c_int32_t) :: supersample = 1
+        integer(c_int32_t) :: perspective = 0
+        integer(c_int32_t) :: shading = 1
+        integer(c_int32_t) :: two_sided = 1
+        integer(c_int32_t) :: edges = 0
+        integer(c_int32_t) :: component = -1
+        integer(c_int32_t) :: has_vmin = 0
+        integer(c_int32_t) :: has_vmax = 0
+        integer(c_int32_t) :: has_clip_low = 0
+        integer(c_int32_t) :: has_clip_high = 0
+        integer(c_int32_t) :: colorbar = 0
+        integer(c_int32_t) :: axes = 0
+        integer(c_int32_t) :: scale_bar = 0
+        integer(c_int32_t) :: symmetric = 0
+        integer(c_int32_t) :: scale = 0
+        integer(c_int32_t) :: categorical = 0
+        integer(c_int32_t) :: color_regions = 0
+        integer(c_int32_t) :: category_edges = 0
+        integer(c_int32_t) :: isolines = 0
+        integer(c_int32_t) :: vector_count = 200
+        integer(c_int32_t) :: warp_outline = 0
+        integer(c_int32_t) :: diagnostic = 0
+        integer(c_int32_t) :: edge_color = 255
+        integer(c_int32_t) :: fill_color = -926564865
+        integer(c_int32_t) :: line_color = 33023
+        integer(c_int32_t) :: background = 0
+        integer(c_int32_t) :: nan_color = -2139062017
+        integer(c_int32_t) :: iso_color = 505290495
+        integer(c_int32_t) :: vector_color = -600689921
+        integer(c_int32_t) :: outline_color = -1768515841
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_text_opts`.
+    type, bind(c) :: mio_text_opts_t
+        real(c_double) :: cell_aspect = 2.0_c_double
+        integer(c_int32_t) :: encoding = 0
+        integer(c_int32_t) :: color_depth = 0
+        integer(c_int32_t) :: format = 0
+        integer(c_int32_t) :: cols = 80
+        integer(c_int32_t) :: rows = 24
+        integer(c_int32_t) :: cell_pixel_width = 8
+        integer(c_int32_t) :: cell_pixel_height = 16
+        integer(c_int32_t) :: tmux = 0
+        integer(c_int32_t) :: notes = 1
+        integer(c_int32_t) :: flags = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_snapshot_opts`.
+    type, bind(c) :: mio_snapshot_opts_t
+        real(c_double) :: cast_fps = 12.0_c_double
+        real(c_double) :: cast_degrees = 360.0_c_double
+        integer(c_int32_t) :: png_compress = 0
+        integer(c_int32_t) :: cast_frames = 36
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
     type :: mio_mesh
         private
         type(c_ptr) :: handle = c_null_ptr
@@ -826,6 +923,9 @@ module meshioplusplus
         procedure :: curvature => mesh_curvature
         procedure :: normals => mesh_normals
         procedure :: feature_edges => mesh_feature_edges
+        procedure :: render => mesh_render
+        procedure :: render_text => mesh_render_text
+        procedure :: write_snapshot => mesh_write_snapshot
         procedure :: hausdorff_distance => mesh_hausdorff_distance
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
@@ -913,6 +1013,103 @@ module meshioplusplus
         procedure :: field_data_name => mesh_field_data_name
         procedure :: get_field_data => mesh_get_field_data_r1
     end type mio_mesh
+
+    integer, parameter, public :: MIO_SHADING_NONE = 0, MIO_SHADING_FLAT = 1, MIO_SHADING_SMOOTH = 2
+    integer, parameter, public :: MIO_EDGES_NONE = 0, MIO_EDGES_ALL = 1, MIO_EDGES_FEATURE = 2
+    integer, parameter, public :: MIO_SCALE_LINEAR = 0, MIO_SCALE_LOG = 1, MIO_SCALE_SYMLOG = 2
+    integer, parameter, public :: MIO_DIAGNOSTIC_NONE = 0, MIO_DIAGNOSTIC_QUALITY = 1
+    integer, parameter, public :: MIO_DIAGNOSTIC_INVERTED = 2, MIO_DIAGNOSTIC_DEGENERATE = 3
+    integer, parameter, public :: MIO_DIAGNOSTIC_ORIENTATION = 4, MIO_DIAGNOSTIC_FREE_EDGES = 5
+    integer, parameter, public :: MIO_DIAGNOSTIC_EDGE_LENGTH = 6
+    integer, parameter, public :: MIO_ENCODING_HALFBLOCK = 0, MIO_ENCODING_QUADRANT = 1
+    integer, parameter, public :: MIO_ENCODING_SEXTANT = 2, MIO_ENCODING_BRAILLE = 3
+    integer, parameter, public :: MIO_ENCODING_ASCII = 4, MIO_ENCODING_KITTY = 5
+    integer, parameter, public :: MIO_ENCODING_ITERM2 = 6, MIO_ENCODING_SIXEL = 7
+    integer, parameter, public :: MIO_COLOR_TRUECOLOR = 0, MIO_COLOR_256 = 1
+    integer, parameter, public :: MIO_COLOR_16 = 2, MIO_COLOR_MONO = 3
+    integer, parameter, public :: MIO_TEXT_ANSI = 0, MIO_TEXT_PLAIN = 1, MIO_TEXT_HTML = 2
+
+    !> Options of `mio_mesh%render` and the functions built on it, in plain Fortran:
+    !> allocatable strings, `.true.`/`.false.` flags, and an allocated `vmin`,
+    !> `vmax`, `clip_low` or `clip_high` meaning "set". Colours are `integer(int64)`
+    !> `0xRRGGBBAA` values (see `mio_rgba`); alpha 0 is transparent. Every default
+    !> matches `mio_render_opts_init`. See doc/tui.md for the meaning of each field.
+    type :: mio_render_settings
+        character(:), allocatable :: view         !< "iso", "+x" ... "-z"
+        character(:), allocatable :: color_by     !< array to colour by
+        character(:), allocatable :: cmap         !< colormap (default viridis)
+        character(:), allocatable :: reduce       !< "mises", "hydrostatic", "principal"
+        character(:), allocatable :: expr         !< a data_calc expression to colour by
+        character(:), allocatable :: vectors      !< vector point array drawn as arrows
+        character(:), allocatable :: warp         !< displacement point array
+        character(:), allocatable :: quality_metric !< metric of MIO_DIAGNOSTIC_QUALITY
+        real(real64), allocatable :: iso_levels(:) !< explicit contour levels
+        real(real64), allocatable :: vmin, vmax    !< explicit range ends
+        real(real64), allocatable :: clip_low, clip_high !< percentiles bounding the range
+        integer :: width = 320, height = 240, supersample = 1
+        integer :: shading = 1, edges = 0, scale = 0, diagnostic = 0
+        integer :: component = -1                  !< -1 takes the magnitude
+        integer :: isolines = 0, vector_count = 200
+        logical :: perspective = .false., two_sided = .true.
+        logical :: colorbar = .false., axes = .false., scale_bar = .false.
+        logical :: symmetric = .false., categorical = .false.
+        logical :: color_regions = .false., category_edges = .false.
+        logical :: warp_outline = .false.
+        real(real64) :: pixel_aspect = 1.0_real64
+        real(real64) :: azimuth = 45.0_real64
+        real(real64) :: elevation = 35.264389682754654_real64
+        real(real64) :: roll = 0.0_real64
+        real(real64) :: fov_deg = 30.0_real64
+        real(real64) :: zoom = 1.0_real64
+        real(real64) :: pan_x = 0.0_real64
+        real(real64) :: pan_y = 0.0_real64
+        real(real64) :: ambient = 0.25_real64
+        real(real64) :: light_x = 0.0_real64
+        real(real64) :: light_y = 0.0_real64
+        real(real64) :: light_z = 1.0_real64
+        real(real64) :: split_angle = 30.0_real64
+        real(real64) :: feature_angle = 30.0_real64
+        real(real64) :: point_radius = 1.5_real64
+        real(real64) :: scale_threshold = 1.0_real64
+        real(real64) :: vector_length = 0.0_real64
+        real(real64) :: warp_scale = 1.0_real64
+        integer(int64) :: edge_color = 255_int64
+        integer(int64) :: fill_color = 3368402431_int64
+        integer(int64) :: line_color = 33023_int64
+        integer(int64) :: background = 0_int64
+        integer(int64) :: nan_color = 2155905279_int64
+        integer(int64) :: iso_color = 505290495_int64
+        integer(int64) :: vector_color = 3694277375_int64
+        integer(int64) :: outline_color = 2526451455_int64
+    end type
+
+    !> Options of the text encodings. `encoding`, `color_depth` and `format` take
+    !> the MIO_ENCODING_*, MIO_COLOR_* and MIO_TEXT_* constants.
+    type :: mio_text_settings
+        integer :: encoding = 0, color_depth = 0, format = 0
+        integer :: cols = 80, rows = 24
+        integer :: cell_pixel_width = 8, cell_pixel_height = 16
+        logical :: tmux = .false., notes = .true.
+        real(real64) :: cell_aspect = 2.0_real64
+    end type
+
+    !> An owned rendered image. Free it with `call frame%free()`.
+    type :: mio_frame
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: free => frame_free
+        procedure :: is_valid => frame_is_valid
+        procedure :: width => frame_width
+        procedure :: height => frame_height
+        procedure :: get_rgba => frame_get_rgba
+        procedure :: get_cell_ids => frame_get_cell_ids
+        procedure :: range => frame_range
+        procedure :: num_notes => frame_num_notes
+        procedure :: note => frame_note
+        procedure :: text => frame_text
+        procedure :: png => frame_png
+    end type
 
     !> Owned interface mesh, report values and per-source Side entries.
     type :: mio_find_interface_result
@@ -3391,6 +3588,113 @@ module meshioplusplus
             integer(c_int64_t), intent(out) :: shape(*)
             integer(c_int) :: st
         end function
+        subroutine c_mio_render_opts_init(opts) bind(c, name="mio_render_opts_init")
+            import :: mio_render_opts_t
+            type(mio_render_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_render(h, opts) bind(c, name="mio_render") result(r)
+            import :: c_ptr, mio_render_opts_t
+            type(c_ptr), value :: h
+            type(mio_render_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_frame_free(f) bind(c, name="mio_frame_free")
+            import :: c_ptr
+            type(c_ptr), value :: f
+        end subroutine
+
+        function c_mio_frame_width(f) bind(c, name="mio_frame_width") result(n)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: f
+            integer(c_int32_t) :: n
+        end function
+
+        function c_mio_frame_height(f) bind(c, name="mio_frame_height") result(n)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: f
+            integer(c_int32_t) :: n
+        end function
+
+        function c_mio_frame_rgba(f) bind(c, name="mio_frame_rgba") result(p)
+            import :: c_ptr
+            type(c_ptr), value :: f
+            type(c_ptr) :: p
+        end function
+
+        function c_mio_frame_cell_ids(f) bind(c, name="mio_frame_cell_ids") result(p)
+            import :: c_ptr
+            type(c_ptr), value :: f
+            type(c_ptr) :: p
+        end function
+
+        function c_mio_frame_range(f, vmin, vmax) bind(c, name="mio_frame_range") result(n)
+            import :: c_ptr, c_int32_t, c_double
+            type(c_ptr), value :: f
+            real(c_double), intent(out) :: vmin, vmax
+            integer(c_int32_t) :: n
+        end function
+
+        function c_mio_frame_num_notes(f) bind(c, name="mio_frame_num_notes") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: f
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_frame_note(f, index, buf, buflen) bind(c, name="mio_frame_note") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: f
+            integer(c_int64_t), value :: index, buflen
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_frame_text(f, opts, buf, buflen) bind(c, name="mio_frame_text") result(n)
+            import :: c_ptr, c_char, c_int64_t, mio_text_opts_t
+            type(c_ptr), value :: f
+            type(mio_text_opts_t), intent(in) :: opts
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_frame_png(f, compress, buf, buflen) bind(c, name="mio_frame_png") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t, c_int8_t
+            type(c_ptr), value :: f
+            integer(c_int32_t), value :: compress
+            integer(c_int8_t), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_render_text(h, ropts, topts, buf, buflen) bind(c, name="mio_render_text") result(n)
+            import :: c_ptr, c_char, c_int64_t, mio_render_opts_t, mio_text_opts_t
+            type(c_ptr), value :: h
+            type(mio_render_opts_t), intent(in) :: ropts
+            type(mio_text_opts_t), intent(in) :: topts
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_write_snapshot(path, h, ropts, topts, sopts) bind(c, name="mio_write_snapshot") result(s)
+            import :: c_ptr, c_char, c_int, mio_render_opts_t, mio_text_opts_t, mio_snapshot_opts_t
+            character(c_char), intent(in) :: path(*)
+            type(c_ptr), value :: h
+            type(mio_render_opts_t), intent(in) :: ropts
+            type(mio_text_opts_t), intent(in) :: topts
+            type(mio_snapshot_opts_t), intent(in) :: sopts
+            integer(c_int) :: s
+        end function
+
+        function c_mio_detect_color_depth(no_color, color_term, term) &
+                bind(c, name="mio_detect_color_depth") result(n)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: no_color, color_term, term
+            integer(c_int32_t) :: n
+        end function
+
     end interface
 
 contains
@@ -9407,6 +9711,448 @@ contains
         if (total == 0 .or. .not. c_associated(p)) return
         call c_f_pointer(p, vals, [total])
         v = real(vals, real64)
+    end function
+
+    !> `0xRRGGBBAA` from four channel values in 0..255, for the colour fields of
+    !> `mio_render_settings`.
+    pure function mio_rgba(r, g, b, a) result(c)
+        integer, intent(in) :: r, g, b
+        integer, intent(in), optional :: a
+        integer(int64) :: c
+        integer :: alpha
+        alpha = 255
+        if (present(a)) alpha = a
+        c = int(r, int64) * 16777216_int64 + int(g, int64) * 65536_int64 &
+            + int(b, int64) * 256_int64 + int(alpha, int64)
+    end function
+
+    !> The bit pattern of a `0xRRGGBBAA` value as the C `uint32_t` field.
+    pure function rgba_to_c(c) result(i)
+        integer(int64), intent(in) :: c
+        integer(c_int32_t) :: i
+        if (c >= 2147483648_int64) then
+            i = int(c - 4294967296_int64, c_int32_t)
+        else
+            i = int(c, c_int32_t)
+        end if
+    end function
+
+    !> A Fortran string as a NUL-terminated C buffer, or NULL when unset/empty.
+    subroutine set_cstr(src, buf, p)
+        character(:), allocatable, intent(in) :: src
+        character(kind=c_char, len=STRBUF_LEN), target, intent(out) :: buf
+        type(c_ptr), intent(out) :: p
+        p = c_null_ptr
+        buf = c_null_char
+        if (.not. allocated(src)) return
+        if (len_trim(src) == 0) return
+        if (len_trim(src) >= STRBUF_LEN) return
+        buf = trim(src)//c_null_char
+        p = c_loc(buf(1:1))
+    end subroutine
+
+    !> Fill the C option struct from the settings. The string buffers are owned by
+    !> the caller so they outlive the C call.
+    subroutine render_opts_to_c(s, o, b, levels)
+        type(mio_render_settings), intent(in) :: s
+        type(mio_render_opts_t), intent(inout) :: o
+        character(kind=c_char, len=STRBUF_LEN), target, intent(out) :: b(8)
+        real(c_double), target, intent(inout) :: levels(:)
+
+        call c_mio_render_opts_init(o)
+        call set_cstr(s%view, b(1), o%view)
+        call set_cstr(s%color_by, b(2), o%color_by)
+        call set_cstr(s%cmap, b(3), o%cmap)
+        call set_cstr(s%reduce, b(4), o%reduce)
+        call set_cstr(s%expr, b(5), o%expr)
+        call set_cstr(s%vectors, b(6), o%vectors)
+        call set_cstr(s%warp, b(7), o%warp)
+        call set_cstr(s%quality_metric, b(8), o%quality_metric)
+        if (allocated(s%iso_levels)) then
+            if (size(s%iso_levels) > 0) then
+                levels = real(s%iso_levels, c_double)
+                o%iso_levels = c_loc(levels(1))
+                o%num_iso_levels = int(size(s%iso_levels), c_int64_t)
+            end if
+        end if
+        o%pixel_aspect = real(s%pixel_aspect, c_double)
+        o%azimuth = real(s%azimuth, c_double)
+        o%elevation = real(s%elevation, c_double)
+        o%roll = real(s%roll, c_double)
+        o%fov_deg = real(s%fov_deg, c_double)
+        o%zoom = real(s%zoom, c_double)
+        o%pan_x = real(s%pan_x, c_double)
+        o%pan_y = real(s%pan_y, c_double)
+        o%ambient = real(s%ambient, c_double)
+        o%light_x = real(s%light_x, c_double)
+        o%light_y = real(s%light_y, c_double)
+        o%light_z = real(s%light_z, c_double)
+        o%split_angle = real(s%split_angle, c_double)
+        o%feature_angle = real(s%feature_angle, c_double)
+        o%point_radius = real(s%point_radius, c_double)
+        o%scale_threshold = real(s%scale_threshold, c_double)
+        o%vector_length = real(s%vector_length, c_double)
+        o%warp_scale = real(s%warp_scale, c_double)
+        o%width = int(s%width, c_int32_t)
+        o%height = int(s%height, c_int32_t)
+        o%supersample = int(s%supersample, c_int32_t)
+        o%shading = int(s%shading, c_int32_t)
+        o%edges = int(s%edges, c_int32_t)
+        o%scale = int(s%scale, c_int32_t)
+        o%diagnostic = int(s%diagnostic, c_int32_t)
+        o%isolines = int(s%isolines, c_int32_t)
+        o%vector_count = int(s%vector_count, c_int32_t)
+        o%component = int(s%component, c_int32_t)
+        o%perspective = merge(1_c_int32_t, 0_c_int32_t, s%perspective)
+        o%two_sided = merge(1_c_int32_t, 0_c_int32_t, s%two_sided)
+        o%colorbar = merge(1_c_int32_t, 0_c_int32_t, s%colorbar)
+        o%axes = merge(1_c_int32_t, 0_c_int32_t, s%axes)
+        o%scale_bar = merge(1_c_int32_t, 0_c_int32_t, s%scale_bar)
+        o%symmetric = merge(1_c_int32_t, 0_c_int32_t, s%symmetric)
+        o%categorical = merge(1_c_int32_t, 0_c_int32_t, s%categorical)
+        o%color_regions = merge(1_c_int32_t, 0_c_int32_t, s%color_regions)
+        o%category_edges = merge(1_c_int32_t, 0_c_int32_t, s%category_edges)
+        o%warp_outline = merge(1_c_int32_t, 0_c_int32_t, s%warp_outline)
+        if (allocated(s%vmin)) then
+            o%vmin = real(s%vmin, c_double)
+            o%has_vmin = 1
+        end if
+        if (allocated(s%vmax)) then
+            o%vmax = real(s%vmax, c_double)
+            o%has_vmax = 1
+        end if
+        if (allocated(s%clip_low)) then
+            o%clip_low = real(s%clip_low, c_double)
+            o%has_clip_low = 1
+        end if
+        if (allocated(s%clip_high)) then
+            o%clip_high = real(s%clip_high, c_double)
+            o%has_clip_high = 1
+        end if
+        o%edge_color = rgba_to_c(s%edge_color)
+        o%fill_color = rgba_to_c(s%fill_color)
+        o%line_color = rgba_to_c(s%line_color)
+        o%background = rgba_to_c(s%background)
+        o%nan_color = rgba_to_c(s%nan_color)
+        o%iso_color = rgba_to_c(s%iso_color)
+        o%vector_color = rgba_to_c(s%vector_color)
+        o%outline_color = rgba_to_c(s%outline_color)
+    end subroutine
+
+    subroutine text_opts_to_c(t, o)
+        type(mio_text_settings), intent(in) :: t
+        type(mio_text_opts_t), intent(out) :: o
+        o%encoding = int(t%encoding, c_int32_t)
+        o%color_depth = int(t%color_depth, c_int32_t)
+        o%format = int(t%format, c_int32_t)
+        o%cols = int(t%cols, c_int32_t)
+        o%rows = int(t%rows, c_int32_t)
+        o%cell_pixel_width = int(t%cell_pixel_width, c_int32_t)
+        o%cell_pixel_height = int(t%cell_pixel_height, c_int32_t)
+        o%tmux = merge(1_c_int32_t, 0_c_int32_t, t%tmux)
+        o%notes = merge(1_c_int32_t, 0_c_int32_t, t%notes)
+        o%cell_aspect = real(t%cell_aspect, c_double)
+    end subroutine
+
+    !> Render this mesh into an RGBA frame (volume cells are drawn through their
+    !> boundary skin). `settings` defaults to `mio_render_settings()`. See
+    !> doc/tui.md. Free the frame with `call frame%free()`.
+    function mesh_render(self, settings, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        type(mio_render_settings), intent(in), optional :: settings
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_frame) :: out
+        type(mio_render_settings) :: s
+        type(mio_render_opts_t) :: o
+        character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
+        real(c_double), target :: levels(1024)
+
+        if (present(settings)) s = settings
+        if (allocated(s%iso_levels)) then
+            if (size(s%iso_levels) > size(levels)) then
+                call handle_failure('render', 'at most 1024 iso_levels', stat, errmsg)
+                return
+            end if
+        end if
+        call render_opts_to_c(s, o, bufs, levels)
+        out%handle = c_mio_render(self%handle, o)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('render', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Render this mesh as text sized to `text%cols` x `text%rows` cells: terminal
+    !> cells with ANSI colour, plain glyphs or an HTML page, or a graphics-protocol
+    !> image. Returns '' on failure.
+    function mesh_render_text(self, settings, text, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        type(mio_render_settings), intent(in), optional :: settings
+        type(mio_text_settings), intent(in), optional :: text
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: out
+        type(mio_render_settings) :: s
+        type(mio_text_settings) :: t
+        type(mio_render_opts_t) :: o
+        type(mio_text_opts_t) :: to
+        character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
+        real(c_double), target :: levels(1024)
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+
+        out = ''
+        if (present(settings)) s = settings
+        if (present(text)) t = text
+        if (allocated(s%iso_levels)) then
+            if (size(s%iso_levels) > size(levels)) then
+                call handle_failure('render_text', 'at most 1024 iso_levels', stat, errmsg)
+                return
+            end if
+        end if
+        call render_opts_to_c(s, o, bufs, levels)
+        call text_opts_to_c(t, to)
+        allocate (buf(1))
+        n = c_mio_render_text(self%handle, o, to, buf, 0_c_int64_t)
+        if (n < 0 .or. n >= int(huge(0) - 1, c_int64_t)) then
+            call handle_failure('render_text', mio_error_message(), stat, errmsg)
+            return
+        end if
+        deallocate (buf)
+        allocate (buf(int(n) + 1))
+        n = c_mio_render_text(self%handle, o, to, buf, n + 1)
+        if (n < 0) then
+            call handle_failure('render_text', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out = from_c_buf(buf, int(n))
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Render this mesh to a file chosen by extension: `.png`, `.txt`, `.ansi`,
+    !> `.html` or `.cast`. Text forms are sized by `text%cols` x `text%rows`.
+    subroutine mesh_write_snapshot(self, path, settings, text, png_compress, cast_frames, &
+                                   cast_fps, cast_degrees, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: path
+        type(mio_render_settings), intent(in), optional :: settings
+        type(mio_text_settings), intent(in), optional :: text
+        integer, intent(in), optional :: png_compress, cast_frames
+        real(real64), intent(in), optional :: cast_fps, cast_degrees
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_render_settings) :: s
+        type(mio_text_settings) :: t
+        type(mio_render_opts_t) :: o
+        type(mio_text_opts_t) :: to
+        type(mio_snapshot_opts_t) :: so
+        character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
+        real(c_double), target :: levels(1024)
+        integer(c_int) :: rc
+
+        if (present(settings)) s = settings
+        if (present(text)) t = text
+        if (allocated(s%iso_levels)) then
+            if (size(s%iso_levels) > size(levels)) then
+                call handle_failure('write_snapshot', 'at most 1024 iso_levels', stat, errmsg)
+                return
+            end if
+        end if
+        call render_opts_to_c(s, o, bufs, levels)
+        call text_opts_to_c(t, to)
+        if (present(png_compress)) so%png_compress = int(png_compress, c_int32_t)
+        if (present(cast_frames)) so%cast_frames = int(cast_frames, c_int32_t)
+        if (present(cast_fps)) so%cast_fps = real(cast_fps, c_double)
+        if (present(cast_degrees)) so%cast_degrees = real(cast_degrees, c_double)
+        rc = c_mio_write_snapshot(trim(path)//c_null_char, self%handle, o, to, so)
+        if (rc /= 0) then
+            call handle_failure('write_snapshot', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    subroutine frame_free(self)
+        class(mio_frame), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_frame_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    function frame_is_valid(self) result(ok)
+        class(mio_frame), intent(in) :: self
+        logical :: ok
+        ok = c_associated(self%handle)
+    end function
+
+    function frame_width(self) result(n)
+        class(mio_frame), intent(in) :: self
+        integer :: n
+        n = int(c_mio_frame_width(self%handle))
+    end function
+
+    function frame_height(self) result(n)
+        class(mio_frame), intent(in) :: self
+        integer :: n
+        n = int(c_mio_frame_height(self%handle))
+    end function
+
+    !> The pixels as `rgba(4, width, height)`, each channel 0..255, row 1 on top.
+    subroutine frame_get_rgba(self, rgba)
+        class(mio_frame), intent(in) :: self
+        integer, allocatable, intent(out) :: rgba(:, :, :)
+        integer(c_int8_t), pointer :: raw(:)
+        integer :: w, h, i
+        w = self%width()
+        h = self%height()
+        allocate (rgba(4, w, h))
+        if (w * h == 0) return
+        call c_f_pointer(c_mio_frame_rgba(self%handle), raw, [4 * w * h])
+        do i = 0, w * h - 1
+            rgba(1:4, mod(i, w) + 1, i / w + 1) = iand(int(raw(4 * i + 1:4 * i + 4)), 255)
+        end do
+    end subroutine
+
+    !> The input cell drawn at each pixel as `ids(width, height)`, -1 for none.
+    subroutine frame_get_cell_ids(self, ids)
+        class(mio_frame), intent(in) :: self
+        integer(int64), allocatable, intent(out) :: ids(:, :)
+        integer(c_int64_t), pointer :: raw(:)
+        integer :: w, h, i
+        w = self%width()
+        h = self%height()
+        allocate (ids(w, h))
+        if (w * h == 0) return
+        call c_f_pointer(c_mio_frame_cell_ids(self%handle), raw, [w * h])
+        do i = 0, w * h - 1
+            ids(mod(i, w) + 1, i / w + 1) = int(raw(i + 1), int64)
+        end do
+    end subroutine
+
+    !> `.true.` when a data field was mapped, with its range in `vmin`, `vmax`.
+    function frame_range(self, vmin, vmax) result(colored)
+        class(mio_frame), intent(in) :: self
+        real(real64), intent(out), optional :: vmin, vmax
+        logical :: colored
+        real(c_double) :: lo, hi
+        colored = c_mio_frame_range(self%handle, lo, hi) == 1
+        if (present(vmin)) vmin = real(lo, real64)
+        if (present(vmax)) vmax = real(hi, real64)
+    end function
+
+    function frame_num_notes(self) result(n)
+        class(mio_frame), intent(in) :: self
+        integer :: n
+        n = int(max(c_mio_frame_num_notes(self%handle), 0_c_int64_t))
+    end function
+
+    !> Note `index` (1-based): the colour range, ticks and keys of the picture.
+    function frame_note(self, index) result(s)
+        class(mio_frame), intent(in) :: self
+        integer, intent(in) :: index
+        character(:), allocatable :: s
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        s = ''
+        allocate (buf(1))
+        n = c_mio_frame_note(self%handle, int(index - 1, c_int64_t), buf, 0_c_int64_t)
+        if (n < 0 .or. n >= int(huge(0) - 1, c_int64_t)) return
+        deallocate (buf)
+        allocate (buf(int(n) + 1))
+        n = c_mio_frame_note(self%handle, int(index - 1, c_int64_t), buf, n + 1)
+        if (n >= 0) s = from_c_buf(buf, int(n))
+    end function
+
+    !> Encode the frame as text. A cell encoding needs a frame whose size is a
+    !> multiple of its cell grid; `mio_mesh%render_text` sizes it for you.
+    function frame_text(self, text, stat, errmsg) result(out)
+        class(mio_frame), intent(in) :: self
+        type(mio_text_settings), intent(in), optional :: text
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(:), allocatable :: out
+        type(mio_text_settings) :: t
+        type(mio_text_opts_t) :: to
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        out = ''
+        if (present(text)) t = text
+        call text_opts_to_c(t, to)
+        allocate (buf(1))
+        n = c_mio_frame_text(self%handle, to, buf, 0_c_int64_t)
+        if (n < 0 .or. n >= int(huge(0) - 1, c_int64_t)) then
+            call handle_failure('frame_text', mio_error_message(), stat, errmsg)
+            return
+        end if
+        deallocate (buf)
+        allocate (buf(int(n) + 1))
+        n = c_mio_frame_text(self%handle, to, buf, n + 1)
+        if (n < 0) then
+            call handle_failure('frame_text', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out = from_c_buf(buf, int(n))
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The frame as an RGBA PNG: `compress` 0 (default) stores the pixels with no
+    !> zlib, the same bytes everywhere; 1..9 compress through zlib where the build
+    !> has it. The bytes are returned as 0..255 values.
+    subroutine frame_png(self, bytes, compress, stat, errmsg)
+        class(mio_frame), intent(in) :: self
+        integer, allocatable, intent(out) :: bytes(:)
+        integer, intent(in), optional :: compress
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int8_t), allocatable :: raw(:)
+        integer(c_int64_t) :: n
+        integer(c_int32_t) :: level
+        level = 0
+        if (present(compress)) level = int(compress, c_int32_t)
+        allocate (bytes(0))
+        allocate (raw(1))
+        n = c_mio_frame_png(self%handle, level, raw, 0_c_int64_t)
+        if (n < 0 .or. n >= int(huge(0) - 1, c_int64_t)) then
+            call handle_failure('frame_png', mio_error_message(), stat, errmsg)
+            return
+        end if
+        deallocate (raw)
+        allocate (raw(int(n)))
+        n = c_mio_frame_png(self%handle, level, raw, n)
+        if (n < 0) then
+            call handle_failure('frame_png', mio_error_message(), stat, errmsg)
+            return
+        end if
+        deallocate (bytes)
+        allocate (bytes(int(n)))
+        bytes = iand(int(raw), 255)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> The MIO_COLOR_* depth a terminal advertises, from the values of NO_COLOR,
+    !> COLORTERM and TERM (omit one that is unset).
+    function mio_detect_color_depth(no_color, color_term, term) result(depth)
+        character(*), intent(in), optional :: no_color, color_term, term
+        integer :: depth
+        character(kind=c_char, len=STRBUF_LEN), target :: a, b, c
+        type(c_ptr) :: pa, pb, pc
+        pa = c_null_ptr
+        pb = c_null_ptr
+        pc = c_null_ptr
+        if (present(no_color)) then
+            a = trim(no_color)//c_null_char
+            pa = c_loc(a(1:1))
+        end if
+        if (present(color_term)) then
+            b = trim(color_term)//c_null_char
+            pb = c_loc(b(1:1))
+        end if
+        if (present(term)) then
+            c = trim(term)//c_null_char
+            pc = c_loc(c(1:1))
+        end if
+        depth = int(c_mio_detect_color_depth(pa, pb, pc))
     end function
 
 end module meshioplusplus
