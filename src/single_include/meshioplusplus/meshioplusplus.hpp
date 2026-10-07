@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 23
+#define MESHIOPLUSPLUS_ABI_VERSION 24
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -11782,7 +11782,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 33
+#define MESHIOPLUSPLUS_VERSION_MINOR 34
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11792,7 +11792,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.33.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.34.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -28641,6 +28641,27 @@ enum class RenderEdges : std::uint8_t {
     Feature = 2,  ///< the sharp, open and non-manifold edges of `feature_edges`
 };
 
+/// How a mapped value becomes a position on the colormap.
+enum class RenderScale : std::uint8_t {
+    Linear = 0,  ///< position proportional to the value (default)
+    Log =
+        1,  ///< proportional to its logarithm; a value that is not positive is drawn in `nan_color`
+    Symlog =
+        2,  ///< linear within `mScaleThreshold` of zero, logarithmic beyond, with the sign kept
+};
+
+/// A built-in check of the mesh, drawn instead of (or beside) a data field.
+enum class RenderDiagnostic : std::uint8_t {
+    None = 0,         ///< no diagnostic (default)
+    Quality = 1,      ///< colour cells by the `quality` metric named `mQualityMetric`
+    Inverted = 2,     ///< highlight cells with a negative signed volume or area
+    Degenerate = 3,   ///< highlight cells with a near-zero volume, edge or Jacobian
+    Orientation = 4,  ///< front faces (towards the camera) in blue, back faces in orange
+    FreeEdges =
+        5,  ///< open edges, non-manifold edges and inconsistently wound pairs, in three colours
+    EdgeLength = 6,  ///< colour faces by their mean edge length
+};
+
 /// An RGBA colour, 8 bits per channel, alpha 255 opaque.
 using RenderColor = std::array<std::uint8_t, 4>;
 
@@ -28717,6 +28738,62 @@ struct RenderOptions {
     /// Draw a scale bar in the lower-right corner (orthographic only) and give
     /// its length in `Frame::mNotes`.
     bool mScaleBar = false;
+
+    // --- Field rendering (v16.34.0, ABI 24) -------------------------------
+
+    /// Reduce the tensor array named by `mColorBy` (six or nine components)
+    /// before colouring: `mises`, `hydrostatic`, or `principal` (with
+    /// `mComponent` 0, 1, 2 the smallest, middle and largest principal value,
+    /// the largest when unset). Empty uses the array as it is.
+    std::string mReduce;
+    /// A `data_calc` expression evaluated into the array that is coloured
+    /// (`mag(u) / max(p)`); `mColorBy` must then be empty. Operands are looked
+    /// up in point data first, then cell data.
+    std::string mExpr;
+    /// Percentiles in [0, 100] that bound the automatic range, so one outlier
+    /// does not flatten the plot; an explicit `mVMin`/`mVMax` wins.
+    std::optional<double> mClipLow;
+    std::optional<double> mClipHigh;
+    /// Make the range symmetric about zero, so a diverging map such as
+    /// `coolwarm` puts zero at its midpoint.
+    bool mSymmetric = false;
+    RenderScale mScale = RenderScale::Linear;
+    /// The linear region of `RenderScale::Symlog` is `|v| < mScaleThreshold`.
+    double mScaleThreshold = 1.0;
+    /// Treat the mapped array's values as categories (integer cell data such
+    /// as a material id), coloured from a fixed qualitative palette, and list
+    /// each in `Frame::mNotes`.
+    bool mCategorical = false;
+    /// Colour cells by the first named cell region that holds them, from the
+    /// same palette, and list every region (an empty one too) in
+    /// `Frame::mNotes`.
+    bool mColorRegions = false;
+    /// Draw the edges where the categories of two faces differ.
+    bool mCategoryEdges = false;
+    /// Contour lines of the point array `mColorBy`: this many, equally spaced
+    /// inside the range, or the explicit `mIsoLevels` when given.
+    std::int32_t mIsolines = 0;
+    std::vector<double> mIsoLevels;
+    RenderColor mIsoColor = {30, 30, 30, 255};
+    /// Arrows for the vector point array of this name, at about
+    /// `mVectorCount` evenly ranked drawn points: a length proportional to the
+    /// magnitude (the longest is 6% of the model's diagonal), or `mVectorLength`
+    /// model units for all of them.
+    std::string mVectors;
+    std::int32_t mVectorCount = 200;
+    double mVectorLength = 0.0;
+    RenderColor mVectorColor = {220, 50, 50, 255};
+    /// Move the points by this displacement point array times `mWarpScale`.
+    std::string mWarp;
+    double mWarpScale = 1.0;
+    /// With a warp, also draw the undeformed outline (its open and sharp
+    /// edges) in `mOutlineColor`.
+    bool mWarpOutline = false;
+    RenderColor mOutlineColor = {150, 150, 150, 255};
+    RenderDiagnostic mDiagnostic = RenderDiagnostic::None;
+    /// The `quality` metric for `RenderDiagnostic::Quality` (`scaled_jacobian`,
+    /// `aspect_ratio`, ...).
+    std::string mQualityMetric;
 };
 
 /** @brief A rendered image. */
@@ -32585,6 +32662,71 @@ std::vector<RegionSummary> region_summaries_from_field_names(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/region_field_data.hpp =====
+// ===== begin src/cpp/src/detail/render_field.hpp =====
+/**
+ * @file detail/render_field.hpp
+ * @brief The pure helpers of field rendering: value scales, percentiles,
+ * legend ticks, the categorical palette and marching on one triangle.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. Everything here
+ * is a function of its arguments, so it is tested without a mesh.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief A value on a colormap's scale: `v` itself, its base-10 logarithm, or a
+ * signed logarithm that is linear within `Threshold` of zero.
+ * @return the scaled value, or NaN where the scale is undefined (a log scale at
+ *         a value that is not positive, or any scale at NaN)
+ */
+double render_scale_forward(RenderScale Scale, double Threshold, double v);
+
+/**
+ * @brief The `P`-th percentile (in [0, 100]) of values, by linear interpolation
+ * between the closest ranks. @p rValues is sorted in place; non-finite values
+ * must already be removed. NaN for an empty list.
+ */
+double render_percentile(std::vector<double>& rValues, double P);
+
+/**
+ * @brief Tick values inside `[VMin, VMax]` for a legend: round numbers (1, 2 or
+ * 5 times a power of ten) about `Target` of them on a linear scale, whole decades
+ * on a log scale, and `0` plus decades either side on a symlog scale.
+ */
+std::vector<double> render_legend_ticks(RenderScale Scale, double Threshold, double VMin,
+                                        double VMax, int Target);
+
+/// The qualitative palette of categorical rendering: the Okabe-Ito colours
+/// (Okabe and Ito, 2002, designed to survive colour-vision deficiency), then
+/// two greys, cycling past ten categories.
+const std::array<std::array<std::uint8_t, 4>, 10>& render_category_palette();
+
+/**
+ * @brief One contour segment of the linear interpolant on a triangle.
+ * @param pXyz the three corners, 3 doubles each
+ * @param pValue the three corner values
+ * @param Level the contour level
+ * @param pOut the two end points, 6 doubles
+ * @return whether the level crosses the triangle. A corner exactly on the level
+ *         counts as above it, so two triangles sharing an edge agree and a level
+ *         through a vertex never draws a stray point.
+ */
+bool render_triangle_contour(const double* pXyz, const double* pValue, double Level, double* pOut);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/render_field.hpp =====
 // ===== begin src/cpp/src/detail/row_writer.hpp =====
 /**
  * @file detail/row_writer.hpp
@@ -60485,6 +60627,147 @@ void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/region_remap.cpp =====
+// ===== begin src/cpp/src/detail/render_field.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+double render_scale_forward(RenderScale Scale, double Threshold, double v) {
+    if (!std::isfinite(v))
+        return std::numeric_limits<double>::quiet_NaN();
+    switch (Scale) {
+        case RenderScale::Log:
+            return v > 0.0 ? std::log10(v) : std::numeric_limits<double>::quiet_NaN();
+        case RenderScale::Symlog: {
+            const double t = Threshold > 0.0 ? Threshold : 1.0;
+            const double a = std::fabs(v);
+            // log10(1 + |v|/t) is odd, continuous and linear (slope 1/(t ln 10)) near 0.
+            const double m = std::log10(1.0 + a / t);
+            return v < 0.0 ? -m : m;
+        }
+        default:
+            return v;
+    }
+}
+
+double render_percentile(std::vector<double>& rValues, double P) {
+    if (rValues.empty())
+        return std::numeric_limits<double>::quiet_NaN();
+    std::sort(rValues.begin(), rValues.end());
+    const double pos =
+        std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
+    const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
+    const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
+    const double frac = pos - static_cast<double>(lo);
+    return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
+}
+
+namespace {
+
+// The 1, 2 or 5 times a power of ten step that gives about Target ticks.
+double rf_nice_step(double Range, int Target) {
+    const double raw = Range / static_cast<double>(std::max(Target, 1));
+    const double mag = std::pow(10.0, std::floor(std::log10(raw)));
+    const double f = raw / mag;
+    const double nice = f <= 1.0 ? 1.0 : (f <= 2.0 ? 2.0 : (f <= 5.0 ? 5.0 : 10.0));
+    return nice * mag;
+}
+
+}  // namespace
+
+std::vector<double> render_legend_ticks(RenderScale Scale, double Threshold, double VMin,
+                                        double VMax, int Target) {
+    std::vector<double> ticks;
+    if (!(VMax > VMin) || !std::isfinite(VMin) || !std::isfinite(VMax))
+        return ticks;
+    if (Scale == RenderScale::Log) {
+        if (!(VMin > 0.0))
+            return ticks;
+        const int lo = static_cast<int>(std::ceil(std::log10(VMin) - 1e-12));
+        const int hi = static_cast<int>(std::floor(std::log10(VMax) + 1e-12));
+        for (int e = lo; e <= hi; ++e)
+            ticks.push_back(std::pow(10.0, e));
+        return ticks;
+    }
+    if (Scale == RenderScale::Symlog) {
+        const double t = Threshold > 0.0 ? Threshold : 1.0;
+        if (VMin < 0.0 && VMax > 0.0)
+            ticks.push_back(0.0);
+        const double top = std::max(std::fabs(VMin), std::fabs(VMax));
+        for (double e = t; e <= top * (1.0 + 1e-12); e *= 10.0) {
+            if (e <= VMax)
+                ticks.push_back(e);
+            if (-e >= VMin)
+                ticks.push_back(-e);
+        }
+        std::sort(ticks.begin(), ticks.end());
+        return ticks;
+    }
+    const double step = rf_nice_step(VMax - VMin, Target);
+    const double first = std::ceil(VMin / step - 1e-9) * step;
+    for (double v = first; v <= VMax + step * 1e-9; v += step) {
+        // Snap to the grid so 0.30000000000000004 is 0.3, and -0 is 0.
+        char buf[48];
+        snprintf_c(buf, sizeof(buf), "%.12g", std::round(v / step) * step);
+        const char* end = nullptr;
+        const double snapped = parse_double(buf, end);
+        ticks.push_back(snapped == 0.0 ? 0.0 : snapped);
+        if (ticks.size() > 64)
+            break;
+    }
+    return ticks;
+}
+
+const std::array<std::array<std::uint8_t, 4>, 10>& render_category_palette() {
+    static const std::array<std::array<std::uint8_t, 4>, 10> palette = {{
+        {0, 114, 178, 255},    // blue
+        {230, 159, 0, 255},    // orange
+        {0, 158, 115, 255},    // bluish green
+        {204, 121, 167, 255},  // reddish purple
+        {86, 180, 233, 255},   // sky blue
+        {213, 94, 0, 255},     // vermillion
+        {240, 228, 66, 255},   // yellow
+        {0, 0, 0, 255},        // black
+        {153, 153, 153, 255},  // grey
+        {204, 204, 204, 255},  // light grey
+    }};
+    return palette;
+}
+
+bool render_triangle_contour(const double* pXyz, const double* pValue, double Level, double* pOut) {
+    // Corners at or above the level are "high"; an edge with one of each is cut.
+    bool high[3];
+    for (int k = 0; k < 3; ++k) {
+        if (!std::isfinite(pValue[k]))
+            return false;
+        high[k] = pValue[k] >= Level;
+    }
+    if (high[0] == high[1] && high[1] == high[2])
+        return false;
+    int n = 0;
+    for (int k = 0; k < 3; ++k) {
+        const int a = k;
+        const int b = (k + 1) % 3;
+        if (high[a] == high[b])
+            continue;
+        const double t = (Level - pValue[a]) / (pValue[b] - pValue[a]);
+        for (int c = 0; c < 3; ++c)
+            pOut[3 * n + c] = pXyz[3 * a + c] + t * (pXyz[3 * b + c] - pXyz[3 * a + c]);
+        ++n;
+    }
+    return n == 2;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/render_field.cpp =====
 // ===== begin src/cpp/src/detail/subset.cpp =====
 #include <cstring>
 
@@ -156601,6 +156884,17 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "OverlapTolerance"}},
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"Snapshot",
+         {"Path",           "Width",       "Height",       "Supersample",   "Cols",
+          "Rows",           "Encoding",    "ColorDepth",   "PngCompress",   "View",
+          "Azimuth",        "Elevation",   "Roll",         "Perspective",   "Fov",
+          "Zoom",           "Shading",     "Edges",        "FeatureAngle",  "Background",
+          "FillColor",      "ColorBy",     "Component",    "Cmap",          "VMin",
+          "VMax",           "Colorbar",    "Axes",         "ScaleBar",      "Reduce",
+          "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
+          "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
+          "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
+          "WarpOutline",    "Diagnostic",  "QualityMetric"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -156831,6 +157125,124 @@ Mesh pipe_apply_data_manage(Mesh mesh, const PipelineStep& rStep, PipelineReport
     }
     pipe_push_step(rReport, rStep);
     return mesh;
+}
+
+// --- Snapshot (v16.34.0) ------------------------------------------------------
+
+/// `#rrggbb`, `#rrggbbaa` or `none` (transparent) for the Snapshot colour parameters.
+RenderColor pipe_snap_color(const PipelineStep& rStep, const char* pKey,
+                            const RenderColor& rFallback) {
+    if (!pipe_find(rStep, pKey))
+        return rFallback;
+    const std::string text = pipe_text(rStep, pKey, "");
+    if (text == "none" || text == "transparent")
+        return {0, 0, 0, 0};
+    auto hex = [&](std::size_t At) {
+        int v = 0;
+        for (std::size_t k = At; k < At + 2; ++k) {
+            const char c = text[k];
+            const int d = c >= '0' && c <= '9'   ? c - '0'
+                          : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                          : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                 : -1;
+            if (d < 0)
+                throw std::invalid_argument(pipe_err(
+                    rStep,
+                    std::string("parameter '") + pKey + "' must be #rrggbb, #rrggbbaa or none"));
+            v = v * 16 + d;
+        }
+        return static_cast<std::uint8_t>(v);
+    };
+    if ((text.size() != 7 && text.size() != 9) || text[0] != '#')
+        throw std::invalid_argument(pipe_err(
+            rStep, std::string("parameter '") + pKey + "' must be #rrggbb, #rrggbbaa or none"));
+    return {hex(1), hex(3), hex(5), text.size() == 9 ? hex(7) : static_cast<std::uint8_t>(255)};
+}
+
+int pipe_snap_choice(const PipelineStep& rStep, const char* pKey,
+                     const std::vector<std::string>& rNames, int Fallback) {
+    if (!pipe_find(rStep, pKey))
+        return Fallback;
+    const std::string name = pipe_text(rStep, pKey, "");
+    for (std::size_t k = 0; k < rNames.size(); ++k)
+        if (rNames[k] == name)
+            return static_cast<int>(k);
+    std::string all;
+    for (const std::string& n : rNames)
+        all += (all.empty() ? "" : ", ") + n;
+    throw std::invalid_argument(pipe_err(
+        rStep,
+        std::string("parameter '") + pKey + "' must be one of " + all + ", not '" + name + "'"));
+}
+
+RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
+    RenderOptions o;
+    o.mWidth = static_cast<int>(pipe_number(rStep, "Width", o.mWidth));
+    o.mHeight = static_cast<int>(pipe_number(rStep, "Height", o.mHeight));
+    o.mSupersample = static_cast<int>(pipe_number(rStep, "Supersample", o.mSupersample));
+    o.mView = pipe_text(rStep, "View", "");
+    o.mAzimuth = pipe_number(rStep, "Azimuth", o.mAzimuth);
+    o.mElevation = pipe_number(rStep, "Elevation", o.mElevation);
+    o.mRoll = pipe_number(rStep, "Roll", o.mRoll);
+    if (pipe_flag(rStep, "Perspective", false))
+        o.mProjection = RenderProjection::Perspective;
+    o.mFovDeg = pipe_number(rStep, "Fov", o.mFovDeg);
+    o.mZoom = pipe_number(rStep, "Zoom", o.mZoom);
+    o.mShading = static_cast<RenderShading>(
+        pipe_snap_choice(rStep, "Shading", {"none", "flat", "smooth"}, 1));
+    o.mEdges =
+        static_cast<RenderEdges>(pipe_snap_choice(rStep, "Edges", {"none", "all", "feature"}, 0));
+    o.mFeatureAngle = pipe_number(rStep, "FeatureAngle", o.mFeatureAngle);
+    o.mBackground = pipe_snap_color(rStep, "Background", o.mBackground);
+    o.mFillColor = pipe_snap_color(rStep, "FillColor", o.mFillColor);
+    o.mColorBy = pipe_text(rStep, "ColorBy", "");
+    if (pipe_find(rStep, "Component"))
+        o.mComponent = static_cast<int>(pipe_number(rStep, "Component", 0.0));
+    o.mCmap = pipe_text(rStep, "Cmap", "viridis");
+    if (pipe_find(rStep, "VMin"))
+        o.mVMin = pipe_number(rStep, "VMin", 0.0);
+    if (pipe_find(rStep, "VMax"))
+        o.mVMax = pipe_number(rStep, "VMax", 0.0);
+    o.mColorbar = pipe_flag(rStep, "Colorbar", false);
+    o.mAxes = pipe_flag(rStep, "Axes", false);
+    o.mScaleBar = pipe_flag(rStep, "ScaleBar", false);
+    o.mReduce = pipe_text(rStep, "Reduce", "");
+    o.mExpr = pipe_text(rStep, "Expr", "");
+    if (pipe_find(rStep, "ClipLow"))
+        o.mClipLow = pipe_number(rStep, "ClipLow", 0.0);
+    if (pipe_find(rStep, "ClipHigh"))
+        o.mClipHigh = pipe_number(rStep, "ClipHigh", 100.0);
+    o.mSymmetric = pipe_flag(rStep, "Symmetric", false);
+    o.mScale =
+        static_cast<RenderScale>(pipe_snap_choice(rStep, "Scale", {"linear", "log", "symlog"}, 0));
+    o.mScaleThreshold = pipe_number(rStep, "ScaleThreshold", o.mScaleThreshold);
+    o.mCategorical = pipe_flag(rStep, "Categorical", false);
+    o.mColorRegions = pipe_flag(rStep, "ColorRegions", false);
+    o.mCategoryEdges = pipe_flag(rStep, "CategoryEdges", false);
+    o.mIsolines = static_cast<std::int32_t>(pipe_number(rStep, "Isolines", 0.0));
+    o.mIsoLevels = pipe_dvec(rStep, "IsoLevels");
+    o.mVectors = pipe_text(rStep, "Vectors", "");
+    o.mVectorCount = static_cast<std::int32_t>(pipe_number(rStep, "VectorCount", o.mVectorCount));
+    o.mWarp = pipe_text(rStep, "Warp", "");
+    o.mWarpScale = pipe_number(rStep, "WarpScale", o.mWarpScale);
+    o.mWarpOutline = pipe_flag(rStep, "WarpOutline", false);
+    o.mDiagnostic = static_cast<RenderDiagnostic>(pipe_snap_choice(
+        rStep, "Diagnostic",
+        {"none", "quality", "inverted", "degenerate", "orientation", "free_edges", "edge_length"},
+        0));
+    o.mQualityMetric = pipe_text(rStep, "QualityMetric", "");
+    return o;
+}
+
+TextOptions pipe_snap_text_options(const PipelineStep& rStep) {
+    TextOptions t;
+    t.mCols = static_cast<int>(pipe_number(rStep, "Cols", 100.0));
+    t.mRows = static_cast<int>(pipe_number(rStep, "Rows", 40.0));
+    t.mEncoding = static_cast<TextEncoding>(pipe_snap_choice(
+        rStep, "Encoding", {"halfblock", "quadrant", "sextant", "braille", "ascii"}, 0));
+    t.mDepth = static_cast<ColorDepth>(
+        pipe_snap_choice(rStep, "ColorDepth", {"truecolor", "256", "16", "mono"}, 0));
+    return t;
 }
 
 }  // namespace
@@ -157087,6 +157499,21 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumNonManifold", static_cast<double>(fr.mNumNonManifold)},
                         {"NumInconsistent", static_cast<double>(fr.mNumInconsistent)}});
         return std::move(fr.mMesh);
+    }
+    if (op == "Snapshot") {
+        // A side output, not a transform: the mesh passes through untouched and
+        // the frame is written to `Path` (.png, .txt, .ansi, .html or .cast).
+        const std::string path = pipe_text(rStep, "Path", "");
+        if (path.empty())
+            throw std::invalid_argument(pipe_err(rStep, "'Path' is required"));
+        const RenderOptions render_options = pipe_snap_render_options(rStep);
+        SnapshotOptions snapshot_options;
+        snapshot_options.mPngCompress = static_cast<int>(pipe_number(rStep, "PngCompress", 0.0));
+        write_snapshot(path, mesh, render_options, pipe_snap_text_options(rStep), snapshot_options);
+        pipe_push_step(rReport, rStep,
+                       {{"Width", static_cast<double>(render_options.mWidth)},
+                        {"Height", static_cast<double>(render_options.mHeight)}});
+        return mesh;
     }
     if (op == "QualityGate") {
         // A gate, not a transform: the mesh passes through untouched, and a
@@ -163379,6 +163806,7 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -163429,6 +163857,43 @@ void rnd_validate(const RenderOptions& rOpt) {
                                         "camera angles and pan must be finite");
     if (rOpt.mVMin.has_value() && rOpt.mVMax.has_value() && *rOpt.mVMin > *rOpt.mVMax)
         throw std::invalid_argument(std::string(kRndPrefix) + "vmin must not exceed vmax");
+    if (rOpt.mClipLow.has_value() || rOpt.mClipHigh.has_value()) {
+        const double lo = rOpt.mClipLow.value_or(0.0);
+        const double hi = rOpt.mClipHigh.value_or(100.0);
+        if (!(lo >= 0.0 && hi <= 100.0 && lo < hi))
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "clip percentiles must satisfy 0 <= low < high <= 100");
+    }
+    if (!(rOpt.mScaleThreshold > 0.0) || !std::isfinite(rOpt.mScaleThreshold))
+        throw std::invalid_argument(std::string(kRndPrefix) + "scale threshold must be positive");
+    if (rOpt.mIsolines < 0 || rOpt.mIsolines > 1000)
+        throw std::invalid_argument(std::string(kRndPrefix) + "isolines must lie in [0, 1000]");
+    for (double level : rOpt.mIsoLevels)
+        if (!std::isfinite(level))
+            throw std::invalid_argument(std::string(kRndPrefix) + "isoline levels must be finite");
+    if (rOpt.mVectorCount < 1 || rOpt.mVectorCount > 100000)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "vector count must lie in [1, 100000]");
+    if (!(rOpt.mVectorLength >= 0.0) || !std::isfinite(rOpt.mVectorLength) ||
+        !std::isfinite(rOpt.mWarpScale))
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "vector length must be non-negative and the warp scale finite");
+    if (!rOpt.mExpr.empty() && !rOpt.mColorBy.empty())
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "give either color_by or expr, not both");
+    if (!rOpt.mReduce.empty() && rOpt.mColorBy.empty())
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "reduce needs color_by (a tensor array)");
+    if (rOpt.mColorRegions && (!rOpt.mColorBy.empty() || !rOpt.mExpr.empty()))
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "color_regions excludes color_by and expr");
+    if (rOpt.mDiagnostic != RenderDiagnostic::None &&
+        (!rOpt.mColorBy.empty() || !rOpt.mExpr.empty() || rOpt.mColorRegions))
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "a diagnostic view excludes color_by, expr and color_regions");
+    if (rOpt.mDiagnostic == RenderDiagnostic::Quality && rOpt.mQualityMetric.empty())
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "the quality diagnostic needs a metric (quality_metric)");
 }
 
 // ---------------------------------------------------------------------------
@@ -163663,17 +164128,207 @@ struct RndColoring {
     double mVMin = 0.0;
     double mVMax = 0.0;
     RndColor mNan = {128, 128, 128, 255};
+    RenderScale mScale = RenderScale::Linear;
+    double mThreshold = 1.0;
+    /// Categories: a value is an index into this palette (cycling).
+    std::vector<RndColor> mPalette;
+    /// A diagnostic that colours faces only: lines and points keep their own.
+    bool mFacesOnly = false;
 
     RndColor Map(double v, const RndColor& rFallback) const {
         if (!mActive)
             return rFallback;
-        if (!std::isfinite(v))
+        if (!mPalette.empty()) {
+            if (!std::isfinite(v) || v < 0.0)
+                return mNan;
+            return mPalette[static_cast<std::size_t>(v) % mPalette.size()];
+        }
+        const double s = detail::render_scale_forward(mScale, mThreshold, v);
+        if (!std::isfinite(s))
             return mNan;
-        const detail::Rgb c =
-            detail::colormap_lookup(mpTable, detail::color_param(v, mVMin, mVMax));
+        const double lo = detail::render_scale_forward(mScale, mThreshold, mVMin);
+        const double hi = detail::render_scale_forward(mScale, mThreshold, mVMax);
+        const detail::Rgb c = detail::colormap_lookup(mpTable, detail::color_param(s, lo, hi));
         return {c.mR, c.mG, c.mB, 255};
     }
+
+    /// The colour of a line or point, which a faces-only diagnostic leaves alone.
+    RndColor MapOther(double v, const RndColor& rFallback) const {
+        return mFacesOnly ? rFallback : Map(v, rFallback);
+    }
 };
+
+std::string rnd_hex(const RndColor& rColor) {
+    static const char digits[] = "0123456789abcdef";
+    std::string out = "#";
+    for (int k = 0; k < 3; ++k) {
+        out.push_back(digits[(rColor[static_cast<std::size_t>(k)] >> 4) & 15]);
+        out.push_back(digits[rColor[static_cast<std::size_t>(k)] & 15]);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Derived arrays and per-vertex data
+// ---------------------------------------------------------------------------
+
+std::string rnd_available(const Mesh& rMesh) {
+    std::string names;
+    for (const std::string& n : rMesh.PointDataNames())
+        names += (names.empty() ? "" : ", ") + n;
+    return names.empty() ? "none" : names;
+}
+
+// The array the colouring reads, when it is not simply `mColorBy`: a
+// `data_calc` expression, a tensor invariant, or a `quality` metric. They all
+// become an ordinary array on a copy of the input, so everything after this
+// point -- the skin, the parent cell mapping, the shared resolver -- is the
+// path an array of the input takes.
+void rnd_prepare_source(const RenderOptions& rOpt, const Mesh& rMesh, Mesh& rWork,
+                        const Mesh*& rpSrc, std::string& rColorBy, std::string& rLabel,
+                        std::optional<int>& rComponent) {
+    rpSrc = &rMesh;
+    rColorBy = rOpt.mColorBy;
+    rLabel = rColorBy;
+    rComponent = rOpt.mComponent;
+    if (!rOpt.mExpr.empty()) {
+        DataCalcOptions options;
+        options.output = "render:expr";
+        options.overwrite = true;
+        try {
+            options.location = DataLocation::Point;
+            rWork = data_calc(rMesh, rOpt.mExpr, options);
+        } catch (const std::invalid_argument& rAsPoint) {
+            try {
+                options.location = DataLocation::Cell;
+                rWork = data_calc(rMesh, rOpt.mExpr, options);
+            } catch (const std::invalid_argument& rAsCell) {
+                throw std::invalid_argument(std::string(kRndPrefix) + "expression '" + rOpt.mExpr +
+                                            "' failed as point data (" + rAsPoint.what() +
+                                            ") and as cell data (" + rAsCell.what() + ")");
+            }
+        }
+        rpSrc = &rWork;
+        rColorBy = "render:expr";
+        rLabel = rOpt.mExpr;
+        return;
+    }
+    if (!rOpt.mReduce.empty()) {
+        if (rOpt.mReduce != "mises" && rOpt.mReduce != "hydrostatic" && rOpt.mReduce != "principal")
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "reduce must be 'mises', "
+                                        "'hydrostatic' or 'principal', not '" +
+                                        rOpt.mReduce + "'");
+        TensorInvariantsOptions options;
+        if (rMesh.HasPointData(rColorBy))
+            options.location = DataLocation::Point;
+        else if (rMesh.HasCellData(rColorBy))
+            options.location = DataLocation::Cell;
+        else
+            throw std::invalid_argument(std::string(kRndPrefix) + "no array named '" + rColorBy +
+                                        "' to reduce (point data: " + rnd_available(rMesh) + ")");
+        options.names = {rColorBy};
+        options.prefix = "render:";
+        options.outputs = rOpt.mReduce == "mises"       ? TensorInvariant::Mises
+                          : rOpt.mReduce == "principal" ? TensorInvariant::Principal
+                                                        : TensorInvariant::Hydrostatic;
+        rWork = tensor_invariants(rMesh, options);
+        rpSrc = &rWork;
+        rColorBy = "render:" + rColorBy + "_" + rOpt.mReduce;
+        rLabel = rOpt.mReduce + "(" + rOpt.mColorBy + ")";
+        if (rOpt.mReduce == "principal" && !rComponent.has_value())
+            rComponent = 2;
+        else if (rOpt.mReduce != "principal")
+            rComponent.reset();
+        return;
+    }
+    if (rOpt.mDiagnostic == RenderDiagnostic::Quality ||
+        rOpt.mDiagnostic == RenderDiagnostic::Inverted ||
+        rOpt.mDiagnostic == RenderDiagnostic::Degenerate) {
+        rWork = attach_quality(rMesh);
+        rpSrc = &rWork;
+        rColorBy = rOpt.mDiagnostic == RenderDiagnostic::Quality
+                       ? "quality:" + rOpt.mQualityMetric
+                       : (rOpt.mDiagnostic == RenderDiagnostic::Inverted ? "quality:inverted"
+                                                                         : "quality:degenerate");
+        rLabel = rColorBy;
+    }
+}
+
+// One value per combined vertex of a point array, read as `Ncomp` components
+// per vertex (missing ones zero), with the skin's points after the source's.
+std::vector<double> rnd_vertex_array(const Mesh& rSrc, const Mesh* pSkin, std::size_t NumSource,
+                                     const std::string& rName, std::size_t Ncomp,
+                                     const char* pWhat) {
+    if (!rSrc.HasPointData(rName))
+        throw std::invalid_argument(std::string(kRndPrefix) + pWhat + " array '" + rName +
+                                    "' is not point data (available: " + rnd_available(rSrc) + ")");
+    const std::size_t total = NumSource + (pSkin != nullptr ? pSkin->NumPoints() : 0);
+    std::vector<double> out(Ncomp * total, 0.0);
+    auto read = [&](const Mesh& rMesh, std::size_t Offset) {
+        const NDArray& arr = rMesh.PointData(rName);
+        const std::size_t n = rMesh.NumPoints();
+        const std::size_t have = n == 0 ? 0 : arr.Size() / n;
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < Ncomp && k < have; ++k)
+                out[(Offset + i) * Ncomp + k] = detail::read_double(arr, i * have + k);
+    };
+    read(rSrc, 0);
+    if (pSkin != nullptr && pSkin->HasPointData(rName))
+        read(*pSkin, NumSource);
+    return out;
+}
+
+// The scalar of a point array at every combined vertex, by the rules the face
+// colouring uses (a component, or the magnitude).
+std::vector<double> rnd_vertex_scalar(const detail::ColorSpec& rSpec, const Mesh& rSrc,
+                                      const Mesh* pSkin, std::size_t NumSource) {
+    std::vector<detail::ColorFace> faces;
+    faces.reserve(rSrc.NumPoints());
+    for (std::size_t i = 0; i < rSrc.NumPoints(); ++i)
+        faces.push_back({{static_cast<std::int64_t>(i), -1, -1, -1}, 1, -1});
+    std::vector<double> out = detail::resolve_face_colors(rSpec, rSrc, rSrc, faces).mValues;
+    if (pSkin != nullptr) {
+        faces.clear();
+        for (std::size_t i = 0; i < pSkin->NumPoints(); ++i)
+            faces.push_back({{static_cast<std::int64_t>(i), -1, -1, -1}, 1, -1});
+        const std::vector<double> more =
+            detail::resolve_face_colors(rSpec, rSrc, *pSkin, faces).mValues;
+        out.insert(out.end(), more.begin(), more.end());
+    }
+    out.resize(NumSource + (pSkin != nullptr ? pSkin->NumPoints() : 0), std::nan(""));
+    return out;
+}
+
+// Triangles of a face, as positions in its ring: a triangle itself, a quad
+// split on its shorter diagonal, a polygon fanned from its first corner.
+void rnd_face_triangles(const std::vector<double>& rXyz, const std::int64_t* pRing, std::int64_t N,
+                        std::vector<std::array<int, 3>>& rOut) {
+    rOut.clear();
+    if (N < 3)
+        return;
+    auto dist2 = [&](std::int64_t a, std::int64_t b) {
+        double d2 = 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double d = rXyz[3 * static_cast<std::size_t>(a) + k] -
+                             rXyz[3 * static_cast<std::size_t>(b) + k];
+            d2 += d * d;
+        }
+        return d2;
+    };
+    if (N == 4) {
+        if (dist2(pRing[0], pRing[2]) <= dist2(pRing[1], pRing[3])) {
+            rOut.push_back({0, 1, 2});
+            rOut.push_back({0, 2, 3});
+        } else {
+            rOut.push_back({1, 2, 3});
+            rOut.push_back({1, 3, 0});
+        }
+    } else {
+        for (int k = 1; k + 1 < N; ++k)
+            rOut.push_back({0, k, k + 1});
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Camera
@@ -163786,9 +164441,25 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     detail::render_view_angles(rOpt, azimuth, elevation);
     const detail::CameraBasis cam = detail::camera_basis(azimuth, elevation, rOpt.mRoll);
 
+    // The array that is coloured: an input array, or one derived from it.
+    Mesh work;
+    const Mesh* p_src = &rMesh;
+    std::string color_by;
+    std::string label;
+    std::optional<int> component;
+    rnd_prepare_source(rOpt, rMesh, work, p_src, color_by, label, component);
+    const Mesh& src = *p_src;
+    if (rOpt.mCategorical && color_by.empty())
+        throw std::invalid_argument(std::string(kRndPrefix) + "categorical needs color_by");
+    if ((rOpt.mIsolines > 0 || !rOpt.mIsoLevels.empty()) && color_by.empty())
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "isolines need color_by (a point array)");
+
     Mesh skin;
     bool has_skin = false;
-    RndGeometry g = rnd_gather(rMesh, skin, has_skin);
+    RndGeometry g = rnd_gather(src, skin, has_skin);
+    const std::size_t num_source_points = g.mNumSource;
+    const Mesh* p_skin = has_skin ? &skin : nullptr;
 
     // The drawn faces as rings into the combined points: the skin's first, then
     // the input's own 2-D cells.
@@ -163806,48 +164477,15 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     }
     const std::size_t num_faces = f_ids.size();
 
-    // Values and the mapped range.
-    RndColoring coloring;
-    coloring.mNan = rOpt.mNanColor;
-    std::vector<double> f_values(num_faces, 0.0);
-    std::vector<double> l_values(g.mLines.mIds.size(), 0.0);
-    std::vector<double> p_values(g.mPoints.mIds.size(), 0.0);
-    if (!rOpt.mColorBy.empty()) {
-        detail::ColorSpec spec;
-        spec.mColorBy = rOpt.mColorBy;
-        spec.mComponent = rOpt.mComponent;
-        spec.mCmap = rOpt.mCmap;
-        coloring.mpTable = detail::colormap_table(rOpt.mCmap);
-        const bool is_point = rMesh.HasPointData(rOpt.mColorBy);
-        if (!is_point && !rMesh.HasCellData(rOpt.mColorBy))
-            (void)detail::resolve_face_colors(spec, rMesh, rMesh, {});  // throws the shared message
-        f_values = rnd_group_values(spec, rMesh, g.mSkinFaces, is_point);
-        const std::vector<double> own = rnd_group_values(spec, rMesh, g.mFaces, is_point);
-        f_values.insert(f_values.end(), own.begin(), own.end());
-        l_values = rnd_group_values(spec, rMesh, g.mLines, is_point);
-        p_values = rnd_group_values(spec, rMesh, g.mPoints, is_point);
-        double lo = 0.0;
-        double hi = 0.0;
-        bool seen = false;
-        for (const std::vector<double>* p_values_list : {&f_values, &l_values, &p_values}) {
-            for (double v : *p_values_list) {
-                if (!std::isfinite(v))
-                    continue;
-                if (!seen) {
-                    lo = v;
-                    hi = v;
-                    seen = true;
-                } else {
-                    lo = std::min(lo, v);
-                    hi = std::max(hi, v);
-                }
-            }
-        }
-        coloring.mVMin = rOpt.mVMin.value_or(lo);
-        coloring.mVMax = rOpt.mVMax.value_or(hi);
-        if (coloring.mVMin > coloring.mVMax)
-            throw std::invalid_argument(std::string(kRndPrefix) + "vmin must not exceed vmax");
-        coloring.mActive = true;
+    // A warp moves the points before anything is measured from them; the
+    // undeformed positions are kept for the outline.
+    std::vector<double> xyz_undeformed;
+    if (!rOpt.mWarp.empty()) {
+        xyz_undeformed = g.mXyz;
+        const std::vector<double> disp =
+            rnd_vertex_array(src, p_skin, num_source_points, rOpt.mWarp, 3, "warp");
+        for (std::size_t i = 0; i < g.mXyz.size(); ++i)
+            g.mXyz[i] += rOpt.mWarpScale * disp[i];
     }
 
     // Face normals (Newell's, from the shared crease kernel).
@@ -163857,6 +164495,193 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
                                  static_cast<std::size_t>(f_start[f + 1] - f_start[f]),
                                  &f_normal[3 * f]);
     });
+
+    // --- Values -----------------------------------------------------------
+    RndColoring coloring;
+    coloring.mNan = rOpt.mNanColor;
+    coloring.mScale = rOpt.mScale;
+    coloring.mThreshold = rOpt.mScaleThreshold;
+    std::vector<double> f_values(num_faces, 0.0);
+    std::vector<double> l_values(g.mLines.mIds.size(), 0.0);
+    std::vector<double> p_values(g.mPoints.mIds.size(), 0.0);
+    std::vector<std::string> keys;
+    bool continuous = false;
+    bool categorical = false;
+    const bool diag_flag = rOpt.mDiagnostic == RenderDiagnostic::Inverted ||
+                           rOpt.mDiagnostic == RenderDiagnostic::Degenerate;
+    detail::ColorSpec spec;
+    spec.mColorBy = color_by;
+    spec.mComponent = component;
+    spec.mCmap = rOpt.mCmap;
+
+    // The first Cell region that holds each input cell.
+    std::vector<std::int32_t> cell_region;
+    std::vector<std::string> region_names;
+    std::vector<std::size_t> region_counts;
+
+    if (rOpt.mColorRegions) {
+        std::size_t total_cells = 0;
+        for (const auto cb : src.CellRange())
+            total_cells += cb.NumCells();
+        cell_region.assign(total_cells, -1);
+        for (std::size_t r = 0; r < src.NumRegions(); ++r) {
+            const meshioplusplus::Region& region = src.Region(r);
+            if (region.mKind != RegionKind::Cell)
+                continue;
+            const std::int32_t index = static_cast<std::int32_t>(region_names.size());
+            region_names.push_back(region.mName);
+            region_counts.push_back(region.NumEntries());
+            for (std::size_t e = 0; e < region.mEntries.Size(); ++e) {
+                const std::int64_t c = detail::read_int(region.mEntries, e);
+                if (c >= 0 && static_cast<std::size_t>(c) < total_cells &&
+                    cell_region[static_cast<std::size_t>(c)] < 0)
+                    cell_region[static_cast<std::size_t>(c)] = index;
+            }
+        }
+        if (region_names.empty())
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "color_regions needs at least one named cell region");
+        auto region_of = [&](std::int64_t id) {
+            return id >= 0 && static_cast<std::size_t>(id) < cell_region.size() &&
+                           cell_region[static_cast<std::size_t>(id)] >= 0
+                       ? static_cast<double>(cell_region[static_cast<std::size_t>(id)])
+                       : std::nan("");
+        };
+        for (std::size_t f = 0; f < num_faces; ++f)
+            f_values[f] = region_of(f_ids[f]);
+        for (std::size_t i = 0; i < l_values.size(); ++i)
+            l_values[i] = region_of(g.mLines.mIds[i]);
+        for (std::size_t i = 0; i < p_values.size(); ++i)
+            p_values[i] = region_of(g.mPoints.mIds[i]);
+        categorical = true;
+        for (std::size_t r = 0; r < region_names.size(); ++r) {
+            const auto& pal = detail::render_category_palette();
+            const RndColor c = pal[r % pal.size()];
+            coloring.mPalette.push_back(c);
+            keys.push_back("region " + region_names[r] + ": " + rnd_hex(c) + " (" +
+                           std::to_string(region_counts[r]) + " cells)");
+        }
+    } else if (!color_by.empty()) {
+        coloring.mpTable = detail::colormap_table(rOpt.mCmap);
+        const bool is_point = src.HasPointData(color_by);
+        if (!is_point && !src.HasCellData(color_by))
+            (void)detail::resolve_face_colors(spec, src, src, {});  // throws the shared message
+        f_values = rnd_group_values(spec, src, g.mSkinFaces, is_point);
+        const std::vector<double> own = rnd_group_values(spec, src, g.mFaces, is_point);
+        f_values.insert(f_values.end(), own.begin(), own.end());
+        l_values = rnd_group_values(spec, src, g.mLines, is_point);
+        p_values = rnd_group_values(spec, src, g.mPoints, is_point);
+        if (diag_flag) {
+            // 0 or 1; a cell the metric does not apply to is not flagged.
+            for (std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+                for (double& v : *p_list)
+                    v = std::isfinite(v) && v > 0.5 ? 1.0 : 0.0;
+            coloring.mPalette = {rOpt.mFillColor, {220, 40, 40, 255}};
+            coloring.mFacesOnly = true;
+            std::size_t flagged = 0;
+            for (double v : f_values)
+                flagged += v > 0.5 ? 1 : 0;
+            keys.push_back(std::string(rOpt.mDiagnostic == RenderDiagnostic::Inverted
+                                           ? "inverted"
+                                           : "degenerate") +
+                           ": " + std::to_string(flagged) + " drawn faces in red");
+            categorical = true;
+        } else if (rOpt.mCategorical) {
+            std::vector<double> distinct;
+            for (const std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+                for (double v : *p_list)
+                    if (std::isfinite(v))
+                        distinct.push_back(v);
+            std::sort(distinct.begin(), distinct.end());
+            distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+            std::vector<std::size_t> counts(distinct.size(), 0);
+            auto index_of = [&](double v) {
+                return static_cast<std::size_t>(
+                    std::lower_bound(distinct.begin(), distinct.end(), v) - distinct.begin());
+            };
+            for (double v : f_values)
+                if (std::isfinite(v))
+                    ++counts[index_of(v)];
+            for (std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+                for (double& v : *p_list)
+                    if (std::isfinite(v))
+                        v = static_cast<double>(index_of(v));
+            const auto& pal = detail::render_category_palette();
+            for (std::size_t i = 0; i < distinct.size(); ++i) {
+                const RndColor c = pal[i % pal.size()];
+                coloring.mPalette.push_back(c);
+                keys.push_back(label + " = " + rnd_num(distinct[i]) + ": " + rnd_hex(c) + " (" +
+                               std::to_string(counts[i]) + " drawn faces)");
+            }
+            if (coloring.mPalette.empty())
+                coloring.mPalette.push_back(rOpt.mFillColor);
+            categorical = true;
+        } else {
+            continuous = true;
+        }
+    } else if (rOpt.mDiagnostic == RenderDiagnostic::EdgeLength) {
+        coloring.mpTable = detail::colormap_table(rOpt.mCmap);
+        label = "edge length";
+        for (std::size_t f = 0; f < num_faces; ++f) {
+            const std::int64_t lo = f_start[f];
+            const std::int64_t n = f_start[f + 1] - lo;
+            double sum = 0.0;
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::size_t a =
+                    static_cast<std::size_t>(f_nodes[static_cast<std::size_t>(lo + k)]);
+                const std::size_t b =
+                    static_cast<std::size_t>(f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)]);
+                double d2 = 0.0;
+                for (std::size_t c = 0; c < 3; ++c) {
+                    const double d = g.mXyz[3 * a + c] - g.mXyz[3 * b + c];
+                    d2 += d * d;
+                }
+                sum += std::sqrt(d2);
+            }
+            f_values[f] = n > 0 ? sum / static_cast<double>(n) : std::nan("");
+        }
+        std::fill(l_values.begin(), l_values.end(), std::nan(""));
+        std::fill(p_values.begin(), p_values.end(), std::nan(""));
+        coloring.mFacesOnly = true;
+        continuous = true;
+    }
+
+    if (continuous) {
+        // The range: the finite values of what is drawn (positive ones on a log
+        // scale), narrowed to percentiles, made symmetric, or given outright.
+        std::vector<double> finite;
+        for (const std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+            for (double v : *p_list)
+                if (std::isfinite(v) && (rOpt.mScale != RenderScale::Log || v > 0.0))
+                    finite.push_back(v);
+        double lo = 0.0;
+        double hi = 0.0;
+        if (!finite.empty()) {
+            if (rOpt.mClipLow.has_value() || rOpt.mClipHigh.has_value()) {
+                std::vector<double> sorted = finite;
+                lo = detail::render_percentile(sorted, rOpt.mClipLow.value_or(0.0));
+                hi = detail::render_percentile(sorted, rOpt.mClipHigh.value_or(100.0));
+            } else {
+                const auto mm = std::minmax_element(finite.begin(), finite.end());
+                lo = *mm.first;
+                hi = *mm.second;
+            }
+        }
+        if (rOpt.mSymmetric) {
+            const double m = std::max(std::fabs(lo), std::fabs(hi));
+            lo = -m;
+            hi = m;
+        }
+        coloring.mVMin = rOpt.mVMin.value_or(lo);
+        coloring.mVMax = rOpt.mVMax.value_or(hi);
+        if (coloring.mVMin > coloring.mVMax)
+            throw std::invalid_argument(std::string(kRndPrefix) + "vmin must not exceed vmax");
+        if (rOpt.mScale == RenderScale::Log && !(coloring.mVMin > 0.0) && !finite.empty())
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "a log scale needs a positive range, not " +
+                                        rnd_num(coloring.mVMin) + " .. " + rnd_num(coloring.mVMax));
+    }
+    coloring.mActive = continuous || categorical;
 
     // Smooth shading draws the faces through compute_normals' split points:
     // the rings change, the original points keep their indices.
@@ -163898,6 +164723,154 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         }
     }
 
+    // --- Extra line layers: contours, arrows, the undeformed outline ------
+    struct Extra {
+        std::int64_t mA;
+        std::int64_t mB;
+        RndColor mColor;
+    };
+    std::vector<Extra> extras;
+    auto add_vertex = [&](const double* pPoint) {
+        const std::int64_t id = static_cast<std::int64_t>(xyz.size() / 3);
+        xyz.insert(xyz.end(), pPoint, pPoint + 3);
+        return id;
+    };
+    auto add_segment = [&](const double* pA, const double* pB, const RndColor& rColor) {
+        const std::int64_t a = add_vertex(pA);
+        const std::int64_t b = add_vertex(pB);
+        extras.push_back({a, b, rColor});
+    };
+
+    if (rOpt.mIsolines > 0 || !rOpt.mIsoLevels.empty()) {
+        if (!src.HasPointData(color_by))
+            throw std::invalid_argument(
+                std::string(kRndPrefix) + "isolines need a point array, but '" + color_by +
+                "' is not point data (available: " + rnd_available(src) + ")");
+        const std::vector<double> vv = rnd_vertex_scalar(spec, src, p_skin, num_source_points);
+        std::vector<double> levels = rOpt.mIsoLevels;
+        if (levels.empty()) {
+            if (!continuous)
+                throw std::invalid_argument(std::string(kRndPrefix) +
+                                            "isolines need a continuous range to divide");
+            for (std::int32_t k = 1; k <= rOpt.mIsolines; ++k)
+                levels.push_back(coloring.mVMin + (coloring.mVMax - coloring.mVMin) *
+                                                      static_cast<double>(k) /
+                                                      static_cast<double>(rOpt.mIsolines + 1));
+        }
+        std::vector<std::array<int, 3>> tris;
+        for (std::size_t f = 0; f < num_faces; ++f) {
+            const std::int64_t* ring = f_nodes.data() + f_start[f];
+            rnd_face_triangles(xyz, ring, f_start[f + 1] - f_start[f], tris);
+            for (const std::array<int, 3>& t : tris) {
+                double corner[9];
+                double value[3];
+                for (int k = 0; k < 3; ++k) {
+                    const std::size_t v =
+                        static_cast<std::size_t>(ring[t[static_cast<std::size_t>(k)]]);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        corner[3 * k + static_cast<int>(c)] = xyz[3 * v + c];
+                    value[k] = vv[v];
+                }
+                for (double level : levels) {
+                    double seg[6];
+                    if (detail::render_triangle_contour(corner, value, level, seg))
+                        add_segment(seg, seg + 3, rOpt.mIsoColor);
+                }
+            }
+        }
+        keys.push_back("isolines: " + std::to_string(levels.size()) + " levels (" +
+                       rnd_hex(rOpt.mIsoColor) + ")");
+    }
+
+    if (!rOpt.mVectors.empty() && num_faces > 0) {
+        const std::vector<double> vec =
+            rnd_vertex_array(src, p_skin, num_source_points, rOpt.mVectors, 3, "vector");
+        std::vector<std::int64_t> ids(f_nodes);
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        const std::size_t want =
+            std::min<std::size_t>(ids.size(), static_cast<std::size_t>(rOpt.mVectorCount));
+        std::vector<std::int64_t> picked;
+        for (std::size_t k = 0; k < want; ++k)
+            picked.push_back(ids[static_cast<std::size_t>((static_cast<double>(k) + 0.5) *
+                                                          static_cast<double>(ids.size()) /
+                                                          static_cast<double>(want))]);
+        double lo3[3] = {0, 0, 0};
+        double hi3[3] = {0, 0, 0};
+        bool first = true;
+        for (std::int64_t v : ids)
+            for (std::size_t c = 0; c < 3; ++c) {
+                const double x = xyz[3 * static_cast<std::size_t>(v) + c];
+                lo3[c] = first ? x : std::min(lo3[c], x);
+                hi3[c] = first ? x : std::max(hi3[c], x);
+                first = false;
+            }
+        first = true;
+        const double diag = std::sqrt((hi3[0] - lo3[0]) * (hi3[0] - lo3[0]) +
+                                      (hi3[1] - lo3[1]) * (hi3[1] - lo3[1]) +
+                                      (hi3[2] - lo3[2]) * (hi3[2] - lo3[2]));
+        double max_mag = 0.0;
+        for (std::int64_t v : picked) {
+            const double* a = &vec[3 * static_cast<std::size_t>(v)];
+            const double m = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            if (std::isfinite(m))
+                max_mag = std::max(max_mag, m);
+        }
+        const double cos_barb = 0.9063077870366499;  // 25 degrees
+        const double sin_barb = 0.42261826174069944;
+        for (std::int64_t v : picked) {
+            const double* a = &vec[3 * static_cast<std::size_t>(v)];
+            const double mag = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            if (!(mag > 0.0) || !std::isfinite(mag) || !(max_mag > 0.0))
+                continue;
+            const double len =
+                rOpt.mVectorLength > 0.0 ? rOpt.mVectorLength : 0.06 * diag * mag / max_mag;
+            const double dir[3] = {a[0] / mag, a[1] / mag, a[2] / mag};
+            const double* p = &xyz[3 * static_cast<std::size_t>(v)];
+            const double tip[3] = {p[0] + dir[0] * len, p[1] + dir[1] * len, p[2] + dir[2] * len};
+            // The barbs lie in the plane of the arrow and the line of sight.
+            double perp[3] = {dir[1] * cam.mW[2] - dir[2] * cam.mW[1],
+                              dir[2] * cam.mW[0] - dir[0] * cam.mW[2],
+                              dir[0] * cam.mW[1] - dir[1] * cam.mW[0]};
+            double pl = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
+            if (pl < 1e-9) {
+                perp[0] = cam.mU[0];
+                perp[1] = cam.mU[1];
+                perp[2] = cam.mU[2];
+                pl = 1.0;
+            }
+            for (double& c : perp)
+                c /= pl;
+            add_segment(p, tip, rOpt.mVectorColor);
+            for (double sign : {1.0, -1.0}) {
+                double barb[3];
+                for (std::size_t c = 0; c < 3; ++c)
+                    barb[c] = tip[c] - 0.3 * len * (cos_barb * dir[c] - sign * sin_barb * perp[c]);
+                add_segment(tip, barb, rOpt.mVectorColor);
+            }
+        }
+        keys.push_back("vectors: " + rOpt.mVectors + ", " + std::to_string(picked.size()) +
+                       " arrows, longest " + rnd_num(max_mag));
+    }
+
+    if (!rOpt.mWarp.empty() && rOpt.mWarpOutline && num_faces > 0) {
+        std::vector<double> n0(3 * num_faces, 0.0);
+        for (std::size_t f = 0; f < num_faces; ++f)
+            detail::ring_unit_normal(xyz_undeformed.data(), f_nodes.data() + f_start[f],
+                                     static_cast<std::size_t>(f_start[f + 1] - f_start[f]),
+                                     &n0[3 * f]);
+        for (const detail::CreaseEdge& e :
+             detail::crease_edges(f_start, f_nodes, n0, rOpt.mFeatureAngle))
+            if (e.IsCrease() || e.IsBoundary())
+                add_segment(&xyz_undeformed[3 * static_cast<std::size_t>(e.mLo)],
+                            &xyz_undeformed[3 * static_cast<std::size_t>(e.mHi)],
+                            rOpt.mOutlineColor);
+        keys.push_back("warp: " + rOpt.mWarp + " x " + rnd_num(rOpt.mWarpScale) +
+                       ", undeformed outline in " + rnd_hex(rOpt.mOutlineColor));
+    } else if (!rOpt.mWarp.empty()) {
+        keys.push_back("warp: " + rOpt.mWarp + " x " + rnd_num(rOpt.mWarpScale));
+    }
+
     // Project every vertex a primitive uses.
     const std::size_t nv = xyz.size() / 3;
     std::vector<std::uint8_t> used(nv, 0);
@@ -163907,6 +164880,10 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         used[static_cast<std::size_t>(v)] = 1;
     for (std::int64_t v : g.mPoints.mNodes)
         used[static_cast<std::size_t>(v)] = 1;
+    for (const Extra& e : extras) {
+        used[static_cast<std::size_t>(e.mA)] = 1;
+        used[static_cast<std::size_t>(e.mB)] = 1;
+    }
 
     const bool perspective = rOpt.mProjection == RenderProjection::Perspective;
     std::array<double, 3> eye = {0.0, 0.0, 0.0};
@@ -163945,6 +164922,38 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         const double distance = radius / std::sin(rOpt.mFovDeg * 3.141592653589793 / 360.0);
         for (int k = 0; k < 3; ++k)
             eye[k] = centre[k] + cam.mW[static_cast<std::size_t>(k)] * distance;
+    }
+
+    // Front and back faces, which need the camera.
+    if (rOpt.mDiagnostic == RenderDiagnostic::Orientation) {
+        const RndColor front = {70, 130, 230, 255};
+        const RndColor back = {230, 140, 40, 255};
+        coloring.mPalette = {front, back};
+        coloring.mFacesOnly = true;
+        coloring.mActive = true;
+        categorical = true;
+        std::size_t back_faces = 0;
+        for (std::size_t f = 0; f < num_faces; ++f) {
+            const double* n = &f_normal[3 * f];
+            double toward[3] = {cam.mW[0], cam.mW[1], cam.mW[2]};
+            if (perspective) {
+                double c[3] = {0, 0, 0};
+                const std::int64_t cnt = f_start[f + 1] - f_start[f];
+                for (std::int64_t k = f_start[f]; k < f_start[f + 1]; ++k)
+                    for (std::size_t a = 0; a < 3; ++a)
+                        c[a] +=
+                            xyz[3 * static_cast<std::size_t>(f_nodes[static_cast<std::size_t>(k)]) +
+                                a];
+                for (std::size_t a = 0; a < 3; ++a)
+                    toward[a] = eye[a] - (cnt > 0 ? c[a] / static_cast<double>(cnt) : 0.0);
+            }
+            const double d = n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2];
+            f_values[f] = d < 0.0 ? 1.0 : 0.0;
+            back_faces += d < 0.0 ? 1 : 0;
+        }
+        keys.push_back("orientation: front " + rnd_hex(front) + ", back " + rnd_hex(back) + " (" +
+                       std::to_string(back_faces) + " of " + std::to_string(num_faces) +
+                       " drawn faces)");
     }
 
     std::vector<double> sx(nv, 0.0);
@@ -163990,7 +164999,7 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     const double width = static_cast<double>(rOpt.mWidth) * ss;
     const double height = static_cast<double>(rOpt.mHeight) * ss;
     const double aspect = rOpt.mPixelAspect;
-    const bool colorbar = rOpt.mColorbar && coloring.mActive;
+    const bool colorbar = rOpt.mColorbar && continuous;
     const double usable_w = width * (colorbar ? 0.85 : 1.0);
     const double avail_x = usable_w * (1.0 - 2.0 * kRndMargin);
     const double avail_y = height * aspect * (1.0 - 2.0 * kRndMargin);
@@ -164038,8 +165047,7 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     else
         light = cam.mW;
 
-    // Triangles: a triangle as is, a quad split on its shorter diagonal, a
-    // polygon fanned from its first corner.
+    // Triangles.
     std::size_t num_tris = 0;
     for (std::size_t f = 0; f < num_faces; ++f) {
         const std::int64_t n = f_start[f + 1] - f_start[f];
@@ -164047,15 +165055,7 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             num_tris += static_cast<std::size_t>(n - 2);
     }
     scene.mTris.reserve(num_tris);
-    auto dist2 = [&](std::int64_t a, std::int64_t b) {
-        double d2 = 0.0;
-        for (std::size_t k = 0; k < 3; ++k) {
-            const double d =
-                xyz[3 * static_cast<std::size_t>(a) + k] - xyz[3 * static_cast<std::size_t>(b) + k];
-            d2 += d * d;
-        }
-        return d2;
-    };
+    std::vector<std::array<int, 3>> tri_positions;
     for (std::size_t f = 0; f < num_faces; ++f) {
         const std::int64_t* ring = s_nodes.data() + f_start[f];
         const std::int64_t n = f_start[f + 1] - f_start[f];
@@ -164072,38 +165072,27 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
                 return face_i;
             return rnd_lambert(nrm, light, rOpt);
         };
-        auto emit = [&](std::int64_t a, std::int64_t b, std::int64_t c) {
-            detail::RasterTri t;
-            t.mV[0] = ring[a];
-            t.mV[1] = ring[b];
-            t.mV[2] = ring[c];
-            t.mIntensity[0] = corner_i(ring[a]);
-            t.mIntensity[1] = corner_i(ring[b]);
-            t.mIntensity[2] = corner_i(ring[c]);
-            t.mColor = color;
-            t.mId = f_ids[f];
-            scene.mTris.push_back(t);
-        };
-        if (n == 4) {
-            if (dist2(ring[0], ring[2]) <= dist2(ring[1], ring[3])) {
-                emit(0, 1, 2);
-                emit(0, 2, 3);
-            } else {
-                emit(1, 2, 3);
-                emit(1, 3, 0);
+        // The diagonal of a quad is chosen on the face's own (unsplit) ring, so
+        // smooth shading's copies of a point never change it.
+        rnd_face_triangles(xyz, f_nodes.data() + f_start[f], n, tri_positions);
+        for (const std::array<int, 3>& t : tri_positions) {
+            detail::RasterTri tri;
+            for (std::size_t k = 0; k < 3; ++k) {
+                tri.mV[k] = ring[t[k]];
+                tri.mIntensity[k] = corner_i(ring[t[k]]);
             }
-        } else {
-            for (std::int64_t k = 1; k + 1 < n; ++k)
-                emit(0, k, k + 1);
+            tri.mColor = color;
+            tri.mId = f_ids[f];
+            scene.mTris.push_back(tri);
         }
     }
 
-    // Lines: the input's line cells, then the edge overlay.
+    // Lines: the input's line cells, then the edge overlays and extra layers.
     for (std::size_t i = 0; i < g.mLines.mIds.size(); ++i) {
         detail::RasterLine line;
         line.mA = g.mLines.mNodes[static_cast<std::size_t>(g.mLines.mStart[i])];
         line.mB = g.mLines.mNodes[static_cast<std::size_t>(g.mLines.mStart[i]) + 1];
-        line.mColor = coloring.Map(l_values[i], rOpt.mLineColor);
+        line.mColor = coloring.MapOther(l_values[i], rOpt.mLineColor);
         line.mId = g.mLines.mIds[i];
         scene.mLines.push_back(line);
     }
@@ -164131,10 +165120,72 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             if (e.IsCrease() || e.IsBoundary())
                 scene.mLines.push_back({e.mLo, e.mHi, rOpt.mEdgeColor, -1});
     }
+    if (rOpt.mDiagnostic == RenderDiagnostic::FreeEdges && num_faces > 0) {
+        const RndColor open_color = {235, 140, 0, 255};
+        const RndColor non_manifold_color = {220, 30, 30, 255};
+        const RndColor inconsistent_color = {200, 0, 200, 255};
+        std::size_t open_edges = 0, non_manifold = 0, inconsistent = 0;
+        for (const detail::CreaseEdge& e :
+             detail::crease_edges(f_start, f_nodes, f_normal, 180.0)) {
+            if (e.IsNonManifold()) {
+                scene.mLines.push_back({e.mLo, e.mHi, non_manifold_color, -1});
+                ++non_manifold;
+            } else if (e.IsBoundary()) {
+                scene.mLines.push_back({e.mLo, e.mHi, open_color, -1});
+                ++open_edges;
+            } else if (e.mInconsistent) {
+                scene.mLines.push_back({e.mLo, e.mHi, inconsistent_color, -1});
+                ++inconsistent;
+            }
+        }
+        keys.push_back(
+            "free edges: " + std::to_string(open_edges) + " open " + rnd_hex(open_color) + ", " +
+            std::to_string(non_manifold) + " non-manifold " + rnd_hex(non_manifold_color) + ", " +
+            std::to_string(inconsistent) + " inconsistent " + rnd_hex(inconsistent_color));
+    }
+    if (rOpt.mCategoryEdges) {
+        if (!categorical)
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "category edges need a categorical colouring "
+                                        "(categorical, color_regions or a flag diagnostic)");
+        struct Use {
+            std::int64_t mLo, mHi;
+            std::size_t mFace;
+            bool operator<(const Use& rO) const {
+                return mLo != rO.mLo ? mLo < rO.mLo
+                                     : (mHi != rO.mHi ? mHi < rO.mHi : mFace < rO.mFace);
+            }
+        };
+        std::vector<Use> uses;
+        for (std::size_t f = 0; f < num_faces; ++f) {
+            const std::int64_t lo = f_start[f];
+            const std::int64_t n = f_start[f + 1] - lo;
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
+                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
+                if (a != b)
+                    uses.push_back({std::min(a, b), std::max(a, b), f});
+            }
+        }
+        parallel_sort(uses.begin(), uses.end());
+        auto same = [&](double a, double b) {
+            return (std::isfinite(a) ? a : -1.0) == (std::isfinite(b) ? b : -1.0);
+        };
+        for (std::size_t i = 0; i < uses.size();) {
+            std::size_t j = i;
+            while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+                ++j;
+            if (j - i == 2 && !same(f_values[uses[i].mFace], f_values[uses[i + 1].mFace]))
+                scene.mLines.push_back({uses[i].mLo, uses[i].mHi, rOpt.mEdgeColor, -1});
+            i = j;
+        }
+    }
+    for (const Extra& e : extras)
+        scene.mLines.push_back({e.mA, e.mB, e.mColor, -1});
     for (std::size_t i = 0; i < g.mPoints.mIds.size(); ++i) {
         detail::RasterPoint point;
         point.mV = g.mPoints.mNodes[static_cast<std::size_t>(g.mPoints.mStart[i])];
-        point.mColor = coloring.Map(p_values[i], rOpt.mLineColor);
+        point.mColor = coloring.MapOther(p_values[i], rOpt.mLineColor);
         point.mId = g.mPoints.mIds[i];
         scene.mPoints.push_back(point);
     }
@@ -164151,15 +165202,32 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     const std::int64_t margin =
         std::max<std::int64_t>(1, static_cast<std::int64_t>(min_side * 0.03));
     std::int64_t bar_w = 0;
-    if (coloring.mActive) {
+    if (continuous) {
         frame.mColored = true;
         frame.mVMin = coloring.mVMin;
         frame.mVMax = coloring.mVMax;
-        std::string label = rOpt.mColorBy;
-        if (rOpt.mComponent.has_value())
-            label += "[" + std::to_string(*rOpt.mComponent) + "]";
-        frame.mNotes.push_back(label + ": " + rnd_num(coloring.mVMin) + " .. " +
-                               rnd_num(coloring.mVMax) + " (" + rOpt.mCmap + ")");
+        std::string text = label;
+        if (component.has_value() && rOpt.mReduce.empty())
+            text += "[" + std::to_string(*component) + "]";
+        text +=
+            ": " + rnd_num(coloring.mVMin) + " .. " + rnd_num(coloring.mVMax) + " (" + rOpt.mCmap;
+        if (rOpt.mScale == RenderScale::Log)
+            text += ", log";
+        else if (rOpt.mScale == RenderScale::Symlog)
+            text += ", symlog " + rnd_num(rOpt.mScaleThreshold);
+        text += ")";
+        frame.mNotes.push_back(text);
+        std::size_t non_finite = 0;
+        for (const std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+            for (double v : *p_list)
+                if (!std::isfinite(v) || (rOpt.mScale == RenderScale::Log && !(v > 0.0)))
+                    ++non_finite;
+        if (rOpt.mDiagnostic == RenderDiagnostic::EdgeLength)
+            non_finite -= std::min(non_finite, l_values.size() + p_values.size());
+        if (non_finite > 0)
+            frame.mNotes.push_back(
+                std::to_string(non_finite) + " drawn " + (non_finite == 1 ? "value" : "values") +
+                " with no finite value on this scale, in " + rnd_hex(rOpt.mNanColor));
     }
     if (colorbar) {
         bar_w = std::max<std::int64_t>(2, rOpt.mWidth / 40);
@@ -164168,13 +165236,39 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         const std::int64_t y0 = static_cast<std::int64_t>(rOpt.mHeight * 0.2);
         const std::int64_t y1 =
             std::max<std::int64_t>(y0 + 1, static_cast<std::int64_t>(rOpt.mHeight * 0.8));
+        const double s_lo =
+            detail::render_scale_forward(rOpt.mScale, rOpt.mScaleThreshold, coloring.mVMin);
+        const double s_hi =
+            detail::render_scale_forward(rOpt.mScale, rOpt.mScaleThreshold, coloring.mVMax);
         for (std::int64_t y = y0; y <= y1; ++y) {
             const double t = static_cast<double>(y1 - y) / static_cast<double>(y1 - y0);
-            const detail::Rgb c = detail::colormap_lookup(coloring.mpTable, t);
+            // The bar is linear in the scaled value, so its colour at height t is
+            // the colour of the scaled value s_lo + t * (s_hi - s_lo).
+            const detail::Rgb c = detail::colormap_lookup(
+                coloring.mpTable, std::isfinite(s_lo) && s_hi > s_lo ? t : 0.5);
             for (std::int64_t x = x0; x <= x1; ++x)
                 rnd_plot(frame, x, y, {c.mR, c.mG, c.mB, 255});
         }
+        // Ticks beside the bar, and the same values as a line of text.
+        const std::vector<double> ticks = detail::render_legend_ticks(
+            rOpt.mScale, rOpt.mScaleThreshold, coloring.mVMin, coloring.mVMax, 5);
+        std::string tick_text;
+        const RndColor tick_color = {110, 110, 110, 255};
+        for (double v : ticks) {
+            const double s = detail::render_scale_forward(rOpt.mScale, rOpt.mScaleThreshold, v);
+            if (!std::isfinite(s) || !(s_hi > s_lo))
+                continue;
+            const double t = (s - s_lo) / (s_hi - s_lo);
+            const double y = static_cast<double>(y1) - t * static_cast<double>(y1 - y0);
+            rnd_line(frame, static_cast<double>(x0 - 3), y, static_cast<double>(x0 - 1), y,
+                     tick_color);
+            tick_text += (tick_text.empty() ? "" : ", ") + rnd_num(v);
+        }
+        if (!tick_text.empty())
+            frame.mNotes.push_back("ticks: " + tick_text);
     }
+    for (const std::string& key : keys)
+        frame.mNotes.push_back(key);
     if (rOpt.mAxes) {
         const double len = std::max(4.0, min_side * 0.12);
         const double ox = static_cast<double>(margin) + len;
