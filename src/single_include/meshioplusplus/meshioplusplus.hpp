@@ -35517,8 +35517,16 @@ inline Face build_pyramid(const std::vector<Face>& rOriented, const P3& rP) {
     for (const auto& f : rOriented)
         for (std::int64_t v : f)
             all.insert(v);
+    // Five faces over five nodes are a pyramid only when one of them is the
+    // quadrilateral base and a fifth node is left over for the apex; a face list
+    // that is not (no quad, or every node on the quad) is skipped by the caller
+    // as an empty connectivity, never indexed.
+    if (quad.size() != 4)
+        return {};
     for (std::int64_t v : quad)
         all.erase(v);
+    if (all.empty())
+        return {};
     std::int64_t apex = *all.begin();
     Face n = {quad[0], quad[1], quad[2], quad[3], apex};
     if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
@@ -64766,6 +64774,26 @@ struct FluentCellZone {
     std::int64_t mZone, mFirst, mLast;
 };
 
+// The number of ids in [First, Last], 0 when it is empty. The bounds are
+// arbitrary 64-bit values from the file, so `Last - First + 1` overflows; the
+// span is taken in unsigned arithmetic and saturates, and the callers compare
+// it with what the file can hold.
+std::size_t fluent_id_span(std::int64_t First, std::int64_t Last) {
+    if (Last < First)
+        return 0;
+    const std::uint64_t span = static_cast<std::uint64_t>(Last) - static_cast<std::uint64_t>(First);
+    if (span >= std::numeric_limits<std::size_t>::max())
+        return std::numeric_limits<std::size_t>::max();
+    return static_cast<std::size_t>(span) + 1;
+}
+
+// `Id - Base` for ids read from the file, wrapping instead of overflowing; a
+// wrapped value lies outside every range the callers then check it against.
+std::int64_t fluent_offset(std::int64_t Id, std::int64_t Base) {
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(Id) -
+                                     static_cast<std::uint64_t>(Base));
+}
+
 // (nodes, c0, c1) rows of a face body.
 void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Count,
                       std::int64_t FaceType, std::int64_t Zone, std::int64_t Bc,
@@ -64775,7 +64803,10 @@ void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Coun
     for (std::size_t r = 0; r < Count; ++r) {
         const std::size_t n = k ? static_cast<std::size_t>(k)
                                 : (i < rValues.size() ? static_cast<std::size_t>(rValues[i++]) : 0);
-        if (i + n + 2 > rValues.size())
+        // `n` comes from the file (a negative count wraps to a huge size_t), so
+        // compare it with what is left rather than adding to `i`.
+        const std::size_t left = rValues.size() - i;
+        if (n > left || left - n < 2)
             throw ReadError("Fluent: face section shorter than its header");
         FluentFace f{Zone, Bc, rValues[i + n], rValues[i + n + 1], {}};
         f.mNodes.assign(rValues.begin() + static_cast<std::ptrdiff_t>(i),
@@ -64849,8 +64880,9 @@ Mesh read_ansys(const std::string& rPath) {
             if (head.size() < 4)
                 continue;
             const std::int64_t zone = head[0], first = head[1], last = head[2];
-            const std::size_t count =
-                static_cast<std::size_t>(std::max<std::int64_t>(0, last - first + 1));
+            const std::size_t count = fluent_id_span(first, last);
+            if (has_body && count > data.size())
+                throw ReadError("Fluent: a section declares more entries than the file holds");
             auto ints = [&](std::size_t n) {
                 std::vector<std::int64_t> v;
                 if (prefix == "20") {
@@ -64945,20 +64977,20 @@ Mesh read_ansys(const std::string& rPath) {
     // can exceed the file's size in bytes, which bounds the allocations and
     // the loops over the ranges below.
     const std::size_t bytes = detail::file_bytes(rPath);
-    const std::size_t npoints = detail::checked_count(top - base + 1, bytes, "Fluent", "node");
+    const std::size_t npoints =
+        detail::checked_count(fluent_id_span(base, top), bytes, "Fluent", "node");
     for (const auto& z : node_zones)
-        if (z.mLast < z.mFirst ||
-            static_cast<std::size_t>(z.mLast - z.mFirst + 1) * z.mDim > z.mPoints.size())
+        if (z.mLast < z.mFirst || fluent_id_span(z.mFirst, z.mLast) * z.mDim > z.mPoints.size())
             throw ReadError("Fluent: a node zone holds fewer coordinates than its id range");
     for (const auto& z : cell_zones)
-        detail::checked_count(z.mLast - z.mFirst + 1, bytes, "Fluent", "cell");
+        detail::checked_count(fluent_id_span(z.mFirst, z.mLast), bytes, "Fluent", "cell");
     NDArray pts(DType::Float64, {npoints, nd});
     double* pp = pts.As<double>();
     std::fill(pp, pp + npoints * nd, 0.0);
     for (const auto& z : node_zones)
-        for (std::size_t r = 0; r < static_cast<std::size_t>(z.mLast - z.mFirst + 1); ++r)
+        for (std::size_t r = 0; r < fluent_id_span(z.mFirst, z.mLast); ++r)
             for (std::size_t c = 0; c < z.mDim; ++c)
-                pp[(static_cast<std::size_t>(z.mFirst - base) + r) * nd + c] =
+                pp[(static_cast<std::size_t>(fluent_offset(z.mFirst, base)) + r) * nd + c] =
                     z.mPoints[r * z.mDim + c];
     face_cells::P3 p3(npoints, {0.0, 0.0, 0.0});
     for (std::size_t i = 0; i < npoints; ++i)
@@ -64975,7 +65007,7 @@ Mesh read_ansys(const std::string& rPath) {
             NDArray conn(DType::Int64, {rc.mRows, rc.mCols});
             std::int64_t* dp = conn.As<std::int64_t>();
             for (std::size_t k = 0; k < rc.mConn.size(); ++k)
-                dp[k] = rc.mConn[k] - base;
+                dp[k] = fluent_offset(rc.mConn[k], base);
             mesh.AddCellBlock(rc.mType, std::move(conn));
         }
         return mesh;
@@ -64985,8 +65017,8 @@ Mesh read_ansys(const std::string& rPath) {
 
     std::map<std::int64_t, std::int64_t> zone_of;  // cell id -> zone, ascending
     for (const auto& z : cell_zones)
-        for (std::int64_t c = z.mFirst; c <= z.mLast; ++c)
-            zone_of[c] = z.mZone;
+        for (std::size_t k = 0, n = fluent_id_span(z.mFirst, z.mLast); k < n; ++k)
+            zone_of[static_cast<std::int64_t>(static_cast<std::uint64_t>(z.mFirst) + k)] = z.mZone;
     if (cell_zones.empty())
         for (const auto& f : faces)
             for (std::int64_t c : {f.mC0, f.mC1})
@@ -64999,7 +65031,7 @@ Mesh read_ansys(const std::string& rPath) {
     for (const auto& f : faces) {
         face_cells::Face g(f.mNodes.size());
         for (std::size_t i = 0; i < g.size(); ++i) {
-            g[i] = f.mNodes[i] - base;
+            g[i] = fluent_offset(f.mNodes[i], base);
             if (g[i] < 0 || static_cast<std::size_t>(g[i]) >= npoints)
                 throw ReadError("Fluent: a face names a node outside the node zones");
         }
@@ -65083,7 +65115,7 @@ Mesh read_ansys(const std::string& rPath) {
             continue;
         face_cells::Face g(f.mNodes.size());
         for (std::size_t i = 0; i < g.size(); ++i) {
-            g[i] = f.mNodes[i] - base;
+            g[i] = fluent_offset(f.mNodes[i], base);
             if (g[i] < 0 || static_cast<std::size_t>(g[i]) >= npoints)
                 throw ReadError("Fluent: a face names a node outside the node zones");
         }
