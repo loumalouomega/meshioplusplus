@@ -413,12 +413,11 @@ SEXP R_mio_points(SEXP mesh) {
     int64_t dim = mio_mesh_point_dim(m);
 
     /* Rf_allocMatrix(REALSXP, dim, n) is column-major, i.e. byte-identical to
-     * the C API's row-major (n, dim). One memcpy, no transpose -- the same
-     * identity the Julia and Fortran bindings rely on. */
+     * the C API's row-major (n, dim). One copy straight into the result, no
+     * transpose -- the same identity the Julia and Fortran bindings rely on. */
     SEXP out = PROTECT(Rf_allocMatrix(REALSXP, (int)dim, (int)n));
-    SEXP flat = PROTECT(mio_r_copy_as_real(data, dt, (R_xlen_t)(n * dim)));
-    memcpy(REAL(out), REAL(flat), (size_t)(n * dim) * sizeof(double));
-    UNPROTECT(2);
+    mio_r_fill_real(REAL(out), data, dt, (R_xlen_t)(n * dim), 0.0);
+    UNPROTECT(1);
     return out;
 }
 
@@ -439,14 +438,10 @@ static SEXP conn_matrix(SEXP mesh, SEXP block, int shift) {
     mio_dtype dt;
     mio_r_check(mio_mesh_cell_block_conn(m, b, &conn, &dt), "cell_block_conn");
 
+    /* Convert and shift to 1-based in one pass over the one allocation. */
     SEXP out = PROTECT(Rf_allocMatrix(REALSXP, (int)npc, (int)nc));
-    SEXP flat = PROTECT(mio_r_copy_as_real(conn, dt, (R_xlen_t)(nc * npc)));
-    double *dst = REAL(out);
-    const double *src = REAL(flat);
-    for (R_xlen_t i = 0; i < (R_xlen_t)(nc * npc); ++i) {
-        dst[i] = src[i] + (shift ? 1.0 : 0.0);
-    }
-    UNPROTECT(2);
+    mio_r_fill_real(REAL(out), conn, dt, (R_xlen_t)(nc * npc), shift ? 1.0 : 0.0);
+    UNPROTECT(1);
     return out;
 }
 

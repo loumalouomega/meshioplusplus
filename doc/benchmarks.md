@@ -710,6 +710,24 @@ Wall time, Python 3.12, interleaved old and new in fresh interpreters, 15 each, 
 
 The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The command-line tool and the MCP server import the whole package for their option lists and tool tables, so they gain nothing. `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
+### VTP encodings for the browser viewer
+
+Roadmap §3.4.5.1. The viewer's worker writes every operation result as a zlib-compressed VTP and vtk.js parses it on the main thread. `benchmark/bench_vtp_inflate.py` writes a triangulated surface (a point scalar, a float64 cell vector and the int64 `surface:parent_cell`) in three encodings and times the writer and the base64 and inflate steps; `benchmark/vtp_inflate.js` times vtk.js 32.9.0's `XMLPolyDataReader` on the same files (`vtp_inflate.csv`, `vtp_inflate_vtkjs.csv`). Native SEQ build for the writer, Node 22 for vtk.js, minimum of five runs.
+
+| Cells | Encoding | File | Write | vtk.js parse | Write + parse |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 20 000 | zlib | 1.0 MB | 22.2 ms | 50.8 ms | 73.0 ms |
+| 20 000 | raw, 4-byte header | 2.1 MB | 2.0 ms | `RangeError` | |
+| 20 000 | raw, 8-byte header | 2.1 MB | | 55.6 ms | 57.6 ms |
+| 180 000 | zlib | 9.5 MB | 159.2 ms | 421.2 ms | 580.4 ms |
+| 180 000 | raw, 4-byte header | 19.2 MB | 30.1 ms | `RangeError` | |
+| 180 000 | raw, 8-byte header | 19.2 MB | | 529.7 ms | 559.8 ms |
+| 980 000 | zlib | 52.6 MB | 946.4 ms | 2575.9 ms | 3522.3 ms |
+| 980 000 | raw, 4-byte header | 104.6 MB | 150.6 ms | `RangeError` | |
+| 980 000 | raw, 8-byte header | 104.6 MB | | 3014.5 ms | 3165.1 ms |
+
+The 8-byte-header file has no native writer yet (`header_type` falls back to the Python reference writer), so its write column is empty and the last column pairs its parse with the native 4-byte-header write, which differs only in the header. Two results. First, vtk.js reads the uncompressed 8-byte-header file and rejects the 4-byte one (`start offset of Float64Array should be a multiple of 8`), as the roadmap predicted. Second, skipping the inflate does not speed up the parse: vtk.js is 10 to 26% slower on the uncompressed file, because the XML text and base64 decode double with the bytes and fflate's inflate is a small part of its time. What an uncompressed file saves is the producer-side compression, 3.5 to 21% of write plus parse here. The worker's `applyOps` (read, operations, write) was not measured, because there is no WASM toolchain in the development container, and an uncompressed result is twice the size to hold and transfer.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
