@@ -3876,17 +3876,51 @@ int cmd_screenshot(const std::vector<std::string>& rArgs) {
 /// `:` commands later): one vocabulary, parsed by one function.
 std::vector<cli_opt_spec> render_flag_specs() {
     return {
-        {"view", {}, true},        {"azimuth", {}, true},      {"elevation", {}, true},
-        {"roll", {}, true},        {"perspective", {}, false}, {"fov", {}, true},
-        {"zoom", {}, true},        {"pan-x", {}, true},        {"pan-y", {}, true},
-        {"shading", {}, true},     {"one-sided", {}, false},   {"ambient", {}, true},
-        {"split-angle", {}, true}, {"edges", {}, true},        {"feature-angle", {}, true},
-        {"edge-color", {}, true},  {"fill", {}, true},         {"line-color", {}, true},
-        {"background", {}, true},  {"point-radius", {}, true}, {"supersample", {}, true},
-        {"axes", {}, false},       {"scale-bar", {}, false},   {"color-by", {}, true},
-        {"component", {}, true},   {"cmap", {}, true},         {"vmin", {}, true},
-        {"vmax", {}, true},        {"nan-color", {}, true},    {"colorbar", {}, false},
+        {"view", {}, true},           {"azimuth", {}, true},        {"elevation", {}, true},
+        {"roll", {}, true},           {"perspective", {}, false},   {"fov", {}, true},
+        {"zoom", {}, true},           {"pan-x", {}, true},          {"pan-y", {}, true},
+        {"shading", {}, true},        {"one-sided", {}, false},     {"ambient", {}, true},
+        {"split-angle", {}, true},    {"edges", {}, true},          {"feature-angle", {}, true},
+        {"edge-color", {}, true},     {"fill", {}, true},           {"line-color", {}, true},
+        {"background", {}, true},     {"point-radius", {}, true},   {"supersample", {}, true},
+        {"axes", {}, false},          {"scale-bar", {}, false},     {"color-by", {}, true},
+        {"component", {}, true},      {"cmap", {}, true},           {"vmin", {}, true},
+        {"vmax", {}, true},           {"nan-color", {}, true},      {"colorbar", {}, false},
+        {"reduce", {}, true},         {"expr", {}, true},           {"clip", {}, true},
+        {"symmetric", {}, false},     {"scale", {}, true},          {"scale-threshold", {}, true},
+        {"categorical", {}, false},   {"color-regions", {}, false}, {"category-edges", {}, false},
+        {"isolines", {}, true},       {"iso-levels", {}, true},     {"iso-color", {}, true},
+        {"vectors", {}, true},        {"vector-count", {}, true},   {"vector-length", {}, true},
+        {"vector-color", {}, true},   {"warp", {}, true},           {"warp-scale", {}, true},
+        {"warp-outline", {}, false},  {"outline-color", {}, true},  {"diagnostic", {}, true},
+        {"quality-metric", {}, true},
     };
+}
+
+/// A comma-separated list of numbers; an empty entry is `nullopt` (so
+/// `--clip 2,` leaves the high end alone).
+std::vector<std::optional<double>> cli_parse_numbers(const std::string& rText, const char* pFlag) {
+    std::vector<std::optional<double>> out;
+    std::size_t at = 0;
+    while (true) {
+        const std::size_t comma = rText.find(',', at);
+        const std::string item = rText.substr(at, comma == std::string::npos ? comma : comma - at);
+        if (item.empty()) {
+            out.emplace_back(std::nullopt);
+        } else {
+            const char* end = nullptr;
+            const double v = meshioplusplus::detail::parse_double(item.c_str(), end);
+            if (end == item.c_str() || end != item.c_str() + item.size())
+                throw std::invalid_argument(std::string("--") + pFlag +
+                                            " expects numbers separated by commas, not '" + rText +
+                                            "'");
+            out.emplace_back(v);
+        }
+        if (comma == std::string::npos)
+            break;
+        at = comma + 1;
+    }
+    return out;
 }
 
 /// `#rrggbb`, `#rrggbbaa`, or `none`/`transparent` (alpha 0).
@@ -3977,13 +4011,95 @@ meshioplusplus::RenderOptions cli_render_options(const cli_parsed& rP) {
         o.mSupersample = std::stoi(opt_value(rP, "supersample"));
     o.mAxes = has_flag(rP, "axes");
     o.mScaleBar = has_flag(rP, "scale-bar");
+    // Field rendering. A mapped field comes from an array, an expression, or
+    // a diagnostic that computes one; only then do the range flags apply.
+    o.mReduce = opt_value(rP, "reduce");
+    o.mExpr = opt_value(rP, "expr");
+    if (has_opt(rP, "clip")) {
+        const auto clip = cli_parse_numbers(opt_value(rP, "clip"), "clip");
+        if (clip.size() != 2)
+            throw std::invalid_argument(
+                "--clip expects LOW,HIGH percentiles (either may be empty)");
+        o.mClipLow = clip[0];
+        o.mClipHigh = clip[1];
+    }
+    o.mSymmetric = has_flag(rP, "symmetric");
+    const std::string scale = opt_value(rP, "scale", "linear");
+    if (scale == "linear")
+        o.mScale = meshioplusplus::RenderScale::Linear;
+    else if (scale == "log")
+        o.mScale = meshioplusplus::RenderScale::Log;
+    else if (scale == "symlog")
+        o.mScale = meshioplusplus::RenderScale::Symlog;
+    else
+        throw std::invalid_argument("--scale expects linear, log or symlog, not '" + scale + "'");
+    if (has_opt(rP, "scale-threshold"))
+        o.mScaleThreshold = stod_c(opt_value(rP, "scale-threshold"));
+    o.mCategorical = has_flag(rP, "categorical");
+    o.mColorRegions = has_flag(rP, "color-regions");
+    o.mCategoryEdges = has_flag(rP, "category-edges");
+    if (has_opt(rP, "isolines"))
+        o.mIsolines = std::stoi(opt_value(rP, "isolines"));
+    if (has_opt(rP, "iso-levels"))
+        for (const auto& level : cli_parse_numbers(opt_value(rP, "iso-levels"), "iso-levels")) {
+            if (!level.has_value())
+                throw std::invalid_argument("--iso-levels expects numbers separated by commas");
+            o.mIsoLevels.push_back(*level);
+        }
+    if (has_opt(rP, "iso-color"))
+        o.mIsoColor = cli_parse_rgba(opt_value(rP, "iso-color"), "iso-color");
+    o.mVectors = opt_value(rP, "vectors");
+    if (has_opt(rP, "vector-count"))
+        o.mVectorCount = std::stoi(opt_value(rP, "vector-count"));
+    if (has_opt(rP, "vector-length"))
+        o.mVectorLength = stod_c(opt_value(rP, "vector-length"));
+    if (has_opt(rP, "vector-color"))
+        o.mVectorColor = cli_parse_rgba(opt_value(rP, "vector-color"), "vector-color");
+    o.mWarp = opt_value(rP, "warp");
+    if (has_opt(rP, "warp-scale"))
+        o.mWarpScale = stod_c(opt_value(rP, "warp-scale"));
+    o.mWarpOutline = has_flag(rP, "warp-outline");
+    if (has_opt(rP, "outline-color"))
+        o.mOutlineColor = cli_parse_rgba(opt_value(rP, "outline-color"), "outline-color");
+    const std::string diagnostic = opt_value(rP, "diagnostic", "none");
+    using meshioplusplus::RenderDiagnostic;
+    static const std::pair<const char*, RenderDiagnostic> diagnostics[] = {
+        {"none", RenderDiagnostic::None},
+        {"quality", RenderDiagnostic::Quality},
+        {"inverted", RenderDiagnostic::Inverted},
+        {"degenerate", RenderDiagnostic::Degenerate},
+        {"orientation", RenderDiagnostic::Orientation},
+        {"free-edges", RenderDiagnostic::FreeEdges},
+        {"edge-length", RenderDiagnostic::EdgeLength}};
+    bool known_diagnostic = false;
+    for (const auto& d : diagnostics)
+        if (diagnostic == d.first) {
+            o.mDiagnostic = d.second;
+            known_diagnostic = true;
+        }
+    if (!known_diagnostic)
+        throw std::invalid_argument(
+            "--diagnostic expects none, quality, inverted, degenerate, orientation, "
+            "free-edges or edge-length, not '" +
+            diagnostic + "'");
+    o.mQualityMetric = opt_value(rP, "quality-metric");
+    if (has_opt(rP, "quality-metric") && o.mDiagnostic != RenderDiagnostic::Quality)
+        throw std::runtime_error("--quality-metric requires --diagnostic quality");
+
     const bool color = has_opt(rP, "color-by");
-    if (!color) {
-        for (const char* flag : {"component", "cmap", "vmin", "vmax", "nan-color"})
+    const bool mapped = color || !o.mExpr.empty() || o.mDiagnostic == RenderDiagnostic::Quality ||
+                        o.mDiagnostic == RenderDiagnostic::EdgeLength;
+    if (!mapped) {
+        for (const char* flag :
+             {"component", "cmap", "vmin", "vmax", "nan-color", "clip", "scale", "scale-threshold"})
             if (has_opt(rP, flag))
-                throw std::runtime_error(std::string("--") + flag + " requires --color-by");
-        if (has_flag(rP, "colorbar"))
-            throw std::runtime_error("--colorbar requires --color-by");
+                throw std::runtime_error(
+                    std::string("--") + flag +
+                    " requires --color-by, --expr or a quality or edge-length diagnostic");
+        if (has_flag(rP, "colorbar") || has_flag(rP, "symmetric"))
+            throw std::runtime_error(
+                "--colorbar and --symmetric require --color-by, --expr or a quality or "
+                "edge-length diagnostic");
     } else {
         o.mColorBy = opt_value(rP, "color-by");
         cli_color_values(rP, o.mComponent, o.mVMin, o.mVMax);

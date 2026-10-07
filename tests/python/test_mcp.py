@@ -1302,7 +1302,9 @@ def test_feature_edges_and_hausdorff(tmp_path):
 def test_render_mesh_tool(tmp_path):
     pytest.importorskip("meshioplusplus._core")
     src = str(tmp_path / "cube.vtu")
-    meshioplusplus.write(src, _unit_cube_quads())
+    cube = _unit_cube_quads()
+    cube.point_data["x"] = cube.points[:, 0].copy()
+    meshioplusplus.write(src, cube)
     text = _dump(_tools.tool_render_mesh(src, cols=24, rows=8))
     assert (text["cols"], text["rows"]) == (24, 8)
     assert len(text["text"].splitlines()) == 8
@@ -1316,6 +1318,25 @@ def test_render_mesh_tool(tmp_path):
     assert open(png["output_path"], "rb").read()[:8] == b"\x89PNG\r\n\x1a\n"
     with pytest.raises(ValueError, match="text_format"):
         _tools.tool_render_mesh(src, text_format="svg")
+    # Field rendering: the notes under the text carry the range, ticks and keys.
+    field = _dump(
+        _tools.tool_render_mesh(
+            src,
+            cols=24,
+            rows=8,
+            color_by="x",
+            colorbar=True,
+            symmetric=True,
+            clip=[5, 95],
+        )
+    )
+    assert "x: -" in field["text"] and "ticks:" in field["text"]
+    diag = _dump(
+        _tools.tool_render_mesh(src, cols=24, rows=8, diagnostic="orientation")
+    )
+    assert "orientation:" in diag["text"]
+    with pytest.raises(ValueError, match="diagnostic must be"):
+        _tools.tool_render_mesh(src, diagnostic="plastic")
     with pytest.raises(ValueError, match="expected .png"):
         _tools.tool_render_mesh(src, str(tmp_path / "c.vtu"))
 

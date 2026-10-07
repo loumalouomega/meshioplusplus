@@ -273,3 +273,168 @@ def test_cli_rejects_modifiers_without_color_by(tmp_path):
     mio.write(infile, _cube())
     with pytest.raises(SystemExit, match="--cmap requires --color-by"):
         _python_cli(["snapshot", str(infile), "-", "--cmap", "turbo"])
+
+
+# --- field rendering (v16.34.0) ------------------------------------------------
+
+
+def _grid(n=4):
+    """An n x n grid of quads in z = 0 with point arrays x, y, v (a vector) and
+    cell arrays id and mat, and a cell region for each half."""
+    xs, ys = np.meshgrid(np.linspace(0, 1, n + 1), np.linspace(0, 1, n + 1))
+    pts = np.stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)], axis=1)
+    quads = []
+    for j in range(n):
+        for i in range(n):
+            p = j * (n + 1) + i
+            quads.append([p, p + 1, p + n + 2, p + n + 1])
+    mesh = mio.Mesh(pts, [("quad", np.array(quads))])
+    mesh.point_data["x"] = pts[:, 0].copy()
+    mesh.point_data["v"] = np.tile([0.0, 1.0, 0.0], (len(pts), 1))
+    mesh.point_data["u"] = np.tile([0.0, 0.0, 0.25], (len(pts), 1))
+    mesh.cell_data["mat"] = [np.arange(len(quads), dtype=float) % 2]
+    return mesh
+
+
+def _count(image, color):
+    return int((image == np.array(color, dtype=np.uint8)).all(axis=-1).sum())
+
+
+def test_clip_symmetric_and_log_report_what_they_did():
+    mesh = _grid()
+    _, plain = mio.render_image(mesh, 40, 40, color_by="x", return_info=True, view="+z")
+    _, clipped = mio.render_image(
+        mesh, 40, 40, color_by="x", clip=(30, 70), return_info=True, view="+z"
+    )
+    assert plain["vmin"] < clipped["vmin"] < clipped["vmax"] < plain["vmax"]
+    _, sym = mio.render_image(
+        mesh, 40, 40, color_by="x", symmetric=True, return_info=True, view="+z"
+    )
+    assert sym["vmin"] == -sym["vmax"]
+    _, logged = mio.render_image(
+        mesh, 40, 40, color_by="mat", scale="log", return_info=True, view="+z"
+    )
+    assert any("log" in n for n in logged["notes"])
+    with pytest.raises(ValueError, match="percentiles"):
+        mio.render_image(mesh, color_by="x", clip=(90, 10))
+    with pytest.raises(ValueError, match="scale must be"):
+        mio.render_image(mesh, color_by="x", scale="sqrt")
+
+
+def test_isolines_vectors_and_warp_draw_in_their_colors():
+    mesh = _grid(8)
+    img = mio.render_image(
+        mesh,
+        80,
+        80,
+        color_by="x",
+        isolines=3,
+        iso_color=(255, 0, 255),
+        cmap="grey",
+        shading="none",
+        view="+z",
+    )
+    assert _count(img, (255, 0, 255, 255)) > 80
+    with pytest.raises(ValueError, match="point"):
+        mio.render_image(mesh, color_by="mat", isolines=2)
+    arrows = mio.render_image(
+        mesh, 100, 100, vectors="v", vector_count=9, vector_color=(255, 0, 0), view="+z"
+    )
+    assert _count(arrows, (255, 0, 0, 255)) > 30
+    warped = mio.render_image(
+        mesh, 60, 60, warp="u", warp_outline=True, outline_color=(0, 255, 0), view="+x"
+    )
+    assert _count(warped, (0, 255, 0, 255)) > 0
+    with pytest.raises(ValueError, match="warp array 'nope'"):
+        mio.render_image(mesh, warp="nope")
+
+
+def test_categories_regions_and_diagnostics_carry_keys():
+    mesh = _grid()
+    mesh.regions = []
+    _, info = mio.render_image(
+        mesh, 40, 40, color_by="mat", categorical=True, return_info=True, view="+z"
+    )
+    assert any(n.startswith("mat = 0: #0072b2") for n in info["notes"])
+    _, orient = mio.render_image(
+        mesh, 40, 40, diagnostic="orientation", return_info=True, view="+z"
+    )
+    assert any(n.startswith("orientation:") for n in orient["notes"])
+    _, qual = mio.render_image(
+        mesh,
+        40,
+        40,
+        diagnostic="quality",
+        quality_metric="scaled_jacobian",
+        return_info=True,
+    )
+    assert qual["colored"] is True
+    with pytest.raises(ValueError, match="diagnostic must be"):
+        mio.render_image(mesh, diagnostic="plastic")
+    with pytest.raises(ValueError, match="excludes"):
+        mio.render_image(mesh, diagnostic="orientation", color_by="x")
+
+
+def test_expr_and_reduce_colour_like_arrays():
+    mesh = _grid()
+    _, doubled = mio.render_image(
+        mesh, 30, 30, expr="x * 2", return_info=True, view="+z"
+    )
+    _, plain = mio.render_image(mesh, 30, 30, color_by="x", return_info=True, view="+z")
+    assert doubled["vmax"] == pytest.approx(2 * plain["vmax"])
+    assert doubled["notes"][0].startswith("x * 2:")
+    mesh.point_data["stress"] = np.tile([5.0, 0, 0, 0, 0, 0], (len(mesh.points), 1))
+    _, mises = mio.render_image(
+        mesh, 30, 30, color_by="stress", reduce="mises", return_info=True, view="+z"
+    )
+    assert mises["vmax"] == pytest.approx(5.0)
+    with pytest.raises(ValueError, match="either color_by or expr"):
+        mio.render_image(mesh, color_by="x", expr="x * 2")
+    with pytest.raises(ValueError, match="reduce must be"):
+        mio.render_image(mesh, color_by="stress", reduce="trace")
+
+
+def test_field_flags_match_between_the_two_clis(tmp_path):
+    if NATIVE is None:
+        pytest.skip("no native CLI build found")
+    infile = tmp_path / "in.vtu"
+    mio.write(infile, _grid(6))
+    flags = [
+        "--color-by",
+        "x",
+        "--clip",
+        "5,95",
+        "--symmetric",
+        "--colorbar",
+        "--isolines",
+        "2",
+        "--vectors",
+        "v",
+        "--vector-count",
+        "9",
+        "--warp",
+        "u",
+        "--warp-outline",
+        "--view",
+        "+z",
+        "--width",
+        "64",
+        "--height",
+        "48",
+    ]
+    py_out = tmp_path / "py.png"
+    native_out = tmp_path / "native.png"
+    assert _python_cli(["snapshot", str(infile), str(py_out), *flags]) == 0
+    r = subprocess.run(
+        [NATIVE, "snapshot", str(infile), str(native_out), *flags],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert py_out.read_bytes() == native_out.read_bytes()
+    r = subprocess.run(
+        [NATIVE, "snapshot", str(infile), "-", "--clip", "5,95"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0 and "requires --color-by" in r.stderr

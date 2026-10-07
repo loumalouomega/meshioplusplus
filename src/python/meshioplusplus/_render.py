@@ -46,6 +46,40 @@ Every function takes the render options as keyword arguments:
     colour by a point or cell data array, as the SVG writer does.
 ``axes``, ``scale_bar``
     draw the world axes and a scale bar in the corners.
+
+Field rendering (v16.34.0):
+
+``expr``, ``reduce``
+    colour by a ``data_calc`` expression (``"mag(u) / max(p)"``; operands are
+    point data, then cell data), or by a tensor invariant of the ``color_by``
+    array: ``"mises"``, ``"hydrostatic"`` or ``"principal"`` (with
+    ``component`` 0, 1, 2 the smallest, middle and largest; the largest by
+    default).
+``clip``, ``symmetric``, ``scale``, ``scale_threshold``
+    the range: ``clip=(2, 98)`` percentiles of the drawn values (``None`` for
+    either end), a range symmetric about zero, and ``scale`` of ``"linear"``,
+    ``"log"`` or ``"symlog"`` (linear within ``scale_threshold`` of zero).
+``colorbar``
+    a bar with tick marks, the tick values and the range in the notes.
+``categorical``, ``color_regions``, ``category_edges``
+    colour integer data (a material id) or the named cell regions from a
+    fixed qualitative palette, with a key in the notes (an empty region
+    included), and draw the edges where two faces differ.
+``isolines``, ``iso_levels``, ``iso_color``
+    contour lines of the point array ``color_by``: that many equally spaced
+    levels inside the range, or explicit levels.
+``vectors``, ``vector_count``, ``vector_length``, ``vector_color``
+    arrows for a vector point array at about ``vector_count`` evenly ranked
+    drawn points; the longest is 6% of the model's diagonal unless
+    ``vector_length`` gives one length in model units.
+``warp``, ``warp_scale``, ``warp_outline``, ``outline_color``
+    move the points by a displacement point array, optionally drawing the
+    undeformed outline.
+``diagnostic``, ``quality_metric``
+    ``"quality"`` (with a ``quality_metric`` such as ``"scaled_jacobian"``),
+    ``"inverted"``, ``"degenerate"``, ``"orientation"`` (front and back faces),
+    ``"free_edges"`` (open, non-manifold and inconsistent edges) or
+    ``"edge_length"``.
 """
 
 from __future__ import annotations
@@ -105,8 +139,12 @@ def _render_dict(options):
             continue
         if key in ("edge_color", "fill_color", "line_color", "background", "nan_color"):
             value = [int(c) for c in value]
-        elif key in ("pan", "light_dir"):
+        elif key in ("iso_color", "vector_color", "outline_color"):
+            value = [int(c) for c in value]
+        elif key in ("pan", "light_dir", "iso_levels"):
             value = [float(c) for c in value]
+        elif key == "clip":
+            value = [None if c is None else float(c) for c in value]
         out[key] = value
     return out
 
