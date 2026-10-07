@@ -132,8 +132,16 @@ inline Face build_pyramid(const std::vector<Face>& rOriented, const P3& rP) {
     for (const auto& f : rOriented)
         for (std::int64_t v : f)
             all.insert(v);
+    // Five faces over five nodes are a pyramid only when one of them is the
+    // quadrilateral base and a fifth node is left over for the apex; a face list
+    // that is not (no quad, or every node on the quad) is skipped by the caller
+    // as an empty connectivity, never indexed.
+    if (quad.size() != 4)
+        return {};
     for (std::int64_t v : quad)
         all.erase(v);
+    if (all.empty())
+        return {};
     std::int64_t apex = *all.begin();
     Face n = {quad[0], quad[1], quad[2], quad[3], apex};
     if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
