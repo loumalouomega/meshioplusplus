@@ -98,6 +98,7 @@
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -793,6 +794,33 @@ int main(int argc, char** argv) {
         // Rows for roadmap §5's analysis operations (v16.23.0).
         row("feature_edges",
             [&](MeshDigest* pD) { of(pD, mio::feature_edges(volume).mMesh); });
+        // Rows for roadmap §7's software rasterizer (v16.33.0): a terminal-sized
+        // frame of the volume (its skin extraction is part of the cost), and a
+        // 4x-supersampled image of the field mesh with smooth shading, a mapped
+        // field and every edge. The digest covers the pixels and the id buffer,
+        // so the determinism check holds the raster to its contract.
+        const auto frame_of = [](MeshDigest* pD, const mio::Frame& rF) {
+            if (!pD)
+                return;
+            pD->Bytes(rF.mRgba.data(), rF.mRgba.size());
+            pD->Bytes(rF.mCellIds.data(), rF.mCellIds.size() * sizeof(std::int64_t));
+        };
+        row("render_frame_160x96", [&](MeshDigest* pD) {
+            mio::RenderOptions o;
+            o.mWidth = 160;
+            o.mHeight = 96;
+            frame_of(pD, mio::render(volume, o));
+        });
+        row("render_ss4_800x480", [&](MeshDigest* pD) {
+            mio::RenderOptions o;
+            o.mWidth = 800;
+            o.mHeight = 480;
+            o.mSupersample = 4;
+            o.mShading = mio::RenderShading::Smooth;
+            o.mEdges = mio::RenderEdges::All;
+            o.mColorBy = "u";
+            frame_of(pD, mio::render(with_field, o));
+        });
         row("hausdorff", [&](MeshDigest* pD) {
             mio::HausdorffOptions o;
             o.mFaceSamples = 2;
