@@ -58,6 +58,7 @@
 #include "meshioplusplus/write_options.hpp"
 
 #include "polyscope_view.hpp"
+#include "terminal.hpp"
 #include "view_payload.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/partition.hpp"
@@ -108,6 +109,8 @@
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -330,6 +333,18 @@ void write_pcd_in_place(const std::string& rPath, const Mesh& rMesh, meshioplusp
 
 /// The formats `--color-by` applies to. Everything else errors rather than
 /// silently ignoring the flags.
+/// The numeric half of the `--color-by` family (`--component`, `--vmin`,
+/// `--vmax`), shared by `convert` and `snapshot` so both read them alike.
+void cli_color_values(const cli_parsed& rP, std::optional<int>& rComponent,
+                      std::optional<double>& rVMin, std::optional<double>& rVMax) {
+    if (has_opt(rP, "component"))
+        rComponent = std::stoi(opt_value(rP, "component"));
+    if (has_opt(rP, "vmin"))
+        rVMin = meshioplusplus::detail::stod_c(opt_value(rP, "vmin"));
+    if (has_opt(rP, "vmax"))
+        rVMax = meshioplusplus::detail::stod_c(opt_value(rP, "vmax"));
+}
+
 bool cli_is_colorable_format(const std::string& rFormat) {
     return rFormat == "svg" || rFormat == "tikz" || rFormat == "gltf";
 }
@@ -543,6 +558,10 @@ void print_usage(std::ostream& os) {
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  view                    Open a mesh in an interactive viewer\n"
           "  screenshot              Render a mesh to a PNG without a window\n"
+          "  snapshot                Draw a mesh in this terminal (OUT = -) or to a\n"
+          "                            .png/.txt/.ansi/.html/.cast file, with no display\n"
+          "                            or GPU (--encoding --color-depth --view --edges\n"
+          "                            --shading --color-by ...; see doc/tui.md)\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n"
           "  pipeline                Run a settings.json operation chain (read -> ops ->\n"
           "                          write; see doc/pipeline.md). --input/--output\n"
@@ -936,14 +955,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     std::optional<int> component;
     std::optional<double> vmin;
     std::optional<double> vmax;
-    if (color) {
-        if (has_opt(p, "component"))
-            component = std::stoi(opt_value(p, "component"));
-        if (has_opt(p, "vmin"))
-            vmin = meshioplusplus::detail::stod_c(opt_value(p, "vmin"));
-        if (has_opt(p, "vmax"))
-            vmax = meshioplusplus::detail::stod_c(opt_value(p, "vmax"));
-    }
+    if (color)
+        cli_color_values(p, component, vmin, vmax);
     const std::string cmap = has_opt(p, "cmap") ? opt_value(p, "cmap") : "viridis";
 
     if (target_fmt == "gltf" && (color || gltf_flags)) {
@@ -3831,10 +3844,287 @@ int cmd_screenshot(const std::vector<std::string>& rArgs) {
     }
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    if (!meshioplusplus::cli::has_polyscope()) {
+        // No window system in this build: the software rasterizer draws the
+        // PNG instead (what `snapshot` does), rather than failing.
+        meshioplusplus::RenderOptions render;
+        render.mWidth = width;
+        render.mHeight = height;
+        render.mSupersample = 2;
+        render.mColorBy = opt_value(p, "color-by");
+        render.mBackground = has_flag(p, "transparent")
+                                 ? meshioplusplus::RenderColor{0, 0, 0, 0}
+                                 : meshioplusplus::RenderColor{255, 255, 255, 255};
+        meshioplusplus::log::info(
+            "screenshot: no Polyscope in this build; drawing with the software "
+            "rasterizer (see `snapshot` for its options)");
+        meshioplusplus::write_snapshot(p.positionals[1], mesh, render);
+        return 0;
+    }
     meshioplusplus::cli::screenshot_mesh(
         mesh, meshioplusplus::cli::view_kind_from_name(opt_value(p, "kind", "auto")),
         opt_value(p, "color-by"), opt_value(p, "name", "mesh"), p.positionals[1], width, height,
         has_flag(p, "transparent"));
+    return 0;
+}
+
+// --------------------------------------------------------------------------
+// snapshot: the software rasterizer (operations/render.hpp)
+// --------------------------------------------------------------------------
+
+/// The flags every software-rendering verb shares (snapshot now, the TUI's
+/// `:` commands later): one vocabulary, parsed by one function.
+std::vector<cli_opt_spec> render_flag_specs() {
+    return {
+        {"view", {}, true},        {"azimuth", {}, true},      {"elevation", {}, true},
+        {"roll", {}, true},        {"perspective", {}, false}, {"fov", {}, true},
+        {"zoom", {}, true},        {"pan-x", {}, true},        {"pan-y", {}, true},
+        {"shading", {}, true},     {"one-sided", {}, false},   {"ambient", {}, true},
+        {"split-angle", {}, true}, {"edges", {}, true},        {"feature-angle", {}, true},
+        {"edge-color", {}, true},  {"fill", {}, true},         {"line-color", {}, true},
+        {"background", {}, true},  {"point-radius", {}, true}, {"supersample", {}, true},
+        {"axes", {}, false},       {"scale-bar", {}, false},   {"color-by", {}, true},
+        {"component", {}, true},   {"cmap", {}, true},         {"vmin", {}, true},
+        {"vmax", {}, true},        {"nan-color", {}, true},    {"colorbar", {}, false},
+    };
+}
+
+/// `#rrggbb`, `#rrggbbaa`, or `none`/`transparent` (alpha 0).
+meshioplusplus::RenderColor cli_parse_rgba(const std::string& rText, const char* pFlag) {
+    if (rText == "none" || rText == "transparent")
+        return {0, 0, 0, 0};
+    auto hex = [&](std::size_t At) {
+        int v = 0;
+        for (std::size_t k = At; k < At + 2; ++k) {
+            const char c = rText[k];
+            v = v * 16 + (c >= '0' && c <= '9'   ? c - '0'
+                          : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                          : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                 : -1000);
+        }
+        if (v < 0)
+            throw std::invalid_argument(std::string("--") + pFlag +
+                                        " expects #rrggbb, #rrggbbaa or none, not '" + rText + "'");
+        return static_cast<std::uint8_t>(v);
+    };
+    if ((rText.size() != 7 && rText.size() != 9) || rText[0] != '#')
+        throw std::invalid_argument(std::string("--") + pFlag +
+                                    " expects #rrggbb, #rrggbbaa or none, not '" + rText + "'");
+    return {hex(1), hex(3), hex(5), rText.size() == 9 ? hex(7) : static_cast<std::uint8_t>(255)};
+}
+
+meshioplusplus::RenderOptions cli_render_options(const cli_parsed& rP) {
+    using meshioplusplus::detail::stod_c;
+    meshioplusplus::RenderOptions o;
+    o.mView = opt_value(rP, "view");
+    if (has_opt(rP, "azimuth"))
+        o.mAzimuth = stod_c(opt_value(rP, "azimuth"));
+    if (has_opt(rP, "elevation"))
+        o.mElevation = stod_c(opt_value(rP, "elevation"));
+    if (has_opt(rP, "roll"))
+        o.mRoll = stod_c(opt_value(rP, "roll"));
+    if (!o.mView.empty() && (has_opt(rP, "azimuth") || has_opt(rP, "elevation")))
+        throw std::invalid_argument("--view and --azimuth/--elevation are mutually exclusive");
+    if (has_flag(rP, "perspective"))
+        o.mProjection = meshioplusplus::RenderProjection::Perspective;
+    else if (has_opt(rP, "fov"))
+        throw std::invalid_argument("--fov requires --perspective");
+    if (has_opt(rP, "fov"))
+        o.mFovDeg = stod_c(opt_value(rP, "fov"));
+    if (has_opt(rP, "zoom"))
+        o.mZoom = stod_c(opt_value(rP, "zoom"));
+    if (has_opt(rP, "pan-x"))
+        o.mPanX = stod_c(opt_value(rP, "pan-x"));
+    if (has_opt(rP, "pan-y"))
+        o.mPanY = stod_c(opt_value(rP, "pan-y"));
+    const std::string shading = opt_value(rP, "shading", "flat");
+    if (shading == "none")
+        o.mShading = meshioplusplus::RenderShading::None;
+    else if (shading == "flat")
+        o.mShading = meshioplusplus::RenderShading::Flat;
+    else if (shading == "smooth")
+        o.mShading = meshioplusplus::RenderShading::Smooth;
+    else
+        throw std::invalid_argument("--shading expects none, flat or smooth, not '" + shading +
+                                    "'");
+    o.mTwoSided = !has_flag(rP, "one-sided");
+    if (has_opt(rP, "ambient"))
+        o.mAmbient = stod_c(opt_value(rP, "ambient"));
+    if (has_opt(rP, "split-angle"))
+        o.mSplitAngle = stod_c(opt_value(rP, "split-angle"));
+    const std::string edges = opt_value(rP, "edges", "none");
+    if (edges == "none")
+        o.mEdges = meshioplusplus::RenderEdges::None;
+    else if (edges == "all")
+        o.mEdges = meshioplusplus::RenderEdges::All;
+    else if (edges == "feature")
+        o.mEdges = meshioplusplus::RenderEdges::Feature;
+    else
+        throw std::invalid_argument("--edges expects none, all or feature, not '" + edges + "'");
+    if (has_opt(rP, "feature-angle"))
+        o.mFeatureAngle = stod_c(opt_value(rP, "feature-angle"));
+    if (has_opt(rP, "edge-color"))
+        o.mEdgeColor = cli_parse_rgba(opt_value(rP, "edge-color"), "edge-color");
+    if (has_opt(rP, "fill"))
+        o.mFillColor = cli_parse_rgba(opt_value(rP, "fill"), "fill");
+    if (has_opt(rP, "line-color"))
+        o.mLineColor = cli_parse_rgba(opt_value(rP, "line-color"), "line-color");
+    if (has_opt(rP, "background"))
+        o.mBackground = cli_parse_rgba(opt_value(rP, "background"), "background");
+    if (has_opt(rP, "point-radius"))
+        o.mPointRadius = stod_c(opt_value(rP, "point-radius"));
+    if (has_opt(rP, "supersample"))
+        o.mSupersample = std::stoi(opt_value(rP, "supersample"));
+    o.mAxes = has_flag(rP, "axes");
+    o.mScaleBar = has_flag(rP, "scale-bar");
+    const bool color = has_opt(rP, "color-by");
+    if (!color) {
+        for (const char* flag : {"component", "cmap", "vmin", "vmax", "nan-color"})
+            if (has_opt(rP, flag))
+                throw std::runtime_error(std::string("--") + flag + " requires --color-by");
+        if (has_flag(rP, "colorbar"))
+            throw std::runtime_error("--colorbar requires --color-by");
+    } else {
+        o.mColorBy = opt_value(rP, "color-by");
+        cli_color_values(rP, o.mComponent, o.mVMin, o.mVMax);
+        o.mCmap = opt_value(rP, "cmap", "viridis");
+        if (has_opt(rP, "nan-color"))
+            o.mNanColor = cli_parse_rgba(opt_value(rP, "nan-color"), "nan-color");
+        o.mColorbar = has_flag(rP, "colorbar");
+    }
+    return o;
+}
+
+meshioplusplus::TextEncoding cli_text_encoding(const std::string& rName) {
+    using meshioplusplus::TextEncoding;
+    if (rName == "halfblock")
+        return TextEncoding::HalfBlock;
+    if (rName == "quadrant")
+        return TextEncoding::Quadrant;
+    if (rName == "sextant")
+        return TextEncoding::Sextant;
+    if (rName == "braille")
+        return TextEncoding::Braille;
+    if (rName == "ascii")
+        return TextEncoding::Ascii;
+    if (rName == "kitty")
+        return TextEncoding::Kitty;
+    if (rName == "iterm2")
+        return TextEncoding::ITerm2;
+    if (rName == "sixel")
+        return TextEncoding::Sixel;
+    throw std::invalid_argument(
+        "--encoding expects halfblock, quadrant, sextant, braille, ascii, kitty, "
+        "iterm2 or sixel, not '" +
+        rName + "'");
+}
+
+meshioplusplus::ColorDepth cli_color_depth(const std::string& rName) {
+    using meshioplusplus::ColorDepth;
+    if (rName == "auto")
+        return meshioplusplus::cli::environment_color_depth();
+    if (rName == "truecolor" || rName == "24bit")
+        return ColorDepth::TrueColor;
+    if (rName == "256")
+        return ColorDepth::Palette256;
+    if (rName == "16")
+        return ColorDepth::Ansi16;
+    if (rName == "mono")
+        return ColorDepth::Mono;
+    throw std::invalid_argument("--color-depth expects auto, truecolor, 256, 16 or mono, not '" +
+                                rName + "'");
+}
+
+int cmd_snapshot(const std::vector<std::string>& rArgs) {
+    std::vector<cli_opt_spec> specs = render_flag_specs();
+    for (cli_opt_spec spec : std::vector<cli_opt_spec>{
+             {"input-format", {"-i"}, true},
+             {"width", {}, true},
+             {"height", {}, true},
+             {"cols", {}, true},
+             {"rows", {}, true},
+             {"encoding", {}, true},
+             {"color-depth", {}, true},
+             {"cell-aspect", {}, true},
+             {"tmux", {}, false},
+             {"no-notes", {}, false},
+             {"png-compress", {}, true},
+             {"cast-frames", {}, true},
+             {"cast-fps", {}, true},
+             {"cast-degrees", {}, true},
+         })
+        specs.push_back(spec);
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error(
+            "snapshot requires exactly INFILE and OUTFILE (- for this terminal)");
+    const std::string& outfile = p.positionals[1];
+    const bool to_stdout = outfile == "-";
+
+    meshioplusplus::RenderOptions render = cli_render_options(p);
+    if (has_opt(p, "width"))
+        render.mWidth = std::stoi(opt_value(p, "width"));
+    else
+        render.mWidth = 800;
+    if (has_opt(p, "height"))
+        render.mHeight = std::stoi(opt_value(p, "height"));
+    else
+        render.mHeight = 600;
+
+    meshioplusplus::TextOptions text;
+    text.mEncoding = cli_text_encoding(opt_value(p, "encoding", "halfblock"));
+    text.mDepth = cli_color_depth(opt_value(p, "color-depth", to_stdout ? "auto" : "truecolor"));
+    text.mNotes = !has_flag(p, "no-notes");
+    text.mTmuxPassthrough = has_flag(p, "tmux");
+    if (has_opt(p, "cell-aspect"))
+        text.mCellAspect = meshioplusplus::detail::stod_c(opt_value(p, "cell-aspect"));
+    // Fit the terminal this goes to (one row kept for the prompt, one per note),
+    // or 100 x 40 cells for a file or a pipe.
+    meshioplusplus::cli::TerminalSize term;
+    const bool sized = to_stdout && meshioplusplus::cli::stdout_is_terminal() &&
+                       meshioplusplus::cli::terminal_size(term);
+    text.mCols = sized ? term.mCols : 100;
+    text.mRows = sized ? std::max(1, term.mRows - 1 - (render.mColorBy.empty() ? 0 : 1)) : 40;
+    if (sized && term.mPixelWidth > 0 && term.mPixelHeight > 0) {
+        text.mCellPixelWidth = term.mPixelWidth / term.mCols;
+        text.mCellPixelHeight = term.mPixelHeight / term.mRows;
+        text.mCellAspect = static_cast<double>(term.mPixelHeight * term.mCols) /
+                           static_cast<double>(term.mPixelWidth * term.mRows);
+    }
+    if (has_opt(p, "cols"))
+        text.mCols = std::stoi(opt_value(p, "cols"));
+    if (has_opt(p, "rows"))
+        text.mRows = std::stoi(opt_value(p, "rows"));
+    const bool graphics = text.mEncoding == meshioplusplus::TextEncoding::Kitty ||
+                          text.mEncoding == meshioplusplus::TextEncoding::ITerm2 ||
+                          text.mEncoding == meshioplusplus::TextEncoding::Sixel;
+    if (graphics && meshioplusplus::cli::inside_tmux() && !text.mTmuxPassthrough)
+        throw std::runtime_error(
+            "snapshot: inside tmux the " + opt_value(p, "encoding") +
+            " protocol needs --tmux (and `set -g allow-passthrough on`, tmux 3.3+); "
+            "a cell encoding works without it");
+
+    meshioplusplus::SnapshotOptions snap;
+    if (has_opt(p, "png-compress"))
+        snap.mPngCompress = std::stoi(opt_value(p, "png-compress"));
+    if (has_opt(p, "cast-frames"))
+        snap.mCastFrames = std::stoi(opt_value(p, "cast-frames"));
+    if (has_opt(p, "cast-fps"))
+        snap.mCastFps = meshioplusplus::detail::stod_c(opt_value(p, "cast-fps"));
+    if (has_opt(p, "cast-degrees"))
+        snap.mCastDegrees = meshioplusplus::detail::stod_c(opt_value(p, "cast-degrees"));
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    if (to_stdout) {
+        text.mFormat = meshioplusplus::TextFormat::Ansi;
+        if (!meshioplusplus::cli::enable_terminal_output())
+            text.mDepth = meshioplusplus::ColorDepth::Mono;
+        const std::string out = meshioplusplus::render_text(mesh, render, text);
+        std::cout.write(out.data(), static_cast<std::streamsize>(out.size()));
+        std::cout.flush();
+        return 0;
+    }
+    meshioplusplus::write_snapshot(outfile, mesh, render, text, snap);
     return 0;
 }
 
@@ -5117,6 +5407,8 @@ int main(int argc, char** argv) {
             return cmd_stats(rest);
         if (cmd == "view")
             return cmd_view(rest);
+        if (cmd == "snapshot")
+            return cmd_snapshot(rest);
         if (cmd == "screenshot")
             return cmd_screenshot(rest);
     } catch (const std::exception& e) {

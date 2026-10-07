@@ -1299,6 +1299,27 @@ def test_feature_edges_and_hausdorff(tmp_path):
     assert _dump(_tools.tool_hausdorff(src, src))["distance"] == 0.0
 
 
+def test_render_mesh_tool(tmp_path):
+    pytest.importorskip("meshioplusplus._core")
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    text = _dump(_tools.tool_render_mesh(src, cols=24, rows=8))
+    assert (text["cols"], text["rows"]) == (24, 8)
+    assert len(text["text"].splitlines()) == 8
+    assert "\x1b" not in text["text"]
+    ansi = _dump(_tools.tool_render_mesh(src, cols=24, rows=8, text_format="ansi"))
+    assert "\x1b[" in ansi["text"]
+    png = _dump(
+        _tools.tool_render_mesh(src, str(tmp_path / "c.png"), width=48, height=32)
+    )
+    assert png["size"] == [48, 32]
+    assert open(png["output_path"], "rb").read()[:8] == b"\x89PNG\r\n\x1a\n"
+    with pytest.raises(ValueError, match="text_format"):
+        _tools.tool_render_mesh(src, text_format="svg")
+    with pytest.raises(ValueError, match="expected .png"):
+        _tools.tool_render_mesh(src, str(tmp_path / "c.vtu"))
+
+
 def test_region_adjacency_tool(tmp_path):
     mesh = meshioplusplus.Mesh(
         np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1.0]]),
@@ -1955,6 +1976,28 @@ def test_server_lists_every_registered_tool():
     for t in tools:
         assert (t.description or "").strip(), f"tool '{t.name}' has no description"
         assert t.inputSchema, f"tool '{t.name}' has no input schema"
+
+
+def test_server_render_mesh_returns_an_image(mesh_file, tmp_path):
+    pytest.importorskip("meshioplusplus._core")
+    server = _server()
+    result = _run(
+        server.call_tool(
+            "render_mesh",
+            {
+                "input_path": mesh_file,
+                "output_path": str(tmp_path / "r.png"),
+                "width": 40,
+                "height": 30,
+            },
+        )
+    )
+    content = result[0] if isinstance(result, tuple) else result
+    assert any(getattr(c, "type", "") == "image" for c in content)
+    text = _tool_json(
+        _run(server.call_tool("render_mesh", {"input_path": mesh_file, "rows": 5}))
+    )
+    assert len(text["text"].splitlines()) == 5
 
 
 def test_server_call_tool_info_and_convert(mesh_file, tmp_path):

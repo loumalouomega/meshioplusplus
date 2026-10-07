@@ -755,14 +755,28 @@ def test_view_rejects_an_unknown_backend_at_parse_time(tmp_path):
     assert exc.value.code == 2
 
 
-def test_screenshot_without_polyscope_says_how_to_install_it(tmp_path, monkeypatch):
+def test_screenshot_without_polyscope_falls_back_to_the_software_rasterizer(
+    tmp_path, monkeypatch, capsys
+):
+    pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus import _viewer
     from meshioplusplus._cli import _view
 
     monkeypatch.setattr(_view, "has_viewer", lambda: False)
+    monkeypatch.setattr(_viewer, "has_viewer", lambda: False)
     infile = tmp_path / "in.vtu"
+    out = tmp_path / "o.png"
     meshioplusplus.write(infile, helpers.tri_mesh)
-    with pytest.raises(SystemExit, match=r"pip install meshioplusplus\[viewer\]"):
-        meshioplusplus._cli.main(["screenshot", str(infile), str(tmp_path / "o.png")])
+    assert (
+        meshioplusplus._cli.main(
+            ["screenshot", str(infile), str(out), "--size", "64", "48"]
+        )
+        == 0
+    )
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    err = capsys.readouterr().err
+    assert "pip install meshioplusplus[viewer]" in err
+    assert "software rasterizer" in err
 
 
 @pytest.mark.viewer

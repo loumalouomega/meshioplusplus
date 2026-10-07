@@ -334,7 +334,8 @@ def _register_conversion(server: FastMCP) -> None:
         component point_data array is exported raw as a custom attribute
         (temperature -> _TEMPERATURE); fields=false skips them. color_by names
         a point_data or cell_data array to bake into COLOR_0 through cmap
-        (viridis|coolwarm|turbo) over vmin..vmax (default: the finite range of
+        (viridis, coolwarm, turbo, magma, inferno, plasma, grey, or a
+        reversed *_r variant) over vmin..vmax (default: the finite range of
         what is exported), with an unlit material unless unlit=false;
         multi-component arrays reduce to component or their magnitude and
         non-finite values take nan_color (#rrggbb). The output is Y-up,
@@ -1247,6 +1248,86 @@ def _register_operations(server: FastMCP) -> None:
             max_degenerate=max_degenerate,
             file_format=file_format,
         )
+
+    @server.tool()
+    def render_mesh(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        width: int = 640,
+        height: int = 480,
+        cols: int = 100,
+        rows: int = 40,
+        encoding: str = "halfblock",
+        text_format: str = "plain",
+        view: Optional[str] = None,
+        azimuth: Optional[float] = None,
+        elevation: Optional[float] = None,
+        perspective: bool = False,
+        zoom: Optional[float] = None,
+        shading: str = "flat",
+        edges: str = "none",
+        color_by: Optional[str] = None,
+        component: Optional[int] = None,
+        cmap: Optional[str] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        colorbar: bool = False,
+        supersample: int = 2,
+        background: Optional[str] = None,
+        axes: bool = False,
+    ):
+        """Look at a mesh: draw it with the software rasterizer, which needs
+        no display, GPU or optional extra (unlike screenshot).
+
+        Without output_path the picture comes back as text, cols x rows
+        terminal cells: text_format "plain" (glyphs only, the default),
+        "ansi" (24-bit colour escapes) or "html"; encoding is halfblock,
+        quadrant, sextant, braille or ascii. With output_path the extension
+        picks the form: .png (width x height pixels, returned as an image),
+        .txt, .ansi, .html, or .cast (an asciinema orbit). The camera is a
+        named view (iso, +x, -x, +y, -y, +z, -z: the side the camera sits
+        on) or azimuth/elevation in degrees, orthographic unless
+        perspective; zoom magnifies the fitted view. shading is none, flat
+        or smooth; edges none, all or feature. color_by maps a point or cell
+        data array through cmap (viridis, coolwarm, turbo, ...) over
+        vmin..vmax, with an optional colorbar; component picks one component
+        of a vector array (else its magnitude). background is #rrggbb,
+        #rrggbbaa or none (transparent, the default); axes draws the world
+        axes. Volume meshes are drawn through their boundary skin."""
+        report = _guard(
+            _tools.tool_render_mesh,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            width=width,
+            height=height,
+            cols=cols,
+            rows=rows,
+            encoding=encoding,
+            text_format=text_format,
+            view=view,
+            azimuth=azimuth,
+            elevation=elevation,
+            perspective=perspective,
+            zoom=zoom,
+            shading=shading,
+            edges=edges,
+            color_by=color_by,
+            component=component,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            colorbar=colorbar,
+            supersample=supersample,
+            background=background,
+            axes=axes,
+        )
+        if isinstance(report, dict) and str(
+            report.get("output_path", "")
+        ).lower().endswith(".png"):
+            return [Image(path=report["output_path"]), report]
+        return report
 
     @server.tool()
     def feature_edges(

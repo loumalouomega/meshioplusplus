@@ -639,7 +639,8 @@ namespace {
     throw std::runtime_error(
         std::string(pVerb) +
         ": this build has no viewer; rebuild with -DMESHIOPLUSPLUS_WITH_POLYSCOPE=ON "
-        "(and `git submodule update --init --recursive`)");
+        "(and `git submodule update --init --recursive`), or draw it in this terminal "
+        "with `meshioplusplus snapshot INFILE -`");
 }
 }  // namespace
 

@@ -197,6 +197,7 @@ if TYPE_CHECKING:
     from ._region_ops import edit_regions
     from ._remesh import remesh
     from ._remesh_volume import remesh_volume
+    from ._render import render_image, render_text, snapshot
     from ._reorder import compute_bandwidth, reorder
     from ._repair import repair
     from ._sdf import (
@@ -339,6 +340,9 @@ _LAZY_ATTRS = {
     "remesh": "_remesh",
     "remesh_volume": "_remesh_volume",
     "compute_bandwidth": "_reorder",
+    "render_image": "_render",
+    "render_text": "_render",
+    "snapshot": "_render",
     "reorder": "_reorder",
     "repair": "_repair",
     "compute_sdf": "_sdf",
@@ -546,6 +550,9 @@ __all__ = [
     "view",
     "screenshot",
     "has_viewer",
+    "render_image",
+    "render_text",
+    "snapshot",
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",

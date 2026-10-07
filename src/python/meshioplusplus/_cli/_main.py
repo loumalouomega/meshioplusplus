@@ -52,6 +52,7 @@ from . import (
     _shrinkwrap,
     _slice,
     _smooth,
+    _snapshot,
     _sobolev,
     _split,
     _split_interface,
@@ -515,6 +516,14 @@ def main(argv=None):
     )
     _view.add_screenshot_args(parser)
     parser.set_defaults(func=_view.screenshot_cmd)
+
+    parser = subparsers.add_parser(
+        "snapshot",
+        help="Draw a mesh in this terminal (OUT = -) or to .png/.txt/.ansi/.html/.cast, "
+        "with no display or GPU",
+    )
+    _snapshot.add_args(parser)
+    parser.set_defaults(func=_snapshot.snapshot_cmd)
 
     # Nested group: `meshioplusplus data <verb>`. The inner parsers each call
     # set_defaults(func=...), which overrides the outer default, so the
