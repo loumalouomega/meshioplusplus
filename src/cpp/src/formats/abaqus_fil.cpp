@@ -922,6 +922,7 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             if (!rOpts.WantsArray(name))
                 continue;
             std::vector<double> v;
+            v.reserve(w.size());
             for (const FilWord& x : w)
                 v.push_back(fil_word_real(x, sw));
             auto [it, fresh] = nodal.emplace(name, decltype(nodal)::mapped_type{});
@@ -999,6 +1000,7 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         if (ffresh)
             fields.push_back({name, location, {}});
         std::vector<double> v;
+        v.reserve(w.size());
         for (const FilWord& x : w)
             v.push_back(fil_word_real(x, sw));
         fields[fit->second].mValues[header->mElement][header->mPoint] = std::move(v);

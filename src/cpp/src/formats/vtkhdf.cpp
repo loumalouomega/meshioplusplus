@@ -955,11 +955,13 @@ std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKi
             all_indexed = all_indexed && h5::has_attr(b.mGroup, "Index");
         if (all_indexed) {
             std::vector<std::pair<I64, std::size_t>> keyed;
+            keyed.reserve(blocks.size());
             for (std::size_t i = 0; i < blocks.size(); ++i)
                 keyed.emplace_back(h5::read_attr_int(blocks[i].mGroup, "Index"), i);
             std::stable_sort(keyed.begin(), keyed.end(),
                              [](const auto& a, const auto& b) { return a.first < b.first; });
             std::vector<VtkhdfBlock> sorted;
+            sorted.reserve(keyed.size());
             for (const auto& kv : keyed)
                 sorted.push_back(std::move(blocks[kv.second]));
             blocks = std::move(sorted);
@@ -1469,6 +1471,7 @@ int vtkhdf_pd_category(const std::string& rType) {
 void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
                                  std::pair<int, int> Version) {
     std::vector<int> kinds;
+    kinds.reserve(rMesh.NumCellBlocks());
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi)
         kinds.push_back(vtkhdf_pd_category(rMesh.Cells(bi).Type()));
     // VTK's canonical PolyData cell order is Vertices, Lines, Polygons, Strips: regroup

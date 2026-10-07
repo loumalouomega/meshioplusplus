@@ -52,6 +52,8 @@ class AnimCursor {
 public:
     AnimCursor(std::string_view rData, const std::string& rPath) : mData(rData), mPath(rPath) {}
 
+    std::size_t Remaining() const { return mData.size() - mPos; }
+
     const char* Take(std::size_t N) {
         if (N > mData.size() - mPos)  // not mPos + N: that wraps for a huge N
             throw ReadError("Radioss animation: '" + mPath + "' is truncated (needs " +
@@ -122,6 +124,8 @@ public:
 
     std::vector<std::string> Texts(std::int64_t Count, std::size_t N) {
         std::vector<std::string> out;
+        if (Count > 0 && N > 0)  // bounded by the bytes left, as Take() checks
+            out.reserve(std::min<std::size_t>(static_cast<std::size_t>(Count), Remaining() / N));
         for (std::int64_t k = 0; k < Count; ++k)
             out.push_back(Text(N));
         return out;

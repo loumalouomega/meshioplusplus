@@ -1096,6 +1096,7 @@ public:
 
     std::vector<double> Times() const {
         std::vector<double> out;
+        out.reserve(mIncrements.size());
         for (const auto& inc : mIncrements)
             out.push_back(Info(inc).mTime);
         return out;

@@ -685,6 +685,7 @@ Mesh pcd_build_mesh(const PcdHeader& rH, PcdColumns& rColumns, bool drop_invalid
         cells.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
     mesh.AddCellBlock("vertex", std::move(cells));
     std::vector<std::string> names;
+    names.reserve(point_data.size());
     for (const auto& entry : point_data)
         names.push_back(entry.first);
     std::sort(names.begin(), names.end());

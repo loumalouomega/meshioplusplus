@@ -351,6 +351,17 @@ These timings are **neutral**. Across the thirty writer cells the median change 
 
 The first run of this matrix stopped when its background time limit was reached after all fourteen main stages; the two confirmation rounds were then run from the same modules. `test_text_io_dtypes.cpp` and `test_text_io_dtypes.py` extend the earlier batches to these writers: EnSight (ASCII and binary), FLAC3D (ASCII and binary), DEX, MFM, Marc, LS-DYNA, MFEM, MFF and XYZ byte for byte, and VTP, VTKHDF, H5M and XDMF, which record dtypes in the file, by round-tripped values. H5M stores connectivity as Int32/Int64/UInt32/UInt64 only, so its round-trip test skips the other index dtypes.
 
+### WASM size after dtype hoisting
+
+Roadmap §3.1.2. Each `dispatch_dtype` site instantiates its body once per dtype, so the hoisting batches could have grown the WASM artifacts. The `wasm.yml` job's *Report artifact size* step answers it: v16.30.0, released before any batch, against v16.31.0, which carries all six.
+
+| Artifact | v16.30.0 | v16.31.0 | Change |
+| --- | ---: | ---: | ---: |
+| `meshioplusplus_wasm.wasm` (SEQ) | 12,240,518 B | 12,229,812 B | −10,706 B (−0.09%) |
+| `meshioplusplus_wasm_mt.wasm` (threaded) | 12,966,704 B | 12,961,386 B | −5,318 B (−0.04%) |
+
+Both artifacts shrank (v16.31.0 also carries the text-cursor readers, so the figure is the net of both), so no site falls back to one converting view. The figures come from the `wasm.yml` runs of the two tag pushes, 37109655002 and 37301176188.
+
 ### Dtype-hoisted gradient, diff, refine and convert_cells loops
 
 Roadmap §3.3.2. `gradient`'s per-cell loader (`grad_load_cell`) read each corner's node id, coordinates and field values through `read_int`/`read_double`, and `diff` did the same per element for its array comparison, its cell connectivity and its unordered point correspondence; `refine` and `convert_cells` (`Elevate` and the subdividing modes) wrote each new point and point-data value through `write_double`. Each of those switched on the dtype once per value. Now each array is taken once through the existing `Int64View`/`DoubleView`, and the writes go through `DoubleSink`, a new write-side twin in the core-private `detail/typed_view.hpp`: a hot loop stores into a plain `double*`, and one `Commit()` converts the appended range into the destination with exactly `write_double`'s rounding and saturation. On a float64 destination the sink is the array itself and `Commit()` does nothing. The sink covers only the appended rows, so the copied originals are never round-tripped through `double` (that would corrupt an int64 array's large values). The changes are in `.cpp` bodies and a private header; installed headers and C++ ABI 22 are unchanged. `partition`'s dual-graph map was the only leftover of the roadmap item; it is [flat](#flat-dual-graph-in-partition) now.
@@ -695,6 +706,15 @@ Roadmap §3.2.2. The four `performance-inefficient-vector-operation` diagnostics
 
 **SEQ is not slower, and not faster.** Interleaved, six rounds, tier M, median (best): `agglomerate` 0.635 (0.581) → 0.633 (0.593) s, `find_interface` 0.488 (0.447) → 0.490 (0.444) s, `region_adjacency` 0.512 (0.437) → 0.472 (0.447) s. The medians move less than the spread between rounds, so these reserves are a clean audit and a tidier allocation pattern, not a measured speedup: the vectors involved are patch- or block-sized.
 
+### Reserved output in the formats
+
+Roadmap §3.2.2, the last of it. A fresh audit of the formats (Clang-Tidy 23.1.1, 2026-10-07) still listed the 44 `performance-inefficient-vector-operation` diagnostics of the first count, in 23 translation units; each now reserves before its loop. The rule was a bound the code already holds, never a count read from a file on its own, and the sites sort into two kinds:
+
+- **39 with an exact bound in hand**: the size of the container the loop walks (a record's words in Abaqus `.fil`, the tokens of a FEBio facet, the result sets of Femap and OP2, Marc's increments, MFEM's face and element lists, the sizes of xplt's blocks, the regions or blocks of the mesh being written in LS-DYNA, VTK, VTKHDF, UNV and Tecplot, and the like), a fixed ten (an LS-DYNA element's node fields) or, for the Ansys `.rst` sector rotations, the sector count the reader already allocates two vectors of.
+- **5 from a count the file declares**, each clamped by what the input can hold: the three Ansys `.rst` DOF label lists (by the header record's length; `rst_solution` already rejects a larger count before the other two run), libMesh's `IntVector` (by the input's size over the narrowest item, `Width` bytes in XDR and two in text), MFEM's communication-group ranks (by the lexer's remaining tokens) and Radioss animation's `Texts` (by the bytes left over each text's width, the bound `Take` enforces; a new `AnimCursor::Remaining()`). A corrupt count therefore reserves no more than the file could fill, and the reader still fails where it failed before.
+
+The rescan of the changed files reports no `performance-inefficient-vector-operation` diagnostic. The meshes read back by a write and read of the 17 touched formats `benchmark/bench.py` round-trips (tier M, a point scalar, a point vector and a cell scalar added) have the same digests before and after, and so do the written files except VTKHDF's, whose HDF5 object timestamps differ between two writes of the same mesh anyway. Timings are neutral: tier M, five repeats, every read and write within ±8% both ways (measured beside a concurrent build), as expected for lists that are mostly a handful of entries. The touched readers' tests and fuzz regressions pass under AddressSanitizer and UndefinedBehaviorSanitizer. Changes are in `.cpp` bodies: installed headers and C++ ABI 23 are unchanged.
+
 ### Lazy format and operation imports
 
 Roadmap §3.4.2. `import meshioplusplus` used to import all 77 format subpackages, about 130 operation and helper modules and the `_core` extension: 556 modules. Formats register themselves when imported, so the package now carries a generated table of which subpackage registers which format name and extension (`_format_table.py`, written by `tools/gen_format_table.py` and checked by `test_format_table.py`), and `read` and `write` import only the subpackages their path or format name selects. The three registries are read-through: a public read (`reader_map`, `extension_to_filetypes`, `formats()`, or the error message that lists every writer) imports the rest first, so each still shows every format, in the same order for the extensions several formats share. Operations and submodules load through a module `__getattr__` (PEP 562); `__all__` is unchanged, so `from meshioplusplus import *` loads everything. Importing the package now loads 221 modules, none of them `_core`, and numpy is most of what is left.
@@ -836,7 +856,7 @@ The MESHIO inventory groups as follows; a location can have more than one check,
 | Candidate class | Diagnostics | Triage |
 | --- | ---: | --- |
 | Value parameters, copied initializations and moves | 287 | Review ownership first; many are pybind11 refcount suggestions, small metadata copies or necessary owned clones. |
-| Vector capacity planning | 59 | First batch: the Fluent writer's two mesh-sized lists; small metadata lists and unchecked reader counts are deferred. |
+| Vector capacity planning | 59 | Closed: the Fluent writer's two mesh-sized lists first, then the operations ([agglomerate and interfaces](#reserved-output-in-agglomerate-and-interfaces)) and the [formats](#reserved-output-in-the-formats); header counts reserve only through a bound the input enforces. |
 | String concatenation, find/character overloads and view conversion | 91 | Many are error paths or header parsing; no reader throughput win established yet. |
 | Enum width | 85 | Installed enum widths are ABI-sensitive; private enums still need evidence before narrowing. |
 
