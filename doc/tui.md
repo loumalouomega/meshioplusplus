@@ -96,6 +96,56 @@ The [`--color-by` family](./formats/svg.md) of `convert` works the same way here
 
 The colormaps are `viridis` (the default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma` and `grey`, and a reversed `_r` variant of each. They are shared with the SVG, TikZ and glTF writers. viridis, magma, inferno and plasma are matplotlib's listed maps (CC0); Turbo is Apache-2.0 (Google LLC); coolwarm and grey are sampled from matplotlib.
 
+## Field rendering
+
+These options (v16.34.0) turn a picture of a surface into a picture of a solution. Each is a flag of `snapshot` and a keyword argument of the same name in every language (see [surfaces](#surfaces)).
+
+| Option (CLI / Python) | Meaning |
+| --- | --- |
+| `--expr TEXT` / `expr` | colour by a [`data_calc`](./data_calc.md) expression (`"mag(u) / max(p)"`), evaluated on the fly: operands are point data, then cell data, so no intermediate file is written |
+| `--reduce NAME` / `reduce` | colour a six- or nine-component tensor array by `mises`, `hydrostatic` or `principal` (with `--component` 0, 1, 2 the smallest, middle and largest, the largest by default), as [`tensor_invariants`](./tensor_invariants.md) computes them |
+| `--clip LOW,HIGH` / `clip=(low, high)` | bound the automatic range by percentiles of the drawn values, so one outlier does not flatten the plot; either end may be left empty (`--clip 2,`); an explicit `--vmin`/`--vmax` wins |
+| `--symmetric` / `symmetric` | make the automatic range symmetric about zero, so a diverging map such as `coolwarm` puts zero at its midpoint |
+| `--scale linear\|log\|symlog`, `--scale-threshold T` / `scale`, `scale_threshold` | the colormap position of a value: proportional, proportional to its logarithm (a value that is not positive is drawn in `--nan-color`, and a range that is not positive is an error), or a signed logarithm that is linear within `T` of zero |
+| `--colorbar` | a gradient bar with tick marks; the tick values and the range are also in the notes under a text picture, and a count of values with no finite value on the scale says so |
+| `--categorical` | treat the integer array of `--color-by` (a material id) as categories, coloured from a fixed qualitative palette, with a key in the notes |
+| `--color-regions` | colour cells by the first named cell [region](./regions.md) that holds them (regions in their sorted order), with a key listing each name, colour and cell count; an empty region still appears in the key |
+| `--category-edges` | draw the edges where two faces of different category meet (categories, regions or a flag diagnostic) |
+| `--isolines N`, `--iso-levels A,B,...`, `--iso-color` / `isolines`, `iso_levels`, `iso_color` | contour lines of the point array `--color-by`: `N` equally spaced levels inside the range, or the explicit levels, drawn with a depth bias so they sit on their faces; cell data are refused by name |
+| `--vectors NAME`, `--vector-count N`, `--vector-length L`, `--vector-color` / `vectors`, ... | arrows for a vector point array at about `N` evenly ranked drawn points; the longest is 6% of the model's diagonal, or every arrow is `L` model units long; the heads lie in the plane of the arrow and the line of sight |
+| `--warp NAME`, `--warp-scale S`, `--warp-outline`, `--outline-color` / `warp`, ... | move the points by a displacement point array times `S`, optionally drawing the undeformed outline (its open and sharp edges) beside the deformed shape |
+| `--diagnostic NAME`, `--quality-metric M` / `diagnostic`, `quality_metric` | one flag for the checks people run first, below |
+
+The diagnostics reuse metrics that already exist; none is a new algorithm:
+
+| `--diagnostic` | Draws |
+| --- | --- |
+| `quality` | cells coloured by the [`quality`](./mesh_quality.md) metric `--quality-metric` names (`scaled_jacobian`, `aspect_ratio`, ...) |
+| `inverted`, `degenerate` | cells with a negative signed volume or area, or a near-zero volume, edge or Jacobian, in red; the notes count the faces |
+| `orientation` | front faces (towards the camera) in blue and back faces in orange, so a flipped patch is visible at once |
+| `free-edges` | open edges in orange, non-manifold edges in red and inconsistently wound pairs in magenta, from the [`repair`](./repair.md) detectors |
+| `edge-length` | faces coloured by their mean edge length |
+
+A diagnostic excludes `--color-by`, `--expr` and `--color-regions`; the options that make no sense together are refused by name rather than ignored. With none of the new options set a frame is byte-identical to v16.33.0's.
+
+## Surfaces
+
+The rasterizer is reachable from every language the library has, with the same options and the same pixels:
+
+| Surface | Entry points | See |
+| --- | --- | --- |
+| native CLI, Python CLI | `snapshot` | [CLI](./cli.md#meshioplusplus-snapshot) |
+| Python | `render_image`, `render_text`, `snapshot` (core only) | below |
+| MCP | `render_mesh` | [MCP server](./mcp.md) |
+| C | `mio_render`, `mio_frame_*`, `mio_render_text`, `mio_write_snapshot` | [C API](./c_api.md#software-rendering-v16-34-0) |
+| Fortran | `mio_mesh%render`, `%render_text`, `%write_snapshot`, `mio_frame` | [Fortran](./fortran.md#software-rendering-v16-34-0) |
+| Julia | `render`, `render_text`, `render_png`, `write_snapshot` | [Julia](./julia.md#software-rendering-v16-34-0) |
+| R | `mio_render`, `mio_render_text`, `mio_render_png`, `mio_write_snapshot` | [R](./r.md#software-rendering-v16-34-0) |
+| WebAssembly | `render`, `renderText`, `renderPng` (cell encodings only) | [WebAssembly](./wasm.md#software-rendering-v16-34-0) |
+| settings pipeline | the `Snapshot` step | [pipeline](./pipeline.md) |
+
+The interactive loop and the graphics-protocol encoders are CLI features: the library carries frames, text and PNG, never a tty. The `Snapshot` pipeline step writes a frame as a side output after any step, with the mesh passing through untouched, so a `Smooth` or `Decimate` can be shown before and after in a report.
+
 ## Screenshots without a viewer
 
 [`screenshot()`](./viewer.md#screenshots) needs Polyscope and EGL or a virtual framebuffer. Without Polyscope it now falls back to this rasterizer, with a warning, and the `screenshot` verbs of both CLIs do the same. The native release binaries, which exclude Polyscope, therefore write a PNG instead of reporting a build flag, and their `view` error points at `snapshot`.
@@ -145,5 +195,7 @@ At XL both rows cost about the same although the second draws 400 times as many 
 - No transparency, shadows or reflections; one directional light.
 - The scale bar is drawn for the orthographic camera only.
 - Screen coordinates are clamped to ±262,144 pixels, so an extreme zoom distorts geometry far outside the frame (never inside it).
+- Streamlines are not drawn: they need a sampler and a step integrator. Vector arrows sit at the drawn points, not along a flow.
+- Isolines are the piecewise-linear contours of the interpolant on each triangle (a quad is split on its shorter diagonal); they are not smoothed.
 - The id buffer of a supersampled frame reports the cell at the centre sample of each pixel.
 - The Kitty, iTerm2 and Sixel encoders are written to their specifications but are not tested against every terminal; the cell encodings are the portable choice.

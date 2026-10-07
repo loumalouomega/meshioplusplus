@@ -1003,11 +1003,11 @@ def roadmap_map():
         (
             "§7 terminal rendering",
             [
-                ("field rendering · surfaces", "M"),
+                ("streamlines · thumbnails", "S"),
                 ("interactive tui · view auto", "L"),
                 ("synthwave theme · music", "S"),
             ],
-            [(0, 1), (1, 2)],
+            [(1, 2)],
         ),
     ]
     per_row = 4

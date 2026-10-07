@@ -326,8 +326,9 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 // `render()`, `encode_text()`, `render_text()` and `write_snapshot()`, and Frame
 // is returned by value through `render()`; none embeds a Mesh, so all four are
 // pinned from the release that introduces them. Roadmap section 7 grows
-// RenderOptions (field rendering, a theme): each growth bumps the ABI.
-MIO_ABI_LAYOUT(meshioplusplus::RenderOptions, 320, 8);
+// RenderOptions (field rendering in v16.34.0, ABI 24, took it from 320 to 608
+// bytes; a theme will grow it again): each growth bumps the ABI.
+MIO_ABI_LAYOUT(meshioplusplus::RenderOptions, 608, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Frame, 104, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TextOptions, 40, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SnapshotOptions, 24, 8);

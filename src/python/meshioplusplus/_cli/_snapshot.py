@@ -13,6 +13,37 @@ from .._render import parse_color as _rgba
 from .._render import render_text, snapshot
 
 
+def _numbers(text, flag):
+    out = []
+    for item in text.split(","):
+        if not item.strip():
+            out.append(None)
+            continue
+        try:
+            out.append(float(item))
+        except ValueError:
+            raise SystemExit(
+                f"meshio++: --{flag} expects numbers separated by commas, not '{text}'"
+            ) from None
+    return out
+
+
+def _parse_clip(text):
+    clip = _numbers(text, "clip")
+    if len(clip) != 2:
+        raise SystemExit(
+            "meshio++: --clip expects LOW,HIGH percentiles (either may be empty)"
+        )
+    return tuple(clip)
+
+
+def _parse_levels(text):
+    levels = _numbers(text, "iso-levels")
+    if any(v is None for v in levels):
+        raise SystemExit("meshio++: --iso-levels expects numbers separated by commas")
+    return levels
+
+
 def add_render_args(parser):
     """The render flags shared by every software-rendering verb."""
     camera = parser.add_argument_group("camera")
@@ -53,6 +84,61 @@ def add_render_args(parser):
     color.add_argument("--vmax", type=float, default=None)
     color.add_argument("--nan-color", type=_rgba, default=None, metavar="#RRGGBB[AA]")
     color.add_argument("--colorbar", action="store_true")
+    field = parser.add_argument_group("field rendering")
+    field.add_argument(
+        "--reduce", choices=["mises", "hydrostatic", "principal"], default=None
+    )
+    field.add_argument(
+        "--expr", type=str, default=None, help="colour by a data_calc expression"
+    )
+    field.add_argument(
+        "--clip", type=str, default=None, metavar="LOW,HIGH", help="percentiles"
+    )
+    field.add_argument(
+        "--symmetric", action="store_true", help="range symmetric about zero"
+    )
+    field.add_argument("--scale", choices=["linear", "log", "symlog"], default=None)
+    field.add_argument("--scale-threshold", type=float, default=None)
+    field.add_argument(
+        "--categorical", action="store_true", help="integer data as categories"
+    )
+    field.add_argument(
+        "--color-regions", action="store_true", help="colour by cell region"
+    )
+    field.add_argument("--category-edges", action="store_true")
+    field.add_argument("--isolines", type=int, default=None, metavar="N")
+    field.add_argument("--iso-levels", type=str, default=None, metavar="A,B,...")
+    field.add_argument("--iso-color", type=_rgba, default=None, metavar="#RRGGBB[AA]")
+    field.add_argument(
+        "--vectors", type=str, default=None, help="vector point array for arrows"
+    )
+    field.add_argument("--vector-count", type=int, default=None)
+    field.add_argument("--vector-length", type=float, default=None)
+    field.add_argument(
+        "--vector-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
+    )
+    field.add_argument(
+        "--warp", type=str, default=None, help="displacement point array"
+    )
+    field.add_argument("--warp-scale", type=float, default=None)
+    field.add_argument("--warp-outline", action="store_true")
+    field.add_argument(
+        "--outline-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
+    )
+    field.add_argument(
+        "--diagnostic",
+        choices=[
+            "none",
+            "quality",
+            "inverted",
+            "degenerate",
+            "orientation",
+            "free-edges",
+            "edge-length",
+        ],
+        default=None,
+    )
+    field.add_argument("--quality-metric", type=str, default=None)
 
 
 def render_options(args):
@@ -65,14 +151,32 @@ def render_options(args):
         )
     if args.fov is not None and not args.perspective:
         raise SystemExit("meshio++: --fov requires --perspective")
-    if args.color_by is None:
-        for flag in ("component", "cmap", "vmin", "vmax", "nan_color"):
+    diagnostic = args.diagnostic or "none"
+    if args.quality_metric is not None and diagnostic != "quality":
+        raise SystemExit("meshio++: --quality-metric requires --diagnostic quality")
+    mapped = (
+        args.color_by is not None
+        or args.expr is not None
+        or diagnostic in ("quality", "edge-length")
+    )
+    if not mapped:
+        what = "--color-by, --expr or a quality or edge-length diagnostic"
+        for flag in (
+            "component",
+            "cmap",
+            "vmin",
+            "vmax",
+            "nan_color",
+            "clip",
+            "scale",
+            "scale_threshold",
+        ):
             if getattr(args, flag) is not None:
                 raise SystemExit(
-                    f"meshio++: --{flag.replace('_', '-')} requires --color-by"
+                    f"meshio++: --{flag.replace('_', '-')} requires {what}"
                 )
-        if args.colorbar:
-            raise SystemExit("meshio++: --colorbar requires --color-by")
+        if args.colorbar or args.symmetric:
+            raise SystemExit(f"meshio++: --colorbar and --symmetric require {what}")
     options = {
         "view": args.view,
         "azimuth": args.azimuth,
@@ -101,7 +205,31 @@ def render_options(args):
         "vmin": args.vmin,
         "vmax": args.vmax,
         "nan_color": args.nan_color,
-        "colorbar": args.colorbar if args.color_by is not None else None,
+        "colorbar": args.colorbar if mapped else None,
+        "reduce": args.reduce,
+        "expr": args.expr,
+        "clip": _parse_clip(args.clip) if args.clip is not None else None,
+        "symmetric": args.symmetric or None,
+        "scale": args.scale,
+        "scale_threshold": args.scale_threshold,
+        "categorical": args.categorical or None,
+        "color_regions": args.color_regions or None,
+        "category_edges": args.category_edges or None,
+        "isolines": args.isolines,
+        "iso_levels": (
+            _parse_levels(args.iso_levels) if args.iso_levels is not None else None
+        ),
+        "iso_color": args.iso_color,
+        "vectors": args.vectors,
+        "vector_count": args.vector_count,
+        "vector_length": args.vector_length,
+        "vector_color": args.vector_color,
+        "warp": args.warp,
+        "warp_scale": args.warp_scale,
+        "warp_outline": args.warp_outline or None,
+        "outline_color": args.outline_color,
+        "diagnostic": None if diagnostic == "none" else diagnostic.replace("-", "_"),
+        "quality_metric": args.quality_metric,
     }
     if args.pan_x is not None or args.pan_y is not None:
         options["pan"] = (args.pan_x or 0.0, args.pan_y or 0.0)

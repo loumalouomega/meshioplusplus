@@ -781,3 +781,60 @@ def test_crop_step_takes_a_data_predicate(tmp_path):
                 "Output": {"Path": str(out)},
             }
         )
+
+
+# --------------------------------------------------------------------------- #
+# Snapshot: a side output, in both engines                                    #
+# --------------------------------------------------------------------------- #
+def test_snapshot_step_writes_the_same_bytes_in_both_engines(settings_env):
+    if not hasattr(_core, "run_pipeline_json"):
+        pytest.skip("_core predates the pipeline")
+    tmp = settings_env["tmp"]
+    ops = [
+        {
+            "Op": "Snapshot",
+            "Path": str(tmp / "WHO.png"),
+            "Width": 64,
+            "Height": 48,
+            "Supersample": 2,
+            "Edges": "all",
+            "ColorBy": "temperature",
+            "Colorbar": True,
+            "Background": "#ffffff",
+        },
+        {
+            "Op": "Snapshot",
+            "Path": str(tmp / "WHO.txt"),
+            "Cols": 20,
+            "Rows": 6,
+            "ColorDepth": "mono",
+        },
+    ]
+    for who in ("py", "cpp"):
+        settings = make_settings(settings_env, copy.deepcopy(ops))
+        for op in settings["Operations"]:
+            op["Path"] = op["Path"].replace("WHO", who)
+        if who == "py":
+            meshioplusplus.run_pipeline(settings)
+        else:
+            _core.run_pipeline_json(json.dumps(settings))
+    for ext in ("png", "txt"):
+        assert (tmp / f"py.{ext}").read_bytes() == (tmp / f"cpp.{ext}").read_bytes()
+    assert (tmp / "py.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_snapshot_step_passes_the_mesh_through_and_names_its_errors(settings_env):
+    tmp = settings_env["tmp"]
+    ops = [{"Op": "Snapshot", "Path": str(tmp / "a.png")}]
+    meshioplusplus.run_pipeline(make_settings(settings_env, ops))
+    out = meshioplusplus.read(settings_env["out"])
+    assert out.points.shape == helpers.tet_mesh.points.shape
+    with pytest.raises(ValueError, match="'Path' is required"):
+        meshioplusplus.run_pipeline(make_settings(settings_env, [{"Op": "Snapshot"}]))
+    with pytest.raises(ValueError, match="must be one of"):
+        meshioplusplus.run_pipeline(
+            make_settings(
+                settings_env,
+                [{"Op": "Snapshot", "Path": str(tmp / "b.png"), "Shading": "plastic"}],
+            )
+        )

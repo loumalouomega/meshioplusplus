@@ -243,6 +243,25 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## Software rendering (v16.34.0)
+
+A deterministic software rasterizer and its terminal, HTML and PNG encodings, with no display or GPU: see [terminal rendering](/tui) for what is drawn and every option. Every option is a keyword argument of the same name as the C `mio_render_opts` field.
+
+```julia
+frame = render(mesh; width=800, height=600, supersample=2,
+               color_by="temperature", colorbar=true, clip=(2, 98), isolines=8)
+frame.rgba        # Array{UInt8,3} (4, width, height); frame.rgba[:, x, y] is a pixel, row 1 on top
+frame.cell_ids    # (width, height): the input cell at each pixel, -1 for none
+frame.range       # (vmin, vmax), or nothing when no field is mapped
+frame.notes       # the colour range, ticks and keys
+
+print(render_text(mesh; cols=80, rows=24, encoding="braille", color_by="temperature"))
+png = render_png(mesh; width=800, height=600)          # Vector{UInt8}
+write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .cast
+```
+
+`render` copies the frame out of the library, so a `Frame` owns its arrays and nothing needs closing. Colours are `0xRRGGBBAA` integers or `(r, g, b[, a])` tuples (`rgba(r, g, b, a)` builds the integer); `shading`, `edges`, `scale` and `diagnostic` take their names (`"smooth"`, `"feature"`, `"log"`, `"orientation"`, ...). `render_text(...; format="html")` returns a self-contained page, which a notebook shows with `display("text/html", ...)`. An unknown option or enum name is an `ErrorException` listing the choices; a library failure (an unknown array, a bad range) is a `MeshioError`. `detect_color_depth(; no_color, color_term, term)` returns `"truecolor"`, `"256"`, `"16"` or `"mono"`.
+
 ## v16.25.0 additions
 
 - `agglomerate(mesh; target_group_size=8, merge_coplanar_faces=false, coplanar_angle=1.0, min_sphericity=0.0) -> (; mesh, cell_map, num_faces_merged, num_rejected)` — the coplanar-face merge and sphericity gate of [agglomerate](/agglomerate).

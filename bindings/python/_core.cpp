@@ -328,14 +328,25 @@ void render_py_unknown(const py::dict& rD, const std::vector<std::string>& rKnow
 }
 
 meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
-    render_py_unknown(rD,
-                      {"width",      "height",      "pixel_aspect", "supersample",   "azimuth",
-                       "elevation",  "roll",        "view",         "projection",    "fov",
-                       "zoom",       "pan",         "shading",      "two_sided",     "ambient",
-                       "light_dir",  "split_angle", "edges",        "feature_angle", "edge_color",
-                       "fill_color", "line_color",  "background",   "point_radius",  "color_by",
-                       "component",  "cmap",        "vmin",         "vmax",          "nan_color",
-                       "colorbar",   "axes",        "scale_bar"},
+    render_py_unknown(rD, {"width",         "height",        "pixel_aspect",
+                           "supersample",   "azimuth",       "elevation",
+                           "roll",          "view",          "projection",
+                           "fov",           "zoom",          "pan",
+                           "shading",       "two_sided",     "ambient",
+                           "light_dir",     "split_angle",   "edges",
+                           "feature_angle", "edge_color",    "fill_color",
+                           "line_color",    "background",    "point_radius",
+                           "color_by",      "component",     "cmap",
+                           "vmin",          "vmax",          "nan_color",
+                           "colorbar",      "axes",          "scale_bar",
+                           "reduce",        "expr",          "clip",
+                           "symmetric",     "scale",         "scale_threshold",
+                           "categorical",   "color_regions", "category_edges",
+                           "isolines",      "iso_levels",    "iso_color",
+                           "vectors",       "vector_count",  "vector_length",
+                           "vector_color",  "warp",          "warp_scale",
+                           "warp_outline",  "outline_color", "diagnostic",
+                           "quality_metric"},
                       "render");
     meshioplusplus::RenderOptions o;
     auto get = [&](const char* pKey) -> py::object {
@@ -446,6 +457,89 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
         o.mAxes = v.cast<bool>();
     if (!(v = get("scale_bar")).is_none())
         o.mScaleBar = v.cast<bool>();
+    if (!(v = get("reduce")).is_none())
+        o.mReduce = v.cast<std::string>();
+    if (!(v = get("expr")).is_none())
+        o.mExpr = v.cast<std::string>();
+    if (!(v = get("clip")).is_none()) {
+        const std::vector<py::object> clip = v.cast<std::vector<py::object>>();
+        if (clip.size() != 2)
+            throw std::invalid_argument(
+                "meshio++: render: clip must be (low, high) percentiles; "
+                "use None for either end");
+        if (!clip[0].is_none())
+            o.mClipLow = clip[0].cast<double>();
+        if (!clip[1].is_none())
+            o.mClipHigh = clip[1].cast<double>();
+    }
+    if (!(v = get("symmetric")).is_none())
+        o.mSymmetric = v.cast<bool>();
+    if (!(v = get("scale")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        if (name == "linear")
+            o.mScale = meshioplusplus::RenderScale::Linear;
+        else if (name == "log")
+            o.mScale = meshioplusplus::RenderScale::Log;
+        else if (name == "symlog")
+            o.mScale = meshioplusplus::RenderScale::Symlog;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: scale must be 'linear', 'log' or 'symlog', not '" + name + "'");
+    }
+    if (!(v = get("scale_threshold")).is_none())
+        o.mScaleThreshold = v.cast<double>();
+    if (!(v = get("categorical")).is_none())
+        o.mCategorical = v.cast<bool>();
+    if (!(v = get("color_regions")).is_none())
+        o.mColorRegions = v.cast<bool>();
+    if (!(v = get("category_edges")).is_none())
+        o.mCategoryEdges = v.cast<bool>();
+    if (!(v = get("isolines")).is_none())
+        o.mIsolines = v.cast<std::int32_t>();
+    if (!(v = get("iso_levels")).is_none())
+        o.mIsoLevels = v.cast<std::vector<double>>();
+    if (!(v = get("iso_color")).is_none())
+        o.mIsoColor = render_py_color(v, "iso_color");
+    if (!(v = get("vectors")).is_none())
+        o.mVectors = v.cast<std::string>();
+    if (!(v = get("vector_count")).is_none())
+        o.mVectorCount = v.cast<std::int32_t>();
+    if (!(v = get("vector_length")).is_none())
+        o.mVectorLength = v.cast<double>();
+    if (!(v = get("vector_color")).is_none())
+        o.mVectorColor = render_py_color(v, "vector_color");
+    if (!(v = get("warp")).is_none())
+        o.mWarp = v.cast<std::string>();
+    if (!(v = get("warp_scale")).is_none())
+        o.mWarpScale = v.cast<double>();
+    if (!(v = get("warp_outline")).is_none())
+        o.mWarpOutline = v.cast<bool>();
+    if (!(v = get("outline_color")).is_none())
+        o.mOutlineColor = render_py_color(v, "outline_color");
+    if (!(v = get("diagnostic")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        static const std::pair<const char*, meshioplusplus::RenderDiagnostic> table[] = {
+            {"none", meshioplusplus::RenderDiagnostic::None},
+            {"quality", meshioplusplus::RenderDiagnostic::Quality},
+            {"inverted", meshioplusplus::RenderDiagnostic::Inverted},
+            {"degenerate", meshioplusplus::RenderDiagnostic::Degenerate},
+            {"orientation", meshioplusplus::RenderDiagnostic::Orientation},
+            {"free_edges", meshioplusplus::RenderDiagnostic::FreeEdges},
+            {"edge_length", meshioplusplus::RenderDiagnostic::EdgeLength}};
+        bool found = false;
+        for (const auto& e : table)
+            if (name == e.first) {
+                o.mDiagnostic = e.second;
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(
+                "meshio++: render: diagnostic must be one of none, quality, inverted, degenerate, "
+                "orientation, free_edges, edge_length; not '" +
+                name + "'");
+    }
+    if (!(v = get("quality_metric")).is_none())
+        o.mQualityMetric = v.cast<std::string>();
     return o;
 }
 

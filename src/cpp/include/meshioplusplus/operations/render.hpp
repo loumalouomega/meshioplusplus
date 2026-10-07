@@ -87,6 +87,27 @@ enum class RenderEdges : std::uint8_t {
     Feature = 2,  ///< the sharp, open and non-manifold edges of `feature_edges`
 };
 
+/// How a mapped value becomes a position on the colormap.
+enum class RenderScale : std::uint8_t {
+    Linear = 0,  ///< position proportional to the value (default)
+    Log =
+        1,  ///< proportional to its logarithm; a value that is not positive is drawn in `nan_color`
+    Symlog =
+        2,  ///< linear within `mScaleThreshold` of zero, logarithmic beyond, with the sign kept
+};
+
+/// A built-in check of the mesh, drawn instead of (or beside) a data field.
+enum class RenderDiagnostic : std::uint8_t {
+    None = 0,         ///< no diagnostic (default)
+    Quality = 1,      ///< colour cells by the `quality` metric named `mQualityMetric`
+    Inverted = 2,     ///< highlight cells with a negative signed volume or area
+    Degenerate = 3,   ///< highlight cells with a near-zero volume, edge or Jacobian
+    Orientation = 4,  ///< front faces (towards the camera) in blue, back faces in orange
+    FreeEdges =
+        5,  ///< open edges, non-manifold edges and inconsistently wound pairs, in three colours
+    EdgeLength = 6,  ///< colour faces by their mean edge length
+};
+
 /// An RGBA colour, 8 bits per channel, alpha 255 opaque.
 using RenderColor = std::array<std::uint8_t, 4>;
 
@@ -163,6 +184,62 @@ struct RenderOptions {
     /// Draw a scale bar in the lower-right corner (orthographic only) and give
     /// its length in `Frame::mNotes`.
     bool mScaleBar = false;
+
+    // --- Field rendering (v16.34.0, ABI 24) -------------------------------
+
+    /// Reduce the tensor array named by `mColorBy` (six or nine components)
+    /// before colouring: `mises`, `hydrostatic`, or `principal` (with
+    /// `mComponent` 0, 1, 2 the smallest, middle and largest principal value,
+    /// the largest when unset). Empty uses the array as it is.
+    std::string mReduce;
+    /// A `data_calc` expression evaluated into the array that is coloured
+    /// (`mag(u) / max(p)`); `mColorBy` must then be empty. Operands are looked
+    /// up in point data first, then cell data.
+    std::string mExpr;
+    /// Percentiles in [0, 100] that bound the automatic range, so one outlier
+    /// does not flatten the plot; an explicit `mVMin`/`mVMax` wins.
+    std::optional<double> mClipLow;
+    std::optional<double> mClipHigh;
+    /// Make the range symmetric about zero, so a diverging map such as
+    /// `coolwarm` puts zero at its midpoint.
+    bool mSymmetric = false;
+    RenderScale mScale = RenderScale::Linear;
+    /// The linear region of `RenderScale::Symlog` is `|v| < mScaleThreshold`.
+    double mScaleThreshold = 1.0;
+    /// Treat the mapped array's values as categories (integer cell data such
+    /// as a material id), coloured from a fixed qualitative palette, and list
+    /// each in `Frame::mNotes`.
+    bool mCategorical = false;
+    /// Colour cells by the first named cell region that holds them, from the
+    /// same palette, and list every region (an empty one too) in
+    /// `Frame::mNotes`.
+    bool mColorRegions = false;
+    /// Draw the edges where the categories of two faces differ.
+    bool mCategoryEdges = false;
+    /// Contour lines of the point array `mColorBy`: this many, equally spaced
+    /// inside the range, or the explicit `mIsoLevels` when given.
+    std::int32_t mIsolines = 0;
+    std::vector<double> mIsoLevels;
+    RenderColor mIsoColor = {30, 30, 30, 255};
+    /// Arrows for the vector point array of this name, at about
+    /// `mVectorCount` evenly ranked drawn points: a length proportional to the
+    /// magnitude (the longest is 6% of the model's diagonal), or `mVectorLength`
+    /// model units for all of them.
+    std::string mVectors;
+    std::int32_t mVectorCount = 200;
+    double mVectorLength = 0.0;
+    RenderColor mVectorColor = {220, 50, 50, 255};
+    /// Move the points by this displacement point array times `mWarpScale`.
+    std::string mWarp;
+    double mWarpScale = 1.0;
+    /// With a warp, also draw the undeformed outline (its open and sharp
+    /// edges) in `mOutlineColor`.
+    bool mWarpOutline = false;
+    RenderColor mOutlineColor = {150, 150, 150, 255};
+    RenderDiagnostic mDiagnostic = RenderDiagnostic::None;
+    /// The `quality` metric for `RenderDiagnostic::Quality` (`scaled_jacobian`,
+    /// `aspect_ratio`, ...).
+    std::string mQualityMetric;
 };
 
 /** @brief A rendered image. */

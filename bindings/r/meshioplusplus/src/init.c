@@ -81,6 +81,11 @@ extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, S
 extern SEXP R_mio_compute_curvature(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_normals(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_feature_edges(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_render(SEXP, SEXP);
+extern SEXP R_mio_render_text(SEXP, SEXP, SEXP);
+extern SEXP R_mio_render_png(SEXP, SEXP, SEXP);
+extern SEXP R_mio_write_snapshot(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_detect_color_depth(SEXP, SEXP, SEXP);
 extern SEXP R_mio_region_adjacency(SEXP, SEXP);
 extern SEXP R_mio_find_interface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_contact_pairs(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -256,6 +261,11 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_compute_curvature, 8),
                                               CALLDEF(R_mio_compute_normals, 7),
                                               CALLDEF(R_mio_feature_edges, 7),
+                                              CALLDEF(R_mio_render, 2),
+                                              CALLDEF(R_mio_render_text, 3),
+                                              CALLDEF(R_mio_render_png, 3),
+                                              CALLDEF(R_mio_write_snapshot, 8),
+                                              CALLDEF(R_mio_detect_color_depth, 3),
                                               CALLDEF(R_mio_region_adjacency, 2),
                                               CALLDEF(R_mio_find_interface, 9),
                                               CALLDEF(R_mio_contact_pairs, 6),

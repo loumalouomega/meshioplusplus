@@ -1600,6 +1600,54 @@ end
     close(gridm)
 end
 
+@testset "software rendering" begin
+    conn = Int64[1 5 1 4 1 2; 4 6 2 8 5 3; 3 7 6 7 8 7; 2 8 5 3 4 6]
+    pts = Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1]
+    cube = Mesh()
+    set_points!(cube, pts)
+    add_cell_block!(cube, "quad", conn)
+    add_point_data!(cube, "x", reshape(pts[1, :], 1, :))
+
+    f = render(cube; width=48, height=32, background=rgba(255, 255, 255))
+    @test f isa Frame
+    @test (f.width, f.height) == (48, 32)
+    @test size(f.rgba) == (4, 48, 32)
+    @test size(f.cell_ids) == (48, 32)
+    @test f.rgba[:, 1, 1] == UInt8[255, 255, 255, 255]
+    @test count(>=(0), f.cell_ids) > 100
+    @test f.range === nothing
+
+    g = render(cube; width=40, height=40, color_by="x", colorbar=true, symmetric=true,
+               clip=(5, 95), scale="linear", isolines=2, view="+z")
+    @test g.range !== nothing
+    @test g.range[1] == -g.range[2]
+    @test any(n -> startswith(n, "x: "), g.notes)
+    @test any(n -> startswith(n, "ticks: "), g.notes)
+
+    text = render_text(cube; cols=20, rows=6, color_depth="mono")
+    @test count(==('\n'), text) == 6
+    @test !occursin('\e', text)
+    html = render_text(cube; cols=20, rows=6, format="html")
+    @test startswith(html, "<!DOCTYPE html>")
+
+    png = render_png(cube; width=30, height=20)
+    @test png[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    @test_throws MeshioError render_png(cube; compress=10)
+
+    path = joinpath(mktempdir(), "frame.png")
+    write_snapshot(path, cube; width=32, height=24)
+    @test read(path)[1:4] == UInt8[0x89, 0x50, 0x4e, 0x47]
+    @test_throws MeshioError write_snapshot(joinpath(dirname(path), "frame.vtu"), cube)
+
+    @test_throws MeshioError render(cube; color_by="nope")
+    @test_throws ErrorException render(cube; bogus=1)
+    @test_throws ErrorException render(cube; shading="plastic")
+    @test detect_color_depth(no_color="1") == "mono"
+    @test detect_color_depth(color_term="truecolor") == "truecolor"
+    @test detect_color_depth(term="xterm-256color") == "256"
+    close(cube)
+end
+
 @testset "format side channel (mdpa)" begin
     mktempdir() do dir
         path = joinpath(dir, "side.mdpa")

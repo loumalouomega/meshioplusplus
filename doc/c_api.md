@@ -242,6 +242,29 @@ A `NULL` `opts.arrays` means *every* array; a non-`NULL` pointer with `num_array
 
 Conan gains `with_zstd` / `with_lz4` and vcpkg gains `zstd` / `lz4` features, both **off by default** (unlike `with_hdf5`/`with_netcdf`/`with_zlib`). zlib remains the default codec, so existing package IDs and consumers are unaffected. See [Compression codecs](codecs.md).
 
+## Software rendering (v16.34.0)
+
+A deterministic software rasterizer and its terminal, HTML and PNG encodings, with no display or GPU: see [terminal rendering](/tui) for what is drawn and every option. The interactive terminal loop is CLI-only and has no entry point here.
+
+```c
+mio_render_opts opts;
+mio_render_opts_init(&opts);            // an all-zero struct is NOT the default: width 0 is refused
+opts.width = 800; opts.height = 600; opts.supersample = 2;
+opts.color_by = "temperature"; opts.colorbar = 1; opts.clip_low = 2; opts.has_clip_low = 1;
+
+mio_frame* f = mio_render(mesh, &opts);                   // NULL on failure, see mio_last_error()
+const uint8_t* rgba = mio_frame_rgba(f);                  // width*height*4, straight alpha, row 0 on top
+const int64_t* ids = mio_frame_cell_ids(f);               // the input cell at each pixel, -1 for none
+int64_t n = mio_frame_png(f, 0, NULL, 0);                 // length query, then the bytes into a buffer
+mio_frame_free(f);
+
+mio_text_opts text; mio_text_opts_init(&text); text.cols = 80; text.rows = 24;
+int64_t len = mio_render_text(mesh, &opts, &text, buf, buflen);   // string rule 5
+mio_write_snapshot("part.png", mesh, &opts, NULL, NULL);          // .png .txt .ansi .html .cast
+```
+
+`mio_render_opts` follows the usual rules (reserved tail, append-only growth; colours are packed `0xRRGGBBAA`; enum values are the `MIO_SHADING_*`, `MIO_EDGES_*`, `MIO_SCALE_*` and `MIO_DIAGNOSTIC_*` macros; string fields are borrowed for the call and may be `NULL`). A frame is an owning `mio_frame` whose borrows (`mio_frame_rgba`, `mio_frame_cell_ids`) expire when it is freed; `mio_frame_range` gives the mapped range and `mio_frame_note` the notes (colour range, ticks and keys). A cell encoding of `mio_frame_text` needs a frame sized to its grid, which `mio_render_text` does for you. `mio_detect_color_depth` reads the values of `NO_COLOR`, `COLORTERM` and `TERM`. An unknown enum value, a bad option or a misnamed array is `NULL`/`-1`/an error status with the reason in `mio_last_error()`.
+
 ## v9.1.0 additions
 
 **Gmsh metadata.** `mio_read_with_info` returns a `"gmsh"` handle containing 4.1 bounding-entity tags and 2.2/4.0/4.1 periodic links. `mio_gmsh_info_count(info, section)` accepts `MIO_GMSH_BOUNDING_ENTITIES` (per cell block) and `MIO_GMSH_PERIODIC` (per link); `mio_gmsh_info_array(info, section, index, field, ...)` borrows from the handle until it is freed. Bounding field 0 is Int32 signed entity tags. Periodic fields are 0 = Int32 `[dimension, slave entity tag, master entity tag]`, 1 = Float64 affine coefficients (0 or 16), 2 = Int64 `(N, 2)` slave/master **0-based point rows**. Entity tags stay file ids; ordering and duplicates survive I/O. The handle outlives its mesh, but operations do not remap the rows; rebuild the info after point/topology changes. `mio_write_with_info` accepts `gmsh` or `gmsh22` for a Gmsh handle, writing binary with the usual defaults. Existing C signatures and option-struct layouts are unchanged.

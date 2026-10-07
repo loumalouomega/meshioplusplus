@@ -4021,6 +4021,21 @@ def tool_render_mesh(
     supersample=2,
     background=None,
     axes=False,
+    expr=None,
+    reduce=None,
+    clip=None,
+    symmetric=False,
+    scale=None,
+    categorical=False,
+    color_regions=False,
+    category_edges=False,
+    isolines=0,
+    vectors=None,
+    warp=None,
+    warp_scale=1.0,
+    warp_outline=False,
+    diagnostic=None,
+    quality_metric=None,
 ):
     """Draw a mesh with the software rasterizer: no display, GPU or extra.
     Without output_path, return it as text; with one, write the form its
@@ -4045,6 +4060,21 @@ def tool_render_mesh(
         "supersample": supersample,
         "background": None if background is None else parse_color(background),
         "axes": bool(axes),
+        "expr": expr,
+        "reduce": reduce,
+        "clip": None if clip is None else tuple(clip),
+        "symmetric": bool(symmetric) or None,
+        "scale": scale,
+        "categorical": bool(categorical) or None,
+        "color_regions": bool(color_regions) or None,
+        "category_edges": bool(category_edges) or None,
+        "isolines": int(isolines) or None,
+        "vectors": vectors,
+        "warp": warp,
+        "warp_scale": float(warp_scale) if warp else None,
+        "warp_outline": bool(warp_outline) or None,
+        "diagnostic": diagnostic,
+        "quality_metric": quality_metric,
     }
     options = {k: v for k, v in options.items() if v is not None}
     if output_path is None:
