@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 16.32.0
+  VERSION 16.34.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -1635,7 +1635,7 @@ endif()
 option(MESHIOPLUSPLUS_BUILD_CLI "Build the native command-line binary" OFF)
 if(MESHIOPLUSPLUS_BUILD_CLI)
   add_executable(meshioplusplus_cli src/cpp/cli/main.cpp)
-  target_sources(meshioplusplus_cli PRIVATE src/cpp/cli/view_payload.cpp)
+  target_sources(meshioplusplus_cli PRIVATE src/cpp/cli/view_payload.cpp src/cpp/cli/terminal.cpp)
   target_link_libraries(meshioplusplus_cli PRIVATE meshioplusplus_core_obj)
   target_compile_definitions(meshioplusplus_cli
     PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")

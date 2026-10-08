@@ -13,13 +13,14 @@ meshioplusplus.view(mesh, backend="polyscope") # a native desktop window
 meshioplusplus.view(mesh, backend="browser")   # vtk.js, in a browser or notebook
 ```
 
-| | desktop (`polyscope`) | browser (`vtk.js`) |
-| --- | --- | --- |
-| install | `pip install meshioplusplus[viewer]` | nothing extra |
-| volume meshes | drawn as solids you can slice | drawn by their boundary |
-| headless screenshots | yes | no |
-| works in a notebook | no | yes, inline |
-| needs a display | yes | no |
+| | desktop (`polyscope`) | browser (`vtk.js`) | terminal ([`snapshot`](./tui.md)) |
+| --- | --- | --- | --- |
+| install | `pip install meshioplusplus[viewer]` | nothing extra | nothing extra; in the native release binaries too |
+| volume meshes | drawn as solids you can slice | drawn by their boundary | drawn by their boundary |
+| headless screenshots | yes | no | yes (PNG, no GPU or EGL) |
+| works in a notebook | no | yes, inline | as an image or HTML |
+| needs a display | yes | no | no; draws in a terminal over SSH |
+| interactive | yes | yes | not yet (a still picture) |
 
 `backend="auto"` (the default) uses polyscope when it is installed *and* a display is available, and the browser otherwise — so the same call works over SSH, in a notebook, and on a workstation.
 
@@ -31,7 +32,7 @@ meshioplusplus.view(mesh, backend="browser")   # vtk.js, in a browser or noteboo
 pip install meshioplusplus[viewer]
 ```
 
-Without it, `view(backend="polyscope")` and `screenshot()` raise an error naming that command; everything else, including `view(backend="browser")`, works unchanged. `has_viewer()` reports whether the polyscope backend is importable — checking it never opens a window or needs a display, so it is safe to call anywhere before deciding which backend to request.
+Without it, `view(backend="polyscope")` raises an error naming that command, and `screenshot()` falls back to the [software rasterizer](./tui.md) with a warning; everything else, including `view(backend="browser")`, works unchanged. `has_viewer()` reports whether the polyscope backend is importable — checking it never opens a window or needs a display, so it is safe to call anywhere before deciding which backend to request.
 
 ![The example bracket in Polyscope, coloured by scaled Jacobian](/viewer/desktop-viewer.png)
 
@@ -52,7 +53,7 @@ meshioplusplus.screenshot(mesh, "part.png", color_by="quality:scaled_jacobian",
                           size=(1600, 1200))
 ```
 
-It needs EGL or a virtual framebuffer. On a headless Linux box either `libegl1` or `xvfb-run -a python …` will do; the error names the backends it tried.
+It needs EGL or a virtual framebuffer. On a headless Linux box either `libegl1` or `xvfb-run -a python …` will do; the error names the backends it tried. Without polyscope at all, `screenshot()` draws the PNG with the [software rasterizer](./tui.md) instead — no GPU, EGL or display — and warns that it did.
 
 ### How a mesh becomes a picture
 

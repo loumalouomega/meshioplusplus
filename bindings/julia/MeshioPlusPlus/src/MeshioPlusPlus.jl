@@ -57,6 +57,7 @@ include("errors.jl")
 include("mesh.jl")
 include("regions.jl")
 include("operations.jl")
+include("render.jl")
 include("sequence.jl")
 include("xdmf_series.jl")
 include("exodus_series.jl")
@@ -73,6 +74,7 @@ end
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
 export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info
 export write_gltf
+export render, render_text, render_png, write_snapshot, detect_color_depth, Frame, rgba
 export ReadOptions, MeshMetadata, DiffReport
 
 # Introspection

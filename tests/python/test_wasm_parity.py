@@ -89,6 +89,8 @@ _JS_TO_C = {
     "resampleSequence": "sequence_resample",
     "readMedNamed": "med_read_named",
     "writeMedMulti": "med_write_multi",
+    # The JS wrapper renders and encodes in one call; C holds the frame between.
+    "renderPng": "frame_png",
 }
 
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no

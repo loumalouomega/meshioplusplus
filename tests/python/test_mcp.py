@@ -1299,6 +1299,48 @@ def test_feature_edges_and_hausdorff(tmp_path):
     assert _dump(_tools.tool_hausdorff(src, src))["distance"] == 0.0
 
 
+def test_render_mesh_tool(tmp_path):
+    pytest.importorskip("meshioplusplus._core")
+    src = str(tmp_path / "cube.vtu")
+    cube = _unit_cube_quads()
+    cube.point_data["x"] = cube.points[:, 0].copy()
+    meshioplusplus.write(src, cube)
+    text = _dump(_tools.tool_render_mesh(src, cols=24, rows=8))
+    assert (text["cols"], text["rows"]) == (24, 8)
+    assert len(text["text"].splitlines()) == 8
+    assert "\x1b" not in text["text"]
+    ansi = _dump(_tools.tool_render_mesh(src, cols=24, rows=8, text_format="ansi"))
+    assert "\x1b[" in ansi["text"]
+    png = _dump(
+        _tools.tool_render_mesh(src, str(tmp_path / "c.png"), width=48, height=32)
+    )
+    assert png["size"] == [48, 32]
+    assert open(png["output_path"], "rb").read()[:8] == b"\x89PNG\r\n\x1a\n"
+    with pytest.raises(ValueError, match="text_format"):
+        _tools.tool_render_mesh(src, text_format="svg")
+    # Field rendering: the notes under the text carry the range, ticks and keys.
+    field = _dump(
+        _tools.tool_render_mesh(
+            src,
+            cols=24,
+            rows=8,
+            color_by="x",
+            colorbar=True,
+            symmetric=True,
+            clip=[5, 95],
+        )
+    )
+    assert "x: -" in field["text"] and "ticks:" in field["text"]
+    diag = _dump(
+        _tools.tool_render_mesh(src, cols=24, rows=8, diagnostic="orientation")
+    )
+    assert "orientation:" in diag["text"]
+    with pytest.raises(ValueError, match="diagnostic must be"):
+        _tools.tool_render_mesh(src, diagnostic="plastic")
+    with pytest.raises(ValueError, match="expected .png"):
+        _tools.tool_render_mesh(src, str(tmp_path / "c.vtu"))
+
+
 def test_region_adjacency_tool(tmp_path):
     mesh = meshioplusplus.Mesh(
         np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1.0]]),
@@ -1957,6 +1999,28 @@ def test_server_lists_every_registered_tool():
         assert t.inputSchema, f"tool '{t.name}' has no input schema"
 
 
+def test_server_render_mesh_returns_an_image(mesh_file, tmp_path):
+    pytest.importorskip("meshioplusplus._core")
+    server = _server()
+    result = _run(
+        server.call_tool(
+            "render_mesh",
+            {
+                "input_path": mesh_file,
+                "output_path": str(tmp_path / "r.png"),
+                "width": 40,
+                "height": 30,
+            },
+        )
+    )
+    content = result[0] if isinstance(result, tuple) else result
+    assert any(getattr(c, "type", "") == "image" for c in content)
+    text = _tool_json(
+        _run(server.call_tool("render_mesh", {"input_path": mesh_file, "rows": 5}))
+    )
+    assert len(text["text"].splitlines()) == 5
+
+
 def test_server_call_tool_info_and_convert(mesh_file, tmp_path):
     server = _server()
     report = _tool_json(_run(server.call_tool("info", {"input_path": mesh_file})))
@@ -1981,20 +2045,23 @@ def test_server_error_payload_shape(tmp_path):
     assert "input file not found" in report["error"]
 
 
-def test_server_gated_tool_names_the_extra(mesh_file, tmp_path):
-    if meshioplusplus.has_viewer():
-        pytest.skip("polyscope installed; the gated error path is not reachable")
+def test_server_screenshot_falls_back_to_the_software_rasterizer(
+    mesh_file, tmp_path, monkeypatch
+):
+    # `screenshot` is polyscope-first, but without it (the common case on a
+    # server) it draws the PNG with the software rasterizer instead of failing.
+    pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus import _viewer
+
+    monkeypatch.setattr(_viewer, "has_viewer", lambda: False)
     server = _server()
-    report = _tool_json(
-        _run(
-            server.call_tool(
-                "screenshot",
-                {"input_path": mesh_file, "output_path": str(tmp_path / "s.png")},
-            )
-        )
+    out = str(tmp_path / "s.png")
+    result = _run(
+        server.call_tool("screenshot", {"input_path": mesh_file, "output_path": out})
     )
-    assert report["error_type"] == "ImportError"
-    assert "polyscope" in report["error"]
+    content = result[0] if isinstance(result, tuple) else result
+    assert any(getattr(c, "type", "") == "image" for c in content)
+    assert open(out, "rb").read(8) == b"\x89PNG\r\n\x1a\n"
 
 
 def test_server_resources():

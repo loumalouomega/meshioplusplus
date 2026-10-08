@@ -250,7 +250,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 32
+#define MIO_VERSION_MINOR 34
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -4501,6 +4501,245 @@ MIO_API const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pa
 
 /** Destroy a pairs handle. Safe to call with NULL. */
 MIO_API void mio_periodic_pairs_free(mio_periodic_pairs* pairs);
+
+/* --------------------------------------------------------------------------
+ * Software rendering (v16.33.0 core, v16.34.0 field rendering): a
+ * deterministic software rasterizer and its terminal, HTML and PNG encodings.
+ * It needs no display, GPU or windowing library, and a frame is the same bytes
+ * on every platform and thread count. See doc/tui.md.
+ *
+ * The interactive terminal loop is CLI-only and has no entry point here.
+ * Colours are packed 0xRRGGBBAA (R in the most significant byte); alpha 0 is
+ * transparent.
+ * -------------------------------------------------------------------------- */
+
+/** `view` names, `shading`, `edges`, `scale` and `diagnostic` values. */
+#define MIO_SHADING_NONE 0
+#define MIO_SHADING_FLAT 1
+#define MIO_SHADING_SMOOTH 2
+#define MIO_EDGES_NONE 0
+#define MIO_EDGES_ALL 1
+#define MIO_EDGES_FEATURE 2
+#define MIO_SCALE_LINEAR 0
+#define MIO_SCALE_LOG 1
+#define MIO_SCALE_SYMLOG 2
+#define MIO_DIAGNOSTIC_NONE 0
+#define MIO_DIAGNOSTIC_QUALITY 1
+#define MIO_DIAGNOSTIC_INVERTED 2
+#define MIO_DIAGNOSTIC_DEGENERATE 3
+#define MIO_DIAGNOSTIC_ORIENTATION 4
+#define MIO_DIAGNOSTIC_FREE_EDGES 5
+#define MIO_DIAGNOSTIC_EDGE_LENGTH 6
+
+/**
+ * Options for mio_render and the functions built on it.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always initialize through
+ * mio_render_opts_init(): an all-zero struct is NOT the default (a zero width
+ * is an error). String fields are borrowed for the call; NULL or "" means unset.
+ */
+typedef struct mio_render_opts {
+    const char*
+        view; /**< "iso", "+x" ... "-z": the side the camera sits on; overrides azimuth/elevation */
+    const char* color_by; /**< data array to colour by; NULL for the fill colour */
+    const char* cmap;     /**< colormap name (default "viridis") */
+    const char* reduce;   /**< "mises", "hydrostatic" or "principal" tensor reduction of color_by */
+    const char* expr;     /**< a data_calc expression to colour by instead of color_by */
+    const char* vectors;  /**< vector point array drawn as arrows */
+    const char* warp;     /**< displacement point array that moves the points */
+    const char* quality_metric; /**< metric of MIO_DIAGNOSTIC_QUALITY, e.g. "scaled_jacobian" */
+    const double* iso_levels;   /**< explicit contour levels (num_iso_levels of them), or NULL */
+    int64_t num_iso_levels;
+    double pixel_aspect; /**< height over width of a pixel; 1 for an image */
+    double azimuth;      /**< degrees; default 45 (isometric) */
+    double elevation;    /**< degrees; default 35.264389682754654 */
+    double roll;         /**< degrees */
+    double fov_deg; /**< vertical field of view of the perspective camera, (0, 180); default 30 */
+    double zoom;    /**< magnification over the fitted view; default 1 */
+    double pan_x;   /**< shift, in fractions of the frame */
+    double pan_y;
+    double ambient; /**< light floor in [0, 1]; default 0.25 */
+    double light_x; /**< direction toward the light in camera space; default (0, 0, 1) */
+    double light_y;
+    double light_z;
+    double split_angle;   /**< crease angle of smooth shading, degrees; default 30 */
+    double feature_angle; /**< crease angle of MIO_EDGES_FEATURE, degrees; default 30 */
+    double point_radius;  /**< disc radius of drawn points, pixels; default 1.5 */
+    double vmin;          /**< range low end, used when has_vmin */
+    double vmax;
+    double clip_low; /**< percentile bounding the automatic range, used when has_clip_low */
+    double clip_high;
+    double scale_threshold; /**< linear region of MIO_SCALE_SYMLOG; default 1 */
+    double vector_length;   /**< model units of every arrow; 0 scales them by magnitude */
+    double warp_scale;      /**< default 1 */
+    int32_t width;          /**< pixels; default 320 */
+    int32_t height;         /**< default 240 */
+    int32_t supersample;    /**< 1, 2 or 4 samples per pixel along each axis; default 1 */
+    int32_t perspective;    /**< nonzero: a pinhole camera instead of an orthographic one */
+    int32_t shading;        /**< MIO_SHADING_*; default MIO_SHADING_FLAT */
+    int32_t two_sided;      /**< nonzero lights both sides of a face; default 1 */
+    int32_t edges;          /**< MIO_EDGES_*; default MIO_EDGES_NONE */
+    int32_t component;      /**< component of a vector or tensor array; -1 takes the magnitude */
+    int32_t has_vmin;
+    int32_t has_vmax;
+    int32_t has_clip_low;
+    int32_t has_clip_high;
+    int32_t colorbar;       /**< nonzero draws a colour bar with ticks */
+    int32_t axes;           /**< nonzero draws the world axes */
+    int32_t scale_bar;      /**< nonzero draws a scale bar (orthographic only) */
+    int32_t symmetric;      /**< nonzero makes the range symmetric about zero */
+    int32_t scale;          /**< MIO_SCALE_*; default MIO_SCALE_LINEAR */
+    int32_t categorical;    /**< nonzero colours integer data as categories */
+    int32_t color_regions;  /**< nonzero colours cells by their first named cell region */
+    int32_t category_edges; /**< nonzero draws the edges where two categories meet */
+    int32_t isolines; /**< number of equally spaced contour levels of the point array color_by */
+    int32_t vector_count;   /**< about this many arrows; default 200 */
+    int32_t warp_outline;   /**< nonzero also draws the undeformed outline */
+    int32_t diagnostic;     /**< MIO_DIAGNOSTIC_* */
+    uint32_t edge_color;    /**< default 0x000000FF */
+    uint32_t fill_color;    /**< default 0xC8C5BDFF */
+    uint32_t line_color;    /**< default 0x000080FF */
+    uint32_t background;    /**< default 0x00000000 (transparent) */
+    uint32_t nan_color;     /**< default 0x808080FF */
+    uint32_t iso_color;     /**< default 0x1E1E1EFF */
+    uint32_t vector_color;  /**< default 0xDC3232FF */
+    uint32_t outline_color; /**< default 0x969696FF */
+    int64_t reserved[6];    /**< must be zero; room for additive growth */
+} mio_render_opts;
+
+/** Initialize render options to the defaults named above. */
+MIO_API void mio_render_opts_init(mio_render_opts* opts);
+
+/** `encoding` values of mio_text_opts. */
+#define MIO_ENCODING_HALFBLOCK 0
+#define MIO_ENCODING_QUADRANT 1
+#define MIO_ENCODING_SEXTANT 2
+#define MIO_ENCODING_BRAILLE 3
+#define MIO_ENCODING_ASCII 4
+#define MIO_ENCODING_KITTY 5
+#define MIO_ENCODING_ITERM2 6
+#define MIO_ENCODING_SIXEL 7
+/** `color_depth` values. */
+#define MIO_COLOR_TRUECOLOR 0
+#define MIO_COLOR_256 1
+#define MIO_COLOR_16 2
+#define MIO_COLOR_MONO 3
+/** `format` values. */
+#define MIO_TEXT_ANSI 0
+#define MIO_TEXT_PLAIN 1
+#define MIO_TEXT_HTML 2
+
+/**
+ * Options for the text encodings. Same ABI rules as mio_render_opts; initialize
+ * through mio_text_opts_init().
+ */
+typedef struct mio_text_opts {
+    double cell_aspect;        /**< height over width of a terminal cell; default 2 */
+    int32_t encoding;          /**< MIO_ENCODING_*; default MIO_ENCODING_HALFBLOCK */
+    int32_t color_depth;       /**< MIO_COLOR_*; default MIO_COLOR_TRUECOLOR */
+    int32_t format;            /**< MIO_TEXT_*; default MIO_TEXT_ANSI */
+    int32_t cols;              /**< terminal size mio_render_text fits the frame to; default 80 */
+    int32_t rows;              /**< default 24 */
+    int32_t cell_pixel_width;  /**< pixel size of a cell, for the graphics protocols; default 8 */
+    int32_t cell_pixel_height; /**< default 16 */
+    int32_t tmux;              /**< nonzero wraps graphics protocols for tmux passthrough */
+    int32_t notes;       /**< nonzero appends the frame's notes under the picture; default 1 */
+    int32_t flags;       /**< must be zero */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_text_opts;
+
+/** Initialize text options to the defaults named above. */
+MIO_API void mio_text_opts_init(mio_text_opts* opts);
+
+/** An owned rendered image. */
+typedef struct mio_frame mio_frame;
+
+/**
+ * Render a mesh into an RGBA frame with a per-pixel cell-id buffer.
+ * @param mesh a mesh (volume cells are drawn through their boundary skin).
+ * @param opts options; NULL means every mio_render_opts_init() default.
+ * @return the frame (free with mio_frame_free), or NULL on failure.
+ */
+MIO_API mio_frame* mio_render(const mio_mesh* mesh, const mio_render_opts* opts);
+
+/** NULL is allowed. Everything borrowed from the frame expires with it. */
+MIO_API void mio_frame_free(mio_frame* frame);
+
+/** Size in pixels; 0 on a NULL frame. */
+MIO_API int32_t mio_frame_width(const mio_frame* frame);
+MIO_API int32_t mio_frame_height(const mio_frame* frame);
+
+/** Borrow `width * height * 4` bytes, RGBA, rows top to bottom, straight alpha. */
+MIO_API const uint8_t* mio_frame_rgba(const mio_frame* frame);
+
+/** Borrow `width * height` ids: the input cell (global, block-major) drawn at
+ * each pixel, -1 for none. */
+MIO_API const int64_t* mio_frame_cell_ids(const mio_frame* frame);
+
+/** @return 1 when a field was mapped (then *vmin and *vmax, either may be NULL,
+ * receive its range), 0 when not, -1 on error. */
+MIO_API int32_t mio_frame_range(const mio_frame* frame, double* vmin, double* vmax);
+
+/** @return the number of text notes (colour range, ticks, keys), or -1. */
+MIO_API int64_t mio_frame_num_notes(const mio_frame* frame);
+
+/** String rule 5: required byte length excluding NUL, -1 on error. */
+MIO_API int64_t mio_frame_note(const mio_frame* frame, int64_t index, char* buf, int64_t buflen);
+
+/**
+ * Encode a frame as text (terminal cells, or a graphics-protocol image). A cell
+ * encoding needs a frame whose size is a multiple of its cell grid; use
+ * mio_render_text to have it sized. String rule 5; buffer may be NULL/zero to
+ * query the length.
+ */
+MIO_API int64_t mio_frame_text(const mio_frame* frame, const mio_text_opts* opts, char* buf,
+                               int64_t buflen);
+
+/**
+ * Encode a frame as an RGBA PNG. `compress` 0 writes stored deflate blocks (the
+ * same bytes everywhere, no zlib needed); 1-9 compress through zlib where the
+ * build has it. Returns the required byte length (the bytes are not
+ * NUL-terminated), or -1 on error; the buffer may be NULL/zero to query it.
+ */
+MIO_API int64_t mio_frame_png(const mio_frame* frame, int32_t compress, uint8_t* buf,
+                              int64_t buflen);
+
+/**
+ * Render a mesh to text sized to opts->cols x opts->rows cells. String rule 5.
+ * @param render render options (NULL for defaults; width and height are
+ *        replaced by the size the encoding needs).
+ */
+MIO_API int64_t mio_render_text(const mio_mesh* mesh, const mio_render_opts* render,
+                                const mio_text_opts* text, char* buf, int64_t buflen);
+
+/** Options of mio_write_snapshot beyond the render and text ones. */
+typedef struct mio_snapshot_opts {
+    double cast_fps;      /**< asciicast frame rate; default 12 */
+    double cast_degrees;  /**< azimuth swept by an asciicast orbit; default 360 */
+    int32_t png_compress; /**< 0 stored; 1-9 zlib; default 0 */
+    int32_t cast_frames;  /**< asciicast frames; default 36 */
+    int64_t reserved[6];  /**< must be zero; room for additive growth */
+} mio_snapshot_opts;
+
+MIO_API void mio_snapshot_opts_init(mio_snapshot_opts* opts);
+
+/**
+ * Render a mesh to a file chosen by extension: `.png`, `.txt`, `.ansi`, `.html`
+ * or `.cast` (an asciinema orbit). Text forms are sized by text->cols and rows.
+ * Any option may be NULL for its defaults.
+ */
+MIO_API mio_status mio_write_snapshot(const char* path, const mio_mesh* mesh,
+                                      const mio_render_opts* render, const mio_text_opts* text,
+                                      const mio_snapshot_opts* snapshot);
+
+/**
+ * The colour depth a terminal advertises: pass the values of NO_COLOR,
+ * COLORTERM and TERM (NULL when unset). @return a MIO_COLOR_* value.
+ */
+MIO_API int32_t mio_detect_color_depth(const char* no_color, const char* color_term,
+                                       const char* term);
 
 #ifdef __cplusplus
 }

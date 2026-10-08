@@ -231,7 +231,8 @@ mio_write <- function(mesh, path, format = NULL, encoding = "default",
 #' @param mesh A `mio_mesh` object.
 #' @param path Destination `.glb` or `.gltf` path.
 #' @param color_by Point or cell field to colour by; `NULL` disables colouring.
-#' @param cmap Colormap: `viridis`, `coolwarm`, or `turbo`.
+#' @param cmap Colormap: `viridis`, `coolwarm`, `turbo`, `magma`, `inferno`,
+#'   `plasma` or `grey`, or a reversed `_r` variant of any.
 #' @param component 1-based component, or `NULL` for magnitude.
 #' @param vmin,vmax Optional colour range limits.
 #' @param split_angle Smooth-normal split angle in degrees.
@@ -1227,6 +1228,147 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
     R_mio_feature_edges, mesh, as.numeric(feature_angle), isTRUE(feature),
     isTRUE(boundary), isTRUE(non_manifold), isTRUE(inconsistent), as.character(region)
   )
+}
+
+#' Render a mesh into an RGBA frame
+#'
+#' A deterministic software rasterizer: no display, GPU or windowing library, and
+#' the same pixels on every platform. Volume cells are drawn through their
+#' boundary skin. See `doc/tui.md`.
+#'
+#' The named arguments in `...` are the options of the C `mio_render_opts`:
+#' `width`, `height`, `supersample`; the camera `view` (`"iso"`, `"+x"` ... `"-z"`),
+#' `azimuth`, `elevation`, `roll`, `projection` (`"orthographic"`, `"perspective"`),
+#' `fov_deg`, `zoom`, `pan`; `shading` (`"none"`, `"flat"`, `"smooth"`), `two_sided`,
+#' `ambient`, `light_dir`, `split_angle`; `edges` (`"none"`, `"all"`, `"feature"`),
+#' `feature_angle`; the colours `edge_color`, `fill_color`, `line_color`,
+#' `background`, `nan_color`, `iso_color`, `vector_color`, `outline_color` (see
+#' [mio_rgba()] or `c(r, g, b[, a])`), `point_radius`; colouring by `color_by`,
+#' `component`, `cmap`, `vmin`, `vmax`, `colorbar`, `axes`, `scale_bar`; and the
+#' field options `expr`, `reduce`, `clip` (percentiles, `NA` for either end),
+#' `symmetric`, `scale` (`"linear"`, `"log"`, `"symlog"`), `scale_threshold`,
+#' `categorical`, `color_regions`, `category_edges`, `isolines`, `iso_levels`,
+#' `vectors`, `vector_count`, `vector_length`, `warp`, `warp_scale`,
+#' `warp_outline`, `diagnostic` (`"quality"`, `"inverted"`, `"degenerate"`,
+#' `"orientation"`, `"free_edges"`, `"edge_length"`) and `quality_metric`. An
+#' unknown name is an error.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param ... Named render options, see Details.
+#' @return A `mio_frame`: a list of `width`, `height`, `rgba` (an integer array
+#'   `c(4, width, height)`, straight alpha, row 1 on top), `cell_ids` (a
+#'   `width` x `height` matrix of the input cell drawn at each pixel, -1 for
+#'   none), `range` (`c(vmin, vmax)`, or `NULL` when no field is mapped) and
+#'   `notes` (the colour range, ticks and keys).
+#' @export
+mio_render <- function(mesh, ...) {
+  structure(.Call(R_mio_render, mesh, list(...)), class = "mio_frame")
+}
+
+#' A frame as a numeric array
+#'
+#' @param frame A `mio_frame` from [mio_render()].
+#' @return A numeric array `c(height, width, 4)` with values in `[0, 1]`, the
+#'   layout `rasterImage()` and the `png` package take.
+#' @export
+mio_frame_array <- function(frame) {
+  a <- aperm(frame$rgba, c(3L, 2L, 1L)) / 255
+  dim(a) <- c(frame$height, frame$width, 4L)
+  a
+}
+
+#' Render a mesh as text for a terminal
+#'
+#' @param mesh A `mio_mesh`.
+#' @param cols,rows Size in terminal cells.
+#' @param encoding `"halfblock"`, `"quadrant"`, `"sextant"`, `"braille"`,
+#'   `"ascii"`, or a graphics protocol: `"kitty"`, `"iterm2"` or `"sixel"`.
+#' @param color_depth `"truecolor"`, `"256"`, `"16"` or `"mono"`.
+#' @param format `"ansi"` (SGR colour escapes), `"plain"` (glyphs only) or `"html"`.
+#' @param cell_aspect Height over width of a terminal cell.
+#' @param tmux Wrap a graphics protocol for tmux passthrough.
+#' @param notes Append the colour range and keys under the picture.
+#' @param ... Named render options, see [mio_render()].
+#' @return A character string (UTF-8), ready for `cat()`.
+#' @export
+mio_render_text <- function(mesh, cols = 80L, rows = 24L, encoding = "halfblock",
+                            color_depth = "truecolor", format = "ansi", cell_aspect = 2,
+                            tmux = FALSE, notes = TRUE, ...) {
+  .Call(
+    R_mio_render_text, mesh, list(...),
+    list(
+      encoding = as.character(encoding), color_depth = as.character(color_depth),
+      format = as.character(format), cols = as.integer(cols), rows = as.integer(rows),
+      cell_aspect = as.numeric(cell_aspect), tmux = isTRUE(tmux), notes = isTRUE(notes)
+    )
+  )
+}
+
+#' Render a mesh to PNG bytes
+#'
+#' @param mesh A `mio_mesh`.
+#' @param compress `0` stores the pixels uncompressed (no zlib, the same bytes
+#'   everywhere); 1-9 compress through zlib where the build has it.
+#' @param ... Named render options, see [mio_render()].
+#' @return A raw vector holding an RGBA PNG.
+#' @export
+mio_render_png <- function(mesh, compress = 0L, ...) {
+  .Call(R_mio_render_png, mesh, list(...), as.integer(compress))
+}
+
+#' Render a mesh to a file chosen by extension
+#'
+#' `.png`, `.txt`, `.ansi`, `.html` or `.cast` (an asciinema orbit). Text forms
+#' are sized `cols` x `rows`.
+#'
+#' @param path Output path.
+#' @param mesh A `mio_mesh`.
+#' @param ... Named render options, see [mio_render()].
+#' @param cols,rows,encoding,color_depth,format,cell_aspect,tmux,notes As for
+#'   [mio_render_text()].
+#' @param png_compress,cast_frames,cast_fps,cast_degrees PNG compression level
+#'   and the asciicast orbit's frame count, rate and sweep in degrees.
+#' @return `NULL`, invisibly.
+#' @export
+mio_write_snapshot <- function(path, mesh, ..., cols = 80L, rows = 24L, encoding = "halfblock",
+                               color_depth = "truecolor", format = "ansi", cell_aspect = 2,
+                               tmux = FALSE, notes = TRUE, png_compress = 0L, cast_frames = 36L,
+                               cast_fps = 12, cast_degrees = 360) {
+  .Call(
+    R_mio_write_snapshot, as.character(path), mesh, list(...),
+    list(
+      encoding = as.character(encoding), color_depth = as.character(color_depth),
+      format = as.character(format), cols = as.integer(cols), rows = as.integer(rows),
+      cell_aspect = as.numeric(cell_aspect), tmux = isTRUE(tmux), notes = isTRUE(notes)
+    ),
+    as.integer(png_compress), as.integer(cast_frames), as.numeric(cast_fps),
+    as.numeric(cast_degrees)
+  )
+  invisible(NULL)
+}
+
+#' The colour depth a terminal advertises
+#'
+#' @param no_color,color_term,term The values of `NO_COLOR`, `COLORTERM` and
+#'   `TERM`, or `NULL` when unset.
+#' @return `"truecolor"`, `"256"`, `"16"` or `"mono"`.
+#' @export
+mio_detect_color_depth <- function(no_color = NULL, color_term = NULL, term = NULL) {
+  .Call(
+    R_mio_detect_color_depth,
+    if (is.null(no_color)) NULL else as.character(no_color),
+    if (is.null(color_term)) NULL else as.character(color_term),
+    if (is.null(term)) NULL else as.character(term)
+  )
+}
+
+#' A colour as the `0xRRGGBBAA` number the render options take
+#'
+#' @param r,g,b,a Channels in `0:255`; `a` defaults to opaque.
+#' @return A number (a double: it can exceed the integer range).
+#' @export
+mio_rgba <- function(r, g, b, a = 255) {
+  ((r * 256 + g) * 256 + b) * 256 + a
 }
 
 #' Conforming shared facets between Cell regions

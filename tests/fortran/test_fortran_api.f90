@@ -1570,6 +1570,7 @@ program test_fortran_api
     call check_curvature()
     call check_normals()
     call check_analysis_editing()
+    call check_render(prefix)
     call check_repair_shrinkwrap_sobolev()
     call check_mdpa_side_channel(prefix)
 
@@ -1971,6 +1972,104 @@ contains
         call check(ierr == 0 .and. .not. passed, 'check_quality fails a tight bound')
         passed = sq%check_quality('bogus >= 1', stat=ierr)
         call check(ierr /= 0, 'check_quality rejects an unknown metric')
+        call sq%free()
+    end subroutine
+
+    subroutine check_render(out_prefix)
+        character(*), intent(in) :: out_prefix
+        type(mio_mesh) :: sq
+        type(mio_frame) :: f, bad
+        type(mio_render_settings) :: set
+        type(mio_text_settings) :: tset
+        real(real64) :: cube_points(3, 8), lo, hi
+        integer(int64) :: cube_conn(4, 6)
+        integer(int64), allocatable :: ids(:, :)
+        integer, allocatable :: rgba(:, :, :), png(:)
+        character(:), allocatable :: text
+        integer :: ierr, w, h, x, y, covered
+        logical :: colored
+
+        cube_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 1.0_real64, 1.0_real64, &
+                               0.0_real64, 1.0_real64, 1.0_real64], [3, 8])
+        cube_conn = reshape([1_int64, 4_int64, 3_int64, 2_int64, &
+                             5_int64, 6_int64, 7_int64, 8_int64, &
+                             1_int64, 2_int64, 6_int64, 5_int64, &
+                             4_int64, 8_int64, 7_int64, 3_int64, &
+                             1_int64, 5_int64, 8_int64, 4_int64, &
+                             2_int64, 3_int64, 7_int64, 6_int64], [4, 6])
+        call sq%create()
+        call sq%set_points(cube_points)
+        call sq%add_cell_block('quad', cube_conn)
+
+        ! A frame: size, pixels, ids.
+        set%width = 48
+        set%height = 32
+        set%background = mio_rgba(255, 255, 255)
+        f = sq%render(set, stat=ierr)
+        call check(ierr == 0 .and. f%is_valid(), 'render succeeded')
+        w = f%width()
+        h = f%height()
+        call check(w == 48 .and. h == 32, 'the frame has the requested size')
+        call f%get_rgba(rgba)
+        call f%get_cell_ids(ids)
+        call check(all(shape(rgba) == [4, 48, 32]), 'rgba is (4, width, height)')
+        call check(rgba(4, 1, 1) == 255 .and. rgba(1, 1, 1) == 255, 'the corner is the white background')
+        covered = 0
+        do y = 1, h
+            do x = 1, w
+                if (ids(x, y) >= 0) covered = covered + 1
+            end do
+        end do
+        call check(covered > 100, 'the cube covers pixels')
+        call check(.not. f%range(lo, hi), 'no field is mapped by default')
+        call f%png(png, stat=ierr)
+        call check(ierr == 0 .and. size(png) > 8, 'the PNG has bytes')
+        call check(png(2) == 80 .and. png(3) == 78 .and. png(4) == 71, 'the PNG starts with the PNG signature')
+        call f%png(png, compress=10, stat=ierr)
+        call check(ierr /= 0, 'a compression level of 10 is refused')
+        tset%color_depth = MIO_COLOR_MONO
+        text = f%text(tset, stat=ierr)
+        call check(ierr == 0 .and. len(text) > 0, 'a frame encodes as text')
+        call f%free()
+
+        ! Text sized to the cells, with a mapped field's note.
+        tset%cols = 20
+        tset%rows = 6
+        tset%color_depth = MIO_COLOR_MONO
+        set = mio_render_settings()
+        text = sq%render_text(set, tset, stat=ierr)
+        call check(ierr == 0, 'render_text succeeded')
+        call check(count([(text(x:x) == achar(10), x=1, len(text))]) == 6, 'render_text has one line per row')
+        call check(.not. any([(iachar(text(x:x)) == 27, x=1, len(text))]), 'mono text has no escape sequence')
+
+        ! A mapped field: a vertex array that does not exist is refused by name.
+        set%color_by = 'nope'
+        bad = sq%render(set, stat=ierr)
+        call check(ierr /= 0 .and. .not. bad%is_valid(), 'an unknown array is refused')
+        call check(index(mio_error_message(), 'nope') > 0, 'the error names the array')
+        set%color_by = ''
+        set%scale = 9
+        bad = sq%render(set, stat=ierr)
+        call check(ierr /= 0, 'an unknown scale is refused')
+
+        ! Files by extension.
+        set = mio_render_settings()
+        set%width = 32
+        set%height = 24
+        call sq%write_snapshot(out_prefix//'_render.png', set, stat=ierr)
+        call check(ierr == 0, 'write_snapshot .png succeeded')
+        call sq%write_snapshot(out_prefix//'_render.vtu', set, stat=ierr)
+        call check(ierr /= 0, 'write_snapshot refuses an unknown extension')
+
+        call check(mio_detect_color_depth(no_color='1') == MIO_COLOR_MONO, 'NO_COLOR gives mono')
+        call check(mio_detect_color_depth(color_term='truecolor') == MIO_COLOR_TRUECOLOR, 'truecolor')
+        call check(mio_detect_color_depth(term='xterm-256color') == MIO_COLOR_256, '256 colours')
         call sq%free()
     end subroutine
 

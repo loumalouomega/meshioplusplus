@@ -1,3 +1,6 @@
+import sys
+import warnings
+
 from .._helpers import read, reader_map
 from .._viewer import has_viewer, screenshot, view
 
@@ -79,20 +82,25 @@ def add_screenshot_args(parser):
 
 def screenshot_cmd(args):
     if not has_viewer():
-        # Fail here rather than after reading a large file: screenshots are
-        # polyscope-only, and the browser backend cannot substitute.
-        raise SystemExit(
-            "meshio++: screenshot needs the polyscope backend; "
-            "install it with `pip install meshioplusplus[viewer]`"
+        # No polyscope: `screenshot` falls back to the software rasterizer
+        # (what `snapshot` draws). Say so once, on stderr, with the way to get
+        # polyscope's rendering instead.
+        print(
+            "meshio++: screenshot: polyscope is not installed (`pip install "
+            "meshioplusplus[viewer]`); drawing with the software rasterizer",
+            file=sys.stderr,
         )
     mesh = read(args.infile, file_format=args.input_format)
-    screenshot(
-        mesh,
-        args.outfile,
-        kind=args.kind,
-        color_by=args.color_by,
-        name=args.name,
-        size=tuple(args.size),
-        transparent=args.transparent,
-    )
+    with warnings.catch_warnings():
+        # The fallback's warning repeats the line printed above.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        screenshot(
+            mesh,
+            args.outfile,
+            kind=args.kind,
+            color_by=args.color_by,
+            name=args.name,
+            size=tuple(args.size),
+            transparent=args.transparent,
+        )
     return 0

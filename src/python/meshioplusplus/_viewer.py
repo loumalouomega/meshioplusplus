@@ -851,9 +851,11 @@ def screenshot(
 ):
     """Render a mesh to a PNG without opening a window.
 
-    Always uses the polyscope backend, headless — which is what makes it usable
-    from CI and from a docs build. A vtk.js/Playwright equivalent would be a
-    much heavier way to get the same picture.
+    Uses the polyscope backend, headless — which is what makes it usable from
+    CI and from a docs build. When polyscope is not installed it falls back to
+    the software rasterizer (:func:`snapshot`) with a warning: no lighting
+    model or anti-aliasing to match polyscope's, but no GPU, display or extra
+    dependency either.
 
     Parameters
     ----------
@@ -875,11 +877,14 @@ def screenshot(
 
     Raises
     ------
-    ImportError
-        when polyscope is not installed.
     RuntimeError
-        when no headless rendering backend is available.
+        when polyscope is installed but no headless rendering backend is
+        available.
     """
+    if not has_viewer():
+        return _software_screenshot(
+            mesh, path, color_by, size, transparent, camera, ps_options
+        )
     ps = _import_polyscope()
     payload = _to_polyscope_payload(mesh, kind)
     _show_polyscope(
@@ -900,6 +905,47 @@ def screenshot(
     ps.screenshot(str(path), transparent_bg=transparent)
     ps.remove_all_structures()
     return str(path)
+
+
+def _software_screenshot(mesh, path, color_by, size, transparent, camera, ps_options):
+    """`screenshot` without polyscope: the same picture request, drawn by the
+    software rasterizer. ``camera=(position, target)`` becomes the azimuth and
+    elevation of the direction from the target to the position."""
+    import math
+    import warnings
+
+    from ._render import snapshot
+
+    warnings.warn(
+        "meshio++: screenshot: polyscope is not installed; drawing with the "
+        "software rasterizer (meshioplusplus.snapshot) instead",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    if ps_options:
+        warnings.warn(
+            "meshio++: screenshot: polyscope options are ignored by the software "
+            "rasterizer: " + ", ".join(sorted(ps_options)),
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    options = {
+        "supersample": 2,
+        "background": (0, 0, 0, 0) if transparent else (255, 255, 255, 255),
+    }
+    if color_by is not None:
+        options["color_by"] = color_by
+    if camera is not None:
+        position, target = camera
+        d = [float(p) - float(t) for p, t in zip(position, target)]
+        length = math.sqrt(sum(c * c for c in d))
+        if length > 0.0:
+            options["azimuth"] = math.degrees(math.atan2(d[1], d[0]))
+            options["elevation"] = math.degrees(
+                math.asin(max(-1.0, min(1.0, d[2] / length)))
+            )
+    width, height = size
+    return snapshot(mesh, path, width=int(width), height=int(height), **options)
 
 
 def _has_display() -> bool:

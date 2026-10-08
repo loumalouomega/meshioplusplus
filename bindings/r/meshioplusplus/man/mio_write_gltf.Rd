@@ -13,7 +13,8 @@ mio_write_gltf(mesh, path, color_by = NULL, cmap = "viridis", component = NULL,
 \item{mesh}{A \code{mio_mesh} object.}
 \item{path}{Destination \code{.glb} or \code{.gltf} path.}
 \item{color_by}{Point or cell field to colour by; \code{NULL} disables colouring.}
-\item{cmap}{Colormap: \code{viridis}, \code{coolwarm}, or \code{turbo}.}
+\item{cmap}{Colormap: \code{viridis}, \code{coolwarm}, \code{turbo}, \code{magma}, \code{inferno},
+\code{plasma} or \code{grey}, or a reversed \code{_r} variant of any.}
 \item{component}{1-based component, or \code{NULL} for magnitude.}
 \item{vmin, vmax}{Optional colour range limits.}
 \item{split_angle}{Smooth-normal split angle in degrees.}

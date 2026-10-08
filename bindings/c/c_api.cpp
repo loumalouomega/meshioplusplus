@@ -111,6 +111,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
@@ -179,6 +180,10 @@ struct mio_diff_result {
 
 struct mio_pipeline_report {
     std::string mJson;
+};
+
+struct mio_frame {
+    meshioplusplus::Frame mFrame;
 };
 
 struct mio_xdmf_series {
@@ -6000,6 +6005,361 @@ mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int64_t max
         }
         return MIO_OK;
     });
+}
+
+// --- software rendering (v16.33.0, field rendering v16.34.0) ------------------
+
+static_assert(sizeof(mio_render_opts) == 432, "mio_render_opts grew outside its reserved tail");
+static_assert(sizeof(mio_text_opts) == 96, "mio_text_opts grew outside its reserved tail");
+static_assert(sizeof(mio_snapshot_opts) == 72, "mio_snapshot_opts grew outside its reserved tail");
+
+namespace {
+
+meshioplusplus::RenderColor render_color(std::uint32_t Rgba) {
+    return {static_cast<std::uint8_t>(Rgba >> 24), static_cast<std::uint8_t>(Rgba >> 16),
+            static_cast<std::uint8_t>(Rgba >> 8), static_cast<std::uint8_t>(Rgba)};
+}
+
+std::string render_string(const char* pText) {
+    return pText ? std::string(pText) : std::string();
+}
+
+meshioplusplus::RenderOptions render_options_from_c(const mio_render_opts* pOpts) {
+    mio_render_opts defaults;
+    if (!pOpts) {
+        mio_render_opts_init(&defaults);
+        pOpts = &defaults;
+    }
+    for (std::int64_t r : pOpts->reserved)
+        if (r != 0)
+            throw std::invalid_argument("meshio++: render: reserved option fields must be zero");
+    meshioplusplus::RenderOptions o;
+    o.mWidth = pOpts->width;
+    o.mHeight = pOpts->height;
+    o.mPixelAspect = pOpts->pixel_aspect;
+    o.mSupersample = pOpts->supersample;
+    o.mAzimuth = pOpts->azimuth;
+    o.mElevation = pOpts->elevation;
+    o.mRoll = pOpts->roll;
+    o.mView = render_string(pOpts->view);
+    o.mProjection = pOpts->perspective != 0 ? meshioplusplus::RenderProjection::Perspective
+                                            : meshioplusplus::RenderProjection::Orthographic;
+    o.mFovDeg = pOpts->fov_deg;
+    o.mZoom = pOpts->zoom;
+    o.mPanX = pOpts->pan_x;
+    o.mPanY = pOpts->pan_y;
+    switch (pOpts->shading) {
+        case MIO_SHADING_NONE:
+            o.mShading = meshioplusplus::RenderShading::None;
+            break;
+        case MIO_SHADING_FLAT:
+            o.mShading = meshioplusplus::RenderShading::Flat;
+            break;
+        case MIO_SHADING_SMOOTH:
+            o.mShading = meshioplusplus::RenderShading::Smooth;
+            break;
+        default:
+            throw std::invalid_argument("meshio++: render: unknown shading value");
+    }
+    o.mTwoSided = pOpts->two_sided != 0;
+    o.mAmbient = pOpts->ambient;
+    o.mLightDir = {pOpts->light_x, pOpts->light_y, pOpts->light_z};
+    o.mSplitAngle = pOpts->split_angle;
+    switch (pOpts->edges) {
+        case MIO_EDGES_NONE:
+            o.mEdges = meshioplusplus::RenderEdges::None;
+            break;
+        case MIO_EDGES_ALL:
+            o.mEdges = meshioplusplus::RenderEdges::All;
+            break;
+        case MIO_EDGES_FEATURE:
+            o.mEdges = meshioplusplus::RenderEdges::Feature;
+            break;
+        default:
+            throw std::invalid_argument("meshio++: render: unknown edges value");
+    }
+    o.mFeatureAngle = pOpts->feature_angle;
+    o.mEdgeColor = render_color(pOpts->edge_color);
+    o.mFillColor = render_color(pOpts->fill_color);
+    o.mLineColor = render_color(pOpts->line_color);
+    o.mBackground = render_color(pOpts->background);
+    o.mNanColor = render_color(pOpts->nan_color);
+    o.mPointRadius = pOpts->point_radius;
+    o.mColorBy = render_string(pOpts->color_by);
+    if (pOpts->component >= 0)
+        o.mComponent = pOpts->component;
+    if (pOpts->cmap && pOpts->cmap[0] != '\0')
+        o.mCmap = pOpts->cmap;
+    if (pOpts->has_vmin)
+        o.mVMin = pOpts->vmin;
+    if (pOpts->has_vmax)
+        o.mVMax = pOpts->vmax;
+    o.mColorbar = pOpts->colorbar != 0;
+    o.mAxes = pOpts->axes != 0;
+    o.mScaleBar = pOpts->scale_bar != 0;
+    o.mReduce = render_string(pOpts->reduce);
+    o.mExpr = render_string(pOpts->expr);
+    if (pOpts->has_clip_low)
+        o.mClipLow = pOpts->clip_low;
+    if (pOpts->has_clip_high)
+        o.mClipHigh = pOpts->clip_high;
+    o.mSymmetric = pOpts->symmetric != 0;
+    switch (pOpts->scale) {
+        case MIO_SCALE_LINEAR:
+            o.mScale = meshioplusplus::RenderScale::Linear;
+            break;
+        case MIO_SCALE_LOG:
+            o.mScale = meshioplusplus::RenderScale::Log;
+            break;
+        case MIO_SCALE_SYMLOG:
+            o.mScale = meshioplusplus::RenderScale::Symlog;
+            break;
+        default:
+            throw std::invalid_argument("meshio++: render: unknown scale value");
+    }
+    o.mScaleThreshold = pOpts->scale_threshold;
+    o.mCategorical = pOpts->categorical != 0;
+    o.mColorRegions = pOpts->color_regions != 0;
+    o.mCategoryEdges = pOpts->category_edges != 0;
+    o.mIsolines = pOpts->isolines;
+    if (pOpts->num_iso_levels < 0 || (pOpts->num_iso_levels > 0 && !pOpts->iso_levels))
+        throw std::invalid_argument("meshio++: render: iso_levels is NULL or its count negative");
+    if (pOpts->num_iso_levels > 0)
+        o.mIsoLevels.assign(pOpts->iso_levels, pOpts->iso_levels + pOpts->num_iso_levels);
+    o.mIsoColor = render_color(pOpts->iso_color);
+    o.mVectors = render_string(pOpts->vectors);
+    o.mVectorCount = pOpts->vector_count;
+    o.mVectorLength = pOpts->vector_length;
+    o.mVectorColor = render_color(pOpts->vector_color);
+    o.mWarp = render_string(pOpts->warp);
+    o.mWarpScale = pOpts->warp_scale;
+    o.mWarpOutline = pOpts->warp_outline != 0;
+    o.mOutlineColor = render_color(pOpts->outline_color);
+    if (pOpts->diagnostic < MIO_DIAGNOSTIC_NONE || pOpts->diagnostic > MIO_DIAGNOSTIC_EDGE_LENGTH)
+        throw std::invalid_argument("meshio++: render: unknown diagnostic value");
+    o.mDiagnostic = static_cast<meshioplusplus::RenderDiagnostic>(pOpts->diagnostic);
+    o.mQualityMetric = render_string(pOpts->quality_metric);
+    return o;
+}
+
+meshioplusplus::TextOptions text_options_from_c(const mio_text_opts* pOpts) {
+    mio_text_opts defaults;
+    if (!pOpts) {
+        mio_text_opts_init(&defaults);
+        pOpts = &defaults;
+    }
+    for (std::int64_t r : pOpts->reserved)
+        if (r != 0)
+            throw std::invalid_argument("meshio++: render: reserved option fields must be zero");
+    if (pOpts->flags != 0)
+        throw std::invalid_argument("meshio++: render: text option flags must be zero");
+    if (pOpts->encoding < MIO_ENCODING_HALFBLOCK || pOpts->encoding > MIO_ENCODING_SIXEL)
+        throw std::invalid_argument("meshio++: render: unknown encoding value");
+    if (pOpts->color_depth < MIO_COLOR_TRUECOLOR || pOpts->color_depth > MIO_COLOR_MONO)
+        throw std::invalid_argument("meshio++: render: unknown color_depth value");
+    if (pOpts->format < MIO_TEXT_ANSI || pOpts->format > MIO_TEXT_HTML)
+        throw std::invalid_argument("meshio++: render: unknown format value");
+    meshioplusplus::TextOptions t;
+    t.mEncoding = static_cast<meshioplusplus::TextEncoding>(pOpts->encoding);
+    t.mDepth = static_cast<meshioplusplus::ColorDepth>(pOpts->color_depth);
+    t.mFormat = static_cast<meshioplusplus::TextFormat>(pOpts->format);
+    t.mCols = pOpts->cols;
+    t.mRows = pOpts->rows;
+    t.mCellAspect = pOpts->cell_aspect;
+    t.mCellPixelWidth = pOpts->cell_pixel_width;
+    t.mCellPixelHeight = pOpts->cell_pixel_height;
+    t.mTmuxPassthrough = pOpts->tmux != 0;
+    t.mNotes = pOpts->notes != 0;
+    return t;
+}
+
+const meshioplusplus::Frame& frame_of(const mio_frame* pFrame) {
+    if (!pFrame)
+        throw std::invalid_argument("meshio++: frame is NULL");
+    return pFrame->mFrame;
+}
+
+}  // namespace
+
+void mio_render_opts_init(mio_render_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_render_opts{};
+    opts->pixel_aspect = 1.0;
+    opts->azimuth = 45.0;
+    opts->elevation = 35.264389682754654;
+    opts->fov_deg = 30.0;
+    opts->zoom = 1.0;
+    opts->ambient = 0.25;
+    opts->light_z = 1.0;
+    opts->split_angle = 30.0;
+    opts->feature_angle = 30.0;
+    opts->point_radius = 1.5;
+    opts->scale_threshold = 1.0;
+    opts->warp_scale = 1.0;
+    opts->width = 320;
+    opts->height = 240;
+    opts->supersample = 1;
+    opts->shading = MIO_SHADING_FLAT;
+    opts->two_sided = 1;
+    opts->component = -1;
+    opts->vector_count = 200;
+    opts->edge_color = 0x000000FFu;
+    opts->fill_color = 0xC8C5BDFFu;
+    opts->line_color = 0x000080FFu;
+    opts->background = 0x00000000u;
+    opts->nan_color = 0x808080FFu;
+    opts->iso_color = 0x1E1E1EFFu;
+    opts->vector_color = 0xDC3232FFu;
+    opts->outline_color = 0x969696FFu;
+}
+
+void mio_text_opts_init(mio_text_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_text_opts{};
+    opts->cell_aspect = 2.0;
+    opts->cols = 80;
+    opts->rows = 24;
+    opts->cell_pixel_width = 8;
+    opts->cell_pixel_height = 16;
+    opts->notes = 1;
+}
+
+void mio_snapshot_opts_init(mio_snapshot_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_snapshot_opts{};
+    opts->cast_fps = 12.0;
+    opts->cast_degrees = 360.0;
+    opts->cast_frames = 36;
+}
+
+mio_frame* mio_render(const mio_mesh* mesh, const mio_render_opts* opts) {
+    return guarded_ptr(static_cast<mio_frame*>(nullptr), [&]() -> mio_frame* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        const meshioplusplus::RenderOptions options = render_options_from_c(opts);
+        return new mio_frame{meshioplusplus::render(mesh->mMesh, options)};
+    });
+}
+
+void mio_frame_free(mio_frame* frame) {
+    delete frame;
+}
+
+int32_t mio_frame_width(const mio_frame* frame) {
+    return frame ? frame->mFrame.mWidth : 0;
+}
+
+int32_t mio_frame_height(const mio_frame* frame) {
+    return frame ? frame->mFrame.mHeight : 0;
+}
+
+const uint8_t* mio_frame_rgba(const mio_frame* frame) {
+    return frame ? frame->mFrame.mRgba.data() : nullptr;
+}
+
+const int64_t* mio_frame_cell_ids(const mio_frame* frame) {
+    return frame ? frame->mFrame.mCellIds.data() : nullptr;
+}
+
+int32_t mio_frame_range(const mio_frame* frame, double* vmin, double* vmax) {
+    return guarded_ptr(int32_t{-1}, [&]() -> int32_t {
+        const meshioplusplus::Frame& f = frame_of(frame);
+        if (vmin)
+            *vmin = f.mVMin;
+        if (vmax)
+            *vmax = f.mVMax;
+        return f.mColored ? 1 : 0;
+    });
+}
+
+int64_t mio_frame_num_notes(const mio_frame* frame) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        return static_cast<int64_t>(frame_of(frame).mNotes.size());
+    });
+}
+
+int64_t mio_frame_note(const mio_frame* frame, int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        const meshioplusplus::Frame& f = frame_of(frame);
+        if (index < 0 || static_cast<std::size_t>(index) >= f.mNotes.size())
+            throw std::out_of_range("meshio++: frame note index out of range");
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative note buffer length");
+        return copy_string(f.mNotes[static_cast<std::size_t>(index)], buf, buflen);
+    });
+}
+
+int64_t mio_frame_text(const mio_frame* frame, const mio_text_opts* opts, char* buf,
+                       int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative text buffer length");
+        const std::string text =
+            meshioplusplus::encode_text(frame_of(frame), text_options_from_c(opts));
+        return copy_string(text, buf, buflen);
+    });
+}
+
+int64_t mio_frame_png(const mio_frame* frame, int32_t compress, uint8_t* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative PNG buffer length");
+        const std::string png = meshioplusplus::encode_png(frame_of(frame), compress);
+        if (buf && buflen > 0)
+            std::memcpy(buf, png.data(), std::min(png.size(), static_cast<std::size_t>(buflen)));
+        return static_cast<int64_t>(png.size());
+    });
+}
+
+int64_t mio_render_text(const mio_mesh* mesh, const mio_render_opts* render,
+                        const mio_text_opts* text, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative text buffer length");
+        const std::string out = meshioplusplus::render_text(
+            mesh->mMesh, render_options_from_c(render), text_options_from_c(text));
+        return copy_string(out, buf, buflen);
+    });
+}
+
+mio_status mio_write_snapshot(const char* path, const mio_mesh* mesh, const mio_render_opts* render,
+                              const mio_text_opts* text, const mio_snapshot_opts* snapshot) {
+    return guarded([&]() -> mio_status {
+        if (!path || !mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: write_snapshot: path/mesh is NULL");
+        meshioplusplus::SnapshotOptions options;
+        if (snapshot) {
+            for (std::int64_t r : snapshot->reserved)
+                if (r != 0)
+                    return fail(MIO_ERR_INVALID_ARG,
+                                "meshio++: write_snapshot: reserved fields must be zero");
+            options.mPngCompress = snapshot->png_compress;
+            options.mCastFrames = snapshot->cast_frames;
+            options.mCastFps = snapshot->cast_fps;
+            options.mCastDegrees = snapshot->cast_degrees;
+        }
+        meshioplusplus::write_snapshot(path, mesh->mMesh, render_options_from_c(render),
+                                       text_options_from_c(text), options);
+        return MIO_OK;
+    });
+}
+
+int32_t mio_detect_color_depth(const char* no_color, const char* color_term, const char* term) {
+    switch (meshioplusplus::detect_color_depth(no_color, color_term, term)) {
+        case meshioplusplus::ColorDepth::TrueColor:
+            return MIO_COLOR_TRUECOLOR;
+        case meshioplusplus::ColorDepth::Palette256:
+            return MIO_COLOR_256;
+        case meshioplusplus::ColorDepth::Ansi16:
+            return MIO_COLOR_16;
+        default:
+            return MIO_COLOR_MONO;
+    }
 }
 
 }  // extern "C"

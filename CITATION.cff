@@ -172,3 +172,17 @@ license: MIT
 # most notably gidpost's own Fortran binding and its `cfortran.h`-dependent
 # file, which carries a separate third-party distribution policy of its
 # own and is not vendored here).
+#
+# The built-in colormap tables (src/cpp/src/detail/colormap.cpp and
+# src/python/meshioplusplus/_colormap.py, written by tools/gen_colormaps.py)
+# are 256-entry samples of matplotlib's own maps, taken at generation time
+# only: matplotlib is not a dependency of the library. viridis, magma,
+# inferno and plasma are by Nathaniel J. Smith, Stefan van der Walt and Eric
+# Firing, dedicated to the public domain under CC0
+# (https://github.com/BIDS/colormap); coolwarm is matplotlib's segmented map
+# (after K. Moreland, "Diverging Color Maps for Scientific Visualization",
+# 2009) and grey its `gray` ramp. Turbo is Copyright 2019 Google LLC,
+# Apache-2.0, by Anton Mikhailov
+# (https://gist.github.com/mikhailov-work/6a308c20e494d9e0ccc29036b28faa7a);
+# the table here is matplotlib's 256-entry listing of it. Each `_r` variant is
+# the same table reversed. See doc/tui.md.

@@ -96,6 +96,7 @@ from .. import (
     region_adjacency,
     remesh,
     remesh_volume,
+    render_text,
     reorder,
     repair,
     resample_grid,
@@ -107,8 +108,9 @@ from .. import (
 from .. import screenshot as _screenshot_fn
 from .. import shrinkwrap
 from .. import slice as _slice_op
+from .. import smooth
+from .. import snapshot as _snapshot_fn
 from .. import (
-    smooth,
     sniff_format,
     sobolev_deform,
     split,
@@ -3993,6 +3995,123 @@ def tool_screenshot(
     return _json_safe({"output_path": resolved, "size": [int(width), int(height)]})
 
 
+def tool_render_mesh(
+    input_path,
+    output_path=None,
+    input_format=None,
+    width=640,
+    height=480,
+    cols=100,
+    rows=40,
+    encoding="halfblock",
+    text_format="plain",
+    view=None,
+    azimuth=None,
+    elevation=None,
+    perspective=False,
+    zoom=None,
+    shading="flat",
+    edges="none",
+    color_by=None,
+    component=None,
+    cmap=None,
+    vmin=None,
+    vmax=None,
+    colorbar=False,
+    supersample=2,
+    background=None,
+    axes=False,
+    expr=None,
+    reduce=None,
+    clip=None,
+    symmetric=False,
+    scale=None,
+    categorical=False,
+    color_regions=False,
+    category_edges=False,
+    isolines=0,
+    vectors=None,
+    warp=None,
+    warp_scale=1.0,
+    warp_outline=False,
+    diagnostic=None,
+    quality_metric=None,
+):
+    """Draw a mesh with the software rasterizer: no display, GPU or extra.
+    Without output_path, return it as text; with one, write the form its
+    extension names (.png, .txt, .ansi, .html, .cast)."""
+    from .._render import parse_color
+
+    mesh = _load(input_path, input_format)
+    options = {
+        "view": view,
+        "azimuth": azimuth,
+        "elevation": elevation,
+        "projection": "perspective" if perspective else None,
+        "zoom": zoom,
+        "shading": shading,
+        "edges": edges,
+        "color_by": color_by,
+        "component": component,
+        "cmap": cmap,
+        "vmin": vmin,
+        "vmax": vmax,
+        "colorbar": bool(colorbar) if color_by else None,
+        "supersample": supersample,
+        "background": None if background is None else parse_color(background),
+        "axes": bool(axes),
+        "expr": expr,
+        "reduce": reduce,
+        "clip": None if clip is None else tuple(clip),
+        "symmetric": bool(symmetric) or None,
+        "scale": scale,
+        "categorical": bool(categorical) or None,
+        "color_regions": bool(color_regions) or None,
+        "category_edges": bool(category_edges) or None,
+        "isolines": int(isolines) or None,
+        "vectors": vectors,
+        "warp": warp,
+        "warp_scale": float(warp_scale) if warp else None,
+        "warp_outline": bool(warp_outline) or None,
+        "diagnostic": diagnostic,
+        "quality_metric": quality_metric,
+    }
+    options = {k: v for k, v in options.items() if v is not None}
+    if output_path is None:
+        if text_format not in ("plain", "ansi", "html"):
+            raise ValueError(
+                f"meshio++: render_mesh: text_format must be plain, ansi or html, not '{text_format}'"
+            )
+        text = render_text(
+            mesh,
+            cols=int(cols),
+            rows=int(rows),
+            encoding=encoding,
+            color_depth="mono" if text_format == "plain" else "truecolor",
+            format=text_format,
+            **options,
+        )
+        return _json_safe({"text": text, "cols": int(cols), "rows": int(rows)})
+    resolved = _resolve(output_path, for_write=True)
+    _snapshot_fn(
+        mesh,
+        resolved,
+        width=int(width),
+        height=int(height),
+        cols=int(cols),
+        rows=int(rows),
+        encoding=encoding,
+        **options,
+    )
+    return _json_safe(
+        {
+            "output_path": resolved,
+            "size": [int(width), int(height)],
+            "cells": [int(cols), int(rows)],
+        }
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Registry — the single source of truth                                       #
 # --------------------------------------------------------------------------- #
@@ -4372,6 +4491,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "screenshot",
             {"fn": tool_screenshot, "wraps": ("screenshot",), "gated": "viewer"},
+        ),
+        (
+            "render_mesh",
+            {
+                "fn": tool_render_mesh,
+                "wraps": ("render_image", "render_text", "snapshot"),
+                "gated": None,
+            },
         ),
     ]
 )

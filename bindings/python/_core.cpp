@@ -126,6 +126,7 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
@@ -289,6 +290,379 @@ template <class TFn>
 decltype(auto) core_nogil(TFn&& fn) {
     py::gil_scoped_release release;
     return std::forward<TFn>(fn)();
+}
+
+// --------------------------------------------------------------------------
+// The software rasterizer (operations/render.hpp). Options travel as dicts
+// with snake_case keys, the names of the Python API; an unknown key is an
+// error naming the ones that exist, so a typo never silently does nothing.
+// --------------------------------------------------------------------------
+
+meshioplusplus::RenderColor render_py_color(py::handle h, const char* pKey) {
+    const std::vector<int> v = py::cast<std::vector<int>>(h);
+    if (v.size() != 3 && v.size() != 4)
+        throw std::invalid_argument(std::string("meshio++: render: ") + pKey +
+                                    " must be (r, g, b) or (r, g, b, a) with values 0-255");
+    meshioplusplus::RenderColor c = {0, 0, 0, 255};
+    for (std::size_t k = 0; k < v.size(); ++k) {
+        if (v[k] < 0 || v[k] > 255)
+            throw std::invalid_argument(std::string("meshio++: render: ") + pKey +
+                                        " values must lie in 0-255");
+        c[k] = static_cast<std::uint8_t>(v[k]);
+    }
+    return c;
+}
+
+void render_py_unknown(const py::dict& rD, const std::vector<std::string>& rKnown,
+                       const char* pWhat) {
+    for (auto item : rD) {
+        const std::string key = py::cast<std::string>(item.first);
+        if (std::find(rKnown.begin(), rKnown.end(), key) == rKnown.end()) {
+            std::string names;
+            for (const std::string& k : rKnown)
+                names += (names.empty() ? "" : ", ") + k;
+            throw std::invalid_argument("meshio++: render: unknown " + std::string(pWhat) +
+                                        " option '" + key + "' (expected one of: " + names + ")");
+        }
+    }
+}
+
+meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
+    render_py_unknown(rD, {"width",         "height",        "pixel_aspect",
+                           "supersample",   "azimuth",       "elevation",
+                           "roll",          "view",          "projection",
+                           "fov",           "zoom",          "pan",
+                           "shading",       "two_sided",     "ambient",
+                           "light_dir",     "split_angle",   "edges",
+                           "feature_angle", "edge_color",    "fill_color",
+                           "line_color",    "background",    "point_radius",
+                           "color_by",      "component",     "cmap",
+                           "vmin",          "vmax",          "nan_color",
+                           "colorbar",      "axes",          "scale_bar",
+                           "reduce",        "expr",          "clip",
+                           "symmetric",     "scale",         "scale_threshold",
+                           "categorical",   "color_regions", "category_edges",
+                           "isolines",      "iso_levels",    "iso_color",
+                           "vectors",       "vector_count",  "vector_length",
+                           "vector_color",  "warp",          "warp_scale",
+                           "warp_outline",  "outline_color", "diagnostic",
+                           "quality_metric"},
+                      "render");
+    meshioplusplus::RenderOptions o;
+    auto get = [&](const char* pKey) -> py::object {
+        return rD.contains(pKey) ? py::reinterpret_borrow<py::object>(rD[pKey]) : py::none();
+    };
+    py::object v;
+    if (!(v = get("width")).is_none())
+        o.mWidth = v.cast<int>();
+    if (!(v = get("height")).is_none())
+        o.mHeight = v.cast<int>();
+    if (!(v = get("pixel_aspect")).is_none())
+        o.mPixelAspect = v.cast<double>();
+    if (!(v = get("supersample")).is_none())
+        o.mSupersample = v.cast<int>();
+    if (!(v = get("azimuth")).is_none())
+        o.mAzimuth = v.cast<double>();
+    if (!(v = get("elevation")).is_none())
+        o.mElevation = v.cast<double>();
+    if (!(v = get("roll")).is_none())
+        o.mRoll = v.cast<double>();
+    if (!(v = get("view")).is_none())
+        o.mView = v.cast<std::string>();
+    if (!(v = get("projection")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        if (name == "orthographic")
+            o.mProjection = meshioplusplus::RenderProjection::Orthographic;
+        else if (name == "perspective")
+            o.mProjection = meshioplusplus::RenderProjection::Perspective;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: projection must be 'orthographic' or 'perspective', not '" +
+                name + "'");
+    }
+    if (!(v = get("fov")).is_none())
+        o.mFovDeg = v.cast<double>();
+    if (!(v = get("zoom")).is_none())
+        o.mZoom = v.cast<double>();
+    if (!(v = get("pan")).is_none()) {
+        const std::vector<double> pan = v.cast<std::vector<double>>();
+        if (pan.size() != 2)
+            throw std::invalid_argument("meshio++: render: pan must be (x, y)");
+        o.mPanX = pan[0];
+        o.mPanY = pan[1];
+    }
+    if (!(v = get("shading")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        if (name == "none")
+            o.mShading = meshioplusplus::RenderShading::None;
+        else if (name == "flat")
+            o.mShading = meshioplusplus::RenderShading::Flat;
+        else if (name == "smooth")
+            o.mShading = meshioplusplus::RenderShading::Smooth;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: shading must be 'none', 'flat' or 'smooth', not '" + name + "'");
+    }
+    if (!(v = get("two_sided")).is_none())
+        o.mTwoSided = v.cast<bool>();
+    if (!(v = get("ambient")).is_none())
+        o.mAmbient = v.cast<double>();
+    if (!(v = get("light_dir")).is_none()) {
+        const std::vector<double> d = v.cast<std::vector<double>>();
+        if (d.size() != 3)
+            throw std::invalid_argument("meshio++: render: light_dir must be (x, y, z)");
+        o.mLightDir = {d[0], d[1], d[2]};
+    }
+    if (!(v = get("split_angle")).is_none())
+        o.mSplitAngle = v.cast<double>();
+    if (!(v = get("edges")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        if (name == "none")
+            o.mEdges = meshioplusplus::RenderEdges::None;
+        else if (name == "all")
+            o.mEdges = meshioplusplus::RenderEdges::All;
+        else if (name == "feature")
+            o.mEdges = meshioplusplus::RenderEdges::Feature;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: edges must be 'none', 'all' or 'feature', not '" + name + "'");
+    }
+    if (!(v = get("feature_angle")).is_none())
+        o.mFeatureAngle = v.cast<double>();
+    if (!(v = get("edge_color")).is_none())
+        o.mEdgeColor = render_py_color(v, "edge_color");
+    if (!(v = get("fill_color")).is_none())
+        o.mFillColor = render_py_color(v, "fill_color");
+    if (!(v = get("line_color")).is_none())
+        o.mLineColor = render_py_color(v, "line_color");
+    if (!(v = get("background")).is_none())
+        o.mBackground = render_py_color(v, "background");
+    if (!(v = get("point_radius")).is_none())
+        o.mPointRadius = v.cast<double>();
+    if (!(v = get("color_by")).is_none())
+        o.mColorBy = v.cast<std::string>();
+    if (!(v = get("component")).is_none())
+        o.mComponent = v.cast<int>();
+    if (!(v = get("cmap")).is_none())
+        o.mCmap = v.cast<std::string>();
+    if (!(v = get("vmin")).is_none())
+        o.mVMin = v.cast<double>();
+    if (!(v = get("vmax")).is_none())
+        o.mVMax = v.cast<double>();
+    if (!(v = get("nan_color")).is_none())
+        o.mNanColor = render_py_color(v, "nan_color");
+    if (!(v = get("colorbar")).is_none())
+        o.mColorbar = v.cast<bool>();
+    if (!(v = get("axes")).is_none())
+        o.mAxes = v.cast<bool>();
+    if (!(v = get("scale_bar")).is_none())
+        o.mScaleBar = v.cast<bool>();
+    if (!(v = get("reduce")).is_none())
+        o.mReduce = v.cast<std::string>();
+    if (!(v = get("expr")).is_none())
+        o.mExpr = v.cast<std::string>();
+    if (!(v = get("clip")).is_none()) {
+        const std::vector<py::object> clip = v.cast<std::vector<py::object>>();
+        if (clip.size() != 2)
+            throw std::invalid_argument(
+                "meshio++: render: clip must be (low, high) percentiles; "
+                "use None for either end");
+        if (!clip[0].is_none())
+            o.mClipLow = clip[0].cast<double>();
+        if (!clip[1].is_none())
+            o.mClipHigh = clip[1].cast<double>();
+    }
+    if (!(v = get("symmetric")).is_none())
+        o.mSymmetric = v.cast<bool>();
+    if (!(v = get("scale")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        if (name == "linear")
+            o.mScale = meshioplusplus::RenderScale::Linear;
+        else if (name == "log")
+            o.mScale = meshioplusplus::RenderScale::Log;
+        else if (name == "symlog")
+            o.mScale = meshioplusplus::RenderScale::Symlog;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: scale must be 'linear', 'log' or 'symlog', not '" + name + "'");
+    }
+    if (!(v = get("scale_threshold")).is_none())
+        o.mScaleThreshold = v.cast<double>();
+    if (!(v = get("categorical")).is_none())
+        o.mCategorical = v.cast<bool>();
+    if (!(v = get("color_regions")).is_none())
+        o.mColorRegions = v.cast<bool>();
+    if (!(v = get("category_edges")).is_none())
+        o.mCategoryEdges = v.cast<bool>();
+    if (!(v = get("isolines")).is_none())
+        o.mIsolines = v.cast<std::int32_t>();
+    if (!(v = get("iso_levels")).is_none())
+        o.mIsoLevels = v.cast<std::vector<double>>();
+    if (!(v = get("iso_color")).is_none())
+        o.mIsoColor = render_py_color(v, "iso_color");
+    if (!(v = get("vectors")).is_none())
+        o.mVectors = v.cast<std::string>();
+    if (!(v = get("vector_count")).is_none())
+        o.mVectorCount = v.cast<std::int32_t>();
+    if (!(v = get("vector_length")).is_none())
+        o.mVectorLength = v.cast<double>();
+    if (!(v = get("vector_color")).is_none())
+        o.mVectorColor = render_py_color(v, "vector_color");
+    if (!(v = get("warp")).is_none())
+        o.mWarp = v.cast<std::string>();
+    if (!(v = get("warp_scale")).is_none())
+        o.mWarpScale = v.cast<double>();
+    if (!(v = get("warp_outline")).is_none())
+        o.mWarpOutline = v.cast<bool>();
+    if (!(v = get("outline_color")).is_none())
+        o.mOutlineColor = render_py_color(v, "outline_color");
+    if (!(v = get("diagnostic")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        static const std::pair<const char*, meshioplusplus::RenderDiagnostic> table[] = {
+            {"none", meshioplusplus::RenderDiagnostic::None},
+            {"quality", meshioplusplus::RenderDiagnostic::Quality},
+            {"inverted", meshioplusplus::RenderDiagnostic::Inverted},
+            {"degenerate", meshioplusplus::RenderDiagnostic::Degenerate},
+            {"orientation", meshioplusplus::RenderDiagnostic::Orientation},
+            {"free_edges", meshioplusplus::RenderDiagnostic::FreeEdges},
+            {"edge_length", meshioplusplus::RenderDiagnostic::EdgeLength}};
+        bool found = false;
+        for (const auto& e : table)
+            if (name == e.first) {
+                o.mDiagnostic = e.second;
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(
+                "meshio++: render: diagnostic must be one of none, quality, inverted, degenerate, "
+                "orientation, free_edges, edge_length; not '" +
+                name + "'");
+    }
+    if (!(v = get("quality_metric")).is_none())
+        o.mQualityMetric = v.cast<std::string>();
+    return o;
+}
+
+meshioplusplus::TextOptions render_py_text(const py::dict& rD) {
+    render_py_unknown(rD,
+                      {"encoding", "color_depth", "format", "cols", "rows", "cell_aspect",
+                       "cell_pixels", "tmux", "notes"},
+                      "text");
+    meshioplusplus::TextOptions t;
+    if (rD.contains("encoding")) {
+        const std::string name = py::cast<std::string>(rD["encoding"]);
+        static const std::pair<const char*, meshioplusplus::TextEncoding> table[] = {
+            {"halfblock", meshioplusplus::TextEncoding::HalfBlock},
+            {"quadrant", meshioplusplus::TextEncoding::Quadrant},
+            {"sextant", meshioplusplus::TextEncoding::Sextant},
+            {"braille", meshioplusplus::TextEncoding::Braille},
+            {"ascii", meshioplusplus::TextEncoding::Ascii},
+            {"kitty", meshioplusplus::TextEncoding::Kitty},
+            {"iterm2", meshioplusplus::TextEncoding::ITerm2},
+            {"sixel", meshioplusplus::TextEncoding::Sixel}};
+        bool found = false;
+        for (const auto& e : table)
+            if (name == e.first) {
+                t.mEncoding = e.second;
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(
+                "meshio++: render: encoding must be one of halfblock, quadrant, sextant, "
+                "braille, ascii, kitty, iterm2, sixel; not '" +
+                name + "'");
+    }
+    if (rD.contains("color_depth")) {
+        const std::string name = py::cast<std::string>(rD["color_depth"]);
+        if (name == "truecolor")
+            t.mDepth = meshioplusplus::ColorDepth::TrueColor;
+        else if (name == "256")
+            t.mDepth = meshioplusplus::ColorDepth::Palette256;
+        else if (name == "16")
+            t.mDepth = meshioplusplus::ColorDepth::Ansi16;
+        else if (name == "mono")
+            t.mDepth = meshioplusplus::ColorDepth::Mono;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: color_depth must be 'truecolor', '256', '16' or 'mono', not '" +
+                name + "'");
+    }
+    if (rD.contains("format")) {
+        const std::string name = py::cast<std::string>(rD["format"]);
+        if (name == "ansi")
+            t.mFormat = meshioplusplus::TextFormat::Ansi;
+        else if (name == "plain")
+            t.mFormat = meshioplusplus::TextFormat::Plain;
+        else if (name == "html")
+            t.mFormat = meshioplusplus::TextFormat::Html;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: format must be 'ansi', 'plain' or 'html', not '" + name + "'");
+    }
+    if (rD.contains("cols"))
+        t.mCols = py::cast<int>(rD["cols"]);
+    if (rD.contains("rows"))
+        t.mRows = py::cast<int>(rD["rows"]);
+    if (rD.contains("cell_aspect"))
+        t.mCellAspect = py::cast<double>(rD["cell_aspect"]);
+    if (rD.contains("cell_pixels")) {
+        const std::vector<int> px = py::cast<std::vector<int>>(rD["cell_pixels"]);
+        if (px.size() != 2)
+            throw std::invalid_argument("meshio++: render: cell_pixels must be (width, height)");
+        t.mCellPixelWidth = px[0];
+        t.mCellPixelHeight = px[1];
+    }
+    if (rD.contains("tmux"))
+        t.mTmuxPassthrough = py::cast<bool>(rD["tmux"]);
+    if (rD.contains("notes"))
+        t.mNotes = py::cast<bool>(rD["notes"]);
+    return t;
+}
+
+meshioplusplus::SnapshotOptions render_py_snapshot(const py::dict& rD) {
+    render_py_unknown(rD, {"png_compress", "cast_frames", "cast_fps", "cast_degrees"}, "snapshot");
+    meshioplusplus::SnapshotOptions s;
+    if (rD.contains("png_compress"))
+        s.mPngCompress = py::cast<int>(rD["png_compress"]);
+    if (rD.contains("cast_frames"))
+        s.mCastFrames = py::cast<int>(rD["cast_frames"]);
+    if (rD.contains("cast_fps"))
+        s.mCastFps = py::cast<double>(rD["cast_fps"]);
+    if (rD.contains("cast_degrees"))
+        s.mCastDegrees = py::cast<double>(rD["cast_degrees"]);
+    return s;
+}
+
+// A frame from an (H, W, 4) uint8 array (C-contiguous after the cast).
+meshioplusplus::Frame render_py_frame(
+    py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast> rImage,
+    const std::vector<std::string>& rNotes) {
+    if (rImage.ndim() != 3 || rImage.shape(2) != 4 || rImage.shape(0) <= 0 || rImage.shape(1) <= 0)
+        throw std::invalid_argument("meshio++: render: an image must be an (H, W, 4) uint8 array");
+    meshioplusplus::Frame f;
+    f.mHeight = static_cast<int>(rImage.shape(0));
+    f.mWidth = static_cast<int>(rImage.shape(1));
+    f.mRgba.assign(rImage.data(), rImage.data() + rImage.size());
+    f.mCellIds.assign(static_cast<std::size_t>(f.mWidth) * static_cast<std::size_t>(f.mHeight), -1);
+    f.mNotes = rNotes;
+    return f;
+}
+
+py::dict render_py_result(meshioplusplus::Frame&& rFrame) {
+    const py::ssize_t h = rFrame.mHeight;
+    const py::ssize_t w = rFrame.mWidth;
+    py::array_t<std::uint8_t> image({h, w, static_cast<py::ssize_t>(4)});
+    std::copy(rFrame.mRgba.begin(), rFrame.mRgba.end(), image.mutable_data());
+    py::array_t<std::int64_t> ids({h, w});
+    std::copy(rFrame.mCellIds.begin(), rFrame.mCellIds.end(), ids.mutable_data());
+    py::dict out;
+    out["image"] = image;
+    out["cell_ids"] = ids;
+    out["colored"] = rFrame.mColored;
+    out["vmin"] = rFrame.mColored ? py::object(py::float_(rFrame.mVMin)) : py::object(py::none());
+    out["vmax"] = rFrame.mColored ? py::object(py::float_(rFrame.mVMax)) : py::object(py::none());
+    out["notes"] = rFrame.mNotes;
+    return out;
 }
 
 /**
@@ -2429,6 +2803,111 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("point_normals") = true, py::arg("cell_normals") = false,
         py::arg("weight") = "angle", py::arg("split") = false, py::arg("split_angle") = 30.0,
         py::arg("record_parent_ids") = false, py::arg("region") = "");
+
+    // The software rasterizer and its encodings. See operations/render.hpp;
+    // the Python API is meshioplusplus/_render.py.
+    m.def(
+        "render",
+        [](py::object pymesh, py::dict options) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const meshioplusplus::RenderOptions o = render_py_options(options);
+            meshioplusplus::Frame f = core_nogil([&] { return meshioplusplus::render(cpp, o); });
+            return render_py_result(std::move(f));
+        },
+        py::arg("mesh"), py::arg("options") = py::dict());
+    m.def(
+        "render_text",
+        [](py::object pymesh, py::dict options, py::dict text) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const meshioplusplus::RenderOptions o = render_py_options(options);
+            const meshioplusplus::TextOptions t = render_py_text(text);
+            return core_nogil([&] { return meshioplusplus::render_text(cpp, o, t); });
+        },
+        py::arg("mesh"), py::arg("options") = py::dict(), py::arg("text") = py::dict());
+    m.def(
+        "encode_text",
+        [](py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast> image,
+           py::dict text, const std::vector<std::string>& notes) {
+            const meshioplusplus::Frame f = render_py_frame(image, notes);
+            const meshioplusplus::TextOptions t = render_py_text(text);
+            return meshioplusplus::encode_text(f, t);
+        },
+        py::arg("image"), py::arg("text") = py::dict(),
+        py::arg("notes") = std::vector<std::string>());
+    m.def(
+        "encode_png",
+        [](py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast> image,
+           int compress) {
+            const meshioplusplus::Frame f = render_py_frame(image, {});
+            const std::string png = meshioplusplus::encode_png(f, compress);
+            return py::bytes(png);
+        },
+        py::arg("image"), py::arg("compress") = 0);
+    m.def(
+        "text_frame_size",
+        [](py::dict text) {
+            double aspect = 1.0;
+            const std::array<int, 2> size =
+                meshioplusplus::text_frame_size(render_py_text(text), aspect);
+            return py::make_tuple(size[0], size[1], aspect);
+        },
+        py::arg("text") = py::dict());
+    m.def(
+        "detect_color_depth",
+        [](py::object no_color, py::object color_term, py::object term) {
+            auto opt = [](py::object o) -> std::optional<std::string> {
+                if (o.is_none())
+                    return std::nullopt;
+                return o.cast<std::string>();
+            };
+            const auto a = opt(no_color);
+            const auto b = opt(color_term);
+            const auto c = opt(term);
+            switch (meshioplusplus::detect_color_depth(
+                a ? a->c_str() : nullptr, b ? b->c_str() : nullptr, c ? c->c_str() : nullptr)) {
+                case meshioplusplus::ColorDepth::TrueColor:
+                    return std::string("truecolor");
+                case meshioplusplus::ColorDepth::Palette256:
+                    return std::string("256");
+                case meshioplusplus::ColorDepth::Ansi16:
+                    return std::string("16");
+                default:
+                    return std::string("mono");
+            }
+        },
+        py::arg("no_color") = py::none(), py::arg("color_term") = py::none(),
+        py::arg("term") = py::none());
+    m.def(
+        "encode_cast",
+        [](py::object pymesh, py::dict options, py::dict text, py::dict snapshot) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const meshioplusplus::RenderOptions o = render_py_options(options);
+            const meshioplusplus::TextOptions t = render_py_text(text);
+            const meshioplusplus::SnapshotOptions s = render_py_snapshot(snapshot);
+            return core_nogil([&] { return meshioplusplus::encode_cast(cpp, o, t, s); });
+        },
+        py::arg("mesh"), py::arg("options") = py::dict(), py::arg("text") = py::dict(),
+        py::arg("snapshot") = py::dict());
+    m.def(
+        "write_snapshot",
+        [](const std::string& path, py::object pymesh, py::dict options, py::dict text,
+           py::dict snapshot) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const meshioplusplus::RenderOptions o = render_py_options(options);
+            const meshioplusplus::TextOptions t = render_py_text(text);
+            const meshioplusplus::SnapshotOptions s = render_py_snapshot(snapshot);
+            core_nogil([&] { meshioplusplus::write_snapshot(path, cpp, o, t, s); });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("options") = py::dict(),
+        py::arg("text") = py::dict(), py::arg("snapshot") = py::dict());
 
     // Sharp, open, non-manifold and inconsistently wound edges as a line mesh.
     // See operations/feature_edges.hpp.

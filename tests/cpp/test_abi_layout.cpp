@@ -104,6 +104,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
+#include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 
@@ -320,6 +321,18 @@ MIO_ABI_LAYOUT(meshioplusplus::RegionSelector, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegionEdit, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 
+// The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
+// TextOptions and SnapshotOptions are passed by const-ref through the exported
+// `render()`, `encode_text()`, `render_text()` and `write_snapshot()`, and Frame
+// is returned by value through `render()`; none embeds a Mesh, so all four are
+// pinned from the release that introduces them. Roadmap section 7 grows
+// RenderOptions (field rendering in v16.34.0, ABI 24, took it from 320 to 608
+// bytes; a theme will grow it again): each growth bumps the ABI.
+MIO_ABI_LAYOUT(meshioplusplus::RenderOptions, 608, 8);
+MIO_ABI_LAYOUT(meshioplusplus::Frame, 104, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TextOptions, 40, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SnapshotOptions, 24, 8);
+
 // GltfWriteOptions is passed by const-ref through the exported `write_gltf()`,
 // pinned from the release that introduces it (the "pin in advance" lesson).
 MIO_ABI_LAYOUT(meshioplusplus::GltfWriteOptions, 168, 8);
@@ -490,6 +503,10 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::SequenceInput>("SequenceInput");
     report<meshioplusplus::SequenceOutput>("SequenceOutput");
     report<meshioplusplus::SequencePipeline>("SequencePipeline");
+    report<meshioplusplus::RenderOptions>("RenderOptions");
+    report<meshioplusplus::Frame>("Frame");
+    report<meshioplusplus::TextOptions>("TextOptions");
+    report<meshioplusplus::SnapshotOptions>("SnapshotOptions");
     report<meshioplusplus::Mesh>("Mesh (this backend)");
 
 #if MIO_ABI_LAYOUT_PINNED

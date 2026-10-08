@@ -4896,6 +4896,33 @@ step('checkQuality gates on thresholds', () => {
     assert.throws(() => m.checkQuality(cubeSurface, 'bogus >= 1'));
 });
 
+step('render, renderText, renderPng', () => {
+    const f = m.render(cubeSurface, { width: 48, height: 32, background: [255, 255, 255, 255] });
+    assert.equal(f.width, 48);
+    assert.equal(f.height, 32);
+    assert.ok(f.rgba instanceof Uint8ClampedArray);
+    assert.equal(f.rgba.length, 48 * 32 * 4);
+    assert.equal(f.cellIds.length, 48 * 32);
+    assert.deepEqual(Array.from(f.rgba.slice(0, 4)), [255, 255, 255, 255]);
+    assert.ok(Array.from(f.cellIds).filter((c) => c >= 0).length > 100);
+    assert.equal(f.range, null);
+
+    const text = m.renderText(cubeSurface, {}, { cols: 20, rows: 6, colorDepth: 'mono' });
+    assert.equal(text.split('\n').length - 1, 6);
+    assert.ok(!text.includes('\x1b'));
+    assert.ok(m.renderText(cubeSurface, {}, { cols: 20, rows: 6, format: 'html' }).startsWith('<!DOCTYPE html>'));
+    assert.throws(() => m.renderText(cubeSurface, {}, { encoding: 'kitty' }), /encoding must be one of/);
+
+    const png = m.renderPng(cubeSurface, { width: 30, height: 20 });
+    assert.ok(png instanceof Uint8Array);
+    assert.deepEqual(Array.from(png.slice(0, 8)), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    assert.throws(() => m.render(cubeSurface, { bogus: 1 }), /unknown option 'bogus'/);
+    assert.throws(() => m.render(cubeSurface, { shading: 'plastic' }), /shading must be one of/);
+    assert.throws(() => m.render(cubeSurface, { colorBy: 'nope' }), /nope/);
+    assert.throws(() => m.render(cubeSurface, { supersample: 3 }), /supersample/);
+});
+
 step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     const fe = m.featureEdges(cubeSurface);
     assert.equal(fe.numFeature, 12);

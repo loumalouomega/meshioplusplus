@@ -443,6 +443,22 @@ m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1] -- always presen
 
 **zstd and lz4 are compiled out.** Unlike HDF5 and netCDF, which this build now carries, neither has an Emscripten port and neither is worth a from-source dependency for an optional VTK block codec. zlib (`-sUSE_ZLIB=1`) is unchanged and remains the default codec, so every file the WASM build wrote before it still round-trips.
 
+## Software rendering (v16.34.0)
+
+`render` draws a mesh with a deterministic software rasterizer: **no WebGL**, so it works in a Node script or a server-side preview where the [browser viewer](/viewer) cannot. See [terminal rendering](/tui) for what is drawn and every option; the options are one object with camelCase names (`colorBy`, `scaleBar`, `isoLevels`, ...), and an unknown key is an error listing the ones that exist.
+
+```js
+const frame = m.render(mesh, { width: 800, height: 600, supersample: 2, colorBy: 'temperature', colorbar: true, clip: [2, 98] });
+const image = new ImageData(frame.rgba, frame.width, frame.height);   // rgba is a Uint8ClampedArray
+frame.cellIds;   // Float64Array: the input cell at each pixel, -1 for none
+frame.range;     // [vmin, vmax], or null when no field is mapped; frame.notes holds the ticks and keys
+
+console.log(m.renderText(mesh, { colorBy: 'temperature' }, { cols: 80, rows: 24, encoding: 'braille' }));
+const png = m.renderPng(mesh, { width: 800, height: 600 });           // Uint8Array
+```
+
+Colours are `0xRRGGBBAA` numbers or `[r, g, b, a?]`. `renderText` takes the cell encodings only (`halfblock`, `quadrant`, `sextant`, `braille`, `ascii`): the Kitty, iTerm2 and Sixel protocols and the interactive terminal loop are CLI features and are not exported, so nothing is added to the bundle but the rasterizer itself.
+
 ## v9.1.0 additions
 
 - `readMeshSelective(path, { lenient: true })` — see [`doc/selective_read.md`](selective_read.md).

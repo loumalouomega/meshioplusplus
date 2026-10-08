@@ -175,6 +175,29 @@ Two things worth knowing before reading the result back:
 
 Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finalizer. Reading a finished series back is the ordinary `m%read(path, time_step=k)`, with `mio_read_metadata(path)%time_values` reporting the steps.
 
+## Software rendering (v16.34.0)
+
+A deterministic software rasterizer and its terminal, HTML and PNG encodings, with no display or GPU: see [terminal rendering](/tui) for what is drawn and every option. Options are the plain-Fortran `mio_render_settings` (allocatable strings, `.true.`/`.false.` flags, an *allocated* `vmin`, `vmax`, `clip_low` or `clip_high` meaning "set", colours as `integer(int64)` `0xRRGGBBAA` from `mio_rgba(r, g, b, a)`), whose defaults are the C ones.
+
+```fortran
+type(mio_render_settings) :: set
+type(mio_frame) :: frame
+integer, allocatable :: rgba(:, :, :), png(:)
+
+set%width = 800; set%height = 600; set%supersample = 2
+set%color_by = 'temperature'; set%colorbar = .true.
+allocate (set%clip_low, source=2.0_real64)
+frame = mesh%render(set, stat=ierr)          ! frame%is_valid(), %width(), %height(), %range(vmin, vmax)
+call frame%get_rgba(rgba)                    ! rgba(4, width, height), channels 0..255, row 1 on top
+call frame%png(png)                          ! the file's bytes as 0..255 values
+call frame%free()
+
+text = mesh%render_text(set, tset)           ! tset%cols x tset%rows cells; mio_text_settings
+call mesh%write_snapshot('part.png', set)    ! .png .txt .ansi .html .cast
+```
+
+`frame%get_cell_ids(ids)` gives the input cell at each pixel (`ids(width, height)`, -1 for none), `frame%num_notes()` and `frame%note(i)` the colour range, ticks and keys, and `frame%text(tset)` encodes a frame whose size fits the encoding's cell grid. `mio_detect_color_depth(no_color=, color_term=, term=)` returns a `MIO_COLOR_*` constant. The `MIO_SHADING_*`, `MIO_EDGES_*`, `MIO_SCALE_*`, `MIO_DIAGNOSTIC_*`, `MIO_ENCODING_*`, `MIO_COLOR_*` and `MIO_TEXT_*` constants name the enum values. Without `stat=` a failure stops the program with the library's message, as everywhere in this module.
+
 ## v9.1.0 additions
 
 - `m%read(..., lenient=.true.)` — see [`doc/selective_read.md`](selective_read.md).

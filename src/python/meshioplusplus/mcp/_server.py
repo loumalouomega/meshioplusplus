@@ -334,7 +334,8 @@ def _register_conversion(server: FastMCP) -> None:
         component point_data array is exported raw as a custom attribute
         (temperature -> _TEMPERATURE); fields=false skips them. color_by names
         a point_data or cell_data array to bake into COLOR_0 through cmap
-        (viridis|coolwarm|turbo) over vmin..vmax (default: the finite range of
+        (viridis, coolwarm, turbo, magma, inferno, plasma, grey, or a
+        reversed *_r variant) over vmin..vmax (default: the finite range of
         what is exported), with an unlit material unless unlit=false;
         multi-component arrays reduce to component or their magnitude and
         non-finite values take nan_color (#rrggbb). The output is Y-up,
@@ -1247,6 +1248,133 @@ def _register_operations(server: FastMCP) -> None:
             max_degenerate=max_degenerate,
             file_format=file_format,
         )
+
+    @server.tool()
+    def render_mesh(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        width: int = 640,
+        height: int = 480,
+        cols: int = 100,
+        rows: int = 40,
+        encoding: str = "halfblock",
+        text_format: str = "plain",
+        view: Optional[str] = None,
+        azimuth: Optional[float] = None,
+        elevation: Optional[float] = None,
+        perspective: bool = False,
+        zoom: Optional[float] = None,
+        shading: str = "flat",
+        edges: str = "none",
+        color_by: Optional[str] = None,
+        component: Optional[int] = None,
+        cmap: Optional[str] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        colorbar: bool = False,
+        supersample: int = 2,
+        background: Optional[str] = None,
+        axes: bool = False,
+        expr: Optional[str] = None,
+        reduce: Optional[str] = None,
+        clip: Optional[list] = None,
+        symmetric: bool = False,
+        scale: Optional[str] = None,
+        categorical: bool = False,
+        color_regions: bool = False,
+        category_edges: bool = False,
+        isolines: int = 0,
+        vectors: Optional[str] = None,
+        warp: Optional[str] = None,
+        warp_scale: float = 1.0,
+        warp_outline: bool = False,
+        diagnostic: Optional[str] = None,
+        quality_metric: Optional[str] = None,
+    ):
+        """Look at a mesh: draw it with the software rasterizer, which needs
+        no display, GPU or optional extra (unlike screenshot).
+
+        Without output_path the picture comes back as text, cols x rows
+        terminal cells: text_format "plain" (glyphs only, the default),
+        "ansi" (24-bit colour escapes) or "html"; encoding is halfblock,
+        quadrant, sextant, braille or ascii. With output_path the extension
+        picks the form: .png (width x height pixels, returned as an image),
+        .txt, .ansi, .html, or .cast (an asciinema orbit). The camera is a
+        named view (iso, +x, -x, +y, -y, +z, -z: the side the camera sits
+        on) or azimuth/elevation in degrees, orthographic unless
+        perspective; zoom magnifies the fitted view. shading is none, flat
+        or smooth; edges none, all or feature. color_by maps a point or cell
+        data array through cmap (viridis, coolwarm, turbo, ...) over
+        vmin..vmax, with an optional colorbar; component picks one component
+        of a vector array (else its magnitude). background is #rrggbb,
+        #rrggbbaa or none (transparent, the default); axes draws the world
+        axes. Volume meshes are drawn through their boundary skin.
+
+        Field rendering: expr colours by a data_calc expression ("mag(u) /
+        max(p)") instead of color_by, and reduce ("mises", "hydrostatic" or
+        "principal", with component) by a tensor invariant of color_by; clip
+        is [low, high] percentiles bounding the range (null for either end),
+        symmetric centres it on zero, and scale is "linear", "log" or
+        "symlog". categorical colours integer data (a material id) and
+        color_regions the named cell regions from a fixed palette, with a key
+        in the notes under the picture; category_edges draws where they meet.
+        isolines draws that many contour lines of the point array color_by,
+        vectors draws arrows for a vector point array, and warp moves the
+        points by a displacement point array (times warp_scale), with
+        warp_outline drawing the undeformed outline. diagnostic is one of
+        quality (with quality_metric, e.g. scaled_jacobian), inverted,
+        degenerate, orientation (front and back faces), free_edges (open,
+        non-manifold and inconsistent edges) or edge_length. Returned text ends
+        with the colour range, ticks and keys."""
+        report = _guard(
+            _tools.tool_render_mesh,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            width=width,
+            height=height,
+            cols=cols,
+            rows=rows,
+            encoding=encoding,
+            text_format=text_format,
+            view=view,
+            azimuth=azimuth,
+            elevation=elevation,
+            perspective=perspective,
+            zoom=zoom,
+            shading=shading,
+            edges=edges,
+            color_by=color_by,
+            component=component,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            colorbar=colorbar,
+            supersample=supersample,
+            background=background,
+            axes=axes,
+            expr=expr,
+            reduce=reduce,
+            clip=clip,
+            symmetric=symmetric,
+            scale=scale,
+            categorical=categorical,
+            color_regions=color_regions,
+            category_edges=category_edges,
+            isolines=isolines,
+            vectors=vectors,
+            warp=warp,
+            warp_scale=warp_scale,
+            warp_outline=warp_outline,
+            diagnostic=diagnostic,
+            quality_metric=quality_metric,
+        )
+        if isinstance(report, dict) and str(
+            report.get("output_path", "")
+        ).lower().endswith(".png"):
+            return [Image(path=report["output_path"]), report]
+        return report
 
     @server.tool()
     def feature_edges(
@@ -3029,8 +3157,9 @@ def _register_gated(server: FastMCP) -> None:
         transparent: bool = False,
     ):
         """Render an off-screen PNG screenshot of the mesh (optionally colored
-        by a data array). Needs the [viewer] extra (polyscope); a missing
-        install returns a named error."""
+        by a data array). Uses polyscope when the [viewer] extra is installed
+        (size and transparent apply to it); otherwise the software rasterizer
+        draws the picture (see render_mesh for its options)."""
         try:
             report = _tools.tool_screenshot(
                 input_path=input_path,
