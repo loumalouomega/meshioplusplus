@@ -987,7 +987,7 @@ def roadmap_map():
                 ("Rust bindings over the C API", "M"),
                 ("interop phase 2 (Open3D, GPU)", "S"),
                 ("CLI chatbot over MCP tools", "M"),
-                ("viewer UI · MDPA preview", "L"),
+                ("viewer look · MDPA preview", "M"),
             ],
             [],
         ),
