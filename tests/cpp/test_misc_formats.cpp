@@ -417,3 +417,31 @@ TEST(Su2, ReadRejectsInvalidNdime) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+// A Fluent section header whose id range spans the whole int64 line: `last -
+// first + 1` is a signed overflow (found by the fuzzer, tests/fuzz/regressions/
+// ansys/fluent-id-range-overflow), and the section cannot hold that many ids.
+TEST(AnsysFluentRead, AnIdRangeLargerThanTheFileIsAReadError) {
+    const std::string path = mt::temp_path(".msh");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "(2 3)\n(10 (1 0 7fffffffffffffff 1 3)(0 0 0))\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_ansys(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// A mixed-face row (face type 0) whose own node count is negative: the count
+// wrapped to a huge size_t, `i + n + 2` wrapped with it, and the bounds check
+// passed (tests/fuzz/regressions/ansys/fluent-mixed-face-negative-count).
+TEST(AnsysFluentRead, ANegativeNodeCountInAMixedFaceRowIsAReadError) {
+    const std::string path = mt::temp_path(".msh");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "(2 2)\n(13 (8 1 1 2 0) (-2 2 3 2 1))\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_ansys(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
