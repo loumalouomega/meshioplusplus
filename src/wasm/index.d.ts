@@ -395,7 +395,7 @@ export interface RegionSummary {
  * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
  */
 /** A built-in colormap (shared with the SVG and TikZ writers). */
-export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey";
+export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey" | "synthwave";
 /** A built-in colormap or its reversed `_r` variant. */
 export type ColormapName = ColormapBase | `${ColormapBase}_r`;
 
@@ -467,6 +467,20 @@ export interface RenderOptions {
   outlineColor?: RenderColor;
   diagnostic?: "none" | "quality" | "inverted" | "degenerate" | "orientation" | "free_edges" | "edge_length";
   qualityMetric?: string;
+  /**
+   * One or two cut-away planes that clip the geometry away: each is six numbers,
+   * a point and then the normal of the side kept (`[0.5, 0, 0, 1, 0, 0]` keeps `x >= 0.5`).
+   * The back faces then in view, the inside of the cut, are drawn in `cutawayTint`.
+   */
+  cutaway?: number[] | number[][];
+  cutawayTint?: RenderColor;
+  /** A vector point array to follow with streamlines, drawn over the mesh's own cells. */
+  streamlines?: string;
+  /** About this many seeds (default 40). */
+  streamSeeds?: number;
+  /** The longest a line grows each way from its seed, in model diagonals (default 0.5). */
+  streamLength?: number;
+  streamColor?: RenderColor;
 }
 
 /** Options of `renderText`: the cell encodings only (the graphics protocols are CLI features). */

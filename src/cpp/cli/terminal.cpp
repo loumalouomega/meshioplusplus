@@ -5,6 +5,7 @@
 #include "terminal.hpp"
 
 #include <cerrno>
+#include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -118,8 +119,19 @@ volatile std::sig_atomic_t gResize = 0;
 volatile std::sig_atomic_t gSignal = 0;
 RawTerminal* gActive = nullptr;
 bool gAtexitRegistered = false;
+std::atomic<long> gChildPid{0};
+
+// Async-signal-safe: kill(2) only (a lock-free atomic load is too).
+void kill_child() {
+#ifndef _WIN32
+    const long pid = gChildPid.load();
+    if (pid > 0)
+        kill(static_cast<pid_t>(pid), SIGKILL);
+#endif
+}
 
 void leave_at_exit() {
+    kill_child();
     if (gActive != nullptr)
         gActive->Leave();
 }
@@ -298,6 +310,7 @@ bool gHaveSaved = false;
 
 // Async-signal-safe: write(2) and tcsetattr(3) only.
 void restore_from_signal() {
+    kill_child();
     if (!gHaveSaved)
         return;
     const ssize_t ignored = write(STDOUT_FILENO, kLeaveSequence, sizeof(kLeaveSequence) - 1);
@@ -462,5 +475,7 @@ int RawTerminal::TerminationSignal() const {
 RawTerminal::~RawTerminal() {
     Leave();
 }
+
+void terminal_track_child(long Pid) { gChildPid.store(Pid); }
 
 }  // namespace meshioplusplus::cli

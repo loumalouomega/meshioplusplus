@@ -291,7 +291,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric"}},
+          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
+          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor",
+          "Theme",          "Scanlines",   "Bloom",         "Fringe",       "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -595,7 +597,13 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
     o.mColorBy = pipe_text(rStep, "ColorBy", "");
     if (pipe_find(rStep, "Component"))
         o.mComponent = static_cast<int>(pipe_number(rStep, "Component", 0.0));
-    o.mCmap = pipe_text(rStep, "Cmap", "viridis");
+    o.mTheme = static_cast<RenderTheme>(pipe_snap_choice(rStep, "Theme", {"none", "synthwave"}, 0));
+    // The theme brings its own colormap unless one is named.
+    o.mCmap = pipe_text(rStep, "Cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
+    o.mScanlines = pipe_flag(rStep, "Scanlines", false);
+    o.mBloom = pipe_flag(rStep, "Bloom", false);
+    o.mFringe = pipe_flag(rStep, "Fringe", false);
+    o.mGridFloor = pipe_flag(rStep, "GridFloor", false);
     if (pipe_find(rStep, "VMin"))
         o.mVMin = pipe_number(rStep, "VMin", 0.0);
     if (pipe_find(rStep, "VMax"))
@@ -628,6 +636,24 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
         {"none", "quality", "inverted", "degenerate", "orientation", "free_edges", "edge_length"},
         0));
     o.mQualityMetric = pipe_text(rStep, "QualityMetric", "");
+    // Cut-away planes: a flat list of numbers, six per plane (a point and the
+    // normal of the side kept).
+    const std::vector<double> cut = pipe_dvec(rStep, "Cutaway");
+    if (cut.size() % 6 != 0 || cut.size() > 12)
+        throw std::invalid_argument(pipe_err(
+            rStep, "parameter 'Cutaway' must be one or two planes of six numbers each "
+                   "(a point, then the normal of the side kept)"));
+    for (std::size_t i = 0; i + 6 <= cut.size(); i += 6) {
+        RenderCutaway plane;
+        plane.mPoint = {cut[i], cut[i + 1], cut[i + 2]};
+        plane.mNormal = {cut[i + 3], cut[i + 4], cut[i + 5]};
+        o.mCutaways.push_back(plane);
+    }
+    o.mCutawayTint = pipe_snap_color(rStep, "CutawayTint", o.mCutawayTint);
+    o.mStreamlines = pipe_text(rStep, "Streamlines", "");
+    o.mStreamSeeds = static_cast<std::int32_t>(pipe_number(rStep, "StreamSeeds", o.mStreamSeeds));
+    o.mStreamLength = pipe_number(rStep, "StreamLength", o.mStreamLength);
+    o.mStreamColor = pipe_snap_color(rStep, "StreamColor", o.mStreamColor);
     return o;
 }
 

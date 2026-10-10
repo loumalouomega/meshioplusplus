@@ -91,3 +91,31 @@ mio_histogram <- function(values, title, xlabel, color = "#3b82f6") {
     breaks = 12
   )
 }
+
+# -- software-rendered frames -------------------------------------------------------
+#
+# Unlike the SVG route above, meshio++'s own rasterizer (mio_render(),
+# mio_render_png()) is reachable through the C API with every option:
+# colouring, field options, streamlines and cut-aways. A frame is encoded as a
+# PNG and handed to IRdisplay, which IRkernel turns into an inline image.
+
+#' Draw `mesh` with the software rasterizer and display it inline.
+#'
+#' The `...` are the options of `mio_render()` (`view`, `color_by`,
+#' `streamlines`, `cutaway`, ...). The pixels go through zlib when the library
+#' has it (a small file) and as stored blocks otherwise (the same bytes
+#' everywhere, but large). The display function is looked up in
+#' `getOption("mio.nb.display_png")` first, so a script can capture frames
+#' without a kernel; in a notebook it is `IRdisplay::display_png()`.
+mio_frame_image <- function(mesh, width = 560L, height = 420L, ...) {
+  bytes <- tryCatch(
+    mio_render_png(mesh, compress = 6L, width = as.integer(width), height = as.integer(height), ...),
+    error = function(e) {
+      if (!grepl("compress", conditionMessage(e))) stop(e)
+      mio_render_png(mesh, width = as.integer(width), height = as.integer(height), ...)
+    }
+  )
+  show_png <- getOption("mio.nb.display_png", function(b) IRdisplay::display_png(data = b))
+  show_png(bytes)
+  invisible(bytes)
+}

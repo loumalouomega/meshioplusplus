@@ -1035,6 +1035,99 @@ def test_dataset_hand_edit_survives_cli_edit(tmp_path, monkeypatch):
     assert m["case_0"].notes == "hand-written" and m["case_0"].split == "train"
 
 
+def test_dataset_thumbnail_verb_draws_sets_and_clears(tmp_path, monkeypatch):
+    pytest.importorskip("meshioplusplus._core")
+    _dataset_cases(tmp_path, n=2)
+    monkeypatch.chdir(tmp_path)
+    main = meshioplusplus._cli.main
+    assert (
+        main(["dataset", "add", "m.json", "cases/case_0.vtu", "--render-thumbnail"])
+        == 0
+    )
+    m = meshioplusplus.DatasetManifest.load("m.json")
+    assert m["case_0"].thumbnail == "thumbnails/case_0.png"
+    assert (tmp_path / "thumbnails" / "case_0.png").read_bytes()[:4] == b"\x89PNG"
+    assert main(["dataset", "add", "m.json", "cases/case_1.vtu"]) == 0
+    assert (
+        main(
+            [
+                "dataset",
+                "thumbnail",
+                "m.json",
+                "--all",
+                "--width",
+                "48",
+                "--height",
+                "32",
+            ]
+        )
+        == 0
+    )
+    m = meshioplusplus.DatasetManifest.load("m.json")
+    assert m["case_1"].thumbnail == "thumbnails/case_1.png"
+    assert (
+        main(
+            [
+                "dataset",
+                "thumbnail",
+                "m.json",
+                "--id",
+                "case_1",
+                "--path",
+                "pics/one.png",
+            ]
+        )
+        == 0
+    )
+    assert (tmp_path / "pics" / "one.png").exists()
+    assert (
+        meshioplusplus.DatasetManifest.load("m.json")["case_1"].thumbnail
+        == "pics/one.png"
+    )
+    assert (
+        main(
+            [
+                "dataset",
+                "thumbnail",
+                "m.json",
+                "--id",
+                "case_0",
+                "--set",
+                "pics/one.png",
+            ]
+        )
+        == 0
+    )
+    assert (
+        meshioplusplus.DatasetManifest.load("m.json")["case_0"].thumbnail
+        == "pics/one.png"
+    )
+    assert main(["dataset", "thumbnail", "m.json", "--all", "--clear"]) == 0
+    assert all(
+        e.thumbnail is None for e in meshioplusplus.DatasetManifest.load("m.json")
+    )
+    # Usage errors are named, and nothing is half-written.
+    assert main(["dataset", "thumbnail", "m.json"]) == 2
+    assert main(["dataset", "thumbnail", "m.json", "--all", "--path", "x.png"]) == 2
+    assert (
+        main(
+            [
+                "dataset",
+                "thumbnail",
+                "m.json",
+                "--id",
+                "case_0",
+                "--set",
+                "a.png",
+                "--clear",
+            ]
+        )
+        == 2
+    )
+    with pytest.raises(KeyError):
+        main(["dataset", "thumbnail", "m.json", "--id", "nope"])
+
+
 # --------------------------------------------------------------------------- #
 # grid transfer                                                               #
 # --------------------------------------------------------------------------- #

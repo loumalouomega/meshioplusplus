@@ -6139,6 +6139,22 @@ meshioplusplus::RenderOptions render_options_from_c(const mio_render_opts* pOpts
         throw std::invalid_argument("meshio++: render: unknown diagnostic value");
     o.mDiagnostic = static_cast<meshioplusplus::RenderDiagnostic>(pOpts->diagnostic);
     o.mQualityMetric = render_string(pOpts->quality_metric);
+    if (pOpts->num_cutaways < 0 || pOpts->num_cutaways > 2 ||
+        (pOpts->num_cutaways > 0 && !pOpts->cutaways))
+        throw std::invalid_argument(
+            "meshio++: render: cutaways is NULL, or its count is not 0, 1 or 2");
+    for (std::int32_t i = 0; i < pOpts->num_cutaways; ++i) {
+        const double* six = pOpts->cutaways + 6 * i;
+        meshioplusplus::RenderCutaway plane;
+        plane.mPoint = {six[0], six[1], six[2]};
+        plane.mNormal = {six[3], six[4], six[5]};
+        o.mCutaways.push_back(plane);
+    }
+    o.mCutawayTint = render_color(pOpts->cutaway_tint);
+    o.mStreamlines = render_string(pOpts->streamlines);
+    o.mStreamSeeds = pOpts->stream_seeds;
+    o.mStreamLength = pOpts->stream_length;
+    o.mStreamColor = render_color(pOpts->stream_color);
     return o;
 }
 
@@ -6212,6 +6228,10 @@ void mio_render_opts_init(mio_render_opts* opts) {
     opts->iso_color = 0x1E1E1EFFu;
     opts->vector_color = 0xDC3232FFu;
     opts->outline_color = 0x969696FFu;
+    opts->cutaway_tint = 0xE88034FFu;
+    opts->stream_seeds = 40;
+    opts->stream_length = 0.5;
+    opts->stream_color = 0xF050A0FFu;
 }
 
 void mio_text_opts_init(mio_text_opts* opts) {

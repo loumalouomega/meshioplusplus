@@ -1639,6 +1639,32 @@ end
     @test read(path)[1:4] == UInt8[0x89, 0x50, 0x4e, 0x47]
     @test_throws MeshioError write_snapshot(joinpath(dirname(path), "frame.vtu"), cube)
 
+    # A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so the far face
+    # (cell 5) shows from inside, in the tint.
+    cut = render(cube; width=32, height=32, view="-x", shading="none",
+                 background=rgba(0, 0, 0), cutaway=[0.5, 0, 0, 1, 0, 0],
+                 cutaway_tint=rgba(10, 200, 30))
+    @test cut.cell_ids[17, 17] == 5
+    @test cut.rgba[1:3, 17, 17] == UInt8[10, 200, 30]
+    two = render(cube; width=32, height=32,
+                 cutaway=[[0.5, 0, 0, 1, 0, 0], [0, 0.5, 0, 0, 1, 0]])
+    @test two isa Frame
+    @test_throws ErrorException render(cube; cutaway=[1, 2, 3])
+    @test_throws MeshioError render(cube; cutaway=[0, 0, 0, 0, 0, 0])
+
+    # Streamlines of a vector point array.
+    add_point_data!(cube, "flow", vcat(reshape(-(pts[2, :] .- 0.5), 1, :),
+                                       reshape(pts[1, :] .- 0.5, 1, :), zeros(1, size(pts, 2))))
+    red(fr) = count(i -> fr.rgba[1, i] == 255 && fr.rgba[2, i] == 0 && fr.rgba[3, i] == 0,
+                    CartesianIndices(size(fr.rgba)[2:3]))
+    plain = render(cube; width=64, height=64, view="+z", shading="none", background=rgba(0, 0, 0))
+    @test red(plain) == 0
+    lines = render(cube; width=64, height=64, view="+z", shading="none",
+                   background=rgba(0, 0, 0), streamlines="flow", stream_color=rgba(255, 0, 0))
+    @test red(lines) > 20
+    @test_throws MeshioError render(cube; streamlines="nope")
+    @test_throws MeshioError render(cube; streamlines="flow", stream_seeds=0)
+
     @test_throws MeshioError render(cube; color_by="nope")
     @test_throws ErrorException render(cube; bogus=1)
     @test_throws ErrorException render(cube; shading="plastic")

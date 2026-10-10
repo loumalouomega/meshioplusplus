@@ -44,7 +44,7 @@ def write(
     ``_NAME`` (``fields=False`` skips them). ``color_by`` names a ``point_data``
     or ``cell_data`` array to bake into ``COLOR_0`` through ``cmap``
     (``viridis``, ``coolwarm``, ``turbo``, ``magma``, ``inferno``,
-    ``plasma`` or ``grey``, or a reversed ``_r`` variant) over ``vmin``..``vmax`` (default:
+    ``plasma``, ``grey`` or ``synthwave``, or a reversed ``_r`` variant) over ``vmin``..``vmax`` (default:
     the finite range of what is exported), the material then being
     ``KHR_materials_unlit`` unless ``unlit=False``; non-finite values take
     ``nan_color``. Multi-component arrays reduce to ``component`` or to their

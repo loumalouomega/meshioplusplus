@@ -1,40 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="544" viewBox="0 0 800 544" role="img" aria-label="meshioplusplus tui, 100x34 terminal">
 <title>meshioplusplus tui, 100x34 terminal</title>
 <rect width="800" height="544" fill="#18181c"/>
-<rect x="0" y="0" width="464" height="16" fill="#d4d4d4"/>
-<rect x="0" y="16" width="464" height="16" fill="#d4d4d4"/>
-<rect x="0" y="32" width="464" height="16" fill="#d4d4d4"/>
-<rect x="0" y="48" width="464" height="16" fill="#d4d4d4"/>
-<rect x="0" y="64" width="464" height="16" fill="#d4d4d4"/>
-<rect x="0" y="80" width="464" height="16" fill="#d4d4d4"/>
-<rect x="0" y="96" width="464" height="16" fill="#d4d4d4"/>
-<rect x="464" y="104" width="8" height="8" fill="#915d3f"/>
-<rect x="472" y="104" width="8" height="8" fill="#815137"/>
-<rect x="480" y="104" width="8" height="8" fill="#72432f"/>
-<rect x="488" y="104" width="8" height="8" fill="#5d3424"/>
-<rect x="416" y="112" width="8" height="16" fill="#b46a4a"/>
-<rect x="424" y="112" width="8" height="16" fill="#bb724e"/>
-<rect x="432" y="112" width="8" height="16" fill="#b46f4d"/>
-<rect x="440" y="112" width="8" height="16" fill="#ac6e4b"/>
-<rect x="448" y="112" width="8" height="16" fill="#be7a53"/>
-<rect x="456" y="112" width="8" height="16" fill="#d2855b"/>
-<rect x="464" y="112" width="8" height="16" fill="#d5855b"/>
-<rect x="472" y="112" width="8" height="16" fill="#bf7651"/>
-<rect x="480" y="112" width="8" height="16" fill="#9f5f42"/>
-<rect x="488" y="112" width="8" height="16" fill="#97593e"/>
-<rect x="496" y="112" width="8" height="16" fill="#91523a"/>
-<rect x="408" y="120" width="8" height="8" fill="#52221f"/>
-<rect x="416" y="112" width="8" height="8" fill="#9a5b3f"/>
-<rect x="424" y="112" width="8" height="8" fill="#ad6a49"/>
-<rect x="432" y="112" width="8" height="8" fill="#b6724e"/>
-<rect x="440" y="112" width="8" height="8" fill="#b0714d"/>
-<rect x="448" y="112" width="8" height="8" fill="#bc7a54"/>
-<rect x="456" y="112" width="8" height="8" fill="#c17f57"/>
-<rect x="464" y="112" width="8" height="8" fill="#bd7952"/>
-<rect x="472" y="112" width="8" height="8" fill="#ae6d4b"/>
-<rect x="480" y="112" width="8" height="8" fill="#a56545"/>
-<rect x="488" y="112" width="8" height="8" fill="#854e36"/>
-<rect x="496" y="112" width="8" height="8" fill="#643626"/>
+<rect x="0" y="0" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="16" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="32" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="48" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="64" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="80" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="96" width="576" height="16" fill="#d4d4d4"/>
+<rect x="0" y="112" width="576" height="16" fill="#d4d4d4"/>
 <rect x="408" y="128" width="8" height="16" fill="#673026"/>
 <rect x="416" y="128" width="8" height="16" fill="#676046"/>
 <rect x="424" y="128" width="8" height="16" fill="#c3bf8f"/>
@@ -1027,31 +1001,42 @@
 <g font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="12" xml:space="preserve">
 <text x="8" y="12" fill="#18181c" textLength="96" lengthAdjust="spacing">meshio++ tui</text>
 <text x="8" y="28" fill="#18181c" textLength="32" lengthAdjust="spacing">drag</text>
-<text x="136" y="28" fill="#18181c" textLength="40" lengthAdjust="spacing">orbit</text>
-<text x="272" y="28" fill="#18181c" textLength="88" lengthAdjust="spacing">wheel / + -</text>
-<text x="384" y="28" fill="#18181c" textLength="32" lengthAdjust="spacing">zoom</text>
+<text x="104" y="28" fill="#18181c" textLength="40" lengthAdjust="spacing">orbit</text>
+<text x="240" y="28" fill="#18181c" textLength="88" lengthAdjust="spacing">wheel / + -</text>
+<text x="360" y="28" fill="#18181c" textLength="32" lengthAdjust="spacing">zoom</text>
 <text x="8" y="44" fill="#18181c" textLength="48" lengthAdjust="spacing">arrows</text>
-<text x="136" y="44" fill="#18181c" textLength="24" lengthAdjust="spacing">pan</text>
-<text x="272" y="44" fill="#18181c" textLength="64" lengthAdjust="spacing">r / Home</text>
-<text x="384" y="44" fill="#18181c" textLength="40" lengthAdjust="spacing">reset</text>
+<text x="104" y="44" fill="#18181c" textLength="24" lengthAdjust="spacing">pan</text>
+<text x="240" y="44" fill="#18181c" textLength="64" lengthAdjust="spacing">r / Home</text>
+<text x="360" y="44" fill="#18181c" textLength="40" lengthAdjust="spacing">reset</text>
 <text x="8" y="60" fill="#18181c" textLength="48" lengthAdjust="spacing">1 .. 7</text>
-<text x="136" y="60" fill="#18181c" textLength="168" lengthAdjust="spacing">iso +x -x +y -y +z -z</text>
-<text x="8" y="76" fill="#18181c" textLength="8" lengthAdjust="spacing">p</text>
-<text x="32" y="76" fill="#18181c" textLength="88" lengthAdjust="spacing">perspective</text>
-<text x="136" y="76" fill="#18181c" textLength="8" lengthAdjust="spacing">a</text>
-<text x="160" y="76" fill="#18181c" textLength="32" lengthAdjust="spacing">axes</text>
-<text x="272" y="76" fill="#18181c" textLength="8" lengthAdjust="spacing">c</text>
-<text x="296" y="76" fill="#18181c" textLength="80" lengthAdjust="spacing">colour bar</text>
-<text x="8" y="92" fill="#18181c" textLength="8" lengthAdjust="spacing">e</text>
-<text x="32" y="92" fill="#18181c" textLength="40" lengthAdjust="spacing">edges</text>
-<text x="136" y="92" fill="#18181c" textLength="8" lengthAdjust="spacing">s</text>
-<text x="160" y="92" fill="#18181c" textLength="56" lengthAdjust="spacing">shading</text>
-<text x="272" y="92" fill="#18181c" textLength="8" lengthAdjust="spacing">b</text>
-<text x="296" y="92" fill="#18181c" textLength="72" lengthAdjust="spacing">scale bar</text>
-<text x="8" y="108" fill="#18181c" textLength="8" lengthAdjust="spacing">?</text>
-<text x="32" y="108" fill="#18181c" textLength="72" lengthAdjust="spacing">this help</text>
-<text x="136" y="108" fill="#18181c" textLength="128" lengthAdjust="spacing">q / Esc / Ctrl-C</text>
-<text x="288" y="108" fill="#18181c" textLength="32" lengthAdjust="spacing">quit</text>
+<text x="104" y="60" fill="#18181c" textLength="168" lengthAdjust="spacing">iso +x -x +y -y +z -z</text>
+<text x="320" y="60" fill="#18181c" textLength="40" lengthAdjust="spacing">click</text>
+<text x="384" y="60" fill="#18181c" textLength="96" lengthAdjust="spacing">probe a cell</text>
+<text x="8" y="76" fill="#18181c" textLength="104" lengthAdjust="spacing">p perspective</text>
+<text x="136" y="76" fill="#18181c" textLength="48" lengthAdjust="spacing">a axes</text>
+<text x="208" y="76" fill="#18181c" textLength="88" lengthAdjust="spacing">b scale bar</text>
+<text x="320" y="76" fill="#18181c" textLength="96" lengthAdjust="spacing">c colour bar</text>
+<text x="440" y="76" fill="#18181c" textLength="8" lengthAdjust="spacing">0</text>
+<text x="464" y="76" fill="#18181c" textLength="96" lengthAdjust="spacing">clear probes</text>
+<text x="8" y="92" fill="#18181c" textLength="56" lengthAdjust="spacing">e edges</text>
+<text x="88" y="92" fill="#18181c" textLength="72" lengthAdjust="spacing">s shading</text>
+<text x="184" y="92" fill="#18181c" textLength="120" lengthAdjust="spacing">i pin the probe</text>
+<text x="328" y="92" fill="#18181c" textLength="40" lengthAdjust="spacing">x y z</text>
+<text x="384" y="92" fill="#18181c" textLength="64" lengthAdjust="spacing">cut-away</text>
+<text x="472" y="92" fill="#18181c" textLength="24" lengthAdjust="spacing">, .</text>
+<text x="512" y="92" fill="#18181c" textLength="40" lengthAdjust="spacing">slide</text>
+<text x="8" y="108" fill="#18181c" textLength="24" lengthAdjust="spacing">[ ]</text>
+<text x="48" y="108" fill="#18181c" textLength="32" lengthAdjust="spacing">step</text>
+<text x="104" y="108" fill="#18181c" textLength="24" lengthAdjust="spacing">{ }</text>
+<text x="144" y="108" fill="#18181c" textLength="80" lengthAdjust="spacing">step by 10</text>
+<text x="248" y="108" fill="#18181c" textLength="40" lengthAdjust="spacing">space</text>
+<text x="304" y="108" fill="#18181c" textLength="32" lengthAdjust="spacing">play</text>
+<text x="400" y="108" fill="#18181c" textLength="8" lengthAdjust="spacing">:</text>
+<text x="424" y="108" fill="#18181c" textLength="96" lengthAdjust="spacing">command line</text>
+<text x="8" y="124" fill="#18181c" textLength="8" lengthAdjust="spacing">?</text>
+<text x="32" y="124" fill="#18181c" textLength="72" lengthAdjust="spacing">this help</text>
+<text x="160" y="124" fill="#18181c" textLength="128" lengthAdjust="spacing">q / Esc / Ctrl-C</text>
+<text x="312" y="124" fill="#18181c" textLength="32" lengthAdjust="spacing">quit</text>
 <text x="0" y="524" fill="#d4d4d4" textLength="272" lengthAdjust="spacing">height: 5.27509 .. 113.047 (magma)</text>
 <text x="8" y="540" fill="#18181c" textLength="72" lengthAdjust="spacing">bunny.stl</text>
 <text x="96" y="540" fill="#18181c" textLength="40" lengthAdjust="spacing">az 45</text>

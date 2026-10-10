@@ -334,8 +334,8 @@ def _register_conversion(server: FastMCP) -> None:
         component point_data array is exported raw as a custom attribute
         (temperature -> _TEMPERATURE); fields=false skips them. color_by names
         a point_data or cell_data array to bake into COLOR_0 through cmap
-        (viridis, coolwarm, turbo, magma, inferno, plasma, grey, or a
-        reversed *_r variant) over vmin..vmax (default: the finite range of
+        (viridis, coolwarm, turbo, magma, inferno, plasma, grey, synthwave,
+        or a reversed *_r variant) over vmin..vmax (default: the finite range of
         what is exported), with an unlit material unless unlit=false;
         multi-component arrays reduce to component or their magnitude and
         non-finite values take nan_color (#rrggbb). The output is Y-up,
@@ -1291,6 +1291,12 @@ def _register_operations(server: FastMCP) -> None:
         warp_outline: bool = False,
         diagnostic: Optional[str] = None,
         quality_metric: Optional[str] = None,
+        cutaway: Optional[list] = None,
+        cutaway_tint: Optional[str] = None,
+        streamlines: Optional[str] = None,
+        stream_seeds: int = 40,
+        stream_length: float = 0.5,
+        stream_color: Optional[str] = None,
     ):
         """Look at a mesh: draw it with the software rasterizer, which needs
         no display, GPU or optional extra (unlike screenshot).
@@ -1325,8 +1331,17 @@ def _register_operations(server: FastMCP) -> None:
         warp_outline drawing the undeformed outline. diagnostic is one of
         quality (with quality_metric, e.g. scaled_jacobian), inverted,
         degenerate, orientation (front and back faces), free_edges (open,
-        non-manifold and inconsistent edges) or edge_length. Returned text ends
-        with the colour range, ticks and keys."""
+        non-manifold and inconsistent edges) or edge_length. cutaway clips
+        the geometry away to look inside: a list of at most two planes, each
+        a string like "+x:0.5" (keep x >= 0.5; "-x:0.5" keeps x <= 0.5) or
+        six numbers [px, py, pz, nx, ny, nz] (a point and the normal of the
+        side kept); the back faces then in view, the inside of the cut, are
+        drawn in cutaway_tint (#rrggbb). streamlines draws lines that follow
+        a vector point array over the mesh's cells from about stream_seeds
+        seeds (default 40), each at most stream_length diagonals of the model
+        long (default 0.5) in each direction, in stream_color (#rrggbb); on a
+        volume they run inside it, so combine them with cutaway. Returned
+        text ends with the colour range, ticks and keys."""
         report = _guard(
             _tools.tool_render_mesh,
             input_path=input_path,
@@ -1369,6 +1384,12 @@ def _register_operations(server: FastMCP) -> None:
             warp_outline=warp_outline,
             diagnostic=diagnostic,
             quality_metric=quality_metric,
+            cutaway=cutaway,
+            cutaway_tint=cutaway_tint,
+            streamlines=streamlines,
+            stream_seeds=stream_seeds,
+            stream_length=stream_length,
+            stream_color=stream_color,
         )
         if isinstance(report, dict) and str(
             report.get("output_path", "")
@@ -2644,6 +2665,10 @@ def _register_dataset(server: FastMCP) -> None:
         group: Optional[str] = None,
         notes: Optional[str] = None,
         metadata: Optional[dict] = None,
+        thumbnail: Optional[str] = None,
+        render_thumbnail: bool = False,
+        thumbnail_width: int = 256,
+        thumbnail_height: int = 192,
     ) -> dict:
         """Add a case to a dataset manifest JSON (created if absent). Give
         exactly one of input_pattern (a glob) or input_paths; the source is
@@ -2652,7 +2677,10 @@ def _register_dataset(server: FastMCP) -> None:
         superresolution dataset: the two must have the same number of steps at
         the same instants, checked here. Leave it out for the ordinary case --
         an entry without a target is self-supervised, one mesh supplying both
-        sides. Optional curation: split, tags, group, notes, metadata."""
+        sides. Optional curation: split, tags, group, notes, metadata, and a
+        picture of the case: thumbnail (an existing PNG under the manifest's
+        directory) or render_thumbnail=true, which draws the first step with
+        the software rasterizer to thumbnails/<id>.png beside the manifest."""
         return _guard(
             _tools.tool_dataset_add,
             manifest_path=manifest_path,
@@ -2674,6 +2702,10 @@ def _register_dataset(server: FastMCP) -> None:
             group=group,
             notes=notes,
             metadata=metadata,
+            thumbnail=thumbnail,
+            render_thumbnail=render_thumbnail,
+            thumbnail_width=thumbnail_width,
+            thumbnail_height=thumbnail_height,
         )
 
     @server.tool()
@@ -2711,11 +2743,19 @@ def _register_dataset(server: FastMCP) -> None:
         notes: Optional[str] = None,
         metadata: Optional[dict] = None,
         drop_metadata: Optional[List[str]] = None,
+        thumbnail: Optional[str] = None,
+        render_thumbnail: bool = False,
+        thumbnail_step: int = 0,
+        thumbnail_width: int = 256,
+        thumbnail_height: int = 192,
     ) -> dict:
         """Curate a dataset manifest: set a split on selected entries, assign
         splits by fractions (assign_splits={"train": 0.8, ...}, deterministic
         via seed; by_group keeps groups together), add/remove tags, or set one
-        entry's group/notes/metadata."""
+        entry's group/notes/metadata. thumbnail records an existing PNG under
+        the manifest's directory as one entry's picture ("none" clears it);
+        render_thumbnail=true draws each selected entry's step
+        thumbnail_step to thumbnails/<id>.png beside the manifest."""
         return _guard(
             _tools.tool_dataset_update,
             manifest_path=manifest_path,
@@ -2731,6 +2771,11 @@ def _register_dataset(server: FastMCP) -> None:
             notes=notes,
             metadata=metadata,
             drop_metadata=drop_metadata,
+            thumbnail=thumbnail,
+            render_thumbnail=render_thumbnail,
+            thumbnail_step=thumbnail_step,
+            thumbnail_width=thumbnail_width,
+            thumbnail_height=thumbnail_height,
         )
 
     @server.tool()
