@@ -10,6 +10,7 @@ core directly. This binding rides on the same flat C API as [Fortran](../../doc/
 | [`01_read_and_visualize.ipynb`](01_read_and_visualize.ipynb) | Read the mesh, inspect it, render the full part and a cropped interior view, and chart element quality/height for a corner. |
 | [`02_convert_and_inspect.ipynb`](02_convert_and_inspect.ipynb) | Convert to VTU/VTK/XDMF/Gmsh/PLY, compare file sizes, verify every round trip. |
 | [`03_mesh_operations.ipynb`](03_mesh_operations.ipynb) | The same operations tour as [`../cpp/03_mesh_operations.ipynb`](../cpp/03_mesh_operations.ipynb): surface/skin extraction, quality, reorder, diff, sniff, transform, clean, crop, merge, split, stats, convert_cells, refine, decimate, partition, smooth, interpolate, slice, isosurface, the five data operations, and selective reads. |
+| [`04_terminal_rendering.ipynb`](04_terminal_rendering.ipynb) | v16.37.0: the software rasterizer drawing the bracket with no display or plotting library, every option reached through the C API (`render`, `render_png`, `render_text`, `write_snapshot`): colouring by data, contour lines, arrows, a warp, **streamlines** on the skin and through a cut-away, the terminal form and `write_snapshot`. Frames are shown inline as PNGs by ``frame_image` in `mio_notebook.jl``. |
 
 ## Rendering without PyVista — and without per-call SVG colouring
 

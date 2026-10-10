@@ -436,7 +436,7 @@ struct _CFeatureEdgesReport
     reserved::NTuple{4,Int64}
 end
 
-"""Mirror of C `mio_render_opts` (v16.34.0). ABI; fill it through [`render`](@ref),
+"""Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
 which initializes the defaults in C and sets only what the caller names."""
 struct _CRenderOpts
     view::Ptr{UInt8}
@@ -503,7 +503,14 @@ struct _CRenderOpts
     iso_color::UInt32
     vector_color::UInt32
     outline_color::UInt32
-    reserved::NTuple{6,Int64}
+    cutaways::Ptr{Float64}
+    num_cutaways::Int32
+    cutaway_tint::UInt32
+    streamlines::Ptr{UInt8}
+    stream_seeds::Int32
+    stream_color::UInt32
+    stream_length::Cdouble
+    reserved::NTuple{1,Int64}
 end
 
 """Mirror of C `mio_text_opts` (v16.34.0)."""

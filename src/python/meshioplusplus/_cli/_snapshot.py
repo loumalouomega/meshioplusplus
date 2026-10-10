@@ -10,7 +10,7 @@ import sys
 from .._helpers import read, reader_map
 from .._render import _core_module, _environment_color_depth
 from .._render import parse_color as _rgba
-from .._render import render_text, snapshot
+from .._render import parse_cutaway, render_text, snapshot
 
 
 def _numbers(text, flag):
@@ -118,6 +118,25 @@ def add_render_args(parser):
         "--vector-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
     )
     field.add_argument(
+        "--streamlines", type=str, default=None, help="vector point array to follow"
+    )
+    field.add_argument("--stream-seeds", type=int, default=None)
+    field.add_argument("--stream-length", type=float, default=None)
+    field.add_argument(
+        "--stream-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
+    )
+    field.add_argument(
+        "--theme",
+        choices=["none", "synthwave"],
+        default=None,
+        help="an optional look: synthwave puts a banded sunset behind the model "
+        "in neon colours and defaults --cmap to synthwave",
+    )
+    field.add_argument("--grid-floor", action="store_true", help="with --theme")
+    field.add_argument("--bloom", action="store_true")
+    field.add_argument("--fringe", action="store_true")
+    field.add_argument("--scanlines", action="store_true")
+    field.add_argument(
         "--warp", type=str, default=None, help="displacement point array"
     )
     field.add_argument("--warp-scale", type=float, default=None)
@@ -139,6 +158,16 @@ def add_render_args(parser):
         default=None,
     )
     field.add_argument("--quality-metric", type=str, default=None)
+    cut = parser.add_argument_group("cut-aways")
+    cut.add_argument(
+        "--cutaway",
+        action="append",
+        default=None,
+        metavar="PLANE",
+        help="clip away a half-space (twice at most): PX,PY,PZ,NX,NY,NZ (a point and "
+        "the normal of the side kept) or AXIS:OFFSET with AXIS one of +x -x +y -y +z -z",
+    )
+    cut.add_argument("--cutaway-tint", type=_rgba, default=None, metavar="#RRGGBB[AA]")
 
 
 def render_options(args):
@@ -224,13 +253,31 @@ def render_options(args):
         "vector_count": args.vector_count,
         "vector_length": args.vector_length,
         "vector_color": args.vector_color,
+        "theme": args.theme,
+        "grid_floor": args.grid_floor or None,
+        "bloom": args.bloom or None,
+        "fringe": args.fringe or None,
+        "scanlines": args.scanlines or None,
+        "streamlines": args.streamlines,
+        "stream_seeds": args.stream_seeds,
+        "stream_length": args.stream_length,
+        "stream_color": args.stream_color,
         "warp": args.warp,
         "warp_scale": args.warp_scale,
         "warp_outline": args.warp_outline or None,
         "outline_color": args.outline_color,
         "diagnostic": None if diagnostic == "none" else diagnostic.replace("-", "_"),
         "quality_metric": args.quality_metric,
+        "cutaway": args.cutaway,
+        "cutaway_tint": args.cutaway_tint,
     }
+    if args.cutaway_tint is not None and not args.cutaway:
+        raise SystemExit("meshio++: --cutaway-tint requires --cutaway")
+    if args.cutaway:
+        try:
+            options["cutaway"] = [list(parse_cutaway(p)) for p in args.cutaway]
+        except ValueError as exc:
+            raise SystemExit(f"meshio++: --cutaway: {exc}") from None
     if args.pan_x is not None or args.pan_y is not None:
         options["pan"] = (args.pan_x or 0.0, args.pan_y or 0.0)
     return {k: v for k, v in options.items() if v is not None}

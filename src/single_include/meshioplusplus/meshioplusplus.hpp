@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 24
+#define MESHIOPLUSPLUS_ABI_VERSION 25
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -7520,7 +7520,10 @@ inline std::ofstream make_classic_ofstream(const std::filesystem::path& rPath,
  * Each colormap is a 256-entry table of packed uint8 RGB triples. viridis,
  * magma, inferno, plasma and turbo are matplotlib's canonical 256-entry listed
  * colormaps verbatim; coolwarm and grey are matplotlib's segmented maps sampled
- * at the same 256 points; each `<name>_r` is its map reversed. viridis, magma,
+ * at the same 256 points; `synthwave` (v16.38.0) is an original palette defined by
+ * the generator itself, piecewise-linear through deep blue, violet, magenta, hot
+ * pink and pale cyan, and not perceptually uniform; each `<name>_r` is its map
+ * reversed. viridis, magma,
  * inferno and plasma are CC0 (Smith, van der Walt and Firing); Turbo is
  * Apache-2.0 (Google LLC, 2019) -- see CITATION.cff.
  *
@@ -11782,7 +11785,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 34
+#define MESHIOPLUSPLUS_VERSION_MINOR 38
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11792,7 +11795,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.34.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.38.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -28612,6 +28615,7 @@ MESHIOPLUSPLUS_API RemeshVolumeResult remesh_volume(const Mesh& rMesh,
 // System includes
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28664,6 +28668,25 @@ enum class RenderDiagnostic : std::uint8_t {
 
 /// An RGBA colour, 8 bits per channel, alpha 255 opaque.
 using RenderColor = std::array<std::uint8_t, 4>;
+
+/**
+ * @brief A cut-away plane: the half-space kept is the side the normal points
+ * to, `(p - mPoint) . mNormal >= 0`. Everything on the other side is clipped
+ * away before it is drawn.
+ */
+struct RenderCutaway {
+    std::array<double, 3> mPoint = {0.0, 0.0, 0.0};
+    std::array<double, 3> mNormal = {0.0, 0.0, 1.0};
+};
+
+/// An optional look for a frame; `None` changes nothing.
+enum class RenderTheme : std::uint8_t {
+    None = 0,
+    /// A dark violet-to-orange sunset behind the model (banded, so it survives
+    /// 16- and 256-colour terminals), neon violet faces, cyan edges and magenta
+    /// lines. Options you set yourself win over the theme's defaults.
+    Synthwave = 1,
+};
 
 /** @brief Everything `render` takes besides the mesh. */
 struct RenderOptions {
@@ -28794,6 +28817,51 @@ struct RenderOptions {
     /// The `quality` metric for `RenderDiagnostic::Quality` (`scaled_jacobian`,
     /// `aspect_ratio`, ...).
     std::string mQualityMetric;
+
+    // --- Cut-aways (v16.36.0, ABI 25) -------------------------------------
+
+    /// Up to two planes; the geometry on the far side of any is clipped away
+    /// (faces, lines, points and the extra layers; a face crossing a plane is
+    /// cut and keeps its colour and shading). A cut surface is hollow: the
+    /// back faces now in view, those turned away from the camera, are drawn
+    /// in `mCutawayTint` so the inside reads as inside. Empty: nothing is cut.
+    /// A draw-time option: `render_scene` takes it from its own options.
+    std::vector<RenderCutaway> mCutaways;
+    RenderColor mCutawayTint = {232, 128, 52, 255};
+
+    // --- Streamlines (v16.37.0, ABI 25) -----------------------------------
+
+    /// Streamlines of the vector point array of this name: lines that follow
+    /// the field from about `mStreamSeeds` seeds, in both directions, over the
+    /// mesh's own cells (triangles, quads, tetrahedra, hexahedra, wedges and
+    /// pyramids; a surface is traced on the surface). Each line grows at most
+    /// `mStreamLength` diagonals of the model from its seed. Drawn like
+    /// isolines and arrows, in `mStreamColor`. On a volume the lines are
+    /// inside it, so cut it away (`mCutaways`) to see them.
+    std::string mStreamlines;
+    std::int32_t mStreamSeeds = 40;
+    double mStreamLength = 0.5;
+    RenderColor mStreamColor = {240, 80, 160, 255};
+
+    // --- Theme (v16.38.0, ABI 25) -----------------------------------------
+
+    /// The theme's background (wherever the frame is not opaque, so an explicit
+    /// opaque `mBackground` wins) and default colours, a perspective grid floor
+    /// under the model with `mGridFloor`, and three post-processes on the final
+    /// frame, in this order: `mBloom` (the brightest pixels blurred and added
+    /// back), `mFringe` (red and blue shifted apart) and `mScanlines` (every
+    /// other row dimmed). All of it is integer arithmetic in a fixed order, so
+    /// it is deterministic, and with everything off a frame is byte-identical to
+    /// one rendered before the theme existed. `mGridFloor` needs a theme.
+    RenderTheme mTheme = RenderTheme::None;
+    bool mScanlines = false;
+    bool mBloom = false;
+    bool mFringe = false;
+    bool mGridFloor = false;
+    /// The theme's beat counter: the grid's colour alternates and its lines
+    /// scroll one eighth of a cell per beat. The viewer advances it with the
+    /// tempo; a still frame leaves it at 0.
+    std::int32_t mThemePhase = 0;
 };
 
 /** @brief A rendered image. */
@@ -28867,6 +28935,52 @@ struct TextOptions {
 MESHIOPLUSPLUS_API Frame render(const Mesh& rMesh, const RenderOptions& rOptions = {});
 
 /**
+ * @brief The camera-independent half of a render, kept for reuse (v16.35.0).
+ * Extracting the skin of a volume dominates a frame's cost at large sizes and
+ * does not depend on where the camera is, so an interactive viewer prepares a
+ * scene once and draws it from many viewpoints. An opaque, cheap-to-copy
+ * handle (a shared, immutable scene); a default-constructed `RenderScene` is
+ * empty.
+ */
+struct RenderScene {
+    /// Implementation detail; do not interpret.
+    std::shared_ptr<const void> mpData;
+    bool Empty() const { return mpData == nullptr; }
+};
+
+/**
+ * @brief Prepare a mesh for repeated drawing: the drawn faces and their skin,
+ * the resolved field and its range, normals, edge lines and extra layers.
+ * @p rOptions fixes everything that is not the camera or the frame: the field
+ * (`mColorBy`, `mExpr`, scale, clip, categories, isolines, vectors, warp,
+ * diagnostics), edges, colours and the shading *mode* (smooth normals are
+ * computed here). Throws what `render` throws for the same options.
+ */
+MESHIOPLUSPLUS_API RenderScene prepare_render(const Mesh& rMesh,
+                                              const RenderOptions& rOptions = {});
+
+/**
+ * @brief The bounding sphere of what a scene draws (before any cut-away): its
+ * centre and radius, the fixed fit's frame. False for an empty scene.
+ */
+MESHIOPLUSPLUS_API bool render_scene_bounds(const RenderScene& rScene,
+                                            std::array<double, 3>& rCentre, double& rRadius);
+
+/**
+ * @brief Draw a prepared scene. The camera, projection, zoom, pan, frame size,
+ * supersampling, lighting, background and overlays (axes, scale bar, colour
+ * bar) come from @p rOptions; the field, edges and colours are the prepared
+ * ones. With the same options as `prepare_render`, the frame is byte-identical
+ * to `render`'s.
+ * @param FixedFit fit the frame to the scene's bounding sphere instead of the
+ *        projected extents, so the model keeps one size and place while the
+ *        camera orbits (the interactive loop sets it; `render` does not)
+ * @throws std::invalid_argument for an empty scene
+ */
+MESHIOPLUSPLUS_API Frame render_scene(const RenderScene& rScene,
+                                      const RenderOptions& rOptions = {}, bool FixedFit = false);
+
+/**
  * @brief The frame size, in pixels, and the pixel aspect that make an encoding
  * fill `Cols` by `Rows` cells.
  * @return `{width, height}`; @p rPixelAspect receives the matching
@@ -28888,6 +29002,41 @@ MESHIOPLUSPLUS_API std::string encode_text(const Frame& rFrame, const TextOption
 /** @brief `render` sized by `text_frame_size`, then `encode_text`. */
 MESHIOPLUSPLUS_API std::string render_text(const Mesh& rMesh, const RenderOptions& rRender = {},
                                            const TextOptions& rText = {});
+
+/** @brief One terminal cell of a cell encoding: a glyph and its two colours. */
+struct TextCell {
+    std::uint32_t mGlyph = 0x20;  ///< Unicode code point
+    bool mFgSet = false;          ///< false: the terminal's own foreground
+    bool mBgSet = false;
+    std::array<int, 3> mFg = {0, 0, 0};
+    std::array<int, 3> mBg = {0, 0, 0};
+};
+
+/** @brief The cells of a frame, row by row. */
+struct TextGrid {
+    int mCols = 0;
+    int mRows = 0;
+    std::vector<TextCell> mCells;  ///< `mCols * mRows`
+};
+
+/**
+ * @brief The cells `encode_text` would print for a frame, before any
+ * serialization (the interactive loop diffs these).
+ * @throws std::invalid_argument for a graphics protocol, or a frame that is not
+ *         a whole number of cells (size it with `text_frame_size`)
+ */
+MESHIOPLUSPLUS_API TextGrid encode_cells(const Frame& rFrame, const TextOptions& rOptions = {});
+
+/**
+ * @brief The bytes that repaint @p rNew over @p rOld, for a terminal showing
+ * @p rOld with its top-left cell at 1-based screen position (Row, Col): a
+ * cursor move, then SGR changes and glyphs for each run of changed cells, and
+ * a reset at the end. Cells are compared as @p Depth shows them, so colours
+ * that quantize alike are not rewritten. A different grid size repaints every
+ * cell. `ColorDepth::Mono` emits glyphs and cursor moves only.
+ */
+MESHIOPLUSPLUS_API std::string encode_cells_update(const TextGrid& rOld, const TextGrid& rNew,
+                                                   ColorDepth Depth, int Row = 1, int Col = 1);
 
 /**
  * @brief Encode a frame as an RGBA PNG.
@@ -33295,6 +33444,67 @@ inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/slot_runs.hpp =====
+// ===== begin src/cpp/src/detail/streamlines.hpp =====
+/**
+ * @file detail/streamlines.hpp
+ * @brief Streamlines of a point vector field over a mesh, for `render`.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * The field is the piecewise-linear interpolation of the vector point array
+ * over the mesh's cells, each split into simplices: triangles and quads
+ * (two triangles) for a surface, tetrahedra, hexahedra (six), wedges (three)
+ * and pyramids (two) for a volume; a higher-order cell contributes its corner
+ * nodes. A volume mesh is traced in its volume, a surface mesh on its surface
+ * (the field is projected onto the triangle it is on, and the point stays on
+ * it), and the dimension of the highest cells found decides which.
+ *
+ * Everything is a pure function of the mesh and the arguments: the point
+ * locator is a uniform bucket grid filled in simplex order, the seeds are the
+ * centroids of simplices ranked at equal measure along a golden-ratio
+ * sequence, the integrator is fixed-step RK4 in arc length, and the lines are
+ * traced in parallel into per-seed buffers joined in seed order, so the
+ * result does not depend on the parallel backend or the thread count.
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+struct StreamlineOptions {
+    /// About this many lines (at most the number of simplices).
+    std::size_t mSeeds = 40;
+    /// The longest a line may grow in each direction from its seed, as a
+    /// fraction of the diagonal of the box around the traced cells.
+    double mLength = 0.5;
+};
+
+/// Polylines, concatenated: line `l` is the vertices `[mStart[l], mStart[l+1])`.
+struct Streamlines {
+    std::vector<double> mXyz;  ///< 3 per vertex
+    std::vector<std::size_t> mStart = {0};
+    std::size_t mNumSimplices = 0;
+    int mDim = 0;  ///< 2 (on a surface) or 3 (in a volume)
+
+    std::size_t NumLines() const { return mStart.size() - 1; }
+};
+
+/// Trace the streamlines of `pVec` (3 doubles per point of `rMesh`) over the
+/// cells of `rMesh`, whose points are `pXyz` (3 per point; a warp may have
+/// moved them). Throws std::invalid_argument, naming the cell types, when the
+/// mesh has no cell of a supported type.
+Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                              const StreamlineOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/streamlines.hpp =====
 // ===== begin src/cpp/src/detail/surface_edge_runs.hpp =====
 /**
  * @file detail/surface_edge_runs.hpp
@@ -33343,6 +33553,65 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/synth.hpp =====
+/**
+ * @file detail/synth.hpp
+ * @brief A small, deterministic synthesizer for the viewer's optional
+ * soundtrack: a slow minor-key loop as 16-bit mono PCM, and the WAV container
+ * around it.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Everything is integer arithmetic on phase accumulators: waveforms come from
+ * the accumulators' top bits, the sine is a fixed-point polynomial, the filter
+ * is a one-pole integer low-pass and the noise is an xorshift generator. No
+ * floating-point value and no libm call touches a sample, so the same
+ * `SynthOptions` give the same bytes on every compiler, platform and
+ * optimisation level. The loop is original: nothing is sampled, copied from or
+ * modelled on an existing piece, and no audio file ships with the library.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+struct SynthOptions {
+    /// Picks the chord progression and its variation.
+    std::uint32_t mSeed = 1;
+    /// Beats per minute, 60 to 140 (the 1980s sit around 90 to 110).
+    double mTempo = 100.0;
+    /// The tonic as a semitone above C (0 to 11); the default is A.
+    int mKey = 9;
+    /// Length of the loop in bars of four beats.
+    int mBars = 8;
+    /// Samples per second.
+    int mSampleRate = 22050;
+    /// Loudness of the loudest sample as a fraction of full scale, in (0, 0.9].
+    double mGain = 0.3;
+};
+
+/// Samples in one beat for these options.
+std::size_t synth_samples_per_beat(const SynthOptions& rOptions);
+
+/// Samples in the whole loop: `mBars * 4 * synth_samples_per_beat`.
+std::size_t synth_length(const SynthOptions& rOptions);
+
+/// The loop as 16-bit mono PCM. Throws std::invalid_argument on a tempo, key,
+/// length, rate or gain out of range.
+std::vector<std::int16_t> synth_synthwave(const SynthOptions& rOptions);
+
+/// A RIFF/WAVE file (PCM, mono, 16-bit, little-endian) around the samples.
+std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/synth.hpp =====
 // ===== begin src/cpp/src/detail/text_cursor.hpp =====
 /**
  * @file detail/text_cursor.hpp
@@ -52527,6 +52796,74 @@ constexpr std::uint8_t kGrey[kColormapSize * 3] = {
 // clang-format on
 
 // clang-format off
+constexpr std::uint8_t kSynthwave[kColormapSize * 3] = {
+    8, 6, 60, 9, 6, 61, 10, 6, 63, 11, 7, 64,
+    12, 7, 66, 13, 7, 67, 14, 7, 68, 15, 8, 70,
+    16, 8, 71, 17, 8, 73, 18, 8, 74, 19, 8, 76,
+    20, 9, 77, 21, 9, 78, 22, 9, 80, 23, 9, 81,
+    24, 10, 83, 25, 10, 84, 26, 10, 85, 26, 10, 87,
+    27, 10, 88, 28, 11, 90, 29, 11, 91, 30, 11, 92,
+    31, 11, 94, 32, 11, 95, 33, 12, 97, 34, 12, 98,
+    35, 12, 100, 36, 12, 101, 37, 13, 102, 38, 13, 104,
+    39, 13, 105, 40, 13, 107, 41, 13, 108, 42, 14, 109,
+    43, 14, 111, 44, 14, 112, 45, 14, 114, 46, 15, 115,
+    47, 15, 116, 48, 15, 118, 49, 15, 119, 50, 15, 121,
+    51, 16, 122, 52, 16, 124, 53, 16, 125, 54, 16, 126,
+    55, 17, 128, 56, 17, 129, 57, 17, 131, 58, 17, 132,
+    59, 17, 133, 60, 18, 135, 61, 18, 136, 61, 18, 138,
+    62, 18, 139, 63, 19, 140, 64, 19, 142, 65, 19, 143,
+    66, 19, 145, 67, 19, 146, 68, 20, 148, 69, 20, 149,
+    70, 20, 150, 72, 20, 150, 74, 20, 151, 76, 21, 151,
+    78, 21, 151, 80, 21, 152, 82, 21, 152, 84, 21, 152,
+    86, 21, 153, 87, 21, 153, 89, 22, 153, 91, 22, 154,
+    93, 22, 154, 95, 22, 154, 97, 22, 154, 99, 22, 155,
+    101, 23, 155, 102, 23, 155, 104, 23, 156, 106, 23, 156,
+    108, 23, 156, 110, 23, 157, 112, 23, 157, 114, 24, 157,
+    116, 24, 158, 118, 24, 158, 119, 24, 158, 121, 24, 159,
+    123, 24, 159, 125, 25, 159, 127, 25, 159, 129, 25, 160,
+    131, 25, 160, 133, 25, 160, 134, 25, 161, 136, 26, 161,
+    138, 26, 161, 140, 26, 162, 142, 26, 162, 144, 26, 162,
+    146, 26, 163, 148, 26, 163, 150, 27, 163, 151, 27, 164,
+    153, 27, 164, 155, 27, 164, 157, 27, 165, 159, 27, 165,
+    161, 28, 165, 163, 28, 165, 165, 28, 166, 166, 28, 166,
+    168, 28, 166, 170, 28, 167, 172, 29, 167, 174, 29, 167,
+    176, 29, 168, 178, 29, 168, 180, 29, 168, 182, 29, 169,
+    183, 29, 169, 185, 30, 169, 187, 30, 170, 189, 30, 170,
+    191, 30, 170, 192, 31, 169, 193, 31, 169, 194, 32, 168,
+    195, 32, 168, 196, 33, 167, 197, 33, 167, 198, 34, 166,
+    199, 34, 166, 200, 34, 166, 201, 35, 165, 202, 35, 165,
+    203, 36, 164, 204, 36, 164, 205, 37, 163, 206, 37, 163,
+    207, 38, 162, 208, 38, 162, 209, 39, 161, 210, 39, 161,
+    211, 40, 160, 212, 40, 160, 213, 41, 159, 214, 41, 159,
+    215, 42, 158, 216, 42, 158, 217, 42, 158, 218, 43, 157,
+    219, 43, 157, 220, 44, 156, 221, 44, 156, 222, 45, 155,
+    223, 45, 155, 224, 46, 154, 225, 46, 154, 226, 47, 153,
+    227, 47, 153, 228, 48, 152, 229, 48, 152, 230, 49, 151,
+    231, 49, 151, 232, 50, 150, 233, 50, 150, 234, 50, 150,
+    235, 51, 149, 236, 51, 149, 237, 52, 148, 238, 52, 148,
+    239, 53, 147, 240, 53, 147, 241, 54, 146, 243, 54, 146,
+    244, 55, 145, 245, 55, 145, 246, 56, 144, 247, 56, 144,
+    248, 57, 143, 249, 57, 143, 250, 58, 142, 251, 58, 142,
+    252, 58, 142, 253, 59, 141, 254, 59, 141, 255, 60, 140,
+    254, 62, 141, 253, 65, 143, 252, 68, 145, 251, 71, 147,
+    250, 74, 149, 249, 77, 150, 248, 80, 152, 247, 82, 154,
+    246, 85, 156, 245, 88, 158, 244, 91, 159, 243, 94, 161,
+    242, 97, 163, 241, 100, 165, 240, 103, 167, 239, 106, 168,
+    238, 109, 170, 237, 112, 172, 236, 114, 174, 235, 117, 176,
+    234, 120, 177, 233, 123, 179, 232, 126, 181, 231, 129, 183,
+    230, 132, 185, 229, 135, 186, 228, 138, 188, 227, 141, 190,
+    226, 143, 192, 225, 146, 194, 224, 149, 195, 223, 152, 197,
+    222, 155, 199, 221, 158, 201, 220, 161, 203, 219, 164, 204,
+    218, 167, 206, 217, 170, 208, 215, 172, 210, 214, 175, 212,
+    213, 178, 214, 212, 181, 215, 211, 184, 217, 210, 187, 219,
+    209, 190, 221, 208, 193, 223, 207, 196, 224, 206, 199, 226,
+    205, 201, 228, 204, 204, 230, 203, 207, 232, 202, 210, 233,
+    201, 213, 235, 200, 216, 237, 199, 219, 239, 198, 222, 241,
+    197, 225, 242, 196, 228, 244, 195, 230, 246, 194, 233, 248,
+    193, 236, 250, 192, 239, 251, 191, 242, 253, 190, 245, 255};
+// clang-format on
+
+// clang-format off
 constexpr std::uint8_t kViridisR[kColormapSize * 3] = {
     253, 231, 37, 251, 231, 35, 248, 230, 33, 246, 230, 32,
     244, 230, 30, 241, 229, 29, 239, 229, 28, 236, 229, 27,
@@ -53002,6 +53339,74 @@ constexpr std::uint8_t kGreyR[kColormapSize * 3] = {
     3, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0, 0};
 // clang-format on
 
+// clang-format off
+constexpr std::uint8_t kSynthwaveR[kColormapSize * 3] = {
+    190, 245, 255, 191, 242, 253, 192, 239, 251, 193, 236, 250,
+    194, 233, 248, 195, 230, 246, 196, 228, 244, 197, 225, 242,
+    198, 222, 241, 199, 219, 239, 200, 216, 237, 201, 213, 235,
+    202, 210, 233, 203, 207, 232, 204, 204, 230, 205, 201, 228,
+    206, 199, 226, 207, 196, 224, 208, 193, 223, 209, 190, 221,
+    210, 187, 219, 211, 184, 217, 212, 181, 215, 213, 178, 214,
+    214, 175, 212, 215, 172, 210, 217, 170, 208, 218, 167, 206,
+    219, 164, 204, 220, 161, 203, 221, 158, 201, 222, 155, 199,
+    223, 152, 197, 224, 149, 195, 225, 146, 194, 226, 143, 192,
+    227, 141, 190, 228, 138, 188, 229, 135, 186, 230, 132, 185,
+    231, 129, 183, 232, 126, 181, 233, 123, 179, 234, 120, 177,
+    235, 117, 176, 236, 114, 174, 237, 112, 172, 238, 109, 170,
+    239, 106, 168, 240, 103, 167, 241, 100, 165, 242, 97, 163,
+    243, 94, 161, 244, 91, 159, 245, 88, 158, 246, 85, 156,
+    247, 82, 154, 248, 80, 152, 249, 77, 150, 250, 74, 149,
+    251, 71, 147, 252, 68, 145, 253, 65, 143, 254, 62, 141,
+    255, 60, 140, 254, 59, 141, 253, 59, 141, 252, 58, 142,
+    251, 58, 142, 250, 58, 142, 249, 57, 143, 248, 57, 143,
+    247, 56, 144, 246, 56, 144, 245, 55, 145, 244, 55, 145,
+    243, 54, 146, 241, 54, 146, 240, 53, 147, 239, 53, 147,
+    238, 52, 148, 237, 52, 148, 236, 51, 149, 235, 51, 149,
+    234, 50, 150, 233, 50, 150, 232, 50, 150, 231, 49, 151,
+    230, 49, 151, 229, 48, 152, 228, 48, 152, 227, 47, 153,
+    226, 47, 153, 225, 46, 154, 224, 46, 154, 223, 45, 155,
+    222, 45, 155, 221, 44, 156, 220, 44, 156, 219, 43, 157,
+    218, 43, 157, 217, 42, 158, 216, 42, 158, 215, 42, 158,
+    214, 41, 159, 213, 41, 159, 212, 40, 160, 211, 40, 160,
+    210, 39, 161, 209, 39, 161, 208, 38, 162, 207, 38, 162,
+    206, 37, 163, 205, 37, 163, 204, 36, 164, 203, 36, 164,
+    202, 35, 165, 201, 35, 165, 200, 34, 166, 199, 34, 166,
+    198, 34, 166, 197, 33, 167, 196, 33, 167, 195, 32, 168,
+    194, 32, 168, 193, 31, 169, 192, 31, 169, 191, 30, 170,
+    189, 30, 170, 187, 30, 170, 185, 30, 169, 183, 29, 169,
+    182, 29, 169, 180, 29, 168, 178, 29, 168, 176, 29, 168,
+    174, 29, 167, 172, 29, 167, 170, 28, 167, 168, 28, 166,
+    166, 28, 166, 165, 28, 166, 163, 28, 165, 161, 28, 165,
+    159, 27, 165, 157, 27, 165, 155, 27, 164, 153, 27, 164,
+    151, 27, 164, 150, 27, 163, 148, 26, 163, 146, 26, 163,
+    144, 26, 162, 142, 26, 162, 140, 26, 162, 138, 26, 161,
+    136, 26, 161, 134, 25, 161, 133, 25, 160, 131, 25, 160,
+    129, 25, 160, 127, 25, 159, 125, 25, 159, 123, 24, 159,
+    121, 24, 159, 119, 24, 158, 118, 24, 158, 116, 24, 158,
+    114, 24, 157, 112, 23, 157, 110, 23, 157, 108, 23, 156,
+    106, 23, 156, 104, 23, 156, 102, 23, 155, 101, 23, 155,
+    99, 22, 155, 97, 22, 154, 95, 22, 154, 93, 22, 154,
+    91, 22, 154, 89, 22, 153, 87, 21, 153, 86, 21, 153,
+    84, 21, 152, 82, 21, 152, 80, 21, 152, 78, 21, 151,
+    76, 21, 151, 74, 20, 151, 72, 20, 150, 70, 20, 150,
+    69, 20, 149, 68, 20, 148, 67, 19, 146, 66, 19, 145,
+    65, 19, 143, 64, 19, 142, 63, 19, 140, 62, 18, 139,
+    61, 18, 138, 61, 18, 136, 60, 18, 135, 59, 17, 133,
+    58, 17, 132, 57, 17, 131, 56, 17, 129, 55, 17, 128,
+    54, 16, 126, 53, 16, 125, 52, 16, 124, 51, 16, 122,
+    50, 15, 121, 49, 15, 119, 48, 15, 118, 47, 15, 116,
+    46, 15, 115, 45, 14, 114, 44, 14, 112, 43, 14, 111,
+    42, 14, 109, 41, 13, 108, 40, 13, 107, 39, 13, 105,
+    38, 13, 104, 37, 13, 102, 36, 12, 101, 35, 12, 100,
+    34, 12, 98, 33, 12, 97, 32, 11, 95, 31, 11, 94,
+    30, 11, 92, 29, 11, 91, 28, 11, 90, 27, 10, 88,
+    26, 10, 87, 26, 10, 85, 25, 10, 84, 24, 10, 83,
+    23, 9, 81, 22, 9, 80, 21, 9, 78, 20, 9, 77,
+    19, 8, 76, 18, 8, 74, 17, 8, 73, 16, 8, 71,
+    15, 8, 70, 14, 7, 68, 13, 7, 67, 12, 7, 66,
+    11, 7, 64, 10, 6, 63, 9, 6, 61, 8, 6, 60};
+// clang-format on
+
 // BEGIN srgb_linear -- generated by tools/gen_srgb_linear.py, do not edit
 // clang-format off
 const std::uint32_t kSrgbLinearBits[256] = {
@@ -53058,6 +53463,8 @@ const std::uint8_t* colormap_table(const std::string& rName) {
         return kPlasma;
     if (rName == "grey")
         return kGrey;
+    if (rName == "synthwave")
+        return kSynthwave;
     if (rName == "viridis_r")
         return kViridisR;
     if (rName == "coolwarm_r")
@@ -53072,13 +53479,15 @@ const std::uint8_t* colormap_table(const std::string& rName) {
         return kPlasmaR;
     if (rName == "grey_r")
         return kGreyR;
+    if (rName == "synthwave_r")
+        return kSynthwaveR;
     throw std::invalid_argument("meshio++: unknown colormap '" + rName +
-                                "' (available: viridis, coolwarm, turbo, magma, inferno, plasma, grey, viridis_r, coolwarm_r, turbo_r, magma_r, inferno_r, plasma_r, grey_r)");
+                                "' (available: viridis, coolwarm, turbo, magma, inferno, plasma, grey, synthwave, viridis_r, coolwarm_r, turbo_r, magma_r, inferno_r, plasma_r, grey_r, synthwave_r)");
 }
 
 // clang-format off
 std::vector<std::string> colormap_names() {
-    return {"viridis", "coolwarm", "turbo", "magma", "inferno", "plasma", "grey", "viridis_r", "coolwarm_r", "turbo_r", "magma_r", "inferno_r", "plasma_r", "grey_r"};
+    return {"viridis", "coolwarm", "turbo", "magma", "inferno", "plasma", "grey", "synthwave", "viridis_r", "coolwarm_r", "turbo_r", "magma_r", "inferno_r", "plasma_r", "grey_r", "synthwave_r"};
 }
 // clang-format on
 
@@ -60768,6 +61177,518 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/render_field.cpp =====
+// ===== begin src/cpp/src/detail/streamlines.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+using Vec3 = std::array<double, 3>;
+
+Vec3 sl_sub(const double* pA, const double* pB) {
+    return {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
+}
+
+Vec3 sl_cross(const Vec3& rA, const Vec3& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+
+double sl_dot(const Vec3& rA, const Vec3& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+// How a cell of a given type name is cut into simplices, as corner indices into
+// its connectivity row; `Corners` is how many leading nodes it reads.
+struct SlCut {
+    int mDim = 0;
+    std::size_t mCorners = 0;
+    std::vector<std::array<int, 4>> mSimplices;
+};
+
+bool sl_cut(const std::string& rType, SlCut& rCut) {
+    auto starts = [&](const char* pPrefix) { return rType.rfind(pPrefix, 0) == 0; };
+    if (starts("triangle")) {
+        rCut = {2, 3, {{0, 1, 2, -1}}};
+    } else if (starts("quad")) {
+        rCut = {2, 4, {{0, 1, 2, -1}, {0, 2, 3, -1}}};
+    } else if (starts("tetra")) {
+        rCut = {3, 4, {{0, 1, 2, 3}}};
+    } else if (starts("hexahedron")) {
+        // Six tetrahedra around the diagonal 0-6.
+        rCut = {
+            3,
+            8,
+            {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6}, {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}}};
+    } else if (starts("wedge")) {
+        rCut = {3, 6, {{0, 1, 2, 3}, {1, 2, 5, 3}, {1, 5, 4, 3}}};
+    } else if (starts("pyramid")) {
+        rCut = {3, 5, {{0, 1, 2, 4}, {0, 2, 3, 4}}};
+    } else {
+        return false;
+    }
+    return true;
+}
+
+struct SlSimplex {
+    std::array<std::int64_t, 4> mNode;
+};
+
+// The simplices of the mesh's highest supported dimension, and the (sorted,
+// unique) names of the cell types that had to be left out.
+struct SlSoup {
+    int mDim = 0;
+    std::vector<SlSimplex> mSimplices;
+    std::vector<std::string> mSeen;
+};
+
+SlSoup sl_collect(const Mesh& rMesh) {
+    SlSoup out;
+    std::vector<SlSimplex> by_dim[2];
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t n = cb.NumCells();
+        const std::string& type = cb.Type();
+        if (n > 0 && std::find(out.mSeen.begin(), out.mSeen.end(), type) == out.mSeen.end())
+            out.mSeen.push_back(type);
+        SlCut cut;
+        if (n == 0 || cb.IsRagged() || cb.IsPolyhedron() || !sl_cut(type, cut))
+            continue;
+        const NDArray& conn = cb.Conn();
+        const std::size_t cols = conn.Size() / n;
+        if (cols < cut.mCorners)
+            continue;
+        std::vector<SlSimplex>& dest = by_dim[cut.mDim - 2];
+        for (std::size_t r = 0; r < n; ++r)
+            for (const std::array<int, 4>& s : cut.mSimplices) {
+                SlSimplex simplex;
+                simplex.mNode = {-1, -1, -1, -1};
+                for (std::size_t k = 0; k < static_cast<std::size_t>(cut.mDim) + 1; ++k)
+                    simplex.mNode[k] = read_int(conn, r * cols + static_cast<std::size_t>(s[k]));
+                dest.push_back(simplex);
+            }
+    }
+    std::sort(out.mSeen.begin(), out.mSeen.end());
+    if (!by_dim[1].empty()) {
+        out.mDim = 3;
+        out.mSimplices = std::move(by_dim[1]);
+    } else if (!by_dim[0].empty()) {
+        out.mDim = 2;
+        out.mSimplices = std::move(by_dim[0]);
+    }
+    return out;
+}
+
+// A uniform bucket grid over the simplices' boxes, filled in simplex order, and
+// the point-in-simplex test and interpolation on top of it.
+class SlField {
+public:
+    SlField(const SlSoup& rSoup, const double* pXyz, const double* pVec, double Diagonal,
+            double Tolerance)
+        : mrSoup(rSoup), mpXyz(pXyz), mpVec(pVec), mTol(Tolerance), mDim(rSoup.mDim) {
+        const std::size_t count = rSoup.mSimplices.size();
+        std::vector<Vec3> lo(count);
+        std::vector<Vec3> hi(count);
+        const std::size_t corners = static_cast<std::size_t>(mDim) + 1;
+        for (std::size_t s = 0; s < count; ++s) {
+            for (std::size_t c = 0; c < 3; ++c) {
+                lo[s][c] = std::numeric_limits<double>::infinity();
+                hi[s][c] = -lo[s][c];
+            }
+            for (std::size_t k = 0; k < corners; ++k) {
+                const double* p = point(rSoup.mSimplices[s].mNode[k]);
+                for (std::size_t c = 0; c < 3; ++c) {
+                    lo[s][c] = std::min(lo[s][c], p[c]);
+                    hi[s][c] = std::max(hi[s][c], p[c]);
+                }
+            }
+            for (std::size_t c = 0; c < 3; ++c)
+                if (!(lo[s][c] == lo[s][c]) || !(hi[s][c] == hi[s][c]))
+                    lo[s][c] = hi[s][c] = 0.0;
+        }
+        for (std::size_t c = 0; c < 3; ++c) {
+            mLo[c] = std::numeric_limits<double>::infinity();
+            mHi[c] = -mLo[c];
+        }
+        for (std::size_t s = 0; s < count; ++s)
+            for (std::size_t c = 0; c < 3; ++c) {
+                mLo[c] = std::min(mLo[c], lo[s][c]);
+                mHi[c] = std::max(mHi[c], hi[s][c]);
+            }
+        for (std::size_t c = 0; c < 3; ++c) {
+            mLo[c] -= mTol;
+            mHi[c] += mTol;
+        }
+        // About two simplices per bucket, over the axes that have any extent.
+        const double flat = 1e-6 * Diagonal;
+        double volume = 1.0;
+        int live = 0;
+        for (std::size_t c = 0; c < 3; ++c)
+            if (mHi[c] - mLo[c] > flat + 2.0 * mTol) {
+                volume *= mHi[c] - mLo[c];
+                ++live;
+            }
+        const double buckets = std::max(1.0, static_cast<double>(count) / 2.0);
+        double size = live > 0 ? std::pow(volume / buckets, 1.0 / live) : 1.0;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const double extent = mHi[c] - mLo[c];
+            std::size_t r = 1;
+            if (extent > flat + 2.0 * mTol && size > 0.0)
+                r = static_cast<std::size_t>(std::clamp(std::ceil(extent / size), 1.0, 256.0));
+            mRes[c] = r;
+            mCell[c] = extent / static_cast<double>(r);
+        }
+        mOffset.assign(mRes[0] * mRes[1] * mRes[2] + 1, 0);
+        // Two passes, in simplex order: count, then fill.
+        for (int pass = 0; pass < 2; ++pass) {
+            std::vector<std::size_t> fill(mOffset.size() - 1, 0);
+            for (std::size_t s = 0; s < count; ++s) {
+                std::size_t a[3];
+                std::size_t b[3];
+                for (std::size_t c = 0; c < 3; ++c) {
+                    a[c] = bucket(c, lo[s][c] - mTol);
+                    b[c] = bucket(c, hi[s][c] + mTol);
+                }
+                for (std::size_t z = a[2]; z <= b[2]; ++z)
+                    for (std::size_t y = a[1]; y <= b[1]; ++y)
+                        for (std::size_t x = a[0]; x <= b[0]; ++x) {
+                            const std::size_t id = x + mRes[0] * (y + mRes[1] * z);
+                            if (pass == 0)
+                                ++mOffset[id + 1];
+                            else
+                                mItems[mOffset[id] + fill[id]++] = s;
+                        }
+            }
+            if (pass == 0) {
+                for (std::size_t i = 1; i < mOffset.size(); ++i)
+                    mOffset[i] += mOffset[i - 1];
+                mItems.assign(mOffset.back(), 0);
+            }
+        }
+    }
+
+    /// The field at `pPoint` (a point of the plane, for a surface, is moved onto
+    /// the triangle): the interpolated vector, and the simplex that holds it.
+    bool Sample(double* pPoint, double* pVector, std::size_t* pSimplex = nullptr) const {
+        for (std::size_t c = 0; c < 3; ++c)
+            if (!(pPoint[c] > mLo[c]) || !(pPoint[c] < mHi[c]))
+                return false;
+        std::size_t at[3];
+        for (std::size_t c = 0; c < 3; ++c)
+            at[c] = bucket(c, pPoint[c]);
+        const std::size_t id = at[0] + mRes[0] * (at[1] + mRes[1] * at[2]);
+        double best = std::numeric_limits<double>::infinity();
+        bool found = false;
+        double best_vec[3] = {0, 0, 0};
+        double best_point[3] = {0, 0, 0};
+        std::size_t best_simplex = 0;
+        for (std::size_t i = mOffset[id]; i < mOffset[id + 1]; ++i) {
+            const std::size_t s = mItems[i];
+            double lambda[4];
+            double distance = 0.0;
+            Vec3 normal = {0, 0, 0};
+            if (!Locate(s, pPoint, lambda, distance, normal))
+                continue;
+            if (std::fabs(distance) >= best)
+                continue;
+            best = std::fabs(distance);
+            found = true;
+            best_simplex = s;
+            for (std::size_t c = 0; c < 3; ++c) {
+                double v = 0.0;
+                for (std::size_t k = 0; k < static_cast<std::size_t>(mDim) + 1; ++k)
+                    v += lambda[k] *
+                         mpVec[3 * static_cast<std::size_t>(mrSoup.mSimplices[s].mNode[k]) + c];
+                best_vec[c] = v;
+                best_point[c] = pPoint[c] - (mDim == 2 ? distance * normal[c] : 0.0);
+            }
+            if (mDim == 2) {
+                const double along = sl_dot({best_vec[0], best_vec[1], best_vec[2]}, normal);
+                for (std::size_t c = 0; c < 3; ++c)
+                    best_vec[c] -= along * normal[c];
+            }
+            if (mDim == 3)
+                break;  // simplices of a volume tile it: the first hit is the cell
+        }
+        if (!found)
+            return false;
+        for (std::size_t c = 0; c < 3; ++c) {
+            pVector[c] = best_vec[c];
+            pPoint[c] = best_point[c];
+        }
+        if (pSimplex != nullptr)
+            *pSimplex = best_simplex;
+        return true;
+    }
+
+    const double* point(std::int64_t Id) const { return mpXyz + 3 * static_cast<std::size_t>(Id); }
+
+    double Measure(std::size_t Simplex) const {
+        const SlSimplex& s = mrSoup.mSimplices[Simplex];
+        if (mDim == 3) {
+            const Vec3 a = sl_sub(point(s.mNode[0]), point(s.mNode[3]));
+            const Vec3 b = sl_sub(point(s.mNode[1]), point(s.mNode[3]));
+            const Vec3 c = sl_sub(point(s.mNode[2]), point(s.mNode[3]));
+            return std::fabs(sl_dot(a, sl_cross(b, c))) / 6.0;
+        }
+        const Vec3 a = sl_sub(point(s.mNode[1]), point(s.mNode[0]));
+        const Vec3 b = sl_sub(point(s.mNode[2]), point(s.mNode[0]));
+        const Vec3 n = sl_cross(a, b);
+        return 0.5 * std::sqrt(sl_dot(n, n));
+    }
+
+    Vec3 Centroid(std::size_t Simplex) const {
+        const SlSimplex& s = mrSoup.mSimplices[Simplex];
+        const std::size_t corners = static_cast<std::size_t>(mDim) + 1;
+        Vec3 out = {0, 0, 0};
+        for (std::size_t k = 0; k < corners; ++k)
+            for (std::size_t c = 0; c < 3; ++c)
+                out[c] += point(s.mNode[k])[c] / static_cast<double>(corners);
+        return out;
+    }
+
+private:
+    std::size_t bucket(std::size_t Axis, double Coordinate) const {
+        if (mRes[Axis] == 1 || !(mCell[Axis] > 0.0))
+            return 0;
+        const double t = (Coordinate - mLo[Axis]) / mCell[Axis];
+        if (!(t > 0.0))
+            return 0;
+        return std::min(static_cast<std::size_t>(t), mRes[Axis] - 1);
+    }
+
+    // The barycentric coordinates of the point in a simplex; true when it is in
+    // (a volume) or within `mTol` of (a surface). `rDistance` is the signed
+    // distance to the plane of a triangle.
+    bool Locate(std::size_t Simplex, const double* pPoint, double* pLambda, double& rDistance,
+                Vec3& rNormal) const {
+        const SlSimplex& s = mrSoup.mSimplices[Simplex];
+        constexpr double kEps = 1e-9;
+        if (mDim == 3) {
+            const double* d = point(s.mNode[3]);
+            const Vec3 a = sl_sub(point(s.mNode[0]), d);
+            const Vec3 b = sl_sub(point(s.mNode[1]), d);
+            const Vec3 c = sl_sub(point(s.mNode[2]), d);
+            const Vec3 p = sl_sub(pPoint, d);
+            const double det = sl_dot(a, sl_cross(b, c));
+            if (!(std::fabs(det) > 0.0))
+                return false;
+            pLambda[0] = sl_dot(p, sl_cross(b, c)) / det;
+            pLambda[1] = sl_dot(a, sl_cross(p, c)) / det;
+            pLambda[2] = sl_dot(a, sl_cross(b, p)) / det;
+            pLambda[3] = 1.0 - pLambda[0] - pLambda[1] - pLambda[2];
+            for (int k = 0; k < 4; ++k)
+                if (!(pLambda[k] >= -kEps))
+                    return false;
+            return true;
+        }
+        const double* origin = point(s.mNode[0]);
+        const Vec3 u = sl_sub(point(s.mNode[1]), origin);
+        const Vec3 v = sl_sub(point(s.mNode[2]), origin);
+        const Vec3 w = sl_sub(pPoint, origin);
+        const Vec3 n = sl_cross(u, v);
+        const double area2 = sl_dot(n, n);
+        if (!(area2 > 0.0))
+            return false;
+        const double len = std::sqrt(area2);
+        rNormal = {n[0] / len, n[1] / len, n[2] / len};
+        rDistance = sl_dot(w, rNormal);
+        if (!(std::fabs(rDistance) <= mTol))
+            return false;
+        pLambda[1] = sl_dot(sl_cross(w, v), n) / area2;
+        pLambda[2] = sl_dot(sl_cross(u, w), n) / area2;
+        pLambda[0] = 1.0 - pLambda[1] - pLambda[2];
+        for (int k = 0; k < 3; ++k)
+            if (!(pLambda[k] >= -kEps))
+                return false;
+        return true;
+    }
+
+    const SlSoup& mrSoup;
+    const double* mpXyz;
+    const double* mpVec;
+    double mTol;
+    int mDim;
+    Vec3 mLo = {0, 0, 0};
+    Vec3 mHi = {0, 0, 0};
+    Vec3 mCell = {1, 1, 1};
+    std::array<std::size_t, 3> mRes = {1, 1, 1};
+    std::vector<std::size_t> mOffset;
+    std::vector<std::size_t> mItems;
+};
+
+// The unit direction of the field at a point, moved onto the surface for a
+// triangle mesh; false where the field is gone (outside, zero or not finite).
+bool sl_direction(const SlField& rField, double Floor, double* pPoint, double* pDir) {
+    double v[3];
+    if (!rField.Sample(pPoint, v))
+        return false;
+    const double mag = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!std::isfinite(mag) || !(mag > Floor))
+        return false;
+    for (std::size_t c = 0; c < 3; ++c)
+        pDir[c] = v[c] / mag;
+    return true;
+}
+
+// One way from the seed: RK4 in arc length, stopping at the boundary, at a
+// stagnation point or when the length is used up.
+void sl_trace(const SlField& rField, double Floor, const Vec3& rSeed, double Sign, double Step,
+              std::size_t MaxSteps, std::vector<Vec3>& rOut) {
+    Vec3 p = rSeed;
+    for (std::size_t it = 0; it < MaxSteps; ++it) {
+        double k1[3];
+        double k2[3];
+        double k3[3];
+        double k4[3];
+        double q[3] = {p[0], p[1], p[2]};
+        if (!sl_direction(rField, Floor, q, k1))
+            return;
+        for (std::size_t c = 0; c < 3; ++c)
+            k1[c] *= Sign;
+        auto stage = [&](const double* pK, double Scale, double* pOut) {
+            double x[3] = {p[0] + Scale * Step * pK[0], p[1] + Scale * Step * pK[1],
+                           p[2] + Scale * Step * pK[2]};
+            if (!sl_direction(rField, Floor, x, pOut)) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    pOut[c] = pK[c];  // the stage left the mesh: keep the last slope
+                return;
+            }
+            for (std::size_t c = 0; c < 3; ++c)
+                pOut[c] *= Sign;
+        };
+        stage(k1, 0.5, k2);
+        stage(k2, 0.5, k3);
+        stage(k3, 1.0, k4);
+        double next[3];
+        for (std::size_t c = 0; c < 3; ++c)
+            next[c] = p[c] + Step / 6.0 * (k1[c] + 2.0 * k2[c] + 2.0 * k3[c] + k4[c]);
+        double unused[3];
+        if (!rField.Sample(next, unused))
+            return;
+        p = {next[0], next[1], next[2]};
+        rOut.push_back(p);
+    }
+}
+
+}  // namespace
+
+Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                              const StreamlineOptions& rOptions) {
+    const SlSoup soup = sl_collect(rMesh);
+    Streamlines out;
+    if (soup.mSimplices.empty()) {
+        std::string seen;
+        for (const std::string& type : soup.mSeen)
+            seen += (seen.empty() ? "" : ", ") + type;
+        throw std::invalid_argument(
+            "streamlines need triangle, quad, tetra, hexahedron, wedge or pyramid cells (this "
+            "mesh has: " +
+            (seen.empty() ? std::string("no cells") : seen) + ")");
+    }
+    out.mDim = soup.mDim;
+    out.mNumSimplices = soup.mSimplices.size();
+
+    // The box around the traced cells, and the scales taken from its diagonal.
+    double lo[3] = {std::numeric_limits<double>::infinity(), 0, 0};
+    double hi[3] = {0, 0, 0};
+    bool first = true;
+    for (const SlSimplex& s : soup.mSimplices)
+        for (std::size_t k = 0; k < static_cast<std::size_t>(soup.mDim) + 1; ++k) {
+            const double* p = pXyz + 3 * static_cast<std::size_t>(s.mNode[k]);
+            for (std::size_t c = 0; c < 3; ++c) {
+                lo[c] = first ? p[c] : std::min(lo[c], p[c]);
+                hi[c] = first ? p[c] : std::max(hi[c], p[c]);
+            }
+            first = false;
+        }
+    const double diag =
+        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    if (!(diag > 0.0) || !std::isfinite(diag))
+        return out;
+    const double step = 0.005 * diag;
+    const std::size_t max_steps = static_cast<std::size_t>(
+        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
+
+    // The slowest speed that still counts as moving, from the fastest corner.
+    double max_mag = 0.0;
+    for (const SlSimplex& s : soup.mSimplices)
+        for (std::size_t k = 0; k < static_cast<std::size_t>(soup.mDim) + 1; ++k) {
+            const double* v = pVec + 3 * static_cast<std::size_t>(s.mNode[k]);
+            const double m = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            if (std::isfinite(m))
+                max_mag = std::max(max_mag, m);
+        }
+    if (!(max_mag > 0.0))
+        return out;
+    const double floor = 1e-9 * max_mag;
+
+    const SlField field(soup, pXyz, pVec, diag, soup.mDim == 2 ? 0.5 * step : 1e-9 * diag);
+
+    // Seeds: simplices ranked at equal measure along a golden-ratio sequence
+    // (a plain stride would line up with the rows of a structured mesh), each
+    // started at its centroid.
+    const std::size_t count = soup.mSimplices.size();
+    std::vector<double> cumulative(count);
+    double total = 0.0;
+    for (std::size_t s = 0; s < count; ++s) {
+        const double m = field.Measure(s);
+        total += std::isfinite(m) ? m : 0.0;
+        cumulative[s] = total;
+    }
+    const std::size_t seeds = std::min(rOptions.mSeeds, count);
+    std::vector<Vec3> seed_points;
+    for (std::size_t k = 0; k < seeds && total > 0.0; ++k) {
+        double t = 0.5 + static_cast<double>(k) * 0.6180339887498949;
+        t -= std::floor(t);
+        const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), t * total);
+        const std::size_t s =
+            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), count - 1);
+        seed_points.push_back(field.Centroid(s));
+    }
+
+    std::vector<std::vector<Vec3>> lines(seed_points.size());
+    parallel_for(seed_points.size(), [&](std::size_t i) {
+        std::vector<Vec3> back;
+        std::vector<Vec3> forward;
+        Vec3 seed = seed_points[i];
+        double v[3];
+        if (!field.Sample(seed.data(), v))
+            return;
+        sl_trace(field, floor, seed, -1.0, step, max_steps, back);
+        sl_trace(field, floor, seed, +1.0, step, max_steps, forward);
+        std::vector<Vec3>& line = lines[i];
+        line.assign(back.rbegin(), back.rend());
+        line.push_back(seed);
+        line.insert(line.end(), forward.begin(), forward.end());
+        if (line.size() < 2)
+            line.clear();
+    });
+    for (const std::vector<Vec3>& line : lines) {
+        if (line.empty())
+            continue;
+        for (const Vec3& p : line)
+            out.mXyz.insert(out.mXyz.end(), p.begin(), p.end());
+        out.mStart.push_back(out.mXyz.size() / 3);
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/streamlines.cpp =====
 // ===== begin src/cpp/src/detail/subset.cpp =====
 #include <cstring>
 
@@ -62084,6 +63005,252 @@ void sym3_principal(const double* pT, double* pOut) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/sym3_eigen.cpp =====
+// ===== begin src/cpp/src/detail/synth.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+// --- Fixed-point oscillators: a 32-bit phase, waveforms from its top bits ---
+
+int synth_tri(std::uint32_t Phase) {
+    const int t = static_cast<int>(Phase >> 16);  // 0 .. 65535
+    return t < 32768 ? t * 2 - 32767 : 98303 - t * 2;
+}
+
+int synth_saw(std::uint32_t Phase) {
+    return static_cast<int>(Phase >> 16) - 32768;
+}
+
+int synth_pulse(std::uint32_t Phase, std::uint32_t Duty) {
+    return Phase < Duty ? 24000 : -24000;
+}
+
+// sin(pi x / 2) ~ x (3 - x^2) / 2 on the triangle wave: a smooth, odd, integer sine.
+int synth_sine(std::uint32_t Phase) {
+    const std::int64_t x = synth_tri(Phase);
+    const std::int64_t x2 = (x * x) >> 15;
+    return static_cast<int>((x * (98304 - x2)) >> 16);
+}
+
+// The twelve pitch classes of octave 0 in Q8 hertz (C0 = 16.35 Hz, A0 = 27.5 Hz).
+constexpr std::array<std::uint32_t, 12> kPitchQ8 = {4186, 4435, 4699, 4978, 5274, 5588,
+                                                    5920, 6272, 6645, 7040, 7459, 7902};
+
+// The phase step per sample of a MIDI-like note number (C0 = 0).
+std::uint32_t synth_step(int Note, int Rate) {
+    const std::uint64_t q8 =
+        static_cast<std::uint64_t>(kPitchQ8[static_cast<std::size_t>(Note % 12)]) << (Note / 12);
+    return static_cast<std::uint32_t>((q8 << 24) / static_cast<std::uint64_t>(Rate));
+}
+
+std::uint32_t synth_noise(std::uint32_t& rState) {
+    rState ^= rState << 13;
+    rState ^= rState >> 17;
+    rState ^= rState << 5;
+    return rState;
+}
+
+// Linear decay from 32767 to 0 over `Length` samples.
+int synth_decay(std::int64_t Age, std::int64_t Length) {
+    return Age < 0 || Age >= Length ? 0 : static_cast<int>(32767 - 32767 * Age / Length);
+}
+
+struct SynthChord {
+    int mRoot;  // semitones above the tonic
+    bool mMajor;
+};
+
+constexpr std::array<std::array<SynthChord, 4>, 4> kProgressions = {{
+    {{{0, false}, {8, true}, {3, true}, {10, true}}},   // i  VI  III VII
+    {{{0, false}, {5, false}, {8, true}, {7, false}}},  // i  iv  VI  v
+    {{{0, false}, {3, true}, {10, true}, {8, true}}},   // i  III VII VI
+    {{{0, false}, {10, true}, {8, true}, {10, true}}},  // i  VII VI  VII
+}};
+
+// Sixteenth-note hit masks (bit k = step k of the bar) for the bass.
+constexpr std::array<std::uint32_t, 4> kBassHits = {0x9292, 0x8888 | 0x0020, 0xA4A4, 0x9249};
+// Arpeggio orders over the chord's three tones.
+constexpr std::array<std::array<int, 4>, 3> kArp = {{{0, 1, 2, 1}, {0, 2, 1, 2}, {2, 1, 0, 1}}};
+
+}  // namespace
+
+std::size_t synth_samples_per_beat(const SynthOptions& rOptions) {
+    return static_cast<std::size_t>(
+        static_cast<double>(rOptions.mSampleRate) * 60.0 / rOptions.mTempo + 0.5);
+}
+
+std::size_t synth_length(const SynthOptions& rOptions) {
+    return static_cast<std::size_t>(rOptions.mBars) * 4 * synth_samples_per_beat(rOptions);
+}
+
+std::vector<std::int16_t> synth_synthwave(const SynthOptions& rOptions) {
+    const SynthOptions& o = rOptions;
+    if (!(o.mTempo >= 60.0 && o.mTempo <= 140.0))
+        throw std::invalid_argument("meshio++: synth: the tempo must lie in [60, 140] BPM");
+    if (o.mKey < 0 || o.mKey > 11)
+        throw std::invalid_argument("meshio++: synth: the key must lie in [0, 11]");
+    if (o.mBars < 1 || o.mBars > 64)
+        throw std::invalid_argument("meshio++: synth: the length must lie in [1, 64] bars");
+    if (o.mSampleRate < 8000 || o.mSampleRate > 48000)
+        throw std::invalid_argument("meshio++: synth: the sample rate must lie in [8000, 48000]");
+    if (!(o.mGain > 0.0 && o.mGain <= 0.9))
+        throw std::invalid_argument("meshio++: synth: the gain must lie in (0, 0.9]");
+
+    const std::size_t spb = synth_samples_per_beat(o);
+    const std::size_t bar = 4 * spb;
+    const std::size_t total = o.mBars * bar;
+    const std::size_t tail = 6 * spb;
+    const int rate = o.mSampleRate;
+    const auto& progression = kProgressions[o.mSeed % 4];
+    const auto& arp = kArp[(o.mSeed / 4) % 3];
+    const std::uint32_t bass_hits = kBassHits[(o.mSeed / 16) % 4];
+    const std::size_t delay_len = 3 * spb / 4;
+
+    std::vector<std::int32_t> mix(total + tail, 0);
+    std::vector<std::int32_t> ring(delay_len, 0);
+    std::size_t ring_at = 0;
+    std::uint32_t noise = 0x9E3779B9u ^ (o.mSeed * 2654435761u);
+    std::array<std::uint32_t, 6> pad_phase = {0,          0x2AAAAAAA, 0x55555555,
+                                              0x80000000, 0xAAAAAAAA, 0xD5555555};
+    std::uint32_t arp_phase = 0;
+    std::uint32_t bass_phase = 0;
+    std::uint32_t kick_phase = 0;
+    int lp_state = 0;
+    int hat_prev = 0;
+
+    for (std::size_t i = 0; i < total + tail; ++i) {
+        std::int32_t dry_bed = 0;  // pad and arpeggio: what the delay hears
+        std::int32_t drums = 0;
+        if (i < total) {
+            const std::size_t bar_index = i / bar;
+            const std::size_t in_bar = i % bar;
+            const std::size_t sixteenth = (in_bar * 16) / bar;
+            const std::size_t sixteenth_start = (sixteenth * bar) / 16;
+            const std::size_t step_len = ((sixteenth + 1) * bar) / 16 - sixteenth_start;
+            const std::int64_t in_step = static_cast<std::int64_t>(in_bar - sixteenth_start);
+            const SynthChord chord = progression[bar_index % 4];
+            const int root = o.mKey + chord.mRoot;
+            const int tones[3] = {root, root + (chord.mMajor ? 4 : 3), root + 7};
+
+            // Pad: two detuned saws per chord tone, swelling in and out of each bar.
+            std::int64_t pad = 0;
+            for (int v = 0; v < 3; ++v) {
+                const std::uint32_t step = synth_step(tones[v] + 36, rate);
+                pad_phase[static_cast<std::size_t>(2 * v)] += step;
+                pad_phase[static_cast<std::size_t>(2 * v + 1)] += step + (step >> 8);
+                pad += synth_saw(pad_phase[static_cast<std::size_t>(2 * v)]) +
+                       synth_saw(pad_phase[static_cast<std::size_t>(2 * v + 1)]);
+            }
+            const std::int64_t attack =
+                std::min<std::int64_t>(32767, static_cast<std::int64_t>(in_bar) * 32767 /
+                                                  static_cast<std::int64_t>(bar / 4));
+            const std::int64_t release =
+                std::min<std::int64_t>(32767, static_cast<std::int64_t>(bar - in_bar) * 32767 /
+                                                  static_cast<std::int64_t>(bar / 8));
+            const std::int64_t swell = std::min(attack, release);
+            pad = (pad / 6) * swell >> 15;
+            // A slow low-pass sweep across the whole loop.
+            const int lfo = synth_tri(
+                static_cast<std::uint32_t>((static_cast<std::uint64_t>(i) << 32) / total));
+            const int coeff = 2500 + ((lfo < 0 ? -lfo : lfo) * 9000 >> 15);
+            lp_state += static_cast<int>((static_cast<std::int64_t>(pad - lp_state) * coeff) >> 15);
+            dry_bed += lp_state * 5 / 10;
+
+            // Arpeggio: a quarter-width pulse stepping through the chord on sixteenths.
+            const int arp_note = tones[arp[sixteenth % 4]] + 60;
+            arp_phase += synth_step(arp_note, rate);
+            const int arp_env = synth_decay(in_step, static_cast<std::int64_t>(step_len) * 7 / 10);
+            dry_bed += (synth_pulse(arp_phase, 0x40000000u) * arp_env >> 15) * 3 / 10;
+
+            // Bass: a sine on the root, two octaves below the pad, on the hit mask.
+            bass_phase += synth_step(root + 24, rate);
+            const bool hit = ((bass_hits >> sixteenth) & 1u) != 0;
+            const int bass_env =
+                hit ? synth_decay(in_step, static_cast<std::int64_t>(step_len) * 2) : 0;
+            drums += (synth_sine(bass_phase) * bass_env >> 15) * 6 / 10;
+
+            // Kick: a sine that falls from 140 Hz to 45 Hz, on every beat.
+            const std::int64_t in_beat = static_cast<std::int64_t>(i % spb);
+            const std::int64_t kick_len = static_cast<std::int64_t>(rate) / 4;
+            const std::int64_t sweep = static_cast<std::int64_t>(rate) / 8;
+            const std::int64_t f_q8 =
+                (in_beat < sweep ? 140 * 256 - (140 - 45) * 256 * in_beat / sweep : 45 * 256);
+            kick_phase += static_cast<std::uint32_t>(((static_cast<std::uint64_t>(f_q8)) << 24) /
+                                                     static_cast<std::uint64_t>(rate));
+            drums += (synth_sine(kick_phase) * synth_decay(in_beat, kick_len) >> 15) * 9 / 10;
+
+            // Hat: high-passed noise on the off-beat eighths, quieter on the other sixteenths.
+            const int n = static_cast<int>(synth_noise(noise) >> 17) - 16384;
+            const int hp = n - hat_prev;
+            hat_prev = n;
+            const bool off_beat = (sixteenth % 4) == 2;
+            const int hat_env =
+                synth_decay(in_step, static_cast<std::int64_t>(rate) / 25) / (off_beat ? 1 : 4);
+            drums += (hp * hat_env >> 15) * 2 / 10;
+        }
+        // Feedback delay of a dotted eighth, over the bed.
+        const std::int32_t echo = ring[ring_at];
+        ring[ring_at] = dry_bed + (echo * 45 / 100);
+        ring_at = (ring_at + 1) % delay_len;
+        mix[i] = dry_bed + (echo * 40 / 100) + drums;
+    }
+
+    // Fold the delay's tail onto the start so the loop joins without a click.
+    for (std::size_t i = 0; i < tail; ++i)
+        mix[i] += mix[total + i];
+    mix.resize(total);
+
+    std::int32_t peak = 1;
+    for (std::int32_t v : mix)
+        peak = std::max<std::int32_t>(peak, v < 0 ? -v : v);
+    const std::int64_t target = static_cast<std::int64_t>(o.mGain * 32767.0);
+    std::vector<std::int16_t> out(total);
+    for (std::size_t i = 0; i < total; ++i)
+        out[i] = static_cast<std::int16_t>(static_cast<std::int64_t>(mix[i]) * target / peak);
+    return out;
+}
+
+std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate) {
+    auto le32 = [](std::string& rOut, std::uint32_t v) {
+        for (int k = 0; k < 4; ++k)
+            rOut.push_back(static_cast<char>((v >> (8 * k)) & 0xFF));
+    };
+    auto le16 = [](std::string& rOut, std::uint16_t v) {
+        rOut.push_back(static_cast<char>(v & 0xFF));
+        rOut.push_back(static_cast<char>(v >> 8));
+    };
+    const std::uint32_t bytes = static_cast<std::uint32_t>(rSamples.size() * 2);
+    std::string out;
+    out.reserve(44 + bytes);
+    out += "RIFF";
+    le32(out, 36 + bytes);
+    out += "WAVEfmt ";
+    le32(out, 16);
+    le16(out, 1);  // PCM
+    le16(out, 1);  // mono
+    le32(out, static_cast<std::uint32_t>(SampleRate));
+    le32(out, static_cast<std::uint32_t>(SampleRate) * 2);
+    le16(out, 2);
+    le16(out, 16);
+    out += "data";
+    le32(out, bytes);
+    for (std::int16_t s : rSamples)
+        le16(out, static_cast<std::uint16_t>(s));
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/synth.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <cstring>
@@ -81910,7 +83077,10 @@ Mesh read_flac3d(const std::string& rPath) {
         for (auto v : f_ids)
             all_ids.push_back(v);
         for (auto v : z_ids)
-            all_ids.push_back(v + z_offset);
+            // A zone id near INT64_MAX must not overflow (a file can say anything):
+            // the sum wraps, defined for unsigned, rather than being undefined.
+            all_ids.push_back(static_cast<std::int64_t>(static_cast<std::uint64_t>(v) +
+                                                        static_cast<std::uint64_t>(z_offset)));
 
         std::vector<NDArray> id_blocks;
         std::size_t off = 0;
@@ -156918,7 +158088,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric"}},
+          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
+          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor",
+          "Theme",          "Scanlines",   "Bloom",         "Fringe",       "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -157222,7 +158394,13 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
     o.mColorBy = pipe_text(rStep, "ColorBy", "");
     if (pipe_find(rStep, "Component"))
         o.mComponent = static_cast<int>(pipe_number(rStep, "Component", 0.0));
-    o.mCmap = pipe_text(rStep, "Cmap", "viridis");
+    o.mTheme = static_cast<RenderTheme>(pipe_snap_choice(rStep, "Theme", {"none", "synthwave"}, 0));
+    // The theme brings its own colormap unless one is named.
+    o.mCmap = pipe_text(rStep, "Cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
+    o.mScanlines = pipe_flag(rStep, "Scanlines", false);
+    o.mBloom = pipe_flag(rStep, "Bloom", false);
+    o.mFringe = pipe_flag(rStep, "Fringe", false);
+    o.mGridFloor = pipe_flag(rStep, "GridFloor", false);
     if (pipe_find(rStep, "VMin"))
         o.mVMin = pipe_number(rStep, "VMin", 0.0);
     if (pipe_find(rStep, "VMax"))
@@ -157255,6 +158433,24 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
         {"none", "quality", "inverted", "degenerate", "orientation", "free_edges", "edge_length"},
         0));
     o.mQualityMetric = pipe_text(rStep, "QualityMetric", "");
+    // Cut-away planes: a flat list of numbers, six per plane (a point and the
+    // normal of the side kept).
+    const std::vector<double> cut = pipe_dvec(rStep, "Cutaway");
+    if (cut.size() % 6 != 0 || cut.size() > 12)
+        throw std::invalid_argument(pipe_err(
+            rStep, "parameter 'Cutaway' must be one or two planes of six numbers each "
+                   "(a point, then the normal of the side kept)"));
+    for (std::size_t i = 0; i + 6 <= cut.size(); i += 6) {
+        RenderCutaway plane;
+        plane.mPoint = {cut[i], cut[i + 1], cut[i + 2]};
+        plane.mNormal = {cut[i + 3], cut[i + 4], cut[i + 5]};
+        o.mCutaways.push_back(plane);
+    }
+    o.mCutawayTint = pipe_snap_color(rStep, "CutawayTint", o.mCutawayTint);
+    o.mStreamlines = pipe_text(rStep, "Streamlines", "");
+    o.mStreamSeeds = static_cast<std::int32_t>(pipe_number(rStep, "StreamSeeds", o.mStreamSeeds));
+    o.mStreamLength = pipe_number(rStep, "StreamLength", o.mStreamLength);
+    o.mStreamColor = pipe_snap_color(rStep, "StreamColor", o.mStreamColor);
     return o;
 }
 
@@ -163830,6 +165026,7 @@ RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& r
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -163898,6 +165095,15 @@ void rnd_validate(const RenderOptions& rOpt) {
     if (rOpt.mVectorCount < 1 || rOpt.mVectorCount > 100000)
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "vector count must lie in [1, 100000]");
+    if (rOpt.mGridFloor && rOpt.mTheme == RenderTheme::None)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "the grid floor is part of a theme (set theme)");
+    if (rOpt.mStreamSeeds < 1 || rOpt.mStreamSeeds > 10000)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "stream seeds must lie in [1, 10000]");
+    if (!(rOpt.mStreamLength > 0.0) || !(rOpt.mStreamLength <= 10.0))
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "stream length must lie in (0, 10] diagonals");
     if (!(rOpt.mVectorLength >= 0.0) || !std::isfinite(rOpt.mVectorLength) ||
         !std::isfinite(rOpt.mWarpScale))
         throw std::invalid_argument(std::string(kRndPrefix) +
@@ -163918,6 +165124,20 @@ void rnd_validate(const RenderOptions& rOpt) {
     if (rOpt.mDiagnostic == RenderDiagnostic::Quality && rOpt.mQualityMetric.empty())
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "the quality diagnostic needs a metric (quality_metric)");
+    if (rOpt.mCutaways.size() > 2)
+        throw std::invalid_argument(std::string(kRndPrefix) + "at most two cutaway planes");
+    for (const RenderCutaway& cut : rOpt.mCutaways) {
+        double len2 = 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+            if (!std::isfinite(cut.mPoint[k]) || !std::isfinite(cut.mNormal[k]))
+                throw std::invalid_argument(std::string(kRndPrefix) +
+                                            "a cutaway plane must be finite");
+            len2 += cut.mNormal[k] * cut.mNormal[k];
+        }
+        if (!(len2 > 0.0))
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "a cutaway plane needs a non-zero normal");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -164418,6 +165638,165 @@ double rnd_nice_length(double Target) {
     return base;
 }
 
+
+// ---------------------------------------------------------------------------
+// Theme: a banded background, a grid floor and three post-processes
+// ---------------------------------------------------------------------------
+
+int rnd_lerp_i(int A, int B, int Num, int Den) { return A + (B - A) * Num / Den; }
+
+// One colour of a banded gradient through `Stops`: the band `Band` of `Bands`.
+RndColor rnd_band_color(const std::vector<std::array<int, 3>>& rStops, int Band, int Bands) {
+    const int segments = static_cast<int>(rStops.size()) - 1;
+    const int scaled = Bands > 1 ? Band * segments * 1000 / (Bands - 1) : 0;
+    int seg = std::min(segments - 1, scaled / 1000);
+    const int frac = scaled - seg * 1000;
+    const std::array<int, 3>& a = rStops[static_cast<std::size_t>(seg)];
+    const std::array<int, 3>& b = rStops[static_cast<std::size_t>(seg) + 1];
+    return {static_cast<std::uint8_t>(rnd_lerp_i(a[0], b[0], frac, 1000)),
+            static_cast<std::uint8_t>(rnd_lerp_i(a[1], b[1], frac, 1000)),
+            static_cast<std::uint8_t>(rnd_lerp_i(a[2], b[2], frac, 1000)), 255};
+}
+
+// Put the theme behind the model: a sunset in eight bands down to the horizon
+// at 60% of the height, a dark floor in four below it, the grid on the floor
+// when asked for; then lay the frame over it by its own alpha.
+void rnd_theme_background(Frame& rFrame, const RenderOptions& rOpt) {
+    const std::int64_t w = rFrame.mWidth;
+    const std::int64_t h = rFrame.mHeight;
+    if (w < 1 || h < 1)
+        return;
+    const std::int64_t horizon = h * 6 / 10;
+    static const std::vector<std::array<int, 3>> sky = {
+        {20, 8, 60}, {120, 20, 140}, {255, 45, 150}, {255, 150, 40}};
+    static const std::vector<std::array<int, 3>> floor_stops = {{12, 4, 36}, {26, 8, 60}};
+    Frame bg;
+    bg.mWidth = static_cast<int>(w);
+    bg.mHeight = static_cast<int>(h);
+    bg.mRgba.resize(static_cast<std::size_t>(w * h) * 4);
+    bg.mCellIds.assign(static_cast<std::size_t>(w * h), -1);
+    for (std::int64_t y = 0; y < h; ++y) {
+        const RndColor c = y < horizon
+                               ? rnd_band_color(sky, static_cast<int>(y * 8 / std::max<std::int64_t>(1, horizon)), 8)
+                               : rnd_band_color(floor_stops,
+                                                static_cast<int>((y - horizon) * 4 /
+                                                                 std::max<std::int64_t>(1, h - horizon)),
+                                                4);
+        for (std::int64_t x = 0; x < w; ++x)
+            std::copy(c.begin(), c.end(), bg.mRgba.data() + static_cast<std::size_t>(y * w + x) * 4);
+    }
+    if (rOpt.mGridFloor && h - horizon > 3) {
+        const int phase = ((rOpt.mThemePhase % 8) + 8) % 8;
+        const RndColor line = (phase % 2 == 0) ? RndColor{255, 50, 200, 255} : RndColor{0, 220, 255, 255};
+        const double yh = static_cast<double>(horizon);
+        const double yb = static_cast<double>(h - 1);
+        const int rows = 8;
+        for (int k = 0; k < rows; ++k) {
+            const double d = (static_cast<double>(k) + static_cast<double>(phase) / 8.0) / rows;
+            const double y = yh + (yb - yh) * d * d;
+            rnd_line(bg, 0.0, y, static_cast<double>(w - 1), y, line);
+        }
+        const int rays = 16;
+        for (int j = 0; j <= rays; ++j) {
+            const double xb = static_cast<double>(w) / 2.0 +
+                              (static_cast<double>(j) - rays / 2.0) * static_cast<double>(w) * 2.0 / rays;
+            rnd_line(bg, static_cast<double>(w) / 2.0, yh, xb, yb, line);
+        }
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i) {
+        std::uint8_t* p = rFrame.mRgba.data() + i * 4;
+        const int a = p[3];
+        if (a == 255)
+            continue;
+        const std::uint8_t* q = bg.mRgba.data() + i * 4;
+        for (int c = 0; c < 3; ++c)
+            p[c] = static_cast<std::uint8_t>((p[c] * a + q[c] * (255 - a) + 127) / 255);
+        p[3] = 255;
+    }
+}
+
+// Bloom, fringe and scanlines on the final frame, in that order.
+void rnd_theme_post(Frame& rFrame, const RenderOptions& rOpt) {
+    const std::int64_t w = rFrame.mWidth;
+    const std::int64_t h = rFrame.mHeight;
+    if (w < 1 || h < 1)
+        return;
+    std::uint8_t* px = rFrame.mRgba.data();
+    if (rOpt.mBloom) {
+        const std::int64_t radius = std::max<std::int64_t>(1, std::min(w, h) / 100);
+        std::vector<std::int32_t> bright(static_cast<std::size_t>(w * h) * 3, 0);
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i) {
+            const std::uint8_t* p = px + i * 4;
+            const int lum = (p[0] * 54 + p[1] * 183 + p[2] * 19) >> 8;
+            if (lum >= 190)
+                for (int c = 0; c < 3; ++c)
+                    bright[i * 3 + static_cast<std::size_t>(c)] = p[c];
+        }
+        // A separable box blur: sums over a window of 2 * radius + 1, divided once.
+        std::vector<std::int32_t> tmp(bright.size(), 0);
+        const std::int64_t window = 2 * radius + 1;
+        for (std::int64_t y = 0; y < h; ++y)
+            for (int c = 0; c < 3; ++c) {
+                std::int64_t sum = 0;
+                for (std::int64_t x = -radius; x <= radius; ++x)
+                    if (x >= 0 && x < w)
+                        sum += bright[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)];
+                for (std::int64_t x = 0; x < w; ++x) {
+                    tmp[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)] =
+                        static_cast<std::int32_t>(sum / window);
+                    const std::int64_t add = x + radius + 1;
+                    const std::int64_t drop = x - radius;
+                    if (add < w)
+                        sum += bright[static_cast<std::size_t>(y * w + add) * 3 + static_cast<std::size_t>(c)];
+                    if (drop >= 0)
+                        sum -= bright[static_cast<std::size_t>(y * w + drop) * 3 + static_cast<std::size_t>(c)];
+                }
+            }
+        std::vector<std::int32_t> blur(bright.size(), 0);
+        for (std::int64_t x = 0; x < w; ++x)
+            for (int c = 0; c < 3; ++c) {
+                std::int64_t sum = 0;
+                for (std::int64_t y = -radius; y <= radius; ++y)
+                    if (y >= 0 && y < h)
+                        sum += tmp[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)];
+                for (std::int64_t y = 0; y < h; ++y) {
+                    blur[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)] =
+                        static_cast<std::int32_t>(sum / window);
+                    const std::int64_t add = y + radius + 1;
+                    const std::int64_t drop = y - radius;
+                    if (add < h)
+                        sum += tmp[static_cast<std::size_t>(add * w + x) * 3 + static_cast<std::size_t>(c)];
+                    if (drop >= 0)
+                        sum -= tmp[static_cast<std::size_t>(drop * w + x) * 3 + static_cast<std::size_t>(c)];
+                }
+            }
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i)
+            for (int c = 0; c < 3; ++c)
+                px[i * 4 + static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(
+                    std::min<std::int32_t>(255, px[i * 4 + static_cast<std::size_t>(c)] +
+                                                    blur[i * 3 + static_cast<std::size_t>(c)] / 2));
+    }
+    if (rOpt.mFringe) {
+        const std::int64_t d = std::max<std::int64_t>(1, w / 320);
+        const std::vector<std::uint8_t> src(px, px + static_cast<std::size_t>(w * h) * 4);
+        for (std::int64_t y = 0; y < h; ++y)
+            for (std::int64_t x = 0; x < w; ++x) {
+                const std::size_t at = static_cast<std::size_t>(y * w + x) * 4;
+                const std::size_t left = static_cast<std::size_t>(y * w + std::max<std::int64_t>(0, x - d)) * 4;
+                const std::size_t right = static_cast<std::size_t>(y * w + std::min<std::int64_t>(w - 1, x + d)) * 4;
+                px[at] = src[left];
+                px[at + 2] = src[right + 2];
+            }
+    }
+    if (rOpt.mScanlines)
+        for (std::int64_t y = 1; y < h; y += 2)
+            for (std::int64_t x = 0; x < w; ++x) {
+                std::uint8_t* p = px + static_cast<std::size_t>(y * w + x) * 4;
+                for (int c = 0; c < 3; ++c)
+                    p[c] = static_cast<std::uint8_t>(p[c] - p[c] / 4);
+            }
+}
+
 }  // namespace
 
 namespace detail {
@@ -164458,12 +165837,267 @@ void render_view_angles(const RenderOptions& rOpt, double& rAzimuth, double& rEl
 
 }  // namespace detail
 
-Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
+namespace {
+
+struct RndExtra {
+    std::int64_t mA;
+    std::int64_t mB;
+    RndColor mColor;
+};
+
+/// One arrow of the vector layer: its barbs depend on the camera, so only the
+/// shaft is fixed.
+struct RndArrow {
+    double mP[3];
+    double mTip[3];
+    double mDir[3];
+    double mLen = 0.0;
+};
+
+/// Everything a frame needs that does not depend on the camera: the drawn
+/// faces, the skin of a volume, the resolved field and its range, normals,
+/// edge lines and extra layers. `render_scene` draws it from any viewpoint.
+struct RndPrepared {
+    RenderOptions mOpt;  ///< the options it was prepared with (field, edges, colours)
+    std::size_t mNumFaces = 0;
+    std::vector<std::int64_t> mFStart;
+    std::vector<std::int64_t> mFNodes;
+    std::vector<std::int64_t> mFIds;
+    std::vector<std::int64_t> mSNodes;  ///< the rings through smooth shading's split points
+    std::vector<double> mXyz;           ///< points, then the extra layers' vertices
+    std::vector<double> mFNormal;
+    std::vector<double> mVNormal;
+    bool mSmooth = false;
+    RndGroup mLines;
+    RndGroup mPoints;
+    std::vector<double> mFValues;
+    std::vector<double> mLValues;
+    std::vector<double> mPValues;
+    RndColoring mColoring;
+    bool mContinuous = false;
+    bool mCategorical = false;
+    std::string mLabel;
+    std::optional<int> mComponent;
+    std::vector<std::string> mKeys;
+    std::vector<RndExtra> mExtras;
+    std::size_t mExtrasBeforeArrows = 0;
+    std::vector<RndArrow> mArrows;
+    std::vector<detail::RasterLine> mEdgeLines;
+    bool mDeferCategoryEdges = false;  ///< orientation categories need the camera
+    std::array<double, 3> mCentre = {0.0, 0.0, 0.0};  ///< bounding sphere of what is drawn
+    double mRadius = 1.0;
+};
+
+/// The lines between faces whose categories differ: every interior edge shared by
+/// exactly two faces of different value.
+void rnd_category_edge_lines(const RenderOptions& rOpt, bool Categorical,
+                             const std::vector<std::int64_t>& rFStart,
+                             const std::vector<std::int64_t>& rFNodes,
+                             const std::vector<double>& rFValues,
+                             std::vector<detail::RasterLine>& rLines) {
+    const std::vector<std::int64_t>& f_start = rFStart;
+    const std::vector<std::int64_t>& f_nodes = rFNodes;
+    const std::vector<double>& f_values = rFValues;
+    const std::size_t num_faces = f_start.empty() ? 0 : f_start.size() - 1;
+    const bool categorical = Categorical;
+    if (!categorical)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "category edges need a categorical colouring "
+                                    "(categorical, color_regions or a flag diagnostic)");
+    struct Use {
+        std::int64_t mLo, mHi;
+        std::size_t mFace;
+        bool operator<(const Use& rO) const {
+            return mLo != rO.mLo ? mLo < rO.mLo
+                                 : (mHi != rO.mHi ? mHi < rO.mHi : mFace < rO.mFace);
+        }
+    };
+    std::vector<Use> uses;
+    for (std::size_t f = 0; f < num_faces; ++f) {
+        const std::int64_t lo = f_start[f];
+        const std::int64_t n = f_start[f + 1] - lo;
+        for (std::int64_t k = 0; k < n; ++k) {
+            const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
+            const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
+            if (a != b)
+                uses.push_back({std::min(a, b), std::max(a, b), f});
+        }
+    }
+    parallel_sort(uses.begin(), uses.end());
+    auto same = [&](double a, double b) {
+        return (std::isfinite(a) ? a : -1.0) == (std::isfinite(b) ? b : -1.0);
+    };
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i;
+        while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 2 && !same(f_values[uses[i].mFace], f_values[uses[i + 1].mFace]))
+            rLines.push_back({uses[i].mLo, uses[i].mHi, rOpt.mEdgeColor, -1});
+        i = j;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cut-aways: clip the drawn geometry against up to two planes
+// ---------------------------------------------------------------------------
+
+// The kept side of a plane: dist(x) = n . x + d >= 0, n a unit vector.
+struct RndPlane {
+    double mN[3];
+    double mD;
+};
+
+std::vector<RndPlane> rnd_planes(const std::vector<RenderCutaway>& rCutaways) {
+    std::vector<RndPlane> out;
+    for (const RenderCutaway& cut : rCutaways) {
+        RndPlane plane;
+        const double len = std::sqrt(cut.mNormal[0] * cut.mNormal[0] +
+                                     cut.mNormal[1] * cut.mNormal[1] +
+                                     cut.mNormal[2] * cut.mNormal[2]);
+        for (std::size_t k = 0; k < 3; ++k)
+            plane.mN[k] = cut.mNormal[k] / len;
+        plane.mD = -(plane.mN[0] * cut.mPoint[0] + plane.mN[1] * cut.mPoint[1] +
+                     plane.mN[2] * cut.mPoint[2]);
+        out.push_back(plane);
+    }
+    return out;
+}
+
+double rnd_dist(const RndPlane& rPlane, const double* pX) {
+    return rPlane.mN[0] * pX[0] + rPlane.mN[1] * pX[1] + rPlane.mN[2] * pX[2] + rPlane.mD;
+}
+
+// A polygon corner while it is being clipped: its position, its smooth-shading
+// normal, and the vertex it came from (-1 for a point made by the cut).
+struct RndClipCorner {
+    double mX[3];
+    double mN[3];
+    std::int64_t mId;
+};
+
+// Sutherland-Hodgman against one plane. The new corners lie where an edge
+// meets the plane, with the position and the normal interpolated along it.
+void rnd_clip_polygon(const RndPlane& rPlane, std::vector<RndClipCorner>& rPoly) {
+    std::vector<RndClipCorner> out;
+    const std::size_t n = rPoly.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const RndClipCorner& a = rPoly[i];
+        const RndClipCorner& b = rPoly[(i + 1) % n];
+        const double da = rnd_dist(rPlane, a.mX);
+        const double db = rnd_dist(rPlane, b.mX);
+        if (da >= 0.0)
+            out.push_back(a);
+        if ((da >= 0.0) != (db >= 0.0)) {
+            const double t = da / (da - db);
+            RndClipCorner q;
+            q.mId = -1;
+            for (std::size_t k = 0; k < 3; ++k) {
+                q.mX[k] = a.mX[k] + t * (b.mX[k] - a.mX[k]);
+                q.mN[k] = a.mN[k] + t * (b.mN[k] - a.mN[k]);
+            }
+            const double len = std::sqrt(q.mN[0] * q.mN[0] + q.mN[1] * q.mN[1] + q.mN[2] * q.mN[2]);
+            if (len > 0.0 && std::isfinite(len))
+                for (double& c : q.mN)
+                    c /= len;
+            out.push_back(q);
+        }
+    }
+    rPoly.swap(out);
+}
+
+// The geometry left once the planes have cut it.
+struct RndClipped {
+    std::size_t mNumFaces = 0;
+    std::vector<std::int64_t> mFStart = {0};
+    std::vector<std::int64_t> mFNodes;  // the rasterized rings (also used for the diagonals)
+    std::vector<std::int64_t> mFIds;
+    std::vector<double> mFNormal;
+    std::vector<double> mFValues;
+    std::vector<double> mVNormal;  // grown with the new corners, NaN where unknown
+    struct Line {
+        std::int64_t mA;
+        std::int64_t mB;
+        std::size_t mSource;
+    };
+    std::vector<Line> mLines;
+    std::vector<std::size_t> mPoints;  // the input points that survive
+    std::vector<detail::RasterLine> mEdgeLines;
+};
+
+// A segment against every plane; false when nothing of it is kept. The ends the
+// cut moves become new vertices appended to rXyz.
+bool rnd_clip_segment(const std::vector<RndPlane>& rPlanes, std::vector<double>& rXyz,
+                      std::int64_t& rA, std::int64_t& rB) {
+    double pa[3];
+    double pb[3];
+    for (std::size_t k = 0; k < 3; ++k) {
+        pa[k] = rXyz[3 * static_cast<std::size_t>(rA) + k];
+        pb[k] = rXyz[3 * static_cast<std::size_t>(rB) + k];
+    }
+    bool moved_a = false;
+    bool moved_b = false;
+    for (const RndPlane& plane : rPlanes) {
+        const double da = rnd_dist(plane, pa);
+        const double db = rnd_dist(plane, pb);
+        if (da < 0.0 && db < 0.0)
+            return false;
+        if (da >= 0.0 && db >= 0.0)
+            continue;
+        const double t = da / (da - db);
+        double q[3];
+        for (std::size_t k = 0; k < 3; ++k)
+            q[k] = pa[k] + t * (pb[k] - pa[k]);
+        if (da < 0.0) {
+            for (std::size_t k = 0; k < 3; ++k)
+                pa[k] = q[k];
+            moved_a = true;
+        } else {
+            for (std::size_t k = 0; k < 3; ++k)
+                pb[k] = q[k];
+            moved_b = true;
+        }
+    }
+    if (moved_a) {
+        rA = static_cast<std::int64_t>(rXyz.size() / 3);
+        rXyz.insert(rXyz.end(), pa, pa + 3);
+    }
+    if (moved_b) {
+        rB = static_cast<std::int64_t>(rXyz.size() / 3);
+        rXyz.insert(rXyz.end(), pb, pb + 3);
+    }
+    return true;
+}
+
+bool rnd_point_kept(const std::vector<RndPlane>& rPlanes, const double* pX) {
+    for (const RndPlane& plane : rPlanes)
+        if (rnd_dist(plane, pX) < 0.0)
+            return false;
+    return true;
+}
+
+// The options with the theme's default colours in place of the ones left at
+// their defaults (a colour you set to the default itself cannot be told apart,
+// and takes the theme's).
+RenderOptions rnd_themed(const RenderOptions& rIn) {
+    RenderOptions out = rIn;
+    if (out.mTheme == RenderTheme::Synthwave) {
+        const RenderOptions defaults;
+        if (out.mFillColor == defaults.mFillColor)
+            out.mFillColor = {96, 56, 190, 255};
+        if (out.mEdgeColor == defaults.mEdgeColor)
+            out.mEdgeColor = {0, 230, 255, 255};
+        if (out.mLineColor == defaults.mLineColor)
+            out.mLineColor = {255, 60, 200, 255};
+    }
+    return out;
+}
+
+std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOptIn) {
+    const RenderOptions rOpt = rnd_themed(rOptIn);
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
-    detail::render_view_angles(rOpt, azimuth, elevation);
-    const detail::CameraBasis cam = detail::camera_basis(azimuth, elevation, rOpt.mRoll);
+    detail::render_view_angles(rOpt, azimuth, elevation);  // rejects an unknown view
 
     // The array that is coloured: an input array, or one derived from it.
     Mesh work;
@@ -164806,6 +166440,28 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
                        rnd_hex(rOpt.mIsoColor) + ")");
     }
 
+    if (!rOpt.mStreamlines.empty()) {
+        const std::vector<double> vec =
+            rnd_vertex_array(src, p_skin, num_source_points, rOpt.mStreamlines, 3, "streamline");
+        detail::StreamlineOptions stream;
+        stream.mSeeds = static_cast<std::size_t>(rOpt.mStreamSeeds);
+        stream.mLength = rOpt.mStreamLength;
+        detail::Streamlines lines;
+        try {
+            lines = detail::trace_streamlines(src, xyz.data(), vec.data(), stream);
+        } catch (const std::invalid_argument& rErr) {
+            throw std::invalid_argument(std::string(kRndPrefix) + rErr.what());
+        }
+        for (std::size_t l = 0; l < lines.NumLines(); ++l)
+            for (std::size_t k = lines.mStart[l]; k + 1 < lines.mStart[l + 1]; ++k)
+                add_segment(&lines.mXyz[3 * k], &lines.mXyz[3 * (k + 1)], rOpt.mStreamColor);
+        keys.push_back("streamlines: " + rOpt.mStreamlines + ", " +
+                       std::to_string(lines.NumLines()) + " lines (" + rnd_hex(rOpt.mStreamColor) +
+                       ")");
+    }
+
+    const std::size_t extras_before_arrows = extras.size();
+    std::vector<RndArrow> arrows;
     if (!rOpt.mVectors.empty() && num_faces > 0) {
         const std::vector<double> vec =
             rnd_vertex_array(src, p_skin, num_source_points, rOpt.mVectors, 3, "vector");
@@ -164840,8 +166496,6 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             if (std::isfinite(m))
                 max_mag = std::max(max_mag, m);
         }
-        const double cos_barb = 0.9063077870366499;  // 25 degrees
-        const double sin_barb = 0.42261826174069944;
         for (std::int64_t v : picked) {
             const double* a = &vec[3 * static_cast<std::size_t>(v)];
             const double mag = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
@@ -164852,26 +166506,14 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             const double dir[3] = {a[0] / mag, a[1] / mag, a[2] / mag};
             const double* p = &xyz[3 * static_cast<std::size_t>(v)];
             const double tip[3] = {p[0] + dir[0] * len, p[1] + dir[1] * len, p[2] + dir[2] * len};
-            // The barbs lie in the plane of the arrow and the line of sight.
-            double perp[3] = {dir[1] * cam.mW[2] - dir[2] * cam.mW[1],
-                              dir[2] * cam.mW[0] - dir[0] * cam.mW[2],
-                              dir[0] * cam.mW[1] - dir[1] * cam.mW[0]};
-            double pl = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
-            if (pl < 1e-9) {
-                perp[0] = cam.mU[0];
-                perp[1] = cam.mU[1];
-                perp[2] = cam.mU[2];
-                pl = 1.0;
+            RndArrow arrow;
+            for (std::size_t c = 0; c < 3; ++c) {
+                arrow.mP[c] = p[c];
+                arrow.mTip[c] = tip[c];
+                arrow.mDir[c] = dir[c];
             }
-            for (double& c : perp)
-                c /= pl;
-            add_segment(p, tip, rOpt.mVectorColor);
-            for (double sign : {1.0, -1.0}) {
-                double barb[3];
-                for (std::size_t c = 0; c < 3; ++c)
-                    barb[c] = tip[c] - 0.3 * len * (cos_barb * dir[c] - sign * sin_barb * perp[c]);
-                add_segment(tip, barb, rOpt.mVectorColor);
-            }
+            arrow.mLen = len;
+            arrows.push_back(arrow);
         }
         keys.push_back("vectors: " + rOpt.mVectors + ", " + std::to_string(picked.size()) +
                        " arrows, longest " + rnd_num(max_mag));
@@ -164895,7 +166537,65 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         keys.push_back("warp: " + rOpt.mWarp + " x " + rnd_num(rOpt.mWarpScale));
     }
 
-    // Project every vertex a primitive uses.
+    // Edge overlays that depend on the geometry alone.
+    std::vector<detail::RasterLine> edge_lines;
+    if (rOpt.mEdges == RenderEdges::All) {
+        std::vector<std::pair<std::int64_t, std::int64_t>> edges;
+        edges.reserve(f_nodes.size());
+        for (std::size_t f = 0; f < num_faces; ++f) {
+            const std::int64_t lo = f_start[f];
+            const std::int64_t n = f_start[f + 1] - lo;
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
+                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
+                if (a != b)
+                    edges.emplace_back(std::min(a, b), std::max(a, b));
+            }
+        }
+        parallel_sort(edges.begin(), edges.end());
+        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        for (const auto& e : edges)
+            edge_lines.push_back({e.first, e.second, rOpt.mEdgeColor, -1});
+    } else if (rOpt.mEdges == RenderEdges::Feature && num_faces > 0) {
+        const std::vector<detail::CreaseEdge> edges =
+            detail::crease_edges(f_start, f_nodes, f_normal, rOpt.mFeatureAngle);
+        for (const detail::CreaseEdge& e : edges)
+            if (e.IsCrease() || e.IsBoundary())
+                edge_lines.push_back({e.mLo, e.mHi, rOpt.mEdgeColor, -1});
+    }
+    if (rOpt.mDiagnostic == RenderDiagnostic::FreeEdges && num_faces > 0) {
+        const RndColor open_color = {235, 140, 0, 255};
+        const RndColor non_manifold_color = {220, 30, 30, 255};
+        const RndColor inconsistent_color = {200, 0, 200, 255};
+        std::size_t open_edges = 0, non_manifold = 0, inconsistent = 0;
+        for (const detail::CreaseEdge& e :
+             detail::crease_edges(f_start, f_nodes, f_normal, 180.0)) {
+            if (e.IsNonManifold()) {
+                edge_lines.push_back({e.mLo, e.mHi, non_manifold_color, -1});
+                ++non_manifold;
+            } else if (e.IsBoundary()) {
+                edge_lines.push_back({e.mLo, e.mHi, open_color, -1});
+                ++open_edges;
+            } else if (e.mInconsistent) {
+                edge_lines.push_back({e.mLo, e.mHi, inconsistent_color, -1});
+                ++inconsistent;
+            }
+        }
+        keys.push_back(
+            "free edges: " + std::to_string(open_edges) + " open " + rnd_hex(open_color) + ", " +
+            std::to_string(non_manifold) + " non-manifold " + rnd_hex(non_manifold_color) + ", " +
+            std::to_string(inconsistent) + " inconsistent " + rnd_hex(inconsistent_color));
+    }
+    bool defer_category_edges = false;
+    if (rOpt.mCategoryEdges) {
+        if (rOpt.mDiagnostic == RenderDiagnostic::Orientation)
+            defer_category_edges = true;  // its categories depend on the camera
+        else
+            rnd_category_edge_lines(rOpt, categorical, f_start, f_nodes, f_values, edge_lines);
+    }
+
+
+    // The bounding sphere of what is drawn, for a fixed fit.
     const std::size_t nv = xyz.size() / 3;
     std::vector<std::uint8_t> used(nv, 0);
     for (std::int64_t v : s_nodes)
@@ -164908,8 +166608,292 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         used[static_cast<std::size_t>(e.mA)] = 1;
         used[static_cast<std::size_t>(e.mB)] = 1;
     }
+    std::array<double, 3> lo_b = {0.0, 0.0, 0.0};
+    std::array<double, 3> hi_b = {0.0, 0.0, 0.0};
+    bool seen = false;
+    for (std::size_t i = 0; i < nv; ++i) {
+        if (!used[i])
+            continue;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double c = xyz[3 * i + k];
+            lo_b[k] = seen ? std::min(lo_b[k], c) : c;
+            hi_b[k] = seen ? std::max(hi_b[k], c) : c;
+        }
+        seen = true;
+    }
+    auto prep = std::make_shared<RndPrepared>();
+    for (std::size_t k = 0; k < 3; ++k)
+        prep->mCentre[k] = 0.5 * (lo_b[k] + hi_b[k]);
+    double radius_b = 0.0;
+    for (std::size_t i = 0; i < nv; ++i) {
+        if (!used[i])
+            continue;
+        double d2 = 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double d = xyz[3 * i + k] - prep->mCentre[k];
+            d2 += d * d;
+        }
+        radius_b = std::max(radius_b, std::sqrt(d2));
+    }
+    prep->mRadius = radius_b > 0.0 ? radius_b : 1.0;
+
+    prep->mOpt = rOpt;
+    prep->mNumFaces = num_faces;
+    prep->mFStart = std::move(f_start);
+    prep->mFNodes = std::move(f_nodes);
+    prep->mFIds = std::move(f_ids);
+    prep->mSNodes = std::move(s_nodes);
+    prep->mXyz = std::move(xyz);
+    prep->mFNormal = std::move(f_normal);
+    prep->mVNormal = std::move(v_normal);
+    prep->mSmooth = smooth;
+    prep->mLines = g.mLines;
+    prep->mLines.mpDraw = nullptr;
+    prep->mPoints = g.mPoints;
+    prep->mPoints.mpDraw = nullptr;
+    prep->mFValues = std::move(f_values);
+    prep->mLValues = std::move(l_values);
+    prep->mPValues = std::move(p_values);
+    prep->mColoring = coloring;
+    prep->mContinuous = continuous;
+    prep->mCategorical = categorical;
+    prep->mLabel = label;
+    prep->mComponent = component;
+    prep->mKeys = std::move(keys);
+    for (const Extra& e : extras)
+        prep->mExtras.push_back({e.mA, e.mB, e.mColor});
+    prep->mExtrasBeforeArrows = extras_before_arrows;
+    prep->mArrows = std::move(arrows);
+    prep->mEdgeLines = std::move(edge_lines);
+    prep->mDeferCategoryEdges = defer_category_edges;
+    return prep;
+}
+
+Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool FixedFit) {
+    // The field, edge and colour options are the prepared ones; the camera and
+    // the frame are the caller's.
+    RenderOptions rOpt = rPrep.mOpt;
+    rOpt.mWidth = rCamera.mWidth;
+    rOpt.mHeight = rCamera.mHeight;
+    rOpt.mPixelAspect = rCamera.mPixelAspect;
+    rOpt.mSupersample = rCamera.mSupersample;
+    rOpt.mAzimuth = rCamera.mAzimuth;
+    rOpt.mElevation = rCamera.mElevation;
+    rOpt.mRoll = rCamera.mRoll;
+    rOpt.mView = rCamera.mView;
+    rOpt.mProjection = rCamera.mProjection;
+    rOpt.mFovDeg = rCamera.mFovDeg;
+    rOpt.mZoom = rCamera.mZoom;
+    rOpt.mPanX = rCamera.mPanX;
+    rOpt.mPanY = rCamera.mPanY;
+    rOpt.mShading = rCamera.mShading;
+    rOpt.mTwoSided = rCamera.mTwoSided;
+    rOpt.mAmbient = rCamera.mAmbient;
+    rOpt.mLightDir = rCamera.mLightDir;
+    rOpt.mBackground = rCamera.mBackground;
+    rOpt.mPointRadius = rCamera.mPointRadius;
+    rOpt.mAxes = rCamera.mAxes;
+    rOpt.mScaleBar = rCamera.mScaleBar;
+    rOpt.mColorbar = rCamera.mColorbar;
+    rOpt.mCutaways = rCamera.mCutaways;
+    rOpt.mCutawayTint = rCamera.mCutawayTint;
+    rOpt.mTheme = rCamera.mTheme;
+    rOpt.mScanlines = rCamera.mScanlines;
+    rOpt.mBloom = rCamera.mBloom;
+    rOpt.mFringe = rCamera.mFringe;
+    rOpt.mGridFloor = rCamera.mGridFloor;
+    rOpt.mThemePhase = rCamera.mThemePhase;
+    rnd_validate(rOpt);
+    double azimuth = 0.0;
+    double elevation = 0.0;
+    detail::render_view_angles(rOpt, azimuth, elevation);
+    const detail::CameraBasis cam = detail::camera_basis(azimuth, elevation, rOpt.mRoll);
+
+    const bool smooth = rPrep.mSmooth && rOpt.mShading == RenderShading::Smooth;
+    const std::vector<double>& l_values = rPrep.mLValues;
+    const std::vector<double>& p_values = rPrep.mPValues;
+    const bool continuous = rPrep.mContinuous;
+    bool categorical = rPrep.mCategorical;
+    const std::string& label = rPrep.mLabel;
+    const std::optional<int>& component = rPrep.mComponent;
+    RndColoring coloring = rPrep.mColoring;
+    std::vector<std::string> keys = rPrep.mKeys;
+    const bool orientation = rOpt.mDiagnostic == RenderDiagnostic::Orientation;
+
+    // The extra layers: the prepared ones with the arrows between them, whose
+    // barbs lie in the plane of the arrow and the line of sight.
+    std::vector<double> xyz = rPrep.mXyz;
+    struct Extra {
+        std::int64_t mA;
+        std::int64_t mB;
+        RndColor mColor;
+    };
+    std::vector<Extra> extras;
+    auto add_vertex = [&](const double* pPoint) {
+        const std::int64_t id = static_cast<std::int64_t>(xyz.size() / 3);
+        xyz.insert(xyz.end(), pPoint, pPoint + 3);
+        return id;
+    };
+    auto add_segment = [&](const double* pA, const double* pB, const RndColor& rColor) {
+        const std::int64_t a = add_vertex(pA);
+        const std::int64_t b = add_vertex(pB);
+        extras.push_back({a, b, rColor});
+    };
+    for (std::size_t i = 0; i < rPrep.mExtrasBeforeArrows; ++i)
+        extras.push_back({rPrep.mExtras[i].mA, rPrep.mExtras[i].mB, rPrep.mExtras[i].mColor});
+    const double cos_barb = 0.9063077870366499;  // 25 degrees
+    const double sin_barb = 0.42261826174069944;
+    for (const RndArrow& arrow : rPrep.mArrows) {
+        const double* dir = arrow.mDir;
+        const double len = arrow.mLen;
+        double perp[3] = {dir[1] * cam.mW[2] - dir[2] * cam.mW[1],
+                          dir[2] * cam.mW[0] - dir[0] * cam.mW[2],
+                          dir[0] * cam.mW[1] - dir[1] * cam.mW[0]};
+        double pl = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
+        if (pl < 1e-9) {
+            perp[0] = cam.mU[0];
+            perp[1] = cam.mU[1];
+            perp[2] = cam.mU[2];
+            pl = 1.0;
+        }
+        for (double& c : perp)
+            c /= pl;
+        add_segment(arrow.mP, arrow.mTip, rOpt.mVectorColor);
+        for (double sign : {1.0, -1.0}) {
+            double barb[3];
+            for (std::size_t c = 0; c < 3; ++c)
+                barb[c] = arrow.mTip[c] - 0.3 * len * (cos_barb * dir[c] - sign * sin_barb * perp[c]);
+            add_segment(arrow.mTip, barb, rOpt.mVectorColor);
+        }
+    }
+    for (std::size_t i = rPrep.mExtrasBeforeArrows; i < rPrep.mExtras.size(); ++i)
+        extras.push_back({rPrep.mExtras[i].mA, rPrep.mExtras[i].mB, rPrep.mExtras[i].mColor});
+
+    // Cut-aways: clip the faces, lines and points against the planes. A face the
+    // cut leaves whole keeps its vertices; one it crosses is replaced by the
+    // polygon on the kept side, with the interpolated corners appended to xyz.
+    const std::vector<RndPlane> planes = rnd_planes(rOpt.mCutaways);
+    const bool clip_on = !planes.empty();
+    RndClipped clipped;
+    std::vector<Extra> extras_unclipped;  // the framing is the whole model's, cut or not
+    if (clip_on) {
+        const double nan = std::nan("");
+        if (smooth)
+            clipped.mVNormal = rPrep.mVNormal;
+        auto new_vertex = [&](const RndClipCorner& rCorner) {
+            const std::int64_t id = static_cast<std::int64_t>(xyz.size() / 3);
+            xyz.insert(xyz.end(), rCorner.mX, rCorner.mX + 3);
+            if (smooth) {
+                clipped.mVNormal.resize(3 * static_cast<std::size_t>(id), nan);
+                clipped.mVNormal.insert(clipped.mVNormal.end(), rCorner.mN, rCorner.mN + 3);
+            }
+            return id;
+        };
+        for (std::size_t f = 0; f < rPrep.mNumFaces; ++f) {
+            const std::int64_t lo = rPrep.mFStart[f];
+            const std::int64_t n = rPrep.mFStart[f + 1] - lo;
+            if (n < 3)
+                continue;
+            const std::int64_t* ring = rPrep.mSNodes.data() + lo;
+            bool inside = true;
+            for (std::int64_t k = 0; k < n && inside; ++k)
+                for (const RndPlane& plane : planes)
+                    if (rnd_dist(plane, &xyz[3 * static_cast<std::size_t>(ring[k])]) < 0.0) {
+                        inside = false;
+                        break;
+                    }
+            if (inside) {
+                clipped.mFNodes.insert(clipped.mFNodes.end(), ring, ring + n);
+            } else {
+                std::vector<RndClipCorner> poly;
+                for (std::int64_t k = 0; k < n; ++k) {
+                    RndClipCorner corner;
+                    const std::size_t v = static_cast<std::size_t>(ring[k]);
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        corner.mX[c] = xyz[3 * v + c];
+                        corner.mN[c] = smooth && 3 * v + c < rPrep.mVNormal.size()
+                                           ? rPrep.mVNormal[3 * v + c]
+                                           : nan;
+                    }
+                    corner.mId = ring[k];
+                    poly.push_back(corner);
+                }
+                for (const RndPlane& plane : planes)
+                    rnd_clip_polygon(plane, poly);
+                if (poly.size() < 3)
+                    continue;
+                for (const RndClipCorner& corner : poly)
+                    clipped.mFNodes.push_back(corner.mId >= 0 ? corner.mId : new_vertex(corner));
+            }
+            clipped.mFStart.push_back(static_cast<std::int64_t>(clipped.mFNodes.size()));
+            clipped.mFIds.push_back(rPrep.mFIds[f]);
+            clipped.mFNormal.insert(clipped.mFNormal.end(), rPrep.mFNormal.begin() + 3 * f,
+                                    rPrep.mFNormal.begin() + 3 * f + 3);
+            clipped.mFValues.push_back(rPrep.mFValues[f]);
+        }
+        clipped.mNumFaces = clipped.mFIds.size();
+        for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
+            std::int64_t a = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i])];
+            std::int64_t b =
+                rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i]) + 1];
+            if (rnd_clip_segment(planes, xyz, a, b))
+                clipped.mLines.push_back({a, b, i});
+        }
+        for (const detail::RasterLine& edge : rPrep.mEdgeLines) {
+            detail::RasterLine line = edge;
+            if (rnd_clip_segment(planes, xyz, line.mA, line.mB))
+                clipped.mEdgeLines.push_back(line);
+        }
+        extras_unclipped = extras;
+        std::vector<Extra> kept_extras;
+        for (const Extra& e : extras) {
+            Extra moved = e;
+            if (rnd_clip_segment(planes, xyz, moved.mA, moved.mB))
+                kept_extras.push_back(moved);
+        }
+        extras.swap(kept_extras);
+        for (std::size_t i = 0; i < rPrep.mPoints.mIds.size(); ++i) {
+            const std::size_t v =
+                static_cast<std::size_t>(rPrep.mPoints.mNodes[static_cast<std::size_t>(rPrep.mPoints.mStart[i])]);
+            if (rnd_point_kept(planes, &xyz[3 * v]))
+                clipped.mPoints.push_back(i);
+        }
+        keys.push_back("cutaway: " + std::to_string(planes.size()) + " plane" +
+                       (planes.size() == 1 ? "" : "s") + ", inside in " +
+                       rnd_hex(rOpt.mCutawayTint));
+    }
+    const std::size_t num_faces = clip_on ? clipped.mNumFaces : rPrep.mNumFaces;
+    const std::vector<std::int64_t>& f_start = clip_on ? clipped.mFStart : rPrep.mFStart;
+    const std::vector<std::int64_t>& f_nodes = clip_on ? clipped.mFNodes : rPrep.mFNodes;
+    const std::vector<std::int64_t>& f_ids = clip_on ? clipped.mFIds : rPrep.mFIds;
+    const std::vector<std::int64_t>& s_nodes = clip_on ? clipped.mFNodes : rPrep.mSNodes;
+    const std::vector<double>& f_normal = clip_on ? clipped.mFNormal : rPrep.mFNormal;
+    const std::vector<double>& v_normal = clip_on ? clipped.mVNormal : rPrep.mVNormal;
+    const std::vector<double>& face_values = clip_on ? clipped.mFValues : rPrep.mFValues;
+    std::vector<double> f_orient;
+    if (orientation)
+        f_orient = face_values;
+    const std::vector<double>& f_values = orientation ? f_orient : face_values;
+
+    // Project every vertex a primitive uses. The frame is fitted to the geometry
+    // as it was before any cut (the corners a cut adds lie inside it), so a
+    // cut-away keeps the size and place of the whole model instead of enlarging
+    // what is left.
+    const std::size_t nv = xyz.size() / 3;
+    std::vector<std::uint8_t> used(nv, 0);
+    for (std::int64_t v : rPrep.mSNodes)
+        used[static_cast<std::size_t>(v)] = 1;
+    for (std::int64_t v : rPrep.mLines.mNodes)
+        used[static_cast<std::size_t>(v)] = 1;
+    for (std::int64_t v : rPrep.mPoints.mNodes)
+        used[static_cast<std::size_t>(v)] = 1;
+    for (const Extra& e : clip_on ? extras_unclipped : extras) {
+        used[static_cast<std::size_t>(e.mA)] = 1;
+        used[static_cast<std::size_t>(e.mB)] = 1;
+    }
 
     const bool perspective = rOpt.mProjection == RenderProjection::Perspective;
+    double fit_distance = 0.0;
     std::array<double, 3> eye = {0.0, 0.0, 0.0};
     const double focal = 1.0 / std::tan(rOpt.mFovDeg * 3.141592653589793 / 360.0);
     if (perspective) {
@@ -164944,12 +166928,13 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         if (!(radius > 0.0))
             radius = 1.0;
         const double distance = radius / std::sin(rOpt.mFovDeg * 3.141592653589793 / 360.0);
+        fit_distance = distance;
         for (int k = 0; k < 3; ++k)
             eye[k] = centre[k] + cam.mW[static_cast<std::size_t>(k)] * distance;
     }
 
     // Front and back faces, which need the camera.
-    if (rOpt.mDiagnostic == RenderDiagnostic::Orientation) {
+    if (orientation) {
         const RndColor front = {70, 130, 230, 255};
         const RndColor back = {230, 140, 40, 255};
         coloring.mPalette = {front, back};
@@ -164972,7 +166957,7 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
                     toward[a] = eye[a] - (cnt > 0 ? c[a] / static_cast<double>(cnt) : 0.0);
             }
             const double d = n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2];
-            f_values[f] = d < 0.0 ? 1.0 : 0.0;
+            f_orient[f] = d < 0.0 ? 1.0 : 0.0;
             back_faces += d < 0.0 ? 1 : 0;
         }
         keys.push_back("orientation: front " + rnd_hex(front) + ", back " + rnd_hex(back) + " (" +
@@ -165016,6 +167001,30 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             min_z = std::min(min_z, sz[i]);
             max_z = std::max(max_z, sz[i]);
         }
+    }
+
+
+    if (FixedFit) {
+        // The bounding sphere stands in for the projected extents, so the model
+        // keeps one size and one place while the camera moves.
+        const double r = rPrep.mRadius;
+        if (perspective) {
+            min_x = min_y = -1.0;
+            max_x = max_y = 1.0;
+            min_z = 1.0 / (fit_distance + r);
+            max_z = 1.0 / (fit_distance - r);
+        } else {
+            const double cx = rnd_dot(rPrep.mCentre.data(), cam.mU);
+            const double cy = rnd_dot(rPrep.mCentre.data(), cam.mV);
+            const double cz = rnd_dot(rPrep.mCentre.data(), cam.mW);
+            min_x = cx - r;
+            max_x = cx + r;
+            min_y = cy - r;
+            max_y = cy + r;
+            min_z = cz - r;
+            max_z = cz + r;
+        }
+        any = true;
     }
 
     // Fit the drawn geometry to the frame (leaving room for a colour bar).
@@ -165071,6 +167080,22 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     else
         light = cam.mW;
 
+    // Back faces seen through a cut-away are the inside: they take the tint.
+    auto faces_away = [&](std::size_t f) {
+        const double* nrm = &f_normal[3 * f];
+        double toward[3] = {cam.mW[0], cam.mW[1], cam.mW[2]};
+        if (perspective) {
+            double c[3] = {0, 0, 0};
+            const std::int64_t cnt = f_start[f + 1] - f_start[f];
+            for (std::int64_t k = f_start[f]; k < f_start[f + 1]; ++k)
+                for (std::size_t a = 0; a < 3; ++a)
+                    c[a] += xyz[3 * static_cast<std::size_t>(s_nodes[static_cast<std::size_t>(k)]) + a];
+            for (std::size_t a = 0; a < 3; ++a)
+                toward[a] = eye[a] - (cnt > 0 ? c[a] / static_cast<double>(cnt) : 0.0);
+        }
+        return nrm[0] * toward[0] + nrm[1] * toward[1] + nrm[2] * toward[2] < 0.0;
+    };
+
     // Triangles.
     std::size_t num_tris = 0;
     for (std::size_t f = 0; f < num_faces; ++f) {
@@ -165085,7 +167110,9 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         const std::int64_t n = f_start[f + 1] - f_start[f];
         if (n < 3)
             continue;
-        const RndColor color = coloring.Map(f_values[f], rOpt.mFillColor);
+        RndColor color = coloring.Map(f_values[f], rOpt.mFillColor);
+        if (clip_on && !orientation && faces_away(f))
+            color = rOpt.mCutawayTint;
         const double face_i =
             rOpt.mShading == RenderShading::None ? 1.0 : rnd_lambert(&f_normal[3 * f], light, rOpt);
         auto corner_i = [&](std::int64_t v) {
@@ -165112,106 +167139,45 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     }
 
     // Lines: the input's line cells, then the edge overlays and extra layers.
-    for (std::size_t i = 0; i < g.mLines.mIds.size(); ++i) {
-        detail::RasterLine line;
-        line.mA = g.mLines.mNodes[static_cast<std::size_t>(g.mLines.mStart[i])];
-        line.mB = g.mLines.mNodes[static_cast<std::size_t>(g.mLines.mStart[i]) + 1];
-        line.mColor = coloring.MapOther(l_values[i], rOpt.mLineColor);
-        line.mId = g.mLines.mIds[i];
-        scene.mLines.push_back(line);
-    }
-    if (rOpt.mEdges == RenderEdges::All) {
-        std::vector<std::pair<std::int64_t, std::int64_t>> edges;
-        edges.reserve(f_nodes.size());
-        for (std::size_t f = 0; f < num_faces; ++f) {
-            const std::int64_t lo = f_start[f];
-            const std::int64_t n = f_start[f + 1] - lo;
-            for (std::int64_t k = 0; k < n; ++k) {
-                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
-                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                if (a != b)
-                    edges.emplace_back(std::min(a, b), std::max(a, b));
-            }
+    if (clip_on) {
+        for (const RndClipped::Line& cut : clipped.mLines) {
+            detail::RasterLine line;
+            line.mA = cut.mA;
+            line.mB = cut.mB;
+            line.mColor = coloring.MapOther(l_values[cut.mSource], rOpt.mLineColor);
+            line.mId = rPrep.mLines.mIds[cut.mSource];
+            scene.mLines.push_back(line);
         }
-        parallel_sort(edges.begin(), edges.end());
-        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-        for (const auto& e : edges)
-            scene.mLines.push_back({e.first, e.second, rOpt.mEdgeColor, -1});
-    } else if (rOpt.mEdges == RenderEdges::Feature && num_faces > 0) {
-        const std::vector<detail::CreaseEdge> edges =
-            detail::crease_edges(f_start, f_nodes, f_normal, rOpt.mFeatureAngle);
-        for (const detail::CreaseEdge& e : edges)
-            if (e.IsCrease() || e.IsBoundary())
-                scene.mLines.push_back({e.mLo, e.mHi, rOpt.mEdgeColor, -1});
-    }
-    if (rOpt.mDiagnostic == RenderDiagnostic::FreeEdges && num_faces > 0) {
-        const RndColor open_color = {235, 140, 0, 255};
-        const RndColor non_manifold_color = {220, 30, 30, 255};
-        const RndColor inconsistent_color = {200, 0, 200, 255};
-        std::size_t open_edges = 0, non_manifold = 0, inconsistent = 0;
-        for (const detail::CreaseEdge& e :
-             detail::crease_edges(f_start, f_nodes, f_normal, 180.0)) {
-            if (e.IsNonManifold()) {
-                scene.mLines.push_back({e.mLo, e.mHi, non_manifold_color, -1});
-                ++non_manifold;
-            } else if (e.IsBoundary()) {
-                scene.mLines.push_back({e.mLo, e.mHi, open_color, -1});
-                ++open_edges;
-            } else if (e.mInconsistent) {
-                scene.mLines.push_back({e.mLo, e.mHi, inconsistent_color, -1});
-                ++inconsistent;
-            }
+        scene.mLines.insert(scene.mLines.end(), clipped.mEdgeLines.begin(),
+                            clipped.mEdgeLines.end());
+    } else {
+        for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
+            detail::RasterLine line;
+            line.mA = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i])];
+            line.mB = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i]) + 1];
+            line.mColor = coloring.MapOther(l_values[i], rOpt.mLineColor);
+            line.mId = rPrep.mLines.mIds[i];
+            scene.mLines.push_back(line);
         }
-        keys.push_back(
-            "free edges: " + std::to_string(open_edges) + " open " + rnd_hex(open_color) + ", " +
-            std::to_string(non_manifold) + " non-manifold " + rnd_hex(non_manifold_color) + ", " +
-            std::to_string(inconsistent) + " inconsistent " + rnd_hex(inconsistent_color));
+        scene.mLines.insert(scene.mLines.end(), rPrep.mEdgeLines.begin(), rPrep.mEdgeLines.end());
     }
-    if (rOpt.mCategoryEdges) {
-        if (!categorical)
-            throw std::invalid_argument(std::string(kRndPrefix) +
-                                        "category edges need a categorical colouring "
-                                        "(categorical, color_regions or a flag diagnostic)");
-        struct Use {
-            std::int64_t mLo, mHi;
-            std::size_t mFace;
-            bool operator<(const Use& rO) const {
-                return mLo != rO.mLo ? mLo < rO.mLo
-                                     : (mHi != rO.mHi ? mHi < rO.mHi : mFace < rO.mFace);
-            }
-        };
-        std::vector<Use> uses;
-        for (std::size_t f = 0; f < num_faces; ++f) {
-            const std::int64_t lo = f_start[f];
-            const std::int64_t n = f_start[f + 1] - lo;
-            for (std::int64_t k = 0; k < n; ++k) {
-                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
-                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                if (a != b)
-                    uses.push_back({std::min(a, b), std::max(a, b), f});
-            }
-        }
-        parallel_sort(uses.begin(), uses.end());
-        auto same = [&](double a, double b) {
-            return (std::isfinite(a) ? a : -1.0) == (std::isfinite(b) ? b : -1.0);
-        };
-        for (std::size_t i = 0; i < uses.size();) {
-            std::size_t j = i;
-            while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
-                ++j;
-            if (j - i == 2 && !same(f_values[uses[i].mFace], f_values[uses[i + 1].mFace]))
-                scene.mLines.push_back({uses[i].mLo, uses[i].mHi, rOpt.mEdgeColor, -1});
-            i = j;
-        }
-    }
+    if (rPrep.mDeferCategoryEdges)
+        rnd_category_edge_lines(rOpt, categorical, f_start, f_nodes, f_values, scene.mLines);
     for (const Extra& e : extras)
         scene.mLines.push_back({e.mA, e.mB, e.mColor, -1});
-    for (std::size_t i = 0; i < g.mPoints.mIds.size(); ++i) {
+    auto add_point = [&](std::size_t i) {
         detail::RasterPoint point;
-        point.mV = g.mPoints.mNodes[static_cast<std::size_t>(g.mPoints.mStart[i])];
+        point.mV = rPrep.mPoints.mNodes[static_cast<std::size_t>(rPrep.mPoints.mStart[i])];
         point.mColor = coloring.MapOther(p_values[i], rOpt.mLineColor);
-        point.mId = g.mPoints.mIds[i];
+        point.mId = rPrep.mPoints.mIds[i];
         scene.mPoints.push_back(point);
+    };
+    if (clip_on) {
+        for (std::size_t i : clipped.mPoints)
+            add_point(i);
+    } else {
+        for (std::size_t i = 0; i < rPrep.mPoints.mIds.size(); ++i)
+            add_point(i);
     }
 
     const detail::RasterTarget target =
@@ -165220,6 +167186,8 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     frame.mWidth = rOpt.mWidth;
     frame.mHeight = rOpt.mHeight;
     detail::raster_downsample(target, ss, frame.mRgba, frame.mCellIds);
+    if (rOpt.mTheme == RenderTheme::Synthwave)
+        rnd_theme_background(frame, rOpt);
 
     // Overlays and notes, at the output resolution.
     const double min_side = static_cast<double>(std::min(rOpt.mWidth, rOpt.mHeight));
@@ -165324,7 +167292,37 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             frame.mNotes.push_back("scale bar: " + rnd_num(length));
         }
     }
+    rnd_theme_post(frame, rOpt);
     return frame;
+}
+
+}  // namespace
+
+RenderScene prepare_render(const Mesh& rMesh, const RenderOptions& rOpt) {
+    RenderScene scene;
+    scene.mpData = rnd_prepare(rMesh, rOpt);
+    return scene;
+}
+
+bool render_scene_bounds(const RenderScene& rScene, std::array<double, 3>& rCentre,
+                         double& rRadius) {
+    if (!rScene.mpData)
+        return false;
+    const RndPrepared& prep = *static_cast<const RndPrepared*>(rScene.mpData.get());
+    rCentre = prep.mCentre;
+    rRadius = prep.mRadius;
+    return true;
+}
+
+Frame render_scene(const RenderScene& rScene, const RenderOptions& rOpt, bool FixedFit) {
+    if (!rScene.mpData)
+        throw std::invalid_argument(std::string(kRndPrefix) + "render_scene needs a prepared scene");
+    return rnd_draw(*static_cast<const RndPrepared*>(rScene.mpData.get()), rOpt, FixedFit);
+}
+
+Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
+    const std::shared_ptr<const RndPrepared> prepared = rnd_prepare(rMesh, rOpt);
+    return rnd_draw(*prepared, rOpt, false);
 }
 
 }  // namespace meshioplusplus
@@ -165553,13 +167551,7 @@ std::string tx_hex(const TxRgb& rC) {
 // The two-colour split of one cell
 // ---------------------------------------------------------------------------
 
-struct TxCell {
-    std::uint32_t mGlyph = 0x20;
-    bool mFgSet = false;  // false: the terminal's own colour
-    bool mBgSet = false;
-    TxRgb mFg = {0, 0, 0};
-    TxRgb mBg = {0, 0, 0};
-};
+using TxCell = TextCell;  // the public cell: the loop diffs and repaints these
 
 struct TxSub {
     bool mOpaque = false;
@@ -166099,6 +168091,82 @@ std::string encode_text(const Frame& rFrame, const TextOptions& rOptions) {
         default:
             return tx_sixel(rFrame, rOptions.mTmuxPassthrough);
     }
+}
+
+TextGrid encode_cells(const Frame& rFrame, const TextOptions& rOptions) {
+    if (rFrame.mWidth <= 0 || rFrame.mHeight <= 0 ||
+        rFrame.mRgba.size() !=
+            static_cast<std::size_t>(rFrame.mWidth) * static_cast<std::size_t>(rFrame.mHeight) * 4)
+        throw std::invalid_argument(std::string(kTxPrefix) +
+                                    "the frame's buffer does not match its size");
+    if (!tx_is_cell(rOptions.mEncoding))
+        throw std::invalid_argument(std::string(kTxPrefix) +
+                                    "encode_cells needs a cell encoding, not a graphics protocol");
+    TextGrid grid;
+    grid.mCells = tx_cells(rFrame, rOptions, grid.mCols, grid.mRows);
+    return grid;
+}
+
+namespace {
+
+// Whether two cells look the same at a colour depth.
+bool tx_same_cell(const TextCell& rA, const TextCell& rB, ColorDepth Depth) {
+    if (rA.mGlyph != rB.mGlyph)
+        return false;
+    if (Depth == ColorDepth::Mono)
+        return true;
+    if (rA.mFgSet != rB.mFgSet || rA.mBgSet != rB.mBgSet)
+        return false;
+    if (rA.mFgSet && tx_quantize(rA.mFg, Depth) != tx_quantize(rB.mFg, Depth))
+        return false;
+    if (rA.mBgSet && tx_quantize(rA.mBg, Depth) != tx_quantize(rB.mBg, Depth))
+        return false;
+    return true;
+}
+
+}  // namespace
+
+std::string encode_cells_update(const TextGrid& rOld, const TextGrid& rNew, ColorDepth Depth,
+                                int Row, int Col) {
+    const bool full = rOld.mCols != rNew.mCols || rOld.mRows != rNew.mRows ||
+                      rOld.mCells.size() != rNew.mCells.size();
+    const bool sgr = Depth != ColorDepth::Mono;
+    std::string out;
+    std::string cur_fg;  // empty: not known, so the next cell sets both
+    std::string cur_bg;
+    bool any = false;
+    for (int row = 0; row < rNew.mRows; ++row) {
+        int last = -2;  // the column the cursor is already at, after the last glyph written
+        for (int col = 0; col < rNew.mCols; ++col) {
+            const std::size_t at = static_cast<std::size_t>(row) *
+                                       static_cast<std::size_t>(rNew.mCols) +
+                                   static_cast<std::size_t>(col);
+            const TextCell& cell = rNew.mCells[at];
+            if (!full && tx_same_cell(rOld.mCells[at], cell, Depth))
+                continue;
+            if (col != last + 1)
+                out += "\x1b[" + std::to_string(Row + row) + ";" + std::to_string(Col + col) + "H";
+            if (sgr) {
+                const std::string fg = tx_sgr(cell.mFgSet, cell.mFg, Depth, true);
+                const std::string bg = tx_sgr(cell.mBgSet, cell.mBg, Depth, false);
+                std::string params;
+                if (fg != cur_fg)
+                    params = fg;
+                if (bg != cur_bg)
+                    params += (params.empty() ? "" : ";") + bg;
+                if (!params.empty())
+                    out += "\x1b[" + params + "m";
+                cur_fg = fg;
+                cur_bg = bg;
+            }
+            tx_utf8(out, cell.mGlyph);
+            last = col;
+            any = true;
+        }
+    }
+    if (any && sgr)
+        out += "\x1b[0m";
+    return out;
 }
 
 std::string render_text(const Mesh& rMesh, const RenderOptions& rRender, const TextOptions& rText) {

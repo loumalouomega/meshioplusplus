@@ -47,6 +47,51 @@ ColorDepth environment_color_depth();
 /// Whether the process runs inside tmux (TMUX is set).
 bool inside_tmux();
 
+/// The interactive session: raw input, the alternate screen, a hidden cursor,
+/// SGR mouse reporting and bracketed paste, all undone by `Leave`.
+///
+/// The terminal is restored on every way out the process controls: `Leave`,
+/// the destructor, an exception unwinding through it, `SIGINT`, `SIGTERM` and
+/// `SIGHUP` (a flag the loop sees within one poll interval, so it unwinds
+/// normally) and `std::exit` (an `atexit` hook). `SIGKILL` cannot be caught.
+/// Only one session can be active at a time.
+class RawTerminal {
+public:
+    RawTerminal() = default;
+    ~RawTerminal();
+    RawTerminal(const RawTerminal&) = delete;
+    RawTerminal& operator=(const RawTerminal&) = delete;
+
+    /// Start the session. Fails, with a message naming `snapshot` as the
+    /// alternative, when standard input or output is not a terminal.
+    bool Enter(std::string& rError);
+    /// End the session; safe to call more than once.
+    void Leave();
+    bool Active() const { return mActive; }
+
+    /// Wait up to `TimeoutMs` for input and append what arrived to `rBytes`.
+    /// Returns false at end of input, true otherwise (also after a timeout or a
+    /// signal, with nothing appended).
+    bool Read(std::string& rBytes, int TimeoutMs);
+    /// Write every byte to standard output; false once the output is gone.
+    bool Write(const std::string& rBytes);
+    /// Whether the terminal was resized since the last call.
+    bool TakeResize();
+    /// The signal that asked the process to stop (SIGINT, SIGTERM, SIGHUP),
+    /// or 0.
+    int TerminationSignal() const;
+
+private:
+    bool mActive = false;
+    struct State;
+    State* mpState = nullptr;
+};
+
+/// Register a child process the session must not outlive (the music player):
+/// it is killed when the terminal is restored from a signal and at exit, as
+/// well as by whoever started it. 0 forgets it. One child at a time.
+void terminal_track_child(long Pid);
+
 }  // namespace meshioplusplus::cli
 
 #endif  // MESHIOPLUSPLUS_CLI_TERMINAL_HPP

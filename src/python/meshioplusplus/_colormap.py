@@ -187,6 +187,30 @@ TABLES: dict[str, bytes] = {
         "f0f0f0f1f1f1f2f2f2f3f3f3f4f4f4f5f5f5f6f6f6f7f7f7f8f8f8f9f9f9fafafafbfbfb"
         "fcfcfcfdfdfdfefefeffffff"
     ),
+    "synthwave": bytes.fromhex(
+        "08063c09063d0a063f0b07400c07420d07430e07440f084610084711084912084a13084c"
+        "14094d15094e160950170951180a53190a541a0a551a0a571b0a581c0b5a1d0b5b1e0b5c"
+        "1f0b5e200b5f210c61220c62230c64240c65250d66260d68270d69280d6b290d6c2a0e6d"
+        "2b0e6f2c0e702d0e722e0f732f0f74300f76310f77320f7933107a34107c35107d36107e"
+        "3711803811813911833a11843b11853c12873d12883d128a3e128b3f138c40138e41138f"
+        "4213914313924414944514954614964814964a14974c15974e1597501598521598541598"
+        "5615995715995916995b169a5d169a5f169a61169a63169b65179b66179b68179c6a179c"
+        "6c179c6e179d70179d72189d74189e76189e77189e79189f7b189f7d199f7f199f8119a0"
+        "8319a08519a08619a1881aa18a1aa18c1aa28e1aa2901aa2921aa3941aa3961ba3971ba4"
+        "991ba49b1ba49d1ba59f1ba5a11ca5a31ca5a51ca6a61ca6a81ca6aa1ca7ac1da7ae1da7"
+        "b01da8b21da8b41da8b61da9b71da9b91ea9bb1eaabd1eaabf1eaac01fa9c11fa9c220a8"
+        "c320a8c421a7c521a7c622a6c722a6c822a6c923a5ca23a5cb24a4cc24a4cd25a3ce25a3"
+        "cf26a2d026a2d127a1d227a1d328a0d428a0d5299fd6299fd72a9ed82a9ed92a9eda2b9d"
+        "db2b9ddc2c9cdd2c9cde2d9bdf2d9be02e9ae12e9ae22f99e32f99e43098e53098e63197"
+        "e73197e83296e93296ea3296eb3395ec3395ed3494ee3494ef3593f03593f13692f33692"
+        "f43791f53791f63890f73890f8398ff9398ffa3a8efb3a8efc3a8efd3b8dfe3b8dff3c8c"
+        "fe3e8dfd418ffc4491fb4793fa4a95f94d96f85098f7529af6559cf5589ef45b9ff35ea1"
+        "f261a3f164a5f067a7ef6aa8ee6daaed70acec72aeeb75b0ea78b1e97bb3e87eb5e781b7"
+        "e684b9e587bae48abce38dbee28fc0e192c2e095c3df98c5de9bc7dd9ec9dca1cbdba4cc"
+        "daa7ced9aad0d7acd2d6afd4d5b2d6d4b5d7d3b8d9d2bbdbd1beddd0c1dfcfc4e0cec7e2"
+        "cdc9e4cccce6cbcfe8cad2e9c9d5ebc8d8edc7dbefc6def1c5e1f2c4e4f4c3e6f6c2e9f8"
+        "c1ecfac0effbbff2fdbef5ff"
+    ),
     "viridis_r": bytes.fromhex(
         "fde725fbe723f8e621f6e620f4e61ef1e51defe51cece51beae51ae7e419e5e419e2e418"
         "dfe318dde318dae319d8e219d5e21ad2e21bd0e11ccde11dcae11fc8e020c5e021c2df23"
@@ -355,6 +379,30 @@ TABLES: dict[str, bytes] = {
         "0f0f0f0e0e0e0d0d0d0c0c0c0b0b0b0a0a0a090909080808070707060606050505040404"
         "030303020202010101000000"
     ),
+    "synthwave_r": bytes.fromhex(
+        "bef5ffbff2fdc0effbc1ecfac2e9f8c3e6f6c4e4f4c5e1f2c6def1c7dbefc8d8edc9d5eb"
+        "cad2e9cbcfe8cccce6cdc9e4cec7e2cfc4e0d0c1dfd1beddd2bbdbd3b8d9d4b5d7d5b2d6"
+        "d6afd4d7acd2d9aad0daa7cedba4ccdca1cbdd9ec9de9bc7df98c5e095c3e192c2e28fc0"
+        "e38dbee48abce587bae684b9e781b7e87eb5e97bb3ea78b1eb75b0ec72aeed70acee6daa"
+        "ef6aa8f067a7f164a5f261a3f35ea1f45b9ff5589ef6559cf7529af85098f94d96fa4a95"
+        "fb4793fc4491fd418ffe3e8dff3c8cfe3b8dfd3b8dfc3a8efb3a8efa3a8ef9398ff8398f"
+        "f73890f63890f53791f43791f33692f13692f03593ef3593ee3494ed3494ec3395eb3395"
+        "ea3296e93296e83296e73197e63197e53098e43098e32f99e22f99e12e9ae02e9adf2d9b"
+        "de2d9bdd2c9cdc2c9cdb2b9dda2b9dd92a9ed82a9ed72a9ed6299fd5299fd428a0d328a0"
+        "d227a1d127a1d026a2cf26a2ce25a3cd25a3cc24a4cb24a4ca23a5c923a5c822a6c722a6"
+        "c622a6c521a7c421a7c320a8c220a8c11fa9c01fa9bf1eaabd1eaabb1eaab91ea9b71da9"
+        "b61da9b41da8b21da8b01da8ae1da7ac1da7aa1ca7a81ca6a61ca6a51ca6a31ca5a11ca5"
+        "9f1ba59d1ba59b1ba4991ba4971ba4961ba3941aa3921aa3901aa28e1aa28c1aa28a1aa1"
+        "881aa18619a18519a08319a08119a07f199f7d199f7b189f79189f77189e76189e74189e"
+        "72189d70179d6e179d6c179c6a179c68179c66179b65179b63169b61169a5f169a5d169a"
+        "5b169a5916995715995615995415985215985015984e15974c15974a1497481496461496"
+        "45149544149443139242139141138f40138e3f138c3e128b3d128a3d12883c12873b1185"
+        "3a118439118338118137118036107e35107d34107c33107a320f79310f77300f762f0f74"
+        "2e0f732d0e722c0e702b0e6f2a0e6d290d6c280d6b270d69260d68250d66240c65230c64"
+        "220c62210c61200b5f1f0b5e1e0b5c1d0b5b1c0b5a1b0a581a0a571a0a55190a54180a53"
+        "17095116095015094e14094d13084c12084a1108491008470f08460e07440d07430c0742"
+        "0b07400a063f09063d08063c"
+    ),
 }
 
 NAMES = list(TABLES)
@@ -406,7 +454,7 @@ def colormap_table(name: str) -> bytes:
         return TABLES[name]
     except KeyError:
         raise ValueError(
-            f"meshio++: unknown colormap {name!r} (available: viridis, coolwarm, turbo, magma, inferno, plasma, grey, viridis_r, coolwarm_r, turbo_r, magma_r, inferno_r, plasma_r, grey_r)"
+            f"meshio++: unknown colormap {name!r} (available: viridis, coolwarm, turbo, magma, inferno, plasma, grey, synthwave, viridis_r, coolwarm_r, turbo_r, magma_r, inferno_r, plasma_r, grey_r, synthwave_r)"
         ) from None
 
 

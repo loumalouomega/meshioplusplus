@@ -41,11 +41,13 @@ def add_args(parser):
     parser.add_argument(
         "--backend",
         type=str,
-        choices=["auto", "polyscope", "browser"],
+        choices=["auto", "polyscope", "browser", "terminal"],
         default="auto",
         help=(
             "auto uses the polyscope desktop window when it is installed and a "
-            "display is available, else the browser (default: auto)"
+            "display is available; else the browser when a display lets it open; "
+            "else the interactive terminal viewer (`tui`) when stdin and stdout "
+            "are terminals; else an HTML file (default: auto)"
         ),
     )
 

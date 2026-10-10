@@ -57,7 +57,7 @@ Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step i
 |--------|-------------|
 | `--color-by NAME` | `point_data` or `cell_data` array to colour the faces by |
 | `--component I` | Component of a multi-component array (default: its magnitude) |
-| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma` or `grey`, or a reversed `_r` variant of any |
+| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma`, `grey` or `synthwave` (an original neon palette for the [synthwave theme](tui.md#the-synthwave-theme), not perceptually uniform), or a reversed `_r` variant of any |
 | `--vmin V` / `--vmax V` | Colour range (default: the drawn faces' finite range) |
 | `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
 | `--colorbar` | Append a gradient bar with min/max labels (SVG/TikZ only) |
@@ -1046,8 +1046,12 @@ meshioplusplus snapshot [options] INFILE OUTFILE
 | `--categorical` / `--color-regions` / `--category-edges` | Colour integer data, or the named cell regions, from a fixed palette with a key; draw the edges where categories meet |
 | `--isolines N` / `--iso-levels A,B,...` / `--iso-color` | Contour lines of the point array `--color-by` |
 | `--vectors NAME` / `--vector-count N` / `--vector-length L` / `--vector-color` | Arrows for a vector point array |
+| `--streamlines NAME` / `--stream-seeds N` / `--stream-length L` / `--stream-color` | Streamlines of a vector point array: about `N` seeds (default 40) spread at equal area or volume, each line at most `L` model diagonals (default 0.5) in each direction, over the mesh's own cells; on a volume they run inside it, so add a `--cutaway` |
 | `--warp NAME` / `--warp-scale S` / `--warp-outline` / `--outline-color` | Move the points by a displacement array; draw the undeformed outline |
 | `--diagnostic NAME` / `--quality-metric M` | `quality`, `inverted`, `degenerate`, `orientation`, `free-edges` or `edge-length` |
+| `--cutaway PLANE` / `--cutaway-tint` | Clip a half-space away (twice at most): `PX,PY,PZ,NX,NY,NZ` (a point and the normal of the side kept) or `AXIS:OFFSET`, `AXIS` one of `+x -x +y -y +z -z` (`+x:0.5` keeps x ≥ 0.5); the back faces then in view are drawn in the tint (default `#e88034`) |
+| `--theme synthwave` / `--grid-floor` | An optional 1980s look: a banded sunset behind the model, neon defaults and the `synthwave` colormap; a perspective grid under it (see [the theme](tui.md#the-synthwave-theme)) |
+| `--bloom` / `--fringe` / `--scanlines` | Post-processes on the final frame, in that order, with or without a theme |
 | `--png-compress 1..9` | Compress a PNG through zlib (default: stored blocks, the same bytes everywhere) |
 | `--cast-frames N` / `--cast-fps R` / `--cast-degrees DEG` | An asciicast orbit: frame count (`36`), rate (`12`), sweep (`360`) |
 | `--input-format` (`-i`) | Force the input format |
@@ -1062,6 +1066,48 @@ meshioplusplus snapshot part.vtu orbit.cast --cast-frames 72        # asciinema 
 `--cmap`, `--vmin`, `--vmax`, `--nan-color`, `--colorbar` and `--symmetric` also apply to `--expr` and to the `quality` and `edge-length` diagnostics; without any of those they are refused by name. See [terminal rendering](/tui#field-rendering) for each option.
 
 Without Polyscope (always, in the release binaries) `screenshot` draws its PNG through the same rasterizer, and `view` points at `snapshot`.
+
+---
+
+## meshioplusplus tui
+
+Orbit, zoom and pan a mesh inside this terminal, with no display, GPU or browser: the [interactive viewer](/tui#the-interactive-viewer-tui) around the software rasterizer. It needs a terminal on standard input and output, and refuses by name otherwise (use [`snapshot`](#meshioplusplus-snapshot) for one frame to a file or a pipe).
+
+```
+meshioplusplus tui [options] INFILE
+```
+
+![The interactive viewer](/images/tui_loop.svg)
+
+Drag to orbit, the wheel or `+` `-` to zoom, the arrow keys to pan, `1`…`7` for the named views, `p` perspective, `e` edges, `s` shading, `a` `b` `c` axes, scale bar and colour bar, a click to probe a cell (`i` pins it), `x` `y` `z` to cut the model away at the middle (`,` `.` slide the plane), `[` `]` to step a series, `:` for a command line that takes the flags of `snapshot`, `r` reset, `?` help, `q` quit. The terminal is restored however it ends; a signal ends it with exit code 128 plus the signal number.
+
+It takes every render option of `snapshot` (the camera, shading, edges, colouring and field options listed there; the frame size is the terminal's), and:
+
+| Option | Description |
+|--------|-------------|
+| `--encoding NAME` | `halfblock` (default), `quadrant`, `sextant`, `braille`, `ascii`, or `kitty`, `iterm2`, `sixel` (these redraw the whole image on every change) |
+| `--color-depth NAME` | `auto` (from `NO_COLOR`, `COLORTERM`, `TERM`; the default), `truecolor`, `256`, `16` or `mono` |
+| `--cell-aspect R` | Height over width of a terminal cell (default: the terminal's own when it reports its pixel size, else `2`) |
+| `--tmux` | Wrap a graphics protocol for tmux passthrough; one is refused inside tmux without it |
+| `INFILE...` | Several files, or a quoted glob (`'out_*.vtu'`), make a time series: `[` `]` step, space plays |
+| `--compare FILE` / `--diff` / `--separate-ranges` | Draw a second mesh beside the first under one camera and one colour range; `--diff` draws `\|B − A\|` of the `--color-by` point array instead of B |
+| `--follow` / `--follow-interval MS` / `--settle MS` | Watch the series (or the file) for a new step and show it once its file has stopped changing for `--settle` ms (default 300) |
+| `--fps R` | Steps per second when playing (default 4) |
+| `--session FILE` | Read a session if the file exists and write it when the viewer ends |
+| `--replay FILE` | Play a recorded input stream on a `--cols` by `--rows` screen (default `100` x `40`) and print what the viewer writes, instead of using the terminal |
+| `--music` / `--music-out FILE.wav` | Play a generated synthwave loop on an external player (silent in CI and over SSH unless `--music-over-ssh`); or write it to a file for your own player. `m` mutes, `<` `>` change the volume ([the soundtrack](tui.md#the-soundtrack)) |
+| `--volume V` / `--tempo BPM` / `--music-seed N` / `--music-key K` | The loop's loudness (0.05 to 0.9, default 0.3), tempo (60 to 140, default 100), variation and tonic (`C`…`B` or 0 to 11) |
+| `--pulse` / `--reduced-motion` | With a theme: step the grid on every beat of `--tempo` (`--music` implies it); never, whatever else is asked (also `REDUCED_MOTION` in the environment) |
+| `--input-format` (`-i`) | Force the input format |
+
+```sh
+meshioplusplus tui part.vtu
+meshioplusplus tui part.vtu --theme synthwave --grid-floor --bloom --music
+meshioplusplus tui result.vtu --color-by temperature --colorbar --cmap magma --edges feature
+meshioplusplus tui part.vtu --encoding braille --color-depth 256
+```
+
+The Python CLI has the same verb, and `meshioplusplus view --backend terminal` (Python and native) runs it.
 
 ---
 
@@ -1535,11 +1581,12 @@ meshioplusplus dataset <subcommand> [options]
 
 | verb | does |
 |---|---|
-| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case |
+| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case ; `--thumbnail PNG` records a picture of the case, `--render-thumbnail` draws one |
 | `list MANIFEST` | entries filtered by `--split`/`--tag`/`--group`; `--resolve` expands each plan (checks files exist, reads no mesh); `--json` emits the entries (plus `Resolved` plans) as JSON |
 | `split MANIFEST` | `--set S` on `--id` (repeatable) or `--all`; or `--assign train=0.8,valid=0.1,test=0.1` over every entry — deterministic (`--seed`), `--by-group` keeps entries sharing a `Group` together |
 | `tag MANIFEST` | `--add T,T` / `--remove T,T` on `--id` (repeatable) or `--all` |
 | `annotate MANIFEST --id ID` | set `--notes`, `--group`, merge `--meta K=V`, drop `--del-meta K` |
+| `thumbnail MANIFEST` | a picture of the cases on `--id` (repeatable) or `--all`: draws step `--step` (default 0) with the [software rasterizer](tui.md) at `--width`×`--height` (default 256×192; `--color-by`, `--cmap`, `--view`, `--shading`) to `--path` (one id; default `thumbnails/<id>.png` beside the manifest), or records an existing picture with `--set PNG` (one id), or `--clear`s it |
 
 ```sh
 meshioplusplus dataset add m.json 'runs/c42/out_*.vtu' --split train --meta Re=100
@@ -1548,6 +1595,8 @@ meshioplusplus dataset add m.json 'coarse/*.vtu' --target 'fine/*.vtu' --id sr
 meshioplusplus dataset split m.json --assign train=0.8,valid=0.1,test=0.1 --seed 0
 meshioplusplus dataset list m.json --split train --resolve
 meshioplusplus dataset annotate m.json --id pair --notes "restarted at t=0.3"
+meshioplusplus dataset add m.json 'runs/c43/out_*.vtu' --render-thumbnail
+meshioplusplus dataset thumbnail m.json --all --color-by pressure --cmap coolwarm
 ```
 
 ---
@@ -1681,7 +1730,7 @@ meshioplusplus view part.msh --kind surface --color-by material
 meshioplusplus screenshot part.msh out.png --size 1600x1200
 ```
 
-Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`, `--color-by NAME`, `--name NAME`; `screenshot` adds `--size WIDTHxHEIGHT` and `--transparent`.
+Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`, `--color-by NAME`, `--name NAME`; `view` adds `--backend {auto,polyscope,terminal}` (`auto` is Polyscope when the build has it, else the [terminal viewer](#meshioplusplus-tui) when standard input and output are terminals); `screenshot` adds `--size WIDTHxHEIGHT` and `--transparent`.
 
 These mirror the Python CLI's verbs, but in the **native binary** they are only functional in a build configured with [Polyscope](https://polyscope.run):
 

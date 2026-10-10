@@ -72,9 +72,28 @@ Field rendering (v16.34.0):
     arrows for a vector point array at about ``vector_count`` evenly ranked
     drawn points; the longest is 6% of the model's diagonal unless
     ``vector_length`` gives one length in model units.
+``streamlines``, ``stream_seeds``, ``stream_length``, ``stream_color``
+    lines that follow a vector point array, in both directions from about
+    ``stream_seeds`` seeds spread at equal area or volume, over the mesh's own
+    cells (triangles, quads, tetrahedra, hexahedra, wedges, pyramids); each
+    grows at most ``stream_length`` diagonals of the model from its seed. On a
+    volume they run inside it, so combine them with ``cutaway``.
+``theme``, ``scanlines``, ``bloom``, ``fringe``, ``grid_floor``
+    ``theme="synthwave"`` puts a banded violet-to-orange sunset behind the model
+    (wherever the frame is not opaque), colours the faces, edges and lines in
+    neon and makes ``synthwave`` the default colormap; ``grid_floor`` adds a
+    perspective grid under the model (it needs a theme). ``bloom``, ``fringe`` and
+    ``scanlines`` are post-processes on the final frame, in that order, and work
+    with or without a theme. Everything is off by default and a frame with
+    all of it off is unchanged.
 ``warp``, ``warp_scale``, ``warp_outline``, ``outline_color``
     move the points by a displacement point array, optionally drawing the
     undeformed outline.
+``cutaway``, ``cutaway_tint``
+    up to two planes that clip the geometry away: each is six numbers (a point,
+    then the normal of the side kept), or ``"+x:0.5"`` for the side the axis
+    points to; a single plane may be given alone. A cut surface is hollow, so
+    the back faces now in view are drawn in ``cutaway_tint``.
 ``diagnostic``, ``quality_metric``
     ``"quality"`` (with a ``quality_metric`` such as ``"scaled_jacobian"``),
     ``"inverted"``, ``"degenerate"``, ``"orientation"`` (front and back faces),
@@ -132,6 +151,50 @@ def _core_module(name):
     return _core
 
 
+def parse_cutaway(value):
+    """A cut-away plane as six numbers ``(px, py, pz, nx, ny, nz)``: a point and
+    the normal of the side kept.
+
+    Accepts those six numbers (a sequence, or ``"px,py,pz,nx,ny,nz"``), or
+    ``"AXIS:OFFSET"`` with ``AXIS`` one of ``+x -x +y -y +z -z``, which keeps the
+    side that axis points to: ``"+x:0.5"`` keeps ``x >= 0.5`` and ``"-x:0.5"``
+    keeps ``x <= 0.5``.
+    """
+    if isinstance(value, str):
+        if ":" in value:
+            axis, _, offset = value.partition(":")
+            if axis not in ("+x", "-x", "+y", "-y", "+z", "-z"):
+                raise ValueError(
+                    f"a cutaway is AXIS:OFFSET with AXIS one of +x -x +y -y +z -z, "
+                    f"or six numbers, not '{value}'"
+                )
+            try:
+                at = float(offset)
+            except ValueError:
+                raise ValueError(
+                    f"a cutaway expects one number after the colon, not '{value}'"
+                ) from None
+            point = [0.0, 0.0, 0.0]
+            normal = [0.0, 0.0, 0.0]
+            k = "xyz".index(axis[1])
+            point[k] = at
+            normal[k] = 1.0 if axis[0] == "+" else -1.0
+            return tuple(point + normal)
+        try:
+            numbers = [float(t) for t in value.split(",")]
+        except ValueError:
+            raise ValueError(
+                f"a cutaway is AXIS:OFFSET or six numbers PX,PY,PZ,NX,NY,NZ, not '{value}'"
+            ) from None
+    else:
+        numbers = [float(t) for t in value]
+    if len(numbers) != 6:
+        raise ValueError(
+            "a cutaway is six numbers: a point, then the normal of the side kept"
+        )
+    return tuple(numbers)
+
+
 def _render_dict(options):
     out = {}
     for key, value in options.items():
@@ -139,12 +202,19 @@ def _render_dict(options):
             continue
         if key in ("edge_color", "fill_color", "line_color", "background", "nan_color"):
             value = [int(c) for c in value]
-        elif key in ("iso_color", "vector_color", "outline_color"):
+        elif key in ("iso_color", "vector_color", "outline_color", "stream_color"):
             value = [int(c) for c in value]
         elif key in ("pan", "light_dir", "iso_levels"):
             value = [float(c) for c in value]
         elif key == "clip":
             value = [None if c is None else float(c) for c in value]
+        elif key == "cutaway":
+            one_plane = isinstance(value, str) or (
+                len(value) > 0 and isinstance(value[0], (int, float))
+            )
+            value = [list(parse_cutaway(p)) for p in ([value] if one_plane else value)]
+        elif key == "cutaway_tint":
+            value = [int(c) for c in value]
         out[key] = value
     return out
 
@@ -162,6 +232,8 @@ def _split(options):
                 snap[key] = value
         else:
             render[key] = value
+    if render.get("theme") == "synthwave" and render.get("cmap") is None:
+        render["cmap"] = "synthwave"  # the theme's own colormap, unless one is named
     return _render_dict(render), text, snap
 
 

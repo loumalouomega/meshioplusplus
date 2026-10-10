@@ -19,6 +19,8 @@
 // probes of roadmap 7.2.7 and 7.3.6, plus the PNG and asciicast containers.
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <set>
@@ -28,6 +30,7 @@
 
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/region.hpp"
@@ -37,6 +40,7 @@
 #include "../../src/cpp/src/detail/png_write.hpp"
 #include "../../src/cpp/src/detail/raster.hpp"
 #include "../../src/cpp/src/detail/render_field.hpp"
+#include "../../src/cpp/src/detail/streamlines.hpp"
 
 using namespace meshioplusplus;
 
@@ -897,5 +901,472 @@ TEST(RenderFieldFrame, ColoursOfTheOriginalFieldAreUnchangedByTheNewOptions) {
     RenderOptions b = a;
     b.mScale = RenderScale::Linear;
     b.mSymmetric = false;
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
+}
+
+// ---------------------------------------------------------------------------
+// Cut-aways (v16.36.0, ABI 25): planes that clip the drawn geometry
+// ---------------------------------------------------------------------------
+
+namespace {
+
+RenderCutaway keep_beyond(int Axis, double At, double Sign = 1.0) {
+    RenderCutaway c;
+    c.mPoint = {0.0, 0.0, 0.0};
+    c.mPoint[static_cast<std::size_t>(Axis)] = At;
+    c.mNormal = {0.0, 0.0, 0.0};
+    c.mNormal[static_cast<std::size_t>(Axis)] = Sign;
+    return c;
+}
+
+RenderOptions side_view(const char* pView, int Size = 64) {
+    RenderOptions o;
+    o.mWidth = Size;
+    o.mHeight = Size;
+    o.mView = pView;
+    o.mShading = RenderShading::None;
+    o.mBackground = {0, 0, 0, 255};
+    return o;
+}
+
+std::int64_t centre_id(const Frame& rFrame) {
+    return rFrame.mCellIds[static_cast<std::size_t>(rFrame.mHeight / 2 * rFrame.mWidth +
+                                                    rFrame.mWidth / 2)];
+}
+
+RenderColor centre_rgba(const Frame& rFrame) {
+    const std::size_t at = static_cast<std::size_t>(rFrame.mHeight / 2 * rFrame.mWidth +
+                                                    rFrame.mWidth / 2) *
+                           4;
+    return {rFrame.mRgba[at], rFrame.mRgba[at + 1], rFrame.mRgba[at + 2], rFrame.mRgba[at + 3]};
+}
+
+std::size_t covered(const Frame& rFrame, std::int64_t Id) {
+    return static_cast<std::size_t>(
+        std::count(rFrame.mCellIds.begin(), rFrame.mCellIds.end(), Id));
+}
+
+}  // namespace
+
+TEST(RenderCutaway, ACutThroughACubeShowsTheTintedInsideOfTheFarFace) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("-x");  // the camera sits on the -x side
+    EXPECT_EQ(centre_id(render(m, o)), 4);  // the x = 0 face, uncut
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    o.mCutawayTint = {10, 200, 30, 255};
+    const Frame cut = render(m, o);
+    EXPECT_EQ(centre_id(cut), 5);  // now the x = 1 face, seen from inside
+    EXPECT_EQ(centre_rgba(cut), (RenderColor{10, 200, 30, 255}));
+    EXPECT_EQ(covered(cut, 4), 0u);  // the near face is gone
+    EXPECT_TRUE(std::any_of(cut.mNotes.begin(), cut.mNotes.end(), [](const std::string& s) {
+        return s.rfind("cutaway: 1 plane", 0) == 0;
+    }));
+}
+
+TEST(RenderCutaway, FrontFacesAreNotTinted) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+x");  // the camera sits on the +x side
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    const Frame cut = render(m, o);
+    EXPECT_EQ(centre_id(cut), 5);  // the x = 1 face, seen from outside
+    EXPECT_EQ(centre_rgba(cut), (RenderColor{200, 197, 189, 255}));
+}
+
+TEST(RenderCutaway, TheKeptSideIsTheOneTheNormalPointsTo) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+x");
+    o.mCutaways = {keep_beyond(0, 0.5, -1.0)};  // keeps x <= 0.5: the x = 1 face is gone
+    const Frame cut = render(m, o);
+    EXPECT_EQ(covered(cut, 5), 0u);
+    EXPECT_EQ(centre_id(cut), 4);  // the x = 0 face, from inside, tinted
+}
+
+TEST(RenderCutaway, TwoPlanesLeaveAQuarter) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+z");
+    const std::size_t whole = covered(render(m, o), 1);  // the z = 1 face
+    ASSERT_GT(whole, 0u);
+    o.mCutaways = {keep_beyond(0, 0.5), keep_beyond(1, 0.5)};
+    const std::size_t quarter = covered(render(m, o), 1);
+    EXPECT_GT(quarter, whole / 5);
+    EXPECT_LT(quarter, whole * 3 / 10);
+}
+
+TEST(RenderCutaway, AFaceCrossingThePlaneKeepsItsIdAndColour) {
+    const Mesh m = grid_square(4);
+    RenderOptions o = top_view();
+    o.mColorBy = "x";
+    const Frame whole = render(m, o);
+    o.mCutaways = {keep_beyond(0, 0.30)};
+    const Frame cut = render(m, o);
+    // Cell values are corner means, so a cell cut in two keeps one colour; no
+    // pixel appears where there was none.
+    for (std::size_t i = 0; i < cut.mCellIds.size(); ++i)
+        if (cut.mCellIds[i] >= 0) {
+            EXPECT_EQ(cut.mCellIds[i], whole.mCellIds[i]);
+        }
+    EXPECT_LT(covered(cut, -1), cut.mCellIds.size());
+    EXPECT_GT(covered(cut, -1), covered(whole, -1));
+}
+
+TEST(RenderCutaway, LinesAndPointsAreClippedToo) {
+    const Mesh lines = make_mesh({{0, 0, 0}, {1, 0, 0}}, "line", {{0, 1}});
+    RenderOptions o = top_view();
+    o.mLineColor = {255, 0, 0, 255};
+    const std::size_t whole = covered(render(lines, o), 0);
+    ASSERT_GT(whole, 4u);
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    const std::size_t half = covered(render(lines, o), 0);
+    EXPECT_GT(half, whole / 3);
+    EXPECT_LT(half, whole * 2 / 3);
+    o.mCutaways = {keep_beyond(0, 2.0)};
+    EXPECT_EQ(covered(render(lines, o), 0), 0u);  // nothing on the kept side
+
+    const Mesh cloud = make_mesh({{0, 0, 0}, {1, 0, 0}, {0.2, 0.5, 0}}, "vertex", {{0}, {1}, {2}});
+    RenderOptions p = top_view(64, 64);
+    p.mPointRadius = 2.0;
+    p.mCutaways = {keep_beyond(0, 0.5)};
+    const Frame points = render(cloud, p);
+    EXPECT_GT(covered(points, 1), 0u);
+    EXPECT_EQ(covered(points, 0), 0u);
+    EXPECT_EQ(covered(points, 2), 0u);
+}
+
+TEST(RenderCutaway, ASceneDrawnWithACutEqualsRenderWithTheCut) {
+    const Mesh m = cube_quads();
+    RenderOptions base = side_view("-x");
+    base.mShading = RenderShading::Smooth;
+    base.mEdges = RenderEdges::All;
+    base.mBackground = {0, 0, 0, 0};
+    const RenderScene scene = prepare_render(m, base);
+    RenderOptions cut = base;
+    cut.mCutaways = {keep_beyond(0, 0.35), keep_beyond(2, 0.25)};
+    cut.mAzimuth = 20.0;
+    cut.mView.clear();
+    const Frame direct = render(m, cut);
+    const Frame drawn = render_scene(scene, cut);
+    EXPECT_EQ(direct.mRgba, drawn.mRgba);
+    EXPECT_EQ(direct.mCellIds, drawn.mCellIds);
+    // And the cut is a draw-time choice: the same scene draws uncut again.
+    EXPECT_EQ(render(m, base).mRgba, render_scene(scene, base).mRgba);
+    EXPECT_NE(direct.mRgba, render_scene(scene, base).mRgba);
+}
+
+TEST(RenderCutaway, ThePerspectiveCameraAndFieldsWork) {
+    const Mesh m = grid_square(4);
+    RenderOptions o = top_view();
+    o.mProjection = RenderProjection::Perspective;
+    o.mColorBy = "x";
+    o.mIsolines = 3;
+    o.mVectors = "x";
+    o.mCutaways = {keep_beyond(1, 0.4)};
+    EXPECT_NO_THROW(render(m, o));
+}
+
+TEST(RenderCutaway, ClippingEverythingIsABlankFrameNotAnError) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+z");
+    o.mCutaways = {keep_beyond(2, 10.0)};
+    const Frame f = render(m, o);
+    EXPECT_EQ(covered(f, -1), f.mCellIds.size());
+}
+
+TEST(RenderCutaway, BadPlanesAreRefused) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+z");
+    o.mCutaways = {keep_beyond(0, 0.1), keep_beyond(1, 0.1), keep_beyond(2, 0.1)};
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    RenderCutaway flat;
+    flat.mNormal = {0.0, 0.0, 0.0};
+    o.mCutaways = {flat};
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    RenderCutaway nan_plane;
+    nan_plane.mPoint = {std::nan(""), 0.0, 0.0};
+    o.mCutaways = {nan_plane};
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(RenderCutaway, WithNoPlanesTheBytesAreUnchanged) {
+    const Mesh m = cube_quads();
+    RenderOptions a = side_view("+x");
+    a.mShading = RenderShading::Smooth;
+    RenderOptions b = a;
+    b.mCutaways.clear();
+    b.mCutawayTint = {1, 2, 3, 255};  // the tint matters only when something is cut
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
+}
+
+// ---------------------------------------------------------------------------
+// Streamlines
+// ---------------------------------------------------------------------------
+
+namespace {
+
+NDArray swirl_field(const Mesh& rMesh) {
+    std::vector<std::vector<double>> v;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
+        const double x = detail::read_double(pts, i * dim + 0);
+        const double y = detail::read_double(pts, i * dim + 1);
+        v.push_back({-(y - 0.5), x - 0.5, 0.0});
+    }
+    return mt::points_from(v);
+}
+
+std::vector<double> flat_field(const NDArray& rField) {
+    std::vector<double> out(rField.Size());
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = detail::read_double(rField, i);
+    return out;
+}
+
+std::vector<double> flat_points(const Mesh& rMesh) {
+    std::vector<double> out;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            out.push_back(k < dim ? detail::read_double(pts, i * dim + k) : 0.0);
+    return out;
+}
+
+}  // namespace
+
+TEST(Streamlines, ASwirlOverAGridFollowsCircles) {
+    Mesh m = grid_square(8);
+    const std::vector<double> xyz = flat_points(m);
+    const std::vector<double> vec = flat_field(swirl_field(m));
+    detail::StreamlineOptions o;
+    o.mSeeds = 12;
+    o.mLength = 0.4;
+    const detail::Streamlines lines = detail::trace_streamlines(m, xyz.data(), vec.data(), o);
+    EXPECT_EQ(lines.mDim, 2);
+    EXPECT_GE(lines.NumLines(), 8u);
+    for (std::size_t l = 0; l < lines.NumLines(); ++l) {
+        const std::size_t first = lines.mStart[l];
+        auto radius = [&](std::size_t k) {
+            return std::hypot(lines.mXyz[3 * k] - 0.5, lines.mXyz[3 * k + 1] - 0.5);
+        };
+        for (std::size_t k = first; k < lines.mStart[l + 1]; ++k)
+            EXPECT_NEAR(radius(k), radius(first), 2e-3) << "line " << l;
+    }
+}
+
+TEST(Streamlines, TheSameTraceComesBackEveryTime) {
+    Mesh m = grid_square(6);
+    const std::vector<double> xyz = flat_points(m);
+    const std::vector<double> vec = flat_field(swirl_field(m));
+    const detail::Streamlines a =
+        detail::trace_streamlines(m, xyz.data(), vec.data(), detail::StreamlineOptions{});
+    const detail::Streamlines b =
+        detail::trace_streamlines(m, xyz.data(), vec.data(), detail::StreamlineOptions{});
+    EXPECT_EQ(a.mXyz, b.mXyz);
+    EXPECT_EQ(a.mStart, b.mStart);
+}
+
+TEST(Streamlines, AUniformFieldCrossesAHexahedronToItsFaces) {
+    Mesh m = mt::hex_mesh();
+    const std::vector<double> xyz = flat_points(m);
+    std::vector<double> vec;
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        vec.insert(vec.end(), {1.0, 0.0, 0.0});
+    detail::StreamlineOptions o;
+    o.mLength = 2.0;
+    const detail::Streamlines lines = detail::trace_streamlines(m, xyz.data(), vec.data(), o);
+    EXPECT_EQ(lines.mDim, 3);
+    ASSERT_GT(lines.NumLines(), 0u);
+    for (std::size_t l = 0; l < lines.NumLines(); ++l) {
+        double lo = 1e9;
+        double hi = -1e9;
+        for (std::size_t k = lines.mStart[l]; k < lines.mStart[l + 1]; ++k) {
+            EXPECT_NEAR(lines.mXyz[3 * k + 1], lines.mXyz[3 * lines.mStart[l] + 1], 1e-9);
+            EXPECT_NEAR(lines.mXyz[3 * k + 2], lines.mXyz[3 * lines.mStart[l] + 2], 1e-9);
+            lo = std::min(lo, lines.mXyz[3 * k]);
+            hi = std::max(hi, lines.mXyz[3 * k]);
+        }
+        EXPECT_LT(lo, 0.02);
+        EXPECT_GT(hi, 0.98);
+    }
+}
+
+TEST(Streamlines, ATiltedSurfaceKeepsTheLinesOnIt) {
+    // The plane z = x, with a field along it.
+    Mesh m = make_mesh({{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}}, "triangle",
+                       {{0, 1, 2}, {0, 2, 3}});
+    const std::vector<double> xyz = flat_points(m);
+    std::vector<double> vec;
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        vec.insert(vec.end(), {1.0, 0.0, 1.0});
+    detail::StreamlineOptions o;
+    o.mSeeds = 4;
+    o.mLength = 1.0;
+    const detail::Streamlines lines = detail::trace_streamlines(m, xyz.data(), vec.data(), o);
+    EXPECT_EQ(lines.mDim, 2);
+    ASSERT_GT(lines.NumLines(), 0u);
+    for (std::size_t k = 0; k < lines.mXyz.size() / 3; ++k)
+        EXPECT_NEAR(lines.mXyz[3 * k + 2], lines.mXyz[3 * k], 1e-9);
+}
+
+TEST(Streamlines, ACellTypeWithNothingToFollowIsNamed) {
+    Mesh m = mt::line_mesh();
+    const std::vector<double> xyz = flat_points(m);
+    const std::vector<double> vec(3 * m.NumPoints(), 1.0);
+    try {
+        detail::trace_streamlines(m, xyz.data(), vec.data(), detail::StreamlineOptions{});
+        FAIL() << "a mesh of lines has no streamlines";
+    } catch (const std::invalid_argument& rErr) {
+        EXPECT_NE(std::string(rErr.what()).find("line"), std::string::npos);
+        EXPECT_NE(std::string(rErr.what()).find("streamlines need"), std::string::npos);
+    }
+}
+
+TEST(Streamlines, TheRendererDrawsThemInTheirColour) {
+    Mesh m = grid_square(8);
+    m.AddPointData("v", swirl_field(m));
+    RenderOptions o = top_view(120, 120);
+    EXPECT_EQ(count_color(render(m, o), {240, 80, 160, 255}), 0u);
+    o.mStreamlines = "v";
+    o.mStreamColor = {255, 0, 0, 255};
+    const Frame f = render(m, o);
+    EXPECT_GT(count_color(f, {255, 0, 0, 255}), 100u);
+    EXPECT_TRUE(has_note(f, "streamlines: v,"));
+    o.mStreamSeeds = 5;
+    const Frame fewer = render(m, o);
+    EXPECT_LT(count_color(fewer, {255, 0, 0, 255}), count_color(f, {255, 0, 0, 255}));
+    o.mStreamlines = "nope";
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mStreamlines = "v";
+    o.mStreamSeeds = 0;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mStreamSeeds = 5;
+    o.mStreamLength = 0.0;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(Streamlines, OffByDefaultTheBytesAreUnchanged) {
+    Mesh m = grid_square(4);
+    m.AddPointData("v", swirl_field(m));
+    RenderOptions a = top_view(80, 80);
+    RenderOptions b = a;
+    b.mStreamColor = {1, 2, 3, 255};
+    b.mStreamSeeds = 7;  // nothing is drawn without a named array
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
+}
+
+// ---------------------------------------------------------------------------
+// The synthwave theme
+// ---------------------------------------------------------------------------
+
+namespace {
+
+RenderColor pixel(const Frame& rF, int X, int Y) {
+    const std::size_t at = (static_cast<std::size_t>(Y) * rF.mWidth + X) * 4;
+    return {rF.mRgba[at], rF.mRgba[at + 1], rF.mRgba[at + 2], rF.mRgba[at + 3]};
+}
+
+RenderOptions themed(int W = 64, int H = 64) {
+    RenderOptions o = top_view(W, H);
+    o.mTheme = RenderTheme::Synthwave;
+    return o;
+}
+
+}  // namespace
+
+TEST(RenderTheme, ABandedSunsetFillsTheTransparentBackgroundOnly) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = themed(64, 96);
+    o.mZoom = 0.4;  // leave the corners empty
+    const Frame f = render(m, o);
+    EXPECT_EQ(pixel(f, 0, 0), (RenderColor{20, 8, 60, 255}));  // the top of the sky
+    EXPECT_EQ(pixel(f, 63, 0), pixel(f, 0, 0));
+    EXPECT_EQ(pixel(f, 0, 95)[3], 255);
+    // Banded: eight bands of sky and four of floor, not a smooth ramp.
+    std::set<std::array<std::uint8_t, 3>> colours;
+    for (int y = 0; y < 96; ++y) {
+        const RenderColor c = pixel(f, 0, y);
+        colours.insert({c[0], c[1], c[2]});
+    }
+    EXPECT_LE(colours.size(), 12u);
+    EXPECT_GE(colours.size(), 8u);
+    // The warm end sits at the horizon, above the floor.
+    EXPECT_GT(pixel(f, 0, 55)[0], pixel(f, 0, 5)[0]);
+    EXPECT_GT(pixel(f, 0, 55)[1], pixel(f, 0, 5)[1]);
+    // An opaque background of your own wins.
+    o.mBackground = {1, 2, 3, 255};
+    EXPECT_EQ(pixel(render(m, o), 0, 0), (RenderColor{1, 2, 3, 255}));
+}
+
+TEST(RenderTheme, TheThemeColoursTheFacesAndEdgesUnlessYouSetThem) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = themed();
+    const Frame f = render(m, o);
+    EXPECT_EQ(pixel(f, 32, 32), (RenderColor{96, 56, 190, 255}));  // neon violet, unlit
+    o.mFillColor = {10, 20, 30, 255};
+    EXPECT_EQ(pixel(render(m, o), 32, 32), (RenderColor{10, 20, 30, 255}));
+    o = themed();
+    o.mEdges = RenderEdges::All;
+    EXPECT_GT(count_color(render(m, o), {0, 230, 255, 255}), 20u);  // cyan edges
+}
+
+TEST(RenderTheme, TheGridFloorNeedsATheme) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = top_view();
+    o.mGridFloor = true;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mTheme = RenderTheme::Synthwave;
+    EXPECT_NO_THROW(render(m, o));
+}
+
+TEST(RenderTheme, TheGridFloorStepsWithTheBeat) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = themed(96, 96);
+    o.mZoom = 0.3;
+    const Frame plain = render(m, o);
+    o.mGridFloor = true;
+    const Frame grid = render(m, o);
+    EXPECT_NE(plain.mRgba, grid.mRgba);
+    EXPECT_GT(count_color(grid, {255, 50, 200, 255}), 50u);  // magenta on an even beat
+    o.mThemePhase = 1;
+    const Frame next = render(m, o);
+    EXPECT_GT(count_color(next, {0, 220, 255, 255}), 50u);  // cyan on an odd one
+    EXPECT_EQ(count_color(next, {255, 50, 200, 255}), 0u);
+    o.mThemePhase = 8;  // the scroll comes round after eight beats
+    EXPECT_EQ(render(m, o).mRgba, grid.mRgba);
+}
+
+TEST(RenderTheme, ThePostProcessesChangeTheFrameAndAreDeterministic) {
+    const Mesh m = grid_square(4);
+    RenderOptions base = themed(120, 80);
+    base.mColorBy = "x";
+    base.mCmap = "synthwave";
+    const Frame plain = render(m, base);
+    for (int which = 0; which < 3; ++which) {
+        RenderOptions o = base;
+        (which == 0 ? o.mBloom : which == 1 ? o.mFringe : o.mScanlines) = true;
+        const Frame a = render(m, o);
+        EXPECT_NE(a.mRgba, plain.mRgba) << which;
+        EXPECT_EQ(a.mRgba, render(m, o).mRgba) << which;
+        EXPECT_EQ(a.mCellIds, plain.mCellIds) << which;  // pixels change, picking does not
+    }
+    // Scanlines dim every other row and leave the rest.
+    RenderOptions o = base;
+    o.mScanlines = true;
+    const Frame lines = render(m, o);
+    for (int x : {10, 60, 100}) {
+        EXPECT_EQ(pixel(lines, x, 20), pixel(plain, x, 20));
+        const RenderColor a = pixel(plain, x, 21);
+        const RenderColor b = pixel(lines, x, 21);
+        EXPECT_EQ(b[0], a[0] - a[0] / 4);
+        EXPECT_EQ(b[3], 255);
+    }
+}
+
+TEST(RenderTheme, WithEverythingOffTheBytesAreUnchanged) {
+    const Mesh m = grid_square(4);
+    RenderOptions a = top_view(80, 60);
+    a.mColorBy = "x";
+    RenderOptions b = a;
+    b.mThemePhase = 5;  // the phase matters only with a theme
     EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
 }

@@ -56,6 +56,7 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -110,6 +111,25 @@ enum class RenderDiagnostic : std::uint8_t {
 
 /// An RGBA colour, 8 bits per channel, alpha 255 opaque.
 using RenderColor = std::array<std::uint8_t, 4>;
+
+/**
+ * @brief A cut-away plane: the half-space kept is the side the normal points
+ * to, `(p - mPoint) . mNormal >= 0`. Everything on the other side is clipped
+ * away before it is drawn.
+ */
+struct RenderCutaway {
+    std::array<double, 3> mPoint = {0.0, 0.0, 0.0};
+    std::array<double, 3> mNormal = {0.0, 0.0, 1.0};
+};
+
+/// An optional look for a frame; `None` changes nothing.
+enum class RenderTheme : std::uint8_t {
+    None = 0,
+    /// A dark violet-to-orange sunset behind the model (banded, so it survives
+    /// 16- and 256-colour terminals), neon violet faces, cyan edges and magenta
+    /// lines. Options you set yourself win over the theme's defaults.
+    Synthwave = 1,
+};
 
 /** @brief Everything `render` takes besides the mesh. */
 struct RenderOptions {
@@ -240,6 +260,51 @@ struct RenderOptions {
     /// The `quality` metric for `RenderDiagnostic::Quality` (`scaled_jacobian`,
     /// `aspect_ratio`, ...).
     std::string mQualityMetric;
+
+    // --- Cut-aways (v16.36.0, ABI 25) -------------------------------------
+
+    /// Up to two planes; the geometry on the far side of any is clipped away
+    /// (faces, lines, points and the extra layers; a face crossing a plane is
+    /// cut and keeps its colour and shading). A cut surface is hollow: the
+    /// back faces now in view, those turned away from the camera, are drawn
+    /// in `mCutawayTint` so the inside reads as inside. Empty: nothing is cut.
+    /// A draw-time option: `render_scene` takes it from its own options.
+    std::vector<RenderCutaway> mCutaways;
+    RenderColor mCutawayTint = {232, 128, 52, 255};
+
+    // --- Streamlines (v16.37.0, ABI 25) -----------------------------------
+
+    /// Streamlines of the vector point array of this name: lines that follow
+    /// the field from about `mStreamSeeds` seeds, in both directions, over the
+    /// mesh's own cells (triangles, quads, tetrahedra, hexahedra, wedges and
+    /// pyramids; a surface is traced on the surface). Each line grows at most
+    /// `mStreamLength` diagonals of the model from its seed. Drawn like
+    /// isolines and arrows, in `mStreamColor`. On a volume the lines are
+    /// inside it, so cut it away (`mCutaways`) to see them.
+    std::string mStreamlines;
+    std::int32_t mStreamSeeds = 40;
+    double mStreamLength = 0.5;
+    RenderColor mStreamColor = {240, 80, 160, 255};
+
+    // --- Theme (v16.38.0, ABI 25) -----------------------------------------
+
+    /// The theme's background (wherever the frame is not opaque, so an explicit
+    /// opaque `mBackground` wins) and default colours, a perspective grid floor
+    /// under the model with `mGridFloor`, and three post-processes on the final
+    /// frame, in this order: `mBloom` (the brightest pixels blurred and added
+    /// back), `mFringe` (red and blue shifted apart) and `mScanlines` (every
+    /// other row dimmed). All of it is integer arithmetic in a fixed order, so
+    /// it is deterministic, and with everything off a frame is byte-identical to
+    /// one rendered before the theme existed. `mGridFloor` needs a theme.
+    RenderTheme mTheme = RenderTheme::None;
+    bool mScanlines = false;
+    bool mBloom = false;
+    bool mFringe = false;
+    bool mGridFloor = false;
+    /// The theme's beat counter: the grid's colour alternates and its lines
+    /// scroll one eighth of a cell per beat. The viewer advances it with the
+    /// tempo; a still frame leaves it at 0.
+    std::int32_t mThemePhase = 0;
 };
 
 /** @brief A rendered image. */
@@ -313,6 +378,52 @@ struct TextOptions {
 MESHIOPLUSPLUS_API Frame render(const Mesh& rMesh, const RenderOptions& rOptions = {});
 
 /**
+ * @brief The camera-independent half of a render, kept for reuse (v16.35.0).
+ * Extracting the skin of a volume dominates a frame's cost at large sizes and
+ * does not depend on where the camera is, so an interactive viewer prepares a
+ * scene once and draws it from many viewpoints. An opaque, cheap-to-copy
+ * handle (a shared, immutable scene); a default-constructed `RenderScene` is
+ * empty.
+ */
+struct RenderScene {
+    /// Implementation detail; do not interpret.
+    std::shared_ptr<const void> mpData;
+    bool Empty() const { return mpData == nullptr; }
+};
+
+/**
+ * @brief Prepare a mesh for repeated drawing: the drawn faces and their skin,
+ * the resolved field and its range, normals, edge lines and extra layers.
+ * @p rOptions fixes everything that is not the camera or the frame: the field
+ * (`mColorBy`, `mExpr`, scale, clip, categories, isolines, vectors, warp,
+ * diagnostics), edges, colours and the shading *mode* (smooth normals are
+ * computed here). Throws what `render` throws for the same options.
+ */
+MESHIOPLUSPLUS_API RenderScene prepare_render(const Mesh& rMesh,
+                                              const RenderOptions& rOptions = {});
+
+/**
+ * @brief The bounding sphere of what a scene draws (before any cut-away): its
+ * centre and radius, the fixed fit's frame. False for an empty scene.
+ */
+MESHIOPLUSPLUS_API bool render_scene_bounds(const RenderScene& rScene,
+                                            std::array<double, 3>& rCentre, double& rRadius);
+
+/**
+ * @brief Draw a prepared scene. The camera, projection, zoom, pan, frame size,
+ * supersampling, lighting, background and overlays (axes, scale bar, colour
+ * bar) come from @p rOptions; the field, edges and colours are the prepared
+ * ones. With the same options as `prepare_render`, the frame is byte-identical
+ * to `render`'s.
+ * @param FixedFit fit the frame to the scene's bounding sphere instead of the
+ *        projected extents, so the model keeps one size and place while the
+ *        camera orbits (the interactive loop sets it; `render` does not)
+ * @throws std::invalid_argument for an empty scene
+ */
+MESHIOPLUSPLUS_API Frame render_scene(const RenderScene& rScene,
+                                      const RenderOptions& rOptions = {}, bool FixedFit = false);
+
+/**
  * @brief The frame size, in pixels, and the pixel aspect that make an encoding
  * fill `Cols` by `Rows` cells.
  * @return `{width, height}`; @p rPixelAspect receives the matching
@@ -334,6 +445,41 @@ MESHIOPLUSPLUS_API std::string encode_text(const Frame& rFrame, const TextOption
 /** @brief `render` sized by `text_frame_size`, then `encode_text`. */
 MESHIOPLUSPLUS_API std::string render_text(const Mesh& rMesh, const RenderOptions& rRender = {},
                                            const TextOptions& rText = {});
+
+/** @brief One terminal cell of a cell encoding: a glyph and its two colours. */
+struct TextCell {
+    std::uint32_t mGlyph = 0x20;  ///< Unicode code point
+    bool mFgSet = false;          ///< false: the terminal's own foreground
+    bool mBgSet = false;
+    std::array<int, 3> mFg = {0, 0, 0};
+    std::array<int, 3> mBg = {0, 0, 0};
+};
+
+/** @brief The cells of a frame, row by row. */
+struct TextGrid {
+    int mCols = 0;
+    int mRows = 0;
+    std::vector<TextCell> mCells;  ///< `mCols * mRows`
+};
+
+/**
+ * @brief The cells `encode_text` would print for a frame, before any
+ * serialization (the interactive loop diffs these).
+ * @throws std::invalid_argument for a graphics protocol, or a frame that is not
+ *         a whole number of cells (size it with `text_frame_size`)
+ */
+MESHIOPLUSPLUS_API TextGrid encode_cells(const Frame& rFrame, const TextOptions& rOptions = {});
+
+/**
+ * @brief The bytes that repaint @p rNew over @p rOld, for a terminal showing
+ * @p rOld with its top-left cell at 1-based screen position (Row, Col): a
+ * cursor move, then SGR changes and glyphs for each run of changed cells, and
+ * a reset at the end. Cells are compared as @p Depth shows them, so colours
+ * that quantize alike are not rewritten. A different grid size repaints every
+ * cell. `ColorDepth::Mono` emits glyphs and cursor moves only.
+ */
+MESHIOPLUSPLUS_API std::string encode_cells_update(const TextGrid& rOld, const TextGrid& rNew,
+                                                   ColorDepth Depth, int Row = 1, int Col = 1);
 
 /**
  * @brief Encode a frame as an RGBA PNG.

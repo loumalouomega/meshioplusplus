@@ -250,13 +250,7 @@ std::string tx_hex(const TxRgb& rC) {
 // The two-colour split of one cell
 // ---------------------------------------------------------------------------
 
-struct TxCell {
-    std::uint32_t mGlyph = 0x20;
-    bool mFgSet = false;  // false: the terminal's own colour
-    bool mBgSet = false;
-    TxRgb mFg = {0, 0, 0};
-    TxRgb mBg = {0, 0, 0};
-};
+using TxCell = TextCell;  // the public cell: the loop diffs and repaints these
 
 struct TxSub {
     bool mOpaque = false;
@@ -796,6 +790,82 @@ std::string encode_text(const Frame& rFrame, const TextOptions& rOptions) {
         default:
             return tx_sixel(rFrame, rOptions.mTmuxPassthrough);
     }
+}
+
+TextGrid encode_cells(const Frame& rFrame, const TextOptions& rOptions) {
+    if (rFrame.mWidth <= 0 || rFrame.mHeight <= 0 ||
+        rFrame.mRgba.size() !=
+            static_cast<std::size_t>(rFrame.mWidth) * static_cast<std::size_t>(rFrame.mHeight) * 4)
+        throw std::invalid_argument(std::string(kTxPrefix) +
+                                    "the frame's buffer does not match its size");
+    if (!tx_is_cell(rOptions.mEncoding))
+        throw std::invalid_argument(std::string(kTxPrefix) +
+                                    "encode_cells needs a cell encoding, not a graphics protocol");
+    TextGrid grid;
+    grid.mCells = tx_cells(rFrame, rOptions, grid.mCols, grid.mRows);
+    return grid;
+}
+
+namespace {
+
+// Whether two cells look the same at a colour depth.
+bool tx_same_cell(const TextCell& rA, const TextCell& rB, ColorDepth Depth) {
+    if (rA.mGlyph != rB.mGlyph)
+        return false;
+    if (Depth == ColorDepth::Mono)
+        return true;
+    if (rA.mFgSet != rB.mFgSet || rA.mBgSet != rB.mBgSet)
+        return false;
+    if (rA.mFgSet && tx_quantize(rA.mFg, Depth) != tx_quantize(rB.mFg, Depth))
+        return false;
+    if (rA.mBgSet && tx_quantize(rA.mBg, Depth) != tx_quantize(rB.mBg, Depth))
+        return false;
+    return true;
+}
+
+}  // namespace
+
+std::string encode_cells_update(const TextGrid& rOld, const TextGrid& rNew, ColorDepth Depth,
+                                int Row, int Col) {
+    const bool full = rOld.mCols != rNew.mCols || rOld.mRows != rNew.mRows ||
+                      rOld.mCells.size() != rNew.mCells.size();
+    const bool sgr = Depth != ColorDepth::Mono;
+    std::string out;
+    std::string cur_fg;  // empty: not known, so the next cell sets both
+    std::string cur_bg;
+    bool any = false;
+    for (int row = 0; row < rNew.mRows; ++row) {
+        int last = -2;  // the column the cursor is already at, after the last glyph written
+        for (int col = 0; col < rNew.mCols; ++col) {
+            const std::size_t at = static_cast<std::size_t>(row) *
+                                       static_cast<std::size_t>(rNew.mCols) +
+                                   static_cast<std::size_t>(col);
+            const TextCell& cell = rNew.mCells[at];
+            if (!full && tx_same_cell(rOld.mCells[at], cell, Depth))
+                continue;
+            if (col != last + 1)
+                out += "\x1b[" + std::to_string(Row + row) + ";" + std::to_string(Col + col) + "H";
+            if (sgr) {
+                const std::string fg = tx_sgr(cell.mFgSet, cell.mFg, Depth, true);
+                const std::string bg = tx_sgr(cell.mBgSet, cell.mBg, Depth, false);
+                std::string params;
+                if (fg != cur_fg)
+                    params = fg;
+                if (bg != cur_bg)
+                    params += (params.empty() ? "" : ";") + bg;
+                if (!params.empty())
+                    out += "\x1b[" + params + "m";
+                cur_fg = fg;
+                cur_bg = bg;
+            }
+            tx_utf8(out, cell.mGlyph);
+            last = col;
+            any = true;
+        }
+    }
+    if (any && sgr)
+        out += "\x1b[0m";
+    return out;
 }
 
 std::string render_text(const Mesh& rMesh, const RenderOptions& rRender, const TextOptions& rText) {

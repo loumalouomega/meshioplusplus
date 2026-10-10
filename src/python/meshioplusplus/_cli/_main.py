@@ -60,6 +60,7 @@ from . import (
     _subdivide,
     _tessellate,
     _transform,
+    _tui,
     _undo_green,
     _view,
     _voxelize,
@@ -524,6 +525,13 @@ def main(argv=None):
     )
     _snapshot.add_args(parser)
     parser.set_defaults(func=_snapshot.snapshot_cmd)
+
+    parser = subparsers.add_parser(
+        "tui",
+        help="Orbit, zoom and pan a mesh inside this terminal, with no display or GPU",
+    )
+    _tui.add_args(parser)
+    parser.set_defaults(func=_tui.tui_cmd)
 
     # Nested group: `meshioplusplus data <verb>`. The inner parsers each call
     # set_defaults(func=...), which overrides the outer default, so the

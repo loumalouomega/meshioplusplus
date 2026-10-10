@@ -7,6 +7,12 @@ One command, two kinds of output:
   colouring. These are the canonical figures for anything that is really a
   picture *of a mesh coloured by a field*: they are dependency-free, they scale,
   and they are produced by exactly the code path they document.
+* **Terminal screens** (``doc/public/images/tui_*.svg``) -- the interactive
+  viewer (``meshioplusplus tui``) driven by a recorded input stream on a screen
+  of a stated size, then drawn by ``tools/ansi_screen.py``'s terminal emulator.
+  What the figure shows is exactly what the loop writes, so it is reproducible
+  and needs no terminal, display or font for the picture itself (block and
+  Braille glyphs are drawn as shapes). Needs the compiled core.
 * **Raster** (``doc/public/viewer/*.png``) -- ``screenshot()``, i.e. the
   Polyscope ``[viewer]`` extra, for the shaded 3D views a flat vector
   projection cannot convey.
@@ -138,6 +144,210 @@ def vector_figures(dry_run: bool) -> list[pathlib.Path]:
     return written
 
 
+# Terminal-screen figures: (file, columns, rows, input stream, tui options, tui
+# keyword arguments). The streams are SGR mouse reports (``CSI < b ; x ; y M``)
+# and keys: a drag from one cell to another turns the camera by 360 degrees per
+# screen width, a press and a release in one cell is a click.
+def _drag(x0, y0, x1, y1):
+    return (f"\x1b[<0;{x0};{y0}M\x1b[<32;{x1};{y1}M\x1b[<0;{x1};{y1}m").encode()
+
+
+def _click(x, y):
+    return f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m".encode()
+
+
+TERMINAL_FIGURES = [
+    (
+        "tui_loop.svg",
+        100,
+        34,
+        _drag(40, 14, 47, 12),
+        dict(color_by="height", cmap="viridis", colorbar=True, shading="smooth"),
+        {},
+    ),
+    (
+        "tui_help.svg",
+        100,
+        34,
+        b"?",
+        dict(color_by="height", cmap="magma", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_braille.svg",
+        100,
+        34,
+        _drag(40, 14, 44, 12) + b"+",
+        dict(encoding="braille", edges="feature", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_probe.svg",
+        100,
+        34,
+        _click(36, 24) + b"i" + _click(56, 9) + b"i",
+        dict(color_by="height", cmap="viridis", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_command.svg",
+        100,
+        34,
+        b":cmap magma\r:isolines 6\r:vectors",
+        dict(color_by="height", cmap="viridis", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_cutaway.svg",
+        100,
+        34,
+        _drag(40, 14, 43, 13) + b"x,,",
+        dict(color_by="height", cmap="viridis", shading="smooth", view="-x"),
+        {},
+    ),
+    (
+        "tui_compare.svg",
+        101,
+        34,
+        _drag(30, 14, 36, 12),
+        dict(color_by="u", cmap="coolwarm", shading="smooth"),
+        {"compare": "step4"},
+    ),
+    (
+        "tui_series.svg",
+        100,
+        34,
+        b"]]",
+        dict(color_by="u", cmap="coolwarm", shading="smooth"),
+        {"series": True},
+    ),
+    (
+        "tui_streamlines.svg",
+        100,
+        34,
+        _drag(40, 14, 44, 12),
+        dict(
+            color_by="height",
+            cmap="grey",
+            shading="smooth",
+            encoding="sextant",
+            streamlines="flow",
+            stream_seeds=36,
+            stream_length=0.2,
+        ),
+        {"flow": True},
+    ),
+    (
+        "tui_synthwave.svg",
+        100,
+        34,
+        _drag(40, 14, 43, 12),
+        dict(
+            theme="synthwave",
+            grid_floor=True,
+            color_by="height",
+            shading="smooth",
+            edges="feature",
+            bloom=True,
+            encoding="sextant",
+        ),
+        {},
+    ),
+]
+
+
+def _bunny():
+    """The Stanford bunny of ``example/``, with its height as a point field."""
+    mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
+    return meshioplusplus.Mesh(
+        mesh.points, mesh.cells, point_data={"height": mesh.points[:, 2].copy()}
+    )
+
+
+def _bunny_flow():
+    """The bunny with a spiral flow about its vertical axis, as a vector field."""
+    mesh = _bunny()
+    x, y = mesh.points[:, 0], mesh.points[:, 1]
+    cx, cy = 0.5 * (x.min() + x.max()), 0.5 * (y.min() + y.max())
+    flow = np.stack([-(y - cy), x - cx, 0.4 * np.hypot(x - cx, y - cy)], axis=1)
+    return meshioplusplus.Mesh(
+        mesh.points, mesh.cells, point_data={**mesh.point_data, "flow": flow}
+    )
+
+
+def _bunny_series(folder: pathlib.Path, steps: int = 4) -> list:
+    """A short time series: a travelling wave over the bunny's height."""
+    mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
+    z = mesh.points[:, 2] / 100.0
+    paths = []
+    for k in range(steps):
+        u = np.sin(6.0 * z + 1.2 * k) * (1.0 + 0.3 * k)
+        path = folder / f"bunny_{k + 1}.vtu"
+        meshioplusplus.write(
+            path,
+            meshioplusplus.Mesh(mesh.points, mesh.cells, point_data={"u": u}),
+        )
+        paths.append(str(path))
+    return paths
+
+
+def terminal_figures(dry_run: bool) -> list[pathlib.Path]:
+    """The interactive viewer's screens."""
+    paths = [IMAGES / entry[0] for entry in TERMINAL_FIGURES]
+    if dry_run:
+        return paths
+    try:
+        from meshioplusplus import _core  # noqa: F401
+    except ImportError:
+        print(
+            "  skipping the terminal figures: the compiled core is not available",
+            file=sys.stderr,
+        )
+        return []
+    import tempfile
+
+    sys.path.insert(0, str(REPO / "tools"))
+    import ansi_screen
+
+    mesh = _bunny()
+    with tempfile.TemporaryDirectory() as tmp:
+        series = _bunny_series(pathlib.Path(tmp))
+        for name, cols, rows, script, options, extra in TERMINAL_FIGURES:
+            kwargs = {}
+            if extra.get("series"):
+                kwargs["series"] = series
+                target = None
+                title = "bunny_*.vtu"
+            elif extra.get("flow"):
+                target = _bunny_flow()
+                title = "bunny.stl"
+            elif extra.get("compare"):
+                kwargs["compare"] = series[3]
+                target = series[0]
+                title = None
+            else:
+                target = mesh
+                title = "bunny.stl"
+            result = meshioplusplus.tui(
+                target,
+                replay=script,
+                cols=cols,
+                rows=rows,
+                color_depth="truecolor",
+                title=title,
+                **kwargs,
+                **options,
+            )
+            screen = ansi_screen.replay(result["output"], cols, rows)
+            path = IMAGES / name
+            path.write_text(
+                screen.to_svg(title=f"meshioplusplus tui, {cols}x{rows} terminal"),
+                encoding="utf-8",
+            )
+            print(f"  wrote {_display(path)}")
+    return paths
+
+
 def raster_figures(dry_run: bool) -> list[pathlib.Path]:
     """The shaded Polyscope screenshots."""
     path = VIEWER / "desktop-viewer.png"
@@ -184,6 +394,7 @@ def main() -> int:
         print("regenerating doc figures from", SAMPLE.relative_to(REPO))
 
     written = vector_figures(args.list)
+    written += terminal_figures(args.list)
     if not args.vector_only:
         written += raster_figures(args.list)
 

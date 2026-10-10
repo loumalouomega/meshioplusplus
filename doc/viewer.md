@@ -2,7 +2,7 @@
 
 ![The browser viewer showing a surface mesh coloured by point data](/viewer/browser-viewer.png)
 
-meshio++ can show you a mesh, through one entry point with two backends.
+meshio++ can show you a mesh, through one entry point with three backends.
 
 ```python
 import meshioplusplus
@@ -11,18 +11,30 @@ mesh = meshioplusplus.read("part.msh")
 meshioplusplus.view(mesh)                      # pick a backend automatically
 meshioplusplus.view(mesh, backend="polyscope") # a native desktop window
 meshioplusplus.view(mesh, backend="browser")   # vtk.js, in a browser or notebook
+meshioplusplus.view(mesh, backend="terminal")  # orbit and zoom inside this terminal
 ```
 
-| | desktop (`polyscope`) | browser (`vtk.js`) | terminal ([`snapshot`](./tui.md)) |
+| | desktop (`polyscope`) | browser (`vtk.js`) | terminal ([`tui`](./tui.md#the-interactive-viewer-tui)) |
 | --- | --- | --- | --- |
 | install | `pip install meshioplusplus[viewer]` | nothing extra | nothing extra; in the native release binaries too |
 | volume meshes | drawn as solids you can slice | drawn by their boundary | drawn by their boundary |
 | headless screenshots | yes | no | yes (PNG, no GPU or EGL) |
 | works in a notebook | no | yes, inline | as an image or HTML |
 | needs a display | yes | no | no; draws in a terminal over SSH |
-| interactive | yes | yes | not yet (a still picture) |
+| interactive | yes | yes | yes: mouse and keyboard in the terminal; [`snapshot`](./tui.md) for a still picture |
 
-`backend="auto"` (the default) uses polyscope when it is installed *and* a display is available, and the browser otherwise — so the same call works over SSH, in a notebook, and on a workstation.
+`backend="auto"` (the default) resolves in this order:
+
+1. **polyscope**, when it is installed *and* a display is available;
+2. the **browser**, when a display is available (a window can open, so the page opens in the default browser, or inline in a notebook);
+3. the **terminal**, when there is no display but standard input and output are both terminals — an SSH session, a container shell, a text console;
+4. the **browser** again otherwise (a notebook, a pipe), which writes an HTML file.
+
+![How view(backend="auto") picks a backend: polyscope with a display, the browser when a window can open, the terminal viewer when only a terminal is left, an HTML file otherwise](/diagrams/view_backends.svg)
+
+macOS and Windows count as having a display, so there `auto` never picks the terminal; ask for it with `backend="terminal"`. A notebook cell is not a terminal, so notebooks behave as before.
+
+The terminal rule is a change of behaviour: before v16.35.0 a display-less terminal got step 4's HTML file, which nobody could open from there. Pass `backend="browser"` to keep that.
 
 ## Desktop viewer (Polyscope)
 

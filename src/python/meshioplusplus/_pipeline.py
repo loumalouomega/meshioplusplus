@@ -220,6 +220,17 @@ _OP_TABLE = {
         "WarpOutline",
         "Diagnostic",
         "QualityMetric",
+        "Cutaway",
+        "CutawayTint",
+        "Streamlines",
+        "StreamSeeds",
+        "StreamLength",
+        "StreamColor",
+        "Theme",
+        "Scanlines",
+        "Bloom",
+        "Fringe",
+        "GridFloor",
     ),
     "Repair": (
         "FixOrientation",
@@ -463,6 +474,14 @@ def _snapshot_options(step):
     """The keyword arguments of `snapshot` from a Snapshot step's parameters,
     with the defaults of the native engine's `pipe_snap_render_options`."""
     iso_levels = _dvec(step, "IsoLevels")
+    flat_cut = _dvec(step, "Cutaway") or []
+    if len(flat_cut) % 6 != 0 or len(flat_cut) > 12:
+        raise _err(
+            step["Op"],
+            "parameter 'Cutaway' must be one or two planes of six numbers each "
+            "(a point, then the normal of the side kept)",
+        )
+    cutaway = [tuple(flat_cut[i : i + 6]) for i in range(0, len(flat_cut), 6)] or None
     options = {
         "width": int(_number(step, "Width", 320)),
         "height": int(_number(step, "Height", 240)),
@@ -494,7 +513,16 @@ def _snapshot_options(step):
         "component": (
             int(_number(step, "Component", 0)) if "Component" in step else None
         ),
-        "cmap": _text(step, "Cmap", "viridis"),
+        "theme": _snap_choice(step, "Theme", ("none", "synthwave")),
+        "cmap": _text(
+            step,
+            "Cmap",
+            "synthwave" if _text(step, "Theme", "none") == "synthwave" else "viridis",
+        ),
+        "scanlines": _flag(step, "Scanlines", False),
+        "bloom": _flag(step, "Bloom", False),
+        "fringe": _flag(step, "Fringe", False),
+        "grid_floor": _flag(step, "GridFloor", False),
         "vmin": _number(step, "VMin", 0.0) if "VMin" in step else None,
         "vmax": _number(step, "VMax", 0.0) if "VMax" in step else None,
         "colorbar": _flag(step, "Colorbar", False),
@@ -537,6 +565,12 @@ def _snapshot_options(step):
             ),
         ),
         "quality_metric": _text(step, "QualityMetric", "") or None,
+        "cutaway": cutaway,
+        "cutaway_tint": _snap_color(step, "CutawayTint"),
+        "streamlines": _text(step, "Streamlines", "") or None,
+        "stream_seeds": int(_number(step, "StreamSeeds", 40)),
+        "stream_length": _number(step, "StreamLength", 0.5),
+        "stream_color": _snap_color(step, "StreamColor"),
     }
     return {k: v for k, v in options.items() if v is not None}
 
