@@ -600,7 +600,9 @@ def series_files(tmp_path_factory):
             point_data={"u": np.arange(8, dtype=float) * (k + 1)},
         )
         path = folder / f"out_{k + 1}.vtu"
-        meshioplusplus.write(str(path), mesh)
+        # Uncompressed: the native viewer reads a series itself, and a build
+        # without zlib cannot inflate compressed VTU (the Windows job has none).
+        meshioplusplus.write(str(path), mesh, compression=None)
         paths.append(str(path))
     return folder, paths
 
