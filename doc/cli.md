@@ -1046,6 +1046,7 @@ meshioplusplus snapshot [options] INFILE OUTFILE
 | `--categorical` / `--color-regions` / `--category-edges` | Colour integer data, or the named cell regions, from a fixed palette with a key; draw the edges where categories meet |
 | `--isolines N` / `--iso-levels A,B,...` / `--iso-color` | Contour lines of the point array `--color-by` |
 | `--vectors NAME` / `--vector-count N` / `--vector-length L` / `--vector-color` | Arrows for a vector point array |
+| `--streamlines NAME` / `--stream-seeds N` / `--stream-length L` / `--stream-color` | Streamlines of a vector point array: about `N` seeds (default 40) spread at equal area or volume, each line at most `L` model diagonals (default 0.5) in each direction, over the mesh's own cells; on a volume they run inside it, so add a `--cutaway` |
 | `--warp NAME` / `--warp-scale S` / `--warp-outline` / `--outline-color` | Move the points by a displacement array; draw the undeformed outline |
 | `--diagnostic NAME` / `--quality-metric M` | `quality`, `inverted`, `degenerate`, `orientation`, `free-edges` or `edge-length` |
 | `--cutaway PLANE` / `--cutaway-tint` | Clip a half-space away (twice at most): `PX,PY,PZ,NX,NY,NZ` (a point and the normal of the side kept) or `AXIS:OFFSET`, `AXIS` one of `+x -x +y -y +z -z` (`+x:0.5` keeps x ≥ 0.5); the back faces then in view are drawn in the tint (default `#e88034`) |
@@ -1574,11 +1575,12 @@ meshioplusplus dataset <subcommand> [options]
 
 | verb | does |
 |---|---|
-| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case |
+| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case ; `--thumbnail PNG` records a picture of the case, `--render-thumbnail` draws one |
 | `list MANIFEST` | entries filtered by `--split`/`--tag`/`--group`; `--resolve` expands each plan (checks files exist, reads no mesh); `--json` emits the entries (plus `Resolved` plans) as JSON |
 | `split MANIFEST` | `--set S` on `--id` (repeatable) or `--all`; or `--assign train=0.8,valid=0.1,test=0.1` over every entry — deterministic (`--seed`), `--by-group` keeps entries sharing a `Group` together |
 | `tag MANIFEST` | `--add T,T` / `--remove T,T` on `--id` (repeatable) or `--all` |
 | `annotate MANIFEST --id ID` | set `--notes`, `--group`, merge `--meta K=V`, drop `--del-meta K` |
+| `thumbnail MANIFEST` | a picture of the cases on `--id` (repeatable) or `--all`: draws step `--step` (default 0) with the [software rasterizer](tui.md) at `--width`×`--height` (default 256×192; `--color-by`, `--cmap`, `--view`, `--shading`) to `--path` (one id; default `thumbnails/<id>.png` beside the manifest), or records an existing picture with `--set PNG` (one id), or `--clear`s it |
 
 ```sh
 meshioplusplus dataset add m.json 'runs/c42/out_*.vtu' --split train --meta Re=100
@@ -1587,6 +1589,8 @@ meshioplusplus dataset add m.json 'coarse/*.vtu' --target 'fine/*.vtu' --id sr
 meshioplusplus dataset split m.json --assign train=0.8,valid=0.1,test=0.1 --seed 0
 meshioplusplus dataset list m.json --split train --resolve
 meshioplusplus dataset annotate m.json --id pair --notes "restarted at t=0.3"
+meshioplusplus dataset add m.json 'runs/c43/out_*.vtu' --render-thumbnail
+meshioplusplus dataset thumbnail m.json --all --color-by pressure --cmap coolwarm
 ```
 
 ---

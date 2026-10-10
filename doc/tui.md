@@ -115,6 +115,7 @@ These options (v16.34.0) turn a picture of a surface into a picture of a solutio
 | `--category-edges` | draw the edges where two faces of different category meet (categories, regions or a flag diagnostic) |
 | `--isolines N`, `--iso-levels A,B,...`, `--iso-color` / `isolines`, `iso_levels`, `iso_color` | contour lines of the point array `--color-by`: `N` equally spaced levels inside the range, or the explicit levels, drawn with a depth bias so they sit on their faces; cell data are refused by name |
 | `--vectors NAME`, `--vector-count N`, `--vector-length L`, `--vector-color` / `vectors`, ... | arrows for a vector point array at about `N` evenly ranked drawn points; the longest is 6% of the model's diagonal, or every arrow is `L` model units long; the heads lie in the plane of the arrow and the line of sight |
+| `--streamlines NAME`, `--stream-seeds N`, `--stream-length L`, `--stream-color` / `streamlines`, ... | lines that follow a vector point array, [below](#streamlines) |
 | `--warp NAME`, `--warp-scale S`, `--warp-outline`, `--outline-color` / `warp`, ... | move the points by a displacement point array times `S`, optionally drawing the undeformed outline (its open and sharp edges) beside the deformed shape |
 | `--diagnostic NAME`, `--quality-metric M` / `diagnostic`, `quality_metric` | one flag for the checks people run first, below |
 
@@ -129,6 +130,24 @@ The diagnostics reuse metrics that already exist; none is a new algorithm:
 | `edge-length` | faces coloured by their mean edge length |
 
 A diagnostic excludes `--color-by`, `--expr` and `--color-regions`; the options that make no sense together are refused by name rather than ignored. With none of the new options set a frame is byte-identical to v16.33.0's.
+
+### Streamlines
+
+![The bunny with magenta streamlines winding around it](/images/tui_streamlines.svg)
+
+*A spiral flow about the bunny's vertical axis, 36 streamlines at `--stream-length 0.2`, in a terminal 100 columns wide with the `sextant` encoding. The lines are drawn on the surface, wrap behind the model and are hidden by it, as any other geometry is.*
+
+`--streamlines NAME` (v16.37.0) follows the vector point array `NAME` from a set of seeds, in both directions, and draws the lines like isolines and arrows (a depth bias keeps them on their faces). The field is the piecewise-linear interpolation of the array over the mesh's own cells, so a linear field is followed exactly: triangles, quads (two triangles), tetrahedra, hexahedra (six), wedges (three) and pyramids (two); a higher-order cell contributes its corner nodes, and a mesh with no cell of these kinds is refused by naming the types it has. The dimension of the highest cells found decides where the lines run: a volume is traced through its volume, a surface *on* the surface (the field is projected onto the triangle it is on, and the point stays on it), so a flow over a shell winds around it.
+
+| Option | Meaning |
+| --- | --- |
+| `--stream-seeds N` | about this many lines (default 40; 1 to 10000, and never more than there are simplices). The seeds are the centroids of simplices ranked at equal area or volume along a golden-ratio sequence, so they spread evenly over a structured mesh instead of lining up with its rows |
+| `--stream-length L` | the longest a line grows in each direction from its seed, in diagonals of the box around the traced cells (default 0.5; (0, 10]) |
+| `--stream-color` | the colour of the lines (default `#f050a0`) |
+
+A line stops where it leaves the mesh, where the field vanishes (a speed under a billionth of the fastest) or when its length is used up. The integrator is fixed-step RK4 in arc length with a step of 0.5% of the diagonal, so a line has at most `L / 0.005` segments each way (100 by default, never more than 2000), and a result depends only on the mesh and the arguments: the point locator is a uniform bucket grid filled in simplex order, the lines are traced in parallel into per-seed buffers joined in seed order, and the digests are the same across SEQ, OpenMP and TBB at any thread count.
+
+On a volume the lines are *inside* it, hidden by the skin, so combine them with a [cut-away](#cut-aways) (`--cutaway +x:0.5`) to see them. In the viewer `:streamlines NAME` turns them on and `:streamlines none` off; they are a prepare-time option, so changing them re-prepares the scene once and an orbit afterwards costs only a redraw. With no array named a frame is byte-identical to one rendered without the option.
 
 ## Surfaces
 

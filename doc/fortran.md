@@ -198,6 +198,8 @@ call mesh%write_snapshot('part.png', set)    ! .png .txt .ansi .html .cast
 
 **Cut-aways (v16.36.0).** `set%cutaways` is an allocatable `real(real64)` array of one or two planes, six numbers each (a point, then the normal of the side kept), and `set%cutaway_tint` a colour (`mio_rgba`); the geometry on the far side is clipped away and the back faces now in view are tinted. A length that is not 6 or 12, or a zero normal, is refused by name: `set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64]`.
 
+**Streamlines (v16.37.0).** `set%streamlines` names a vector point array to follow; `set%stream_seeds` (default 40), `set%stream_length` (model diagonals each way, default 0.5) and `set%stream_color` (`mio_rgba`) shape the lines. An unknown array or a seed count outside 1 to 10000 is refused by name: `set%streamlines = 'velocity'`.
+
 `frame%get_cell_ids(ids)` gives the input cell at each pixel (`ids(width, height)`, -1 for none), `frame%num_notes()` and `frame%note(i)` the colour range, ticks and keys, and `frame%text(tset)` encodes a frame whose size fits the encoding's cell grid. `mio_detect_color_depth(no_color=, color_term=, term=)` returns a `MIO_COLOR_*` constant. The `MIO_SHADING_*`, `MIO_EDGES_*`, `MIO_SCALE_*`, `MIO_DIAGNOSTIC_*`, `MIO_ENCODING_*`, `MIO_COLOR_*` and `MIO_TEXT_*` constants name the enum values. Without `stat=` a failure stops the program with the library's message, as everywhere in this module.
 
 ## v9.1.0 additions

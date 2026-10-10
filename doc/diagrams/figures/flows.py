@@ -1076,7 +1076,7 @@ def roadmap_map():
         (
             "§7 terminal rendering",
             [
-                ("streamlines · thumbnails", "S"),
+                ("manager shows thumbnails", "S"),
                 ("synthwave theme · music", "S"),
             ],
             [],

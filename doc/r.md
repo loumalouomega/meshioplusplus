@@ -245,6 +245,8 @@ mio_write_snapshot("part.png", mesh)                       # .png .txt .ansi .ht
 
 **Cut-aways (v16.36.0).** `cutaway = c(px, py, pz, nx, ny, nz)` (a point and the normal of the side kept), or a list of up to two such vectors, with `cutaway_tint = mio_rgba(...)`, clips the geometry away and tints the back faces now in view: `mio_render(mesh, view = "-x", cutaway = c(0.5, 0, 0, 1, 0, 0))`.
 
+**Streamlines (v16.37.0).** `streamlines = "velocity"` follows a vector point array over the mesh's cells, with `stream_seeds` (default 40), `stream_length` (model diagonals each way, default 0.5) and `stream_color = mio_rgba(...)`: `mio_render(m, streamlines = "velocity", stream_seeds = 60L)`. An unknown array or a seed count outside 1 to 10000 is an error naming it.
+
 Colours are numbers `0xRRGGBBAA` (`mio_rgba(r, g, b, a)`) or `c(r, g, b[, a])`; `clip = c(2, NA)` leaves the high end alone. The text is UTF-8 whatever the session's locale. `mio_detect_color_depth(no_color, color_term, term)` returns `"truecolor"`, `"256"`, `"16"` or `"mono"`.
 
 ## v15.4.0 additions

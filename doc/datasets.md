@@ -39,6 +39,7 @@ A settings-family JSON (the [pipeline](./pipeline) / [sequences](./sequences) co
       "Tags": ["re100", "coarse"],        // optional
       "Group": "cylinder/laminar",        // optional organizing path
       "Notes": "restarted at t=0.3",      // optional free text
+      "Thumbnail": "thumbs/case_0042.png", // optional picture of the case (v16.37.0)
       "Metadata": { "Re": 100 }           // optional, open object
     }
   ]
@@ -56,6 +57,7 @@ A settings-family JSON (the [pipeline](./pipeline) / [sequences](./sequences) co
 | `Tags` | free strings; filtering requires **all** given tags |
 | `Group` | slash-separated path; filtering matches the path or any descendant (path segments, not string prefixes) |
 | `Notes` / `Metadata` | free text / open object for whatever a case needs to carry (provenance, run parameters, known issues) |
+| `Thumbnail` | the path of a PNG picture of the case, resolved like a source path (against the manifest's directory when relative); see [Thumbnails](#thumbnails) |
 
 **Relative paths resolve against the manifest file's directory** — a manifest loaded from `campaign/m.json` finds `cases/out_*.vtu` under `campaign/`, so the whole directory moves as one portable unit. A manifest loaded from a dict or JSON text (no file location) resolves against the CWD; `save(path)` makes the saved location the new anchor.
 
@@ -81,6 +83,23 @@ for entry in m:
 - `add` derives an id from the source stem when none is given; a collision is a named error, never a silent overwrite. `validate_source=True` (default) expands the plan once so an empty glob fails at `add` time, not at first training access.
 - `assign_splits` is deterministic — `random.Random(seed)` over the sorted ids — so the same manifest and seed always produce the same assignment; `by_group=True` assigns whole groups together (the leakage guard for cases that are variations of one another).
 - `entry.time_series(**read_kwargs)` maps `Source` 1:1 onto [`TimeSeries`](./sequences#timeseries); `entry.entries()` returns the resolved `{"path", "step", "time", "time_source"}` plan without reading a mesh.
+
+## Thumbnails
+
+An entry can carry a picture of itself (v16.37.0), so a manager shows what a case looks like without opening the file. The key is `Thumbnail`, the path of a PNG, stored relative to the manifest like a source. The manifest does not read or check the file: a thumbnail is a convenience, never a requirement, and a missing one is just a missing picture.
+
+```python
+m.render_thumbnail("case_0042", width=256, height=192, color_by="pressure", cmap="coolwarm")
+# draws step 0 with the software rasterizer to thumbnails/case_0042.png beside the manifest,
+# records it, and returns the path; step=-1 draws the last step instead
+m.set_thumbnail("case_7", "pics/seven.png")     # an existing picture (None clears it)
+m.add("runs/c43/out_*.vtu", thumbnail="pics/c43.png")
+entry.thumbnail_path()                          # resolved against the manifest's directory
+```
+
+`render_thumbnail` is [`snapshot`](./tui) over the entry's `Source`, so it needs the compiled core but no display, GPU or optional extra, and any [render option](./tui#field-rendering) works (`view`, `color_by`, `streamlines`, ...). The command line has `dataset thumbnail` and `dataset add --thumbnail / --render-thumbnail`; the MCP `dataset_add` and `dataset_update` take `thumbnail` and `render_thumbnail`, with every path inside the sandbox.
+
+**Compatibility.** Parsing is strict, so a release before v16.37.0 refuses a manifest that carries a `Thumbnail` by name (`unknown key 'Thumbnail'`), exactly as it refuses any key it does not know; `Version` stays 1, because a manifest without the key reads and writes identically everywhere. The [browser dataset manager](#curating-in-the-browser) accepts, keeps and saves the key but does not display it yet: it draws its own preview of the entry it has open.
 
 ## Curating in the browser
 
@@ -147,7 +166,7 @@ See [mesh and regular grids](./grids) for what the two sides become, and [the Ph
 | surface | entry point |
 |---|---|
 | Python | `DatasetManifest` / `DatasetEntry` |
-| CLI | [`meshioplusplus dataset add / list / split / tag / annotate`](./cli#meshioplusplus-dataset) |
+| CLI | [`meshioplusplus dataset add / list / split / tag / annotate / thumbnail`](./cli#meshioplusplus-dataset) |
 | MCP | `dataset_add` / `dataset_list` / `dataset_update` (sandboxed like `sequence`), plus `dataset_find` / `dataset_health` — the [dashboard](./dashboard#the-companion-process)'s server-side manifest discovery and health producer |
 | PhysicsNeMo | [`iter_samples` / `field_stats` / `make_dataset` / `make_reader`](./physicsnemo), [`grid_sample_pair` / `iter_grid_samples` / `grid_stats`](./physicsnemo#grid-samples) for paired grids, and [`run_training` / `predict`](./physicsnemo#training-and-prediction) over a manifest's splits |
 
