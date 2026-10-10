@@ -7520,7 +7520,10 @@ inline std::ofstream make_classic_ofstream(const std::filesystem::path& rPath,
  * Each colormap is a 256-entry table of packed uint8 RGB triples. viridis,
  * magma, inferno, plasma and turbo are matplotlib's canonical 256-entry listed
  * colormaps verbatim; coolwarm and grey are matplotlib's segmented maps sampled
- * at the same 256 points; each `<name>_r` is its map reversed. viridis, magma,
+ * at the same 256 points; `synthwave` (v16.38.0) is an original palette defined by
+ * the generator itself, piecewise-linear through deep blue, violet, magenta, hot
+ * pink and pale cyan, and not perceptually uniform; each `<name>_r` is its map
+ * reversed. viridis, magma,
  * inferno and plasma are CC0 (Smith, van der Walt and Firing); Turbo is
  * Apache-2.0 (Google LLC, 2019) -- see CITATION.cff.
  *
@@ -11782,7 +11785,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 37
+#define MESHIOPLUSPLUS_VERSION_MINOR 38
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11792,7 +11795,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.37.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.38.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -28676,6 +28679,15 @@ struct RenderCutaway {
     std::array<double, 3> mNormal = {0.0, 0.0, 1.0};
 };
 
+/// An optional look for a frame; `None` changes nothing.
+enum class RenderTheme : std::uint8_t {
+    None = 0,
+    /// A dark violet-to-orange sunset behind the model (banded, so it survives
+    /// 16- and 256-colour terminals), neon violet faces, cyan edges and magenta
+    /// lines. Options you set yourself win over the theme's defaults.
+    Synthwave = 1,
+};
+
 /** @brief Everything `render` takes besides the mesh. */
 struct RenderOptions {
     /// Frame size in pixels; both must be positive.
@@ -28830,6 +28842,26 @@ struct RenderOptions {
     std::int32_t mStreamSeeds = 40;
     double mStreamLength = 0.5;
     RenderColor mStreamColor = {240, 80, 160, 255};
+
+    // --- Theme (v16.38.0, ABI 25) -----------------------------------------
+
+    /// The theme's background (wherever the frame is not opaque, so an explicit
+    /// opaque `mBackground` wins) and default colours, a perspective grid floor
+    /// under the model with `mGridFloor`, and three post-processes on the final
+    /// frame, in this order: `mBloom` (the brightest pixels blurred and added
+    /// back), `mFringe` (red and blue shifted apart) and `mScanlines` (every
+    /// other row dimmed). All of it is integer arithmetic in a fixed order, so
+    /// it is deterministic, and with everything off a frame is byte-identical to
+    /// one rendered before the theme existed. `mGridFloor` needs a theme.
+    RenderTheme mTheme = RenderTheme::None;
+    bool mScanlines = false;
+    bool mBloom = false;
+    bool mFringe = false;
+    bool mGridFloor = false;
+    /// The theme's beat counter: the grid's colour alternates and its lines
+    /// scroll one eighth of a cell per beat. The viewer advances it with the
+    /// tempo; a still frame leaves it at 0.
+    std::int32_t mThemePhase = 0;
 };
 
 /** @brief A rendered image. */
@@ -33521,6 +33553,65 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/synth.hpp =====
+/**
+ * @file detail/synth.hpp
+ * @brief A small, deterministic synthesizer for the viewer's optional
+ * soundtrack: a slow minor-key loop as 16-bit mono PCM, and the WAV container
+ * around it.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Everything is integer arithmetic on phase accumulators: waveforms come from
+ * the accumulators' top bits, the sine is a fixed-point polynomial, the filter
+ * is a one-pole integer low-pass and the noise is an xorshift generator. No
+ * floating-point value and no libm call touches a sample, so the same
+ * `SynthOptions` give the same bytes on every compiler, platform and
+ * optimisation level. The loop is original: nothing is sampled, copied from or
+ * modelled on an existing piece, and no audio file ships with the library.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+struct SynthOptions {
+    /// Picks the chord progression and its variation.
+    std::uint32_t mSeed = 1;
+    /// Beats per minute, 60 to 140 (the 1980s sit around 90 to 110).
+    double mTempo = 100.0;
+    /// The tonic as a semitone above C (0 to 11); the default is A.
+    int mKey = 9;
+    /// Length of the loop in bars of four beats.
+    int mBars = 8;
+    /// Samples per second.
+    int mSampleRate = 22050;
+    /// Loudness of the loudest sample as a fraction of full scale, in (0, 0.9].
+    double mGain = 0.3;
+};
+
+/// Samples in one beat for these options.
+std::size_t synth_samples_per_beat(const SynthOptions& rOptions);
+
+/// Samples in the whole loop: `mBars * 4 * synth_samples_per_beat`.
+std::size_t synth_length(const SynthOptions& rOptions);
+
+/// The loop as 16-bit mono PCM. Throws std::invalid_argument on a tempo, key,
+/// length, rate or gain out of range.
+std::vector<std::int16_t> synth_synthwave(const SynthOptions& rOptions);
+
+/// A RIFF/WAVE file (PCM, mono, 16-bit, little-endian) around the samples.
+std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/synth.hpp =====
 // ===== begin src/cpp/src/detail/text_cursor.hpp =====
 /**
  * @file detail/text_cursor.hpp
@@ -52705,6 +52796,74 @@ constexpr std::uint8_t kGrey[kColormapSize * 3] = {
 // clang-format on
 
 // clang-format off
+constexpr std::uint8_t kSynthwave[kColormapSize * 3] = {
+    8, 6, 60, 9, 6, 61, 10, 6, 63, 11, 7, 64,
+    12, 7, 66, 13, 7, 67, 14, 7, 68, 15, 8, 70,
+    16, 8, 71, 17, 8, 73, 18, 8, 74, 19, 8, 76,
+    20, 9, 77, 21, 9, 78, 22, 9, 80, 23, 9, 81,
+    24, 10, 83, 25, 10, 84, 26, 10, 85, 26, 10, 87,
+    27, 10, 88, 28, 11, 90, 29, 11, 91, 30, 11, 92,
+    31, 11, 94, 32, 11, 95, 33, 12, 97, 34, 12, 98,
+    35, 12, 100, 36, 12, 101, 37, 13, 102, 38, 13, 104,
+    39, 13, 105, 40, 13, 107, 41, 13, 108, 42, 14, 109,
+    43, 14, 111, 44, 14, 112, 45, 14, 114, 46, 15, 115,
+    47, 15, 116, 48, 15, 118, 49, 15, 119, 50, 15, 121,
+    51, 16, 122, 52, 16, 124, 53, 16, 125, 54, 16, 126,
+    55, 17, 128, 56, 17, 129, 57, 17, 131, 58, 17, 132,
+    59, 17, 133, 60, 18, 135, 61, 18, 136, 61, 18, 138,
+    62, 18, 139, 63, 19, 140, 64, 19, 142, 65, 19, 143,
+    66, 19, 145, 67, 19, 146, 68, 20, 148, 69, 20, 149,
+    70, 20, 150, 72, 20, 150, 74, 20, 151, 76, 21, 151,
+    78, 21, 151, 80, 21, 152, 82, 21, 152, 84, 21, 152,
+    86, 21, 153, 87, 21, 153, 89, 22, 153, 91, 22, 154,
+    93, 22, 154, 95, 22, 154, 97, 22, 154, 99, 22, 155,
+    101, 23, 155, 102, 23, 155, 104, 23, 156, 106, 23, 156,
+    108, 23, 156, 110, 23, 157, 112, 23, 157, 114, 24, 157,
+    116, 24, 158, 118, 24, 158, 119, 24, 158, 121, 24, 159,
+    123, 24, 159, 125, 25, 159, 127, 25, 159, 129, 25, 160,
+    131, 25, 160, 133, 25, 160, 134, 25, 161, 136, 26, 161,
+    138, 26, 161, 140, 26, 162, 142, 26, 162, 144, 26, 162,
+    146, 26, 163, 148, 26, 163, 150, 27, 163, 151, 27, 164,
+    153, 27, 164, 155, 27, 164, 157, 27, 165, 159, 27, 165,
+    161, 28, 165, 163, 28, 165, 165, 28, 166, 166, 28, 166,
+    168, 28, 166, 170, 28, 167, 172, 29, 167, 174, 29, 167,
+    176, 29, 168, 178, 29, 168, 180, 29, 168, 182, 29, 169,
+    183, 29, 169, 185, 30, 169, 187, 30, 170, 189, 30, 170,
+    191, 30, 170, 192, 31, 169, 193, 31, 169, 194, 32, 168,
+    195, 32, 168, 196, 33, 167, 197, 33, 167, 198, 34, 166,
+    199, 34, 166, 200, 34, 166, 201, 35, 165, 202, 35, 165,
+    203, 36, 164, 204, 36, 164, 205, 37, 163, 206, 37, 163,
+    207, 38, 162, 208, 38, 162, 209, 39, 161, 210, 39, 161,
+    211, 40, 160, 212, 40, 160, 213, 41, 159, 214, 41, 159,
+    215, 42, 158, 216, 42, 158, 217, 42, 158, 218, 43, 157,
+    219, 43, 157, 220, 44, 156, 221, 44, 156, 222, 45, 155,
+    223, 45, 155, 224, 46, 154, 225, 46, 154, 226, 47, 153,
+    227, 47, 153, 228, 48, 152, 229, 48, 152, 230, 49, 151,
+    231, 49, 151, 232, 50, 150, 233, 50, 150, 234, 50, 150,
+    235, 51, 149, 236, 51, 149, 237, 52, 148, 238, 52, 148,
+    239, 53, 147, 240, 53, 147, 241, 54, 146, 243, 54, 146,
+    244, 55, 145, 245, 55, 145, 246, 56, 144, 247, 56, 144,
+    248, 57, 143, 249, 57, 143, 250, 58, 142, 251, 58, 142,
+    252, 58, 142, 253, 59, 141, 254, 59, 141, 255, 60, 140,
+    254, 62, 141, 253, 65, 143, 252, 68, 145, 251, 71, 147,
+    250, 74, 149, 249, 77, 150, 248, 80, 152, 247, 82, 154,
+    246, 85, 156, 245, 88, 158, 244, 91, 159, 243, 94, 161,
+    242, 97, 163, 241, 100, 165, 240, 103, 167, 239, 106, 168,
+    238, 109, 170, 237, 112, 172, 236, 114, 174, 235, 117, 176,
+    234, 120, 177, 233, 123, 179, 232, 126, 181, 231, 129, 183,
+    230, 132, 185, 229, 135, 186, 228, 138, 188, 227, 141, 190,
+    226, 143, 192, 225, 146, 194, 224, 149, 195, 223, 152, 197,
+    222, 155, 199, 221, 158, 201, 220, 161, 203, 219, 164, 204,
+    218, 167, 206, 217, 170, 208, 215, 172, 210, 214, 175, 212,
+    213, 178, 214, 212, 181, 215, 211, 184, 217, 210, 187, 219,
+    209, 190, 221, 208, 193, 223, 207, 196, 224, 206, 199, 226,
+    205, 201, 228, 204, 204, 230, 203, 207, 232, 202, 210, 233,
+    201, 213, 235, 200, 216, 237, 199, 219, 239, 198, 222, 241,
+    197, 225, 242, 196, 228, 244, 195, 230, 246, 194, 233, 248,
+    193, 236, 250, 192, 239, 251, 191, 242, 253, 190, 245, 255};
+// clang-format on
+
+// clang-format off
 constexpr std::uint8_t kViridisR[kColormapSize * 3] = {
     253, 231, 37, 251, 231, 35, 248, 230, 33, 246, 230, 32,
     244, 230, 30, 241, 229, 29, 239, 229, 28, 236, 229, 27,
@@ -53180,6 +53339,74 @@ constexpr std::uint8_t kGreyR[kColormapSize * 3] = {
     3, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0, 0};
 // clang-format on
 
+// clang-format off
+constexpr std::uint8_t kSynthwaveR[kColormapSize * 3] = {
+    190, 245, 255, 191, 242, 253, 192, 239, 251, 193, 236, 250,
+    194, 233, 248, 195, 230, 246, 196, 228, 244, 197, 225, 242,
+    198, 222, 241, 199, 219, 239, 200, 216, 237, 201, 213, 235,
+    202, 210, 233, 203, 207, 232, 204, 204, 230, 205, 201, 228,
+    206, 199, 226, 207, 196, 224, 208, 193, 223, 209, 190, 221,
+    210, 187, 219, 211, 184, 217, 212, 181, 215, 213, 178, 214,
+    214, 175, 212, 215, 172, 210, 217, 170, 208, 218, 167, 206,
+    219, 164, 204, 220, 161, 203, 221, 158, 201, 222, 155, 199,
+    223, 152, 197, 224, 149, 195, 225, 146, 194, 226, 143, 192,
+    227, 141, 190, 228, 138, 188, 229, 135, 186, 230, 132, 185,
+    231, 129, 183, 232, 126, 181, 233, 123, 179, 234, 120, 177,
+    235, 117, 176, 236, 114, 174, 237, 112, 172, 238, 109, 170,
+    239, 106, 168, 240, 103, 167, 241, 100, 165, 242, 97, 163,
+    243, 94, 161, 244, 91, 159, 245, 88, 158, 246, 85, 156,
+    247, 82, 154, 248, 80, 152, 249, 77, 150, 250, 74, 149,
+    251, 71, 147, 252, 68, 145, 253, 65, 143, 254, 62, 141,
+    255, 60, 140, 254, 59, 141, 253, 59, 141, 252, 58, 142,
+    251, 58, 142, 250, 58, 142, 249, 57, 143, 248, 57, 143,
+    247, 56, 144, 246, 56, 144, 245, 55, 145, 244, 55, 145,
+    243, 54, 146, 241, 54, 146, 240, 53, 147, 239, 53, 147,
+    238, 52, 148, 237, 52, 148, 236, 51, 149, 235, 51, 149,
+    234, 50, 150, 233, 50, 150, 232, 50, 150, 231, 49, 151,
+    230, 49, 151, 229, 48, 152, 228, 48, 152, 227, 47, 153,
+    226, 47, 153, 225, 46, 154, 224, 46, 154, 223, 45, 155,
+    222, 45, 155, 221, 44, 156, 220, 44, 156, 219, 43, 157,
+    218, 43, 157, 217, 42, 158, 216, 42, 158, 215, 42, 158,
+    214, 41, 159, 213, 41, 159, 212, 40, 160, 211, 40, 160,
+    210, 39, 161, 209, 39, 161, 208, 38, 162, 207, 38, 162,
+    206, 37, 163, 205, 37, 163, 204, 36, 164, 203, 36, 164,
+    202, 35, 165, 201, 35, 165, 200, 34, 166, 199, 34, 166,
+    198, 34, 166, 197, 33, 167, 196, 33, 167, 195, 32, 168,
+    194, 32, 168, 193, 31, 169, 192, 31, 169, 191, 30, 170,
+    189, 30, 170, 187, 30, 170, 185, 30, 169, 183, 29, 169,
+    182, 29, 169, 180, 29, 168, 178, 29, 168, 176, 29, 168,
+    174, 29, 167, 172, 29, 167, 170, 28, 167, 168, 28, 166,
+    166, 28, 166, 165, 28, 166, 163, 28, 165, 161, 28, 165,
+    159, 27, 165, 157, 27, 165, 155, 27, 164, 153, 27, 164,
+    151, 27, 164, 150, 27, 163, 148, 26, 163, 146, 26, 163,
+    144, 26, 162, 142, 26, 162, 140, 26, 162, 138, 26, 161,
+    136, 26, 161, 134, 25, 161, 133, 25, 160, 131, 25, 160,
+    129, 25, 160, 127, 25, 159, 125, 25, 159, 123, 24, 159,
+    121, 24, 159, 119, 24, 158, 118, 24, 158, 116, 24, 158,
+    114, 24, 157, 112, 23, 157, 110, 23, 157, 108, 23, 156,
+    106, 23, 156, 104, 23, 156, 102, 23, 155, 101, 23, 155,
+    99, 22, 155, 97, 22, 154, 95, 22, 154, 93, 22, 154,
+    91, 22, 154, 89, 22, 153, 87, 21, 153, 86, 21, 153,
+    84, 21, 152, 82, 21, 152, 80, 21, 152, 78, 21, 151,
+    76, 21, 151, 74, 20, 151, 72, 20, 150, 70, 20, 150,
+    69, 20, 149, 68, 20, 148, 67, 19, 146, 66, 19, 145,
+    65, 19, 143, 64, 19, 142, 63, 19, 140, 62, 18, 139,
+    61, 18, 138, 61, 18, 136, 60, 18, 135, 59, 17, 133,
+    58, 17, 132, 57, 17, 131, 56, 17, 129, 55, 17, 128,
+    54, 16, 126, 53, 16, 125, 52, 16, 124, 51, 16, 122,
+    50, 15, 121, 49, 15, 119, 48, 15, 118, 47, 15, 116,
+    46, 15, 115, 45, 14, 114, 44, 14, 112, 43, 14, 111,
+    42, 14, 109, 41, 13, 108, 40, 13, 107, 39, 13, 105,
+    38, 13, 104, 37, 13, 102, 36, 12, 101, 35, 12, 100,
+    34, 12, 98, 33, 12, 97, 32, 11, 95, 31, 11, 94,
+    30, 11, 92, 29, 11, 91, 28, 11, 90, 27, 10, 88,
+    26, 10, 87, 26, 10, 85, 25, 10, 84, 24, 10, 83,
+    23, 9, 81, 22, 9, 80, 21, 9, 78, 20, 9, 77,
+    19, 8, 76, 18, 8, 74, 17, 8, 73, 16, 8, 71,
+    15, 8, 70, 14, 7, 68, 13, 7, 67, 12, 7, 66,
+    11, 7, 64, 10, 6, 63, 9, 6, 61, 8, 6, 60};
+// clang-format on
+
 // BEGIN srgb_linear -- generated by tools/gen_srgb_linear.py, do not edit
 // clang-format off
 const std::uint32_t kSrgbLinearBits[256] = {
@@ -53236,6 +53463,8 @@ const std::uint8_t* colormap_table(const std::string& rName) {
         return kPlasma;
     if (rName == "grey")
         return kGrey;
+    if (rName == "synthwave")
+        return kSynthwave;
     if (rName == "viridis_r")
         return kViridisR;
     if (rName == "coolwarm_r")
@@ -53250,13 +53479,15 @@ const std::uint8_t* colormap_table(const std::string& rName) {
         return kPlasmaR;
     if (rName == "grey_r")
         return kGreyR;
+    if (rName == "synthwave_r")
+        return kSynthwaveR;
     throw std::invalid_argument("meshio++: unknown colormap '" + rName +
-                                "' (available: viridis, coolwarm, turbo, magma, inferno, plasma, grey, viridis_r, coolwarm_r, turbo_r, magma_r, inferno_r, plasma_r, grey_r)");
+                                "' (available: viridis, coolwarm, turbo, magma, inferno, plasma, grey, synthwave, viridis_r, coolwarm_r, turbo_r, magma_r, inferno_r, plasma_r, grey_r, synthwave_r)");
 }
 
 // clang-format off
 std::vector<std::string> colormap_names() {
-    return {"viridis", "coolwarm", "turbo", "magma", "inferno", "plasma", "grey", "viridis_r", "coolwarm_r", "turbo_r", "magma_r", "inferno_r", "plasma_r", "grey_r"};
+    return {"viridis", "coolwarm", "turbo", "magma", "inferno", "plasma", "grey", "synthwave", "viridis_r", "coolwarm_r", "turbo_r", "magma_r", "inferno_r", "plasma_r", "grey_r", "synthwave_r"};
 }
 // clang-format on
 
@@ -62774,6 +63005,252 @@ void sym3_principal(const double* pT, double* pOut) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/sym3_eigen.cpp =====
+// ===== begin src/cpp/src/detail/synth.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+// --- Fixed-point oscillators: a 32-bit phase, waveforms from its top bits ---
+
+int synth_tri(std::uint32_t Phase) {
+    const int t = static_cast<int>(Phase >> 16);  // 0 .. 65535
+    return t < 32768 ? t * 2 - 32767 : 98303 - t * 2;
+}
+
+int synth_saw(std::uint32_t Phase) {
+    return static_cast<int>(Phase >> 16) - 32768;
+}
+
+int synth_pulse(std::uint32_t Phase, std::uint32_t Duty) {
+    return Phase < Duty ? 24000 : -24000;
+}
+
+// sin(pi x / 2) ~ x (3 - x^2) / 2 on the triangle wave: a smooth, odd, integer sine.
+int synth_sine(std::uint32_t Phase) {
+    const std::int64_t x = synth_tri(Phase);
+    const std::int64_t x2 = (x * x) >> 15;
+    return static_cast<int>((x * (98304 - x2)) >> 16);
+}
+
+// The twelve pitch classes of octave 0 in Q8 hertz (C0 = 16.35 Hz, A0 = 27.5 Hz).
+constexpr std::array<std::uint32_t, 12> kPitchQ8 = {4186, 4435, 4699, 4978, 5274, 5588,
+                                                    5920, 6272, 6645, 7040, 7459, 7902};
+
+// The phase step per sample of a MIDI-like note number (C0 = 0).
+std::uint32_t synth_step(int Note, int Rate) {
+    const std::uint64_t q8 =
+        static_cast<std::uint64_t>(kPitchQ8[static_cast<std::size_t>(Note % 12)]) << (Note / 12);
+    return static_cast<std::uint32_t>((q8 << 24) / static_cast<std::uint64_t>(Rate));
+}
+
+std::uint32_t synth_noise(std::uint32_t& rState) {
+    rState ^= rState << 13;
+    rState ^= rState >> 17;
+    rState ^= rState << 5;
+    return rState;
+}
+
+// Linear decay from 32767 to 0 over `Length` samples.
+int synth_decay(std::int64_t Age, std::int64_t Length) {
+    return Age < 0 || Age >= Length ? 0 : static_cast<int>(32767 - 32767 * Age / Length);
+}
+
+struct SynthChord {
+    int mRoot;  // semitones above the tonic
+    bool mMajor;
+};
+
+constexpr std::array<std::array<SynthChord, 4>, 4> kProgressions = {{
+    {{{0, false}, {8, true}, {3, true}, {10, true}}},   // i  VI  III VII
+    {{{0, false}, {5, false}, {8, true}, {7, false}}},  // i  iv  VI  v
+    {{{0, false}, {3, true}, {10, true}, {8, true}}},   // i  III VII VI
+    {{{0, false}, {10, true}, {8, true}, {10, true}}},  // i  VII VI  VII
+}};
+
+// Sixteenth-note hit masks (bit k = step k of the bar) for the bass.
+constexpr std::array<std::uint32_t, 4> kBassHits = {0x9292, 0x8888 | 0x0020, 0xA4A4, 0x9249};
+// Arpeggio orders over the chord's three tones.
+constexpr std::array<std::array<int, 4>, 3> kArp = {{{0, 1, 2, 1}, {0, 2, 1, 2}, {2, 1, 0, 1}}};
+
+}  // namespace
+
+std::size_t synth_samples_per_beat(const SynthOptions& rOptions) {
+    return static_cast<std::size_t>(
+        static_cast<double>(rOptions.mSampleRate) * 60.0 / rOptions.mTempo + 0.5);
+}
+
+std::size_t synth_length(const SynthOptions& rOptions) {
+    return static_cast<std::size_t>(rOptions.mBars) * 4 * synth_samples_per_beat(rOptions);
+}
+
+std::vector<std::int16_t> synth_synthwave(const SynthOptions& rOptions) {
+    const SynthOptions& o = rOptions;
+    if (!(o.mTempo >= 60.0 && o.mTempo <= 140.0))
+        throw std::invalid_argument("meshio++: synth: the tempo must lie in [60, 140] BPM");
+    if (o.mKey < 0 || o.mKey > 11)
+        throw std::invalid_argument("meshio++: synth: the key must lie in [0, 11]");
+    if (o.mBars < 1 || o.mBars > 64)
+        throw std::invalid_argument("meshio++: synth: the length must lie in [1, 64] bars");
+    if (o.mSampleRate < 8000 || o.mSampleRate > 48000)
+        throw std::invalid_argument("meshio++: synth: the sample rate must lie in [8000, 48000]");
+    if (!(o.mGain > 0.0 && o.mGain <= 0.9))
+        throw std::invalid_argument("meshio++: synth: the gain must lie in (0, 0.9]");
+
+    const std::size_t spb = synth_samples_per_beat(o);
+    const std::size_t bar = 4 * spb;
+    const std::size_t total = o.mBars * bar;
+    const std::size_t tail = 6 * spb;
+    const int rate = o.mSampleRate;
+    const auto& progression = kProgressions[o.mSeed % 4];
+    const auto& arp = kArp[(o.mSeed / 4) % 3];
+    const std::uint32_t bass_hits = kBassHits[(o.mSeed / 16) % 4];
+    const std::size_t delay_len = 3 * spb / 4;
+
+    std::vector<std::int32_t> mix(total + tail, 0);
+    std::vector<std::int32_t> ring(delay_len, 0);
+    std::size_t ring_at = 0;
+    std::uint32_t noise = 0x9E3779B9u ^ (o.mSeed * 2654435761u);
+    std::array<std::uint32_t, 6> pad_phase = {0,          0x2AAAAAAA, 0x55555555,
+                                              0x80000000, 0xAAAAAAAA, 0xD5555555};
+    std::uint32_t arp_phase = 0;
+    std::uint32_t bass_phase = 0;
+    std::uint32_t kick_phase = 0;
+    int lp_state = 0;
+    int hat_prev = 0;
+
+    for (std::size_t i = 0; i < total + tail; ++i) {
+        std::int32_t dry_bed = 0;  // pad and arpeggio: what the delay hears
+        std::int32_t drums = 0;
+        if (i < total) {
+            const std::size_t bar_index = i / bar;
+            const std::size_t in_bar = i % bar;
+            const std::size_t sixteenth = (in_bar * 16) / bar;
+            const std::size_t sixteenth_start = (sixteenth * bar) / 16;
+            const std::size_t step_len = ((sixteenth + 1) * bar) / 16 - sixteenth_start;
+            const std::int64_t in_step = static_cast<std::int64_t>(in_bar - sixteenth_start);
+            const SynthChord chord = progression[bar_index % 4];
+            const int root = o.mKey + chord.mRoot;
+            const int tones[3] = {root, root + (chord.mMajor ? 4 : 3), root + 7};
+
+            // Pad: two detuned saws per chord tone, swelling in and out of each bar.
+            std::int64_t pad = 0;
+            for (int v = 0; v < 3; ++v) {
+                const std::uint32_t step = synth_step(tones[v] + 36, rate);
+                pad_phase[static_cast<std::size_t>(2 * v)] += step;
+                pad_phase[static_cast<std::size_t>(2 * v + 1)] += step + (step >> 8);
+                pad += synth_saw(pad_phase[static_cast<std::size_t>(2 * v)]) +
+                       synth_saw(pad_phase[static_cast<std::size_t>(2 * v + 1)]);
+            }
+            const std::int64_t attack =
+                std::min<std::int64_t>(32767, static_cast<std::int64_t>(in_bar) * 32767 /
+                                                  static_cast<std::int64_t>(bar / 4));
+            const std::int64_t release =
+                std::min<std::int64_t>(32767, static_cast<std::int64_t>(bar - in_bar) * 32767 /
+                                                  static_cast<std::int64_t>(bar / 8));
+            const std::int64_t swell = std::min(attack, release);
+            pad = (pad / 6) * swell >> 15;
+            // A slow low-pass sweep across the whole loop.
+            const int lfo = synth_tri(
+                static_cast<std::uint32_t>((static_cast<std::uint64_t>(i) << 32) / total));
+            const int coeff = 2500 + ((lfo < 0 ? -lfo : lfo) * 9000 >> 15);
+            lp_state += static_cast<int>((static_cast<std::int64_t>(pad - lp_state) * coeff) >> 15);
+            dry_bed += lp_state * 5 / 10;
+
+            // Arpeggio: a quarter-width pulse stepping through the chord on sixteenths.
+            const int arp_note = tones[arp[sixteenth % 4]] + 60;
+            arp_phase += synth_step(arp_note, rate);
+            const int arp_env = synth_decay(in_step, static_cast<std::int64_t>(step_len) * 7 / 10);
+            dry_bed += (synth_pulse(arp_phase, 0x40000000u) * arp_env >> 15) * 3 / 10;
+
+            // Bass: a sine on the root, two octaves below the pad, on the hit mask.
+            bass_phase += synth_step(root + 24, rate);
+            const bool hit = ((bass_hits >> sixteenth) & 1u) != 0;
+            const int bass_env =
+                hit ? synth_decay(in_step, static_cast<std::int64_t>(step_len) * 2) : 0;
+            drums += (synth_sine(bass_phase) * bass_env >> 15) * 6 / 10;
+
+            // Kick: a sine that falls from 140 Hz to 45 Hz, on every beat.
+            const std::int64_t in_beat = static_cast<std::int64_t>(i % spb);
+            const std::int64_t kick_len = static_cast<std::int64_t>(rate) / 4;
+            const std::int64_t sweep = static_cast<std::int64_t>(rate) / 8;
+            const std::int64_t f_q8 =
+                (in_beat < sweep ? 140 * 256 - (140 - 45) * 256 * in_beat / sweep : 45 * 256);
+            kick_phase += static_cast<std::uint32_t>(((static_cast<std::uint64_t>(f_q8)) << 24) /
+                                                     static_cast<std::uint64_t>(rate));
+            drums += (synth_sine(kick_phase) * synth_decay(in_beat, kick_len) >> 15) * 9 / 10;
+
+            // Hat: high-passed noise on the off-beat eighths, quieter on the other sixteenths.
+            const int n = static_cast<int>(synth_noise(noise) >> 17) - 16384;
+            const int hp = n - hat_prev;
+            hat_prev = n;
+            const bool off_beat = (sixteenth % 4) == 2;
+            const int hat_env =
+                synth_decay(in_step, static_cast<std::int64_t>(rate) / 25) / (off_beat ? 1 : 4);
+            drums += (hp * hat_env >> 15) * 2 / 10;
+        }
+        // Feedback delay of a dotted eighth, over the bed.
+        const std::int32_t echo = ring[ring_at];
+        ring[ring_at] = dry_bed + (echo * 45 / 100);
+        ring_at = (ring_at + 1) % delay_len;
+        mix[i] = dry_bed + (echo * 40 / 100) + drums;
+    }
+
+    // Fold the delay's tail onto the start so the loop joins without a click.
+    for (std::size_t i = 0; i < tail; ++i)
+        mix[i] += mix[total + i];
+    mix.resize(total);
+
+    std::int32_t peak = 1;
+    for (std::int32_t v : mix)
+        peak = std::max<std::int32_t>(peak, v < 0 ? -v : v);
+    const std::int64_t target = static_cast<std::int64_t>(o.mGain * 32767.0);
+    std::vector<std::int16_t> out(total);
+    for (std::size_t i = 0; i < total; ++i)
+        out[i] = static_cast<std::int16_t>(static_cast<std::int64_t>(mix[i]) * target / peak);
+    return out;
+}
+
+std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate) {
+    auto le32 = [](std::string& rOut, std::uint32_t v) {
+        for (int k = 0; k < 4; ++k)
+            rOut.push_back(static_cast<char>((v >> (8 * k)) & 0xFF));
+    };
+    auto le16 = [](std::string& rOut, std::uint16_t v) {
+        rOut.push_back(static_cast<char>(v & 0xFF));
+        rOut.push_back(static_cast<char>(v >> 8));
+    };
+    const std::uint32_t bytes = static_cast<std::uint32_t>(rSamples.size() * 2);
+    std::string out;
+    out.reserve(44 + bytes);
+    out += "RIFF";
+    le32(out, 36 + bytes);
+    out += "WAVEfmt ";
+    le32(out, 16);
+    le16(out, 1);  // PCM
+    le16(out, 1);  // mono
+    le32(out, static_cast<std::uint32_t>(SampleRate));
+    le32(out, static_cast<std::uint32_t>(SampleRate) * 2);
+    le16(out, 2);
+    le16(out, 16);
+    out += "data";
+    le32(out, bytes);
+    for (std::int16_t s : rSamples)
+        le16(out, static_cast<std::uint16_t>(s));
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/synth.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <cstring>
@@ -157609,7 +158086,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
           "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
-          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor"}},
+          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor",
+          "Theme",          "Scanlines",   "Bloom",         "Fringe",       "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -157913,7 +158391,13 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
     o.mColorBy = pipe_text(rStep, "ColorBy", "");
     if (pipe_find(rStep, "Component"))
         o.mComponent = static_cast<int>(pipe_number(rStep, "Component", 0.0));
-    o.mCmap = pipe_text(rStep, "Cmap", "viridis");
+    o.mTheme = static_cast<RenderTheme>(pipe_snap_choice(rStep, "Theme", {"none", "synthwave"}, 0));
+    // The theme brings its own colormap unless one is named.
+    o.mCmap = pipe_text(rStep, "Cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
+    o.mScanlines = pipe_flag(rStep, "Scanlines", false);
+    o.mBloom = pipe_flag(rStep, "Bloom", false);
+    o.mFringe = pipe_flag(rStep, "Fringe", false);
+    o.mGridFloor = pipe_flag(rStep, "GridFloor", false);
     if (pipe_find(rStep, "VMin"))
         o.mVMin = pipe_number(rStep, "VMin", 0.0);
     if (pipe_find(rStep, "VMax"))
@@ -164608,6 +165092,9 @@ void rnd_validate(const RenderOptions& rOpt) {
     if (rOpt.mVectorCount < 1 || rOpt.mVectorCount > 100000)
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "vector count must lie in [1, 100000]");
+    if (rOpt.mGridFloor && rOpt.mTheme == RenderTheme::None)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "the grid floor is part of a theme (set theme)");
     if (rOpt.mStreamSeeds < 1 || rOpt.mStreamSeeds > 10000)
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "stream seeds must lie in [1, 10000]");
@@ -165148,6 +165635,165 @@ double rnd_nice_length(double Target) {
     return base;
 }
 
+
+// ---------------------------------------------------------------------------
+// Theme: a banded background, a grid floor and three post-processes
+// ---------------------------------------------------------------------------
+
+int rnd_lerp_i(int A, int B, int Num, int Den) { return A + (B - A) * Num / Den; }
+
+// One colour of a banded gradient through `Stops`: the band `Band` of `Bands`.
+RndColor rnd_band_color(const std::vector<std::array<int, 3>>& rStops, int Band, int Bands) {
+    const int segments = static_cast<int>(rStops.size()) - 1;
+    const int scaled = Bands > 1 ? Band * segments * 1000 / (Bands - 1) : 0;
+    int seg = std::min(segments - 1, scaled / 1000);
+    const int frac = scaled - seg * 1000;
+    const std::array<int, 3>& a = rStops[static_cast<std::size_t>(seg)];
+    const std::array<int, 3>& b = rStops[static_cast<std::size_t>(seg) + 1];
+    return {static_cast<std::uint8_t>(rnd_lerp_i(a[0], b[0], frac, 1000)),
+            static_cast<std::uint8_t>(rnd_lerp_i(a[1], b[1], frac, 1000)),
+            static_cast<std::uint8_t>(rnd_lerp_i(a[2], b[2], frac, 1000)), 255};
+}
+
+// Put the theme behind the model: a sunset in eight bands down to the horizon
+// at 60% of the height, a dark floor in four below it, the grid on the floor
+// when asked for; then lay the frame over it by its own alpha.
+void rnd_theme_background(Frame& rFrame, const RenderOptions& rOpt) {
+    const std::int64_t w = rFrame.mWidth;
+    const std::int64_t h = rFrame.mHeight;
+    if (w < 1 || h < 1)
+        return;
+    const std::int64_t horizon = h * 6 / 10;
+    static const std::vector<std::array<int, 3>> sky = {
+        {20, 8, 60}, {120, 20, 140}, {255, 45, 150}, {255, 150, 40}};
+    static const std::vector<std::array<int, 3>> floor_stops = {{12, 4, 36}, {26, 8, 60}};
+    Frame bg;
+    bg.mWidth = static_cast<int>(w);
+    bg.mHeight = static_cast<int>(h);
+    bg.mRgba.resize(static_cast<std::size_t>(w * h) * 4);
+    bg.mCellIds.assign(static_cast<std::size_t>(w * h), -1);
+    for (std::int64_t y = 0; y < h; ++y) {
+        const RndColor c = y < horizon
+                               ? rnd_band_color(sky, static_cast<int>(y * 8 / std::max<std::int64_t>(1, horizon)), 8)
+                               : rnd_band_color(floor_stops,
+                                                static_cast<int>((y - horizon) * 4 /
+                                                                 std::max<std::int64_t>(1, h - horizon)),
+                                                4);
+        for (std::int64_t x = 0; x < w; ++x)
+            std::copy(c.begin(), c.end(), bg.mRgba.data() + static_cast<std::size_t>(y * w + x) * 4);
+    }
+    if (rOpt.mGridFloor && h - horizon > 3) {
+        const int phase = ((rOpt.mThemePhase % 8) + 8) % 8;
+        const RndColor line = (phase % 2 == 0) ? RndColor{255, 50, 200, 255} : RndColor{0, 220, 255, 255};
+        const double yh = static_cast<double>(horizon);
+        const double yb = static_cast<double>(h - 1);
+        const int rows = 8;
+        for (int k = 0; k < rows; ++k) {
+            const double d = (static_cast<double>(k) + static_cast<double>(phase) / 8.0) / rows;
+            const double y = yh + (yb - yh) * d * d;
+            rnd_line(bg, 0.0, y, static_cast<double>(w - 1), y, line);
+        }
+        const int rays = 16;
+        for (int j = 0; j <= rays; ++j) {
+            const double xb = static_cast<double>(w) / 2.0 +
+                              (static_cast<double>(j) - rays / 2.0) * static_cast<double>(w) * 2.0 / rays;
+            rnd_line(bg, static_cast<double>(w) / 2.0, yh, xb, yb, line);
+        }
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i) {
+        std::uint8_t* p = rFrame.mRgba.data() + i * 4;
+        const int a = p[3];
+        if (a == 255)
+            continue;
+        const std::uint8_t* q = bg.mRgba.data() + i * 4;
+        for (int c = 0; c < 3; ++c)
+            p[c] = static_cast<std::uint8_t>((p[c] * a + q[c] * (255 - a) + 127) / 255);
+        p[3] = 255;
+    }
+}
+
+// Bloom, fringe and scanlines on the final frame, in that order.
+void rnd_theme_post(Frame& rFrame, const RenderOptions& rOpt) {
+    const std::int64_t w = rFrame.mWidth;
+    const std::int64_t h = rFrame.mHeight;
+    if (w < 1 || h < 1)
+        return;
+    std::uint8_t* px = rFrame.mRgba.data();
+    if (rOpt.mBloom) {
+        const std::int64_t radius = std::max<std::int64_t>(1, std::min(w, h) / 100);
+        std::vector<std::int32_t> bright(static_cast<std::size_t>(w * h) * 3, 0);
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i) {
+            const std::uint8_t* p = px + i * 4;
+            const int lum = (p[0] * 54 + p[1] * 183 + p[2] * 19) >> 8;
+            if (lum >= 190)
+                for (int c = 0; c < 3; ++c)
+                    bright[i * 3 + static_cast<std::size_t>(c)] = p[c];
+        }
+        // A separable box blur: sums over a window of 2 * radius + 1, divided once.
+        std::vector<std::int32_t> tmp(bright.size(), 0);
+        const std::int64_t window = 2 * radius + 1;
+        for (std::int64_t y = 0; y < h; ++y)
+            for (int c = 0; c < 3; ++c) {
+                std::int64_t sum = 0;
+                for (std::int64_t x = -radius; x <= radius; ++x)
+                    if (x >= 0 && x < w)
+                        sum += bright[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)];
+                for (std::int64_t x = 0; x < w; ++x) {
+                    tmp[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)] =
+                        static_cast<std::int32_t>(sum / window);
+                    const std::int64_t add = x + radius + 1;
+                    const std::int64_t drop = x - radius;
+                    if (add < w)
+                        sum += bright[static_cast<std::size_t>(y * w + add) * 3 + static_cast<std::size_t>(c)];
+                    if (drop >= 0)
+                        sum -= bright[static_cast<std::size_t>(y * w + drop) * 3 + static_cast<std::size_t>(c)];
+                }
+            }
+        std::vector<std::int32_t> blur(bright.size(), 0);
+        for (std::int64_t x = 0; x < w; ++x)
+            for (int c = 0; c < 3; ++c) {
+                std::int64_t sum = 0;
+                for (std::int64_t y = -radius; y <= radius; ++y)
+                    if (y >= 0 && y < h)
+                        sum += tmp[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)];
+                for (std::int64_t y = 0; y < h; ++y) {
+                    blur[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)] =
+                        static_cast<std::int32_t>(sum / window);
+                    const std::int64_t add = y + radius + 1;
+                    const std::int64_t drop = y - radius;
+                    if (add < h)
+                        sum += tmp[static_cast<std::size_t>(add * w + x) * 3 + static_cast<std::size_t>(c)];
+                    if (drop >= 0)
+                        sum -= tmp[static_cast<std::size_t>(drop * w + x) * 3 + static_cast<std::size_t>(c)];
+                }
+            }
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i)
+            for (int c = 0; c < 3; ++c)
+                px[i * 4 + static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(
+                    std::min<std::int32_t>(255, px[i * 4 + static_cast<std::size_t>(c)] +
+                                                    blur[i * 3 + static_cast<std::size_t>(c)] / 2));
+    }
+    if (rOpt.mFringe) {
+        const std::int64_t d = std::max<std::int64_t>(1, w / 320);
+        const std::vector<std::uint8_t> src(px, px + static_cast<std::size_t>(w * h) * 4);
+        for (std::int64_t y = 0; y < h; ++y)
+            for (std::int64_t x = 0; x < w; ++x) {
+                const std::size_t at = static_cast<std::size_t>(y * w + x) * 4;
+                const std::size_t left = static_cast<std::size_t>(y * w + std::max<std::int64_t>(0, x - d)) * 4;
+                const std::size_t right = static_cast<std::size_t>(y * w + std::min<std::int64_t>(w - 1, x + d)) * 4;
+                px[at] = src[left];
+                px[at + 2] = src[right + 2];
+            }
+    }
+    if (rOpt.mScanlines)
+        for (std::int64_t y = 1; y < h; y += 2)
+            for (std::int64_t x = 0; x < w; ++x) {
+                std::uint8_t* p = px + static_cast<std::size_t>(y * w + x) * 4;
+                for (int c = 0; c < 3; ++c)
+                    p[c] = static_cast<std::uint8_t>(p[c] - p[c] / 4);
+            }
+}
+
 }  // namespace
 
 namespace detail {
@@ -165426,7 +166072,25 @@ bool rnd_point_kept(const std::vector<RndPlane>& rPlanes, const double* pX) {
     return true;
 }
 
-std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOpt) {
+// The options with the theme's default colours in place of the ones left at
+// their defaults (a colour you set to the default itself cannot be told apart,
+// and takes the theme's).
+RenderOptions rnd_themed(const RenderOptions& rIn) {
+    RenderOptions out = rIn;
+    if (out.mTheme == RenderTheme::Synthwave) {
+        const RenderOptions defaults;
+        if (out.mFillColor == defaults.mFillColor)
+            out.mFillColor = {96, 56, 190, 255};
+        if (out.mEdgeColor == defaults.mEdgeColor)
+            out.mEdgeColor = {0, 230, 255, 255};
+        if (out.mLineColor == defaults.mLineColor)
+            out.mLineColor = {255, 60, 200, 255};
+    }
+    return out;
+}
+
+std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOptIn) {
+    const RenderOptions rOpt = rnd_themed(rOptIn);
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
@@ -166030,6 +166694,12 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     rOpt.mColorbar = rCamera.mColorbar;
     rOpt.mCutaways = rCamera.mCutaways;
     rOpt.mCutawayTint = rCamera.mCutawayTint;
+    rOpt.mTheme = rCamera.mTheme;
+    rOpt.mScanlines = rCamera.mScanlines;
+    rOpt.mBloom = rCamera.mBloom;
+    rOpt.mFringe = rCamera.mFringe;
+    rOpt.mGridFloor = rCamera.mGridFloor;
+    rOpt.mThemePhase = rCamera.mThemePhase;
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
@@ -166513,6 +167183,8 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     frame.mWidth = rOpt.mWidth;
     frame.mHeight = rOpt.mHeight;
     detail::raster_downsample(target, ss, frame.mRgba, frame.mCellIds);
+    if (rOpt.mTheme == RenderTheme::Synthwave)
+        rnd_theme_background(frame, rOpt);
 
     // Overlays and notes, at the output resolution.
     const double min_side = static_cast<double>(std::min(rOpt.mWidth, rOpt.mHeight));
@@ -166617,6 +167289,7 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
             frame.mNotes.push_back("scale bar: " + rnd_num(length));
         }
     }
+    rnd_theme_post(frame, rOpt);
     return frame;
 }
 
