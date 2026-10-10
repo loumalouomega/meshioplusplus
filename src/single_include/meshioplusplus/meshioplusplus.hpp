@@ -82600,7 +82600,10 @@ Mesh read_flac3d(const std::string& rPath) {
         for (auto v : f_ids)
             all_ids.push_back(v);
         for (auto v : z_ids)
-            all_ids.push_back(v + z_offset);
+            // A zone id near INT64_MAX must not overflow (a file can say anything):
+            // the sum wraps, defined for unsigned, rather than being undefined.
+            all_ids.push_back(static_cast<std::int64_t>(static_cast<std::uint64_t>(v) +
+                                                        static_cast<std::uint64_t>(z_offset)));
 
         std::vector<NDArray> id_blocks;
         std::size_t off = 0;
