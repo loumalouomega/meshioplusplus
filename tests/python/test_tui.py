@@ -454,7 +454,8 @@ def test_quit_restores_the_terminal(pty_run, mesh_file, kind):
 @pytest.mark.parametrize("kind", _both())
 @pytest.mark.parametrize(
     "sig, code",
-    [(signal.SIGTERM, 128 + 15), (signal.SIGHUP, 128 + 1), (signal.SIGINT, 128 + 2)],
+    [(signal.SIGTERM, 128 + 15), (signal.SIGINT, 128 + 2)]
+    + ([(signal.SIGHUP, 128 + 1)] if hasattr(signal, "SIGHUP") else []),
 )
 def test_a_signal_restores_the_terminal(pty_run, mesh_file, kind, sig, code):
     p = pty_run(_argv_for(kind, mesh_file))
