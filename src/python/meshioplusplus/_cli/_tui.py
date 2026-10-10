@@ -12,16 +12,14 @@ from .._tui import tui
 from ._snapshot import _write_text, add_render_args, render_options
 
 
-_KEYS = {
-    "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6,
-    "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11,
-}  # fmt: skip
-
-
 def _music_key(text):
     """A note name (C, C#, Db, ...) or a semitone above C, as the native CLI reads it."""
-    if text.upper() in _KEYS:
-        return _KEYS[text.upper()]
+    keys = {
+        "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6,
+        "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11,
+    }  # fmt: skip
+    if text.upper() in keys:
+        return keys[text.upper()]
     try:
         value = int(text)
     except ValueError:
