@@ -1604,6 +1604,7 @@ _NOT_TOOLS = {
     # file-level use (fan-in, fan-out, N->N).
     "read_sequence",
     "view",  # interactive; screenshot is the headless tool
+    "tui",  # interactive (it takes over a terminal); render_mesh is the headless tool
     "has_viewer",
     "to_pyvista",
     "from_pyvista",

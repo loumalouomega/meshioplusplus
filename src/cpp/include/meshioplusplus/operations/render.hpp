@@ -56,6 +56,7 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -313,6 +314,45 @@ struct TextOptions {
 MESHIOPLUSPLUS_API Frame render(const Mesh& rMesh, const RenderOptions& rOptions = {});
 
 /**
+ * @brief The camera-independent half of a render, kept for reuse (v16.35.0).
+ * Extracting the skin of a volume dominates a frame's cost at large sizes and
+ * does not depend on where the camera is, so an interactive viewer prepares a
+ * scene once and draws it from many viewpoints. An opaque, cheap-to-copy
+ * handle (a shared, immutable scene); a default-constructed `RenderScene` is
+ * empty.
+ */
+struct RenderScene {
+    /// Implementation detail; do not interpret.
+    std::shared_ptr<const void> mpData;
+    bool Empty() const { return mpData == nullptr; }
+};
+
+/**
+ * @brief Prepare a mesh for repeated drawing: the drawn faces and their skin,
+ * the resolved field and its range, normals, edge lines and extra layers.
+ * @p rOptions fixes everything that is not the camera or the frame: the field
+ * (`mColorBy`, `mExpr`, scale, clip, categories, isolines, vectors, warp,
+ * diagnostics), edges, colours and the shading *mode* (smooth normals are
+ * computed here). Throws what `render` throws for the same options.
+ */
+MESHIOPLUSPLUS_API RenderScene prepare_render(const Mesh& rMesh,
+                                              const RenderOptions& rOptions = {});
+
+/**
+ * @brief Draw a prepared scene. The camera, projection, zoom, pan, frame size,
+ * supersampling, lighting, background and overlays (axes, scale bar, colour
+ * bar) come from @p rOptions; the field, edges and colours are the prepared
+ * ones. With the same options as `prepare_render`, the frame is byte-identical
+ * to `render`'s.
+ * @param FixedFit fit the frame to the scene's bounding sphere instead of the
+ *        projected extents, so the model keeps one size and place while the
+ *        camera orbits (the interactive loop sets it; `render` does not)
+ * @throws std::invalid_argument for an empty scene
+ */
+MESHIOPLUSPLUS_API Frame render_scene(const RenderScene& rScene,
+                                      const RenderOptions& rOptions = {}, bool FixedFit = false);
+
+/**
  * @brief The frame size, in pixels, and the pixel aspect that make an encoding
  * fill `Cols` by `Rows` cells.
  * @return `{width, height}`; @p rPixelAspect receives the matching
@@ -334,6 +374,41 @@ MESHIOPLUSPLUS_API std::string encode_text(const Frame& rFrame, const TextOption
 /** @brief `render` sized by `text_frame_size`, then `encode_text`. */
 MESHIOPLUSPLUS_API std::string render_text(const Mesh& rMesh, const RenderOptions& rRender = {},
                                            const TextOptions& rText = {});
+
+/** @brief One terminal cell of a cell encoding: a glyph and its two colours. */
+struct TextCell {
+    std::uint32_t mGlyph = 0x20;  ///< Unicode code point
+    bool mFgSet = false;          ///< false: the terminal's own foreground
+    bool mBgSet = false;
+    std::array<int, 3> mFg = {0, 0, 0};
+    std::array<int, 3> mBg = {0, 0, 0};
+};
+
+/** @brief The cells of a frame, row by row. */
+struct TextGrid {
+    int mCols = 0;
+    int mRows = 0;
+    std::vector<TextCell> mCells;  ///< `mCols * mRows`
+};
+
+/**
+ * @brief The cells `encode_text` would print for a frame, before any
+ * serialization (the interactive loop diffs these).
+ * @throws std::invalid_argument for a graphics protocol, or a frame that is not
+ *         a whole number of cells (size it with `text_frame_size`)
+ */
+MESHIOPLUSPLUS_API TextGrid encode_cells(const Frame& rFrame, const TextOptions& rOptions = {});
+
+/**
+ * @brief The bytes that repaint @p rNew over @p rOld, for a terminal showing
+ * @p rOld with its top-left cell at 1-based screen position (Row, Col): a
+ * cursor move, then SGR changes and glyphs for each run of changed cells, and
+ * a reset at the end. Cells are compared as @p Depth shows them, so colours
+ * that quantize alike are not rewritten. A different grid size repaints every
+ * cell. `ColorDepth::Mono` emits glyphs and cursor moves only.
+ */
+MESHIOPLUSPLUS_API std::string encode_cells_update(const TextGrid& rOld, const TextGrid& rNew,
+                                                   ColorDepth Depth, int Row = 1, int Col = 1);
 
 /**
  * @brief Encode a frame as an RGBA PNG.

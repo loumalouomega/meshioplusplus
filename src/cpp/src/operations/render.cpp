@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -673,12 +674,111 @@ void render_view_angles(const RenderOptions& rOpt, double& rAzimuth, double& rEl
 
 }  // namespace detail
 
-Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
+namespace {
+
+struct RndExtra {
+    std::int64_t mA;
+    std::int64_t mB;
+    RndColor mColor;
+};
+
+/// One arrow of the vector layer: its barbs depend on the camera, so only the
+/// shaft is fixed.
+struct RndArrow {
+    double mP[3];
+    double mTip[3];
+    double mDir[3];
+    double mLen = 0.0;
+};
+
+/// Everything a frame needs that does not depend on the camera: the drawn
+/// faces, the skin of a volume, the resolved field and its range, normals,
+/// edge lines and extra layers. `render_scene` draws it from any viewpoint.
+struct RndPrepared {
+    RenderOptions mOpt;  ///< the options it was prepared with (field, edges, colours)
+    std::size_t mNumFaces = 0;
+    std::vector<std::int64_t> mFStart;
+    std::vector<std::int64_t> mFNodes;
+    std::vector<std::int64_t> mFIds;
+    std::vector<std::int64_t> mSNodes;  ///< the rings through smooth shading's split points
+    std::vector<double> mXyz;           ///< points, then the extra layers' vertices
+    std::vector<double> mFNormal;
+    std::vector<double> mVNormal;
+    bool mSmooth = false;
+    RndGroup mLines;
+    RndGroup mPoints;
+    std::vector<double> mFValues;
+    std::vector<double> mLValues;
+    std::vector<double> mPValues;
+    RndColoring mColoring;
+    bool mContinuous = false;
+    bool mCategorical = false;
+    std::string mLabel;
+    std::optional<int> mComponent;
+    std::vector<std::string> mKeys;
+    std::vector<RndExtra> mExtras;
+    std::size_t mExtrasBeforeArrows = 0;
+    std::vector<RndArrow> mArrows;
+    std::vector<detail::RasterLine> mEdgeLines;
+    bool mDeferCategoryEdges = false;  ///< orientation categories need the camera
+    std::array<double, 3> mCentre = {0.0, 0.0, 0.0};  ///< bounding sphere of what is drawn
+    double mRadius = 1.0;
+};
+
+/// The lines between faces whose categories differ: every interior edge shared by
+/// exactly two faces of different value.
+void rnd_category_edge_lines(const RenderOptions& rOpt, bool Categorical,
+                             const std::vector<std::int64_t>& rFStart,
+                             const std::vector<std::int64_t>& rFNodes,
+                             const std::vector<double>& rFValues,
+                             std::vector<detail::RasterLine>& rLines) {
+    const std::vector<std::int64_t>& f_start = rFStart;
+    const std::vector<std::int64_t>& f_nodes = rFNodes;
+    const std::vector<double>& f_values = rFValues;
+    const std::size_t num_faces = f_start.empty() ? 0 : f_start.size() - 1;
+    const bool categorical = Categorical;
+    if (!categorical)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "category edges need a categorical colouring "
+                                    "(categorical, color_regions or a flag diagnostic)");
+    struct Use {
+        std::int64_t mLo, mHi;
+        std::size_t mFace;
+        bool operator<(const Use& rO) const {
+            return mLo != rO.mLo ? mLo < rO.mLo
+                                 : (mHi != rO.mHi ? mHi < rO.mHi : mFace < rO.mFace);
+        }
+    };
+    std::vector<Use> uses;
+    for (std::size_t f = 0; f < num_faces; ++f) {
+        const std::int64_t lo = f_start[f];
+        const std::int64_t n = f_start[f + 1] - lo;
+        for (std::int64_t k = 0; k < n; ++k) {
+            const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
+            const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
+            if (a != b)
+                uses.push_back({std::min(a, b), std::max(a, b), f});
+        }
+    }
+    parallel_sort(uses.begin(), uses.end());
+    auto same = [&](double a, double b) {
+        return (std::isfinite(a) ? a : -1.0) == (std::isfinite(b) ? b : -1.0);
+    };
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i;
+        while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 2 && !same(f_values[uses[i].mFace], f_values[uses[i + 1].mFace]))
+            rLines.push_back({uses[i].mLo, uses[i].mHi, rOpt.mEdgeColor, -1});
+        i = j;
+    }
+}
+
+std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOpt) {
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
-    detail::render_view_angles(rOpt, azimuth, elevation);
-    const detail::CameraBasis cam = detail::camera_basis(azimuth, elevation, rOpt.mRoll);
+    detail::render_view_angles(rOpt, azimuth, elevation);  // rejects an unknown view
 
     // The array that is coloured: an input array, or one derived from it.
     Mesh work;
@@ -1021,6 +1121,8 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
                        rnd_hex(rOpt.mIsoColor) + ")");
     }
 
+    const std::size_t extras_before_arrows = extras.size();
+    std::vector<RndArrow> arrows;
     if (!rOpt.mVectors.empty() && num_faces > 0) {
         const std::vector<double> vec =
             rnd_vertex_array(src, p_skin, num_source_points, rOpt.mVectors, 3, "vector");
@@ -1055,8 +1157,6 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             if (std::isfinite(m))
                 max_mag = std::max(max_mag, m);
         }
-        const double cos_barb = 0.9063077870366499;  // 25 degrees
-        const double sin_barb = 0.42261826174069944;
         for (std::int64_t v : picked) {
             const double* a = &vec[3 * static_cast<std::size_t>(v)];
             const double mag = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
@@ -1067,26 +1167,14 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             const double dir[3] = {a[0] / mag, a[1] / mag, a[2] / mag};
             const double* p = &xyz[3 * static_cast<std::size_t>(v)];
             const double tip[3] = {p[0] + dir[0] * len, p[1] + dir[1] * len, p[2] + dir[2] * len};
-            // The barbs lie in the plane of the arrow and the line of sight.
-            double perp[3] = {dir[1] * cam.mW[2] - dir[2] * cam.mW[1],
-                              dir[2] * cam.mW[0] - dir[0] * cam.mW[2],
-                              dir[0] * cam.mW[1] - dir[1] * cam.mW[0]};
-            double pl = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
-            if (pl < 1e-9) {
-                perp[0] = cam.mU[0];
-                perp[1] = cam.mU[1];
-                perp[2] = cam.mU[2];
-                pl = 1.0;
+            RndArrow arrow;
+            for (std::size_t c = 0; c < 3; ++c) {
+                arrow.mP[c] = p[c];
+                arrow.mTip[c] = tip[c];
+                arrow.mDir[c] = dir[c];
             }
-            for (double& c : perp)
-                c /= pl;
-            add_segment(p, tip, rOpt.mVectorColor);
-            for (double sign : {1.0, -1.0}) {
-                double barb[3];
-                for (std::size_t c = 0; c < 3; ++c)
-                    barb[c] = tip[c] - 0.3 * len * (cos_barb * dir[c] - sign * sin_barb * perp[c]);
-                add_segment(tip, barb, rOpt.mVectorColor);
-            }
+            arrow.mLen = len;
+            arrows.push_back(arrow);
         }
         keys.push_back("vectors: " + rOpt.mVectors + ", " + std::to_string(picked.size()) +
                        " arrows, longest " + rnd_num(max_mag));
@@ -1110,7 +1198,65 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         keys.push_back("warp: " + rOpt.mWarp + " x " + rnd_num(rOpt.mWarpScale));
     }
 
-    // Project every vertex a primitive uses.
+    // Edge overlays that depend on the geometry alone.
+    std::vector<detail::RasterLine> edge_lines;
+    if (rOpt.mEdges == RenderEdges::All) {
+        std::vector<std::pair<std::int64_t, std::int64_t>> edges;
+        edges.reserve(f_nodes.size());
+        for (std::size_t f = 0; f < num_faces; ++f) {
+            const std::int64_t lo = f_start[f];
+            const std::int64_t n = f_start[f + 1] - lo;
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
+                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
+                if (a != b)
+                    edges.emplace_back(std::min(a, b), std::max(a, b));
+            }
+        }
+        parallel_sort(edges.begin(), edges.end());
+        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        for (const auto& e : edges)
+            edge_lines.push_back({e.first, e.second, rOpt.mEdgeColor, -1});
+    } else if (rOpt.mEdges == RenderEdges::Feature && num_faces > 0) {
+        const std::vector<detail::CreaseEdge> edges =
+            detail::crease_edges(f_start, f_nodes, f_normal, rOpt.mFeatureAngle);
+        for (const detail::CreaseEdge& e : edges)
+            if (e.IsCrease() || e.IsBoundary())
+                edge_lines.push_back({e.mLo, e.mHi, rOpt.mEdgeColor, -1});
+    }
+    if (rOpt.mDiagnostic == RenderDiagnostic::FreeEdges && num_faces > 0) {
+        const RndColor open_color = {235, 140, 0, 255};
+        const RndColor non_manifold_color = {220, 30, 30, 255};
+        const RndColor inconsistent_color = {200, 0, 200, 255};
+        std::size_t open_edges = 0, non_manifold = 0, inconsistent = 0;
+        for (const detail::CreaseEdge& e :
+             detail::crease_edges(f_start, f_nodes, f_normal, 180.0)) {
+            if (e.IsNonManifold()) {
+                edge_lines.push_back({e.mLo, e.mHi, non_manifold_color, -1});
+                ++non_manifold;
+            } else if (e.IsBoundary()) {
+                edge_lines.push_back({e.mLo, e.mHi, open_color, -1});
+                ++open_edges;
+            } else if (e.mInconsistent) {
+                edge_lines.push_back({e.mLo, e.mHi, inconsistent_color, -1});
+                ++inconsistent;
+            }
+        }
+        keys.push_back(
+            "free edges: " + std::to_string(open_edges) + " open " + rnd_hex(open_color) + ", " +
+            std::to_string(non_manifold) + " non-manifold " + rnd_hex(non_manifold_color) + ", " +
+            std::to_string(inconsistent) + " inconsistent " + rnd_hex(inconsistent_color));
+    }
+    bool defer_category_edges = false;
+    if (rOpt.mCategoryEdges) {
+        if (rOpt.mDiagnostic == RenderDiagnostic::Orientation)
+            defer_category_edges = true;  // its categories depend on the camera
+        else
+            rnd_category_edge_lines(rOpt, categorical, f_start, f_nodes, f_values, edge_lines);
+    }
+
+
+    // The bounding sphere of what is drawn, for a fixed fit.
     const std::size_t nv = xyz.size() / 3;
     std::vector<std::uint8_t> used(nv, 0);
     for (std::int64_t v : s_nodes)
@@ -1123,8 +1269,186 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         used[static_cast<std::size_t>(e.mA)] = 1;
         used[static_cast<std::size_t>(e.mB)] = 1;
     }
+    std::array<double, 3> lo_b = {0.0, 0.0, 0.0};
+    std::array<double, 3> hi_b = {0.0, 0.0, 0.0};
+    bool seen = false;
+    for (std::size_t i = 0; i < nv; ++i) {
+        if (!used[i])
+            continue;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double c = xyz[3 * i + k];
+            lo_b[k] = seen ? std::min(lo_b[k], c) : c;
+            hi_b[k] = seen ? std::max(hi_b[k], c) : c;
+        }
+        seen = true;
+    }
+    auto prep = std::make_shared<RndPrepared>();
+    for (std::size_t k = 0; k < 3; ++k)
+        prep->mCentre[k] = 0.5 * (lo_b[k] + hi_b[k]);
+    double radius_b = 0.0;
+    for (std::size_t i = 0; i < nv; ++i) {
+        if (!used[i])
+            continue;
+        double d2 = 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double d = xyz[3 * i + k] - prep->mCentre[k];
+            d2 += d * d;
+        }
+        radius_b = std::max(radius_b, std::sqrt(d2));
+    }
+    prep->mRadius = radius_b > 0.0 ? radius_b : 1.0;
+
+    prep->mOpt = rOpt;
+    prep->mNumFaces = num_faces;
+    prep->mFStart = std::move(f_start);
+    prep->mFNodes = std::move(f_nodes);
+    prep->mFIds = std::move(f_ids);
+    prep->mSNodes = std::move(s_nodes);
+    prep->mXyz = std::move(xyz);
+    prep->mFNormal = std::move(f_normal);
+    prep->mVNormal = std::move(v_normal);
+    prep->mSmooth = smooth;
+    prep->mLines = g.mLines;
+    prep->mLines.mpDraw = nullptr;
+    prep->mPoints = g.mPoints;
+    prep->mPoints.mpDraw = nullptr;
+    prep->mFValues = std::move(f_values);
+    prep->mLValues = std::move(l_values);
+    prep->mPValues = std::move(p_values);
+    prep->mColoring = coloring;
+    prep->mContinuous = continuous;
+    prep->mCategorical = categorical;
+    prep->mLabel = label;
+    prep->mComponent = component;
+    prep->mKeys = std::move(keys);
+    for (const Extra& e : extras)
+        prep->mExtras.push_back({e.mA, e.mB, e.mColor});
+    prep->mExtrasBeforeArrows = extras_before_arrows;
+    prep->mArrows = std::move(arrows);
+    prep->mEdgeLines = std::move(edge_lines);
+    prep->mDeferCategoryEdges = defer_category_edges;
+    return prep;
+}
+
+Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool FixedFit) {
+    // The field, edge and colour options are the prepared ones; the camera and
+    // the frame are the caller's.
+    RenderOptions rOpt = rPrep.mOpt;
+    rOpt.mWidth = rCamera.mWidth;
+    rOpt.mHeight = rCamera.mHeight;
+    rOpt.mPixelAspect = rCamera.mPixelAspect;
+    rOpt.mSupersample = rCamera.mSupersample;
+    rOpt.mAzimuth = rCamera.mAzimuth;
+    rOpt.mElevation = rCamera.mElevation;
+    rOpt.mRoll = rCamera.mRoll;
+    rOpt.mView = rCamera.mView;
+    rOpt.mProjection = rCamera.mProjection;
+    rOpt.mFovDeg = rCamera.mFovDeg;
+    rOpt.mZoom = rCamera.mZoom;
+    rOpt.mPanX = rCamera.mPanX;
+    rOpt.mPanY = rCamera.mPanY;
+    rOpt.mShading = rCamera.mShading;
+    rOpt.mTwoSided = rCamera.mTwoSided;
+    rOpt.mAmbient = rCamera.mAmbient;
+    rOpt.mLightDir = rCamera.mLightDir;
+    rOpt.mBackground = rCamera.mBackground;
+    rOpt.mPointRadius = rCamera.mPointRadius;
+    rOpt.mAxes = rCamera.mAxes;
+    rOpt.mScaleBar = rCamera.mScaleBar;
+    rOpt.mColorbar = rCamera.mColorbar;
+    rnd_validate(rOpt);
+    double azimuth = 0.0;
+    double elevation = 0.0;
+    detail::render_view_angles(rOpt, azimuth, elevation);
+    const detail::CameraBasis cam = detail::camera_basis(azimuth, elevation, rOpt.mRoll);
+
+    const std::size_t num_faces = rPrep.mNumFaces;
+    const std::vector<std::int64_t>& f_start = rPrep.mFStart;
+    const std::vector<std::int64_t>& f_nodes = rPrep.mFNodes;
+    const std::vector<std::int64_t>& f_ids = rPrep.mFIds;
+    const std::vector<std::int64_t>& s_nodes = rPrep.mSNodes;
+    const std::vector<double>& f_normal = rPrep.mFNormal;
+    const std::vector<double>& v_normal = rPrep.mVNormal;
+    const bool smooth = rPrep.mSmooth && rOpt.mShading == RenderShading::Smooth;
+    const std::vector<double>& l_values = rPrep.mLValues;
+    const std::vector<double>& p_values = rPrep.mPValues;
+    const bool continuous = rPrep.mContinuous;
+    bool categorical = rPrep.mCategorical;
+    const std::string& label = rPrep.mLabel;
+    const std::optional<int>& component = rPrep.mComponent;
+    RndColoring coloring = rPrep.mColoring;
+    std::vector<std::string> keys = rPrep.mKeys;
+    const bool orientation = rOpt.mDiagnostic == RenderDiagnostic::Orientation;
+    std::vector<double> f_orient;
+    if (orientation)
+        f_orient = rPrep.mFValues;
+    const std::vector<double>& f_values = orientation ? f_orient : rPrep.mFValues;
+
+    // The extra layers: the prepared ones with the arrows between them, whose
+    // barbs lie in the plane of the arrow and the line of sight.
+    std::vector<double> xyz = rPrep.mXyz;
+    struct Extra {
+        std::int64_t mA;
+        std::int64_t mB;
+        RndColor mColor;
+    };
+    std::vector<Extra> extras;
+    auto add_vertex = [&](const double* pPoint) {
+        const std::int64_t id = static_cast<std::int64_t>(xyz.size() / 3);
+        xyz.insert(xyz.end(), pPoint, pPoint + 3);
+        return id;
+    };
+    auto add_segment = [&](const double* pA, const double* pB, const RndColor& rColor) {
+        const std::int64_t a = add_vertex(pA);
+        const std::int64_t b = add_vertex(pB);
+        extras.push_back({a, b, rColor});
+    };
+    for (std::size_t i = 0; i < rPrep.mExtrasBeforeArrows; ++i)
+        extras.push_back({rPrep.mExtras[i].mA, rPrep.mExtras[i].mB, rPrep.mExtras[i].mColor});
+    const double cos_barb = 0.9063077870366499;  // 25 degrees
+    const double sin_barb = 0.42261826174069944;
+    for (const RndArrow& arrow : rPrep.mArrows) {
+        const double* dir = arrow.mDir;
+        const double len = arrow.mLen;
+        double perp[3] = {dir[1] * cam.mW[2] - dir[2] * cam.mW[1],
+                          dir[2] * cam.mW[0] - dir[0] * cam.mW[2],
+                          dir[0] * cam.mW[1] - dir[1] * cam.mW[0]};
+        double pl = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
+        if (pl < 1e-9) {
+            perp[0] = cam.mU[0];
+            perp[1] = cam.mU[1];
+            perp[2] = cam.mU[2];
+            pl = 1.0;
+        }
+        for (double& c : perp)
+            c /= pl;
+        add_segment(arrow.mP, arrow.mTip, rOpt.mVectorColor);
+        for (double sign : {1.0, -1.0}) {
+            double barb[3];
+            for (std::size_t c = 0; c < 3; ++c)
+                barb[c] = arrow.mTip[c] - 0.3 * len * (cos_barb * dir[c] - sign * sin_barb * perp[c]);
+            add_segment(arrow.mTip, barb, rOpt.mVectorColor);
+        }
+    }
+    for (std::size_t i = rPrep.mExtrasBeforeArrows; i < rPrep.mExtras.size(); ++i)
+        extras.push_back({rPrep.mExtras[i].mA, rPrep.mExtras[i].mB, rPrep.mExtras[i].mColor});
+
+    // Project every vertex a primitive uses.
+    const std::size_t nv = xyz.size() / 3;
+    std::vector<std::uint8_t> used(nv, 0);
+    for (std::int64_t v : s_nodes)
+        used[static_cast<std::size_t>(v)] = 1;
+    for (std::int64_t v : rPrep.mLines.mNodes)
+        used[static_cast<std::size_t>(v)] = 1;
+    for (std::int64_t v : rPrep.mPoints.mNodes)
+        used[static_cast<std::size_t>(v)] = 1;
+    for (const Extra& e : extras) {
+        used[static_cast<std::size_t>(e.mA)] = 1;
+        used[static_cast<std::size_t>(e.mB)] = 1;
+    }
 
     const bool perspective = rOpt.mProjection == RenderProjection::Perspective;
+    double fit_distance = 0.0;
     std::array<double, 3> eye = {0.0, 0.0, 0.0};
     const double focal = 1.0 / std::tan(rOpt.mFovDeg * 3.141592653589793 / 360.0);
     if (perspective) {
@@ -1159,12 +1483,13 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         if (!(radius > 0.0))
             radius = 1.0;
         const double distance = radius / std::sin(rOpt.mFovDeg * 3.141592653589793 / 360.0);
+        fit_distance = distance;
         for (int k = 0; k < 3; ++k)
             eye[k] = centre[k] + cam.mW[static_cast<std::size_t>(k)] * distance;
     }
 
     // Front and back faces, which need the camera.
-    if (rOpt.mDiagnostic == RenderDiagnostic::Orientation) {
+    if (orientation) {
         const RndColor front = {70, 130, 230, 255};
         const RndColor back = {230, 140, 40, 255};
         coloring.mPalette = {front, back};
@@ -1187,7 +1512,7 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
                     toward[a] = eye[a] - (cnt > 0 ? c[a] / static_cast<double>(cnt) : 0.0);
             }
             const double d = n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2];
-            f_values[f] = d < 0.0 ? 1.0 : 0.0;
+            f_orient[f] = d < 0.0 ? 1.0 : 0.0;
             back_faces += d < 0.0 ? 1 : 0;
         }
         keys.push_back("orientation: front " + rnd_hex(front) + ", back " + rnd_hex(back) + " (" +
@@ -1231,6 +1556,30 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
             min_z = std::min(min_z, sz[i]);
             max_z = std::max(max_z, sz[i]);
         }
+    }
+
+
+    if (FixedFit) {
+        // The bounding sphere stands in for the projected extents, so the model
+        // keeps one size and one place while the camera moves.
+        const double r = rPrep.mRadius;
+        if (perspective) {
+            min_x = min_y = -1.0;
+            max_x = max_y = 1.0;
+            min_z = 1.0 / (fit_distance + r);
+            max_z = 1.0 / (fit_distance - r);
+        } else {
+            const double cx = rnd_dot(rPrep.mCentre.data(), cam.mU);
+            const double cy = rnd_dot(rPrep.mCentre.data(), cam.mV);
+            const double cz = rnd_dot(rPrep.mCentre.data(), cam.mW);
+            min_x = cx - r;
+            max_x = cx + r;
+            min_y = cy - r;
+            max_y = cy + r;
+            min_z = cz - r;
+            max_z = cz + r;
+        }
+        any = true;
     }
 
     // Fit the drawn geometry to the frame (leaving room for a colour bar).
@@ -1327,105 +1676,24 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
     }
 
     // Lines: the input's line cells, then the edge overlays and extra layers.
-    for (std::size_t i = 0; i < g.mLines.mIds.size(); ++i) {
+    for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
         detail::RasterLine line;
-        line.mA = g.mLines.mNodes[static_cast<std::size_t>(g.mLines.mStart[i])];
-        line.mB = g.mLines.mNodes[static_cast<std::size_t>(g.mLines.mStart[i]) + 1];
+        line.mA = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i])];
+        line.mB = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i]) + 1];
         line.mColor = coloring.MapOther(l_values[i], rOpt.mLineColor);
-        line.mId = g.mLines.mIds[i];
+        line.mId = rPrep.mLines.mIds[i];
         scene.mLines.push_back(line);
     }
-    if (rOpt.mEdges == RenderEdges::All) {
-        std::vector<std::pair<std::int64_t, std::int64_t>> edges;
-        edges.reserve(f_nodes.size());
-        for (std::size_t f = 0; f < num_faces; ++f) {
-            const std::int64_t lo = f_start[f];
-            const std::int64_t n = f_start[f + 1] - lo;
-            for (std::int64_t k = 0; k < n; ++k) {
-                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
-                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                if (a != b)
-                    edges.emplace_back(std::min(a, b), std::max(a, b));
-            }
-        }
-        parallel_sort(edges.begin(), edges.end());
-        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-        for (const auto& e : edges)
-            scene.mLines.push_back({e.first, e.second, rOpt.mEdgeColor, -1});
-    } else if (rOpt.mEdges == RenderEdges::Feature && num_faces > 0) {
-        const std::vector<detail::CreaseEdge> edges =
-            detail::crease_edges(f_start, f_nodes, f_normal, rOpt.mFeatureAngle);
-        for (const detail::CreaseEdge& e : edges)
-            if (e.IsCrease() || e.IsBoundary())
-                scene.mLines.push_back({e.mLo, e.mHi, rOpt.mEdgeColor, -1});
-    }
-    if (rOpt.mDiagnostic == RenderDiagnostic::FreeEdges && num_faces > 0) {
-        const RndColor open_color = {235, 140, 0, 255};
-        const RndColor non_manifold_color = {220, 30, 30, 255};
-        const RndColor inconsistent_color = {200, 0, 200, 255};
-        std::size_t open_edges = 0, non_manifold = 0, inconsistent = 0;
-        for (const detail::CreaseEdge& e :
-             detail::crease_edges(f_start, f_nodes, f_normal, 180.0)) {
-            if (e.IsNonManifold()) {
-                scene.mLines.push_back({e.mLo, e.mHi, non_manifold_color, -1});
-                ++non_manifold;
-            } else if (e.IsBoundary()) {
-                scene.mLines.push_back({e.mLo, e.mHi, open_color, -1});
-                ++open_edges;
-            } else if (e.mInconsistent) {
-                scene.mLines.push_back({e.mLo, e.mHi, inconsistent_color, -1});
-                ++inconsistent;
-            }
-        }
-        keys.push_back(
-            "free edges: " + std::to_string(open_edges) + " open " + rnd_hex(open_color) + ", " +
-            std::to_string(non_manifold) + " non-manifold " + rnd_hex(non_manifold_color) + ", " +
-            std::to_string(inconsistent) + " inconsistent " + rnd_hex(inconsistent_color));
-    }
-    if (rOpt.mCategoryEdges) {
-        if (!categorical)
-            throw std::invalid_argument(std::string(kRndPrefix) +
-                                        "category edges need a categorical colouring "
-                                        "(categorical, color_regions or a flag diagnostic)");
-        struct Use {
-            std::int64_t mLo, mHi;
-            std::size_t mFace;
-            bool operator<(const Use& rO) const {
-                return mLo != rO.mLo ? mLo < rO.mLo
-                                     : (mHi != rO.mHi ? mHi < rO.mHi : mFace < rO.mFace);
-            }
-        };
-        std::vector<Use> uses;
-        for (std::size_t f = 0; f < num_faces; ++f) {
-            const std::int64_t lo = f_start[f];
-            const std::int64_t n = f_start[f + 1] - lo;
-            for (std::int64_t k = 0; k < n; ++k) {
-                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
-                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                if (a != b)
-                    uses.push_back({std::min(a, b), std::max(a, b), f});
-            }
-        }
-        parallel_sort(uses.begin(), uses.end());
-        auto same = [&](double a, double b) {
-            return (std::isfinite(a) ? a : -1.0) == (std::isfinite(b) ? b : -1.0);
-        };
-        for (std::size_t i = 0; i < uses.size();) {
-            std::size_t j = i;
-            while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
-                ++j;
-            if (j - i == 2 && !same(f_values[uses[i].mFace], f_values[uses[i + 1].mFace]))
-                scene.mLines.push_back({uses[i].mLo, uses[i].mHi, rOpt.mEdgeColor, -1});
-            i = j;
-        }
-    }
+    scene.mLines.insert(scene.mLines.end(), rPrep.mEdgeLines.begin(), rPrep.mEdgeLines.end());
+    if (rPrep.mDeferCategoryEdges)
+        rnd_category_edge_lines(rOpt, categorical, f_start, f_nodes, f_values, scene.mLines);
     for (const Extra& e : extras)
         scene.mLines.push_back({e.mA, e.mB, e.mColor, -1});
-    for (std::size_t i = 0; i < g.mPoints.mIds.size(); ++i) {
+    for (std::size_t i = 0; i < rPrep.mPoints.mIds.size(); ++i) {
         detail::RasterPoint point;
-        point.mV = g.mPoints.mNodes[static_cast<std::size_t>(g.mPoints.mStart[i])];
+        point.mV = rPrep.mPoints.mNodes[static_cast<std::size_t>(rPrep.mPoints.mStart[i])];
         point.mColor = coloring.MapOther(p_values[i], rOpt.mLineColor);
-        point.mId = g.mPoints.mIds[i];
+        point.mId = rPrep.mPoints.mIds[i];
         scene.mPoints.push_back(point);
     }
 
@@ -1540,6 +1808,25 @@ Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
         }
     }
     return frame;
+}
+
+}  // namespace
+
+RenderScene prepare_render(const Mesh& rMesh, const RenderOptions& rOpt) {
+    RenderScene scene;
+    scene.mpData = rnd_prepare(rMesh, rOpt);
+    return scene;
+}
+
+Frame render_scene(const RenderScene& rScene, const RenderOptions& rOpt, bool FixedFit) {
+    if (!rScene.mpData)
+        throw std::invalid_argument(std::string(kRndPrefix) + "render_scene needs a prepared scene");
+    return rnd_draw(*static_cast<const RndPrepared*>(rScene.mpData.get()), rOpt, FixedFit);
+}
+
+Frame render(const Mesh& rMesh, const RenderOptions& rOpt) {
+    const std::shared_ptr<const RndPrepared> prepared = rnd_prepare(rMesh, rOpt);
+    return rnd_draw(*prepared, rOpt, false);
 }
 
 }  // namespace meshioplusplus

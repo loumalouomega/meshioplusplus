@@ -228,6 +228,7 @@ if TYPE_CHECKING:
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
     from ._transform import transform
+    from ._tui import tui
     from ._undo_green import undo_green
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
@@ -343,6 +344,7 @@ _LAZY_ATTRS = {
     "render_image": "_render",
     "render_text": "_render",
     "snapshot": "_render",
+    "tui": "_tui",
     "reorder": "_reorder",
     "repair": "_repair",
     "compute_sdf": "_sdf",
@@ -553,6 +555,7 @@ __all__ = [
     "render_image",
     "render_text",
     "snapshot",
+    "tui",
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",

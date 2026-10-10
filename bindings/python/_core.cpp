@@ -35,6 +35,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/version.hpp"
+#include "../../src/cpp/cli/tui/loop.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
@@ -2908,6 +2909,54 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("options") = py::dict(),
         py::arg("text") = py::dict(), py::arg("snapshot") = py::dict());
+
+    // The interactive terminal viewer (roadmap 7.2): the same loop as the native
+    // `tui` verb, compiled from src/cpp/cli/tui. With `replay` (bytes) it plays a
+    // recorded input stream on a screen of cols x rows and returns what it wrote,
+    // which is how the tests and the documentation figures drive it; without, it
+    // takes over the terminal until the user quits.
+    m.def(
+        "tui",
+        [](py::object pymesh, py::dict options, py::dict text, const std::string& title,
+           py::object replay, int cols, int rows) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::cli::tui::TuiOptions t;
+            t.mRender = render_py_options(options);
+            t.mText = render_py_text(text);
+            t.mText.mNotes = false;  // the loop draws the notes itself
+            if (text.contains("cell_aspect"))
+                t.mCellAspectFromTerminal = false;
+            t.mTitle = title;
+            meshioplusplus::cli::tui::TuiReport report;
+            py::dict out;
+            if (!replay.is_none()) {
+                const std::string script = py::cast<std::string>(replay);
+                meshioplusplus::cli::tui::ScriptedIo io(script, cols, rows);
+                report = core_nogil([&] {
+                    meshioplusplus::cli::tui::TuiSession session(cpp, t);
+                    return session.Run(io);
+                });
+                out["output"] = py::bytes(io.Output());
+            } else {
+                report = core_nogil([&] { return meshioplusplus::cli::tui::run_on_terminal(cpp, t); });
+                if (!report.mError.empty())
+                    throw std::runtime_error(report.mError);
+            }
+            out["exit"] = report.mExit;
+            out["frames"] = report.mFrames;
+            out["status"] = report.mStatus;
+            out["azimuth"] = report.mFinal.mAzimuth;
+            out["elevation"] = report.mFinal.mElevation;
+            out["zoom"] = report.mFinal.mZoom;
+            out["pan_x"] = report.mFinal.mPanX;
+            out["pan_y"] = report.mFinal.mPanY;
+            return out;
+        },
+        py::arg("mesh"), py::arg("options") = py::dict(), py::arg("text") = py::dict(),
+        py::arg("title") = "", py::arg("replay") = py::none(), py::arg("cols") = 100,
+        py::arg("rows") = 40);
 
     // Sharp, open, non-manifold and inconsistently wound edges as a line mesh.
     // See operations/feature_edges.hpp.

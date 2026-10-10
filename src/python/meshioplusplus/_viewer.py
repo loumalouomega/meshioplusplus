@@ -1,6 +1,6 @@
-"""Interactive visualization of a mesh, with two interchangeable backends.
+"""Interactive visualization of a mesh, with three interchangeable backends.
 
-A dependency-free *mapping* plus two optional renderers. Nothing here reads or
+A dependency-free *mapping* plus optional renderers. Nothing here reads or
 writes a file format, and nothing here is part of the C++ core — meshio++
 already knows how to produce every array a renderer needs, so the job is to
 hand those arrays over rather than to draw anything:
@@ -11,6 +11,10 @@ hand those arrays over rather than to draw anything:
 * **browser** — the mesh is written to VTP in memory and rendered by the
   vtk.js app under ``src/viewer/``, either inline in a notebook or in the default
   browser. See :mod:`meshioplusplus._viewer_browser`.
+* **terminal** — the software rasterizer's interactive loop
+  (:func:`~meshioplusplus.tui`): orbit, zoom and pan inside the terminal you
+  are in, with no display, no GPU and no dependency. The only backend that
+  works over a bare SSH session. C++-core only.
 
 The bulk of this module is :func:`_to_polyscope_payload`, which is *pure*: it
 takes a :class:`~meshioplusplus._mesh.Mesh` and returns plain numpy arrays and
@@ -788,9 +792,14 @@ def view(
         force a representation.
     backend :
         ``"auto"`` (default) uses polyscope when it is installed and a display
-        is available, else the browser; ``"polyscope"`` opens a native window;
-        ``"browser"`` renders with vtk.js, inline in a notebook or in the
-        default browser.
+        is available; else the browser when a display is (it can open a
+        window); else the interactive terminal viewer when standard input
+        and output are both terminals; else the browser, which writes an HTML
+        file. ``"polyscope"`` opens a native window; ``"browser"`` renders
+        with vtk.js, inline in a notebook or in the default browser;
+        ``"terminal"`` takes over the terminal (see
+        :func:`~meshioplusplus.tui`), where ``kind`` has no effect because the
+        viewer draws a volume's skin, 2-D cells, lines and points as they are.
     color_by :
         name of a mapped quantity to enable on load. Note that a vector array
         ``v`` also yields ``v:magnitude``, and a tensor its components — the
@@ -804,12 +813,15 @@ def view(
         backend-specific extras. For polyscope, forwarded to its
         ``set_<option>`` functions (``ground_plane_mode="none"``,
         ``up_dir="z_up"``). For the browser, ``quality=True`` bakes per-cell
-        quality metrics into the page so it can colour by them offline.
+        quality metrics into the page so it can colour by them offline. For
+        the terminal, the render options of :func:`~meshioplusplus.tui`
+        (``view="+x"``, ``edges="all"``, ``cmap="magma"``, ...).
 
     Returns
     -------
     The registered polyscope structure, or for the browser backend the path to
-    the generated page (``None`` when displayed inline in a notebook).
+    the generated page (``None`` when displayed inline in a notebook), or
+    ``None`` for the terminal backend, which returns when the user quits.
 
     Raises
     ------
@@ -818,14 +830,28 @@ def view(
         with ``pip install meshioplusplus[viewer]``.
     ValueError
         on an unknown ``backend``/``kind``, or a ``color_by`` naming no array.
+    RuntimeError
+        when ``backend="terminal"`` and standard input or output is not a
+        terminal.
+    NotImplementedError
+        when ``backend="terminal"`` and the compiled core is unavailable.
     """
-    if backend not in ("auto", "polyscope", "browser"):
+    if backend not in ("auto", "polyscope", "browser", "terminal"):
         raise ValueError(
             f"meshio++: view: unknown backend '{backend}' "
-            "(expected auto, polyscope or browser)"
+            "(expected auto, polyscope, browser or terminal)"
         )
     if backend == "auto":
-        backend = "polyscope" if (has_viewer() and _has_display()) else "browser"
+        backend = _auto_backend()
+
+    if backend == "terminal":
+        from ._tui import tui
+
+        options = dict(backend_options)
+        if color_by is not None:
+            options["color_by"] = color_by
+        tui(mesh, title=name, **options)
+        return None
 
     if backend == "browser":
         from ._viewer_browser import view_browser
@@ -946,6 +972,37 @@ def _software_screenshot(mesh, path, color_by, size, transparent, camera, ps_opt
             )
     width, height = size
     return snapshot(mesh, path, width=int(width), height=int(height), **options)
+
+
+def _auto_backend() -> str:
+    """What ``view(backend="auto")`` resolves to.
+
+    Polyscope with a display; the browser when a display lets it open a
+    window; the terminal viewer when only a terminal is left (no display, and
+    both standard streams are terminals); the browser's HTML file otherwise
+    (a notebook, a pipe).
+    """
+    display = _has_display()
+    if display and has_viewer():
+        return "polyscope"
+    if display or not _terminal_available():
+        return "browser"
+    return "terminal"
+
+
+def _terminal_available() -> bool:
+    """Whether the interactive terminal viewer can run here: both standard
+    streams are terminals and the compiled core is present."""
+    import sys
+
+    try:
+        from . import _core  # noqa: F401
+    except ImportError:
+        return False
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError):  # a closed or replaced stream
+        return False
 
 
 def _has_display() -> bool:

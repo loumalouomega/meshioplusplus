@@ -333,6 +333,13 @@ MIO_ABI_LAYOUT(meshioplusplus::Frame, 104, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TextOptions, 40, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SnapshotOptions, 24, 8);
 
+// v16.35.0 (the interactive viewer): the prepared-scene handle, and the cell
+// grid `encode_cells` returns by value. Neither embeds a Mesh. RenderScene is
+// an opaque shared pointer, so its layout is the only contract.
+MIO_ABI_LAYOUT(meshioplusplus::RenderScene, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TextCell, 32, 4);
+MIO_ABI_LAYOUT(meshioplusplus::TextGrid, 32, 8);
+
 // GltfWriteOptions is passed by const-ref through the exported `write_gltf()`,
 // pinned from the release that introduces it (the "pin in advance" lesson).
 MIO_ABI_LAYOUT(meshioplusplus::GltfWriteOptions, 168, 8);
