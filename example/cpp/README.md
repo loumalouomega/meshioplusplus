@@ -17,6 +17,7 @@ in the core is available with no separate build step.
 | [`04_gmsh_periodic.ipynb`](04_gmsh_periodic.ipynb) | Read sparse Gmsh 4.0 periodic tags into `GmshInfo`, render the mesh and round-trip ordered/duplicate pairs through native 2.2/4.1 writers. |
 | [`05_vtk_xml_appended.ipynb`](05_vtk_xml_appended.ipynb) | Independently framed raw/base64 ImageData, UInt64 headers, native registry reads, metadata and selective loading, rendered with the SVG helper. |
 | [`06_xdmf_series_regions.ipynb`](06_xdmf_series_regions.ipynb) | Fixed point/cell/side regions stored once with shared XDMF topology, retained across flush/append, and native step reads with SVG field rendering. |
+| [`07_terminal_rendering.ipynb`](07_terminal_rendering.ipynb) | v16.37.0: the software rasterizer drawing the bracket with no display or plotting library, every option reached through the C++ API (`RenderOptions`, `render`, `encode_png`): colouring by data, contour lines, arrows, a warp, **streamlines** on the skin and through a cut-away, the terminal form and `write_snapshot`. Frames are shown inline as PNGs by ``frame_image` in `mio_notebook.hpp``. |
 | [`03_mesh_operations.ipynb`](03_mesh_operations.ipynb) | The same operations tour as [`../python/03_mesh_operations.ipynb`](../python/03_mesh_operations.ipynb): surface/skin extraction, quality, reorder, diff, sniff, transform, clean, crop, merge, split, stats, convert_cells, refine, partition, smooth, interpolate, the five data operations, and selective reads. |
 
 ## Rendering without PyVista
