@@ -54,3 +54,23 @@ def test_raster_figures_need_polyscope(gen, tmp_path, monkeypatch):
     assert written
     for path in written:
         assert path.exists() and path.stat().st_size > 0, path
+
+
+def test_terminal_figures_are_listed(gen):
+    names = [p.name for p in gen.terminal_figures(dry_run=True)]
+    assert names == ["tui_loop.svg", "tui_help.svg", "tui_braille.svg"]
+
+
+def test_terminal_figures_are_deterministic_screens(gen, tmp_path, monkeypatch):
+    pytest.importorskip("meshioplusplus._core")
+    monkeypatch.setattr(gen, "IMAGES", tmp_path)
+    first = {p.name: p.read_bytes() for p in gen.terminal_figures(dry_run=False)}
+    assert set(first) == {"tui_loop.svg", "tui_help.svg", "tui_braille.svg"}
+    for name, data in first.items():
+        text = data.decode()
+        assert text.startswith("<svg ")
+        assert "<rect " in text
+        assert "q quit" in text or "this help" in text  # the status line or the help
+    assert b"<circle" in first["tui_braille.svg"]  # Braille dots are drawn as shapes
+    again = {p.name: p.read_bytes() for p in gen.terminal_figures(dry_run=False)}
+    assert again == first  # the same bytes twice: a replay has no clock in it

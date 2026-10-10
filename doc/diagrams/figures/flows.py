@@ -938,6 +938,47 @@ def abi_tiers():
     return c.render()
 
 
+def view_backends():
+    c = Canvas(
+        900,
+        372,
+        "How view picks a backend with auto: polyscope with a display, the browser when a window can open, the terminal viewer when only a terminal is left, an HTML file otherwise",
+    )
+    rows = [
+        ("a display exists and polyscope is installed", "polyscope", "a native desktop window", P.PYTHON),
+        ("a display exists", "browser", "vtk.js in the default browser, or inline in a notebook", P.WASM),
+        (
+            "no display, and stdin and stdout are both terminals",
+            "terminal",
+            "meshioplusplus tui: orbit, zoom and pan in the terminal you are in",
+            P.CORE,
+        ),
+        ("anything else (a notebook, a pipe)", "browser", "an HTML file, as before", P.WASM),
+    ]
+    c.box(24, 24, 190, 40, "view(mesh)", color=P.INK_2, size=P.SIZE_LABEL, weight="700")
+    y = 84
+    previous = None
+    for question, backend, what, colour in rows:
+        c.box(24, y, 330, 46, question, color=P.INK_2, size=P.SIZE_SMALL, rx=4)
+        c.arrow(354, y + 23, 430, y + 23, stroke=colour, sw=1.8)
+        c.label(392, y + 15, "yes" if backend != "browser" or y < 200 else "then", size=9.5)
+        c.box(430, y, 446, 46, backend, color=colour, sub=what, size=P.SIZE_LABEL, sub_size=9.5)
+        if previous is not None:
+            c.arrow(189, previous + 46, 189, y, stroke=P.INK_2, sw=1.4)
+            c.label(205, y - 9, "no", size=9.5, anchor="start")
+        else:
+            c.arrow(119, 64, 119, y, stroke=P.INK_2, sw=1.4)
+        previous = y
+        y += 66
+    c.label(
+        450,
+        y + 2,
+        "macOS and Windows always count as having a display, so there auto never picks the terminal; ask for it with backend=terminal.",
+    )
+    c.label(450, y + 20, "Before v16.35.0 the third row was an HTML file that nobody could open from a terminal.")
+    return c.render()
+
+
 def roadmap_map():
     columns = [
         (
@@ -1005,7 +1046,7 @@ def roadmap_map():
             "§7 terminal rendering",
             [
                 ("streamlines · thumbnails", "S"),
-                ("interactive tui · view auto", "L"),
+                ("tui: probe · clip · time", "L"),
                 ("synthwave theme · music", "S"),
             ],
             [(1, 2)],
@@ -1098,5 +1139,6 @@ FIGURES = {
     "data_locations": data_locations,
     "ml_fanout": ml_fanout,
     "abi_tiers": abi_tiers,
+    "view_backends": view_backends,
     "roadmap_map": roadmap_map,
 }

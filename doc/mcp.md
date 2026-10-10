@@ -192,6 +192,8 @@ Jobs on the machine the server runs on (see [the dashboard](./dashboard#launchin
 | `screenshot` | `[viewer]` | off-screen PNG render, returned as MCP image content; without the extra the software rasterizer draws it (`render_mesh` takes its options) |
 | `train_start`, `train_predict`, `predict_file` | `nvidia-physicsnemo`, plus `torch_geometric` for the `meshgraphnet` family (no pip extra, [deliberately](physicsnemo.md#installation-deliberately-no-physicsnemo-extra)) | training and inference; the other `train_*` tools only read files and need neither. `train_defaults` reports which of `torch_geometric`/`physicsnemo`/`deeponet` (the experimental `DeepONet`) the server has |
 
+`view`, `has_viewer` and `tui` are deliberately not tools: they hand control to a person (a window, a browser tab, or a terminal taken over for orbiting and zooming), and an agent has nothing to drive. `screenshot` and `render_mesh` are their headless equivalents; the [interactive terminal viewer](/tui#the-interactive-viewer-tui) is for the person at the keyboard.
+
 ## Reports are strict JSON
 
 Every response survives `json.dumps(..., allow_nan=False)`: numpy scalars and arrays are converted, `NaN`/`±Inf` become `null` (with a `non_finite_replaced` count so the loss is visible), and any array longer than 1000 elements is replaced by a `{"truncated": true, "size", "shape", "dtype", "preview"}` wrapper — reports stay agent-sized no matter how large the mesh.

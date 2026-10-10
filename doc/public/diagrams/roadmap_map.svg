@@ -93,7 +93,7 @@
 <text x="520.67" y="397" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">streamlines · thumbnails</text>
 <text x="520.67" y="411" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="514.67" y="430" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="520.67" y="447" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">interactive tui · view auto</text>
+<text x="520.67" y="447" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">tui: probe · clip · time</text>
 <text x="520.67" y="461" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
 <rect x="514.67" y="480" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
 <text x="520.67" y="497" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">synthwave theme · music</text>

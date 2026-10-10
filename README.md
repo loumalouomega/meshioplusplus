@@ -868,15 +868,21 @@ Where there is no window, browser or GPU — an SSH session on a login node, a c
 meshioplusplus snapshot part.vtu -                                    # draw it in this terminal
 meshioplusplus snapshot result.vtu - --color-by temperature --colorbar --encoding braille
 meshioplusplus snapshot part.vtu part.png --edges feature --axes      # a PNG, no display needed
+meshioplusplus tui part.vtu                                           # orbit and zoom it right here
 ```
 
 ```python
 print(meshioplusplus.render_text(mesh, color_by="temperature"))      # ANSI text for this terminal
 image = meshioplusplus.render_image(mesh, 800, 600, supersample=2)   # an (H, W, 4) uint8 array
 meshioplusplus.snapshot(mesh, "part.png", edges="all")               # .png .txt .ansi .html .cast
+meshioplusplus.tui(mesh)                                             # the interactive viewer
 ```
 
 Field rendering colours by an array, a `data_calc` expression or a tensor invariant on a linear, log or symlog scale with percentile clipping and a legend, draws categories, regions, isolines, vector arrows and a warp with its undeformed outline, and offers quality, orientation and free-edge diagnostic views. The same options reach C, Fortran, Julia, R, WebAssembly and the settings pipeline's `Snapshot` step.
+
+`tui` is the interactive viewer for a machine with no display: drag to orbit, wheel to zoom, only the changed cells are sent, and the terminal is restored however it ends. `view()` picks it by itself when there is no display but a terminal.
+
+![The interactive terminal viewer](doc/public/images/tui_loop.svg)
 
 It is a preview, not a replacement for the viewers above; `screenshot()` falls back to it when Polyscope is not installed, and the MCP server's `render_mesh` tool lets an agent look at a mesh. See [`doc/tui.md`](doc/tui.md).
 
@@ -1165,7 +1171,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.34.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.35.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

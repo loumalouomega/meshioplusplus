@@ -34,6 +34,7 @@ Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled
 | [`28_vtk_xml_appended.ipynb`](28_vtk_xml_appended.ipynb) | Native raw/base64 appended VTP/VTS/VTR/VTI reads from VTK's own writers, curved/graded structured geometry, UInt64 headers, compression, metadata summaries and selective reads, rendered off-screen with a matplotlib fallback |
 | [`30_xdmf_series_regions.ipynb`](30_xdmf_series_regions.ipynb) | Fixed point/cell/side regions shared by every XDMF step, empty groups and tags, Python reader/writer tuples, native flush/append and selective reads, with off-screen PyVista overlays and a matplotlib fallback |
 | [`31_terminal_rendering.ipynb`](31_terminal_rendering.ipynb) | v16.33.0: the software rasterizer beside PyVista — `render_image` as an array through matplotlib, camera, shading and edge options, data colouring with the new colormaps and a colour bar, the terminal form embedded as HTML (`render_text`), and PNG and asciinema files from `snapshot` |
+| [`32_interactive_terminal.ipynb`](32_interactive_terminal.ipynb) | v16.35.0: the interactive terminal viewer — a recorded mouse-and-key session replayed through `tui`, the resulting camera beside PyVista, the cell diff that keeps the link usable, and the `view(backend="auto")` order |
 
 See [`../cpp/`](../cpp/) for the same tour written directly against the **C++ core** (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel.
 

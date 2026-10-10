@@ -7,6 +7,12 @@ One command, two kinds of output:
   colouring. These are the canonical figures for anything that is really a
   picture *of a mesh coloured by a field*: they are dependency-free, they scale,
   and they are produced by exactly the code path they document.
+* **Terminal screens** (``doc/public/images/tui_*.svg``) -- the interactive
+  viewer (``meshioplusplus tui``) driven by a recorded input stream on a screen
+  of a stated size, then drawn by ``tools/ansi_screen.py``'s terminal emulator.
+  What the figure shows is exactly what the loop writes, so it is reproducible
+  and needs no terminal, display or font for the picture itself (block and
+  Braille glyphs are drawn as shapes). Needs the compiled core.
 * **Raster** (``doc/public/viewer/*.png``) -- ``screenshot()``, i.e. the
   Polyscope ``[viewer]`` extra, for the shaded 3D views a flat vector
   projection cannot convey.
@@ -138,6 +144,83 @@ def vector_figures(dry_run: bool) -> list[pathlib.Path]:
     return written
 
 
+# Terminal-screen figures: (file, columns, rows, input stream, tui options).
+# The streams are SGR mouse reports (``CSI < b ; x ; y M``): a drag from one
+# cell to another turns the camera by 360 degrees per screen width.
+def _drag(x0, y0, x1, y1):
+    return (f"\x1b[<0;{x0};{y0}M\x1b[<32;{x1};{y1}M\x1b[<0;{x1};{y1}m").encode()
+
+
+TERMINAL_FIGURES = [
+    (
+        "tui_loop.svg",
+        100,
+        34,
+        _drag(40, 14, 47, 12),
+        dict(color_by="height", cmap="viridis", colorbar=True, shading="smooth"),
+    ),
+    (
+        "tui_help.svg",
+        100,
+        34,
+        b"?",
+        dict(color_by="height", cmap="magma", shading="smooth"),
+    ),
+    (
+        "tui_braille.svg",
+        100,
+        34,
+        _drag(40, 14, 44, 12) + b"+",
+        dict(encoding="braille", edges="feature", shading="smooth"),
+    ),
+]
+
+
+def _bunny():
+    """The Stanford bunny of ``example/``, with its height as a point field."""
+    mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
+    return meshioplusplus.Mesh(
+        mesh.points, mesh.cells, point_data={"height": mesh.points[:, 2].copy()}
+    )
+
+
+def terminal_figures(dry_run: bool) -> list[pathlib.Path]:
+    """The interactive viewer's screens."""
+    paths = [IMAGES / name for name, *_ in TERMINAL_FIGURES]
+    if dry_run:
+        return paths
+    try:
+        from meshioplusplus import _core  # noqa: F401
+    except ImportError:
+        print(
+            "  skipping the terminal figures: the compiled core is not available",
+            file=sys.stderr,
+        )
+        return []
+    sys.path.insert(0, str(REPO / "tools"))
+    import ansi_screen
+
+    mesh = _bunny()
+    for name, cols, rows, script, options in TERMINAL_FIGURES:
+        result = meshioplusplus.tui(
+            mesh,
+            replay=script,
+            cols=cols,
+            rows=rows,
+            color_depth="truecolor",
+            title="bunny.stl",
+            **options,
+        )
+        screen = ansi_screen.replay(result["output"], cols, rows)
+        path = IMAGES / name
+        path.write_text(
+            screen.to_svg(title=f"meshioplusplus tui, {cols}x{rows} terminal"),
+            encoding="utf-8",
+        )
+        print(f"  wrote {_display(path)}")
+    return paths
+
+
 def raster_figures(dry_run: bool) -> list[pathlib.Path]:
     """The shaded Polyscope screenshots."""
     path = VIEWER / "desktop-viewer.png"
@@ -184,6 +267,7 @@ def main() -> int:
         print("regenerating doc figures from", SAMPLE.relative_to(REPO))
 
     written = vector_figures(args.list)
+    written += terminal_figures(args.list)
     if not args.vector_only:
         written += raster_figures(args.list)
 

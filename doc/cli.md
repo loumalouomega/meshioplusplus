@@ -1065,6 +1065,39 @@ Without Polyscope (always, in the release binaries) `screenshot` draws its PNG t
 
 ---
 
+## meshioplusplus tui
+
+Orbit, zoom and pan a mesh inside this terminal, with no display, GPU or browser: the [interactive viewer](/tui#the-interactive-viewer-tui) around the software rasterizer. It needs a terminal on standard input and output, and refuses by name otherwise (use [`snapshot`](#meshioplusplus-snapshot) for one frame to a file or a pipe).
+
+```
+meshioplusplus tui [options] INFILE
+```
+
+![The interactive viewer](/images/tui_loop.svg)
+
+Drag to orbit, the wheel or `+` `-` to zoom, the arrow keys to pan, `1`…`7` for the named views, `p` perspective, `e` edges, `s` shading, `a` `b` `c` axes, scale bar and colour bar, `r` reset, `?` help, `q` quit. The terminal is restored however it ends; a signal ends it with exit code 128 plus the signal number.
+
+It takes every render option of `snapshot` (the camera, shading, edges, colouring and field options listed there; the frame size is the terminal's), and:
+
+| Option | Description |
+|--------|-------------|
+| `--encoding NAME` | `halfblock` (default), `quadrant`, `sextant`, `braille`, `ascii`, or `kitty`, `iterm2`, `sixel` (these redraw the whole image on every change) |
+| `--color-depth NAME` | `auto` (from `NO_COLOR`, `COLORTERM`, `TERM`; the default), `truecolor`, `256`, `16` or `mono` |
+| `--cell-aspect R` | Height over width of a terminal cell (default: the terminal's own when it reports its pixel size, else `2`) |
+| `--tmux` | Wrap a graphics protocol for tmux passthrough; one is refused inside tmux without it |
+| `--replay FILE` | Play a recorded input stream on a `--cols` by `--rows` screen (default `100` x `40`) and print what the viewer writes, instead of using the terminal |
+| `--input-format` (`-i`) | Force the input format |
+
+```sh
+meshioplusplus tui part.vtu
+meshioplusplus tui result.vtu --color-by temperature --colorbar --cmap magma --edges feature
+meshioplusplus tui part.vtu --encoding braille --color-depth 256
+```
+
+The Python CLI has the same verb, and `meshioplusplus view --backend terminal` (Python and native) runs it.
+
+---
+
 ## meshioplusplus hausdorff
 
 Print the Hausdorff distance between the surfaces of two meshes — how far apart they are at their worst (see [Hausdorff distance](/hausdorff)).
@@ -1681,7 +1714,7 @@ meshioplusplus view part.msh --kind surface --color-by material
 meshioplusplus screenshot part.msh out.png --size 1600x1200
 ```
 
-Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`, `--color-by NAME`, `--name NAME`; `screenshot` adds `--size WIDTHxHEIGHT` and `--transparent`.
+Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`, `--color-by NAME`, `--name NAME`; `view` adds `--backend {auto,polyscope,terminal}` (`auto` is Polyscope when the build has it, else the [terminal viewer](#meshioplusplus-tui) when standard input and output are terminals); `screenshot` adds `--size WIDTHxHEIGHT` and `--transparent`.
 
 These mirror the Python CLI's verbs, but in the **native binary** they are only functional in a build configured with [Polyscope](https://polyscope.run):
 
