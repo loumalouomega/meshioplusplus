@@ -148,6 +148,7 @@
 #include "json_out.hpp"
 #include "render_args.hpp"
 #include "tui/loop.hpp"
+#include "tui/series.hpp"
 namespace {
 
 using meshioplusplus::DType;
@@ -467,7 +468,9 @@ void print_usage(std::ostream& os) {
           "                            --shading --color-by ...; see doc/tui.md)\n"
           "  tui                     Orbit, zoom and pan a mesh in this terminal: drag or\n"
           "                            arrows to move, wheel or +/- to zoom, ? for help,\n"
-          "                            q to quit (takes snapshot's flags; see doc/tui.md)\n"
+          "                            q to quit (takes snapshot's flags; several files or a\n"
+          "                            quoted glob make a time series: [ ] step, space plays;\n"
+          "                            --compare FILE, --follow, --session FILE; see doc/tui.md)\n"
           "  data <verb>             Inspect / rename / average / compute on data arrays\n"
           "  pipeline                Run a settings.json operation chain (read -> ops ->\n"
           "                          write; see doc/pipeline.md). --input/--output\n"
@@ -3911,11 +3914,20 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
              {"replay", {}, true},
              {"cols", {}, true},
              {"rows", {}, true},
+             {"compare", {}, true},
+             {"diff", {}, false},
+             {"separate-ranges", {}, false},
+             {"follow", {}, false},
+             {"follow-interval", {}, true},
+             {"settle", {}, true},
+             {"fps", {}, true},
+             {"session", {}, true},
          })
         specs.push_back(spec);
     auto p = cli_parse(rArgs, specs);
-    if (p.positionals.size() != 1)
-        throw std::runtime_error("tui requires exactly one INFILE");
+    if (p.positionals.empty())
+        throw std::runtime_error(
+            "tui requires an INFILE (or several files, or a quoted glob, for a time series)");
 
     meshioplusplus::cli::tui::TuiOptions options;
     options.mRender = cli_render_options(p);
@@ -3937,8 +3949,44 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
             "tui: inside tmux the " + opt_value(p, "encoding") +
             " protocol needs --tmux (and `set -g allow-passthrough on`, tmux 3.3+); "
             "a cell encoding works without it");
+    options.mSessionPath = opt_value(p, "session");
+    options.mDiff = has_flag(p, "diff");
+    options.mSharedRange = !has_flag(p, "separate-ranges");
+    if (has_flag(p, "follow")) {
+        options.mFollowMs = has_opt(p, "follow-interval") ? std::stoi(opt_value(p, "follow-interval"))
+                                                          : 500;
+        if (options.mFollowMs < 10)
+            throw std::runtime_error("--follow-interval must be at least 10 (milliseconds)");
+    } else if (has_opt(p, "follow-interval")) {
+        throw std::runtime_error("--follow-interval requires --follow");
+    }
+    if (has_opt(p, "settle"))
+        options.mFollowSettleMs = std::stoi(opt_value(p, "settle"));
+    if (has_opt(p, "fps"))
+        options.mPlayFps = meshioplusplus::detail::stod_c(opt_value(p, "fps"));
+    if (options.mDiff && !has_opt(p, "compare"))
+        throw std::runtime_error("--diff requires --compare FILE");
 
-    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    // One mesh, or a time series: several files, a quoted glob, or --follow
+    // (which watches the file for being rewritten).
+    const std::string format = opt_value(p, "input-format");
+    Mesh mesh;  // the single mesh; unused when a series is shown
+    const bool glob = p.positionals.size() == 1 &&
+                      p.positionals[0].find_first_of("*?") != std::string::npos;
+    if (glob || p.positionals.size() > 1 || options.mFollowMs > 0) {
+        options.mpSeries = glob ? std::make_shared<meshioplusplus::cli::tui::PathSeries>(
+                                      std::vector<std::string>{}, p.positionals[0], format)
+                                : std::make_shared<meshioplusplus::cli::tui::PathSeries>(
+                                      p.positionals, std::string(), format);
+    } else {
+        mesh = read_mesh_cli(p.positionals[0], format);
+    }
+    Mesh other;
+    if (has_opt(p, "compare")) {
+        other = read_mesh_cli(opt_value(p, "compare"), format);
+        options.mpCompare = &other;
+        options.mCompareTitle = std::filesystem::path(opt_value(p, "compare")).filename().string();
+    }
 
     if (has_opt(p, "replay")) {
         // A recorded byte stream on a screen of a stated size: what the loop
@@ -3959,6 +4007,8 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
         const auto report = session.Run(io);
         std::cout.write(io.Output().data(), static_cast<std::streamsize>(io.Output().size()));
         std::cout.flush();
+        if (!report.mError.empty())
+            std::cerr << "error: " << report.mError << "\n";
         return report.mExit;
     }
 

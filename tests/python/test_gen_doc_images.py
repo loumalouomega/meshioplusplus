@@ -56,21 +56,33 @@ def test_raster_figures_need_polyscope(gen, tmp_path, monkeypatch):
         assert path.exists() and path.stat().st_size > 0, path
 
 
+TERMINAL = [
+    "tui_loop.svg",
+    "tui_help.svg",
+    "tui_braille.svg",
+    "tui_probe.svg",
+    "tui_command.svg",
+    "tui_cutaway.svg",
+    "tui_compare.svg",
+    "tui_series.svg",
+]
+
+
 def test_terminal_figures_are_listed(gen):
-    names = [p.name for p in gen.terminal_figures(dry_run=True)]
-    assert names == ["tui_loop.svg", "tui_help.svg", "tui_braille.svg"]
+    assert [p.name for p in gen.terminal_figures(dry_run=True)] == TERMINAL
 
 
 def test_terminal_figures_are_deterministic_screens(gen, tmp_path, monkeypatch):
     pytest.importorskip("meshioplusplus._core")
     monkeypatch.setattr(gen, "IMAGES", tmp_path)
     first = {p.name: p.read_bytes() for p in gen.terminal_figures(dry_run=False)}
-    assert set(first) == {"tui_loop.svg", "tui_help.svg", "tui_braille.svg"}
+    assert list(first) == TERMINAL
     for name, data in first.items():
         text = data.decode()
         assert text.startswith("<svg ")
         assert "<rect " in text
-        assert "q quit" in text or "this help" in text  # the status line or the help
+        assert "q quit" in text or "this help" in text or ":" in text  # a status line
     assert b"<circle" in first["tui_braille.svg"]  # Braille dots are drawn as shapes
+    assert "cutaway: 1 plane" in first["tui_cutaway.svg"].decode()
     again = {p.name: p.read_bytes() for p in gen.terminal_figures(dry_run=False)}
     assert again == first  # the same bytes twice: a replay has no clock in it

@@ -144,11 +144,16 @@ def vector_figures(dry_run: bool) -> list[pathlib.Path]:
     return written
 
 
-# Terminal-screen figures: (file, columns, rows, input stream, tui options).
-# The streams are SGR mouse reports (``CSI < b ; x ; y M``): a drag from one
-# cell to another turns the camera by 360 degrees per screen width.
+# Terminal-screen figures: (file, columns, rows, input stream, tui options, tui
+# keyword arguments). The streams are SGR mouse reports (``CSI < b ; x ; y M``)
+# and keys: a drag from one cell to another turns the camera by 360 degrees per
+# screen width, a press and a release in one cell is a click.
 def _drag(x0, y0, x1, y1):
     return (f"\x1b[<0;{x0};{y0}M\x1b[<32;{x1};{y1}M\x1b[<0;{x1};{y1}m").encode()
+
+
+def _click(x, y):
+    return f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m".encode()
 
 
 TERMINAL_FIGURES = [
@@ -158,6 +163,7 @@ TERMINAL_FIGURES = [
         34,
         _drag(40, 14, 47, 12),
         dict(color_by="height", cmap="viridis", colorbar=True, shading="smooth"),
+        {},
     ),
     (
         "tui_help.svg",
@@ -165,6 +171,7 @@ TERMINAL_FIGURES = [
         34,
         b"?",
         dict(color_by="height", cmap="magma", shading="smooth"),
+        {},
     ),
     (
         "tui_braille.svg",
@@ -172,6 +179,47 @@ TERMINAL_FIGURES = [
         34,
         _drag(40, 14, 44, 12) + b"+",
         dict(encoding="braille", edges="feature", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_probe.svg",
+        100,
+        34,
+        _click(36, 24) + b"i" + _click(56, 9) + b"i",
+        dict(color_by="height", cmap="viridis", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_command.svg",
+        100,
+        34,
+        b":cmap magma\r:isolines 6\r:vectors",
+        dict(color_by="height", cmap="viridis", shading="smooth"),
+        {},
+    ),
+    (
+        "tui_cutaway.svg",
+        100,
+        34,
+        _drag(40, 14, 43, 13) + b"x,,",
+        dict(color_by="height", cmap="viridis", shading="smooth", view="-x"),
+        {},
+    ),
+    (
+        "tui_compare.svg",
+        101,
+        34,
+        _drag(30, 14, 36, 12),
+        dict(color_by="u", cmap="coolwarm", shading="smooth"),
+        {"compare": "step4"},
+    ),
+    (
+        "tui_series.svg",
+        100,
+        34,
+        b"]]",
+        dict(color_by="u", cmap="coolwarm", shading="smooth"),
+        {"series": True},
     ),
 ]
 
@@ -184,9 +232,25 @@ def _bunny():
     )
 
 
+def _bunny_series(folder: pathlib.Path, steps: int = 4) -> list:
+    """A short time series: a travelling wave over the bunny's height."""
+    mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
+    z = mesh.points[:, 2] / 100.0
+    paths = []
+    for k in range(steps):
+        u = np.sin(6.0 * z + 1.2 * k) * (1.0 + 0.3 * k)
+        path = folder / f"bunny_{k + 1}.vtu"
+        meshioplusplus.write(
+            path,
+            meshioplusplus.Mesh(mesh.points, mesh.cells, point_data={"u": u}),
+        )
+        paths.append(str(path))
+    return paths
+
+
 def terminal_figures(dry_run: bool) -> list[pathlib.Path]:
     """The interactive viewer's screens."""
-    paths = [IMAGES / name for name, *_ in TERMINAL_FIGURES]
+    paths = [IMAGES / entry[0] for entry in TERMINAL_FIGURES]
     if dry_run:
         return paths
     try:
@@ -197,27 +261,44 @@ def terminal_figures(dry_run: bool) -> list[pathlib.Path]:
             file=sys.stderr,
         )
         return []
+    import tempfile
+
     sys.path.insert(0, str(REPO / "tools"))
     import ansi_screen
 
     mesh = _bunny()
-    for name, cols, rows, script, options in TERMINAL_FIGURES:
-        result = meshioplusplus.tui(
-            mesh,
-            replay=script,
-            cols=cols,
-            rows=rows,
-            color_depth="truecolor",
-            title="bunny.stl",
-            **options,
-        )
-        screen = ansi_screen.replay(result["output"], cols, rows)
-        path = IMAGES / name
-        path.write_text(
-            screen.to_svg(title=f"meshioplusplus tui, {cols}x{rows} terminal"),
-            encoding="utf-8",
-        )
-        print(f"  wrote {_display(path)}")
+    with tempfile.TemporaryDirectory() as tmp:
+        series = _bunny_series(pathlib.Path(tmp))
+        for name, cols, rows, script, options, extra in TERMINAL_FIGURES:
+            kwargs = {}
+            if extra.get("series"):
+                kwargs["series"] = series
+                target = None
+                title = "bunny_*.vtu"
+            elif extra.get("compare"):
+                kwargs["compare"] = series[3]
+                target = series[0]
+                title = None
+            else:
+                target = mesh
+                title = "bunny.stl"
+            result = meshioplusplus.tui(
+                target,
+                replay=script,
+                cols=cols,
+                rows=rows,
+                color_depth="truecolor",
+                title=title,
+                **kwargs,
+                **options,
+            )
+            screen = ansi_screen.replay(result["output"], cols, rows)
+            path = IMAGES / name
+            path.write_text(
+                screen.to_svg(title=f"meshioplusplus tui, {cols}x{rows} terminal"),
+                encoding="utf-8",
+            )
+            print(f"  wrote {_display(path)}")
     return paths
 
 

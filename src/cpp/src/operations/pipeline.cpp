@@ -291,7 +291,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric"}},
+          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
+          "CutawayTint"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -628,6 +629,20 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
         {"none", "quality", "inverted", "degenerate", "orientation", "free_edges", "edge_length"},
         0));
     o.mQualityMetric = pipe_text(rStep, "QualityMetric", "");
+    // Cut-away planes: a flat list of numbers, six per plane (a point and the
+    // normal of the side kept).
+    const std::vector<double> cut = pipe_dvec(rStep, "Cutaway");
+    if (cut.size() % 6 != 0 || cut.size() > 12)
+        throw std::invalid_argument(pipe_err(
+            rStep, "parameter 'Cutaway' must be one or two planes of six numbers each "
+                   "(a point, then the normal of the side kept)"));
+    for (std::size_t i = 0; i + 6 <= cut.size(); i += 6) {
+        RenderCutaway plane;
+        plane.mPoint = {cut[i], cut[i + 1], cut[i + 2]};
+        plane.mNormal = {cut[i + 3], cut[i + 4], cut[i + 5]};
+        o.mCutaways.push_back(plane);
+    }
+    o.mCutawayTint = pipe_snap_color(rStep, "CutawayTint", o.mCutawayTint);
     return o;
 }
 

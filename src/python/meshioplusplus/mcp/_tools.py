@@ -4036,6 +4036,8 @@ def tool_render_mesh(
     warp_outline=False,
     diagnostic=None,
     quality_metric=None,
+    cutaway=None,
+    cutaway_tint=None,
 ):
     """Draw a mesh with the software rasterizer: no display, GPU or extra.
     Without output_path, return it as text; with one, write the form its
@@ -4075,6 +4077,8 @@ def tool_render_mesh(
         "warp_outline": bool(warp_outline) or None,
         "diagnostic": diagnostic,
         "quality_metric": quality_metric,
+        "cutaway": None if not cutaway else list(cutaway),
+        "cutaway_tint": None if cutaway_tint is None else parse_color(cutaway_tint),
     }
     options = {k: v for k, v in options.items() if v is not None}
     if output_path is None:

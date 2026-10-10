@@ -438,3 +438,112 @@ def test_field_flags_match_between_the_two_clis(tmp_path):
         text=True,
     )
     assert r.returncode != 0 and "requires --color-by" in r.stderr
+
+
+# --- cut-aways (v16.36.0, ABI 25) ----------------------------------------------
+
+
+def _centre(image, info):
+    h, w = image.shape[:2]
+    return int(info["cell_ids"][h // 2, w // 2]), tuple(
+        int(c) for c in image[h // 2, w // 2]
+    )
+
+
+def test_a_cutaway_shows_the_tinted_inside_of_a_cube():
+    cube = _cube()
+    kw = dict(view="-x", shading="none", background=(0, 0, 0, 255), return_info=True)
+    image, info = mio.render_image(cube, 64, 64, **kw)
+    assert _centre(image, info)[0] == 4  # the x = 0 face
+    for plane in (
+        "+x:0.5",
+        (0.5, 0, 0, 1, 0, 0),
+        [(0.5, 0, 0, 1, 0, 0)],
+        "0.5,0,0,1,0,0",
+    ):
+        image, info = mio.render_image(
+            cube, 64, 64, cutaway=plane, cutaway_tint=(10, 200, 30), **kw
+        )
+        assert _centre(image, info) == (5, (10, 200, 30, 255)), plane
+    assert any(n.startswith("cutaway: 1 plane") for n in info["notes"])
+
+
+def test_cutaway_forms_are_validated():
+    cube = _cube()
+    with pytest.raises(ValueError, match="AXIS:OFFSET"):
+        mio.render_image(cube, cutaway="x:1")
+    with pytest.raises(ValueError, match="six numbers"):
+        mio.render_image(cube, cutaway=(1, 2, 3))
+    with pytest.raises(ValueError, match="at most two"):
+        mio.render_image(cube, cutaway=["+x:0.1", "+y:0.1", "+z:0.1"])
+    with pytest.raises(ValueError, match="non-zero normal"):
+        mio.render_image(cube, cutaway=(0, 0, 0, 0, 0, 0))
+    a = mio.render_image(cube, 32, 32, cutaway=["+x:0.5", "+y:0.5"], view="+z")
+    b = mio.render_image(
+        cube, 32, 32, cutaway=[(0.5, 0, 0, 1, 0, 0), "+y:0.5"], view="+z"
+    )
+    assert (a == b).all()
+
+
+def test_a_cut_keeps_the_framing_of_the_whole_model():
+    cube = _cube()
+    whole, wi = mio.render_image(
+        cube, 64, 64, view="+z", shading="none", return_info=True
+    )
+    cut, ci = mio.render_image(
+        cube, 64, 64, view="+z", shading="none", cutaway="+x:0.5", return_info=True
+    )
+    ids_whole = wi["cell_ids"]
+    ids_cut = ci["cell_ids"]
+    # Where the cut picture draws the top face, the whole picture drew it too.
+    drawn = ids_cut == 1
+    assert drawn.any() and (ids_whole[drawn] == 1).all()
+    assert 0.3 < drawn.sum() / (ids_whole == 1).sum() < 0.7
+
+
+def test_cutaway_flags_match_between_the_two_clis(tmp_path):
+    if NATIVE is None:
+        pytest.skip("no native CLI build found")
+    infile = tmp_path / "cube.vtu"
+    mio.write(infile, _cube())
+    flags = [
+        "--cutaway",
+        "+x:0.4",
+        "--cutaway",
+        "0,0.3,0,0,-1,0",
+        "--cutaway-tint",
+        "#00ff80",
+        "--view",
+        "iso",
+        "--shading",
+        "smooth",
+        "--width",
+        "64",
+        "--height",
+        "48",
+    ]
+    py_out = tmp_path / "py.png"
+    native_out = tmp_path / "native.png"
+    assert _python_cli(["snapshot", str(infile), str(py_out), *flags]) == 0
+    r = subprocess.run(
+        [NATIVE, "snapshot", str(infile), str(native_out), *flags],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert py_out.read_bytes() == native_out.read_bytes()
+    plain = tmp_path / "plain.png"
+    assert _python_cli(["snapshot", str(infile), str(plain), "--width", "64"]) == 0
+    assert plain.read_bytes() != py_out.read_bytes()
+    r = subprocess.run(
+        [NATIVE, "snapshot", str(infile), "-", "--cutaway-tint", "#ff0000"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0 and "requires --cutaway" in r.stderr
+    r = subprocess.run(
+        [NATIVE, "snapshot", str(infile), "-", "--cutaway", "sideways:1"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0 and "AXIS:OFFSET" in r.stderr

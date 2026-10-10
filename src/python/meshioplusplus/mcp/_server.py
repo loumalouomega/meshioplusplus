@@ -1291,6 +1291,8 @@ def _register_operations(server: FastMCP) -> None:
         warp_outline: bool = False,
         diagnostic: Optional[str] = None,
         quality_metric: Optional[str] = None,
+        cutaway: Optional[list] = None,
+        cutaway_tint: Optional[str] = None,
     ):
         """Look at a mesh: draw it with the software rasterizer, which needs
         no display, GPU or optional extra (unlike screenshot).
@@ -1325,8 +1327,13 @@ def _register_operations(server: FastMCP) -> None:
         warp_outline drawing the undeformed outline. diagnostic is one of
         quality (with quality_metric, e.g. scaled_jacobian), inverted,
         degenerate, orientation (front and back faces), free_edges (open,
-        non-manifold and inconsistent edges) or edge_length. Returned text ends
-        with the colour range, ticks and keys."""
+        non-manifold and inconsistent edges) or edge_length. cutaway clips
+        the geometry away to look inside: a list of at most two planes, each
+        a string like "+x:0.5" (keep x >= 0.5; "-x:0.5" keeps x <= 0.5) or
+        six numbers [px, py, pz, nx, ny, nz] (a point and the normal of the
+        side kept); the back faces then in view, the inside of the cut, are
+        drawn in cutaway_tint (#rrggbb). Returned text ends with the colour
+        range, ticks and keys."""
         report = _guard(
             _tools.tool_render_mesh,
             input_path=input_path,
@@ -1369,6 +1376,8 @@ def _register_operations(server: FastMCP) -> None:
             warp_outline=warp_outline,
             diagnostic=diagnostic,
             quality_metric=quality_metric,
+            cutaway=cutaway,
+            cutaway_tint=cutaway_tint,
         )
         if isinstance(report, dict) and str(
             report.get("output_path", "")

@@ -45,6 +45,25 @@ test_that("a mapped field reports its range, ticks and symmetric limits", {
   expect_true(any(startsWith(g$notes, "ticks: ")))
 })
 
+test_that("a cut-away clips the near face and tints the inside", {
+  m <- cube_surface()
+  on.exit(mio_release(m))
+  f <- mio_render(m,
+    width = 32L, height = 32L, view = "-x", shading = "none",
+    background = mio_rgba(0, 0, 0), cutaway = c(0.5, 0, 0, 1, 0, 0),
+    cutaway_tint = mio_rgba(10, 200, 30)
+  )
+  expect_equal(f$cell_ids[17, 17], 5)
+  expect_equal(as.integer(f$rgba[1:3, 17, 17]), c(10L, 200L, 30L))
+  two <- mio_render(m,
+    width = 32L, height = 32L,
+    cutaway = list(c(0.5, 0, 0, 1, 0, 0), c(0, 0.5, 0, 0, 1, 0))
+  )
+  expect_s3_class(two, "mio_frame")
+  expect_error(mio_render(m, cutaway = c(1, 2, 3)), "cutaway")
+  expect_error(mio_render(m, cutaway = c(0, 0, 0, 0, 0, 0)), "normal")
+})
+
 test_that("text, PNG and file forms render", {
   m <- cube_surface()
   on.exit(mio_release(m))

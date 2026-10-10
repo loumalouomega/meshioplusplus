@@ -2058,6 +2058,36 @@ contains
         bad = sq%render(set, stat=ierr)
         call check(ierr /= 0, 'an unknown scale is refused')
 
+        ! A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so the near
+        ! face goes and the far one (cell 5) shows from inside, in the tint.
+        set = mio_render_settings()
+        set%width = 32
+        set%height = 32
+        set%view = '-x'
+        set%shading = MIO_SHADING_NONE
+        set%background = mio_rgba(0, 0, 0)
+        set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64]
+        set%cutaway_tint = mio_rgba(10, 200, 30)
+        f = sq%render(set, stat=ierr)
+        call check(ierr == 0 .and. f%is_valid(), 'render with a cut-away succeeded')
+        call f%get_cell_ids(ids)
+        call f%get_rgba(rgba)
+        call check(ids(17, 17) == 5, 'the cut shows the far face at the centre')
+        call check(rgba(1, 17, 17) == 10 .and. rgba(2, 17, 17) == 200 .and. rgba(3, 17, 17) == 30, &
+                   'the inside is drawn in the tint')
+        call f%free()
+        set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64, &
+                        0.0_real64, 0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64]
+        f = sq%render(set, stat=ierr)
+        call check(ierr == 0, 'two cut-away planes are accepted')
+        call f%free()
+        set%cutaways = [1.0_real64, 2.0_real64, 3.0_real64]
+        bad = sq%render(set, stat=ierr)
+        call check(ierr /= 0 .and. .not. bad%is_valid(), 'a plane of three numbers is refused')
+        set%cutaways = [0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64]
+        bad = sq%render(set, stat=ierr)
+        call check(ierr /= 0 .and. index(mio_error_message(), 'normal') > 0, 'a plane with no normal is refused')
+
         ! Files by extension.
         set = mio_render_settings()
         set%width = 32

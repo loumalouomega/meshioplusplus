@@ -5078,6 +5078,63 @@ TEST(CApi, RenderFieldOptionsAndNotes) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, RenderCutawaysClipAndAreValidated) {
+    mio_render_opts o;
+    mio_render_opts_init(&o);
+    EXPECT_EQ(o.num_cutaways, 0);
+    EXPECT_EQ(o.cutaways, nullptr);
+    EXPECT_EQ(o.cutaway_tint, 0xE88034FFu);
+    mio_mesh* cube = capi_cube_surface();
+    o.width = 32;
+    o.height = 32;
+    o.view = "-x";  // the camera sits on the -x side
+    o.shading = MIO_SHADING_NONE;
+    o.background = 0x000000FFu;
+    mio_frame* whole = mio_render(cube, &o);
+    ASSERT_NE(whole, nullptr) << mio_last_error();
+    const std::int64_t whole_centre = mio_frame_cell_ids(whole)[16 * 32 + 16];
+    const std::vector<std::uint8_t> whole_rgba(mio_frame_rgba(whole),
+                                               mio_frame_rgba(whole) + 32 * 32 * 4);
+    mio_frame_free(whole);
+
+    // One plane keeping x >= 0.5: the near face goes, the far one shows from inside.
+    const double plane[6] = {0.5, 0, 0, 1, 0, 0};
+    o.cutaways = plane;
+    o.num_cutaways = 1;
+    o.cutaway_tint = 0x0AC81EFFu;
+    mio_frame* cut = mio_render(cube, &o);
+    ASSERT_NE(cut, nullptr) << mio_last_error();
+    EXPECT_NE(mio_frame_cell_ids(cut)[16 * 32 + 16], whole_centre);
+    const std::uint8_t* centre = mio_frame_rgba(cut) + (16 * 32 + 16) * 4;
+    EXPECT_EQ(centre[0], 0x0A);
+    EXPECT_EQ(centre[1], 0xC8);
+    EXPECT_EQ(centre[2], 0x1E);
+    EXPECT_NE(std::vector<std::uint8_t>(mio_frame_rgba(cut), mio_frame_rgba(cut) + 32 * 32 * 4),
+              whole_rgba);
+    mio_frame_free(cut);
+
+    // A pointer without a count, a count over two, a negative one, a zero normal,
+    // and a non-zero reserved word are refused by name.
+    o.cutaways = nullptr;
+    EXPECT_EQ(mio_render(cube, &o), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("cutaways"), std::string::npos);
+    const double three[18] = {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1};
+    o.cutaways = three;
+    o.num_cutaways = 3;
+    EXPECT_EQ(mio_render(cube, &o), nullptr);
+    o.num_cutaways = -1;
+    EXPECT_EQ(mio_render(cube, &o), nullptr);
+    const double flat[6] = {0, 0, 0, 0, 0, 0};
+    o.cutaways = flat;
+    o.num_cutaways = 1;
+    EXPECT_EQ(mio_render(cube, &o), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("normal"), std::string::npos);
+    o.cutaways = plane;
+    o.reserved[3] = 1;
+    EXPECT_EQ(mio_render(cube, &o), nullptr);
+    mio_mesh_free(cube);
+}
+
 TEST(CApi, WriteSnapshotChoosesTheFormByExtension) {
     mio_mesh* cube = capi_cube_surface();
     const std::string png = mt::temp_path(".png");

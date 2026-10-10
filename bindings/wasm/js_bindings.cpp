@@ -4015,7 +4015,8 @@ meshioplusplus::RenderOptions js_render_options(const val& rOpts) {
         "clip",         "symmetric",     "scale",        "scaleThreshold", "categorical",
         "colorRegions", "categoryEdges", "isolines",     "isoLevels",      "isoColor",
         "vectors",      "vectorCount",   "vectorLength", "vectorColor",    "warp",
-        "warpScale",    "warpOutline",   "outlineColor", "diagnostic",     "qualityMetric"};
+        "warpScale",    "warpOutline",   "outlineColor", "diagnostic",     "qualityMetric",
+        "cutaway",      "cutawayTint"};
     meshioplusplus::RenderOptions o;
     if (rOpts.isUndefined() || rOpts.isNull())
         return o;
@@ -4180,6 +4181,26 @@ meshioplusplus::RenderOptions js_render_options(const val& rOpts) {
                         "edge_length"}));
         else if (key == "qualityMetric")
             o.mQualityMetric = str();
+        else if (key == "cutaway") {
+            // One plane as six numbers, or an array of up to two such arrays.
+            std::vector<std::vector<double>> planes;
+            if (v["length"].as<unsigned>() > 0 && v[0].typeOf().as<std::string>() == "number")
+                planes.push_back(js_number_list(v));
+            else
+                for (unsigned p = 0; p < v["length"].as<unsigned>(); ++p)
+                    planes.push_back(js_number_list(v[p]));
+            for (const std::vector<double>& six : planes) {
+                if (six.size() != 6)
+                    throw std::invalid_argument(
+                        "meshio++: render: each cutaway is six numbers: a point, then the normal "
+                        "of the side kept");
+                meshioplusplus::RenderCutaway plane;
+                plane.mPoint = {six[0], six[1], six[2]};
+                plane.mNormal = {six[3], six[4], six[5]};
+                o.mCutaways.push_back(plane);
+            }
+        } else if (key == "cutawayTint")
+            o.mCutawayTint = js_render_color(v, key);
     }
     return o;
 }

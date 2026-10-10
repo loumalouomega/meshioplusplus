@@ -861,7 +861,10 @@ module meshioplusplus
         integer(c_int32_t) :: iso_color = 505290495
         integer(c_int32_t) :: vector_color = -600689921
         integer(c_int32_t) :: outline_color = -1768515841
-        integer(c_int64_t) :: reserved(6) = 0
+        type(c_ptr) :: cutaways = c_null_ptr
+        integer(c_int32_t) :: num_cutaways = 0
+        integer(c_int32_t) :: cutaway_tint = -394251009
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_text_opts`.
@@ -1081,6 +1084,8 @@ module meshioplusplus
         integer(int64) :: iso_color = 505290495_int64
         integer(int64) :: vector_color = 3694277375_int64
         integer(int64) :: outline_color = 2526451455_int64
+        real(real64), allocatable :: cutaways(:) !< up to two cut-away planes, six numbers each: a point, then the normal of the side kept
+        integer(int64) :: cutaway_tint = 3900716287_int64 !< back faces seen through a cut
     end type
 
     !> Options of the text encodings. `encoding`, `color_depth` and `format` take
@@ -9758,7 +9763,10 @@ contains
         type(mio_render_opts_t), intent(inout) :: o
         character(kind=c_char, len=STRBUF_LEN), target, intent(out) :: b(8)
         real(c_double), target, intent(inout) :: levels(:)
+        real(c_double) :: cuts(12)
 
+        ! `levels` is the caller's scratch: the contour levels fill all but its last
+        ! twelve slots, which carry the cut-away planes (two of six numbers).
         call c_mio_render_opts_init(o)
         call set_cstr(s%view, b(1), o%view)
         call set_cstr(s%color_by, b(2), o%color_by)
@@ -9770,7 +9778,7 @@ contains
         call set_cstr(s%quality_metric, b(8), o%quality_metric)
         if (allocated(s%iso_levels)) then
             if (size(s%iso_levels) > 0) then
-                levels = real(s%iso_levels, c_double)
+                levels(1:size(s%iso_levels)) = real(s%iso_levels, c_double)
                 o%iso_levels = c_loc(levels(1))
                 o%num_iso_levels = int(size(s%iso_levels), c_int64_t)
             end if
@@ -9837,6 +9845,20 @@ contains
         o%iso_color = rgba_to_c(s%iso_color)
         o%vector_color = rgba_to_c(s%vector_color)
         o%outline_color = rgba_to_c(s%outline_color)
+        o%cutaway_tint = rgba_to_c(s%cutaway_tint)
+        if (allocated(s%cutaways)) then
+            if (size(s%cutaways) > 0) then
+                if (mod(size(s%cutaways), 6) /= 0 .or. size(s%cutaways) > 12) then
+                    o%num_cutaways = -1  ! the C library refuses it by name
+                else
+                    cuts = levels(size(levels) - 11:size(levels))
+                    cuts(1:size(s%cutaways)) = real(s%cutaways, c_double)
+                    levels(size(levels) - 11:size(levels)) = cuts
+                    o%cutaways = c_loc(levels(size(levels) - 11))
+                    o%num_cutaways = int(size(s%cutaways) / 6, c_int32_t)
+                end if
+            end if
+        end if
     end subroutine
 
     subroutine text_opts_to_c(t, o)
@@ -9866,11 +9888,11 @@ contains
         type(mio_render_settings) :: s
         type(mio_render_opts_t) :: o
         character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
-        real(c_double), target :: levels(1024)
+        real(c_double), target :: levels(1036)
 
         if (present(settings)) s = settings
         if (allocated(s%iso_levels)) then
-            if (size(s%iso_levels) > size(levels)) then
+            if (size(s%iso_levels) > size(levels) - 12) then
                 call handle_failure('render', 'at most 1024 iso_levels', stat, errmsg)
                 return
             end if
@@ -9899,7 +9921,7 @@ contains
         type(mio_render_opts_t) :: o
         type(mio_text_opts_t) :: to
         character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
-        real(c_double), target :: levels(1024)
+        real(c_double), target :: levels(1036)
         character(c_char), allocatable :: buf(:)
         integer(c_int64_t) :: n
 
@@ -9907,7 +9929,7 @@ contains
         if (present(settings)) s = settings
         if (present(text)) t = text
         if (allocated(s%iso_levels)) then
-            if (size(s%iso_levels) > size(levels)) then
+            if (size(s%iso_levels) > size(levels) - 12) then
                 call handle_failure('render_text', 'at most 1024 iso_levels', stat, errmsg)
                 return
             end if
@@ -9949,13 +9971,13 @@ contains
         type(mio_text_opts_t) :: to
         type(mio_snapshot_opts_t) :: so
         character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
-        real(c_double), target :: levels(1024)
+        real(c_double), target :: levels(1036)
         integer(c_int) :: rc
 
         if (present(settings)) s = settings
         if (present(text)) t = text
         if (allocated(s%iso_levels)) then
-            if (size(s%iso_levels) > size(levels)) then
+            if (size(s%iso_levels) > size(levels) - 12) then
                 call handle_failure('write_snapshot', 'at most 1024 iso_levels', stat, errmsg)
                 return
             end if

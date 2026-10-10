@@ -66,7 +66,7 @@ const _RENDER_INTS = (:width, :height, :supersample, :component, :isolines, :vec
 const _RENDER_BOOLS = (:perspective, :two_sided, :colorbar, :axes, :scale_bar, :symmetric,
                        :categorical, :color_regions, :category_edges, :warp_outline)
 const _RENDER_COLORS = (:edge_color, :fill_color, :line_color, :background, :nan_color,
-                        :iso_color, :vector_color, :outline_color)
+                        :iso_color, :vector_color, :outline_color, :cutaway_tint)
 
 """
     _with_render_opts(f; kwargs...)
@@ -82,6 +82,7 @@ function _with_render_opts(f; kwargs...)
     end
     roots = Any[]
     levels = Float64[]
+    cuts = Float64[]
     for (k, v) in kwargs
         v === nothing && continue
         if k in _RENDER_STRINGS
@@ -131,11 +132,20 @@ function _with_render_opts(f; kwargs...)
             levels = Float64.(collect(v))
             _setopt!(ref, :iso_levels, pointer(levels))
             _setopt!(ref, :num_iso_levels, length(levels))
+        elseif k === :cutaway
+            # One plane as six numbers, or a collection of up to two such planes.
+            planes = v isa AbstractVector && !isempty(v) && v[1] isa Number ? [v] : collect(v)
+            all(length(p) == 6 for p in planes) && length(planes) <= 2 ||
+                error("meshio++: render: cutaway is one or two planes of six numbers each " *
+                      "(a point, then the normal of the side kept)")
+            cuts = Float64[Float64(x) for p in planes for x in p]
+            _setopt!(ref, :cutaways, pointer(cuts))
+            _setopt!(ref, :num_cutaways, length(planes))
         else
             error("meshio++: render: unknown option '$k'")
         end
     end
-    GC.@preserve roots levels f(ref)
+    GC.@preserve roots levels cuts f(ref)
 end
 
 function _text_opts(; encoding="halfblock", color_depth="truecolor", format="ansi", cols::Integer=80,
@@ -163,8 +173,9 @@ skin). The keyword arguments are those of the C `mio_render_opts`, by name:
 `colorbar`, `axes`, `scale_bar`; and the field options `expr`, `reduce`, `clip`,
 `symmetric`, `scale`, `scale_threshold`, `categorical`, `color_regions`,
 `category_edges`, `isolines`, `iso_levels`, `vectors`, `vector_count`,
-`vector_length`, `warp`, `warp_scale`, `warp_outline`, `diagnostic` and
-`quality_metric`. See `doc/tui.md`.
+`vector_length`, `warp`, `warp_scale`, `warp_outline`, `diagnostic`,
+`quality_metric`, and the cut-aways `cutaway` (one or two planes of six numbers:
+a point, then the normal of the side kept) and `cutaway_tint`. See `doc/tui.md`.
 """
 function render(m::Mesh; kwargs...)
     ptr = _with_render_opts(; kwargs...) do ref

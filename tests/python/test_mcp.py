@@ -1339,6 +1339,22 @@ def test_render_mesh_tool(tmp_path):
         _tools.tool_render_mesh(src, diagnostic="plastic")
     with pytest.raises(ValueError, match="expected .png"):
         _tools.tool_render_mesh(src, str(tmp_path / "c.vtu"))
+    # Cut-aways: a plane as "+x:0.5" or six numbers, and the notes say so.
+    whole = _dump(_tools.tool_render_mesh(src, cols=24, rows=8, view="-x"))
+    cut = _dump(
+        _tools.tool_render_mesh(
+            src, cols=24, rows=8, view="-x", cutaway=["+x:0.5"], cutaway_tint="#00ff00"
+        )
+    )
+    assert "cutaway: 1 plane" in cut["text"] and "cutaway" not in whole["text"]
+    six = _dump(
+        _tools.tool_render_mesh(
+            src, cols=24, rows=8, view="-x", cutaway=[[0.5, 0, 0, 1, 0, 0]]
+        )
+    )
+    assert "cutaway: 1 plane" in six["text"]
+    with pytest.raises(ValueError, match="AXIS:OFFSET"):
+        _tools.tool_render_mesh(src, cutaway=["x:1"])
 
 
 def test_region_adjacency_tool(tmp_path):

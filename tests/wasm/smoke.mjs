@@ -4917,6 +4917,18 @@ step('render, renderText, renderPng', () => {
     assert.ok(png instanceof Uint8Array);
     assert.deepEqual(Array.from(png.slice(0, 8)), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+    // A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so what was the
+    // near face is gone and the centre is the far face, in the tint.
+    const side = { width: 32, height: 32, view: '-x', shading: 'none', background: [0, 0, 0, 255] };
+    const whole = m.render(cubeSurface, side);
+    const cut = m.render(cubeSurface, { ...side, cutaway: [0.5, 0, 0, 1, 0, 0], cutawayTint: [10, 200, 30, 255] });
+    const centre = 16 * 32 + 16;
+    assert.notEqual(cut.cellIds[centre], whole.cellIds[centre]);
+    assert.deepEqual(Array.from(cut.rgba.slice(centre * 4, centre * 4 + 4)), [10, 200, 30, 255]);
+    assert.ok(m.render(cubeSurface, { ...side, cutaway: [[0.5, 0, 0, 1, 0, 0], [0, 0.5, 0, 0, 1, 0]] }));
+    assert.throws(() => m.render(cubeSurface, { cutaway: [1, 2, 3] }), /six numbers/);
+    assert.throws(() => m.render(cubeSurface, { cutaway: [0, 0, 0, 0, 0, 0] }), /normal/);
+
     assert.throws(() => m.render(cubeSurface, { bogus: 1 }), /unknown option 'bogus'/);
     assert.throws(() => m.render(cubeSurface, { shading: 'plastic' }), /shading must be one of/);
     assert.throws(() => m.render(cubeSurface, { colorBy: 'nope' }), /nope/);

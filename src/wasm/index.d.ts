@@ -467,6 +467,13 @@ export interface RenderOptions {
   outlineColor?: RenderColor;
   diagnostic?: "none" | "quality" | "inverted" | "degenerate" | "orientation" | "free_edges" | "edge_length";
   qualityMetric?: string;
+  /**
+   * One or two cut-away planes that clip the geometry away: each is six numbers,
+   * a point and then the normal of the side kept (`[0.5, 0, 0, 1, 0, 0]` keeps `x >= 0.5`).
+   * The back faces then in view, the inside of the cut, are drawn in `cutawayTint`.
+   */
+  cutaway?: number[] | number[][];
+  cutawayTint?: RenderColor;
 }
 
 /** Options of `renderText`: the cell encodings only (the graphics protocols are CLI features). */

@@ -1250,8 +1250,10 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
 #' `categorical`, `color_regions`, `category_edges`, `isolines`, `iso_levels`,
 #' `vectors`, `vector_count`, `vector_length`, `warp`, `warp_scale`,
 #' `warp_outline`, `diagnostic` (`"quality"`, `"inverted"`, `"degenerate"`,
-#' `"orientation"`, `"free_edges"`, `"edge_length"`) and `quality_metric`. An
-#' unknown name is an error.
+#' `"orientation"`, `"free_edges"`, `"edge_length"`), `quality_metric`, and the
+#' cut-aways `cutaway` (one or two planes of six numbers: a point, then the
+#' normal of the side kept, as a vector or a list of vectors) and `cutaway_tint`.
+#' An unknown name is an error.
 #'
 #' @param mesh A `mio_mesh`.
 #' @param ... Named render options, see Details.

@@ -899,3 +899,195 @@ TEST(RenderFieldFrame, ColoursOfTheOriginalFieldAreUnchangedByTheNewOptions) {
     b.mSymmetric = false;
     EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
 }
+
+// ---------------------------------------------------------------------------
+// Cut-aways (v16.36.0, ABI 25): planes that clip the drawn geometry
+// ---------------------------------------------------------------------------
+
+namespace {
+
+RenderCutaway keep_beyond(int Axis, double At, double Sign = 1.0) {
+    RenderCutaway c;
+    c.mPoint = {0.0, 0.0, 0.0};
+    c.mPoint[static_cast<std::size_t>(Axis)] = At;
+    c.mNormal = {0.0, 0.0, 0.0};
+    c.mNormal[static_cast<std::size_t>(Axis)] = Sign;
+    return c;
+}
+
+RenderOptions side_view(const char* pView, int Size = 64) {
+    RenderOptions o;
+    o.mWidth = Size;
+    o.mHeight = Size;
+    o.mView = pView;
+    o.mShading = RenderShading::None;
+    o.mBackground = {0, 0, 0, 255};
+    return o;
+}
+
+std::int64_t centre_id(const Frame& rFrame) {
+    return rFrame.mCellIds[static_cast<std::size_t>(rFrame.mHeight / 2 * rFrame.mWidth +
+                                                    rFrame.mWidth / 2)];
+}
+
+RenderColor centre_rgba(const Frame& rFrame) {
+    const std::size_t at = static_cast<std::size_t>(rFrame.mHeight / 2 * rFrame.mWidth +
+                                                    rFrame.mWidth / 2) *
+                           4;
+    return {rFrame.mRgba[at], rFrame.mRgba[at + 1], rFrame.mRgba[at + 2], rFrame.mRgba[at + 3]};
+}
+
+std::size_t covered(const Frame& rFrame, std::int64_t Id) {
+    return static_cast<std::size_t>(
+        std::count(rFrame.mCellIds.begin(), rFrame.mCellIds.end(), Id));
+}
+
+}  // namespace
+
+TEST(RenderCutaway, ACutThroughACubeShowsTheTintedInsideOfTheFarFace) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("-x");  // the camera sits on the -x side
+    EXPECT_EQ(centre_id(render(m, o)), 4);  // the x = 0 face, uncut
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    o.mCutawayTint = {10, 200, 30, 255};
+    const Frame cut = render(m, o);
+    EXPECT_EQ(centre_id(cut), 5);  // now the x = 1 face, seen from inside
+    EXPECT_EQ(centre_rgba(cut), (RenderColor{10, 200, 30, 255}));
+    EXPECT_EQ(covered(cut, 4), 0u);  // the near face is gone
+    EXPECT_TRUE(std::any_of(cut.mNotes.begin(), cut.mNotes.end(), [](const std::string& s) {
+        return s.rfind("cutaway: 1 plane", 0) == 0;
+    }));
+}
+
+TEST(RenderCutaway, FrontFacesAreNotTinted) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+x");  // the camera sits on the +x side
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    const Frame cut = render(m, o);
+    EXPECT_EQ(centre_id(cut), 5);  // the x = 1 face, seen from outside
+    EXPECT_EQ(centre_rgba(cut), (RenderColor{200, 197, 189, 255}));
+}
+
+TEST(RenderCutaway, TheKeptSideIsTheOneTheNormalPointsTo) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+x");
+    o.mCutaways = {keep_beyond(0, 0.5, -1.0)};  // keeps x <= 0.5: the x = 1 face is gone
+    const Frame cut = render(m, o);
+    EXPECT_EQ(covered(cut, 5), 0u);
+    EXPECT_EQ(centre_id(cut), 4);  // the x = 0 face, from inside, tinted
+}
+
+TEST(RenderCutaway, TwoPlanesLeaveAQuarter) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+z");
+    const std::size_t whole = covered(render(m, o), 1);  // the z = 1 face
+    ASSERT_GT(whole, 0u);
+    o.mCutaways = {keep_beyond(0, 0.5), keep_beyond(1, 0.5)};
+    const std::size_t quarter = covered(render(m, o), 1);
+    EXPECT_GT(quarter, whole / 5);
+    EXPECT_LT(quarter, whole * 3 / 10);
+}
+
+TEST(RenderCutaway, AFaceCrossingThePlaneKeepsItsIdAndColour) {
+    const Mesh m = grid_square(4);
+    RenderOptions o = top_view();
+    o.mColorBy = "x";
+    const Frame whole = render(m, o);
+    o.mCutaways = {keep_beyond(0, 0.30)};
+    const Frame cut = render(m, o);
+    // Cell values are corner means, so a cell cut in two keeps one colour; no
+    // pixel appears where there was none.
+    for (std::size_t i = 0; i < cut.mCellIds.size(); ++i)
+        if (cut.mCellIds[i] >= 0) {
+            EXPECT_EQ(cut.mCellIds[i], whole.mCellIds[i]);
+        }
+    EXPECT_LT(covered(cut, -1), cut.mCellIds.size());
+    EXPECT_GT(covered(cut, -1), covered(whole, -1));
+}
+
+TEST(RenderCutaway, LinesAndPointsAreClippedToo) {
+    const Mesh lines = make_mesh({{0, 0, 0}, {1, 0, 0}}, "line", {{0, 1}});
+    RenderOptions o = top_view();
+    o.mLineColor = {255, 0, 0, 255};
+    const std::size_t whole = covered(render(lines, o), 0);
+    ASSERT_GT(whole, 4u);
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    const std::size_t half = covered(render(lines, o), 0);
+    EXPECT_GT(half, whole / 3);
+    EXPECT_LT(half, whole * 2 / 3);
+    o.mCutaways = {keep_beyond(0, 2.0)};
+    EXPECT_EQ(covered(render(lines, o), 0), 0u);  // nothing on the kept side
+
+    const Mesh cloud = make_mesh({{0, 0, 0}, {1, 0, 0}, {0.2, 0.5, 0}}, "vertex", {{0}, {1}, {2}});
+    RenderOptions p = top_view(64, 64);
+    p.mPointRadius = 2.0;
+    p.mCutaways = {keep_beyond(0, 0.5)};
+    const Frame points = render(cloud, p);
+    EXPECT_GT(covered(points, 1), 0u);
+    EXPECT_EQ(covered(points, 0), 0u);
+    EXPECT_EQ(covered(points, 2), 0u);
+}
+
+TEST(RenderCutaway, ASceneDrawnWithACutEqualsRenderWithTheCut) {
+    const Mesh m = cube_quads();
+    RenderOptions base = side_view("-x");
+    base.mShading = RenderShading::Smooth;
+    base.mEdges = RenderEdges::All;
+    base.mBackground = {0, 0, 0, 0};
+    const RenderScene scene = prepare_render(m, base);
+    RenderOptions cut = base;
+    cut.mCutaways = {keep_beyond(0, 0.35), keep_beyond(2, 0.25)};
+    cut.mAzimuth = 20.0;
+    cut.mView.clear();
+    const Frame direct = render(m, cut);
+    const Frame drawn = render_scene(scene, cut);
+    EXPECT_EQ(direct.mRgba, drawn.mRgba);
+    EXPECT_EQ(direct.mCellIds, drawn.mCellIds);
+    // And the cut is a draw-time choice: the same scene draws uncut again.
+    EXPECT_EQ(render(m, base).mRgba, render_scene(scene, base).mRgba);
+    EXPECT_NE(direct.mRgba, render_scene(scene, base).mRgba);
+}
+
+TEST(RenderCutaway, ThePerspectiveCameraAndFieldsWork) {
+    const Mesh m = grid_square(4);
+    RenderOptions o = top_view();
+    o.mProjection = RenderProjection::Perspective;
+    o.mColorBy = "x";
+    o.mIsolines = 3;
+    o.mVectors = "x";
+    o.mCutaways = {keep_beyond(1, 0.4)};
+    EXPECT_NO_THROW(render(m, o));
+}
+
+TEST(RenderCutaway, ClippingEverythingIsABlankFrameNotAnError) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+z");
+    o.mCutaways = {keep_beyond(2, 10.0)};
+    const Frame f = render(m, o);
+    EXPECT_EQ(covered(f, -1), f.mCellIds.size());
+}
+
+TEST(RenderCutaway, BadPlanesAreRefused) {
+    const Mesh m = cube_quads();
+    RenderOptions o = side_view("+z");
+    o.mCutaways = {keep_beyond(0, 0.1), keep_beyond(1, 0.1), keep_beyond(2, 0.1)};
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    RenderCutaway flat;
+    flat.mNormal = {0.0, 0.0, 0.0};
+    o.mCutaways = {flat};
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    RenderCutaway nan_plane;
+    nan_plane.mPoint = {std::nan(""), 0.0, 0.0};
+    o.mCutaways = {nan_plane};
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(RenderCutaway, WithNoPlanesTheBytesAreUnchanged) {
+    const Mesh m = cube_quads();
+    RenderOptions a = side_view("+x");
+    a.mShading = RenderShading::Smooth;
+    RenderOptions b = a;
+    b.mCutaways.clear();
+    b.mCutawayTint = {1, 2, 3, 255};  // the tint matters only when something is cut
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
+}

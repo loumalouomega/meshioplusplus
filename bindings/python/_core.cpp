@@ -36,6 +36,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/version.hpp"
 #include "../../src/cpp/cli/tui/loop.hpp"
+#include "../../src/cpp/cli/tui/series.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
@@ -347,7 +348,7 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
                            "vectors",       "vector_count",  "vector_length",
                            "vector_color",  "warp",          "warp_scale",
                            "warp_outline",  "outline_color", "diagnostic",
-                           "quality_metric"},
+                           "quality_metric", "cutaway",      "cutaway_tint"},
                       "render");
     meshioplusplus::RenderOptions o;
     auto get = [&](const char* pKey) -> py::object {
@@ -541,6 +542,21 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
     }
     if (!(v = get("quality_metric")).is_none())
         o.mQualityMetric = v.cast<std::string>();
+    if (!(v = get("cutaway")).is_none()) {
+        for (py::handle item : v) {
+            const std::vector<double> six = py::cast<std::vector<double>>(item);
+            if (six.size() != 6)
+                throw std::invalid_argument(
+                    "meshio++: render: each cutaway is six numbers: a point, then the normal of "
+                    "the side kept");
+            meshioplusplus::RenderCutaway plane;
+            plane.mPoint = {six[0], six[1], six[2]};
+            plane.mNormal = {six[3], six[4], six[5]};
+            o.mCutaways.push_back(plane);
+        }
+    }
+    if (!(v = get("cutaway_tint")).is_none())
+        o.mCutawayTint = render_py_color(v, "cutaway_tint");
     return o;
 }
 
@@ -2918,25 +2934,51 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "tui",
         [](py::object pymesh, py::dict options, py::dict text, const std::string& title,
-           py::object replay, int cols, int rows) {
+           py::object replay, int cols, int rows, py::object pycompare,
+           const std::string& compare_title, bool diff, bool shared_range,
+           const std::vector<std::string>& paths, const std::string& pattern,
+           const std::string& input_format, int follow_ms, int settle_ms, double fps,
+           const std::string& session) {
             meshioplusplus_py::PyMeshRefs refs;
-            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
-                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus_py::PyMeshRefs compare_refs;
+            meshioplusplus::Mesh cpp;
+            if (!pymesh.is_none())
+                cpp = meshioplusplus_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true,
+                                                    /*allow_ragged=*/true);
+            meshioplusplus::Mesh other;
             meshioplusplus::cli::tui::TuiOptions t;
+            if (!pycompare.is_none()) {
+                other = meshioplusplus_py::py_to_mesh(pycompare, compare_refs,
+                                                      /*lenient_field_data=*/true,
+                                                      /*allow_ragged=*/true);
+                t.mpCompare = &other;
+                t.mCompareTitle = compare_title;
+            }
             t.mRender = render_py_options(options);
             t.mText = render_py_text(text);
             t.mText.mNotes = false;  // the loop draws the notes itself
             if (text.contains("cell_aspect"))
                 t.mCellAspectFromTerminal = false;
             t.mTitle = title;
+            t.mDiff = diff;
+            t.mSharedRange = shared_range;
+            t.mFollowMs = follow_ms;
+            t.mFollowSettleMs = settle_ms;
+            t.mPlayFps = fps;
+            t.mSessionPath = session;
+            if (!paths.empty() || !pattern.empty())
+                t.mpSeries = std::make_shared<meshioplusplus::cli::tui::PathSeries>(paths, pattern,
+                                                                                    input_format);
+            else if (pymesh.is_none())
+                throw std::invalid_argument("meshio++: tui: give a mesh or a series");
             meshioplusplus::cli::tui::TuiReport report;
             py::dict out;
             if (!replay.is_none()) {
                 const std::string script = py::cast<std::string>(replay);
                 meshioplusplus::cli::tui::ScriptedIo io(script, cols, rows);
                 report = core_nogil([&] {
-                    meshioplusplus::cli::tui::TuiSession session(cpp, t);
-                    return session.Run(io);
+                    meshioplusplus::cli::tui::TuiSession session_run(cpp, t);
+                    return session_run.Run(io);
                 });
                 out["output"] = py::bytes(io.Output());
             } else {
@@ -2952,11 +2994,18 @@ PYBIND11_MODULE(_core, m) {
             out["zoom"] = report.mFinal.mZoom;
             out["pan_x"] = report.mFinal.mPanX;
             out["pan_y"] = report.mFinal.mPanY;
+            out["step"] = report.mStep;
+            out["probe"] = report.mProbe;
+            out["error"] = report.mError;
             return out;
         },
-        py::arg("mesh"), py::arg("options") = py::dict(), py::arg("text") = py::dict(),
-        py::arg("title") = "", py::arg("replay") = py::none(), py::arg("cols") = 100,
-        py::arg("rows") = 40);
+        py::arg("mesh") = py::none(), py::arg("options") = py::dict(),
+        py::arg("text") = py::dict(), py::arg("title") = "", py::arg("replay") = py::none(),
+        py::arg("cols") = 100, py::arg("rows") = 40, py::arg("compare") = py::none(),
+        py::arg("compare_title") = "", py::arg("diff") = false, py::arg("shared_range") = true,
+        py::arg("paths") = std::vector<std::string>{}, py::arg("pattern") = "",
+        py::arg("input_format") = "", py::arg("follow_ms") = 0, py::arg("settle_ms") = 300,
+        py::arg("fps") = 4.0, py::arg("session") = "");
 
     // Sharp, open, non-manifold and inconsistently wound edges as a line mesh.
     // See operations/feature_edges.hpp.

@@ -39,7 +39,7 @@ static const field_def render_fields[] = {
     FIELD(warp_outline, F_BOOL),
     FIELD(edge_color, F_COLOR),   FIELD(fill_color, F_COLOR), FIELD(line_color, F_COLOR),
     FIELD(background, F_COLOR),   FIELD(nan_color, F_COLOR),  FIELD(iso_color, F_COLOR),
-    FIELD(vector_color, F_COLOR), FIELD(outline_color, F_COLOR),
+    FIELD(vector_color, F_COLOR), FIELD(outline_color, F_COLOR), FIELD(cutaway_tint, F_COLOR),
 };
 #define NUM_RENDER_FIELDS (sizeof(render_fields) / sizeof(render_fields[0]))
 
@@ -154,6 +154,31 @@ static void fill_render_opts(SEXP opts, mio_render_opts *o, int *nprotect) {
             o->scale = lookup("scale", scale_names, 3, mio_r_string(v, name));
         } else if (strcmp(name, "diagnostic") == 0) {
             o->diagnostic = lookup("diagnostic", diagnostic_names, 7, mio_r_string(v, name));
+        } else if (strcmp(name, "cutaway") == 0) {
+            /* One or two planes of six numbers: a point, then the normal of the side
+             * kept. A plain vector of 6 or 12 numbers, or a list of such vectors. */
+            SEXP d;
+            if (TYPEOF(v) == VECSXP) {
+                R_xlen_t j, total = 0;
+                int ok = XLENGTH(v) >= 1 && XLENGTH(v) <= 2;
+                for (j = 0; ok && j < XLENGTH(v); ++j) ok = XLENGTH(VECTOR_ELT(v, j)) == 6;
+                if (!ok) Rf_error("meshio++: render: cutaway is one or two planes of six numbers each");
+                d = PROTECT(Rf_allocVector(REALSXP, 6 * XLENGTH(v)));
+                ++*nprotect;
+                for (j = 0; j < XLENGTH(v); ++j) {
+                    SEXP plane = PROTECT(Rf_coerceVector(VECTOR_ELT(v, j), REALSXP));
+                    R_xlen_t t;
+                    for (t = 0; t < 6; ++t) REAL(d)[total++] = REAL(plane)[t];
+                    UNPROTECT(1);
+                }
+            } else {
+                if (XLENGTH(v) != 6 && XLENGTH(v) != 12)
+                    Rf_error("meshio++: render: cutaway is one or two planes of six numbers each");
+                d = PROTECT(Rf_coerceVector(v, REALSXP));
+                ++*nprotect;
+            }
+            o->cutaways = REAL(d);
+            o->num_cutaways = (int32_t)(XLENGTH(d) / 6);
         } else if (strcmp(name, "iso_levels") == 0) {
             SEXP d = PROTECT(Rf_coerceVector(v, REALSXP));
             ++*nprotect;

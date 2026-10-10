@@ -555,3 +555,262 @@ def test_view_on_a_tty_takes_over_the_terminal_and_quits(pty_run, mesh_file):
     assert b"RETURNED" in p.output
     assert p.cooked()
     assert p.output.index(LEAVE) < p.output.index(b"RETURNED")
+
+
+# --------------------------------------------------------------------------
+# Probing, commands, sessions, comparison, series (roadmap 7.2)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def series_files(tmp_path_factory):
+    """Four steps of a cube whose field grows with the step."""
+    folder = tmp_path_factory.mktemp("series")
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        float,
+    )
+    quads = np.array(
+        [
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [3, 7, 6, 2],
+            [0, 4, 7, 3],
+            [1, 2, 6, 5],
+        ]
+    )
+    paths = []
+    for k in range(4):
+        mesh = meshioplusplus.Mesh(
+            pts,
+            [("quad", quads)],
+            point_data={"u": np.arange(8, dtype=float) * (k + 1)},
+        )
+        path = folder / f"out_{k + 1}.vtu"
+        meshioplusplus.write(str(path), mesh)
+        paths.append(str(path))
+    return folder, paths
+
+
+def test_a_click_probes_a_cell_and_a_pin_keeps_it(mesh_file):
+    click = _mouse(0, 40, 10) + _mouse(0, 40, 10, release=True)
+    result = _replay_core(mesh_file, click + b"iq", view="+z", color_by="u")
+    assert result["probe"][0].startswith("cell ")
+    assert any(line.startswith("pin A") for line in result["probe"])
+    assert any("u " in line for line in result["probe"])
+    screen = ansi_screen.replay(result["output"], 80, 24)
+    assert any(line.startswith("cell ") for line in screen.text())
+    cleared = _replay_core(mesh_file, click + b"i0q", view="+z", color_by="u")
+    assert cleared["probe"] == []
+
+
+def test_the_command_line_speaks_the_snapshot_flags(mesh_file):
+    result = _replay_core(mesh_file, b":bogus\r", color_by="u")
+    assert "unknown command" in result["status"]
+    result = _replay_core(mesh_file, b":cmap magma\r", color_by="u")
+    plain = _replay_core(mesh_file, b"q", color_by="u")
+    assert result["output"] != plain["output"]
+    result = _replay_core(mesh_file, b":zoom 2\r", color_by="u")
+    assert result["zoom"] == 2.0
+    result = _replay_core(mesh_file, b":view +x\r", color_by="u")
+    assert (result["azimuth"], result["elevation"]) == (0.0, 0.0)
+    result = _replay_core(mesh_file, b":cmap magma\x1b", color_by="u")  # Escape cancels
+    assert result["output"] == plain["output"] or "preparing" not in result["status"]
+
+
+def test_cutaway_keys_and_options_clip_the_picture(mesh_file):
+    plain = _replay_core(mesh_file, b"q")
+    keyed = _replay_core(mesh_file, b"xq")
+    assert keyed["output"] != plain["output"]
+    assert "cut 1" in keyed["status"]
+    optioned = _replay_core(mesh_file, b"q", cutaway="+x:0.5")
+    assert "cut 1" in optioned["status"]
+    commanded = _replay_core(mesh_file, b":clip +x 0.5\r")
+    assert "cut 1" in commanded["status"]
+    assert (
+        _replay_core(mesh_file, b":clip +x 0.5\r:clip off\r")["status"].count("cut")
+        == 0
+    )
+
+
+def test_a_session_file_is_written_and_read_back(mesh_file, tmp_path):
+    session = tmp_path / "view.json"
+    first = _replay_core(mesh_file, b":zoom 2.5\r", color_by="u", session=str(session))
+    assert first["zoom"] == 2.5
+    text = session.read_text()
+    assert '"version": 1' in text and "--zoom=2.5" in text
+    again = _replay_core(mesh_file, b"q", color_by="u", session=str(session))
+    assert again["zoom"] == 2.5
+    session.write_text('{"version": 1, "mystery": 3}')
+    with pytest.raises(ValueError, match="mystery"):
+        _replay_core(mesh_file, b"q", session=str(session))
+
+
+def test_a_series_is_stepped_and_followed_by_name(series_files):
+    folder, paths = series_files
+    glob = str(folder / "out_*.vtu")
+    result = meshioplusplus.tui(
+        series=glob,
+        replay=b"]]q",
+        cols=100,
+        rows=24,
+        color_depth="truecolor",
+        color_by="u",
+    )
+    assert result["step"] == 2
+    assert "step 3/4" in result["status"]
+    listed = meshioplusplus.tui(
+        series=paths, replay=b"}q", cols=100, rows=24, color_depth="truecolor"
+    )
+    assert listed["step"] == 3
+    # The colour range is the first step's: the last step's own range never shows.
+    first = meshioplusplus.tui(
+        series=glob,
+        replay=b"q",
+        cols=100,
+        rows=24,
+        color_depth="truecolor",
+        color_by="u",
+    )
+    later = meshioplusplus.tui(
+        series=glob,
+        replay=b"}q",
+        cols=100,
+        rows=24,
+        color_depth="truecolor",
+        color_by="u",
+    )
+    s_first = "\n".join(ansi_screen.replay(first["output"], 100, 24).text())
+    s_later = "\n".join(ansi_screen.replay(later["output"], 100, 24).text())
+    note = [line for line in s_first.splitlines() if line.startswith("u: ")][0]
+    assert note in s_later
+    from meshioplusplus._exceptions import ReadError
+
+    with pytest.raises(ReadError, match="matched no files"):
+        meshioplusplus.tui(series=str(folder / "nothing_*.vtu"), replay=b"q")
+    with pytest.raises(TypeError):
+        meshioplusplus.tui(replay=b"q")
+
+
+def test_two_meshes_side_by_side_and_their_difference(mesh_file, series_files):
+    _, paths = series_files
+    both = meshioplusplus.tui(
+        paths[0],
+        compare=paths[3],
+        replay=b"q",
+        cols=101,
+        rows=24,
+        color_depth="truecolor",
+        color_by="u",
+    )
+    screen = ansi_screen.replay(both["output"], 101, 24)
+    assert all(screen.cell(r, 50).char == "\u2502" for r in range(20))  # (101 - 1) // 2
+    note = "\n".join(screen.text())
+    assert "out_1.vtu" in note and "out_4.vtu" in note
+    diff = meshioplusplus.tui(
+        paths[0],
+        compare=paths[3],
+        diff=True,
+        replay=b"q",
+        cols=101,
+        rows=24,
+        color_depth="truecolor",
+        color_by="u",
+    )
+    assert diff["output"] != both["output"]
+    with pytest.raises(ValueError, match="difference"):
+        meshioplusplus.tui(
+            paths[0], compare=paths[3], diff=True, replay=b"q", color_by="missing"
+        )
+    with pytest.raises(ValueError, match="cell encoding"):
+        meshioplusplus.tui(
+            paths[0], compare=paths[3], replay=b"q", encoding="kitty", color_by="u"
+        )
+
+
+def test_the_cli_replays_of_a_series_and_a_comparison_match(series_files, tmp_path):
+    if NATIVE is None:
+        pytest.skip("native CLI is not built")
+    folder, paths = series_files
+    script = tmp_path / "keys.bin"
+    script.write_bytes(b"]x:cmap magma\r\x1b")
+    common = [
+        "--replay",
+        str(script),
+        "--cols",
+        "101",
+        "--rows",
+        "30",
+        "--color-depth",
+        "truecolor",
+        "--color-by",
+        "u",
+    ]
+    for args in (
+        [str(folder / "out_*.vtu")],
+        paths[:3],
+        [paths[0], "--compare", paths[3]],
+        [paths[0], "--compare", paths[3], "--diff"],
+    ):
+        py = _python_cli("tui", *args, *common)
+        native = subprocess.run(
+            [NATIVE, "tui", *args, *common], capture_output=True, timeout=60
+        )
+        assert py.returncode == native.returncode == 0, (py.stderr, native.stderr)
+        assert py.stdout == native.stdout, args
+
+
+@posix_only
+@pytest.mark.parametrize("kind", _both())
+def test_the_command_line_works_on_a_real_terminal(pty_run, mesh_file, kind):
+    p = pty_run(_argv_for(kind, mesh_file, "--color-depth", "truecolor"))
+    assert p.wait_for(b"q quit")
+    p.send(b":zoom 2\r")
+    assert p.wait_for(b"zoom 2.00")
+    p.send(b":nonsense\r")
+    assert p.wait_for(b"unknown command")
+    p.send(b"q")
+    assert p.finish() == 0
+    assert p.cooked()
+
+
+@posix_only
+@pytest.mark.parametrize("kind", _both())
+def test_following_a_series_on_a_real_terminal(pty_run, series_files, tmp_path, kind):
+    _, paths = series_files
+    live = tmp_path / "live"
+    live.mkdir()
+    for k in (0, 1):
+        meshioplusplus.write(
+            str(live / f"run_{k + 1}.vtu"), meshioplusplus.read(paths[k])
+        )
+    p = pty_run(
+        _argv_for(
+            kind,
+            str(live / "run_*.vtu"),
+            "--follow",
+            "--follow-interval",
+            "100",
+            "--settle",
+            "100",
+            "--color-by",
+            "u",
+        )
+    )
+    assert p.wait_for(b"step 2/2")  # a followed series starts on the newest step
+    meshioplusplus.write(str(live / "run_3.vtu"), meshioplusplus.read(paths[2]))
+    assert p.wait_for(b"step 3/3", timeout=20)
+    assert p.wait_for(b"followed")
+    p.send(b"q")
+    assert p.finish() == 0
+    assert p.cooked()
