@@ -3069,6 +3069,45 @@ def _sandbox_entry_paths(entry):
     return plan
 
 
+def _mcp_thumbnails(manifest, base, ids, thumbnail, render, step, width, height):
+    """Set, clear or draw the thumbnails of the entries ``ids``, inside the
+    sandbox: a given picture is stored relative to the manifest; a drawn one is
+    written to ``thumbnails/<id>.png`` beside it, after the entry's own plan
+    has been sandbox-checked (a hand-edited manifest can name anything)."""
+    from .._dataset import portable_relpath
+
+    if thumbnail is not None and render:
+        raise ValueError("meshio++: mcp: give thumbnail or render_thumbnail, not both")
+    if not ids or ids == "all" and not len(manifest):
+        raise ValueError(
+            "meshio++: mcp: thumbnails need entry_ids or all_entries (and entries)"
+        )
+    chosen = manifest.ids() if ids == "all" else list(ids)
+    if render:
+        for entry_id in chosen:
+            _sandbox_entry_paths(manifest[entry_id])
+            target = _resolve(
+                os.path.join(base, "thumbnails", f"{entry_id}.png"), for_write=True
+            )
+            manifest.render_thumbnail(
+                entry_id,
+                target,
+                step=int(step),
+                width=int(width),
+                height=int(height),
+            )
+        return
+    if len(chosen) != 1:
+        raise ValueError(
+            "meshio++: mcp: a given thumbnail applies to exactly one entry"
+        )
+    if thumbnail in ("", "none"):
+        manifest.set_thumbnail(chosen[0], None)
+        return
+    inside = _resolve(os.path.join(base, thumbnail), must_exist=True)
+    manifest.set_thumbnail(chosen[0], portable_relpath(inside, base))
+
+
 def _mcp_source_block(pattern, paths, base, fmt, times, time_from, sort):
     """One sandboxed source family -> a Source object stored relative to `base`.
 
@@ -3122,6 +3161,10 @@ def tool_dataset_add(
     group=None,
     notes=None,
     metadata=None,
+    thumbnail=None,
+    render_thumbnail=False,
+    thumbnail_width=256,
+    thumbnail_height=192,
 ):
     """Add a case to a dataset manifest (created if absent).
 
@@ -3165,11 +3208,23 @@ def tool_dataset_add(
         notes=notes,
         metadata=metadata,
     )
+    if thumbnail is not None or render_thumbnail:
+        _mcp_thumbnails(
+            manifest,
+            base,
+            [entry.id],
+            thumbnail,
+            render_thumbnail,
+            0,
+            thumbnail_width,
+            thumbnail_height,
+        )
     manifest.save(resolved_manifest)
     return _json_safe(
         {
             "manifest_path": resolved_manifest,
             "entry_id": entry.id,
+            "thumbnail": manifest[entry.id].thumbnail,
             "num_steps": len(entry.entries()),
             "num_target_steps": len(entry.target_entries()) if entry.target else None,
             "num_entries": len(manifest),
@@ -3217,13 +3272,21 @@ def tool_dataset_update(
     notes=None,
     metadata=None,
     drop_metadata=None,
+    thumbnail=None,
+    render_thumbnail=False,
+    thumbnail_step=0,
+    thumbnail_width=256,
+    thumbnail_height=192,
 ):
     """Curate a manifest: set splits (or assign by fractions), tag, annotate.
 
     entry_ids (or all_entries=true) selects; split/add_tags/remove_tags apply
     to the selection; assign_splits={"train": 0.8, ...} reassigns every entry
     deterministically (seed; by_group keeps groups together); group/notes/
-    metadata/drop_metadata need exactly one selected entry.
+    metadata/drop_metadata need exactly one selected entry. thumbnail (a PNG
+    under the manifest's directory; "none" clears it, one entry) or
+    render_thumbnail (draw each selected entry's step thumbnail_step) record
+    a picture of the case.
     """
     manifest, resolved_manifest = _load_manifest(manifest_path)
     ids = "all" if all_entries else list(entry_ids or ())
@@ -3248,6 +3311,17 @@ def tool_dataset_update(
             group=group,
             metadata=metadata,
             drop_metadata=drop_metadata or (),
+        )
+    if thumbnail is not None or render_thumbnail:
+        _mcp_thumbnails(
+            manifest,
+            os.path.dirname(resolved_manifest),
+            ids,
+            thumbnail,
+            render_thumbnail,
+            thumbnail_step,
+            thumbnail_width,
+            thumbnail_height,
         )
     manifest.save(resolved_manifest)
     return _json_safe(
@@ -4038,6 +4112,10 @@ def tool_render_mesh(
     quality_metric=None,
     cutaway=None,
     cutaway_tint=None,
+    streamlines=None,
+    stream_seeds=40,
+    stream_length=0.5,
+    stream_color=None,
 ):
     """Draw a mesh with the software rasterizer: no display, GPU or extra.
     Without output_path, return it as text; with one, write the form its
@@ -4079,6 +4157,10 @@ def tool_render_mesh(
         "quality_metric": quality_metric,
         "cutaway": None if not cutaway else list(cutaway),
         "cutaway_tint": None if cutaway_tint is None else parse_color(cutaway_tint),
+        "streamlines": streamlines,
+        "stream_seeds": int(stream_seeds) if streamlines else None,
+        "stream_length": float(stream_length) if streamlines else None,
+        "stream_color": None if stream_color is None else parse_color(stream_color),
     }
     options = {k: v for k, v in options.items() if v is not None}
     if output_path is None:

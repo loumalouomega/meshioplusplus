@@ -341,6 +341,49 @@ def test_isolines_vectors_and_warp_draw_in_their_colors():
         mesh, 100, 100, vectors="v", vector_count=9, vector_color=(255, 0, 0), view="+z"
     )
     assert _count(arrows, (255, 0, 0, 255)) > 30
+    mesh.point_data["swirl"] = np.stack(
+        [
+            -(mesh.points[:, 1] - 0.5),
+            mesh.points[:, 0] - 0.5,
+            np.zeros(len(mesh.points)),
+        ],
+        axis=1,
+    )
+    flow = mio.render_image(
+        mesh,
+        100,
+        100,
+        streamlines="swirl",
+        stream_color=(255, 0, 0),
+        view="+z",
+        shading="none",
+    )
+    assert _count(flow, (255, 0, 0, 255)) > 100
+    again = mio.render_image(
+        mesh,
+        100,
+        100,
+        streamlines="swirl",
+        stream_color=(255, 0, 0),
+        view="+z",
+        shading="none",
+    )
+    assert (flow == again).all()
+    few = mio.render_image(
+        mesh,
+        100,
+        100,
+        streamlines="swirl",
+        stream_seeds=3,
+        stream_color=(255, 0, 0),
+        view="+z",
+        shading="none",
+    )
+    assert 0 < _count(few, (255, 0, 0, 255)) < _count(flow, (255, 0, 0, 255))
+    with pytest.raises(ValueError, match="streamline array 'nope'"):
+        mio.render_image(mesh, streamlines="nope")
+    with pytest.raises(ValueError, match="stream seeds"):
+        mio.render_image(mesh, streamlines="swirl", stream_seeds=0)
     warped = mio.render_image(
         mesh, 60, 60, warp="u", warp_outline=True, outline_color=(0, 255, 0), view="+x"
     )
@@ -547,3 +590,48 @@ def test_cutaway_flags_match_between_the_two_clis(tmp_path):
         text=True,
     )
     assert r.returncode != 0 and "AXIS:OFFSET" in r.stderr
+
+
+# --- the synthwave theme (v16.38.0) ----------------------------------------------
+
+
+def test_the_synthwave_theme_paints_a_banded_sunset_and_defaults_its_colormap():
+    mesh = _grid()
+    img = mio.render_image(mesh, 64, 96, theme="synthwave", view="+z", zoom=0.4)
+    assert tuple(img[0, 0]) == (20, 8, 60, 255)  # the top of the sky, opaque
+    assert len({tuple(img[y, 0, :3]) for y in range(96)}) <= 12  # banded
+    # color_by with no cmap takes the theme's colormap; naming one wins.
+    a = mio.render_image(mesh, 48, 48, color_by="x", theme="synthwave", view="+z")
+    b = mio.render_image(
+        mesh, 48, 48, color_by="x", theme="synthwave", cmap="synthwave", view="+z"
+    )
+    c = mio.render_image(
+        mesh, 48, 48, color_by="x", theme="synthwave", cmap="viridis", view="+z"
+    )
+    assert (a == b).all() and not (a == c).all()
+    opaque = mio.render_image(
+        mesh, 64, 96, theme="synthwave", background=(1, 2, 3, 255), zoom=0.4
+    )
+    assert tuple(opaque[0, 0]) == (1, 2, 3, 255)
+
+
+def test_the_theme_options_are_validated_and_the_post_processes_deterministic():
+    mesh = _grid()
+    with pytest.raises(ValueError, match="theme"):
+        mio.render_image(mesh, grid_floor=True)
+    with pytest.raises(ValueError, match="theme must be"):
+        mio.render_image(mesh, theme="vaporwave")
+    base = dict(theme="synthwave", color_by="x", view="+z")
+    plain = mio.render_image(mesh, 96, 64, **base)
+    for option in ("bloom", "fringe", "scanlines", "grid_floor"):
+        out = mio.render_image(mesh, 96, 64, **{**base, option: True})
+        assert not (out == plain).all(), option
+        assert (out == mio.render_image(mesh, 96, 64, **{**base, option: True})).all()
+    # The post-processes need no theme.
+    assert not (
+        mio.render_image(mesh, 96, 64, scanlines=True, view="+z")
+        == mio.render_image(mesh, 96, 64, view="+z")
+    ).all()
+    phase0 = mio.render_image(mesh, 96, 64, grid_floor=True, **base)
+    phase1 = mio.render_image(mesh, 96, 64, grid_floor=True, theme_phase=1, **base)
+    assert not (phase0 == phase1).all()

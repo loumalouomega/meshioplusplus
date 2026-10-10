@@ -87,6 +87,11 @@ private:
     State* mpState = nullptr;
 };
 
+/// Register a child process the session must not outlive (the music player):
+/// it is killed when the terminal is restored from a signal and at exit, as
+/// well as by whoever started it. 0 forgets it. One child at a time.
+void terminal_track_child(long Pid);
+
 }  // namespace meshioplusplus::cli
 
 #endif  // MESHIOPLUSPLUS_CLI_TERMINAL_HPP

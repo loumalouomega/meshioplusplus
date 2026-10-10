@@ -459,6 +459,8 @@ const png = m.renderPng(mesh, { width: 800, height: 600 });           // Uint8Ar
 
 **Cut-aways (v16.36.0).** `cutaway: [px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or an array of up to two such arrays, with `cutawayTint`, clips the geometry away and tints the back faces now in view: `m.render(mesh, { view: '-x', cutaway: [0.5, 0, 0, 1, 0, 0] })`.
 
+**Streamlines (v16.37.0).** `streamlines: 'velocity'` follows a vector point array over the mesh's cells, with `streamSeeds` (default 40), `streamLength` (model diagonals each way, default 0.5) and `streamColor`: `m.render(mesh, { streamlines: 'velocity', streamSeeds: 60 })`. The point array is a flat typed array of three numbers per point. An unknown array or a seed count outside 1 to 10000 throws, naming it.
+
 Colours are `0xRRGGBBAA` numbers or `[r, g, b, a?]`. `renderText` takes the cell encodings only (`halfblock`, `quadrant`, `sextant`, `braille`, `ascii`): the Kitty, iTerm2 and Sixel protocols and the interactive terminal loop are CLI features and are not exported, so nothing is added to the bundle but the rasterizer itself.
 
 ## v9.1.0 additions

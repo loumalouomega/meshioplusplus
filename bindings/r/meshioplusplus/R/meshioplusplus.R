@@ -232,7 +232,7 @@ mio_write <- function(mesh, path, format = NULL, encoding = "default",
 #' @param path Destination `.glb` or `.gltf` path.
 #' @param color_by Point or cell field to colour by; `NULL` disables colouring.
 #' @param cmap Colormap: `viridis`, `coolwarm`, `turbo`, `magma`, `inferno`,
-#'   `plasma` or `grey`, or a reversed `_r` variant of any.
+#'   `plasma`, `grey` or `synthwave`, or a reversed `_r` variant of any.
 #' @param component 1-based component, or `NULL` for magnitude.
 #' @param vmin,vmax Optional colour range limits.
 #' @param split_angle Smooth-normal split angle in degrees.
@@ -1252,8 +1252,9 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
 #' `warp_outline`, `diagnostic` (`"quality"`, `"inverted"`, `"degenerate"`,
 #' `"orientation"`, `"free_edges"`, `"edge_length"`), `quality_metric`, and the
 #' cut-aways `cutaway` (one or two planes of six numbers: a point, then the
-#' normal of the side kept, as a vector or a list of vectors) and `cutaway_tint`.
-#' An unknown name is an error.
+#' normal of the side kept, as a vector or a list of vectors) and `cutaway_tint`,
+#' and the streamlines `streamlines` (a vector point array), `stream_seeds`,
+#' `stream_length` and `stream_color`. An unknown name is an error.
 #'
 #' @param mesh A `mio_mesh`.
 #' @param ... Named render options, see Details.

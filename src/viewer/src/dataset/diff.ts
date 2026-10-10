@@ -49,6 +49,7 @@ const ENTRY_FIELDS: (keyof ManifestEntry)[] = [
     'tags',
     'group',
     'notes',
+    'thumbnail',
     'metadata',
 ];
 

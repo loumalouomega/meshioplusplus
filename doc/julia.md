@@ -262,6 +262,8 @@ write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .
 
 **Cut-aways (v16.36.0).** `cutaway=[px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or a collection of up to two such planes, with `cutaway_tint=rgba(...)`, clips the geometry away and tints the back faces now in view: `render(mesh; view="-x", cutaway=[0.5, 0, 0, 1, 0, 0])`. A wrong length is an `ErrorException`; a zero normal a `MeshioError`.
 
+**Streamlines (v16.37.0).** `streamlines="velocity"` follows a vector point array over the mesh's cells, with `stream_seeds` (default 40), `stream_length` (model diagonals each way, default 0.5) and `stream_color=rgba(...)`: `render(mesh; streamlines="velocity", stream_seeds=60)`. An unknown array or a seed count outside 1 to 10000 is a `MeshioError`.
+
 `render` copies the frame out of the library, so a `Frame` owns its arrays and nothing needs closing. Colours are `0xRRGGBBAA` integers or `(r, g, b[, a])` tuples (`rgba(r, g, b, a)` builds the integer); `shading`, `edges`, `scale` and `diagnostic` take their names (`"smooth"`, `"feature"`, `"log"`, `"orientation"`, ...). `render_text(...; format="html")` returns a self-contained page, which a notebook shows with `display("text/html", ...)`. An unknown option or enum name is an `ErrorException` listing the choices; a library failure (an unknown array, a bad range) is a `MeshioError`. `detect_color_depth(; no_color, color_term, term)` returns `"truecolor"`, `"256"`, `"16"` or `"mono"`.
 
 ## v16.25.0 additions

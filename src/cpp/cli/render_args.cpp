@@ -125,6 +125,9 @@ std::vector<cli_opt_spec> render_flag_specs() {
         {"vector-color", {}, true},   {"warp", {}, true},           {"warp-scale", {}, true},
         {"warp-outline", {}, false},  {"outline-color", {}, true},  {"diagnostic", {}, true},
         {"quality-metric", {}, true}, {"cutaway", {}, true},    {"cutaway-tint", {}, true},
+        {"streamlines", {}, true},    {"stream-seeds", {}, true},   {"stream-length", {}, true},
+        {"stream-color", {}, true},   {"theme", {}, true},          {"scanlines", {}, false},
+        {"bloom", {}, false},         {"fringe", {}, false},        {"grid-floor", {}, false},
     };
 }
 
@@ -322,6 +325,13 @@ RenderOptions cli_render_options(const cli_parsed& rP) {
         o.mVectorLength = stod_c(opt_value(rP, "vector-length"));
     if (has_opt(rP, "vector-color"))
         o.mVectorColor = cli_parse_rgba(opt_value(rP, "vector-color"), "vector-color");
+    o.mStreamlines = opt_value(rP, "streamlines");
+    if (has_opt(rP, "stream-seeds"))
+        o.mStreamSeeds = std::stoi(opt_value(rP, "stream-seeds"));
+    if (has_opt(rP, "stream-length"))
+        o.mStreamLength = stod_c(opt_value(rP, "stream-length"));
+    if (has_opt(rP, "stream-color"))
+        o.mStreamColor = cli_parse_rgba(opt_value(rP, "stream-color"), "stream-color");
     o.mWarp = opt_value(rP, "warp");
     if (has_opt(rP, "warp-scale"))
         o.mWarpScale = stod_c(opt_value(rP, "warp-scale"));
@@ -361,6 +371,19 @@ RenderOptions cli_render_options(const cli_parsed& rP) {
         o.mCutawayTint = cli_parse_rgba(opt_value(rP, "cutaway-tint"), "cutaway-tint");
     }
 
+    if (has_opt(rP, "theme")) {
+        const std::string theme = opt_value(rP, "theme");
+        if (theme == "synthwave")
+            o.mTheme = RenderTheme::Synthwave;
+        else if (theme != "none")
+            throw std::runtime_error("--theme expects synthwave or none, not '" + theme + "'");
+    }
+    o.mScanlines = has_flag(rP, "scanlines");
+    o.mBloom = has_flag(rP, "bloom");
+    o.mFringe = has_flag(rP, "fringe");
+    o.mGridFloor = has_flag(rP, "grid-floor");
+    if (o.mGridFloor && o.mTheme == RenderTheme::None)
+        throw std::runtime_error("--grid-floor requires --theme");
     const bool color = has_opt(rP, "color-by");
     const bool mapped = color || !o.mExpr.empty() || o.mDiagnostic == RenderDiagnostic::Quality ||
                         o.mDiagnostic == RenderDiagnostic::EdgeLength;
@@ -378,7 +401,8 @@ RenderOptions cli_render_options(const cli_parsed& rP) {
     } else {
         o.mColorBy = opt_value(rP, "color-by");
         cli_color_values(rP, o.mComponent, o.mVMin, o.mVMax);
-        o.mCmap = opt_value(rP, "cmap", "viridis");
+        // The theme brings its own colormap unless one is named.
+        o.mCmap = opt_value(rP, "cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
         if (has_opt(rP, "nan-color"))
             o.mNanColor = cli_parse_rgba(opt_value(rP, "nan-color"), "nan-color");
         o.mColorbar = has_flag(rP, "colorbar");
@@ -518,7 +542,8 @@ RenderFlags RenderFlags::FromOptions(const RenderOptions& rOptions) {
     if (mapped) {
         if (rOptions.mComponent.has_value())
             f.Set("component", std::to_string(*rOptions.mComponent));
-        if (rOptions.mCmap != d.mCmap)
+        if (rOptions.mCmap !=
+            (rOptions.mTheme == RenderTheme::Synthwave ? std::string("synthwave") : d.mCmap))
             f.Set("cmap", rOptions.mCmap);
         if (rOptions.mVMin.has_value())
             f.Set("vmin", flag_number(*rOptions.mVMin));
@@ -553,6 +578,12 @@ RenderFlags RenderFlags::FromOptions(const RenderOptions& rOptions) {
         f.Set("vector-count", std::to_string(rOptions.mVectorCount));
     number("vector-length", rOptions.mVectorLength, d.mVectorLength);
     color("vector-color", rOptions.mVectorColor, d.mVectorColor);
+    if (!rOptions.mStreamlines.empty())
+        f.Set("streamlines", rOptions.mStreamlines);
+    if (rOptions.mStreamSeeds != d.mStreamSeeds)
+        f.Set("stream-seeds", std::to_string(rOptions.mStreamSeeds));
+    number("stream-length", rOptions.mStreamLength, d.mStreamLength);
+    color("stream-color", rOptions.mStreamColor, d.mStreamColor);
     if (!rOptions.mWarp.empty())
         f.Set("warp", rOptions.mWarp);
     number("warp-scale", rOptions.mWarpScale, d.mWarpScale);
@@ -564,6 +595,16 @@ RenderFlags RenderFlags::FromOptions(const RenderOptions& rOptions) {
                                        cut.mNormal[1], cut.mNormal[2]}));
     if (!rOptions.mCutaways.empty())
         color("cutaway-tint", rOptions.mCutawayTint, d.mCutawayTint);
+    if (rOptions.mTheme == RenderTheme::Synthwave)
+        f.Set("theme", "synthwave");
+    if (rOptions.mScanlines)
+        f.SetFlag("scanlines", true);
+    if (rOptions.mBloom)
+        f.SetFlag("bloom", true);
+    if (rOptions.mFringe)
+        f.SetFlag("fringe", true);
+    if (rOptions.mGridFloor)
+        f.SetFlag("grid-floor", true);
     return f;
 }
 

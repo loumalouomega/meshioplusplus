@@ -348,7 +348,11 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
                            "vectors",       "vector_count",  "vector_length",
                            "vector_color",  "warp",          "warp_scale",
                            "warp_outline",  "outline_color", "diagnostic",
-                           "quality_metric", "cutaway",      "cutaway_tint"},
+                           "quality_metric", "cutaway",      "cutaway_tint",
+                           "streamlines",   "stream_seeds",  "stream_length",
+                           "stream_color",  "theme",         "scanlines",
+                           "bloom",         "fringe",        "grid_floor",
+                           "theme_phase"},
                       "render");
     meshioplusplus::RenderOptions o;
     auto get = [&](const char* pKey) -> py::object {
@@ -557,6 +561,34 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
     }
     if (!(v = get("cutaway_tint")).is_none())
         o.mCutawayTint = render_py_color(v, "cutaway_tint");
+    if (!(v = get("streamlines")).is_none())
+        o.mStreamlines = v.cast<std::string>();
+    if (!(v = get("stream_seeds")).is_none())
+        o.mStreamSeeds = v.cast<std::int32_t>();
+    if (!(v = get("stream_length")).is_none())
+        o.mStreamLength = v.cast<double>();
+    if (!(v = get("stream_color")).is_none())
+        o.mStreamColor = render_py_color(v, "stream_color");
+    if (!(v = get("theme")).is_none()) {
+        const std::string name = v.cast<std::string>();
+        if (name == "synthwave")
+            o.mTheme = meshioplusplus::RenderTheme::Synthwave;
+        else if (name == "none")
+            o.mTheme = meshioplusplus::RenderTheme::None;
+        else
+            throw std::invalid_argument(
+                "meshio++: render: theme must be one of none, synthwave; not '" + name + "'");
+    }
+    if (!(v = get("scanlines")).is_none())
+        o.mScanlines = v.cast<bool>();
+    if (!(v = get("bloom")).is_none())
+        o.mBloom = v.cast<bool>();
+    if (!(v = get("fringe")).is_none())
+        o.mFringe = v.cast<bool>();
+    if (!(v = get("grid_floor")).is_none())
+        o.mGridFloor = v.cast<bool>();
+    if (!(v = get("theme_phase")).is_none())
+        o.mThemePhase = v.cast<std::int32_t>();
     return o;
 }
 
@@ -2938,7 +2970,7 @@ PYBIND11_MODULE(_core, m) {
            const std::string& compare_title, bool diff, bool shared_range,
            const std::vector<std::string>& paths, const std::string& pattern,
            const std::string& input_format, int follow_ms, int settle_ms, double fps,
-           const std::string& session) {
+           const std::string& session, py::dict music) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus_py::PyMeshRefs compare_refs;
             meshioplusplus::Mesh cpp;
@@ -2971,6 +3003,46 @@ PYBIND11_MODULE(_core, m) {
                                                                                     input_format);
             else if (pymesh.is_none())
                 throw std::invalid_argument("meshio++: tui: give a mesh or a series");
+            // The optional soundtrack and the theme's beat (see doc/tui.md).
+            meshioplusplus::detail::SynthOptions synth;
+            double volume = 0.3;
+            if (music.contains("tempo"))
+                synth.mTempo = music["tempo"].cast<double>();
+            if (music.contains("seed"))
+                synth.mSeed = music["seed"].cast<std::uint32_t>();
+            if (music.contains("key"))
+                synth.mKey = music["key"].cast<int>();
+            if (music.contains("volume"))
+                volume = music["volume"].cast<double>();
+            if (!(volume >= 0.05 && volume <= 0.9))
+                throw std::invalid_argument(
+                    "meshio++: tui: the volume must lie in [0.05, 0.9] (the default is 0.3)");
+            synth.mGain = volume;
+            const bool play = music.contains("enabled") && music["enabled"].cast<bool>();
+            const std::string music_out =
+                music.contains("out") ? music["out"].cast<std::string>() : std::string();
+            meshioplusplus::detail::synth_synthwave(synth);  // refuses a tempo or key out of range
+            if (!music_out.empty())
+                meshioplusplus::cli::tui::music_write_wav(music_out, synth);
+            const bool reduced = (music.contains("reduced_motion") &&
+                                  music["reduced_motion"].cast<bool>()) ||
+                                 meshioplusplus::cli::tui::reduced_motion_requested();
+            const bool pulse = music.contains("pulse") && music["pulse"].cast<bool>();
+            if (t.mRender.mTheme != meshioplusplus::RenderTheme::None && !reduced &&
+                (pulse || play))
+                t.mPulseTempo = synth.mTempo;
+            meshioplusplus::cli::tui::MusicPlayer player(synth, volume);
+            std::string music_message;
+            if (play && replay.is_none()) {
+                std::string why;
+                if (!meshioplusplus::cli::tui::music_allowed(
+                        music.contains("over_ssh") && music["over_ssh"].cast<bool>(), why))
+                    music_message = "music: " + why + "; the viewer goes on silently";
+                else if (player.Start(music_message)) {
+                    t.mpMusic = &player;
+                    music_message.clear();  // only a refusal is worth saying
+                }
+            }
             meshioplusplus::cli::tui::TuiReport report;
             py::dict out;
             if (!replay.is_none()) {
@@ -2997,6 +3069,7 @@ PYBIND11_MODULE(_core, m) {
             out["step"] = report.mStep;
             out["probe"] = report.mProbe;
             out["error"] = report.mError;
+            out["music"] = music_message;
             return out;
         },
         py::arg("mesh") = py::none(), py::arg("options") = py::dict(),
@@ -3005,7 +3078,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("compare_title") = "", py::arg("diff") = false, py::arg("shared_range") = true,
         py::arg("paths") = std::vector<std::string>{}, py::arg("pattern") = "",
         py::arg("input_format") = "", py::arg("follow_ms") = 0, py::arg("settle_ms") = 300,
-        py::arg("fps") = 4.0, py::arg("session") = "");
+        py::arg("fps") = 4.0, py::arg("session") = "", py::arg("music") = py::dict());
 
     // Sharp, open, non-manifold and inconsistently wound edges as a line mesh.
     // See operations/feature_edges.hpp.

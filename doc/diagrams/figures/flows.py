@@ -1060,6 +1060,7 @@ def roadmap_map():
                 ("interop phase 2 (Open3D, GPU)", "S"),
                 ("CLI chatbot over MCP tools", "M"),
                 ("viewer look · MDPA preview", "M"),
+                ("manager shows thumbnails", "S"),
             ],
             [],
         ),
@@ -1072,14 +1073,6 @@ def roadmap_map():
                 ("out-of-core operations", "XL"),
             ],
             [(0, 1)],
-        ),
-        (
-            "§7 terminal rendering",
-            [
-                ("streamlines · thumbnails", "S"),
-                ("synthwave theme · music", "S"),
-            ],
-            [],
         ),
     ]
     per_row = 4

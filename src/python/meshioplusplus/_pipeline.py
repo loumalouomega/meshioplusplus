@@ -222,6 +222,15 @@ _OP_TABLE = {
         "QualityMetric",
         "Cutaway",
         "CutawayTint",
+        "Streamlines",
+        "StreamSeeds",
+        "StreamLength",
+        "StreamColor",
+        "Theme",
+        "Scanlines",
+        "Bloom",
+        "Fringe",
+        "GridFloor",
     ),
     "Repair": (
         "FixOrientation",
@@ -504,7 +513,16 @@ def _snapshot_options(step):
         "component": (
             int(_number(step, "Component", 0)) if "Component" in step else None
         ),
-        "cmap": _text(step, "Cmap", "viridis"),
+        "theme": _snap_choice(step, "Theme", ("none", "synthwave")),
+        "cmap": _text(
+            step,
+            "Cmap",
+            "synthwave" if _text(step, "Theme", "none") == "synthwave" else "viridis",
+        ),
+        "scanlines": _flag(step, "Scanlines", False),
+        "bloom": _flag(step, "Bloom", False),
+        "fringe": _flag(step, "Fringe", False),
+        "grid_floor": _flag(step, "GridFloor", False),
         "vmin": _number(step, "VMin", 0.0) if "VMin" in step else None,
         "vmax": _number(step, "VMax", 0.0) if "VMax" in step else None,
         "colorbar": _flag(step, "Colorbar", False),
@@ -549,6 +567,10 @@ def _snapshot_options(step):
         "quality_metric": _text(step, "QualityMetric", "") or None,
         "cutaway": cutaway,
         "cutaway_tint": _snap_color(step, "CutawayTint"),
+        "streamlines": _text(step, "Streamlines", "") or None,
+        "stream_seeds": int(_number(step, "StreamSeeds", 40)),
+        "stream_length": _number(step, "StreamLength", 0.5),
+        "stream_color": _snap_color(step, "StreamColor"),
     }
     return {k: v for k, v in options.items() if v is not None}
 

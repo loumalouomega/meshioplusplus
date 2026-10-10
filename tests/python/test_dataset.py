@@ -56,6 +56,7 @@ def _doc(**overrides):
                 "Tags": ["re100"],
                 "Group": "cyl/laminar",
                 "Notes": "n",
+                "Thumbnail": "thumbs/a.png",
                 "Metadata": {"Re": 100},
             },
             {"Id": "b", "Source": {"Path": "cases/single.vtu"}},
@@ -121,6 +122,8 @@ def test_load_accepts_dict_json_text_and_path(tmp_path):
             "Sort applies only with Paths",
         ),
         (lambda d: d["Entries"][0].update(Tags=[1]), "Tags"),
+        (lambda d: d["Entries"][0].update(Thumbnail=""), "Thumbnail"),
+        (lambda d: d["Entries"][0].update(Thumbnail=3), "Thumbnail"),
         (lambda d: d["Entries"][1].update(Id="a"), "duplicate entry id 'a'"),
     ],
 )
@@ -505,3 +508,57 @@ def test_check_pairing_counts_a_self_supervised_entry(tmp_path):
     manifest = DatasetManifest(base_dir=str(tmp_path))
     entry = manifest.add({"Pattern": "coarse/*.vtu"}, id="solo")
     assert check_pairing(entry) == 3
+
+
+# --------------------------------------------------------------------------- #
+# thumbnails                                                                  #
+# --------------------------------------------------------------------------- #
+def test_a_thumbnail_is_an_optional_key_that_round_trips(tmp_path):
+    manifest = DatasetManifest.load(_doc())
+    assert manifest["a"].thumbnail == "thumbs/a.png"
+    assert manifest["b"].thumbnail is None
+    assert "Thumbnail" not in manifest.to_dict()["Entries"][1]
+    # Between Notes and Metadata, where the other optional keys sit.
+    keys = list(manifest.to_dict()["Entries"][0])
+    assert keys.index("Notes") < keys.index("Thumbnail") < keys.index("Metadata")
+    path = tmp_path / "m.json"
+    manifest.save(path)
+    again = DatasetManifest.load(path)
+    assert again["a"].thumbnail == "thumbs/a.png"
+    assert again["a"].thumbnail_path() == os.path.join(str(tmp_path), "thumbs/a.png")
+    assert again["b"].thumbnail_path() is None
+
+
+def test_set_thumbnail_and_add_take_a_path(tmp_path):
+    manifest = DatasetManifest()
+    manifest.add({"Path": "a.vtu"}, validate_source=False, thumbnail="t/a.png")
+    assert manifest["a"].thumbnail == "t/a.png"
+    manifest.set_thumbnail("a", None)
+    assert manifest["a"].thumbnail is None
+    manifest.set_thumbnail("a", tmp_path / "x.png")
+    assert manifest["a"].thumbnail == str(tmp_path / "x.png")
+    with pytest.raises(ValueError, match="thumbnail"):
+        manifest.set_thumbnail("a", "")
+    with pytest.raises(KeyError):
+        manifest.set_thumbnail("nope", "x.png")
+
+
+def test_render_thumbnail_draws_the_first_step_beside_the_manifest(tmp_path):
+    pytest.importorskip("meshioplusplus._core")
+    paths = _write_cases(tmp_path, 3)
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    manifest.add(paths, id="run")
+    written = manifest.render_thumbnail("run", width=64, height=48, color_by="T")
+    assert written == os.path.join(str(tmp_path), "thumbnails", "run.png")
+    assert open(written, "rb").read(8) == b"\x89PNG\r\n\x1a\n"
+    # Portable: stored relative to the manifest, resolved back to the file.
+    assert manifest["run"].thumbnail == "thumbnails/run.png"
+    assert manifest["run"].thumbnail_path() == written
+    again = manifest.render_thumbnail(
+        "run", tmp_path / "other" / "r.png", step=-1, width=32, height=32
+    )
+    assert os.path.exists(again) and manifest["run"].thumbnail == "other/r.png"
+    with pytest.raises(ValueError, match="no step 7"):
+        manifest.render_thumbnail("run", step=7)
+    with pytest.raises(ValueError, match=".png"):
+        manifest.render_thumbnail("run", tmp_path / "r.jpg")

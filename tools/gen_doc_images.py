@@ -221,6 +221,38 @@ TERMINAL_FIGURES = [
         dict(color_by="u", cmap="coolwarm", shading="smooth"),
         {"series": True},
     ),
+    (
+        "tui_streamlines.svg",
+        100,
+        34,
+        _drag(40, 14, 44, 12),
+        dict(
+            color_by="height",
+            cmap="grey",
+            shading="smooth",
+            encoding="sextant",
+            streamlines="flow",
+            stream_seeds=36,
+            stream_length=0.2,
+        ),
+        {"flow": True},
+    ),
+    (
+        "tui_synthwave.svg",
+        100,
+        34,
+        _drag(40, 14, 43, 12),
+        dict(
+            theme="synthwave",
+            grid_floor=True,
+            color_by="height",
+            shading="smooth",
+            edges="feature",
+            bloom=True,
+            encoding="sextant",
+        ),
+        {},
+    ),
 ]
 
 
@@ -229,6 +261,17 @@ def _bunny():
     mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
     return meshioplusplus.Mesh(
         mesh.points, mesh.cells, point_data={"height": mesh.points[:, 2].copy()}
+    )
+
+
+def _bunny_flow():
+    """The bunny with a spiral flow about its vertical axis, as a vector field."""
+    mesh = _bunny()
+    x, y = mesh.points[:, 0], mesh.points[:, 1]
+    cx, cy = 0.5 * (x.min() + x.max()), 0.5 * (y.min() + y.max())
+    flow = np.stack([-(y - cy), x - cx, 0.4 * np.hypot(x - cx, y - cy)], axis=1)
+    return meshioplusplus.Mesh(
+        mesh.points, mesh.cells, point_data={**mesh.point_data, "flow": flow}
     )
 
 
@@ -275,6 +318,9 @@ def terminal_figures(dry_run: bool) -> list[pathlib.Path]:
                 kwargs["series"] = series
                 target = None
                 title = "bunny_*.vtu"
+            elif extra.get("flow"):
+                target = _bunny_flow()
+                title = "bunny.stl"
             elif extra.get("compare"):
                 kwargs["compare"] = series[3]
                 target = series[0]

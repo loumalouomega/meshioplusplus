@@ -21,6 +21,8 @@ KNOWN = {
     "inferno": ((0, 0, 4), (188, 55, 84), (252, 255, 164)),
     "plasma": ((13, 8, 135), (204, 71, 120), (240, 249, 33)),
     "grey": ((0, 0, 0), (128, 128, 128), (255, 255, 255)),
+    # Not matplotlib's: the generator's own palette (see tools/gen_colormaps.py).
+    "synthwave": ((8, 6, 60), (191, 30, 170), (190, 245, 255)),
 }
 
 

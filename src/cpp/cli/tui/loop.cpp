@@ -178,7 +178,7 @@ std::string scene_key(const RenderOptions& rOptions) {
         "azimuth", "elevation",    "roll",      "perspective", "fov",         "zoom",
         "pan-x",   "pan-y",        "axes",      "scale-bar",   "colorbar",    "cutaway",
         "cutaway-tint", "ambient", "one-sided", "background",  "point-radius", "supersample",
-        "view"};
+        "view",         "scanlines", "bloom",      "fringe",      "grid-floor"};
     std::string key;
     for (const std::string& token : RenderFlags::FromOptions(rOptions).Tokens())
         if (draw_time.count(token_name(token)) == 0)
@@ -635,6 +635,23 @@ bool TuiSession::Handle(const InputEvent& rEvent, const TerminalSize& rSize) {
             return StepBy(-10);
         case '}':
             return StepBy(10);
+        case 'm':
+            if (mOptions.mpMusic == nullptr) {
+                mMessage = "no music (--music starts it)";
+                return true;
+            }
+            mOptions.mpMusic->SetMuted(!mOptions.mpMusic->Muted());
+            mMessage = mOptions.mpMusic->Status();
+            return true;
+        case '<':
+        case '>':
+            if (mOptions.mpMusic == nullptr) {
+                mMessage = "no music (--music starts it)";
+                return true;
+            }
+            mOptions.mpMusic->AdjustVolume(ch == '>' ? 1 : -1);
+            mMessage = mOptions.mpMusic->Status();
+            return true;
         case ' ':
             if (!mpSeries || mpSeries->Count() < 2) {
                 mMessage = "one step: nothing to play";
@@ -787,6 +804,7 @@ void TuiSession::ApplyFlags(RenderFlags& rFlags, bool Prepare) {
         mCutSign = {0, 0, 0};
         mCutActive = -1;
     }
+    next.mThemePhase = mCamera.mThemePhase;  // the beat counter is not a flag
     mCamera = next;
     if (!scene_changed)
         return;
@@ -994,10 +1012,13 @@ std::string TuiSession::Execute(const std::string& rLine) {
             if (RenderFlags::TakesValue(name)) {
                 need(1, name + " VALUE");
                 const bool clearable = name == "color-by" || name == "expr" || name == "vectors" ||
-                                       name == "warp" || name == "reduce" ||
+                                       name == "streamlines" || name == "theme" || name == "warp" || name == "reduce" ||
                                        name == "quality-metric";
-                if (t[1] == "none" && clearable)
+                if (t[1] == "none" && clearable) {
                     flags.Unset(name);
+                    if (name == "theme")
+                        flags.Unset("grid-floor");  // the grid floor is part of a theme
+                }
                 else
                     flags.Set(name, t[1]);
             } else {
@@ -1206,6 +1227,8 @@ void TuiSession::Draw(TuiIo& rIo, const TerminalSize& rSize, bool Full) {
             status += "  cut " + std::to_string(mCamera.mCutaways.size());
         if (!mMessage.empty())
             status += "  | " + mMessage;
+        if (mOptions.mpMusic != nullptr)
+            status += "  " + mOptions.mpMusic->Status();
         status += "  | ? help  q quit";
     }
     mReport.mStatus = status;
@@ -1227,6 +1250,16 @@ void TuiSession::Draw(TuiIo& rIo, const TerminalSize& rSize, bool Full) {
 // ---------------------------------------------------------------------------
 
 void TuiSession::Tick() {
+    if (mOptions.mpMusic != nullptr)
+        mOptions.mpMusic->Poll();
+    // The theme's beat: one step of the counter per beat of the tempo.
+    if (mOptions.mPulseTempo > 0.0 && mCamera.mTheme != RenderTheme::None) {
+        if (mPulseStartMs < 0)
+            mPulseStartMs = mNowMs;
+        const double beats = static_cast<double>(mNowMs - mPulseStartMs) * mOptions.mPulseTempo /
+                             60000.0;
+        mCamera.mThemePhase = static_cast<std::int32_t>(beats);
+    }
     // Playing: the next step every 1/fps seconds, stopping at the last.
     if (mPlaying && mpSeries && mNowMs >= mNextPlayMs) {
         const double fps = mOptions.mPlayFps > 0.0 ? mOptions.mPlayFps : 4.0;
@@ -1289,8 +1322,10 @@ TuiReport TuiSession::Run(TuiIo& rIo) {
         const std::size_t step_before = mStep;
         const std::string message_before = mMessage;
         const bool playing_before = mPlaying;
+        const std::int32_t phase_before = mCamera.mThemePhase;
         Tick();
-        if (mStep != step_before || mMessage != message_before || mPlaying != playing_before)
+        if (mStep != step_before || mMessage != message_before || mPlaying != playing_before ||
+            mCamera.mThemePhase != phase_before)
             dirty = true;
         if (mFull) {
             full = true;

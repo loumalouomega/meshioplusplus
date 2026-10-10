@@ -57,7 +57,7 @@ Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step i
 |--------|-------------|
 | `--color-by NAME` | `point_data` or `cell_data` array to colour the faces by |
 | `--component I` | Component of a multi-component array (default: its magnitude) |
-| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma` or `grey`, or a reversed `_r` variant of any |
+| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma`, `grey` or `synthwave` (an original neon palette for the [synthwave theme](tui.md#the-synthwave-theme), not perceptually uniform), or a reversed `_r` variant of any |
 | `--vmin V` / `--vmax V` | Colour range (default: the drawn faces' finite range) |
 | `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
 | `--colorbar` | Append a gradient bar with min/max labels (SVG/TikZ only) |
@@ -1046,9 +1046,12 @@ meshioplusplus snapshot [options] INFILE OUTFILE
 | `--categorical` / `--color-regions` / `--category-edges` | Colour integer data, or the named cell regions, from a fixed palette with a key; draw the edges where categories meet |
 | `--isolines N` / `--iso-levels A,B,...` / `--iso-color` | Contour lines of the point array `--color-by` |
 | `--vectors NAME` / `--vector-count N` / `--vector-length L` / `--vector-color` | Arrows for a vector point array |
+| `--streamlines NAME` / `--stream-seeds N` / `--stream-length L` / `--stream-color` | Streamlines of a vector point array: about `N` seeds (default 40) spread at equal area or volume, each line at most `L` model diagonals (default 0.5) in each direction, over the mesh's own cells; on a volume they run inside it, so add a `--cutaway` |
 | `--warp NAME` / `--warp-scale S` / `--warp-outline` / `--outline-color` | Move the points by a displacement array; draw the undeformed outline |
 | `--diagnostic NAME` / `--quality-metric M` | `quality`, `inverted`, `degenerate`, `orientation`, `free-edges` or `edge-length` |
 | `--cutaway PLANE` / `--cutaway-tint` | Clip a half-space away (twice at most): `PX,PY,PZ,NX,NY,NZ` (a point and the normal of the side kept) or `AXIS:OFFSET`, `AXIS` one of `+x -x +y -y +z -z` (`+x:0.5` keeps x ≥ 0.5); the back faces then in view are drawn in the tint (default `#e88034`) |
+| `--theme synthwave` / `--grid-floor` | An optional 1980s look: a banded sunset behind the model, neon defaults and the `synthwave` colormap; a perspective grid under it (see [the theme](tui.md#the-synthwave-theme)) |
+| `--bloom` / `--fringe` / `--scanlines` | Post-processes on the final frame, in that order, with or without a theme |
 | `--png-compress 1..9` | Compress a PNG through zlib (default: stored blocks, the same bytes everywhere) |
 | `--cast-frames N` / `--cast-fps R` / `--cast-degrees DEG` | An asciicast orbit: frame count (`36`), rate (`12`), sweep (`360`) |
 | `--input-format` (`-i`) | Force the input format |
@@ -1092,10 +1095,14 @@ It takes every render option of `snapshot` (the camera, shading, edges, colourin
 | `--fps R` | Steps per second when playing (default 4) |
 | `--session FILE` | Read a session if the file exists and write it when the viewer ends |
 | `--replay FILE` | Play a recorded input stream on a `--cols` by `--rows` screen (default `100` x `40`) and print what the viewer writes, instead of using the terminal |
+| `--music` / `--music-out FILE.wav` | Play a generated synthwave loop on an external player (silent in CI and over SSH unless `--music-over-ssh`); or write it to a file for your own player. `m` mutes, `<` `>` change the volume ([the soundtrack](tui.md#the-soundtrack)) |
+| `--volume V` / `--tempo BPM` / `--music-seed N` / `--music-key K` | The loop's loudness (0.05 to 0.9, default 0.3), tempo (60 to 140, default 100), variation and tonic (`C`…`B` or 0 to 11) |
+| `--pulse` / `--reduced-motion` | With a theme: step the grid on every beat of `--tempo` (`--music` implies it); never, whatever else is asked (also `REDUCED_MOTION` in the environment) |
 | `--input-format` (`-i`) | Force the input format |
 
 ```sh
 meshioplusplus tui part.vtu
+meshioplusplus tui part.vtu --theme synthwave --grid-floor --bloom --music
 meshioplusplus tui result.vtu --color-by temperature --colorbar --cmap magma --edges feature
 meshioplusplus tui part.vtu --encoding braille --color-depth 256
 ```
@@ -1574,11 +1581,12 @@ meshioplusplus dataset <subcommand> [options]
 
 | verb | does |
 |---|---|
-| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case |
+| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case ; `--thumbnail PNG` records a picture of the case, `--render-thumbnail` draws one |
 | `list MANIFEST` | entries filtered by `--split`/`--tag`/`--group`; `--resolve` expands each plan (checks files exist, reads no mesh); `--json` emits the entries (plus `Resolved` plans) as JSON |
 | `split MANIFEST` | `--set S` on `--id` (repeatable) or `--all`; or `--assign train=0.8,valid=0.1,test=0.1` over every entry — deterministic (`--seed`), `--by-group` keeps entries sharing a `Group` together |
 | `tag MANIFEST` | `--add T,T` / `--remove T,T` on `--id` (repeatable) or `--all` |
 | `annotate MANIFEST --id ID` | set `--notes`, `--group`, merge `--meta K=V`, drop `--del-meta K` |
+| `thumbnail MANIFEST` | a picture of the cases on `--id` (repeatable) or `--all`: draws step `--step` (default 0) with the [software rasterizer](tui.md) at `--width`×`--height` (default 256×192; `--color-by`, `--cmap`, `--view`, `--shading`) to `--path` (one id; default `thumbnails/<id>.png` beside the manifest), or records an existing picture with `--set PNG` (one id), or `--clear`s it |
 
 ```sh
 meshioplusplus dataset add m.json 'runs/c42/out_*.vtu' --split train --meta Re=100
@@ -1587,6 +1595,8 @@ meshioplusplus dataset add m.json 'coarse/*.vtu' --target 'fine/*.vtu' --id sr
 meshioplusplus dataset split m.json --assign train=0.8,valid=0.1,test=0.1 --seed 0
 meshioplusplus dataset list m.json --split train --resolve
 meshioplusplus dataset annotate m.json --id pair --notes "restarted at t=0.3"
+meshioplusplus dataset add m.json 'runs/c43/out_*.vtu' --render-thumbnail
+meshioplusplus dataset thumbnail m.json --all --color-by pressure --cmap coolwarm
 ```
 
 ---

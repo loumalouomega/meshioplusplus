@@ -96,7 +96,7 @@ The camera is fitted to the geometry actually drawn, not to the whole bounding b
 
 The [`--color-by` family](./formats/svg.md) of `convert` works the same way here: `--color-by NAME` (point data first, then cell data), `--component`, `--cmap`, `--vmin`, `--vmax`, `--nan-color` and `--colorbar`. Point data colours a face by the mean of its corners, cell data by the owning cell, and non-finite values take `--nan-color`. The automatic range spans every face handed to the rasterizer, hidden ones included, so an orbit never changes the colours. The range is printed under a text rendering (`--no-notes` turns that off) and returned by `render_image(..., return_info=True)`.
 
-The colormaps are `viridis` (the default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma` and `grey`, and a reversed `_r` variant of each. They are shared with the SVG, TikZ and glTF writers. viridis, magma, inferno and plasma are matplotlib's listed maps (CC0); Turbo is Apache-2.0 (Google LLC); coolwarm and grey are sampled from matplotlib.
+The colormaps are `viridis` (the default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma`, `grey` and `synthwave`, and a reversed `_r` variant of each. `synthwave` runs from deep blue through violet and magenta to hot pink and pale cyan; it is an original palette, not perceptually uniform, and is for the [theme](#the-synthwave-theme), not for anything quantitative. They are shared with the SVG, TikZ and glTF writers. viridis, magma, inferno and plasma are matplotlib's listed maps (CC0); Turbo is Apache-2.0 (Google LLC); coolwarm and grey are sampled from matplotlib.
 
 ## Field rendering
 
@@ -115,6 +115,7 @@ These options (v16.34.0) turn a picture of a surface into a picture of a solutio
 | `--category-edges` | draw the edges where two faces of different category meet (categories, regions or a flag diagnostic) |
 | `--isolines N`, `--iso-levels A,B,...`, `--iso-color` / `isolines`, `iso_levels`, `iso_color` | contour lines of the point array `--color-by`: `N` equally spaced levels inside the range, or the explicit levels, drawn with a depth bias so they sit on their faces; cell data are refused by name |
 | `--vectors NAME`, `--vector-count N`, `--vector-length L`, `--vector-color` / `vectors`, ... | arrows for a vector point array at about `N` evenly ranked drawn points; the longest is 6% of the model's diagonal, or every arrow is `L` model units long; the heads lie in the plane of the arrow and the line of sight |
+| `--streamlines NAME`, `--stream-seeds N`, `--stream-length L`, `--stream-color` / `streamlines`, ... | lines that follow a vector point array, [below](#streamlines) |
 | `--warp NAME`, `--warp-scale S`, `--warp-outline`, `--outline-color` / `warp`, ... | move the points by a displacement point array times `S`, optionally drawing the undeformed outline (its open and sharp edges) beside the deformed shape |
 | `--diagnostic NAME`, `--quality-metric M` / `diagnostic`, `quality_metric` | one flag for the checks people run first, below |
 
@@ -129,6 +130,50 @@ The diagnostics reuse metrics that already exist; none is a new algorithm:
 | `edge-length` | faces coloured by their mean edge length |
 
 A diagnostic excludes `--color-by`, `--expr` and `--color-regions`; the options that make no sense together are refused by name rather than ignored. With none of the new options set a frame is byte-identical to v16.33.0's.
+
+### Streamlines
+
+![The bunny with magenta streamlines winding around it](/images/tui_streamlines.svg)
+
+*A spiral flow about the bunny's vertical axis, 36 streamlines at `--stream-length 0.2`, in a terminal 100 columns wide with the `sextant` encoding. The lines are drawn on the surface, wrap behind the model and are hidden by it, as any other geometry is.*
+
+`--streamlines NAME` (v16.37.0) follows the vector point array `NAME` from a set of seeds, in both directions, and draws the lines like isolines and arrows (a depth bias keeps them on their faces). The field is the piecewise-linear interpolation of the array over the mesh's own cells, so a linear field is followed exactly: triangles, quads (two triangles), tetrahedra, hexahedra (six), wedges (three) and pyramids (two); a higher-order cell contributes its corner nodes, and a mesh with no cell of these kinds is refused by naming the types it has. The dimension of the highest cells found decides where the lines run: a volume is traced through its volume, a surface *on* the surface (the field is projected onto the triangle it is on, and the point stays on it), so a flow over a shell winds around it.
+
+| Option | Meaning |
+| --- | --- |
+| `--stream-seeds N` | about this many lines (default 40; 1 to 10000, and never more than there are simplices). The seeds are the centroids of simplices ranked at equal area or volume along a golden-ratio sequence, so they spread evenly over a structured mesh instead of lining up with its rows |
+| `--stream-length L` | the longest a line grows in each direction from its seed, in diagonals of the box around the traced cells (default 0.5; (0, 10]) |
+| `--stream-color` | the colour of the lines (default `#f050a0`) |
+
+A line stops where it leaves the mesh, where the field vanishes (a speed under a billionth of the fastest) or when its length is used up. The integrator is fixed-step RK4 in arc length with a step of 0.5% of the diagonal, so a line has at most `L / 0.005` segments each way (100 by default, never more than 2000), and a result depends only on the mesh and the arguments: the point locator is a uniform bucket grid filled in simplex order, the lines are traced in parallel into per-seed buffers joined in seed order, and the digests are the same across SEQ, OpenMP and TBB at any thread count.
+
+On a volume the lines are *inside* it, hidden by the skin, so combine them with a [cut-away](#cut-aways) (`--cutaway +x:0.5`) to see them. In the viewer `:streamlines NAME` turns them on and `:streamlines none` off; they are a prepare-time option, so changing them re-prepares the scene once and an orbit afterwards costs only a redraw. With no array named a frame is byte-identical to one rendered without the option.
+
+## The synthwave theme
+
+![The bunny in front of a banded sunset and a grid floor, in neon colours](/images/tui_synthwave.svg)
+
+*`--theme synthwave --grid-floor --color-by height --bloom` on a screen of 100 columns, the `sextant` encoding. The sunset, the grid and the violet-to-pink colours are all drawn by the rasterizer; the picture is a replayed session, like the other screenshots.*
+
+An optional 1980s look (v16.38.0), and a joke taken seriously: nothing about it is a default, it adds no dependency and it touches no mesh operation. `--theme synthwave` (`theme="synthwave"` in Python, `:theme synthwave` in the viewer) does four things:
+
+- **A sunset behind the model**, wherever the frame is not opaque: dark violet to hot pink to orange down to a horizon at 60% of the height, then a dark floor, each in a fixed number of bands (eight above the horizon, four below) so it survives 16- and 256-colour terminals. An opaque `--background` of your own wins.
+- **Neon defaults.** Faces left at their default fill become violet, edges cyan and lines magenta; any colour you set is kept. With a mapped field the default colormap becomes `synthwave` unless you name one (`--cmap viridis` stays viridis).
+- **`--grid-floor`**, a perspective grid under the model, drawn behind it by the rasterizer. Its colour alternates between magenta and cyan, and its lines scroll one eighth of a cell, with the theme's *phase*, a beat counter (below).
+- **Post-processes**, each its own flag, off by default and usable without a theme: `--bloom` (the brightest pixels, box-blurred and added back), `--fringe` (red and blue shifted apart by a pixel or so) and `--scanlines` (every other row dimmed by a quarter), applied to the final frame in that order.
+
+| Option | Meaning |
+| --- | --- |
+| `--theme NAME` / `theme` | `synthwave`, or `none` |
+| `--grid-floor` / `grid_floor` | the grid under the model; it needs a theme |
+| `--bloom`, `--fringe`, `--scanlines` | the post-processes |
+| `--pulse`, `--reduced-motion` (`tui`) | step the theme's phase on every beat of `--tempo`; never, whatever else is asked |
+
+Everything is integer arithmetic in a fixed order, so the theme is as deterministic as the rest of the renderer: the same options give the same bytes on every backend and thread count, and with the theme off a frame is byte-identical to one rendered before it existed (the `render_frame_*` rows of the [benchmark harness](./benchmarks.md) are unchanged). The picking buffer is not touched, so probing works under a theme. The `synthwave` colormap is generated by `tools/gen_colormaps.py`, an original palette through deep blue, violet, magenta, hot pink and pale cyan; it is not perceptually uniform, so it is for the look and not for anything quantitative (`viridis` stays the default).
+
+**The beat.** With a theme and `--pulse` (or `--music`, which implies it) the viewer counts beats from the clock it is given, at the tempo of the soundtrack (100 BPM unless `--tempo` says otherwise), and redraws once per beat with the new phase. The tempo is capped at 140 BPM, so the picture changes at most 2.3 times a second, under the three flashes a second that accessibility guidance for photosensitive viewers asks content to stay below (†, from memory: check the current WCAG wording before relying on it), and a step moves the grid by an eighth of a cell and swaps two neon colours, never the whole frame to white. `--reduced-motion`, or the `REDUCED_MOTION` environment variable set to anything but empty, `0` or `false`, turns the pulse off entirely; the frames are then still. Because the clock is the loop's own (a replayed session supplies a deterministic one), a recorded `.cast` or a replay reproduces.
+
+The theme reaches the native and Python `snapshot` and `tui`, the Python library (`render_image`, `render_text`, `snapshot`) and the `Snapshot` pipeline step (`Theme`, `GridFloor`, `Bloom`, `Fringe`, `Scanlines`). C, Fortran, Julia, R and WebAssembly get the `synthwave` colormap by name and nothing else: their option structures did not grow, and an agent has nothing to hear, so there is no MCP entry either.
 
 ## Surfaces
 
@@ -188,6 +233,7 @@ It takes the render flags of [`snapshot`](#field-rendering) (`--color-by`, `--cm
 | `i`, `0` | pin the probe (two pins show their difference); clear the probe, the pins and the cut-aways |
 | `x` `y` `z`, `,` `.` | [cut away](#cut-aways) half the model at the middle along an axis (once: keep the + side, twice: the − side, third time: off); slide the plane |
 | `[` `]`, `{` `}`, space | [step](#time-series) through a series by one or ten; play and pause |
+| `m`, `<` `>` | mute or unmute the [soundtrack](#the-soundtrack); lower or raise its volume (nothing happens without `--music`) |
 | `:` | the [command line](#the-command-line) |
 | `r`, Home | reset the camera (the cut-aways go; the field, edges and shading stay) |
 | `?` | show or hide the help |
@@ -289,6 +335,27 @@ Several files, or a quoted glob (`'out_*.vtu'`, natural-numeric order), make a s
 
 The flags are the camera, the field, its range and scale, the cut-aways and everything else `snapshot` takes, as the tokens it parses, so a session can also be pasted onto a command line. An unknown key, a wrong type or another version is an error naming it, and a session that makes no sense for the mesh stops the start with a message instead of starting somewhere else. The reader is a small hand-written one for exactly this shape, so the viewer does not depend on the optional JSON library.
 
+### The soundtrack
+
+`--music` plays a generated loop while the viewer runs (v16.38.0): a slow minor-key chord progression on detuned sawtooth pads under a gentle low-pass sweep, a sine bass on the root, a soft arpeggio on a quarter-width pulse wave, a kick on every beat, a noise hi-hat on the off-beats and a dotted-eighth feedback delay, 8 bars of 4 beats at 100 BPM by default (about 19 seconds, looped). It is original and generated: nothing is sampled, copied or modelled on an existing piece, and no audio file ships with the library.
+
+The synthesizer (`detail/synth.*`, core-private, no public header and no ABI) is a pure function of its options, computed entirely in integer arithmetic on phase accumulators: the waveforms come from the accumulators' top bits, the sine is a fixed-point polynomial, the filter is a one-pole integer low-pass and the noise is an xorshift generator, so no floating-point value or libm call touches a sample. The same `(seed, tempo, key, length)` gives the same WAV bytes on every compiler, platform and optimisation level (a checksum of the default loop is pinned in the tests, which also check the sample count, that the peak follows `--volume` and stays below full scale, and that the loop's first and last samples join without a step). The seed picks the chord progression (four of them), the arpeggio order and the bass pattern.
+
+| Option | Meaning |
+| --- | --- |
+| `--music` | play the loop on an external player |
+| `--music-out FILE.wav` | write the loop for your own player; no player is needed, and it works over SSH and in CI |
+| `--volume V` | the loop's loudness as a fraction of full scale, 0.05 to 0.9 (default 0.3); baked into the samples, so it is the same on every player |
+| `--tempo BPM` | 60 to 140 (default 100); also the pulse's tempo |
+| `--music-seed N`, `--music-key K` | the variation, and the tonic (`C`, `C#`, `Db`, ... `B`, or 0 to 11; default `A`) |
+| `--music-over-ssh` | play even in an SSH session |
+
+**Players.** No audio library is linked. The loop is written to a temporary WAV file and played by the first of `afplay` (macOS), `paplay`, `pw-play`, `aplay -q`, `ffplay -nodisp -autoexit -loglevel quiet` found on the `PATH` (on Windows, PowerShell's `System.Media.SoundPlayer`), started as a child process, restarted when it ends and killed on every way out the process controls: a normal quit, an exception, `SIGINT`, `SIGTERM` and `SIGHUP`, `atexit`, and even `SIGKILL` of the viewer on Linux (the child asks the kernel to kill it with its parent). With no player found `--music` says so, naming what it looked for, and the viewer goes on silently. `m` mutes, which stops the player, and `<` `>` change the volume, which writes the loop again and restarts it.
+
+**Manners.** Sound is off unless asked for: no environment variable, configuration file or `auto` rule turns it on, and `snapshot` has no music at all. `--music` is refused, with the reason, when `CI` is set, and in an SSH session unless `--music-over-ssh` is given: the music plays on the machine the process runs on, not where the terminal is, which over SSH is somebody else's speaker. A replay never plays.
+
+**What was verified.** The four Linux players (`paplay`, `pw-play`, `aplay`, `ffplay`) accept the generated file with the arguments above, checked here by starting each on a generated loop. The pty tests run the real viewer against a fake player and check that it starts, that muting stops it, and that every exit path, a quit, three signals and an outright `SIGKILL`, leaves none behind. **Not verified:** `afplay` on macOS and the PowerShell player on Windows (these come from their documentation, and the Windows child is not tied to the terminal's signal restore as the POSIX one is).
+
 ### Prepared scenes
 
 The library exposes the cached half as `prepare_render(mesh, options)` and `render_scene(scene, options, fixed_fit)` in `operations/render.hpp` (and `render_scene_bounds`, the bounding sphere the cut-away keys centre on): `prepare_render` fixes the field, edges, colours and shading mode; `render_scene` takes the camera, the frame size, the lighting and the overlays. With the same options the frame is byte-identical to `render`'s, which a test checks across cameras, fields, vectors, warps, diagnostics and supersampling. `encode_cells` and `encode_cells_update` give the cell grid and the bytes that repaint one grid over another. They are what the viewer uses, and available to anyone writing their own loop; the loop itself, with its raw mode and signal handling, stays in the command-line layer.
@@ -327,7 +394,7 @@ The [MCP server](./mcp.md)'s `render_mesh` tool lets an agent look at a mesh: wi
 
 ## Design decisions
 
-These were settled before the rasterizer was written ([roadmap](./roadmap.md) §7.1).
+These were settled before the rasterizer was written, and recorded in the roadmap while it was open.
 
 **Frame budget.** Measured with the `render_frame_160x96` (a terminal-sized frame of the tier's volume) and `render_ss4_800x480` (a 4x-supersampled 800x480 image of the same volume with smooth shading, every edge and a mapped field) rows of the [benchmark harness](./benchmarks.md), on four OpenMP threads of a 16-core machine:
 
@@ -342,6 +409,8 @@ At XL both rows cost about the same although the second draws 400 times as many 
 **No Python twin.** Every other renderer in meshio++ (SVG, TikZ, glTF) has a byte-pinned NumPy twin. This one does not: a NumPy edge-function rasterizer would be slow and would double the surface that has to stay byte-identical. Python calls the core or raises by name, the precedent of [`remesh_volume`](./remesh_volume.md) and the MMG operations; `MESHIOPLUSPLUS_STRICT_CORE` and the core-fallback guards are unaffected because there is no fallback to take.
 
 **Nothing beyond the standard library and the operating system.** No curses, image or terminal library. The PNG encoder, the colour quantizers, the Sixel median cut and the asciicast writer are all part of the core. The terminal itself is queried only by the CLI layer, through `ioctl(TIOCGWINSZ)` on POSIX and the console API on Windows. On Windows the CLI turns on `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and the UTF-8 output code page; [virtual-terminal processing](https://learn.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences) needs Windows 10 version 1511 (build 10586) or later, and the interactive loop also needs virtual-terminal *input*, for which Microsoft's documentation gives no version (the viewer asks and, if the console refuses, says so). On an older console `snapshot -` falls back to glyphs without colour.
+
+**No audio library.** The soundtrack is synthesized by the core in integer arithmetic and played by whatever player the system has, as a child process the viewer owns. Linking an audio library would add a dependency for a joke; a player on the `PATH` costs nothing and fails by name when it is absent.
 
 **Where the code lives.** The public header is `operations/render.hpp` (`RenderOptions`, `Frame`, `TextOptions`, `render`, `encode_text`, `encode_png`, `write_snapshot`, …); the rasterizer, PNG encoder and text encoders are core-private (`src/cpp/src/detail/raster.*`, `png_write.*`, `operations/render_text.cpp`). Terminal queries live in the CLI (`src/cpp/cli/terminal.*`), so the library never owns a tty. The header is an additive ABI change, recorded in the [ABI reviews](./abi_reviews.md).
 

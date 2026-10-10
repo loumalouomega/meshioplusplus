@@ -72,6 +72,20 @@ Field rendering (v16.34.0):
     arrows for a vector point array at about ``vector_count`` evenly ranked
     drawn points; the longest is 6% of the model's diagonal unless
     ``vector_length`` gives one length in model units.
+``streamlines``, ``stream_seeds``, ``stream_length``, ``stream_color``
+    lines that follow a vector point array, in both directions from about
+    ``stream_seeds`` seeds spread at equal area or volume, over the mesh's own
+    cells (triangles, quads, tetrahedra, hexahedra, wedges, pyramids); each
+    grows at most ``stream_length`` diagonals of the model from its seed. On a
+    volume they run inside it, so combine them with ``cutaway``.
+``theme``, ``scanlines``, ``bloom``, ``fringe``, ``grid_floor``
+    ``theme="synthwave"`` puts a banded violet-to-orange sunset behind the model
+    (wherever the frame is not opaque), colours the faces, edges and lines in
+    neon and makes ``synthwave`` the default colormap; ``grid_floor`` adds a
+    perspective grid under the model (it needs a theme). ``bloom``, ``fringe`` and
+    ``scanlines`` are post-processes on the final frame, in that order, and work
+    with or without a theme. Everything is off by default and a frame with
+    all of it off is unchanged.
 ``warp``, ``warp_scale``, ``warp_outline``, ``outline_color``
     move the points by a displacement point array, optionally drawing the
     undeformed outline.
@@ -188,7 +202,7 @@ def _render_dict(options):
             continue
         if key in ("edge_color", "fill_color", "line_color", "background", "nan_color"):
             value = [int(c) for c in value]
-        elif key in ("iso_color", "vector_color", "outline_color"):
+        elif key in ("iso_color", "vector_color", "outline_color", "stream_color"):
             value = [int(c) for c in value]
         elif key in ("pan", "light_dir", "iso_levels"):
             value = [float(c) for c in value]
@@ -218,6 +232,8 @@ def _split(options):
                 snap[key] = value
         else:
             render[key] = value
+    if render.get("theme") == "synthwave" and render.get("cmap") is None:
+        render["cmap"] = "synthwave"  # the theme's own colormap, unless one is named
     return _render_dict(render), text, snap
 
 

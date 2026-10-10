@@ -219,3 +219,23 @@ test('filters: exact split, all-of tags, group path segments', () => {
         ],
     );
 });
+
+test('a Thumbnail round-trips and is validated like the Python manifest', () => {
+    const doc = {
+        Version: 1,
+        Entries: [{ Id: 'a', Source: { Path: 'a.vtu' }, Thumbnail: 'thumbs/a.png', Notes: 'n' }],
+    };
+    const manifest = parseManifest(doc);
+    assert.equal(getEntry(manifest, 'a').thumbnail, 'thumbs/a.png');
+    const text = stringifyManifest(manifest);
+    // After Notes and before Metadata, as in `DatasetEntry.to_dict`.
+    assert.ok(text.indexOf('"Notes"') < text.indexOf('"Thumbnail"'));
+    assert.equal(stringifyManifest(parseManifest(text)), text);
+    assert.throws(
+        () => parseManifest({ Entries: [{ Id: 'a', Source: { Path: 'p' }, Thumbnail: '' }] }),
+        /Thumbnail must be a non-empty string/,
+    );
+    const added = addEntry(emptyManifest(), { Path: 'b.vtu' }, { id: 'b', thumbnail: 't.png' });
+    assert.equal(added.thumbnail, 't.png');
+    assert.equal(getEntry(parseManifest(doc), 'a').notes, 'n');
+});

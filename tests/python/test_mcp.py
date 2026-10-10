@@ -1304,6 +1304,14 @@ def test_render_mesh_tool(tmp_path):
     src = str(tmp_path / "cube.vtu")
     cube = _unit_cube_quads()
     cube.point_data["x"] = cube.points[:, 0].copy()
+    cube.point_data["flow"] = np.stack(
+        [
+            -(cube.points[:, 1] - 0.5),
+            cube.points[:, 0] - 0.5,
+            np.zeros(len(cube.points)),
+        ],
+        axis=1,
+    )
     meshioplusplus.write(src, cube)
     text = _dump(_tools.tool_render_mesh(src, cols=24, rows=8))
     assert (text["cols"], text["rows"]) == (24, 8)
@@ -1355,6 +1363,22 @@ def test_render_mesh_tool(tmp_path):
     assert "cutaway: 1 plane" in six["text"]
     with pytest.raises(ValueError, match="AXIS:OFFSET"):
         _tools.tool_render_mesh(src, cutaway=["x:1"])
+    # Streamlines of a vector point array, named in the notes.
+    flow = _dump(
+        _tools.tool_render_mesh(
+            src,
+            cols=24,
+            rows=8,
+            view="-x",
+            cutaway=["+x:0.5"],
+            streamlines="flow",
+            stream_seeds=6,
+            stream_color="#ff00ff",
+        )
+    )
+    assert "streamlines: flow," in flow["text"]
+    with pytest.raises(ValueError, match="streamline array 'nope'"):
+        _tools.tool_render_mesh(src, streamlines="nope")
 
 
 def test_region_adjacency_tool(tmp_path):
@@ -2152,6 +2176,56 @@ def test_dataset_add_list_update_round_trip(tmp_path, monkeypatch):
     assert entry["Id"] == "sweep" and entry["Tags"] == ["raw", "v1"]
     assert len(entry["resolved"]) == 3
     assert all(item["time_source"] for item in entry["resolved"])
+
+
+def test_dataset_tools_draw_set_and_clear_thumbnails(tmp_path, monkeypatch):
+    pytest.importorskip("meshioplusplus._core")
+    _case_files(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    manifest = str(tmp_path / "m.json")
+    out = _dump(
+        _tools.tool_dataset_add(
+            manifest,
+            input_pattern="cases/case_*.vtu",
+            entry_id="sweep",
+            render_thumbnail=True,
+            thumbnail_width=48,
+            thumbnail_height=32,
+        )
+    )
+    assert out["thumbnail"] == "thumbnails/sweep.png"
+    assert (tmp_path / "thumbnails" / "sweep.png").read_bytes()[:4] == b"\x89PNG"
+    _dump(
+        _tools.tool_dataset_add(
+            manifest, input_paths=["cases/case_0.vtu"], entry_id="one"
+        )
+    )
+    out = _dump(
+        _tools.tool_dataset_update(
+            manifest, entry_ids=["one"], render_thumbnail=True, thumbnail_step=0
+        )
+    )
+    listed = _dump(_tools.tool_dataset_list(manifest))
+    assert {e["Id"]: e.get("Thumbnail") for e in listed["entries"]} == {
+        "sweep": "thumbnails/sweep.png",
+        "one": "thumbnails/one.png",
+    }
+    _tools.tool_dataset_update(
+        manifest, entry_ids=["one"], thumbnail="thumbnails/sweep.png"
+    )
+    assert _dump(_tools.tool_dataset_list(manifest))["entries"][1]["Thumbnail"] == (
+        "thumbnails/sweep.png"
+    )
+    _tools.tool_dataset_update(manifest, entry_ids=["one"], thumbnail="none")
+    assert "Thumbnail" not in _dump(_tools.tool_dataset_list(manifest))["entries"][1]
+    with pytest.raises(ValueError, match="not both"):
+        _tools.tool_dataset_update(
+            manifest, entry_ids=["one"], thumbnail="x.png", render_thumbnail=True
+        )
+    with pytest.raises(ValueError, match="exactly one entry"):
+        _tools.tool_dataset_update(manifest, all_entries=True, thumbnail="x.png")
+    with pytest.raises(ValueError, match="not found"):
+        _tools.tool_dataset_update(manifest, entry_ids=["one"], thumbnail="missing.png")
 
 
 def test_dataset_update_assign_and_annotate(tmp_path, monkeypatch):

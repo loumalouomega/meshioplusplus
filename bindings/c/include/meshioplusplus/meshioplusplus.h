@@ -250,7 +250,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 36
+#define MIO_VERSION_MINOR 38
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -4612,7 +4612,16 @@ typedef struct mio_render_opts {
     const double* cutaways;
     int32_t num_cutaways;
     uint32_t cutaway_tint; /**< back faces seen through a cut; default 0xE88034FF */
-    int64_t reserved[4];   /**< must be zero; room for additive growth */
+    /** v16.37.0: streamlines of this vector point array (NULL or "" for none),
+     * from about `stream_seeds` seeds (default 40), each growing at most
+     * `stream_length` diagonals of the model (default 0.5) from its seed, in
+     * `stream_color` (default 0xF050A0FF). Take three of the former `reserved`
+     * slots; size unchanged. */
+    const char* streamlines;
+    int32_t stream_seeds;
+    uint32_t stream_color;
+    double stream_length;
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_render_opts;
 
 /** Initialize render options to the defaults named above. */

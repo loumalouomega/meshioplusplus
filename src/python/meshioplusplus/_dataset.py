@@ -46,6 +46,7 @@ _ENTRY_KEYS = (
     "Tags",
     "Group",
     "Notes",
+    "Thumbnail",
     "Metadata",
 )
 _SOURCE_KEYS = ("Pattern", "Path", "Paths", "Format", "Times", "TimeFrom", "Sort")
@@ -134,6 +135,14 @@ def _coerce_source(source, where, block="Source"):
     )
 
 
+def _validate_thumbnail(value):
+    if value is None:
+        return None
+    if not isinstance(value, (str, os.PathLike)) or not os.fspath(value):
+        raise _err("the thumbnail must be a non-empty path")
+    return os.fspath(value)
+
+
 def _validate_metadata(value, where):
     if value is None:
         return {}
@@ -190,6 +199,11 @@ class DatasetEntry:
     group: str = None
     notes: str = None
     metadata: dict = field(default_factory=dict)
+    #: A picture of the case: the path of a PNG, resolved like a source path
+    #: (against the manifest's directory when relative). ``None`` when there is
+    #: none. A key of the document since v16.37.0: an older reader refuses a
+    #: manifest that carries it, by name, as it does any unknown key.
+    thumbnail: str = None
     base_dir: str = field(default=None, compare=False)
 
     @classmethod
@@ -220,6 +234,9 @@ class DatasetEntry:
         notes = obj.get("Notes")
         if notes is not None and not isinstance(notes, str):
             raise _err(f"{where}.Notes must be a string")
+        thumbnail = obj.get("Thumbnail")
+        if thumbnail is not None and (not isinstance(thumbnail, str) or not thumbnail):
+            raise _err(f"{where}.Thumbnail must be a non-empty string")
         metadata = _validate_metadata(obj.get("Metadata"), f"{where}.Metadata")
         return cls(
             id=entry_id,
@@ -230,6 +247,7 @@ class DatasetEntry:
             group=group,
             notes=notes,
             metadata=metadata,
+            thumbnail=thumbnail,
             base_dir=base_dir,
         )
 
@@ -247,9 +265,21 @@ class DatasetEntry:
             out["Group"] = self.group
         if self.notes is not None:
             out["Notes"] = self.notes
+        if self.thumbnail is not None:
+            out["Thumbnail"] = self.thumbnail
         if self.metadata:
             out["Metadata"] = dict(self.metadata)
         return out
+
+    def thumbnail_path(self, *, base_dir=None):
+        """The thumbnail's path, resolved against ``base_dir`` (default: the
+        manifest's directory), or ``None`` when the entry has none. The file is
+        not checked: a thumbnail is a convenience, never a requirement."""
+        if self.thumbnail is None:
+            return None
+        return _resolve_source_path(
+            self.thumbnail, self.base_dir if base_dir is None else base_dir
+        )
 
     def _resolved_source(self, base_dir, source=None):
         source = self.source if source is None else source
@@ -531,6 +561,7 @@ class DatasetManifest:
         group=None,
         notes=None,
         metadata=None,
+        thumbnail=None,
         validate_source=True,
     ):
         """Add an entry and return it.
@@ -546,6 +577,9 @@ class DatasetManifest:
         ``target`` takes the same three shapes and records the paired series a
         coarse/fine problem needs. Leave it out for the ordinary case: an entry
         without a target is self-supervised.
+
+        ``thumbnail`` is the path of a picture of the case (see
+        :meth:`render_thumbnail`, which draws one).
         """
         source = _coerce_source(source, "add()")
         if target is not None:
@@ -564,6 +598,7 @@ class DatasetManifest:
             group=group,
             notes=notes,
             metadata=_validate_metadata(metadata, "metadata"),
+            thumbnail=_validate_thumbnail(thumbnail),
             base_dir=self.base_dir,
         )
         if validate_source:
@@ -671,6 +706,63 @@ class DatasetManifest:
             changes["metadata"] = merged
         if changes:
             self._replace(entry_id, **changes)
+
+    def set_thumbnail(self, entry_id, path):
+        """Record ``path`` (a PNG; ``None`` clears it) as the entry's
+        thumbnail. A relative path is kept as given and resolves against the
+        manifest's directory, like a source."""
+        self._replace(entry_id, thumbnail=_validate_thumbnail(path))
+
+    def render_thumbnail(
+        self,
+        entry_id,
+        path=None,
+        *,
+        step=0,
+        width=256,
+        height=192,
+        **render_options,
+    ):
+        """Draw a picture of an entry and record it as its thumbnail.
+
+        The mesh is step ``step`` of the entry's ``Source`` (the first by
+        default), drawn by the software rasterizer (:func:`~meshioplusplus.snapshot`,
+        so no display is needed) at ``width`` x ``height`` pixels; any
+        ``render_options`` (``color_by``, ``view``, ...) are passed through.
+        ``path`` is where the PNG goes: by default ``thumbnails/<id>.png`` under
+        the manifest's directory (the working directory for a manifest that has
+        not been saved). It is stored relative to the manifest's directory when
+        it lies under it, so the manifest stays portable. Returns the path
+        written.
+        """
+        from ._render import snapshot
+
+        entry = self[entry_id]
+        series = entry.time_series()
+        if not -len(series) <= step < len(series):
+            raise _err(
+                f"entry '{entry_id}' has {len(series)} step(s); there is no step {step}"
+            )
+        base = self.base_dir or os.getcwd()
+        if path is None:
+            path = os.path.join(base, "thumbnails", f"{entry_id}.png")
+        path = os.fspath(path)
+        if not path.lower().endswith(".png"):
+            raise _err(f"a thumbnail is a .png file, not '{path}'")
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+        _, mesh = series[step]
+        snapshot(mesh, path, width=width, height=height, **render_options)
+        absolute = os.path.abspath(path)
+        stored = path
+        if self.base_dir and not os.path.isabs(path):
+            stored = portable_relpath(absolute, self.base_dir)
+        elif self.base_dir:
+            relative = portable_relpath(absolute, self.base_dir)
+            if not relative.startswith(".."):
+                stored = relative
+        self._replace(entry_id, thumbnail=stored)
+        return path
 
     # ------------------------------------------------------------------ #
     # Internals                                                          #

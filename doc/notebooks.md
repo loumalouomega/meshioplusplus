@@ -34,9 +34,9 @@ Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled [`exam
 
 ## Other languages
 
-- **C++** — [`example/cpp/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/cpp), the same tour written directly against the C++ core (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel; see [`example/cpp/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/cpp/README.md).
-- **Julia** — [`example/julia/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/julia); see [`example/julia/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/julia/README.md).
-- **R** — [`example/r/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/r); see [`example/r/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/r/README.md).
+- **C++** — [`example/cpp/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/cpp), the same tour written directly against the C++ core (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel (`07_terminal_rendering.ipynb` shows the software rasterizer, inline PNG frames included); see [`example/cpp/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/cpp/README.md).
+- **Julia** — [`example/julia/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/julia) (`04_terminal_rendering.ipynb` shows the software rasterizer, inline PNG frames included); see [`example/julia/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/julia/README.md).
+- **R** — [`example/r/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/r) (`04_terminal_rendering.ipynb` shows the software rasterizer, inline PNG frames included); see [`example/r/README.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/r/README.md).
 
 ## Running them
 

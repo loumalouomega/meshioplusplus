@@ -28,6 +28,7 @@
 #include "input.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/render.hpp"
+#include "music.hpp"
 #include "probe.hpp"
 #include "series.hpp"
 
@@ -157,6 +158,14 @@ struct TuiOptions {
     /// A session file: read at the start when it exists, written when the viewer
     /// ends (and by `:session save`).
     std::string mSessionPath;
+
+    /// The optional soundtrack (not owned): polled every turn so the loop
+    /// restarts, `m` mutes it and `<` `>` change its volume. Null for none.
+    MusicControl* mpMusic = nullptr;
+    /// With a theme: the grid's colour and scroll step on every beat of this
+    /// tempo, counted from the clock the loop is given (never the wall clock of
+    /// a recording). 0 for a still theme. Beats stay under three a second.
+    double mPulseTempo = 0.0;
 };
 
 /// What a run leaves behind.
@@ -286,6 +295,7 @@ private:
     long long mNextFollowMs = 0;
     long long mSettleUntilMs = 0;
     long long mNowMs = 0;
+    long long mPulseStartMs = -1;
     TuiReport mReport;
     TextGrid mPrevious;
     std::vector<std::string> mPreviousLines;

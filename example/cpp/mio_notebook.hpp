@@ -197,4 +197,52 @@ inline SvgImage histogram_chart(const std::vector<double>& rEdges, const std::ve
     return SvgImage{svg.str()};
 }
 
+
+// -- software-rendered frames -----------------------------------------------------
+//
+// Unlike the SVG route above, meshio++'s own rasterizer (`render`, `encode_png`)
+// takes every option: colouring, field options, streamlines and cut-aways. A frame
+// is encoded as a PNG and shown through its `image/png` MIME bundle.
+
+inline std::string base64_encode(const std::string& rBytes) {
+    static const char kDigits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((rBytes.size() + 2) / 3 * 4);
+    for (std::size_t i = 0; i < rBytes.size(); i += 3) {
+        const unsigned a = static_cast<unsigned char>(rBytes[i]);
+        const unsigned b = i + 1 < rBytes.size() ? static_cast<unsigned char>(rBytes[i + 1]) : 0u;
+        const unsigned c = i + 2 < rBytes.size() ? static_cast<unsigned char>(rBytes[i + 2]) : 0u;
+        out.push_back(kDigits[a >> 2]);
+        out.push_back(kDigits[((a & 3u) << 4) | (b >> 4)]);
+        out.push_back(i + 1 < rBytes.size() ? kDigits[((b & 15u) << 2) | (c >> 6)] : '=');
+        out.push_back(i + 2 < rBytes.size() ? kDigits[c & 63u] : '=');
+    }
+    return out;
+}
+
+struct PngImage {
+    std::string png;
+};
+
+inline nl::json mime_bundle_repr(const PngImage& rImg) {
+    auto bundle = nl::json::object();
+    bundle["image/png"] = base64_encode(rImg.png);
+    return bundle;
+}
+
+// Draws `rMesh` with the software rasterizer and returns it as a displayable
+// PngImage. The pixels go through zlib when the build has it (a small file) and as
+// stored blocks otherwise (the same bytes everywhere, but large).
+inline PngImage frame_image(const meshioplusplus::Mesh& rMesh, meshioplusplus::RenderOptions Options = {},
+                            int width = 560, int height = 420) {
+    Options.mWidth = width;
+    Options.mHeight = height;
+    const meshioplusplus::Frame frame = meshioplusplus::render(rMesh, Options);
+    try {
+        return PngImage{meshioplusplus::encode_png(frame, 6)};
+    } catch (const std::exception&) {
+        return PngImage{meshioplusplus::encode_png(frame, 0)};
+    }
+}
+
 }  // namespace mio_nb

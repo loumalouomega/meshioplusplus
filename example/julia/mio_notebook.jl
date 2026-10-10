@@ -156,3 +156,37 @@ function histogram_chart(edges::Vector{<:Real}, counts::Vector{<:Integer}, title
     print(io, "</svg>")
     SvgImage(String(take!(io)))
 end
+
+# -- software-rendered frames ----------------------------------------------------
+#
+# Unlike the SVG route above, meshio++'s own rasterizer (`render`, `render_png`) is
+# reachable through the C API with every option: colouring, field options,
+# streamlines and cut-aways. A frame is an RGBA array; to show one inline it is
+# encoded as a PNG and wrapped so Jupyter's `image/png` hook finds it.
+
+"""A PNG, displayed inline via Jupyter's `image/png` MIME type."""
+struct PngImage
+    bytes::Vector{UInt8}
+end
+
+Base.show(io::IO, ::MIME"image/png", x::PngImage) = write(io, x.bytes)
+Base.showable(::MIME"image/png", ::PngImage) = true
+
+"""
+    frame_image(mesh; width=560, height=420, kwargs...) -> PngImage
+
+Draw `mesh` with the software rasterizer and return it as a displayable
+[`PngImage`](@ref). The keyword arguments are those of `render` (`view`,
+`color_by`, `streamlines`, `cutaway`, ...). The pixels go through zlib when the
+library has it (a small file) and as stored blocks otherwise (the same bytes
+everywhere, but large).
+"""
+function frame_image(m::Mesh; width::Integer=560, height::Integer=420, kwargs...)
+    bytes = try
+        mio.render_png(m; width=width, height=height, compress=6, kwargs...)
+    catch e
+        e isa MeshioError && occursin("compress", sprint(showerror, e)) || rethrow()
+        mio.render_png(m; width=width, height=height, kwargs...)
+    end
+    PngImage(bytes)
+end

@@ -3903,6 +3903,26 @@ int cmd_snapshot(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// The tonic of the soundtrack: a semitone above C (0 to 11) or a note name (C, C#, Db, A, ...).
+int parse_music_key(const std::string& rText) {
+    static const std::vector<std::pair<std::string, int>> names = {
+        {"C", 0},  {"C#", 1}, {"Db", 1}, {"D", 2},  {"D#", 3}, {"Eb", 3}, {"E", 4},
+        {"F", 5},  {"F#", 6}, {"Gb", 6}, {"G", 7},  {"G#", 8}, {"Ab", 8}, {"A", 9},
+        {"A#", 10}, {"Bb", 10}, {"B", 11}};
+    for (const auto& [name, semitone] : names)
+        if (rText == name)
+            return semitone;
+    try {
+        std::size_t used = 0;
+        const int v = std::stoi(rText, &used);
+        if (used == rText.size() && v >= 0 && v <= 11)
+            return v;
+    } catch (const std::exception&) {
+    }
+    throw std::runtime_error("--music-key expects a note name (C, C#, Db, ..., B) or 0 to 11, not '" +
+                             rText + "'");
+}
+
 int cmd_tui(const std::vector<std::string>& rArgs) {
     std::vector<cli_opt_spec> specs = render_flag_specs();
     for (cli_opt_spec spec : std::vector<cli_opt_spec>{
@@ -3922,6 +3942,15 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
              {"settle", {}, true},
              {"fps", {}, true},
              {"session", {}, true},
+             {"music", {}, false},
+             {"music-out", {}, true},
+             {"volume", {}, true},
+             {"tempo", {}, true},
+             {"music-seed", {}, true},
+             {"music-key", {}, true},
+             {"music-over-ssh", {}, false},
+             {"pulse", {}, false},
+             {"reduced-motion", {}, false},
          })
         specs.push_back(spec);
     auto p = cli_parse(rArgs, specs);
@@ -3966,6 +3995,40 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
         options.mPlayFps = meshioplusplus::detail::stod_c(opt_value(p, "fps"));
     if (options.mDiff && !has_opt(p, "compare"))
         throw std::runtime_error("--diff requires --compare FILE");
+
+    // The optional soundtrack (--music, --music-out) and the theme's beat.
+    meshioplusplus::detail::SynthOptions synth;
+    if (has_opt(p, "tempo"))
+        synth.mTempo = meshioplusplus::detail::stod_c(opt_value(p, "tempo"));
+    if (has_opt(p, "music-seed"))
+        synth.mSeed = static_cast<std::uint32_t>(std::stoul(opt_value(p, "music-seed")));
+    if (has_opt(p, "music-key"))
+        synth.mKey = parse_music_key(opt_value(p, "music-key"));
+    double volume = 0.3;
+    if (has_opt(p, "volume")) {
+        volume = meshioplusplus::detail::stod_c(opt_value(p, "volume"));
+        if (!(volume >= 0.05 && volume <= 0.9))
+            throw std::runtime_error("--volume must lie in [0.05, 0.9] (the default is 0.3)");
+    }
+    synth.mGain = volume;
+    for (const char* flag : {"volume", "tempo", "music-seed", "music-key", "music-over-ssh"})
+        if ((has_opt(p, flag) || has_flag(p, flag)) && !has_flag(p, "music") &&
+            !has_opt(p, "music-out") && !(std::string(flag) == "tempo" && has_flag(p, "pulse")))
+            throw std::runtime_error(std::string("--") + flag +
+                                     " needs --music, --music-out or --pulse");
+    meshioplusplus::detail::synth_synthwave(synth);  // refuses a tempo or key out of range
+    if (has_opt(p, "music-out")) {
+        meshioplusplus::cli::tui::music_write_wav(opt_value(p, "music-out"), synth);
+        std::cerr << "wrote " << opt_value(p, "music-out") << " (a generated loop, "
+                  << meshioplusplus::detail::synth_length(synth) / synth.mSampleRate
+                  << " s; play it with your own player)\n";
+    }
+    const bool reduced_motion =
+        has_flag(p, "reduced-motion") || meshioplusplus::cli::tui::reduced_motion_requested();
+    if (options.mRender.mTheme != meshioplusplus::RenderTheme::None && !reduced_motion &&
+        (has_flag(p, "pulse") || has_flag(p, "music")))
+        options.mPulseTempo = synth.mTempo;
+    meshioplusplus::cli::tui::MusicPlayer player(synth, volume);
 
     // One mesh, or a time series: several files, a quoted glob, or --follow
     // (which watches the file for being rewritten).
@@ -4021,7 +4084,18 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
             "this console does not take escape sequences (SetConsoleMode refused "
             "ENABLE_VIRTUAL_TERMINAL_PROCESSING, as an older Windows does); use `snapshot "
             "--color-depth mono` for plain text");
+    if (has_flag(p, "music")) {
+        std::string why;
+        std::string message;
+        if (!meshioplusplus::cli::tui::music_allowed(has_flag(p, "music-over-ssh"), why))
+            std::cerr << "music: " << why << "; the viewer goes on silently\n";
+        else if (player.Start(message))
+            options.mpMusic = &player;
+        else
+            std::cerr << message << "\n";
+    }
     const auto report = meshioplusplus::cli::tui::run_on_terminal(mesh, options);
+    player.Stop();
     if (!report.mError.empty())
         throw std::runtime_error(report.mError);
     return report.mExit;

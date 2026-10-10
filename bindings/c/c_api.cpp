@@ -6151,6 +6151,10 @@ meshioplusplus::RenderOptions render_options_from_c(const mio_render_opts* pOpts
         o.mCutaways.push_back(plane);
     }
     o.mCutawayTint = render_color(pOpts->cutaway_tint);
+    o.mStreamlines = render_string(pOpts->streamlines);
+    o.mStreamSeeds = pOpts->stream_seeds;
+    o.mStreamLength = pOpts->stream_length;
+    o.mStreamColor = render_color(pOpts->stream_color);
     return o;
 }
 
@@ -6225,6 +6229,9 @@ void mio_render_opts_init(mio_render_opts* opts) {
     opts->vector_color = 0xDC3232FFu;
     opts->outline_color = 0x969696FFu;
     opts->cutaway_tint = 0xE88034FFu;
+    opts->stream_seeds = 40;
+    opts->stream_length = 0.5;
+    opts->stream_color = 0xF050A0FFu;
 }
 
 void mio_text_opts_init(mio_text_opts* opts) {

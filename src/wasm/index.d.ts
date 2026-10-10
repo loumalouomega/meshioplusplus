@@ -395,7 +395,7 @@ export interface RegionSummary {
  * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
  */
 /** A built-in colormap (shared with the SVG and TikZ writers). */
-export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey";
+export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey" | "synthwave";
 /** A built-in colormap or its reversed `_r` variant. */
 export type ColormapName = ColormapBase | `${ColormapBase}_r`;
 
@@ -474,6 +474,13 @@ export interface RenderOptions {
    */
   cutaway?: number[] | number[][];
   cutawayTint?: RenderColor;
+  /** A vector point array to follow with streamlines, drawn over the mesh's own cells. */
+  streamlines?: string;
+  /** About this many seeds (default 40). */
+  streamSeeds?: number;
+  /** The longest a line grows each way from its seed, in model diagonals (default 0.5). */
+  streamLength?: number;
+  streamColor?: RenderColor;
 }
 
 /** Options of `renderText`: the cell encodings only (the graphics protocols are CLI features). */

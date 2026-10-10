@@ -65,6 +65,8 @@ TERMINAL = [
     "tui_cutaway.svg",
     "tui_compare.svg",
     "tui_series.svg",
+    "tui_streamlines.svg",
+    "tui_synthwave.svg",
 ]
 
 
