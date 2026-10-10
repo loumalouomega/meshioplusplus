@@ -872,3 +872,44 @@ def test_snapshot_step_passes_the_mesh_through_and_names_its_errors(settings_env
                 [{"Op": "Snapshot", "Path": str(tmp / "b.png"), "Shading": "plastic"}],
             )
         )
+
+
+def test_snapshot_step_streamlines_match_between_engines_and_validate(settings_env):
+    if not hasattr(_core, "run_pipeline_json"):
+        pytest.skip("_core predates the pipeline")
+    tmp = settings_env["tmp"]
+    mesh = meshioplusplus.read(settings_env["in"])
+    mesh.point_data["flow"] = np.stack(
+        [-mesh.points[:, 1], mesh.points[:, 0], 0.2 + 0 * mesh.points[:, 0]], axis=1
+    )
+    meshioplusplus.write(settings_env["in"], mesh, compression=None)
+    op = {
+        "Op": "Snapshot",
+        "Path": str(tmp / "WHO.png"),
+        "Width": 64,
+        "Height": 48,
+        "View": "-x",
+        "Cutaway": [0.5, 0.0, 0.0, -1.0, 0.0, 0.0],
+        "Streamlines": "flow",
+        "StreamSeeds": 12,
+        "StreamLength": 0.8,
+        "StreamColor": "#ff00ff",
+    }
+    for who in ("py", "cpp"):
+        settings = make_settings(settings_env, [copy.deepcopy(op)])
+        settings["Operations"][0]["Path"] = op["Path"].replace("WHO", who)
+        if who == "py":
+            meshioplusplus.run_pipeline(settings)
+        else:
+            _core.run_pipeline_json(json.dumps(settings))
+    assert (tmp / "py.png").read_bytes() == (tmp / "cpp.png").read_bytes()
+    plain = dict(op, Path=str(tmp / "plain.png"))
+    del plain["Streamlines"]
+    meshioplusplus.run_pipeline(make_settings(settings_env, [plain]))
+    assert (tmp / "py.png").read_bytes() != (tmp / "plain.png").read_bytes()
+    with pytest.raises(ValueError, match="streamline array 'nope'"):
+        meshioplusplus.run_pipeline(
+            make_settings(
+                settings_env, [dict(op, Path=str(tmp / "x.png"), Streamlines="nope")]
+            )
+        )

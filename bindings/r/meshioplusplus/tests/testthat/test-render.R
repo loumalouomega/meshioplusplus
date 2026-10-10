@@ -64,6 +64,28 @@ test_that("a cut-away clips the near face and tints the inside", {
   expect_error(mio_render(m, cutaway = c(0, 0, 0, 0, 0, 0)), "normal")
 })
 
+test_that("streamlines follow a vector point array", {
+  m <- cube_surface()
+  on.exit(mio_release(m))
+  pts <- matrix(c(
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1
+  ), nrow = 3)
+  mio_add_point_data(m, "flow", rbind(-(pts[2, ] - 0.5), pts[1, ] - 0.5, 0))
+  red <- function(f) sum(f$rgba[1, , ] == 255 & f$rgba[2, , ] == 0 & f$rgba[3, , ] == 0)
+  opts <- list(
+    width = 64L, height = 64L, view = "+z", shading = "none",
+    background = mio_rgba(0, 0, 0)
+  )
+  expect_equal(red(do.call(mio_render, c(list(m), opts))), 0)
+  lines <- do.call(mio_render, c(list(m), opts, list(
+    streamlines = "flow", stream_color = mio_rgba(255, 0, 0)
+  )))
+  expect_gt(red(lines), 20)
+  expect_error(mio_render(m, streamlines = "nope"), "nope")
+  expect_error(mio_render(m, streamlines = "flow", stream_seeds = 0L), "seeds")
+})
+
 test_that("text, PNG and file forms render", {
   m <- cube_surface()
   on.exit(mio_release(m))

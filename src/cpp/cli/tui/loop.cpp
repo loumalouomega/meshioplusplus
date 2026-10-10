@@ -994,7 +994,7 @@ std::string TuiSession::Execute(const std::string& rLine) {
             if (RenderFlags::TakesValue(name)) {
                 need(1, name + " VALUE");
                 const bool clearable = name == "color-by" || name == "expr" || name == "vectors" ||
-                                       name == "warp" || name == "reduce" ||
+                                       name == "streamlines" || name == "warp" || name == "reduce" ||
                                        name == "quality-metric";
                 if (t[1] == "none" && clearable)
                     flags.Unset(name);

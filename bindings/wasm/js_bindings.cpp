@@ -4016,7 +4016,8 @@ meshioplusplus::RenderOptions js_render_options(const val& rOpts) {
         "colorRegions", "categoryEdges", "isolines",     "isoLevels",      "isoColor",
         "vectors",      "vectorCount",   "vectorLength", "vectorColor",    "warp",
         "warpScale",    "warpOutline",   "outlineColor", "diagnostic",     "qualityMetric",
-        "cutaway",      "cutawayTint"};
+        "cutaway",      "cutawayTint",   "streamlines",  "streamSeeds",    "streamLength",
+        "streamColor"};
     meshioplusplus::RenderOptions o;
     if (rOpts.isUndefined() || rOpts.isNull())
         return o;
@@ -4201,6 +4202,14 @@ meshioplusplus::RenderOptions js_render_options(const val& rOpts) {
             }
         } else if (key == "cutawayTint")
             o.mCutawayTint = js_render_color(v, key);
+        else if (key == "streamlines")
+            o.mStreamlines = str();
+        else if (key == "streamSeeds")
+            o.mStreamSeeds = static_cast<std::int32_t>(num());
+        else if (key == "streamLength")
+            o.mStreamLength = num();
+        else if (key == "streamColor")
+            o.mStreamColor = js_render_color(v, key);
     }
     return o;
 }

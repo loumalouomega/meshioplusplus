@@ -222,6 +222,10 @@ _OP_TABLE = {
         "QualityMetric",
         "Cutaway",
         "CutawayTint",
+        "Streamlines",
+        "StreamSeeds",
+        "StreamLength",
+        "StreamColor",
     ),
     "Repair": (
         "FixOrientation",
@@ -549,6 +553,10 @@ def _snapshot_options(step):
         "quality_metric": _text(step, "QualityMetric", "") or None,
         "cutaway": cutaway,
         "cutaway_tint": _snap_color(step, "CutawayTint"),
+        "streamlines": _text(step, "Streamlines", "") or None,
+        "stream_seeds": int(_number(step, "StreamSeeds", 40)),
+        "stream_length": _number(step, "StreamLength", 0.5),
+        "stream_color": _snap_color(step, "StreamColor"),
     }
     return {k: v for k, v in options.items() if v is not None}
 

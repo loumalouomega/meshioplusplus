@@ -43,6 +43,8 @@ export interface ManifestEntry {
     tags: string[];
     group: string | null;
     notes: string | null;
+    /** A picture of the case (a PNG path, resolved like `source`), or null. */
+    thumbnail: string | null;
     metadata: Record<string, unknown>;
 }
 
@@ -54,7 +56,7 @@ export interface Manifest {
 }
 
 const TOP_KEYS = ['Version', 'Name', 'Description', 'Metadata', 'Entries'];
-const ENTRY_KEYS = ['Id', 'Source', 'Target', 'Split', 'Tags', 'Group', 'Notes', 'Metadata'];
+const ENTRY_KEYS = ['Id', 'Source', 'Target', 'Split', 'Tags', 'Group', 'Notes', 'Thumbnail', 'Metadata'];
 const SOURCE_KEYS = ['Pattern', 'Path', 'Paths', 'Format', 'Times', 'TimeFrom', 'Sort'];
 const TIME_FROM: TimeFrom[] = ['auto', 'file', 'filename', 'index'];
 
@@ -173,6 +175,10 @@ function parseEntry(raw: unknown, where: string): ManifestEntry {
     if (notes !== undefined && typeof notes !== 'string') {
         throw err(`${where}.Notes must be a string`);
     }
+    const thumbnail = raw.Thumbnail;
+    if (thumbnail !== undefined && (typeof thumbnail !== 'string' || !thumbnail)) {
+        throw err(`${where}.Thumbnail must be a non-empty string`);
+    }
     return {
         id,
         source,
@@ -181,6 +187,7 @@ function parseEntry(raw: unknown, where: string): ManifestEntry {
         tags: [...tags],
         group: typeof group === 'string' ? group : null,
         notes: typeof notes === 'string' ? notes : null,
+        thumbnail: typeof thumbnail === 'string' ? thumbnail : null,
         metadata: validateMetadata(raw.Metadata, `${where}.Metadata`),
     };
 }
@@ -232,6 +239,7 @@ function entryToDoc(entry: ManifestEntry): Record<string, unknown> {
     if (entry.tags.length) out.Tags = [...entry.tags];
     if (entry.group !== null) out.Group = entry.group;
     if (entry.notes !== null) out.Notes = entry.notes;
+    if (entry.thumbnail !== null) out.Thumbnail = entry.thumbnail;
     if (Object.keys(entry.metadata).length) out.Metadata = { ...entry.metadata };
     return out;
 }
@@ -287,6 +295,7 @@ export function addEntry(
         tags?: string[];
         group?: string | null;
         notes?: string | null;
+        thumbnail?: string | null;
         metadata?: Record<string, unknown>;
     } = {},
 ): ManifestEntry {
@@ -303,6 +312,7 @@ export function addEntry(
         tags: [...(opts.tags ?? [])],
         group: opts.group ?? null,
         notes: opts.notes ?? null,
+        thumbnail: opts.thumbnail ?? null,
         metadata: { ...(opts.metadata ?? {}) },
     };
     manifest.entries.push(entry);

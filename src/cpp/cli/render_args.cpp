@@ -125,6 +125,8 @@ std::vector<cli_opt_spec> render_flag_specs() {
         {"vector-color", {}, true},   {"warp", {}, true},           {"warp-scale", {}, true},
         {"warp-outline", {}, false},  {"outline-color", {}, true},  {"diagnostic", {}, true},
         {"quality-metric", {}, true}, {"cutaway", {}, true},    {"cutaway-tint", {}, true},
+        {"streamlines", {}, true},    {"stream-seeds", {}, true},   {"stream-length", {}, true},
+        {"stream-color", {}, true},
     };
 }
 
@@ -322,6 +324,13 @@ RenderOptions cli_render_options(const cli_parsed& rP) {
         o.mVectorLength = stod_c(opt_value(rP, "vector-length"));
     if (has_opt(rP, "vector-color"))
         o.mVectorColor = cli_parse_rgba(opt_value(rP, "vector-color"), "vector-color");
+    o.mStreamlines = opt_value(rP, "streamlines");
+    if (has_opt(rP, "stream-seeds"))
+        o.mStreamSeeds = std::stoi(opt_value(rP, "stream-seeds"));
+    if (has_opt(rP, "stream-length"))
+        o.mStreamLength = stod_c(opt_value(rP, "stream-length"));
+    if (has_opt(rP, "stream-color"))
+        o.mStreamColor = cli_parse_rgba(opt_value(rP, "stream-color"), "stream-color");
     o.mWarp = opt_value(rP, "warp");
     if (has_opt(rP, "warp-scale"))
         o.mWarpScale = stod_c(opt_value(rP, "warp-scale"));
@@ -553,6 +562,12 @@ RenderFlags RenderFlags::FromOptions(const RenderOptions& rOptions) {
         f.Set("vector-count", std::to_string(rOptions.mVectorCount));
     number("vector-length", rOptions.mVectorLength, d.mVectorLength);
     color("vector-color", rOptions.mVectorColor, d.mVectorColor);
+    if (!rOptions.mStreamlines.empty())
+        f.Set("streamlines", rOptions.mStreamlines);
+    if (rOptions.mStreamSeeds != d.mStreamSeeds)
+        f.Set("stream-seeds", std::to_string(rOptions.mStreamSeeds));
+    number("stream-length", rOptions.mStreamLength, d.mStreamLength);
+    color("stream-color", rOptions.mStreamColor, d.mStreamColor);
     if (!rOptions.mWarp.empty())
         f.Set("warp", rOptions.mWarp);
     number("warp-scale", rOptions.mWarpScale, d.mWarpScale);

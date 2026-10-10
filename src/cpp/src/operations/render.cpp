@@ -55,6 +55,7 @@
 #include "../detail/crease_edges.hpp"
 #include "../detail/raster.hpp"
 #include "../detail/render_field.hpp"
+#include "../detail/streamlines.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -114,6 +115,12 @@ void rnd_validate(const RenderOptions& rOpt) {
     if (rOpt.mVectorCount < 1 || rOpt.mVectorCount > 100000)
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "vector count must lie in [1, 100000]");
+    if (rOpt.mStreamSeeds < 1 || rOpt.mStreamSeeds > 10000)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "stream seeds must lie in [1, 10000]");
+    if (!(rOpt.mStreamLength > 0.0) || !(rOpt.mStreamLength <= 10.0))
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "stream length must lie in (0, 10] diagonals");
     if (!(rOpt.mVectorLength >= 0.0) || !std::isfinite(rOpt.mVectorLength) ||
         !std::isfinite(rOpt.mWarpScale))
         throw std::invalid_argument(std::string(kRndPrefix) +
@@ -1271,6 +1278,26 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
         }
         keys.push_back("isolines: " + std::to_string(levels.size()) + " levels (" +
                        rnd_hex(rOpt.mIsoColor) + ")");
+    }
+
+    if (!rOpt.mStreamlines.empty()) {
+        const std::vector<double> vec =
+            rnd_vertex_array(src, p_skin, num_source_points, rOpt.mStreamlines, 3, "streamline");
+        detail::StreamlineOptions stream;
+        stream.mSeeds = static_cast<std::size_t>(rOpt.mStreamSeeds);
+        stream.mLength = rOpt.mStreamLength;
+        detail::Streamlines lines;
+        try {
+            lines = detail::trace_streamlines(src, xyz.data(), vec.data(), stream);
+        } catch (const std::invalid_argument& rErr) {
+            throw std::invalid_argument(std::string(kRndPrefix) + rErr.what());
+        }
+        for (std::size_t l = 0; l < lines.NumLines(); ++l)
+            for (std::size_t k = lines.mStart[l]; k + 1 < lines.mStart[l + 1]; ++k)
+                add_segment(&lines.mXyz[3 * k], &lines.mXyz[3 * (k + 1)], rOpt.mStreamColor);
+        keys.push_back("streamlines: " + rOpt.mStreamlines + ", " +
+                       std::to_string(lines.NumLines()) + " lines (" + rnd_hex(rOpt.mStreamColor) +
+                       ")");
     }
 
     const std::size_t extras_before_arrows = extras.size();

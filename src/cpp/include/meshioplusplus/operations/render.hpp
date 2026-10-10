@@ -262,6 +262,20 @@ struct RenderOptions {
     /// A draw-time option: `render_scene` takes it from its own options.
     std::vector<RenderCutaway> mCutaways;
     RenderColor mCutawayTint = {232, 128, 52, 255};
+
+    // --- Streamlines (v16.37.0, ABI 25) -----------------------------------
+
+    /// Streamlines of the vector point array of this name: lines that follow
+    /// the field from about `mStreamSeeds` seeds, in both directions, over the
+    /// mesh's own cells (triangles, quads, tetrahedra, hexahedra, wedges and
+    /// pyramids; a surface is traced on the surface). Each line grows at most
+    /// `mStreamLength` diagonals of the model from its seed. Drawn like
+    /// isolines and arrows, in `mStreamColor`. On a volume the lines are
+    /// inside it, so cut it away (`mCutaways`) to see them.
+    std::string mStreamlines;
+    std::int32_t mStreamSeeds = 40;
+    double mStreamLength = 0.5;
+    RenderColor mStreamColor = {240, 80, 160, 255};
 };
 
 /** @brief A rendered image. */

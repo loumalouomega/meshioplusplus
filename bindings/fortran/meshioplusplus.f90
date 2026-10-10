@@ -864,7 +864,11 @@ module meshioplusplus
         type(c_ptr) :: cutaways = c_null_ptr
         integer(c_int32_t) :: num_cutaways = 0
         integer(c_int32_t) :: cutaway_tint = -394251009
-        integer(c_int64_t) :: reserved(4) = 0
+        type(c_ptr) :: streamlines = c_null_ptr
+        integer(c_int32_t) :: stream_seeds = 40
+        integer(c_int32_t) :: stream_color = -263151361
+        real(c_double) :: stream_length = 0.5_c_double
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> Interop mirror of C `mio_text_opts`.
@@ -1086,6 +1090,10 @@ module meshioplusplus
         integer(int64) :: outline_color = 2526451455_int64
         real(real64), allocatable :: cutaways(:) !< up to two cut-away planes, six numbers each: a point, then the normal of the side kept
         integer(int64) :: cutaway_tint = 3900716287_int64 !< back faces seen through a cut
+        character(:), allocatable :: streamlines !< vector point array to follow with streamlines
+        integer :: stream_seeds = 40               !< about this many seeds
+        real(real64) :: stream_length = 0.5_real64 !< longest line each way, in model diagonals
+        integer(int64) :: stream_color = 4031815935_int64 !< colour of the lines
     end type
 
     !> Options of the text encodings. `encoding`, `color_depth` and `format` take
@@ -9761,7 +9769,7 @@ contains
     subroutine render_opts_to_c(s, o, b, levels)
         type(mio_render_settings), intent(in) :: s
         type(mio_render_opts_t), intent(inout) :: o
-        character(kind=c_char, len=STRBUF_LEN), target, intent(out) :: b(8)
+        character(kind=c_char, len=STRBUF_LEN), target, intent(out) :: b(9)
         real(c_double), target, intent(inout) :: levels(:)
         real(c_double) :: cuts(12)
 
@@ -9776,6 +9784,10 @@ contains
         call set_cstr(s%vectors, b(6), o%vectors)
         call set_cstr(s%warp, b(7), o%warp)
         call set_cstr(s%quality_metric, b(8), o%quality_metric)
+        call set_cstr(s%streamlines, b(9), o%streamlines)
+        o%stream_seeds = int(s%stream_seeds, c_int32_t)
+        o%stream_length = real(s%stream_length, c_double)
+        o%stream_color = rgba_to_c(s%stream_color)
         if (allocated(s%iso_levels)) then
             if (size(s%iso_levels) > 0) then
                 levels(1:size(s%iso_levels)) = real(s%iso_levels, c_double)
@@ -9887,7 +9899,7 @@ contains
         type(mio_frame) :: out
         type(mio_render_settings) :: s
         type(mio_render_opts_t) :: o
-        character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
+        character(kind=c_char, len=STRBUF_LEN), target :: bufs(9)
         real(c_double), target :: levels(1036)
 
         if (present(settings)) s = settings
@@ -9920,7 +9932,7 @@ contains
         type(mio_text_settings) :: t
         type(mio_render_opts_t) :: o
         type(mio_text_opts_t) :: to
-        character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
+        character(kind=c_char, len=STRBUF_LEN), target :: bufs(9)
         real(c_double), target :: levels(1036)
         character(c_char), allocatable :: buf(:)
         integer(c_int64_t) :: n
@@ -9970,7 +9982,7 @@ contains
         type(mio_render_opts_t) :: o
         type(mio_text_opts_t) :: to
         type(mio_snapshot_opts_t) :: so
-        character(kind=c_char, len=STRBUF_LEN), target :: bufs(8)
+        character(kind=c_char, len=STRBUF_LEN), target :: bufs(9)
         real(c_double), target :: levels(1036)
         integer(c_int) :: rc
 

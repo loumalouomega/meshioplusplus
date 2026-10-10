@@ -5130,9 +5130,72 @@ TEST(CApi, RenderCutawaysClipAndAreValidated) {
     EXPECT_EQ(mio_render(cube, &o), nullptr);
     EXPECT_NE(std::string(mio_last_error()).find("normal"), std::string::npos);
     o.cutaways = plane;
-    o.reserved[3] = 1;
+    o.reserved[0] = 1;
     EXPECT_EQ(mio_render(cube, &o), nullptr);
     mio_mesh_free(cube);
+}
+
+TEST(CApi, RenderStreamlinesDrawAndAreValidated) {
+    mio_render_opts o;
+    mio_render_opts_init(&o);
+    EXPECT_EQ(o.streamlines, nullptr);
+    EXPECT_EQ(o.stream_seeds, 40);
+    EXPECT_EQ(o.stream_length, 0.5);
+    EXPECT_EQ(o.stream_color, 0xF050A0FFu);
+    EXPECT_EQ(sizeof(mio_render_opts), 432u);
+    // A 6 x 6 grid of quads with a swirling vector point array.
+    const int n = 6;
+    std::vector<double> pts;
+    std::vector<double> swirl;
+    for (int j = 0; j <= n; ++j)
+        for (int i = 0; i <= n; ++i) {
+            const double x = double(i) / n;
+            const double y = double(j) / n;
+            pts.insert(pts.end(), {x, y, 0.0});
+            swirl.insert(swirl.end(), {-(y - 0.5), x - 0.5, 0.0});
+        }
+    std::vector<std::int64_t> quads;
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i) {
+            const std::int64_t p = j * (n + 1) + i;
+            quads.insert(quads.end(), {p, p + 1, p + n + 2, p + n + 1});
+        }
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, (n + 1) * (n + 1), 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", n * n, 4, MIO_INT64, quads.data()), MIO_OK);
+    const std::int64_t shape[2] = {(n + 1) * (n + 1), 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "swirl", MIO_FLOAT64, 2, shape, swirl.data()), MIO_OK);
+    o.width = 96;
+    o.height = 96;
+    o.view = "+z";
+    o.shading = MIO_SHADING_NONE;
+    mio_frame* plain = mio_render(m, &o);
+    ASSERT_NE(plain, nullptr) << mio_last_error();
+    auto count = [](mio_frame* f, std::uint32_t rgba) {
+        std::size_t c = 0;
+        const std::uint8_t* px = mio_frame_rgba(f);
+        for (std::size_t i = 0; i < 96u * 96u; ++i)
+            c += px[4 * i] == (rgba >> 24) && px[4 * i + 1] == ((rgba >> 16) & 255) &&
+                 px[4 * i + 2] == ((rgba >> 8) & 255);
+        return c;
+    };
+    EXPECT_EQ(count(plain, 0xFF0000FFu), 0u);
+    mio_frame_free(plain);
+    o.streamlines = "swirl";
+    o.stream_color = 0xFF0000FFu;
+    mio_frame* lines = mio_render(m, &o);
+    ASSERT_NE(lines, nullptr) << mio_last_error();
+    EXPECT_GT(count(lines, 0xFF0000FFu), 100u);
+    mio_frame_free(lines);
+    o.streamlines = "nope";
+    EXPECT_EQ(mio_render(m, &o), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    o.streamlines = "swirl";
+    o.stream_seeds = 0;
+    EXPECT_EQ(mio_render(m, &o), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("seeds"), std::string::npos);
+    mio_mesh_free(m);
 }
 
 TEST(CApi, WriteSnapshotChoosesTheFormByExtension) {

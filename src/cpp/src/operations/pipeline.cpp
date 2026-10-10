@@ -292,7 +292,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
           "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
-          "CutawayTint"}},
+          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -643,6 +643,10 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
         o.mCutaways.push_back(plane);
     }
     o.mCutawayTint = pipe_snap_color(rStep, "CutawayTint", o.mCutawayTint);
+    o.mStreamlines = pipe_text(rStep, "Streamlines", "");
+    o.mStreamSeeds = static_cast<std::int32_t>(pipe_number(rStep, "StreamSeeds", o.mStreamSeeds));
+    o.mStreamLength = pipe_number(rStep, "StreamLength", o.mStreamLength);
+    o.mStreamColor = pipe_snap_color(rStep, "StreamColor", o.mStreamColor);
     return o;
 }
 

@@ -821,6 +821,34 @@ int main(int argc, char** argv) {
             o.mColorBy = "u";
             frame_of(pD, mio::render(with_field, o));
         });
+        // v16.37.0: streamlines through a cut-away volume. The digest covers the
+        // pixels and the id buffer, so it holds the tracer (its point locator, its
+        // seeds and its parallel per-seed buffers) to the same contract.
+        const Mesh with_flow = [&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            NDArray v = NDArray::Uninit(DType::Float64, {m.NumPoints(), std::size_t(3)});
+            const double* p = m.Points().As<double>();
+            for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+                v.As<double>()[3 * i] = -(p[3 * i + 1] - 0.5);
+                v.As<double>()[3 * i + 1] = p[3 * i] - 0.5;
+                v.As<double>()[3 * i + 2] = 0.1;
+            }
+            m.AddPointData("flow", std::move(v));
+            return m;
+        }();
+        row("render_streamlines_320x192", [&](MeshDigest* pD) {
+            mio::RenderOptions o;
+            o.mWidth = 320;
+            o.mHeight = 192;
+            o.mSupersample = 2;
+            o.mStreamlines = "flow";
+            o.mStreamSeeds = 200;
+            mio::RenderCutaway cut;
+            cut.mPoint = {0.0, 0.0, 0.5};
+            cut.mNormal = {0.0, 0.0, -1.0};
+            o.mCutaways = {cut};
+            frame_of(pD, mio::render(with_flow, o));
+        });
         row("hausdorff", [&](MeshDigest* pD) {
             mio::HausdorffOptions o;
             o.mFaceSamples = 2;

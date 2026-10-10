@@ -506,7 +506,11 @@ struct _CRenderOpts
     cutaways::Ptr{Float64}
     num_cutaways::Int32
     cutaway_tint::UInt32
-    reserved::NTuple{4,Int64}
+    streamlines::Ptr{UInt8}
+    stream_seeds::Int32
+    stream_color::UInt32
+    stream_length::Cdouble
+    reserved::NTuple{1,Int64}
 end
 
 """Mirror of C `mio_text_opts` (v16.34.0)."""

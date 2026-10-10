@@ -57,16 +57,19 @@ function _setopt!(ref::Ref{T}, name::Symbol, v) where {T}
     nothing
 end
 
-const _RENDER_STRINGS = (:view, :color_by, :cmap, :reduce, :expr, :vectors, :warp, :quality_metric)
+const _RENDER_STRINGS = (:view, :color_by, :cmap, :reduce, :expr, :vectors, :warp, :quality_metric,
+                         :streamlines)
 const _RENDER_FLOATS = (:pixel_aspect, :azimuth, :elevation, :roll, :fov_deg, :zoom, :pan_x,
                         :pan_y, :ambient, :light_x, :light_y, :light_z, :split_angle,
                         :feature_angle, :point_radius, :scale_threshold, :vector_length,
-                        :warp_scale)
-const _RENDER_INTS = (:width, :height, :supersample, :component, :isolines, :vector_count)
+                        :warp_scale, :stream_length)
+const _RENDER_INTS = (:width, :height, :supersample, :component, :isolines, :vector_count,
+                       :stream_seeds)
 const _RENDER_BOOLS = (:perspective, :two_sided, :colorbar, :axes, :scale_bar, :symmetric,
                        :categorical, :color_regions, :category_edges, :warp_outline)
 const _RENDER_COLORS = (:edge_color, :fill_color, :line_color, :background, :nan_color,
-                        :iso_color, :vector_color, :outline_color, :cutaway_tint)
+                        :iso_color, :vector_color, :outline_color, :cutaway_tint,
+                        :stream_color)
 
 """
     _with_render_opts(f; kwargs...)
@@ -175,7 +178,9 @@ skin). The keyword arguments are those of the C `mio_render_opts`, by name:
 `category_edges`, `isolines`, `iso_levels`, `vectors`, `vector_count`,
 `vector_length`, `warp`, `warp_scale`, `warp_outline`, `diagnostic`,
 `quality_metric`, and the cut-aways `cutaway` (one or two planes of six numbers:
-a point, then the normal of the side kept) and `cutaway_tint`. See `doc/tui.md`.
+a point, then the normal of the side kept) and `cutaway_tint`, and the streamlines
+`streamlines` (a vector point array), `stream_seeds`, `stream_length` and `stream_color`.
+See `doc/tui.md`.
 """
 function render(m::Mesh; kwargs...)
     ptr = _with_render_opts(; kwargs...) do ref

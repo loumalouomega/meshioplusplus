@@ -341,6 +341,49 @@ def test_isolines_vectors_and_warp_draw_in_their_colors():
         mesh, 100, 100, vectors="v", vector_count=9, vector_color=(255, 0, 0), view="+z"
     )
     assert _count(arrows, (255, 0, 0, 255)) > 30
+    mesh.point_data["swirl"] = np.stack(
+        [
+            -(mesh.points[:, 1] - 0.5),
+            mesh.points[:, 0] - 0.5,
+            np.zeros(len(mesh.points)),
+        ],
+        axis=1,
+    )
+    flow = mio.render_image(
+        mesh,
+        100,
+        100,
+        streamlines="swirl",
+        stream_color=(255, 0, 0),
+        view="+z",
+        shading="none",
+    )
+    assert _count(flow, (255, 0, 0, 255)) > 100
+    again = mio.render_image(
+        mesh,
+        100,
+        100,
+        streamlines="swirl",
+        stream_color=(255, 0, 0),
+        view="+z",
+        shading="none",
+    )
+    assert (flow == again).all()
+    few = mio.render_image(
+        mesh,
+        100,
+        100,
+        streamlines="swirl",
+        stream_seeds=3,
+        stream_color=(255, 0, 0),
+        view="+z",
+        shading="none",
+    )
+    assert 0 < _count(few, (255, 0, 0, 255)) < _count(flow, (255, 0, 0, 255))
+    with pytest.raises(ValueError, match="streamline array 'nope'"):
+        mio.render_image(mesh, streamlines="nope")
+    with pytest.raises(ValueError, match="stream seeds"):
+        mio.render_image(mesh, streamlines="swirl", stream_seeds=0)
     warped = mio.render_image(
         mesh, 60, 60, warp="u", warp_outline=True, outline_color=(0, 255, 0), view="+x"
     )

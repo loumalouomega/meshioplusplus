@@ -1,6 +1,6 @@
 """The nested `dataset` subcommand group: curate a dataset manifest.
 
-`meshioplusplus dataset add / list / split / tag / annotate` over the
+`meshioplusplus dataset add / list / split / tag / annotate / thumbnail` over the
 hand-editable `DatasetManifest` JSON (`doc/datasets.md`). The `data` group's
 wiring pattern verbatim: each inner parser's `set_defaults(func=...)`
 overrides the outer one, so `_main.py`'s single `args.func(args)` dispatch
@@ -122,6 +122,19 @@ def add_add_args(parser):
         help="metadata entry (repeatable; V parses as JSON when it can)",
     )
     parser.add_argument(
+        "--thumbnail",
+        type=str,
+        default=None,
+        metavar="PNG",
+        help="record this picture of the case (stored relative to the manifest)",
+    )
+    parser.add_argument(
+        "--render-thumbnail",
+        action="store_true",
+        help="draw the case's first step as its thumbnail "
+        "(thumbnails/<id>.png beside the manifest; see `dataset thumbnail`)",
+    )
+    parser.add_argument(
         "--no-validate",
         action="store_true",
         help="skip expanding the source now (accept a not-yet-existing case)",
@@ -181,9 +194,20 @@ def add_cmd(args):
         group=args.group,
         notes=args.notes,
         metadata=_meta_pairs(args.meta) or None,
+        thumbnail=(
+            _manifest_relative(args.thumbnail, args.manifest)
+            if args.thumbnail
+            else None
+        ),
         validate_source=not args.no_validate,
     )
-    manifest.save(args.manifest)
+    manifest.save(args.manifest)  # the manifest's directory is known from here
+    if args.render_thumbnail:
+        if args.thumbnail:
+            print("error: pass --thumbnail or --render-thumbnail, not both")
+            return 2
+        manifest.render_thumbnail(entry.id)
+        manifest.save(args.manifest)
     steps = "not validated" if args.no_validate else f"{len(entry.entries())} step(s)"
     paired = ", paired with a target" if entry.target else ""
     print(f"added '{entry.id}' ({steps}{paired}); {len(manifest)} entr(ies) total")
@@ -241,6 +265,8 @@ def list_cmd(args):
             bits.append("tags: " + ",".join(entry.tags))
         if entry.group:
             bits.append(f"group: {entry.group}")
+        if entry.thumbnail:
+            bits.append(f"thumbnail: {entry.thumbnail}")
         if args.resolve:
             bits.append(f"{len(entry.entries())} step(s)")
         source = entry.source.get(
@@ -376,6 +402,92 @@ def annotate_cmd(args):
     return 0
 
 
+# --- thumbnail -------------------------------------------------------------
+def add_thumbnail_args(parser):
+    parser.add_argument("manifest", type=str, help="manifest JSON to update")
+    parser.add_argument(
+        "--id", action="append", default=[], help="entry id (repeatable)"
+    )
+    parser.add_argument("--all", action="store_true", help="every entry")
+    parser.add_argument(
+        "--set",
+        type=str,
+        default=None,
+        metavar="PNG",
+        help="record this existing picture instead of drawing one (one --id)",
+    )
+    parser.add_argument(
+        "--clear", action="store_true", help="drop the thumbnail instead of drawing one"
+    )
+    parser.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        metavar="PNG",
+        help="where to write the picture (one --id; default: "
+        "thumbnails/<id>.png beside the manifest)",
+    )
+    parser.add_argument(
+        "--step", type=int, default=0, help="the step of the case to draw (default 0)"
+    )
+    parser.add_argument("--width", type=int, default=256, help="pixels (default 256)")
+    parser.add_argument("--height", type=int, default=192, help="pixels (default 192)")
+    parser.add_argument("--color-by", type=str, default=None, help="array to colour by")
+    parser.add_argument("--cmap", type=str, default=None, help="colormap")
+    parser.add_argument(
+        "--view", type=str, default=None, help="iso (default), +x, -x, +y, -y, +z, -z"
+    )
+    parser.add_argument(
+        "--shading", type=str, choices=["none", "flat", "smooth"], default=None
+    )
+
+
+def thumbnail_cmd(args):
+    manifest = DatasetManifest.load(args.manifest)
+    ids = manifest.ids() if args.all else list(args.id)
+    if not ids:
+        print("error: pass --id (repeatable) or --all")
+        return 2
+    if (args.set or args.path) and len(ids) != 1:
+        print("error: --set and --path take exactly one --id")
+        return 2
+    if args.set and (args.clear or args.path):
+        print("error: --set excludes --clear and --path")
+        return 2
+    for entry_id in ids:
+        manifest[entry_id]  # KeyError, naming the known ids, before any work
+    if args.clear:
+        for entry_id in ids:
+            manifest.set_thumbnail(entry_id, None)
+            print(f"  {entry_id}: cleared")
+    elif args.set:
+        manifest.set_thumbnail(ids[0], _manifest_relative(args.set, args.manifest))
+        print(f"  {ids[0]}: {manifest[ids[0]].thumbnail}")
+    else:
+        options = {
+            key: value
+            for key, value in (
+                ("color_by", args.color_by),
+                ("cmap", args.cmap),
+                ("view", args.view),
+                ("shading", args.shading),
+            )
+            if value is not None
+        }
+        for entry_id in ids:
+            manifest.render_thumbnail(
+                entry_id,
+                args.path,
+                step=args.step,
+                width=args.width,
+                height=args.height,
+                **options,
+            )
+            print(f"  {entry_id}: {manifest[entry_id].thumbnail}")
+    manifest.save(args.manifest)
+    return 0
+
+
 # --- group wiring ----------------------------------------------------------
 _VERBS = (
     (
@@ -404,6 +516,12 @@ _VERBS = (
         "Set an entry's notes / group / metadata",
         add_annotate_args,
         annotate_cmd,
+    ),
+    (
+        "thumbnail",
+        "Draw (or --set, or --clear) a picture of the chosen entries",
+        add_thumbnail_args,
+        thumbnail_cmd,
     ),
 )
 

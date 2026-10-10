@@ -118,6 +118,14 @@ def add_render_args(parser):
         "--vector-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
     )
     field.add_argument(
+        "--streamlines", type=str, default=None, help="vector point array to follow"
+    )
+    field.add_argument("--stream-seeds", type=int, default=None)
+    field.add_argument("--stream-length", type=float, default=None)
+    field.add_argument(
+        "--stream-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
+    )
+    field.add_argument(
         "--warp", type=str, default=None, help="displacement point array"
     )
     field.add_argument("--warp-scale", type=float, default=None)
@@ -234,6 +242,10 @@ def render_options(args):
         "vector_count": args.vector_count,
         "vector_length": args.vector_length,
         "vector_color": args.vector_color,
+        "streamlines": args.streamlines,
+        "stream_seeds": args.stream_seeds,
+        "stream_length": args.stream_length,
+        "stream_color": args.stream_color,
         "warp": args.warp,
         "warp_scale": args.warp_scale,
         "warp_outline": args.warp_outline or None,

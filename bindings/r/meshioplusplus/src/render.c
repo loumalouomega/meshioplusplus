@@ -25,14 +25,15 @@ typedef struct {
 static const field_def render_fields[] = {
     FIELD(view, F_STR),           FIELD(color_by, F_STR),      FIELD(cmap, F_STR),
     FIELD(reduce, F_STR),         FIELD(expr, F_STR),          FIELD(vectors, F_STR),
-    FIELD(warp, F_STR),           FIELD(quality_metric, F_STR),
+    FIELD(warp, F_STR),           FIELD(quality_metric, F_STR), FIELD(streamlines, F_STR),
     FIELD(pixel_aspect, F_DBL),   FIELD(azimuth, F_DBL),       FIELD(elevation, F_DBL),
     FIELD(roll, F_DBL),           FIELD(fov_deg, F_DBL),       FIELD(zoom, F_DBL),
     FIELD(ambient, F_DBL),        FIELD(split_angle, F_DBL),   FIELD(feature_angle, F_DBL),
     FIELD(point_radius, F_DBL),   FIELD(scale_threshold, F_DBL), FIELD(vector_length, F_DBL),
-    FIELD(warp_scale, F_DBL),
+    FIELD(warp_scale, F_DBL),     FIELD(stream_length, F_DBL),
     FIELD(width, F_INT),          FIELD(height, F_INT),        FIELD(supersample, F_INT),
     FIELD(component, F_INT),      FIELD(isolines, F_INT),      FIELD(vector_count, F_INT),
+    FIELD(stream_seeds, F_INT),
     FIELD(perspective, F_BOOL),   FIELD(two_sided, F_BOOL),    FIELD(colorbar, F_BOOL),
     FIELD(axes, F_BOOL),          FIELD(scale_bar, F_BOOL),    FIELD(symmetric, F_BOOL),
     FIELD(categorical, F_BOOL),   FIELD(color_regions, F_BOOL), FIELD(category_edges, F_BOOL),
@@ -40,6 +41,7 @@ static const field_def render_fields[] = {
     FIELD(edge_color, F_COLOR),   FIELD(fill_color, F_COLOR), FIELD(line_color, F_COLOR),
     FIELD(background, F_COLOR),   FIELD(nan_color, F_COLOR),  FIELD(iso_color, F_COLOR),
     FIELD(vector_color, F_COLOR), FIELD(outline_color, F_COLOR), FIELD(cutaway_tint, F_COLOR),
+    FIELD(stream_color, F_COLOR),
 };
 #define NUM_RENDER_FIELDS (sizeof(render_fields) / sizeof(render_fields[0]))
 

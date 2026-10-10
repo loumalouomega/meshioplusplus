@@ -19,6 +19,7 @@
 // probes of roadmap 7.2.7 and 7.3.6, plus the PNG and asciicast containers.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <set>
@@ -28,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/region.hpp"
@@ -37,6 +39,7 @@
 #include "../../src/cpp/src/detail/png_write.hpp"
 #include "../../src/cpp/src/detail/raster.hpp"
 #include "../../src/cpp/src/detail/render_field.hpp"
+#include "../../src/cpp/src/detail/streamlines.hpp"
 
 using namespace meshioplusplus;
 
@@ -1089,5 +1092,163 @@ TEST(RenderCutaway, WithNoPlanesTheBytesAreUnchanged) {
     RenderOptions b = a;
     b.mCutaways.clear();
     b.mCutawayTint = {1, 2, 3, 255};  // the tint matters only when something is cut
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
+}
+
+// ---------------------------------------------------------------------------
+// Streamlines
+// ---------------------------------------------------------------------------
+
+namespace {
+
+NDArray swirl_field(const Mesh& rMesh) {
+    std::vector<std::vector<double>> v;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
+        const double x = detail::read_double(pts, i * dim + 0);
+        const double y = detail::read_double(pts, i * dim + 1);
+        v.push_back({-(y - 0.5), x - 0.5, 0.0});
+    }
+    return mt::points_from(v);
+}
+
+std::vector<double> flat_field(const NDArray& rField) {
+    std::vector<double> out(rField.Size());
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = detail::read_double(rField, i);
+    return out;
+}
+
+std::vector<double> flat_points(const Mesh& rMesh) {
+    std::vector<double> out;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            out.push_back(k < dim ? detail::read_double(pts, i * dim + k) : 0.0);
+    return out;
+}
+
+}  // namespace
+
+TEST(Streamlines, ASwirlOverAGridFollowsCircles) {
+    Mesh m = grid_square(8);
+    const std::vector<double> xyz = flat_points(m);
+    const std::vector<double> vec = flat_field(swirl_field(m));
+    detail::StreamlineOptions o;
+    o.mSeeds = 12;
+    o.mLength = 0.4;
+    const detail::Streamlines lines = detail::trace_streamlines(m, xyz.data(), vec.data(), o);
+    EXPECT_EQ(lines.mDim, 2);
+    EXPECT_GE(lines.NumLines(), 8u);
+    for (std::size_t l = 0; l < lines.NumLines(); ++l) {
+        const std::size_t first = lines.mStart[l];
+        auto radius = [&](std::size_t k) {
+            return std::hypot(lines.mXyz[3 * k] - 0.5, lines.mXyz[3 * k + 1] - 0.5);
+        };
+        for (std::size_t k = first; k < lines.mStart[l + 1]; ++k)
+            EXPECT_NEAR(radius(k), radius(first), 2e-3) << "line " << l;
+    }
+}
+
+TEST(Streamlines, TheSameTraceComesBackEveryTime) {
+    Mesh m = grid_square(6);
+    const std::vector<double> xyz = flat_points(m);
+    const std::vector<double> vec = flat_field(swirl_field(m));
+    const detail::Streamlines a =
+        detail::trace_streamlines(m, xyz.data(), vec.data(), detail::StreamlineOptions{});
+    const detail::Streamlines b =
+        detail::trace_streamlines(m, xyz.data(), vec.data(), detail::StreamlineOptions{});
+    EXPECT_EQ(a.mXyz, b.mXyz);
+    EXPECT_EQ(a.mStart, b.mStart);
+}
+
+TEST(Streamlines, AUniformFieldCrossesAHexahedronToItsFaces) {
+    Mesh m = mt::hex_mesh();
+    const std::vector<double> xyz = flat_points(m);
+    std::vector<double> vec;
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        vec.insert(vec.end(), {1.0, 0.0, 0.0});
+    detail::StreamlineOptions o;
+    o.mLength = 2.0;
+    const detail::Streamlines lines = detail::trace_streamlines(m, xyz.data(), vec.data(), o);
+    EXPECT_EQ(lines.mDim, 3);
+    ASSERT_GT(lines.NumLines(), 0u);
+    for (std::size_t l = 0; l < lines.NumLines(); ++l) {
+        double lo = 1e9;
+        double hi = -1e9;
+        for (std::size_t k = lines.mStart[l]; k < lines.mStart[l + 1]; ++k) {
+            EXPECT_NEAR(lines.mXyz[3 * k + 1], lines.mXyz[3 * lines.mStart[l] + 1], 1e-9);
+            EXPECT_NEAR(lines.mXyz[3 * k + 2], lines.mXyz[3 * lines.mStart[l] + 2], 1e-9);
+            lo = std::min(lo, lines.mXyz[3 * k]);
+            hi = std::max(hi, lines.mXyz[3 * k]);
+        }
+        EXPECT_LT(lo, 0.02);
+        EXPECT_GT(hi, 0.98);
+    }
+}
+
+TEST(Streamlines, ATiltedSurfaceKeepsTheLinesOnIt) {
+    // The plane z = x, with a field along it.
+    Mesh m = make_mesh({{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}}, "triangle",
+                       {{0, 1, 2}, {0, 2, 3}});
+    const std::vector<double> xyz = flat_points(m);
+    std::vector<double> vec;
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        vec.insert(vec.end(), {1.0, 0.0, 1.0});
+    detail::StreamlineOptions o;
+    o.mSeeds = 4;
+    o.mLength = 1.0;
+    const detail::Streamlines lines = detail::trace_streamlines(m, xyz.data(), vec.data(), o);
+    EXPECT_EQ(lines.mDim, 2);
+    ASSERT_GT(lines.NumLines(), 0u);
+    for (std::size_t k = 0; k < lines.mXyz.size() / 3; ++k)
+        EXPECT_NEAR(lines.mXyz[3 * k + 2], lines.mXyz[3 * k], 1e-9);
+}
+
+TEST(Streamlines, ACellTypeWithNothingToFollowIsNamed) {
+    Mesh m = mt::line_mesh();
+    const std::vector<double> xyz = flat_points(m);
+    const std::vector<double> vec(3 * m.NumPoints(), 1.0);
+    try {
+        detail::trace_streamlines(m, xyz.data(), vec.data(), detail::StreamlineOptions{});
+        FAIL() << "a mesh of lines has no streamlines";
+    } catch (const std::invalid_argument& rErr) {
+        EXPECT_NE(std::string(rErr.what()).find("line"), std::string::npos);
+        EXPECT_NE(std::string(rErr.what()).find("streamlines need"), std::string::npos);
+    }
+}
+
+TEST(Streamlines, TheRendererDrawsThemInTheirColour) {
+    Mesh m = grid_square(8);
+    m.AddPointData("v", swirl_field(m));
+    RenderOptions o = top_view(120, 120);
+    EXPECT_EQ(count_color(render(m, o), {240, 80, 160, 255}), 0u);
+    o.mStreamlines = "v";
+    o.mStreamColor = {255, 0, 0, 255};
+    const Frame f = render(m, o);
+    EXPECT_GT(count_color(f, {255, 0, 0, 255}), 100u);
+    EXPECT_TRUE(has_note(f, "streamlines: v,"));
+    o.mStreamSeeds = 5;
+    const Frame fewer = render(m, o);
+    EXPECT_LT(count_color(fewer, {255, 0, 0, 255}), count_color(f, {255, 0, 0, 255}));
+    o.mStreamlines = "nope";
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mStreamlines = "v";
+    o.mStreamSeeds = 0;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mStreamSeeds = 5;
+    o.mStreamLength = 0.0;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+}
+
+TEST(Streamlines, OffByDefaultTheBytesAreUnchanged) {
+    Mesh m = grid_square(4);
+    m.AddPointData("v", swirl_field(m));
+    RenderOptions a = top_view(80, 80);
+    RenderOptions b = a;
+    b.mStreamColor = {1, 2, 3, 255};
+    b.mStreamSeeds = 7;  // nothing is drawn without a named array
     EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
 }

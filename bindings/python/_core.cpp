@@ -348,7 +348,9 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
                            "vectors",       "vector_count",  "vector_length",
                            "vector_color",  "warp",          "warp_scale",
                            "warp_outline",  "outline_color", "diagnostic",
-                           "quality_metric", "cutaway",      "cutaway_tint"},
+                           "quality_metric", "cutaway",      "cutaway_tint",
+                           "streamlines",   "stream_seeds",  "stream_length",
+                           "stream_color"},
                       "render");
     meshioplusplus::RenderOptions o;
     auto get = [&](const char* pKey) -> py::object {
@@ -557,6 +559,14 @@ meshioplusplus::RenderOptions render_py_options(const py::dict& rD) {
     }
     if (!(v = get("cutaway_tint")).is_none())
         o.mCutawayTint = render_py_color(v, "cutaway_tint");
+    if (!(v = get("streamlines")).is_none())
+        o.mStreamlines = v.cast<std::string>();
+    if (!(v = get("stream_seeds")).is_none())
+        o.mStreamSeeds = v.cast<std::int32_t>();
+    if (!(v = get("stream_length")).is_none())
+        o.mStreamLength = v.cast<double>();
+    if (!(v = get("stream_color")).is_none())
+        o.mStreamColor = render_py_color(v, "stream_color");
     return o;
 }
 

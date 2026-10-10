@@ -474,6 +474,13 @@ export interface RenderOptions {
    */
   cutaway?: number[] | number[][];
   cutawayTint?: RenderColor;
+  /** A vector point array to follow with streamlines, drawn over the mesh's own cells. */
+  streamlines?: string;
+  /** About this many seeds (default 40). */
+  streamSeeds?: number;
+  /** The longest a line grows each way from its seed, in model diagonals (default 0.5). */
+  streamLength?: number;
+  streamColor?: RenderColor;
 }
 
 /** Options of `renderText`: the cell encodings only (the graphics protocols are CLI features). */

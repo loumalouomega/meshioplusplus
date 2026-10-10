@@ -4929,6 +4929,27 @@ step('render, renderText, renderPng', () => {
     assert.throws(() => m.render(cubeSurface, { cutaway: [1, 2, 3] }), /six numbers/);
     assert.throws(() => m.render(cubeSurface, { cutaway: [0, 0, 0, 0, 0, 0] }), /normal/);
 
+    // Streamlines: a vector point array drawn as lines in their colour.
+    const cubeFlow = {
+        ...cubeSurface,
+        point_data: {
+            flow: new Float64Array([
+                0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0, -0.5, -0.5, 0,
+                0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0, -0.5, -0.5, 0,
+            ]),
+        },
+    };
+    const flowView = { width: 64, height: 64, view: '+z', shading: 'none', background: [0, 0, 0, 255] };
+    const redCount = (f) => {
+        let n = 0;
+        for (let i = 0; i < f.rgba.length; i += 4) n += f.rgba[i] === 255 && f.rgba[i + 1] === 0 && f.rgba[i + 2] === 0;
+        return n;
+    };
+    assert.equal(redCount(m.render(cubeFlow, flowView)), 0);
+    assert.ok(redCount(m.render(cubeFlow, { ...flowView, streamlines: 'flow', streamColor: [255, 0, 0, 255] })) > 20);
+    assert.throws(() => m.render(cubeFlow, { streamlines: 'nope' }), /nope/);
+    assert.throws(() => m.render(cubeFlow, { streamlines: 'flow', streamSeeds: 0 }), /seeds/);
+
     assert.throws(() => m.render(cubeSurface, { bogus: 1 }), /unknown option 'bogus'/);
     assert.throws(() => m.render(cubeSurface, { shading: 'plastic' }), /shading must be one of/);
     assert.throws(() => m.render(cubeSurface, { colorBy: 'nope' }), /nope/);
