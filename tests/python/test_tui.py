@@ -796,8 +796,11 @@ def test_following_a_series_on_a_real_terminal(pty_run, series_files, tmp_path, 
     live = tmp_path / "live"
     live.mkdir()
     for k in (0, 1):
+        # Uncompressed, as in series_files: the followed series is read natively.
         meshioplusplus.write(
-            str(live / f"run_{k + 1}.vtu"), meshioplusplus.read(paths[k])
+            str(live / f"run_{k + 1}.vtu"),
+            meshioplusplus.read(paths[k]),
+            compression=None,
         )
     p = pty_run(
         _argv_for(
@@ -813,7 +816,9 @@ def test_following_a_series_on_a_real_terminal(pty_run, series_files, tmp_path, 
         )
     )
     assert p.wait_for(b"step 2/2")  # a followed series starts on the newest step
-    meshioplusplus.write(str(live / "run_3.vtu"), meshioplusplus.read(paths[2]))
+    meshioplusplus.write(
+        str(live / "run_3.vtu"), meshioplusplus.read(paths[2]), compression=None
+    )
     assert p.wait_for(b"step 3/3", timeout=20)
     assert p.wait_for(b"followed")
     p.send(b"q")
