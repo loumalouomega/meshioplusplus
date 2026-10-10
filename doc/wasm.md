@@ -457,6 +457,8 @@ console.log(m.renderText(mesh, { colorBy: 'temperature' }, { cols: 80, rows: 24,
 const png = m.renderPng(mesh, { width: 800, height: 600 });           // Uint8Array
 ```
 
+**Cut-aways (v16.36.0).** `cutaway: [px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or an array of up to two such arrays, with `cutawayTint`, clips the geometry away and tints the back faces now in view: `m.render(mesh, { view: '-x', cutaway: [0.5, 0, 0, 1, 0, 0] })`.
+
 Colours are `0xRRGGBBAA` numbers or `[r, g, b, a?]`. `renderText` takes the cell encodings only (`halfblock`, `quadrant`, `sextant`, `braille`, `ascii`): the Kitty, iTerm2 and Sixel protocols and the interactive terminal loop are CLI features and are not exported, so nothing is added to the bundle but the rasterizer itself.
 
 ## v9.1.0 additions

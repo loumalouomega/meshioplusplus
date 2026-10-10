@@ -184,7 +184,12 @@ It takes the render flags of [`snapshot`](#field-rendering) (`--color-by`, `--cm
 | `e` | edges: off, all, feature (re-prepares the scene) |
 | `s` | shading: flat, smooth, none (smooth re-prepares the scene) |
 | `a` `b` `c` | the axes, the scale bar and the colour bar |
-| `r`, Home | reset the camera |
+| click (press and release without moving) | [probe](#probing-a-cell) the cell under the pointer |
+| `i`, `0` | pin the probe (two pins show their difference); clear the probe, the pins and the cut-aways |
+| `x` `y` `z`, `,` `.` | [cut away](#cut-aways) half the model at the middle along an axis (once: keep the + side, twice: the − side, third time: off); slide the plane |
+| `[` `]`, `{` `}`, space | [step](#time-series) through a series by one or ten; play and pause |
+| `:` | the [command line](#the-command-line) |
+| `r`, Home | reset the camera (the cut-aways go; the field, edges and shading stay) |
 | `?` | show or hide the help |
 | `q`, Escape, Ctrl-C, Ctrl-D | quit |
 
@@ -209,9 +214,84 @@ The final frame at rest is the deterministic one: the same camera gives the same
 
 `--encoding` is the same set as for `snapshot`. `halfblock` (the default) is the portable choice; `quadrant`, `sextant` and `braille` pack more detail per cell and need a font that has the glyphs; `ascii` works anywhere. The graphics protocols (`kitty`, `iterm2`, `sixel`) redraw the whole image on every change, so they suit a local terminal rather than a slow link. Inside tmux they need `--tmux` (and `set -g allow-passthrough on`), and the viewer refuses by name otherwise.
 
+### Probing a cell
+
+![Two cells pinned, with their field values and the difference between them](/images/tui_probe.svg)
+
+*Two clicks on the bunny, each pinned with `i`: the lines under the picture are the probe (the cell, its block and type, its node ids, the cell data there and the point data across its nodes, and any named region that holds it), then the two pins and their difference.*
+
+The id buffer of a frame names the input cell drawn at each pixel (global, block-major), so a click on a cell of the picture is a lookup, not a pick: the pixels of the cell under the pointer are read, the first drawn one is taken, and `probe_cell` reads the mesh at that cell. For a volume mesh it is the volume cell that owns the visible face (the skin remembers its parent). A click on the background says so. A drag is never a click: the viewer tells them apart by whether the pointer moved between the press and the release.
+
+Pinning keeps the numbers: a pin shows the cell and up to four of its values, and with two pins the last line is `B − A` over every name they share (cell data as is, point data as the mean over the cell's nodes, a vector array as its magnitude). Probing a comparison probes the pane that was clicked.
+
+### The command line
+
+![A command typed at the colon prompt](/images/tui_command.svg)
+
+`:` opens a prompt on the status line (`:cmap magma`, Enter runs it, Escape or Ctrl-C cancels, Ctrl-U clears). A command is a flag of [`snapshot`](./cli.md#meshioplusplus-snapshot) spelled without the dashes, so there is one vocabulary: `:cmap turbo`, `:edges feature`, `:isolines 6`, `:vectors disp`, `:warp disp`, `:scale log`, `:diagnostic quality`, `:zoom 2`, `:axes` (a boolean flag toggles, or takes `on`/`off`). The state is kept as flags: a command takes the current options as flags, changes one, and derives the options again, so everything `snapshot` validates is validated here, and a bad command (a `:cmap` with no field mapped, an unknown colormap) is a message on the status line and changes nothing.
+
+A few commands have their own meaning:
+
+| command | does |
+| --- | --- |
+| `:color NAME` / `:color none` | colour by a data array; `:unset FLAG` removes any flag |
+| `:range LOW HIGH`, `:range auto`, `:range lock` | an explicit range; each frame its own; keep the range of the first frame shown (a series does by default) |
+| `:view NAME` | `iso`, `+x`, `-x`, `+y`, `-y`, `+z`, `-z` |
+| `:clip AXIS OFFSET`, `:clip off` | a [cut-away](#cut-aways) (`:clip +x 0.5` keeps x ≥ 0.5; `--clip` itself is the percentile range, so `:clip` is the cut-away here) |
+| `:w FILE` | write what is on screen with `snapshot`'s writers: `.png`, `.txt`, `.ansi`, `.html`, `.cast` |
+| `:session save FILE`, `:session load FILE` | [sessions](#sessions) |
+| `:step N`, `:step next|prev|first|last` | the [series](#time-series) |
+| `:pin`, `:probe off` | pin the probe; clear probes |
+| `:reset`, `:help`, `:q` | as the keys |
+
+### Cut-aways
+
+![The bunny cut open at the middle, its inside drawn in orange](/images/tui_cutaway.svg)
+
+*`x` once, then `,` twice: the plane keeps x ≥ 24.55 and the camera looks at the cut from the −x side. The inside, the back faces now in view, is orange.*
+
+A cut-away clips the drawn geometry against up to two planes (`--cutaway PX,PY,PZ,NX,NY,NZ` or `--cutaway AXIS:OFFSET`, a point and the normal of the side kept; `-x:0.5` keeps x ≤ 0.5). A face a plane crosses is cut in two and keeps its colour, its id and its smooth shading (the normals are interpolated along the cut); lines and points on the far side are dropped. A cut surface is hollow, so the back faces now in view, those turned away from the camera, are drawn in `--cutaway-tint` (default orange) and the inside reads as inside. No cap is built.
+
+The cut is a *draw-time* option: the prepared scene is untouched, so sliding the plane with `,` and `.` costs only a redraw, and a frame with no plane is byte-identical to one rendered before cut-aways existed. The frame stays fitted to the whole model, not to what is left, so the part you keep does not change size or place when you cut. The same option is `cutaway=` in Python (`"+x:0.5"`, six numbers, or a list of up to two), `cutaway` in the `Snapshot` pipeline step (a flat list, six numbers per plane), `render_mesh`'s `cutaway` and `cutaway_tint`, and a field of the C, Fortran, Julia, R and WebAssembly render options.
+
+### Comparing two meshes
+
+![Two time steps side by side with one colour range](/images/tui_compare.svg)
+
+`meshioplusplus tui a.vtu --compare b.vtu` draws the two meshes side by side under one camera (an orbit moves both) and one colour range, so the same colour means the same value in both; `--separate-ranges` gives each its own. `--diff` replaces the right mesh by `|B − A|` of the `--color-by` point array, node by node (the two meshes must share their nodes, and each must have the array; the difference is drawn with `magma`). A click probes the mesh under it. Comparing needs a cell encoding, not a graphics protocol.
+
+### Time series
+
+![A time series: the status line names the step](/images/tui_series.svg)
+
+Several files, or a quoted glob (`'out_*.vtu'`, natural-numeric order), make a series: `meshioplusplus tui 'out_*.vtu' --color-by u`. The viewer holds one step at a time, as the library's [sequence](./sequences.md) machinery does, so a 500-step dataset is browsable on a laptop. `[` and `]` step, `{` and `}` step by ten, `:step N` jumps, and space plays at `--fps` steps per second (default 4) and stops at the last. The colour range is fixed from the first step shown, so colours do not jump while stepping; `:range auto` lets each step choose its own.
+
+`--follow` watches a run that is still writing (`--follow-interval MS`, default 500): the viewer looks at the newest file's name, size and modification time, waits until that stops changing for `--settle` ms (default 300), then reads it and shows it. A reader that throws on a half-written file is expected, not fatal: the last good picture stays up with a message, and the read is retried. `--follow` on a single file reloads it each time it is rewritten. Modification-time polling is the whole mechanism (no inotify or kqueue), which works on every platform and over network file systems.
+
+### Sessions
+
+`--session FILE` reads a session if the file exists and writes it when the viewer ends; `:session save FILE` and `:session load FILE` do it on demand. A session is strict JSON with sorted keys and a version:
+
+```json
+{
+  "flags": [
+    "--azimuth=33",
+    "--cmap=magma",
+    "--color-by=u",
+    "--cutaway=0.5,0,0,1,0,0",
+    "--edges=all",
+    "--zoom=2.5"
+  ],
+  "step": 0,
+  "version": 1
+}
+```
+
+The flags are the camera, the field, its range and scale, the cut-aways and everything else `snapshot` takes, as the tokens it parses, so a session can also be pasted onto a command line. An unknown key, a wrong type or another version is an error naming it, and a session that makes no sense for the mesh stops the start with a message instead of starting somewhere else. The reader is a small hand-written one for exactly this shape, so the viewer does not depend on the optional JSON library.
+
 ### Prepared scenes
 
-The library exposes the cached half as `prepare_render(mesh, options)` and `render_scene(scene, options, fixed_fit)` in `operations/render.hpp`: `prepare_render` fixes the field, edges, colours and shading mode; `render_scene` takes the camera, the frame size, the lighting and the overlays. With the same options the frame is byte-identical to `render`'s, which a test checks across cameras, fields, vectors, warps, diagnostics and supersampling. `encode_cells` and `encode_cells_update` give the cell grid and the bytes that repaint one grid over another. They are what the viewer uses, and available to anyone writing their own loop; the loop itself, with its raw mode and signal handling, stays in the command-line layer.
+The library exposes the cached half as `prepare_render(mesh, options)` and `render_scene(scene, options, fixed_fit)` in `operations/render.hpp` (and `render_scene_bounds`, the bounding sphere the cut-away keys centre on): `prepare_render` fixes the field, edges, colours and shading mode; `render_scene` takes the camera, the frame size, the lighting and the overlays. With the same options the frame is byte-identical to `render`'s, which a test checks across cameras, fields, vectors, warps, diagnostics and supersampling. `encode_cells` and `encode_cells_update` give the cell grid and the bytes that repaint one grid over another. They are what the viewer uses, and available to anyone writing their own loop; the loop itself, with its raw mode and signal handling, stays in the command-line layer.
 
 ### Replaying a session
 
@@ -275,5 +355,6 @@ At XL both rows cost about the same although the second draws 400 times as many 
 - Streamlines are not drawn: they need a sampler and a step integrator. Vector arrows sit at the drawn points, not along a flow.
 - Isolines are the piecewise-linear contours of the interpolant on each triangle (a quad is split on its shorter diagonal); they are not smoothed.
 - The id buffer of a supersampled frame reports the cell at the centre sample of each pixel.
-- The interactive viewer has no clip planes, probing, command line, sessions, comparison, time stepping or `--follow` yet; the [roadmap](./roadmap.md) lists them.
+- A cut-away has no cap: the inside is the hollow back of the surface, tinted. Real caps are a follow-up.
+- Probing reads the mesh the viewer was given; after `:warp` the cell is still the input cell, at its undeformed position.
 - The Kitty, iTerm2 and Sixel encoders are written to their specifications but are not tested against every terminal; the cell encodings are the portable choice.

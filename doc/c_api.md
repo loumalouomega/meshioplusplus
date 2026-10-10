@@ -263,6 +263,13 @@ int64_t len = mio_render_text(mesh, &opts, &text, buf, buflen);   // string rule
 mio_write_snapshot("part.png", mesh, &opts, NULL, NULL);          // .png .txt .ansi .html .cast
 ```
 
+**Cut-aways (v16.36.0, ABI 25).** `mio_render_opts` gains `cutaways` (a borrowed pointer to `num_cutaways` planes of six doubles each: a point, then the normal of the side kept), `num_cutaways` (0 to 2) and `cutaway_tint` (`0xRRGGBBAA`, default `0xE88034FF`), taking the place of two of the reserved words, so the struct is still 432 bytes and every earlier field is where it was. They clip the faces, lines and points against the planes at draw time and tint the back faces now in view; a count outside 0 to 2, a NULL pointer with a count, a zero normal or a non-zero `reserved` word is refused by name.
+
+```c
+const double plane[6] = {0.5, 0, 0, 1, 0, 0};   // keep x >= 0.5
+opts.cutaways = plane; opts.num_cutaways = 1; opts.cutaway_tint = 0x0AC81EFF;
+```
+
 `mio_render_opts` follows the usual rules (reserved tail, append-only growth; colours are packed `0xRRGGBBAA`; enum values are the `MIO_SHADING_*`, `MIO_EDGES_*`, `MIO_SCALE_*` and `MIO_DIAGNOSTIC_*` macros; string fields are borrowed for the call and may be `NULL`). A frame is an owning `mio_frame` whose borrows (`mio_frame_rgba`, `mio_frame_cell_ids`) expire when it is freed; `mio_frame_range` gives the mapped range and `mio_frame_note` the notes (colour range, ticks and keys). A cell encoding of `mio_frame_text` needs a frame sized to its grid, which `mio_render_text` does for you. `mio_detect_color_depth` reads the values of `NO_COLOR`, `COLORTERM` and `TERM`. An unknown enum value, a bad option or a misnamed array is `NULL`/`-1`/an error status with the reason in `mio_last_error()`.
 
 ## v9.1.0 additions

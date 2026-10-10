@@ -1077,10 +1077,9 @@ def roadmap_map():
             "§7 terminal rendering",
             [
                 ("streamlines · thumbnails", "S"),
-                ("tui: probe · clip · time", "L"),
                 ("synthwave theme · music", "S"),
             ],
-            [(1, 2)],
+            [],
         ),
     ]
     per_row = 4

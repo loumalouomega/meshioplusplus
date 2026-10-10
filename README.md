@@ -880,7 +880,7 @@ meshioplusplus.tui(mesh)                                             # the inter
 
 Field rendering colours by an array, a `data_calc` expression or a tensor invariant on a linear, log or symlog scale with percentile clipping and a legend, draws categories, regions, isolines, vector arrows and a warp with its undeformed outline, and offers quality, orientation and free-edge diagnostic views. The same options reach C, Fortran, Julia, R, WebAssembly and the settings pipeline's `Snapshot` step.
 
-`tui` is the interactive viewer for a machine with no display: drag to orbit, wheel to zoom, only the changed cells are sent, and the terminal is restored however it ends. `view()` picks it by itself when there is no display but a terminal.
+`tui` is the interactive viewer for a machine with no display: drag to orbit, wheel to zoom, click to probe a cell, `x`/`y`/`z` to cut the model open, `[` `]` to step through a time series (`--follow` watches a run that is still writing), `--compare` to put two meshes side by side, a `:` command line that takes the flags of `snapshot`, and sessions saved as JSON; only the changed cells are sent, and the terminal is restored however it ends. `view()` picks it by itself when there is no display but a terminal.
 
 ![The interactive terminal viewer](doc/public/images/tui_loop.svg)
 
@@ -1171,7 +1171,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.35.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.36.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -1048,6 +1048,7 @@ meshioplusplus snapshot [options] INFILE OUTFILE
 | `--vectors NAME` / `--vector-count N` / `--vector-length L` / `--vector-color` | Arrows for a vector point array |
 | `--warp NAME` / `--warp-scale S` / `--warp-outline` / `--outline-color` | Move the points by a displacement array; draw the undeformed outline |
 | `--diagnostic NAME` / `--quality-metric M` | `quality`, `inverted`, `degenerate`, `orientation`, `free-edges` or `edge-length` |
+| `--cutaway PLANE` / `--cutaway-tint` | Clip a half-space away (twice at most): `PX,PY,PZ,NX,NY,NZ` (a point and the normal of the side kept) or `AXIS:OFFSET`, `AXIS` one of `+x -x +y -y +z -z` (`+x:0.5` keeps x ≥ 0.5); the back faces then in view are drawn in the tint (default `#e88034`) |
 | `--png-compress 1..9` | Compress a PNG through zlib (default: stored blocks, the same bytes everywhere) |
 | `--cast-frames N` / `--cast-fps R` / `--cast-degrees DEG` | An asciicast orbit: frame count (`36`), rate (`12`), sweep (`360`) |
 | `--input-format` (`-i`) | Force the input format |
@@ -1075,7 +1076,7 @@ meshioplusplus tui [options] INFILE
 
 ![The interactive viewer](/images/tui_loop.svg)
 
-Drag to orbit, the wheel or `+` `-` to zoom, the arrow keys to pan, `1`…`7` for the named views, `p` perspective, `e` edges, `s` shading, `a` `b` `c` axes, scale bar and colour bar, `r` reset, `?` help, `q` quit. The terminal is restored however it ends; a signal ends it with exit code 128 plus the signal number.
+Drag to orbit, the wheel or `+` `-` to zoom, the arrow keys to pan, `1`…`7` for the named views, `p` perspective, `e` edges, `s` shading, `a` `b` `c` axes, scale bar and colour bar, a click to probe a cell (`i` pins it), `x` `y` `z` to cut the model away at the middle (`,` `.` slide the plane), `[` `]` to step a series, `:` for a command line that takes the flags of `snapshot`, `r` reset, `?` help, `q` quit. The terminal is restored however it ends; a signal ends it with exit code 128 plus the signal number.
 
 It takes every render option of `snapshot` (the camera, shading, edges, colouring and field options listed there; the frame size is the terminal's), and:
 
@@ -1085,6 +1086,11 @@ It takes every render option of `snapshot` (the camera, shading, edges, colourin
 | `--color-depth NAME` | `auto` (from `NO_COLOR`, `COLORTERM`, `TERM`; the default), `truecolor`, `256`, `16` or `mono` |
 | `--cell-aspect R` | Height over width of a terminal cell (default: the terminal's own when it reports its pixel size, else `2`) |
 | `--tmux` | Wrap a graphics protocol for tmux passthrough; one is refused inside tmux without it |
+| `INFILE...` | Several files, or a quoted glob (`'out_*.vtu'`), make a time series: `[` `]` step, space plays |
+| `--compare FILE` / `--diff` / `--separate-ranges` | Draw a second mesh beside the first under one camera and one colour range; `--diff` draws `\|B − A\|` of the `--color-by` point array instead of B |
+| `--follow` / `--follow-interval MS` / `--settle MS` | Watch the series (or the file) for a new step and show it once its file has stopped changing for `--settle` ms (default 300) |
+| `--fps R` | Steps per second when playing (default 4) |
+| `--session FILE` | Read a session if the file exists and write it when the viewer ends |
 | `--replay FILE` | Play a recorded input stream on a `--cols` by `--rows` screen (default `100` x `40`) and print what the viewer writes, instead of using the terminal |
 | `--input-format` (`-i`) | Force the input format |
 
