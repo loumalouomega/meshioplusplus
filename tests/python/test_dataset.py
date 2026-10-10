@@ -525,7 +525,7 @@ def test_a_thumbnail_is_an_optional_key_that_round_trips(tmp_path):
     manifest.save(path)
     again = DatasetManifest.load(path)
     assert again["a"].thumbnail == "thumbs/a.png"
-    assert again["a"].thumbnail_path() == os.path.join(str(tmp_path), "thumbs/a.png")
+    assert again["a"].thumbnail_path() == os.path.join(str(tmp_path), "thumbs", "a.png")
     assert again["b"].thumbnail_path() is None
 
 
