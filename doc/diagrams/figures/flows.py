@@ -945,15 +945,30 @@ def view_backends():
         "How view picks a backend with auto: polyscope with a display, the browser when a window can open, the terminal viewer when only a terminal is left, an HTML file otherwise",
     )
     rows = [
-        ("a display exists and polyscope is installed", "polyscope", "a native desktop window", P.PYTHON),
-        ("a display exists", "browser", "vtk.js in the default browser, or inline in a notebook", P.WASM),
+        (
+            "a display exists and polyscope is installed",
+            "polyscope",
+            "a native desktop window",
+            P.PYTHON,
+        ),
+        (
+            "a display exists",
+            "browser",
+            "vtk.js in the default browser, or inline in a notebook",
+            P.WASM,
+        ),
         (
             "no display, and stdin and stdout are both terminals",
             "terminal",
             "meshioplusplus tui: orbit, zoom and pan in the terminal you are in",
             P.CORE,
         ),
-        ("anything else (a notebook, a pipe)", "browser", "an HTML file, as before", P.WASM),
+        (
+            "anything else (a notebook, a pipe)",
+            "browser",
+            "an HTML file, as before",
+            P.WASM,
+        ),
     ]
     c.box(24, 24, 190, 40, "view(mesh)", color=P.INK_2, size=P.SIZE_LABEL, weight="700")
     y = 84
@@ -961,8 +976,20 @@ def view_backends():
     for question, backend, what, colour in rows:
         c.box(24, y, 330, 46, question, color=P.INK_2, size=P.SIZE_SMALL, rx=4)
         c.arrow(354, y + 23, 430, y + 23, stroke=colour, sw=1.8)
-        c.label(392, y + 15, "yes" if backend != "browser" or y < 200 else "then", size=9.5)
-        c.box(430, y, 446, 46, backend, color=colour, sub=what, size=P.SIZE_LABEL, sub_size=9.5)
+        c.label(
+            392, y + 15, "yes" if backend != "browser" or y < 200 else "then", size=9.5
+        )
+        c.box(
+            430,
+            y,
+            446,
+            46,
+            backend,
+            color=colour,
+            sub=what,
+            size=P.SIZE_LABEL,
+            sub_size=9.5,
+        )
         if previous is not None:
             c.arrow(189, previous + 46, 189, y, stroke=P.INK_2, sw=1.4)
             c.label(205, y - 9, "no", size=9.5, anchor="start")
@@ -975,7 +1002,11 @@ def view_backends():
         y + 2,
         "macOS and Windows always count as having a display, so there auto never picks the terminal; ask for it with backend=terminal.",
     )
-    c.label(450, y + 20, "Before v16.35.0 the third row was an HTML file that nobody could open from a terminal.")
+    c.label(
+        450,
+        y + 20,
+        "Before v16.35.0 the third row was an HTML file that nobody could open from a terminal.",
+    )
     return c.render()
 
 
