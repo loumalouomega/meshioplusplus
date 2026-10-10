@@ -913,3 +913,34 @@ def test_snapshot_step_streamlines_match_between_engines_and_validate(settings_e
                 settings_env, [dict(op, Path=str(tmp / "x.png"), Streamlines="nope")]
             )
         )
+
+
+def test_snapshot_step_theme_matches_between_engines(settings_env):
+    if not hasattr(_core, "run_pipeline_json"):
+        pytest.skip("_core predates the pipeline")
+    tmp = settings_env["tmp"]
+    op = {
+        "Op": "Snapshot",
+        "Path": str(tmp / "WHO.png"),
+        "Width": 80,
+        "Height": 60,
+        "Theme": "synthwave",
+        "GridFloor": True,
+        "Bloom": True,
+        "Scanlines": True,
+        "ColorBy": "temperature",
+    }
+    for who in ("py", "cpp"):
+        settings = make_settings(settings_env, [copy.deepcopy(op)])
+        settings["Operations"][0]["Path"] = op["Path"].replace("WHO", who)
+        if who == "py":
+            meshioplusplus.run_pipeline(settings)
+        else:
+            _core.run_pipeline_json(json.dumps(settings))
+    assert (tmp / "py.png").read_bytes() == (tmp / "cpp.png").read_bytes()
+    with pytest.raises(ValueError, match="Theme"):
+        meshioplusplus.run_pipeline(
+            make_settings(
+                settings_env, [dict(op, Path=str(tmp / "x.png"), Theme="vapor")]
+            )
+        )

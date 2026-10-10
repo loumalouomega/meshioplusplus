@@ -43,6 +43,15 @@ def tui(
     settle: int = 300,
     fps: float = 4.0,
     session: Optional[str] = None,
+    music: bool = False,
+    music_out: Optional[str] = None,
+    volume: float = 0.3,
+    tempo: float = 100.0,
+    music_seed: int = 1,
+    music_key: int = 9,
+    music_over_ssh: bool = False,
+    pulse: bool = False,
+    reduced_motion: bool = False,
     **options,
 ) -> dict:
     """Browse a mesh in the terminal until the user quits.
@@ -85,6 +94,20 @@ def tui(
     :param fps: steps per second when playing.
     :param session: a JSON session file, read at the start if it exists and
         written when the viewer ends.
+    :param music: play a generated synthwave loop while the viewer runs, through
+        an external player found on the ``PATH`` (``afplay``, ``paplay``,
+        ``pw-play``, ``aplay`` or ``ffplay``; PowerShell on Windows). Off unless
+        asked for, and silent in CI and over SSH unless ``music_over_ssh`` (the
+        sound would come out of the machine the process runs on). ``m`` mutes it
+        and ``<`` ``>`` change the volume. The loop is a pure function of
+        ``tempo`` (60 to 140 BPM), ``music_seed`` and ``music_key`` (a semitone
+        above C, 0 to 11); nothing is sampled and no file ships.
+    :param music_out: write the loop to this ``.wav`` file for your own player
+        (no player needed, and it also works over SSH or in CI).
+    :param volume: loudness of the loop as a fraction of full scale, 0.05 to 0.9.
+    :param pulse: with ``theme="synthwave"``, step the grid's colour and scroll on
+        every beat of ``tempo``; ``music`` implies it. ``reduced_motion`` (or the
+        ``REDUCED_MOTION`` environment variable) turns it off.
     :param options: the render options of :func:`~meshioplusplus.render_image`
         (``view``, ``color_by``, ``cmap``, ``edges``, ``shading``, ``cutaway``,
         ...); the frame size comes from the terminal.
@@ -160,7 +183,22 @@ def tui(
         int(settle),
         float(fps),
         os.fspath(session) if session else "",
+        {
+            "enabled": bool(music),
+            "out": os.fspath(music_out) if music_out else "",
+            "volume": float(volume),
+            "tempo": float(tempo),
+            "seed": int(music_seed),
+            "key": int(music_key),
+            "over_ssh": bool(music_over_ssh),
+            "pulse": bool(pulse),
+            "reduced_motion": bool(reduced_motion),
+        },
     )
+    if result.get("music"):
+        import warnings
+
+        warnings.warn(result["music"], RuntimeWarning, stacklevel=2)
     if result["exit"] == _SIGINT_EXIT:
         raise KeyboardInterrupt
     return result

@@ -816,3 +816,227 @@ def test_following_a_series_on_a_real_terminal(pty_run, series_files, tmp_path, 
     p.send(b"q")
     assert p.finish() == 0
     assert p.cooked()
+
+
+# --- the synthwave theme and the soundtrack (v16.38.0) ---------------------------
+
+
+def plain_screen_corner(plain):
+    cell = ansi_screen.replay(plain["output"], 80, 24).cell(0, 0)
+    return cell.fg or cell.bg
+
+
+def test_the_theme_draws_a_sunset_in_a_replay(mesh_file):
+    result = _replay_core(mesh_file, b"q", theme="synthwave", pulse=True)
+    assert result["exit"] == 0
+    plain = _replay_core(mesh_file, b"q")
+    assert result["output"] != plain["output"]
+    screen = ansi_screen.replay(result["output"], 80, 24)
+    corner = screen.cell(0, 0)  # the top of the sky, not the terminal's own colours
+    assert corner.fg is not None or corner.bg is not None
+    assert plain_screen_corner(plain) is None
+
+
+def test_music_options_are_validated_and_a_replay_never_plays(mesh_file, tmp_path):
+    wav = tmp_path / "loop.wav"
+    result = _replay_core(
+        mesh_file, b"q", music=True, music_out=str(wav), tempo=90, music_seed=2
+    )
+    assert result["exit"] == 0 and result["music"] == ""
+    data = wav.read_bytes()
+    assert data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+    assert len(data) == 44 + 2 * 4 * 8 * round(22050 * 60 / 90)  # 8 bars of 4 beats
+    again = tmp_path / "again.wav"
+    _replay_core(mesh_file, b"q", music_out=str(again), tempo=90, music_seed=2)
+    assert again.read_bytes() == data  # the same arguments, the same bytes
+    other = tmp_path / "other.wav"
+    _replay_core(mesh_file, b"q", music_out=str(other), tempo=90, music_seed=3)
+    assert other.read_bytes() != data
+    with pytest.raises(ValueError, match="tempo"):
+        _replay_core(mesh_file, b"q", tempo=300)
+    with pytest.raises(ValueError, match="key"):
+        _replay_core(mesh_file, b"q", music_key=12)
+    with pytest.raises(ValueError, match="volume"):
+        _replay_core(mesh_file, b"q", volume=1.5)
+
+
+def _fake_player(tmp_path):
+    """A directory with an `aplay` that records its pid and then plays for a minute."""
+    directory = tmp_path / "players"
+    directory.mkdir()
+    script = directory / "aplay"
+    script.write_text('#!/bin/sh\necho $$ > "$MUSIC_PIDFILE"\nexec sleep 60\n')
+    script.chmod(0o755)
+    return directory
+
+
+def _music_env(tmp_path, players, **extra):
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("CI", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REDUCED_MOTION")
+    }
+    env["MESHIOPLUSPLUS_MUSIC_PLAYERS"] = str(players)
+    env["MUSIC_PIDFILE"] = str(tmp_path / "player.pid")
+    env.update(extra)
+    return env
+
+
+def _wait_for_pid(tmp_path, timeout=10):
+    path = tmp_path / "player.pid"
+    end = time.time() + timeout
+    while time.time() < end:
+        if path.exists() and path.read_text().strip():
+            return int(path.read_text())
+        time.sleep(0.05)
+    return None
+
+
+def _gone(pid, timeout=5):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        # A zombie child of this test's process tree is dead for our purposes.
+        try:
+            with open(f"/proc/{pid}/stat") as handle:
+                if handle.read().split(")")[-1].split()[0] == "Z":
+                    return True
+        except OSError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@posix_only
+@pytest.mark.parametrize("kind", _both())
+def test_the_music_player_runs_while_the_viewer_does_and_dies_with_it(
+    pty_run, mesh_file, tmp_path, kind
+):
+    env = _music_env(tmp_path, _fake_player(tmp_path))
+    p = pty_run(_argv_for(kind, mesh_file, "--music"), env=env)
+    assert p.wait_for(b"q quit")
+    pid = _wait_for_pid(tmp_path)
+    assert pid is not None, p.output[-300:]
+    assert b"music: 30%" in p.output
+    p.send(b"m")
+    assert p.wait_for(b"music: muted")
+    assert _gone(pid)  # muting stops the player
+    p.send(b"m")
+    assert p.wait_for(b"music: 30%")
+    (tmp_path / "player.pid").unlink()
+    pid = _wait_for_pid(tmp_path)
+    assert pid is not None
+    p.send(b"q")
+    assert p.finish() == 0
+    assert _gone(pid)
+
+
+@posix_only
+@pytest.mark.parametrize("kind", _both())
+@pytest.mark.parametrize(
+    "sig",
+    [signal.SIGTERM, signal.SIGINT]
+    + ([signal.SIGHUP] if hasattr(signal, "SIGHUP") else []),
+)
+def test_a_signal_stops_the_music_player_too(pty_run, mesh_file, tmp_path, kind, sig):
+    env = _music_env(tmp_path, _fake_player(tmp_path))
+    p = pty_run(_argv_for(kind, mesh_file, "--music"), env=env)
+    assert p.wait_for(b"q quit")
+    pid = _wait_for_pid(tmp_path)
+    assert pid is not None
+    p.proc.send_signal(sig)
+    p.finish()
+    assert p.cooked()
+    assert _gone(pid)
+
+
+@posix_only
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG")
+@needs_native
+def test_killing_the_viewer_outright_still_stops_the_player(
+    pty_run, mesh_file, tmp_path
+):
+    env = _music_env(tmp_path, _fake_player(tmp_path))
+    p = pty_run(_tui_argv(mesh_file, "--music"), env=env)
+    assert p.wait_for(b"q quit")
+    pid = _wait_for_pid(tmp_path)
+    assert pid is not None
+    p.proc.kill()
+    p.proc.wait()
+    assert _gone(pid)
+
+
+@posix_only
+@pytest.mark.parametrize("kind", _both())
+@pytest.mark.parametrize(
+    "env_extra, reason",
+    [({"CI": "true"}, b"CI is set"), ({"SSH_CONNECTION": "a 1 b 2"}, b"SSH session")],
+)
+def test_nothing_plays_in_ci_or_over_ssh(
+    pty_run, mesh_file, tmp_path, kind, env_extra, reason
+):
+    env = _music_env(tmp_path, _fake_player(tmp_path), **env_extra)
+    p = pty_run(_argv_for(kind, mesh_file, "--music"), env=env)
+    assert p.wait_for(b"q quit")
+    time.sleep(0.5)
+    assert not (tmp_path / "player.pid").exists()
+    p.send(b"q")
+    p.finish()
+    if kind == "native":
+        assert reason in p.output
+
+
+@posix_only
+@needs_native
+def test_over_ssh_plays_when_asked_and_no_player_is_said_by_name(
+    pty_run, mesh_file, tmp_path
+):
+    env = _music_env(tmp_path, _fake_player(tmp_path), SSH_CONNECTION="a 1 b 2")
+    p = pty_run(_tui_argv(mesh_file, "--music", "--music-over-ssh"), env=env)
+    assert p.wait_for(b"q quit")
+    pid = _wait_for_pid(tmp_path)
+    assert pid is not None
+    p.send(b"q")
+    p.finish()
+    assert _gone(pid)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    env = _music_env(tmp_path, empty)
+    p = pty_run(_tui_argv(mesh_file, "--music"), env=env)
+    assert p.wait_for(b"q quit")
+    p.send(b"q")
+    assert p.finish() == 0
+    assert b"no player found" in p.output and b"afplay" in p.output
+
+
+@needs_native
+def test_the_native_replay_writes_the_loop_and_takes_the_theme(mesh_file, tmp_path):
+    wav = tmp_path / "native.wav"
+    replay = tmp_path / "q.bin"
+    replay.write_bytes(b"q")
+    done = subprocess.run(
+        [NATIVE, "tui", mesh_file, "--replay", str(replay), "--theme", "synthwave",
+         "--pulse", "--music-out", str(wav), "--tempo", "90", "--music-seed", "2"],
+        capture_output=True,
+        check=True,
+    )  # fmt: skip
+    assert wav.read_bytes()[:4] == b"RIFF" and b"wrote" in done.stderr
+    py = tmp_path / "py.wav"
+    meshioplusplus.tui(
+        meshioplusplus.read(mesh_file), replay=b"q", music_out=str(py), tempo=90,
+        music_seed=2,
+    )  # fmt: skip
+    assert py.read_bytes() == wav.read_bytes()  # one synthesizer, two front ends
+    bad = subprocess.run(
+        [NATIVE, "tui", mesh_file, "--replay", str(replay), "--music-key", "H"],
+        capture_output=True,
+    )
+    assert bad.returncode != 0 and b"--music-key" in bad.stderr
+    stray = subprocess.run(
+        [NATIVE, "tui", mesh_file, "--replay", str(replay), "--volume", "0.5"],
+        capture_output=True,
+    )
+    assert stray.returncode != 0 and b"needs --music" in stray.stderr

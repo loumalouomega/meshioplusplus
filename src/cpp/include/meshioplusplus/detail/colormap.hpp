@@ -7,7 +7,10 @@
  * Each colormap is a 256-entry table of packed uint8 RGB triples. viridis,
  * magma, inferno, plasma and turbo are matplotlib's canonical 256-entry listed
  * colormaps verbatim; coolwarm and grey are matplotlib's segmented maps sampled
- * at the same 256 points; each `<name>_r` is its map reversed. viridis, magma,
+ * at the same 256 points; `synthwave` (v16.38.0) is an original palette defined by
+ * the generator itself, piecewise-linear through deep blue, violet, magenta, hot
+ * pink and pale cyan, and not perceptually uniform; each `<name>_r` is its map
+ * reversed. viridis, magma,
  * inferno and plasma are CC0 (Smith, van der Walt and Firing); Turbo is
  * Apache-2.0 (Google LLC, 2019) -- see CITATION.cff.
  *

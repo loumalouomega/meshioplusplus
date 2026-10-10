@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 16.37.0
+  VERSION 16.38.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -1249,7 +1249,8 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
   # tty); the binding compiles the same sources the native `tui` verb does.
   target_sources(_core PRIVATE src/cpp/cli/terminal.cpp src/cpp/cli/render_args.cpp
                                src/cpp/cli/tui/input.cpp
-                               src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp)
+                               src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp
+      src/cpp/cli/tui/music.cpp)
   target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
 
   # LDFLAGS env-var seeding of CMAKE_MODULE_LINKER_FLAGS was tried first and
@@ -1516,7 +1517,8 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   target_sources(meshioplusplus_tests
                  PRIVATE src/cpp/cli/view_payload.cpp src/cpp/cli/terminal.cpp
                          src/cpp/cli/render_args.cpp src/cpp/cli/tui/input.cpp
-                         src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp)
+                         src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp
+      src/cpp/cli/tui/music.cpp)
   target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_core_obj GTest::gtest_main)
   if(MESHIOPLUSPLUS_BUILD_C_API)
     # Link the C API's objects directly (not the shared lib): the gtest binary
@@ -1645,7 +1647,8 @@ if(MESHIOPLUSPLUS_BUILD_CLI)
   add_executable(meshioplusplus_cli src/cpp/cli/main.cpp)
   target_sources(meshioplusplus_cli PRIVATE src/cpp/cli/view_payload.cpp src/cpp/cli/terminal.cpp
                                            src/cpp/cli/render_args.cpp src/cpp/cli/tui/input.cpp
-                                           src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp)
+                                           src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp
+      src/cpp/cli/tui/music.cpp)
   target_link_libraries(meshioplusplus_cli PRIVATE meshioplusplus_core_obj)
   target_compile_definitions(meshioplusplus_cli
     PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")

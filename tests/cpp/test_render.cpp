@@ -19,6 +19,7 @@
 // probes of roadmap 7.2.7 and 7.3.6, plus the PNG and asciicast containers.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1250,5 +1251,122 @@ TEST(Streamlines, OffByDefaultTheBytesAreUnchanged) {
     RenderOptions b = a;
     b.mStreamColor = {1, 2, 3, 255};
     b.mStreamSeeds = 7;  // nothing is drawn without a named array
+    EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
+}
+
+// ---------------------------------------------------------------------------
+// The synthwave theme
+// ---------------------------------------------------------------------------
+
+namespace {
+
+RenderColor pixel(const Frame& rF, int X, int Y) {
+    const std::size_t at = (static_cast<std::size_t>(Y) * rF.mWidth + X) * 4;
+    return {rF.mRgba[at], rF.mRgba[at + 1], rF.mRgba[at + 2], rF.mRgba[at + 3]};
+}
+
+RenderOptions themed(int W = 64, int H = 64) {
+    RenderOptions o = top_view(W, H);
+    o.mTheme = RenderTheme::Synthwave;
+    return o;
+}
+
+}  // namespace
+
+TEST(RenderTheme, ABandedSunsetFillsTheTransparentBackgroundOnly) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = themed(64, 96);
+    o.mZoom = 0.4;  // leave the corners empty
+    const Frame f = render(m, o);
+    EXPECT_EQ(pixel(f, 0, 0), (RenderColor{20, 8, 60, 255}));  // the top of the sky
+    EXPECT_EQ(pixel(f, 63, 0), pixel(f, 0, 0));
+    EXPECT_EQ(pixel(f, 0, 95)[3], 255);
+    // Banded: eight bands of sky and four of floor, not a smooth ramp.
+    std::set<std::array<std::uint8_t, 3>> colours;
+    for (int y = 0; y < 96; ++y) {
+        const RenderColor c = pixel(f, 0, y);
+        colours.insert({c[0], c[1], c[2]});
+    }
+    EXPECT_LE(colours.size(), 12u);
+    EXPECT_GE(colours.size(), 8u);
+    // The warm end sits at the horizon, above the floor.
+    EXPECT_GT(pixel(f, 0, 55)[0], pixel(f, 0, 5)[0]);
+    EXPECT_GT(pixel(f, 0, 55)[1], pixel(f, 0, 5)[1]);
+    // An opaque background of your own wins.
+    o.mBackground = {1, 2, 3, 255};
+    EXPECT_EQ(pixel(render(m, o), 0, 0), (RenderColor{1, 2, 3, 255}));
+}
+
+TEST(RenderTheme, TheThemeColoursTheFacesAndEdgesUnlessYouSetThem) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = themed();
+    const Frame f = render(m, o);
+    EXPECT_EQ(pixel(f, 32, 32), (RenderColor{96, 56, 190, 255}));  // neon violet, unlit
+    o.mFillColor = {10, 20, 30, 255};
+    EXPECT_EQ(pixel(render(m, o), 32, 32), (RenderColor{10, 20, 30, 255}));
+    o = themed();
+    o.mEdges = RenderEdges::All;
+    EXPECT_GT(count_color(render(m, o), {0, 230, 255, 255}), 20u);  // cyan edges
+}
+
+TEST(RenderTheme, TheGridFloorNeedsATheme) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = top_view();
+    o.mGridFloor = true;
+    EXPECT_THROW(render(m, o), std::invalid_argument);
+    o.mTheme = RenderTheme::Synthwave;
+    EXPECT_NO_THROW(render(m, o));
+}
+
+TEST(RenderTheme, TheGridFloorStepsWithTheBeat) {
+    const Mesh m = grid_square(2);
+    RenderOptions o = themed(96, 96);
+    o.mZoom = 0.3;
+    const Frame plain = render(m, o);
+    o.mGridFloor = true;
+    const Frame grid = render(m, o);
+    EXPECT_NE(plain.mRgba, grid.mRgba);
+    EXPECT_GT(count_color(grid, {255, 50, 200, 255}), 50u);  // magenta on an even beat
+    o.mThemePhase = 1;
+    const Frame next = render(m, o);
+    EXPECT_GT(count_color(next, {0, 220, 255, 255}), 50u);  // cyan on an odd one
+    EXPECT_EQ(count_color(next, {255, 50, 200, 255}), 0u);
+    o.mThemePhase = 8;  // the scroll comes round after eight beats
+    EXPECT_EQ(render(m, o).mRgba, grid.mRgba);
+}
+
+TEST(RenderTheme, ThePostProcessesChangeTheFrameAndAreDeterministic) {
+    const Mesh m = grid_square(4);
+    RenderOptions base = themed(120, 80);
+    base.mColorBy = "x";
+    base.mCmap = "synthwave";
+    const Frame plain = render(m, base);
+    for (int which = 0; which < 3; ++which) {
+        RenderOptions o = base;
+        (which == 0 ? o.mBloom : which == 1 ? o.mFringe : o.mScanlines) = true;
+        const Frame a = render(m, o);
+        EXPECT_NE(a.mRgba, plain.mRgba) << which;
+        EXPECT_EQ(a.mRgba, render(m, o).mRgba) << which;
+        EXPECT_EQ(a.mCellIds, plain.mCellIds) << which;  // pixels change, picking does not
+    }
+    // Scanlines dim every other row and leave the rest.
+    RenderOptions o = base;
+    o.mScanlines = true;
+    const Frame lines = render(m, o);
+    for (int x : {10, 60, 100}) {
+        EXPECT_EQ(pixel(lines, x, 20), pixel(plain, x, 20));
+        const RenderColor a = pixel(plain, x, 21);
+        const RenderColor b = pixel(lines, x, 21);
+        EXPECT_EQ(b[0], a[0] - a[0] / 4);
+        EXPECT_EQ(b[3], 255);
+    }
+}
+
+TEST(RenderTheme, WithEverythingOffTheBytesAreUnchanged) {
+    const Mesh m = grid_square(4);
+    RenderOptions a = top_view(80, 60);
+    a.mColorBy = "x";
+    RenderOptions b = a;
+    b.mThemePhase = 5;  // the phase matters only with a theme
     EXPECT_EQ(render(m, a).mRgba, render(m, b).mRgba);
 }

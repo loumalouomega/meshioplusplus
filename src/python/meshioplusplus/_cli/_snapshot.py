@@ -126,6 +126,17 @@ def add_render_args(parser):
         "--stream-color", type=_rgba, default=None, metavar="#RRGGBB[AA]"
     )
     field.add_argument(
+        "--theme",
+        choices=["none", "synthwave"],
+        default=None,
+        help="an optional look: synthwave puts a banded sunset behind the model "
+        "in neon colours and defaults --cmap to synthwave",
+    )
+    field.add_argument("--grid-floor", action="store_true", help="with --theme")
+    field.add_argument("--bloom", action="store_true")
+    field.add_argument("--fringe", action="store_true")
+    field.add_argument("--scanlines", action="store_true")
+    field.add_argument(
         "--warp", type=str, default=None, help="displacement point array"
     )
     field.add_argument("--warp-scale", type=float, default=None)
@@ -242,6 +253,11 @@ def render_options(args):
         "vector_count": args.vector_count,
         "vector_length": args.vector_length,
         "vector_color": args.vector_color,
+        "theme": args.theme,
+        "grid_floor": args.grid_floor or None,
+        "bloom": args.bloom or None,
+        "fringe": args.fringe or None,
+        "scanlines": args.scanlines or None,
         "streamlines": args.streamlines,
         "stream_seeds": args.stream_seeds,
         "stream_length": args.stream_length,

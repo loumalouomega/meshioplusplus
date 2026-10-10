@@ -849,6 +849,21 @@ int main(int argc, char** argv) {
             o.mCutaways = {cut};
             frame_of(pD, mio::render(with_flow, o));
         });
+        // v16.38.0: the synthwave theme (a sunset, the grid floor and the three
+        // post-processes) on the cut-away volume.
+        row("render_synthwave_320x192", [&](MeshDigest* pD) {
+            mio::RenderOptions o;
+            o.mWidth = 320;
+            o.mHeight = 192;
+            o.mSupersample = 2;
+            o.mTheme = mio::RenderTheme::Synthwave;
+            o.mGridFloor = true;
+            o.mBloom = true;
+            o.mFringe = true;
+            o.mScanlines = true;
+            o.mThemePhase = 3;
+            frame_of(pD, mio::render(with_flow, o));
+        });
         row("hausdorff", [&](MeshDigest* pD) {
             mio::HausdorffOptions o;
             o.mFaceSamples = 2;

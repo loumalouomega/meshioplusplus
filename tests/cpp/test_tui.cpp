@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -27,6 +28,11 @@
 
 #include <gtest/gtest.h>
 
+#ifndef _WIN32
+#include <csignal>
+#include <unistd.h>
+#endif
+
 #include "meshioplusplus/operations/render.hpp"
 #include "mesh_fixtures.hpp"
 
@@ -34,6 +40,7 @@
 #include "../../src/cpp/cli/render_args.hpp"
 #include "../../src/cpp/cli/tui/input.hpp"
 #include "../../src/cpp/cli/tui/loop.hpp"
+#include "../../src/cpp/cli/tui/music.hpp"
 #include "../../src/cpp/cli/tui/probe.hpp"
 #include "../../src/cpp/cli/tui/series.hpp"
 #include "../../src/cpp/cli/tui/session_file.hpp"
@@ -1394,5 +1401,301 @@ TEST(PathSeriesTest, ReadsStepsFromFilesAndNoticesNewOnes) {
     EXPECT_THROW(PathSeries({}, (dir / "nothing_*.vtu").string(), ""), ReadError);
     std::filesystem::remove_all(dir);
 }
+
+// ------------------------------------------------------------------ the theme
+
+TEST(TuiTheme, ItsFlagsRoundTripAndTheThemeBringsItsColormap) {
+    RenderFlags flags = RenderFlags::FromTokens(
+        {"--theme", "synthwave", "--color-by", "u", "--scanlines", "--bloom", "--fringe",
+         "--grid-floor"});
+    RenderOptions o = flags.ToOptions();
+    EXPECT_EQ(o.mTheme, RenderTheme::Synthwave);
+    EXPECT_TRUE(o.mScanlines && o.mBloom && o.mFringe && o.mGridFloor);
+    EXPECT_EQ(o.mCmap, "synthwave");  // unless one is named
+    EXPECT_EQ(RenderFlags::FromOptions(o).ToOptions().mCmap, "synthwave");
+    EXPECT_EQ(RenderFlags::FromOptions(o).Tokens(), flags.Tokens());
+    // A colormap you name wins, and survives the round trip even when it is viridis.
+    flags = RenderFlags::FromTokens({"--theme", "synthwave", "--color-by", "u", "--cmap", "viridis"});
+    o = flags.ToOptions();
+    EXPECT_EQ(o.mCmap, "viridis");
+    EXPECT_EQ(RenderFlags::FromOptions(o).ToOptions().mCmap, "viridis");
+    EXPECT_THROW(RenderFlags::FromTokens({"--theme", "vaporwave"}).ToOptions(), std::runtime_error);
+    EXPECT_THROW(RenderFlags::FromTokens({"--grid-floor"}).ToOptions(), std::runtime_error);
+}
+
+TEST(TuiTheme, TheCommandLineSwitchesItOnAndOff) {
+    const Mesh m = cube_quads();
+    TuiSession session(m, TuiOptions{});
+    EXPECT_EQ(session.Execute("theme synthwave"), "");
+    EXPECT_EQ(session.Camera().mTheme, RenderTheme::Synthwave);
+    EXPECT_EQ(session.Execute("grid-floor"), "");
+    EXPECT_TRUE(session.Camera().mGridFloor);
+    EXPECT_EQ(session.Execute("theme none"), "");  // takes the grid floor with it
+    EXPECT_EQ(session.Camera().mTheme, RenderTheme::None);
+    EXPECT_FALSE(session.Camera().mGridFloor);
+    EXPECT_NE(session.Execute("grid-floor").find("theme"), std::string::npos);  // needs a theme
+}
+
+TEST(TuiTheme, TheBeatStepsThePhaseWithTheClockAndOnlyWithATheme) {
+    const Mesh m = cube_quads();
+    TuiOptions options;
+    options.mRender.mTheme = RenderTheme::Synthwave;
+    options.mPulseTempo = 120.0;  // a beat every 500 ms
+    {
+        TuiSession session(m, options);
+        ClockIo io({}, 2100);
+        const TuiReport report = session.Run(io);
+        EXPECT_EQ(report.mFinal.mThemePhase, 4);  // 2000 ms of 500 ms beats
+    }
+    options.mPulseTempo = 0.0;
+    {
+        TuiSession session(m, options);
+        ClockIo io({}, 2100);
+        EXPECT_EQ(session.Run(io).mFinal.mThemePhase, 0);
+    }
+    options.mPulseTempo = 120.0;
+    options.mRender.mTheme = RenderTheme::None;
+    {
+        TuiSession session(m, options);
+        ClockIo io({}, 2100);
+        EXPECT_EQ(session.Run(io).mFinal.mThemePhase, 0);
+    }
+}
+
+// ------------------------------------------------------------------ the music
+
+class FakeMusic : public MusicControl {
+public:
+    void Poll() override { ++mPolls; }
+    void SetMuted(bool Muted) override { mMuted = Muted; }
+    bool Muted() const override { return mMuted; }
+    void AdjustVolume(int Steps) override { mVolume += 0.05 * Steps; }
+    double Volume() const override { return mVolume; }
+    std::string Status() const override { return mMuted ? "music: muted" : "music: on"; }
+    int mPolls = 0;
+    bool mMuted = false;
+    double mVolume = 0.3;
+};
+
+TEST(TuiMusic, KeysMuteAndChangeTheVolumeAndTheLoopPollsIt) {
+    const Mesh m = cube_quads();
+    FakeMusic music;
+    TuiOptions options;
+    options.mpMusic = &music;
+    TuiSession session(m, options);
+    ScriptedIo io("m>>><", 80, 24);
+    const TuiReport report = session.Run(io);
+    EXPECT_TRUE(music.mMuted);
+    EXPECT_NEAR(music.mVolume, 0.3 + 0.05 * 2, 1e-9);
+    EXPECT_GE(music.mPolls, 1);
+    EXPECT_NE(report.mStatus.find("music: muted"), std::string::npos);
+}
+
+TEST(TuiMusic, WithoutMusicTheKeysSayHowToStartIt) {
+    const Mesh m = cube_quads();
+    TuiSession session(m, TuiOptions{});
+    ScriptedIo io("m", 80, 24);
+    EXPECT_NE(session.Run(io).mStatus.find("--music"), std::string::npos);
+}
+
+TEST(TuiMusic, SoundIsRefusedInCiAndOverSshUnlessAsked) {
+    auto set = [](const char* pName, const char* pValue) {
+#ifdef _WIN32
+        _putenv_s(pName, pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv(pName, pValue, 1);
+        else
+            unsetenv(pName);
+#endif
+    };
+    const char* old_ci = std::getenv("CI");
+    const std::string saved_ci = old_ci != nullptr ? old_ci : "";
+    set("SSH_CONNECTION", nullptr);
+    set("SSH_CLIENT", nullptr);
+    set("SSH_TTY", nullptr);
+    set("CI", nullptr);
+    std::string why;
+    EXPECT_TRUE(music_allowed(false, why));
+    set("CI", "true");
+    EXPECT_FALSE(music_allowed(false, why));
+    EXPECT_NE(why.find("CI"), std::string::npos);
+    EXPECT_FALSE(music_allowed(true, why));  // --music-over-ssh does not lift CI
+    set("CI", nullptr);
+    set("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 4242");
+    EXPECT_FALSE(music_allowed(false, why));
+    EXPECT_NE(why.find("SSH"), std::string::npos);
+    EXPECT_TRUE(music_allowed(true, why));
+    set("SSH_CONNECTION", nullptr);
+    if (old_ci != nullptr)
+        set("CI", saved_ci.c_str());
+}
+
+TEST(TuiMusic, ReducedMotionFollowsTheEnvironment) {
+    auto set = [](const char* pValue) {
+#ifdef _WIN32
+        _putenv_s("REDUCED_MOTION", pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv("REDUCED_MOTION", pValue, 1);
+        else
+            unsetenv("REDUCED_MOTION");
+#endif
+    };
+    const char* old = std::getenv("REDUCED_MOTION");
+    const std::string saved = old != nullptr ? old : "";
+    set(nullptr);
+    EXPECT_FALSE(reduced_motion_requested());
+    for (const char* off : {"", "0", "false"}) {
+        set(off);
+        EXPECT_FALSE(reduced_motion_requested()) << off;
+    }
+    for (const char* on : {"1", "true", "yes"}) {
+        set(on);
+        EXPECT_TRUE(reduced_motion_requested()) << on;
+    }
+    if (old != nullptr)
+        set(saved.c_str());
+    else
+        set(nullptr);
+}
+
+TEST(TuiMusic, TheLoopIsWrittenAsAWavFile) {
+    const auto path = std::filesystem::temp_directory_path() / "meshio_music_test.wav";
+    meshioplusplus::detail::SynthOptions o;
+    o.mBars = 1;
+    music_write_wav(path.string(), o);
+    std::ifstream in(path, std::ios::binary);
+    std::string head(12, '\0');
+    in.read(head.data(), 12);
+    EXPECT_EQ(head.substr(0, 4), "RIFF");
+    EXPECT_EQ(head.substr(8, 4), "WAVE");
+    EXPECT_EQ(std::filesystem::file_size(path), 44u + 2u * meshioplusplus::detail::synth_length(o));
+    std::filesystem::remove(path);
+}
+
+#ifndef _WIN32
+// A fake player on a search path of its own: a script that records its pid and
+// arguments, then sleeps or ends at once.
+class FakePlayerDir {
+public:
+    explicit FakePlayerDir(const std::string& rBody) {
+        mDir = std::filesystem::temp_directory_path() /
+               ("meshio_fake_player_" + std::to_string(std::rand()));
+        std::filesystem::create_directories(mDir);
+        const auto script = mDir / "aplay";
+        {
+            std::ofstream out(script);
+            out << "#!/bin/sh\n" << rBody << "\n";
+        }
+        std::filesystem::permissions(script, std::filesystem::perms::owner_all);
+        setenv("MESHIOPLUSPLUS_MUSIC_PLAYERS", mDir.c_str(), 1);
+    }
+    ~FakePlayerDir() {
+        unsetenv("MESHIOPLUSPLUS_MUSIC_PLAYERS");
+        std::filesystem::remove_all(mDir);
+    }
+    std::string Read(const char* pName) const {
+        std::ifstream in(mDir / pName);
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        return text;
+    }
+    std::filesystem::path mDir;
+};
+
+bool process_alive(long Pid) { return Pid > 0 && kill(static_cast<pid_t>(Pid), 0) == 0; }
+
+int pid_lines(const std::string& rText) {
+    return static_cast<int>(std::count(rText.begin(), rText.end(), '\n'));
+}
+
+long last_pid(const std::string& rText) {
+    const auto end = rText.find_last_not_of('\n');
+    const auto begin = rText.rfind('\n', end);
+    return std::stol(rText.substr(begin == std::string::npos ? 0 : begin + 1, end - begin));
+}
+
+bool wait_for_file_text(const FakePlayerDir& rDir, const char* pName) {
+    for (int i = 0; i < 100; ++i) {
+        if (!rDir.Read(pName).empty())
+            return true;
+        usleep(20000);
+    }
+    return false;
+}
+
+TEST(TuiMusic, ThePlayerIsStartedMutedKilledAndRestarted) {
+    FakePlayerDir dir("echo $$ >> \"$(dirname \"$0\")/pids\"\necho \"$@\" >> \"$(dirname \"$0\")/args\"\nexec sleep 30");
+    meshioplusplus::detail::SynthOptions o;
+    o.mBars = 1;
+    std::string message;
+    long pid = 0;
+    {
+        MusicPlayer player(o, 0.3);
+        EXPECT_TRUE(player.Start(message)) << message;
+        EXPECT_TRUE(player.Playing());
+        ASSERT_TRUE(wait_for_file_text(dir, "args"));
+        EXPECT_NE(dir.Read("args").find("-q"), std::string::npos);  // aplay's own flag
+        EXPECT_NE(dir.Read("args").find(".wav"), std::string::npos);
+        pid = std::stol(dir.Read("pids"));
+        EXPECT_TRUE(process_alive(pid));
+        EXPECT_EQ(player.Status(), "music: 30%");
+        player.SetMuted(true);
+        EXPECT_FALSE(player.Playing());
+        EXPECT_FALSE(process_alive(pid));
+        EXPECT_EQ(player.Status(), "music: muted");
+        player.SetMuted(false);
+        EXPECT_TRUE(player.Playing());
+        for (int i = 0; i < 100 && pid_lines(dir.Read("pids")) < 2; ++i)
+            usleep(20000);
+        ASSERT_EQ(pid_lines(dir.Read("pids")), 2);
+        player.AdjustVolume(2);  // restarts the loop louder
+        EXPECT_EQ(player.Status(), "music: 40%");
+        EXPECT_TRUE(player.Playing());
+        // The two relaunches write their pids a moment after they start.
+        for (int i = 0; i < 100 && pid_lines(dir.Read("pids")) < 3; ++i)
+            usleep(20000);
+        ASSERT_EQ(pid_lines(dir.Read("pids")), 3);
+        pid = last_pid(dir.Read("pids"));
+        ASSERT_TRUE(process_alive(pid));
+    }
+    // Destroying the player stops the one that was running.
+    usleep(100000);
+    EXPECT_FALSE(process_alive(pid));
+}
+
+TEST(TuiMusic, ALoopThatEndsIsStartedAgain) {
+    FakePlayerDir dir("echo $$ >> \"$(dirname \"$0\")/pids\"");
+    meshioplusplus::detail::SynthOptions o;
+    o.mBars = 1;
+    MusicPlayer player(o, 0.3);
+    std::string message;
+    ASSERT_TRUE(player.Start(message)) << message;
+    int launches = 0;
+    for (int i = 0; i < 100 && launches < 3; ++i) {
+        usleep(20000);
+        player.Poll();
+        const std::string pids = dir.Read("pids");
+        launches = static_cast<int>(std::count(pids.begin(), pids.end(), '\n'));
+    }
+    EXPECT_GE(launches, 3);
+}
+
+TEST(TuiMusic, WithNoPlayerTheMessageNamesWhatWasTried) {
+    const auto empty = std::filesystem::temp_directory_path() / "meshio_no_player";
+    std::filesystem::create_directories(empty);
+    setenv("MESHIOPLUSPLUS_MUSIC_PLAYERS", empty.c_str(), 1);
+    meshioplusplus::detail::SynthOptions o;
+    MusicPlayer player(o, 0.3);
+    std::string message;
+    EXPECT_FALSE(player.Start(message));
+    EXPECT_NE(message.find("afplay"), std::string::npos);
+    EXPECT_NE(message.find("ffplay"), std::string::npos);
+    EXPECT_NE(message.find("--music-out"), std::string::npos);
+    EXPECT_FALSE(player.Playing());
+    unsetenv("MESHIOPLUSPLUS_MUSIC_PLAYERS");
+    std::filesystem::remove_all(empty);
+}
+#endif
 
 }  // namespace

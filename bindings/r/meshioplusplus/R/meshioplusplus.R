@@ -232,7 +232,7 @@ mio_write <- function(mesh, path, format = NULL, encoding = "default",
 #' @param path Destination `.glb` or `.gltf` path.
 #' @param color_by Point or cell field to colour by; `NULL` disables colouring.
 #' @param cmap Colormap: `viridis`, `coolwarm`, `turbo`, `magma`, `inferno`,
-#'   `plasma` or `grey`, or a reversed `_r` variant of any.
+#'   `plasma`, `grey` or `synthwave`, or a reversed `_r` variant of any.
 #' @param component 1-based component, or `NULL` for magnitude.
 #' @param vmin,vmax Optional colour range limits.
 #' @param split_angle Smooth-normal split angle in degrees.
