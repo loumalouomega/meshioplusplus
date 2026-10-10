@@ -283,9 +283,12 @@ def _bunny_series(folder: pathlib.Path, steps: int = 4) -> list:
     for k in range(steps):
         u = np.sin(6.0 * z + 1.2 * k) * (1.0 + 0.3 * k)
         path = folder / f"bunny_{k + 1}.vtu"
+        # Uncompressed, as in tests/python/test_tui.py: the native viewer reads
+        # this series itself, and a build without zlib cannot inflate VTU.
         meshioplusplus.write(
             path,
             meshioplusplus.Mesh(mesh.points, mesh.cells, point_data={"u": u}),
+            compression=None,
         )
         paths.append(str(path))
     return paths
