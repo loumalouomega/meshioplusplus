@@ -8,7 +8,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 
 #include "../terminal.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -42,11 +41,15 @@ std::vector<std::string> split_path(const std::string& rPath) {
     const char sep = ':';
 #endif
     std::vector<std::string> out;
-    std::stringstream in(rPath);
-    std::string item;
-    while (std::getline(in, item, sep))
-        if (!item.empty())
-            out.push_back(item);
+    std::size_t start = 0;
+    while (start <= rPath.size()) {
+        std::size_t end = rPath.find(sep, start);
+        if (end == std::string::npos)
+            end = rPath.size();
+        if (end > start)
+            out.push_back(rPath.substr(start, end - start));
+        start = end + 1;
+    }
     return out;
 }
 
