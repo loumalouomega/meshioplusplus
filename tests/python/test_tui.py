@@ -9,7 +9,6 @@ cooked mode with the cursor visible however the viewer ends, and a resize never
 leaves a picture bigger than the screen.
 """
 
-import fcntl
 import importlib.util
 import os
 import pathlib
@@ -17,13 +16,16 @@ import select
 import signal
 import subprocess
 import sys
-import termios
 import time
 
 import numpy as np
 import pytest
 
 import meshioplusplus
+
+if sys.platform != "win32":  # the pty tests are POSIX only
+    import fcntl
+    import termios
 
 pytest.importorskip("meshioplusplus._core")
 
