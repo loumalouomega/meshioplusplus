@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -30,6 +31,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -259,4 +261,19 @@ TEST(Flac3dGroups, NoRegionsWritesTheSameBytes) {
     EXPECT_NE(text.find("* ZONE GROUPS\n* FACES"), std::string::npos) << text;
     EXPECT_NE(text.find("* FACE GROUPS\n"), std::string::npos) << text;
     EXPECT_EQ(text.find("ZGROUP"), std::string::npos) << text;
+}
+
+// A zone id near INT64_MAX: `id + zone_offset` overflowed a signed integer when
+// the reader built cell_data["cell_ids"] (found by the fuzzer; the input is
+// tests/fuzz/regressions/flac3d/zone-id-near-int64-max). The reader returns a
+// mesh or throws ReadError; undefined behaviour is neither.
+TEST(Flac3dRead, AZoneIdNearInt64MaxDoesNotOverflow) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "flac3d" /
+                                        "zone-id-near-int64-max";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    try {
+        (void)meshioplusplus::read_flac3d(input.string());
+    } catch (const meshioplusplus::ReadError&) {
+    }
 }
