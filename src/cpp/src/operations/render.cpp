@@ -115,6 +115,9 @@ void rnd_validate(const RenderOptions& rOpt) {
     if (rOpt.mVectorCount < 1 || rOpt.mVectorCount > 100000)
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "vector count must lie in [1, 100000]");
+    if (rOpt.mGridFloor && rOpt.mTheme == RenderTheme::None)
+        throw std::invalid_argument(std::string(kRndPrefix) +
+                                    "the grid floor is part of a theme (set theme)");
     if (rOpt.mStreamSeeds < 1 || rOpt.mStreamSeeds > 10000)
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "stream seeds must lie in [1, 10000]");
@@ -655,6 +658,165 @@ double rnd_nice_length(double Target) {
     return base;
 }
 
+
+// ---------------------------------------------------------------------------
+// Theme: a banded background, a grid floor and three post-processes
+// ---------------------------------------------------------------------------
+
+int rnd_lerp_i(int A, int B, int Num, int Den) { return A + (B - A) * Num / Den; }
+
+// One colour of a banded gradient through `Stops`: the band `Band` of `Bands`.
+RndColor rnd_band_color(const std::vector<std::array<int, 3>>& rStops, int Band, int Bands) {
+    const int segments = static_cast<int>(rStops.size()) - 1;
+    const int scaled = Bands > 1 ? Band * segments * 1000 / (Bands - 1) : 0;
+    int seg = std::min(segments - 1, scaled / 1000);
+    const int frac = scaled - seg * 1000;
+    const std::array<int, 3>& a = rStops[static_cast<std::size_t>(seg)];
+    const std::array<int, 3>& b = rStops[static_cast<std::size_t>(seg) + 1];
+    return {static_cast<std::uint8_t>(rnd_lerp_i(a[0], b[0], frac, 1000)),
+            static_cast<std::uint8_t>(rnd_lerp_i(a[1], b[1], frac, 1000)),
+            static_cast<std::uint8_t>(rnd_lerp_i(a[2], b[2], frac, 1000)), 255};
+}
+
+// Put the theme behind the model: a sunset in eight bands down to the horizon
+// at 60% of the height, a dark floor in four below it, the grid on the floor
+// when asked for; then lay the frame over it by its own alpha.
+void rnd_theme_background(Frame& rFrame, const RenderOptions& rOpt) {
+    const std::int64_t w = rFrame.mWidth;
+    const std::int64_t h = rFrame.mHeight;
+    if (w < 1 || h < 1)
+        return;
+    const std::int64_t horizon = h * 6 / 10;
+    static const std::vector<std::array<int, 3>> sky = {
+        {20, 8, 60}, {120, 20, 140}, {255, 45, 150}, {255, 150, 40}};
+    static const std::vector<std::array<int, 3>> floor_stops = {{12, 4, 36}, {26, 8, 60}};
+    Frame bg;
+    bg.mWidth = static_cast<int>(w);
+    bg.mHeight = static_cast<int>(h);
+    bg.mRgba.resize(static_cast<std::size_t>(w * h) * 4);
+    bg.mCellIds.assign(static_cast<std::size_t>(w * h), -1);
+    for (std::int64_t y = 0; y < h; ++y) {
+        const RndColor c = y < horizon
+                               ? rnd_band_color(sky, static_cast<int>(y * 8 / std::max<std::int64_t>(1, horizon)), 8)
+                               : rnd_band_color(floor_stops,
+                                                static_cast<int>((y - horizon) * 4 /
+                                                                 std::max<std::int64_t>(1, h - horizon)),
+                                                4);
+        for (std::int64_t x = 0; x < w; ++x)
+            std::copy(c.begin(), c.end(), bg.mRgba.data() + static_cast<std::size_t>(y * w + x) * 4);
+    }
+    if (rOpt.mGridFloor && h - horizon > 3) {
+        const int phase = ((rOpt.mThemePhase % 8) + 8) % 8;
+        const RndColor line = (phase % 2 == 0) ? RndColor{255, 50, 200, 255} : RndColor{0, 220, 255, 255};
+        const double yh = static_cast<double>(horizon);
+        const double yb = static_cast<double>(h - 1);
+        const int rows = 8;
+        for (int k = 0; k < rows; ++k) {
+            const double d = (static_cast<double>(k) + static_cast<double>(phase) / 8.0) / rows;
+            const double y = yh + (yb - yh) * d * d;
+            rnd_line(bg, 0.0, y, static_cast<double>(w - 1), y, line);
+        }
+        const int rays = 16;
+        for (int j = 0; j <= rays; ++j) {
+            const double xb = static_cast<double>(w) / 2.0 +
+                              (static_cast<double>(j) - rays / 2.0) * static_cast<double>(w) * 2.0 / rays;
+            rnd_line(bg, static_cast<double>(w) / 2.0, yh, xb, yb, line);
+        }
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i) {
+        std::uint8_t* p = rFrame.mRgba.data() + i * 4;
+        const int a = p[3];
+        if (a == 255)
+            continue;
+        const std::uint8_t* q = bg.mRgba.data() + i * 4;
+        for (int c = 0; c < 3; ++c)
+            p[c] = static_cast<std::uint8_t>((p[c] * a + q[c] * (255 - a) + 127) / 255);
+        p[3] = 255;
+    }
+}
+
+// Bloom, fringe and scanlines on the final frame, in that order.
+void rnd_theme_post(Frame& rFrame, const RenderOptions& rOpt) {
+    const std::int64_t w = rFrame.mWidth;
+    const std::int64_t h = rFrame.mHeight;
+    if (w < 1 || h < 1)
+        return;
+    std::uint8_t* px = rFrame.mRgba.data();
+    if (rOpt.mBloom) {
+        const std::int64_t radius = std::max<std::int64_t>(1, std::min(w, h) / 100);
+        std::vector<std::int32_t> bright(static_cast<std::size_t>(w * h) * 3, 0);
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i) {
+            const std::uint8_t* p = px + i * 4;
+            const int lum = (p[0] * 54 + p[1] * 183 + p[2] * 19) >> 8;
+            if (lum >= 190)
+                for (int c = 0; c < 3; ++c)
+                    bright[i * 3 + static_cast<std::size_t>(c)] = p[c];
+        }
+        // A separable box blur: sums over a window of 2 * radius + 1, divided once.
+        std::vector<std::int32_t> tmp(bright.size(), 0);
+        const std::int64_t window = 2 * radius + 1;
+        for (std::int64_t y = 0; y < h; ++y)
+            for (int c = 0; c < 3; ++c) {
+                std::int64_t sum = 0;
+                for (std::int64_t x = -radius; x <= radius; ++x)
+                    if (x >= 0 && x < w)
+                        sum += bright[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)];
+                for (std::int64_t x = 0; x < w; ++x) {
+                    tmp[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)] =
+                        static_cast<std::int32_t>(sum / window);
+                    const std::int64_t add = x + radius + 1;
+                    const std::int64_t drop = x - radius;
+                    if (add < w)
+                        sum += bright[static_cast<std::size_t>(y * w + add) * 3 + static_cast<std::size_t>(c)];
+                    if (drop >= 0)
+                        sum -= bright[static_cast<std::size_t>(y * w + drop) * 3 + static_cast<std::size_t>(c)];
+                }
+            }
+        std::vector<std::int32_t> blur(bright.size(), 0);
+        for (std::int64_t x = 0; x < w; ++x)
+            for (int c = 0; c < 3; ++c) {
+                std::int64_t sum = 0;
+                for (std::int64_t y = -radius; y <= radius; ++y)
+                    if (y >= 0 && y < h)
+                        sum += tmp[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)];
+                for (std::int64_t y = 0; y < h; ++y) {
+                    blur[static_cast<std::size_t>(y * w + x) * 3 + static_cast<std::size_t>(c)] =
+                        static_cast<std::int32_t>(sum / window);
+                    const std::int64_t add = y + radius + 1;
+                    const std::int64_t drop = y - radius;
+                    if (add < h)
+                        sum += tmp[static_cast<std::size_t>(add * w + x) * 3 + static_cast<std::size_t>(c)];
+                    if (drop >= 0)
+                        sum -= tmp[static_cast<std::size_t>(drop * w + x) * 3 + static_cast<std::size_t>(c)];
+                }
+            }
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w * h); ++i)
+            for (int c = 0; c < 3; ++c)
+                px[i * 4 + static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(
+                    std::min<std::int32_t>(255, px[i * 4 + static_cast<std::size_t>(c)] +
+                                                    blur[i * 3 + static_cast<std::size_t>(c)] / 2));
+    }
+    if (rOpt.mFringe) {
+        const std::int64_t d = std::max<std::int64_t>(1, w / 320);
+        const std::vector<std::uint8_t> src(px, px + static_cast<std::size_t>(w * h) * 4);
+        for (std::int64_t y = 0; y < h; ++y)
+            for (std::int64_t x = 0; x < w; ++x) {
+                const std::size_t at = static_cast<std::size_t>(y * w + x) * 4;
+                const std::size_t left = static_cast<std::size_t>(y * w + std::max<std::int64_t>(0, x - d)) * 4;
+                const std::size_t right = static_cast<std::size_t>(y * w + std::min<std::int64_t>(w - 1, x + d)) * 4;
+                px[at] = src[left];
+                px[at + 2] = src[right + 2];
+            }
+    }
+    if (rOpt.mScanlines)
+        for (std::int64_t y = 1; y < h; y += 2)
+            for (std::int64_t x = 0; x < w; ++x) {
+                std::uint8_t* p = px + static_cast<std::size_t>(y * w + x) * 4;
+                for (int c = 0; c < 3; ++c)
+                    p[c] = static_cast<std::uint8_t>(p[c] - p[c] / 4);
+            }
+}
+
 }  // namespace
 
 namespace detail {
@@ -933,7 +1095,25 @@ bool rnd_point_kept(const std::vector<RndPlane>& rPlanes, const double* pX) {
     return true;
 }
 
-std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOpt) {
+// The options with the theme's default colours in place of the ones left at
+// their defaults (a colour you set to the default itself cannot be told apart,
+// and takes the theme's).
+RenderOptions rnd_themed(const RenderOptions& rIn) {
+    RenderOptions out = rIn;
+    if (out.mTheme == RenderTheme::Synthwave) {
+        const RenderOptions defaults;
+        if (out.mFillColor == defaults.mFillColor)
+            out.mFillColor = {96, 56, 190, 255};
+        if (out.mEdgeColor == defaults.mEdgeColor)
+            out.mEdgeColor = {0, 230, 255, 255};
+        if (out.mLineColor == defaults.mLineColor)
+            out.mLineColor = {255, 60, 200, 255};
+    }
+    return out;
+}
+
+std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOptIn) {
+    const RenderOptions rOpt = rnd_themed(rOptIn);
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
@@ -1537,6 +1717,12 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     rOpt.mColorbar = rCamera.mColorbar;
     rOpt.mCutaways = rCamera.mCutaways;
     rOpt.mCutawayTint = rCamera.mCutawayTint;
+    rOpt.mTheme = rCamera.mTheme;
+    rOpt.mScanlines = rCamera.mScanlines;
+    rOpt.mBloom = rCamera.mBloom;
+    rOpt.mFringe = rCamera.mFringe;
+    rOpt.mGridFloor = rCamera.mGridFloor;
+    rOpt.mThemePhase = rCamera.mThemePhase;
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
@@ -2020,6 +2206,8 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     frame.mWidth = rOpt.mWidth;
     frame.mHeight = rOpt.mHeight;
     detail::raster_downsample(target, ss, frame.mRgba, frame.mCellIds);
+    if (rOpt.mTheme == RenderTheme::Synthwave)
+        rnd_theme_background(frame, rOpt);
 
     // Overlays and notes, at the output resolution.
     const double min_side = static_cast<double>(std::min(rOpt.mWidth, rOpt.mHeight));
@@ -2124,6 +2312,7 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
             frame.mNotes.push_back("scale bar: " + rnd_num(length));
         }
     }
+    rnd_theme_post(frame, rOpt);
     return frame;
 }
 

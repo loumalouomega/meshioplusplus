@@ -226,6 +226,11 @@ _OP_TABLE = {
         "StreamSeeds",
         "StreamLength",
         "StreamColor",
+        "Theme",
+        "Scanlines",
+        "Bloom",
+        "Fringe",
+        "GridFloor",
     ),
     "Repair": (
         "FixOrientation",
@@ -508,7 +513,16 @@ def _snapshot_options(step):
         "component": (
             int(_number(step, "Component", 0)) if "Component" in step else None
         ),
-        "cmap": _text(step, "Cmap", "viridis"),
+        "theme": _snap_choice(step, "Theme", ("none", "synthwave")),
+        "cmap": _text(
+            step,
+            "Cmap",
+            "synthwave" if _text(step, "Theme", "none") == "synthwave" else "viridis",
+        ),
+        "scanlines": _flag(step, "Scanlines", False),
+        "bloom": _flag(step, "Bloom", False),
+        "fringe": _flag(step, "Fringe", False),
+        "grid_floor": _flag(step, "GridFloor", False),
         "vmin": _number(step, "VMin", 0.0) if "VMin" in step else None,
         "vmax": _number(step, "VMax", 0.0) if "VMax" in step else None,
         "colorbar": _flag(step, "Colorbar", False),

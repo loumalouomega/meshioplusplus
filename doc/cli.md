@@ -57,7 +57,7 @@ Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step i
 |--------|-------------|
 | `--color-by NAME` | `point_data` or `cell_data` array to colour the faces by |
 | `--component I` | Component of a multi-component array (default: its magnitude) |
-| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma` or `grey`, or a reversed `_r` variant of any |
+| `--cmap NAME` | `viridis` (default), `coolwarm`, `turbo`, `magma`, `inferno`, `plasma`, `grey` or `synthwave` (an original neon palette for the [synthwave theme](tui.md#the-synthwave-theme), not perceptually uniform), or a reversed `_r` variant of any |
 | `--vmin V` / `--vmax V` | Colour range (default: the drawn faces' finite range) |
 | `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
 | `--colorbar` | Append a gradient bar with min/max labels (SVG/TikZ only) |
@@ -1050,6 +1050,8 @@ meshioplusplus snapshot [options] INFILE OUTFILE
 | `--warp NAME` / `--warp-scale S` / `--warp-outline` / `--outline-color` | Move the points by a displacement array; draw the undeformed outline |
 | `--diagnostic NAME` / `--quality-metric M` | `quality`, `inverted`, `degenerate`, `orientation`, `free-edges` or `edge-length` |
 | `--cutaway PLANE` / `--cutaway-tint` | Clip a half-space away (twice at most): `PX,PY,PZ,NX,NY,NZ` (a point and the normal of the side kept) or `AXIS:OFFSET`, `AXIS` one of `+x -x +y -y +z -z` (`+x:0.5` keeps x ≥ 0.5); the back faces then in view are drawn in the tint (default `#e88034`) |
+| `--theme synthwave` / `--grid-floor` | An optional 1980s look: a banded sunset behind the model, neon defaults and the `synthwave` colormap; a perspective grid under it (see [the theme](tui.md#the-synthwave-theme)) |
+| `--bloom` / `--fringe` / `--scanlines` | Post-processes on the final frame, in that order, with or without a theme |
 | `--png-compress 1..9` | Compress a PNG through zlib (default: stored blocks, the same bytes everywhere) |
 | `--cast-frames N` / `--cast-fps R` / `--cast-degrees DEG` | An asciicast orbit: frame count (`36`), rate (`12`), sweep (`360`) |
 | `--input-format` (`-i`) | Force the input format |
@@ -1093,10 +1095,14 @@ It takes every render option of `snapshot` (the camera, shading, edges, colourin
 | `--fps R` | Steps per second when playing (default 4) |
 | `--session FILE` | Read a session if the file exists and write it when the viewer ends |
 | `--replay FILE` | Play a recorded input stream on a `--cols` by `--rows` screen (default `100` x `40`) and print what the viewer writes, instead of using the terminal |
+| `--music` / `--music-out FILE.wav` | Play a generated synthwave loop on an external player (silent in CI and over SSH unless `--music-over-ssh`); or write it to a file for your own player. `m` mutes, `<` `>` change the volume ([the soundtrack](tui.md#the-soundtrack)) |
+| `--volume V` / `--tempo BPM` / `--music-seed N` / `--music-key K` | The loop's loudness (0.05 to 0.9, default 0.3), tempo (60 to 140, default 100), variation and tonic (`C`…`B` or 0 to 11) |
+| `--pulse` / `--reduced-motion` | With a theme: step the grid on every beat of `--tempo` (`--music` implies it); never, whatever else is asked (also `REDUCED_MOTION` in the environment) |
 | `--input-format` (`-i`) | Force the input format |
 
 ```sh
 meshioplusplus tui part.vtu
+meshioplusplus tui part.vtu --theme synthwave --grid-floor --bloom --music
 meshioplusplus tui result.vtu --color-by temperature --colorbar --cmap magma --edges feature
 meshioplusplus tui part.vtu --encoding braille --color-depth 256
 ```

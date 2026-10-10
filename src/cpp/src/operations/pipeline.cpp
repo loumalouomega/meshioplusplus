@@ -292,7 +292,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
           "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
-          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor"}},
+          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor",
+          "Theme",          "Scanlines",   "Bloom",         "Fringe",       "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -596,7 +597,13 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
     o.mColorBy = pipe_text(rStep, "ColorBy", "");
     if (pipe_find(rStep, "Component"))
         o.mComponent = static_cast<int>(pipe_number(rStep, "Component", 0.0));
-    o.mCmap = pipe_text(rStep, "Cmap", "viridis");
+    o.mTheme = static_cast<RenderTheme>(pipe_snap_choice(rStep, "Theme", {"none", "synthwave"}, 0));
+    // The theme brings its own colormap unless one is named.
+    o.mCmap = pipe_text(rStep, "Cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
+    o.mScanlines = pipe_flag(rStep, "Scanlines", false);
+    o.mBloom = pipe_flag(rStep, "Bloom", false);
+    o.mFringe = pipe_flag(rStep, "Fringe", false);
+    o.mGridFloor = pipe_flag(rStep, "GridFloor", false);
     if (pipe_find(rStep, "VMin"))
         o.mVMin = pipe_number(rStep, "VMin", 0.0);
     if (pipe_find(rStep, "VMax"))

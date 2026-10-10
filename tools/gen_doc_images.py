@@ -237,6 +237,22 @@ TERMINAL_FIGURES = [
         ),
         {"flow": True},
     ),
+    (
+        "tui_synthwave.svg",
+        100,
+        34,
+        _drag(40, 14, 43, 12),
+        dict(
+            theme="synthwave",
+            grid_floor=True,
+            color_by="height",
+            shading="smooth",
+            edges="feature",
+            bloom=True,
+            encoding="sextant",
+        ),
+        {},
+    ),
 ]
 
 

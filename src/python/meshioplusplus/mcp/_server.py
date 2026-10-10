@@ -334,8 +334,8 @@ def _register_conversion(server: FastMCP) -> None:
         component point_data array is exported raw as a custom attribute
         (temperature -> _TEMPERATURE); fields=false skips them. color_by names
         a point_data or cell_data array to bake into COLOR_0 through cmap
-        (viridis, coolwarm, turbo, magma, inferno, plasma, grey, or a
-        reversed *_r variant) over vmin..vmax (default: the finite range of
+        (viridis, coolwarm, turbo, magma, inferno, plasma, grey, synthwave,
+        or a reversed *_r variant) over vmin..vmax (default: the finite range of
         what is exported), with an unlit material unless unlit=false;
         multi-component arrays reduce to component or their magnitude and
         non-finite values take nan_color (#rrggbb). The output is Y-up,

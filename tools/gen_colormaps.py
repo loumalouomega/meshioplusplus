@@ -41,8 +41,18 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 # Order is the user-facing order in error messages and CLI --cmap choices: the
 # three original maps first (their tables are pinned by the SVG/TikZ/glTF byte
-# tests), then the additions of v16.33.0, then a reversed `_r` variant of each.
-BASE_NAMES = ["viridis", "coolwarm", "turbo", "magma", "inferno", "plasma", "grey"]
+# tests), then the additions of v16.33.0 and `synthwave` (v16.38.0), then a
+# reversed `_r` variant of each.
+BASE_NAMES = [
+    "viridis",
+    "coolwarm",
+    "turbo",
+    "magma",
+    "inferno",
+    "plasma",
+    "grey",
+    "synthwave",
+]
 NAMES = BASE_NAMES + [n + "_r" for n in BASE_NAMES]
 
 # Names whose matplotlib spelling differs.
@@ -76,10 +86,42 @@ LICENSE_BANNER = """\
 """
 
 
+# `synthwave` is defined here, not by matplotlib: piecewise-linear in sRGB through
+# deep blue, violet, magenta, hot pink and pale cyan. It is meant for the
+# viewer's optional synthwave theme and is NOT perceptually uniform, so it is not
+# for quantitative plots (viridis stays the default). The control points are an
+# original palette, not taken from any existing map.
+SYNTHWAVE_STOPS = [
+    (0.00, (8, 6, 60)),
+    (0.25, (70, 20, 150)),
+    (0.50, (190, 30, 170)),
+    (0.75, (255, 60, 140)),
+    (1.00, (190, 245, 255)),
+]
+
+
+def sample_synthwave() -> bytes:
+    import numpy as np
+
+    t = np.linspace(0.0, 1.0, 256)
+    xs = [stop[0] for stop in SYNTHWAVE_STOPS]
+    channels = [
+        np.interp(t, xs, [stop[1][c] for stop in SYNTHWAVE_STOPS]) for c in range(3)
+    ]
+    rgb = np.round(np.stack(channels, axis=1)).astype(np.uint8)
+    return rgb.tobytes()
+
+
 def sample(name: str) -> bytes:
     """Sample `name` at the 256 canonical points, as packed RGB bytes."""
     import numpy as np
     from matplotlib import colormaps
+
+    if name == "synthwave":
+        return sample_synthwave()
+    if name == "synthwave_r":
+        table = np.frombuffer(sample_synthwave(), dtype=np.uint8).reshape(256, 3)
+        return table[::-1].tobytes()
 
     rgba = colormaps[MATPLOTLIB_NAME.get(name, name)](np.linspace(0.0, 1.0, 256))
     rgb = np.round(rgba[:, :3] * 255.0).astype(np.uint8)
@@ -116,7 +158,10 @@ def write_hpp() -> None:
  * Each colormap is a 256-entry table of packed uint8 RGB triples. viridis,
  * magma, inferno, plasma and turbo are matplotlib's canonical 256-entry listed
  * colormaps verbatim; coolwarm and grey are matplotlib's segmented maps sampled
- * at the same 256 points; each `<name>_r` is its map reversed. viridis, magma,
+ * at the same 256 points; `synthwave` (v16.38.0) is an original palette defined by
+ * the generator itself, piecewise-linear through deep blue, violet, magenta, hot
+ * pink and pale cyan, and not perceptually uniform; each `<name>_r` is its map
+ * reversed. viridis, magma,
  * inferno and plasma are CC0 (Smith, van der Walt and Firing); Turbo is
  * Apache-2.0 (Google LLC, 2019) -- see CITATION.cff.
  *

@@ -122,6 +122,15 @@ struct RenderCutaway {
     std::array<double, 3> mNormal = {0.0, 0.0, 1.0};
 };
 
+/// An optional look for a frame; `None` changes nothing.
+enum class RenderTheme : std::uint8_t {
+    None = 0,
+    /// A dark violet-to-orange sunset behind the model (banded, so it survives
+    /// 16- and 256-colour terminals), neon violet faces, cyan edges and magenta
+    /// lines. Options you set yourself win over the theme's defaults.
+    Synthwave = 1,
+};
+
 /** @brief Everything `render` takes besides the mesh. */
 struct RenderOptions {
     /// Frame size in pixels; both must be positive.
@@ -276,6 +285,26 @@ struct RenderOptions {
     std::int32_t mStreamSeeds = 40;
     double mStreamLength = 0.5;
     RenderColor mStreamColor = {240, 80, 160, 255};
+
+    // --- Theme (v16.38.0, ABI 25) -----------------------------------------
+
+    /// The theme's background (wherever the frame is not opaque, so an explicit
+    /// opaque `mBackground` wins) and default colours, a perspective grid floor
+    /// under the model with `mGridFloor`, and three post-processes on the final
+    /// frame, in this order: `mBloom` (the brightest pixels blurred and added
+    /// back), `mFringe` (red and blue shifted apart) and `mScanlines` (every
+    /// other row dimmed). All of it is integer arithmetic in a fixed order, so
+    /// it is deterministic, and with everything off a frame is byte-identical to
+    /// one rendered before the theme existed. `mGridFloor` needs a theme.
+    RenderTheme mTheme = RenderTheme::None;
+    bool mScanlines = false;
+    bool mBloom = false;
+    bool mFringe = false;
+    bool mGridFloor = false;
+    /// The theme's beat counter: the grid's colour alternates and its lines
+    /// scroll one eighth of a cell per beat. The viewer advances it with the
+    /// tempo; a still frame leaves it at 0.
+    std::int32_t mThemePhase = 0;
 };
 
 /** @brief A rendered image. */

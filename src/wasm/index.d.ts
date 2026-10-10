@@ -395,7 +395,7 @@ export interface RegionSummary {
  * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
  */
 /** A built-in colormap (shared with the SVG and TikZ writers). */
-export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey";
+export type ColormapBase = "viridis" | "coolwarm" | "turbo" | "magma" | "inferno" | "plasma" | "grey" | "synthwave";
 /** A built-in colormap or its reversed `_r` variant. */
 export type ColormapName = ColormapBase | `${ColormapBase}_r`;
 
