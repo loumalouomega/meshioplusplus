@@ -4,6 +4,7 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._frd import read as _py_read
 from ._frd import read_dat
+from ._frd import write as _py_write
 
 
 def read(filename, points_only=False, arrays=None, time_step=0, derived=False):
@@ -40,6 +41,29 @@ def read(filename, points_only=False, arrays=None, time_step=0, derived=False):
     )
 
 
-register_format("frd", [".frd"], read, {})
+def write(filename, mesh, long_ids=True):
+    """Write a CalculiX result file (``.frd``, ASCII).
 
-__all__ = ["read", "read_dat"]
+    The inverse of :func:`read`: the points and the twelve cell types ``ccx`` writes
+    (others are dropped with a warning), ``frd:group`` / ``frd:material`` as each
+    element's group and material, and the point data as one ``-4`` result block per
+    array under its own name, a step's ``meshio:time``, ``frd:step`` and
+    ``frd:analysis`` in the ``100C`` header. ``.frd`` is nodal, holds no sets and
+    prints six digits, so cell data, regions and other field data are dropped with a
+    warning; an array whose name is longer than eight characters, or that is not one
+    value or vector per point, is dropped too. ``long_ids=True`` (what ``ccx``
+    writes) uses ``I10`` ids, ``False`` the short ``I5`` form (99999 nodes or
+    elements at most).
+    """
+    if not is_buffer(filename, "w"):
+        try:
+            return _core.frd_write(str(filename), mesh, long_ids)
+        except Exception as exc:
+            if not core_declined(exc, "frd", "write", filename):
+                raise
+    return _py_write(filename, mesh, long_ids=long_ids)
+
+
+register_format("frd", [".frd"], read, {"frd": write})
+
+__all__ = ["read", "read_dat", "write"]

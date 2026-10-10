@@ -4577,8 +4577,18 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::write_lsdyna(path, mesh);
         });
     });
-    // CalculiX results (.frd): read-only. `time_step` selects the increment;
-    // `derived` adds <NAME>_mises/<NAME>_principal beside each tensor.
+    // CalculiX results (.frd). `time_step` selects the increment; `derived` adds
+    // <NAME>_mises/<NAME>_principal beside each tensor. The writer writes one step
+    // in the ASCII layout, I10 ids (`long_ids`) or the short I5 form.
+    m.def(
+        "frd_write",
+        [](const std::string& path, py::object pymesh, bool long_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_frd(path, mesh, long_ids);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("long_ids") = true);
     m.def("frd_read",
           guard_read("frd",
                      [](const std::string& path, bool points_only, py::object arrays, int time_step,

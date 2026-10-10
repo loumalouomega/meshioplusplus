@@ -31,6 +31,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="femap">`femap`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point |
 | <span id="flac3d">`flac3d`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ↻ | ✓ | exact | — | — | — | — |
 | <span id="flux">`flux`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
+| <span id="frd">`frd`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="freefem">`freefem`</span> |  |  | ✓ |  | ✓ |  |  |  | exact | — | — | — | — |
 | <span id="gid">`gid`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | — |
 | <span id="gltf">`gltf`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
@@ -96,6 +97,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
+- **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
 - **`gltf`**: Written for viewers; no glTF reader exists yet (roadmap §3.1.4).
 - **`gmsh`**: The Gmsh 4.1 writer needs `gmsh:dim_tags` point data to place more than one cell type into entities, and refuses a mixed mesh without it; `gmsh22` writes the same mesh.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
@@ -128,7 +130,6 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 | <span id="abaqus-fil">`abaqus_fil`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. Abaqus's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.6: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.6). |
-| <span id="frd">`frd`</span> | writer | Tracked gap, roadmap §3.2.1: no writer yet. CalculiX (`ccx`)'s result file; the writer is the physics-ML loop's missing half. |
 | <span id="gltf">`gltf`</span> | reader | Tracked gap, roadmap §3.1.4: no reader yet. A general glTF 2.0 reader. |
 | <span id="lsdyna-binout">`lsdyna_binout`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
 | <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.3: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |

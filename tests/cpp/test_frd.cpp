@@ -17,8 +17,8 @@
 
 /**
  * @file test_frd.cpp
- * @brief CalculiX `.frd` reader: node permutations, steps, short and long formats,
- *        derived invariants and the error paths.
+ * @brief CalculiX `.frd` reader and ASCII writer: node permutations, steps, short and
+ *        long formats, derived invariants, the write/read round trip and the error paths.
  *
  * The files are built here from fixed-column records rather than read from
  * tests/python/meshes/frd/: this suite has no test-data path. The Python suite runs the
@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <ios>
 #include <string>
 #include <utility>
@@ -233,7 +234,7 @@ private:
     }
 };
 
-std::string write_frd(const std::string& rText) {
+std::string text_file(const std::string& rText) {
     const std::string path = mt::temp_path(".frd");
     std::ofstream out(path, std::ios::binary);
     out << rText;
@@ -242,7 +243,7 @@ std::string write_frd(const std::string& rText) {
 
 struct Temp {
     std::string mPath;
-    explicit Temp(const std::string& rText) : mPath(write_frd(rText)) {}
+    explicit Temp(const std::string& rText) : mPath(text_file(rText)) {}
     ~Temp() { std::remove(mPath.c_str()); }
 };
 
@@ -598,10 +599,237 @@ TEST(FrdRead, ErrorsAreReadErrors) {
     }
 }
 
-TEST(FrdRegistry, ReadOnlyWithAnExtensionAndMetadata) {
+TEST(FrdRegistry, ReadsAndWritesWithAnExtensionAndMetadata) {
     EXPECT_EQ(meshioplusplus::resolve_format("results.frd", ""), "frd");
     EXPECT_EQ(meshioplusplus::registry_readers().count("frd"), 1u);
-    EXPECT_EQ(meshioplusplus::registry_writers().count("frd"), 0u);
+    EXPECT_EQ(meshioplusplus::registry_writers().count("frd"), 1u);
     EXPECT_EQ(meshioplusplus::registry_metadata_readers().count("frd"), 1u);
     EXPECT_TRUE(meshioplusplus::seq_format_may_have_steps("frd"));
+}
+
+// --- Writing -----------------------------------------------------------------------
+
+namespace {
+
+using meshioplusplus::DType;
+using meshioplusplus::NDArray;
+using meshioplusplus::WriteError;
+
+NDArray doubles(std::initializer_list<std::size_t> shape, const std::vector<double>& values) {
+    NDArray out(DType::Float64, std::vector<std::size_t>(shape));
+    std::copy(values.begin(), values.end(), out.As<double>());
+    return out;
+}
+
+NDArray ints(std::initializer_list<std::size_t> shape, const std::vector<std::int64_t>& values) {
+    NDArray out(DType::Int64, std::vector<std::size_t>(shape));
+    std::copy(values.begin(), values.end(), out.As<std::int64_t>());
+    return out;
+}
+
+/// A tetrahedron, a quadratic wedge and a quadratic line (their node orders differ
+/// from the file's), with results and a step.
+Mesh sample_mesh() {
+    Mesh mesh;
+    std::vector<double> xyz;
+    for (std::size_t i = 0; i < 20; ++i) {
+        xyz.push_back(static_cast<double>(i));
+        xyz.push_back(0.5 * static_cast<double>(i * i));
+        xyz.push_back(-1.25 + 0.001 * static_cast<double>(i));
+    }
+    mesh.AssignPoints(doubles({20, 3}, xyz));
+    mesh.AddCellBlock("tetra", ints({1, 4}, {0, 1, 2, 3}));
+    mesh.AddCellBlock("wedge15", ints({1, 15}, {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}));
+    mesh.AddCellBlock("line3", ints({1, 3}, {2, 19, 3}));
+    std::vector<double> disp, stress, temp;
+    for (std::size_t i = 0; i < 20; ++i) {
+        for (std::size_t k = 0; k < 3; ++k)
+            disp.push_back(1.0e-3 * static_cast<double>(i + k));
+        for (std::size_t k = 0; k < 6; ++k)
+            stress.push_back(1.5e6 * static_cast<double>(i) - 2.5e5 * static_cast<double>(k));
+        temp.push_back(20.0 + 0.25 * static_cast<double>(i));
+    }
+    mesh.AddPointData("DISP", doubles({20, 3}, disp));
+    mesh.AddPointData("STRESS", doubles({20, 6}, stress));
+    mesh.AddPointData("NDTEMP", doubles({20}, temp));
+    mesh.AddCellData("frd:group", {ints({1}, {2}), ints({1}, {3}), ints({1}, {4})});
+    mesh.AddCellData("frd:material", {ints({1}, {1}), ints({1}, {5}), ints({1}, {6})});
+    mesh.AddFieldData(meshioplusplus::kSequenceTimeKey, doubles({1}, {0.125}));
+    mesh.AddFieldData("frd:step", ints({1}, {4}));
+    mesh.AddFieldData("frd:analysis", ints({1}, {1}));
+    return mesh;
+}
+
+struct TempFile {
+    std::string mPath = mt::temp_path(".frd");
+    ~TempFile() { std::remove(mPath.c_str()); }
+};
+
+std::string slurp(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void expect_close(const NDArray& rA, const NDArray& rB, const std::string& rWhat) {
+    ASSERT_EQ(rA.Size(), rB.Size()) << rWhat;
+    for (std::size_t i = 0; i < rA.Size(); ++i) {
+        const double a = at(rA, i);
+        const double b = at(rB, i);
+        EXPECT_NEAR(a, b, 1e-5 * std::fabs(b) + 1e-12) << rWhat << " [" << i << "]";
+    }
+}
+
+}  // namespace
+
+TEST(FrdWrite, RoundTripKeepsMeshDataAndStep) {
+    const Mesh mesh = sample_mesh();
+    for (const bool long_ids : {true, false}) {
+        TempFile file;
+        meshioplusplus::write_frd(file.mPath, mesh, long_ids);
+        const Mesh back = meshioplusplus::read_frd(file.mPath);
+        ASSERT_EQ(back.NumCellBlocks(), 3u);
+        EXPECT_EQ(back.Cells(0).Type(), "tetra");
+        EXPECT_EQ(back.Cells(1).Type(), "wedge15");
+        EXPECT_EQ(back.Cells(2).Type(), "line3");
+        EXPECT_EQ(row_of(back, 1, 0), row_of(mesh, 1, 0));  // the node permutation round-trips
+        EXPECT_EQ(row_of(back, 2, 0), (V{2, 19, 3}));
+        expect_close(back.Points(), mesh.Points(), "points");
+        for (const char* name : {"DISP", "STRESS", "NDTEMP"})
+            expect_close(back.PointData(name), mesh.PointData(name), name);
+        EXPECT_EQ(at(back.CellData("frd:group", 1), 0), 3.0);
+        EXPECT_EQ(at(back.CellData("frd:material", 2), 0), 6.0);
+        EXPECT_EQ(at(back.FieldData(meshioplusplus::kSequenceTimeKey), 0), 0.125);
+        EXPECT_EQ(at(back.FieldData("frd:step"), 0), 4.0);
+        EXPECT_EQ(at(back.FieldData("frd:analysis"), 0), 1.0);
+    }
+}
+
+TEST(FrdWrite, MatchesTheHandBuiltFileTheReaderTestsUse) {
+    // The scratch builder is the oracle: the library writer must read back the same.
+    Nodes nodes = numbered_nodes(20);
+    V conn;
+    for (std::int64_t i = 1; i <= 15; ++i)
+        conn.push_back(i);
+    std::vector<std::pair<std::int64_t, std::vector<double>>> rows;
+    for (std::int64_t i = 1; i <= 20; ++i)
+        rows.push_back({i, {0.5 * static_cast<double>(i), -2.0, 1.0e3}});
+    Temp oracle(FrdText()
+                    .Nodes(nodes)
+                    .Elements({{5, conn}})
+                    .Result(0.5, 0, 1, "DISP", {"D1", "D2", "D3"}, rows, true)
+                    .Finish());
+    const Mesh expected = meshioplusplus::read_frd(oracle.mPath);
+
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, expected);
+    const Mesh actual = meshioplusplus::read_frd(file.mPath);
+    ASSERT_EQ(actual.NumCellBlocks(), 1u);
+    EXPECT_EQ(row_of(actual, 0, 0), row_of(expected, 0, 0));
+    expect_close(actual.Points(), expected.Points(), "points");
+    expect_close(actual.PointData("DISP"), expected.PointData("DISP"), "DISP");
+}
+
+TEST(FrdWrite, TheLayoutIsTheOneCcxWrites) {
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, sample_mesh());
+    const std::string text = slurp(file.mPath);
+    EXPECT_EQ(text.rfind("    1C\n    1UWritten by meshio++", 0), 0u);
+    EXPECT_NE(text.find("    2C                            20" + std::string(37, ' ') + "1\n"),
+              std::string::npos);
+    EXPECT_NE(text.find(" -4  DISP        4    1\n"), std::string::npos);  // DISP + calculated ALL
+    EXPECT_NE(text.find(" -5  ALL         1    2    0    0    1ALL\n"), std::string::npos);
+    EXPECT_NE(text.find(" -4  STRESS      6    1\n -5  SXX         1    4    1    1\n"),
+              std::string::npos);
+    EXPECT_EQ(text.substr(text.size() - 11), " -3\n  9999\n");
+}
+
+TEST(FrdWrite, TheShortFormUsesI5Ids) {
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, sample_mesh(), false);
+    const std::string text = slurp(file.mPath);
+    EXPECT_NE(text.find(std::string(37, ' ') + "0\n -1    1 "), std::string::npos);
+}
+
+TEST(FrdWrite, DropsWhatTheFormatCannotHold) {
+    Mesh mesh = sample_mesh();
+    mesh.AddCellBlock("pyramid", ints({1, 5}, {0, 1, 2, 3, 4}));
+    mesh.AddCellData("frd:group", {ints({1}, {2}), ints({1}, {3}), ints({1}, {4}), ints({1}, {5})});
+    mesh.AddCellData("pressure", {doubles({1}, {1}), doubles({1}, {2}), doubles({1}, {3}),
+                                  doubles({1}, {4})});
+    mesh.AddPointData("TOOLONGNAME", doubles({20}, std::vector<double>(20, 1.0)));
+    mesh.AddPointData("per_cell", doubles({4}, {1, 2, 3, 4}));
+    mesh.AddFieldData("note", ints({1}, {1}));
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, mesh);
+    const Mesh back = meshioplusplus::read_frd(file.mPath);
+    EXPECT_EQ(back.NumCellBlocks(), 3u);  // the pyramid is gone
+    EXPECT_FALSE(back.HasCellData("pressure"));
+    EXPECT_FALSE(back.HasFieldData("note"));
+    EXPECT_FALSE(back.HasPointData("TOOLONGNAME"));
+    EXPECT_FALSE(back.HasPointData("per_cell"));
+    EXPECT_TRUE(back.HasPointData("DISP"));
+}
+
+TEST(FrdWrite, LeavesOutNodesWithANonFiniteValue) {
+    Mesh mesh = sample_mesh();
+    std::vector<double> temp(20, 1.0);
+    temp[3] = std::nan("");
+    mesh.AddPointData("NDTEMP", doubles({20}, temp));
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, mesh);
+    const Mesh back = meshioplusplus::read_frd(file.mPath);
+    EXPECT_TRUE(std::isnan(at(back.PointData("NDTEMP"), 3)));
+    EXPECT_EQ(at(back.PointData("NDTEMP"), 4), 1.0);
+}
+
+TEST(FrdWrite, RefusesWhatItCannotRepresentAndLeavesNoFile) {
+    {
+        Mesh mesh = sample_mesh();
+        std::vector<double> temp(20, 0.0);
+        temp[0] = -1.0e120;
+        mesh.AddPointData("NDTEMP", doubles({20}, temp));
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh), WriteError);
+        std::ifstream in(file.mPath);
+        EXPECT_FALSE(in.good());
+        temp[0] = -1.0e-120;  // tiny values flush to zero instead
+        mesh.AddPointData("NDTEMP", doubles({20}, temp));
+        meshioplusplus::write_frd(file.mPath, mesh);
+        EXPECT_EQ(at(meshioplusplus::read_frd(file.mPath).PointData("NDTEMP"), 0), 0.0);
+    }
+    {
+        Mesh mesh;
+        mesh.AssignPoints(doubles({1, 3}, {INFINITY, 0.0, 0.0}));
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh), WriteError);
+    }
+    {
+        Mesh mesh;
+        mesh.AssignPoints(doubles({3, 3}, {0, 0, 0, 1, 0, 0, 0, 1, 0}));
+        mesh.AddCellBlock("triangle", ints({1, 3}, {0, 1, 5}));
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh), WriteError);
+    }
+    {
+        Mesh mesh = sample_mesh();
+        mesh.AddCellData("frd:group", {ints({1}, {100000}), ints({1}, {3}), ints({1}, {4})});
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh), WriteError);
+    }
+    {
+        Mesh mesh;
+        mesh.AssignPoints(NDArray(DType::Float64, {std::size_t{100000}, std::size_t{3}}));
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh, false), WriteError);
+        meshioplusplus::write_frd(file.mPath, mesh);  // the long form holds it
+        EXPECT_EQ(meshioplusplus::read_frd(file.mPath).NumPoints(), 100000u);
+    }
+}
+
+TEST(FrdWrite, TheRegistryWritesIt) {
+    const auto& writers = meshioplusplus::registry_writers();
+    ASSERT_EQ(writers.count("frd"), 1u);
+    TempFile file;
+    writers.at("frd")(file.mPath, sample_mesh());
+    EXPECT_EQ(meshioplusplus::read_frd(file.mPath).NumCellBlocks(), 3u);
 }

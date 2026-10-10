@@ -1,12 +1,12 @@
 # CalculiX results (`.frd`)
 
-The result file of [CalculiX](http://www.dhondt.de/): the ASCII `.frd` that `ccx` writes and its post-processor `cgx` reads. CalculiX takes Abaqus-style `.inp` input, which meshio++ already writes, so reading its results closes the loop for an open-source solver: mesh → `.inp` → `ccx` → `.frd` → `.vtu` / VTKHDF, with no proprietary tool in the chain.
+The result file of [CalculiX](http://www.dhondt.de/): the ASCII `.frd` that `ccx` writes and its post-processor `cgx` reads. CalculiX takes Abaqus-style `.inp` input, which meshio++ already writes, so reading its results closes the loop for an open-source solver: mesh → `.inp` → `ccx` → `.frd` → `.vtu` / VTKHDF, with no proprietary tool in the chain. Writing one is the other direction: a surrogate's prediction, an anonymised or converted result, or a fixture for a post-processing script, handed to `cgx` or [ccx2paraview](https://github.com/calculix/ccx2paraview) beside the real run.
 
 | | |
 |---|---|
 | **Format name** | `frd` |
 | **Extensions** | `.frd` |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#frd): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.1) |
+| **Read / Write** | ✓ / ✓ (ASCII; the binary variant is still read-only, see [Writing](#writing)) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -28,7 +28,37 @@ mesh.point_data["STRESS_mises"], mesh.point_data["STRESS_principal"]
 meshioplusplus.write("beam.vtu", mesh)                # or: meshioplusplus convert beam.frd beam.vtu
 ```
 
-Both engines (the C++ core and the Python reference) read the whole format, including its binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`, auto-detected — no separate call needed). Buffers are read by the Python reader. `.frd` is read-only: `meshioplusplus.write(..., file_format="frd")` is an error.
+Both engines (the C++ core and the Python reference) read the whole format, including its binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`, auto-detected — no separate call needed). Buffers are read by the Python reader.
+
+## Writing
+
+```python
+import meshioplusplus
+
+mesh = meshioplusplus.read("beam.frd", time_step=-1)
+mesh.point_data["DISP"] *= 2.0                       # or a surrogate's prediction
+meshioplusplus.write("beam_scaled.frd", mesh)        # the long (I10) ASCII layout `ccx` writes
+meshioplusplus.frd.write("small.frd", mesh, long_ids=False)   # the short (I5) layout, 99999 nodes or elements at most
+```
+
+`write` is the inverse of `read`, in the ASCII layout `ccx` itself writes, by both engines (the two write the same bytes; `MESHIOPLUSPLUS_STRICT_CORE=1` proves the core wrote it). One `write` is one step; the same step fields drive the `100C` header that `read` fills:
+
+| Written | From |
+|---|---|
+| `2C` nodes, ids `1…n` | the points (planar points get `z = 0`; a coordinate that is not finite is a `WriteError`) |
+| `3C` elements, ids `1…m` | the cells of the twelve types above, in the file's node order (the inverse of [Node order](#node-order)); `frd:group` (default 0) and `frd:material` (default 1) are each element's group and material and must fit `I5` |
+| one `-4` block per result | each `point_data` array, under its own name (at most eight printable characters), `(n,)` or `(n, c)`; the `-5` component names are `ccx`'s for `DISP`, `VELO`, `FORC`, `NDTEMP`, `STRESS`, `TOSTRAIN`, `MESTRAIN` and `ZZSTR` and `C1…Cn` otherwise; `DISP` and `FORC` get the calculated `ALL` component `ccx` writes |
+| the `100C` header | `meshio:time` (default 0), `frd:step` (default 1) and `frd:analysis` (default 0, static) |
+
+`.frd` is a nodal format, holds no sets and prints six digits (`E12.5`), so a write loses what the format cannot express, each with a warning and a [provenance](../provenance.md) note:
+
+- **Cell data** other than `frd:group` and `frd:material`, **regions**, and **field data** other than the three step keys are dropped.
+- **Cells with no FRD element** (`vertex`, `pyramid`, `polygon`, `polyhedron`, the other high-order types) are dropped; their points stay.
+- **A point-data array** whose name is longer than eight characters (so the `_mises` and `_principal` arrays `derived=True` adds are never written), that is not one value or vector per node, or whose dtype is not numeric is dropped.
+- **A node with a non-finite value** in an array is left out of that block (the reader returns NaN there). A value too large for `E12.5` is a `WriteError` and no file is written; one too small is written as zero.
+- **Values keep six significant digits.** Reading a file `ccx` wrote and writing it back reproduces it; a double computed elsewhere is rounded.
+
+The binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) is read but not yet written. Validator: [ccx2paraview](https://github.com/calculix/ccx2paraview) 3.2.0 (optional, `pip install ccx2paraview vtk`) reads written files in `tests/python/test_frd.py` and returns the same points, cells, `DISP`, `STRESS` and `TOSTRAIN`. It parses the long (`I10`) layout only, and its principal-value step fails under numpy 2 on `ccx`'s own files, so that step is stubbed in the test; `cgx -b` is not in the test environment. See the [roadmap](../roadmap.md#_3-reader-and-writer-parity) (§3.2.1) for the binary variant and the series writer.
 
 ## What is read
 
@@ -144,5 +174,6 @@ Each table is a dict with `step`, `increment`, `time`, `kind` (`"node"` or `"ele
 ## See also
 
 - [Abaqus](./abaqus.md) — the `.inp` that `ccx` reads.
+- [Conformance](../conformance.md#frd) — what a write and a read keep.
 - [Sequences](../sequences.md) — the steps of a multi-increment file.
 - [PVD](./pvd.md) and [VTKHDF](./vtkhdf.md) — the time-series outputs a `.frd` converts to.

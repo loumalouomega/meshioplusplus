@@ -1,4 +1,4 @@
-"""CalculiX ``.frd`` results (read-only): both engines against real ``ccx`` output.
+"""CalculiX ``.frd`` results: both engines against real ``ccx`` output, and the writer.
 
 The single-element files and the multi-increment ones under ``meshes/frd`` were
 written by ccx 2.23 from the decks in ``meshes/frd/decks`` (``tools/gen_frd_fixtures.py``
@@ -451,12 +451,13 @@ class TestRegistration:
         assert meshioplusplus.read(renamed).cells[0].type == "hexahedron"
         assert meshioplusplus._sniff._sniff_format_py(renamed) == "frd"
 
-    def test_it_is_read_only(self):
+    def test_it_reads_and_writes(self, tmp_path):
         formats = meshioplusplus.formats()
-        assert "frd" in formats["readable"] and "frd" not in formats["writable"]
+        assert "frd" in formats["readable"] and "frd" in formats["writable"]
         assert formats["extensions"][".frd"] == ["frd"]
-        with pytest.raises(WriteError):
-            meshioplusplus.write("out.frd", meshioplusplus.read(path_of("c3d8")))
+        out = tmp_path / "out.frd"
+        meshioplusplus.write(out, meshioplusplus.read(path_of("c3d8")))
+        assert meshioplusplus.read(out).cells[0].type == "hexahedron"
 
     def test_buffer_read_uses_the_python_reader(self):
         text = (FIXTURES / "mixed.frd").read_text()
@@ -721,3 +722,306 @@ class TestErrors:
         with caplog.at_level("WARNING"):
             mesh = engine(path)
         assert mesh.cells == []
+
+
+# -- Writing ---------------------------------------------------------------------------
+
+ASCII_FIXTURES = sorted(
+    p.stem
+    for p in FIXTURES.glob("*.frd")
+    if not p.stem.endswith("_bin") and p.stem != "cgx_short"
+) + ["cgx_short"]
+ALL_FIXTURES = sorted(p.stem for p in FIXTURES.glob("*.frd"))
+
+
+def core_write(path, mesh, long_ids=True):
+    """The C++ writer itself, with no fallback to hide a broken native path."""
+    _core.frd_write(str(path), mesh, long_ids)
+
+
+def full(mesh):
+    """Everything a round trip keeps, as lists (NaN compared as a value)."""
+    return (
+        mesh.points.tolist(),
+        [(c.type, np.asarray(c.data).tolist()) for c in mesh.cells],
+        {
+            k: np.nan_to_num(np.asarray(v), nan=-1e300).tolist()
+            for k, v in sorted(mesh.point_data.items())
+        },
+        {
+            k: [np.asarray(b).tolist() for b in v]
+            for k, v in sorted(mesh.cell_data.items())
+        },
+        {k: np.asarray(v).tolist() for k, v in sorted(mesh.field_data.items())},
+    )
+
+
+def assert_close(a, b):
+    assert [c.type for c in a.cells] == [c.type for c in b.cells]
+    for ca, cb in zip(a.cells, b.cells):
+        assert np.array_equal(ca.data, cb.data)
+    np.testing.assert_allclose(a.points, b.points, rtol=1e-5, atol=1e-12)
+    assert sorted(a.point_data) == sorted(b.point_data)
+    for key in b.point_data:
+        np.testing.assert_allclose(
+            a.point_data[key],
+            b.point_data[key],
+            rtol=1e-5,
+            atol=1e-9 * (1 + np.nanmax(np.abs(b.point_data[key]))),
+        )
+    assert sorted(a.field_data) == sorted(b.field_data)
+
+
+@pytest.fixture(params=["core", "python"])
+def write_with(request):
+    return core_write if request.param == "core" else py_frd.write
+
+
+def steps_of(name):
+    return range(len(py_frd.time_values(path_of(name))))
+
+
+class TestWriter:
+    @pytest.mark.parametrize("long_ids", [True, False])
+    @pytest.mark.parametrize("name", ALL_FIXTURES)
+    def test_it_reproduces_the_file_it_read(self, write_with, name, long_ids, tmp_path):
+        """ccx prints E12.5, so reading a file and writing it back loses nothing."""
+        for step in steps_of(name):
+            source = py_frd.read(path_of(name), time_step=step)
+            out = tmp_path / f"{name}_{step}.frd"
+            write_with(out, source, long_ids=long_ids)
+            for back in (core_read(out), py_frd.read(out)):
+                if name.endswith("_bin"):
+                    # a binary file holds float32/float64 values, E12.5 six digits
+                    assert_close(back, source)
+                else:
+                    assert full(back) == full(source)
+
+    @pytest.mark.parametrize("long_ids", [True, False])
+    @pytest.mark.parametrize("name", ALL_FIXTURES)
+    def test_both_engines_write_the_same_bytes(self, name, long_ids, tmp_path):
+        for step in steps_of(name):
+            source = py_frd.read(path_of(name), time_step=step)
+            a, b = tmp_path / "core.frd", tmp_path / "python.frd"
+            core_write(a, source, long_ids=long_ids)
+            py_frd.write(b, source, long_ids=long_ids)
+            assert a.read_bytes() == b.read_bytes()
+
+    def test_the_layout_is_the_one_ccx_writes(self, write_with, tmp_path):
+        out = tmp_path / "c3d8.frd"
+        write_with(out, py_frd.read(path_of("c3d8")))
+        lines = out.read_text().split("\n")
+        assert lines[0] == "    1C" and lines[1].startswith("    1UWritten by meshio++")
+        assert lines[2].startswith("    2C") and lines[2].endswith("   1")
+        assert lines[-2] == "  9999"
+        assert (
+            re.fullmatch(
+                r" -1{:>10}[ -]\d\.\d{{5}}E[+-]\d\d{{3}}".format(1),
+                lines[3].replace("1", "1", 0),
+            )
+            is None
+        )
+        # the DISP block carries the calculated ALL component the reader drops
+        text = out.read_text()
+        assert " -4  DISP        4    1" in text and "ALL" in text
+
+    def test_the_short_form_uses_i5_ids(self, write_with, tmp_path):
+        out = tmp_path / "short.frd"
+        write_with(out, py_frd.read(path_of("c3d8")), long_ids=False)
+        lines = out.read_text().split("\n")
+        assert lines[2].endswith("   0")
+        assert re.match(r" -1    1 ", lines[3])
+
+    def test_too_many_nodes_for_the_short_form(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(np.zeros((100000, 3)), [])
+        with pytest.raises(WriteError, match="short"):
+            write_with(tmp_path / "big.frd", mesh, long_ids=False)
+        write_with(tmp_path / "big.frd", mesh)
+        assert len(core_read(tmp_path / "big.frd").points) == 100000
+
+    def test_step_fields_fill_the_100c_header(self, write_with, tmp_path):
+        mesh = py_frd.read(path_of("mixed"), time_step=1)
+        out = tmp_path / "step.frd"
+        write_with(out, mesh)
+        back = core_read(out)
+        for key in ("meshio:time", "frd:step", "frd:analysis"):
+            assert back.field_data[key].tolist() == mesh.field_data[key].tolist()
+
+    def test_a_mesh_without_results_is_a_mesh(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 2]]))],
+        )
+        out = tmp_path / "bare.frd"
+        write_with(out, mesh)
+        back = core_read(out)
+        assert [c.type for c in back.cells] == ["triangle"]
+        assert back.point_data == {} and back.field_data == {}
+        assert back.cell_data["frd:group"][0].tolist() == [0]
+        assert back.cell_data["frd:material"][0].tolist() == [1]
+
+    def test_planar_points_are_padded_with_zero(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0], [1, 0], [0, 1]]), [("triangle", np.array([[0, 1, 2]]))]
+        )
+        write_with(tmp_path / "flat.frd", mesh)
+        assert core_read(tmp_path / "flat.frd").points[:, 2].tolist() == [0, 0, 0]
+
+    def test_what_the_format_cannot_hold_is_dropped_with_a_warning(
+        self, write_with, tmp_path, capfd
+    ):
+        points = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]])
+        mesh = meshioplusplus.Mesh(
+            points,
+            [
+                ("tetra", np.array([[0, 1, 2, 3]])),
+                ("pyramid", np.array([[0, 1, 2, 3, 4]])),
+            ],
+        )
+        mesh.cell_data["pressure"] = [np.array([1.0]), np.array([2.0])]
+        mesh.point_data["TOOLONGNAME"] = np.ones(5)
+        mesh.point_data["by_cell"] = np.ones((2, 2))
+        mesh.point_data["TEMP"] = np.ones(5)
+        mesh.field_data["note"] = np.array([1])
+        out = tmp_path / "drop.frd"
+        write_with(out, mesh)
+        text = capfd.readouterr().err
+        assert "pyramid" in text and "pressure" in text and "TOOLONGNAME" in text
+        back = core_read(out)
+        assert [c.type for c in back.cells] == ["tetra"]
+        assert list(back.point_data) == ["TEMP"]
+        assert "pressure" not in back.cell_data and "note" not in back.field_data
+
+    def test_regions_are_dropped_with_a_warning(self, write_with, tmp_path, caplog):
+        mesh = meshioplusplus.read(path_of("c3d8"))
+        mesh = (
+            meshioplusplus.add_region(mesh, "all", "cell", [0])
+            if hasattr(meshioplusplus, "add_region")
+            else mesh
+        )
+        out = tmp_path / "regions.frd"
+        with caplog.at_level("WARNING"):
+            write_with(out, mesh)
+        assert core_read(out).cells[0].type == "hexahedron"
+
+    def test_nodes_with_a_non_finite_value_are_left_out(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 2]]))],
+        )
+        mesh.point_data["T"] = np.array([1.0, np.nan, 3.0])
+        out = tmp_path / "nan.frd"
+        write_with(out, mesh)
+        back = core_read(out)
+        assert back.point_data["T"][[0, 2]].tolist() == [1.0, 3.0]
+        assert np.isnan(back.point_data["T"][1])
+
+    def test_a_value_that_does_not_fit_is_refused_and_leaves_no_file(
+        self, write_with, tmp_path
+    ):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 2]]))],
+        )
+        mesh.point_data["T"] = np.array([-1e120, 0.0, 0.0])
+        out = tmp_path / "huge.frd"
+        with pytest.raises(WriteError):
+            write_with(out, mesh)
+        assert not out.exists()
+        mesh.point_data["T"] = np.array([-1e-120, 0.0, 0.0])
+        write_with(out, mesh)
+        assert core_read(out).point_data["T"][0] == 0.0
+
+    def test_a_coordinate_that_is_not_finite_is_refused(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(np.array([[np.inf, 0.0, 0.0]]), [])
+        with pytest.raises(WriteError, match="finite"):
+            write_with(tmp_path / "inf.frd", mesh)
+
+    def test_a_cell_naming_a_missing_point_is_refused(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 5]]))],
+        )
+        with pytest.raises(WriteError, match="does not exist"):
+            write_with(tmp_path / "bad.frd", mesh)
+
+    def test_group_and_material_must_fit_their_i5_fields(self, write_with, tmp_path):
+        mesh = py_frd.read(path_of("c3d8"))
+        mesh.cell_data["frd:group"] = [np.array([100000])]
+        with pytest.raises(WriteError, match="I5"):
+            write_with(tmp_path / "g.frd", mesh)
+
+    def test_the_core_writes_it_without_falling_back(self, tmp_path):
+        set_strict_core(True)
+        try:
+            meshioplusplus.frd.write(
+                tmp_path / "strict.frd", py_frd.read(path_of("c3d8"))
+            )
+        finally:
+            set_strict_core(None)
+        assert (tmp_path / "strict.frd").exists()
+
+    def test_core_has_the_function(self):
+        assert hasattr(_core, "frd_write")
+
+    def test_a_buffer_is_written_by_the_python_writer(self):
+        buf = io.StringIO()
+        meshioplusplus.frd.write(buf, py_frd.read(path_of("c3d8")))
+        assert buf.getvalue().startswith("    1C\n")
+
+
+@pytest.mark.parametrize(
+    "name", ["c3d8", "c3d20", "c3d10", "mixed", "cantilever_static"]
+)
+def test_ccx2paraview_reads_what_the_writer_wrote(name, tmp_path):
+    """The independent validator the roadmap names: an open tool that reads `.frd`.
+
+    ccx2paraview (pip) parses the long layout only, and its principal-value step
+    sorts complex eigenvalues, which numpy 2 refuses on ccx's own fixtures too, so
+    the principal and von Mises extras are stubbed out; the points, the cells and
+    the DISP, STRESS and TOSTRAIN arrays are what it reads back.
+    """
+    pytest.importorskip("ccx2paraview")
+    vtk = pytest.importorskip("vtk")
+    from ccx2paraview import common
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    def blank(self, block):
+        return common.NodalResultsBlock()
+
+    mesh = py_frd.read(path_of(name))
+    out = tmp_path / f"{name}.frd"
+    meshioplusplus.write(out, mesh)
+    saved = {
+        k: getattr(common.FRD, k)
+        for k in (
+            "calculate_principal",
+            "calculate_mises_stress",
+            "calculate_mises_strain",
+        )
+    }
+    try:
+        for k in saved:
+            setattr(common.FRD, k, blank)
+        common.Converter(str(out), ["vtu"]).run()
+    finally:
+        for k, v in saved.items():
+            setattr(common.FRD, k, v)
+    reader = vtk.vtkXMLUnstructuredGridReader()
+    reader.SetFileName(str(tmp_path / f"{name}.vtu"))
+    reader.Update()
+    grid = reader.GetOutput()
+    np.testing.assert_allclose(
+        vtk_to_numpy(grid.GetPoints().GetData()), mesh.points, rtol=1e-5, atol=1e-9
+    )
+    assert grid.GetNumberOfCells() == sum(len(c.data) for c in mesh.cells)
+    point_data = grid.GetPointData()
+    for ours, theirs in (("DISP", "U"), ("STRESS", "S"), ("TOSTRAIN", "E")):
+        got = vtk_to_numpy(point_data.GetArray(theirs))
+        want = np.asarray(mesh.point_data[ours])
+        np.testing.assert_allclose(
+            got.reshape(len(want), -1),
+            want.reshape(len(want), -1),
+            rtol=1e-4,
+            atol=1e-6 * np.abs(want).max(),
+        )

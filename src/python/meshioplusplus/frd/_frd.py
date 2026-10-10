@@ -27,16 +27,19 @@ requested step's result blocks are parsed. CalculiX expands shells and beams int
 solids before it writes, so the mesh here is not the ``.inp`` mesh.
 """
 
+import math
 import pathlib
 import re
 import struct
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
+from .._files import open_file
 from .._mesh import Mesh
-from .._node_order import node_order
+from .._node_order import from_meshio, node_order
 from .._tensor_invariants import _mises as _ti_mises
 from .._tensor_invariants import _principal as _ti_principal
 
@@ -646,6 +649,277 @@ def read(filename, points_only=False, arrays=None, time_step=0, derived=False):
 def time_values(filename):
     """The value of every increment, in file order (the sequence engine's steps)."""
     return [frame.value for frame in _load(filename).frames]
+
+
+# -- Writing -----------------------------------------------------------------------
+#
+# The inverse of the reader, in the ASCII layout `ccx` itself writes: the `1C` banner,
+# a `2C` node block, a `3C` element block, one `1PSTEP` + `100CL` header and `-4`/`-5`
+# result block per point-data array, `9999`. Ids are 1-based and sequential (the
+# reader keeps none), `frd:group` / `frd:material` are the element's group and
+# material, and `meshio:time` / `frd:step` / `frd:analysis` fill the `100C` header.
+# `.frd` is nodal, holds no sets and prints at six digits (`E12.5`), so cell data,
+# regions and any other field data are dropped with a warning. The C++ twin is
+# `formats/frd.cpp`; the two write the same bytes.
+
+_WRITE_TYPES = {name: (code, nodes) for code, (name, nodes) in _TYPES.items()}
+
+# The component names ccx gives its common results; any other array gets C1..Cn.
+_COMPONENT_NAMES = {
+    "STRESS": ("SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"),
+    "TOSTRAIN": ("EXX", "EYY", "EZZ", "EXY", "EYZ", "EZX"),
+    "MESTRAIN": ("EXX", "EYY", "EZZ", "EXY", "EYZ", "EZX"),
+    "ZZSTR": ("SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"),
+    "DISP": ("D1", "D2", "D3"),
+    "VELO": ("V1", "V2", "V3"),
+    "FORC": ("F1", "F2", "F3"),
+    "NDTEMP": ("T",),
+}
+# The vectors ccx follows with a calculated `ALL` component (the reader drops it).
+_WITH_ALL = ("DISP", "FORC")
+_TENSOR_INDEX = ((1, 1), (2, 2), (3, 3), (1, 2), (2, 3), (3, 1))
+_MAX_NAME = 8
+_MAX_SMALL_INT = 99999
+
+
+def _e12(x):
+    """``x`` as the ``E12.5`` the format prints; a value that does not fit twelve
+    columns (a three-digit negative exponent or a four-digit one) is flushed to zero
+    when tiny and refused when huge."""
+    text = f"{x:12.5E}"
+    if len(text) > 12:
+        if abs(x) < 1.0:
+            return f"{0.0:12.5E}"
+        raise WriteError(f"CalculiX FRD: {x!r} does not fit an E12.5 field")
+    return text
+
+
+def _small(value, what):
+    if not 0 <= value <= _MAX_SMALL_INT:
+        raise WriteError(f"CalculiX FRD: {what} {value} does not fit an I5 field")
+    return f"{value:5d}"
+
+
+def _time_text(value):
+    """The step value in the 12 columns of the ``100C`` header: as many decimals as
+    fit, ``E12.5`` for a value too large for any."""
+    for decimals in range(9, -1, -1):
+        text = f"{value:12.{decimals}f}"
+        if len(text) == 12:
+            return text
+    return _e12(value)
+
+
+def _valid_name(name):
+    return (
+        0 < len(name) <= _MAX_NAME
+        and name == name.strip()
+        and all(" " < c <= "~" for c in name)
+    )
+
+
+def _field_int(mesh, key, default):
+    values = mesh.field_data.get(key)
+    if values is None or np.size(values) != 1:
+        return default
+    return int(np.asarray(values).ravel()[0])
+
+
+class _WritePlan:
+    """The cells and nodes the writer makes of a mesh, and what it drops."""
+
+    def __init__(self, mesh, long_ids):
+        points = np.asarray(mesh.points, dtype=np.float64)
+        if points.ndim == 1:
+            points = points.reshape(-1, 1)
+        if points.shape[1] > 3:
+            raise WriteError("CalculiX FRD: points of more than three coordinates")
+        self.npts = points.shape[0]
+        self.coords = np.zeros((self.npts, 3))
+        self.coords[:, : points.shape[1]] = points
+        if not np.isfinite(self.coords).all():
+            raise WriteError("CalculiX FRD: a point coordinate is not finite")
+        self.long_ids = long_ids
+        self.blocks = (
+            []
+        )  # (code, cell type, connectivity in file order, group, material)
+        dropped = []
+        groups = mesh.cell_data.get("frd:group")
+        materials = mesh.cell_data.get("frd:material")
+        for b, block in enumerate(mesh.cells):
+            spec = _WRITE_TYPES.get(block.type)
+            data = np.asarray(block.data)
+            if spec is None or data.ndim != 2 or data.shape[1] != spec[1]:
+                if block.type not in dropped:
+                    dropped.append(block.type)
+                continue
+            if data.size and (data.min() < 0 or data.max() >= self.npts):
+                raise WriteError(
+                    f"CalculiX FRD: a {block.type} cell references a point that "
+                    "does not exist"
+                )
+            conn = from_meshio("frd", block.type, data.astype(np.int64, copy=False))
+            n = len(conn)
+            group = np.zeros(n, dtype=np.int64)
+            material = np.ones(n, dtype=np.int64)
+            if groups is not None and np.size(groups[b]) == n:
+                group = np.asarray(groups[b], dtype=np.int64).ravel()
+            if materials is not None and np.size(materials[b]) == n:
+                material = np.asarray(materials[b], dtype=np.int64).ravel()
+            self.blocks.append((spec[0], block.type, conn, group, material))
+        self.ncells = sum(len(b[2]) for b in self.blocks)
+        limit = 2**31 - 1 if long_ids else _MAX_SMALL_INT
+        if max(self.npts, self.ncells) > limit:
+            raise WriteError(
+                "CalculiX FRD: too many nodes or elements for the "
+                f"{'long' if long_ids else 'short'} format"
+            )
+        for t in dropped:
+            warn(f"CalculiX FRD has no '{t}' element; those cells are dropped")
+            _provenance.note("cells-dropped", f"CalculiX FRD has no '{t}' element")
+        regions = getattr(mesh, "regions", None) or []
+        if regions:
+            warn(f"CalculiX FRD holds no sets; {len(regions)} region(s) dropped")
+            _provenance.note(
+                "regions-dropped", f"{len(regions)} region(s) have no FRD equivalent"
+            )
+
+    @property
+    def width(self):
+        return 10 if self.long_ids else 5
+
+
+def _note_dropped_data(mesh, unwritable):
+    cell_names = [n for n in sorted(mesh.cell_data) if n not in _GROUP_KEYS]
+    field_names = [n for n in sorted(mesh.field_data) if n not in _STEP_KEYS]
+    names = cell_names + field_names + unwritable
+    if not names:
+        return
+    listing = ", ".join(names)
+    warn(f"CalculiX FRD is nodal and has no slot for: {listing}; dropped")
+    _provenance.note("data-dropped", f"arrays with no FRD result block: {listing}")
+
+
+_GROUP_KEYS = ("frd:group", "frd:material")
+_STEP_KEYS = (TIME_KEY, "frd:step", "frd:analysis")
+
+
+def _mesh_lines(plan):
+    w = plan.width
+    flag = 1 if plan.long_ids else 0
+    out = ["    1C"]
+    title = _provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]
+    out.append("    1U" + title.replace("\n", " ").replace("\r", " "))
+    out.append(f"    2C{plan.npts:>30}{'':37}{flag}")
+    for i, (x, y, z) in enumerate(plan.coords, start=1):
+        out.append(f" -1{i:{w}d}{_e12(x)}{_e12(y)}{_e12(z)}")
+    out.append(" -3")
+    out.append(f"    3C{plan.ncells:>30}{'':37}{flag}")
+    per_line = 10 if plan.long_ids else 15
+    eid = 0
+    for code, _type, conn, group, material in plan.blocks:
+        for r in range(len(conn)):
+            eid += 1
+            out.append(
+                f" -1{eid:{w}d}{_small(code, 'element type')}"
+                f"{_small(int(group[r]), 'group')}{_small(int(material[r]), 'material')}"
+            )
+            ids = conn[r] + 1
+            for k in range(0, len(ids), per_line):
+                out.append(
+                    " -2" + "".join(f"{int(i):{w}d}" for i in ids[k : k + per_line])
+                )
+    out.append(" -3")
+    return out
+
+
+def _result_blocks(mesh, plan):
+    """The ``-4`` blocks of the mesh's point data and the names with none."""
+    blocks, unwritable = [], []
+    w = plan.width
+    for name in sorted(mesh.point_data):
+        values = np.asarray(mesh.point_data[name])
+        if (
+            not _valid_name(name)
+            or values.ndim not in (1, 2)
+            or values.shape[0] != plan.npts
+            or values.dtype.kind not in "biuf"
+            or (values.ndim == 2 and values.shape[1] == 0)
+        ):
+            unwritable.append(name)
+            continue
+        values = values.astype(np.float64).reshape(plan.npts, -1)
+        nc = values.shape[1]
+        names = _COMPONENT_NAMES.get(name)
+        if names is None or len(names) != nc:
+            names = tuple(f"C{k}" for k in range(1, nc + 1)) if nc > 1 else (name[:8],)
+        has_all = name in _WITH_ALL and nc == 3
+        lines = [f" -4  {name:<8}{nc + has_all:5d}{1:5d}"]
+        for k, cname in enumerate(names, start=1):
+            if nc == 6:
+                a, b = _TENSOR_INDEX[k - 1]
+                lines.append(f" -5  {cname:<8}{1:5d}{4:5d}{a:5d}{b:5d}")
+            elif nc == 3:
+                lines.append(f" -5  {cname:<8}{1:5d}{2:5d}{k:5d}{0:5d}")
+            else:
+                lines.append(f" -5  {cname:<8}{1:5d}{1:5d}{0:5d}{0:5d}")
+        if has_all:
+            lines.append(f" -5  {'ALL':<8}{1:5d}{2:5d}{0:5d}{0:5d}{1:5d}ALL")
+        skipped = 0
+        for i in range(plan.npts):
+            row = values[i]
+            if not np.isfinite(row).all():
+                skipped += 1
+                continue
+            for k in range(0, nc, 6):
+                chunk = "".join(_e12(float(v)) for v in row[k : k + 6])
+                lines.append(
+                    (f" -1{i + 1:{w}d}" if k == 0 else " -2" + " " * w) + chunk
+                )
+        if skipped:
+            warn(
+                f"CalculiX FRD: {skipped} node(s) of '{name}' with a non-finite "
+                "value left out"
+            )
+        lines.append(" -3")
+        blocks.append(lines)
+    return blocks, unwritable
+
+
+def _frame_lines(mesh, plan, blocks):
+    step = _field_int(mesh, "frd:step", 1)
+    analysis = _field_int(mesh, "frd:analysis", 0)
+    time = mesh.field_data.get(TIME_KEY)
+    value = (
+        float(np.asarray(time).ravel()[0])
+        if time is not None and np.size(time) == 1
+        else 0.0
+    )
+    if not math.isfinite(value):
+        raise WriteError("CalculiX FRD: the step time is not finite")
+    flag = 1 if plan.long_ids else 0
+    out = []
+    for block in blocks:
+        out.append(f"    1PSTEP{'':25}{step:1d}{'':11}1{'':11}{step:1d}{'':10}")
+        out.append(
+            f"  100CL {100 + step:4d}{_time_text(value)}{plan.npts:12d}{'':20}"
+            f"{analysis:2d}{step:5d}{'':10}{flag:2d}"
+        )
+        out.extend(block)
+    return out
+
+
+def write(filename, mesh, long_ids=True):
+    """Write a CalculiX result file (``.frd``, ASCII).
+
+    ``long_ids=True`` (what ``ccx`` writes) uses ``I10`` ids; ``False`` the short
+    ``I5`` form, which holds 99999 nodes or elements at most."""
+    plan = _WritePlan(mesh, long_ids)
+    blocks, unwritable = _result_blocks(mesh, plan)
+    _note_dropped_data(mesh, unwritable)
+    lines = _mesh_lines(plan) + _frame_lines(mesh, plan, blocks) + ["  9999"]
+    with open_file(filename, "w", newline="\n") as fh:
+        fh.write("\n".join(lines) + "\n")
 
 
 # -- .dat: the ccx tabular print, a companion file with no mesh in it ----------------

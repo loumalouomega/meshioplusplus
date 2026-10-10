@@ -666,6 +666,24 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
+    "frd": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Nodal, with no sets: cell data, regions and other field data are dropped "
+        "with a warning, and values print at six digits (`E12.5`). No vertex or pyramid "
+        "element exists. Only `frd:group` and `frd:material` come back as cell data.",
+    },
     "gltf": {
         "error": "write-only",
         "note": "Written for viewers; no glTF reader exists yet (roadmap §3.1.4).",
@@ -1497,7 +1515,6 @@ READ_ONLY = {
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
         "side is `ansys_rst`'s cyclic option (roadmap §3.2.6)."
     ),
-    "frd": _GAP.format(item="3.2.1", why=_RESULT.format(tool="CalculiX (`ccx`)")),
     "lsdyna_binout": _GAP.format(item="3.2.4", why=_RESULT.format(tool="LS-DYNA")),
     "lsdyna_d3plot": _GAP.format(item="3.2.3", why=_RESULT.format(tool="LS-DYNA")),
     "marc_t19": _GAP.format(

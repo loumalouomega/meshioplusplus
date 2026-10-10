@@ -175,17 +175,21 @@ def test_formats_payload():
     assert out["extensions"][".vtu"] == ["vtu"]
 
 
-def test_frd_is_readable_not_writable_and_convert_reaches_its_steps(tmp_path):
+def test_frd_is_readable_and_writable_and_convert_reaches_its_steps(tmp_path):
     import pathlib
 
     frd = str(pathlib.Path(__file__).parent / "meshes" / "frd" / "mixed.frd")
     out = _dump(_tools.tool_formats())
-    assert "frd" in out["readable"] and "frd" not in out["writable"]
+    assert "frd" in out["readable"] and "frd" in out["writable"]
     target = str(tmp_path / "last.vtu")
     _tools.tool_convert(frd, target, time_step=-1)
     written = meshioplusplus.read(target)
     assert "DISP" in written.point_data and "TOSTRAIN" not in written.point_data
     assert written.field_data["meshio:time"].tolist() == [2.0]
+    # and back: the last step written as a result file keeps its step fields
+    again = str(tmp_path / "again.frd")
+    _tools.tool_convert(frd, again, time_step=-1)
+    assert meshioplusplus.read(again).field_data["meshio:time"].tolist() == [2.0]
 
 
 def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_path):

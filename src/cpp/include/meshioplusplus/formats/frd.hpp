@@ -18,7 +18,7 @@
 
 /**
  * @file frd.hpp
- * @brief CalculiX result file (`.frd`) C++ reader.
+ * @brief CalculiX result file (`.frd`) C++ reader and ASCII writer.
  *
  * The file `ccx` writes and `cgx` reads: fixed-column records keyed by their first
  * columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per result
@@ -46,6 +46,13 @@
  *    `xx yy zz xy yz zx`.
  *  - `FrdReadOptions::mDerived` adds `<NAME>_mises` and `<NAME>_principal` (ascending
  *    min, mid, max) beside each `STRESS`/`TOSTRAIN`/`MESTRAIN` tensor.
+ *
+ * `write_frd` is the inverse, in the ASCII layout `ccx` writes: the points, the twelve
+ * cell types above (others are dropped with a warning) with `frd:group`/`frd:material`
+ * as each element's group and material, and the point data as one `-4` result block per
+ * array under its own name, with `meshio:time`, `frd:step` and `frd:analysis` in the
+ * `100C` header. The format is nodal, holds no sets and prints six digits (`E12.5`), so
+ * cell data, regions and other field data are dropped with a warning.
  *
  * See doc/formats/frd.md for the record layouts and the limits.
  */
@@ -88,5 +95,19 @@ MESHIOPLUSPLUS_API Mesh read_frd(const std::string& rPath, const ReadOptions& rO
  */
 MESHIOPLUSPLUS_API MeshMetadata read_frd_metadata(const std::string& rPath,
                                                   const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a CalculiX `.frd` result file (ASCII), one step.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh; the point data is the step's results
+ * @param LongIds `true` (what `ccx` writes) for `I10` ids, `false` for the short `I5`
+ *        form, which holds 99999 nodes or elements at most
+ * @throws WriteError if the file can't be opened, a coordinate is not finite, a value
+ *         does not fit its `E12.5` field, or the ids do not fit the chosen form
+ * @note Since v16.39.0.
+ */
+MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
+                                  bool LongIds = true);
 
 }  // namespace meshioplusplus

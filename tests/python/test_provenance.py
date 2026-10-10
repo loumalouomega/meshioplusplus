@@ -82,6 +82,7 @@ def _cases():
     from meshioplusplus.femap import _femap as py_femap
     from meshioplusplus.flac3d import _flac3d as py_flac3d
     from meshioplusplus.flux import _flux as py_flux
+    from meshioplusplus.frd import _frd as py_frd
     from meshioplusplus.gltf import _gltf as py_gltf
     from meshioplusplus.lsdyna import _lsdyna as py_lsdyna
     from meshioplusplus.marc import _marc as py_marc
@@ -145,6 +146,7 @@ def _cases():
             lambda p, m: py_flac3d.write(p, m, binary=False),
         ),
         "flux": (TRI, ".pf3", _core.flux_write, py_flux.write),
+        "frd": (TRI, ".frd", _core.frd_write, py_frd.write),
         "tecplot": (TRI, ".dat", _core.tecplot_write, py_tecplot.write),
         "ansys": (
             TRI,
