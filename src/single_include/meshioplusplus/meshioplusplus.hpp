@@ -16256,6 +16256,8 @@ MESHIOPLUSPLUS_API Mesh read_flux(const std::string& rPath);
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -16304,6 +16306,48 @@ MESHIOPLUSPLUS_API MeshMetadata read_frd_metadata(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
                                   bool LongIds = true);
+
+/**
+ * @brief A time series in one result file: the mesh once, then one `100C` increment
+ * (a `1PSTEP` header and a `-4` block per point-data array) per step, the increments
+ * `read_frd` reads back by `mTimeStep`. Since v16.39.0.
+ *
+ * A step's value is its time; its number is its `frd:step` when positive and unused,
+ * else the next free one; its analysis type is its `frd:analysis` (default 0). Every
+ * step must have the first step's cells; a step whose points moved is written with the
+ * first step's, with a warning. The Python twin, `meshioplusplus.frd.SeriesWriter`,
+ * writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API FrdSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit FrdSeriesWriter(const std::string& rPath, bool LongIds = true);
+    ~FrdSeriesWriter();
+
+    FrdSeriesWriter(const FrdSeriesWriter&) = delete;
+    FrdSeriesWriter& operator=(const FrdSeriesWriter&) = delete;
+    FrdSeriesWriter(FrdSeriesWriter&&) noexcept;
+    FrdSeriesWriter& operator=(FrdSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's cells differ from the first step's, when a
+     *         value does not fit the format, on a write failure, or on a moved-from
+     *         writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// End the file (`9999`) and close it. Idempotent. @throws WriteError when no step
+    /// was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/frd.hpp =====
@@ -83705,6 +83749,8 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
 #include <fstream>
 #include <ios>
 #include <limits>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -84605,6 +84651,13 @@ const std::vector<const char*>* frd_component_names(const std::string& rName) {
     return it == table.end() ? nullptr : &it->second;
 }
 
+}  // namespace
+
+// FrdWritePlan is held by FrdSeriesWriter::Impl, a class with external linkage, so it
+// lives in a named namespace rather than the anonymous one (-Wsubobject-linkage in the
+// single header).
+namespace detail::frd_writer {
+
 struct FrdWriteBlock {
     int mCode = 0;
     std::size_t mNodes = 0;
@@ -84623,6 +84676,13 @@ struct FrdWritePlan {
 
     std::size_t Width() const { return mLong ? 10 : 5; }
 };
+
+}  // namespace detail::frd_writer
+
+namespace {
+
+using detail::frd_writer::FrdWriteBlock;
+using detail::frd_writer::FrdWritePlan;
 
 FrdWritePlan frd_plan(const Mesh& rMesh, bool LongIds) {
     FrdWritePlan plan;
@@ -84860,32 +84920,62 @@ std::int64_t frd_field_int(const Mesh& rMesh, const char* pKey, std::int64_t Def
     return a.Size() == 1 ? detail::read_int(a, 0) : Default;
 }
 
-/// The `1PSTEP`/`100CL` header and `-4` block of every result, for the step @p rMesh
-/// carries.
-std::string frd_frame_text(const Mesh& rMesh, const FrdWritePlan& rPlan,
-                           const std::vector<std::string>& rBlocks) {
-    const std::int64_t step = frd_field_int(rMesh, "frd:step", 1);
-    const std::int64_t analysis = frd_field_int(rMesh, "frd:analysis", 0);
-    double value = 0.0;
+/// The `meshio:time` of @p rMesh, 0 when it has none.
+double frd_field_time(const Mesh& rMesh) {
     if (rMesh.HasFieldData(kSequenceTimeKey) && rMesh.FieldData(kSequenceTimeKey).Size() == 1)
-        value = detail::read_double(rMesh.FieldData(kSequenceTimeKey), 0);
-    if (!std::isfinite(value))
+        return detail::read_double(rMesh.FieldData(kSequenceTimeKey), 0);
+    return 0.0;
+}
+
+/// The `1PSTEP`/`100CL` header and `-4` block of every result for one increment.
+std::string frd_frame_text(const FrdWritePlan& rPlan, const std::vector<std::string>& rBlocks,
+                           double Value, std::int64_t Step, std::int64_t Analysis) {
+    if (!std::isfinite(Value))
         throw WriteError("CalculiX FRD: the step time is not finite");
     const int flag = rPlan.mLong ? 1 : 0;
     char buf[200];
     std::string out;
     for (const std::string& block : rBlocks) {
         detail::snprintf_c(buf, sizeof(buf), "    1PSTEP%25s%1lld%11s1%11s%1lld%10s\n", "",
-                           static_cast<long long>(step), "", "", static_cast<long long>(step), "");
+                           static_cast<long long>(Step), "", "", static_cast<long long>(Step), "");
         out += buf;
         detail::snprintf_c(buf, sizeof(buf), "  100CL %4lld%s%12zu%20s%2lld%5lld%10s%2d\n",
-                           static_cast<long long>(100 + step), frd_time_text(value).c_str(),
-                           rPlan.mNpts, "", static_cast<long long>(analysis),
-                           static_cast<long long>(step), "", flag);
+                           static_cast<long long>(100 + Step), frd_time_text(Value).c_str(),
+                           rPlan.mNpts, "", static_cast<long long>(Analysis),
+                           static_cast<long long>(Step), "", flag);
         out += buf;
         out += block;
     }
     return out;
+}
+
+/// What must not change between the steps of a series: a hash of the cells, and one of
+/// the points (no copy of a step is kept).
+std::pair<std::uint64_t, std::uint64_t> frd_fingerprint(const Mesh& rMesh) {
+    auto mix = [](std::uint64_t H, const void* pData, std::size_t Bytes) {
+        const auto* p = static_cast<const unsigned char*>(pData);
+        for (std::size_t i = 0; i < Bytes; ++i) {
+            H ^= p[i];
+            H *= 1099511628211ull;
+        }
+        return H;
+    };
+    std::uint64_t cells = 14695981039346656037ull;
+    std::uint64_t points = 14695981039346656037ull;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        cells = mix(cells, type.data(), type.size());
+        if (cb.IsRagged())
+            continue;
+        const detail::Int64View conn(cb.Conn());
+        const std::size_t n = cb.NumCells() * cb.NodesPerCell();
+        cells = mix(cells, &n, sizeof(n));
+        cells = mix(cells, conn.Data(), n * sizeof(std::int64_t));
+    }
+    const detail::DoubleView values(rMesh.Points());
+    const std::size_t n = rMesh.NumPoints() * rMesh.PointDim();
+    points = mix(points, values.Data(), n * sizeof(double));
+    return {cells, points};
 }
 
 }  // namespace
@@ -84898,7 +84988,8 @@ void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
     // Everything is built before the file is touched, so a refused value leaves no
     // half-written file behind.
     std::string text = frd_mesh_text(plan);
-    text += frd_frame_text(rMesh, plan, blocks);
+    text += frd_frame_text(plan, blocks, frd_field_time(rMesh), frd_field_int(rMesh, "frd:step", 1),
+                           frd_field_int(rMesh, "frd:analysis", 0));
     text += "  9999\n";
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
@@ -84906,6 +84997,95 @@ void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
     os.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!os)
         throw WriteError("Could not write file: " + rPath);
+}
+
+
+struct FrdSeriesWriter::Impl {
+    std::string mPath;
+    bool mLong = true;
+    decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
+    std::optional<FrdWritePlan> mPlan;
+    std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
+    std::set<std::int64_t> mStepIds;
+    std::int64_t mNextStep = 1;
+    bool mMoved = false;
+    bool mClosed = false;
+    std::size_t mSteps = 0;
+};
+
+FrdSeriesWriter::FrdSeriesWriter(const std::string& rPath, bool LongIds)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mLong = LongIds;
+    mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!mpImpl->mOut)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+FrdSeriesWriter::~FrdSeriesWriter() = default;
+FrdSeriesWriter::FrdSeriesWriter(FrdSeriesWriter&&) noexcept = default;
+FrdSeriesWriter& FrdSeriesWriter::operator=(FrdSeriesWriter&&) noexcept = default;
+
+void FrdSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("CalculiX FRD series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("CalculiX FRD series: the writer is finalized");
+    std::string text;
+    std::vector<std::string> unwritable;
+    if (!s.mPlan) {
+        s.mPlan = frd_plan(rMesh, s.mLong);
+        s.mFingerprint = frd_fingerprint(rMesh);
+        text = frd_mesh_text(*s.mPlan);
+    } else {
+        const auto fp = frd_fingerprint(rMesh);
+        if (fp.first != s.mFingerprint.first)
+            throw WriteError("CalculiX FRD series: step " + std::to_string(s.mSteps) +
+                             "'s cells differ from the first step's; a result file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        if (fp.second != s.mFingerprint.second && !s.mMoved) {
+            s.mMoved = true;
+            log::warn("CalculiX FRD series: points moved after the first step; written as the "
+                      "first step's");
+            detail::provenance_note("points-moved",
+                                    "every increment shares the first step's points");
+        }
+    }
+    const std::vector<std::string> blocks = frd_result_blocks(rMesh, *s.mPlan, unwritable);
+    if (s.mSteps == 0)
+        frd_note_dropped_data(rMesh, unwritable);
+    std::int64_t step = frd_field_int(rMesh, "frd:step", 0);
+    if (step <= 0 || s.mStepIds.count(step)) {
+        while (s.mStepIds.count(s.mNextStep))
+            ++s.mNextStep;
+        step = s.mNextStep;
+    }
+    // Everything is built before the file is touched, so a refused value leaves the
+    // steps already written intact.
+    text += frd_frame_text(*s.mPlan, blocks, Time, step, frd_field_int(rMesh, "frd:analysis", 0));
+    s.mStepIds.insert(step);
+    s.mOut.write(text.data(), static_cast<std::streamsize>(text.size()));
+    s.mOut.flush();
+    if (!s.mOut)
+        throw WriteError("CalculiX FRD series: failed writing " + s.mPath);
+    ++s.mSteps;
+}
+
+std::size_t FrdSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void FrdSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed || !mpImpl->mOut.is_open())
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("CalculiX FRD series: no step was written to " + mpImpl->mPath);
+    mpImpl->mClosed = true;
+    mpImpl->mOut << "  9999\n";
+    mpImpl->mOut.close();
+    if (!mpImpl->mOut)
+        throw WriteError("CalculiX FRD series: failed writing " + mpImpl->mPath);
 }
 
 }  // namespace meshioplusplus
@@ -170716,13 +170896,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap") {
+        rFormat == "femap" || rFormat == "frd") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap' "
-           "and 'exodus' can); "
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
+           "'frd' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -171015,6 +171195,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "vtkhdf" ? "VTKHDF"
                       : rFormat == "pvd"    ? "PVD"
                       : rFormat == "femap"  ? "Femap"
+                      : rFormat == "frd"    ? "CalculiX FRD"
                                             : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
@@ -171029,6 +171210,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
             "select");
+    if (rFormat == "frd" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient CalculiX FRD writer has no ASCII/binary variant "
+            "to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -171098,6 +171283,19 @@ private:
     FemapSeriesWriter mWriter;
 };
 
+/// A CalculiX result file holds one mesh and an increment per step: its writer writes
+/// the mesh with the first step, so `WritePointsCells` has nothing to do.
+class SeqFrdSink final : public SeqSeriesSink {
+public:
+    explicit SeqFrdSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    FrdSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -171133,6 +171331,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "femap")
         return std::make_unique<SeqFemapSink>(rPath);
+    if (rFormat == "frd")
+        return std::make_unique<SeqFrdSink>(rPath);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);

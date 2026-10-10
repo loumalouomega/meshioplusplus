@@ -58,6 +58,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -109,5 +111,47 @@ MESHIOPLUSPLUS_API MeshMetadata read_frd_metadata(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
                                   bool LongIds = true);
+
+/**
+ * @brief A time series in one result file: the mesh once, then one `100C` increment
+ * (a `1PSTEP` header and a `-4` block per point-data array) per step, the increments
+ * `read_frd` reads back by `mTimeStep`. Since v16.39.0.
+ *
+ * A step's value is its time; its number is its `frd:step` when positive and unused,
+ * else the next free one; its analysis type is its `frd:analysis` (default 0). Every
+ * step must have the first step's cells; a step whose points moved is written with the
+ * first step's, with a warning. The Python twin, `meshioplusplus.frd.SeriesWriter`,
+ * writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API FrdSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit FrdSeriesWriter(const std::string& rPath, bool LongIds = true);
+    ~FrdSeriesWriter();
+
+    FrdSeriesWriter(const FrdSeriesWriter&) = delete;
+    FrdSeriesWriter& operator=(const FrdSeriesWriter&) = delete;
+    FrdSeriesWriter(FrdSeriesWriter&&) noexcept;
+    FrdSeriesWriter& operator=(FrdSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's cells differ from the first step's, when a
+     *         value does not fit the format, on a write failure, or on a moved-from
+     *         writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// End the file (`9999`) and close it. Idempotent. @throws WriteError when no step
+    /// was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

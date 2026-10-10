@@ -833,3 +833,95 @@ TEST(FrdWrite, TheRegistryWritesIt) {
     writers.at("frd")(file.mPath, sample_mesh());
     EXPECT_EQ(meshioplusplus::read_frd(file.mPath).NumCellBlocks(), 3u);
 }
+
+// --- The series writer ----------------------------------------------------------------
+
+namespace {
+
+/// `sample_mesh()` with its step fields set.
+Mesh step_mesh(double time, std::int64_t step, double scale) {
+    Mesh mesh = sample_mesh();
+    std::vector<double> temp;
+    for (std::size_t i = 0; i < 20; ++i)
+        temp.push_back(scale * (20.0 + 0.25 * static_cast<double>(i)));
+    mesh.AddPointData("NDTEMP", doubles({20}, temp));
+    mesh.AddFieldData(meshioplusplus::kSequenceTimeKey, doubles({1}, {time}));
+    mesh.AddFieldData("frd:step", ints({1}, {step}));
+    return mesh;
+}
+
+}  // namespace
+
+TEST(FrdSeries, EveryStepReadsBackByItsIndex) {
+    for (const bool long_ids : {true, false}) {
+        TempFile file;
+        {
+            meshioplusplus::FrdSeriesWriter writer(file.mPath, long_ids);
+            for (int k = 0; k < 3; ++k)
+                writer.Write(0.5 * (k + 1), step_mesh(0.0, k + 1, 1.0 + k));
+            EXPECT_EQ(writer.NumSteps(), 3u);
+            writer.Finalize();
+            writer.Finalize();  // idempotent
+        }
+        EXPECT_EQ(meshioplusplus::read_frd_metadata(file.mPath).mTimeValues,
+                  (std::vector<double>{0.5, 1.0, 1.5}));
+        for (int k = 0; k < 3; ++k) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = k;
+            const Mesh back = meshioplusplus::read_frd(file.mPath, opts);
+            EXPECT_EQ(back.NumCellBlocks(), 3u);
+            EXPECT_EQ(at(back.FieldData(meshioplusplus::kSequenceTimeKey), 0), 0.5 * (k + 1));
+            EXPECT_EQ(at(back.FieldData("frd:step"), 0), static_cast<double>(k + 1));
+            EXPECT_NEAR(at(back.PointData("NDTEMP"), 4), (1.0 + k) * 21.0, 1e-4 * (1.0 + k));
+        }
+    }
+}
+
+TEST(FrdSeries, ASeriesWithOneStepIsTheSingleStepFile) {
+    const Mesh mesh = step_mesh(0.25, 1, 1.0);
+    TempFile series, single;
+    {
+        meshioplusplus::FrdSeriesWriter writer(series.mPath);
+        writer.Write(0.25, mesh);
+        writer.Finalize();
+    }
+    meshioplusplus::write_frd(single.mPath, mesh);
+    EXPECT_EQ(slurp(series.mPath), slurp(single.mPath));
+}
+
+TEST(FrdSeries, ARepeatedStepNumberGetsTheNextFreeOne) {
+    TempFile file;
+    {
+        meshioplusplus::FrdSeriesWriter writer(file.mPath);
+        for (int k = 0; k < 3; ++k)
+            writer.Write(1.0 * k, step_mesh(0.0, 5, 1.0));
+        writer.Finalize();
+    }
+    std::vector<double> steps;
+    for (int k = 0; k < 3; ++k) {
+        meshioplusplus::ReadOptions opts;
+        opts.mTimeStep = k;
+        steps.push_back(at(meshioplusplus::read_frd(file.mPath, opts).FieldData("frd:step"), 0));
+    }
+    EXPECT_EQ(steps, (std::vector<double>{5, 1, 2}));
+}
+
+TEST(FrdSeries, RefusesOtherCellsAndAnEmptySeries) {
+    TempFile file;
+    meshioplusplus::FrdSeriesWriter writer(file.mPath);
+    EXPECT_THROW(writer.Finalize(), WriteError);  // nothing written yet
+    writer.Write(0.0, step_mesh(0.0, 1, 1.0));
+    Mesh other;
+    other.AssignPoints(doubles({20, 3}, std::vector<double>(60, 0.0)));
+    other.AddCellBlock("tetra", ints({1, 4}, {0, 1, 2, 4}));
+    EXPECT_THROW(writer.Write(1.0, other), WriteError);
+    EXPECT_EQ(writer.NumSteps(), 1u);  // the refused step left the file intact
+    writer.Finalize();
+    EXPECT_EQ(meshioplusplus::read_frd_metadata(file.mPath).mTimeValues.size(), 1u);
+}
+
+TEST(FrdSeries, TheSequenceEngineWritesItAndSaysSo) {
+    std::string why;
+    EXPECT_TRUE(meshioplusplus::sequence_write_supports_time("frd", why));
+    EXPECT_TRUE(why.empty());
+}

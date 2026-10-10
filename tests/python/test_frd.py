@@ -970,6 +970,120 @@ class TestWriter:
         assert buf.getvalue().startswith("    1C\n")
 
 
+class TestSeriesWriter:
+    @pytest.fixture(params=["core", "python"])
+    def series(self, request):
+        """Both engines' stateful writers behind one signature."""
+        if request.param == "core":
+
+            def make(path, long_ids=True):
+                core = _core.FrdSeriesWriter(str(path), long_ids)
+
+                class Wrapper:
+                    def write(self, time, mesh):
+                        core.write(float(time), mesh)
+
+                    def close(self):
+                        core.finalize()
+
+                return Wrapper()
+
+            return make
+        return py_frd.SeriesWriter
+
+    @pytest.mark.parametrize("name", ["cantilever_static", "cantilever_modes", "mixed"])
+    @pytest.mark.parametrize("long_ids", [True, False])
+    def test_every_step_reads_back(self, series, name, long_ids, tmp_path):
+        steps = list(_sequence.read_sequence(path_of(name)))
+        assert len(steps) >= 2
+        out = tmp_path / "series.frd"
+        writer = series(out, long_ids)
+        for time, mesh in steps:
+            writer.write(time, mesh)
+        writer.close()
+        assert len(py_frd.time_values(out)) == len(steps)
+        for k, (time, mesh) in enumerate(steps):
+            for read in (core_read, py_frd.read):
+                back = read(out, time_step=k)
+                assert full(back) == full(mesh), k
+
+    def test_both_engines_and_write_sequence_write_the_same_bytes(self, tmp_path):
+        steps = list(_sequence.read_sequence(path_of("cantilever_modes")))
+        a, b, c = (tmp_path / n for n in ("core.frd", "python.frd", "seq.frd"))
+        core = _core.FrdSeriesWriter(str(a), True)
+        for time, mesh in steps:
+            core.write(float(time), mesh)
+        core.finalize()
+        with py_frd.SeriesWriter(b) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        _sequence.write_sequence(c, steps)
+        assert a.read_bytes() == b.read_bytes() == c.read_bytes()
+        assert a.read_text().endswith(" -3\n  9999\n")
+
+    def test_a_repeated_or_missing_step_number_gets_the_next_free_one(
+        self, series, tmp_path
+    ):
+        mesh = py_frd.read(path_of("c3d8"))
+        mesh.field_data["frd:step"] = np.array([5])
+        out = tmp_path / "numbers.frd"
+        writer = series(out)
+        for time in (0.0, 1.0, 2.0):
+            writer.write(time, mesh)
+        writer.close()
+        assert [
+            int(core_read(out, time_step=k).field_data["frd:step"][0]) for k in range(3)
+        ] == [5, 1, 2]
+
+    def test_a_step_with_other_cells_is_refused(self, series, tmp_path):
+        a = py_frd.read(path_of("c3d8"))
+        b = py_frd.read(path_of("c3d4"))
+        writer = series(tmp_path / "bad.frd")
+        writer.write(0.0, a)
+        with pytest.raises(WriteError, match="differ from the first step"):
+            writer.write(1.0, b)
+
+    def test_moved_points_are_written_as_the_first_steps_with_a_warning(
+        self, series, tmp_path, capfd
+    ):
+        a = py_frd.read(path_of("c3d8"))
+        b = py_frd.read(path_of("c3d8"))
+        b.points = b.points * 2.0
+        out = tmp_path / "moved.frd"
+        writer = series(out)
+        writer.write(0.0, a)
+        writer.write(1.0, b)
+        writer.write(2.0, b)
+        writer.close()
+        assert capfd.readouterr().err.count("points moved") == 1
+        np.testing.assert_allclose(
+            core_read(out, time_step=1).points, a.points, rtol=1e-5
+        )
+
+    def test_a_series_without_a_step_is_an_error_in_the_core(self, tmp_path):
+        core = _core.FrdSeriesWriter(str(tmp_path / "empty.frd"), True)
+        with pytest.raises(WriteError, match="no step"):
+            core.finalize()
+
+    def test_the_shim_uses_the_core_without_falling_back(self, tmp_path):
+        steps = list(_sequence.read_sequence(path_of("mixed")))
+        set_strict_core(True)
+        try:
+            with meshioplusplus.frd.SeriesWriter(tmp_path / "strict.frd") as writer:
+                for time, mesh in steps:
+                    writer.write(time, mesh)
+        finally:
+            set_strict_core(None)
+        assert len(py_frd.time_values(tmp_path / "strict.frd")) == len(steps)
+
+    def test_a_buffer_is_written_by_the_python_twin(self):
+        buf = io.StringIO()
+        with meshioplusplus.frd.SeriesWriter(buf) as writer:
+            writer.write(0.5, py_frd.read(path_of("c3d8")))
+        assert buf.getvalue().rstrip().endswith("9999")
+        assert not buf.closed
+
+
 @pytest.mark.parametrize(
     "name", ["c3d8", "c3d20", "c3d10", "mixed", "cantilever_static"]
 )

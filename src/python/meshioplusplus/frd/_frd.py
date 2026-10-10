@@ -37,7 +37,7 @@ import numpy as np
 from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
-from .._files import open_file
+from .._files import is_buffer, open_file
 from .._mesh import Mesh
 from .._node_order import from_meshio, node_order
 from .._tensor_invariants import _mises as _ti_mises
@@ -886,15 +886,18 @@ def _result_blocks(mesh, plan):
     return blocks, unwritable
 
 
-def _frame_lines(mesh, plan, blocks):
-    step = _field_int(mesh, "frd:step", 1)
-    analysis = _field_int(mesh, "frd:analysis", 0)
+def _field_time(mesh):
     time = mesh.field_data.get(TIME_KEY)
-    value = (
+    return (
         float(np.asarray(time).ravel()[0])
         if time is not None and np.size(time) == 1
         else 0.0
     )
+
+
+def _frame_lines(plan, blocks, value, step, analysis):
+    """The ``1PSTEP``/``100CL`` header and ``-4`` block of every result for one
+    increment."""
     if not math.isfinite(value):
         raise WriteError("CalculiX FRD: the step time is not finite")
     flag = 1 if plan.long_ids else 0
@@ -917,9 +920,110 @@ def write(filename, mesh, long_ids=True):
     plan = _WritePlan(mesh, long_ids)
     blocks, unwritable = _result_blocks(mesh, plan)
     _note_dropped_data(mesh, unwritable)
-    lines = _mesh_lines(plan) + _frame_lines(mesh, plan, blocks) + ["  9999"]
+    frame = _frame_lines(
+        plan,
+        blocks,
+        _field_time(mesh),
+        _field_int(mesh, "frd:step", 1),
+        _field_int(mesh, "frd:analysis", 0),
+    )
+    lines = _mesh_lines(plan) + frame + ["  9999"]
     with open_file(filename, "w", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
+
+
+def _fingerprint(mesh):
+    """What must not change between the steps of a series, as digests (no copy of
+    a step is kept): the cells, and separately the points."""
+    import hashlib
+
+    cells = hashlib.blake2b(digest_size=16)
+    for block in mesh.cells:
+        data = np.asarray(block.data, dtype=np.int64)
+        cells.update(f"{block.type}:{data.shape};".encode())
+        cells.update(np.ascontiguousarray(data).tobytes())
+    points = hashlib.blake2b(
+        np.ascontiguousarray(np.asarray(mesh.points, dtype=np.float64)).tobytes(),
+        digest_size=16,
+    )
+    return cells.digest(), points.digest()
+
+
+class SeriesWriter:
+    """The Python twin of ``FrdSeriesWriter``: the mesh once, then one ``100C``
+    increment per step. Use as a context manager, or call :meth:`close`."""
+
+    def __init__(self, filename, long_ids=True):
+        # A path is opened as `write` opens it; a caller's buffer is written
+        # into and left open.
+        self._owned = not is_buffer(filename, "w")
+        self._fh = open(filename, "w", newline="\n") if self._owned else filename
+        self._long = long_ids
+        self._plan = None
+        self._cells = self._points = None
+        self._moved = False
+        self._step_ids = set()
+        self._next_step = 1
+        self._step = 0
+
+    def write(self, time, mesh):
+        lines = []
+        if self._plan is None:
+            self._plan = _WritePlan(mesh, self._long)
+            self._cells, self._points = _fingerprint(mesh)
+            lines = _mesh_lines(self._plan)
+        else:
+            cells, points = _fingerprint(mesh)
+            if cells != self._cells:
+                raise WriteError(
+                    f"CalculiX FRD series: step {self._step}'s cells differ from the "
+                    "first step's; a result file holds one mesh -- write one file per "
+                    "step with '{step}'"
+                )
+            if points != self._points and not self._moved:
+                self._moved = True
+                warn(
+                    "CalculiX FRD series: points moved after the first step; written "
+                    "as the first step's"
+                )
+                _provenance.note(
+                    "points-moved", "every increment shares the first step's points"
+                )
+        blocks, unwritable = _result_blocks(mesh, self._plan)
+        if self._step == 0:
+            _note_dropped_data(mesh, unwritable)
+        step = _field_int(mesh, "frd:step", 0)
+        if step <= 0 or step in self._step_ids:
+            while self._next_step in self._step_ids:
+                self._next_step += 1
+            step = self._next_step
+        # Everything is built before the file is touched, so a refused value
+        # leaves the steps already written intact.
+        lines += _frame_lines(
+            self._plan,
+            blocks,
+            float(time),
+            step,
+            _field_int(mesh, "frd:analysis", 0),
+        )
+        self._step_ids.add(step)
+        self._fh.write("\n".join(lines) + "\n")
+        self._step += 1
+
+    def close(self):
+        if self._fh is not None:
+            if self._step:
+                self._fh.write("  9999\n")
+            if self._owned:
+                self._fh.close()
+            self._fh = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 
 # -- .dat: the ccx tabular print, a companion file with no mesh in it ----------------

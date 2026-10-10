@@ -4684,6 +4684,20 @@ PYBIND11_MODULE(_core, m) {
         .def("num_steps", &meshioplusplus::FemapSeriesWriter::NumSteps)
         .def("finalize", &meshioplusplus::FemapSeriesWriter::Finalize);
 
+    // A time series in one CalculiX result file (v16.39.0): the core half of
+    // `meshioplusplus.frd.SeriesWriter`.
+    py::class_<meshioplusplus::FrdSeriesWriter>(m, "FrdSeriesWriter")
+        .def(py::init<const std::string&, bool>(), py::arg("path"), py::arg("long_ids") = true)
+        .def(
+            "write",
+            [](meshioplusplus::FrdSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::FrdSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::FrdSeriesWriter::Finalize);
+
     // Abaqus results file (.fil) reader.
     m.def(
         "abaqus_fil_read",

@@ -406,7 +406,7 @@ def _register_conversion(server: FastMCP) -> None:
         transient dataset. Give exactly one of input_pattern (a glob -- '*' and
         '?' only) or input_paths. A '{step}'/'{index}' token in output_path
         writes one file per step (fan-out); a plain path writes one multi-step
-        file (fan-in, only for xdmf, gid, usd, vtkhdf, pvd and femap -- any
+        file (fan-in, only for xdmf, gid, usd, vtkhdf, pvd, femap and frd -- any
         other format fails by name rather than silently keeping step 0).
         XDMF fan-in stores the first mesh's fixed point/cell/side regions;
         later steps do not change their membership.

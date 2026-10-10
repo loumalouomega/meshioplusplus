@@ -6,7 +6,7 @@ The result file of [CalculiX](http://www.dhondt.de/): the ASCII `.frd` that `ccx
 |---|---|
 | **Format name** | `frd` |
 | **Extensions** | `.frd` |
-| **Read / Write** | ✓ / ✓ (ASCII; the binary variant is still read-only, see [Writing](#writing)) |
+| **Read / Write** | ✓ / ✓ (ASCII, one step per `write` or a [series](#time-series); the binary variant is still read-only) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -58,7 +58,17 @@ meshioplusplus.frd.write("small.frd", mesh, long_ids=False)   # the short (I5) l
 - **A node with a non-finite value** in an array is left out of that block (the reader returns NaN there). A value too large for `E12.5` is a `WriteError` and no file is written; one too small is written as zero.
 - **Values keep six significant digits.** Reading a file `ccx` wrote and writing it back reproduces it; a double computed elsewhere is rounded.
 
-The binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) is read but not yet written. Validator: [ccx2paraview](https://github.com/calculix/ccx2paraview) 3.2.0 (optional, `pip install ccx2paraview vtk`) reads written files in `tests/python/test_frd.py` and returns the same points, cells, `DISP`, `STRESS` and `TOSTRAIN`. It parses the long (`I10`) layout only, and its principal-value step fails under numpy 2 on `ccx`'s own files, so that step is stubbed in the test; `cgx -b` is not in the test environment. See the [roadmap](../roadmap.md#_3-reader-and-writer-parity) (§3.2.1) for the binary variant and the series writer.
+### Time series
+
+```python
+with meshioplusplus.frd.SeriesWriter("run.frd") as w:        # or: meshioplusplus.write_sequence("run.frd", steps)
+    for time, mesh in steps:
+        w.write(time, mesh)
+```
+
+A result file holds one mesh and any number of increments, so a series writes the mesh with the first step and one `100C` increment (a `1PSTEP` and `100C` header and a `-4` block per array) per step; `read(time_step=k)` reads step `k` back, and `write_sequence` / `convert in_*.vtu out.frd` / the `Sequence` pipeline step reach it as a fan-in. A step's value is the `time` you pass; its number is its `frd:step` when positive and not used by an earlier step, else the next free one; its analysis type is its `frd:analysis`. Every step must have the first step's cells (otherwise a `WriteError` asks for one file per step with `{step}`); points that move are written as the first step's, with one warning. The C++ class is `FrdSeriesWriter`, the Python one `meshioplusplus.frd.SeriesWriter`; both write the same bytes.
+
+The binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) is read but not yet written. Validator: [ccx2paraview](https://github.com/calculix/ccx2paraview) 3.2.0 (optional, `pip install ccx2paraview vtk`) reads written files in `tests/python/test_frd.py` and returns the same points, cells, `DISP`, `STRESS` and `TOSTRAIN`. It parses the long (`I10`) layout only, and its principal-value step fails under numpy 2 on `ccx`'s own files, so that step is stubbed in the test; `cgx -b` is not in the test environment. See the [roadmap](../roadmap.md#_3-reader-and-writer-parity) (§3.2.1) for the binary variant.
 
 ## What is read
 
