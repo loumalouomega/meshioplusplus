@@ -6,7 +6,7 @@ The result database [MSC Nastran](https://hexagon.com/products/product-groups/co
 |---|---|
 | **Format name** | `nastran_h5` |
 | **Extensions** | `.h5` (GiD's longer `.post.h5` stays `gid`) |
-| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#nastran-h5): MSC Nastran writes it, and no tool reads one written elsewhere) |
+| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#nastran-h5): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.5) |
 | **Extra dependencies** | HDF5 (the C++ core); `h5py` for the Python reader |
 
 ## Reading

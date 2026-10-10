@@ -150,20 +150,22 @@ def render_conformance() -> str:
         body += ["", "## Notes", ""] + notes
     body += [
         "",
-        "## Read-only formats",
+        "## Formats missing a direction",
         "",
-        "The formats meshio++ reads and does not write, each with the reason. "
-        "`test_conformance.py` fails when a format reads without writing and is "
-        "not listed here, or is listed and writes, in either the Python or the "
+        "Every registered format is meant to read and write, in both engines "
+        "([roadmap §3](./roadmap.md#_3-reader-and-writer-parity)). A format that does only one is a tracked gap, "
+        "listed here with the roadmap item that closes it; `ansys_rst_cyclic` is the one exemption. "
+        "`test_conformance.py` fails when a format reads without writing, or writes without reading, "
+        "and is not listed here, or is listed and has gained the missing direction, in either the Python or the "
         "native registry.",
         "",
-        "| Format | Why there is no writer |",
-        "|---|---|",
+        "| Format | Missing | Why, and the item that closes it |",
+        "|---|---|---|",
     ]
-    for fmt in sorted(cs.READ_ONLY, key=str.lower):
-        body.append(
-            f'| <span id="{_anchor(fmt)}">`{fmt}`</span> | {cs.READ_ONLY[fmt]} |'
-        )
+    rows = [(fmt, "writer", why) for fmt, why in cs.READ_ONLY.items()]
+    rows += [(fmt, "reader", why) for fmt, why in cs.WRITE_ONLY.items()]
+    for fmt, missing, why in sorted(rows, key=lambda r: r[0].lower()):
+        body.append(f'| <span id="{_anchor(fmt)}">`{fmt}`</span> | {missing} | {why} |')
     return "\n".join(body) + "\n"
 
 

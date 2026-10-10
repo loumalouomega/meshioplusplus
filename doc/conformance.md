@@ -96,7 +96,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
-- **`gltf`**: Written for viewers; meshio++ reads glTF only as the scene it wrote, not as a mesh round trip.
+- **`gltf`**: Written for viewers; no glTF reader exists yet (roadmap §3.1.4).
 - **`gmsh`**: The Gmsh 4.1 writer needs `gmsh:dim_tags` point data to place more than one cell type into entities, and refuses a mixed mesh without it; `gmsh22` writes the same mesh.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
@@ -108,9 +108,9 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
-- **`svg`**: A 2-D drawing, write-only.
+- **`svg`**: A 2-D drawing, write-only until its reader lands (roadmap §3.1.1).
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
-- **`tikz`**: A 2-D drawing, write-only.
+- **`tikz`**: A 2-D drawing, write-only until its reader lands (roadmap §3.1.2).
 - **`triangle`**: Triangle reads and writes 2-D triangulations only, so this row is observed on the planar part of the canonical mesh.
 - **`usd`**: A UsdGeom mesh stores faces: volume cells are written as their skin.
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).
@@ -119,23 +119,26 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`zarr`**: As `pmsh`: tetrahedra only, other volume cells simplexified.
 
-## Read-only formats
+## Formats missing a direction
 
-The formats meshio++ reads and does not write, each with the reason. `test_conformance.py` fails when a format reads without writing and is not listed here, or is listed and writes, in either the Python or the native registry.
+Every registered format is meant to read and write, in both engines ([roadmap §3](./roadmap.md#_3-reader-and-writer-parity)). A format that does only one is a tracked gap, listed here with the roadmap item that closes it; `ansys_rst_cyclic` is the one exemption. `test_conformance.py` fails when a format reads without writing, or writes without reading, and is not listed here, or is listed and has gained the missing direction, in either the Python or the native registry.
 
-| Format | Why there is no writer |
-|---|---|
-| <span id="abaqus-fil">`abaqus_fil`</span> | Abaqus's result file: Abaqus is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="ansys-rst">`ansys_rst`</span> | Ansys's result file: Ansys is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | Not a file of its own: the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. |
-| <span id="frd">`frd`</span> | CalculiX (`ccx`)'s result file: CalculiX (`ccx`) is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="lsdyna-binout">`lsdyna_binout`</span> | LS-DYNA's result file: LS-DYNA is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | LS-DYNA's result file: LS-DYNA is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="marc-t19">`marc_t19`</span> | Marc's result file: Marc is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="nastran-h5">`nastran_h5`</span> | MSC Nastran's result file: MSC Nastran is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="nastran-op2">`nastran_op2`</span> | Nastran's result file: Nastran is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="radioss-anim">`radioss_anim`</span> | the OpenRadioss engine's result file: the OpenRadioss engine is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="radioss-th">`radioss_th`</span> | the OpenRadioss engine's result file: the OpenRadioss engine is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
-| <span id="szplt">`szplt`</span> | Undocumented: TecIO, Tecplot's own library, is its only reader and writer; meshio++ writes Tecplot's documented `.plt`/`.dat` instead. |
-| <span id="vtx">`vtx`</span> | DOLFINx's output, read through ADIOS2: DOLFINx is its producer and ParaView reads DOLFINx's own files; meshio++ hands a mesh to ParaView as VTKHDF, XDMF or VTU instead. |
-| <span id="xplt">`xplt`</span> | FEBio's result file: FEBio is its only producer, and no downstream tool reads one written by anything else, so there is nothing to write back. |
+| Format | Missing | Why, and the item that closes it |
+|---|---|---|
+| <span id="abaqus-fil">`abaqus_fil`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. Abaqus's result file; the writer is the physics-ML loop's missing half. |
+| <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.6: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
+| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.6). |
+| <span id="frd">`frd`</span> | writer | Tracked gap, roadmap §3.2.1: no writer yet. CalculiX (`ccx`)'s result file; the writer is the physics-ML loop's missing half. |
+| <span id="gltf">`gltf`</span> | reader | Tracked gap, roadmap §3.1.4: no reader yet. A general glTF 2.0 reader. |
+| <span id="lsdyna-binout">`lsdyna_binout`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
+| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.3: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
+| <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.13: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
+| <span id="nastran-h5">`nastran_h5`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. MSC Nastran's result file; the writer is the physics-ML loop's missing half. |
+| <span id="nastran-op2">`nastran_op2`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. Nastran's result file; the writer is the physics-ML loop's missing half. |
+| <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
+| <span id="radioss-th">`radioss_th`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
+| <span id="svg">`svg`</span> | reader | Tracked gap, roadmap §3.1.1: no reader yet. A 2-D drawing; the reader will parse only the structure meshio++'s writer emits. |
+| <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.12: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
+| <span id="tikz">`tikz`</span> | reader | Tracked gap, roadmap §3.1.2: no reader yet. A 2-D drawing; the reader will parse only the structure meshio++'s writer emits. |
+| <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
+| <span id="xplt">`xplt`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. FEBio's result file; the writer is the physics-ML loop's missing half. |

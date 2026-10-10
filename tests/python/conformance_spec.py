@@ -668,8 +668,7 @@ SPEC: dict[str, dict] = {
     },
     "gltf": {
         "error": "write-only",
-        "note": "Written for viewers; meshio++ reads glTF only as the scene it wrote, not as "
-        "a mesh round trip.",
+        "note": "Written for viewers; no glTF reader exists yet (roadmap §3.1.4).",
     },
     "gmsh": {
         "cells": {
@@ -1185,7 +1184,10 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
-    "svg": {"error": "write-only", "note": "A 2-D drawing, write-only."},
+    "svg": {
+        "error": "write-only",
+        "note": "A 2-D drawing, write-only until its reader lands (roadmap §3.1.1).",
+    },
     "tecplot": {
         "cells": {
             "line": "exact",
@@ -1212,7 +1214,10 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
-    "tikz": {"error": "write-only", "note": "A 2-D drawing, write-only."},
+    "tikz": {
+        "error": "write-only",
+        "note": "A 2-D drawing, write-only until its reader lands (roadmap §3.1.2).",
+    },
     "triangle": {
         "cells": {"triangle": "exact"},
         "points": "exact",
@@ -1473,44 +1478,59 @@ SPEC: dict[str, dict] = {
 
 
 # ----------------------------------------------------------------------------
-# Read-only formats, each with the reason it has no writer
+# Formats missing a direction, each with the roadmap item that closes the gap
 # ----------------------------------------------------------------------------
 
-# Every format that reads without writing must be declared here, with the
-# reason, and nothing else may be (test_conformance.py checks it against both
-# registries). A solver's result file has the solver as its only producer:
-# writing one is worth it only when a downstream tool asks for a synthetic one
-# (roadmap, Non-goals), and none has. The reasons render into
-# doc/conformance.md, and the formats table links each read-only row there.
-_RESULT_FILE = (
-    "{tool}'s result file: {tool} is its only producer, and no downstream tool "
-    "reads one written by anything else, so there is nothing to write back."
-)
+# Every registered format reads and writes (roadmap section 3, "Reader and
+# writer parity"). A format that reads without writing is a tracked gap: it
+# must be declared here with the item that closes it, and nothing else may be
+# (test_conformance.py checks it against both registries). When the writer
+# lands, the entry goes and the format gets a SPEC declaration. The reasons
+# render into doc/conformance.md, and the formats table links each row there.
+_GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
+_RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
-    "abaqus_fil": _RESULT_FILE.format(tool="Abaqus"),
-    "ansys_rst": _RESULT_FILE.format(tool="Ansys"),
+    "abaqus_fil": _GAP.format(item="3.2.7", why=_RESULT.format(tool="Abaqus")),
+    "ansys_rst": _GAP.format(item="3.2.6", why=_RESULT.format(tool="Ansys")),
     "ansys_rst_cyclic": (
-        "Not a file of its own: the full rotor that a static cyclic-symmetry "
-        "`.rst` expands to, read from `ansys_rst`'s file."
+        "Exempt, not a gap: not a file of its own but the full rotor that a static "
+        "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
+        "side is `ansys_rst`'s cyclic option (roadmap §3.2.6)."
     ),
-    "frd": _RESULT_FILE.format(tool="CalculiX (`ccx`)"),
-    "lsdyna_binout": _RESULT_FILE.format(tool="LS-DYNA"),
-    "lsdyna_d3plot": _RESULT_FILE.format(tool="LS-DYNA"),
-    "marc_t19": _RESULT_FILE.format(tool="Marc"),
-    "nastran_h5": _RESULT_FILE.format(tool="MSC Nastran"),
-    "nastran_op2": _RESULT_FILE.format(tool="Nastran"),
-    "radioss_anim": _RESULT_FILE.format(tool="the OpenRadioss engine"),
-    "radioss_th": _RESULT_FILE.format(tool="the OpenRadioss engine"),
-    "xplt": _RESULT_FILE.format(tool="FEBio"),
-    "vtx": (
-        "DOLFINx's output, read through ADIOS2: DOLFINx is its producer and "
-        "ParaView reads DOLFINx's own files; meshio++ hands a mesh to ParaView as "
-        "VTKHDF, XDMF or VTU instead."
+    "frd": _GAP.format(item="3.2.1", why=_RESULT.format(tool="CalculiX (`ccx`)")),
+    "lsdyna_binout": _GAP.format(item="3.2.4", why=_RESULT.format(tool="LS-DYNA")),
+    "lsdyna_d3plot": _GAP.format(item="3.2.3", why=_RESULT.format(tool="LS-DYNA")),
+    "marc_t19": _GAP.format(
+        item="3.2.13",
+        why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
     ),
-    "szplt": (
-        "Undocumented: TecIO, Tecplot's own library, is its only reader and "
-        "writer; meshio++ writes Tecplot's documented `.plt`/`.dat` instead."
+    "nastran_h5": _GAP.format(item="3.2.5", why=_RESULT.format(tool="MSC Nastran")),
+    "nastran_op2": _GAP.format(item="3.2.2", why=_RESULT.format(tool="Nastran")),
+    "radioss_anim": _GAP.format(
+        item="3.2.9", why=_RESULT.format(tool="the OpenRadioss engine")
     ),
+    "radioss_th": _GAP.format(
+        item="3.2.10", why=_RESULT.format(tool="the OpenRadioss engine")
+    ),
+    "xplt": _GAP.format(item="3.2.8", why=_RESULT.format(tool="FEBio")),
+    "vtx": _GAP.format(
+        item="3.2.11",
+        why="DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build.",
+    ),
+    "szplt": _GAP.format(
+        item="3.2.12",
+        why="Tecplot's SZL container, written through TecIO; needs the optional TecIO build.",
+    ),
+}
+
+# The mirror: formats that write without reading. `svg` and `tikz` are 2-D
+# drawings, whose reader will parse only the structure meshio++ itself emits.
+WRITE_ONLY = {
+    "gltf": "Tracked gap, roadmap §3.1.4: no reader yet. A general glTF 2.0 reader.",
+    "svg": "Tracked gap, roadmap §3.1.1: no reader yet. A 2-D drawing; the reader "
+    "will parse only the structure meshio++'s writer emits.",
+    "tikz": "Tracked gap, roadmap §3.1.2: no reader yet. A 2-D drawing; the reader "
+    "will parse only the structure meshio++'s writer emits.",
 }
 
 
@@ -1523,4 +1543,18 @@ def read_only_drift(readable, writable, declared=None):
     return {
         "undeclared": sorted(read_only - set(declared)),
         "stale": sorted(set(declared) - read_only),
+    }
+
+
+def write_only_drift(readable, writable, declared=None):
+    """The formats that write without reading but are not declared
+    (``undeclared``), and the declared ones that read or no longer write
+    (``stale``)."""
+    declared = WRITE_ONLY if declared is None else declared
+    # `vtk42` and the like write what the registry reads under `vtk`.
+    readable = set(readable) | {n for n, r in _READ_AS.items() if r in readable}
+    write_only = set(writable) - readable
+    return {
+        "undeclared": sorted(write_only - set(declared)),
+        "stale": sorted(set(declared) - write_only),
     }

@@ -6,7 +6,7 @@ The result file of [CalculiX](http://www.dhondt.de/): the ASCII `.frd` that `ccx
 |---|---|
 | **Format name** | `frd` |
 | **Extensions** | `.frd` |
-| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#frd): `ccx` writes it, and no tool reads one written elsewhere) |
+| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#frd): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.1) |
 | **Extra dependencies** | — |
 
 ## Reading

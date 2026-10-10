@@ -46,11 +46,32 @@ def test_every_read_only_format_is_declared_with_its_reason():
     formats = meshioplusplus.formats()
     drift = cs.read_only_drift(formats["readable"], formats["writable"])
     assert drift == {"undeclared": [], "stale": []}, (
-        "a format that reads without writing must say why in "
-        "conformance_spec.READ_ONLY (and one that writes must leave it)"
+        "a format that reads without writing must name the roadmap item that "
+        "closes the gap in conformance_spec.READ_ONLY (and one that writes must "
+        "leave it)"
     )
     assert not set(cs.READ_ONLY) & set(cs.SPEC)
     assert all(reason.strip() for reason in cs.READ_ONLY.values())
+
+
+def test_every_write_only_format_is_declared_with_its_item():
+    formats = meshioplusplus.formats()
+    drift = cs.write_only_drift(formats["readable"], formats["writable"])
+    assert drift == {"undeclared": [], "stale": []}, (
+        "a format that writes without reading must name the roadmap item that "
+        "closes the gap in conformance_spec.WRITE_ONLY (and one that reads must "
+        "leave it)"
+    )
+    assert all(reason.strip() for reason in cs.WRITE_ONLY.values())
+    # The two lists and the round-trip matrix agree on what write-only means.
+    assert {f for f, s in cs.SPEC.items() if s.get("error") == "write-only"} == set(
+        cs.WRITE_ONLY
+    )
+
+
+def test_every_gap_names_a_roadmap_item():
+    for fmt, reason in {**cs.READ_ONLY, **cs.WRITE_ONLY}.items():
+        assert "roadmap §3." in reason, f"{fmt}: name the roadmap item in its reason"
 
 
 def test_the_native_registry_agrees():
@@ -69,6 +90,31 @@ def test_the_native_registry_agrees():
     # without writing natively is declared read-only or writes in Python.
     assert not writable & set(cs.READ_ONLY)
     assert readable - writable <= set(cs.READ_ONLY) | set(python["writable"])
+    # The mirror: nothing declared write-only reads natively, and a format that
+    # writes without reading natively is declared write-only or reads in Python.
+    assert not readable & set(cs.WRITE_ONLY)
+    read_anywhere = readable | set(python["readable"])
+    assert {n for n in writable if cs._READ_AS.get(n, n) not in read_anywhere} <= set(
+        cs.WRITE_ONLY
+    )
+
+
+def test_the_drift_check_fails_on_an_undeclared_write_only_format():
+    # The probe: a format registered with a writer and no reader, and no
+    # write-only reason, must be caught.
+    from meshioplusplus._helpers import deregister_format, register_format
+
+    register_format("probe-wo", [".probe-wo"], None, {"probe-wo": lambda *a: None})
+    try:
+        formats = meshioplusplus.formats()
+        drift = cs.write_only_drift(formats["readable"], formats["writable"])
+        assert drift["undeclared"] == ["probe-wo"]
+        declared = {**cs.WRITE_ONLY, "probe-wo": "a test probe"}
+        drift = cs.write_only_drift(formats["readable"], formats["writable"], declared)
+        assert drift == {"undeclared": [], "stale": []}
+    finally:
+        deregister_format("probe-wo")
+    assert "probe-wo" not in meshioplusplus.formats()["writable"]
 
 
 def test_the_drift_check_fails_on_an_undeclared_read_only_format():

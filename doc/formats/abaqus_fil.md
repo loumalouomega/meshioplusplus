@@ -6,7 +6,7 @@ The results file Abaqus/Standard (and Explicit, with `*FILE OUTPUT`) writes on r
 |---|---|
 | **Format name** | `abaqus_fil` |
 | **Extensions** | `.fil` (also recognised by content, ASCII and binary) |
-| **Read / Write** | ✓ / — ([read-only by design](../conformance.md#abaqus-fil): Abaqus writes it, and no tool reads one written elsewhere) |
+| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#abaqus-fil): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.7) |
 | **Extra dependencies** | — |
 
 ## Reading
