@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 24
+#define MESHIOPLUSPLUS_ABI_VERSION 25
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -11782,7 +11782,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 35
+#define MESHIOPLUSPLUS_VERSION_MINOR 36
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11792,7 +11792,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.35.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.36.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -28666,6 +28666,16 @@ enum class RenderDiagnostic : std::uint8_t {
 /// An RGBA colour, 8 bits per channel, alpha 255 opaque.
 using RenderColor = std::array<std::uint8_t, 4>;
 
+/**
+ * @brief A cut-away plane: the half-space kept is the side the normal points
+ * to, `(p - mPoint) . mNormal >= 0`. Everything on the other side is clipped
+ * away before it is drawn.
+ */
+struct RenderCutaway {
+    std::array<double, 3> mPoint = {0.0, 0.0, 0.0};
+    std::array<double, 3> mNormal = {0.0, 0.0, 1.0};
+};
+
 /** @brief Everything `render` takes besides the mesh. */
 struct RenderOptions {
     /// Frame size in pixels; both must be positive.
@@ -28795,6 +28805,17 @@ struct RenderOptions {
     /// The `quality` metric for `RenderDiagnostic::Quality` (`scaled_jacobian`,
     /// `aspect_ratio`, ...).
     std::string mQualityMetric;
+
+    // --- Cut-aways (v16.36.0, ABI 25) -------------------------------------
+
+    /// Up to two planes; the geometry on the far side of any is clipped away
+    /// (faces, lines, points and the extra layers; a face crossing a plane is
+    /// cut and keeps its colour and shading). A cut surface is hollow: the
+    /// back faces now in view, those turned away from the camera, are drawn
+    /// in `mCutawayTint` so the inside reads as inside. Empty: nothing is cut.
+    /// A draw-time option: `render_scene` takes it from its own options.
+    std::vector<RenderCutaway> mCutaways;
+    RenderColor mCutawayTint = {232, 128, 52, 255};
 };
 
 /** @brief A rendered image. */
@@ -28891,6 +28912,13 @@ struct RenderScene {
  */
 MESHIOPLUSPLUS_API RenderScene prepare_render(const Mesh& rMesh,
                                               const RenderOptions& rOptions = {});
+
+/**
+ * @brief The bounding sphere of what a scene draws (before any cut-away): its
+ * centre and radius, the fixed fit's frame. False for an empty scene.
+ */
+MESHIOPLUSPLUS_API bool render_scene_bounds(const RenderScene& rScene,
+                                            std::array<double, 3>& rCentre, double& rRadius);
 
 /**
  * @brief Draw a prepared scene. The camera, projection, zoom, pan, frame size,
@@ -156993,7 +157021,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
           "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
           "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric"}},
+          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
+          "CutawayTint"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -157330,6 +157359,20 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
         {"none", "quality", "inverted", "degenerate", "orientation", "free_edges", "edge_length"},
         0));
     o.mQualityMetric = pipe_text(rStep, "QualityMetric", "");
+    // Cut-away planes: a flat list of numbers, six per plane (a point and the
+    // normal of the side kept).
+    const std::vector<double> cut = pipe_dvec(rStep, "Cutaway");
+    if (cut.size() % 6 != 0 || cut.size() > 12)
+        throw std::invalid_argument(pipe_err(
+            rStep, "parameter 'Cutaway' must be one or two planes of six numbers each "
+                   "(a point, then the normal of the side kept)"));
+    for (std::size_t i = 0; i + 6 <= cut.size(); i += 6) {
+        RenderCutaway plane;
+        plane.mPoint = {cut[i], cut[i + 1], cut[i + 2]};
+        plane.mNormal = {cut[i + 3], cut[i + 4], cut[i + 5]};
+        o.mCutaways.push_back(plane);
+    }
+    o.mCutawayTint = pipe_snap_color(rStep, "CutawayTint", o.mCutawayTint);
     return o;
 }
 
@@ -163994,6 +164037,20 @@ void rnd_validate(const RenderOptions& rOpt) {
     if (rOpt.mDiagnostic == RenderDiagnostic::Quality && rOpt.mQualityMetric.empty())
         throw std::invalid_argument(std::string(kRndPrefix) +
                                     "the quality diagnostic needs a metric (quality_metric)");
+    if (rOpt.mCutaways.size() > 2)
+        throw std::invalid_argument(std::string(kRndPrefix) + "at most two cutaway planes");
+    for (const RenderCutaway& cut : rOpt.mCutaways) {
+        double len2 = 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+            if (!std::isfinite(cut.mPoint[k]) || !std::isfinite(cut.mNormal[k]))
+                throw std::invalid_argument(std::string(kRndPrefix) +
+                                            "a cutaway plane must be finite");
+            len2 += cut.mNormal[k] * cut.mNormal[k];
+        }
+        if (!(len2 > 0.0))
+            throw std::invalid_argument(std::string(kRndPrefix) +
+                                        "a cutaway plane needs a non-zero normal");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -164634,6 +164691,144 @@ void rnd_category_edge_lines(const RenderOptions& rOpt, bool Categorical,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cut-aways: clip the drawn geometry against up to two planes
+// ---------------------------------------------------------------------------
+
+// The kept side of a plane: dist(x) = n . x + d >= 0, n a unit vector.
+struct RndPlane {
+    double mN[3];
+    double mD;
+};
+
+std::vector<RndPlane> rnd_planes(const std::vector<RenderCutaway>& rCutaways) {
+    std::vector<RndPlane> out;
+    for (const RenderCutaway& cut : rCutaways) {
+        RndPlane plane;
+        const double len = std::sqrt(cut.mNormal[0] * cut.mNormal[0] +
+                                     cut.mNormal[1] * cut.mNormal[1] +
+                                     cut.mNormal[2] * cut.mNormal[2]);
+        for (std::size_t k = 0; k < 3; ++k)
+            plane.mN[k] = cut.mNormal[k] / len;
+        plane.mD = -(plane.mN[0] * cut.mPoint[0] + plane.mN[1] * cut.mPoint[1] +
+                     plane.mN[2] * cut.mPoint[2]);
+        out.push_back(plane);
+    }
+    return out;
+}
+
+double rnd_dist(const RndPlane& rPlane, const double* pX) {
+    return rPlane.mN[0] * pX[0] + rPlane.mN[1] * pX[1] + rPlane.mN[2] * pX[2] + rPlane.mD;
+}
+
+// A polygon corner while it is being clipped: its position, its smooth-shading
+// normal, and the vertex it came from (-1 for a point made by the cut).
+struct RndClipCorner {
+    double mX[3];
+    double mN[3];
+    std::int64_t mId;
+};
+
+// Sutherland-Hodgman against one plane. The new corners lie where an edge
+// meets the plane, with the position and the normal interpolated along it.
+void rnd_clip_polygon(const RndPlane& rPlane, std::vector<RndClipCorner>& rPoly) {
+    std::vector<RndClipCorner> out;
+    const std::size_t n = rPoly.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const RndClipCorner& a = rPoly[i];
+        const RndClipCorner& b = rPoly[(i + 1) % n];
+        const double da = rnd_dist(rPlane, a.mX);
+        const double db = rnd_dist(rPlane, b.mX);
+        if (da >= 0.0)
+            out.push_back(a);
+        if ((da >= 0.0) != (db >= 0.0)) {
+            const double t = da / (da - db);
+            RndClipCorner q;
+            q.mId = -1;
+            for (std::size_t k = 0; k < 3; ++k) {
+                q.mX[k] = a.mX[k] + t * (b.mX[k] - a.mX[k]);
+                q.mN[k] = a.mN[k] + t * (b.mN[k] - a.mN[k]);
+            }
+            const double len = std::sqrt(q.mN[0] * q.mN[0] + q.mN[1] * q.mN[1] + q.mN[2] * q.mN[2]);
+            if (len > 0.0 && std::isfinite(len))
+                for (double& c : q.mN)
+                    c /= len;
+            out.push_back(q);
+        }
+    }
+    rPoly.swap(out);
+}
+
+// The geometry left once the planes have cut it.
+struct RndClipped {
+    std::size_t mNumFaces = 0;
+    std::vector<std::int64_t> mFStart = {0};
+    std::vector<std::int64_t> mFNodes;  // the rasterized rings (also used for the diagonals)
+    std::vector<std::int64_t> mFIds;
+    std::vector<double> mFNormal;
+    std::vector<double> mFValues;
+    std::vector<double> mVNormal;  // grown with the new corners, NaN where unknown
+    struct Line {
+        std::int64_t mA;
+        std::int64_t mB;
+        std::size_t mSource;
+    };
+    std::vector<Line> mLines;
+    std::vector<std::size_t> mPoints;  // the input points that survive
+    std::vector<detail::RasterLine> mEdgeLines;
+};
+
+// A segment against every plane; false when nothing of it is kept. The ends the
+// cut moves become new vertices appended to rXyz.
+bool rnd_clip_segment(const std::vector<RndPlane>& rPlanes, std::vector<double>& rXyz,
+                      std::int64_t& rA, std::int64_t& rB) {
+    double pa[3];
+    double pb[3];
+    for (std::size_t k = 0; k < 3; ++k) {
+        pa[k] = rXyz[3 * static_cast<std::size_t>(rA) + k];
+        pb[k] = rXyz[3 * static_cast<std::size_t>(rB) + k];
+    }
+    bool moved_a = false;
+    bool moved_b = false;
+    for (const RndPlane& plane : rPlanes) {
+        const double da = rnd_dist(plane, pa);
+        const double db = rnd_dist(plane, pb);
+        if (da < 0.0 && db < 0.0)
+            return false;
+        if (da >= 0.0 && db >= 0.0)
+            continue;
+        const double t = da / (da - db);
+        double q[3];
+        for (std::size_t k = 0; k < 3; ++k)
+            q[k] = pa[k] + t * (pb[k] - pa[k]);
+        if (da < 0.0) {
+            for (std::size_t k = 0; k < 3; ++k)
+                pa[k] = q[k];
+            moved_a = true;
+        } else {
+            for (std::size_t k = 0; k < 3; ++k)
+                pb[k] = q[k];
+            moved_b = true;
+        }
+    }
+    if (moved_a) {
+        rA = static_cast<std::int64_t>(rXyz.size() / 3);
+        rXyz.insert(rXyz.end(), pa, pa + 3);
+    }
+    if (moved_b) {
+        rB = static_cast<std::int64_t>(rXyz.size() / 3);
+        rXyz.insert(rXyz.end(), pb, pb + 3);
+    }
+    return true;
+}
+
+bool rnd_point_kept(const std::vector<RndPlane>& rPlanes, const double* pX) {
+    for (const RndPlane& plane : rPlanes)
+        if (rnd_dist(plane, pX) < 0.0)
+            return false;
+    return true;
+}
+
 std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOptions& rOpt) {
     rnd_validate(rOpt);
     double azimuth = 0.0;
@@ -165216,19 +165411,14 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     rOpt.mAxes = rCamera.mAxes;
     rOpt.mScaleBar = rCamera.mScaleBar;
     rOpt.mColorbar = rCamera.mColorbar;
+    rOpt.mCutaways = rCamera.mCutaways;
+    rOpt.mCutawayTint = rCamera.mCutawayTint;
     rnd_validate(rOpt);
     double azimuth = 0.0;
     double elevation = 0.0;
     detail::render_view_angles(rOpt, azimuth, elevation);
     const detail::CameraBasis cam = detail::camera_basis(azimuth, elevation, rOpt.mRoll);
 
-    const std::size_t num_faces = rPrep.mNumFaces;
-    const std::vector<std::int64_t>& f_start = rPrep.mFStart;
-    const std::vector<std::int64_t>& f_nodes = rPrep.mFNodes;
-    const std::vector<std::int64_t>& f_ids = rPrep.mFIds;
-    const std::vector<std::int64_t>& s_nodes = rPrep.mSNodes;
-    const std::vector<double>& f_normal = rPrep.mFNormal;
-    const std::vector<double>& v_normal = rPrep.mVNormal;
     const bool smooth = rPrep.mSmooth && rOpt.mShading == RenderShading::Smooth;
     const std::vector<double>& l_values = rPrep.mLValues;
     const std::vector<double>& p_values = rPrep.mPValues;
@@ -165239,10 +165429,6 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     RndColoring coloring = rPrep.mColoring;
     std::vector<std::string> keys = rPrep.mKeys;
     const bool orientation = rOpt.mDiagnostic == RenderDiagnostic::Orientation;
-    std::vector<double> f_orient;
-    if (orientation)
-        f_orient = rPrep.mFValues;
-    const std::vector<double>& f_values = orientation ? f_orient : rPrep.mFValues;
 
     // The extra layers: the prepared ones with the arrows between them, whose
     // barbs lie in the plane of the arrow and the line of sight.
@@ -165293,16 +165479,125 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     for (std::size_t i = rPrep.mExtrasBeforeArrows; i < rPrep.mExtras.size(); ++i)
         extras.push_back({rPrep.mExtras[i].mA, rPrep.mExtras[i].mB, rPrep.mExtras[i].mColor});
 
-    // Project every vertex a primitive uses.
+    // Cut-aways: clip the faces, lines and points against the planes. A face the
+    // cut leaves whole keeps its vertices; one it crosses is replaced by the
+    // polygon on the kept side, with the interpolated corners appended to xyz.
+    const std::vector<RndPlane> planes = rnd_planes(rOpt.mCutaways);
+    const bool clip_on = !planes.empty();
+    RndClipped clipped;
+    std::vector<Extra> extras_unclipped;  // the framing is the whole model's, cut or not
+    if (clip_on) {
+        const double nan = std::nan("");
+        if (smooth)
+            clipped.mVNormal = rPrep.mVNormal;
+        auto new_vertex = [&](const RndClipCorner& rCorner) {
+            const std::int64_t id = static_cast<std::int64_t>(xyz.size() / 3);
+            xyz.insert(xyz.end(), rCorner.mX, rCorner.mX + 3);
+            if (smooth) {
+                clipped.mVNormal.resize(3 * static_cast<std::size_t>(id), nan);
+                clipped.mVNormal.insert(clipped.mVNormal.end(), rCorner.mN, rCorner.mN + 3);
+            }
+            return id;
+        };
+        for (std::size_t f = 0; f < rPrep.mNumFaces; ++f) {
+            const std::int64_t lo = rPrep.mFStart[f];
+            const std::int64_t n = rPrep.mFStart[f + 1] - lo;
+            if (n < 3)
+                continue;
+            const std::int64_t* ring = rPrep.mSNodes.data() + lo;
+            bool inside = true;
+            for (std::int64_t k = 0; k < n && inside; ++k)
+                for (const RndPlane& plane : planes)
+                    if (rnd_dist(plane, &xyz[3 * static_cast<std::size_t>(ring[k])]) < 0.0) {
+                        inside = false;
+                        break;
+                    }
+            if (inside) {
+                clipped.mFNodes.insert(clipped.mFNodes.end(), ring, ring + n);
+            } else {
+                std::vector<RndClipCorner> poly;
+                for (std::int64_t k = 0; k < n; ++k) {
+                    RndClipCorner corner;
+                    const std::size_t v = static_cast<std::size_t>(ring[k]);
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        corner.mX[c] = xyz[3 * v + c];
+                        corner.mN[c] = smooth && 3 * v + c < rPrep.mVNormal.size()
+                                           ? rPrep.mVNormal[3 * v + c]
+                                           : nan;
+                    }
+                    corner.mId = ring[k];
+                    poly.push_back(corner);
+                }
+                for (const RndPlane& plane : planes)
+                    rnd_clip_polygon(plane, poly);
+                if (poly.size() < 3)
+                    continue;
+                for (const RndClipCorner& corner : poly)
+                    clipped.mFNodes.push_back(corner.mId >= 0 ? corner.mId : new_vertex(corner));
+            }
+            clipped.mFStart.push_back(static_cast<std::int64_t>(clipped.mFNodes.size()));
+            clipped.mFIds.push_back(rPrep.mFIds[f]);
+            clipped.mFNormal.insert(clipped.mFNormal.end(), rPrep.mFNormal.begin() + 3 * f,
+                                    rPrep.mFNormal.begin() + 3 * f + 3);
+            clipped.mFValues.push_back(rPrep.mFValues[f]);
+        }
+        clipped.mNumFaces = clipped.mFIds.size();
+        for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
+            std::int64_t a = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i])];
+            std::int64_t b =
+                rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i]) + 1];
+            if (rnd_clip_segment(planes, xyz, a, b))
+                clipped.mLines.push_back({a, b, i});
+        }
+        for (const detail::RasterLine& edge : rPrep.mEdgeLines) {
+            detail::RasterLine line = edge;
+            if (rnd_clip_segment(planes, xyz, line.mA, line.mB))
+                clipped.mEdgeLines.push_back(line);
+        }
+        extras_unclipped = extras;
+        std::vector<Extra> kept_extras;
+        for (const Extra& e : extras) {
+            Extra moved = e;
+            if (rnd_clip_segment(planes, xyz, moved.mA, moved.mB))
+                kept_extras.push_back(moved);
+        }
+        extras.swap(kept_extras);
+        for (std::size_t i = 0; i < rPrep.mPoints.mIds.size(); ++i) {
+            const std::size_t v =
+                static_cast<std::size_t>(rPrep.mPoints.mNodes[static_cast<std::size_t>(rPrep.mPoints.mStart[i])]);
+            if (rnd_point_kept(planes, &xyz[3 * v]))
+                clipped.mPoints.push_back(i);
+        }
+        keys.push_back("cutaway: " + std::to_string(planes.size()) + " plane" +
+                       (planes.size() == 1 ? "" : "s") + ", inside in " +
+                       rnd_hex(rOpt.mCutawayTint));
+    }
+    const std::size_t num_faces = clip_on ? clipped.mNumFaces : rPrep.mNumFaces;
+    const std::vector<std::int64_t>& f_start = clip_on ? clipped.mFStart : rPrep.mFStart;
+    const std::vector<std::int64_t>& f_nodes = clip_on ? clipped.mFNodes : rPrep.mFNodes;
+    const std::vector<std::int64_t>& f_ids = clip_on ? clipped.mFIds : rPrep.mFIds;
+    const std::vector<std::int64_t>& s_nodes = clip_on ? clipped.mFNodes : rPrep.mSNodes;
+    const std::vector<double>& f_normal = clip_on ? clipped.mFNormal : rPrep.mFNormal;
+    const std::vector<double>& v_normal = clip_on ? clipped.mVNormal : rPrep.mVNormal;
+    const std::vector<double>& face_values = clip_on ? clipped.mFValues : rPrep.mFValues;
+    std::vector<double> f_orient;
+    if (orientation)
+        f_orient = face_values;
+    const std::vector<double>& f_values = orientation ? f_orient : face_values;
+
+    // Project every vertex a primitive uses. The frame is fitted to the geometry
+    // as it was before any cut (the corners a cut adds lie inside it), so a
+    // cut-away keeps the size and place of the whole model instead of enlarging
+    // what is left.
     const std::size_t nv = xyz.size() / 3;
     std::vector<std::uint8_t> used(nv, 0);
-    for (std::int64_t v : s_nodes)
+    for (std::int64_t v : rPrep.mSNodes)
         used[static_cast<std::size_t>(v)] = 1;
     for (std::int64_t v : rPrep.mLines.mNodes)
         used[static_cast<std::size_t>(v)] = 1;
     for (std::int64_t v : rPrep.mPoints.mNodes)
         used[static_cast<std::size_t>(v)] = 1;
-    for (const Extra& e : extras) {
+    for (const Extra& e : clip_on ? extras_unclipped : extras) {
         used[static_cast<std::size_t>(e.mA)] = 1;
         used[static_cast<std::size_t>(e.mB)] = 1;
     }
@@ -165495,6 +165790,22 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     else
         light = cam.mW;
 
+    // Back faces seen through a cut-away are the inside: they take the tint.
+    auto faces_away = [&](std::size_t f) {
+        const double* nrm = &f_normal[3 * f];
+        double toward[3] = {cam.mW[0], cam.mW[1], cam.mW[2]};
+        if (perspective) {
+            double c[3] = {0, 0, 0};
+            const std::int64_t cnt = f_start[f + 1] - f_start[f];
+            for (std::int64_t k = f_start[f]; k < f_start[f + 1]; ++k)
+                for (std::size_t a = 0; a < 3; ++a)
+                    c[a] += xyz[3 * static_cast<std::size_t>(s_nodes[static_cast<std::size_t>(k)]) + a];
+            for (std::size_t a = 0; a < 3; ++a)
+                toward[a] = eye[a] - (cnt > 0 ? c[a] / static_cast<double>(cnt) : 0.0);
+        }
+        return nrm[0] * toward[0] + nrm[1] * toward[1] + nrm[2] * toward[2] < 0.0;
+    };
+
     // Triangles.
     std::size_t num_tris = 0;
     for (std::size_t f = 0; f < num_faces; ++f) {
@@ -165509,7 +165820,9 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
         const std::int64_t n = f_start[f + 1] - f_start[f];
         if (n < 3)
             continue;
-        const RndColor color = coloring.Map(f_values[f], rOpt.mFillColor);
+        RndColor color = coloring.Map(f_values[f], rOpt.mFillColor);
+        if (clip_on && !orientation && faces_away(f))
+            color = rOpt.mCutawayTint;
         const double face_i =
             rOpt.mShading == RenderShading::None ? 1.0 : rnd_lambert(&f_normal[3 * f], light, rOpt);
         auto corner_i = [&](std::int64_t v) {
@@ -165536,25 +165849,45 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
     }
 
     // Lines: the input's line cells, then the edge overlays and extra layers.
-    for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
-        detail::RasterLine line;
-        line.mA = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i])];
-        line.mB = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i]) + 1];
-        line.mColor = coloring.MapOther(l_values[i], rOpt.mLineColor);
-        line.mId = rPrep.mLines.mIds[i];
-        scene.mLines.push_back(line);
+    if (clip_on) {
+        for (const RndClipped::Line& cut : clipped.mLines) {
+            detail::RasterLine line;
+            line.mA = cut.mA;
+            line.mB = cut.mB;
+            line.mColor = coloring.MapOther(l_values[cut.mSource], rOpt.mLineColor);
+            line.mId = rPrep.mLines.mIds[cut.mSource];
+            scene.mLines.push_back(line);
+        }
+        scene.mLines.insert(scene.mLines.end(), clipped.mEdgeLines.begin(),
+                            clipped.mEdgeLines.end());
+    } else {
+        for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
+            detail::RasterLine line;
+            line.mA = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i])];
+            line.mB = rPrep.mLines.mNodes[static_cast<std::size_t>(rPrep.mLines.mStart[i]) + 1];
+            line.mColor = coloring.MapOther(l_values[i], rOpt.mLineColor);
+            line.mId = rPrep.mLines.mIds[i];
+            scene.mLines.push_back(line);
+        }
+        scene.mLines.insert(scene.mLines.end(), rPrep.mEdgeLines.begin(), rPrep.mEdgeLines.end());
     }
-    scene.mLines.insert(scene.mLines.end(), rPrep.mEdgeLines.begin(), rPrep.mEdgeLines.end());
     if (rPrep.mDeferCategoryEdges)
         rnd_category_edge_lines(rOpt, categorical, f_start, f_nodes, f_values, scene.mLines);
     for (const Extra& e : extras)
         scene.mLines.push_back({e.mA, e.mB, e.mColor, -1});
-    for (std::size_t i = 0; i < rPrep.mPoints.mIds.size(); ++i) {
+    auto add_point = [&](std::size_t i) {
         detail::RasterPoint point;
         point.mV = rPrep.mPoints.mNodes[static_cast<std::size_t>(rPrep.mPoints.mStart[i])];
         point.mColor = coloring.MapOther(p_values[i], rOpt.mLineColor);
         point.mId = rPrep.mPoints.mIds[i];
         scene.mPoints.push_back(point);
+    };
+    if (clip_on) {
+        for (std::size_t i : clipped.mPoints)
+            add_point(i);
+    } else {
+        for (std::size_t i = 0; i < rPrep.mPoints.mIds.size(); ++i)
+            add_point(i);
     }
 
     const detail::RasterTarget target =
@@ -165676,6 +166009,16 @@ RenderScene prepare_render(const Mesh& rMesh, const RenderOptions& rOpt) {
     RenderScene scene;
     scene.mpData = rnd_prepare(rMesh, rOpt);
     return scene;
+}
+
+bool render_scene_bounds(const RenderScene& rScene, std::array<double, 3>& rCentre,
+                         double& rRadius) {
+    if (!rScene.mpData)
+        return false;
+    const RndPrepared& prep = *static_cast<const RndPrepared*>(rScene.mpData.get());
+    rCentre = prep.mCentre;
+    rRadius = prep.mRadius;
+    return true;
 }
 
 Frame render_scene(const RenderScene& rScene, const RenderOptions& rOpt, bool FixedFit) {
