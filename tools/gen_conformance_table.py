@@ -154,7 +154,7 @@ def render_conformance() -> str:
         "",
         "Every registered format is meant to read and write, in both engines "
         "([roadmap §3](./roadmap.md#_3-reader-and-writer-parity)). A format that does only one is a tracked gap, "
-        "listed here with the roadmap item that closes it; `ansys_rst_cyclic` is the one exemption. "
+        "listed here with the roadmap item that closes it; `ansys_rst_cyclic` and `step` are the exemptions. "
         "`test_conformance.py` fails when a format reads without writing, or writes without reading, "
         "and is not listed here, or is listed and has gained the missing direction, in either the Python or the "
         "native registry.",

@@ -39,6 +39,9 @@
 // System includes
 #include <cctype>
 #include <cstddef>
+#include <cstring>
+#include <functional>
+#include <ostream>
 #include <string_view>
 #include <vector>
 
@@ -89,6 +92,41 @@ NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, 
  */
 void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
                     std::vector<unsigned char>& rOut);
+
+/**
+ * @brief Writes the bytes [Offset, Offset + N) of an array's raw payload to
+ * pDst[0 .. N). The streaming encoders below call it in fixed batches, so a
+ * writer can generate an array (a padded point array, a VTK connectivity
+ * stream) a window at a time instead of materialising it.
+ */
+using VtuFill = std::function<void(std::size_t Offset, std::size_t N, unsigned char* pDst)>;
+
+/**
+ * @brief Writes to @p rOs the text `vtu_encode_binary` returns for the
+ * @p nbytes bytes that @p rFill produces, without holding them, their blocks
+ * or their base64 text: the payload is generated and encoded a fixed batch at
+ * a time, and with @p codec only the compressed blocks are kept (the block
+ * header, which comes first, needs every compressed size). Byte-identical to
+ * `os << vtu_encode_binary(...)`. Roadmap §6.1 (doc/spikes.md).
+ */
+void vtu_write_binary_stream(std::ostream& rOs, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                             const VtuFill& rFill);
+
+/// `vtu_write_binary_stream` over bytes already in memory: what
+/// `os << vtu_encode_binary(pData, ...)` writes, without the compressed
+/// blocks' copies or the whole base64 string.
+inline void vtu_write_binary_bytes(std::ostream& rOs, const unsigned char* pData,
+                                   std::size_t nbytes, VtkCodec codec, std::size_t hsz) {
+    vtu_write_binary_stream(rOs, nbytes, codec, hsz,
+                            [pData](std::size_t Off, std::size_t N, unsigned char* pDst) {
+                                std::memcpy(pDst, pData + Off, N);
+                            });
+}
+
+/// `vtu_encode_raw` over the bytes @p rFill produces, generated a batch at a
+/// time straight into @p rOut (or, with @p codec, compressed from the batch).
+void vtu_encode_raw_stream(std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                           const VtuFill& rFill, std::vector<unsigned char>& rOut);
 
 /// `vtu_parse_binary(vtu_strip(...), ...)` over a view of the element's text.
 inline NDArray vtu_decode_bin_view(std::string_view Text, DType dt, VtkCodec codec,

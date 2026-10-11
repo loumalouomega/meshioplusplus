@@ -1,0 +1,193 @@
+"""Tests for the write-only ``step`` format (roadmap §6.3.5.1): a closed
+surface as an AP214 faceted B-rep. The engines write the same bytes; an
+OpenCASCADE check (skipped without ``OCP``, from ``pip install cadquery-ocp``)
+reads each file back as a valid solid of the right volume. The C++ behaviour
+is pinned in ``tests/cpp/test_step.cpp``."""
+
+import re
+
+import numpy as np
+import pytest
+
+import meshioplusplus as mio
+from meshioplusplus.step import _step
+
+from .analytic_surfaces import box_skin, cylinder, torus
+
+try:
+    from meshioplusplus import _core
+except ImportError:  # pragma: no cover - a pure-Python build
+    _core = None
+
+needs_core = pytest.mark.skipif(_core is None, reason="needs the compiled core")
+
+
+@pytest.fixture(autouse=True)
+def _fixed_provenance(monkeypatch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
+
+
+def _two_boxes():
+    b = box_skin(2)
+    pts = np.vstack([b.points, b.points + 3.0])
+    conn = np.vstack([b.cells[0].data, b.cells[0].data + len(b.points)])
+    return mio.Mesh(pts, [("quad", conn)])
+
+
+def _inward():
+    b = box_skin(2)
+    return mio.Mesh(b.points, [("quad", b.cells[0].data[:, ::-1].copy())])
+
+
+def _tet():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1.0]])
+    return mio.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3]]))])
+
+
+def _warped():
+    b = box_skin(1)
+    pts = b.points.copy()
+    pts[0] += [0.0, 0.0, -0.1]
+    return mio.Mesh(pts, b.cells)
+
+
+def _polygons():
+    b = box_skin(1)
+    return mio.Mesh(b.points, [("polygon", [row for row in b.cells[0].data])])
+
+
+CASES = {
+    "box": (box_skin(3), 1, 54, 1.0),
+    "torus": (torus(n=16, m=12), 1, 192, None),
+    "inward": (_inward(), 1, 24, 1.0),
+    "two": (_two_boxes(), 2, 48, 2.0),
+    "tet": (_tet(), 1, 4, 1.0 / 6.0),
+    "warped": (_warped(), 1, 7, None),
+    "polygons": (_polygons(), 1, 6, 1.0),
+}
+
+
+def _count(text, entity):
+    return len(re.findall(r"=" + entity + r"\(", text))
+
+
+def test_the_format_is_write_only():
+    formats = mio.formats()
+    assert "step" in formats["writable"] and "step" not in formats["readable"]
+    assert formats["extensions"][".step"] == ["step"]
+    assert formats["extensions"][".stp"] == ["step"]
+    with pytest.raises(Exception):
+        mio.read("nothing.step")
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_topology_is_closed_and_counted(tmp_path, name):
+    mesh, solids, faces, _volume = CASES[name]
+    path = tmp_path / "part.stp"
+    mio.write(path, mesh)
+    text = path.read_text()
+    assert text.startswith("ISO-10303-21;\n") and text.endswith("END-ISO-10303-21;\n")
+    assert _count(text, "MANIFOLD_SOLID_BREP") == solids
+    assert _count(text, "CLOSED_SHELL") == solids
+    assert _count(text, "ADVANCED_FACE") == faces
+    assert _count(text, "PLANE") == faces
+    # every edge curve is used by exactly two oriented edges, once each way
+    edges = re.findall(r"#(\d+)=EDGE_CURVE\(", text)
+    uses = re.findall(r"ORIENTED_EDGE\('',\*,\*,#(\d+),\.([TF])\.\)", text)
+    for e in edges:
+        senses = sorted(s for i, s in uses if i == e)
+        assert senses == ["F", "T"], e
+
+
+def test_a_cube_has_six_faces_twelve_edges_eight_vertices(tmp_path):
+    path = tmp_path / "cube.step"
+    mio.write(path, box_skin(1))
+    text = path.read_text()
+    assert (_count(text, "ADVANCED_FACE"), _count(text, "EDGE_CURVE")) == (6, 12)
+    assert _count(text, "VERTEX_POINT") == 8
+    assert "FILE_NAME('cube.step'," in text
+    assert "SI_UNIT(.MILLI.,.METRE.)" in text
+
+
+@needs_core
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_the_core_and_the_reference_write_the_same_bytes(tmp_path, name):
+    mesh = CASES[name][0]
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _core.step_write(str(tmp_path / "a" / "x.step"), mesh)
+    _step.write(str(tmp_path / "b" / "x.step"), mesh)
+    assert (tmp_path / "a" / "x.step").read_bytes() == (
+        tmp_path / "b" / "x.step"
+    ).read_bytes()
+
+
+def test_reals_carry_a_decimal_point():
+    assert _step._real(3.0) == "3."
+    assert _step._real(1e-5) == "1.0000000000000001E-05"
+    assert _step._real(1e20) == "1.E+20"
+    assert _step._real(-0.25) == "-0.25"
+    assert _step._real(2.0**-20) == "9.5367431640625E-07"
+
+
+@pytest.mark.parametrize("writer", ["core", "reference"])
+def test_an_open_surface_is_refused_naming_its_edges(tmp_path, writer):
+    if writer == "core" and _core is None:
+        pytest.skip("needs the compiled core")
+    write = (
+        (lambda p, m: _core.step_write(str(p), m)) if writer == "core" else _step.write
+    )
+    with pytest.raises(Exception, match=r"64 open.*first \(0, 1\)"):
+        write(tmp_path / "x.step", cylinder())
+
+
+@needs_core
+def test_both_engines_refuse_with_the_same_message(tmp_path):
+    messages = []
+    for write in (lambda p, m: _core.step_write(str(p), m), _step.write):
+        with pytest.raises(Exception) as info:
+            write(tmp_path / "x.step", cylinder())
+        messages.append(str(info.value))
+    assert messages[0] == messages[1]
+
+
+def test_lines_are_dropped_and_no_facets_is_refused(tmp_path):
+    b = box_skin(1)
+    mesh = mio.Mesh(b.points, [b.cells[0], ("line", np.array([[0, 1]]))])
+    mio.write(tmp_path / "a.step", mesh)
+    line = mio.Mesh(b.points, [("line", np.array([[0, 1]]))])
+    with pytest.raises(Exception, match="no surface facets"):
+        mio.write(tmp_path / "b.step", line)
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_opencascade_reads_a_valid_solid(tmp_path, name):
+    pytest.importorskip("OCP")
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    mesh, solids, _faces, volume = CASES[name]
+    path = tmp_path / "x.step"
+    mio.write(path, mesh)
+    reader = STEPControl_Reader()
+    assert reader.ReadFile(str(path)) == IFSelect_RetDone
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    assert BRepCheck_Analyzer(shape).IsValid()
+    found, total = 0, 0.0
+    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    while explorer.More():
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(explorer.Current(), props)
+        assert props.Mass() > 0.0
+        total += props.Mass()
+        found += 1
+        explorer.Next()
+    assert found == solids
+    if volume is not None:
+        assert total == pytest.approx(volume, rel=1e-9)

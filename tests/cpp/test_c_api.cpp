@@ -4532,6 +4532,57 @@ TEST(CApi, FeatureEdgesOfACube) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SegmentAndFitACube) {
+    mio_mesh* m = capi_cube_surface();
+    mio_segment_opts sopts;
+    mio_segment_opts_init(&sopts);
+    EXPECT_DOUBLE_EQ(sopts.feature_angle, 30.0);
+    EXPECT_EQ(sopts.min_patch_cells, 1);  // an all-zero struct is NOT the default
+    mio_segment_report sreport;
+    mio_mesh* seg = mio_segment(m, &sopts, &sreport);
+    ASSERT_NE(seg, nullptr) << mio_last_error();
+    EXPECT_EQ(sreport.num_patches, 6);  // the fan diagonals are flat
+    EXPECT_EQ(sreport.num_feature_edges, 12);
+    mio_regions* regions = mio_regions_create(seg);
+    EXPECT_EQ(mio_regions_count(regions), 6);
+    mio_regions_free(regions);
+
+    mio_fit_primitives_opts fopts;
+    mio_fit_primitives_opts_init(&fopts);
+    EXPECT_EQ(fopts.types, MIO_FIT_ALL_TYPES);
+    mio_fit_primitives_report freport;
+    mio_mesh* fit = mio_fit_primitives(seg, &fopts, &freport);
+    ASSERT_NE(fit, nullptr) << mio_last_error();
+    EXPECT_EQ(freport.num_patches, 6);
+    EXPECT_EQ(freport.num_plane, 6);
+    mio_mesh_free(fit);
+
+    // No label array on the raw cube; a bad tolerance; NULL meshes.
+    EXPECT_EQ(mio_fit_primitives(m, &fopts, nullptr), nullptr);
+    fopts.patch_data = "";
+    fopts.tolerance = 0.0;
+    EXPECT_EQ(mio_fit_primitives(m, &fopts, nullptr), nullptr);
+    sopts.feature_angle = 200.0;
+    EXPECT_EQ(mio_segment(m, &sopts, nullptr), nullptr);
+    EXPECT_EQ(mio_segment(nullptr, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_fit_primitives(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(seg);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, WritesAStepSolid) {
+    mio_mesh* m = capi_cube_surface();
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "meshioplusplus_capi_cube.step").string();
+    ASSERT_EQ(mio_write(path.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    std::ifstream in(path);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text.rfind("ISO-10303-21;", 0), 0u);
+    EXPECT_NE(text.find("MANIFOLD_SOLID_BREP"), std::string::npos);
+    std::filesystem::remove(path);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RegionAdjacencyBetweenCellBlocks) {
     mio_mesh* m = mio_mesh_create();
     const double points[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1};

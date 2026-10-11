@@ -279,8 +279,7 @@ std::vector<std::int64_t> reorder_sfc_perm(const std::vector<std::uint64_t>& rKe
 
 // Scatter the `nrows` rows of `rSrc` so that new row `perm[i]` gets old row `i`,
 // preserving dtype and column shape (a bandwidth-bound byte gather).
-NDArray reorder_scatter_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rPerm,
-                             std::size_t nrows) {
+NDArray reorder_scatter_rows(const NDArray& rSrc, const std::int64_t* pPerm, std::size_t nrows) {
     NDArray dst = NDArray::Uninit(rSrc.Dtype(), rSrc.Shape());
     if (nrows == 0)
         return dst;
@@ -288,7 +287,7 @@ NDArray reorder_scatter_rows(const NDArray& rSrc, const std::vector<std::int64_t
     const std::byte* src = rSrc.Data();
     std::byte* out = dst.Data();
     parallel_for_bw(nrows, [&](std::size_t i) {
-        std::memcpy(out + static_cast<std::size_t>(rPerm[i]) * row_bytes, src + i * row_bytes,
+        std::memcpy(out + static_cast<std::size_t>(pPerm[i]) * row_bytes, src + i * row_bytes,
                     row_bytes);
     });
     return dst;
@@ -318,11 +317,11 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
     }
 
     // Points scattered by the node permutation.
-    out.AssignPoints(reorder_scatter_rows(rMesh.Points(), node_perm, n));
+    out.AssignPoints(reorder_scatter_rows(rMesh.Points(), node_perm.data(), n));
 
     // Cell blocks: remap connectivity node ids, then reorder cells by min new
-    // node index. Keep each block's cell permutation for the cell_data below.
-    std::vector<std::vector<std::int64_t>> block_cell_perms;
+    // node index. Each block's cell permutation (res.mCellPermutations) also
+    // reorders its cell_data below.
     for (const auto cb : rMesh.CellRange()) {
         const std::size_t nc = cb.NumCells();
 
@@ -374,7 +373,9 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             for (std::size_t c = 0; c < nc; ++c)
                 cellorder[start[static_cast<std::size_t>(key[c])]++] = static_cast<std::int64_t>(c);
         }
-        std::vector<std::int64_t> cellperm(nc);  // old -> new
+        std::vector<std::int64_t>().swap(key);  // done with; release before the block copy
+        NDArray cp = NDArray::Uninit(DType::Int64, {nc});  // old -> new
+        std::int64_t* cellperm = cp.As<std::int64_t>();
         for (std::size_t p = 0; p < nc; ++p)
             cellperm[static_cast<std::size_t>(cellorder[p])] = static_cast<std::int64_t>(p);
 
@@ -409,6 +410,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                     rows[++row] = static_cast<std::int64_t>(at);
                 }
             });
+            std::vector<std::int64_t>().swap(nodes);
             out.AddPolyhedronBlock(std::string(cb.Type()), std::move(flat), std::move(rows),
                                    std::move(faces));
         } else if (cb.IsRagged()) {
@@ -440,17 +442,14 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             out.AddCellBlock(std::string(cb.Type()), std::move(block));
         }
 
-        NDArray cp = NDArray::Uninit(DType::Int64, {nc});
-        std::memcpy(cp.Data(), cellperm.data(), nc * sizeof(std::int64_t));
         res.mCellPermutations.push_back(std::move(cp));
-        block_cell_perms.push_back(std::move(cellperm));
     }
 
     // point_data: scatter rows that align with the point table; copy the rest.
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         if (detail::rows(a) == n)
-            out.AddPointData(name, reorder_scatter_rows(a, node_perm, n));
+            out.AddPointData(name, reorder_scatter_rows(a, node_perm.data(), n));
         else
             out.AddPointData(name, reorder_owned_copy(a));
     }
@@ -462,8 +461,10 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
         blocks.reserve(nb);
         for (std::size_t b = 0; b < nb; ++b) {
             const NDArray& a = rMesh.CellData(name, b);
-            if (b < block_cell_perms.size() && detail::rows(a) == block_cell_perms[b].size())
-                blocks.push_back(reorder_scatter_rows(a, block_cell_perms[b], detail::rows(a)));
+            if (b < res.mCellPermutations.size() &&
+                detail::rows(a) == res.mCellPermutations[b].Size())
+                blocks.push_back(reorder_scatter_rows(
+                    a, res.mCellPermutations[b].As<std::int64_t>(), detail::rows(a)));
             else
                 blocks.push_back(reorder_owned_copy(a));
         }

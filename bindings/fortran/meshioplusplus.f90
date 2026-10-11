@@ -219,6 +219,52 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_segment_opts`. Field order/types are ABI; the
+    !> defaults mirror `mio_segment_opts_init` (called anyway).
+    type, bind(c) :: mio_segment_opts_t
+        type(c_ptr) :: region = c_null_ptr
+        type(c_ptr) :: prefix = c_null_ptr
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: normal_tolerance = 0.0_c_double
+        real(c_double) :: curvature_tolerance = 0.0_c_double
+        integer(c_int64_t) :: min_patch_cells = 1
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_segment_report`.
+    type, bind(c) :: mio_segment_report_t
+        integer(c_int64_t) :: num_patches = 0
+        integer(c_int64_t) :: num_merged = 0
+        integer(c_int64_t) :: num_feature_edges = 0
+        integer(c_int64_t) :: num_boundary_edges = 0
+        integer(c_int64_t) :: num_non_manifold_edges = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_primitives_opts` (`types` is the C
+    !> `uint32_t` bit mask, `1 << type`; 62 selects every primitive).
+    type, bind(c) :: mio_fit_primitives_opts_t
+        type(c_ptr) :: patch_data = c_null_ptr
+        real(c_double) :: tolerance = 1.0e-3_c_double
+        real(c_double) :: min_inlier_fraction = 0.9_c_double
+        integer(c_int32_t) :: relative = 1
+        integer(c_int32_t) :: types = 62
+        integer(c_int64_t) :: max_iterations = 50
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_primitives_report`.
+    type, bind(c) :: mio_fit_primitives_report_t
+        integer(c_int64_t) :: num_patches = 0
+        integer(c_int64_t) :: num_plane = 0
+        integer(c_int64_t) :: num_sphere = 0
+        integer(c_int64_t) :: num_cylinder = 0
+        integer(c_int64_t) :: num_cone = 0
+        integer(c_int64_t) :: num_torus = 0
+        integer(c_int64_t) :: num_unfitted = 0
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
     !> Interop mirror of C `mio_hausdorff_opts`.
     type, bind(c) :: mio_hausdorff_opts_t
         type(c_ptr) :: region_a = c_null_ptr
@@ -930,6 +976,8 @@ module meshioplusplus
         procedure :: curvature => mesh_curvature
         procedure :: normals => mesh_normals
         procedure :: feature_edges => mesh_feature_edges
+        procedure :: segment => mesh_segment
+        procedure :: fit_primitives => mesh_fit_primitives
         procedure :: render => mesh_render
         procedure :: render_text => mesh_render_text
         procedure :: write_snapshot => mesh_write_snapshot
@@ -1973,6 +2021,34 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_feature_edges_opts_t), intent(in) :: opts
             type(mio_feature_edges_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_segment_opts_init(opts) bind(c, name="mio_segment_opts_init")
+            import :: mio_segment_opts_t
+            type(mio_segment_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_segment(h, opts, report) bind(c, name="mio_segment") result(r)
+            import :: c_ptr, mio_segment_opts_t, mio_segment_report_t
+            type(c_ptr), value :: h
+            type(mio_segment_opts_t), intent(in) :: opts
+            type(mio_segment_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_fit_primitives_opts_init(opts) &
+                bind(c, name="mio_fit_primitives_opts_init")
+            import :: mio_fit_primitives_opts_t
+            type(mio_fit_primitives_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_fit_primitives(h, opts, report) &
+                bind(c, name="mio_fit_primitives") result(r)
+            import :: c_ptr, mio_fit_primitives_opts_t, mio_fit_primitives_report_t
+            type(c_ptr), value :: h
+            type(mio_fit_primitives_opts_t), intent(in) :: opts
+            type(mio_fit_primitives_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -5317,6 +5393,110 @@ contains
         if (present(num_boundary)) num_boundary = int(report%num_boundary, int64)
         if (present(num_non_manifold)) num_non_manifold = int(report%num_non_manifold, int64)
         if (present(num_inconsistent)) num_inconsistent = int(report%num_inconsistent, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Split this surface into smooth patches by region growing, bounded by its
+    !> feature edges: the input plus cell data `segment:patch`, field data
+    !> `segment:adjacency` and one cell region per patch (`<prefix>:<k>`).
+    !> `feature_angle` defaults to 30; the tolerances default to off. See
+    !> doc/segment.md.
+    function mesh_segment(self, feature_angle, normal_tolerance, curvature_tolerance, &
+                          min_patch_cells, region, prefix, num_patches, num_merged, &
+                          num_feature_edges, num_boundary_edges, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: feature_angle, normal_tolerance
+        real(real64), intent(in), optional :: curvature_tolerance
+        integer(int64), intent(in), optional :: min_patch_cells
+        character(*), intent(in), optional :: region, prefix
+        integer(int64), intent(out), optional :: num_patches, num_merged
+        integer(int64), intent(out), optional :: num_feature_edges, num_boundary_edges
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_segment_opts_t) :: opts
+        type(mio_segment_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf, prefix_buf
+
+        call c_mio_segment_opts_init(opts)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(normal_tolerance)) &
+            opts%normal_tolerance = real(normal_tolerance, c_double)
+        if (present(curvature_tolerance)) &
+            opts%curvature_tolerance = real(curvature_tolerance, c_double)
+        if (present(min_patch_cells)) opts%min_patch_cells = int(min_patch_cells, c_int64_t)
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            opts%region = c_loc(region_buf(1:1))
+        end if
+        if (present(prefix)) then
+            prefix_buf = trim(prefix)//c_null_char
+            opts%prefix = c_loc(prefix_buf(1:1))
+        end if
+        res = c_mio_segment(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('segment', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_patches)) num_patches = int(report%num_patches, int64)
+        if (present(num_merged)) num_merged = int(report%num_merged, int64)
+        if (present(num_feature_edges)) num_feature_edges = int(report%num_feature_edges, int64)
+        if (present(num_boundary_edges)) &
+            num_boundary_edges = int(report%num_boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Fit a plane, sphere, cylinder, cone or torus to each patch of this
+    !> surface: the input plus cell data `fit:type`, `fit:rms`, `fit:max` and
+    !> per-patch field data `fit:patch_*`. `patch_data` names the label array
+    !> (default `segment:patch`; '' fits the whole surface); `types` is the
+    !> bit mask `2**type` (default 62, every primitive). See doc/fit_primitives.md.
+    function mesh_fit_primitives(self, patch_data, tolerance, relative, &
+                                 min_inlier_fraction, types, max_iterations, num_patches, &
+                                 num_plane, num_sphere, num_cylinder, num_cone, num_torus, &
+                                 num_unfitted, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: patch_data
+        real(real64), intent(in), optional :: tolerance, min_inlier_fraction
+        logical, intent(in), optional :: relative
+        integer, intent(in), optional :: types
+        integer(int64), intent(in), optional :: max_iterations
+        integer(int64), intent(out), optional :: num_patches, num_plane, num_sphere
+        integer(int64), intent(out), optional :: num_cylinder, num_cone, num_torus, num_unfitted
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_fit_primitives_opts_t) :: opts
+        type(mio_fit_primitives_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: patch_buf
+
+        call c_mio_fit_primitives_opts_init(opts)
+        if (present(patch_data)) then
+            patch_buf = trim(patch_data)//c_null_char
+            opts%patch_data = c_loc(patch_buf(1:1))
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(min_inlier_fraction)) &
+            opts%min_inlier_fraction = real(min_inlier_fraction, c_double)
+        if (present(relative)) opts%relative = merge(1_c_int32_t, 0_c_int32_t, relative)
+        if (present(types)) opts%types = int(types, c_int32_t)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+        res = c_mio_fit_primitives(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('fit_primitives', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_patches)) num_patches = int(report%num_patches, int64)
+        if (present(num_plane)) num_plane = int(report%num_plane, int64)
+        if (present(num_sphere)) num_sphere = int(report%num_sphere, int64)
+        if (present(num_cylinder)) num_cylinder = int(report%num_cylinder, int64)
+        if (present(num_cone)) num_cone = int(report%num_cone, int64)
+        if (present(num_torus)) num_torus = int(report%num_torus, int64)
+        if (present(num_unfitted)) num_unfitted = int(report%num_unfitted, int64)
         call clear_status(stat, errmsg)
     end function
 

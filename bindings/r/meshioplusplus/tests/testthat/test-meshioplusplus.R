@@ -1328,6 +1328,16 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(fe$num_boundary, 0)
   expect_error(mio_feature_edges(m, feature_angle = 200))
 
+  sg <- mio_segment(m)
+  on.exit(mio_release(sg$mesh), add = TRUE)
+  expect_equal(sg$num_patches, 6)
+  fp <- mio_fit_primitives(sg$mesh)
+  on.exit(mio_release(fp$mesh), add = TRUE)
+  expect_equal(fp$num_plane, 6)
+  expect_error(mio_segment(m, feature_angle = 200))
+  expect_error(mio_fit_primitives(m))
+  expect_error(mio_fit_primitives(sg$mesh, types = "blob"))
+
   h <- mio_hausdorff_distance(m, m, face_samples = 2)
   expect_equal(h$distance, 0)
   expect_equal(h$num_samples_a, 8 + 12 * 4)

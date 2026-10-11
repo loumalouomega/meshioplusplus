@@ -42,6 +42,7 @@ from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._feature_edges import feature_edges
+from ._fit_primitives import TYPES, fit_primitives, types_mask
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
 from ._hessian import hessian
@@ -65,6 +66,7 @@ from ._render import snapshot
 from ._reorder import reorder
 from ._repair import repair
 from ._sdf import compute_sdf
+from ._segment import segment
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
@@ -157,6 +159,22 @@ _OP_TABLE = {
         "NonManifold",
         "Inconsistent",
         "Region",
+    ),
+    "Segment": (
+        "FeatureAngle",
+        "NormalTolerance",
+        "CurvatureTolerance",
+        "MinPatchCells",
+        "Region",
+        "Prefix",
+    ),
+    "FitPrimitives": (
+        "PatchData",
+        "Tolerance",
+        "Relative",
+        "MinInlierFraction",
+        "Types",
+        "MaxIterations",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
     "RegionAdjacency": ("Regions",),
@@ -952,6 +970,44 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumBoundary"] = report["num_boundary"]
         entry["NumNonManifold"] = report["num_non_manifold"]
         entry["NumInconsistent"] = report["num_inconsistent"]
+    elif op == "Segment":
+        mesh, report = segment(
+            mesh,
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            normal_tolerance=_number(step, "NormalTolerance", 0.0),
+            curvature_tolerance=_number(step, "CurvatureTolerance", 0.0),
+            min_patch_cells=int(_number(step, "MinPatchCells", 1.0)),
+            region=_text(step, "Region", ""),
+            prefix=_text(step, "Prefix", "patch"),
+            return_report=True,
+        )
+        entry["NumPatches"] = report["num_patches"]
+        entry["NumMerged"] = report["num_merged"]
+        entry["NumFeatureEdges"] = report["num_feature_edges"]
+        entry["NumBoundaryEdges"] = report["num_boundary_edges"]
+    elif op == "FitPrimitives":
+        types = _svec(step, "Types")
+        try:
+            mask_types = tuple(types) if types else TYPES[1:]
+            if types:
+                types_mask(mask_types)
+        except ValueError:
+            bad = next(t for t in types if t not in TYPES[1:])
+            raise _err(op, f"unknown primitive type '{bad}' in 'Types'") from None
+        mesh, report = fit_primitives(
+            mesh,
+            patch_data=_text(step, "PatchData", "segment:patch"),
+            tolerance=_number(step, "Tolerance", 1e-3),
+            relative=_flag(step, "Relative", True),
+            min_inlier_fraction=_number(step, "MinInlierFraction", 0.9),
+            types=mask_types,
+            max_iterations=int(_number(step, "MaxIterations", 50.0)),
+            return_report=True,
+        )
+        entry["NumPatches"] = report["num_patches"]
+        for t in TYPES[1:]:
+            entry["Num" + t.capitalize()] = report["num_" + t]
+        entry["NumUnfitted"] = report["num_unfitted"]
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and
         # the frame is written to `Path` (.png, .txt, .ansi, .html or .cast).

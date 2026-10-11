@@ -24,6 +24,7 @@ from . import (
     _extract_surface,
     _feature_edges,
     _find_interface,
+    _fit_primitives,
     _grid_transfer,
     _guard,
     _hausdorff,
@@ -49,6 +50,7 @@ from . import (
     _repair,
     _resample,
     _sdf,
+    _segment,
     _shrinkwrap,
     _slice,
     _smooth,
@@ -141,6 +143,20 @@ def main(argv=None):
     )
     _feature_edges.add_args(parser)
     parser.set_defaults(func=_feature_edges.feature_edges_cmd)
+
+    parser = subparsers.add_parser(
+        "segment",
+        help="Split a surface into smooth patches bounded by its feature edges",
+    )
+    _segment.add_args(parser)
+    parser.set_defaults(func=_segment.segment_cmd)
+
+    parser = subparsers.add_parser(
+        "fit-primitives",
+        help="Fit a plane, sphere, cylinder, cone or torus to each patch",
+    )
+    _fit_primitives.add_args(parser)
+    parser.set_defaults(func=_fit_primitives.fit_primitives_cmd)
 
     parser = subparsers.add_parser(
         "region-adjacency",

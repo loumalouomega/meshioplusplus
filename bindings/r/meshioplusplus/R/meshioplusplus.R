@@ -1230,6 +1230,73 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
   )
 }
 
+#' Split a surface into smooth patches
+#'
+#' Region growing over the cells of a surface, bounded by its feature edges:
+#' a patch grows from its lowest-numbered cell across every edge two cells
+#' share whose dihedral angle is at most `feature_angle`, and -- when set --
+#' whose cell stays within `normal_tolerance` (degrees) of the seed's normal and
+#' `curvature_tolerance` (1/length) of the patch's mean curvature estimate. Patches
+#' smaller than `min_patch_cells` merge into the neighbour they share the most
+#' edges with. See `doc/segment.md`.
+#'
+#' @param mesh A surface `mio_mesh`.
+#' @param feature_angle The largest dihedral angle, in degrees, still crossed.
+#' @param normal_tolerance,curvature_tolerance The growth tolerances; 0 is off.
+#' @param min_patch_cells The smallest patch kept on its own.
+#' @param region Restrict to this named cell region; `""` takes every cell.
+#' @param prefix The patch regions are named `<prefix>:<k>`.
+#' @return A list of `mesh` (the input plus cell data `segment:patch`, field
+#'   data `segment:adjacency` and one cell region per patch), `num_patches`,
+#'   `num_merged`, `num_feature_edges` and `num_boundary_edges`.
+#' @export
+mio_segment <- function(mesh, feature_angle = 30, normal_tolerance = 0,
+                        curvature_tolerance = 0, min_patch_cells = 1, region = "",
+                        prefix = "patch") {
+  .Call(
+    R_mio_segment, mesh, as.numeric(feature_angle), as.numeric(normal_tolerance),
+    as.numeric(curvature_tolerance), as.numeric(min_patch_cells), as.character(region),
+    as.character(prefix)
+  )
+}
+
+#' Fit analytic primitives to the patches of a surface
+#'
+#' Fits a plane, sphere, cylinder, cone or torus to each patch (the
+#' `segment:patch` labels by default) and keeps the first type, in that order,
+#' whose RMS orthogonal distance is within `tolerance` with at least
+#' `min_inlier_fraction` of the points inside it; otherwise the patch is
+#' reported unfitted with its best residual. See `doc/fit_primitives.md`.
+#'
+#' @param mesh A surface `mio_mesh` carrying the patch labels.
+#' @param patch_data The integer cell-data label; `""` fits the whole surface.
+#' @param tolerance The acceptance tolerance.
+#' @param relative Whether `tolerance` is a fraction of each patch's
+#'   bounding-box diagonal.
+#' @param min_inlier_fraction The share of points that must be within tolerance.
+#' @param types The primitives to try.
+#' @param max_iterations The Levenberg-Marquardt iteration cap per fit.
+#' @return A list of `mesh` (with cell data `fit:type`, `fit:rms`, `fit:max`
+#'   and field data `fit:patch_*`), `num_patches`, `num_plane`, `num_sphere`,
+#'   `num_cylinder`, `num_cone`, `num_torus` and `num_unfitted`.
+#' @export
+mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1e-3,
+                               relative = TRUE, min_inlier_fraction = 0.9,
+                               types = c("plane", "sphere", "cylinder", "cone", "torus"),
+                               max_iterations = 50) {
+  known <- c("plane", "sphere", "cylinder", "cone", "torus")
+  bad <- setdiff(types, known)
+  if (length(bad) > 0) {
+    stop("meshio++: fit_primitives: unknown primitive type ", bad[[1]])
+  }
+  mask <- sum(2^match(unique(types), known))
+  .Call(
+    R_mio_fit_primitives, mesh, as.character(patch_data), as.numeric(tolerance),
+    isTRUE(relative), as.numeric(min_inlier_fraction), as.numeric(mask),
+    as.numeric(max_iterations)
+  )
+}
+
 #' Render a mesh into an RGBA frame
 #'
 #' A deterministic software rasterizer: no display, GPU or windowing library, and

@@ -825,6 +825,14 @@ The parallel backend is a compile-time choice, so `tools/bench_ops.sh` configure
 CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh benchmark/results_ops.csv "SEQ OPENMP TBB" "1 2 4 8" -- --tier S --tier M
 ```
 
+### Tier XL
+
+`--tier XL` (10,368,000 tetrahedra) builds a derived input only when a selected row reads it, so `--ops` runs fit in memory; before, the setup held every derived copy of the cube at once and was killed at 13.6 GB on a 15 GiB machine. Every row was run alone at XL, one thread on the `SEQ` backend, with its peak resident memory: [`benchmark/xl_ops_seq.csv`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/xl_ops_seq.csv), and the write-side memory of one XL mesh per format in [`benchmark/xl_writes.csv`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/xl_writes.csv). The table and what it decided for streaming writes and out-of-core operations are in the [long-run findings](./spikes.md#scale-at-10m-cells). The VTU writer's footprint and the ragged `reorder` and `simplexify` rows were then fixed with every digest unchanged; the CSV files carry the new measurements, and the before and after are under [what landed](./spikes.md#what-landed).
+
+```sh
+build/bench-ops-seq/meshioplusplus_bench_ops --tier XL --runs 1 --ops feature_edges
+```
+
 ### Determinism check
 
 Every operation's output is meant to be byte-identical across parallel backends and thread counts; the serial phases in several operations exist to guarantee that. `--hash` makes each row carry a 64-bit digest of its result — points, connectivity, point/cell/field data and regions in block and sorted-name order, plus the result's index maps and counters — taken from the untimed warmup run, and `tools/bench_ops.sh` then fails if one row's digest differs between any two backends or thread counts. With `BASELINE=<earlier.csv>` it also fails if a digest differs from that earlier sweep, which is how a change that must not alter output proves it:

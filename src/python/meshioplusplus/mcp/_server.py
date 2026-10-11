@@ -1440,6 +1440,90 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def segment(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        feature_angle: float = 30.0,
+        normal_tolerance: float = 0.0,
+        curvature_tolerance: float = 0.0,
+        min_patch_cells: int = 1,
+        region: str = "",
+        prefix: str = "patch",
+    ) -> dict:
+        """Split a surface into smooth patches -- the first step of turning a
+        triangle skin (an STL, a scan) into a CAD model.
+
+        A patch grows from its lowest-numbered cell across every edge two
+        cells share whose dihedral angle is at most feature_angle degrees
+        (default 30); open, non-manifold and sharp edges are never crossed.
+        normal_tolerance (degrees) also bounds a cell's normal against its
+        seed's, and curvature_tolerance (1/length) its curvature estimate
+        against the patch's mean so far -- both off at 0. Patches with fewer than
+        min_patch_cells cells merge into the neighbour sharing the most edges.
+        The mesh is written unchanged plus cell data segment:patch, field data
+        segment:adjacency (rows a, b, shared edges) and one cell region per
+        patch named <prefix>:<k>. Reports num_patches, num_merged,
+        num_feature_edges, num_boundary_edges and num_non_manifold_edges.
+        Feed the output to fit_primitives."""
+        return _guard(
+            _tools.tool_segment,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            feature_angle=feature_angle,
+            normal_tolerance=normal_tolerance,
+            curvature_tolerance=curvature_tolerance,
+            min_patch_cells=min_patch_cells,
+            region=region,
+            prefix=prefix,
+        )
+
+    @server.tool()
+    def fit_primitives(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        patch_data: str = "segment:patch",
+        tolerance: float = 1e-3,
+        relative: bool = True,
+        min_inlier_fraction: float = 0.9,
+        types: Optional[List[str]] = None,
+        max_iterations: int = 50,
+    ) -> dict:
+        """Fit a plane, sphere, cylinder, cone or torus to each patch of a
+        surface and report how well it fits -- a recovered radius, axis or
+        plane normal is a measurement.
+
+        Patches are the integer cell-data label patch_data (segment:patch,
+        written by the segment tool; "" fits the whole surface as one patch).
+        A type is accepted when its RMS orthogonal distance is at most
+        tolerance (a fraction of the patch's bounding-box diagonal unless
+        relative is false) and at least min_inlier_fraction of the points lie
+        within it; the first accepted of plane, sphere, cylinder, cone, torus
+        wins (types narrows the list), else the patch is reported unfitted
+        with its best residual. The mesh is written with cell data fit:type /
+        fit:rms / fit:max and field data fit:patch_*; the report lists each
+        patch's type, params (x, y, z, ax, ay, az, r1, r2, angle_deg, 0), rms,
+        max and fraction, plus counts per type."""
+        return _guard(
+            _tools.tool_fit_primitives,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            patch_data=patch_data,
+            tolerance=tolerance,
+            relative=relative,
+            min_inlier_fraction=min_inlier_fraction,
+            types=types,
+            max_iterations=max_iterations,
+        )
+
+    @server.tool()
     def region_adjacency(
         input_path: str,
         output_path: str,

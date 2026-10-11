@@ -39,6 +39,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
@@ -376,6 +377,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
+        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.2).
+        {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
         // writes); the flat bindings emit them with the fixed default styling
@@ -601,7 +604,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".post.bin", "gid"},
         {".post.h5", "gid"},
         {".ply", "ply"},
+        {".step", "step"},
         {".stl", "stl"},
+        {".stp", "step"},
         {".su2", "su2"},
         {".glb", "gltf"},
         {".gltf", "gltf"},

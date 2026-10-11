@@ -103,6 +103,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -326,6 +328,12 @@ MIO_ABI_LAYOUT(meshioplusplus::HausdorffResult, 120, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegionSelector, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegionEdit, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
+
+// The skin-to-CAD options (roadmap §6.3), passed by const-ref through the
+// exported `segment()` and `fit_primitives()`, pinned from the release that
+// introduces them. Their results embed a Mesh and are not pinned.
+MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 
 // The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
 // TextOptions and SnapshotOptions are passed by const-ref through the exported

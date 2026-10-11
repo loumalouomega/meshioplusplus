@@ -1320,6 +1320,31 @@ def _unit_cube_quads():
     )
 
 
+def test_segment_fit_and_step(tmp_path):
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    seg = str(tmp_path / "seg.vtu")
+    out = _dump(_tools.tool_segment(src, seg))
+    assert out["num_patches"] == 6
+    assert out["num_feature_edges"] == 12
+    assert "segment:patch" in out["cell_data"]
+    fit = _dump(_tools.tool_fit_primitives(seg, str(tmp_path / "fit.vtu")))
+    assert fit["num_plane"] == 6
+    assert [p["type"] for p in fit["patches"]] == ["plane"] * 6
+    narrowed = _dump(
+        _tools.tool_fit_primitives(
+            src, str(tmp_path / "fit2.vtu"), patch_data="", types=["plane"]
+        )
+    )
+    assert narrowed["num_unfitted"] == 1
+    with pytest.raises(ValueError, match="180"):
+        _tools.tool_segment(src, str(tmp_path / "x.vtu"), feature_angle=200)
+    # the faceted STEP writer reaches MCP through the format registry
+    conv = _dump(_tools.tool_convert(src, str(tmp_path / "cube.step")))
+    assert conv["output_path"].endswith("cube.step")
+    assert "step" in _tools.tool_formats()["writable"]
+
+
 def test_feature_edges_and_hausdorff(tmp_path):
     src = str(tmp_path / "cube.vtu")
     meshioplusplus.write(src, _unit_cube_quads())

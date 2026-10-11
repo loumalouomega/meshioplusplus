@@ -4264,6 +4264,123 @@ typedef struct mio_feature_edges_report {
 MIO_API mio_mesh* mio_feature_edges(const mio_mesh* mesh, const mio_feature_edges_opts* opts,
                                     mio_feature_edges_report* report);
 
+/* ---------------------------------------------------------------------
+ * Skin to CAD (roadmap §6.3): smooth patches and primitive fits. See
+ * doc/segment.md, doc/fit_primitives.md and doc/cad_fit.md.
+ * --------------------------------------------------------------------- */
+
+/**
+ * Options for mio_segment. Same ABI rules as mio_feature_edges_opts; always
+ * initialize through mio_segment_opts_init(): the feature angle defaults to 30
+ * and min_patch_cells to 1, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_segment_opts {
+    /** Restrict to this named cell region; NULL or "" takes every cell. */
+    const char* region;
+    /** The patch regions are named "<prefix>:<k>"; NULL or "" means "patch". */
+    const char* prefix;
+    /** The largest dihedral angle, in degrees, still crossed; [0, 180]. */
+    double feature_angle;
+    /** The largest angle, in degrees, between a cell's normal and its seed's; 0 = off. */
+    double normal_tolerance;
+    /** The largest curvature-estimate difference from the patch mean (1/length); 0 = off. */
+    double curvature_tolerance;
+    /** Patches with fewer cells merge into a neighbour; >= 1. */
+    int64_t min_patch_cells;
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_segment_opts;
+
+/** Initialize segment options: 30 degrees, no tolerances, min_patch_cells 1. */
+MIO_API void mio_segment_opts_init(mio_segment_opts* opts);
+
+/** What mio_segment found. */
+typedef struct mio_segment_report {
+    int64_t num_patches;
+    int64_t num_merged;
+    int64_t num_feature_edges;
+    int64_t num_boundary_edges;
+    int64_t num_non_manifold_edges;
+    int64_t reserved[3]; /**< must be zero; room for additive growth */
+} mio_segment_report;
+
+/**
+ * Split a surface into smooth patches by region growing, bounded by its feature
+ * edges. Returns the input unchanged plus Int64 cell data "segment:patch"
+ * (-1 off the surface), Int64 field data "segment:adjacency" ((m, 3): patch a,
+ * patch b, shared edges) and one cell region per patch.
+ *
+ * @param mesh   a surface mesh (volume blocks fail; take the skin first).
+ * @param opts   options; NULL means every mio_segment_opts_init() default.
+ * @param report optional out: the counts.
+ * @return the annotated mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_segment(const mio_mesh* mesh, const mio_segment_opts* opts,
+                              mio_segment_report* report);
+
+/** The values of "fit:type" / "fit:patch_type"; `1 << type` selects a type. */
+typedef enum mio_fit_type {
+    MIO_FIT_NONE = 0,
+    MIO_FIT_PLANE = 1,
+    MIO_FIT_SPHERE = 2,
+    MIO_FIT_CYLINDER = 3,
+    MIO_FIT_CONE = 4,
+    MIO_FIT_TORUS = 5
+} mio_fit_type;
+
+/** Every primitive: `(1 << MIO_FIT_PLANE) | ... | (1 << MIO_FIT_TORUS)`. */
+#define MIO_FIT_ALL_TYPES 0x3Eu
+
+/**
+ * Options for mio_fit_primitives. Same ABI rules as above; always initialize
+ * through mio_fit_primitives_opts_init().
+ */
+typedef struct mio_fit_primitives_opts {
+    /** The Int cell-data patch label; NULL means "segment:patch", "" the whole surface. */
+    const char* patch_data;
+    /** The acceptance tolerance on the orthogonal distance; > 0. */
+    double tolerance;
+    /** The share of a patch's points that must lie within tolerance; [0, 1]. */
+    double min_inlier_fraction;
+    /** Nonzero: tolerance is a fraction of each patch's bounding-box diagonal. */
+    int32_t relative;
+    /** The types to try, as `1 << mio_fit_type` bits; MIO_FIT_ALL_TYPES by default. */
+    uint32_t types;
+    /** The Levenberg-Marquardt iteration cap per fit; >= 1. */
+    int64_t max_iterations;
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_fit_primitives_opts;
+
+/** Initialize fit options: tolerance 1e-3 relative, 0.9 inliers, every type, 50 iterations. */
+MIO_API void mio_fit_primitives_opts_init(mio_fit_primitives_opts* opts);
+
+/** How many patches took each type. */
+typedef struct mio_fit_primitives_report {
+    int64_t num_patches;
+    int64_t num_plane;
+    int64_t num_sphere;
+    int64_t num_cylinder;
+    int64_t num_cone;
+    int64_t num_torus;
+    int64_t num_unfitted;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_fit_primitives_report;
+
+/**
+ * Fit a plane, sphere, cylinder, cone or torus to each patch of a surface. Returns
+ * the input unchanged plus cell data "fit:type" (Int64, a mio_fit_type or -1),
+ * "fit:rms" and "fit:max", and per-patch field data "fit:patch_id",
+ * "fit:patch_type", "fit:patch_params" ((m, 10) Float64), "fit:patch_rms",
+ * "fit:patch_max", "fit:patch_fraction" and "fit:patch_tolerance". See
+ * doc/fit_primitives.md for the parameter layout.
+ *
+ * @param mesh   a surface mesh carrying the patch labels.
+ * @param opts   options; NULL means every mio_fit_primitives_opts_init() default.
+ * @param report optional out: the per-type counts.
+ * @return the annotated mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
+                                     mio_fit_primitives_report* report);
+
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero
  * struct IS the default here, but initialize through mio_hausdorff_opts_init().

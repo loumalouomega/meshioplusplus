@@ -207,6 +207,11 @@ struct CcellsOutBlock {
     std::vector<std::int64_t> mFaceOffsets;
     bool mIsRagged = false;
     bool mIsPolyhedron = false;
+    // A rectangular block already in its final (n, mNodesPerCell) Int64 array,
+    // written in place by simplexify instead of staged in mConn and copied:
+    // at 10M polyhedra the staged copy alone was 4 GB (roadmap §6.1).
+    NDArray mReady;
+    bool mHasReady = false;
 };
 
 // Stage an input block unchanged (used for every pass-through case).
@@ -281,6 +286,12 @@ void ccells_emit_block(Mesh& rOut, CcellsOutBlock& rBlock,
         else
             rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mFlat),
                                  std::move(rBlock.mRowOffsets));
+    } else if (rBlock.mHasReady) {
+        if (pRemap) {
+            std::int64_t* ids = rBlock.mReady.As<std::int64_t>();
+            parallel_for_bw(rBlock.mReady.Size(), [&](std::size_t i) { ids[i] = map(ids[i]); });
+        }
+        rOut.AddCellBlock(rBlock.mType, std::move(rBlock.mReady));
     } else {
         const std::size_t npc = rBlock.mNodesPerCell;
         const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
@@ -298,6 +309,11 @@ void ccells_visit_block_nodes(const CcellsOutBlock& rBlock, TFunc&& rFunc) {
         for (std::int64_t id : rBlock.mFlat)
             rFunc(id);
     } else {
+        if (rBlock.mHasReady) {
+            const std::int64_t* ids = rBlock.mReady.As<std::int64_t>();
+            for (std::size_t i = 0; i < rBlock.mReady.Size(); ++i)
+                rFunc(ids[i]);
+        }
         for (std::int64_t id : rBlock.mConn)
             rFunc(id);
     }
@@ -503,6 +519,9 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     staged.reserve(nblocks);
     std::vector<std::vector<std::int64_t>> first_child(nblocks);
     std::vector<std::vector<std::int64_t>> parent_of_child(nblocks);
+    // Each child's parent row is read only to replicate cell_data and for
+    // RecordParentIds; without either it is not built.
+    const bool need_parents = RecordParentIds || mesh.NumCellData() != 0;
 
     std::size_t bi = 0;
     for (const auto cb : mesh.CellRange()) {
@@ -540,14 +559,20 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                     ring_nodes += cb.Face(c, f).second;
                     ++face_count;
                 }
-            out.mConn.reserve(4 * ring_nodes);
-            parents.reserve(ring_nodes);
+            // Exactly ring_nodes tets: cell_rings keeps every face's nodes and
+            // skips only a cell with no faces, and orient_rings refuses a face
+            // it cannot use. Written in place; trimmed below should it fall short.
+            NDArray tets = NDArray::Uninit(DType::Int64, {ring_nodes, 4});
+            std::int64_t* const tet = tets.As<std::int64_t>();
+            std::size_t ntet = 0;
+            if (need_parents)
+                parents.reserve(ring_nodes);
             src_start.reserve(src_start.size() + ncells + face_count);
             src_nodes.reserve(src_nodes.size() + 2 * ring_nodes);
             detail::CellRings rings;
             std::vector<detail::Vec3> coords;
             for (std::size_t c = 0; c < ncells; ++c) {
-                firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 4);
+                firsts[c] = static_cast<std::int64_t>(ntet);
                 if (!detail::cell_rings(cb, c, mesh.Points(), mesh.PointDim(), rings, coords))
                     continue;  // no faces at all: contributes nothing
                 if (detail::orient_rings(rings, coords.data()) ==
@@ -570,18 +595,32 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                     for (std::size_t k = 0; k < m; ++k)
                         src_nodes.push_back(rings.mNodes[ring[k]]);
                     src_start.push_back(src_nodes.size());
+                    if (m > ring_nodes - ntet)
+                        throw std::logic_error(
+                            "convert_cells: a polyhedron yielded more tetrahedra than its faces "
+                            "have nodes");
                     for (std::size_t k = 0; k < m; ++k) {
                         // (cell centroid, face centroid, a, b) is positively
                         // oriented for an outward-wound face -- the same
                         // determinant poly_measure accumulates.
-                        out.mConn.push_back(cell_pt);
-                        out.mConn.push_back(face_pt);
-                        out.mConn.push_back(rings.mNodes[ring[k]]);
-                        out.mConn.push_back(rings.mNodes[ring[(k + 1) % m]]);
-                        parents.push_back(static_cast<std::int64_t>(c));
+                        std::int64_t* t = tet + 4 * ntet++;
+                        t[0] = cell_pt;
+                        t[1] = face_pt;
+                        t[2] = rings.mNodes[ring[k]];
+                        t[3] = rings.mNodes[ring[(k + 1) % m]];
+                        if (need_parents)
+                            parents.push_back(static_cast<std::int64_t>(c));
                     }
                 }
             }
+            if (ntet != ring_nodes) {
+                NDArray exact = NDArray::Uninit(DType::Int64, {ntet, 4});
+                if (ntet)
+                    std::memcpy(exact.Data(), tets.Data(), ntet * 4 * sizeof(std::int64_t));
+                tets = std::move(exact);
+            }
+            out.mReady = std::move(tets);
+            out.mHasReady = true;
             staged.push_back(std::move(out));
             ++bi;
             continue;
@@ -605,21 +644,28 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
                 num_tris += n > 2 ? n - 2 : 0;
             }
-            out.mConn.reserve(num_tris * 3);
-            parents.reserve(parents.size() + num_tris);
+            NDArray tris = NDArray::Uninit(DType::Int64, {num_tris, 3});
+            std::int64_t* const tri = tris.As<std::int64_t>();
+            std::size_t ntri = 0;
+            if (need_parents)
+                parents.reserve(parents.size() + num_tris);
             for (std::size_t c = 0; c < ncells; ++c) {
-                firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 3);
+                firsts[c] = static_cast<std::int64_t>(ntri);
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
                 auto node = [&](std::size_t k) {
                     return ragged ? cb.Row(c)[k] : detail::read_int(*conn, c * npc + k);
                 };
                 for (std::size_t k = 1; k + 1 < n; ++k) {
-                    out.mConn.push_back(node(0));
-                    out.mConn.push_back(node(k));
-                    out.mConn.push_back(node(k + 1));
-                    parents.push_back(static_cast<std::int64_t>(c));
+                    std::int64_t* t = tri + 3 * ntri++;
+                    t[0] = node(0);
+                    t[1] = node(k);
+                    t[2] = node(k + 1);
+                    if (need_parents)
+                        parents.push_back(static_cast<std::int64_t>(c));
                 }
             }
+            out.mReady = std::move(tris);
+            out.mHasReady = true;
             staged.push_back(std::move(out));
             ++bi;
             continue;
@@ -635,7 +681,8 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             staged.push_back(ccells_stage_passthrough(cb));
             for (std::size_t c = 0; c < ncells; ++c) {
                 firsts[c] = static_cast<std::int64_t>(c);
-                parents.push_back(static_cast<std::int64_t>(c));
+                if (need_parents)
+                    parents.push_back(static_cast<std::int64_t>(c));
             }
             ++bi;
             continue;
@@ -650,9 +697,11 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         CcellsOutBlock out;
         out.mType = cell_type_name(tpl->mChildType);
         out.mNodesPerCell = npc_out;
-        out.mConn.resize(ncells * per_cell * npc_out);
-        parents.resize(ncells * per_cell);
-        std::vector<std::int64_t>& dst = out.mConn;
+        out.mReady = NDArray::Uninit(DType::Int64, {ncells * per_cell, npc_out});
+        out.mHasReady = true;
+        if (need_parents)
+            parents.resize(ncells * per_cell);
+        std::int64_t* const dst = out.mReady.As<std::int64_t>();
         const std::vector<std::uint8_t>& nodes = tpl->mNodes;
         parallel_for_bw(ncells, [&](std::size_t c) {
             const std::size_t base_in = c * npc_in;
@@ -661,7 +710,8 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 for (std::size_t k = 0; k < npc_out; ++k)
                     dst[base_out + child * npc_out + k] =
                         conn_v[base_in + nodes[child * npc_out + k]];
-                parents[c * per_cell + child] = static_cast<std::int64_t>(c);
+                if (need_parents)
+                    parents[c * per_cell + child] = static_cast<std::int64_t>(c);
             }
         });
         for (std::size_t c = 0; c < ncells; ++c)
@@ -699,16 +749,15 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         sink.Commit();
         out.AssignPoints(std::move(np));
     }
-    for (CcellsOutBlock& block : staged)
-        ccells_emit_block(out, block, nullptr);
-    if (num_new == 0) {
-        ccells_copy_point_data(mesh, out);
-    } else {
+    // The new points' point_data next, while their sources are still here;
+    // then the sources go before the blocks are added (roadmap §6.1).
+    std::vector<std::pair<std::string, NDArray>> new_point_data;
+    if (num_new != 0) {
         for (const std::string& name : mesh.PointDataNames()) {
             const NDArray& a = mesh.PointData(name);
             const detail::DoubleView a_v(a);
             if (detail::rows(a) != num_points) {
-                out.AddPointData(name, detail::data_owned_copy(a));
+                new_point_data.emplace_back(name, detail::data_owned_copy(a));
                 continue;  // not per-point data; copy verbatim rather than mangle
             }
             const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
@@ -729,9 +778,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 }
             });
             sink.Commit();
-            out.AddPointData(name, std::move(b));
+            new_point_data.emplace_back(name, std::move(b));
         }
     }
+    std::vector<std::int64_t>().swap(src_nodes);
+    std::vector<std::size_t>().swap(src_start);
+    for (CcellsOutBlock& block : staged) {
+        ccells_emit_block(out, block, nullptr);
+        block = CcellsOutBlock();  // release its staging as soon as it is added
+    }
+    if (num_new == 0)
+        ccells_copy_point_data(mesh, out);
+    for (auto& [name, array] : new_point_data)
+        out.AddPointData(name, std::move(array));
     ccells_copy_field_data(mesh, out);
 
     // cell_data: replicate each parent's row to its children. An array whose

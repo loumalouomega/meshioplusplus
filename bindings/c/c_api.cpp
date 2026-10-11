@@ -111,6 +111,8 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -5551,6 +5553,17 @@ static_assert(sizeof(mio_feature_edges_opts) == 80,
               "mio_feature_edges_opts grew outside its reserved tail");
 static_assert(sizeof(mio_feature_edges_report) == 64,
               "mio_feature_edges_report grew outside its reserved tail");
+static_assert(sizeof(mio_segment_opts) == 96, "mio_segment_opts grew outside its reserved tail");
+static_assert(sizeof(mio_segment_report) == 64,
+              "mio_segment_report grew outside its reserved tail");
+static_assert(sizeof(mio_fit_primitives_opts) == 88,
+              "mio_fit_primitives_opts grew outside its reserved tail");
+static_assert(sizeof(mio_fit_primitives_report) == 96,
+              "mio_fit_primitives_report grew outside its reserved tail");
+static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
+              "MIO_FIT_ALL_TYPES must match kFitAllTypes");
+static_assert(MIO_FIT_TORUS == static_cast<int>(meshioplusplus::FitPrimitiveType::Torus),
+              "mio_fit_type must match FitPrimitiveType");
 static_assert(sizeof(mio_hausdorff_opts) == 80,
               "mio_hausdorff_opts grew outside its reserved tail");
 static_assert(sizeof(mio_hausdorff_report) == 152,
@@ -5598,6 +5611,85 @@ mio_mesh* mio_feature_edges(const mio_mesh* mesh, const mio_feature_edges_opts* 
             report->num_boundary = r.mNumBoundary;
             report->num_non_manifold = r.mNumNonManifold;
             report->num_inconsistent = r.mNumInconsistent;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_segment_opts_init(mio_segment_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_segment_opts{};
+    opts->feature_angle = 30.0;
+    opts->min_patch_cells = 1;
+}
+
+mio_mesh* mio_segment(const mio_mesh* mesh, const mio_segment_opts* opts,
+                      mio_segment_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::SegmentOptions options;
+        if (opts) {
+            options.mFeatureAngleDeg = opts->feature_angle;
+            options.mNormalToleranceDeg = opts->normal_tolerance;
+            options.mCurvatureTolerance = opts->curvature_tolerance;
+            options.mMinPatchCells = opts->min_patch_cells;
+            if (opts->region)
+                options.mRegion = opts->region;
+            if (opts->prefix && opts->prefix[0] != '\0')
+                options.mPrefix = opts->prefix;
+        }
+        meshioplusplus::SegmentResult r = meshioplusplus::segment(mesh->mMesh, options);
+        if (report) {
+            *report = mio_segment_report{};
+            report->num_patches = r.mNumPatches;
+            report->num_merged = r.mNumMerged;
+            report->num_feature_edges = r.mNumFeatureEdges;
+            report->num_boundary_edges = r.mNumBoundaryEdges;
+            report->num_non_manifold_edges = r.mNumNonManifoldEdges;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_fit_primitives_opts_init(mio_fit_primitives_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_primitives_opts{};
+    opts->tolerance = 1e-3;
+    opts->min_inlier_fraction = 0.9;
+    opts->relative = 1;
+    opts->types = MIO_FIT_ALL_TYPES;
+    opts->max_iterations = 50;
+}
+
+mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
+                             mio_fit_primitives_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::FitPrimitivesOptions options;
+        if (opts) {
+            if (opts->patch_data)
+                options.mPatchData = opts->patch_data;
+            options.mTolerance = opts->tolerance;
+            options.mMinInlierFraction = opts->min_inlier_fraction;
+            options.mRelative = opts->relative != 0;
+            options.mTypes = opts->types;
+            options.mMaxIterations = opts->max_iterations;
+        }
+        meshioplusplus::FitPrimitivesResult r =
+            meshioplusplus::fit_primitives(mesh->mMesh, options);
+        if (report) {
+            *report = mio_fit_primitives_report{};
+            report->num_patches = r.mNumPatches;
+            report->num_plane = r.mNumPlane;
+            report->num_sphere = r.mNumSphere;
+            report->num_cylinder = r.mNumCylinder;
+            report->num_cone = r.mNumCone;
+            report->num_torus = r.mNumTorus;
+            report->num_unfitted = r.mNumUnfitted;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

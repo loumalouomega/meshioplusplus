@@ -36,6 +36,7 @@ Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled
 | [`31_terminal_rendering.ipynb`](31_terminal_rendering.ipynb) | v16.33.0 (streamlines, v16.37.0): the software rasterizer beside PyVista — `render_image` as an array through matplotlib, camera, shading and edge options, data colouring with the new colormaps and a colour bar, the terminal form embedded as HTML (`render_text`), and PNG and asciinema files from `snapshot` |
 | [`32_interactive_terminal.ipynb`](32_interactive_terminal.ipynb) | v16.35.0: the interactive terminal viewer — a recorded mouse-and-key session replayed through `tui`, the resulting camera beside PyVista, the cell diff that keeps the link usable, and the `view(backend="auto")` order |
 | [`33_interactive_session.ipynb`](33_interactive_session.ipynb) | v16.36.0: the terminal viewer, part two — probing a cell and pinning two, the `:` command line and a saved session, cut-aways beside PyVista's `clip`, two meshes and their difference, and a time series with one colour range |
+| [`34_skin_to_cad.ipynb`](34_skin_to_cad.ipynb) | Unreleased: skin to CAD — a noisy turned part segmented into smooth patches by crease and curvature, a plane, sphere, cylinder, cone and torus fitted to them with their residuals, and the closed skin handed to CAD as a faceted STEP solid |
 
 See [`../cpp/`](../cpp/) for the same tour written directly against the **C++ core** (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel.
 

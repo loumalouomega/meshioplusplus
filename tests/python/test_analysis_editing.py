@@ -506,3 +506,14 @@ def test_pipeline_steps_match_the_c_engine(tmp_path):
     np.testing.assert_array_equal(
         py.cell_data["feature:kind"][0], cpp.cell_data["feature:kind"][0]
     )
+
+
+def test_feature_edges_of_a_rectangular_polygon_block():
+    """A polygon block stored rectangular (every cell four corners) used to be
+    read through the ragged accessors and crash the core."""
+    quads = cube_quads()
+    polys = mio.Mesh(quads.points, [("polygon", quads.cells[0].data.copy())])
+    _, report = mio.feature_edges(polys, return_report=True)
+    _, expected = mio.feature_edges(quads, return_report=True)
+    assert report == expected
+    mio.smooth(polys)  # the crease rings of smooth read the same block

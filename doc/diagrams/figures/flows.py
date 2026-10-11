@@ -1067,12 +1067,12 @@ def roadmap_map():
         (
             "§6 long run (spike first)",
             [
-                ("spike: can the model stretch?", "M"),
+                ("undo_green at XL", "S"),
+                ("NurbsInfo side channel", "M"),
                 ("read-only CAD ingestion", "L"),
-                ("streaming writes of one mesh", "L"),
-                ("out-of-core operations", "XL"),
+                ("analytic CAD faces (OCC)", "L"),
             ],
-            [(0, 1)],
+            [(1, 2)],
         ),
     ]
     per_row = 4

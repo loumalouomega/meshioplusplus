@@ -112,6 +112,8 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -3960,6 +3962,76 @@ val feature_edges_js(const val& rMeshObj, double featureAngle, bool feature, boo
     });
 }
 
+/**
+ * @brief Smooth patches by region growing. See operations/segment.hpp.
+ */
+val segment_js(const val& rMeshObj, double featureAngle, double normalTolerance,
+               double curvatureTolerance, double minPatchCells, const std::string& rRegion,
+               const std::string& rPrefix) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SegmentOptions options;
+        options.mFeatureAngleDeg = featureAngle;
+        options.mNormalToleranceDeg = normalTolerance;
+        options.mCurvatureTolerance = curvatureTolerance;
+        options.mMinPatchCells = static_cast<std::int64_t>(minPatchCells);
+        options.mRegion = rRegion;
+        options.mPrefix = rPrefix;
+        meshioplusplus::SegmentResult r = meshioplusplus::segment(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numPatches", static_cast<double>(r.mNumPatches));
+        out.set("numMerged", static_cast<double>(r.mNumMerged));
+        out.set("numFeatureEdges", static_cast<double>(r.mNumFeatureEdges));
+        out.set("numBoundaryEdges", static_cast<double>(r.mNumBoundaryEdges));
+        out.set("numNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges));
+        return out;
+    });
+}
+
+/**
+ * @brief Plane/sphere/cylinder/cone/torus fits per patch. See
+ * operations/fit_primitives.hpp. `types` is an array of type names.
+ */
+val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double tolerance,
+                      bool relative, double minInlierFraction, const val& rTypes,
+                      double maxIterations) {
+    return with_js_errors([&]() -> val {
+        static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+        meshioplusplus::FitPrimitivesOptions options;
+        options.mPatchData = rPatchData;
+        options.mTolerance = tolerance;
+        options.mRelative = relative;
+        options.mMinInlierFraction = minInlierFraction;
+        options.mMaxIterations = static_cast<std::int64_t>(maxIterations);
+        options.mTypes = 0;
+        const unsigned n = rTypes["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            const std::string name = rTypes[i].as<std::string>();
+            bool found = false;
+            for (int t = 0; t < 5; ++t)
+                if (name == kNames[t]) {
+                    options.mTypes |= 1u << (t + 1);
+                    found = true;
+                }
+            if (!found)
+                throw std::invalid_argument("meshio++: fit_primitives: unknown primitive type '" +
+                                            name + "'");
+        }
+        meshioplusplus::FitPrimitivesResult r =
+            meshioplusplus::fit_primitives(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numPatches", static_cast<double>(r.mNumPatches));
+        out.set("numPlane", static_cast<double>(r.mNumPlane));
+        out.set("numSphere", static_cast<double>(r.mNumSphere));
+        out.set("numCylinder", static_cast<double>(r.mNumCylinder));
+        out.set("numCone", static_cast<double>(r.mNumCone));
+        out.set("numTorus", static_cast<double>(r.mNumTorus));
+        out.set("numUnfitted", static_cast<double>(r.mNumUnfitted));
+        return out;
+    });
+}
+
 // ---------------------------------------------------------------------
 // Software rendering (v16.33.0, field rendering v16.34.0): a deterministic
 // rasterizer that needs no WebGL (a server-side preview, a Node script). The
@@ -5948,6 +6020,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("computeCurvature", &compute_curvature_js);
     emscripten::function("computeNormals", &compute_normals_js);
     emscripten::function("featureEdges", &feature_edges_js);
+    emscripten::function("segment", &segment_js);
+    emscripten::function("fitPrimitives", &fit_primitives_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);

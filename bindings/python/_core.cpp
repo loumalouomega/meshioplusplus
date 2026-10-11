@@ -99,6 +99,7 @@
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/su2.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
@@ -128,6 +129,8 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -3110,6 +3113,69 @@ PYBIND11_MODULE(_core, m) {
         py::arg("boundary") = true, py::arg("non_manifold") = true, py::arg("inconsistent") = true,
         py::arg("region") = "");
 
+    // Smooth patches by region growing. See operations/segment.hpp.
+    m.def(
+        "segment",
+        [](py::object pymesh, double feature_angle, double normal_tolerance,
+           double curvature_tolerance, std::int64_t min_patch_cells, const std::string& region,
+           const std::string& prefix) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SegmentOptions options;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mNormalToleranceDeg = normal_tolerance;
+            options.mCurvatureTolerance = curvature_tolerance;
+            options.mMinPatchCells = min_patch_cells;
+            options.mRegion = region;
+            options.mPrefix = prefix;
+            meshioplusplus::SegmentResult r =
+                core_nogil([&] { return meshioplusplus::segment(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_patches"] = r.mNumPatches;
+            out["num_merged"] = r.mNumMerged;
+            out["num_feature_edges"] = r.mNumFeatureEdges;
+            out["num_boundary_edges"] = r.mNumBoundaryEdges;
+            out["num_non_manifold_edges"] = r.mNumNonManifoldEdges;
+            return out;
+        },
+        py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("normal_tolerance") = 0.0,
+        py::arg("curvature_tolerance") = 0.0, py::arg("min_patch_cells") = 1,
+        py::arg("region") = "", py::arg("prefix") = "patch");
+
+    // Plane/sphere/cylinder/cone/torus fits per patch. See operations/fit_primitives.hpp.
+    m.def(
+        "fit_primitives",
+        [](py::object pymesh, const std::string& patch_data, double tolerance, bool relative,
+           double min_inlier_fraction, std::uint32_t types, std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::FitPrimitivesOptions options;
+            options.mPatchData = patch_data;
+            options.mTolerance = tolerance;
+            options.mRelative = relative;
+            options.mMinInlierFraction = min_inlier_fraction;
+            options.mTypes = types;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::FitPrimitivesResult r =
+                core_nogil([&] { return meshioplusplus::fit_primitives(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_patches"] = r.mNumPatches;
+            out["num_plane"] = r.mNumPlane;
+            out["num_sphere"] = r.mNumSphere;
+            out["num_cylinder"] = r.mNumCylinder;
+            out["num_cone"] = r.mNumCone;
+            out["num_torus"] = r.mNumTorus;
+            out["num_unfitted"] = r.mNumUnfitted;
+            return out;
+        },
+        py::arg("mesh"), py::arg("patch_data") = "segment:patch", py::arg("tolerance") = 1e-3,
+        py::arg("relative") = true, py::arg("min_inlier_fraction") = 0.9,
+        py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50);
+
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See
     // operations/interfaces.hpp.
@@ -4305,6 +4371,15 @@ PYBIND11_MODULE(_core, m) {
           }));
 
     // OFF writer / reader.
+    // STEP faceted B-rep (write-only); ragged polygon blocks are facets too.
+    m.def("step_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                            /*lenient_field_data=*/true,
+                                                            /*allow_ragged=*/true)] {
+            return meshioplusplus::write_step(path, mesh);
+        });
+    });
     m.def("off_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {

@@ -241,6 +241,21 @@ WRITING = [
         lambda f, out: ["feature-edges", f["grid"], out + ".vtu", "--json"],
     ),
     (
+        "segment",
+        lambda f, out: ["segment", f["grid"], out + ".vtu", "--json"],
+    ),
+    (
+        "fit_primitives",
+        lambda f, out: [
+            "fit-primitives",
+            f["grid"],
+            out + ".vtu",
+            "--patch-data",
+            "",
+            "--json",
+        ],
+    ),
+    (
         "region_adjacency",
         lambda f, out: ["region-adjacency", f["tagged"], out + ".vtu", "--json"],
     ),

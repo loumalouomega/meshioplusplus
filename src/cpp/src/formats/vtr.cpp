@@ -36,6 +36,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
+#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 
@@ -81,7 +82,8 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        detail::vtu_write_binary_bytes(os, d, n, binary ? codec : detail::VtkCodec::None, hsz);
+        os << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();

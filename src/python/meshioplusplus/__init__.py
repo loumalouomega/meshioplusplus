@@ -76,6 +76,7 @@ if TYPE_CHECKING:
         radioss,
         radioss_anim,
         radioss_th,
+        step,
         stl,
         su2,
         svg,
@@ -122,6 +123,7 @@ if TYPE_CHECKING:
     from ._diff import diff, meshes_equal
     from ._error import estimate_error
     from ._feature_edges import feature_edges
+    from ._fit_primitives import fit_primitives
     from ._gpu import (
         from_cupy,
         has_cuda_device,
@@ -206,6 +208,7 @@ if TYPE_CHECKING:
         sample_distance,
         surface_watertight_check,
     )
+    from ._segment import segment
     from ._sequence import (
         TimeSeries,
         blend_steps,
@@ -266,6 +269,8 @@ _LAZY_ATTRS = {
     "meshes_equal": "_diff",
     "estimate_error": "_error",
     "feature_edges": "_feature_edges",
+    "fit_primitives": "_fit_primitives",
+    "segment": "_segment",
     "from_cupy": "_gpu",
     "has_cuda_device": "_gpu",
     "has_cupy": "_gpu",
@@ -438,6 +443,7 @@ __all__ = [
     "radioss",
     "radioss_anim",
     "radioss_th",
+    "step",
     "stl",
     "su2",
     "svg",
@@ -479,6 +485,8 @@ __all__ = [
     "compute_curvature",
     "compute_normals",
     "feature_edges",
+    "fit_primitives",
+    "segment",
     "hausdorff_distance",
     "match_periodic_nodes",
     "edit_regions",

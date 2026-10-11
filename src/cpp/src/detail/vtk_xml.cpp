@@ -318,12 +318,13 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
         rOs << " NumberOfComponents=\"" << components << "\"";
     }
     rOs << " format=\"" << (Binary ? "binary" : "ascii") << "\">\n";
-    if (Binary)
-        rOs << vtu_encode_binary(reinterpret_cast<const unsigned char*>(rArray.Data()),
-                                 rArray.Nbytes(), Codec, Hsz)
-            << "\n";
-    else
+    if (Binary) {
+        vtu_write_binary_bytes(rOs, reinterpret_cast<const unsigned char*>(rArray.Data()),
+                               rArray.Nbytes(), Codec, Hsz);
+        rOs << "\n";
+    } else {
         vtu_ascii_ndarray(rOs, rArray);
+    }
     rOs << "</DataArray>\n";
 }
 

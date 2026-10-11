@@ -67,6 +67,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="pvtu">`pvtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
 | <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="radioss-th">`radioss_th`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
+| <span id="step">`step`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
 | <span id="su2">`su2`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
 | <span id="svg">`svg`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
@@ -110,6 +111,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
 - **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
+- **`step`**: A faceted B-rep solid for CAD tools; a reader needs a CAD kernel (roadmap §6.2.2).
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
 - **`svg`**: A 2-D drawing, read back as planar (z = 0) from the scale and offset meshio++ records in a comment. Observed with `float_fmt=".17g"`: the default `.3f` keeps three decimals of a drawing 100 units wide, so corners come back to about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `svg:fill`.
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
@@ -124,7 +126,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 
 ## Formats missing a direction
 
-Every registered format is meant to read and write, in both engines ([roadmap §3](./roadmap.md#_3-reader-and-writer-parity)). A format that does only one is a tracked gap, listed here with the roadmap item that closes it; `ansys_rst_cyclic` is the one exemption. `test_conformance.py` fails when a format reads without writing, or writes without reading, and is not listed here, or is listed and has gained the missing direction, in either the Python or the native registry.
+Every registered format is meant to read and write, in both engines ([roadmap §3](./roadmap.md#_3-reader-and-writer-parity)). A format that does only one is a tracked gap, listed here with the roadmap item that closes it; `ansys_rst_cyclic` and `step` are the exemptions. `test_conformance.py` fails when a format reads without writing, or writes without reading, and is not listed here, or is listed and has gained the missing direction, in either the Python or the native registry.
 
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
@@ -138,6 +140,7 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 | <span id="nastran-h5">`nastran_h5`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. MSC Nastran's result file; the writer is the physics-ML loop's missing half. |
 | <span id="nastran-op2">`nastran_op2`</span> | writer | Tracked gap, roadmap §3.2.1: no writer yet. Nastran's result file; the writer is the physics-ML loop's missing half. |
 | <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
+| <span id="step">`step`</span> | reader | Exempt, not a gap: reading STEP means a CAD kernel (roadmap §6.2.2). The faceted writer is the CAD hand-off of the skin-to-CAD work (roadmap §6.3). |
 | <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
 | <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
 | <span id="xplt">`xplt`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. FEBio's result file; the writer is the physics-ML loop's missing half. |
