@@ -817,7 +817,7 @@ def test_convert_openfoam_binary_variant(mesh_file, tmp_path):
 
 
 def test_convert_frd_ascii_and_binary_variants(tmp_path):
-    # roadmap 3.2.1: the CalculiX result file joined the ascii/binary variant table.
+    # The CalculiX result file joined the ascii/binary variant table.
     frd = pathlib.Path(__file__).parent / "meshes" / "frd" / "mixed.frd"
     ascii_out, binary_out = tmp_path / "a.frd", tmp_path / "b.frd"
     _tools.tool_convert(str(frd), str(ascii_out), mode="ascii", time_step=-1)

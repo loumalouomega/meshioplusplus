@@ -702,7 +702,7 @@ SPEC: dict[str, dict] = {
     },
     "gltf": {
         "error": "write-only",
-        "note": "Written for viewers; no glTF reader exists yet (roadmap §3.1.4).",
+        "note": "Written for viewers; no glTF reader exists yet (roadmap §3.1.1).",
     },
     "gmsh": {
         "cells": {
@@ -1565,31 +1565,31 @@ SPEC: dict[str, dict] = {
 _GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
 _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
-    "abaqus_fil": _GAP.format(item="3.2.7", why=_RESULT.format(tool="Abaqus")),
-    "ansys_rst": _GAP.format(item="3.2.6", why=_RESULT.format(tool="Ansys")),
+    "abaqus_fil": _GAP.format(item="3.2.6", why=_RESULT.format(tool="Abaqus")),
+    "ansys_rst": _GAP.format(item="3.2.5", why=_RESULT.format(tool="Ansys")),
     "ansys_rst_cyclic": (
         "Exempt, not a gap: not a file of its own but the full rotor that a static "
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
-        "side is `ansys_rst`'s cyclic option (roadmap §3.2.6)."
+        "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
     ),
-    "lsdyna_binout": _GAP.format(item="3.2.4", why=_RESULT.format(tool="LS-DYNA")),
-    "lsdyna_d3plot": _GAP.format(item="3.2.3", why=_RESULT.format(tool="LS-DYNA")),
+    "lsdyna_binout": _GAP.format(item="3.2.3", why=_RESULT.format(tool="LS-DYNA")),
+    "lsdyna_d3plot": _GAP.format(item="3.2.2", why=_RESULT.format(tool="LS-DYNA")),
     "marc_t19": _GAP.format(
-        item="3.2.13",
+        item="3.2.11",
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
     ),
-    "nastran_h5": _GAP.format(item="3.2.5", why=_RESULT.format(tool="MSC Nastran")),
-    "nastran_op2": _GAP.format(item="3.2.2", why=_RESULT.format(tool="Nastran")),
+    "nastran_h5": _GAP.format(item="3.2.4", why=_RESULT.format(tool="MSC Nastran")),
+    "nastran_op2": _GAP.format(item="3.2.1", why=_RESULT.format(tool="Nastran")),
     "radioss_anim": _GAP.format(
-        item="3.2.9", why=_RESULT.format(tool="the OpenRadioss engine")
+        item="3.2.8", why=_RESULT.format(tool="the OpenRadioss engine")
     ),
-    "xplt": _GAP.format(item="3.2.8", why=_RESULT.format(tool="FEBio")),
+    "xplt": _GAP.format(item="3.2.7", why=_RESULT.format(tool="FEBio")),
     "vtx": _GAP.format(
-        item="3.2.11",
+        item="3.2.9",
         why="DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build.",
     ),
     "szplt": _GAP.format(
-        item="3.2.12",
+        item="3.2.10",
         why="Tecplot's SZL container, written through TecIO; needs the optional TecIO build.",
     ),
 }
@@ -1597,7 +1597,7 @@ READ_ONLY = {
 # The mirror: formats that write without reading. `svg` and `tikz` left it when
 # their readers landed (they are 2-D drawings, read back as planar).
 WRITE_ONLY = {
-    "gltf": "Tracked gap, roadmap §3.1.4: no reader yet. A general glTF 2.0 reader.",
+    "gltf": "Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader.",
 }
 
 
