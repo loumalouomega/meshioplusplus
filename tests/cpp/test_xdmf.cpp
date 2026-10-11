@@ -103,7 +103,8 @@ TEST(Xdmf, AnUnfilteredChunkStoredInFewerBytesIsAReadError) {
         std::filesystem::temp_directory_path() / "meshioplusplus-unfiltered-chunk";
     std::filesystem::create_directories(dir);
     std::filesystem::path xml;
-    for (const FuzzBundleEntry& entry : fuzz_bundle_decode(bytes.data(), bytes.size())) {
+    for (const meshioplusplus::FuzzBundleEntry& entry :
+         meshioplusplus::fuzz_bundle_decode(bytes.data(), bytes.size())) {
         const std::filesystem::path path = dir / entry.first;
         std::ofstream out(path, std::ios::binary);
         out.write(reinterpret_cast<const char*>(entry.second.data()),
