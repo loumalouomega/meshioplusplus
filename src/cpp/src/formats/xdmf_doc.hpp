@@ -69,8 +69,14 @@ inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
     std::vector<std::size_t> dims;
     auto iss = detail::make_classic_istringstream(rS);
     std::int64_t v;
-    while (iss >> v)
+    while (iss >> v) {
+        // A negative extent cast to size_t wraps to a huge count, and the product
+        // of the extents would then wrap or ask for an allocation no allocator
+        // can make.
+        if (v < 0)
+            throw ReadError("XDMF: negative Dimensions");
         dims.push_back(static_cast<std::size_t>(v));
+    }
     return dims;
 }
 

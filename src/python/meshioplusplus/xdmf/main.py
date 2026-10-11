@@ -30,6 +30,17 @@ def read(filename):
     return XdmfReader(filename).read()
 
 
+def _reshape_item(data, dims):
+    # A count the payload cannot fill is a ReadError, as the C++ reader reports
+    # it, not the numpy ValueError the reshape raises.
+    try:
+        return data.reshape(dims)
+    except ValueError as exc:
+        raise ReadError(
+            f"XDMF: DataItem holds {data.size} values, not the {dims} its Dimensions declare"
+        ) from exc
+
+
 def _block_dim(block):
     """A block's topological dimension (a polyhedron is 3, a polygon 2)."""
     if block.type.startswith("polyhedron"):
@@ -141,6 +152,10 @@ class XdmfReader:
             raise ReadError("XDMF: missing DataItem")
 
         dims = [int(d) for d in data_item.get("Dimensions").split()]
+        if any(d < 0 for d in dims):
+            # reshape would read a negative extent as "infer this one", where the
+            # C++ reader refuses it; both engines must refuse.
+            raise ReadError("XDMF: negative Dimensions")
 
         # Actually, `NumberType` is XDMF2 and `DataType` XDMF3, but many files
         # out there use both keys interchangeably.
@@ -165,12 +180,16 @@ class XdmfReader:
                 data = np.empty((0,), dtype=dtype)
             else:
                 data = np.fromstring(data_item.text, dtype=dtype, sep=" ")
-            return data.reshape(dims)
+            return _reshape_item(data, dims)
 
         elif fmt == "Binary":
-            return np.fromfile(
-                data_item.text.strip(), dtype=xdmf_to_numpy_type[(data_type, precision)]
-            ).reshape(dims)
+            return _reshape_item(
+                np.fromfile(
+                    data_item.text.strip(),
+                    dtype=xdmf_to_numpy_type[(data_type, precision)],
+                ),
+                dims,
+            )
 
         if fmt != "HDF":
             raise ReadError(f"Unknown XDMF Format '{fmt}'.")

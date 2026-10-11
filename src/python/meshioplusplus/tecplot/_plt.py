@@ -10,7 +10,7 @@ import numpy as np
 
 from .._exceptions import ReadError
 from .._files import open_file
-from ._zones import Zone, face_map
+from ._zones import Zone, check_declared_counts, face_map
 
 ZONE_MARKER = 299.0
 GEOMETRY_MARKER = 399.0
@@ -479,5 +479,6 @@ def load(filename):
     _, _, variables, zones = _read_header(cur)
     for z in zones:
         z.finish()
+    check_declared_counts(zones, len(data))
     _scan_data(cur, variables, zones)
     return variables, zones, PltSource(cur, zones)

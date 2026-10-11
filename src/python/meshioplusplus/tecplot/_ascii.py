@@ -8,7 +8,7 @@ import numpy as np
 
 from .._exceptions import ReadError
 from .._files import open_file
-from ._zones import Zone, face_map
+from ._zones import Zone, check_declared_counts, face_map
 
 _ET = {
     "LINESEG": "FELINESEG",
@@ -187,7 +187,12 @@ class AsciiSource:
         flat = []
         li = z.data_start
         while len(flat) < want and li < len(self.lines):
-            flat.extend(float(t) for t in _tokens(self.lines[li]))
+            try:
+                flat.extend(float(t) for t in _tokens(self.lines[li]))
+            except ValueError as exc:
+                raise ReadError(
+                    f"Tecplot: zone {idx + 1} has a value that is not a number"
+                ) from exc
             li += 1
         if len(flat) < want:
             raise ReadError(
@@ -384,4 +389,7 @@ def load(filename):
         raise ReadError("Tecplot: no VARIABLES")
     if not zones:
         raise ReadError("Tecplot: no ZONE")
+    # Every data value is at least one character of the file, so a count above the
+    # file's characters cannot be backed by it (see check_declared_counts).
+    check_declared_counts(zones, sum(len(r) + 1 for r in raw))
     return variables, zones, AsciiSource(lines, zones, len(variables))

@@ -128,3 +128,23 @@ def test_read_metadata_reports_both_zones_of_a_transient_file(tmp_path):
 
     with pytest.raises(meshioplusplus.ReadError):
         meshioplusplus.tecplot.read(p, time_step=5)
+
+
+_FUZZ_TECPLOT = (
+    pathlib.Path(__file__).parent.parent / "fuzz" / "regressions" / "tecplot"
+)
+
+
+@pytest.mark.parametrize(
+    "read", [meshioplusplus.tecplot.read, _tecplot_py_read], ids=["public", "python"]
+)
+@pytest.mark.parametrize(
+    "name",
+    ["face-node-count-overflows-sum", "plt-passive-count-exceeds-file"],
+)
+def test_counts_beyond_the_file_are_read_errors(read, name):
+    # The fuzzer's crashes: a face count that overflowed the node list's running
+    # sum (UBSan), and a passive variable sized from a zone's node count the
+    # file cannot hold (ASan). Both engines refuse them as ReadError.
+    with pytest.raises(meshioplusplus.ReadError):
+        read(str(_FUZZ_TECPLOT / name))

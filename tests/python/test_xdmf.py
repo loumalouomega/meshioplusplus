@@ -311,3 +311,61 @@ def test_hdf_dataset_larger_than_its_dimensions_is_a_read_error(tmp_path, engine
     else:
         with pytest.raises(meshioplusplus.ReadError):
             XdmfReader(path).read()
+
+
+_TOPOLOGY = (
+    '<Topology TopologyType="Triangle" NumberOfElements="1">'
+    '<DataItem Dimensions="1 3" Format="XML">0 1 2</DataItem></Topology>'
+)
+
+
+def _xdmf_document(geometry_item):
+    return (
+        '<?xml version="1.0"?>\n<Xdmf Version="3.0"><Domain><Grid>\n'
+        f'{_TOPOLOGY}\n<Geometry GeometryType="XY">{geometry_item}</Geometry>\n'
+        "</Grid></Domain></Xdmf>\n"
+    )
+
+
+def _read_with_engine(engine, path):
+    from meshioplusplus import _core
+    from meshioplusplus.xdmf.main import XdmfReader
+
+    if engine == "core":
+        return _core.xdmf_read(str(path))
+    return XdmfReader(path).read()
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        # A negative extent: the C++ reader cast it to a huge count, the Python
+        # reshape read it as "infer this one".
+        '<DataItem Dimensions="-1 2" Format="XML">0 0 1 0 0 1</DataItem>',
+        # A product the text cannot hold: the buffer was sized from it first.
+        '<DataItem Dimensions="1000000000 1000000000" Format="XML">0 0</DataItem>',
+    ],
+    ids=["negative-dimensions", "product-beyond-text"],
+)
+def test_dimensions_the_data_cannot_back_are_read_errors(tmp_path, engine, geometry):
+    # Both engines refuse the same declarations; the C++ core declines to the
+    # Python reader on a ReadError, so the Python reader must refuse them too.
+    path = tmp_path / "bad.xdmf"
+    path.write_text(_xdmf_document(geometry))
+    with pytest.raises(meshioplusplus.ReadError):
+        _read_with_engine(engine, path)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_binary_payload_shorter_than_its_dimensions_is_a_read_error(tmp_path, engine):
+    payload = tmp_path / "pts.bin"
+    np.array([0.0, 1.0], dtype=np.float32).tofile(payload)
+    path = tmp_path / "short.xdmf"
+    path.write_text(
+        _xdmf_document(
+            f'<DataItem Dimensions="3 2" Precision="4" Format="Binary">{payload}</DataItem>'
+        )
+    )
+    with pytest.raises(meshioplusplus.ReadError):
+        _read_with_engine(engine, path)

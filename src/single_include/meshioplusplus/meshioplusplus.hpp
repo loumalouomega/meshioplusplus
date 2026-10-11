@@ -38695,8 +38695,14 @@ inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
     std::vector<std::size_t> dims;
     auto iss = detail::make_classic_istringstream(rS);
     std::int64_t v;
-    while (iss >> v)
+    while (iss >> v) {
+        // A negative extent cast to size_t wraps to a huge count, and the product
+        // of the extents would then wrap or ask for an allocation no allocator
+        // can make.
+        if (v < 0)
+            throw ReadError("XDMF: negative Dimensions");
         dims.push_back(static_cast<std::size_t>(v));
+    }
     return dims;
 }
 
@@ -128137,7 +128143,21 @@ struct TecplotZone {
     // Node and cell counts of an ordered zone: lines, quads or hexahedra over
     // the dimensions longer than one; a single point is one vertex.
     void FinishOrdered() {
-        mNumNodes = mI * mJ * mK;
+        // The product of the non-zero dimensions must not wrap: a wrapped count
+        // would size the columns from a number the file does not describe. A zero
+        // dimension empties the zone but does not excuse the others from the check.
+        std::size_t product = 1;
+        bool zero = false;
+        for (std::size_t d : {mI, mJ, mK}) {
+            if (d == 0) {
+                zero = true;
+                continue;
+            }
+            if (product > std::numeric_limits<std::size_t>::max() / d)
+                throw ReadError("Tecplot: ordered zone dimensions overflow");
+            product *= d;
+        }
+        mNumNodes = zero ? 0 : product;
         std::size_t cells = 1;
         bool any = false;
         for (std::size_t d : {mI, mJ, mK}) {
@@ -128261,6 +128281,11 @@ TecplotFaceMap tecplot_face_map(const TecplotZone& rZ, std::size_t ZoneIdx,
         if (n < 2)
             throw ReadError(where + ": face " + std::to_string(f + 1) + " has " +
                             std::to_string(n) + " nodes");
+        // Checked against the node list as it grows, so a count from the file
+        // cannot overflow the running sum.
+        if (n > static_cast<std::int64_t>(Nodes.size()) - fm.mStart.back())
+            throw ReadError(where + ": face " + std::to_string(f + 1) + " names more nodes " +
+                            "than TOTALNUMFACENODES holds");
         fm.mStart.push_back(fm.mStart.back() + n);
     }
     if (static_cast<std::size_t>(fm.mStart.back()) != Nodes.size())
@@ -129772,6 +129797,19 @@ struct TecplotFile {
     std::unique_ptr<TecplotSource> mSource;
 };
 
+/// Every count a zone header declares must fit in the file. A valid zone holds
+/// at least one byte of its file per node, cell or face it names (a value, a
+/// connection or a face list), so a larger count is a corrupt header and is
+/// refused before anything is sized from it.
+void tecplot_check_declared_counts(const std::vector<TecplotZone>& rZones, std::size_t FileBytes) {
+    for (std::size_t i = 0; i < rZones.size(); ++i) {
+        const TecplotZone& z = rZones[i];
+        if (z.mNumNodes > FileBytes || z.mNumCells > FileBytes || z.mNumFaces > FileBytes)
+            throw ReadError("Tecplot: zone " + std::to_string(i + 1) +
+                            " declares more nodes, cells or faces than the file holds");
+    }
+}
+
 void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, TecplotFile& rFile) {
     bool binary = false;
     {
@@ -129798,6 +129836,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
             rFile.mLines.push_back(st);
         }
         rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
+        tecplot_check_declared_counts(rFile.mZones, rFile.mText->View().size());
         rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,
                                                              rFile.mVariables.size());
         return;
@@ -129822,6 +129861,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
     detail::ByteCursor cur(data, size, big_endian, "Tecplot .plt");
     cur.Seek(12);
     rFile.mZones = tecplot_plt_header(cur, version, rFile.mVariables);
+    tecplot_check_declared_counts(rFile.mZones, size);
     tecplot_plt_scan_data(cur, version, rFile.mVariables, rFile.mZones);
     rFile.mSource = std::make_unique<TecplotPltSource>(data, size, big_endian, rFile.mZones);
 }
@@ -140907,7 +140947,6 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <numeric>
 #include <sstream>
 #include <optional>
 #include <string>
@@ -141035,17 +141074,29 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     std::string fmt = rDi.attribute("Format").value();
     DType dt = xdmf_to_dtype(data_type, precision);
 
-    std::size_t total = dims.empty() ? 0
-                                     : std::accumulate(dims.begin(), dims.end(), std::size_t{1},
-                                                       std::multiplies<>());
+    // The declared element count, overflow-checked: a product that wraps would
+    // size the buffers from a number the file does not describe.
+    std::size_t total = 0;
+    if (!dims.empty()) {
+        total = 1;
+        for (std::size_t d : dims) {
+            if (d != 0 && total > std::numeric_limits<std::size_t>::max() / d)
+                throw ReadError("XDMF: DataItem Dimensions overflow");
+            total *= d;
+        }
+    }
 
     if (fmt == "XML") {
         // The element's text read in place, token by token, and parsed straight
         // into the typed buffer with the dtype switch taken once (roadmap §3):
         // the lenient parse_double / strtoll / strtoull store_token used. A
-        // short item leaves the rest zero, as the zero-filled array did.
-        NDArray a = NDArray::Uninit(dt, dims);
+        // short item leaves the rest zero, as the zero-filled array did. An item
+        // cannot hold more values than characters of text, so a larger count is
+        // refused before the buffer is sized from it.
         const std::string_view text = rDi.text().get();
+        if (total > text.size())
+            throw ReadError("XDMF: DataItem declares more values than its text holds");
+        NDArray a = NDArray::Uninit(dt, dims);
         detail::dispatch_dtype(dt, [&]<class T>() {
             T* out = a.As<T>();
             std::size_t i = 0, pos = 0;
@@ -141083,6 +141134,14 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
             if (!bin)
                 throw ReadError("XDMF: could not open binary file " + path);
         }
+        // The file must hold the declared values: a count beyond its bytes is a
+        // header the payload cannot back, refused before the buffer is sized.
+        bin.seekg(0, std::ios::end);
+        const std::streamoff file_bytes = bin.tellg();
+        bin.seekg(0, std::ios::beg);
+        if (file_bytes < 0 || total > static_cast<std::size_t>(file_bytes) / dtype_size(dt))
+            throw ReadError("XDMF: binary file " + path +
+                            " holds fewer values than its DataItem declares");
         NDArray a(dt, dims);
         bin.read(reinterpret_cast<char*>(a.Data()), static_cast<std::streamsize>(a.Nbytes()));
         return a;

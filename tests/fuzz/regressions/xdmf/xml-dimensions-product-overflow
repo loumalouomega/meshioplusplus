@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<Xdmf Version="3.0"><Domain><Grid Name="g" GridType="Uniform">
+<Topology TopologyType="Triangle" NumberOfElements="1"><DataItem Dimensions="1 3" Format="XML">0 1 2</DataItem></Topology>
+<Geometry GeometryType="XY"><DataItem Dimensions="1000000000 1000000000" Format="XML">0 0</DataItem></Geometry>
+</Grid></Domain></Xdmf>
