@@ -34,6 +34,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/femap.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -1040,4 +1041,19 @@ TEST(SequenceDriver, FanInWritesAFemapSeries) {
     EXPECT_EQ(writer.NumSteps(), 1u);
     writer.Finalize();
     EXPECT_EQ(meshioplusplus::femap_time_values(dir / "direct.neu"), (std::vector<double>{0.0}));
+}
+
+TEST(SequenceDriver, FanInWritesARadiossThSeries) {
+    // A time-history file holds its variables once and an output per step: the
+    // meshes carry no `radioss_th:*` data here, so each output is its time only.
+    SeqTempDir dir;
+    seq_write_files(dir, "in_", 3);
+    SequenceInput in;
+    in.mPattern = dir / "in_*.vtu";
+    in.mTimes = {0.0, 0.5, 1.0};
+    SequenceOutput out;
+    out.mPath = dir / "runT01";
+    meshioplusplus::sequence_to_timeseries(in, out);
+    EXPECT_EQ(meshioplusplus::radioss_th_time_values(out.mPath),
+              (std::vector<double>{0.0, 0.5, 1.0}));
 }

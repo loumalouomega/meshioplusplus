@@ -97,6 +97,7 @@ def _cases():
     from meshioplusplus.permas import _permas as py_permas
     from meshioplusplus.ply import _ply as py_ply
     from meshioplusplus.radioss import _radioss as py_radioss
+    from meshioplusplus.radioss_th import _th as py_radioss_th
     from meshioplusplus.stl import _stl as py_stl
     from meshioplusplus.tecplot import _tecplot as py_tecplot
     from meshioplusplus.tetgen import _tetgen as py_tetgen
@@ -137,6 +138,8 @@ def _cases():
         # The tag ends the header line (Z88 reads its first five integers).
         "z88": (TET, ".txt", _core.z88_write, py_z88.write),
         "radioss": (TET, ".rad", _core.radioss_write, py_radioss.write),
+        # The title record's 80-character field; the file name ends in T01.
+        "radioss_th": (TRI, "T01", _core.radioss_th_write, py_radioss_th.write),
         "marc": (TET, ".dat", _core.marc_write, py_marc.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (

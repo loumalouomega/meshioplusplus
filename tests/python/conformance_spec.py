@@ -1171,6 +1171,26 @@ SPEC: dict[str, dict] = {
         "regions": ["cell", "point", "side"],
         "note": "A starter deck holds no data arrays; a `vertex` has no element card.",
     },
+    "radioss_th": {
+        "cells": {
+            "vertex": "lost",
+            "line": "lost",
+            "triangle": "lost",
+            "quad": "lost",
+            "tetra": "lost",
+            "hexahedron": "lost",
+            "wedge": "lost",
+            "pyramid": "lost",
+        },
+        "points": "none",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A time-history file holds `radioss_th:*` field data only: points, "
+        "cells, regions and other data are not kept (a warning names the field data "
+        "dropped); the canonical `fd` is not a `radioss_th:` name.",
+    },
     "stl": {
         "cells": {
             "triangle": "lost",
@@ -1525,9 +1545,6 @@ READ_ONLY = {
     "nastran_op2": _GAP.format(item="3.2.2", why=_RESULT.format(tool="Nastran")),
     "radioss_anim": _GAP.format(
         item="3.2.9", why=_RESULT.format(tool="the OpenRadioss engine")
-    ),
-    "radioss_th": _GAP.format(
-        item="3.2.10", why=_RESULT.format(tool="the OpenRadioss engine")
     ),
     "xplt": _GAP.format(item="3.2.8", why=_RESULT.format(tool="FEBio")),
     "vtx": _GAP.format(

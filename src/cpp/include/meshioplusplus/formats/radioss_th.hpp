@@ -19,7 +19,7 @@
 /**
  * @file radioss_th.hpp
  * @brief OpenRadioss / Radioss time-history file (`<run>T01`, `T02`...)
- *        reader.
+ *        reader and writer.
  *
  * A time-history file is a big-endian Fortran unformatted file: a title, the
  * run's date, the part, material, property, subset and TH-group descriptions
@@ -34,11 +34,17 @@
  * (`radioss_th:part:<id>:<code name>`, `radioss_th:subset:<id>:...`) and,
  * per TH group, `radioss_th:<kind>:<id>` (entities x variables) with its
  * `:ids` and `:variables` (the variable codes).
+ *
+ * The writer (`write_radioss_th`, `RadiossThSeriesWriter`) is the reader's
+ * inverse: it takes those same field-data names back to the variable codes and
+ * groups, and ignores points and cells. The framing is the shared Fortran
+ * record framer (`detail/fortran_records.hpp`).
  * See doc/formats/radioss_th.md.
  */
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -83,5 +89,68 @@ MESHIOPLUSPLUS_API std::vector<double> radioss_th_time_values(const std::string&
  */
 MESHIOPLUSPLUS_API MeshMetadata read_radioss_th_metadata(const std::string& rPath,
                                                          const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a mesh's `radioss_th:*` field data as a one-output time-history
+ *        file.
+ *
+ * Points and cells are not stored (a time-history file holds none). The output's
+ * time is `meshio:time` (0 when absent). The variables are the reader's inverse:
+ * `radioss_th:global:<name>`, `radioss_th:part:<id>:<name>` and
+ * `radioss_th:subset:<id>:<name>` scalars (a name outside the reader's tables is
+ * `var<code>`), and per TH group `radioss_th:<kind>:<id>` (entities x variables)
+ * with its optional `:ids` and `:variables` (else 1..n). Everything is stored
+ * as big-endian `float32`; ids and codes as `int32`. With
+ * `radioss_th:unit_factors` (three values) the file is version 4021, else 3040
+ * (the version OpenRadioss writes).
+ * Parts, subsets and groups are written sorted by id (groups by kind code, then
+ * id) and their variables by code, so the bytes depend on the names only.
+ * Other field data is dropped with a warning. The Python twin writes the same
+ * bytes.
+ *
+ * @throws WriteError if a group array is not 2-D or disagrees with its `:ids`
+ *         or `:variables`, a value is not an integer in `int32` range, or the
+ *         file cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_radioss_th(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A time-history file written output by output: the descriptions from
+ *        the first step, then one output per `Write`.
+ *
+ * Every step must have the first step's variables (the same names, ids and
+ * codes); a step that does not is a `WriteError` (write one file per step with
+ * `{step}` instead). The time of a step is the argument, not its `meshio:time`.
+ * One step is `write_radioss_th`'s bytes. The Python twin,
+ * `meshioplusplus.radioss_th.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API RadiossThSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit RadiossThSeriesWriter(const std::string& rPath);
+    ~RadiossThSeriesWriter();
+
+    RadiossThSeriesWriter(const RadiossThSeriesWriter&) = delete;
+    RadiossThSeriesWriter& operator=(const RadiossThSeriesWriter&) = delete;
+    RadiossThSeriesWriter(RadiossThSeriesWriter&&) noexcept;
+    RadiossThSeriesWriter& operator=(RadiossThSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one output (the first also writes the descriptions).
+     * @throws WriteError when the step's variables differ from the first
+     *         step's, on a write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

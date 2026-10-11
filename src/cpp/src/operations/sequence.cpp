@@ -44,6 +44,7 @@
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
@@ -279,13 +280,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap" || rFormat == "frd") {
+        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd' and 'exodus' can); "
+           "'frd', 'radioss_th' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -574,12 +575,13 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
             "select");
-    const char* who = rFormat == "exodus"   ? "Exodus"
-                      : rFormat == "vtkhdf" ? "VTKHDF"
-                      : rFormat == "pvd"    ? "PVD"
-                      : rFormat == "femap"  ? "Femap"
-                      : rFormat == "frd"    ? "CalculiX FRD"
-                                            : "XDMF";
+    const char* who = rFormat == "exodus"       ? "Exodus"
+                      : rFormat == "vtkhdf"     ? "VTKHDF"
+                      : rFormat == "pvd"        ? "PVD"
+                      : rFormat == "femap"      ? "Femap"
+                      : rFormat == "frd"        ? "CalculiX FRD"
+                      : rFormat == "radioss_th" ? "Radioss time-history"
+                                                : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -593,6 +595,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
             "select");
+    if (rFormat == "radioss_th" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Radioss time-history writer has no ASCII/binary "
+            "variant to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -675,6 +681,19 @@ private:
     FrdSeriesWriter mWriter;
 };
 
+/// A time-history file holds the descriptions once and an output per step: the writer
+/// writes them with the first step, so `WritePointsCells` has nothing to do.
+class SeqRadiossThSink final : public SeqSeriesSink {
+public:
+    explicit SeqRadiossThSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    RadiossThSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -715,6 +734,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;
         return std::make_unique<SeqFrdSink>(rPath, frd_opts);
     }
+    if (rFormat == "radioss_th")
+        return std::make_unique<SeqRadiossThSink>(rPath);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);

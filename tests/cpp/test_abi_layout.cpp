@@ -80,6 +80,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -228,6 +229,9 @@ MIO_ABI_LAYOUT(meshioplusplus::PvdSeriesWriter, 8, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FemapSeriesWriter, 8, 8);
 // `FrdSeriesWriter` (v16.39.0, unreleased) is the same pimpl handle: one `unique_ptr`.
 MIO_ABI_LAYOUT(meshioplusplus::FrdSeriesWriter, 8, 8);
+// `RadiossThSeriesWriter` is the same shape, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::RadiossThSeriesWriter, 8, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both

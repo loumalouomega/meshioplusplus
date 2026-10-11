@@ -4843,6 +4843,25 @@ PYBIND11_MODULE(_core, m) {
     m.def("radioss_th_time_values", [](const std::string& path) {
         return core_nogil([&] { return meshioplusplus::radioss_th_time_values(path); });
     });
+    // OpenRadioss time-history (T01) writer, and the output-by-output series writer
+    // behind `meshioplusplus.radioss_th.SeriesWriter`.
+    m.def("radioss_th_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_radioss_th(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::RadiossThSeriesWriter>(m, "RadiossThSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::RadiossThSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::RadiossThSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::RadiossThSeriesWriter::Finalize);
 
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     // DOLFINx VTX (.bp directory) reader; ADIOS2 builds only.

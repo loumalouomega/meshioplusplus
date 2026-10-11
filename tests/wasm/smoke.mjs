@@ -2536,13 +2536,14 @@ step('availableFormats reports what this build can read and write', () => {
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0)
-    // and OpenRadioss starter decks (read v16.7.0, written v16.17.0) both ways.
-    // OpenRadioss animation files (v16.11.0), time-history files and LS-DYNA
-    // binouts (v16.12.0) read-only.
-    for (const fmt of ['abaqus_fil', 'radioss_anim', 'radioss_th', 'lsdyna_binout'])
+    // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0),
+    // OpenRadioss starter decks (read v16.7.0, written v16.17.0) and
+    // OpenRadioss time-history files (read v16.12.0, written since) both ways.
+    // OpenRadioss animation files (v16.11.0) and LS-DYNA binouts (v16.12.0)
+    // read-only.
+    for (const fmt of ['abaqus_fil', 'radioss_anim', 'lsdyna_binout'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    for (const fmt of ['z88', 'libmesh', 'radioss'])
+    for (const fmt of ['z88', 'libmesh', 'radioss', 'radioss_th'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // MSC Marc decks (read v16.8.0, written v16.17.0) both ways; its post files
     // and the full rotor of a cyclic Ansys .rst (v16.8.0) read-only.

@@ -19,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -196,4 +198,226 @@ TEST(RadiossTh, ResolvedSniffedNarrowedAndRefused) {
     // the descriptions and one time: no complete output
     const std::string text = th_file();
     EXPECT_THROW(meshioplusplus::read_radioss_th(write_file(text.substr(0, 848))), ReadError);
+}
+
+// ---------------------------------------------------------------------------
+// The writer. `Th` stays the hand-framed oracle: it frames each record itself,
+// so the expected bytes below do not go through the framer the writer uses.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using meshioplusplus::NDArray;
+using meshioplusplus::WriteError;
+
+void add_field(Mesh& rMesh, const std::string& rName, const std::vector<double>& rValues,
+               std::vector<std::size_t> Shape = {}) {
+    if (Shape.empty())
+        Shape = {rValues.size()};
+    NDArray a(meshioplusplus::DType::Float64, std::move(Shape));
+    for (std::size_t i = 0; i < rValues.size(); ++i)
+        a.As<double>()[i] = rValues[i];
+    rMesh.AddFieldData(rName, std::move(a));
+}
+
+void add_ints(Mesh& rMesh, const std::string& rName, const std::vector<std::int64_t>& rValues) {
+    NDArray a(meshioplusplus::DType::Int64, {rValues.size()});
+    for (std::size_t i = 0; i < rValues.size(); ++i)
+        a.As<std::int64_t>()[i] = rValues[i];
+    rMesh.AddFieldData(rName, std::move(a));
+}
+
+// The oracle file's content as field data (see th_file): globals 1, 2; part 7
+// (IE, KE); subset 0 (KE); TH groups node 3 (ids 11, 12; variables 1, 2, 3) and
+// rigid body 4 (entity 5, no variables).
+Mesh sample_mesh(int K, bool Factors = false) {
+    Mesh m;
+    m.AssignPoints(NDArray(meshioplusplus::DType::Float64, {0, 3}));
+    m.AddCellBlock("vertex", NDArray(meshioplusplus::DType::Int64, {0, 1}));
+    const double k = K;
+    add_field(m, "meshio:time", {0.5 * k});
+    add_field(m, "radioss_th:global:internal_energy", {10.0 + k});
+    add_field(m, "radioss_th:global:kinetic_energy", {20.0 + k});
+    add_field(m, "radioss_th:part:7:IE", {1.0 + k});
+    add_field(m, "radioss_th:part:7:KE", {2.0 + k});
+    add_field(m, "radioss_th:subset:0:KE", {3.0 + k});
+    add_field(
+        m, "radioss_th:node:3",
+        {100.0 * k, 1 + 100.0 * k, 2 + 100.0 * k, 3 + 100.0 * k, 4 + 100.0 * k, 5 + 100.0 * k},
+        {2, 3});
+    add_ints(m, "radioss_th:node:3:ids", {11, 12});
+    add_ints(m, "radioss_th:node:3:variables", {1, 2, 3});
+    add_field(m, "radioss_th:rbody:4", {}, {1, 0});
+    add_ints(m, "radioss_th:rbody:4:ids", {5});
+    if (Factors)
+        add_field(m, "radioss_th:unit_factors", {1.0, 1000.0, 0.001});
+    return m;
+}
+
+// What the writer must produce for `sample_mesh(k)` for each k in Steps.
+std::string expected_bytes(const std::vector<int>& rSteps, bool Factors = false) {
+    const std::size_t title = Factors ? 100 : 40;
+    const std::string tag = std::string("Written by meshio++ v") + MESHIOPLUSPLUS_VERSION_STRING;
+    Th t;
+    t.Open().Int(Factors ? 4021 : 3040).Text(tag, 80).Close();
+    t.Open().Text("meshio++", 80).Close();
+    if (Factors) {
+        t.Ints({1});
+        t.Ints({static_cast<std::int32_t>(title)});
+        t.Open().Float(1.0f).Float(1000.0f).Float(0.001f).Close();
+    }
+    t.Ints({1, 0, 0, 1, 2, 2});
+    t.Ints({1, 2});
+    t.Open().Int(7).Text("PART 7", title).Int(0).Int(0).Int(0).Int(2).Close();
+    t.Ints({1, 2});
+    t.Open().Int(0).Int(0).Int(0).Int(0).Int(1).Text("SUBSET 0", title).Close();
+    t.Ints({2});
+    t.Open().Int(3).Int(0).Int(0).Int(2).Int(3).Text("TH node 3", title).Close();
+    t.Open().Int(11).Text("node 11", title).Close();
+    t.Open().Int(12).Text("node 12", title).Close();
+    t.Ints({1, 2, 3});
+    t.Open().Int(4).Int(103).Int(0).Int(1).Int(0).Text("TH rbody 4", title).Close();
+    t.Open().Int(5).Text("rbody 5", title).Close();
+    for (const int k : rSteps) {
+        const float s = static_cast<float>(k);
+        t.Open().Float(0.5f * s).Close();
+        t.Open().Float(10.0f + s).Float(20.0f + s).Close();
+        t.Open().Float(1.0f + s).Float(2.0f + s).Close();
+        t.Open().Float(3.0f + s).Close();
+        t.Open();
+        for (int i = 0; i < 6; ++i)
+            t.Float(static_cast<float>(i) + 100.0f * s);
+        t.Close();
+        t.Open().Close();
+    }
+    return t.mBytes;
+}
+
+std::string read_bytes(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::string temp_th(const std::string& rName = "runT01") {
+    const std::filesystem::path dir(
+        mt::temp_path("_radioss_th_w_" + std::to_string(std::random_device{}())));
+    std::filesystem::create_directories(dir);
+    return (dir / rName).string();
+}
+
+}  // namespace
+
+TEST(RadiossThWriter, FollowsTheHandFramedLayout) {
+    for (const bool factors : {false, true}) {
+        const std::string path = temp_th();
+        meshioplusplus::write_radioss_th(path, sample_mesh(1, factors));
+        EXPECT_EQ(read_bytes(path), expected_bytes({1}, factors)) << "factors " << factors;
+    }
+}
+
+TEST(RadiossThWriter, ReadsBackWhatTheOracleFileHolds) {
+    // The hand-framed file (version 3040, a material, subset parts) and the
+    // written one hold the same variables.
+    const Mesh oracle = meshioplusplus::read_radioss_th(write_file(th_file()), step(1));
+    const std::string path = temp_th();
+    meshioplusplus::write_radioss_th(path, sample_mesh(1));
+    const Mesh written = meshioplusplus::read_radioss_th(path);
+    EXPECT_EQ(oracle.NumFieldData(), written.NumFieldData());
+    for (const std::string& name : oracle.FieldDataNames()) {
+        ASSERT_TRUE(written.HasFieldData(name)) << name;
+        const auto& a = oracle.FieldData(name);
+        const auto& b = written.FieldData(name);
+        EXPECT_EQ(a.Dtype(), b.Dtype()) << name;
+        EXPECT_EQ(a.Shape(), b.Shape()) << name;
+        if (a.Size() > 0)
+            EXPECT_EQ(0, std::memcmp(a.Data(), b.Data(),
+                                     a.Size() * meshioplusplus::dtype_size(a.Dtype())))
+                << name;
+    }
+}
+
+TEST(RadiossThWriter, DefaultsDropsAndRefusals) {
+    // Ids and codes default to 1..n; unnamed codes are var<code>.
+    Mesh m;
+    add_field(m, "radioss_th:shell:2", {0, 1, 2, 3, 4, 5}, {3, 2});
+    add_field(m, "radioss_th:global:var40", {1.5});
+    add_field(m, "radioss_th:part:-3:var26", {2.5});
+    add_field(m, "unrelated", {1.0});
+    const std::string path = temp_th();
+    meshioplusplus::write_radioss_th(path, m);
+    const Mesh back = meshioplusplus::read_radioss_th(path);
+    EXPECT_EQ(back.FieldData("radioss_th:shell:2:ids").As<std::int64_t>()[2], 3);
+    EXPECT_EQ(back.FieldData("radioss_th:shell:2:variables").As<std::int64_t>()[1], 2);
+    EXPECT_EQ(scalar(back, "radioss_th:global:var40"), 1.5);
+    EXPECT_EQ(scalar(back, "radioss_th:part:-3:var26"), 2.5);
+    EXPECT_FALSE(back.HasFieldData("unrelated"));
+
+    Mesh flat = sample_mesh(0);
+    add_field(flat, "radioss_th:node:3", {1, 2, 3});
+    EXPECT_THROW(meshioplusplus::write_radioss_th(temp_th(), flat), WriteError);
+    Mesh ids = sample_mesh(0);
+    add_ints(ids, "radioss_th:node:3:ids", {1, 2, 3});
+    EXPECT_THROW(meshioplusplus::write_radioss_th(temp_th(), ids), WriteError);
+    Mesh fractional = sample_mesh(0);
+    add_field(fractional, "radioss_th:node:3:ids", {1.5, 2.0});
+    EXPECT_THROW(meshioplusplus::write_radioss_th(temp_th(), fractional), WriteError);
+    Mesh factors = sample_mesh(0);
+    add_field(factors, "radioss_th:unit_factors", {1.0, 2.0});
+    EXPECT_THROW(meshioplusplus::write_radioss_th(temp_th(), factors), WriteError);
+    EXPECT_THROW(meshioplusplus::write_radioss_th("/no/such/dir/runT01", sample_mesh(0)),
+                 WriteError);
+}
+
+TEST(RadiossThWriter, ASeriesIsTheDescriptionsOnceThenAnOutputPerStep) {
+    const std::string path = temp_th();
+    meshioplusplus::RadiossThSeriesWriter writer(path);
+    writer.Write(0.0, sample_mesh(0, true));
+    // a step with other variables is refused, and does not count
+    Mesh other = sample_mesh(1, true);
+    Mesh fewer;
+    for (const std::string& name : other.FieldDataNames())
+        if (name != "radioss_th:part:7:KE")
+            fewer.AddFieldData(name, other.FieldData(name));
+    EXPECT_THROW(writer.Write(0.5, fewer), WriteError);
+    EXPECT_EQ(writer.NumSteps(), 1u);
+    // the time is the argument's, not the mesh's
+    writer.Write(0.5, sample_mesh(1, true));
+    writer.Write(1.0, sample_mesh(2, true));
+    writer.Finalize();
+    writer.Finalize();
+    EXPECT_EQ(read_bytes(path), expected_bytes({0, 1, 2}, true));
+    EXPECT_EQ(meshioplusplus::radioss_th_time_values(path), (std::vector<double>{0.0, 0.5, 1.0}));
+
+    meshioplusplus::RadiossThSeriesWriter empty(temp_th());
+    EXPECT_THROW(empty.Finalize(), WriteError);
+
+    const std::string timed_path = temp_th();
+    meshioplusplus::RadiossThSeriesWriter timed(timed_path);
+    timed.Write(7.0, sample_mesh(0));
+    timed.Finalize();
+    EXPECT_EQ(meshioplusplus::radioss_th_time_values(timed_path), (std::vector<double>{7.0}));
+}
+
+TEST(RadiossThWriter, ACutShortWrittenFileKeepsItsCompleteOutputs) {
+    const std::string full = expected_bytes({0, 1});
+    Th tail;
+    tail.Open().Float(1.0f).Close();
+    const std::string lone_time = tail.mBytes;
+    for (const std::string& extra : {lone_time.substr(0, 7), lone_time, lone_time + lone_time,
+                                     lone_time.substr(0, lone_time.size() - 1) + '\x07'}) {
+        const std::string path = temp_th();
+        std::ofstream(path, std::ios::binary) << full << extra;
+        EXPECT_EQ(meshioplusplus::radioss_th_time_values(path), (std::vector<double>{0.0, 0.5}));
+    }
+    const std::string path = temp_th();
+    std::ofstream(path, std::ios::binary) << full.substr(0, full.size() - 20);
+    EXPECT_EQ(meshioplusplus::radioss_th_time_values(path), (std::vector<double>{0.0}));
+}
+
+TEST(RadiossThWriter, TheRegistryWritesItByNameAndByFormat) {
+    EXPECT_EQ(meshioplusplus::resolve_write_format("/a/runT01", ""), "radioss_th");
+    const std::string path = temp_th("history.bin");
+    meshioplusplus::registry_writers().at("radioss_th")(path, sample_mesh(1));
+    EXPECT_EQ(read_bytes(path), expected_bytes({1}));
+    EXPECT_EQ(meshioplusplus::sniff_format(path), "radioss_th");
 }
