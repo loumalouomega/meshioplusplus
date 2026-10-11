@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/femap.hpp"
+#include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
@@ -278,13 +279,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap") {
+        rFormat == "femap" || rFormat == "frd") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap' "
-           "and 'exodus' can); "
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
+           "'frd' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -577,6 +578,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "vtkhdf" ? "VTKHDF"
                       : rFormat == "pvd"    ? "PVD"
                       : rFormat == "femap"  ? "Femap"
+                      : rFormat == "frd"    ? "CalculiX FRD"
                                             : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
@@ -591,6 +593,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
             "select");
+    if (rFormat == "frd" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient CalculiX FRD writer has no ASCII/binary variant "
+            "to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -660,6 +666,19 @@ private:
     FemapSeriesWriter mWriter;
 };
 
+/// A CalculiX result file holds one mesh and an increment per step: its writer writes
+/// the mesh with the first step, so `WritePointsCells` has nothing to do.
+class SeqFrdSink final : public SeqSeriesSink {
+public:
+    explicit SeqFrdSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    FrdSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -695,6 +714,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "femap")
         return std::make_unique<SeqFemapSink>(rPath);
+    if (rFormat == "frd")
+        return std::make_unique<SeqFrdSink>(rPath);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);

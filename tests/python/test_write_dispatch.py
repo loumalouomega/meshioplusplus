@@ -90,4 +90,4 @@ def test_an_existing_file_never_chooses_the_written_format(tmp_path):
 
 def test_naming_a_read_only_format_says_so(tmp_path):
     with pytest.raises(meshioplusplus.WriteError, match="can be read but not written"):
-        meshioplusplus.write(tmp_path / "a.frd", _tri())
+        meshioplusplus.write(tmp_path / "a.xplt", _tri())

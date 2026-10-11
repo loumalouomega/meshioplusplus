@@ -156,7 +156,7 @@ The interface/contact API adds `mio_region_adjacency`, `mio_find_interface`, `mi
 
 MDPA side-channel membership: `mio_mdpa_info_array(info, MIO_MDPA_SUBMODELPARTS, index, field, ...)` exposes table ids at field 0, geometry ids at field 1 and constraint ids at field 2. These borrowed Int64 lists retain raw file ids, order and duplicates; `mio_write_with_info` restores them in nested parts. They are not remapped by mesh operations, and constraints remain opaque. The C ABI signatures and existing fields are unchanged; the underlying C++ layout uses ABI 21.
 
-`mio_write` writes OpenRadioss starter decks (`radioss`, `.rad`) and MSC Marc decks (`marc`, by name) since v16.17.0; `radioss`'s placeholder materials and properties (`stubs`) are Python and C++ only.
+`mio_write` writes OpenRadioss starter decks (`radioss`, `.rad`) and MSC Marc decks (`marc`, by name) since v16.17.0; `radioss`'s placeholder materials and properties (`stubs`) are Python and C++ only. `mio_write` writes CalculiX results (`frd`, `.frd`, ASCII, the long `I10` layout, one step) too; the short `I5` form is Python and C++ only.
 
 `mio_write_ex` takes a `mio_write_opts*` whose `encoding` is `MIO_ENCODING_DEFAULT`, `_ASCII`, `_BINARY` or, since v16.21.0, `MIO_ENCODING_RAW_APPENDED` (`vtu` only: raw binary arrays in one `<AppendedData>` section; any other format fails by name).
 

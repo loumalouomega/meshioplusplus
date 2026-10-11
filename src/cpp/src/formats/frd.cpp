@@ -24,6 +24,8 @@
 #include <fstream>
 #include <ios>
 #include <limits>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -36,11 +38,14 @@
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/read_options.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -855,6 +860,520 @@ MeshMetadata read_frd_metadata(const std::string& rPath, const ReadOptions& /*rO
     for (const FrdFrame& frame : file.mFrames)
         meta.mTimeValues.push_back(frame.mValue);
     return meta;
+}
+
+
+// --- Writing ---------------------------------------------------------------------
+//
+// The inverse of the reader, in the ASCII layout `ccx` itself writes. Python's twin is
+// frd/_frd.py; the two write the same bytes.
+
+namespace {
+
+constexpr std::size_t frd_max_name = 8;
+constexpr std::int64_t frd_max_small = 99999;
+
+/// `X` as the `E12.5` the format prints; a value that does not fit twelve columns is
+/// flushed to zero when tiny and refused when huge.
+std::string frd_e12(double X) {
+    char buf[48];
+    detail::snprintf_c(buf, sizeof(buf), "%12.5E", X);
+    if (std::strlen(buf) > 12) {
+        if (std::fabs(X) >= 1.0)
+            throw WriteError("CalculiX FRD: " + std::string(buf) + " does not fit an E12.5 field");
+        detail::snprintf_c(buf, sizeof(buf), "%12.5E", 0.0);
+    }
+    return buf;
+}
+
+std::string frd_small(std::int64_t Value, const char* pWhat) {
+    if (Value < 0 || Value > frd_max_small)
+        throw WriteError(std::string("CalculiX FRD: ") + pWhat + " " + std::to_string(Value) +
+                         " does not fit an I5 field");
+    char buf[32];
+    detail::snprintf_c(buf, sizeof(buf), "%5lld", static_cast<long long>(Value));
+    return buf;
+}
+
+std::string frd_int_field(std::int64_t Value, std::size_t Width) {
+    char buf[40];
+    detail::snprintf_c(buf, sizeof(buf), "%*lld", static_cast<int>(Width),
+                       static_cast<long long>(Value));
+    return buf;
+}
+
+/// The step value in the 12 columns of the `100C` header: as many decimals as fit,
+/// `E12.5` for a value too large for any.
+std::string frd_time_text(double Value) {
+    char buf[64];
+    for (int decimals = 9; decimals >= 0; --decimals) {
+        detail::snprintf_c(buf, sizeof(buf), "%12.*f", decimals, Value);
+        if (std::strlen(buf) == 12)
+            return buf;
+    }
+    return frd_e12(Value);
+}
+
+bool frd_valid_name(const std::string& rName) {
+    if (rName.empty() || rName.size() > frd_max_name)
+        return false;
+    for (char c : rName)
+        if (!(c > ' ' && c <= '~'))
+            return false;
+    return true;
+}
+
+/// The component names ccx gives its common results.
+const std::vector<const char*>* frd_component_names(const std::string& rName) {
+    static const std::unordered_map<std::string, std::vector<const char*>> table = {
+        {"STRESS", {"SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"}},
+        {"TOSTRAIN", {"EXX", "EYY", "EZZ", "EXY", "EYZ", "EZX"}},
+        {"MESTRAIN", {"EXX", "EYY", "EZZ", "EXY", "EYZ", "EZX"}},
+        {"ZZSTR", {"SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"}},
+        {"DISP", {"D1", "D2", "D3"}},
+        {"VELO", {"V1", "V2", "V3"}},
+        {"FORC", {"F1", "F2", "F3"}},
+        {"NDTEMP", {"T"}},
+    };
+    const auto it = table.find(rName);
+    return it == table.end() ? nullptr : &it->second;
+}
+
+}  // namespace
+
+// FrdWritePlan is held by FrdSeriesWriter::Impl, a class with external linkage, so it
+// lives in a named namespace rather than the anonymous one (-Wsubobject-linkage in the
+// single header).
+namespace detail::frd_writer {
+
+struct FrdWriteBlock {
+    int mCode = 0;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mConn;  // file node order, 0-based
+    std::vector<std::int64_t> mGroup;
+    std::vector<std::int64_t> mMaterial;
+};
+
+/// What the writer makes of a mesh: the nodes and the cells the format can hold.
+struct FrdWritePlan {
+    bool mLong = true;
+    std::size_t mNpts = 0;
+    std::size_t mNumCells = 0;
+    std::vector<double> mCoords;  // mNpts x 3
+    std::vector<FrdWriteBlock> mBlocks;
+
+    std::size_t Width() const { return mLong ? 10 : 5; }
+};
+
+}  // namespace detail::frd_writer
+
+namespace {
+
+using detail::frd_writer::FrdWriteBlock;
+using detail::frd_writer::FrdWritePlan;
+
+FrdWritePlan frd_plan(const Mesh& rMesh, bool LongIds) {
+    FrdWritePlan plan;
+    plan.mLong = LongIds;
+    plan.mNpts = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (dim > 3)
+        throw WriteError("CalculiX FRD: points of more than three coordinates");
+    plan.mCoords.assign(plan.mNpts * 3, 0.0);
+    const detail::DoubleView points(rMesh.Points());
+    for (std::size_t i = 0; i < plan.mNpts; ++i)
+        for (std::size_t k = 0; k < dim; ++k) {
+            const double x = points[i * dim + k];
+            if (!std::isfinite(x))
+                throw WriteError("CalculiX FRD: a point coordinate is not finite");
+            plan.mCoords[i * 3 + k] = x;
+        }
+
+    std::vector<std::string> dropped;
+    const bool has_group = rMesh.HasCellData("frd:group");
+    const bool has_material = rMesh.HasCellData("frd:material");
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string& type = cb.Type();
+        int code = 0;
+        std::size_t nodes = 0;
+        for (int t = 1; t <= 12; ++t) {
+            const FrdTypeSpec* spec = frd_type_spec(t);
+            if (type == spec->mName) {
+                code = t;
+                nodes = spec->mNodes;
+            }
+        }
+        if (code == 0 || cb.IsRagged() || cb.NodesPerCell() != nodes) {
+            if (std::find(dropped.begin(), dropped.end(), type) == dropped.end())
+                dropped.push_back(type);
+            continue;
+        }
+        const std::size_t n = cb.NumCells();
+        const detail::Int64View conn(cb.Conn());
+        const detail::NodeOrder* order = detail::node_order("frd", type);
+        FrdWriteBlock block;
+        block.mCode = code;
+        block.mNodes = nodes;
+        block.mConn.resize(n * nodes);
+        for (std::size_t r = 0; r < n; ++r)
+            for (std::size_t j = 0; j < nodes; ++j) {
+                const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
+                const std::int64_t id = conn[r * nodes + src];
+                if (id < 0 || static_cast<std::size_t>(id) >= plan.mNpts)
+                    throw WriteError("CalculiX FRD: a " + type +
+                                     " cell references a point that does not exist");
+                block.mConn[r * nodes + j] = id;
+            }
+        block.mGroup.assign(n, 0);
+        block.mMaterial.assign(n, 1);
+        if (has_group) {
+            const NDArray& a = rMesh.CellData("frd:group", b);
+            if (a.Size() == n) {
+                const detail::Int64View v(a);
+                for (std::size_t r = 0; r < n; ++r)
+                    block.mGroup[r] = v[r];
+            }
+        }
+        if (has_material) {
+            const NDArray& a = rMesh.CellData("frd:material", b);
+            if (a.Size() == n) {
+                const detail::Int64View v(a);
+                for (std::size_t r = 0; r < n; ++r)
+                    block.mMaterial[r] = v[r];
+            }
+        }
+        plan.mNumCells += n;
+        plan.mBlocks.push_back(std::move(block));
+    }
+    const std::int64_t limit = LongIds ? 2147483647 : frd_max_small;
+    if (static_cast<std::int64_t>(std::max(plan.mNpts, plan.mNumCells)) > limit)
+        throw WriteError(std::string("CalculiX FRD: too many nodes or elements for the ") +
+                         (LongIds ? "long" : "short") + " format");
+    for (const std::string& t : dropped) {
+        log::warn("CalculiX FRD has no '{}' element; those cells are dropped", t);
+        detail::provenance_note("cells-dropped", "CalculiX FRD has no '" + t + "' element");
+    }
+    if (rMesh.NumRegions()) {
+        log::warn("CalculiX FRD holds no sets; {} region(s) dropped", rMesh.NumRegions());
+        detail::provenance_note("regions-dropped", std::to_string(rMesh.NumRegions()) +
+                                                       " region(s) have no FRD equivalent");
+    }
+    return plan;
+}
+
+std::string frd_mesh_text(const FrdWritePlan& rPlan) {
+    const std::size_t w = rPlan.Width();
+    const int flag = rPlan.mLong ? 1 : 0;
+    char buf[160];
+    std::string out = "    1C\n";
+    std::string title = detail::provenance_lines(detail::SlotTier::SingleLine)[0];
+    for (char& c : title)
+        if (c == '\n' || c == '\r')
+            c = ' ';
+    out += "    1U" + title + "\n";
+    detail::snprintf_c(buf, sizeof(buf), "    2C%30zu%37s%d\n", rPlan.mNpts, "", flag);
+    out += buf;
+    for (std::size_t i = 0; i < rPlan.mNpts; ++i) {
+        out += " -1" + frd_int_field(static_cast<std::int64_t>(i + 1), w);
+        for (std::size_t k = 0; k < 3; ++k)
+            out += frd_e12(rPlan.mCoords[i * 3 + k]);
+        out += '\n';
+    }
+    out += " -3\n";
+    detail::snprintf_c(buf, sizeof(buf), "    3C%30zu%37s%d\n", rPlan.mNumCells, "", flag);
+    out += buf;
+    const std::size_t per_line = rPlan.mLong ? 10 : 15;
+    std::int64_t eid = 0;
+    for (const FrdWriteBlock& block : rPlan.mBlocks) {
+        const std::size_t n = block.mGroup.size();
+        for (std::size_t r = 0; r < n; ++r) {
+            ++eid;
+            out += " -1" + frd_int_field(eid, w) + frd_small(block.mCode, "element type") +
+                   frd_small(block.mGroup[r], "group") + frd_small(block.mMaterial[r], "material") +
+                   "\n";
+            const std::int64_t* ids = block.mConn.data() + r * block.mNodes;
+            for (std::size_t k = 0; k < block.mNodes; k += per_line) {
+                out += " -2";
+                for (std::size_t j = k; j < std::min(k + per_line, block.mNodes); ++j)
+                    out += frd_int_field(ids[j] + 1, w);
+                out += '\n';
+            }
+        }
+    }
+    out += " -3\n";
+    return out;
+}
+
+/// The `-4` blocks of the mesh's point data, one string each, and in @p rUnwritable the
+/// arrays that have none.
+std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan& rPlan,
+                                           std::vector<std::string>& rUnwritable) {
+    static const std::int64_t tensor_index[6][2] = {{1, 1}, {2, 2}, {3, 3}, {1, 2}, {2, 3}, {3, 1}};
+    const std::size_t w = rPlan.Width();
+    const std::size_t npts = rPlan.mNpts;
+    std::vector<std::string> blocks;
+    char buf[160];
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const auto& shape = a.Shape();
+        if (!frd_valid_name(name) || shape.empty() || shape.size() > 2 || shape[0] != npts ||
+            (shape.size() == 2 && shape[1] == 0)) {
+            rUnwritable.push_back(name);
+            continue;
+        }
+        const std::size_t nc = shape.size() == 2 ? shape[1] : 1;
+        const detail::DoubleView values(a);
+        const std::vector<const char*>* known = frd_component_names(name);
+        const bool has_all = nc == 3 && (name == "DISP" || name == "FORC");
+        std::string out;
+        detail::snprintf_c(buf, sizeof(buf), " -4  %-8s%5zu%5d\n", name.c_str(), nc + (has_all ? 1 : 0),
+                           1);
+        out += buf;
+        for (std::size_t k = 1; k <= nc; ++k) {
+            std::string cname;
+            if (known && known->size() == nc)
+                cname = (*known)[k - 1];
+            else
+                cname = nc > 1 ? "C" + std::to_string(k) : name;
+            if (nc == 6)
+                detail::snprintf_c(buf, sizeof(buf), " -5  %-8s%5d%5d%5lld%5lld\n", cname.c_str(), 1,
+                                   4, static_cast<long long>(tensor_index[k - 1][0]),
+                                   static_cast<long long>(tensor_index[k - 1][1]));
+            else if (nc == 3)
+                detail::snprintf_c(buf, sizeof(buf), " -5  %-8s%5d%5d%5zu%5d\n", cname.c_str(), 1, 2,
+                                   k, 0);
+            else
+                detail::snprintf_c(buf, sizeof(buf), " -5  %-8s%5d%5d%5d%5d\n", cname.c_str(), 1, 1,
+                                   0, 0);
+            out += buf;
+        }
+        if (has_all) {
+            detail::snprintf_c(buf, sizeof(buf), " -5  %-8s%5d%5d%5d%5d%5dALL\n", "ALL", 1, 2, 0, 0,
+                               1);
+            out += buf;
+        }
+        std::size_t skipped = 0;
+        for (std::size_t i = 0; i < npts; ++i) {
+            const double* row = values.Data() + i * nc;
+            bool finite = true;
+            for (std::size_t k = 0; k < nc; ++k)
+                finite = finite && std::isfinite(row[k]);
+            if (!finite) {
+                ++skipped;
+                continue;
+            }
+            for (std::size_t k = 0; k < nc; k += frd_values_per_line) {
+                if (k == 0)
+                    out += " -1" + frd_int_field(static_cast<std::int64_t>(i + 1), w);
+                else
+                    out += " -2" + std::string(w, ' ');
+                for (std::size_t j = k; j < std::min(k + frd_values_per_line, nc); ++j)
+                    out += frd_e12(row[j]);
+                out += '\n';
+            }
+        }
+        if (skipped)
+            log::warn("CalculiX FRD: {} node(s) of '{}' with a non-finite value left out", skipped,
+                      name);
+        out += " -3\n";
+        blocks.push_back(std::move(out));
+    }
+    return blocks;
+}
+
+/// Warns, and notes in the provenance record, about the data the format cannot hold.
+void frd_note_dropped_data(const Mesh& rMesh, const std::vector<std::string>& rUnwritable) {
+    std::vector<std::string> names;
+    for (const std::string& n : rMesh.CellDataNames())
+        if (n != "frd:group" && n != "frd:material")
+            names.push_back(n);
+    for (const std::string& n : rMesh.FieldDataNames())
+        if (n != kSequenceTimeKey && n != "frd:step" && n != "frd:analysis")
+            names.push_back(n);
+    names.insert(names.end(), rUnwritable.begin(), rUnwritable.end());
+    if (names.empty())
+        return;
+    std::string list;
+    for (const std::string& n : names)
+        list += (list.empty() ? "" : ", ") + n;
+    log::warn("CalculiX FRD is nodal and has no slot for: {}; dropped", list);
+    detail::provenance_note("data-dropped", "arrays with no FRD result block: " + list);
+}
+
+std::int64_t frd_field_int(const Mesh& rMesh, const char* pKey, std::int64_t Default) {
+    if (!rMesh.HasFieldData(pKey))
+        return Default;
+    const NDArray& a = rMesh.FieldData(pKey);
+    return a.Size() == 1 ? detail::read_int(a, 0) : Default;
+}
+
+/// The `meshio:time` of @p rMesh, 0 when it has none.
+double frd_field_time(const Mesh& rMesh) {
+    if (rMesh.HasFieldData(kSequenceTimeKey) && rMesh.FieldData(kSequenceTimeKey).Size() == 1)
+        return detail::read_double(rMesh.FieldData(kSequenceTimeKey), 0);
+    return 0.0;
+}
+
+/// The `1PSTEP`/`100CL` header and `-4` block of every result for one increment.
+std::string frd_frame_text(const FrdWritePlan& rPlan, const std::vector<std::string>& rBlocks,
+                           double Value, std::int64_t Step, std::int64_t Analysis) {
+    if (!std::isfinite(Value))
+        throw WriteError("CalculiX FRD: the step time is not finite");
+    const int flag = rPlan.mLong ? 1 : 0;
+    char buf[200];
+    std::string out;
+    for (const std::string& block : rBlocks) {
+        detail::snprintf_c(buf, sizeof(buf), "    1PSTEP%25s%1lld%11s1%11s%1lld%10s\n", "",
+                           static_cast<long long>(Step), "", "", static_cast<long long>(Step), "");
+        out += buf;
+        detail::snprintf_c(buf, sizeof(buf), "  100CL %4lld%s%12zu%20s%2lld%5lld%10s%2d\n",
+                           static_cast<long long>(100 + Step), frd_time_text(Value).c_str(),
+                           rPlan.mNpts, "", static_cast<long long>(Analysis),
+                           static_cast<long long>(Step), "", flag);
+        out += buf;
+        out += block;
+    }
+    return out;
+}
+
+/// What must not change between the steps of a series: a hash of the cells, and one of
+/// the points (no copy of a step is kept).
+std::pair<std::uint64_t, std::uint64_t> frd_fingerprint(const Mesh& rMesh) {
+    auto mix = [](std::uint64_t H, const void* pData, std::size_t Bytes) {
+        const auto* p = static_cast<const unsigned char*>(pData);
+        for (std::size_t i = 0; i < Bytes; ++i) {
+            H ^= p[i];
+            H *= 1099511628211ull;
+        }
+        return H;
+    };
+    std::uint64_t cells = 14695981039346656037ull;
+    std::uint64_t points = 14695981039346656037ull;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        cells = mix(cells, type.data(), type.size());
+        if (cb.IsRagged())
+            continue;
+        const detail::Int64View conn(cb.Conn());
+        const std::size_t n = cb.NumCells() * cb.NodesPerCell();
+        cells = mix(cells, &n, sizeof(n));
+        cells = mix(cells, conn.Data(), n * sizeof(std::int64_t));
+    }
+    const detail::DoubleView values(rMesh.Points());
+    const std::size_t n = rMesh.NumPoints() * rMesh.PointDim();
+    points = mix(points, values.Data(), n * sizeof(double));
+    return {cells, points};
+}
+
+}  // namespace
+
+void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
+    const FrdWritePlan plan = frd_plan(rMesh, LongIds);
+    std::vector<std::string> unwritable;
+    const std::vector<std::string> blocks = frd_result_blocks(rMesh, plan, unwritable);
+    frd_note_dropped_data(rMesh, unwritable);
+    // Everything is built before the file is touched, so a refused value leaves no
+    // half-written file behind.
+    std::string text = frd_mesh_text(plan);
+    text += frd_frame_text(plan, blocks, frd_field_time(rMesh), frd_field_int(rMesh, "frd:step", 1),
+                           frd_field_int(rMesh, "frd:analysis", 0));
+    text += "  9999\n";
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!os)
+        throw WriteError("Could not write file: " + rPath);
+}
+
+
+struct FrdSeriesWriter::Impl {
+    std::string mPath;
+    bool mLong = true;
+    decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
+    std::optional<FrdWritePlan> mPlan;
+    std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
+    std::set<std::int64_t> mStepIds;
+    std::int64_t mNextStep = 1;
+    bool mMoved = false;
+    bool mClosed = false;
+    std::size_t mSteps = 0;
+};
+
+FrdSeriesWriter::FrdSeriesWriter(const std::string& rPath, bool LongIds)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mLong = LongIds;
+    mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!mpImpl->mOut)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+FrdSeriesWriter::~FrdSeriesWriter() = default;
+FrdSeriesWriter::FrdSeriesWriter(FrdSeriesWriter&&) noexcept = default;
+FrdSeriesWriter& FrdSeriesWriter::operator=(FrdSeriesWriter&&) noexcept = default;
+
+void FrdSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("CalculiX FRD series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("CalculiX FRD series: the writer is finalized");
+    std::string text;
+    std::vector<std::string> unwritable;
+    if (!s.mPlan) {
+        s.mPlan = frd_plan(rMesh, s.mLong);
+        s.mFingerprint = frd_fingerprint(rMesh);
+        text = frd_mesh_text(*s.mPlan);
+    } else {
+        const auto fp = frd_fingerprint(rMesh);
+        if (fp.first != s.mFingerprint.first)
+            throw WriteError("CalculiX FRD series: step " + std::to_string(s.mSteps) +
+                             "'s cells differ from the first step's; a result file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        if (fp.second != s.mFingerprint.second && !s.mMoved) {
+            s.mMoved = true;
+            log::warn("CalculiX FRD series: points moved after the first step; written as the "
+                      "first step's");
+            detail::provenance_note("points-moved",
+                                    "every increment shares the first step's points");
+        }
+    }
+    const std::vector<std::string> blocks = frd_result_blocks(rMesh, *s.mPlan, unwritable);
+    if (s.mSteps == 0)
+        frd_note_dropped_data(rMesh, unwritable);
+    std::int64_t step = frd_field_int(rMesh, "frd:step", 0);
+    if (step <= 0 || s.mStepIds.count(step)) {
+        while (s.mStepIds.count(s.mNextStep))
+            ++s.mNextStep;
+        step = s.mNextStep;
+    }
+    // Everything is built before the file is touched, so a refused value leaves the
+    // steps already written intact.
+    text += frd_frame_text(*s.mPlan, blocks, Time, step, frd_field_int(rMesh, "frd:analysis", 0));
+    s.mStepIds.insert(step);
+    s.mOut.write(text.data(), static_cast<std::streamsize>(text.size()));
+    s.mOut.flush();
+    if (!s.mOut)
+        throw WriteError("CalculiX FRD series: failed writing " + s.mPath);
+    ++s.mSteps;
+}
+
+std::size_t FrdSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void FrdSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed || !mpImpl->mOut.is_open())
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("CalculiX FRD series: no step was written to " + mpImpl->mPath);
+    mpImpl->mClosed = true;
+    mpImpl->mOut << "  9999\n";
+    mpImpl->mOut.close();
+    if (!mpImpl->mOut)
+        throw WriteError("CalculiX FRD series: failed writing " + mpImpl->mPath);
 }
 
 }  // namespace meshioplusplus

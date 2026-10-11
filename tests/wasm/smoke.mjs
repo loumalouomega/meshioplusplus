@@ -2527,8 +2527,8 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('code_aster') && writers.includes('code_aster'));
     // COMSOL binary meshes (roadmap section 1.2, v16.1.0): .mphbin, both directions.
     assert.ok(readers.includes('mphbin') && writers.includes('mphbin'));
-    // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
-    assert.ok(readers.includes('frd') && !writers.includes('frd'));
+    // CalculiX results (roadmap section 1.1, v15.3.0; the ASCII writer of roadmap 3.2.1): both ways.
+    assert.ok(readers.includes('frd') && writers.includes('frd'));
     // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt read-only.
     for (const fmt of ['elmer', 'febio'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
@@ -2704,7 +2704,7 @@ step('.xyz reads its column layouts and refuses chemistry XYZ by name', () => {
     assert.deepEqual(Array.from(m.readMesh('/out.xyz').points), [0.5, 1, -2]);
 });
 
-step('.frd reads a CalculiX result file: node permutation, steps, tensors, read-only', () => {
+step('.frd reads a CalculiX result file: node permutation, steps, tensors, and writes it back', () => {
     const pad = (v, w) => String(v).padStart(w, ' ');
     const e12 = (v) => v.toExponential(5).toUpperCase().replace(/E([+-])(\d)$/, 'E$10$2').padStart(12, ' ');
     const header = (ids) => '    1C\n    2C' + pad(ids.length, 30) + ' '.repeat(37) + '1\n';
@@ -2739,7 +2739,12 @@ step('.frd reads a CalculiX result file: node permutation, steps, tensors, read-
     assert.equal(last.field_data['meshio:time'][0], 1.5);
     assert.equal(last.point_data.STRESS.length, 20 * 6);
     assert.throws(() => m.readMeshSelective('/r.frd', { timeStep: 2 }), /out of range/);
-    assert.throws(() => m.writeMesh('/out.frd', first), /frd/);
+    // The writer is the reader's inverse: the written file reads back the same step.
+    m.writeMesh('/out.frd', first);
+    const again = m.readMesh('/out.frd');
+    assert.deepEqual(Array.from(again.cells[0].data), Array.from(first.cells[0].data));
+    assert.equal(again.point_data.NDTEMP[19], 20);
+    assert.equal(again.field_data['meshio:time'][0], 0.5);
 });
 
 step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one back', () => {
