@@ -39,7 +39,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#freefem) |
 | [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 | [8/8 cells · data PC](./conformance.md#gid) |
 | [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | — | ✓ | — | [write-only](./conformance.md#gltf) |
-| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | `gmsh` [fails](./conformance.md#gmsh) / `gmsh22` [8/8 cells · data PCF · regions C](./conformance.md#gmsh22) |
+| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | [8/8 cells · data PCF · regions C](./conformance.md#gmsh) |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#ip) |
@@ -75,14 +75,14 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
-| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-th) |
+| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#radioss-th) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
-| [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — | [write-only](./conformance.md#svg) |
+| [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |
 | [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | [read-only](./conformance.md#szplt) |
 | [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
-| [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — | [write-only](./conformance.md#tikz) |
+| [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
 | [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
@@ -129,7 +129,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on DOLFINx VTX and Tecplot SZL (`vtx`, `szplt`)** (v16.13.0): two read-only formats whose only reader is a heavy or vendor library, so neither is ever a default. `vtx` reads DOLFINx's `VTXWriter` output (an ADIOS2 `.bp` directory) as a time sequence, through a core built with `MESHIOPLUSPLUS_WITH_ADIOS2` or the `adios2` package, and matches ParaView's VTX reader on real DOLFINx runs; `szplt` reads Tecplot's subzone-loadable files through TecIO (a core built with `MESHIOPLUSPLUS_WITH_TECIO`, or a shared TecIO through ctypes) exactly as the same data in `.plt`. The formats that only their vendor's software reads — Abaqus `.odb`, Marc `.t16`, Femap `.modfem`, results beyond the `.rst` reader — have [vendor-runtime routes](./vendor_routes.md) instead: scripts that run in the vendor's Python and write files meshio++ reads.
 
-**Note on CalculiX results (`frd`)** (v15.3.0, binary layout and `.dat` print v15.5.0): the result file of `ccx`, read by both engines and, since the writer of roadmap §3.2.1, written too (ASCII, one step per write, the long `I10` layout or the short `I5` one; the format is nodal with no sets, so cell data, regions and other field data are dropped with a warning, and values print at six digits; the binary layout is still read-only). Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) ASCII layouts and the binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) are all read. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor, now backed by the shared [`tensor_invariants`](./tensor_invariants.md) operation. `meshioplusplus.frd.read_dat` separately parses the companion `.dat` tabular print (`*NODE PRINT`/`*EL PRINT`) into plain tables, Python-only. See [CalculiX results](./formats/frd.md).
+**Note on CalculiX results (`frd`)** (v15.3.0, binary layout and `.dat` print v15.5.0): the result file of `ccx`, read by both engines and, since v16.39.0, written too (one step per write, in the long `I10` ASCII layout, the short `I5` one or, with `binary=True`, the binary layout with `float64` points and `float32` results; the format is nodal with no sets, so cell data, regions and other field data are dropped with a warning, and ASCII values print at six digits). Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) ASCII layouts and the binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) are all read. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor, now backed by the shared [`tensor_invariants`](./tensor_invariants.md) operation. `meshioplusplus.frd.read_dat` separately parses the companion `.dat` tabular print (`*NODE PRINT`/`*EL PRINT`) into plain tables, Python-only. See [CalculiX results](./formats/frd.md).
 
 **Note on MSC Nastran HDF5 results (`nastran_h5`)** (v15.7.0): the result database MSC Nastran writes with `MDLPRM,HDF5`, **read-only**. The model comes from `/NASTRAN/INPUT` (GRID points moved to the basic system since v16.10.0, one cell block per element card and order, `nastran:eid`/`nastran:pid` cell data, one region per property id), and every result domain (subcase, mode, time or frequency) that an INDEX table references is a step for the [sequence engine](./sequences.md). Nodal tables become point data (`DISPLACEMENT`, `DISPLACEMENT_ROT`, `EIGENVECTOR_real`...), element tables cell data named `<group>:<member>` (`STRESS:X`), with the corner, ply and station values and the grid point forces as `(cells, columns)` arrays beside them (v16.10.0). Other vendors' HDF5 schemas are refused rather than misread. Checked bit for bit against pyNastran on real MSC Nastran 2020 output. See [MSC Nastran HDF5](./formats/nastran_h5.md).
 
@@ -169,9 +169,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `gltf`** (v15.4.0): Write-only. The **surface** of the mesh as glTF 2.0 for the web, three.js and Blender — the skin of volume cells, 2-D cells, `line` cells as `LINES` and `vertex` cells or a cell-less point cloud as `POINTS`, one named node per cell region. `.glb` writes the binary container, `.gltf` JSON with a `.bin` beside it. Normals are per vertex, so points are duplicated at creases (`split_angle`, sharing the smooth-fan kernel of [`compute_normals`](./normals.md)); every one-to-four component `point_data` array is exported raw as `_NAME`; `color_by` bakes a field through a colormap into linear `COLOR_0` with an unlit material. Y-up, `float32`; the axis change, unit scale and recentring offset live on the root node, not in the coordinates. The C++ core and the Python reference write identical bytes and the output passes the Khronos glTF-Validator with zero errors and warnings; see [glTF](./formats/gltf.md).
 
-**Note on `svg`:** Write-only. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
+**Note on `svg`:** A 2-D drawing: it is read back only as the structure meshio++'s own writer emits, as a planar mesh (`z = 0`, one `svg:fill` RGB array if the paths were coloured), and a file without meshio++'s marker comment is refused unless `strict=False`. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
 
-**Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
+**Note on `tikz`:** A 2-D drawing: it is read back only as the structure meshio++'s own writer emits, as a planar mesh (`z = 0`, one `tikz:fill` RGB array if the faces were coloured), and a file without meshio++'s marker comment is refused unless `strict=False`. Emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
 
 **Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII by default; `binary=True` (v15.5.0) writes little-endian binary at a chosen `label_bits`/`scalar_bits` width, Python/C++ only. Polyhedral cells are native here.
 
@@ -277,6 +277,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `vtm` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `pvd` / `pvtu` / `pvtp` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `radioss` | `#` or `$` prefix (`#include` and `#enddata` excepted) | Anywhere; the writer puts it after `#RADIOSS STARTER` (v16.17.0) | Yes |
+| `radioss_th` | None (the title record's 80-character field is the nearest free-text slot) | The title record, after the file version | Yes (the title) |
 | `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
@@ -630,6 +631,10 @@ meshioplusplus.radioss.write(filename, mesh, stubs=False)
 ```
 
 Since v16.17.0. `stubs=True` also writes placeholder `/MAT/LAW1` and `/PROP` cards so the OpenRadioss starter accepts the deck on its own (without them the deck is geometry-only); see [`radioss.md`](./formats/radioss.md#writing).
+
+### OpenRadioss time history (`<run>T01`)
+
+`meshioplusplus.radioss_th.write(filename, mesh)` — no extra options; found by a file name like `crashT01` or by `file_format="radioss_th"`. Writes the `radioss_th:*` field data (global, part, subset and TH-group variables) as one output; `radioss_th.SeriesWriter` and `write_sequence` write an output per step. Points and cells are not stored; see [`radioss_th.md`](./formats/radioss_th.md#writing).
 
 ### MSC Marc (`.dat`)
 

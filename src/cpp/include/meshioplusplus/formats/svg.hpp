@@ -18,10 +18,11 @@
 
 /**
  * @file svg.hpp
- * @brief SVG (Scalable Vector Graphics) mesh writer (write-only).
+ * @brief SVG (Scalable Vector Graphics) mesh writer and drawing reader.
  *
  * Draws the mesh's `line`/`triangle`/`quad` cells as `<path>` elements in a
- * single `<svg>` document — a visualization format with no reader. For 2D or
+ * single `<svg>` document. `read_svg` reads back only what the writer emits (a
+ * drawing is not a mesh): see its documentation below. For 2D or
  * flat-3D input (all z ~ 0) the classic flat path is used, byte-identical to
  * previous releases. A genuinely non-flat 3D mesh is *rendered*: if it
  * contains supported volume cells its boundary skin is extracted first
@@ -41,6 +42,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -97,5 +99,31 @@ MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, c
                const std::optional<double>& rVMin = std::nullopt,
                const std::optional<double>& rVMax = std::nullopt,
                const std::string& rNanColor = "#808080", bool Colorbar = false);
+
+/**
+ * @brief Read an SVG drawing written by `write_svg` back as a planar mesh.
+ *
+ * Inverts exactly what the writer emits and refuses everything else with a
+ * `ReadError` naming the construct. A closed `<path d="M x y L x y ... Z">` of
+ * 3 vertices is a `triangle`, of 4 a `quad`, of more a `polygon`; an open
+ * 2-vertex path is a `line`; consecutive cells of one type and size form one
+ * block. Points are welded on the exact text of their coordinates, in order of
+ * first appearance. The y-flip is undone and `image_width`'s scale restored from
+ * the meshio++ marker comment (or, without one, from the `viewBox`); the colour
+ * bar (`<rect>`/`<text>`) is skipped; a path's `fill="#rrggbb"` comes back as
+ * the `int32` `(n, 3)` cell array `svg:fill` (`-1 -1 -1` where a cell has none),
+ * never as the data it was coloured from. `z` is always 0, and the read warns
+ * once that depth is lost.
+ *
+ * A `<polygon>`, a `transform`, a curve (`C`/`S`/`Q`/`T`/`A`), a relative or
+ * `H`/`V` command, several subpaths and any other element are refused.
+ *
+ * @param rPath    the file to read
+ * @param rOptions `mLenient` is `strict=False`: without it a file that lacks the
+ *                 meshio++ marker is refused; `mPointsOnly` and `mDataArrays`
+ *                 narrow `svg:fill` away
+ * @throws ReadError for anything but a drawing meshio++ wrote
+ */
+MESHIOPLUSPLUS_API Mesh read_svg(const std::string& rPath, const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus

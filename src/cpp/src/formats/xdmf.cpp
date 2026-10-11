@@ -21,7 +21,6 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <numeric>
 #include <sstream>
 #include <optional>
 #include <string>
@@ -167,17 +166,29 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     std::string fmt = rDi.attribute("Format").value();
     DType dt = xdmf_to_dtype(data_type, precision);
 
-    std::size_t total = dims.empty() ? 0
-                                     : std::accumulate(dims.begin(), dims.end(), std::size_t{1},
-                                                       std::multiplies<>());
+    // The declared element count, overflow-checked: a product that wraps would
+    // size the buffers from a number the file does not describe.
+    std::size_t total = 0;
+    if (!dims.empty()) {
+        total = 1;
+        for (std::size_t d : dims) {
+            if (d != 0 && total > std::numeric_limits<std::size_t>::max() / d)
+                throw ReadError("XDMF: DataItem Dimensions overflow");
+            total *= d;
+        }
+    }
 
     if (fmt == "XML") {
         // The element's text read in place, token by token, and parsed straight
         // into the typed buffer with the dtype switch taken once (roadmap §3):
         // the lenient parse_double / strtoll / strtoull store_token used. A
-        // short item leaves the rest zero, as the zero-filled array did.
-        NDArray a = NDArray::Uninit(dt, dims);
+        // short item leaves the rest zero, as the zero-filled array did. An item
+        // cannot hold more values than characters of text, so a larger count is
+        // refused before the buffer is sized from it.
         const std::string_view text = rDi.text().get();
+        if (total > text.size())
+            throw ReadError("XDMF: DataItem declares more values than its text holds");
+        NDArray a = NDArray::Uninit(dt, dims);
         detail::dispatch_dtype(dt, [&]<class T>() {
             T* out = a.As<T>();
             std::size_t i = 0, pos = 0;
@@ -215,6 +226,14 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
             if (!bin)
                 throw ReadError("XDMF: could not open binary file " + path);
         }
+        // The file must hold the declared values: a count beyond its bytes is a
+        // header the payload cannot back, refused before the buffer is sized.
+        bin.seekg(0, std::ios::end);
+        const std::streamoff file_bytes = bin.tellg();
+        bin.seekg(0, std::ios::beg);
+        if (file_bytes < 0 || total > static_cast<std::size_t>(file_bytes) / dtype_size(dt))
+            throw ReadError("XDMF: binary file " + path +
+                            " holds fewer values than its DataItem declares");
         NDArray a(dt, dims);
         bin.read(reinterpret_cast<char*>(a.Data()), static_cast<std::streamsize>(a.Nbytes()));
         return a;

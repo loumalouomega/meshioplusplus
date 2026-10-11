@@ -642,6 +642,7 @@ def tool_diff(
 _ASCII_VARIANT = {
     "ansys": {"binary": False},
     "flac3d": {"binary": False},
+    "frd": {"binary": False},
     "gmsh": {"binary": False},
     "mdpa": {"binary": False},
     "openfoam": {"binary": False},
@@ -655,6 +656,7 @@ _ASCII_VARIANT = {
 _BINARY_VARIANT = {
     "ansys": {"binary": True},
     "flac3d": {"binary": True},
+    "frd": {"binary": True},
     "gmsh": {"binary": True},
     "mdpa": {"binary": True},
     "openfoam": {"binary": True},

@@ -4579,16 +4579,20 @@ PYBIND11_MODULE(_core, m) {
     });
     // CalculiX results (.frd). `time_step` selects the increment; `derived` adds
     // <NAME>_mises/<NAME>_principal beside each tensor. The writer writes one step
-    // in the ASCII layout, I10 ids (`long_ids`) or the short I5 form.
+    // in the ASCII layout, I10 ids (`long_ids`) or the short I5 form, or with
+    // `binary` the raw little-endian layout (int32 ids, float64 points, float32 results).
     m.def(
         "frd_write",
-        [](const std::string& path, py::object pymesh, bool long_ids) {
+        [](const std::string& path, py::object pymesh, bool long_ids, bool binary) {
             meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::FrdWriteOptions opts;
+            opts.mLongIds = long_ids;
+            opts.mBinary = binary;
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_frd(path, mesh, long_ids);
+                return meshioplusplus::write_frd(path, mesh, opts);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("long_ids") = true);
+        py::arg("path"), py::arg("mesh"), py::arg("long_ids") = true, py::arg("binary") = false);
     m.def("frd_read",
           guard_read("frd",
                      [](const std::string& path, bool points_only, py::object arrays, int time_step,
@@ -4687,7 +4691,13 @@ PYBIND11_MODULE(_core, m) {
     // A time series in one CalculiX result file (v16.39.0): the core half of
     // `meshioplusplus.frd.SeriesWriter`.
     py::class_<meshioplusplus::FrdSeriesWriter>(m, "FrdSeriesWriter")
-        .def(py::init<const std::string&, bool>(), py::arg("path"), py::arg("long_ids") = true)
+        .def(py::init([](const std::string& path, bool long_ids, bool binary) {
+                 meshioplusplus::FrdWriteOptions opts;
+                 opts.mLongIds = long_ids;
+                 opts.mBinary = binary;
+                 return std::make_unique<meshioplusplus::FrdSeriesWriter>(path, opts);
+             }),
+             py::arg("path"), py::arg("long_ids") = true, py::arg("binary") = false)
         .def(
             "write",
             [](meshioplusplus::FrdSeriesWriter& rSelf, double time, py::object pymesh) {
@@ -4833,6 +4843,25 @@ PYBIND11_MODULE(_core, m) {
     m.def("radioss_th_time_values", [](const std::string& path) {
         return core_nogil([&] { return meshioplusplus::radioss_th_time_values(path); });
     });
+    // OpenRadioss time-history (T01) writer, and the output-by-output series writer
+    // behind `meshioplusplus.radioss_th.SeriesWriter`.
+    m.def("radioss_th_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_radioss_th(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::RadiossThSeriesWriter>(m, "RadiossThSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::RadiossThSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::RadiossThSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::RadiossThSeriesWriter::Finalize);
 
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     // DOLFINx VTX (.bp directory) reader; ADIOS2 builds only.
@@ -5094,7 +5123,11 @@ PYBIND11_MODULE(_core, m) {
         "ensight_write",
         [](const std::string& path, py::object pymesh, bool binary, bool fortran) {
             meshioplusplus_py::PyMeshRefs refs;
-            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            // nsided / nfaced are written natively, so jagged polygon and
+            // polyhedron blocks are accepted (copied out of their Python lists).
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                /*lenient_field_data=*/false,
+                                                                /*allow_ragged=*/true)] {
                 return meshioplusplus::write_ensight(path, mesh, binary, fortran);
             });
         },
@@ -5942,7 +5975,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "#808080");
 
-    // SVG writer (write-only visualization; 3D input renders the projected
+    // SVG writer (3D input renders the projected
     // skin — camera args appended AFTER the existing ones, the Python shim
     // passes everything positionally).
     m.def(
@@ -5969,7 +6002,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "#808080", py::arg("colorbar") = false);
 
-    // TikZ writer (write-only LaTeX visualization; 3D input renders the
+    // TikZ writer (LaTeX; 3D input renders the
     // projected skin — camera args appended AFTER the existing ones).
     m.def(
         "tikz_write",
@@ -5995,6 +6028,32 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("color_by") = "", py::arg("component") = std::nullopt, py::arg("cmap") = "viridis",
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "gray", py::arg("colorbar") = false);
+
+    // SVG / TikZ drawing readers: only the structure the writers above emit, as a
+    // planar (z = 0) mesh. `strict=False` is ReadOptions::mLenient: read a
+    // drawing that lacks the meshio++ marker.
+    m.def("svg_read",
+          guard_read("svg",
+                     [](const std::string& path, bool points_only, py::object arrays, bool strict) {
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&, opts = core_read_options(points_only, arrays, 0,
+                                                                     py::none(), !strict)] {
+                                 return meshioplusplus::read_svg(path, opts);
+                             }));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("strict") = true);
+    m.def("tikz_read",
+          guard_read("tikz",
+                     [](const std::string& path, bool points_only, py::object arrays, bool strict) {
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&, opts = core_read_options(points_only, arrays, 0,
+                                                                     py::none(), !strict)] {
+                                 return meshioplusplus::read_tikz(path, opts);
+                             }));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("strict") = true);
 
     // PERMAS writer / reader (.post/.dato).
     m.def("permas_write", [](const std::string& path, py::object pymesh) {

@@ -48,8 +48,8 @@ The writer emits a single part (id 1, description `Mesh`) with `node id assign` 
 | `pyramid5` / `pyramid13` | `pyramid` / `pyramid13` |
 | `penta6` / `penta15` | `wedge` / `wedge15` |
 | `hexa8` / `hexa20` | `hexahedron` / `hexahedron20` |
-| `nsided` | `polygon` (read only) |
-| `nfaced` | `polyhedron<N>` (read only) |
+| `nsided` | `polygon` |
+| `nfaced` | `polyhedron<N>` |
 
 Node ordering matches meshio for every type except `penta15`, which differs from `wedge15` by the involution `{0,2,1,3,5,4, 8,7,6, 11,10,9, 12,14,13}` (the same map VTK's EnSight readers apply; note that Kratos's penta15/hexa20 permutations fix Kratos-specific ordering and do **not** apply here). Ghost-cell sections (`g_*`) are read as their base type.
 
@@ -85,7 +85,7 @@ Since v15.5.0 (roadmap §1.1), `write` emits a `VARIABLE` section and one variab
 
 - The format spans two files and **cannot** be read from or written to a buffer.
 - Foreign-endian binaries are auto-detected: the reader checks the plausibility of the part-number/count records (preferring the smaller of two plausible interpretations at the tiny part-number record) and byte-swaps all subsequent reads.
-- Writing `nsided`/`nfaced` (polygon/polyhedron) blocks raises `WriteError` (v1); reading them is supported (`nfaced` cells are grouped by node count into `polyhedron<N>` blocks, the openfoam convention).
+- `polygon` blocks (jagged or uniform) are written as `nsided` and `polyhedron<N>` blocks as `nfaced`, by both engines with identical bytes (ASCII, C binary and Fortran binary). The layout is the inverse of what the reader parses: a per-cell node count (`nsided`) or face count (`nfaced`), for `nfaced` a per-face node count, then the node ids, with no orientation contract and no global face table. Reading groups `nfaced` cells by node count into `polyhedron<N>` blocks in first-seen order (the openfoam convention), so a `polyhedron` block mixing node counts comes back split by count, and every `nsided` section comes back as one `polygon` block. Because the writer emits one section per cell block, a part with several `nsided`/`nfaced` sections reads back as several blocks.
 - Transient/moving geometry (`change_coords_only`, filename wildcards) and EnSight 5/6 files are not supported.
 - The `.geo` extension is also used by Gmsh *script* files — those are not meshes and not claimed by meshio++'s gmsh reader, but a stray Gmsh `.geo` passed to `ensight` will simply fail to parse.
 

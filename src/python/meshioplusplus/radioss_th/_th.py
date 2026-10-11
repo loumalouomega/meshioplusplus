@@ -5,16 +5,27 @@ material, property, subset and TH-group descriptions, then one output per time
 (the time, the global variables, the part and subset variables, one record per
 TH group). The layout follows OpenRadioss's ``th_to_csv`` converter (MIT); no
 code is copied.
+
+The writer (:func:`write`, :class:`SeriesWriter`) is the reader's inverse and
+the twin of the C++ ``write_radioss_th``: it writes the same bytes.
 """
 
+import re
 import struct
 
 import numpy as np
 
-from .._exceptions import ReadError
+from .. import _provenance
+from .._common import warn
+from .._exceptions import ReadError, WriteError
+from .._files import is_buffer
+from .._fortran_records import fortran_record, fortran_records
 from .._mesh import CellBlock, Mesh
 
 TIME_KEY = "meshio:time"
+
+# Big-endian Fortran records with 4-byte markers.
+_LAYOUT = (4, ">")
 
 # Global variables by code (th_to_csv's column titles).
 _GLOBAL_NAMES = (
@@ -133,17 +144,9 @@ class _File:
             _fail(f"'{filename}' is not a time-history file")
         self.data = data
         # Split the records; a truncated last one ends the file.
-        self.records = []
-        p = 0
-        while p + 4 <= len(data):
-            (n,) = struct.unpack_from(">I", data, p)
-            if (
-                p + 8 + n > len(data)
-                or struct.unpack_from(">I", data, p + 4 + n)[0] != n
-            ):
-                break
-            self.records.append((p + 4, n))
-            p += 8 + n
+        self.records = fortran_records(
+            data, _LAYOUT, "Radioss time history", lenient=True
+        )
         self.next = 0
         self._parse()
 
@@ -307,3 +310,341 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     if f.factors is not None and want("radioss_th:unit_factors"):
         mesh.field_data["radioss_th:unit_factors"] = np.array(f.factors, np.float64)
     return mesh
+
+
+# --------------------------------------------------------------------------- #
+# The writer: the reader's inverse                                            #
+# --------------------------------------------------------------------------- #
+
+# Version 3040 (40-character titles, no unit factors) is what OpenRadioss itself
+# writes and ``th_to_csv`` reads; with unit factors the file is 4021 (100-character
+# titles): the reader's two branches that a writer can reach.
+_VERSION_PLAIN = 3040
+_VERSION_FACTORS = 4021
+
+_INT = re.compile(r"-?[0-9]+")
+_INT32 = (-(2**31), 2**31 - 1)
+
+
+def _wfail(message):
+    raise WriteError(f"Radioss time history: {message}")
+
+
+def _parse_int(text):
+    """A whole-string decimal integer that fits an int32, else ``None``."""
+    if not _INT.fullmatch(text):
+        return None
+    value = int(text)
+    return value if _INT32[0] <= value <= _INT32[1] else None
+
+
+def _code(name, name_of):
+    """The code a variable name stands for: found in the reader's own table (so
+    the two directions cannot drift), else ``var<code>``."""
+    for code in range(1, 65):
+        if name_of(code) == name:
+            return code
+    if name.startswith("var"):
+        code = _parse_int(name[3:])
+        if code is not None and code >= 1:
+            return code
+    return None
+
+
+def _kind_type(name):
+    """The TH group type a kind name stands for (``type<N>`` for one the reader
+    has no name for)."""
+    for kind in range(201):
+        if _group_kind(kind) == name:
+            return kind
+    if name.startswith("type"):
+        kind = _parse_int(name[4:])
+        if kind is not None and kind >= 0:
+            return kind
+    return None
+
+
+def _scalar(array):
+    values = np.asarray(array, dtype=np.float64).ravel()
+    if values.size != 1:
+        return None
+    return values
+
+
+def _float32(values):
+    """Values as the big-endian ``float32`` the file stores (overflow is inf)."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        return np.asarray(values, dtype=np.float64).astype(">f4")
+
+
+def _int_array(array, expected, name):
+    values = np.asarray(array, dtype=np.float64).ravel()
+    if values.size != expected:
+        _wfail(f"'{name}' holds {values.size} values, expected {expected}")
+    out = []
+    for value in values:
+        if not (_INT32[0] <= value <= _INT32[1]) or value != np.floor(value):
+            _wfail(f"'{name}' holds a value that is not an integer in 32-bit range")
+        out.append(int(value))
+    return out
+
+
+class _Step:
+    """One output's worth of a mesh: everything the file stores."""
+
+    def __init__(self, mesh, time, dropped):
+        self.time = np.float32(0.0)
+        self.factors = None
+        self.globals = []  # (code, name, value)
+        self.parts = []  # (id, [(code, name, value)])
+        self.subsets = []
+        self.groups = []  # (type, id, kind, ids, codes, values)
+        parts, subsets, groups = {}, {}, {}
+        for name, array in mesh.field_data.items():
+            if name == TIME_KEY:
+                values = np.asarray(array, dtype=np.float64).ravel()
+                if time is None and values.size:
+                    self.time = _float32(values[:1])[0]
+                continue
+            p = name.split(":")
+            taken = False
+            if len(p) >= 2 and p[0] == "radioss_th":
+                if len(p) == 2 and p[1] == "unit_factors":
+                    values = np.asarray(array, dtype=np.float64).ravel()
+                    if values.size != 3:
+                        _wfail("'radioss_th:unit_factors' must hold three values")
+                    self.factors = _float32(values)
+                    taken = True
+                elif len(p) == 3 and p[1] == "global":
+                    code = _code(p[2], _global_name)
+                    value = _scalar(array)
+                    if code is not None and value is not None:
+                        self.globals.append((code, p[2], value[0]))
+                        taken = True
+                elif len(p) == 4 and p[1] in ("part", "subset"):
+                    eid = _parse_int(p[2])
+                    code = _code(p[3], _part_name)
+                    value = _scalar(array)
+                    if eid is not None and code is not None and value is not None:
+                        target = parts if p[1] == "part" else subsets
+                        target.setdefault(eid, []).append((code, p[3], value[0]))
+                        taken = True
+                elif len(p) in (3, 4):
+                    kind = _kind_type(p[1])
+                    gid = _parse_int(p[2])
+                    if (
+                        kind is not None
+                        and gid is not None
+                        and (len(p) == 3 or p[3] in ("ids", "variables"))
+                    ):
+                        g = groups.setdefault((kind, gid, p[1]), {"names": []})
+                        g["data" if len(p) == 3 else p[3]] = array
+                        g["names"].append(name)
+                        taken = True
+            if not taken:
+                dropped.append(name)
+        if time is not None:
+            self.time = _float32([time])[0]
+
+        self.globals.sort(key=lambda v: (v[0], v[1]))
+        for source, target in ((parts, self.parts), (subsets, self.subsets)):
+            for eid in sorted(source):
+                target.append((eid, sorted(source[eid], key=lambda v: (v[0], v[1]))))
+        for key in sorted(groups):
+            g = groups[key]
+            kind, gid, kname = key
+            base = f"radioss_th:{kname}:{gid}"
+            if "data" not in g:
+                dropped.extend(g["names"])
+                continue
+            data = np.asarray(g["data"])
+            if data.ndim != 2:
+                _wfail(f"'{base}' must be a 2-D array (entities x variables)")
+            n, m = data.shape
+            ids = (
+                _int_array(g["ids"], n, base + ":ids")
+                if "ids" in g
+                else list(range(1, n + 1))
+            )
+            codes = (
+                _int_array(g["variables"], m, base + ":variables")
+                if "variables" in g
+                else list(range(1, m + 1))
+            )
+            self.groups.append((kind, gid, kname, ids, codes, _float32(data.ravel())))
+        dropped.sort()
+
+    def same_layout(self, other):
+        """Whether two outputs have the same variables (values and time may
+        differ)."""
+
+        def entities(items):
+            return [(eid, [v[0] for v in vars_]) for eid, vars_ in items]
+
+        return (
+            (self.factors is None) == (other.factors is None)
+            and [v[0] for v in self.globals] == [v[0] for v in other.globals]
+            and entities(self.parts) == entities(other.parts)
+            and entities(self.subsets) == entities(other.subsets)
+            and [g[:5] for g in self.groups] == [g[:5] for g in other.groups]
+        )
+
+
+def _ints(values):
+    return fortran_record(struct.pack(f">{len(values)}i", *values))
+
+
+def _text(text, width):
+    return text[:width].ljust(width).encode("ascii", "replace")
+
+
+def _header(step):
+    """The descriptions: titles, the unit factors, the hierarchy and the
+    variable codes of every part, subset and TH group."""
+    factors = step.factors is not None
+    title = 100 if factors else 40
+    out = [
+        fortran_record(
+            struct.pack(">i", _VERSION_FACTORS if factors else _VERSION_PLAIN)
+            + _text(_provenance.lines(_provenance.SlotTier.BOUNDED)[0], 80)
+        ),
+        fortran_record(_text("meshio++", 80)),
+    ]
+    if factors:
+        out += [
+            _ints([1]),
+            _ints([title]),
+            fortran_record(step.factors.astype(">f4").tobytes()),
+        ]
+    out.append(
+        _ints(
+            [
+                len(step.parts),
+                0,
+                0,
+                len(step.subsets),
+                len(step.groups),
+                len(step.globals),
+            ]
+        )
+    )
+    if step.globals:
+        out.append(_ints([v[0] for v in step.globals]))
+    for eid, vars_ in step.parts:
+        out.append(
+            fortran_record(
+                struct.pack(">i", eid)
+                + _text(f"PART {eid}", title)
+                + struct.pack(">4i", 0, 0, 0, len(vars_))
+            )
+        )
+        if vars_:
+            out.append(_ints([v[0] for v in vars_]))
+    for eid, vars_ in step.subsets:
+        out.append(
+            fortran_record(
+                struct.pack(">5i", eid, 0, 0, 0, len(vars_))
+                + _text(f"SUBSET {eid}", title)
+            )
+        )
+        if vars_:
+            out.append(_ints([v[0] for v in vars_]))
+    for kind, gid, kname, ids, codes, _ in step.groups:
+        out.append(
+            fortran_record(
+                struct.pack(">5i", gid, kind, 0, len(ids), len(codes))
+                + _text(f"TH {kname} {gid}", title)
+            )
+        )
+        for eid in ids:
+            out.append(
+                fortran_record(struct.pack(">i", eid) + _text(f"{kname} {eid}", title))
+            )
+        if codes:
+            out.append(_ints(codes))
+    return b"".join(out)
+
+
+def _output(step):
+    """One output: the time, the globals, the part and subset values, one
+    record per TH group."""
+
+    def floats(values):
+        return fortran_record(_float32(values).tobytes())
+
+    out = [floats([step.time])]
+    if step.globals:
+        out.append(floats([v[2] for v in step.globals]))
+    for entities in (step.parts, step.subsets):
+        values = [v[2] for _, vars_ in entities for v in vars_]
+        if values:
+            out.append(floats(values))
+    for group in step.groups:
+        out.append(fortran_record(group[5].tobytes()))
+    return b"".join(out)
+
+
+def _warn_dropped(dropped):
+    if dropped:
+        warn(
+            "Radioss time history: field data without a place in the file is "
+            f"not written: {', '.join(dropped)}"
+        )
+
+
+@_provenance.slotless_writer
+def write(filename, mesh):
+    dropped = []
+    step = _Step(mesh, None, dropped)
+    _warn_dropped(dropped)
+    data = _header(step) + _output(step)
+    if is_buffer(filename, "w"):
+        filename.write(data)
+    else:
+        with open(filename, "wb") as fh:
+            fh.write(data)
+
+
+class SeriesWriter:
+    """Write a time-history file output by output: the descriptions with the
+    first step, then one output per :meth:`write`. Every step must have the
+    first step's variables; a step that does not is a ``WriteError``. Use as a
+    context manager, or call :meth:`close`."""
+
+    def __init__(self, filename):
+        # A path is opened as `write` opens it; a caller's buffer is written
+        # into and left open.
+        self._owned = not is_buffer(filename, "w")
+        self._fh = open(filename, "wb") if self._owned else filename
+        self._first = None
+        self._step = 0
+
+    def write(self, time, mesh):
+        dropped = []
+        step = _Step(mesh, float(time), dropped)
+        data = b""
+        if self._first is None:
+            _warn_dropped(dropped)
+            data = _header(step)
+            self._first = step
+        elif not self._first.same_layout(step):
+            _wfail(
+                f"series: step {self._step}'s variables differ from the first "
+                "step's; a time-history file holds one set -- write one file per "
+                "step with '{step}'"
+            )
+        self._fh.write(data + _output(step))
+        self._step += 1
+
+    def close(self):
+        if self._fh is not None:
+            if self._owned:
+                self._fh.close()
+            self._fh = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False

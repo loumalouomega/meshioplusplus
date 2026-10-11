@@ -122,12 +122,14 @@ No reader in this library retains any slot a provenance-bearing writer uses. The
 
 | Tier | Meaning | Formats |
 |---|---|---|
-| `Block` | Arbitrarily many lines | abaqus, ansys*, avsucd, code_aster, elmer (in `mesh.names`), exodus, febio, flac3d, flux, gltf, lsdyna, mfem, mphtxt, nastran, netgen, obj, off, permas, ply, tetgen, triangle, vti, vtp, vtu |
+| `Block` | Arbitrarily many lines | abaqus, ansys*, avsucd, code_aster, elmer (in `mesh.names`), exodus, febio, flac3d, flux, gltf, lsdyna, mfem, mphtxt, nastran, netgen, obj, off, permas, ply, svg (an XML comment), tetgen, tikz (`%` lines), triangle, vti, vtp, vtu |
 | `SingleLine` | Exactly one line | ansys, femap (block 100's title), tecplot, vtk/vtk42/vtk51, z88 (the end of `z88i1.txt`'s header line) |
 | `Bounded` | One line, hard byte cap | ensight, openfoam, patran (the 80-column title card), stl (binary only) |
 | `None` | No slot at all | every format `doc/formats.md`'s table marks "—" (mphbin among them: its writer still asks, so `Mode::Required` fails there) |
 
 \* ansys's own comment grammar would support `Block`; the writer is pinned to `SingleLine` for the reason in the parenthetical above.
+
+`svg` and `tikz` also write one `Drawing: …` line right after the tag, under every mode including `Off`: it is the marker their readers require (see [SVG](./formats/svg.md#reading)), not provenance, so the read-back scanner below does not report it.
 
 `Mode::Off` (the default) always renders just the tag, at every tier. `Mode::BestEffort` renders the full block at `Block` and degrades silently to the tag everywhere else — a `SingleLine`/`Bounded` slot cannot structurally hold more, and a `None` slot cannot hold even the tag (which is why no writer at that tier calls this machinery at all; nothing changed there since v10.15.0). `Mode::Required` is identical to `BestEffort` at every tier **except** `None`, where it raises `WriteError` naming the format. This is the resolution of `write_options.hpp`'s standing rule — "an option a format cannot honour is an error, never silently ignored" — that keeps `Required` from being unusable: degrading to the honest maximum a structurally smaller slot can hold is not a failure to report; having nothing to write at all is.
 

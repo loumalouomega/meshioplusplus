@@ -101,7 +101,7 @@ def test_mfm_benchmark_input_roundtrips_natively(bench, monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("binary", [False, True])
-def test_gmsh_single_type_benchmark_keeps_mixed_conformance(
+def test_gmsh_benchmark_uses_its_conformance_row_and_the_volume_input(
     bench, monkeypatch, tmp_path, binary
 ):
     import conformance_spec as cs
@@ -120,7 +120,9 @@ def test_gmsh_single_type_benchmark_keeps_mixed_conformance(
     assert [block.type for block in result.cells] == ["tetra"]
     np.testing.assert_array_equal(result.cells[0].data, source.cells[0].data)
     assert cs.SPEC["gmsh"] == original
-    assert original["error"] == "WriteError"
+    # The mixed conformance mesh writes since the 4.1 writer allocates entities.
+    assert "error" not in original
+    assert "gmsh" not in bench.SINGLE_TYPE_INPUTS
 
 
 def test_dex_sweep_supplies_required_field_without_mutating_inputs(bench, monkeypatch):

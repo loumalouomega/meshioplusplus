@@ -15,29 +15,43 @@
 //
 //
 // System includes
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/fortran_records.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
 // The layout follows OpenRadioss's th_to_csv converter (MIT); no code is copied.
+
+// Big-endian Fortran records with 4-byte markers.
+constexpr detail::FortranRecordLayout kThLayout{4, true};
 
 [[noreturn]] void th_fail(const std::string& rMessage) {
     throw ReadError("Radioss time history: " + rMessage);
@@ -153,8 +167,8 @@ struct ThGroup {
 struct ThFile {
     std::optional<detail::FileSource> mSource;
     std::string_view mData;
-    std::vector<std::pair<std::size_t, std::size_t>> mRecords;  // (offset, length)
-    std::size_t mNext = 0;                                      // next record to read
+    std::vector<detail::FortranRecord> mRecords;  // payload (offset, size)
+    std::size_t mNext = 0;                        // next record to read
     std::vector<std::int64_t> mGlobals;
     std::vector<ThEntity> mParts, mSubsets;
     std::vector<ThGroup> mGroups;
@@ -175,13 +189,8 @@ struct ThFile {
         if (!is_radioss_th_head(mData.data(), mData.size()))
             th_fail("'" + rPath + "' is not a time-history file");
         // Split the records; a truncated last one ends the file.
-        for (std::size_t p = 0; p + 4 <= mData.size();) {
-            const std::size_t n = th_be32(mData.data() + p);
-            if (p + 8 + n > mData.size() || th_be32(mData.data() + p + 4 + n) != n)
-                break;
-            mRecords.emplace_back(p + 4, n);
-            p += 8 + n;
-        }
+        mRecords = detail::fortran_records(mData.data(), mData.size(), kThLayout,
+                                           "Radioss time history", /*Lenient=*/true);
         Parse();
     }
 
@@ -278,21 +287,21 @@ struct ThFile {
         for (const ThGroup& g : mGroups)
             sizes.push_back(4 * g.mIds.size() * g.mCodes.size());
         while (mNext + 1 + sizes.size() <= mRecords.size()) {
-            if (mRecords[mNext].second != 4)
+            if (mRecords[mNext].mSize != 4)
                 th_fail("unexpected record size for an output's time");
             for (std::size_t k = 0; k < sizes.size(); ++k)
-                if (mRecords[mNext + 1 + k].second != sizes[k])
+                if (mRecords[mNext + 1 + k].mSize != sizes[k])
                     th_fail("unexpected record size in the output at record " +
                             std::to_string(mNext + 1 + k));
             mOutputs.push_back(mNext);
-            mTimes.push_back(th_float(mData.data() + mRecords[mNext].first));
+            mTimes.push_back(th_float(mData.data() + mRecords[mNext].mOffset));
             mNext += 1 + sizes.size();
         }
         if (mOutputs.empty())
             th_fail("the file has no complete output");
     }
 
-    const char* Record(std::size_t Index) const { return mData.data() + mRecords[Index].first; }
+    const char* Record(std::size_t Index) const { return mData.data() + mRecords[Index].mOffset; }
 };
 
 void th_scalar(Mesh& rMesh, const ReadOptions& rOpts, const std::string& rName, double Value) {
@@ -415,6 +424,507 @@ MeshMetadata read_radioss_th_metadata(const std::string& rPath, const ReadOption
     meta.mFormat = "radioss_th";
     meta.mTimeValues = radioss_th_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------
+// The writer: the reader's inverse (see doc/formats/radioss_th.md).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Version 3040 (40-character titles, no unit factors) is what OpenRadioss itself
+// writes and `th_to_csv` reads; with unit factors the file is 4021 (100-character
+// titles): the reader's two branches that a writer can reach.
+constexpr std::int32_t kThwVersionPlain = 3040;
+constexpr std::int32_t kThwVersionFactors = 4021;
+
+struct ThwVar {
+    std::int64_t mCode = 0;
+    std::string mName;
+    float mValue = 0.0F;
+};
+
+struct ThwEntity {
+    std::int64_t mId = 0;
+    std::vector<ThwVar> mVars;
+};
+
+struct ThwGroup {
+    std::int64_t mType = 0, mId = 0;
+    std::string mKind;
+    std::vector<std::int64_t> mIds, mCodes;
+    std::vector<float> mValues;  // entities x variables, row-major
+};
+
+// One output's worth of a mesh: everything the file stores.
+struct ThwStep {
+    float mTime = 0.0F;
+    std::optional<std::array<float, 3>> mFactors;
+    std::vector<ThwVar> mGlobals;
+    std::vector<ThwEntity> mParts, mSubsets;
+    std::vector<ThwGroup> mGroups;
+};
+
+[[noreturn]] void thw_fail(const std::string& rMessage) {
+    throw WriteError("Radioss time history: " + rMessage);
+}
+
+// A whole-string decimal integer that fits an int32 (a leading '-' only).
+bool thw_parse_int(std::string_view Text, std::int64_t& rOut) {
+    if (Text.empty())
+        return false;
+    for (std::size_t i = 0; i < Text.size(); ++i) {
+        const char c = Text[i];
+        if (!((c >= '0' && c <= '9') || (i == 0 && c == '-' && Text.size() > 1)))
+            return false;
+    }
+    std::int64_t v = 0;
+    const auto [end, ec] = std::from_chars(Text.data(), Text.data() + Text.size(), v);
+    if (ec != std::errc() || end != Text.data() + Text.size())
+        return false;
+    if (v < INT32_MIN || v > INT32_MAX)
+        return false;
+    rOut = v;
+    return true;
+}
+
+// The code a variable name stands for: found in the reader's own table (so the
+// two directions cannot drift), else `var<code>`.
+template <class NameFn>
+bool thw_code(std::string_view Name, NameFn Fn, std::int64_t& rCode) {
+    for (std::int64_t code = 1; code <= 64; ++code) {
+        if (Fn(code) == Name) {
+            rCode = code;
+            return true;
+        }
+    }
+    return Name.rfind("var", 0) == 0 && thw_parse_int(Name.substr(3), rCode) && rCode >= 1;
+}
+
+// The TH group type a kind name stands for (`type<N>` for one the reader has no
+// name for).
+bool thw_kind(std::string_view Name, std::int64_t& rType) {
+    for (std::int64_t type = 0; type <= 200; ++type) {
+        if (th_group_kind(type) == Name) {
+            rType = type;
+            return true;
+        }
+    }
+    return Name.rfind("type", 0) == 0 && thw_parse_int(Name.substr(4), rType) && rType >= 0;
+}
+
+std::vector<std::string_view> thw_split(std::string_view Name) {
+    std::vector<std::string_view> parts;
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t colon = Name.find(':', start);
+        if (colon == std::string_view::npos) {
+            parts.push_back(Name.substr(start));
+            return parts;
+        }
+        parts.push_back(Name.substr(start, colon - start));
+        start = colon + 1;
+    }
+}
+
+bool thw_is_scalar(const NDArray& rArray, float& rValue) {
+    if (rArray.Size() != 1)
+        return false;
+    const detail::DoubleView values(rArray);
+    rValue = static_cast<float>(values[0]);
+    return true;
+}
+
+// An int32 (an id or a variable code) from a value that must be integral.
+std::int64_t thw_int_value(double Value, const std::string& rWhat) {
+    if (!(Value >= static_cast<double>(INT32_MIN) && Value <= static_cast<double>(INT32_MAX)) ||
+        Value != std::floor(Value))
+        thw_fail(rWhat + " holds a value that is not an integer in 32-bit range");
+    return static_cast<std::int64_t>(Value);
+}
+
+std::vector<std::int64_t> thw_int_array(const NDArray& rArray, std::size_t Expected,
+                                        const std::string& rName) {
+    if (rArray.Size() != Expected)
+        thw_fail("'" + rName + "' holds " + std::to_string(rArray.Size()) + " values, expected " +
+                 std::to_string(Expected));
+    const detail::DoubleView values(rArray);
+    std::vector<std::int64_t> out(Expected);
+    for (std::size_t i = 0; i < Expected; ++i)
+        out[i] = thw_int_value(values[i], "'" + rName + "'");
+    return out;
+}
+
+bool thw_var_less(const ThwVar& rA, const ThwVar& rB) {
+    return rA.mCode != rB.mCode ? rA.mCode < rB.mCode : rA.mName < rB.mName;
+}
+
+// The mesh's `radioss_th:*` field data as one output. @p rDropped receives the
+// names of the field data that has no place in the file.
+ThwStep thw_collect(const Mesh& rMesh, const std::optional<double>& rTime,
+                    std::vector<std::string>& rDropped) {
+    struct Partial {
+        const NDArray* mpData = nullptr;
+        const NDArray* mpIds = nullptr;
+        const NDArray* mpCodes = nullptr;
+        std::vector<std::string> mNames;
+    };
+    ThwStep step;
+    std::map<std::int64_t, std::vector<ThwVar>> parts, subsets;
+    std::map<std::tuple<std::int64_t, std::int64_t, std::string>, Partial> groups;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& array = rMesh.FieldData(name);
+        if (name == kSequenceTimeKey) {
+            if (!rTime && array.Size() > 0) {
+                const detail::DoubleView values(array);
+                step.mTime = static_cast<float>(values[0]);
+            }
+            continue;
+        }
+        const std::vector<std::string_view> p = thw_split(name);
+        bool taken = false;
+        std::int64_t id = 0, code = 0, type = 0;
+        float value = 0.0F;
+        if (p.size() >= 2 && p[0] == "radioss_th") {
+            if (p.size() == 2 && p[1] == "unit_factors") {
+                if (array.Size() != 3)
+                    thw_fail("'radioss_th:unit_factors' must hold three values");
+                const detail::DoubleView values(array);
+                step.mFactors = std::array<float, 3>{static_cast<float>(values[0]),
+                                                     static_cast<float>(values[1]),
+                                                     static_cast<float>(values[2])};
+                taken = true;
+            } else if (p.size() == 3 && p[1] == "global") {
+                if (thw_code(p[2], th_global_name, code) && thw_is_scalar(array, value)) {
+                    step.mGlobals.push_back({code, std::string(p[2]), value});
+                    taken = true;
+                }
+            } else if (p.size() == 4 && (p[1] == "part" || p[1] == "subset")) {
+                if (thw_parse_int(p[2], id) && thw_code(p[3], th_part_name, code) &&
+                    thw_is_scalar(array, value)) {
+                    (p[1] == "part" ? parts : subsets)[id].push_back(
+                        {code, std::string(p[3]), value});
+                    taken = true;
+                }
+            } else if ((p.size() == 3 || p.size() == 4) && thw_kind(p[1], type) &&
+                       thw_parse_int(p[2], id) &&
+                       (p.size() == 3 || p[3] == "ids" || p[3] == "variables")) {
+                Partial& g = groups[{type, id, std::string(p[1])}];
+                if (p.size() == 3)
+                    g.mpData = &array;
+                else if (p[3] == "ids")
+                    g.mpIds = &array;
+                else
+                    g.mpCodes = &array;
+                g.mNames.push_back(name);
+                taken = true;
+            }
+        }
+        if (!taken)
+            rDropped.push_back(name);
+    }
+    if (rTime)
+        step.mTime = static_cast<float>(*rTime);
+
+    std::sort(step.mGlobals.begin(), step.mGlobals.end(), thw_var_less);
+    for (auto* source : {&parts, &subsets}) {
+        for (auto& [id, vars] : *source) {
+            std::sort(vars.begin(), vars.end(), thw_var_less);
+            (source == &parts ? step.mParts : step.mSubsets).push_back({id, std::move(vars)});
+        }
+    }
+    for (const auto& [key, g] : groups) {
+        const std::string base =
+            "radioss_th:" + std::get<2>(key) + ":" + std::to_string(std::get<1>(key));
+        if (!g.mpData) {
+            // companions of an array that is not there
+            rDropped.insert(rDropped.end(), g.mNames.begin(), g.mNames.end());
+            continue;
+        }
+        const NDArray& data = *g.mpData;
+        if (data.Ndim() != 2)
+            thw_fail("'" + base + "' must be a 2-D array (entities x variables)");
+        const std::size_t n = data.Shape()[0], m = data.Shape()[1];
+        ThwGroup group;
+        group.mType = std::get<0>(key);
+        group.mId = std::get<1>(key);
+        group.mKind = std::get<2>(key);
+        if (g.mpIds) {
+            group.mIds = thw_int_array(*g.mpIds, n, base + ":ids");
+        } else {
+            group.mIds.resize(n);
+            for (std::size_t i = 0; i < n; ++i)
+                group.mIds[i] = static_cast<std::int64_t>(i + 1);
+        }
+        if (g.mpCodes) {
+            group.mCodes = thw_int_array(*g.mpCodes, m, base + ":variables");
+        } else {
+            group.mCodes.resize(m);
+            for (std::size_t i = 0; i < m; ++i)
+                group.mCodes[i] = static_cast<std::int64_t>(i + 1);
+        }
+        const detail::DoubleView values(data);
+        group.mValues.resize(n * m);
+        for (std::size_t i = 0; i < n * m; ++i)
+            group.mValues[i] = static_cast<float>(values[i]);
+        step.mGroups.push_back(std::move(group));
+    }
+    std::sort(rDropped.begin(), rDropped.end());
+    return step;
+}
+
+template <class Entities>
+bool thw_same_entities(const Entities& rA, const Entities& rB) {
+    if (rA.size() != rB.size())
+        return false;
+    for (std::size_t i = 0; i < rA.size(); ++i) {
+        if (rA[i].mId != rB[i].mId || rA[i].mVars.size() != rB[i].mVars.size())
+            return false;
+        for (std::size_t k = 0; k < rA[i].mVars.size(); ++k)
+            if (rA[i].mVars[k].mCode != rB[i].mVars[k].mCode)
+                return false;
+    }
+    return true;
+}
+
+// Whether two outputs have the same variables (the values and time may differ).
+bool thw_same_layout(const ThwStep& rA, const ThwStep& rB) {
+    if (rA.mFactors.has_value() != rB.mFactors.has_value() ||
+        rA.mGlobals.size() != rB.mGlobals.size() || rA.mGroups.size() != rB.mGroups.size())
+        return false;
+    for (std::size_t i = 0; i < rA.mGlobals.size(); ++i)
+        if (rA.mGlobals[i].mCode != rB.mGlobals[i].mCode)
+            return false;
+    if (!thw_same_entities(rA.mParts, rB.mParts) || !thw_same_entities(rA.mSubsets, rB.mSubsets))
+        return false;
+    for (std::size_t i = 0; i < rA.mGroups.size(); ++i) {
+        const ThwGroup& a = rA.mGroups[i];
+        const ThwGroup& b = rB.mGroups[i];
+        if (a.mType != b.mType || a.mId != b.mId || a.mKind != b.mKind || a.mIds != b.mIds ||
+            a.mCodes != b.mCodes)
+            return false;
+    }
+    return true;
+}
+
+// Big-endian Fortran records, built field by field.
+class ThwBytes {
+public:
+    void Int(std::int64_t Value) {
+        detail::fortran_put_int32(mPayload, static_cast<std::int32_t>(Value), true);
+    }
+    void Float(float Value) { detail::fortran_put_float32(mPayload, Value, true); }
+    // Text padded with blanks (or cut) to Width characters.
+    void Text(const std::string& rText, std::size_t Width) {
+        std::string t = rText.substr(0, Width);
+        t.resize(Width, ' ');
+        mPayload += t;
+    }
+    // Close the record being built.
+    void End() {
+        detail::fortran_append_record(mFile, mPayload.data(), mPayload.size(), kThLayout);
+        mPayload.clear();
+    }
+    void Ints(const std::vector<std::int64_t>& rValues) {
+        for (const std::int64_t v : rValues)
+            Int(v);
+        End();
+    }
+    std::string mFile;
+
+private:
+    std::string mPayload;
+};
+
+template <class Entities>
+std::size_t thw_count_vars(const Entities& rEntities) {
+    std::size_t n = 0;
+    for (const auto& e : rEntities)
+        n += e.mVars.size();
+    return n;
+}
+
+std::vector<std::int64_t> thw_codes(const std::vector<ThwVar>& rVars) {
+    std::vector<std::int64_t> codes;
+    for (const ThwVar& v : rVars)
+        codes.push_back(v.mCode);
+    return codes;
+}
+
+// The descriptions: titles, the unit factors, the hierarchy and the variable
+// codes of every part, subset and TH group.
+std::string thw_header(const ThwStep& rStep) {
+    const bool factors = rStep.mFactors.has_value();
+    const std::size_t title = factors ? 100 : 40;
+    ThwBytes b;
+    b.Int(factors ? kThwVersionFactors : kThwVersionPlain);
+    b.Text(detail::provenance_lines(detail::SlotTier::Bounded)[0], 80);
+    b.End();
+    b.Text("meshio++", 80);
+    b.End();
+    if (factors) {
+        b.Int(1);
+        b.End();
+        b.Int(static_cast<std::int64_t>(title));
+        b.End();
+        for (const float f : *rStep.mFactors)
+            b.Float(f);
+        b.End();
+    }
+    b.Ints({static_cast<std::int64_t>(rStep.mParts.size()), 0, 0,
+            static_cast<std::int64_t>(rStep.mSubsets.size()),
+            static_cast<std::int64_t>(rStep.mGroups.size()),
+            static_cast<std::int64_t>(rStep.mGlobals.size())});
+    if (!rStep.mGlobals.empty())
+        b.Ints(thw_codes(rStep.mGlobals));
+    for (const ThwEntity& part : rStep.mParts) {
+        b.Int(part.mId);
+        b.Text("PART " + std::to_string(part.mId), title);
+        b.Int(0);
+        b.Int(0);
+        b.Int(0);
+        b.Int(static_cast<std::int64_t>(part.mVars.size()));
+        b.End();
+        if (!part.mVars.empty())
+            b.Ints(thw_codes(part.mVars));
+    }
+    for (const ThwEntity& subset : rStep.mSubsets) {
+        b.Int(subset.mId);
+        b.Int(0);
+        b.Int(0);  // child subsets
+        b.Int(0);  // parts
+        b.Int(static_cast<std::int64_t>(subset.mVars.size()));
+        b.Text("SUBSET " + std::to_string(subset.mId), title);
+        b.End();
+        if (!subset.mVars.empty())
+            b.Ints(thw_codes(subset.mVars));
+    }
+    for (const ThwGroup& group : rStep.mGroups) {
+        b.Int(group.mId);
+        b.Int(group.mType);
+        b.Int(0);
+        b.Int(static_cast<std::int64_t>(group.mIds.size()));
+        b.Int(static_cast<std::int64_t>(group.mCodes.size()));
+        b.Text("TH " + group.mKind + " " + std::to_string(group.mId), title);
+        b.End();
+        for (const std::int64_t id : group.mIds) {
+            b.Int(id);
+            b.Text(group.mKind + " " + std::to_string(id), title);
+            b.End();
+        }
+        if (!group.mCodes.empty())
+            b.Ints(group.mCodes);
+    }
+    return std::move(b.mFile);
+}
+
+// One output: the time, the globals, the part and subset values, one record per
+// TH group.
+std::string thw_output(const ThwStep& rStep) {
+    ThwBytes b;
+    b.Float(rStep.mTime);
+    b.End();
+    if (!rStep.mGlobals.empty()) {
+        for (const ThwVar& v : rStep.mGlobals)
+            b.Float(v.mValue);
+        b.End();
+    }
+    for (const auto* entities : {&rStep.mParts, &rStep.mSubsets}) {
+        if (thw_count_vars(*entities) == 0)
+            continue;
+        for (const ThwEntity& e : *entities)
+            for (const ThwVar& v : e.mVars)
+                b.Float(v.mValue);
+        b.End();
+    }
+    for (const ThwGroup& group : rStep.mGroups) {
+        for (const float v : group.mValues)
+            b.Float(v);
+        b.End();
+    }
+    return std::move(b.mFile);
+}
+
+void thw_warn_dropped(const std::vector<std::string>& rDropped) {
+    if (rDropped.empty())
+        return;
+    std::string names;
+    for (std::size_t i = 0; i < rDropped.size(); ++i)
+        names += (i ? ", " : "") + rDropped[i];
+    log::warn("Radioss time history: field data without a place in the file is not written: {}",
+              names);
+}
+
+}  // namespace
+
+void write_radioss_th(const std::string& rPath, const Mesh& rMesh) {
+    std::vector<std::string> dropped;
+    const ThwStep step = thw_collect(rMesh, std::nullopt, dropped);
+    thw_warn_dropped(dropped);
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    const std::string bytes = thw_header(step) + thw_output(step);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    if (!out)
+        throw WriteError("Radioss time history: failed writing " + rPath);
+}
+
+struct RadiossThSeriesWriter::Impl {
+    std::string mPath;
+    decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
+    std::optional<ThwStep> mFirst;
+    std::size_t mSteps = 0;
+};
+
+RadiossThSeriesWriter::RadiossThSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!mpImpl->mOut)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+RadiossThSeriesWriter::~RadiossThSeriesWriter() = default;
+RadiossThSeriesWriter::RadiossThSeriesWriter(RadiossThSeriesWriter&&) noexcept = default;
+RadiossThSeriesWriter& RadiossThSeriesWriter::operator=(RadiossThSeriesWriter&&) noexcept = default;
+
+void RadiossThSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        thw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    std::vector<std::string> dropped;
+    const ThwStep step = thw_collect(rMesh, Time, dropped);
+    std::string bytes;
+    if (!s.mFirst) {
+        thw_warn_dropped(dropped);
+        bytes = thw_header(step);
+        s.mFirst = step;
+    } else if (!thw_same_layout(*s.mFirst, step)) {
+        thw_fail("series: step " + std::to_string(s.mSteps) +
+                 "'s variables differ from the first step's; a time-history file holds one "
+                 "set -- write one file per step with '{step}'");
+    }
+    bytes += thw_output(step);
+    s.mOut.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!s.mOut)
+        thw_fail("series: failed writing " + s.mPath);
+    ++s.mSteps;
+}
+
+std::size_t RadiossThSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void RadiossThSeriesWriter::Finalize() {
+    if (!mpImpl || !mpImpl->mOut.is_open())
+        return;
+    if (mpImpl->mSteps == 0)
+        thw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mOut.close();
+    if (!mpImpl->mOut)
+        thw_fail("series: failed writing " + mpImpl->mPath);
 }
 
 }  // namespace meshioplusplus

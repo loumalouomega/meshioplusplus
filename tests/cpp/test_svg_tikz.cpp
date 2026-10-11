@@ -27,6 +27,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // Project includes
 #include "mesh_fixtures.hpp"
@@ -35,6 +36,8 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
+#include "meshioplusplus/read_options.hpp"
+#include "meshioplusplus/registry.hpp"
 
 namespace {
 
@@ -524,4 +527,494 @@ TEST(Colormap, ColorParamHandlesADegenerateRange) {
     EXPECT_DOUBLE_EQ(meshioplusplus::detail::color_param(-1.0, 0.0, 1.0), 0.0);
     EXPECT_DOUBLE_EQ(meshioplusplus::detail::color_param(2.0, 0.0, 1.0), 1.0);
     EXPECT_DOUBLE_EQ(meshioplusplus::detail::color_param(0.25, 0.0, 1.0), 0.25);
+}
+
+// ------------------------------------------------------------ readers --------
+
+namespace {
+
+void write_text(const std::string& rPath, const std::string& rText) {
+    std::ofstream f(rPath, std::ios::binary);
+    f << rText;
+}
+
+// A marked SVG document around `rBody` (the marker a planar write leaves).
+std::string marked_svg(const std::string& rBody, const std::string& rExtraRoot = "") {
+    return "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\"0 0 10 10\"" +
+           rExtraRoot +
+           "><!--\nWritten by meshio++ v1.0.0\nDrawing: planar scale=1 offset=0,10\n-->" + rBody +
+           "</svg>";
+}
+
+// A marked TikZ picture around `rBody`.
+std::string marked_tikz(const std::string& rBody) {
+    return "% Written by meshio++ v1.0.0\n% Drawing: planar\n\\begin{tikzpicture}\n" + rBody +
+           "\n\\end{tikzpicture}\n";
+}
+
+// Reads `rText` as `rFormat` and returns the ReadError message ("" if none).
+std::string read_error(const std::string& rFormat, const std::string& rText, bool Lenient = false) {
+    const std::string path = mt::temp_path(rFormat == "svg" ? ".svg" : ".tikz");
+    write_text(path, rText);
+    std::string message;
+    try {
+        meshioplusplus::ReadOptions opts;
+        opts.mLenient = Lenient;
+        (void)(rFormat == "svg" ? meshioplusplus::read_svg(path, opts)
+                                : meshioplusplus::read_tikz(path, opts));
+    } catch (const meshioplusplus::ReadError& e) {
+        message = e.what();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return message;
+}
+
+double point_at(const mt::Mesh& rMesh, std::size_t i, std::size_t axis) {
+    return meshioplusplus::detail::read_double(rMesh.Points(), i * rMesh.PointDim() + axis);
+}
+
+std::int64_t cell_node(const mt::Mesh& rMesh, std::size_t block, std::size_t cell,
+                       std::size_t node) {
+    const auto cb = rMesh.Cells(block);
+    return meshioplusplus::detail::read_int(cb.Conn(), cell * cb.NodesPerCell() + node);
+}
+
+std::int64_t fill_at(const mt::Mesh& rMesh, const char* pName, std::size_t block, std::size_t cell,
+                     std::size_t channel) {
+    return meshioplusplus::detail::read_int(rMesh.CellData(pName, block), cell * 3 + channel);
+}
+
+}  // namespace
+
+TEST(SvgRead, WritersMarkerNamesTheDrawing) {
+    std::string flat = mt::temp_path(".svg");
+    meshioplusplus::write_svg(flat, mt::tri_mesh());
+    const std::string out = slurp(flat);
+    EXPECT_NE(out.find("<!--\nWritten by meshio++ v"), std::string::npos);
+    EXPECT_NE(out.find("\nDrawing: planar scale=100 offset=0,1\n-->"), std::string::npos);
+
+    std::string proj = mt::temp_path(".svg");
+    meshioplusplus::write_svg(proj, non_flat_mesh());
+    EXPECT_NE(slurp(proj).find(
+                  "\nDrawing: projected azimuth=45 elevation=35.264389682754654 roll=0 scale="),
+              std::string::npos);
+    std::error_code ec;
+    std::filesystem::remove(flat, ec);
+    std::filesystem::remove(proj, ec);
+}
+
+TEST(SvgRead, PlanarRoundTripRestoresModelUnits) {
+    // 2 x 1 rectangle in two triangles: image_width 100 scales by 50 and the y-flip is
+    // about 0 + 1; the marker's scale and offset bring both back (dyadic, so exactly).
+    const mt::Mesh in =
+        mt::make_mesh({{0, 0}, {2, 0}, {2, 1}, {0, 1}}, "triangle", {{0, 1, 2}, {0, 2, 3}});
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, in);
+    const mt::Mesh out = meshioplusplus::read_svg(path);
+    ASSERT_EQ(out.NumPoints(), 4u);
+    EXPECT_EQ(out.PointDim(), 3u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_DOUBLE_EQ(point_at(out, i, 0), point_at(in, i, 0));
+        EXPECT_DOUBLE_EQ(point_at(out, i, 1), point_at(in, i, 1));
+        EXPECT_EQ(point_at(out, i, 2), 0.0);
+    }
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(out.Cells(0).Type()), "triangle");
+    EXPECT_EQ(mt::cell_rows(out), mt::cell_rows(in));
+    EXPECT_FALSE(out.HasCellData("svg:fill"));
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, WeldsOnTheCoordinateText) {
+    const mt::Mesh in = mt::tri_mesh();
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, in);
+    EXPECT_EQ(meshioplusplus::read_svg(path).NumPoints(), 4u);
+    // Two spellings of one number are two points: the weld is on the text.
+    write_text(path,
+               marked_svg("<path d=\"M 0 0L 1 0L 1 1Z\" /><path d=\"M 0.0 0L 1 0L 1 1Z\" />"));
+    EXPECT_EQ(meshioplusplus::read_svg(path).NumPoints(), 4u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, QuadsLinesAndPolygonsKeepTheirType) {
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, mt::quad_mesh());
+    const mt::Mesh quads = meshioplusplus::read_svg(path);
+    ASSERT_EQ(quads.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(quads.Cells(0).Type()), "quad");
+    EXPECT_EQ(quads.Cells(0).NumCells(), 2u);
+
+    meshioplusplus::write_svg(path, mt::line_mesh());
+    const mt::Mesh lines = meshioplusplus::read_svg(path);
+    ASSERT_EQ(lines.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(lines.Cells(0).Type()), "line");
+    EXPECT_EQ(lines.Cells(0).NumCells(), 5u);
+
+    write_text(path, marked_svg("<path d=\"M 0 0L 4 0L 5 2L 2 4L -1 2Z\" />"));
+    const mt::Mesh polygon = meshioplusplus::read_svg(path);
+    ASSERT_EQ(polygon.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(polygon.Cells(0).Type()), "polygon");
+    EXPECT_EQ(polygon.Cells(0).NodesPerCell(), 5u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, ProjectedDrawingComesBackFlat) {
+    // A 3-D mesh is drawn projected; what comes back is that picture, with z = 0.
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, mt::tet_mesh());
+    const mt::Mesh out = meshioplusplus::read_svg(path);
+    EXPECT_GT(out.NumPoints(), 0u);
+    EXPECT_GT(out.NumCellBlocks(), 0u);
+    for (std::size_t i = 0; i < out.NumPoints(); ++i)
+        EXPECT_EQ(point_at(out, i, 2), 0.0);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, FillsComeBackAsRgbAndTheColorbarIsSkipped) {
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0, "#c8c5bd",
+                              "#000080", 45.0, 35.264389682754654, 0.0, "tag", std::nullopt,
+                              "viridis", std::nullopt, std::nullopt, "#808080", /*Colorbar=*/true);
+    const mt::Mesh out = meshioplusplus::read_svg(path);
+    EXPECT_EQ(out.NumPoints(), 4u);  // the 32 swatches added no points
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).NumCells(), 2u);
+    ASSERT_TRUE(out.HasCellData("svg:fill"));
+    const std::int64_t lo[3] = {68, 1, 84}, hi[3] = {253, 231, 37};
+    for (std::size_t k = 0; k < 3; ++k) {
+        EXPECT_EQ(fill_at(out, "svg:fill", 0, 0, k), lo[k]);
+        EXPECT_EQ(fill_at(out, "svg:fill", 0, 1, k), hi[k]);
+    }
+
+    // The narrowing options drop the array.
+    meshioplusplus::ReadOptions points_only;
+    points_only.mPointsOnly = true;
+    EXPECT_FALSE(meshioplusplus::read_svg(path, points_only).HasCellData("svg:fill"));
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, ACellWithoutAFillIsMinusOne) {
+    mt::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}, "triangle", {{0, 1, 2}});
+    m.AddCellBlock("line", mt::conn_from({{1, 3}}));
+    std::vector<meshioplusplus::NDArray> tag;
+    tag.push_back(mt::data_array({0.0}));
+    tag.push_back(mt::data_array({1.0}));
+    m.AddCellData("tag", std::move(tag));
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0,
+                              35.264389682754654, 0.0, "tag");
+    const mt::Mesh out = meshioplusplus::read_svg(path);
+    ASSERT_EQ(out.NumCellBlocks(), 2u);
+    ASSERT_TRUE(out.HasCellData("svg:fill"));
+    EXPECT_NE(fill_at(out, "svg:fill", 0, 0, 0), -1);
+    for (std::size_t k = 0; k < 3; ++k)
+        EXPECT_EQ(fill_at(out, "svg:fill", 1, 0, k), -1);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, AFileWithoutTheMarkerNeedsStrictFalse) {
+    // No marker: refused, unless told to read it as a plain drawing, where the y-flip is
+    // undone from the viewBox (here the whole 0..10 box, so y -> 10 - y).
+    const std::string text =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">"
+        "<path d=\"M 0 10L 10 10L 10 0Z\" /></svg>";
+    EXPECT_NE(read_error("svg", text).find("no meshio++ drawing marker"), std::string::npos);
+    std::string path = mt::temp_path(".svg");
+    write_text(path, text);
+    meshioplusplus::ReadOptions lenient;
+    lenient.mLenient = true;
+    const mt::Mesh out = meshioplusplus::read_svg(path, lenient);
+    ASSERT_EQ(out.NumPoints(), 3u);
+    EXPECT_EQ(point_at(out, 0, 0), 0.0);
+    EXPECT_EQ(point_at(out, 0, 1), 0.0);
+    EXPECT_EQ(point_at(out, 1, 0), 10.0);
+    EXPECT_EQ(point_at(out, 1, 1), 0.0);
+    EXPECT_EQ(point_at(out, 2, 0), 10.0);
+    EXPECT_EQ(point_at(out, 2, 1), 10.0);
+    // A marker with a Drawing line that is not ours is a ReadError even when lenient.
+    const std::string bad =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><!--\nWritten by meshio++ "
+        "v1\nDrawing: sideways\n--></svg>";
+    EXPECT_NE(read_error("svg", bad, true).find("malformed drawing marker"), std::string::npos);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, UnsupportedConstructsAreRefusedByName) {
+    struct Case {
+        std::string body;
+        std::string root;
+        std::string expect;
+    };
+    const std::vector<Case> cases = {
+        {"<polygon points=\"0,0 1,0 1,1\" />", "", "<polygon>"},
+        {"<path d=\"M 0 0L 1 0L 1 1Z\" transform=\"translate(1)\" />", "", "transform"},
+        {"<path d=\"M 0 0C 1 0 1 1 0 1Z\" />", "", "curve command 'C'"},
+        {"<path d=\"M 0 0Q 1 0 1 1Z\" />", "", "curve command 'Q'"},
+        {"<path d=\"M 0 0A 1 1 0 0 1 1 1Z\" />", "", "curve command 'A'"},
+        {"<path d=\"M 0 0l 1 0l 0 1z\" />", "", "relative path command 'l'"},
+        {"<path d=\"M 0 0H 1V 1Z\" />", "", "path command 'H'"},
+        {"<path d=\"M 0 0L 1 0Z M 2 2L 3 3\" />", "", "subpaths"},
+        {"<path d=\"M 0 0 1 0 1 1Z\" />", "", "repeated coordinates"},
+        {"<path d=\"M 0 0L 1\" />", "", "missing its coordinates"},
+        {"<path />", "", "no d attribute"},
+        {"<g><path d=\"M 0 0L 1 0L 1 1Z\" /></g>", "", "<g>"},
+        {"<circle cx=\"1\" cy=\"1\" r=\"1\" />", "", "<circle>"},
+        {"<path d=\"M 0 0L 1 0L 1 1Z\" />", " transform=\"scale(2)\"", "transform"},
+        {"<path d=\"M 0 0L 1 0L 1 1Z\" />", " xmlns:xlink=\"http://www.w3.org/1999/xlink\"",
+         "namespace prefixes"},
+    };
+    for (const Case& c : cases) {
+        const std::string message = read_error("svg", marked_svg(c.body, c.root));
+        EXPECT_NE(message.find(c.expect), std::string::npos)
+            << "body: " << c.body << "\nmessage: " << message;
+    }
+    // An open path of three vertices is not a line.
+    EXPECT_NE(
+        read_error("svg", marked_svg("<path d=\"M 0 0L 1 0L 1 1\" />")).find("open path of 3"),
+        std::string::npos);
+    // A closed path of two is not a face.
+    EXPECT_NE(read_error("svg", marked_svg("<path d=\"M 0 0L 1 0Z\" />")).find("closed path of 2"),
+              std::string::npos);
+}
+
+TEST(SvgRead, MalformedInputIsAlwaysAReadError) {
+    for (const std::string& text : std::vector<std::string>{
+             "", "not xml", "<svg", "<html></html>", "<svg viewBox=\"0 0 1 1\"></svg>",
+             marked_svg("<path d=\"M 1e999 0L 1 0L 1 1Z\" />"),
+             "<svg xmlns=\"http://example.org/\" viewBox=\"0 0 1 1\"></svg>",
+             "<svg xmlns=\"http://www.w3.org/2000/svg\"><!--\nWritten by meshio++ v1\nDrawing: "
+             "planar scale=1 offset=0,0\n--></svg>",
+             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1\"><!--\nWritten by "
+             "meshio++ v1\nDrawing: planar scale=1 offset=0,0\n--></svg>",
+             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><!--\nWritten by "
+             "meshio++ v1\nDrawing: planar scale=0 offset=0,0\n--></svg>",
+             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><!--\nWritten by "
+             "meshio++ v1\nDrawing: projected azimuth=1\n--></svg>"}) {
+        EXPECT_FALSE(read_error("svg", text).empty()) << text;
+    }
+}
+
+TEST(SvgRead, AnEmptyDrawingReadsAsAnEmptyMesh) {
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, mt::Mesh());
+    const mt::Mesh out = meshioplusplus::read_svg(path);
+    EXPECT_EQ(out.NumPoints(), 0u);
+    EXPECT_EQ(out.NumCellBlocks(), 0u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(SvgRead, TheRegistryReadsItAndPassesTheOptions) {
+    std::string path = mt::temp_path(".svg");
+    meshioplusplus::write_svg(path, mt::tri_mesh());
+    EXPECT_TRUE(meshioplusplus::registry_reader_supports_options("svg"));
+    EXPECT_EQ(meshioplusplus::registry_read(path, "svg", meshioplusplus::ReadOptions()).NumPoints(),
+              4u);
+    EXPECT_EQ(meshioplusplus::registry_readers().at("svg")(path).NumPoints(), 4u);
+    write_text(path, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"></svg>");
+    EXPECT_THROW(meshioplusplus::registry_readers().at("svg")(path), meshioplusplus::ReadError);
+    meshioplusplus::ReadOptions lenient;
+    lenient.mLenient = true;
+    EXPECT_NO_THROW(meshioplusplus::registry_read(path, "svg", lenient));
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// ---- TikZ ----
+
+TEST(TikzRead, WritersMarkerNamesTheDrawing) {
+    std::string flat = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(flat, mt::tri_mesh());
+    const std::string out = slurp(flat);
+    EXPECT_EQ(out.rfind("% Written by meshio++ v", 0), 0u);
+    EXPECT_NE(out.find("\n% Drawing: planar\n\\documentclass{standalone}"), std::string::npos);
+
+    std::string proj = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(proj, non_flat_mesh(), ".6f", false);
+    EXPECT_NE(slurp(proj).find("\n% Drawing: projected azimuth=45 elevation=35.264389682754654 "
+                               "roll=0\n\\begin{tikzpicture}"),
+              std::string::npos);
+    std::error_code ec;
+    std::filesystem::remove(flat, ec);
+    std::filesystem::remove(proj, ec);
+}
+
+TEST(TikzRead, PlanarInputComesBackExactly) {
+    // Verbatim coordinates: with a lossless float format the points are bit-identical,
+    // whether or not the document is wrapped.
+    const mt::Mesh in = mt::make_mesh({{0.1, 0.2}, {1.0 / 3.0, 0.0}, {0.7, 0.9}, {-0.25, 1e-7}},
+                                      "triangle", {{0, 1, 2}, {0, 2, 3}});
+    for (bool standalone : {true, false}) {
+        std::string path = mt::temp_path(".tikz");
+        meshioplusplus::write_tikz(path, in, ".17g", standalone);
+        const mt::Mesh out = meshioplusplus::read_tikz(path);
+        ASSERT_EQ(out.NumPoints(), 4u);
+        for (std::size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(point_at(out, i, 0), point_at(in, i, 0));
+            EXPECT_EQ(point_at(out, i, 1), point_at(in, i, 1));
+            EXPECT_EQ(point_at(out, i, 2), 0.0);
+        }
+        EXPECT_EQ(mt::cell_rows(out), mt::cell_rows(in));
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+}
+
+TEST(TikzRead, TypesLinesAndTheWeld) {
+    std::string path = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(path, mt::quad_mesh());
+    mt::Mesh out = meshioplusplus::read_tikz(path);
+    EXPECT_EQ(out.NumPoints(), 6u);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(out.Cells(0).Type()), "quad");
+
+    meshioplusplus::write_tikz(path, mt::line_mesh());
+    out = meshioplusplus::read_tikz(path);
+    EXPECT_EQ(out.NumPoints(), 4u);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(out.Cells(0).Type()), "line");
+    EXPECT_EQ(out.Cells(0).NumCells(), 5u);
+
+    write_text(path, marked_tikz("\\draw[fill=gray!30, draw=black] (0,0) -- (4,0) -- (5,2) -- "
+                                 "(2,4) -- (-1,2) -- cycle;"));
+    out = meshioplusplus::read_tikz(path);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(std::string(out.Cells(0).Type()), "polygon");
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(TikzRead, FillsComeBackAsRgbAndTheColorbarIsSkipped) {
+    std::string path = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(path, two_tri_tagged(0.0, 1.0), ".6f", true, std::nullopt, "gray!30",
+                               "black", std::nullopt, 45.0, 35.264389682754654, 0.0, "tag",
+                               std::nullopt, "viridis", std::nullopt, std::nullopt, "gray",
+                               /*Colorbar=*/true);
+    const mt::Mesh out = meshioplusplus::read_tikz(path);
+    EXPECT_EQ(out.NumPoints(), 4u);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    ASSERT_TRUE(out.HasCellData("tikz:fill"));
+    EXPECT_EQ(fill_at(out, "tikz:fill", 0, 0, 0), 68);
+    EXPECT_EQ(fill_at(out, "tikz:fill", 0, 1, 2), 37);
+    // A flat fill that is not an RGB literal (gray!30) gives no array.
+    meshioplusplus::write_tikz(path, mt::tri_mesh());
+    EXPECT_FALSE(meshioplusplus::read_tikz(path).HasCellData("tikz:fill"));
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(TikzRead, ProjectedDrawingComesBackFlat) {
+    std::string path = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(path, mt::tet_mesh());
+    const mt::Mesh out = meshioplusplus::read_tikz(path);
+    EXPECT_GT(out.NumPoints(), 0u);
+    for (std::size_t i = 0; i < out.NumPoints(); ++i)
+        EXPECT_EQ(point_at(out, i, 2), 0.0);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(TikzRead, AFileWithoutTheMarkerNeedsStrictFalse) {
+    const std::string text =
+        "\\begin{tikzpicture}\n\\draw (0,0) -- (1,0) -- (1,1) -- cycle;\n\\end{tikzpicture}\n";
+    EXPECT_NE(read_error("tikz", text).find("no meshio++ drawing marker"), std::string::npos);
+    std::string path = mt::temp_path(".tikz");
+    write_text(path, text);
+    meshioplusplus::ReadOptions lenient;
+    lenient.mLenient = true;
+    const mt::Mesh out = meshioplusplus::read_tikz(path, lenient);
+    ASSERT_EQ(out.NumPoints(), 3u);
+    EXPECT_EQ(point_at(out, 2, 1), 1.0);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(TikzRead, UnsupportedConstructsAreRefusedByName) {
+    struct Case {
+        std::string body;
+        std::string expect;
+    };
+    const std::vector<Case> cases = {
+        {"\\path[draw] (0,0) -- (1,1);", "\\path"},
+        {"\\foreach \\x in {0,1} \\draw (\\x,0) -- (1,1);", "\\foreach"},
+        {"\\draw (0,0) -- (1,1) plot (2,2);", "'plot"},
+        {"\\draw (0,0) circle (1);", "'circle"},
+        {"\\draw (0,0) .. controls (1,1) and (2,2) .. (3,3);", "'.."},
+        {"\\draw (0,0) -- ++(1,0);", "relative"},
+        {"\\draw (0,0) -- +(1,0);", "relative"},
+        {"\\draw (a) -- (b);", "plain (x,y)"},
+        {"\\draw (30:1cm) -- (0,0);", "plain (x,y)"},
+        {"\\draw (0,0,0) -- (1,1,1);", "plain (x,y)"},
+        {"\\draw (0cm,0cm) -- (1,1);", "plain (x,y)"},
+        {"\\draw[->] (0,0) -- (1,1);", "option '->'"},
+        {"\\draw[thick] (0,0) -- (1,1);", "option 'thick'"},
+        {"\\draw (0,0) -- (1,1) to (2,2);", "'to"},
+        {"\\fill (0,0) -- (1,0) -- (1,1) -- cycle;", "colour-bar rectangle"},
+        {"\\draw (0,0) -- (1,1)", "unsupported path construct"},
+        {"\\draw (0,0) -- (1,1) -- cycle -- (2,2);", "after cycle"},
+        {"\\draw (0,0) -- (1,1) -- (2,2);", "open path of 3"},
+        {"\\draw (0,0) -- (1,0) -- cycle;", "closed path of 2"},
+        {"\\tikzset{x=1cm}", "\\tikzset"},
+        {"\\begin{scope}", "'scope'"},
+        {"text", "unexpected text"},
+    };
+    for (const Case& c : cases) {
+        const std::string message = read_error("tikz", marked_tikz(c.body));
+        EXPECT_NE(message.find(c.expect), std::string::npos)
+            << "body: " << c.body << "\nmessage: " << message;
+    }
+    EXPECT_NE(
+        read_error("tikz", "% Written by meshio++ v1\n% Drawing: planar\n").find("no tikzpicture"),
+        std::string::npos);
+    EXPECT_NE(read_error("tikz",
+                         "% Written by meshio++ v1\n% Drawing: "
+                         "planar\n\\begin{tikzpicture}[x=1cm]\n\\end{tikzpicture}\n")
+                  .find("option 'x'"),
+              std::string::npos);
+    EXPECT_NE(read_error("tikz",
+                         "% Written by meshio++ v1\n% Drawing: "
+                         "planar\n\\begin{tikzpicture}\n\\draw (0,0) -- (1,1);\n")
+                  .find("not closed"),
+              std::string::npos);
+    EXPECT_NE(read_error("tikz",
+                         "% Written by meshio++ v1\n% Drawing: projected "
+                         "azimuth=1\n\\begin{tikzpicture}\n\\end{tikzpicture}\n")
+                  .find("malformed drawing marker"),
+              std::string::npos);
+}
+
+TEST(TikzRead, CommentsAndEscapesAreHandled) {
+    std::string path = mt::temp_path(".tikz");
+    write_text(path,
+               "% Written by meshio++ v1.0.0\n% Drawing: planar\n\\begin{tikzpicture} % open\n"
+               "  \\draw (0,0) -- (1,0) % a comment\n    -- (1,1) -- cycle; % 100\\%\n"
+               "\\end{tikzpicture}\n");
+    const mt::Mesh out = meshioplusplus::read_tikz(path);
+    EXPECT_EQ(out.NumPoints(), 3u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(TikzRead, TheRegistryReadsItAndPassesTheOptions) {
+    std::string path = mt::temp_path(".tikz");
+    meshioplusplus::write_tikz(path, mt::tri_mesh());
+    EXPECT_TRUE(meshioplusplus::registry_reader_supports_options("tikz"));
+    EXPECT_EQ(meshioplusplus::registry_readers().at("tikz")(path).NumPoints(), 4u);
+    write_text(path, "\\begin{tikzpicture}\\end{tikzpicture}");
+    EXPECT_THROW(meshioplusplus::registry_readers().at("tikz")(path), meshioplusplus::ReadError);
+    meshioplusplus::ReadOptions lenient;
+    lenient.mLenient = true;
+    EXPECT_NO_THROW(meshioplusplus::registry_read(path, "tikz", lenient));
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }

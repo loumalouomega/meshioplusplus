@@ -823,3 +823,17 @@ def test_serendipity_needs_quadrilaterals(engine, capfd):
     )
     assert "u" not in mesh.point_data
     assert "quadrilateral meshes only" in " ".join(capfd.readouterr().err.split())
+
+
+_FUZZ_MFEM = pathlib.Path(__file__).parent.parent / "fuzz" / "regressions" / "mfem"
+
+
+@pytest.mark.parametrize(
+    "read", [meshioplusplus.mfem.read, py_mfem.read], ids=["public", "python"]
+)
+def test_an_element_vertex_outside_its_part_is_a_read_error(read):
+    # The fuzzer's crash: an element named a vertex its part does not have, and
+    # the output-point lookup read past the part's vertex list (ASan). Both
+    # engines refuse it as ReadError.
+    with pytest.raises(meshioplusplus.ReadError):
+        read(_FUZZ_MFEM / "element-vertex-outside-part")

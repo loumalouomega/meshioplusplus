@@ -65,22 +65,78 @@ std::optional<FortranRecordLayout> sniff_fortran_records(const char* pData, std:
 std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
                                            const FortranRecordLayout& rLayout,
                                            const std::string& rWhat) {
+    return fortran_records(pData, Size, rLayout, rWhat, /*Lenient=*/false);
+}
+
+std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
+                                           const FortranRecordLayout& rLayout,
+                                           const std::string& rWhat, bool Lenient) {
     std::vector<FortranRecord> out;
     const std::size_t w = static_cast<std::size_t>(rLayout.mMarkerBytes);
     std::size_t pos = 0;
     while (pos < Size) {
         const std::int64_t n = fortran_marker(pData, Size, pos, rLayout);
-        if (n < 0 || static_cast<std::uint64_t>(n) > Size - pos - w)
+        if (n < 0 || static_cast<std::uint64_t>(n) > Size - pos - w) {
+            if (Lenient)
+                break;
             throw ReadError(rWhat + ": Fortran record at offset " + std::to_string(pos) +
                             " runs past the end of the file");
+        }
         const std::size_t len = static_cast<std::size_t>(n);
-        if (fortran_marker(pData, Size, pos + w + len, rLayout) != n)
+        if (fortran_marker(pData, Size, pos + w + len, rLayout) != n) {
+            if (Lenient)
+                break;
             throw ReadError(rWhat + ": Fortran record at offset " + std::to_string(pos) +
                             " has mismatched length markers");
+        }
         out.push_back({pos + w, len});
         pos += 2 * w + len;
     }
     return out;
+}
+
+namespace {
+
+// `Bytes` low-order bytes of `Value`, in the requested byte order.
+void fortran_put_bytes(std::string& rBuf, std::uint64_t Value, int Bytes, bool BigEndian) {
+    for (int i = 0; i < Bytes; ++i) {
+        const int shift = BigEndian ? 8 * (Bytes - 1 - i) : 8 * i;
+        rBuf.push_back(static_cast<char>(static_cast<unsigned char>((Value >> shift) & 0xFFU)));
+    }
+}
+
+}  // namespace
+
+void fortran_put_int32(std::string& rBuf, std::int32_t Value, bool BigEndian) {
+    fortran_put_bytes(rBuf, static_cast<std::uint32_t>(Value), 4, BigEndian);
+}
+
+void fortran_put_int64(std::string& rBuf, std::int64_t Value, bool BigEndian) {
+    fortran_put_bytes(rBuf, static_cast<std::uint64_t>(Value), 8, BigEndian);
+}
+
+void fortran_put_float32(std::string& rBuf, float Value, bool BigEndian) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &Value, sizeof bits);
+    fortran_put_bytes(rBuf, bits, 4, BigEndian);
+}
+
+void fortran_put_float64(std::string& rBuf, double Value, bool BigEndian) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &Value, sizeof bits);
+    fortran_put_bytes(rBuf, bits, 8, BigEndian);
+}
+
+void fortran_append_record(std::string& rOut, const char* pPayload, std::size_t Size,
+                           const FortranRecordLayout& rLayout) {
+    if (rLayout.mMarkerBytes == 4 && Size > static_cast<std::size_t>(INT32_MAX))
+        throw WriteError("Fortran records: a record of " + std::to_string(Size) +
+                         " bytes does not fit a 4-byte length marker");
+    rOut.reserve(rOut.size() + Size + 2 * static_cast<std::size_t>(rLayout.mMarkerBytes));
+    fortran_put_bytes(rOut, Size, rLayout.mMarkerBytes, rLayout.mBigEndian);
+    if (Size > 0)
+        rOut.append(pPayload, Size);
+    fortran_put_bytes(rOut, Size, rLayout.mMarkerBytes, rLayout.mBigEndian);
 }
 
 }  // namespace detail

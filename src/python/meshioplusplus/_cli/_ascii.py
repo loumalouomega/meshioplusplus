@@ -1,7 +1,7 @@
 import os
 import pathlib
 
-from .. import ansys, flac3d, gmsh, mdpa, openfoam, pcd, ply, stl, vtk, vtu, xdmf
+from .. import ansys, flac3d, frd, gmsh, mdpa, openfoam, pcd, ply, stl, vtk, vtu, xdmf
 from .._common import error
 from .._helpers import _filetypes_from_path, read, reader_map
 
@@ -39,6 +39,8 @@ def ascii(args):
         ansys.write(args.infile, mesh, binary=False)
     elif fmt == "flac3d":
         flac3d.write(args.infile, mesh, binary=False)
+    elif fmt == "frd":
+        frd.write(args.infile, mesh, binary=False)
     elif fmt == "gmsh":
         gmsh.write(args.infile, mesh, binary=False)
     elif fmt == "mdpa":

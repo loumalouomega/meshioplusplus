@@ -17,12 +17,16 @@
 
 /**
  * @file test_frd.cpp
- * @brief CalculiX `.frd` reader and ASCII writer: node permutations, steps, short and
+ * @brief CalculiX `.frd` reader and ASCII/binary writer: node permutations, steps, short and
  *        long formats, derived invariants, the write/read round trip and the error paths.
  *
  * The files are built here from fixed-column records rather than read from
  * tests/python/meshes/frd/: this suite has no test-data path. The Python suite runs the
  * same reader over real `ccx` output.
+ *
+ * `FrdBinaryText` is an independent oracle for the binary layout: it builds the file by hand,
+ * so the reader tests do not depend on the writer, and the writer tests compare against bytes
+ * assembled here (`TheBytesAreTheLayoutCcxWrites`) and read the oracle's file back.
  */
 
 // External includes
@@ -924,4 +928,297 @@ TEST(FrdSeries, TheSequenceEngineWritesItAndSaysSo) {
     std::string why;
     EXPECT_TRUE(meshioplusplus::sequence_write_supports_time("frd", why));
     EXPECT_TRUE(why.empty());
+}
+
+// --- The binary layout ---------------------------------------------------------------
+
+namespace {
+
+/// `Value` rounded to `float`, the precision a binary file keeps of a result.
+double as_single(double Value) {
+    return static_cast<double>(static_cast<float>(Value));
+}
+
+meshioplusplus::FrdWriteOptions binary_options() {
+    meshioplusplus::FrdWriteOptions opts;
+    opts.mBinary = true;
+    return opts;
+}
+
+/// The bytes of the file from its `2C` header on: the part with no banner in it.
+std::string from_node_header(const std::string& rText) {
+    return rText.substr(rText.find("    2C"));
+}
+
+/// The raw node records of a binary file with @p Count nodes of float64 coordinates.
+std::string node_records(const std::string& rText, std::size_t Count) {
+    const std::size_t header = rText.find("    2C");
+    return rText.substr(rText.find('\n', header) + 1, Count * (4 + 3 * 8));
+}
+
+}  // namespace
+
+TEST(FrdWriteBinary, RoundTripKeepsMeshDataAndStepInSinglePrecision) {
+    const Mesh mesh = sample_mesh();
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, mesh, binary_options());
+    const Mesh back = meshioplusplus::read_frd(file.mPath);
+    ASSERT_EQ(back.NumCellBlocks(), 3u);
+    EXPECT_EQ(back.Cells(1).Type(), "wedge15");
+    EXPECT_EQ(row_of(back, 1, 0), row_of(mesh, 1, 0));  // the node permutation round-trips
+    EXPECT_EQ(row_of(back, 2, 0), (V{2, 19, 3}));
+    // The points are float64 in either layout, so they come back exactly.
+    ASSERT_EQ(back.Points().Size(), mesh.Points().Size());
+    for (std::size_t i = 0; i < mesh.Points().Size(); ++i)
+        EXPECT_EQ(at(back.Points(), i), at(mesh.Points(), i)) << "point " << i;
+    for (const char* name : {"DISP", "STRESS", "NDTEMP"}) {
+        const NDArray& a = back.PointData(name);
+        const NDArray& b = mesh.PointData(name);
+        ASSERT_EQ(a.Shape(), b.Shape()) << name;
+        for (std::size_t i = 0; i < a.Size(); ++i)
+            EXPECT_EQ(at(a, i), as_single(at(b, i))) << name << " [" << i << "]";
+    }
+    EXPECT_EQ(at(back.CellData("frd:group", 1), 0), 3.0);
+    EXPECT_EQ(at(back.CellData("frd:material", 2), 0), 6.0);
+    EXPECT_EQ(at(back.FieldData(meshioplusplus::kSequenceTimeKey), 0), 0.125);
+    EXPECT_EQ(at(back.FieldData("frd:step"), 0), 4.0);
+    EXPECT_EQ(at(back.FieldData("frd:analysis"), 0), 1.0);
+}
+
+TEST(FrdWriteBinary, TheBytesAreTheLayoutCcxWrites) {
+    // The expected file is assembled here, byte by byte, from the layout in
+    // doc/formats/frd.md: independent of both the writer and the reader.
+    Mesh mesh;
+    mesh.AssignPoints(doubles({4, 3}, {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0.5}));
+    mesh.AddCellBlock("tetra", ints({1, 4}, {0, 1, 2, 3}));
+    mesh.AddPointData("NDTEMP", doubles({4}, {1.5, 2.5, std::nan(""), 4.0}));
+    mesh.AddCellData("frd:group", {ints({1}, {7})});
+    mesh.AddCellData("frd:material", {ints({1}, {3})});
+    mesh.AddFieldData(meshioplusplus::kSequenceTimeKey, doubles({1}, {0.25}));
+    mesh.AddFieldData("frd:step", ints({1}, {2}));
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, mesh, binary_options());
+
+    const auto i32 = [](std::int32_t v) {
+        std::string s;
+        append_raw(s, v);
+        return s;
+    };
+    std::string expected = "    2C" + ipad(4, 30) + std::string(37, ' ') + "3\n";
+    const double xyz[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 0.5}};
+    for (int k = 0; k < 4; ++k) {
+        expected += i32(k + 1);
+        for (double c : xyz[k])
+            append_raw(expected, c);
+    }
+    expected += "    3C" + ipad(1, 30) + std::string(37, ' ') + "2\n";
+    for (int v : {1, 3, 7, 3, 1, 2, 3, 4})
+        expected += i32(v);
+    expected += "    1PSTEP" + std::string(25, ' ') + "2" + std::string(11, ' ') + "1" +
+                std::string(11, ' ') + "2" + std::string(10, ' ') + "\n";
+    expected += "  100CL  102 0.250000000" + ipad(3, 12) + std::string(20, ' ') + " 0" + ipad(2, 5) +
+                std::string(10, ' ') + " 2\n";
+    expected += " -4  NDTEMP      1    1\n -5  T           1    1    0    0\n";
+    const std::vector<std::pair<int, float>> rows = {{1, 1.5f}, {2, 2.5f}, {4, 4.0f}};
+    for (const auto& [node, value] : rows) {
+        expected += i32(node);
+        append_raw(expected, value);
+    }
+    expected += " 9999\n";
+
+    const std::string text = slurp(file.mPath);
+    EXPECT_EQ(from_node_header(text), expected);
+    EXPECT_EQ(text.rfind("    1C\n    1UWritten by meshio++", 0), 0u);
+    EXPECT_EQ(text.substr(0, text.find("    2C")).find(" -1"), std::string::npos);
+}
+
+TEST(FrdWriteBinary, ReadsBackTheSameAsTheHandBuiltBinaryFile) {
+    // The scratch builder is the oracle: reading its file and writing it back in the
+    // library's binary layout must change nothing a reader sees, nor the node records.
+    const V hex = iota(8);
+    const std::vector<std::pair<std::int64_t, std::vector<double>>> disp = {
+        {1, {0.1, -0.2, 0.3}}, {2, {-1.5e-7, 2.0, -3.0}}, {3, {0, 0, 0}}, {4, {1, 2, 3}},
+        {5, {4, 5, 6}},        {6, {7, 8, 9}},            {7, {1, 1, 1}}, {8, {-1, -1, -1}}};
+    Temp oracle(FrdBinaryText()
+                    .Nodes(numbered_nodes(8), /*RealBytes=*/8)
+                    .Elements({{1, hex}})
+                    .Result(0.5, 0, 1, "DISP", {"D1", "D2", "D3"}, disp, /*RealBytes=*/4, true)
+                    .Finish());
+    const Mesh expected = meshioplusplus::read_frd(oracle.mPath);
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, expected, binary_options());
+    const Mesh actual = meshioplusplus::read_frd(file.mPath);
+    mt::expect_same_geometry(expected, actual);
+    const NDArray& a = actual.PointData("DISP");
+    const NDArray& e = expected.PointData("DISP");
+    ASSERT_EQ(a.Shape(), e.Shape());
+    for (std::size_t i = 0; i < a.Size(); ++i)
+        EXPECT_EQ(at(a, i), at(e, i)) << i;  // float32 in, float32 out: nothing changes
+    EXPECT_EQ(node_records(slurp(file.mPath), 8), node_records(slurp(oracle.mPath), 8));
+}
+
+TEST(FrdWriteBinary, TheDefaultStaysAsciiAndTheShortFormDoesNotApply) {
+    const Mesh mesh = sample_mesh();
+    TempFile plain, ascii, wide, narrow;
+    meshioplusplus::write_frd(plain.mPath, mesh);
+    meshioplusplus::write_frd(ascii.mPath, mesh, meshioplusplus::FrdWriteOptions{});
+    EXPECT_EQ(slurp(plain.mPath), slurp(ascii.mPath));
+    EXPECT_EQ(slurp(plain.mPath).substr(slurp(plain.mPath).size() - 11), " -3\n  9999\n");
+    meshioplusplus::FrdWriteOptions short_binary = binary_options();
+    short_binary.mLongIds = false;
+    meshioplusplus::write_frd(wide.mPath, mesh, binary_options());
+    meshioplusplus::write_frd(narrow.mPath, mesh, short_binary);
+    EXPECT_EQ(slurp(wide.mPath), slurp(narrow.mPath));
+    const std::string text = slurp(wide.mPath);
+    EXPECT_EQ(text.substr(text.size() - 6), " 9999\n");
+}
+
+TEST(FrdWriteBinary, TheHeaderCountsTheRecordsThatFollow) {
+    Mesh mesh;
+    mesh.AssignPoints(doubles({3, 3}, {0, 0, 0, 1, 0, 0, 0, 1, 0}));
+    mesh.AddCellBlock("triangle", ints({1, 3}, {0, 1, 2}));
+    mesh.AddPointData("T", doubles({3}, {1.0, std::nan(""), 3.0}));
+    TempFile file;
+    meshioplusplus::write_frd(file.mPath, mesh, binary_options());
+    EXPECT_NE(slurp(file.mPath).find("  100CL  101 0.000000000" + ipad(2, 12)), std::string::npos);
+    const Mesh back = meshioplusplus::read_frd(file.mPath);
+    EXPECT_EQ(at(back.PointData("T"), 0), 1.0);
+    EXPECT_TRUE(std::isnan(at(back.PointData("T"), 1)));
+    EXPECT_EQ(at(back.PointData("T"), 2), 3.0);
+}
+
+TEST(FrdWriteBinary, IdsAreInt32AndTheRefusalsLeaveNoFile) {
+    {
+        Mesh mesh = sample_mesh();
+        mesh.AddCellData("frd:group", {ints({1}, {100000}), ints({1}, {3}), ints({1}, {4})});
+        mesh.AddCellData("frd:material",
+                         {ints({1}, {2147483647}), ints({1}, {5}), ints({1}, {6})});
+        TempFile file;
+        meshioplusplus::write_frd(file.mPath, mesh, binary_options());  // wider than I5
+        const Mesh back = meshioplusplus::read_frd(file.mPath);
+        EXPECT_EQ(at(back.CellData("frd:group", 0), 0), 100000.0);
+        EXPECT_EQ(at(back.CellData("frd:material", 0), 0), 2147483647.0);
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh), WriteError);  // I5 refuses it
+    }
+    {
+        Mesh mesh = sample_mesh();
+        mesh.AddCellData("frd:group",
+                         {ints({1}, {2147483648LL}), ints({1}, {3}), ints({1}, {4})});
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh, binary_options()), WriteError);
+        std::ifstream in(file.mPath);
+        EXPECT_FALSE(in.good());
+    }
+    {
+        Mesh mesh = sample_mesh();
+        std::vector<double> temp(20, 0.0);
+        temp[3] = 1.0e39;  // finite, but beyond float32
+        mesh.AddPointData("NDTEMP", doubles({20}, temp));
+        TempFile file;
+        EXPECT_THROW(meshioplusplus::write_frd(file.mPath, mesh, binary_options()), WriteError);
+        std::ifstream in(file.mPath);
+        EXPECT_FALSE(in.good());
+        temp[3] = -3.4e38;  // the edge of the range holds
+        temp[4] = 1.0e-60;  // and underflow flushes to zero
+        mesh.AddPointData("NDTEMP", doubles({20}, temp));
+        meshioplusplus::write_frd(file.mPath, mesh, binary_options());
+        const Mesh back = meshioplusplus::read_frd(file.mPath);
+        EXPECT_NEAR(at(back.PointData("NDTEMP"), 3), -3.4e38, 1e32);
+        EXPECT_EQ(at(back.PointData("NDTEMP"), 4), 0.0);
+    }
+}
+
+TEST(FrdWriteBinary, TheRegistryWritesItThroughWriteOptions) {
+    const Mesh mesh = sample_mesh();
+    meshioplusplus::WriteOptions binary;
+    binary.mEncoding = meshioplusplus::WriteEncoding::Binary;
+    meshioplusplus::WriteOptions ascii;
+    ascii.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+    std::string why;
+    EXPECT_TRUE(meshioplusplus::registry_write_supports("frd", binary, why)) << why;
+    EXPECT_TRUE(meshioplusplus::registry_write_supports("frd", ascii, why)) << why;
+    meshioplusplus::WriteOptions codec;
+    codec.mCodecSet = true;
+    EXPECT_FALSE(meshioplusplus::registry_write_supports("frd", codec, why));
+
+    TempFile plain, a, b, direct;
+    meshioplusplus::registry_write_ex(plain.mPath, mesh, "frd", meshioplusplus::WriteOptions{});
+    meshioplusplus::registry_write_ex(a.mPath, mesh, "frd", ascii);
+    meshioplusplus::registry_write_ex(b.mPath, mesh, "frd", binary);
+    meshioplusplus::write_frd(direct.mPath, mesh, binary_options());
+    EXPECT_EQ(slurp(plain.mPath), slurp(a.mPath));
+    EXPECT_EQ(slurp(b.mPath), slurp(direct.mPath));
+    EXPECT_NE(slurp(a.mPath), slurp(b.mPath));
+    EXPECT_EQ(meshioplusplus::read_frd(b.mPath).NumCellBlocks(), 3u);
+}
+
+TEST(FrdSeriesBinary, EveryStepReadsBackByItsIndex) {
+    TempFile file;
+    {
+        meshioplusplus::FrdSeriesWriter writer(file.mPath, binary_options());
+        for (int k = 0; k < 3; ++k)
+            writer.Write(0.5 * (k + 1), step_mesh(0.0, k + 1, 1.0 + k));
+        EXPECT_EQ(writer.NumSteps(), 3u);
+        writer.Finalize();
+        writer.Finalize();  // idempotent
+    }
+    const std::string text = slurp(file.mPath);
+    EXPECT_EQ(text.substr(text.size() - 6), " 9999\n");
+    EXPECT_EQ(meshioplusplus::read_frd_metadata(file.mPath).mTimeValues,
+              (std::vector<double>{0.5, 1.0, 1.5}));
+    for (int k = 0; k < 3; ++k) {
+        meshioplusplus::ReadOptions opts;
+        opts.mTimeStep = k;
+        const Mesh back = meshioplusplus::read_frd(file.mPath, opts);
+        EXPECT_EQ(back.NumCellBlocks(), 3u);
+        EXPECT_EQ(at(back.FieldData(meshioplusplus::kSequenceTimeKey), 0), 0.5 * (k + 1));
+        EXPECT_EQ(at(back.FieldData("frd:step"), 0), static_cast<double>(k + 1));
+        EXPECT_EQ(at(back.PointData("NDTEMP"), 4), as_single((1.0 + k) * 21.0));
+    }
+}
+
+TEST(FrdSeriesBinary, ASeriesWithOneStepIsTheSingleStepFile) {
+    const Mesh mesh = step_mesh(0.25, 1, 1.0);
+    TempFile series, single;
+    {
+        meshioplusplus::FrdSeriesWriter writer(series.mPath, binary_options());
+        writer.Write(0.25, mesh);
+        writer.Finalize();
+    }
+    meshioplusplus::write_frd(single.mPath, mesh, binary_options());
+    EXPECT_EQ(slurp(series.mPath), slurp(single.mPath));
+}
+
+TEST(FrdSeriesBinary, TheSequenceEngineWritesItWhenAskedAndAsAsciiOtherwise) {
+    TempFile first, second;
+    meshioplusplus::write_frd(first.mPath, step_mesh(0.5, 1, 1.0));
+    meshioplusplus::write_frd(second.mPath, step_mesh(1.5, 1, 2.0));
+    meshioplusplus::SequenceInput in;
+    in.mPaths = {first.mPath, second.mPath};
+
+    TempFile ascii, binary, plain;
+    meshioplusplus::SequenceOutput out;
+    out.mPath = plain.mPath;
+    meshioplusplus::sequence_to_timeseries(in, out);
+    out.mPath = ascii.mPath;
+    out.mOptions.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+    meshioplusplus::sequence_to_timeseries(in, out);
+    out.mPath = binary.mPath;
+    out.mOptions.mEncoding = meshioplusplus::WriteEncoding::Binary;
+    meshioplusplus::sequence_to_timeseries(in, out);
+
+    EXPECT_EQ(slurp(plain.mPath), slurp(ascii.mPath));
+    const std::string text = slurp(binary.mPath);
+    EXPECT_EQ(text.substr(text.size() - 6), " 9999\n");
+    EXPECT_NE(text, slurp(ascii.mPath));
+    EXPECT_EQ(meshioplusplus::read_frd_metadata(binary.mPath).mTimeValues,
+              (std::vector<double>{0.5, 1.5}));
+    meshioplusplus::ReadOptions last;
+    last.mTimeStep = -1;
+    EXPECT_EQ(at(meshioplusplus::read_frd(binary.mPath, last).PointData("NDTEMP"), 0),
+              as_single(40.0));
+
+    // A codec has nowhere to go in a result file, binary or not.
+    out.mOptions.mCodecSet = true;
+    EXPECT_THROW(meshioplusplus::sequence_to_timeseries(in, out), WriteError);
 }

@@ -10,7 +10,7 @@ import numpy as np
 
 from .._exceptions import ReadError
 from .._files import open_file
-from ._zones import Zone, face_map
+from ._zones import Zone, check_declared_counts, face_map
 
 ZONE_MARKER = 299.0
 GEOMETRY_MARKER = 399.0
@@ -465,9 +465,15 @@ class PltSource:
         if z.conn_offset is not None:
             cur.pos = z.conn_offset
             npc = NODES_PER_CELL[z.type_code]
+            base = 1 if cur.version in (71, 75) else 0  # Tecplot 7 is 1-based
             conn = cur.array("i4", npc * z.num_cells).astype(np.int64).reshape(-1, npc)
-            if cur.version in (71, 75):
-                conn -= 1  # Tecplot 7 connectivity is 1-based
+            conn -= base
+            bad = (conn < 0) | (conn >= z.num_nodes)
+            if bad.any():
+                raise ReadError(
+                    f"Tecplot .plt: zone {idx + 1} connectivity node "
+                    f"{int(conn[bad][0]) + base} is out of range"
+                )
         return cols, conn
 
 
@@ -479,5 +485,6 @@ def load(filename):
     _, _, variables, zones = _read_header(cur)
     for z in zones:
         z.finish()
+    check_declared_counts(zones, len(data))
     _scan_data(cur, variables, zones)
     return variables, zones, PltSource(cur, zones)

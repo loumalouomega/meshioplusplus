@@ -1,9 +1,13 @@
+import copy
+import re
+
+import numpy as np
 import pytest
 
 import meshioplusplus
 from meshioplusplus import _colormap
 
-from . import helpers, helpers_coloring
+from . import helpers, helpers_coloring, helpers_drawing
 
 test_set = [
     helpers.empty_mesh,
@@ -275,3 +279,316 @@ def test_warns_when_skipping_python_engine(tmp_path, capsys):
     _py_write(str(tmp_path / "skip_py.tikz"), mesh)
     err = capsys.readouterr().err
     assert "tetra" in err
+
+
+# --- reading ------------------------------------------------------------------
+
+_PLANAR_MESHES = [
+    helpers.line_mesh,
+    helpers.tri_mesh,
+    helpers.tri_mesh_2d,
+    helpers.quad_mesh,
+    helpers.line_tri_mesh,
+]
+
+
+def _written(mesh, tmp_path, name="out.tikz", **kwargs):
+    path = tmp_path / name
+    meshioplusplus.tikz.write(path, copy.deepcopy(mesh), **kwargs)
+    return path
+
+
+@pytest.mark.parametrize("mesh", _PLANAR_MESHES)
+@pytest.mark.parametrize("standalone", [True, False])
+def test_planar_round_trip_is_exact(mesh, standalone, tmp_path):
+    # Coordinates are verbatim and there is no y-flip, so planar input comes back
+    # exactly in x and y (a lossless float format, here) with z = 0.
+    path = _written(mesh, tmp_path, float_fmt=".17g", standalone=standalone)
+    back = helpers_drawing.read_both("tikz", path)
+    assert back.points.shape[1] == 3 and not back.points[:, 2].any()
+    expected = meshioplusplus.Mesh(
+        copy.deepcopy(mesh.points), [c for c in mesh.cells if len(c.data)]
+    )
+    assert helpers_drawing.cell_coordinates(back) == helpers_drawing.cell_coordinates(
+        expected
+    )
+    used = sorted({tuple(p[:2]) for p in back.points})
+    wanted = sorted(
+        {tuple(expected.points[i][:2]) for c in expected.cells for i in c.data.ravel()}
+    )
+    assert used == wanted
+
+
+def test_non_dyadic_coordinates_are_bit_exact(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        [[0.1, 0.2], [1.0 / 3.0, 0.0], [0.7, 0.9], [-0.25, 1e-7]],
+        [("triangle", [[0, 1, 2], [0, 2, 3]])],
+    )
+    back = helpers_drawing.read_both("tikz", _written(mesh, tmp_path, float_fmt=".17g"))
+    assert np.array_equal(back.points[:, :2], mesh.points)
+    assert np.array_equal(back.cells[0].data, mesh.cells[0].data)
+
+
+def test_the_default_format_keeps_six_decimals(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0 / 3.0, 0.0], [0.0, 2.0 / 3.0]], [("triangle", [[0, 1, 2]])]
+    )
+    back = helpers_drawing.read_both("tikz", _written(mesh, tmp_path))
+    assert np.allclose(back.points[:, :2], mesh.points, atol=1e-6)
+    assert not np.array_equal(back.points[:, :2], mesh.points)
+
+
+def test_picture_options_do_not_move_the_points(tmp_path):
+    # `scale=` multiplies the picture, not the coordinates: they are read verbatim.
+    path = _written(helpers.tri_mesh, tmp_path, scale=2.5, line_width="0.4pt")
+    assert "[scale=2.5, line width=0.4pt]" in path.read_text()
+    back = helpers_drawing.read_both("tikz", path)
+    assert np.array_equal(back.points, helpers.tri_mesh.points)
+    path = _written(
+        helpers.tri_mesh, tmp_path, name="styled.tikz", fill="red!20", draw="blue"
+    )
+    assert np.array_equal(
+        helpers_drawing.read_both("tikz", path).points, helpers.tri_mesh.points
+    )
+
+
+def test_shared_corners_come_back_shared(tmp_path):
+    back = helpers_drawing.read_both("tikz", _written(helpers.tri_mesh, tmp_path))
+    assert len(back.points) == 4
+    assert np.array_equal(back.cells[0].data, [[0, 1, 2], [0, 2, 3]])
+
+
+def test_a_polygon_path_is_a_polygon_cell(tmp_path):
+    path = tmp_path / "poly.tikz"
+    path.write_text(
+        helpers_drawing.marked_tikz(
+            "\\draw[fill=gray!30, draw=black] (0,0) -- (4,0) -- (5,2) -- (2,4) "
+            "-- (-1,2) -- cycle;"
+        )
+    )
+    back = helpers_drawing.read_both("tikz", path)
+    assert [c.type for c in back.cells] == ["polygon"]
+    assert back.cells[0].data.shape == (1, 5)
+
+
+def test_a_projected_drawing_comes_back_flat(tmp_path, capfd):
+    path = _written(helpers.hex_mesh, tmp_path)
+    capfd.readouterr()
+    core, _ = helpers_drawing.readers("tikz")
+    back = core(str(path))
+    assert back.points.shape[1] == 3 and not back.points[:, 2].any()
+    assert len(back.cells) >= 1
+    err = capfd.readouterr().err
+    assert err.count("projected from 3-D") == 1
+    assert "depth lost" in err
+
+
+def test_a_planar_drawing_warns_once(tmp_path, capfd):
+    path = _written(helpers.tri_mesh, tmp_path)
+    capfd.readouterr()
+    core, py = helpers_drawing.readers("tikz")
+    core(str(path))
+    assert capfd.readouterr().err.count("planar drawing, z = 0 assumed") == 1
+    py(str(path))
+    assert capfd.readouterr().err.count("planar drawing, z = 0 assumed") == 1
+
+
+@pytest.mark.parametrize(
+    "make_mesh, kwargs", helpers_coloring.CASE_ARGS, ids=helpers_coloring.CASE_IDS
+)
+def test_colored_drawings_read_the_same_in_both_engines(make_mesh, kwargs, tmp_path):
+    path = _written(make_mesh(), tmp_path, **kwargs)
+    back = helpers_drawing.read_both("tikz", path)
+    assert len(back.cells) >= 1
+    assert "tikz:fill" in back.cell_data
+    for block, fill in zip(back.cells, back.cell_data["tikz:fill"]):
+        assert fill.dtype == np.int32
+        assert fill.shape == (len(block.data), 3)
+        assert ((fill >= -1) & (fill <= 255)).all()
+    assert not back.point_data and "tag" not in back.cell_data
+
+
+def test_fills_match_the_file(tmp_path):
+    path = _written(
+        helpers_coloring.flat_mesh(), tmp_path, color_by="tag", colorbar=True
+    )
+    text = path.read_text()
+    rgb = re.findall(r"\\draw\[fill=\{rgb,255:red,(\d+);green,(\d+);blue,(\d+)\}", text)
+    back = helpers_drawing.read_both("tikz", path)
+    assert len(back.points) == 4  # the colorbar's swatches added no points
+    # One cell has a NaN tag: it is drawn in `gray`, not an RGB literal.
+    fills = back.cell_data["tikz:fill"][0].tolist()
+    assert [f for f in fills if f[0] >= 0] == [[int(c) for c in t] for t in rgb]
+    assert [-1, -1, -1] in fills
+
+
+def test_a_flat_fill_gives_no_array(tmp_path):
+    back = helpers_drawing.read_both("tikz", _written(helpers.tri_mesh, tmp_path))
+    assert not back.cell_data
+
+
+def test_points_only_and_arrays_narrow_the_fill_away(tmp_path):
+    path = _written(helpers_coloring.flat_mesh(), tmp_path, color_by="T")
+    assert "tikz:fill" in helpers_drawing.read_both("tikz", path).cell_data
+    assert not helpers_drawing.read_both("tikz", path, points_only=True).cell_data
+    assert not helpers_drawing.read_both("tikz", path, arrays=[]).cell_data
+    got = helpers_drawing.read_both("tikz", path, arrays=["tikz:fill"])
+    assert "tikz:fill" in got.cell_data
+
+
+def test_the_dispatch_reads_it(tmp_path):
+    path = _written(helpers.quad_mesh, tmp_path)
+    assert meshioplusplus.read(path).cells[0].type == "quad"
+    assert meshioplusplus.tikz.read(path).cells[0].type == "quad"
+    with open(path, "rb") as f:
+        assert meshioplusplus.tikz.read(f).cells[0].type == "quad"
+    with open(path) as f:
+        assert meshioplusplus.tikz.read(f).cells[0].type == "quad"
+
+
+def test_a_file_without_the_marker_needs_strict_false(tmp_path):
+    path = tmp_path / "plain.tikz"
+    path.write_text(
+        "\\begin{tikzpicture}\n\\draw (0,0) -- (1,0) -- (1,1) -- cycle;\n"
+        "\\end{tikzpicture}\n"
+    )
+    core, py = helpers_drawing.readers("tikz")
+    for read in (core, py, meshioplusplus.tikz.read, meshioplusplus.read):
+        with pytest.raises(meshioplusplus.ReadError, match="no meshio\\+\\+ drawing"):
+            read(str(path))
+    for read in (core, py, meshioplusplus.tikz.read):
+        back = read(str(path), strict=False)
+        assert back.points.tolist() == [[0, 0, 0], [1, 0, 0], [1, 1, 0]]
+
+
+_REFUSED = [
+    ("\\path[draw] (0,0) -- (1,1);", "\\\\path"),
+    ("\\foreach \\x in {0,1} \\draw (\\x,0) -- (1,1);", "\\\\foreach"),
+    ("\\draw (0,0) -- (1,1) plot (2,2);", "'plot"),
+    ("\\draw (0,0) circle (1);", "'circle"),
+    ("\\draw (0,0) .. controls (1,1) and (2,2) .. (3,3);", "'\\.\\."),
+    ("\\draw (0,0) -- ++(1,0);", "relative"),
+    ("\\draw (0,0) -- +(1,0);", "relative"),
+    ("\\draw (a) -- (b);", "plain \\(x,y\\)"),
+    ("\\draw (30:1cm) -- (0,0);", "plain \\(x,y\\)"),
+    ("\\draw (0,0,0) -- (1,1,1);", "plain \\(x,y\\)"),
+    ("\\draw (0cm,0cm) -- (1,1);", "plain \\(x,y\\)"),
+    ("\\draw (1,nan) -- (1,1);", "plain \\(x,y\\)"),
+    ("\\draw[->] (0,0) -- (1,1);", "option '->'"),
+    ("\\draw[thick] (0,0) -- (1,1);", "option 'thick'"),
+    ("\\draw (0,0) -- (1,1) to (2,2);", "'to"),
+    ("\\fill (0,0) -- (1,0) -- (1,1) -- cycle;", "colour-bar rectangle"),
+    ("\\draw (0,0) -- (1,1)", "unsupported path construct"),
+    ("\\draw (0,0) -- (1,1) -- cycle -- (2,2);", "after cycle"),
+    ("\\draw (0,0) -- (1,1) -- (2,2);", "open path of 3"),
+    ("\\draw (0,0) -- (1,0) -- cycle;", "closed path of 2"),
+    ("\\draw (1e999,0) -- (1,1);", "bad number"),
+    ("\\tikzset{x=1cm}", "\\\\tikzset"),
+    ("\\begin{scope}", "'scope'"),
+    ("\\\\", "control sequence"),
+    ("text", "unexpected text"),
+]
+
+
+@pytest.mark.parametrize("body, match", _REFUSED)
+def test_unsupported_constructs_are_refused_by_name(body, match, tmp_path):
+    path = tmp_path / "bad.tikz"
+    path.write_text(helpers_drawing.marked_tikz(body))
+    core, py = helpers_drawing.readers("tikz")
+    for read in (core, py):
+        with pytest.raises(meshioplusplus.ReadError, match=match):
+            read(str(path))
+
+
+@pytest.mark.parametrize(
+    "text, match",
+    [
+        ("% Written by meshio++ v1\n% Drawing: planar\n", "no tikzpicture"),
+        (
+            "% Written by meshio++ v1\n% Drawing: planar\n"
+            "\\begin{tikzpicture}[x=1cm]\n\\end{tikzpicture}\n",
+            "option 'x'",
+        ),
+        (
+            "% Written by meshio++ v1\n% Drawing: planar\n\\begin{tikzpicture}\n"
+            "\\draw (0,0) -- (1,1);\n",
+            "not closed",
+        ),
+        (
+            "% Written by meshio++ v1\n% Drawing: planar\n\\begin{tikzpicture}\n"
+            "\\end{tikzpicture}\n\\begin{tikzpicture}\n\\end{tikzpicture}\n",
+            "only one tikzpicture",
+        ),
+        (
+            "% Written by meshio++ v1\n% Drawing: planar\n\\draw (0,0) -- (1,1);\n",
+            "outside a tikzpicture",
+        ),
+        (
+            "% Written by meshio++ v1\n% Drawing: projected azimuth=1\n"
+            "\\begin{tikzpicture}\n\\end{tikzpicture}\n",
+            "malformed drawing marker",
+        ),
+        (
+            "% Written by meshio++ v1\n% Drawing: planar\n\\begin{foo}\n",
+            "environment 'foo'",
+        ),
+    ],
+)
+def test_structural_errors(text, match, tmp_path):
+    path = tmp_path / "bad.tikz"
+    path.write_text(text)
+    core, py = helpers_drawing.readers("tikz")
+    for read in (core, py):
+        with pytest.raises(meshioplusplus.ReadError, match=match):
+            read(str(path), strict=False)
+
+
+def test_comments_and_escapes_are_handled(tmp_path):
+    path = tmp_path / "comments.tikz"
+    path.write_text(
+        "% Written by meshio++ v1.0.0\n% Drawing: planar\n"
+        "\\begin{tikzpicture} % open\n"
+        "  \\draw (0,0) -- (1,0) % a comment\n    -- (1,1) -- cycle; % 100\\%\n"
+        "\\end{tikzpicture}\r\n"
+    )
+    back = helpers_drawing.read_both("tikz", path)
+    assert len(back.points) == 3
+
+
+def test_the_marker_leads_the_file(tmp_path):
+    lines = _written(helpers.tri_mesh, tmp_path).read_text().splitlines()
+    assert lines[0].startswith("% Written by meshio++ v")
+    assert lines[1] == "% Drawing: planar"
+    assert lines[2] == "\\documentclass{standalone}"
+    lines = _written(helpers.hex_mesh, tmp_path, standalone=False).read_text()
+    assert (
+        "\n% Drawing: projected azimuth=45 elevation=35.264389682754654 roll=0\n"
+        "\\begin{tikzpicture}" in lines
+    )
+
+
+def test_the_marker_survives_a_provenance_block(tmp_path):
+    from meshioplusplus import _provenance
+
+    with _provenance.scope(_provenance.Mode.BEST_EFFORT):
+        _provenance.set_source("in.vtu", "vtu")
+        _provenance.note("regions-dropped", "side regions have no equivalent")
+        path = _written(helpers.tri_mesh, tmp_path)
+    text = path.read_text()
+    assert "% Converted from in.vtu (vtu)" in text
+    assert "% Note [regions-dropped]: side regions have no equivalent" in text
+    assert len(helpers_drawing.read_both("tikz", path).points) == 4
+
+
+def test_the_marker_is_there_with_provenance_off(tmp_path):
+    from meshioplusplus import _provenance
+
+    with _provenance.scope(_provenance.Mode.OFF):
+        path = _written(helpers.tri_mesh, tmp_path)
+    assert "% Drawing: planar" in path.read_text()
+    assert len(helpers_drawing.read_both("tikz", path).points) == 4
+
+
+def test_an_empty_drawing_reads_as_an_empty_mesh(tmp_path):
+    back = helpers_drawing.read_both("tikz", _written(helpers.empty_mesh, tmp_path))
+    assert back.points.shape == (0, 3) and not back.cells

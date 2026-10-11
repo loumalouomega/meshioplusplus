@@ -10,6 +10,8 @@ variables, ordered connectivity, time steps and regions are resolved here,
 once for both.
 """
 
+import math
+
 import numpy as np
 
 from .._exceptions import ReadError
@@ -56,12 +58,15 @@ class Zone:
         return self.type_name == "FEPOLYHEDRON"
 
     def finish(self):
-        """Derives node/cell counts of an ordered zone from I/J/K."""
+        """Derives node/cell counts of an ordered zone from I/J/K.
+
+        Python integers, not numpy's int64: a product that would wrap must reach
+        ``check_declared_counts`` as the huge number it is."""
         if self.ordered:
             dims = [d for d in self.ijk if d > 1]
-            self.num_nodes = int(np.prod(self.ijk))
+            self.num_nodes = math.prod(self.ijk)
             # a single-point zone is one vertex
-            self.num_cells = int(np.prod([d - 1 for d in dims])) if dims else 1
+            self.num_cells = math.prod(d - 1 for d in dims) if dims else 1
 
     def meshio_type(self):
         if self.ordered:
@@ -229,6 +234,24 @@ def face_pieces(z, idx, fm):
     if len(pieces) == 1:
         pieces = [(pieces[0][0], pieces[0][1], None)]
     return pieces
+
+
+def check_declared_counts(zones, file_bytes):
+    """Every count a zone header declares must fit in the file: a valid zone
+    holds at least one byte of its file per node, cell or face it names, so a
+    larger count is a corrupt header, refused before a column is sized from it
+    (a passive variable's NaN column, in particular). The counterpart of the
+    C++ reader's ``tecplot_check_declared_counts``."""
+    for index, z in enumerate(zones, 1):
+        for what, count in (
+            ("nodes", z.num_nodes),
+            ("cells", z.num_cells),
+            ("faces", z.num_faces),
+        ):
+            if count > file_bytes:
+                raise ReadError(
+                    f"Tecplot: zone {index} declares more {what} than the file holds"
+                )
 
 
 def timeline(zones):

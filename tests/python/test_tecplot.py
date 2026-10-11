@@ -128,3 +128,46 @@ def test_read_metadata_reports_both_zones_of_a_transient_file(tmp_path):
 
     with pytest.raises(meshioplusplus.ReadError):
         meshioplusplus.tecplot.read(p, time_step=5)
+
+
+_FUZZ_TECPLOT = (
+    pathlib.Path(__file__).parent.parent / "fuzz" / "regressions" / "tecplot"
+)
+
+
+@pytest.mark.parametrize(
+    "read", [meshioplusplus.tecplot.read, _tecplot_py_read], ids=["public", "python"]
+)
+@pytest.mark.parametrize(
+    "name",
+    ["face-node-count-overflows-sum", "plt-passive-count-exceeds-file"],
+)
+def test_counts_beyond_the_file_are_read_errors(read, name):
+    # The fuzzer's crashes: a face count that overflowed the node list's running
+    # sum (UBSan), and a passive variable sized from a zone's node count the
+    # file cannot hold (ASan). Both engines refuse them as ReadError.
+    with pytest.raises(meshioplusplus.ReadError):
+        read(str(_FUZZ_TECPLOT / name))
+
+
+@pytest.mark.parametrize(
+    "read", [meshioplusplus.tecplot.read, _tecplot_py_read], ids=["public", "python"]
+)
+def test_connectivity_ids_outside_the_zone_are_read_errors(read, tmp_path):
+    # The fuzzer's crash: a connectivity id near INT64_MAX, saturated by the C++
+    # lenient parse, whose point offset overflowed (UBSan). An id past the zone's
+    # node count is refused the same way, and the zone's last node is accepted.
+    with pytest.raises(meshioplusplus.ReadError):
+        read(str(_FUZZ_TECPLOT / "ascii-connectivity-id-overflows-offset"))
+    header = (
+        'VARIABLES = "X" "Y"\n'
+        "ZONE N=3 E=1 DATAPACKING=POINT ZONETYPE=FETRIANGLE\n"
+        "0.0 0.0\n1.0 0.0\n0.0 1.0\n"
+    )
+    last = tmp_path / "last-node.dat"
+    last.write_text(header + "1 2 3\n")
+    read(str(last))
+    past = tmp_path / "past-node.dat"
+    past.write_text(header + "1 2 4\n")
+    with pytest.raises(meshioplusplus.ReadError):
+        read(str(past))

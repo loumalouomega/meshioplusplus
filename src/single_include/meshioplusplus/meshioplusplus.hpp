@@ -5755,8 +5755,10 @@ struct ReadOptions {
      * still throw, because continuing past those would hand back a mesh that is
      * quietly wrong rather than merely incomplete.
      *
-     * Currently honoured by `mdpa` and `vtkhdf` (which skips cells with no
-     * meshio++ type -- poly-vertex, poly-line, triangle strips -- with a warning);
+     * Currently honoured by `mdpa`, `vtkhdf` (which skips cells with no
+     * meshio++ type -- poly-vertex, poly-line, triangle strips -- with a warning)
+     * and `svg`/`tikz` (where it is `strict=False`: a drawing that lacks the meshio++
+     * marker comment is read as a plain drawing, with a warning, instead of refused);
      * every other reader ignores it.
      */
     bool mLenient = false;
@@ -9865,7 +9867,8 @@ private:
 // ===== begin src/cpp/include/meshioplusplus/detail/fortran_records.hpp =====
 /**
  * @file detail/fortran_records.hpp
- * @brief Split a Fortran sequential unformatted file into its records.
+ * @brief Split a Fortran sequential unformatted file into its records, and
+ * frame records to write one.
  *
  * A Fortran `WRITE` to a sequential unformatted unit frames each record with its
  * byte length before and after it. The marker is 4 bytes with gfortran and
@@ -9874,11 +9877,18 @@ private:
  * the first record -- a marker whose twin sits exactly after the payload -- and
  * `fortran_records` returns every record's payload span, checking each twin.
  * Abaqus `.fil` is the first user; OP2 and EnSight Fortran binary share the
- * framing.
+ * framing, and the OpenRadioss time-history file (`radioss_th`, big-endian
+ * 4-byte markers) reads and writes through it.
+ *
+ * The writing half is `fortran_append_record`, which frames one payload in
+ * either marker width and byte order, and the `fortran_put_*` helpers that
+ * append a scalar in the file's byte order to build a payload. The Python twin
+ * is `meshioplusplus._fortran_records`.
  */
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -9927,6 +9937,48 @@ MESHIOPLUSPLUS_API std::optional<FortranRecordLayout> sniff_fortran_records(cons
 MESHIOPLUSPLUS_API std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
                                                               const FortranRecordLayout& rLayout,
                                                               const std::string& rWhat);
+
+/**
+ * @brief `fortran_records`, optionally tolerant of a truncated tail.
+ *
+ * With @p Lenient the first record that runs past the end of the buffer, or whose
+ * trailing marker does not match its leading one, ends the list instead of
+ * throwing: the records before it are returned. A solver killed mid-write leaves
+ * such a file (the OpenRadioss time-history reader drops the incomplete last
+ * output this way). With `Lenient` false this is the four-argument overload.
+ * @param pData The file buffer.
+ * @param Size Its length.
+ * @param rLayout The framing (see `sniff_fortran_records`).
+ * @param rWhat The format name used in error messages.
+ * @param Lenient Stop at the first malformed record rather than throw.
+ * @return the payload spans in file order.
+ * @throws ReadError on a malformed record unless @p Lenient.
+ */
+MESHIOPLUSPLUS_API std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
+                                                              const FortranRecordLayout& rLayout,
+                                                              const std::string& rWhat,
+                                                              bool Lenient);
+
+/**
+ * @brief Append one framed record to @p rOut: the length marker, the payload,
+ * the same marker again.
+ * @param rOut The file being built.
+ * @param pPayload The payload bytes (may be null when @p Size is 0).
+ * @param Size The payload length.
+ * @param rLayout The marker width and byte order.
+ * @throws WriteError when @p Size does not fit the marker.
+ */
+MESHIOPLUSPLUS_API void fortran_append_record(std::string& rOut, const char* pPayload,
+                                              std::size_t Size, const FortranRecordLayout& rLayout);
+
+/// Append @p Value as 4 bytes in the given byte order (payload building).
+MESHIOPLUSPLUS_API void fortran_put_int32(std::string& rBuf, std::int32_t Value, bool BigEndian);
+/// Append @p Value as 8 bytes in the given byte order.
+MESHIOPLUSPLUS_API void fortran_put_int64(std::string& rBuf, std::int64_t Value, bool BigEndian);
+/// Append @p Value as an IEEE single in the given byte order.
+MESHIOPLUSPLUS_API void fortran_put_float32(std::string& rBuf, float Value, bool BigEndian);
+/// Append @p Value as an IEEE double in the given byte order.
+MESHIOPLUSPLUS_API void fortran_put_float64(std::string& rBuf, double Value, bool BigEndian);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -16252,6 +16304,11 @@ MESHIOPLUSPLUS_API Mesh read_flux(const std::string& rPath);
  * `100C` header. The format is nodal, holds no sets and prints six digits (`E12.5`), so
  * cell data, regions and other field data are dropped with a warning.
  *
+ * `FrdWriteOptions::mBinary` writes the binary layout instead (since v16.39.0): the same
+ * ASCII headers with the `2C`/`3C` flag 3/2, then raw little-endian records with no
+ * `-1`/`-2`/`-3` markers: `int32` ids, `float64` coordinates, `float32` results (so a
+ * round trip keeps single precision), and ` 9999` to end. The reader above reads it back.
+ *
  * See doc/formats/frd.md for the record layouts and the limits.
  */
 
@@ -16307,6 +16364,31 @@ MESHIOPLUSPLUS_API MeshMetadata read_frd_metadata(const std::string& rPath,
 MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
                                   bool LongIds = true);
 
+/** @brief Format-specific options of `write_frd` and `FrdSeriesWriter`. Since v16.39.0. */
+struct FrdWriteOptions {
+    /** @brief ASCII only: `I10` ids (what `ccx` writes) rather than the short `I5` form. */
+    bool mLongIds = true;
+    /**
+     * @brief Write the binary layout (`int32` ids, `float64` coordinates, `float32`
+     *        results) instead of ASCII. The ids are 32-bit whatever `mLongIds` says.
+     */
+    bool mBinary = false;
+};
+
+/**
+ * @brief Write a CalculiX `.frd` result file, one step, in the ASCII or the binary layout.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh; the point data is the step's results
+ * @param rOpts the layout
+ * @throws WriteError if the file can't be opened, a coordinate is not finite, a value
+ *         does not fit its field (`E12.5`, or `float32` in the binary layout), or the ids
+ *         do not fit the chosen form
+ * @note Since v16.39.0.
+ */
+MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
+                                  const FrdWriteOptions& rOpts);
+
 /**
  * @brief A time series in one result file: the mesh once, then one `100C` increment
  * (a `1PSTEP` header and a `-4` block per point-data array) per step, the increments
@@ -16322,6 +16404,8 @@ class MESHIOPLUSPLUS_API FrdSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit FrdSeriesWriter(const std::string& rPath, bool LongIds = true);
+    /// The layout of @p rOpts, ASCII or binary.
+    FrdSeriesWriter(const std::string& rPath, const FrdWriteOptions& rOpts);
     ~FrdSeriesWriter();
 
     FrdSeriesWriter(const FrdSeriesWriter&) = delete;
@@ -20344,7 +20428,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_radioss_anim_metadata(const std::string& rP
 /**
  * @file radioss_th.hpp
  * @brief OpenRadioss / Radioss time-history file (`<run>T01`, `T02`...)
- *        reader.
+ *        reader and writer.
  *
  * A time-history file is a big-endian Fortran unformatted file: a title, the
  * run's date, the part, material, property, subset and TH-group descriptions
@@ -20359,11 +20443,17 @@ MESHIOPLUSPLUS_API MeshMetadata read_radioss_anim_metadata(const std::string& rP
  * (`radioss_th:part:<id>:<code name>`, `radioss_th:subset:<id>:...`) and,
  * per TH group, `radioss_th:<kind>:<id>` (entities x variables) with its
  * `:ids` and `:variables` (the variable codes).
+ *
+ * The writer (`write_radioss_th`, `RadiossThSeriesWriter`) is the reader's
+ * inverse: it takes those same field-data names back to the variable codes and
+ * groups, and ignores points and cells. The framing is the shared Fortran
+ * record framer (`detail/fortran_records.hpp`).
  * See doc/formats/radioss_th.md.
  */
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20405,6 +20495,69 @@ MESHIOPLUSPLUS_API std::vector<double> radioss_th_time_values(const std::string&
  */
 MESHIOPLUSPLUS_API MeshMetadata read_radioss_th_metadata(const std::string& rPath,
                                                          const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a mesh's `radioss_th:*` field data as a one-output time-history
+ *        file.
+ *
+ * Points and cells are not stored (a time-history file holds none). The output's
+ * time is `meshio:time` (0 when absent). The variables are the reader's inverse:
+ * `radioss_th:global:<name>`, `radioss_th:part:<id>:<name>` and
+ * `radioss_th:subset:<id>:<name>` scalars (a name outside the reader's tables is
+ * `var<code>`), and per TH group `radioss_th:<kind>:<id>` (entities x variables)
+ * with its optional `:ids` and `:variables` (else 1..n). Everything is stored
+ * as big-endian `float32`; ids and codes as `int32`. With
+ * `radioss_th:unit_factors` (three values) the file is version 4021, else 3040
+ * (the version OpenRadioss writes).
+ * Parts, subsets and groups are written sorted by id (groups by kind code, then
+ * id) and their variables by code, so the bytes depend on the names only.
+ * Other field data is dropped with a warning. The Python twin writes the same
+ * bytes.
+ *
+ * @throws WriteError if a group array is not 2-D or disagrees with its `:ids`
+ *         or `:variables`, a value is not an integer in `int32` range, or the
+ *         file cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_radioss_th(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A time-history file written output by output: the descriptions from
+ *        the first step, then one output per `Write`.
+ *
+ * Every step must have the first step's variables (the same names, ids and
+ * codes); a step that does not is a `WriteError` (write one file per step with
+ * `{step}` instead). The time of a step is the argument, not its `meshio:time`.
+ * One step is `write_radioss_th`'s bytes. The Python twin,
+ * `meshioplusplus.radioss_th.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API RadiossThSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit RadiossThSeriesWriter(const std::string& rPath);
+    ~RadiossThSeriesWriter();
+
+    RadiossThSeriesWriter(const RadiossThSeriesWriter&) = delete;
+    RadiossThSeriesWriter& operator=(const RadiossThSeriesWriter&) = delete;
+    RadiossThSeriesWriter(RadiossThSeriesWriter&&) noexcept;
+    RadiossThSeriesWriter& operator=(RadiossThSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one output (the first also writes the descriptions).
+     * @throws WriteError when the step's variables differ from the first
+     *         step's, on a write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/radioss_th.hpp =====
@@ -20562,10 +20715,11 @@ MESHIOPLUSPLUS_API Mesh read_su2(const std::string& rPath);
 // ===== begin src/cpp/include/meshioplusplus/formats/svg.hpp =====
 /**
  * @file svg.hpp
- * @brief SVG (Scalable Vector Graphics) mesh writer (write-only).
+ * @brief SVG (Scalable Vector Graphics) mesh writer and drawing reader.
  *
  * Draws the mesh's `line`/`triangle`/`quad` cells as `<path>` elements in a
- * single `<svg>` document — a visualization format with no reader. For 2D or
+ * single `<svg>` document. `read_svg` reads back only what the writer emits (a
+ * drawing is not a mesh): see its documentation below. For 2D or
  * flat-3D input (all z ~ 0) the classic flat path is used, byte-identical to
  * previous releases. A genuinely non-flat 3D mesh is *rendered*: if it
  * contains supported volume cells its boundary skin is extracted first
@@ -20639,6 +20793,32 @@ MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, c
                const std::optional<double>& rVMin = std::nullopt,
                const std::optional<double>& rVMax = std::nullopt,
                const std::string& rNanColor = "#808080", bool Colorbar = false);
+
+/**
+ * @brief Read an SVG drawing written by `write_svg` back as a planar mesh.
+ *
+ * Inverts exactly what the writer emits and refuses everything else with a
+ * `ReadError` naming the construct. A closed `<path d="M x y L x y ... Z">` of
+ * 3 vertices is a `triangle`, of 4 a `quad`, of more a `polygon`; an open
+ * 2-vertex path is a `line`; consecutive cells of one type and size form one
+ * block. Points are welded on the exact text of their coordinates, in order of
+ * first appearance. The y-flip is undone and `image_width`'s scale restored from
+ * the meshio++ marker comment (or, without one, from the `viewBox`); the colour
+ * bar (`<rect>`/`<text>`) is skipped; a path's `fill="#rrggbb"` comes back as
+ * the `int32` `(n, 3)` cell array `svg:fill` (`-1 -1 -1` where a cell has none),
+ * never as the data it was coloured from. `z` is always 0, and the read warns
+ * once that depth is lost.
+ *
+ * A `<polygon>`, a `transform`, a curve (`C`/`S`/`Q`/`T`/`A`), a relative or
+ * `H`/`V` command, several subpaths and any other element are refused.
+ *
+ * @param rPath    the file to read
+ * @param rOptions `mLenient` is `strict=False`: without it a file that lacks the
+ *                 meshio++ marker is refused; `mPointsOnly` and `mDataArrays`
+ *                 narrow `svg:fill` away
+ * @throws ReadError for anything but a drawing meshio++ wrote
+ */
+MESHIOPLUSPLUS_API Mesh read_svg(const std::string& rPath, const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/svg.hpp =====
@@ -20867,7 +21047,7 @@ MESHIOPLUSPLUS_API Mesh read_tetgen(const std::string& rPath);
 // ===== begin src/cpp/include/meshioplusplus/formats/tikz.hpp =====
 /**
  * @file tikz.hpp
- * @brief TikZ/PGF (LaTeX) 2D mesh writer (write-only).
+ * @brief TikZ/PGF (LaTeX) 2D mesh writer and drawing reader.
  *
  * Draws the mesh's `line`/`triangle`/`quad` cells as `\draw` commands inside a
  * `tikzpicture` environment. By default it emits a full, directly
@@ -20882,6 +21062,8 @@ MESHIOPLUSPLUS_API Mesh read_tetgen(const std::string& rPath);
  * default the classic CAD isometric view) and drawn back-to-front
  * (painter's algorithm — see `detail/projection.hpp`). Non-drawable cells
  * are silently skipped, and no point_data/cell_data/field_data is emitted.
+ * `read_tikz` reads back only the structure the writer emits (a drawing is not
+ * a mesh): see its documentation below.
  */
 
 // System includes
@@ -20944,6 +21126,32 @@ MESHIOPLUSPLUS_API void write_tikz(const std::string& rPath, const Mesh& rMesh, 
                 const std::optional<double>& rVMin = std::nullopt,
                 const std::optional<double>& rVMax = std::nullopt,
                 const std::string& rNanColor = "gray", bool Colorbar = false);
+
+/**
+ * @brief Read a TikZ figure written by `write_tikz` back as a planar mesh.
+ *
+ * Inverts exactly what the writer emits and refuses everything else with a
+ * `ReadError` naming the construct. One `\draw[...] (x,y) -- ... -- cycle;` is a
+ * face (3 vertices a `triangle`, 4 a `quad`, more a `polygon`) and one
+ * `\draw[...] (x,y) -- (x,y);` a `line`; consecutive cells of one type and size
+ * form one block. Points are welded on the exact text of their coordinates, in
+ * order of first appearance, and are taken verbatim (there is no y-flip and the
+ * picture's `scale=` is not applied), so planar input comes back exactly in x and
+ * y. The colour bar (`\fill ... rectangle` and `\node`) is skipped; a
+ * `fill={rgb,255:red,R;green,G;blue,B}` comes back as the `int32` `(n, 3)` cell
+ * array `tikz:fill` (`-1 -1 -1` where a cell has none). `z` is always 0, and the
+ * read warns once that depth is lost.
+ *
+ * `\path`, `plot`, `circle`, `.. controls ..`, named, polar and relative (`++`)
+ * coordinates, `\foreach` and every other construct are refused.
+ *
+ * @param rPath    the file to read
+ * @param rOptions `mLenient` is `strict=False`: without it a file that lacks the
+ *                 meshio++ marker is refused; `mPointsOnly` and `mDataArrays`
+ *                 narrow `tikz:fill` away
+ * @throws ReadError for anything but a drawing meshio++ wrote
+ */
+MESHIOPLUSPLUS_API Mesh read_tikz(const std::string& rPath, const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/tikz.hpp =====
@@ -32442,6 +32650,1032 @@ void ring_unit_normal(const double* pXyz, const std::int64_t* pRing, std::size_t
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/crease_edges.hpp =====
+// ===== begin src/cpp/src/detail/text_cursor.hpp =====
+/**
+ * @file detail/text_cursor.hpp
+ * @brief Text readers' lines, tokens and numbers as views over one buffer.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Twenty-odd text readers held the whole file as a `std::vector<std::string>`
+ * of lines and split each line into `std::string` tokens through a
+ * `std::istringstream`: a heap string per line and per token. Here a file is
+ * read once (`FileSource`), its lines are `string_view`s into it
+ * (`split_lines`, the lines `std::getline` gives), a line's tokens are views
+ * into it (`split_blanks`, the tokens `istringstream >> std::string` gives),
+ * and a token parses in place with the semantics the readers used before:
+ * `parse_double_token` is `parse_double` over the whole token, and
+ * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
+ * accepted, an out-of-range value saturated. `TextCursor` shares bounded line
+ * and prefix-number positioning; `RecordCursor` traverses split records while
+ * format adapters retain their comments, quoting and diagnostics. Roadmap §3,
+ * "A shared tokenizer and number path".
+ *
+ * A view ends where the file ends, and a mapped file is not guaranteed a
+ * terminating NUL: parse a token with the bounded forms here
+ * (`parse_double_token`, `parse_double_prefix`, `strtoll_token`,
+ * `TextCursor::DoublePrefix`), never `parse_double` over a view.
+ */
+
+// System includes
+#include <charconv>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cerrno>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <span>
+#include <system_error>
+#include <type_traits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Whether `c` separates tokens: `std::isspace` in the classic locale.
+inline bool text_is_blank(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+/**
+ * @brief Core-private byte cursor shared by format-specific grammar adapters.
+ * Lines and prefix numbers stay bounded even when the source has no terminator.
+ * A prefix parse advances only through the accepted prefix, not the whole token.
+ */
+class TextCursor {
+public:
+    explicit TextCursor(std::string_view Text) : mBuf(Text) {}
+    template <class T>
+        requires(std::is_same_v<std::remove_cvref_t<T>, std::string> &&
+                 !std::is_lvalue_reference_v<T>)
+    explicit TextCursor(T&&) = delete;
+    bool AtEnd() const { return mPos >= mBuf.size(); }
+    std::size_t Pos() const { return mPos; }
+    void Seek(std::size_t Pos) { mPos = Pos; }
+    std::string_view Data() const { return mBuf; }
+
+    std::string_view Line(bool StripCr = false) {
+        if (AtEnd())
+            return {};
+        const auto eol = mBuf.find('\n', mPos);
+        const auto end = eol == std::string_view::npos ? mBuf.size() : eol;
+        auto line = mBuf.substr(mPos, end - mPos);
+        mPos = eol == std::string_view::npos ? end : end + 1;
+        if (StripCr && !line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        return line;
+    }
+
+    bool DoublePrefix(double& rValue) {
+#ifdef MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS
+        auto pos = NumberStart();
+        if (pos < mBuf.size() && mBuf[pos] == '+')
+            ++pos;
+        const auto hex = pos < mBuf.size() && mBuf[pos] == '-' ? pos + 1 : pos;
+        const bool hexadecimal = hex + 1 < mBuf.size() && mBuf[hex] == '0' &&
+                                 (mBuf[hex + 1] == 'x' || mBuf[hex + 1] == 'X');
+        if (pos < mBuf.size() && !hexadecimal) {
+            double value = 0.0;
+            const auto parsed =
+                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), value);
+            if (parsed.ec == std::errc{}) {
+                rValue = value;
+                mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
+                return true;
+            }
+        }
+#endif
+        // Hexadecimal, out-of-range and platform fallback paths use the exact
+        // locale-independent C parser over a bounded, terminated copy.
+        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
+            return parse_double(pFirst, rpEnd);
+        });
+    }
+    bool IntPrefix(std::int64_t& rValue) {
+        auto pos = NumberStart();
+        const bool negative = pos < mBuf.size() && mBuf[pos] == '-';
+        if (pos < mBuf.size() && (mBuf[pos] == '+' || negative))
+            ++pos;
+        if (pos < mBuf.size() && mBuf[pos] >= '0' && mBuf[pos] <= '9') {
+            std::uint64_t magnitude = 0;
+            const auto parsed =
+                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), magnitude);
+            constexpr auto maximum =
+                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+            if (parsed.ec == std::errc::result_out_of_range ||
+                magnitude > maximum + (negative ? 1u : 0u)) {
+                rValue = negative ? std::numeric_limits<std::int64_t>::min()
+                                  : std::numeric_limits<std::int64_t>::max();
+                errno = ERANGE;  // the saturating strtoll contract
+            } else {
+                rValue = negative ? static_cast<std::int64_t>(0 - magnitude)
+                                  : static_cast<std::int64_t>(magnitude);
+            }
+            mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
+            return true;
+        }
+        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
+            char* end = nullptr;
+            const auto value = std::strtoll(pFirst, &end, 10);
+            rpEnd = end;
+            return static_cast<std::int64_t>(value);
+        });
+    }
+
+    // Binary-aware adapters retain direct checked byte positioning.
+    std::string_view mBuf;
+    std::size_t mPos = 0;
+
+private:
+    std::size_t NumberStart() const {
+        auto first = mPos;
+        while (first < mBuf.size() && text_is_blank(mBuf[first]))
+            ++first;
+        return first;
+    }
+
+    template <class T, class Parser>
+    bool NumberPrefix(T& rValue, Parser Parse) {
+        const auto first = NumberStart();
+        if (first >= mBuf.size())
+            return false;
+        std::size_t last = first;
+        while (last < mBuf.size() && !text_is_blank(mBuf[last]))
+            ++last;
+        const auto token = mBuf.substr(first, last - first);
+        char small[64];
+        std::string large;
+        const char* start;
+        if (token.size() < sizeof small) {
+            token.copy(small, token.size());
+            small[token.size()] = '\0';
+            start = small;
+        } else {
+            large.assign(token);
+            start = large.c_str();
+        }
+        const char* end = nullptr;
+        const auto value = Parse(start, end);
+        if (end == start)
+            return false;
+        rValue = value;
+        mPos = first + static_cast<std::size_t>(end - start);
+        return true;
+    }
+};
+
+/// A non-owning cursor over already split records; grammar adapters check EOF.
+template <class T>
+class RecordCursor {
+public:
+    RecordCursor() = default;
+    explicit RecordCursor(std::span<const T> Records) : mRecords(Records) {}
+    bool Done() const { return mPos >= mRecords.size(); }
+    std::size_t Remaining() const { return Done() ? 0 : mRecords.size() - mPos; }
+    std::size_t Pos() const { return mPos; }
+    const T& Peek(std::size_t Ahead = 0) const { return mRecords[mPos + Ahead]; }
+    const T& Next() { return mRecords[mPos++]; }
+
+private:
+    std::span<const T> mRecords;
+    std::size_t mPos = 0;
+};
+
+/**
+ * @brief The lines `std::getline` reads from @p Text, as views into it: split
+ * on `'\n'` (a `'\r'` before it is kept, as `getline` keeps it), with no empty
+ * last line after a final newline.
+ */
+inline std::vector<std::string_view> split_lines(std::string_view Text) {
+    std::vector<std::string_view> lines;
+    std::size_t pos = 0;
+    while (pos < Text.size()) {
+        std::size_t eol = Text.find('\n', pos);
+        if (eol == std::string_view::npos)
+            eol = Text.size();
+        lines.push_back(Text.substr(pos, eol - pos));
+        pos = eol + 1;
+    }
+    return lines;
+}
+
+/// The tokens `istringstream >> std::string` reads from @p Line, as views,
+/// appended to @p rOut (cleared first).
+inline void split_blanks(std::string_view Line, std::vector<std::string_view>& rOut) {
+    rOut.clear();
+    std::size_t i = 0;
+    const std::size_t n = Line.size();
+    while (true) {
+        while (i < n && text_is_blank(Line[i]))
+            ++i;
+        if (i >= n)
+            return;
+        const std::size_t b = i;
+        while (i < n && !text_is_blank(Line[i]))
+            ++i;
+        rOut.push_back(Line.substr(b, i - b));
+    }
+}
+
+/// `split_blanks` returning its tokens.
+inline std::vector<std::string_view> split_blanks(std::string_view Line) {
+    std::vector<std::string_view> out;
+    split_blanks(Line, out);
+    return out;
+}
+
+/**
+ * @brief `parse_double` over the whole of @p Token: true, with the value, when
+ * the entire token is one number (what `parse_double(s.c_str(), end)` with
+ * `end == s.c_str() + s.size()` accepted), false otherwise.
+ */
+inline bool parse_double_token(std::string_view Token, double& rOut) {
+    if (Token.empty())
+        return false;
+    // parse_double reads a NUL-terminated string; a token is copied into one.
+    // Tokens are short, so this costs little next to the parse itself.
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Token.size() < sizeof small) {
+        Token.copy(small, Token.size());
+        small[Token.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Token);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    const double v = parse_double(first, end);
+    if (end != first + Token.size())
+        return false;
+    rOut = v;
+    return true;
+}
+
+/**
+ * @brief `strtoll(…, 10)` over the whole of @p Token: true, with the value,
+ * when the entire token is one base-10 integer. Like `strtoll`, a leading `+`
+ * is accepted and a value outside `int64` saturates.
+ */
+inline bool parse_int_token(std::string_view Token, std::int64_t& rOut) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;  // strtoll skips leading blanks
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
+        return false;
+    std::uint64_t mag = 0;
+    const char* p = Token.data() + i;
+    const char* last = Token.data() + Token.size();
+    const auto r = std::from_chars(p, last, mag);
+    if (r.ptr != last)
+        return false;
+    constexpr std::uint64_t kMax =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0)) {
+        rOut = neg ? std::numeric_limits<std::int64_t>::min()
+                   : std::numeric_limits<std::int64_t>::max();
+        return true;
+    }
+    rOut = neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
+    return true;
+}
+
+/**
+ * @brief `strtoll(token, nullptr, 10)` on @p Token: the longest base-10 prefix
+ * (after blanks and a sign), 0 when there is none, saturated when out of
+ * range -- the lenient parse, which ignores what follows the number.
+ */
+inline std::int64_t strtoll_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    constexpr std::uint64_t kMax =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0))
+        return neg ? std::numeric_limits<std::int64_t>::min()
+                   : std::numeric_limits<std::int64_t>::max();
+    return neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
+}
+
+/**
+ * @brief `strtoull(token, nullptr, 10)` on @p Token: the longest base-10
+ * prefix after blanks and a sign, 0 when there is none, `UINT64_MAX` when out
+ * of range, and -- as `strtoull` does -- a negative value wrapped modulo 2^64.
+ */
+inline std::uint64_t strtoull_token(std::string_view Token) {
+    std::size_t i = 0;
+    while (i < Token.size() && text_is_blank(Token[i]))
+        ++i;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    std::size_t j = i;
+    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
+        ++j;
+    if (j == i)
+        return 0;
+    std::uint64_t mag = 0;
+    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
+    if (r.ec == std::errc::result_out_of_range)
+        return std::numeric_limits<std::uint64_t>::max();
+    return neg ? 0 - mag : mag;
+}
+
+/**
+ * @brief `parse_double(token)` on @p Token: the longest numeric prefix, 0.0
+ * when there is none -- the lenient parse, which ignores what follows.
+ */
+inline double parse_double_prefix(std::string_view Token) {
+    char small[64];
+    std::string large;
+    const char* first;
+    if (Token.size() < sizeof small) {
+        Token.copy(small, Token.size());
+        small[Token.size()] = '\0';
+        first = small;
+    } else {
+        large.assign(Token);
+        first = large.c_str();
+    }
+    const char* end = nullptr;
+    return parse_double(first, end);
+}
+
+/**
+ * @brief `std::istringstream` extraction over a view, with no stream: the
+ * same values and the same fail state as `operator>>` in the classic locale.
+ *
+ * Readers that split a line into numbers through a stream built one per line
+ * (a copy of the line, a locale-aware parse per value) take this instead,
+ * unchanged. A double is read as libstdc++'s `num_get` does: blanks skipped,
+ * then a sign, digits with at most one decimal point, and -- after a digit --
+ * an exponent (`e`/`E`, a sign, digits) are accumulated and converted as
+ * `strtod` would; a conversion that fails stores 0, one that overflows stores
+ * the largest finite value of that sign, and either sets the fail state. An
+ * integer accumulates a sign and digits, and out of range stores the bound and
+ * fails. At the end of the text an extraction fails and leaves the value
+ * alone, and once failed every further extraction does nothing, as with a
+ * stream. `test_text_cursor.cpp` checks it against `std::istringstream`.
+ */
+class TextStream {
+public:
+    explicit TextStream(std::string_view Text) : mText(Text) {}
+    // A const temporary cannot be moved into mOwned; do not silently borrow it.
+    explicit TextStream(const std::string&&) = delete;
+    explicit TextStream(const char* pText) : mText(pText ? pText : "") {}
+    explicit TextStream(const std::string& rText) : mText(rText) {}
+    /// A temporary is kept, so the view never outlives it.
+    explicit TextStream(std::string&& rText) : mOwned(std::move(rText)), mText(mOwned) {}
+    TextStream(const TextStream&) = delete;
+    TextStream& operator=(const TextStream&) = delete;
+
+    explicit operator bool() const { return !mFail; }
+    bool operator!() const { return mFail; }
+    bool fail() const { return mFail; }
+
+    TextStream& operator>>(double& rValue) {
+        if (!Sentry())
+            return *this;
+        const std::size_t b = mPos;
+        if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
+            ++mPos;
+        bool digits = false, point = false;
+        while (mPos < mText.size()) {
+            const char c = mText[mPos];
+            if (c >= '0' && c <= '9') {
+                digits = true;
+                ++mPos;
+            } else if (c == '.' && !point) {
+                point = true;
+                ++mPos;
+            } else {
+                break;
+            }
+        }
+        if (digits && mPos < mText.size() && (mText[mPos] == 'e' || mText[mPos] == 'E')) {
+            ++mPos;
+            if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
+                ++mPos;
+            while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+                ++mPos;
+        }
+        double v = 0.0;
+        if (!parse_double_token(mText.substr(b, mPos - b), v)) {
+            rValue = 0.0;
+            mFail = true;
+        } else if (v == std::numeric_limits<double>::infinity()) {
+            rValue = std::numeric_limits<double>::max();
+            mFail = true;
+        } else if (v == -std::numeric_limits<double>::infinity()) {
+            rValue = -std::numeric_limits<double>::max();
+            mFail = true;
+        } else {
+            rValue = v;
+        }
+        return *this;
+    }
+
+    TextStream& operator>>(long long& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(long& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(int& rValue) { return ExtractInt(rValue); }
+    TextStream& operator>>(unsigned long long& rValue) { return ExtractUnsigned(rValue); }
+    TextStream& operator>>(unsigned long& rValue) { return ExtractUnsigned(rValue); }
+    TextStream& operator>>(unsigned& rValue) { return ExtractUnsigned(rValue); }
+
+    /// `std::getline(stream, rLine, Delim)`: the characters up to @p Delim
+    /// (consumed, not stored) or the end; fails only when none are left.
+    friend TextStream& getline(TextStream& rIn, std::string& rLine, char Delim = '\n') {
+        if (rIn.mFail)
+            return rIn;
+        if (rIn.mPos >= rIn.mText.size()) {
+            rIn.mFail = true;
+            return rIn;
+        }
+        std::size_t e = rIn.mText.find(Delim, rIn.mPos);
+        if (e == std::string_view::npos)
+            e = rIn.mText.size();
+        rLine.assign(rIn.mText.substr(rIn.mPos, e - rIn.mPos));
+        rIn.mPos = e < rIn.mText.size() ? e + 1 : e;
+        return rIn;
+    }
+
+    TextStream& operator>>(std::string& rValue) {
+        if (!Sentry())
+            return *this;
+        const std::size_t b = mPos;
+        while (mPos < mText.size() && !text_is_blank(mText[mPos]))
+            ++mPos;
+        rValue.assign(mText.substr(b, mPos - b));
+        return *this;
+    }
+
+private:
+    // The stream's sentry: skip blanks; failed already, or at the end, fails
+    // and leaves the value alone.
+    bool Sentry() {
+        if (mFail)
+            return false;
+        while (mPos < mText.size() && text_is_blank(mText[mPos]))
+            ++mPos;
+        if (mPos >= mText.size()) {
+            mFail = true;
+            return false;
+        }
+        return true;
+    }
+
+    template <class T>
+    TextStream& ExtractInt(T& rValue) {
+        if (!Sentry())
+            return *this;
+        bool neg = false;
+        if (mText[mPos] == '+' || mText[mPos] == '-') {
+            neg = mText[mPos] == '-';
+            ++mPos;
+        }
+        const std::size_t d = mPos;
+        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+            ++mPos;
+        if (mPos == d) {
+            rValue = 0;
+            mFail = true;
+            return *this;
+        }
+        std::uint64_t mag = 0;
+        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
+        const std::uint64_t bound =
+            neg ? static_cast<std::uint64_t>(-(std::numeric_limits<T>::min() + 1)) + 1
+                : static_cast<std::uint64_t>(std::numeric_limits<T>::max());
+        if (r.ec == std::errc::result_out_of_range || mag > bound) {
+            rValue = neg ? std::numeric_limits<T>::min() : std::numeric_limits<T>::max();
+            mFail = true;
+            return *this;
+        }
+        rValue = neg ? static_cast<T>(0 - mag) : static_cast<T>(mag);
+        return *this;
+    }
+
+    // num_get for an unsigned type: a sign is allowed and a negative value
+    // wraps, as strtoull does; out of range stores the maximum and fails.
+    template <class T>
+    TextStream& ExtractUnsigned(T& rValue) {
+        if (!Sentry())
+            return *this;
+        bool neg = false;
+        if (mText[mPos] == '+' || mText[mPos] == '-') {
+            neg = mText[mPos] == '-';
+            ++mPos;
+        }
+        const std::size_t d = mPos;
+        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
+            ++mPos;
+        if (mPos == d) {
+            rValue = 0;
+            mFail = true;
+            return *this;
+        }
+        std::uint64_t mag = 0;
+        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
+        if (r.ec == std::errc::result_out_of_range ||
+            mag > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
+            rValue = std::numeric_limits<T>::max();
+            mFail = true;
+            return *this;
+        }
+        rValue = neg ? static_cast<T>(0 - static_cast<T>(mag)) : static_cast<T>(mag);
+        return *this;
+    }
+
+    std::string mOwned;
+    std::string_view mText;
+    std::size_t mPos = 0;
+    bool mFail = false;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/text_cursor.hpp =====
+// ===== begin src/cpp/src/detail/drawing.hpp =====
+/**
+ * @file detail/drawing.hpp
+ * @brief What the `svg` and `tikz` drawings share: the marker comment their
+ * writers emit and their readers require, and the builder that turns the
+ * drawing's paths back into a planar mesh.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed header
+ * names it, and it adds nothing to the API or the ABI. Its Python twin is
+ * `meshioplusplus/_drawing.py`.
+ *
+ * ### The marker
+ *
+ * Both drawings carry a comment right after the provenance tag
+ * (`Written by meshio++ v...`): one line `Drawing: planar` or
+ * `Drawing: projected azimuth=A elevation=E roll=R`, and for `svg`
+ * `scale=S offset=OX,OY` after it. Numbers are `%.17g`, so the reader restores
+ * them exactly. The reader refuses a file without the line unless it is told
+ * `ReadOptions::mLenient` (`strict=False`), because a drawing is not a mesh: only
+ * the structure meshio++'s own writers emit is read back, and the marker is how
+ * a reader knows it is looking at one.
+ *
+ * ### The model, as the reader restores it
+ *
+ *     model_x = svg_x / S + OX      model_y = OY - svg_y / S      (svg)
+ *
+ * with `S` the scale `image_width` applied (1 when none was) and `OY` the
+ * `max_y + min_y` the writer flipped y about. Without a marker `S = 1`, `OX = 0`
+ * and `OY = 2 * viewBox_y + viewBox_height`, which undoes the flip in drawing
+ * units.
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The prefix of the marker line, shared by both drawings.
+inline constexpr const char* kDrawingMarkerPrefix = "Drawing: ";
+
+/// File text for an error message: anything but printable ASCII becomes '?', so a
+/// message built from hostile bytes is always valid UTF-8 where it is shown.
+inline std::string drawing_safe(std::string_view Text) {
+    std::string out(Text);
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e)
+            c = '?';
+    return out;
+}
+
+/// `%.17g` -- what the marker prints numbers with, so the reader restores them.
+inline std::string drawing_num17(double Value) {
+    char buf[40];
+    snprintf_c(buf, sizeof(buf), "%.17g", Value);
+    return buf;
+}
+
+/// `%g` -- what the read warning prints numbers with.
+inline std::string drawing_numg(double Value) {
+    char buf[40];
+    snprintf_c(buf, sizeof(buf), "%g", Value);
+    return buf;
+}
+
+/// The marker's `Drawing: ...` line. @p pScaleOffset is null for tikz.
+inline std::string drawing_marker_line(bool Projected, double Azimuth, double Elevation,
+                                       double Roll, const double* pScaleOffset) {
+    std::string line = kDrawingMarkerPrefix;
+    if (Projected) {
+        line += "projected azimuth=" + drawing_num17(Azimuth) +
+                " elevation=" + drawing_num17(Elevation) + " roll=" + drawing_num17(Roll);
+    } else {
+        line += "planar";
+    }
+    if (pScaleOffset != nullptr) {
+        line += " scale=" + drawing_num17(pScaleOffset[0]) +
+                " offset=" + drawing_num17(pScaleOffset[1]) + "," + drawing_num17(pScaleOffset[2]);
+    }
+    return line;
+}
+
+/// The provenance lines of a drawing's comment, the marker line right after the
+/// tag (so it is there under every provenance mode).
+inline std::vector<std::string> drawing_comment_lines(const std::string& rMarkerLine) {
+    std::vector<std::string> lines = provenance_lines(SlotTier::Block);
+    lines.insert(lines.begin() + 1, rMarkerLine);
+    return lines;
+}
+
+/// What a drawing's marker said.
+struct DrawingMarker {
+    bool mFound = false;
+    bool mProjected = false;
+    double mAzimuth = 0.0;
+    double mElevation = 0.0;
+    double mRoll = 0.0;
+    double mScale = 1.0;
+    double mOffsetX = 0.0;
+    double mOffsetY = 0.0;
+};
+
+/**
+ * @brief Scans an SVG/TikZ number at @p Pos in @p rText: `[+-]? (digits [. digits?]
+ * | . digits) ([eE] [+-]? digits)?`.
+ *
+ * @return the token's length, or 0 when no number starts there.
+ */
+inline std::size_t drawing_scan_number(std::string_view Text, std::size_t Pos) {
+    auto digit = [&](std::size_t i) { return i < Text.size() && Text[i] >= '0' && Text[i] <= '9'; };
+    std::size_t i = Pos;
+    if (i < Text.size() && (Text[i] == '+' || Text[i] == '-'))
+        ++i;
+    if (digit(i)) {
+        while (digit(i))
+            ++i;
+        if (i < Text.size() && Text[i] == '.') {
+            ++i;
+            while (digit(i))
+                ++i;
+        }
+    } else if (i < Text.size() && Text[i] == '.' && digit(i + 1)) {
+        ++i;
+        while (digit(i))
+            ++i;
+    } else {
+        return 0;
+    }
+    if (i < Text.size() && (Text[i] == 'e' || Text[i] == 'E')) {
+        std::size_t j = i + 1;
+        if (j < Text.size() && (Text[j] == '+' || Text[j] == '-'))
+            ++j;
+        if (digit(j)) {
+            while (digit(j))
+                ++j;
+            i = j;
+        }
+    }
+    return i - Pos;
+}
+
+namespace drawing_detail {
+
+inline std::string_view trim(std::string_view Text) {
+    while (!Text.empty() && text_is_blank(Text.front()))
+        Text.remove_prefix(1);
+    while (!Text.empty() && text_is_blank(Text.back()))
+        Text.remove_suffix(1);
+    return Text;
+}
+
+inline double marker_number(std::string_view Token, const char* pFormat, const char* pKey) {
+    double v = 0.0;
+    if (drawing_scan_number(Token, 0) != Token.size() || !parse_double_token(Token, v) ||
+        !std::isfinite(v))
+        throw ReadError(std::string(pFormat) + ": malformed drawing marker, " + pKey +
+                        " is not a number");
+    return v;
+}
+
+}  // namespace drawing_detail
+
+/**
+ * @brief The marker among @p rCommentLines (the comment text of a drawing's
+ * head, one entry per line).
+ *
+ * Found when both the provenance tag and a `Drawing: ` line are present. A
+ * `Drawing: ` line that is malformed is a `ReadError` (the file claims to be
+ * ours and is not); keys this version does not know are skipped.
+ *
+ * @param NeedScale whether the format requires `scale=`/`offset=` (svg).
+ */
+template <class TLines>
+DrawingMarker parse_drawing_marker(const TLines& rCommentLines, const char* pFormat,
+                                   bool NeedScale) {
+    bool tag = false;
+    std::string_view drawing;
+    bool have_drawing = false;
+    for (const auto& raw : rCommentLines) {
+        const std::string_view line = drawing_detail::trim(std::string_view(raw));
+        if (line.rfind("Written by meshio++ v", 0) == 0)
+            tag = true;
+        else if (!have_drawing && line.rfind(kDrawingMarkerPrefix, 0) == 0) {
+            drawing = line;
+            have_drawing = true;
+        }
+    }
+    DrawingMarker marker;
+    if (!tag || !have_drawing)
+        return marker;
+    drawing.remove_prefix(std::string_view(kDrawingMarkerPrefix).size());
+    const std::vector<std::string_view> tokens = split_blanks(drawing);
+    if (tokens.empty())
+        throw ReadError(std::string(pFormat) + ": malformed drawing marker, empty");
+    if (tokens[0] == "planar")
+        marker.mProjected = false;
+    else if (tokens[0] == "projected")
+        marker.mProjected = true;
+    else
+        throw ReadError(std::string(pFormat) + ": malformed drawing marker, unknown kind '" +
+                        drawing_safe(tokens[0]) + "'");
+    bool has_az = false, has_el = false, has_roll = false, has_scale = false, has_offset = false;
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        const std::size_t eq = tokens[i].find('=');
+        if (eq == std::string_view::npos)
+            continue;
+        const std::string_view key = tokens[i].substr(0, eq);
+        const std::string_view value = tokens[i].substr(eq + 1);
+        if (key == "azimuth") {
+            marker.mAzimuth = drawing_detail::marker_number(value, pFormat, "azimuth");
+            has_az = true;
+        } else if (key == "elevation") {
+            marker.mElevation = drawing_detail::marker_number(value, pFormat, "elevation");
+            has_el = true;
+        } else if (key == "roll") {
+            marker.mRoll = drawing_detail::marker_number(value, pFormat, "roll");
+            has_roll = true;
+        } else if (key == "scale") {
+            marker.mScale = drawing_detail::marker_number(value, pFormat, "scale");
+            has_scale = true;
+        } else if (key == "offset") {
+            const std::size_t comma = value.find(',');
+            if (comma == std::string_view::npos)
+                throw ReadError(std::string(pFormat) +
+                                ": malformed drawing marker, offset needs two numbers");
+            marker.mOffsetX =
+                drawing_detail::marker_number(value.substr(0, comma), pFormat, "offset");
+            marker.mOffsetY =
+                drawing_detail::marker_number(value.substr(comma + 1), pFormat, "offset");
+            has_offset = true;
+        }
+    }
+    if (marker.mProjected && !(has_az && has_el && has_roll))
+        throw ReadError(std::string(pFormat) +
+                        ": malformed drawing marker, a projection needs azimuth, elevation, roll");
+    if (NeedScale && !(has_scale && has_offset))
+        throw ReadError(std::string(pFormat) +
+                        ": malformed drawing marker, scale and offset are missing");
+    if (has_scale && !(marker.mScale > 0.0))
+        throw ReadError(std::string(pFormat) + ": malformed drawing marker, scale must be > 0");
+    marker.mFound = true;
+    return marker;
+}
+
+/// The one warning a drawing read raises: what the file was, and what is lost.
+inline void drawing_read_warning(const char* pFormat, const DrawingMarker& rMarker) {
+    if (!rMarker.mFound) {
+        log::warn(
+            "{}: no meshio++ drawing marker; read as a plain drawing in its own units "
+            "(depth, scale and offset are unknown), z = 0 assumed",
+            pFormat);
+    } else if (rMarker.mProjected) {
+        log::warn(
+            "{}: projected from 3-D (azimuth {}, elevation {}, roll {}), depth lost; z = 0 "
+            "assumed",
+            pFormat, drawing_numg(rMarker.mAzimuth), drawing_numg(rMarker.mElevation),
+            drawing_numg(rMarker.mRoll));
+    } else {
+        log::warn("{}: planar drawing, z = 0 assumed", pFormat);
+    }
+}
+
+/// The refusal for a drawing without a marker.
+inline ReadError drawing_unmarked_error(const char* pFormat) {
+    return ReadError(
+        std::string(pFormat) +
+        ": no meshio++ drawing marker. Only drawings written by meshio++ are read back (a "
+        "drawing is not a mesh); pass strict=False (ReadOptions::mLenient) to read this file "
+        "as a plain drawing anyway");
+}
+
+/// An `#rgb` or `#rrggbb` colour, or nullopt.
+inline std::optional<std::array<int, 3>> drawing_hex_color(std::string_view Text) {
+    Text = drawing_detail::trim(Text);
+    if (Text.size() != 4 && Text.size() != 7)
+        return std::nullopt;
+    if (Text[0] != '#')
+        return std::nullopt;
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
+        return -1;
+    };
+    std::array<int, 3> rgb{};
+    for (std::size_t k = 0; k < 3; ++k) {
+        int hi, lo;
+        if (Text.size() == 4) {
+            hi = lo = hex(Text[1 + k]);
+        } else {
+            hi = hex(Text[1 + 2 * k]);
+            lo = hex(Text[2 + 2 * k]);
+        }
+        if (hi < 0 || lo < 0)
+            return std::nullopt;
+        rgb[k] = hi * 16 + lo;
+    }
+    return rgb;
+}
+
+/**
+ * @brief Collects a drawing's paths and builds the planar mesh.
+ *
+ * Points are welded on the exact text of their coordinates, in order of first
+ * appearance; consecutive cells of one type and size form one block. A fill is
+ * kept as an `int32` `(n, 3)` cell array named by the caller, `-1 -1 -1` for a
+ * cell without an RGB fill, and only when some cell has one.
+ */
+class DrawingBuilder {
+public:
+    DrawingBuilder(const char* pFormat, const char* pFillName)
+        : mpFormat(pFormat), mpFillName(pFillName) {}
+
+    /// Whether the fill array is kept (a `ReadOptions` narrowing it away says no).
+    void SetWantFill(bool Want) { mWantFill = Want; }
+
+    /// The welded index of the vertex whose coordinate texts are @p rX/@p rY.
+    /// @p rParse returns the `{x, y}` values and is called for a new vertex only.
+    template <class TParse>
+    std::int64_t Weld(std::string_view X, std::string_view Y, TParse&& rParse) {
+        std::string key;
+        key.reserve(X.size() + Y.size() + 1);
+        key.append(X);
+        key.push_back(' ');
+        key.append(Y);
+        const auto it = mIndex.find(key);
+        if (it != mIndex.end())
+            return it->second;
+        const std::pair<double, double> xy = rParse();
+        const auto id = static_cast<std::int64_t>(mX.size());
+        mX.push_back(xy.first);
+        mY.push_back(xy.second);
+        mIndex.emplace(std::move(key), id);
+        return id;
+    }
+
+    /// One cell. @p Closed is a closed path (a face), otherwise a line.
+    void AddCell(const std::vector<std::int64_t>& rIds, bool Closed,
+                 const std::optional<std::array<int, 3>>& rFill) {
+        const std::size_t n = rIds.size();
+        const char* type = nullptr;
+        if (!Closed) {
+            if (n != 2)
+                throw ReadError(std::string(mpFormat) + ": an open path of " + std::to_string(n) +
+                                " vertices is not a line (only 2-vertex open paths are read)");
+            type = "line";
+        } else if (n == 3) {
+            type = "triangle";
+        } else if (n == 4) {
+            type = "quad";
+        } else if (n > 4) {
+            type = "polygon";
+        } else {
+            throw ReadError(std::string(mpFormat) + ": a closed path of " + std::to_string(n) +
+                            " vertices is not a face");
+        }
+        if (mBlocks.empty() || mBlocks.back().mType != type || mBlocks.back().mWidth != n) {
+            mBlocks.push_back(Block{type, n, {}, {}});
+        }
+        Block& block = mBlocks.back();
+        block.mConn.insert(block.mConn.end(), rIds.begin(), rIds.end());
+        if (rFill && mWantFill) {
+            mAnyFill = true;
+            block.mFill.insert(block.mFill.end(), rFill->begin(), rFill->end());
+        } else {
+            block.mFill.insert(block.mFill.end(), {-1, -1, -1});
+        }
+    }
+
+    /**
+     * @brief The mesh, points mapped back to model units.
+     *
+     * With @p Flip: `x / Scale + OffsetX`, `OffsetY - y / Scale`. Without it and
+     * with the identity scale/offset, the coordinates are left bit-exact.
+     */
+    Mesh Finish(bool Flip, double Scale, double OffsetX, double OffsetY) {
+        const std::size_t n = mX.size();
+        NDArray pts(DType::Float64, {n, static_cast<std::size_t>(3)});
+        double* pp = pts.As<double>();
+        const bool identity = !Flip && Scale == 1.0 && OffsetX == 0.0 && OffsetY == 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            double x = mX[i], y = mY[i];
+            if (!identity) {
+                x = x / Scale + OffsetX;
+                y = Flip ? OffsetY - y / Scale : y / Scale + OffsetY;
+            }
+            if (!std::isfinite(x) || !std::isfinite(y))
+                throw ReadError(std::string(mpFormat) + ": a coordinate is not finite");
+            pp[i * 3 + 0] = x;
+            pp[i * 3 + 1] = y;
+            pp[i * 3 + 2] = 0.0;
+        }
+        Mesh mesh;
+        mesh.AssignPoints(std::move(pts));
+        std::vector<NDArray> fills;
+        for (const Block& block : mBlocks) {
+            const std::size_t cells = block.mConn.size() / block.mWidth;
+            NDArray conn(DType::Int64, {cells, block.mWidth});
+            std::copy(block.mConn.begin(), block.mConn.end(), conn.As<std::int64_t>());
+            mesh.AddCellBlock(block.mType, std::move(conn));
+            if (mAnyFill) {
+                NDArray fill(DType::Int32, {cells, static_cast<std::size_t>(3)});
+                std::copy(block.mFill.begin(), block.mFill.end(), fill.As<std::int32_t>());
+                fills.push_back(std::move(fill));
+            }
+        }
+        if (mAnyFill)
+            mesh.AddCellData(mpFillName, std::move(fills));
+        return mesh;
+    }
+
+private:
+    struct Block {
+        const char* mType;
+        std::size_t mWidth;
+        std::vector<std::int64_t> mConn;
+        std::vector<std::int32_t> mFill;
+    };
+
+    const char* mpFormat;
+    const char* mpFillName;
+    std::unordered_map<std::string, std::int64_t> mIndex;
+    std::vector<double> mX, mY;
+    std::vector<Block> mBlocks;
+    bool mAnyFill = false;
+    bool mWantFill = true;
+};
+
+/// A scanned number's value, or `ReadError`.
+inline double drawing_number_value(std::string_view Token, const char* pFormat) {
+    double v = 0.0;
+    if (!parse_double_token(Token, v) || !std::isfinite(v))
+        throw ReadError(std::string(pFormat) + ": bad number '" + drawing_safe(Token) + "'");
+    return v;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/drawing.hpp =====
 // ===== begin src/cpp/src/detail/keyword_card_view.hpp =====
 #include <cstdint>
 #include <string>
@@ -33677,577 +34911,6 @@ std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate)
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/synth.hpp =====
-// ===== begin src/cpp/src/detail/text_cursor.hpp =====
-/**
- * @file detail/text_cursor.hpp
- * @brief Text readers' lines, tokens and numbers as views over one buffer.
- *
- * A **core-private** header (the `slot_runs.hpp` precedent): no installed
- * header names it, and it adds nothing to the API or the ABI.
- *
- * Twenty-odd text readers held the whole file as a `std::vector<std::string>`
- * of lines and split each line into `std::string` tokens through a
- * `std::istringstream`: a heap string per line and per token. Here a file is
- * read once (`FileSource`), its lines are `string_view`s into it
- * (`split_lines`, the lines `std::getline` gives), a line's tokens are views
- * into it (`split_blanks`, the tokens `istringstream >> std::string` gives),
- * and a token parses in place with the semantics the readers used before:
- * `parse_double_token` is `parse_double` over the whole token, and
- * `parse_int_token` is `strtoll(…, 10)` over the whole token -- a leading `+`
- * accepted, an out-of-range value saturated. `TextCursor` shares bounded line
- * and prefix-number positioning; `RecordCursor` traverses split records while
- * format adapters retain their comments, quoting and diagnostics. Roadmap §3,
- * "A shared tokenizer and number path".
- *
- * A view ends where the file ends, and a mapped file is not guaranteed a
- * terminating NUL: parse a token with the bounded forms here
- * (`parse_double_token`, `parse_double_prefix`, `strtoll_token`,
- * `TextCursor::DoublePrefix`), never `parse_double` over a view.
- */
-
-// System includes
-#include <charconv>
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <cstdlib>
-#include <cerrno>
-#include <limits>
-#include <string>
-#include <string_view>
-#include <span>
-#include <system_error>
-#include <type_traits>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// Whether `c` separates tokens: `std::isspace` in the classic locale.
-inline bool text_is_blank(char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
-}
-
-/**
- * @brief Core-private byte cursor shared by format-specific grammar adapters.
- * Lines and prefix numbers stay bounded even when the source has no terminator.
- * A prefix parse advances only through the accepted prefix, not the whole token.
- */
-class TextCursor {
-public:
-    explicit TextCursor(std::string_view Text) : mBuf(Text) {}
-    template <class T>
-        requires(std::is_same_v<std::remove_cvref_t<T>, std::string> &&
-                 !std::is_lvalue_reference_v<T>)
-    explicit TextCursor(T&&) = delete;
-    bool AtEnd() const { return mPos >= mBuf.size(); }
-    std::size_t Pos() const { return mPos; }
-    void Seek(std::size_t Pos) { mPos = Pos; }
-    std::string_view Data() const { return mBuf; }
-
-    std::string_view Line(bool StripCr = false) {
-        if (AtEnd())
-            return {};
-        const auto eol = mBuf.find('\n', mPos);
-        const auto end = eol == std::string_view::npos ? mBuf.size() : eol;
-        auto line = mBuf.substr(mPos, end - mPos);
-        mPos = eol == std::string_view::npos ? end : end + 1;
-        if (StripCr && !line.empty() && line.back() == '\r')
-            line.remove_suffix(1);
-        return line;
-    }
-
-    bool DoublePrefix(double& rValue) {
-#ifdef MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS
-        auto pos = NumberStart();
-        if (pos < mBuf.size() && mBuf[pos] == '+')
-            ++pos;
-        const auto hex = pos < mBuf.size() && mBuf[pos] == '-' ? pos + 1 : pos;
-        const bool hexadecimal = hex + 1 < mBuf.size() && mBuf[hex] == '0' &&
-                                 (mBuf[hex + 1] == 'x' || mBuf[hex + 1] == 'X');
-        if (pos < mBuf.size() && !hexadecimal) {
-            double value = 0.0;
-            const auto parsed =
-                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), value);
-            if (parsed.ec == std::errc{}) {
-                rValue = value;
-                mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
-                return true;
-            }
-        }
-#endif
-        // Hexadecimal, out-of-range and platform fallback paths use the exact
-        // locale-independent C parser over a bounded, terminated copy.
-        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
-            return parse_double(pFirst, rpEnd);
-        });
-    }
-    bool IntPrefix(std::int64_t& rValue) {
-        auto pos = NumberStart();
-        const bool negative = pos < mBuf.size() && mBuf[pos] == '-';
-        if (pos < mBuf.size() && (mBuf[pos] == '+' || negative))
-            ++pos;
-        if (pos < mBuf.size() && mBuf[pos] >= '0' && mBuf[pos] <= '9') {
-            std::uint64_t magnitude = 0;
-            const auto parsed =
-                std::from_chars(mBuf.data() + pos, mBuf.data() + mBuf.size(), magnitude);
-            constexpr auto maximum =
-                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-            if (parsed.ec == std::errc::result_out_of_range ||
-                magnitude > maximum + (negative ? 1u : 0u)) {
-                rValue = negative ? std::numeric_limits<std::int64_t>::min()
-                                  : std::numeric_limits<std::int64_t>::max();
-                errno = ERANGE;  // the saturating strtoll contract
-            } else {
-                rValue = negative ? static_cast<std::int64_t>(0 - magnitude)
-                                  : static_cast<std::int64_t>(magnitude);
-            }
-            mPos = static_cast<std::size_t>(parsed.ptr - mBuf.data());
-            return true;
-        }
-        return NumberPrefix(rValue, [](const char* pFirst, const char*& rpEnd) {
-            char* end = nullptr;
-            const auto value = std::strtoll(pFirst, &end, 10);
-            rpEnd = end;
-            return static_cast<std::int64_t>(value);
-        });
-    }
-
-    // Binary-aware adapters retain direct checked byte positioning.
-    std::string_view mBuf;
-    std::size_t mPos = 0;
-
-private:
-    std::size_t NumberStart() const {
-        auto first = mPos;
-        while (first < mBuf.size() && text_is_blank(mBuf[first]))
-            ++first;
-        return first;
-    }
-
-    template <class T, class Parser>
-    bool NumberPrefix(T& rValue, Parser Parse) {
-        const auto first = NumberStart();
-        if (first >= mBuf.size())
-            return false;
-        std::size_t last = first;
-        while (last < mBuf.size() && !text_is_blank(mBuf[last]))
-            ++last;
-        const auto token = mBuf.substr(first, last - first);
-        char small[64];
-        std::string large;
-        const char* start;
-        if (token.size() < sizeof small) {
-            token.copy(small, token.size());
-            small[token.size()] = '\0';
-            start = small;
-        } else {
-            large.assign(token);
-            start = large.c_str();
-        }
-        const char* end = nullptr;
-        const auto value = Parse(start, end);
-        if (end == start)
-            return false;
-        rValue = value;
-        mPos = first + static_cast<std::size_t>(end - start);
-        return true;
-    }
-};
-
-/// A non-owning cursor over already split records; grammar adapters check EOF.
-template <class T>
-class RecordCursor {
-public:
-    RecordCursor() = default;
-    explicit RecordCursor(std::span<const T> Records) : mRecords(Records) {}
-    bool Done() const { return mPos >= mRecords.size(); }
-    std::size_t Remaining() const { return Done() ? 0 : mRecords.size() - mPos; }
-    std::size_t Pos() const { return mPos; }
-    const T& Peek(std::size_t Ahead = 0) const { return mRecords[mPos + Ahead]; }
-    const T& Next() { return mRecords[mPos++]; }
-
-private:
-    std::span<const T> mRecords;
-    std::size_t mPos = 0;
-};
-
-/**
- * @brief The lines `std::getline` reads from @p Text, as views into it: split
- * on `'\n'` (a `'\r'` before it is kept, as `getline` keeps it), with no empty
- * last line after a final newline.
- */
-inline std::vector<std::string_view> split_lines(std::string_view Text) {
-    std::vector<std::string_view> lines;
-    std::size_t pos = 0;
-    while (pos < Text.size()) {
-        std::size_t eol = Text.find('\n', pos);
-        if (eol == std::string_view::npos)
-            eol = Text.size();
-        lines.push_back(Text.substr(pos, eol - pos));
-        pos = eol + 1;
-    }
-    return lines;
-}
-
-/// The tokens `istringstream >> std::string` reads from @p Line, as views,
-/// appended to @p rOut (cleared first).
-inline void split_blanks(std::string_view Line, std::vector<std::string_view>& rOut) {
-    rOut.clear();
-    std::size_t i = 0;
-    const std::size_t n = Line.size();
-    while (true) {
-        while (i < n && text_is_blank(Line[i]))
-            ++i;
-        if (i >= n)
-            return;
-        const std::size_t b = i;
-        while (i < n && !text_is_blank(Line[i]))
-            ++i;
-        rOut.push_back(Line.substr(b, i - b));
-    }
-}
-
-/// `split_blanks` returning its tokens.
-inline std::vector<std::string_view> split_blanks(std::string_view Line) {
-    std::vector<std::string_view> out;
-    split_blanks(Line, out);
-    return out;
-}
-
-/**
- * @brief `parse_double` over the whole of @p Token: true, with the value, when
- * the entire token is one number (what `parse_double(s.c_str(), end)` with
- * `end == s.c_str() + s.size()` accepted), false otherwise.
- */
-inline bool parse_double_token(std::string_view Token, double& rOut) {
-    if (Token.empty())
-        return false;
-    // parse_double reads a NUL-terminated string; a token is copied into one.
-    // Tokens are short, so this costs little next to the parse itself.
-    char small[64];
-    std::string large;
-    const char* first;
-    if (Token.size() < sizeof small) {
-        Token.copy(small, Token.size());
-        small[Token.size()] = '\0';
-        first = small;
-    } else {
-        large.assign(Token);
-        first = large.c_str();
-    }
-    const char* end = nullptr;
-    const double v = parse_double(first, end);
-    if (end != first + Token.size())
-        return false;
-    rOut = v;
-    return true;
-}
-
-/**
- * @brief `strtoll(…, 10)` over the whole of @p Token: true, with the value,
- * when the entire token is one base-10 integer. Like `strtoll`, a leading `+`
- * is accepted and a value outside `int64` saturates.
- */
-inline bool parse_int_token(std::string_view Token, std::int64_t& rOut) {
-    std::size_t i = 0;
-    while (i < Token.size() && text_is_blank(Token[i]))
-        ++i;  // strtoll skips leading blanks
-    bool neg = false;
-    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
-        neg = Token[i] == '-';
-        ++i;
-    }
-    if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
-        return false;
-    std::uint64_t mag = 0;
-    const char* p = Token.data() + i;
-    const char* last = Token.data() + Token.size();
-    const auto r = std::from_chars(p, last, mag);
-    if (r.ptr != last)
-        return false;
-    constexpr std::uint64_t kMax =
-        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0)) {
-        rOut = neg ? std::numeric_limits<std::int64_t>::min()
-                   : std::numeric_limits<std::int64_t>::max();
-        return true;
-    }
-    rOut = neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
-    return true;
-}
-
-/**
- * @brief `strtoll(token, nullptr, 10)` on @p Token: the longest base-10 prefix
- * (after blanks and a sign), 0 when there is none, saturated when out of
- * range -- the lenient parse, which ignores what follows the number.
- */
-inline std::int64_t strtoll_token(std::string_view Token) {
-    std::size_t i = 0;
-    while (i < Token.size() && text_is_blank(Token[i]))
-        ++i;
-    bool neg = false;
-    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
-        neg = Token[i] == '-';
-        ++i;
-    }
-    std::size_t j = i;
-    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
-        ++j;
-    if (j == i)
-        return 0;
-    std::uint64_t mag = 0;
-    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
-    constexpr std::uint64_t kMax =
-        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-    if (r.ec == std::errc::result_out_of_range || mag > kMax + (neg ? 1 : 0))
-        return neg ? std::numeric_limits<std::int64_t>::min()
-                   : std::numeric_limits<std::int64_t>::max();
-    return neg ? static_cast<std::int64_t>(0 - mag) : static_cast<std::int64_t>(mag);
-}
-
-/**
- * @brief `strtoull(token, nullptr, 10)` on @p Token: the longest base-10
- * prefix after blanks and a sign, 0 when there is none, `UINT64_MAX` when out
- * of range, and -- as `strtoull` does -- a negative value wrapped modulo 2^64.
- */
-inline std::uint64_t strtoull_token(std::string_view Token) {
-    std::size_t i = 0;
-    while (i < Token.size() && text_is_blank(Token[i]))
-        ++i;
-    bool neg = false;
-    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
-        neg = Token[i] == '-';
-        ++i;
-    }
-    std::size_t j = i;
-    while (j < Token.size() && Token[j] >= '0' && Token[j] <= '9')
-        ++j;
-    if (j == i)
-        return 0;
-    std::uint64_t mag = 0;
-    const auto r = std::from_chars(Token.data() + i, Token.data() + j, mag);
-    if (r.ec == std::errc::result_out_of_range)
-        return std::numeric_limits<std::uint64_t>::max();
-    return neg ? 0 - mag : mag;
-}
-
-/**
- * @brief `parse_double(token)` on @p Token: the longest numeric prefix, 0.0
- * when there is none -- the lenient parse, which ignores what follows.
- */
-inline double parse_double_prefix(std::string_view Token) {
-    char small[64];
-    std::string large;
-    const char* first;
-    if (Token.size() < sizeof small) {
-        Token.copy(small, Token.size());
-        small[Token.size()] = '\0';
-        first = small;
-    } else {
-        large.assign(Token);
-        first = large.c_str();
-    }
-    const char* end = nullptr;
-    return parse_double(first, end);
-}
-
-/**
- * @brief `std::istringstream` extraction over a view, with no stream: the
- * same values and the same fail state as `operator>>` in the classic locale.
- *
- * Readers that split a line into numbers through a stream built one per line
- * (a copy of the line, a locale-aware parse per value) take this instead,
- * unchanged. A double is read as libstdc++'s `num_get` does: blanks skipped,
- * then a sign, digits with at most one decimal point, and -- after a digit --
- * an exponent (`e`/`E`, a sign, digits) are accumulated and converted as
- * `strtod` would; a conversion that fails stores 0, one that overflows stores
- * the largest finite value of that sign, and either sets the fail state. An
- * integer accumulates a sign and digits, and out of range stores the bound and
- * fails. At the end of the text an extraction fails and leaves the value
- * alone, and once failed every further extraction does nothing, as with a
- * stream. `test_text_cursor.cpp` checks it against `std::istringstream`.
- */
-class TextStream {
-public:
-    explicit TextStream(std::string_view Text) : mText(Text) {}
-    // A const temporary cannot be moved into mOwned; do not silently borrow it.
-    explicit TextStream(const std::string&&) = delete;
-    explicit TextStream(const char* pText) : mText(pText ? pText : "") {}
-    explicit TextStream(const std::string& rText) : mText(rText) {}
-    /// A temporary is kept, so the view never outlives it.
-    explicit TextStream(std::string&& rText) : mOwned(std::move(rText)), mText(mOwned) {}
-    TextStream(const TextStream&) = delete;
-    TextStream& operator=(const TextStream&) = delete;
-
-    explicit operator bool() const { return !mFail; }
-    bool operator!() const { return mFail; }
-    bool fail() const { return mFail; }
-
-    TextStream& operator>>(double& rValue) {
-        if (!Sentry())
-            return *this;
-        const std::size_t b = mPos;
-        if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
-            ++mPos;
-        bool digits = false, point = false;
-        while (mPos < mText.size()) {
-            const char c = mText[mPos];
-            if (c >= '0' && c <= '9') {
-                digits = true;
-                ++mPos;
-            } else if (c == '.' && !point) {
-                point = true;
-                ++mPos;
-            } else {
-                break;
-            }
-        }
-        if (digits && mPos < mText.size() && (mText[mPos] == 'e' || mText[mPos] == 'E')) {
-            ++mPos;
-            if (mPos < mText.size() && (mText[mPos] == '+' || mText[mPos] == '-'))
-                ++mPos;
-            while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
-                ++mPos;
-        }
-        double v = 0.0;
-        if (!parse_double_token(mText.substr(b, mPos - b), v)) {
-            rValue = 0.0;
-            mFail = true;
-        } else if (v == std::numeric_limits<double>::infinity()) {
-            rValue = std::numeric_limits<double>::max();
-            mFail = true;
-        } else if (v == -std::numeric_limits<double>::infinity()) {
-            rValue = -std::numeric_limits<double>::max();
-            mFail = true;
-        } else {
-            rValue = v;
-        }
-        return *this;
-    }
-
-    TextStream& operator>>(long long& rValue) { return ExtractInt(rValue); }
-    TextStream& operator>>(long& rValue) { return ExtractInt(rValue); }
-    TextStream& operator>>(int& rValue) { return ExtractInt(rValue); }
-    TextStream& operator>>(unsigned long long& rValue) { return ExtractUnsigned(rValue); }
-    TextStream& operator>>(unsigned long& rValue) { return ExtractUnsigned(rValue); }
-    TextStream& operator>>(unsigned& rValue) { return ExtractUnsigned(rValue); }
-
-    /// `std::getline(stream, rLine, Delim)`: the characters up to @p Delim
-    /// (consumed, not stored) or the end; fails only when none are left.
-    friend TextStream& getline(TextStream& rIn, std::string& rLine, char Delim = '\n') {
-        if (rIn.mFail)
-            return rIn;
-        if (rIn.mPos >= rIn.mText.size()) {
-            rIn.mFail = true;
-            return rIn;
-        }
-        std::size_t e = rIn.mText.find(Delim, rIn.mPos);
-        if (e == std::string_view::npos)
-            e = rIn.mText.size();
-        rLine.assign(rIn.mText.substr(rIn.mPos, e - rIn.mPos));
-        rIn.mPos = e < rIn.mText.size() ? e + 1 : e;
-        return rIn;
-    }
-
-    TextStream& operator>>(std::string& rValue) {
-        if (!Sentry())
-            return *this;
-        const std::size_t b = mPos;
-        while (mPos < mText.size() && !text_is_blank(mText[mPos]))
-            ++mPos;
-        rValue.assign(mText.substr(b, mPos - b));
-        return *this;
-    }
-
-private:
-    // The stream's sentry: skip blanks; failed already, or at the end, fails
-    // and leaves the value alone.
-    bool Sentry() {
-        if (mFail)
-            return false;
-        while (mPos < mText.size() && text_is_blank(mText[mPos]))
-            ++mPos;
-        if (mPos >= mText.size()) {
-            mFail = true;
-            return false;
-        }
-        return true;
-    }
-
-    template <class T>
-    TextStream& ExtractInt(T& rValue) {
-        if (!Sentry())
-            return *this;
-        bool neg = false;
-        if (mText[mPos] == '+' || mText[mPos] == '-') {
-            neg = mText[mPos] == '-';
-            ++mPos;
-        }
-        const std::size_t d = mPos;
-        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
-            ++mPos;
-        if (mPos == d) {
-            rValue = 0;
-            mFail = true;
-            return *this;
-        }
-        std::uint64_t mag = 0;
-        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
-        const std::uint64_t bound =
-            neg ? static_cast<std::uint64_t>(-(std::numeric_limits<T>::min() + 1)) + 1
-                : static_cast<std::uint64_t>(std::numeric_limits<T>::max());
-        if (r.ec == std::errc::result_out_of_range || mag > bound) {
-            rValue = neg ? std::numeric_limits<T>::min() : std::numeric_limits<T>::max();
-            mFail = true;
-            return *this;
-        }
-        rValue = neg ? static_cast<T>(0 - mag) : static_cast<T>(mag);
-        return *this;
-    }
-
-    // num_get for an unsigned type: a sign is allowed and a negative value
-    // wraps, as strtoull does; out of range stores the maximum and fails.
-    template <class T>
-    TextStream& ExtractUnsigned(T& rValue) {
-        if (!Sentry())
-            return *this;
-        bool neg = false;
-        if (mText[mPos] == '+' || mText[mPos] == '-') {
-            neg = mText[mPos] == '-';
-            ++mPos;
-        }
-        const std::size_t d = mPos;
-        while (mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9')
-            ++mPos;
-        if (mPos == d) {
-            rValue = 0;
-            mFail = true;
-            return *this;
-        }
-        std::uint64_t mag = 0;
-        const auto r = std::from_chars(mText.data() + d, mText.data() + mPos, mag);
-        if (r.ec == std::errc::result_out_of_range ||
-            mag > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
-            rValue = std::numeric_limits<T>::max();
-            mFail = true;
-            return *this;
-        }
-        rValue = neg ? static_cast<T>(0 - static_cast<T>(mag)) : static_cast<T>(mag);
-        return *this;
-    }
-
-    std::string mOwned;
-    std::string_view mText;
-    std::size_t mPos = 0;
-    bool mFail = false;
-};
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/text_cursor.hpp =====
 // ===== begin src/cpp/src/detail/typed_view.hpp =====
 /**
  * @file detail/typed_view.hpp
@@ -38032,8 +38695,14 @@ inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
     std::vector<std::size_t> dims;
     auto iss = detail::make_classic_istringstream(rS);
     std::int64_t v;
-    while (iss >> v)
+    while (iss >> v) {
+        // A negative extent cast to size_t wraps to a huge count, and the product
+        // of the extents would then wrap or ask for an allocation no allocator
+        // can make.
+        if (v < 0)
+            throw ReadError("XDMF: negative Dimensions");
         dims.push_back(static_cast<std::size_t>(v));
+    }
     return dims;
 }
 
@@ -54890,22 +55559,78 @@ std::optional<FortranRecordLayout> sniff_fortran_records(const char* pData, std:
 std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
                                            const FortranRecordLayout& rLayout,
                                            const std::string& rWhat) {
+    return fortran_records(pData, Size, rLayout, rWhat, /*Lenient=*/false);
+}
+
+std::vector<FortranRecord> fortran_records(const char* pData, std::size_t Size,
+                                           const FortranRecordLayout& rLayout,
+                                           const std::string& rWhat, bool Lenient) {
     std::vector<FortranRecord> out;
     const std::size_t w = static_cast<std::size_t>(rLayout.mMarkerBytes);
     std::size_t pos = 0;
     while (pos < Size) {
         const std::int64_t n = fortran_marker(pData, Size, pos, rLayout);
-        if (n < 0 || static_cast<std::uint64_t>(n) > Size - pos - w)
+        if (n < 0 || static_cast<std::uint64_t>(n) > Size - pos - w) {
+            if (Lenient)
+                break;
             throw ReadError(rWhat + ": Fortran record at offset " + std::to_string(pos) +
                             " runs past the end of the file");
+        }
         const std::size_t len = static_cast<std::size_t>(n);
-        if (fortran_marker(pData, Size, pos + w + len, rLayout) != n)
+        if (fortran_marker(pData, Size, pos + w + len, rLayout) != n) {
+            if (Lenient)
+                break;
             throw ReadError(rWhat + ": Fortran record at offset " + std::to_string(pos) +
                             " has mismatched length markers");
+        }
         out.push_back({pos + w, len});
         pos += 2 * w + len;
     }
     return out;
+}
+
+namespace {
+
+// `Bytes` low-order bytes of `Value`, in the requested byte order.
+void fortran_put_bytes(std::string& rBuf, std::uint64_t Value, int Bytes, bool BigEndian) {
+    for (int i = 0; i < Bytes; ++i) {
+        const int shift = BigEndian ? 8 * (Bytes - 1 - i) : 8 * i;
+        rBuf.push_back(static_cast<char>(static_cast<unsigned char>((Value >> shift) & 0xFFU)));
+    }
+}
+
+}  // namespace
+
+void fortran_put_int32(std::string& rBuf, std::int32_t Value, bool BigEndian) {
+    fortran_put_bytes(rBuf, static_cast<std::uint32_t>(Value), 4, BigEndian);
+}
+
+void fortran_put_int64(std::string& rBuf, std::int64_t Value, bool BigEndian) {
+    fortran_put_bytes(rBuf, static_cast<std::uint64_t>(Value), 8, BigEndian);
+}
+
+void fortran_put_float32(std::string& rBuf, float Value, bool BigEndian) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &Value, sizeof bits);
+    fortran_put_bytes(rBuf, bits, 4, BigEndian);
+}
+
+void fortran_put_float64(std::string& rBuf, double Value, bool BigEndian) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &Value, sizeof bits);
+    fortran_put_bytes(rBuf, bits, 8, BigEndian);
+}
+
+void fortran_append_record(std::string& rOut, const char* pPayload, std::size_t Size,
+                           const FortranRecordLayout& rLayout) {
+    if (rLayout.mMarkerBytes == 4 && Size > static_cast<std::size_t>(INT32_MAX))
+        throw WriteError("Fortran records: a record of " + std::to_string(Size) +
+                         " bytes does not fit a 4-byte length marker");
+    rOut.reserve(rOut.size() + Size + 2 * static_cast<std::size_t>(rLayout.mMarkerBytes));
+    fortran_put_bytes(rOut, Size, rLayout.mMarkerBytes, rLayout.mBigEndian);
+    if (Size > 0)
+        rOut.append(pPayload, Size);
+    fortran_put_bytes(rOut, Size, rLayout.mMarkerBytes, rLayout.mBigEndian);
 }
 
 }  // namespace detail
@@ -55384,6 +56109,7 @@ bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double
 // System includes
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -55712,12 +56438,62 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 }
 #endif
 
+// libhdf5 reads an unfiltered chunk straight from its stored bytes, but sizes the
+// read by the chunk's elements: a record shorter than the chunk makes the read copy
+// past the stored bytes (a heap-buffer-overflow inside HDF5 1.10, found by the
+// fuzzer). Each allocated chunk of an unfiltered dataset is checked before a read.
+// A filtered chunk is decoded into a buffer of the full size and is not affected.
+// Listing the chunks needs HDF5 1.10.5; older libraries are not checked.
+void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
+#if H5_VERSION_GE(1, 10, 5)
+    Hid dcpl(H5Dget_create_plist(dset), H5Pclose);
+    if (H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 0)
+        return;
+    Hid space(H5Dget_space(dset), H5Sclose);
+    const int rank = H5Sget_simple_extent_ndims(space);
+    if (rank <= 0)
+        return;
+    std::vector<hsize_t> chunk(static_cast<std::size_t>(rank));
+    if (H5Pget_chunk(dcpl, rank, chunk.data()) != rank)
+        return;
+    Hid dt(H5Dget_type(dset), H5Tclose);
+    hsize_t expected = H5Tget_size(dt);
+    for (hsize_t c : chunk) {
+        if (c == 0)
+            return;
+        if (expected > std::numeric_limits<std::size_t>::max() / c)
+            throw ReadError("HDF5: a chunk of dataset '" + rName + "' is too large");
+        expected *= c;
+    }
+    hsize_t nchunks = 0;
+    if (H5Dget_num_chunks(dset, space, &nchunks) < 0)
+        throw ReadError("HDF5: could not list the chunks of dataset '" + rName + "'");
+    std::vector<hsize_t> offset(static_cast<std::size_t>(rank));
+    for (hsize_t i = 0; i < nchunks; ++i) {
+        unsigned mask = 0;
+        haddr_t addr = 0;
+        hsize_t size = 0;
+        if (H5Dget_chunk_info(dset, space, i, offset.data(), &mask, &addr, &size) < 0)
+            throw ReadError("HDF5: could not read chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "'");
+        if (size != expected)
+            throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
+                            "' is stored in " + std::to_string(size) + " bytes, not " +
+                            std::to_string(expected));
+    }
+#else
+    (void)dset;
+    (void)rName;
+#endif
+}
+
 }  // namespace
 
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
         throw ReadError("HDF5: missing dataset '" + rName + "'");
+    h5_check_unfiltered_chunks(d, rName);
     Hid space(H5Dget_space(d), H5Sclose);
     int ndim = H5Sget_simple_extent_ndims(space);
     std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
@@ -55960,6 +56736,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
 
     std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
     std::vector<hsize_t> count(dims);
+    h5_check_unfiltered_chunks(d, rName);
     start[0] = Row0;
     count[0] = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, start.data(), nullptr, count.data(), nullptr) <
@@ -56250,6 +57027,7 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
     Hid mem_type(H5Tcreate(H5T_COMPOUND, H5Tget_size(elem)), H5Tclose);
     if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, elem) < 0)
         throw ReadError("HDF5: could not build a memory type for '" + rName + "/" + rMember + "'");
+    h5_check_unfiltered_chunks(d, rName);
     const hsize_t start = Row0;
     const hsize_t count = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr) < 0)
@@ -76789,6 +77567,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -77976,11 +78755,21 @@ std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) 
         // format is the exact inverse of what the reader already parses: a
         // per-cell count run, then (for nfaced) a per-face size run, then the
         // node ids. No orientation contract, no global face table.
+        // A polygon block whose cells all share one node count is a
+        // rectangular array (a uniform block from Python, an empty block), so
+        // the cell type -- not `IsRagged()` alone -- decides.
         if (cb.IsPolyhedron()) {
             entries.push_back(&kEnsightNfaced);
             continue;
         }
-        if (cb.IsRagged()) {
+        if (cb.Type().rfind("polyhedron", 0) == 0) {
+            if (cb.NumCells() != 0)
+                throw WriteError("EnSight: polyhedron block '" + cb.Type() +
+                                 "' has no face lists to write as nfaced");
+            entries.push_back(&kEnsightNfaced);
+            continue;
+        }
+        if (cb.IsRagged() || cb.Type().rfind("polygon", 0) == 0) {
             entries.push_back(&kEnsightNsided);
             continue;
         }
@@ -77991,6 +78780,30 @@ std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) 
     }
     return entries;
 }
+
+// The polygon cells of one `nsided` block, whichever storage the block has: the
+// CSR rows of a jagged block, or the rows of a rectangular array.
+template <class TView>
+class EnsightPolygonRows {
+public:
+    explicit EnsightPolygonRows(const TView& rCb)
+        : mCb(rCb), mCsr(rCb.IsRagged()), mNodesPerCell(rCb.NodesPerCell()) {
+        if (!mCsr && rCb.NumCells() > 0)
+            mRect.emplace(rCb.Conn());
+    }
+
+    std::size_t Size(std::size_t Row) const { return mCsr ? mCb.RowSize(Row) : mNodesPerCell; }
+
+    std::int64_t Node(std::size_t Row, std::size_t K) const {
+        return mCsr ? mCb.Row(Row)[K] : (*mRect)[Row * mNodesPerCell + K];
+    }
+
+private:
+    TView mCb;
+    bool mCsr;
+    std::size_t mNodesPerCell;
+    std::optional<detail::Int64View> mRect;
+};
 
 void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
                              const std::vector<const EnsightTypeEntry*>& rEntries) {
@@ -78061,14 +78874,15 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
         }
         if (entry->mNumNodes == -1) {
             // nsided: nodes-per-cell, then the node ids.
+            const EnsightPolygonRows rows(cb);
             for (std::size_t r = 0; r < ne; ++r) {
-                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.RowSize(r)));
+                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(rows.Size(r)));
                 out += buf;
             }
             for (std::size_t r = 0; r < ne; ++r) {
-                for (std::size_t k = 0; k < cb.RowSize(r); ++k) {
+                for (std::size_t k = 0; k < rows.Size(r); ++k) {
                     std::snprintf(buf, sizeof(buf), "%10lld",
-                                  static_cast<long long>(cb.Row(r)[k]) + 1);
+                                  static_cast<long long>(rows.Node(r, k)) + 1);
                     out += buf;
                 }
                 out += "\n";
@@ -78142,6 +78956,9 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
             std::vector<std::int32_t> sizes;
             std::vector<std::int32_t> nodes;
             const bool faced = entry->mNumNodes == -2;
+            std::optional<EnsightPolygonRows<std::remove_cv_t<decltype(cb)>>> rows;
+            if (!faced)
+                rows.emplace(cb);
             for (std::size_t r = 0; r < ne; ++r) {
                 if (faced) {
                     counts.push_back(static_cast<std::int32_t>(cb.NumFaces(r)));
@@ -78152,9 +78969,9 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
                             nodes.push_back(static_cast<std::int32_t>(face.first[k]) + 1);
                     }
                 } else {
-                    counts.push_back(static_cast<std::int32_t>(cb.RowSize(r)));
-                    for (std::size_t k = 0; k < cb.RowSize(r); ++k)
-                        nodes.push_back(static_cast<std::int32_t>(cb.Row(r)[k]) + 1);
+                    counts.push_back(static_cast<std::int32_t>(rows->Size(r)));
+                    for (std::size_t k = 0; k < rows->Size(r); ++k)
+                        nodes.push_back(static_cast<std::int32_t>(rows->Node(r, k)) + 1);
                 }
             }
             auto append = [&out](const std::vector<std::int32_t>& v) {
@@ -84607,6 +85424,38 @@ std::string frd_small(std::int64_t Value, const char* pWhat) {
     return buf;
 }
 
+/// Appends @p Value as four little-endian bytes (the binary layout's integers).
+void frd_put_i32(std::string& rOut, std::int64_t Value, const char* pWhat) {
+    if (Value < std::numeric_limits<std::int32_t>::min() ||
+        Value > std::numeric_limits<std::int32_t>::max())
+        throw WriteError(std::string("CalculiX FRD: ") + pWhat + " " + std::to_string(Value) +
+                         " does not fit a 32-bit integer");
+    const auto word = static_cast<std::uint32_t>(static_cast<std::int32_t>(Value));
+    for (int k = 0; k < 4; ++k)
+        rOut += static_cast<char>((word >> (8 * k)) & 0xFFu);
+}
+
+/// Appends @p Value as eight little-endian bytes (the binary layout's coordinates).
+void frd_put_f64(std::string& rOut, double Value) {
+    std::uint64_t word;
+    std::memcpy(&word, &Value, sizeof(word));
+    for (int k = 0; k < 8; ++k)
+        rOut += static_cast<char>((word >> (8 * k)) & 0xFFu);
+}
+
+/// Appends @p Value as the four little-endian bytes of a `float` (the binary layout's
+/// results); a finite value beyond the `float` range is refused, not turned into inf.
+void frd_put_f32(std::string& rOut, double Value) {
+    if (std::fabs(Value) > static_cast<double>(std::numeric_limits<float>::max()))
+        throw WriteError("CalculiX FRD: " + std::to_string(Value) +
+                         " does not fit a single-precision binary field");
+    const float single = static_cast<float>(Value);
+    std::uint32_t word;
+    std::memcpy(&word, &single, sizeof(word));
+    for (int k = 0; k < 4; ++k)
+        rOut += static_cast<char>((word >> (8 * k)) & 0xFFu);
+}
+
 std::string frd_int_field(std::int64_t Value, std::size_t Width) {
     char buf[40];
     detail::snprintf_c(buf, sizeof(buf), "%*lld", static_cast<int>(Width),
@@ -84669,6 +85518,7 @@ struct FrdWriteBlock {
 /// What the writer makes of a mesh: the nodes and the cells the format can hold.
 struct FrdWritePlan {
     bool mLong = true;
+    bool mBinary = false;  // the raw little-endian layout: ids are int32 whatever mLong says
     std::size_t mNpts = 0;
     std::size_t mNumCells = 0;
     std::vector<double> mCoords;  // mNpts x 3
@@ -84684,9 +85534,12 @@ namespace {
 using detail::frd_writer::FrdWriteBlock;
 using detail::frd_writer::FrdWritePlan;
 
-FrdWritePlan frd_plan(const Mesh& rMesh, bool LongIds) {
+FrdWritePlan frd_plan(const Mesh& rMesh, const FrdWriteOptions& rOpts) {
+    // The binary layout holds int32 ids, as many as the long ASCII form.
+    const bool LongIds = rOpts.mLongIds || rOpts.mBinary;
     FrdWritePlan plan;
     plan.mLong = LongIds;
+    plan.mBinary = rOpts.mBinary;
     plan.mNpts = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
     if (dim > 3)
@@ -84774,15 +85627,51 @@ FrdWritePlan frd_plan(const Mesh& rMesh, bool LongIds) {
     return plan;
 }
 
+/// The binary layout of the mesh: the ASCII banner and `2C`/`3C` headers (flag 3, then
+/// 2) with, after each, a raw little-endian record per entry and no `-1`/`-2`/`-3`
+/// markers: `[int32 id][3 x float64]` per node and `[int32 id, type, group,
+/// material][int32 node x n]` per element, as `ccx` writes `*NODE OUTPUT` and
+/// `*ELEMENT OUTPUT`.
+std::string frd_mesh_binary(const FrdWritePlan& rPlan, const std::string& rTitle) {
+    char buf[160];
+    std::string out = "    1C\n    1U" + rTitle + "\n";
+    detail::snprintf_c(buf, sizeof(buf), "    2C%30zu%37s%d\n", rPlan.mNpts, "", 3);
+    out += buf;
+    out.reserve(out.size() + rPlan.mNpts * 28 + rPlan.mNumCells * 40);
+    for (std::size_t i = 0; i < rPlan.mNpts; ++i) {
+        frd_put_i32(out, static_cast<std::int64_t>(i + 1), "node id");
+        for (std::size_t k = 0; k < 3; ++k)
+            frd_put_f64(out, rPlan.mCoords[i * 3 + k]);
+    }
+    detail::snprintf_c(buf, sizeof(buf), "    3C%30zu%37s%d\n", rPlan.mNumCells, "", 2);
+    out += buf;
+    std::int64_t eid = 0;
+    for (const FrdWriteBlock& block : rPlan.mBlocks) {
+        const std::size_t n = block.mGroup.size();
+        for (std::size_t r = 0; r < n; ++r) {
+            frd_put_i32(out, ++eid, "element id");
+            frd_put_i32(out, block.mCode, "element type");
+            frd_put_i32(out, block.mGroup[r], "group");
+            frd_put_i32(out, block.mMaterial[r], "material");
+            const std::int64_t* ids = block.mConn.data() + r * block.mNodes;
+            for (std::size_t j = 0; j < block.mNodes; ++j)
+                frd_put_i32(out, ids[j] + 1, "node id");
+        }
+    }
+    return out;
+}
+
 std::string frd_mesh_text(const FrdWritePlan& rPlan) {
     const std::size_t w = rPlan.Width();
     const int flag = rPlan.mLong ? 1 : 0;
     char buf[160];
-    std::string out = "    1C\n";
     std::string title = detail::provenance_lines(detail::SlotTier::SingleLine)[0];
     for (char& c : title)
         if (c == '\n' || c == '\r')
             c = ' ';
+    if (rPlan.mBinary)
+        return frd_mesh_binary(rPlan, title);
+    std::string out = "    1C\n";
     out += "    1U" + title + "\n";
     detail::snprintf_c(buf, sizeof(buf), "    2C%30zu%37s%d\n", rPlan.mNpts, "", flag);
     out += buf;
@@ -84817,14 +85706,22 @@ std::string frd_mesh_text(const FrdWritePlan& rPlan) {
     return out;
 }
 
-/// The `-4` blocks of the mesh's point data, one string each, and in @p rUnwritable the
-/// arrays that have none.
-std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan& rPlan,
-                                           std::vector<std::string>& rUnwritable) {
+/// One result block: its `-4`/`-5` records and values, and the number of nodes the `100C`
+/// header names. The ASCII header counts every node (the reader ignores it there); the
+/// binary one must count the records that follow, which a non-finite row leaves out.
+struct FrdResultBlock {
+    std::string mText;
+    std::size_t mRows = 0;
+};
+
+/// The `-4` blocks of the mesh's point data and in @p rUnwritable the arrays that have
+/// none.
+std::vector<FrdResultBlock> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan& rPlan,
+                                              std::vector<std::string>& rUnwritable) {
     static const std::int64_t tensor_index[6][2] = {{1, 1}, {2, 2}, {3, 3}, {1, 2}, {2, 3}, {3, 1}};
     const std::size_t w = rPlan.Width();
     const std::size_t npts = rPlan.mNpts;
-    std::vector<std::string> blocks;
+    std::vector<FrdResultBlock> blocks;
     char buf[160];
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
@@ -84875,6 +85772,12 @@ std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan
                 ++skipped;
                 continue;
             }
+            if (rPlan.mBinary) {
+                frd_put_i32(out, static_cast<std::int64_t>(i + 1), "node id");
+                for (std::size_t k = 0; k < nc; ++k)
+                    frd_put_f32(out, row[k]);
+                continue;
+            }
             for (std::size_t k = 0; k < nc; k += frd_values_per_line) {
                 if (k == 0)
                     out += " -1" + frd_int_field(static_cast<std::int64_t>(i + 1), w);
@@ -84888,8 +85791,9 @@ std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan
         if (skipped)
             log::warn("CalculiX FRD: {} node(s) of '{}' with a non-finite value left out", skipped,
                       name);
-        out += " -3\n";
-        blocks.push_back(std::move(out));
+        if (!rPlan.mBinary)
+            out += " -3\n";
+        blocks.push_back({std::move(out), rPlan.mBinary ? npts - skipped : npts});
     }
     return blocks;
 }
@@ -84928,25 +85832,31 @@ double frd_field_time(const Mesh& rMesh) {
 }
 
 /// The `1PSTEP`/`100CL` header and `-4` block of every result for one increment.
-std::string frd_frame_text(const FrdWritePlan& rPlan, const std::vector<std::string>& rBlocks,
+std::string frd_frame_text(const FrdWritePlan& rPlan, const std::vector<FrdResultBlock>& rBlocks,
                            double Value, std::int64_t Step, std::int64_t Analysis) {
     if (!std::isfinite(Value))
         throw WriteError("CalculiX FRD: the step time is not finite");
-    const int flag = rPlan.mLong ? 1 : 0;
+    // Flag 2 is the binary layout's float32 result records.
+    const int flag = rPlan.mBinary ? 2 : (rPlan.mLong ? 1 : 0);
     char buf[200];
     std::string out;
-    for (const std::string& block : rBlocks) {
+    for (const FrdResultBlock& block : rBlocks) {
         detail::snprintf_c(buf, sizeof(buf), "    1PSTEP%25s%1lld%11s1%11s%1lld%10s\n", "",
                            static_cast<long long>(Step), "", "", static_cast<long long>(Step), "");
         out += buf;
         detail::snprintf_c(buf, sizeof(buf), "  100CL %4lld%s%12zu%20s%2lld%5lld%10s%2d\n",
                            static_cast<long long>(100 + Step), frd_time_text(Value).c_str(),
-                           rPlan.mNpts, "", static_cast<long long>(Analysis),
+                           block.mRows, "", static_cast<long long>(Analysis),
                            static_cast<long long>(Step), "", flag);
         out += buf;
-        out += block;
+        out += block.mText;
     }
     return out;
+}
+
+/// The last record: `  9999` in the ASCII layout, ` 9999` as `ccx` ends a binary file.
+const char* frd_terminator(const FrdWritePlan& rPlan) {
+    return rPlan.mBinary ? " 9999\n" : "  9999\n";
 }
 
 /// What must not change between the steps of a series: a hash of the cells, and one of
@@ -84981,16 +85891,22 @@ std::pair<std::uint64_t, std::uint64_t> frd_fingerprint(const Mesh& rMesh) {
 }  // namespace
 
 void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
-    const FrdWritePlan plan = frd_plan(rMesh, LongIds);
+    FrdWriteOptions opts;
+    opts.mLongIds = LongIds;
+    write_frd(rPath, rMesh, opts);
+}
+
+void write_frd(const std::string& rPath, const Mesh& rMesh, const FrdWriteOptions& rOpts) {
+    const FrdWritePlan plan = frd_plan(rMesh, rOpts);
     std::vector<std::string> unwritable;
-    const std::vector<std::string> blocks = frd_result_blocks(rMesh, plan, unwritable);
+    const std::vector<FrdResultBlock> blocks = frd_result_blocks(rMesh, plan, unwritable);
     frd_note_dropped_data(rMesh, unwritable);
     // Everything is built before the file is touched, so a refused value leaves no
     // half-written file behind.
     std::string text = frd_mesh_text(plan);
     text += frd_frame_text(plan, blocks, frd_field_time(rMesh), frd_field_int(rMesh, "frd:step", 1),
                            frd_field_int(rMesh, "frd:analysis", 0));
-    text += "  9999\n";
+    text += frd_terminator(plan);
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -84999,10 +85915,9 @@ void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
         throw WriteError("Could not write file: " + rPath);
 }
 
-
 struct FrdSeriesWriter::Impl {
     std::string mPath;
-    bool mLong = true;
+    FrdWriteOptions mOpts;
     decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
     std::optional<FrdWritePlan> mPlan;
     std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
@@ -85014,9 +85929,12 @@ struct FrdSeriesWriter::Impl {
 };
 
 FrdSeriesWriter::FrdSeriesWriter(const std::string& rPath, bool LongIds)
+    : FrdSeriesWriter(rPath, FrdWriteOptions{LongIds, false}) {}
+
+FrdSeriesWriter::FrdSeriesWriter(const std::string& rPath, const FrdWriteOptions& rOpts)
     : mpImpl(std::make_unique<Impl>()) {
     mpImpl->mPath = rPath;
-    mpImpl->mLong = LongIds;
+    mpImpl->mOpts = rOpts;
     mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!mpImpl->mOut)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -85035,7 +85953,7 @@ void FrdSeriesWriter::Write(double Time, const Mesh& rMesh) {
     std::string text;
     std::vector<std::string> unwritable;
     if (!s.mPlan) {
-        s.mPlan = frd_plan(rMesh, s.mLong);
+        s.mPlan = frd_plan(rMesh, s.mOpts);
         s.mFingerprint = frd_fingerprint(rMesh);
         text = frd_mesh_text(*s.mPlan);
     } else {
@@ -85052,7 +85970,7 @@ void FrdSeriesWriter::Write(double Time, const Mesh& rMesh) {
                                     "every increment shares the first step's points");
         }
     }
-    const std::vector<std::string> blocks = frd_result_blocks(rMesh, *s.mPlan, unwritable);
+    const std::vector<FrdResultBlock> blocks = frd_result_blocks(rMesh, *s.mPlan, unwritable);
     if (s.mSteps == 0)
         frd_note_dropped_data(rMesh, unwritable);
     std::int64_t step = frd_field_int(rMesh, "frd:step", 0);
@@ -85082,7 +86000,7 @@ void FrdSeriesWriter::Finalize() {
     if (mpImpl->mSteps == 0)
         throw WriteError("CalculiX FRD series: no step was written to " + mpImpl->mPath);
     mpImpl->mClosed = true;
-    mpImpl->mOut << "  9999\n";
+    mpImpl->mOut << frd_terminator(*mpImpl->mPlan);
     mpImpl->mOut.close();
     if (!mpImpl->mOut)
         throw WriteError("CalculiX FRD series: failed writing " + mpImpl->mPath);
@@ -91465,8 +92383,10 @@ std::vector<GmshWriteEntity41> gmsh_entity_blocks_41(
 
 /// `gmsh:dim_tags`/`gmsh:geometrical`/`gmsh:physical`, synthesized so they
 /// can be spliced onto a mesh clone (see #gmsh_synthesize_tags_41).
-/// `mGeometrical`/`mPhysical` are identical here -- nothing else
-/// distinguishes a synthesized entity from its physical group.
+/// `mGeometrical` is the entity tag of each block and `mPhysical` its physical
+/// group; the two agree whenever a block's region tag is unique within its
+/// dimension. `mPhysical` is empty when the mesh has no regions at all, so no
+/// physical group is invented for it.
 struct GmshSynthesizedTags {
     NDArray mDimTags;
     std::vector<NDArray> mGeometrical;
@@ -91474,20 +92394,33 @@ struct GmshSynthesizedTags {
 };
 
 /**
- * @brief Synthesize 4.1 entity tag data from `Cell` regions, for a mesh that
- * carries no `gmsh:dim_tags` of its own (v11.5.0, roadmap §1 tier B3).
+ * @brief Synthesize 4.1 entity tag data for a mesh that carries no
+ * `gmsh:dim_tags` of its own: from its `Cell` regions (v11.5.0, roadmap §1 tier
+ * B3), or, with none, from the cell blocks alone.
  *
  * Format 4.1 records physical-group membership only through `$Entities`, so
  * a tag alone (as 2.2's per-element column carries) is not enough here. One
  * entity per cell block: this writer's `$Elements` model is one gmsh element
  * block per meshio++ cell block, so a block whose cells do not all agree on
- * the same resolved tag cannot be split further here -- it keeps entity 0
- * (no physical group), and a warning names it, a documented scope limit
- * rather than a silent drop. A point's entity is the highest-dimension block
- * touching it, ties broken by block order -- gmsh's own convention (a
- * lower-dimension region's nodes inside a volume belong to the volume).
- * @param rFlatTags per-cell resolved tag, block-major, from
- *        #gmsh_flat_tags_from_regions (must be non-empty).
+ * the same resolved tag cannot be split further here -- it keeps physical group
+ * 0 (none), and a warning names it, a documented scope limit rather than a
+ * silent drop.
+ *
+ * An entity is the pair (dimension, tag), so two blocks of one dimension need
+ * two tags. A block keeps its region tag as its entity tag while that tag is
+ * positive and no earlier block of the same dimension has taken it, which
+ * leaves a block-aligned mesh with the bytes it always had. Every other block
+ * (no region, or a region tag another block already holds, as a triangle and a
+ * quad block of one region do) is given the smallest positive tag still free in
+ * its dimension, in block order, so a mixed mesh gets an entity per block
+ * instead of a collision.
+ *
+ * A point's entity is the highest-dimension block touching it, ties broken by
+ * block order -- gmsh's own convention (a lower-dimension region's nodes inside
+ * a volume belong to the volume).
+ * @param rFlatTags per-cell resolved physical tag, block-major, from
+ *        #gmsh_flat_tags_from_regions; empty when the mesh has no regions
+ *        (every block is then untagged and no physical group is synthesized).
  */
 GmshSynthesizedTags gmsh_synthesize_tags_41(
     const Mesh& rMesh, const std::vector<std::int64_t>& rFlatTags,
@@ -91499,6 +92432,8 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
         block_dim[b] = rCellDim(std::string(cb.Type()));
+        if (rFlatTags.empty())
+            continue;
         const std::size_t start = static_cast<std::size_t>(bases[b]);
         const std::size_t end = static_cast<std::size_t>(bases[b + 1]);
         std::int64_t tag = end > start ? rFlatTags[start] : 0;
@@ -91517,6 +92452,27 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
             tag = 0;
         }
         block_tag[b] = tag;
+    }
+
+    // Entity tag per block, unique within each dimension (see above).
+    std::vector<std::int64_t> entity_tag(nblocks, 0);
+    std::set<std::pair<int, std::int64_t>> taken;
+    std::vector<bool> placed(nblocks, false);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        if (block_tag[b] > 0 && taken.emplace(block_dim[b], block_tag[b]).second) {
+            entity_tag[b] = block_tag[b];
+            placed[b] = true;
+        }
+    }
+    std::map<int, std::int64_t> next_free;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        if (placed[b])
+            continue;
+        std::int64_t& candidate = next_free.try_emplace(block_dim[b], 1).first->second;
+        while (taken.count({block_dim[b], candidate}) != 0)
+            ++candidate;
+        taken.emplace(block_dim[b], candidate);
+        entity_tag[b] = candidate;
     }
 
     const std::size_t npts = rMesh.NumPoints();
@@ -91539,7 +92495,7 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
                     continue;
                 if (dim > point_dim[static_cast<std::size_t>(p)]) {
                     point_dim[static_cast<std::size_t>(p)] = dim;
-                    point_tag[static_cast<std::size_t>(p)] = block_tag[b];
+                    point_tag[static_cast<std::size_t>(p)] = entity_tag[b];
                 }
             }
         }
@@ -91553,14 +92509,15 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
         dt[p * 2 + 1] = point_tag[p];
     }
     out.mGeometrical.reserve(nblocks);
-    out.mPhysical.reserve(nblocks);
     for (std::size_t b = 0; b < nblocks; ++b) {
         const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
         NDArray g = NDArray::Uninit(DType::Int64, {n});
-        std::fill(g.As<std::int64_t>(), g.As<std::int64_t>() + n, block_tag[b]);
+        std::fill(g.As<std::int64_t>(), g.As<std::int64_t>() + n, entity_tag[b]);
+        out.mGeometrical.push_back(std::move(g));
+        if (rFlatTags.empty())
+            continue;
         NDArray p = NDArray::Uninit(DType::Int64, {n});
         std::fill(p.As<std::int64_t>(), p.As<std::int64_t>() + n, block_tag[b]);
-        out.mGeometrical.push_back(std::move(g));
         out.mPhysical.push_back(std::move(p));
     }
     return out;
@@ -91774,12 +92731,20 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     bool synthesized = false;
     if (!rMeshIn.HasPointData("gmsh:dim_tags")) {
         const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMeshIn, region_tags);
-        if (!flat.empty()) {
+        // Without regions a mesh of several cell blocks (a mixed mesh) still
+        // needs one entity per block, or its blocks would share an entity; a
+        // single block keeps the legacy one-block output, and so does a mesh
+        // that brings its own entity tags.
+        const bool blocks_only = flat.empty() && rMeshIn.NumCellBlocks() > 1 &&
+                                 rMeshIn.NumPoints() > 0 &&
+                                 !rMeshIn.HasCellData("gmsh:geometrical");
+        if (!flat.empty() || blocks_only) {
             const GmshSynthesizedTags synth = gmsh_synthesize_tags_41(rMeshIn, flat, cell_dim);
             gmsh41_synth = detail::clone_mesh(rMeshIn);
             gmsh41_synth.AddPointData("gmsh:dim_tags", synth.mDimTags);
             gmsh41_synth.AddCellData("gmsh:geometrical", synth.mGeometrical);
-            gmsh41_synth.AddCellData("gmsh:physical", synth.mPhysical);
+            if (!synth.mPhysical.empty())
+                gmsh41_synth.AddCellData("gmsh:physical", synth.mPhysical);
             synthesized = true;
         }
     }
@@ -107403,6 +108368,10 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
                                 std::vector<std::size_t>& rIds) {
         rIds.clear();
         const auto global = [&](std::int64_t V) {
+            // A vertex the part does not have makes the element malformed.
+            if (V < 0 || static_cast<std::size_t>(V) >= rPart.mGlobal.size())
+                throw ReadError("MFEM: element vertex " + std::to_string(V) +
+                                " is not a vertex of its part");
             return rPart.mGlobal[static_cast<std::size_t>(V)];
         };
         if (rEl.mGeom == 0 || rEl.mGeom == 7) {  // a point; a (linear) pyramid
@@ -124459,14 +125428,21 @@ MeshMetadata read_radioss_anim_metadata(const std::string& rPath, const ReadOpti
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/radioss_anim.cpp =====
 // ===== begin src/cpp/src/formats/radioss_th.cpp =====
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -124477,6 +125453,9 @@ namespace meshioplusplus {
 namespace {
 
 // The layout follows OpenRadioss's th_to_csv converter (MIT); no code is copied.
+
+// Big-endian Fortran records with 4-byte markers.
+constexpr detail::FortranRecordLayout kThLayout{4, true};
 
 [[noreturn]] void th_fail(const std::string& rMessage) {
     throw ReadError("Radioss time history: " + rMessage);
@@ -124592,8 +125571,8 @@ struct ThGroup {
 struct ThFile {
     std::optional<detail::FileSource> mSource;
     std::string_view mData;
-    std::vector<std::pair<std::size_t, std::size_t>> mRecords;  // (offset, length)
-    std::size_t mNext = 0;                                      // next record to read
+    std::vector<detail::FortranRecord> mRecords;  // payload (offset, size)
+    std::size_t mNext = 0;                        // next record to read
     std::vector<std::int64_t> mGlobals;
     std::vector<ThEntity> mParts, mSubsets;
     std::vector<ThGroup> mGroups;
@@ -124614,13 +125593,8 @@ struct ThFile {
         if (!is_radioss_th_head(mData.data(), mData.size()))
             th_fail("'" + rPath + "' is not a time-history file");
         // Split the records; a truncated last one ends the file.
-        for (std::size_t p = 0; p + 4 <= mData.size();) {
-            const std::size_t n = th_be32(mData.data() + p);
-            if (p + 8 + n > mData.size() || th_be32(mData.data() + p + 4 + n) != n)
-                break;
-            mRecords.emplace_back(p + 4, n);
-            p += 8 + n;
-        }
+        mRecords = detail::fortran_records(mData.data(), mData.size(), kThLayout,
+                                           "Radioss time history", /*Lenient=*/true);
         Parse();
     }
 
@@ -124717,21 +125691,21 @@ struct ThFile {
         for (const ThGroup& g : mGroups)
             sizes.push_back(4 * g.mIds.size() * g.mCodes.size());
         while (mNext + 1 + sizes.size() <= mRecords.size()) {
-            if (mRecords[mNext].second != 4)
+            if (mRecords[mNext].mSize != 4)
                 th_fail("unexpected record size for an output's time");
             for (std::size_t k = 0; k < sizes.size(); ++k)
-                if (mRecords[mNext + 1 + k].second != sizes[k])
+                if (mRecords[mNext + 1 + k].mSize != sizes[k])
                     th_fail("unexpected record size in the output at record " +
                             std::to_string(mNext + 1 + k));
             mOutputs.push_back(mNext);
-            mTimes.push_back(th_float(mData.data() + mRecords[mNext].first));
+            mTimes.push_back(th_float(mData.data() + mRecords[mNext].mOffset));
             mNext += 1 + sizes.size();
         }
         if (mOutputs.empty())
             th_fail("the file has no complete output");
     }
 
-    const char* Record(std::size_t Index) const { return mData.data() + mRecords[Index].first; }
+    const char* Record(std::size_t Index) const { return mData.data() + mRecords[Index].mOffset; }
 };
 
 void th_scalar(Mesh& rMesh, const ReadOptions& rOpts, const std::string& rName, double Value) {
@@ -124854,6 +125828,507 @@ MeshMetadata read_radioss_th_metadata(const std::string& rPath, const ReadOption
     meta.mFormat = "radioss_th";
     meta.mTimeValues = radioss_th_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------
+// The writer: the reader's inverse (see doc/formats/radioss_th.md).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Version 3040 (40-character titles, no unit factors) is what OpenRadioss itself
+// writes and `th_to_csv` reads; with unit factors the file is 4021 (100-character
+// titles): the reader's two branches that a writer can reach.
+constexpr std::int32_t kThwVersionPlain = 3040;
+constexpr std::int32_t kThwVersionFactors = 4021;
+
+struct ThwVar {
+    std::int64_t mCode = 0;
+    std::string mName;
+    float mValue = 0.0F;
+};
+
+struct ThwEntity {
+    std::int64_t mId = 0;
+    std::vector<ThwVar> mVars;
+};
+
+struct ThwGroup {
+    std::int64_t mType = 0, mId = 0;
+    std::string mKind;
+    std::vector<std::int64_t> mIds, mCodes;
+    std::vector<float> mValues;  // entities x variables, row-major
+};
+
+// One output's worth of a mesh: everything the file stores.
+struct ThwStep {
+    float mTime = 0.0F;
+    std::optional<std::array<float, 3>> mFactors;
+    std::vector<ThwVar> mGlobals;
+    std::vector<ThwEntity> mParts, mSubsets;
+    std::vector<ThwGroup> mGroups;
+};
+
+[[noreturn]] void thw_fail(const std::string& rMessage) {
+    throw WriteError("Radioss time history: " + rMessage);
+}
+
+// A whole-string decimal integer that fits an int32 (a leading '-' only).
+bool thw_parse_int(std::string_view Text, std::int64_t& rOut) {
+    if (Text.empty())
+        return false;
+    for (std::size_t i = 0; i < Text.size(); ++i) {
+        const char c = Text[i];
+        if (!((c >= '0' && c <= '9') || (i == 0 && c == '-' && Text.size() > 1)))
+            return false;
+    }
+    std::int64_t v = 0;
+    const auto [end, ec] = std::from_chars(Text.data(), Text.data() + Text.size(), v);
+    if (ec != std::errc() || end != Text.data() + Text.size())
+        return false;
+    if (v < INT32_MIN || v > INT32_MAX)
+        return false;
+    rOut = v;
+    return true;
+}
+
+// The code a variable name stands for: found in the reader's own table (so the
+// two directions cannot drift), else `var<code>`.
+template <class NameFn>
+bool thw_code(std::string_view Name, NameFn Fn, std::int64_t& rCode) {
+    for (std::int64_t code = 1; code <= 64; ++code) {
+        if (Fn(code) == Name) {
+            rCode = code;
+            return true;
+        }
+    }
+    return Name.rfind("var", 0) == 0 && thw_parse_int(Name.substr(3), rCode) && rCode >= 1;
+}
+
+// The TH group type a kind name stands for (`type<N>` for one the reader has no
+// name for).
+bool thw_kind(std::string_view Name, std::int64_t& rType) {
+    for (std::int64_t type = 0; type <= 200; ++type) {
+        if (th_group_kind(type) == Name) {
+            rType = type;
+            return true;
+        }
+    }
+    return Name.rfind("type", 0) == 0 && thw_parse_int(Name.substr(4), rType) && rType >= 0;
+}
+
+std::vector<std::string_view> thw_split(std::string_view Name) {
+    std::vector<std::string_view> parts;
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t colon = Name.find(':', start);
+        if (colon == std::string_view::npos) {
+            parts.push_back(Name.substr(start));
+            return parts;
+        }
+        parts.push_back(Name.substr(start, colon - start));
+        start = colon + 1;
+    }
+}
+
+bool thw_is_scalar(const NDArray& rArray, float& rValue) {
+    if (rArray.Size() != 1)
+        return false;
+    const detail::DoubleView values(rArray);
+    rValue = static_cast<float>(values[0]);
+    return true;
+}
+
+// An int32 (an id or a variable code) from a value that must be integral.
+std::int64_t thw_int_value(double Value, const std::string& rWhat) {
+    if (!(Value >= static_cast<double>(INT32_MIN) && Value <= static_cast<double>(INT32_MAX)) ||
+        Value != std::floor(Value))
+        thw_fail(rWhat + " holds a value that is not an integer in 32-bit range");
+    return static_cast<std::int64_t>(Value);
+}
+
+std::vector<std::int64_t> thw_int_array(const NDArray& rArray, std::size_t Expected,
+                                        const std::string& rName) {
+    if (rArray.Size() != Expected)
+        thw_fail("'" + rName + "' holds " + std::to_string(rArray.Size()) + " values, expected " +
+                 std::to_string(Expected));
+    const detail::DoubleView values(rArray);
+    std::vector<std::int64_t> out(Expected);
+    for (std::size_t i = 0; i < Expected; ++i)
+        out[i] = thw_int_value(values[i], "'" + rName + "'");
+    return out;
+}
+
+bool thw_var_less(const ThwVar& rA, const ThwVar& rB) {
+    return rA.mCode != rB.mCode ? rA.mCode < rB.mCode : rA.mName < rB.mName;
+}
+
+// The mesh's `radioss_th:*` field data as one output. @p rDropped receives the
+// names of the field data that has no place in the file.
+ThwStep thw_collect(const Mesh& rMesh, const std::optional<double>& rTime,
+                    std::vector<std::string>& rDropped) {
+    struct Partial {
+        const NDArray* mpData = nullptr;
+        const NDArray* mpIds = nullptr;
+        const NDArray* mpCodes = nullptr;
+        std::vector<std::string> mNames;
+    };
+    ThwStep step;
+    std::map<std::int64_t, std::vector<ThwVar>> parts, subsets;
+    std::map<std::tuple<std::int64_t, std::int64_t, std::string>, Partial> groups;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& array = rMesh.FieldData(name);
+        if (name == kSequenceTimeKey) {
+            if (!rTime && array.Size() > 0) {
+                const detail::DoubleView values(array);
+                step.mTime = static_cast<float>(values[0]);
+            }
+            continue;
+        }
+        const std::vector<std::string_view> p = thw_split(name);
+        bool taken = false;
+        std::int64_t id = 0, code = 0, type = 0;
+        float value = 0.0F;
+        if (p.size() >= 2 && p[0] == "radioss_th") {
+            if (p.size() == 2 && p[1] == "unit_factors") {
+                if (array.Size() != 3)
+                    thw_fail("'radioss_th:unit_factors' must hold three values");
+                const detail::DoubleView values(array);
+                step.mFactors = std::array<float, 3>{static_cast<float>(values[0]),
+                                                     static_cast<float>(values[1]),
+                                                     static_cast<float>(values[2])};
+                taken = true;
+            } else if (p.size() == 3 && p[1] == "global") {
+                if (thw_code(p[2], th_global_name, code) && thw_is_scalar(array, value)) {
+                    step.mGlobals.push_back({code, std::string(p[2]), value});
+                    taken = true;
+                }
+            } else if (p.size() == 4 && (p[1] == "part" || p[1] == "subset")) {
+                if (thw_parse_int(p[2], id) && thw_code(p[3], th_part_name, code) &&
+                    thw_is_scalar(array, value)) {
+                    (p[1] == "part" ? parts : subsets)[id].push_back(
+                        {code, std::string(p[3]), value});
+                    taken = true;
+                }
+            } else if ((p.size() == 3 || p.size() == 4) && thw_kind(p[1], type) &&
+                       thw_parse_int(p[2], id) &&
+                       (p.size() == 3 || p[3] == "ids" || p[3] == "variables")) {
+                Partial& g = groups[{type, id, std::string(p[1])}];
+                if (p.size() == 3)
+                    g.mpData = &array;
+                else if (p[3] == "ids")
+                    g.mpIds = &array;
+                else
+                    g.mpCodes = &array;
+                g.mNames.push_back(name);
+                taken = true;
+            }
+        }
+        if (!taken)
+            rDropped.push_back(name);
+    }
+    if (rTime)
+        step.mTime = static_cast<float>(*rTime);
+
+    std::sort(step.mGlobals.begin(), step.mGlobals.end(), thw_var_less);
+    for (auto* source : {&parts, &subsets}) {
+        for (auto& [id, vars] : *source) {
+            std::sort(vars.begin(), vars.end(), thw_var_less);
+            (source == &parts ? step.mParts : step.mSubsets).push_back({id, std::move(vars)});
+        }
+    }
+    for (const auto& [key, g] : groups) {
+        const std::string base =
+            "radioss_th:" + std::get<2>(key) + ":" + std::to_string(std::get<1>(key));
+        if (!g.mpData) {
+            // companions of an array that is not there
+            rDropped.insert(rDropped.end(), g.mNames.begin(), g.mNames.end());
+            continue;
+        }
+        const NDArray& data = *g.mpData;
+        if (data.Ndim() != 2)
+            thw_fail("'" + base + "' must be a 2-D array (entities x variables)");
+        const std::size_t n = data.Shape()[0], m = data.Shape()[1];
+        ThwGroup group;
+        group.mType = std::get<0>(key);
+        group.mId = std::get<1>(key);
+        group.mKind = std::get<2>(key);
+        if (g.mpIds) {
+            group.mIds = thw_int_array(*g.mpIds, n, base + ":ids");
+        } else {
+            group.mIds.resize(n);
+            for (std::size_t i = 0; i < n; ++i)
+                group.mIds[i] = static_cast<std::int64_t>(i + 1);
+        }
+        if (g.mpCodes) {
+            group.mCodes = thw_int_array(*g.mpCodes, m, base + ":variables");
+        } else {
+            group.mCodes.resize(m);
+            for (std::size_t i = 0; i < m; ++i)
+                group.mCodes[i] = static_cast<std::int64_t>(i + 1);
+        }
+        const detail::DoubleView values(data);
+        group.mValues.resize(n * m);
+        for (std::size_t i = 0; i < n * m; ++i)
+            group.mValues[i] = static_cast<float>(values[i]);
+        step.mGroups.push_back(std::move(group));
+    }
+    std::sort(rDropped.begin(), rDropped.end());
+    return step;
+}
+
+template <class Entities>
+bool thw_same_entities(const Entities& rA, const Entities& rB) {
+    if (rA.size() != rB.size())
+        return false;
+    for (std::size_t i = 0; i < rA.size(); ++i) {
+        if (rA[i].mId != rB[i].mId || rA[i].mVars.size() != rB[i].mVars.size())
+            return false;
+        for (std::size_t k = 0; k < rA[i].mVars.size(); ++k)
+            if (rA[i].mVars[k].mCode != rB[i].mVars[k].mCode)
+                return false;
+    }
+    return true;
+}
+
+// Whether two outputs have the same variables (the values and time may differ).
+bool thw_same_layout(const ThwStep& rA, const ThwStep& rB) {
+    if (rA.mFactors.has_value() != rB.mFactors.has_value() ||
+        rA.mGlobals.size() != rB.mGlobals.size() || rA.mGroups.size() != rB.mGroups.size())
+        return false;
+    for (std::size_t i = 0; i < rA.mGlobals.size(); ++i)
+        if (rA.mGlobals[i].mCode != rB.mGlobals[i].mCode)
+            return false;
+    if (!thw_same_entities(rA.mParts, rB.mParts) || !thw_same_entities(rA.mSubsets, rB.mSubsets))
+        return false;
+    for (std::size_t i = 0; i < rA.mGroups.size(); ++i) {
+        const ThwGroup& a = rA.mGroups[i];
+        const ThwGroup& b = rB.mGroups[i];
+        if (a.mType != b.mType || a.mId != b.mId || a.mKind != b.mKind || a.mIds != b.mIds ||
+            a.mCodes != b.mCodes)
+            return false;
+    }
+    return true;
+}
+
+// Big-endian Fortran records, built field by field.
+class ThwBytes {
+public:
+    void Int(std::int64_t Value) {
+        detail::fortran_put_int32(mPayload, static_cast<std::int32_t>(Value), true);
+    }
+    void Float(float Value) { detail::fortran_put_float32(mPayload, Value, true); }
+    // Text padded with blanks (or cut) to Width characters.
+    void Text(const std::string& rText, std::size_t Width) {
+        std::string t = rText.substr(0, Width);
+        t.resize(Width, ' ');
+        mPayload += t;
+    }
+    // Close the record being built.
+    void End() {
+        detail::fortran_append_record(mFile, mPayload.data(), mPayload.size(), kThLayout);
+        mPayload.clear();
+    }
+    void Ints(const std::vector<std::int64_t>& rValues) {
+        for (const std::int64_t v : rValues)
+            Int(v);
+        End();
+    }
+    std::string mFile;
+
+private:
+    std::string mPayload;
+};
+
+template <class Entities>
+std::size_t thw_count_vars(const Entities& rEntities) {
+    std::size_t n = 0;
+    for (const auto& e : rEntities)
+        n += e.mVars.size();
+    return n;
+}
+
+std::vector<std::int64_t> thw_codes(const std::vector<ThwVar>& rVars) {
+    std::vector<std::int64_t> codes;
+    for (const ThwVar& v : rVars)
+        codes.push_back(v.mCode);
+    return codes;
+}
+
+// The descriptions: titles, the unit factors, the hierarchy and the variable
+// codes of every part, subset and TH group.
+std::string thw_header(const ThwStep& rStep) {
+    const bool factors = rStep.mFactors.has_value();
+    const std::size_t title = factors ? 100 : 40;
+    ThwBytes b;
+    b.Int(factors ? kThwVersionFactors : kThwVersionPlain);
+    b.Text(detail::provenance_lines(detail::SlotTier::Bounded)[0], 80);
+    b.End();
+    b.Text("meshio++", 80);
+    b.End();
+    if (factors) {
+        b.Int(1);
+        b.End();
+        b.Int(static_cast<std::int64_t>(title));
+        b.End();
+        for (const float f : *rStep.mFactors)
+            b.Float(f);
+        b.End();
+    }
+    b.Ints({static_cast<std::int64_t>(rStep.mParts.size()), 0, 0,
+            static_cast<std::int64_t>(rStep.mSubsets.size()),
+            static_cast<std::int64_t>(rStep.mGroups.size()),
+            static_cast<std::int64_t>(rStep.mGlobals.size())});
+    if (!rStep.mGlobals.empty())
+        b.Ints(thw_codes(rStep.mGlobals));
+    for (const ThwEntity& part : rStep.mParts) {
+        b.Int(part.mId);
+        b.Text("PART " + std::to_string(part.mId), title);
+        b.Int(0);
+        b.Int(0);
+        b.Int(0);
+        b.Int(static_cast<std::int64_t>(part.mVars.size()));
+        b.End();
+        if (!part.mVars.empty())
+            b.Ints(thw_codes(part.mVars));
+    }
+    for (const ThwEntity& subset : rStep.mSubsets) {
+        b.Int(subset.mId);
+        b.Int(0);
+        b.Int(0);  // child subsets
+        b.Int(0);  // parts
+        b.Int(static_cast<std::int64_t>(subset.mVars.size()));
+        b.Text("SUBSET " + std::to_string(subset.mId), title);
+        b.End();
+        if (!subset.mVars.empty())
+            b.Ints(thw_codes(subset.mVars));
+    }
+    for (const ThwGroup& group : rStep.mGroups) {
+        b.Int(group.mId);
+        b.Int(group.mType);
+        b.Int(0);
+        b.Int(static_cast<std::int64_t>(group.mIds.size()));
+        b.Int(static_cast<std::int64_t>(group.mCodes.size()));
+        b.Text("TH " + group.mKind + " " + std::to_string(group.mId), title);
+        b.End();
+        for (const std::int64_t id : group.mIds) {
+            b.Int(id);
+            b.Text(group.mKind + " " + std::to_string(id), title);
+            b.End();
+        }
+        if (!group.mCodes.empty())
+            b.Ints(group.mCodes);
+    }
+    return std::move(b.mFile);
+}
+
+// One output: the time, the globals, the part and subset values, one record per
+// TH group.
+std::string thw_output(const ThwStep& rStep) {
+    ThwBytes b;
+    b.Float(rStep.mTime);
+    b.End();
+    if (!rStep.mGlobals.empty()) {
+        for (const ThwVar& v : rStep.mGlobals)
+            b.Float(v.mValue);
+        b.End();
+    }
+    for (const auto* entities : {&rStep.mParts, &rStep.mSubsets}) {
+        if (thw_count_vars(*entities) == 0)
+            continue;
+        for (const ThwEntity& e : *entities)
+            for (const ThwVar& v : e.mVars)
+                b.Float(v.mValue);
+        b.End();
+    }
+    for (const ThwGroup& group : rStep.mGroups) {
+        for (const float v : group.mValues)
+            b.Float(v);
+        b.End();
+    }
+    return std::move(b.mFile);
+}
+
+void thw_warn_dropped(const std::vector<std::string>& rDropped) {
+    if (rDropped.empty())
+        return;
+    std::string names;
+    for (std::size_t i = 0; i < rDropped.size(); ++i)
+        names += (i ? ", " : "") + rDropped[i];
+    log::warn("Radioss time history: field data without a place in the file is not written: {}",
+              names);
+}
+
+}  // namespace
+
+void write_radioss_th(const std::string& rPath, const Mesh& rMesh) {
+    std::vector<std::string> dropped;
+    const ThwStep step = thw_collect(rMesh, std::nullopt, dropped);
+    thw_warn_dropped(dropped);
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    const std::string bytes = thw_header(step) + thw_output(step);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    if (!out)
+        throw WriteError("Radioss time history: failed writing " + rPath);
+}
+
+struct RadiossThSeriesWriter::Impl {
+    std::string mPath;
+    decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
+    std::optional<ThwStep> mFirst;
+    std::size_t mSteps = 0;
+};
+
+RadiossThSeriesWriter::RadiossThSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!mpImpl->mOut)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+RadiossThSeriesWriter::~RadiossThSeriesWriter() = default;
+RadiossThSeriesWriter::RadiossThSeriesWriter(RadiossThSeriesWriter&&) noexcept = default;
+RadiossThSeriesWriter& RadiossThSeriesWriter::operator=(RadiossThSeriesWriter&&) noexcept = default;
+
+void RadiossThSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        thw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    std::vector<std::string> dropped;
+    const ThwStep step = thw_collect(rMesh, Time, dropped);
+    std::string bytes;
+    if (!s.mFirst) {
+        thw_warn_dropped(dropped);
+        bytes = thw_header(step);
+        s.mFirst = step;
+    } else if (!thw_same_layout(*s.mFirst, step)) {
+        thw_fail("series: step " + std::to_string(s.mSteps) +
+                 "'s variables differ from the first step's; a time-history file holds one "
+                 "set -- write one file per step with '{step}'");
+    }
+    bytes += thw_output(step);
+    s.mOut.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!s.mOut)
+        thw_fail("series: failed writing " + s.mPath);
+    ++s.mSteps;
+}
+
+std::size_t RadiossThSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void RadiossThSeriesWriter::Finalize() {
+    if (!mpImpl || !mpImpl->mOut.is_open())
+        return;
+    if (mpImpl->mSteps == 0)
+        thw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mOut.close();
+    if (!mpImpl->mOut)
+        thw_fail("series: failed writing " + mpImpl->mPath);
 }
 
 }  // namespace meshioplusplus
@@ -125843,6 +127318,7 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/su2.cpp =====
 // ===== begin src/cpp/src/formats/svg.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -125851,6 +127327,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
 #include <vector>
 
 // Project includes
+
+// External includes
 
 namespace meshioplusplus {
 
@@ -125870,6 +127348,24 @@ std::string svg_color_hex(detail::Rgb c) {
     std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", static_cast<int>(c.mR), static_cast<int>(c.mG),
                   static_cast<int>(c.mB));
     return buf;
+}
+
+// The marker comment right after the opening tag: the provenance tag, the
+// `Drawing: ...` line, then whatever else the provenance block carries. Always
+// the multi-line form, with "--" broken apart as the XML comment rules need
+// (the twin of `render_xml_comment` in `_provenance.py`).
+std::string svg_marker_comment(bool Projected, double Azimuth, double Elevation, double Roll,
+                               double Scale, double OffsetX, double OffsetY) {
+    const double scale_offset[3] = {Scale, OffsetX, OffsetY};
+    std::string out = "<!--\n";
+    for (std::string line : detail::drawing_comment_lines(
+             detail::drawing_marker_line(Projected, Azimuth, Elevation, Roll, scale_offset))) {
+        for (std::size_t at = line.find("--"); at != std::string::npos; at = line.find("--", at))
+            line.insert(at + 1, 1, ' ');
+        out += line;
+        out += '\n';
+    }
+    return out + "-->";
 }
 
 // The extra viewBox width a colorbar occupies, as a multiple of the drawing's
@@ -125942,14 +127438,17 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
     }
 
     // Flip y (projected math convention y-up -> SVG screen convention y-down).
+    const double y_flip = max_y + min_y;
     for (std::size_t i = 0; i < num_points; ++i)
         y[i] = max_y + min_y - y[i];
 
     double width = max_x - min_x;
     double height = max_y - min_y;
 
+    double applied_scale = 1.0;
     if (rImageWidth.has_value() && width != 0.0) {
         const double scaling_factor = *rImageWidth / width;
+        applied_scale = scaling_factor;
         min_x *= scaling_factor;
         min_y *= scaling_factor;
         width *= scaling_factor;
@@ -125980,6 +127479,8 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
     os << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\""
        << svg_fmt_num(min_x, rFloatFmt) << ' ' << svg_fmt_num(min_y, rFloatFmt) << ' '
        << svg_fmt_num(view_width, rFloatFmt) << ' ' << svg_fmt_num(height, rFloatFmt) << "\">";
+
+    os << svg_marker_comment(true, azimuth, elevation, roll, applied_scale, 0.0, y_flip);
 
     os << "<style>path {fill: " << rFill << "; stroke: " << rStroke
        << "; stroke-width: " << stroke_width << "; stroke-linejoin:bevel}</style>";
@@ -126017,6 +127518,131 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         svg_append_colorbar(os, colors, min_x, min_y, width, height, rFloatFmt);
 
     os << "</svg>";
+}
+
+// ---------------------------------------------------------------------------
+// Reader. Inverts exactly what the writer above emits, and nothing more: see
+// doc/formats/svg.md ("Reading") and detail/drawing.hpp.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kSvgrNamespace = "http://www.w3.org/2000/svg";
+
+// Every element the reader looks at: no transform, and no namespace of its own
+// other than SVG's.
+void svgr_check_element(const pugi::xml_node& rNode) {
+    for (const pugi::xml_attribute attr : rNode.attributes()) {
+        const std::string_view name = attr.name();
+        if (name == "transform")
+            throw ReadError("SVG: a transform on <" + detail::drawing_safe(rNode.name()) +
+                            "> is not supported (meshio++ draws absolute coordinates)");
+        if (name == "xmlns" && std::string_view(attr.value()) != kSvgrNamespace)
+            throw ReadError("SVG: <" + detail::drawing_safe(rNode.name()) +
+                            "> is in a namespace other than SVG's");
+    }
+}
+
+// The four numbers of a viewBox.
+std::array<double, 4> svgr_view_box(std::string_view Text) {
+    std::array<double, 4> box{};
+    std::size_t pos = 0;
+    auto skip = [&] {
+        while (pos < Text.size() && (detail::text_is_blank(Text[pos]) || Text[pos] == ','))
+            ++pos;
+    };
+    for (double& value : box) {
+        skip();
+        const std::size_t len = detail::drawing_scan_number(Text, pos);
+        if (len == 0)
+            throw ReadError("SVG: malformed viewBox");
+        value = detail::drawing_number_value(Text.substr(pos, len), "SVG");
+        pos += len;
+    }
+    skip();
+    if (pos != Text.size())
+        throw ReadError("SVG: malformed viewBox");
+    return box;
+}
+
+// One path's `d`: `M x y (L x y)* Z?`, absolute, one subpath.
+void svgr_read_path(std::string_view D, detail::DrawingBuilder& rBuilder,
+                    const std::optional<std::array<int, 3>>& rFill) {
+    std::size_t pos = 0;
+    auto skip = [&] {
+        while (pos < D.size() && (detail::text_is_blank(D[pos]) || D[pos] == ','))
+            ++pos;
+    };
+    auto pair = [&]() -> std::int64_t {
+        skip();
+        const std::size_t xlen = detail::drawing_scan_number(D, pos);
+        if (xlen == 0)
+            throw ReadError("SVG: a path command is missing its coordinates");
+        const std::string_view x = D.substr(pos, xlen);
+        pos += xlen;
+        skip();
+        const std::size_t ylen = detail::drawing_scan_number(D, pos);
+        if (ylen == 0)
+            throw ReadError("SVG: a path command is missing its coordinates");
+        const std::string_view y = D.substr(pos, ylen);
+        pos += ylen;
+        return rBuilder.Weld(x, y, [&] {
+            return std::make_pair(detail::drawing_number_value(x, "SVG"),
+                                  detail::drawing_number_value(y, "SVG"));
+        });
+    };
+
+    std::vector<std::int64_t> ids;
+    bool started = false;
+    bool closed = false;
+    while (true) {
+        skip();
+        if (pos >= D.size())
+            break;
+        const char c = D[pos];
+        if (closed)
+            throw ReadError("SVG: a path continues after Z (several subpaths are not supported)");
+        if (c == 'M') {
+            if (started)
+                throw ReadError("SVG: a path with several subpaths is not supported");
+            ++pos;
+            ids.push_back(pair());
+            started = true;
+        } else if (c == 'L') {
+            if (!started)
+                throw ReadError("SVG: a path must start with M");
+            ++pos;
+            ids.push_back(pair());
+        } else if (c == 'Z') {
+            if (!started)
+                throw ReadError("SVG: a path must start with M");
+            ++pos;
+            closed = true;
+        } else if (std::string_view("mlhvcsqtaz").find(c) != std::string_view::npos) {
+            throw ReadError(std::string("SVG: the relative path command '") + c +
+                            "' is not supported (meshio++ writes absolute M, L and Z)");
+        } else if (std::string_view("CSQTA").find(c) != std::string_view::npos) {
+            throw ReadError(std::string("SVG: the curve command '") + c + "' is not supported");
+        } else if (c == 'H' || c == 'V') {
+            throw ReadError(std::string("SVG: the path command '") + c + "' is not supported");
+        } else if (detail::drawing_scan_number(D, pos) != 0) {
+            throw ReadError("SVG: repeated coordinates after one path command are not supported");
+        } else {
+            throw ReadError("SVG: unexpected character '" +
+                            detail::drawing_safe(std::string_view(&c, 1)) + "' in a path");
+        }
+    }
+    if (!started)
+        throw ReadError("SVG: an empty path");
+    rBuilder.AddCell(ids, closed, rFill);
+}
+
+std::vector<std::string> svgr_split_lines(std::string_view Text) {
+    std::vector<std::string> lines;
+    for (std::string_view line : detail::split_lines(Text)) {
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        lines.emplace_back(line);
+    }
+    return lines;
 }
 
 }  // namespace
@@ -126086,14 +127712,17 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
     }
 
     // Flip y (mesh math convention y-up -> SVG screen convention y-down).
+    const double y_flip = max_y + min_y;
     for (std::size_t i = 0; i < num_points; ++i)
         y[i] = max_y + min_y - y[i];
 
     double width = max_x - min_x;
     double height = max_y - min_y;
 
+    double applied_scale = 1.0;
     if (rImageWidth.has_value() && width != 0.0) {
         const double scaling_factor = *rImageWidth / width;
+        applied_scale = scaling_factor;
         min_x *= scaling_factor;
         min_y *= scaling_factor;
         width *= scaling_factor;
@@ -126129,6 +127758,8 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
     os << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" viewBox=\""
        << svg_fmt_num(min_x, rFloatFmt) << ' ' << svg_fmt_num(min_y, rFloatFmt) << ' '
        << svg_fmt_num(view_width, rFloatFmt) << ' ' << svg_fmt_num(height, rFloatFmt) << "\">";
+
+    os << svg_marker_comment(false, 0.0, 0.0, 0.0, applied_scale, 0.0, y_flip);
 
     // Use path (not polygon): svgo rewrites polygons to paths but drops style.
     os << "<style>path {fill: " << rFill << "; stroke: " << rStroke
@@ -126192,6 +127823,78 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
             "skipping.",
             joined);
     }
+}
+
+Mesh read_svg(const std::string& rPath, const ReadOptions& rOptions) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result parsed =
+        doc.load_file(rPath.c_str(), pugi::parse_default | pugi::parse_comments);
+    if (!parsed)
+        throw ReadError("SVG: could not parse " + rPath + " (" + parsed.description() + ")");
+    const pugi::xml_node root = doc.document_element();
+    if (!root || std::string_view(root.name()) != "svg")
+        throw ReadError("SVG: the root element is not <svg>");
+    svgr_check_element(root);
+    for (const pugi::xml_attribute attr : root.attributes()) {
+        if (std::string_view(attr.name()).rfind("xmlns:", 0) == 0)
+            throw ReadError("SVG: namespace prefixes are not supported");
+    }
+
+    // The marker: the comments that lead the root's children.
+    std::vector<std::string> head;
+    for (const pugi::xml_node node : root.children()) {
+        if (node.type() == pugi::node_element)
+            break;
+        if (node.type() == pugi::node_comment) {
+            std::vector<std::string> lines = svgr_split_lines(node.value());
+            head.insert(head.end(), lines.begin(), lines.end());
+        }
+    }
+    const detail::DrawingMarker marker = detail::parse_drawing_marker(head, "SVG", true);
+    if (!marker.mFound && !rOptions.mLenient)
+        throw detail::drawing_unmarked_error("SVG");
+
+    const pugi::xml_attribute view_box_attr = root.attribute("viewBox");
+    if (!view_box_attr)
+        throw ReadError("SVG: the <svg> has no viewBox");
+    const std::array<double, 4> view_box = svgr_view_box(view_box_attr.value());
+
+    detail::DrawingBuilder builder("SVG", "svg:fill");
+    builder.SetWantFill(rOptions.WantsAnyData() && rOptions.WantsArray("svg:fill"));
+    for (const pugi::xml_node node : root.children()) {
+        if (node.type() != pugi::node_element)
+            continue;
+        const std::string_view name = node.name();
+        svgr_check_element(node);
+        if (name == "path") {
+            const pugi::xml_attribute d = node.attribute("d");
+            if (!d)
+                throw ReadError("SVG: a <path> has no d attribute");
+            svgr_read_path(d.value(), builder,
+                           detail::drawing_hex_color(node.attribute("fill").value()));
+        } else if (name == "style" || name == "rect" || name == "text") {
+            // The stylesheet is the writer's own; <rect> and <text> are the colour bar.
+        } else if (name == "polygon") {
+            throw ReadError(
+                "SVG: <polygon> is not supported (meshio++ draws faces as <path>; tools such as "
+                "svgo rewrite polygons to paths)");
+        } else {
+            throw ReadError("SVG: the element <" + detail::drawing_safe(name) +
+                            "> is not supported");
+        }
+    }
+
+    // model = (x / S + OX, OY - y / S). Without a marker S = 1 and the y-flip is undone
+    // from the viewBox: it was about the middle of the drawing's y extent.
+    double scale = 1.0, offset_x = 0.0, offset_y = 2.0 * view_box[1] + view_box[3];
+    if (marker.mFound) {
+        scale = marker.mScale;
+        offset_x = marker.mOffsetX;
+        offset_y = marker.mOffsetY;
+    }
+    Mesh mesh = builder.Finish(/*Flip=*/true, scale, offset_x, offset_y);
+    detail::drawing_read_warning("SVG", marker);
+    return mesh;
 }
 
 }  // namespace meshioplusplus
@@ -126497,7 +128200,21 @@ struct TecplotZone {
     // Node and cell counts of an ordered zone: lines, quads or hexahedra over
     // the dimensions longer than one; a single point is one vertex.
     void FinishOrdered() {
-        mNumNodes = mI * mJ * mK;
+        // The product of the non-zero dimensions must not wrap: a wrapped count
+        // would size the columns from a number the file does not describe. A zero
+        // dimension empties the zone but does not excuse the others from the check.
+        std::size_t product = 1;
+        bool zero = false;
+        for (std::size_t d : {mI, mJ, mK}) {
+            if (d == 0) {
+                zero = true;
+                continue;
+            }
+            if (product > std::numeric_limits<std::size_t>::max() / d)
+                throw ReadError("Tecplot: ordered zone dimensions overflow");
+            product *= d;
+        }
+        mNumNodes = zero ? 0 : product;
         std::size_t cells = 1;
         bool any = false;
         for (std::size_t d : {mI, mJ, mK}) {
@@ -126621,6 +128338,11 @@ TecplotFaceMap tecplot_face_map(const TecplotZone& rZ, std::size_t ZoneIdx,
         if (n < 2)
             throw ReadError(where + ": face " + std::to_string(f + 1) + " has " +
                             std::to_string(n) + " nodes");
+        // Checked against the node list as it grows, so a count from the file
+        // cannot overflow the running sum.
+        if (n > static_cast<std::int64_t>(Nodes.size()) - fm.mStart.back())
+            throw ReadError(where + ": face " + std::to_string(f + 1) + " names more nodes " +
+                            "than TOTALNUMFACENODES holds");
         fm.mStart.push_back(fm.mStart.back() + n);
     }
     if (static_cast<std::size_t>(fm.mStart.back()) != Nodes.size())
@@ -127011,8 +128733,17 @@ public:
             if (toks.size() < nn)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
-            for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = detail::zero_based(detail::strtoll_token(toks[j]));
+            for (std::size_t j = 0; j < nn; ++j) {
+                // Checked as a 1-based id, before the subtraction and before any point
+                // offset is added: the lenient parse saturates an id near INT64_MAX,
+                // and adding an offset to that overflows (UBSan).
+                const std::int64_t id = detail::strtoll_token(toks[j]);
+                if (id < 1 || id > static_cast<std::int64_t>(z.mNumNodes))
+                    throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                    " connectivity node " + std::to_string(id) +
+                                    " is out of range");
+                cp[c * nn + j] = id - 1;
+            }
         }
     }
 
@@ -127573,8 +129304,14 @@ public:
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
         const std::int64_t base = tecplot_plt_v7(z.mVersion) ? 1 : 0;  // Tecplot 7 is 1-based
-        for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
-            cp[r] = cur.I32() - base;
+        for (std::size_t r = 0; r < z.mNumCells * nn; ++r) {
+            const std::int64_t id = cur.I32() - base;
+            if (id < 0 || id >= static_cast<std::int64_t>(z.mNumNodes))
+                throw ReadError("Tecplot .plt: zone " + std::to_string(ZoneIdx + 1) +
+                                " connectivity node " + std::to_string(id + base) +
+                                " is out of range");
+            cp[r] = id;
+        }
     }
 
 private:
@@ -128132,6 +129869,19 @@ struct TecplotFile {
     std::unique_ptr<TecplotSource> mSource;
 };
 
+/// Every count a zone header declares must fit in the file. A valid zone holds
+/// at least one byte of its file per node, cell or face it names (a value, a
+/// connection or a face list), so a larger count is a corrupt header and is
+/// refused before anything is sized from it.
+void tecplot_check_declared_counts(const std::vector<TecplotZone>& rZones, std::size_t FileBytes) {
+    for (std::size_t i = 0; i < rZones.size(); ++i) {
+        const TecplotZone& z = rZones[i];
+        if (z.mNumNodes > FileBytes || z.mNumCells > FileBytes || z.mNumFaces > FileBytes)
+            throw ReadError("Tecplot: zone " + std::to_string(i + 1) +
+                            " declares more nodes, cells or faces than the file holds");
+    }
+}
+
 void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, TecplotFile& rFile) {
     bool binary = false;
     {
@@ -128158,6 +129908,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
             rFile.mLines.push_back(st);
         }
         rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
+        tecplot_check_declared_counts(rFile.mZones, rFile.mText->View().size());
         rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,
                                                              rFile.mVariables.size());
         return;
@@ -128182,6 +129933,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
     detail::ByteCursor cur(data, size, big_endian, "Tecplot .plt");
     cur.Seek(12);
     rFile.mZones = tecplot_plt_header(cur, version, rFile.mVariables);
+    tecplot_check_declared_counts(rFile.mZones, size);
     tecplot_plt_scan_data(cur, version, rFile.mVariables, rFile.mZones);
     rFile.mSource = std::make_unique<TecplotPltSource>(data, size, big_endian, rFile.mZones);
 }
@@ -129121,6 +130873,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/tetgen.cpp =====
 // ===== begin src/cpp/src/formats/tikz.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -129140,6 +130893,18 @@ std::string tikz_fmt_num(double value, const std::string& rSpec) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
     return buf;
+}
+
+// The marker comment that opens the file: the provenance tag, the
+// `Drawing: ...` line, then whatever else the provenance block carries, each as a
+// `%` line (the twin of `_marker_lines` in `_tikz.py`).
+std::vector<std::string> tikz_marker_lines(bool Projected, double Azimuth, double Elevation,
+                                           double Roll) {
+    std::vector<std::string> lines;
+    for (const std::string& line : detail::drawing_comment_lines(
+             detail::drawing_marker_line(Projected, Azimuth, Elevation, Roll, nullptr)))
+        lines.push_back("% " + line);
+    return lines;
 }
 
 // TikZ's inline colour vocabulary. The braces are required: without them the
@@ -129262,7 +131027,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     }
     const std::string pic_opt_str = pic_opts.empty() ? "" : ("[" + pic_opts + "]");
 
-    std::vector<std::string> out;
+    std::vector<std::string> out = tikz_marker_lines(true, azimuth, elevation, roll);
     if (Standalone) {
         out.push_back("\\documentclass{standalone}");
         out.push_back("\\usepackage{tikz}");
@@ -129282,6 +131047,334 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     for (std::size_t i = 0; i < out.size(); ++i)
         os << out[i] << '\n';
 }
+
+// ---------------------------------------------------------------------------
+// Reader. Inverts exactly what the writer above emits, and nothing more: see
+// doc/formats/tikz.md ("Reading") and detail/drawing.hpp.
+// ---------------------------------------------------------------------------
+
+// A name for the construct at the cursor, for a refusal: the next run of
+// non-blank characters, cut short.
+std::string tikzr_construct_at(std::string_view Text, std::size_t Pos) {
+    std::size_t end = Pos;
+    while (end < Text.size() && !detail::text_is_blank(Text[end]) && end - Pos < 16)
+        ++end;
+    return detail::drawing_safe(Text.substr(Pos, end - Pos));
+}
+
+// Splits an option list on the commas outside braces.
+std::vector<std::string_view> tikzr_split_options(std::string_view Text) {
+    std::vector<std::string_view> items;
+    int depth = 0;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < Text.size(); ++i) {
+        if (Text[i] == '{') {
+            ++depth;
+        } else if (Text[i] == '}') {
+            --depth;
+        } else if (Text[i] == ',' && depth == 0) {
+            items.push_back(Text.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    items.push_back(Text.substr(start));
+    return items;
+}
+
+std::string_view tikzr_trim(std::string_view Text) {
+    while (!Text.empty() && detail::text_is_blank(Text.front()))
+        Text.remove_prefix(1);
+    while (!Text.empty() && detail::text_is_blank(Text.back()))
+        Text.remove_suffix(1);
+    return Text;
+}
+
+// `{rgb,255:red,R;green,G;blue,B}` -> {R, G, B}; anything else (gray!30, ...) -> nullopt.
+std::optional<std::array<int, 3>> tikzr_rgb(std::string_view Value) {
+    Value = tikzr_trim(Value);
+    if (Value.size() < 2 || Value.front() != '{' || Value.back() != '}')
+        return std::nullopt;
+    Value = Value.substr(1, Value.size() - 2);
+    constexpr std::string_view head = "rgb,255:red,";
+    if (Value.substr(0, head.size()) != head)
+        return std::nullopt;
+    Value.remove_prefix(head.size());
+    std::array<int, 3> rgb{};
+    const std::array<std::string_view, 3> next = {";green,", ";blue,", ""};
+    for (std::size_t k = 0; k < 3; ++k) {
+        std::size_t end = 0;
+        while (end < Value.size() && Value[end] >= '0' && Value[end] <= '9')
+            ++end;
+        if (end == 0 || end > 3)
+            return std::nullopt;
+        int v = 0;
+        for (std::size_t i = 0; i < end; ++i)
+            v = v * 10 + (Value[i] - '0');
+        if (v > 255)
+            return std::nullopt;
+        rgb[k] = v;
+        Value.remove_prefix(end);
+        if (Value.substr(0, next[k].size()) != next[k])
+            return std::nullopt;
+        Value.remove_prefix(next[k].size());
+    }
+    if (!Value.empty())
+        return std::nullopt;
+    return rgb;
+}
+
+// One reading of a figure: the text with its comments cut, and a cursor.
+class TikzrReader {
+public:
+    TikzrReader(std::string_view Body, detail::DrawingBuilder& rBuilder)
+        : mText(Body), mBuilder(rBuilder) {}
+
+    void Run() {
+        bool in_document = false;
+        bool in_picture = false;
+        bool seen_picture = false;
+        while (true) {
+            SkipBlanks();
+            if (mPos >= mText.size())
+                break;
+            if (mText[mPos] != '\\')
+                throw ReadError("TikZ: unexpected text '" + tikzr_construct_at(mText, mPos) + "'");
+            ++mPos;
+            std::size_t end = mPos;
+            while (end < mText.size() && ((mText[end] >= 'a' && mText[end] <= 'z') ||
+                                          (mText[end] >= 'A' && mText[end] <= 'Z')))
+                ++end;
+            const std::string_view name = mText.substr(mPos, end - mPos);
+            if (name.empty())
+                throw ReadError("TikZ: unexpected control sequence '\\" +
+                                tikzr_construct_at(mText, mPos) + "'");
+            mPos = end;
+            if (name == "documentclass" || name == "usepackage") {
+                SkipBlanks();
+                if (mPos < mText.size() && mText[mPos] == '[')
+                    Balanced('[', ']');
+                SkipBlanks();
+                Balanced('{', '}');
+            } else if (name == "begin" || name == "end") {
+                SkipBlanks();
+                const std::string_view env = Balanced('{', '}');
+                if (env == "document") {
+                    if (name == "begin" ? in_document : !in_document)
+                        throw ReadError("TikZ: unbalanced document environment");
+                    in_document = name == "begin";
+                } else if (env == "tikzpicture") {
+                    if (name == "begin") {
+                        if (in_picture || seen_picture)
+                            throw ReadError("TikZ: only one tikzpicture is read");
+                        SkipBlanks();
+                        if (mPos < mText.size() && mText[mPos] == '[')
+                            PictureOptions(Balanced('[', ']'));
+                        in_picture = seen_picture = true;
+                    } else {
+                        if (!in_picture)
+                            throw ReadError("TikZ: \\end{tikzpicture} without its begin");
+                        in_picture = false;
+                    }
+                } else {
+                    throw ReadError("TikZ: the environment '" + detail::drawing_safe(env) +
+                                    "' is not supported");
+                }
+            } else if (name == "draw") {
+                RequirePicture(in_picture, name);
+                Draw();
+            } else if (name == "fill") {
+                RequirePicture(in_picture, name);
+                ColorBarSwatch();
+            } else if (name == "node") {
+                RequirePicture(in_picture, name);
+                SkipStatement();
+            } else {
+                throw ReadError("TikZ: the command \\" + std::string(name) + " is not supported");
+            }
+        }
+        if (in_picture)
+            throw ReadError("TikZ: the tikzpicture is not closed");
+        if (!seen_picture)
+            throw ReadError("TikZ: no tikzpicture");
+    }
+
+private:
+    void SkipBlanks() {
+        while (mPos < mText.size() && detail::text_is_blank(mText[mPos]))
+            ++mPos;
+    }
+
+    static void RequirePicture(bool InPicture, std::string_view Name) {
+        if (!InPicture)
+            throw ReadError("TikZ: \\" + std::string(Name) + " outside a tikzpicture");
+    }
+
+    // The text between the bracket at the cursor and its match (braces nest and
+    // hide brackets); the cursor ends just past the closing one.
+    std::string_view Balanced(char Open, char Close) {
+        if (mPos >= mText.size() || mText[mPos] != Open)
+            throw ReadError(std::string("TikZ: expected '") + Open + "'");
+        const std::size_t start = mPos + 1;
+        int braces = 0;
+        for (std::size_t i = start; i < mText.size(); ++i) {
+            const char c = mText[i];
+            if (c == '{') {
+                ++braces;
+            } else if (c == '}' && braces > 0) {
+                --braces;
+            } else if (c == Close && braces == 0) {
+                mPos = i + 1;
+                return mText.substr(start, i - start);
+            }
+        }
+        throw ReadError(std::string("TikZ: '") + Open + "' is never closed");
+    }
+
+    // `scale=` and `line width=` only: anything else changes the drawing.
+    static void PictureOptions(std::string_view Options) {
+        for (std::string_view item : tikzr_split_options(Options)) {
+            item = tikzr_trim(item);
+            if (item.empty())
+                continue;
+            const std::size_t eq = item.find('=');
+            const std::string_view key = tikzr_trim(item.substr(0, eq));
+            if (key != "scale" && key != "line width")
+                throw ReadError("TikZ: the tikzpicture option '" + detail::drawing_safe(key) +
+                                "' is not supported");
+        }
+    }
+
+    // `fill`, `draw` and `line width`; the fill is returned when it is an RGB one.
+    static std::optional<std::array<int, 3>> DrawOptions(std::string_view Options) {
+        std::optional<std::array<int, 3>> fill;
+        for (std::string_view item : tikzr_split_options(Options)) {
+            item = tikzr_trim(item);
+            if (item.empty())
+                continue;
+            const std::size_t eq = item.find('=');
+            const std::string_view key = tikzr_trim(item.substr(0, eq));
+            if (key != "fill" && key != "draw" && key != "line width")
+                throw ReadError("TikZ: the \\draw option '" + detail::drawing_safe(key) +
+                                "' is not supported");
+            if (key == "fill" && eq != std::string_view::npos)
+                fill = tikzr_rgb(item.substr(eq + 1));
+        }
+        return fill;
+    }
+
+    // `(x,y)` -> the welded vertex; x and y are plain numbers, nothing else.
+    // @p Keep false (a colour-bar corner): checked, not welded into the mesh.
+    std::int64_t Coordinate(bool Keep = true) {
+        SkipBlanks();
+        if (mPos >= mText.size())
+            throw ReadError("TikZ: a path ends where a coordinate is expected");
+        if (mText[mPos] == '+')
+            throw ReadError("TikZ: relative coordinates (+, ++) are not supported");
+        if (mText[mPos] != '(')
+            throw ReadError("TikZ: unsupported path construct '" + tikzr_construct_at(mText, mPos) +
+                            "'");
+        const std::size_t close = mText.find(')', mPos);
+        if (close == std::string_view::npos)
+            throw ReadError("TikZ: a coordinate is never closed");
+        const std::string_view inside = mText.substr(mPos + 1, close - mPos - 1);
+        mPos = close + 1;
+        const std::size_t comma = inside.find(',');
+        const std::string_view x = tikzr_trim(inside.substr(0, comma));
+        const std::string_view y = comma == std::string_view::npos
+                                       ? std::string_view()
+                                       : tikzr_trim(inside.substr(comma + 1));
+        if (comma == std::string_view::npos || x.empty() || y.empty() ||
+            detail::drawing_scan_number(x, 0) != x.size() ||
+            detail::drawing_scan_number(y, 0) != y.size())
+            throw ReadError("TikZ: the coordinate (" + detail::drawing_safe(inside) +
+                            ") is not a plain (x,y) pair of numbers (named, polar, calc, 3-D and "
+                            "unit-carrying coordinates are not supported)");
+        if (!Keep) {
+            detail::drawing_number_value(x, "TikZ");
+            detail::drawing_number_value(y, "TikZ");
+            return -1;
+        }
+        return mBuilder.Weld(x, y, [&] {
+            return std::make_pair(detail::drawing_number_value(x, "TikZ"),
+                                  detail::drawing_number_value(y, "TikZ"));
+        });
+    }
+
+    // `\draw[opts] (x,y) -- (x,y) ... [-- cycle];`
+    void Draw() {
+        SkipBlanks();
+        std::optional<std::array<int, 3>> fill;
+        if (mPos < mText.size() && mText[mPos] == '[')
+            fill = DrawOptions(Balanced('[', ']'));
+        std::vector<std::int64_t> ids;
+        bool closed = false;
+        while (true) {
+            ids.push_back(Coordinate());
+            SkipBlanks();
+            if (mPos < mText.size() && mText[mPos] == ';') {
+                ++mPos;
+                break;
+            }
+            if (mText.substr(mPos, 2) != "--")
+                throw ReadError("TikZ: unsupported path construct '" +
+                                tikzr_construct_at(mText, mPos) + "'");
+            mPos += 2;
+            SkipBlanks();
+            if (mText.substr(mPos, 5) == "cycle" &&
+                (mPos + 5 >= mText.size() ||
+                 !((mText[mPos + 5] >= 'a' && mText[mPos + 5] <= 'z') ||
+                   (mText[mPos + 5] >= 'A' && mText[mPos + 5] <= 'Z')))) {
+                mPos += 5;
+                closed = true;
+                SkipBlanks();
+                if (mPos >= mText.size() || mText[mPos] != ';')
+                    throw ReadError("TikZ: expected ';' after cycle");
+                ++mPos;
+                break;
+            }
+        }
+        mBuilder.AddCell(ids, closed, fill);
+    }
+
+    // `\fill[colour] (x,y) rectangle (x,y);` -- the colour bar's swatches.
+    void ColorBarSwatch() {
+        SkipBlanks();
+        if (mPos < mText.size() && mText[mPos] == '[')
+            Balanced('[', ']');
+        Coordinate(false);
+        SkipBlanks();
+        if (mText.substr(mPos, 9) != "rectangle")
+            throw ReadError("TikZ: \\fill is only read as a colour-bar rectangle, found '" +
+                            tikzr_construct_at(mText, mPos) + "'");
+        mPos += 9;
+        Coordinate(false);
+        SkipBlanks();
+        if (mPos >= mText.size() || mText[mPos] != ';')
+            throw ReadError("TikZ: expected ';' after the rectangle");
+        ++mPos;
+    }
+
+    // `\node ... ;` -- the colour bar's labels: up to the next ';' outside braces.
+    void SkipStatement() {
+        int braces = 0;
+        for (; mPos < mText.size(); ++mPos) {
+            const char c = mText[mPos];
+            if (c == '{') {
+                ++braces;
+            } else if (c == '}' && braces > 0) {
+                --braces;
+            } else if (c == ';' && braces == 0) {
+                ++mPos;
+                return;
+            }
+        }
+        throw ReadError("TikZ: a \\node is never closed");
+    }
+
+    std::string_view mText;
+    std::size_t mPos = 0;
+    detail::DrawingBuilder& mBuilder;
+};
 
 }  // namespace
 
@@ -129427,7 +131520,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
     const std::string pic_opt_str = pic_opts.empty() ? "" : ("[" + pic_opts + "]");
 
-    std::vector<std::string> out;
+    std::vector<std::string> out = tikz_marker_lines(false, 0.0, 0.0, 0.0);
     if (Standalone) {
         out.push_back("\\documentclass{standalone}");
         out.push_back("\\usepackage{tikz}");
@@ -129446,6 +131539,56 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
     for (std::size_t i = 0; i < out.size(); ++i)
         os << out[i] << '\n';
+}
+
+Mesh read_tikz(const std::string& rPath, const ReadOptions& rOptions) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+
+    // Comments are cut at the first unescaped '%'. The marker is the comment lines
+    // that lead the file, before any code.
+    std::string body;
+    body.reserve(source.Size());
+    std::vector<std::string> head;
+    bool leading = true;
+    for (std::string_view line : detail::split_lines(source.View())) {
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        std::size_t cut = std::string_view::npos;
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == '\\') {
+                ++i;
+            } else if (line[i] == '%') {
+                cut = i;
+                break;
+            }
+        }
+        const std::string_view code = cut == std::string_view::npos ? line : line.substr(0, cut);
+        if (tikzr_trim(code).empty()) {
+            if (cut != std::string_view::npos && leading) {
+                std::string_view text = line.substr(cut);
+                while (!text.empty() && text.front() == '%')
+                    text.remove_prefix(1);
+                head.emplace_back(tikzr_trim(text));
+            }
+        } else {
+            leading = false;
+        }
+        body.append(code);
+        body.push_back('\n');
+    }
+
+    const detail::DrawingMarker marker = detail::parse_drawing_marker(head, "TikZ", false);
+    if (!marker.mFound && !rOptions.mLenient)
+        throw detail::drawing_unmarked_error("TikZ");
+
+    detail::DrawingBuilder builder("TikZ", "tikz:fill");
+    builder.SetWantFill(rOptions.WantsAnyData() && rOptions.WantsArray("tikz:fill"));
+    TikzrReader(body, builder).Run();
+
+    // Coordinates are verbatim: no flip, no scale.
+    Mesh mesh = builder.Finish(/*Flip=*/false, 1.0, 0.0, 0.0);
+    detail::drawing_read_warning("TikZ", marker);
+    return mesh;
 }
 
 }  // namespace meshioplusplus
@@ -138876,7 +141019,6 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <numeric>
 #include <sstream>
 #include <optional>
 #include <string>
@@ -139004,17 +141146,29 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
     std::string fmt = rDi.attribute("Format").value();
     DType dt = xdmf_to_dtype(data_type, precision);
 
-    std::size_t total = dims.empty() ? 0
-                                     : std::accumulate(dims.begin(), dims.end(), std::size_t{1},
-                                                       std::multiplies<>());
+    // The declared element count, overflow-checked: a product that wraps would
+    // size the buffers from a number the file does not describe.
+    std::size_t total = 0;
+    if (!dims.empty()) {
+        total = 1;
+        for (std::size_t d : dims) {
+            if (d != 0 && total > std::numeric_limits<std::size_t>::max() / d)
+                throw ReadError("XDMF: DataItem Dimensions overflow");
+            total *= d;
+        }
+    }
 
     if (fmt == "XML") {
         // The element's text read in place, token by token, and parsed straight
         // into the typed buffer with the dtype switch taken once (roadmap §3):
         // the lenient parse_double / strtoll / strtoull store_token used. A
-        // short item leaves the rest zero, as the zero-filled array did.
-        NDArray a = NDArray::Uninit(dt, dims);
+        // short item leaves the rest zero, as the zero-filled array did. An item
+        // cannot hold more values than characters of text, so a larger count is
+        // refused before the buffer is sized from it.
         const std::string_view text = rDi.text().get();
+        if (total > text.size())
+            throw ReadError("XDMF: DataItem declares more values than its text holds");
+        NDArray a = NDArray::Uninit(dt, dims);
         detail::dispatch_dtype(dt, [&]<class T>() {
             T* out = a.As<T>();
             std::size_t i = 0, pos = 0;
@@ -139052,6 +141206,14 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
             if (!bin)
                 throw ReadError("XDMF: could not open binary file " + path);
         }
+        // The file must hold the declared values: a count beyond its bytes is a
+        // header the payload cannot back, refused before the buffer is sized.
+        bin.seekg(0, std::ios::end);
+        const std::streamoff file_bytes = bin.tellg();
+        bin.seekg(0, std::ios::beg);
+        if (file_bytes < 0 || total > static_cast<std::size_t>(file_bytes) / dtype_size(dt))
+            throw ReadError("XDMF: binary file " + path +
+                            " holds fewer values than its DataItem declares");
         NDArray a(dt, dims);
         bin.read(reinterpret_cast<char*>(a.Data()), static_cast<std::streamsize>(a.Nbytes()));
         return a;
@@ -170896,13 +173058,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap" || rFormat == "frd") {
+        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd' and 'exodus' can); "
+           "'frd', 'radioss_th' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -171191,12 +173353,13 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
             "select");
-    const char* who = rFormat == "exodus"   ? "Exodus"
-                      : rFormat == "vtkhdf" ? "VTKHDF"
-                      : rFormat == "pvd"    ? "PVD"
-                      : rFormat == "femap"  ? "Femap"
-                      : rFormat == "frd"    ? "CalculiX FRD"
-                                            : "XDMF";
+    const char* who = rFormat == "exodus"       ? "Exodus"
+                      : rFormat == "vtkhdf"     ? "VTKHDF"
+                      : rFormat == "pvd"        ? "PVD"
+                      : rFormat == "femap"      ? "Femap"
+                      : rFormat == "frd"        ? "CalculiX FRD"
+                      : rFormat == "radioss_th" ? "Radioss time-history"
+                                                : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -171210,10 +173373,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
             "select");
-    if (rFormat == "frd" && rOptions.mEncoding != WriteEncoding::Default)
+    if (rFormat == "radioss_th" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
-            "meshio++: sequence: the transient CalculiX FRD writer has no ASCII/binary variant "
-            "to select");
+            "meshio++: sequence: the transient Radioss time-history writer has no ASCII/binary "
+            "variant to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -171287,13 +173450,26 @@ private:
 /// the mesh with the first step, so `WritePointsCells` has nothing to do.
 class SeqFrdSink final : public SeqSeriesSink {
 public:
-    explicit SeqFrdSink(const std::string& rPath) : mWriter(rPath) {}
+    SeqFrdSink(const std::string& rPath, const FrdWriteOptions& rOpts) : mWriter(rPath, rOpts) {}
     void WritePointsCells(const Mesh&) override {}
     void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
     void Finalize() override { mWriter.Finalize(); }
 
 private:
     FrdSeriesWriter mWriter;
+};
+
+/// A time-history file holds the descriptions once and an output per step: the writer
+/// writes them with the first step, so `WritePointsCells` has nothing to do.
+class SeqRadiossThSink final : public SeqSeriesSink {
+public:
+    explicit SeqRadiossThSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    RadiossThSeriesWriter mWriter;
 };
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -171331,8 +173507,13 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "femap")
         return std::make_unique<SeqFemapSink>(rPath);
-    if (rFormat == "frd")
-        return std::make_unique<SeqFrdSink>(rPath);
+    if (rFormat == "frd") {
+        FrdWriteOptions frd_opts;
+        frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;
+        return std::make_unique<SeqFrdSink>(rPath, frd_opts);
+    }
+    if (rFormat == "radioss_th")
+        return std::make_unique<SeqRadiossThSink>(rPath);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);
@@ -177576,6 +179757,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
         {"su2", meshioplusplus::read_su2},
+        // 2-D drawings, read only as the structure meshio++ writes; both take a
+        // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
+        {"svg", [](const std::string& path) { return meshioplusplus::read_svg(path); }},
+        {"tikz", [](const std::string& path) { return meshioplusplus::read_tikz(path); }},
         // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
         // bare name ambiguous (the exodus/mdpa/med/cgns story again).
         {"tecplot",
@@ -177664,6 +179849,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
         {"radioss",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
+        // No extension (`<run>T01`): by name or explicit format only.
+        {"radioss_th", meshioplusplus::write_radioss_th},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",
@@ -177727,10 +179914,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
         {"su2", meshioplusplus::write_su2},
-        // svg/tikz are write-only 2D-visualization formats; the flat bindings
-        // emit them with the fixed default styling (per-call overrides are out
-        // of scope for v1, per registry.hpp).
-        // glTF is write-only too; .glb/.gltf are told apart by the writer, so the
+        // svg/tikz are 2D-drawing formats (read only as the structure meshio++
+        // writes); the flat bindings emit them with the fixed default styling
+        // (per-call overrides are out of scope for v1, per registry.hpp).
+        // glTF is write-only; .glb/.gltf are told apart by the writer, so the
         // flat bindings write the container the suffix names with the defaults.
         {"gltf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); }},
         {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
@@ -178163,6 +180350,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
          }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
+        // meshio++ marker) and the narrowing options (the fill array).
+        {"svg", [](const std::string& path,
+                   const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
+        {"tikz", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_tikz(path, opts); }},
         // Abaqus .fil honours mTimeStep (its steps are the increments) and the
         // narrowing options.
         {"abaqus_fil",
@@ -178448,7 +180641,7 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" ||
+    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "frd" || rFormat == "gmsh" ||
            rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
            rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
            rFormat == "xdmf" || wopt_is_text_only(rFormat);
@@ -178544,6 +180737,11 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_ansys(rPath, rMesh, binary);
     } else if (fmt == "flac3d") {
         write_flac3d(rPath, rMesh, r_ff, binary);
+    } else if (fmt == "frd") {
+        // ASCII is the long I10 form `ccx` writes; binary is the raw little-endian layout.
+        FrdWriteOptions wopts;
+        wopts.mBinary = binary;
+        write_frd(rPath, rMesh, wopts);
     } else if (fmt == "gmsh") {
         write_gmsh41(rPath, rMesh, binary);
     } else if (fmt == "openfoam") {

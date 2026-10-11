@@ -191,6 +191,19 @@ TEST(TecplotPlt, RefusesWhatItCannotRead) {
         remove_file(p);
 }
 
+// A zone whose declared node count is far beyond the file, with a passive
+// variable: the passive column is sized from that count, so the reader asked
+// the allocator for more than it can hand out (the fuzzer's crash, the input is
+// tests/fuzz/regressions/tecplot/plt-passive-count-exceeds-file). The count is
+// checked against the file's bytes before anything is sized from it.
+TEST(TecplotPlt, APassiveVariableOnAZoneLargerThanTheFileIsAReadError) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "tecplot" /
+                                        "plt-passive-count-exceeds-file";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    EXPECT_THROW(meshioplusplus::read_tecplot(input.string()), meshioplusplus::ReadError);
+}
+
 // A Tecplot 7.5 file (the layout VisIt's test files show): no FileType, a
 // 2-D text and a circle in the Tecplot 7 record layouts, an FE-point zone
 // (kind 3) whose element type follows its sizes, one extra word before the

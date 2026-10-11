@@ -29,6 +29,7 @@
 // Project includes
 #include "gmsh_fixtures.hpp"
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -577,6 +578,142 @@ TEST(Gmsh, WritingWithoutDimTagsEmitsNoEntities) {
     std::ifstream is(path);
     const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
     EXPECT_EQ(text.find("$Entities"), std::string::npos);
+    std::remove(path.c_str());
+}
+
+// A mixed mesh has more than one cell block and so needs more than one 4.1
+// entity. Without gmsh:dim_tags the writer gives each block an entity of its
+// own, with a tag that is unique within the block's dimension.
+namespace {
+meshioplusplus::Mesh gmsh_tet_hex_mesh() {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {1, 1, 0},
+                                    {0, 1, 0},
+                                    {0, 0, 1},
+                                    {1, 0, 1},
+                                    {1, 1, 1},
+                                    {0, 1, 1},
+                                    {2, 0, 0},
+                                    {2, 1, 0},
+                                    {2, 0, 1}}));
+    m.AddCellBlock("tetra", mt::conn_from({{1, 8, 2, 5}, {2, 8, 9, 10}}));
+    m.AddCellBlock("hexahedron", mt::conn_from({{0, 1, 2, 3, 4, 5, 6, 7}}));
+    return m;
+}
+
+std::string gmsh_slurp(const std::string& rPath) {
+    std::ifstream is(rPath, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+}
+
+// The entity tag of every block, as the written file names it.
+std::vector<std::int64_t> gmsh_block_entity_tags(const meshioplusplus::Mesh& rMesh) {
+    std::vector<std::int64_t> tags;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        tags.push_back(meshioplusplus::detail::read_int(rMesh.CellData("gmsh:geometrical", b), 0));
+    return tags;
+}
+}  // namespace
+
+TEST(Gmsh, MixedMeshWithoutDimTagsWritesAnEntityPerBlock) {
+    // Every block of each mesh has the same dimension, so the entity tags the
+    // file names must all differ.
+    // Built one at a time: a KRATOS mesh is not copy-constructible, so the two
+    // cannot share an initializer list.
+    for (const auto make : {&mt::tri_quad_mesh, &gmsh_tet_hex_mesh}) {
+        const meshioplusplus::Mesh mesh = make();
+        for (bool binary : {false, true}) {
+            const std::string path = mt::temp_path(".msh");
+            meshioplusplus::write_gmsh41(path, mesh, binary);
+            if (!binary)
+                EXPECT_NE(gmsh_slurp(path).find("$Entities"), std::string::npos);
+
+            const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+            ASSERT_EQ(back.NumPoints(), mesh.NumPoints());
+            ASSERT_EQ(back.NumCellBlocks(), mesh.NumCellBlocks()) << "binary=" << binary;
+            for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+                EXPECT_EQ(back.Cells(b).Type(), mesh.Cells(b).Type());
+                EXPECT_EQ(back.Cells(b).NumCells(), mesh.Cells(b).NumCells());
+            }
+            const std::vector<std::int64_t> tags = gmsh_block_entity_tags(back);
+            for (std::size_t i = 0; i < tags.size(); ++i)
+                for (std::size_t j = i + 1; j < tags.size(); ++j)
+                    EXPECT_NE(tags[i], tags[j])
+                        << "blocks " << i << " and " << j << " share an entity";
+            // No region was given, so none is invented.
+            EXPECT_EQ(back.NumRegions(), 0u);
+            EXPECT_FALSE(back.HasCellData("gmsh:physical"));
+            std::remove(path.c_str());
+        }
+    }
+}
+
+TEST(Gmsh, MixedMeshEntityTagsAreFreeTagsInTheirDimension) {
+    // tri_quad_mesh is triangle, quad, triangle: three dimension-2 blocks.
+    const std::string path = mt::temp_path(".msh");
+    meshioplusplus::write_gmsh41(path, mt::tri_quad_mesh(), false);
+    const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+    EXPECT_EQ(gmsh_block_entity_tags(back), (std::vector<std::int64_t>{1, 2, 3}));
+
+    // A tet block and a hex block are both dimension 3: tags 1 and 2.
+    meshioplusplus::write_gmsh41(path, gmsh_tet_hex_mesh(), false);
+    const meshioplusplus::Mesh back3 = meshioplusplus::read_gmsh(path);
+    EXPECT_EQ(gmsh_block_entity_tags(back3), (std::vector<std::int64_t>{1, 2}));
+    std::remove(path.c_str());
+}
+
+// Blocks of one region used to collide: the entity tag was the region tag, and
+// a triangle and a quad block of one region are two entities of dimension 2.
+TEST(Gmsh, OneRegionSpanningTwoBlocksOfADimensionGetsTwoEntities) {
+    meshioplusplus::Mesh mesh = mt::tri_quad_mesh();  // triangle(2), quad(1), triangle(1)
+    meshioplusplus::NDArray entries =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {4});
+    for (std::int64_t i = 0; i < 4; ++i)
+        entries.As<std::int64_t>()[i] = i;
+    mesh.AddRegion(
+        meshioplusplus::Region("plate", meshioplusplus::RegionKind::Cell, std::move(entries)));
+
+    for (bool binary : {false, true}) {
+        const std::string path = mt::temp_path(".msh");
+        meshioplusplus::write_gmsh41(path, mesh, binary);
+        const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+        ASSERT_EQ(back.NumCellBlocks(), 3u) << "binary=" << binary;
+        // The region tag stays on the first block as its entity tag; the others
+        // take the next free tags of the dimension.
+        EXPECT_EQ(gmsh_block_entity_tags(back), (std::vector<std::int64_t>{1, 2, 3}));
+        ASSERT_NE(back.FindRegion("plate", meshioplusplus::RegionKind::Cell),
+                  meshioplusplus::Mesh::npos);
+        const meshioplusplus::Region& plate =
+            back.Region(back.FindRegion("plate", meshioplusplus::RegionKind::Cell));
+        EXPECT_EQ(plate.NumEntries(), 4u);
+        EXPECT_EQ(plate.mDim, 2);
+        std::remove(path.c_str());
+    }
+}
+
+// A region tag that no other block of its dimension holds stays the entity
+// tag, so a block-aligned mesh keeps writing the entities it always did.
+TEST(Gmsh, UniqueRegionTagsStayTheEntityTags) {
+    meshioplusplus::Mesh mesh = gmsh_tet_hex_mesh();
+    meshioplusplus::NDArray tets =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {2});
+    tets.As<std::int64_t>()[0] = 0;
+    tets.As<std::int64_t>()[1] = 1;
+    meshioplusplus::NDArray hex =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    hex.As<std::int64_t>()[0] = 2;  // the hex is global cell 2
+    mesh.AddRegion(
+        meshioplusplus::Region("tets", meshioplusplus::RegionKind::Cell, 3, 7, std::move(tets)));
+    mesh.AddRegion(
+        meshioplusplus::Region("hex", meshioplusplus::RegionKind::Cell, 3, 4, std::move(hex)));
+
+    const std::string path = mt::temp_path(".msh");
+    meshioplusplus::write_gmsh41(path, mesh, false);
+    const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    EXPECT_EQ(gmsh_block_entity_tags(back), (std::vector<std::int64_t>{7, 4}));
     std::remove(path.c_str());
 }
 

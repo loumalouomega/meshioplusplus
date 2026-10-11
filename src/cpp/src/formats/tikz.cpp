@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -36,6 +37,9 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/drawing.hpp"
+#include "../detail/open_source.hpp"
+#include "../detail/text_cursor.hpp"
 
 namespace meshioplusplus {
 
@@ -47,6 +51,18 @@ std::string tikz_fmt_num(double value, const std::string& rSpec) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
     return buf;
+}
+
+// The marker comment that opens the file: the provenance tag, the
+// `Drawing: ...` line, then whatever else the provenance block carries, each as a
+// `%` line (the twin of `_marker_lines` in `_tikz.py`).
+std::vector<std::string> tikz_marker_lines(bool Projected, double Azimuth, double Elevation,
+                                           double Roll) {
+    std::vector<std::string> lines;
+    for (const std::string& line : detail::drawing_comment_lines(
+             detail::drawing_marker_line(Projected, Azimuth, Elevation, Roll, nullptr)))
+        lines.push_back("% " + line);
+    return lines;
 }
 
 // TikZ's inline colour vocabulary. The braces are required: without them the
@@ -169,7 +185,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     }
     const std::string pic_opt_str = pic_opts.empty() ? "" : ("[" + pic_opts + "]");
 
-    std::vector<std::string> out;
+    std::vector<std::string> out = tikz_marker_lines(true, azimuth, elevation, roll);
     if (Standalone) {
         out.push_back("\\documentclass{standalone}");
         out.push_back("\\usepackage{tikz}");
@@ -189,6 +205,334 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     for (std::size_t i = 0; i < out.size(); ++i)
         os << out[i] << '\n';
 }
+
+// ---------------------------------------------------------------------------
+// Reader. Inverts exactly what the writer above emits, and nothing more: see
+// doc/formats/tikz.md ("Reading") and detail/drawing.hpp.
+// ---------------------------------------------------------------------------
+
+// A name for the construct at the cursor, for a refusal: the next run of
+// non-blank characters, cut short.
+std::string tikzr_construct_at(std::string_view Text, std::size_t Pos) {
+    std::size_t end = Pos;
+    while (end < Text.size() && !detail::text_is_blank(Text[end]) && end - Pos < 16)
+        ++end;
+    return detail::drawing_safe(Text.substr(Pos, end - Pos));
+}
+
+// Splits an option list on the commas outside braces.
+std::vector<std::string_view> tikzr_split_options(std::string_view Text) {
+    std::vector<std::string_view> items;
+    int depth = 0;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < Text.size(); ++i) {
+        if (Text[i] == '{') {
+            ++depth;
+        } else if (Text[i] == '}') {
+            --depth;
+        } else if (Text[i] == ',' && depth == 0) {
+            items.push_back(Text.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    items.push_back(Text.substr(start));
+    return items;
+}
+
+std::string_view tikzr_trim(std::string_view Text) {
+    while (!Text.empty() && detail::text_is_blank(Text.front()))
+        Text.remove_prefix(1);
+    while (!Text.empty() && detail::text_is_blank(Text.back()))
+        Text.remove_suffix(1);
+    return Text;
+}
+
+// `{rgb,255:red,R;green,G;blue,B}` -> {R, G, B}; anything else (gray!30, ...) -> nullopt.
+std::optional<std::array<int, 3>> tikzr_rgb(std::string_view Value) {
+    Value = tikzr_trim(Value);
+    if (Value.size() < 2 || Value.front() != '{' || Value.back() != '}')
+        return std::nullopt;
+    Value = Value.substr(1, Value.size() - 2);
+    constexpr std::string_view head = "rgb,255:red,";
+    if (Value.substr(0, head.size()) != head)
+        return std::nullopt;
+    Value.remove_prefix(head.size());
+    std::array<int, 3> rgb{};
+    const std::array<std::string_view, 3> next = {";green,", ";blue,", ""};
+    for (std::size_t k = 0; k < 3; ++k) {
+        std::size_t end = 0;
+        while (end < Value.size() && Value[end] >= '0' && Value[end] <= '9')
+            ++end;
+        if (end == 0 || end > 3)
+            return std::nullopt;
+        int v = 0;
+        for (std::size_t i = 0; i < end; ++i)
+            v = v * 10 + (Value[i] - '0');
+        if (v > 255)
+            return std::nullopt;
+        rgb[k] = v;
+        Value.remove_prefix(end);
+        if (Value.substr(0, next[k].size()) != next[k])
+            return std::nullopt;
+        Value.remove_prefix(next[k].size());
+    }
+    if (!Value.empty())
+        return std::nullopt;
+    return rgb;
+}
+
+// One reading of a figure: the text with its comments cut, and a cursor.
+class TikzrReader {
+public:
+    TikzrReader(std::string_view Body, detail::DrawingBuilder& rBuilder)
+        : mText(Body), mBuilder(rBuilder) {}
+
+    void Run() {
+        bool in_document = false;
+        bool in_picture = false;
+        bool seen_picture = false;
+        while (true) {
+            SkipBlanks();
+            if (mPos >= mText.size())
+                break;
+            if (mText[mPos] != '\\')
+                throw ReadError("TikZ: unexpected text '" + tikzr_construct_at(mText, mPos) + "'");
+            ++mPos;
+            std::size_t end = mPos;
+            while (end < mText.size() && ((mText[end] >= 'a' && mText[end] <= 'z') ||
+                                          (mText[end] >= 'A' && mText[end] <= 'Z')))
+                ++end;
+            const std::string_view name = mText.substr(mPos, end - mPos);
+            if (name.empty())
+                throw ReadError("TikZ: unexpected control sequence '\\" +
+                                tikzr_construct_at(mText, mPos) + "'");
+            mPos = end;
+            if (name == "documentclass" || name == "usepackage") {
+                SkipBlanks();
+                if (mPos < mText.size() && mText[mPos] == '[')
+                    Balanced('[', ']');
+                SkipBlanks();
+                Balanced('{', '}');
+            } else if (name == "begin" || name == "end") {
+                SkipBlanks();
+                const std::string_view env = Balanced('{', '}');
+                if (env == "document") {
+                    if (name == "begin" ? in_document : !in_document)
+                        throw ReadError("TikZ: unbalanced document environment");
+                    in_document = name == "begin";
+                } else if (env == "tikzpicture") {
+                    if (name == "begin") {
+                        if (in_picture || seen_picture)
+                            throw ReadError("TikZ: only one tikzpicture is read");
+                        SkipBlanks();
+                        if (mPos < mText.size() && mText[mPos] == '[')
+                            PictureOptions(Balanced('[', ']'));
+                        in_picture = seen_picture = true;
+                    } else {
+                        if (!in_picture)
+                            throw ReadError("TikZ: \\end{tikzpicture} without its begin");
+                        in_picture = false;
+                    }
+                } else {
+                    throw ReadError("TikZ: the environment '" + detail::drawing_safe(env) +
+                                    "' is not supported");
+                }
+            } else if (name == "draw") {
+                RequirePicture(in_picture, name);
+                Draw();
+            } else if (name == "fill") {
+                RequirePicture(in_picture, name);
+                ColorBarSwatch();
+            } else if (name == "node") {
+                RequirePicture(in_picture, name);
+                SkipStatement();
+            } else {
+                throw ReadError("TikZ: the command \\" + std::string(name) + " is not supported");
+            }
+        }
+        if (in_picture)
+            throw ReadError("TikZ: the tikzpicture is not closed");
+        if (!seen_picture)
+            throw ReadError("TikZ: no tikzpicture");
+    }
+
+private:
+    void SkipBlanks() {
+        while (mPos < mText.size() && detail::text_is_blank(mText[mPos]))
+            ++mPos;
+    }
+
+    static void RequirePicture(bool InPicture, std::string_view Name) {
+        if (!InPicture)
+            throw ReadError("TikZ: \\" + std::string(Name) + " outside a tikzpicture");
+    }
+
+    // The text between the bracket at the cursor and its match (braces nest and
+    // hide brackets); the cursor ends just past the closing one.
+    std::string_view Balanced(char Open, char Close) {
+        if (mPos >= mText.size() || mText[mPos] != Open)
+            throw ReadError(std::string("TikZ: expected '") + Open + "'");
+        const std::size_t start = mPos + 1;
+        int braces = 0;
+        for (std::size_t i = start; i < mText.size(); ++i) {
+            const char c = mText[i];
+            if (c == '{') {
+                ++braces;
+            } else if (c == '}' && braces > 0) {
+                --braces;
+            } else if (c == Close && braces == 0) {
+                mPos = i + 1;
+                return mText.substr(start, i - start);
+            }
+        }
+        throw ReadError(std::string("TikZ: '") + Open + "' is never closed");
+    }
+
+    // `scale=` and `line width=` only: anything else changes the drawing.
+    static void PictureOptions(std::string_view Options) {
+        for (std::string_view item : tikzr_split_options(Options)) {
+            item = tikzr_trim(item);
+            if (item.empty())
+                continue;
+            const std::size_t eq = item.find('=');
+            const std::string_view key = tikzr_trim(item.substr(0, eq));
+            if (key != "scale" && key != "line width")
+                throw ReadError("TikZ: the tikzpicture option '" + detail::drawing_safe(key) +
+                                "' is not supported");
+        }
+    }
+
+    // `fill`, `draw` and `line width`; the fill is returned when it is an RGB one.
+    static std::optional<std::array<int, 3>> DrawOptions(std::string_view Options) {
+        std::optional<std::array<int, 3>> fill;
+        for (std::string_view item : tikzr_split_options(Options)) {
+            item = tikzr_trim(item);
+            if (item.empty())
+                continue;
+            const std::size_t eq = item.find('=');
+            const std::string_view key = tikzr_trim(item.substr(0, eq));
+            if (key != "fill" && key != "draw" && key != "line width")
+                throw ReadError("TikZ: the \\draw option '" + detail::drawing_safe(key) +
+                                "' is not supported");
+            if (key == "fill" && eq != std::string_view::npos)
+                fill = tikzr_rgb(item.substr(eq + 1));
+        }
+        return fill;
+    }
+
+    // `(x,y)` -> the welded vertex; x and y are plain numbers, nothing else.
+    // @p Keep false (a colour-bar corner): checked, not welded into the mesh.
+    std::int64_t Coordinate(bool Keep = true) {
+        SkipBlanks();
+        if (mPos >= mText.size())
+            throw ReadError("TikZ: a path ends where a coordinate is expected");
+        if (mText[mPos] == '+')
+            throw ReadError("TikZ: relative coordinates (+, ++) are not supported");
+        if (mText[mPos] != '(')
+            throw ReadError("TikZ: unsupported path construct '" + tikzr_construct_at(mText, mPos) +
+                            "'");
+        const std::size_t close = mText.find(')', mPos);
+        if (close == std::string_view::npos)
+            throw ReadError("TikZ: a coordinate is never closed");
+        const std::string_view inside = mText.substr(mPos + 1, close - mPos - 1);
+        mPos = close + 1;
+        const std::size_t comma = inside.find(',');
+        const std::string_view x = tikzr_trim(inside.substr(0, comma));
+        const std::string_view y = comma == std::string_view::npos
+                                       ? std::string_view()
+                                       : tikzr_trim(inside.substr(comma + 1));
+        if (comma == std::string_view::npos || x.empty() || y.empty() ||
+            detail::drawing_scan_number(x, 0) != x.size() ||
+            detail::drawing_scan_number(y, 0) != y.size())
+            throw ReadError("TikZ: the coordinate (" + detail::drawing_safe(inside) +
+                            ") is not a plain (x,y) pair of numbers (named, polar, calc, 3-D and "
+                            "unit-carrying coordinates are not supported)");
+        if (!Keep) {
+            detail::drawing_number_value(x, "TikZ");
+            detail::drawing_number_value(y, "TikZ");
+            return -1;
+        }
+        return mBuilder.Weld(x, y, [&] {
+            return std::make_pair(detail::drawing_number_value(x, "TikZ"),
+                                  detail::drawing_number_value(y, "TikZ"));
+        });
+    }
+
+    // `\draw[opts] (x,y) -- (x,y) ... [-- cycle];`
+    void Draw() {
+        SkipBlanks();
+        std::optional<std::array<int, 3>> fill;
+        if (mPos < mText.size() && mText[mPos] == '[')
+            fill = DrawOptions(Balanced('[', ']'));
+        std::vector<std::int64_t> ids;
+        bool closed = false;
+        while (true) {
+            ids.push_back(Coordinate());
+            SkipBlanks();
+            if (mPos < mText.size() && mText[mPos] == ';') {
+                ++mPos;
+                break;
+            }
+            if (mText.substr(mPos, 2) != "--")
+                throw ReadError("TikZ: unsupported path construct '" +
+                                tikzr_construct_at(mText, mPos) + "'");
+            mPos += 2;
+            SkipBlanks();
+            if (mText.substr(mPos, 5) == "cycle" &&
+                (mPos + 5 >= mText.size() ||
+                 !((mText[mPos + 5] >= 'a' && mText[mPos + 5] <= 'z') ||
+                   (mText[mPos + 5] >= 'A' && mText[mPos + 5] <= 'Z')))) {
+                mPos += 5;
+                closed = true;
+                SkipBlanks();
+                if (mPos >= mText.size() || mText[mPos] != ';')
+                    throw ReadError("TikZ: expected ';' after cycle");
+                ++mPos;
+                break;
+            }
+        }
+        mBuilder.AddCell(ids, closed, fill);
+    }
+
+    // `\fill[colour] (x,y) rectangle (x,y);` -- the colour bar's swatches.
+    void ColorBarSwatch() {
+        SkipBlanks();
+        if (mPos < mText.size() && mText[mPos] == '[')
+            Balanced('[', ']');
+        Coordinate(false);
+        SkipBlanks();
+        if (mText.substr(mPos, 9) != "rectangle")
+            throw ReadError("TikZ: \\fill is only read as a colour-bar rectangle, found '" +
+                            tikzr_construct_at(mText, mPos) + "'");
+        mPos += 9;
+        Coordinate(false);
+        SkipBlanks();
+        if (mPos >= mText.size() || mText[mPos] != ';')
+            throw ReadError("TikZ: expected ';' after the rectangle");
+        ++mPos;
+    }
+
+    // `\node ... ;` -- the colour bar's labels: up to the next ';' outside braces.
+    void SkipStatement() {
+        int braces = 0;
+        for (; mPos < mText.size(); ++mPos) {
+            const char c = mText[mPos];
+            if (c == '{') {
+                ++braces;
+            } else if (c == '}' && braces > 0) {
+                --braces;
+            } else if (c == ';' && braces == 0) {
+                ++mPos;
+                return;
+            }
+        }
+        throw ReadError("TikZ: a \\node is never closed");
+    }
+
+    std::string_view mText;
+    std::size_t mPos = 0;
+    detail::DrawingBuilder& mBuilder;
+};
 
 }  // namespace
 
@@ -334,7 +678,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
     const std::string pic_opt_str = pic_opts.empty() ? "" : ("[" + pic_opts + "]");
 
-    std::vector<std::string> out;
+    std::vector<std::string> out = tikz_marker_lines(false, 0.0, 0.0, 0.0);
     if (Standalone) {
         out.push_back("\\documentclass{standalone}");
         out.push_back("\\usepackage{tikz}");
@@ -353,6 +697,56 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
     for (std::size_t i = 0; i < out.size(); ++i)
         os << out[i] << '\n';
+}
+
+Mesh read_tikz(const std::string& rPath, const ReadOptions& rOptions) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+
+    // Comments are cut at the first unescaped '%'. The marker is the comment lines
+    // that lead the file, before any code.
+    std::string body;
+    body.reserve(source.Size());
+    std::vector<std::string> head;
+    bool leading = true;
+    for (std::string_view line : detail::split_lines(source.View())) {
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        std::size_t cut = std::string_view::npos;
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == '\\') {
+                ++i;
+            } else if (line[i] == '%') {
+                cut = i;
+                break;
+            }
+        }
+        const std::string_view code = cut == std::string_view::npos ? line : line.substr(0, cut);
+        if (tikzr_trim(code).empty()) {
+            if (cut != std::string_view::npos && leading) {
+                std::string_view text = line.substr(cut);
+                while (!text.empty() && text.front() == '%')
+                    text.remove_prefix(1);
+                head.emplace_back(tikzr_trim(text));
+            }
+        } else {
+            leading = false;
+        }
+        body.append(code);
+        body.push_back('\n');
+    }
+
+    const detail::DrawingMarker marker = detail::parse_drawing_marker(head, "TikZ", false);
+    if (!marker.mFound && !rOptions.mLenient)
+        throw detail::drawing_unmarked_error("TikZ");
+
+    detail::DrawingBuilder builder("TikZ", "tikz:fill");
+    builder.SetWantFill(rOptions.WantsAnyData() && rOptions.WantsArray("tikz:fill"));
+    TikzrReader(body, builder).Run();
+
+    // Coordinates are verbatim: no flip, no scale.
+    Mesh mesh = builder.Finish(/*Flip=*/false, 1.0, 0.0, 0.0);
+    detail::drawing_read_warning("TikZ", marker);
+    return mesh;
 }
 
 }  // namespace meshioplusplus

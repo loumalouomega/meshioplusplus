@@ -91,6 +91,80 @@ TEST(FortranRecords, SniffsTheFramingAndSplitsTheRecords) {
     EXPECT_THROW(detail::fortran_records(bad.data(), bad.size(), layout, "test"), ReadError);
 }
 
+namespace {
+
+// A length marker of `Width` bytes, written independently of the library.
+void put_marker(std::string& rOut, std::uint64_t Value, int Width, bool Big) {
+    for (int b = 0; b < Width; ++b) {
+        const int shift = Big ? 8 * (Width - 1 - b) : 8 * b;
+        rOut += static_cast<char>((Value >> shift) & 0xff);
+    }
+}
+
+}  // namespace
+
+TEST(FortranRecords, AppendRecordFramesInEveryLayoutAndReadsBack) {
+    for (const int width : {4, 8}) {
+        for (const bool big : {false, true}) {
+            const detail::FortranRecordLayout layout{width, big};
+            std::string expected, built;
+            std::vector<std::string> payloads{"abcd", "", std::string(13, 'x')};
+            for (const std::string& p : payloads) {
+                put_marker(expected, p.size(), width, big);
+                expected += p;
+                put_marker(expected, p.size(), width, big);
+                detail::fortran_append_record(built, p.data(), p.size(), layout);
+            }
+            EXPECT_EQ(built, expected) << width << (big ? " big" : " little");
+            const auto sniffed = detail::sniff_fortran_records(built.data(), built.size());
+            ASSERT_TRUE(sniffed.has_value());
+            EXPECT_EQ(sniffed->mMarkerBytes, width);
+            EXPECT_EQ(sniffed->mBigEndian, big);
+            const auto recs = detail::fortran_records(built.data(), built.size(), layout, "test");
+            ASSERT_EQ(recs.size(), payloads.size());
+            for (std::size_t i = 0; i < recs.size(); ++i)
+                EXPECT_EQ(built.substr(recs[i].mOffset, recs[i].mSize), payloads[i]);
+
+            // A cut-short tail: an error, unless the reader is lenient.
+            const std::string cut = built.substr(0, built.size() - 3);
+            EXPECT_THROW(detail::fortran_records(cut.data(), cut.size(), layout, "test"),
+                         ReadError);
+            EXPECT_EQ(detail::fortran_records(cut.data(), cut.size(), layout, "test", true).size(),
+                      2u);
+            const std::string runs_past = built.substr(0, built.size() - width - 8);
+            EXPECT_THROW(
+                detail::fortran_records(runs_past.data(), runs_past.size(), layout, "test"),
+                ReadError);
+            std::string bad = built;
+            bad.back() = 0x7f;  // the last trailing marker disagrees
+            EXPECT_THROW(detail::fortran_records(bad.data(), bad.size(), layout, "test"),
+                         ReadError);
+            EXPECT_EQ(detail::fortran_records(bad.data(), bad.size(), layout, "test", true).size(),
+                      2u);
+        }
+    }
+}
+
+TEST(FortranRecords, PutHelpersWriteBothByteOrders) {
+    std::string be, le;
+    detail::fortran_put_int32(be, 0x01020304, true);
+    detail::fortran_put_int32(le, 0x01020304, false);
+    EXPECT_EQ(be, std::string("\x01\x02\x03\x04", 4));
+    EXPECT_EQ(le, std::string("\x04\x03\x02\x01", 4));
+    be.clear();
+    detail::fortran_put_float32(be, 1.0F, true);
+    EXPECT_EQ(be, std::string("\x3f\x80\x00\x00", 4));
+    be.clear();
+    detail::fortran_put_float64(be, 1.0, true);
+    EXPECT_EQ(be, std::string("\x3f\xf0\x00\x00\x00\x00\x00\x00", 8));
+    le.clear();
+    detail::fortran_put_int64(le, -2, false);
+    EXPECT_EQ(le, std::string("\xfe\xff\xff\xff\xff\xff\xff\xff", 8));
+    std::string out;
+    EXPECT_NO_THROW(detail::fortran_append_record(out, nullptr, 0, {4, true}));
+    EXPECT_EQ(out, std::string(8, '\0'));
+}
+
 TEST(DegenerateSolid, CollapsesEveryDocumentedPattern) {
     using A = std::array<std::int64_t, 8>;
     EXPECT_STREQ(detail::collapse_brick(A{1, 2, 3, 4, 4, 4, 4, 4}).mType, "tetra");

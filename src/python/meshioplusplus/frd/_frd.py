@@ -700,6 +700,19 @@ def _small(value, what):
     return f"{value:5d}"
 
 
+_INT32 = np.iinfo(np.int32)
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
+
+
+def _i32(values, what):
+    """``values`` as little-endian ``int32``, refusing what does not fit."""
+    values = np.asarray(values)
+    if values.size and (values.min() < _INT32.min or values.max() > _INT32.max):
+        bad = int(values.min() if values.min() < _INT32.min else values.max())
+        raise WriteError(f"CalculiX FRD: {what} {bad} does not fit a 32-bit integer")
+    return values.astype("<i4")
+
+
 def _time_text(value):
     """The step value in the 12 columns of the ``100C`` header: as many decimals as
     fit, ``E12.5`` for a value too large for any."""
@@ -728,7 +741,7 @@ def _field_int(mesh, key, default):
 class _WritePlan:
     """The cells and nodes the writer makes of a mesh, and what it drops."""
 
-    def __init__(self, mesh, long_ids):
+    def __init__(self, mesh, long_ids, binary=False):
         points = np.asarray(mesh.points, dtype=np.float64)
         if points.ndim == 1:
             points = points.reshape(-1, 1)
@@ -739,7 +752,10 @@ class _WritePlan:
         self.coords[:, : points.shape[1]] = points
         if not np.isfinite(self.coords).all():
             raise WriteError("CalculiX FRD: a point coordinate is not finite")
+        # The binary layout holds int32 ids, as many as the long ASCII form.
+        long_ids = long_ids or binary
         self.long_ids = long_ids
+        self.binary = binary
         self.blocks = (
             []
         )  # (code, cell type, connectivity in file order, group, material)
@@ -833,8 +849,38 @@ def _mesh_lines(plan):
     return out
 
 
+def _mesh_binary(plan):
+    """The binary layout of the mesh: the ASCII banner and ``2C``/``3C`` headers (flag
+    3, then 2) with, after each, a raw little-endian record per entry and no
+    ``-1``/``-2``/``-3`` markers: ``[int32 id][3 x float64]`` per node and ``[int32 id,
+    type, group, material][int32 node x n]`` per element, as ``ccx`` writes ``*NODE
+    OUTPUT`` and ``*ELEMENT OUTPUT``."""
+    title = _provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]
+    title = title.replace("\n", " ").replace("\r", " ")
+    nodes = np.empty(plan.npts, dtype=[("id", "<i4"), ("xyz", "<f8", (3,))])
+    nodes["id"] = np.arange(1, plan.npts + 1)
+    nodes["xyz"] = plan.coords
+    out = bytearray(f"    1C\n    1U{title}\n    2C{plan.npts:>30}{'':37}3\n".encode())
+    out += nodes.tobytes()
+    out += f"    3C{plan.ncells:>30}{'':37}2\n".encode()
+    eid = 0
+    for code, _type, conn, group, material in plan.blocks:
+        n, k = conn.shape
+        records = np.empty((n, 4 + k), dtype="<i4")
+        records[:, 0] = _i32(np.arange(eid + 1, eid + n + 1), "element id")
+        records[:, 1] = code
+        records[:, 2] = _i32(group, "group")
+        records[:, 3] = _i32(material, "material")
+        records[:, 4:] = _i32(conn + 1, "node id")
+        out += records.tobytes()
+        eid += n
+    return bytes(out)
+
+
 def _result_blocks(mesh, plan):
-    """The ``-4`` blocks of the mesh's point data and the names with none."""
+    """The ``-4`` blocks of the mesh's point data and the names with none: for each, its
+    header lines (and in the ASCII layout its values and ``-3``), its raw records (binary
+    only) and the node count of its ``100C`` header."""
     blocks, unwritable = [], []
     w = plan.width
     for name in sorted(mesh.point_data):
@@ -865,24 +911,38 @@ def _result_blocks(mesh, plan):
                 lines.append(f" -5  {cname:<8}{1:5d}{1:5d}{0:5d}{0:5d}")
         if has_all:
             lines.append(f" -5  {'ALL':<8}{1:5d}{2:5d}{0:5d}{0:5d}{1:5d}ALL")
-        skipped = 0
-        for i in range(plan.npts):
-            row = values[i]
-            if not np.isfinite(row).all():
-                skipped += 1
-                continue
-            for k in range(0, nc, 6):
-                chunk = "".join(_e12(float(v)) for v in row[k : k + 6])
-                lines.append(
-                    (f" -1{i + 1:{w}d}" if k == 0 else " -2" + " " * w) + chunk
+        finite = np.isfinite(values).all(axis=1)
+        skipped = int(plan.npts - finite.sum())
+        payload = b""
+        if plan.binary:
+            kept = values[finite]
+            if kept.size and np.abs(kept).max() > _FLOAT32_MAX:
+                raise WriteError(
+                    f"CalculiX FRD: {float(np.abs(kept).max())!r} does not fit a "
+                    "single-precision binary field"
                 )
+            records = np.empty(len(kept), dtype=[("id", "<i4"), ("v", "<f4", (nc,))])
+            records["id"] = np.flatnonzero(finite) + 1
+            records["v"] = kept.astype("<f4")
+            payload = records.tobytes()
+            rows = len(kept)
+        else:
+            rows = plan.npts
+            for i in np.flatnonzero(finite):
+                row = values[i]
+                for k in range(0, nc, 6):
+                    chunk = "".join(_e12(float(v)) for v in row[k : k + 6])
+                    lines.append(
+                        (f" -1{i + 1:{w}d}" if k == 0 else " -2" + " " * w) + chunk
+                    )
         if skipped:
             warn(
                 f"CalculiX FRD: {skipped} node(s) of '{name}' with a non-finite "
                 "value left out"
             )
-        lines.append(" -3")
-        blocks.append(lines)
+        if not plan.binary:
+            lines.append(" -3")
+        blocks.append((lines, payload, rows))
     return blocks, unwritable
 
 
@@ -897,27 +957,42 @@ def _field_time(mesh):
 
 def _frame_lines(plan, blocks, value, step, analysis):
     """The ``1PSTEP``/``100CL`` header and ``-4`` block of every result for one
-    increment."""
+    increment: ASCII lines or, in the binary layout, bytes with the raw records
+    after each block's header lines."""
     if not math.isfinite(value):
         raise WriteError("CalculiX FRD: the step time is not finite")
-    flag = 1 if plan.long_ids else 0
-    out = []
-    for block in blocks:
-        out.append(f"    1PSTEP{'':25}{step:1d}{'':11}1{'':11}{step:1d}{'':10}")
-        out.append(
-            f"  100CL {100 + step:4d}{_time_text(value)}{plan.npts:12d}{'':20}"
-            f"{analysis:2d}{step:5d}{'':10}{flag:2d}"
-        )
-        out.extend(block)
-    return out
+    # Flag 2 is the binary layout's float32 result records.
+    flag = 2 if plan.binary else (1 if plan.long_ids else 0)
+    out = bytearray() if plan.binary else []
+    for lines, payload, rows in blocks:
+        head = [
+            f"    1PSTEP{'':25}{step:1d}{'':11}1{'':11}{step:1d}{'':10}",
+            f"  100CL {100 + step:4d}{_time_text(value)}{rows:12d}{'':20}"
+            f"{analysis:2d}{step:5d}{'':10}{flag:2d}",
+            *lines,
+        ]
+        if plan.binary:
+            out += ("\n".join(head) + "\n").encode() + payload
+        else:
+            out.extend(head)
+    return bytes(out) if plan.binary else out
 
 
-def write(filename, mesh, long_ids=True):
-    """Write a CalculiX result file (``.frd``, ASCII).
+def _terminator(plan):
+    """The last record: ``  9999`` in the ASCII layout, `` 9999`` as ``ccx`` ends a
+    binary file."""
+    return " 9999\n" if plan.binary else "  9999\n"
+
+
+def write(filename, mesh, long_ids=True, binary=False):
+    """Write a CalculiX result file (``.frd``).
 
     ``long_ids=True`` (what ``ccx`` writes) uses ``I10`` ids; ``False`` the short
-    ``I5`` form, which holds 99999 nodes or elements at most."""
-    plan = _WritePlan(mesh, long_ids)
+    ``I5`` form, which holds 99999 nodes or elements at most. ``binary=True`` writes
+    the binary layout instead (ASCII headers, raw little-endian ``int32`` ids,
+    ``float64`` coordinates and ``float32`` results; ``long_ids`` does not apply); a
+    buffer then has to take bytes."""
+    plan = _WritePlan(mesh, long_ids, binary)
     blocks, unwritable = _result_blocks(mesh, plan)
     _note_dropped_data(mesh, unwritable)
     frame = _frame_lines(
@@ -927,6 +1002,11 @@ def write(filename, mesh, long_ids=True):
         _field_int(mesh, "frd:step", 1),
         _field_int(mesh, "frd:analysis", 0),
     )
+    if plan.binary:
+        data = _mesh_binary(plan) + frame + _terminator(plan).encode()
+        with open_file(filename, "wb") as fh:
+            fh.write(data)
+        return
     lines = _mesh_lines(plan) + frame + ["  9999"]
     with open_file(filename, "w", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
@@ -953,12 +1033,18 @@ class SeriesWriter:
     """The Python twin of ``FrdSeriesWriter``: the mesh once, then one ``100C``
     increment per step. Use as a context manager, or call :meth:`close`."""
 
-    def __init__(self, filename, long_ids=True):
+    def __init__(self, filename, long_ids=True, binary=False):
         # A path is opened as `write` opens it; a caller's buffer is written
-        # into and left open.
+        # into and left open (and takes bytes in the binary layout).
         self._owned = not is_buffer(filename, "w")
-        self._fh = open(filename, "w", newline="\n") if self._owned else filename
+        if not self._owned:
+            self._fh = filename
+        elif binary:
+            self._fh = open(filename, "wb")
+        else:
+            self._fh = open(filename, "w", newline="\n")
         self._long = long_ids
+        self._binary = binary
         self._plan = None
         self._cells = self._points = None
         self._moved = False
@@ -967,11 +1053,13 @@ class SeriesWriter:
         self._step = 0
 
     def write(self, time, mesh):
-        lines = []
+        lines = b"" if self._binary else []
         if self._plan is None:
-            self._plan = _WritePlan(mesh, self._long)
+            self._plan = _WritePlan(mesh, self._long, self._binary)
             self._cells, self._points = _fingerprint(mesh)
-            lines = _mesh_lines(self._plan)
+            lines = (
+                _mesh_binary(self._plan) if self._binary else _mesh_lines(self._plan)
+            )
         else:
             cells, points = _fingerprint(mesh)
             if cells != self._cells:
@@ -999,7 +1087,7 @@ class SeriesWriter:
             step = self._next_step
         # Everything is built before the file is touched, so a refused value
         # leaves the steps already written intact.
-        lines += _frame_lines(
+        frame = _frame_lines(
             self._plan,
             blocks,
             float(time),
@@ -1007,13 +1095,17 @@ class SeriesWriter:
             _field_int(mesh, "frd:analysis", 0),
         )
         self._step_ids.add(step)
-        self._fh.write("\n".join(lines) + "\n")
+        if self._binary:
+            self._fh.write(lines + frame)
+        else:
+            self._fh.write("\n".join(lines + frame) + "\n")
         self._step += 1
 
     def close(self):
         if self._fh is not None:
             if self._step:
-                self._fh.write("  9999\n")
+                end = _terminator(self._plan)
+                self._fh.write(end.encode() if self._binary else end)
             if self._owned:
                 self._fh.close()
             self._fh = None

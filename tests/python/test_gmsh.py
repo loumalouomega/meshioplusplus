@@ -596,6 +596,157 @@ def test_gmsh41(mesh, binary, tmp_path):
     helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
+def _tet_hex_mesh():
+    """A tetra block and a hexahedron block: two blocks of one dimension."""
+    points = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+        [2.0, 0.0, 0.0],
+        [2.0, 1.0, 0.0],
+        [2.0, 0.0, 1.0],
+    ]
+    return meshioplusplus.Mesh(
+        points,
+        [
+            ("tetra", [[1, 8, 2, 5], [2, 8, 9, 10]]),
+            ("hexahedron", [[0, 1, 2, 3, 4, 5, 6, 7]]),
+        ],
+    )
+
+
+def _line_tri_tet_mesh():
+    """Blocks of three dimensions, so entities of different dimensions."""
+    mesh = _tet_hex_mesh()
+    mesh.cells = [
+        meshioplusplus.CellBlock("line", [[0, 1], [1, 2]]),
+        meshioplusplus.CellBlock("triangle", [[0, 1, 2], [0, 2, 3]]),
+    ] + mesh.cells[:1]
+    return mesh
+
+
+_MIXED_41_MESHES = {
+    "tri_quad": helpers.tri_quad_mesh,
+    "quad_tri": helpers.quad_tri_mesh,
+    "tet_hex": _tet_hex_mesh(),
+    "line_tri_tet": _line_tri_tet_mesh(),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MIXED_41_MESHES))
+@pytest.mark.parametrize("binary", [False, True])
+def test_gmsh41_writes_a_mixed_mesh_without_dim_tags(name, binary, tmp_path):
+    """The roadmap's 4.1 mixed-mesh gap: more than one cell block needs more
+    than one entity, which the writer now allocates itself (one per block, tags
+    unique within a dimension), so the mesh no longer needs ``gmsh:dim_tags``."""
+    from meshioplusplus import _core
+
+    mesh = copy.deepcopy(_MIXED_41_MESHES[name])
+    assert "gmsh:dim_tags" not in mesh.point_data
+    path = tmp_path / "mixed.msh"
+    # Straight through the C++ core: the shim's fallback would raise from the
+    # Python twin, which still needs gmsh:dim_tags (see the next test).
+    _core.gmsh41_write(str(path), mesh, binary)
+    if not binary:
+        assert "$Entities" in path.read_text()
+
+    back = meshioplusplus.gmsh.read(path)
+    assert back.points.shape == mesh.points.shape
+    assert [c.type for c in back.cells] == [c.type for c in mesh.cells]
+    # The points come back grouped by entity, so compare each cell's own
+    # coordinates rather than its indices.
+    for c0, c1 in zip(mesh.cells, back.cells):
+        np.testing.assert_allclose(
+            back.points[np.asarray(c1.data)],
+            mesh.points[np.asarray(c0.data)],
+            atol=1.0e-15,
+        )
+    # One entity per block; no region was given, so no physical group appears.
+    entities = [
+        (c.dim, int(back.cell_data["gmsh:geometrical"][i][0]))
+        for i, c in enumerate(back.cells)
+    ]
+    assert len(set(entities)) == len(entities)
+    assert all(tag > 0 for _, tag in entities)
+    assert "gmsh:physical" not in back.cell_data
+    assert [r.name for r in back.regions if r.name != "gmsh:bounding_entities"] == []
+
+    # The public writer takes the same route and gives the same bytes.
+    other = tmp_path / "via_shim.msh"
+    meshioplusplus.gmsh.write(
+        other, copy.deepcopy(mesh), fmt_version="4.1", binary=binary
+    )
+    assert other.read_bytes() == path.read_bytes()
+
+
+def test_gmsh41_mixed_mesh_entity_tags(tmp_path):
+    from meshioplusplus import _core
+
+    path = tmp_path / "tags.msh"
+    # Three dimension-2 blocks (triangle, quad, triangle) take tags 1, 2, 3.
+    _core.gmsh41_write(str(path), copy.deepcopy(helpers.tri_quad_mesh), False)
+    back = _core.gmsh_read(str(path))
+    assert [int(a[0]) for a in back.cell_data["gmsh:geometrical"]] == [1, 2, 3]
+    # Dimension 1, 2 and 3 each start again at 1.
+    _core.gmsh41_write(str(path), _line_tri_tet_mesh(), False)
+    back = _core.gmsh_read(str(path))
+    assert [int(a[0]) for a in back.cell_data["gmsh:geometrical"]] == [1, 1, 1]
+
+
+def test_gmsh41_one_region_over_two_blocks_gets_two_entities(tmp_path):
+    """A triangle block and a quad block of one region are two dimension-2
+    entities; the region tag stays on the first, the others take free tags, and
+    the region still holds all its cells."""
+    from meshioplusplus import _core
+
+    mesh = copy.deepcopy(helpers.tri_quad_mesh)
+    mesh.regions = [meshioplusplus.Region("plate", "cell", [0, 1, 2, 3])]
+    path = tmp_path / "region.msh"
+    _core.gmsh41_write(str(path), mesh, False)
+    back = _core.gmsh_read(str(path))
+    assert [int(a[0]) for a in back.cell_data["gmsh:geometrical"]] == [1, 2, 3]
+    plate = {r.name: r for r in back.regions}["plate"]
+    assert list(plate.entries) == [0, 1, 2, 3]
+    assert plate.dim == 2
+
+
+def test_gmsh41_python_twin_still_needs_dim_tags_for_a_mixed_mesh(tmp_path):
+    """The engine difference, pinned: only the C++ writer allocates entities for
+    a mixed mesh. The pure-Python 4.1 writer has no synthesis and refuses it
+    unless ``gmsh:dim_tags`` says which entity each node belongs to."""
+    from meshioplusplus.gmsh import _gmsh41
+
+    with pytest.raises(meshioplusplus.WriteError, match="gmsh:dim_tags"):
+        _gmsh41.write(
+            tmp_path / "py.msh",
+            copy.deepcopy(helpers.tri_quad_mesh),
+            binary=False,
+        )
+
+
+def test_gmsh41_mixed_mesh_loads_in_gmsh(tmp_path):
+    """Only where the ``gmsh`` package is installed."""
+    gmsh = pytest.importorskip("gmsh")
+    from meshioplusplus import _core
+
+    path = tmp_path / "mixed.msh"
+    _core.gmsh41_write(str(path), _tet_hex_mesh(), False)
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(path))
+        assert len(gmsh.model.getEntities(3)) == 2
+        types, _, _ = gmsh.model.mesh.getElements(3)
+        assert sorted(int(t) for t in types) == [4, 5]  # tetra, hexahedron
+    finally:
+        gmsh.finalize()
+
+
 def test_generic_io(tmp_path):
     """A `.msh` written without a format and without gmsh tags is Fluent's
     (the first `.msh` candidate): it reads back as the same planar triangles,

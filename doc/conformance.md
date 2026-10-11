@@ -35,7 +35,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="freefem">`freefem`</span> |  |  | ✓ |  | ✓ |  |  |  | exact | — | — | — | — |
 | <span id="gid">`gid`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | — |
 | <span id="gltf">`gltf`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
-| <span id="gmsh">`gmsh`</span> | ? | ? | ? | ? | ? | ? | ? | ? | fails: `WriteError` | | | | |
+| <span id="gmsh">`gmsh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell |
 | <span id="gmsh22">`gmsh22`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell |
 | <span id="h5m">`h5m`</span> |  | ✓ | ✓ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | — | — | — |
 | <span id="hmf">`hmf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
@@ -66,12 +66,13 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="pvtp">`pvtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point |
 | <span id="pvtu">`pvtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
 | <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="radioss-th">`radioss_th`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
 | <span id="su2">`su2`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
-| <span id="svg">`svg`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
+| <span id="svg">`svg`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="tecplot">`tecplot`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | → hex | → hex | exact | `p_f64` float64, `p_i32` float64 | `c_f64` float64, `c_i32` float64 | — | cell |
 | <span id="tetgen">`tetgen`</span> |  |  |  |  | ✓ |  |  |  | exact | — | — | — | — |
-| <span id="tikz">`tikz`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
+| <span id="tikz">`tikz`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="triangle">`triangle`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="ugrid">`ugrid`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
 | <span id="unv">`unv`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point |
@@ -98,8 +99,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
-- **`gltf`**: Written for viewers; no glTF reader exists yet (roadmap §3.1.4).
-- **`gmsh`**: The Gmsh 4.1 writer needs `gmsh:dim_tags` point data to place more than one cell type into entities, and refuses a mixed mesh without it; `gmsh22` writes the same mesh.
+- **`gltf`**: Written for viewers; no glTF reader exists yet (roadmap §3.1.1).
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
 - **`mff`**: A field without geometry: one array of values, no points or cells.
@@ -109,10 +109,11 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
+- **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
-- **`svg`**: A 2-D drawing, write-only until its reader lands (roadmap §3.1.1).
+- **`svg`**: A 2-D drawing, read back as planar (z = 0) from the scale and offset meshio++ records in a comment. Observed with `float_fmt=".17g"`: the default `.3f` keeps three decimals of a drawing 100 units wide, so corners come back to about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `svg:fill`.
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
-- **`tikz`**: A 2-D drawing, write-only until its reader lands (roadmap §3.1.2).
+- **`tikz`**: A 2-D drawing, read back as planar (z = 0) with its coordinates verbatim, to the digits `float_fmt` kept. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `tikz:fill`.
 - **`triangle`**: Triangle reads and writes 2-D triangulations only, so this row is observed on the planar part of the canonical mesh.
 - **`usd`**: A UsdGeom mesh stores faces: volume cells are written as their skin.
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).
@@ -127,19 +128,16 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
-| <span id="abaqus-fil">`abaqus_fil`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. Abaqus's result file; the writer is the physics-ML loop's missing half. |
-| <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.6: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
-| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.6). |
-| <span id="gltf">`gltf`</span> | reader | Tracked gap, roadmap §3.1.4: no reader yet. A general glTF 2.0 reader. |
-| <span id="lsdyna-binout">`lsdyna_binout`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
-| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.3: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
-| <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.13: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
-| <span id="nastran-h5">`nastran_h5`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. MSC Nastran's result file; the writer is the physics-ML loop's missing half. |
-| <span id="nastran-op2">`nastran_op2`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. Nastran's result file; the writer is the physics-ML loop's missing half. |
-| <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
-| <span id="radioss-th">`radioss_th`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
-| <span id="svg">`svg`</span> | reader | Tracked gap, roadmap §3.1.1: no reader yet. A 2-D drawing; the reader will parse only the structure meshio++'s writer emits. |
-| <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.12: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
-| <span id="tikz">`tikz`</span> | reader | Tracked gap, roadmap §3.1.2: no reader yet. A 2-D drawing; the reader will parse only the structure meshio++'s writer emits. |
-| <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
-| <span id="xplt">`xplt`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. FEBio's result file; the writer is the physics-ML loop's missing half. |
+| <span id="abaqus-fil">`abaqus_fil`</span> | writer | Tracked gap, roadmap §3.2.6: no writer yet. Abaqus's result file; the writer is the physics-ML loop's missing half. |
+| <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
+| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
+| <span id="gltf">`gltf`</span> | reader | Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader. |
+| <span id="lsdyna-binout">`lsdyna_binout`</span> | writer | Tracked gap, roadmap §3.2.3: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
+| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
+| <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
+| <span id="nastran-h5">`nastran_h5`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. MSC Nastran's result file; the writer is the physics-ML loop's missing half. |
+| <span id="nastran-op2">`nastran_op2`</span> | writer | Tracked gap, roadmap §3.2.1: no writer yet. Nastran's result file; the writer is the physics-ML loop's missing half. |
+| <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
+| <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
+| <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
+| <span id="xplt">`xplt`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. FEBio's result file; the writer is the physics-ML loop's missing half. |

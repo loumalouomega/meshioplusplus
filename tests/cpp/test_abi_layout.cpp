@@ -80,6 +80,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
+#include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -228,6 +229,9 @@ MIO_ABI_LAYOUT(meshioplusplus::PvdSeriesWriter, 8, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FemapSeriesWriter, 8, 8);
 // `FrdSeriesWriter` (v16.39.0, unreleased) is the same pimpl handle: one `unique_ptr`.
 MIO_ABI_LAYOUT(meshioplusplus::FrdSeriesWriter, 8, 8);
+// `RadiossThSeriesWriter` is the same shape, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::RadiossThSeriesWriter, 8, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both
@@ -390,6 +394,8 @@ static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
 
 // The CalculiX reader's option struct (v15.3.0, an addition, ABI unchanged): one `bool`.
 MIO_ABI_LAYOUT(meshioplusplus::FrdReadOptions, 1, 1);
+// The CalculiX writer's option struct (v16.39.0, an addition, ABI unchanged): two `bool`s.
+MIO_ABI_LAYOUT(meshioplusplus::FrdWriteOptions, 2, 1);
 
 // The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
 // and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a
@@ -508,6 +514,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::XyzReadOptions>("XyzReadOptions");
     report<meshioplusplus::detail::CardField>("CardField");
     report<meshioplusplus::FrdReadOptions>("FrdReadOptions");
+    report<meshioplusplus::FrdWriteOptions>("FrdWriteOptions");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

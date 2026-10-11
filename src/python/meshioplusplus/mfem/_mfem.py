@@ -1850,6 +1850,9 @@ def _read_parts(parts, nvertices, order, labels, filename):
 
     def cell_nodes(part, geom, verts):
         glob = part["global"]
+        for v in verts:  # a vertex the part does not have makes the element malformed
+            if not 0 <= v < len(glob):
+                raise ReadError(f"MFEM: element vertex {v} is not a vertex of its part")
         if geom in (0, 7):  # a point; a (linear) pyramid
             return [glob[v] for v in verts]
         shape = _SHAPES[geom]

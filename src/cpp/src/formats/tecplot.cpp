@@ -335,7 +335,21 @@ struct TecplotZone {
     // Node and cell counts of an ordered zone: lines, quads or hexahedra over
     // the dimensions longer than one; a single point is one vertex.
     void FinishOrdered() {
-        mNumNodes = mI * mJ * mK;
+        // The product of the non-zero dimensions must not wrap: a wrapped count
+        // would size the columns from a number the file does not describe. A zero
+        // dimension empties the zone but does not excuse the others from the check.
+        std::size_t product = 1;
+        bool zero = false;
+        for (std::size_t d : {mI, mJ, mK}) {
+            if (d == 0) {
+                zero = true;
+                continue;
+            }
+            if (product > std::numeric_limits<std::size_t>::max() / d)
+                throw ReadError("Tecplot: ordered zone dimensions overflow");
+            product *= d;
+        }
+        mNumNodes = zero ? 0 : product;
         std::size_t cells = 1;
         bool any = false;
         for (std::size_t d : {mI, mJ, mK}) {
@@ -459,6 +473,11 @@ TecplotFaceMap tecplot_face_map(const TecplotZone& rZ, std::size_t ZoneIdx,
         if (n < 2)
             throw ReadError(where + ": face " + std::to_string(f + 1) + " has " +
                             std::to_string(n) + " nodes");
+        // Checked against the node list as it grows, so a count from the file
+        // cannot overflow the running sum.
+        if (n > static_cast<std::int64_t>(Nodes.size()) - fm.mStart.back())
+            throw ReadError(where + ": face " + std::to_string(f + 1) + " names more nodes " +
+                            "than TOTALNUMFACENODES holds");
         fm.mStart.push_back(fm.mStart.back() + n);
     }
     if (static_cast<std::size_t>(fm.mStart.back()) != Nodes.size())
@@ -849,8 +868,17 @@ public:
             if (toks.size() < nn)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
-            for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = detail::zero_based(detail::strtoll_token(toks[j]));
+            for (std::size_t j = 0; j < nn; ++j) {
+                // Checked as a 1-based id, before the subtraction and before any point
+                // offset is added: the lenient parse saturates an id near INT64_MAX,
+                // and adding an offset to that overflows (UBSan).
+                const std::int64_t id = detail::strtoll_token(toks[j]);
+                if (id < 1 || id > static_cast<std::int64_t>(z.mNumNodes))
+                    throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                    " connectivity node " + std::to_string(id) +
+                                    " is out of range");
+                cp[c * nn + j] = id - 1;
+            }
         }
     }
 
@@ -1411,8 +1439,14 @@ public:
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
         const std::int64_t base = tecplot_plt_v7(z.mVersion) ? 1 : 0;  // Tecplot 7 is 1-based
-        for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
-            cp[r] = cur.I32() - base;
+        for (std::size_t r = 0; r < z.mNumCells * nn; ++r) {
+            const std::int64_t id = cur.I32() - base;
+            if (id < 0 || id >= static_cast<std::int64_t>(z.mNumNodes))
+                throw ReadError("Tecplot .plt: zone " + std::to_string(ZoneIdx + 1) +
+                                " connectivity node " + std::to_string(id + base) +
+                                " is out of range");
+            cp[r] = id;
+        }
     }
 
 private:
@@ -1970,6 +2004,19 @@ struct TecplotFile {
     std::unique_ptr<TecplotSource> mSource;
 };
 
+/// Every count a zone header declares must fit in the file. A valid zone holds
+/// at least one byte of its file per node, cell or face it names (a value, a
+/// connection or a face list), so a larger count is a corrupt header and is
+/// refused before anything is sized from it.
+void tecplot_check_declared_counts(const std::vector<TecplotZone>& rZones, std::size_t FileBytes) {
+    for (std::size_t i = 0; i < rZones.size(); ++i) {
+        const TecplotZone& z = rZones[i];
+        if (z.mNumNodes > FileBytes || z.mNumCells > FileBytes || z.mNumFaces > FileBytes)
+            throw ReadError("Tecplot: zone " + std::to_string(i + 1) +
+                            " declares more nodes, cells or faces than the file holds");
+    }
+}
+
 void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, TecplotFile& rFile) {
     bool binary = false;
     {
@@ -1996,6 +2043,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
             rFile.mLines.push_back(st);
         }
         rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
+        tecplot_check_declared_counts(rFile.mZones, rFile.mText->View().size());
         rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,
                                                              rFile.mVariables.size());
         return;
@@ -2020,6 +2068,7 @@ void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, Tecplot
     detail::ByteCursor cur(data, size, big_endian, "Tecplot .plt");
     cur.Seek(12);
     rFile.mZones = tecplot_plt_header(cur, version, rFile.mVariables);
+    tecplot_check_declared_counts(rFile.mZones, size);
     tecplot_plt_scan_data(cur, version, rFile.mVariables, rFile.mZones);
     rFile.mSource = std::make_unique<TecplotPltSource>(data, size, big_endian, rFile.mZones);
 }

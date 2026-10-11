@@ -20,6 +20,7 @@
 // System includes
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -352,12 +353,62 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 }
 #endif
 
+// libhdf5 reads an unfiltered chunk straight from its stored bytes, but sizes the
+// read by the chunk's elements: a record shorter than the chunk makes the read copy
+// past the stored bytes (a heap-buffer-overflow inside HDF5 1.10, found by the
+// fuzzer). Each allocated chunk of an unfiltered dataset is checked before a read.
+// A filtered chunk is decoded into a buffer of the full size and is not affected.
+// Listing the chunks needs HDF5 1.10.5; older libraries are not checked.
+void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
+#if H5_VERSION_GE(1, 10, 5)
+    Hid dcpl(H5Dget_create_plist(dset), H5Pclose);
+    if (H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 0)
+        return;
+    Hid space(H5Dget_space(dset), H5Sclose);
+    const int rank = H5Sget_simple_extent_ndims(space);
+    if (rank <= 0)
+        return;
+    std::vector<hsize_t> chunk(static_cast<std::size_t>(rank));
+    if (H5Pget_chunk(dcpl, rank, chunk.data()) != rank)
+        return;
+    Hid dt(H5Dget_type(dset), H5Tclose);
+    hsize_t expected = H5Tget_size(dt);
+    for (hsize_t c : chunk) {
+        if (c == 0)
+            return;
+        if (expected > std::numeric_limits<std::size_t>::max() / c)
+            throw ReadError("HDF5: a chunk of dataset '" + rName + "' is too large");
+        expected *= c;
+    }
+    hsize_t nchunks = 0;
+    if (H5Dget_num_chunks(dset, space, &nchunks) < 0)
+        throw ReadError("HDF5: could not list the chunks of dataset '" + rName + "'");
+    std::vector<hsize_t> offset(static_cast<std::size_t>(rank));
+    for (hsize_t i = 0; i < nchunks; ++i) {
+        unsigned mask = 0;
+        haddr_t addr = 0;
+        hsize_t size = 0;
+        if (H5Dget_chunk_info(dset, space, i, offset.data(), &mask, &addr, &size) < 0)
+            throw ReadError("HDF5: could not read chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "'");
+        if (size != expected)
+            throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
+                            "' is stored in " + std::to_string(size) + " bytes, not " +
+                            std::to_string(expected));
+    }
+#else
+    (void)dset;
+    (void)rName;
+#endif
+}
+
 }  // namespace
 
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
         throw ReadError("HDF5: missing dataset '" + rName + "'");
+    h5_check_unfiltered_chunks(d, rName);
     Hid space(H5Dget_space(d), H5Sclose);
     int ndim = H5Sget_simple_extent_ndims(space);
     std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
@@ -600,6 +651,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
 
     std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
     std::vector<hsize_t> count(dims);
+    h5_check_unfiltered_chunks(d, rName);
     start[0] = Row0;
     count[0] = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, start.data(), nullptr, count.data(), nullptr) <
@@ -890,6 +942,7 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
     Hid mem_type(H5Tcreate(H5T_COMPOUND, H5Tget_size(elem)), H5Tclose);
     if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, elem) < 0)
         throw ReadError("HDF5: could not build a memory type for '" + rName + "/" + rMember + "'");
+    h5_check_unfiltered_chunks(d, rName);
     const hsize_t start = Row0;
     const hsize_t count = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr) < 0)

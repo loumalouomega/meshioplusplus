@@ -30,6 +30,39 @@ def read(filename):
     return XdmfReader(filename).read()
 
 
+def _reshape_item(data, dims):
+    # A count the payload cannot fill is a ReadError, as the C++ reader reports
+    # it, not the numpy ValueError the reshape raises.
+    try:
+        return data.reshape(dims)
+    except ValueError as exc:
+        raise ReadError(
+            f"XDMF: DataItem holds {data.size} values, not the {dims} its Dimensions declare"
+        ) from exc
+
+
+def _check_unfiltered_chunks(dset, name):
+    """The C++ reader's check, for the same datasets: libhdf5 reads an unfiltered
+    chunk from its stored bytes, so a chunk the file stores in fewer bytes than its
+    elements take is refused before the read."""
+    from h5py import h5d
+
+    if not hasattr(dset.id, "get_num_chunks"):
+        return  # libhdf5 before 1.10.5 cannot list the chunks
+    dcpl = dset.id.get_create_plist()
+    if dcpl.get_layout() != h5d.CHUNKED or dcpl.get_nfilters() != 0:
+        return
+    chunk = dcpl.get_chunk()
+    expected = dset.id.get_type().get_size() * int(np.prod(chunk, dtype=object))
+    for i in range(dset.id.get_num_chunks(dset.id.get_space())):
+        size = dset.id.get_chunk_info(i).size
+        if size != expected:
+            raise ReadError(
+                f"HDF5: chunk {i} of dataset '{name}' is stored in {size} bytes, "
+                f"not {expected}"
+            )
+
+
 def _block_dim(block):
     """A block's topological dimension (a polyhedron is 3, a polygon 2)."""
     if block.type.startswith("polyhedron"):
@@ -141,6 +174,10 @@ class XdmfReader:
             raise ReadError("XDMF: missing DataItem")
 
         dims = [int(d) for d in data_item.get("Dimensions").split()]
+        if any(d < 0 for d in dims):
+            # reshape would read a negative extent as "infer this one", where the
+            # C++ reader refuses it; both engines must refuse.
+            raise ReadError("XDMF: negative Dimensions")
 
         # Actually, `NumberType` is XDMF2 and `DataType` XDMF3, but many files
         # out there use both keys interchangeably.
@@ -165,12 +202,16 @@ class XdmfReader:
                 data = np.empty((0,), dtype=dtype)
             else:
                 data = np.fromstring(data_item.text, dtype=dtype, sep=" ")
-            return data.reshape(dims)
+            return _reshape_item(data, dims)
 
         elif fmt == "Binary":
-            return np.fromfile(
-                data_item.text.strip(), dtype=xdmf_to_numpy_type[(data_type, precision)]
-            ).reshape(dims)
+            return _reshape_item(
+                np.fromfile(
+                    data_item.text.strip(),
+                    dtype=xdmf_to_numpy_type[(data_type, precision)],
+                ),
+                dims,
+            )
 
         if fmt != "HDF":
             raise ReadError(f"Unknown XDMF Format '{fmt}'.")
@@ -200,6 +241,7 @@ class XdmfReader:
                 f"XDMF: HDF dataset '{h5path}' is larger than the Dimensions "
                 "its DataItem declares"
             )
+        _check_unfiltered_chunks(f, h5path)
         # `[()]` gives a np.ndarray
         return f[()]
 

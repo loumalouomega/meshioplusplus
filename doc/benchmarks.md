@@ -777,7 +777,7 @@ The read dominates only the cheapest operation on a large surface. Caching a rea
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
 
-Explicitly tested single-type exceptions also participate: MFM and Gmsh 4.1 reject the mixed conformance mesh but round-trip the harness's tetrahedral cube. This does not change their conformance declarations or imply mixed-cell support. Use `--formats mfm,gmsh` to measure those supported reader/writer paths.
+An explicitly tested single-type exception also participates: MFM rejects the mixed conformance mesh but round-trips the harness's tetrahedral cube. This does not change its conformance declaration or imply mixed-cell support. Gmsh 4.1 was a second exception until its writer allocated an entity per cell block (its conformance row now passes), so it is selected through the conformance table like any other format, still on the tetrahedral cube. Use `--formats mfm,gmsh` to measure those reader/writer paths.
 
 ```sh
 python benchmark/bench.py --sizes S,M --out results_all.csv            # every format

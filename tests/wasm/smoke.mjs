@@ -2484,9 +2484,12 @@ step('availableFormats reports what this build can read and write', () => {
     const { readers, writers } = m.availableFormats();
     assert.ok(Array.isArray(readers) && Array.isArray(writers));
     assert.ok(readers.includes('vtu') && writers.includes('vtu'));
-    // The two lists genuinely differ: svg/tikz are write-only. A viewer that
-    // assumes one list would offer broken menu items.
-    assert.ok(writers.includes('svg') && !readers.includes('svg'));
+    // The two lists genuinely differ: gltf is write-only. A viewer that
+    // assumes one list would offer broken menu items. svg and tikz read back
+    // the drawings meshio++ writes, so they are in both.
+    assert.ok(writers.includes('gltf') && !readers.includes('gltf'));
+    assert.ok(readers.includes('svg') && writers.includes('svg'));
+    assert.ok(readers.includes('tikz') && writers.includes('tikz'));
     // openfoam was read-only until v9.20.0 -- this step used to assert that.
     assert.ok(readers.includes('openfoam') && writers.includes('openfoam'));
     // The HDF5- and netCDF-backed formats are in this build too (the wasm32
@@ -2536,13 +2539,14 @@ step('availableFormats reports what this build can read and write', () => {
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0)
-    // and OpenRadioss starter decks (read v16.7.0, written v16.17.0) both ways.
-    // OpenRadioss animation files (v16.11.0), time-history files and LS-DYNA
-    // binouts (v16.12.0) read-only.
-    for (const fmt of ['abaqus_fil', 'radioss_anim', 'radioss_th', 'lsdyna_binout'])
+    // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0),
+    // OpenRadioss starter decks (read v16.7.0, written v16.17.0) and
+    // OpenRadioss time-history files (read v16.12.0, written since) both ways.
+    // OpenRadioss animation files (v16.11.0) and LS-DYNA binouts (v16.12.0)
+    // read-only.
+    for (const fmt of ['abaqus_fil', 'radioss_anim', 'lsdyna_binout'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    for (const fmt of ['z88', 'libmesh', 'radioss'])
+    for (const fmt of ['z88', 'libmesh', 'radioss', 'radioss_th'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // MSC Marc decks (read v16.8.0, written v16.17.0) both ways; its post files
     // and the full rotor of a cyclic Ansys .rst (v16.8.0) read-only.
@@ -2745,6 +2749,14 @@ step('.frd reads a CalculiX result file: node permutation, steps, tensors, and w
     assert.deepEqual(Array.from(again.cells[0].data), Array.from(first.cells[0].data));
     assert.equal(again.point_data.NDTEMP[19], 20);
     assert.equal(again.field_data['meshio:time'][0], 0.5);
+    // The binary layout is an encoding option: float64 points, float32 results.
+    m.writeMesh('/out_bin.frd', first, '', { encoding: 'binary' });
+    const bin = m.FS.readFile('/out_bin.frd');
+    assert.equal(Buffer.from(bin.slice(bin.length - 6)).toString('latin1'), ' 9999\n');
+    const binary = m.readMesh('/out_bin.frd');
+    assert.deepEqual(Array.from(binary.cells[0].data), Array.from(first.cells[0].data));
+    assert.equal(binary.point_data.NDTEMP[19], 20);
+    assert.equal(binary.field_data['meshio:time'][0], 0.5);
 });
 
 step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one back', () => {

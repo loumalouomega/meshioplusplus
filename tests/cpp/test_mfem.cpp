@@ -446,3 +446,14 @@ TEST(Mfem, ParallelNonConformingRanksMerge) {
     EXPECT_EQ(detail::read_int(parts, 1), 1);
     std::filesystem::remove_all(dir);
 }
+
+// The fuzzer's crash (regressions/mfem/element-vertex-outside-part): an element
+// names a vertex its part does not have, and the output-point lookup read past
+// the part's vertex list (ASan). The element is malformed: a ReadError.
+TEST(Mfem, AnElementVertexOutsideItsPartIsAReadError) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "mfem" /
+                                        "element-vertex-outside-part";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    EXPECT_THROW(meshioplusplus::read_mfem(input.string()), ReadError);
+}

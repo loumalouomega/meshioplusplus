@@ -421,6 +421,53 @@ TEST(Tecplot, ReadRejectsMissingVariables) {
     std::filesystem::remove(path, ec);
 }
 
+// A face count near INT64_MAX: the running sum of the face node counts
+// overflowed a signed integer (UBSan, found by the fuzzer; the input is
+// tests/fuzz/regressions/tecplot/face-node-count-overflows-sum). The reader
+// returns a mesh or throws ReadError; undefined behaviour is neither.
+TEST(Tecplot, AFaceNodeCountThatOverflowsTheRunningSumIsAReadError) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "tecplot" /
+                                        "face-node-count-overflows-sum";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    EXPECT_THROW(meshioplusplus::read_tecplot(input.string()), meshioplusplus::ReadError);
+}
+
+// The fuzzer's crash (regressions/tecplot/ascii-connectivity-id-overflows-offset):
+// an id near INT64_MAX, saturated by the lenient parse, whose point offset
+// overflowed (UBSan). It is refused before any offset is added.
+TEST(Tecplot, AConnectivityIdNearInt64MaxIsAReadError) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "tecplot" /
+                                        "ascii-connectivity-id-overflows-offset";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    EXPECT_THROW(meshioplusplus::read_tecplot(input.string()), meshioplusplus::ReadError);
+}
+
+// The node count is the bound: id 3 is a 3-node zone's last node, id 4 is past it.
+TEST(Tecplot, AConnectivityIdPastTheNodeCountIsAReadError) {
+    const std::string header =
+        "VARIABLES = \"X\" \"Y\"\n"
+        "ZONE N=3 E=1 DATAPACKING=POINT ZONETYPE=FETRIANGLE\n"
+        "0.0 0.0\n"
+        "1.0 0.0\n"
+        "0.0 1.0\n";
+    EXPECT_NO_THROW(meshioplusplus::read_tecplot(write_temp(".dat", header + "1 2 3\n")));
+    EXPECT_THROW(meshioplusplus::read_tecplot(write_temp(".dat", header + "1 2 4\n")),
+                 meshioplusplus::ReadError);
+}
+
+// An ordered zone with a zero dimension next to two factors of 2^32+1: their
+// product wraps, and the cell count (2^32 times 2^32) wraps to zero. The zero
+// must not hide the wrap from the overflow check.
+TEST(Tecplot, AZeroDimensionDoesNotHideAWrappingOrderedProduct) {
+    std::string path = write_temp(
+        ".dat", "VARIABLES=\"X\" \"Y\"\nZONE I=0 J=4294967297 K=4294967297 F=POINT\n0 0\n");
+    EXPECT_THROW(meshioplusplus::read_tecplot(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST(Nastran, ReadRejectsForeignFile) {
     // The C++ reader is sentinel-gated to meshio++-written files.
     std::string path = write_temp(".bdf", "$ some other tool's bulk data\nGRID,1,,0.,0.,0.\n");
