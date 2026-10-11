@@ -39,7 +39,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#freefem) |
 | [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 | [8/8 cells · data PC](./conformance.md#gid) |
 | [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | — | ✓ | — | [write-only](./conformance.md#gltf) |
-| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | `gmsh` [fails](./conformance.md#gmsh) / `gmsh22` [8/8 cells · data PCF · regions C](./conformance.md#gmsh22) |
+| [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | [8/8 cells · data PCF · regions C](./conformance.md#gmsh) |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#ip) |
@@ -75,14 +75,14 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
-| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [read-only](./conformance.md#radioss-th) |
+| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#radioss-th) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
-| [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [write-only](./conformance.md#svg) |
+| [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |
 | [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | [read-only](./conformance.md#szplt) |
 | [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
-| [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [write-only](./conformance.md#tikz) |
+| [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
 | [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
