@@ -2871,6 +2871,10 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
                                 std::vector<std::size_t>& rIds) {
         rIds.clear();
         const auto global = [&](std::int64_t V) {
+            // A vertex the part does not have makes the element malformed.
+            if (V < 0 || static_cast<std::size_t>(V) >= rPart.mGlobal.size())
+                throw ReadError("MFEM: element vertex " + std::to_string(V) +
+                                " is not a vertex of its part");
             return rPart.mGlobal[static_cast<std::size_t>(V)];
         };
         if (rEl.mGeom == 0 || rEl.mGeom == 7) {  // a point; a (linear) pyramid
