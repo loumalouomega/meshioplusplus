@@ -75,7 +75,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
-| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-th) |
+| [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [read-only](./conformance.md#radioss-th) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
 | [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — | [write-only](./conformance.md#svg) |
@@ -277,6 +277,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `vtm` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `pvd` / `pvtu` / `pvtp` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `radioss` | `#` or `$` prefix (`#include` and `#enddata` excepted) | Anywhere; the writer puts it after `#RADIOSS STARTER` (v16.17.0) | Yes |
+| `radioss_th` | None (the title record's 80-character field is the nearest free-text slot) | The title record, after the file version | Yes (the title) |
 | `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
@@ -630,6 +631,10 @@ meshioplusplus.radioss.write(filename, mesh, stubs=False)
 ```
 
 Since v16.17.0. `stubs=True` also writes placeholder `/MAT/LAW1` and `/PROP` cards so the OpenRadioss starter accepts the deck on its own (without them the deck is geometry-only); see [`radioss.md`](./formats/radioss.md#writing).
+
+### OpenRadioss time history (`<run>T01`)
+
+`meshioplusplus.radioss_th.write(filename, mesh)` — no extra options; found by a file name like `crashT01` or by `file_format="radioss_th"`. Writes the `radioss_th:*` field data (global, part, subset and TH-group variables) as one output; `radioss_th.SeriesWriter` and `write_sequence` write an output per step. Points and cells are not stored; see [`radioss_th.md`](./formats/radioss_th.md#writing).
 
 ### MSC Marc (`.dat`)
 

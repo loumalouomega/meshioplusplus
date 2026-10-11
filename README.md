@@ -75,7 +75,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
-> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed; written with optional placeholder materials and properties), animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`, read-only; each output a step of field data),
+> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed; written with optional placeholder materials and properties), animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`; each output a step of field data; written too, from the `radioss_th:*` field data),
 > [MSC Marc](https://hexagon.com/products/marc) input deck (`.dat`, written by name) and formatted post file (`.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
