@@ -30,12 +30,14 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **Fixed**: the Gmsh 4.1 writer gives every cell block its own entity, with tags unique per dimension, so mixed meshes (triangle and quad, tetra and hexahedron) write without `gmsh:dim_tags`; a region spanning several blocks of one dimension no longer collides. A multi-block mesh without regions now gets `$Entities` and positive entity tags (and no invented physical group); single-block meshes are unchanged. The `gmsh` conformance row passes. The pure-Python 4.1 writer still refuses a mixed mesh without `gmsh:dim_tags` (roadmap 3.4.12).
 - **Docs**: the format pages for `svg`, `tikz`, `frd` (*Binary output*), `radioss_th` (*Writing*), `ensight` and `gmsh`, the formats and conformance tables, the C, WASM, Fortran, Julia, R and MCP pages, the provenance and selective-read pages, notebooks 07, 22 and 24, and fuzz dictionaries for `svg` and `tikz`. `frd.read_dat` is documented as a Python-only helper. The roadmap drops 3.1.1–3.1.3, 3.2.1, 3.2.10, 3.3.4, 3.3.10 and 3.3.13 and renumbers the rest of §3; the validators still to wire move to 1.2.15 and 2.2.
 
-**Fuzz findings closed: XDMF and Tecplot readers refuse counts the file cannot back.**
+**Fuzz findings closed: XDMF, Tecplot and MFEM readers refuse counts and ids the file cannot back.**
 
 - **Fixed**: an XDMF `DataItem` whose `Dimensions` multiply past what its text (XML) or file (Binary) holds sized the buffer from that product before reading, which aborted under ASan; the product is now overflow-checked and refused when it exceeds the bytes available. A negative extent (`Dimensions="-1 2"`) is a `ReadError` in both engines instead of wrapping to a huge count, and a short Binary payload is refused rather than read as zeros.
 - **Fixed**: a Tecplot face count near `INT64_MAX` overflowed the running sum of face node counts (UBSan); the sum is checked against `TOTALNUMFACENODES` as it grows. An ordered zone whose dimensions wrap the node or cell count is refused, including when a zero dimension hides the wrap.
 - **Fixed**: a Tecplot zone header declaring more nodes, cells or faces than its file holds is refused before any column is sized from it (a passive variable on such a zone allocated the declared count and aborted under ASan).
-- The reproductions are committed under `tests/fuzz/regressions/{xdmf,tecplot}/`, each with a native test. A data count that does not match its `Dimensions` in the Python XDMF reader is now a `ReadError`, as in the C++ reader, rather than a numpy `ValueError`.
+- **Fixed**: a Tecplot connectivity id outside the zone's node range was used as it stood, and an id near `INT64_MAX` (saturated by the lenient parse) overflowed when the zone's point offset was added (UBSan). Both engines refuse it as a `ReadError`, in ASCII and `.plt` files.
+- **Fixed**: an MFEM element named a vertex its part does not have, and the output-point lookup read past the part's vertex list (ASan). Both engines refuse the element as a `ReadError`.
+- The reproductions are committed under `tests/fuzz/regressions/{xdmf,tecplot,mfem}/`, each with a native test. A data count that does not match its `Dimensions` in the Python XDMF reader is now a `ReadError`, as in the C++ reader, rather than a numpy `ValueError`.
 
 ## v16.38.0 (2026-10-10)
 
