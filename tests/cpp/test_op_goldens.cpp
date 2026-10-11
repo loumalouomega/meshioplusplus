@@ -41,6 +41,8 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -181,6 +183,17 @@ std::uint64_t og_curvature() {
 
 std::uint64_t og_normals() {
     return ft_mesh(mio::compute_normals(og_surface()).mMesh);
+}
+
+std::uint64_t og_segment() {
+    mio::SegmentOptions o;
+    o.mCurvatureTolerance = 2.0;
+    o.mMinPatchCells = 3;
+    return ft_mesh(mio::segment(og_surface(), o).mMesh);
+}
+
+std::uint64_t og_fit_primitives() {
+    return ft_mesh(mio::fit_primitives(mio::segment(og_surface()).mMesh).mMesh);
 }
 
 std::uint64_t og_agglomerate() {
@@ -511,6 +524,8 @@ const OgCase kOgCases[] = {
     {"voxelize", og_voxelize, 0x6ba9809e780fc0adull},
     {"curvature", og_curvature, 0x57e791c665c3c096ull},
     {"normals", og_normals, 0xdd92696ea89a5ad9ull},
+    {"segment", og_segment, 0x5ea31eda31330c87ull},
+    {"fit_primitives", og_fit_primitives, 0xe2a91ebe3058024aull},
     {"agglomerate", og_agglomerate, 0x7c40650413522165ull},
     {"split", og_split, 0x258b588246f2ea38ull},
     {"undo_green", og_undo_green, 0x994d7afcbc6f56d9ull},

@@ -1865,6 +1865,84 @@ function feature_edges(m::Mesh; feature_angle::Real=30.0, feature::Bool=true,
 end
 
 """
+    segment(m; feature_angle=30.0, normal_tolerance=0.0, curvature_tolerance=0.0,
+            min_patch_cells=1, region="", prefix="patch")
+        -> (; mesh, num_patches, num_merged, num_feature_edges, num_boundary_edges,
+             num_non_manifold_edges)
+
+Split a surface into smooth patches by region growing, bounded by its feature
+edges. The mesh comes back unchanged plus cell data `segment:patch` (-1 off the
+surface), field data `segment:adjacency` (rows `(a, b, shared edges)`) and one
+cell region per patch, `<prefix>:<k>`. See `doc/segment.md`.
+"""
+function segment(m::Mesh; feature_angle::Real=30.0, normal_tolerance::Real=0.0,
+                 curvature_tolerance::Real=0.0, min_patch_cells::Integer=1,
+                 region::AbstractString="", prefix::AbstractString="patch")
+    report = Ref{_CSegmentReport}()
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    prefix_c = Vector{UInt8}(codeunits(String(prefix) * "\0"))
+    ptr = GC.@preserve region_c prefix_c begin
+        opts = _CSegmentOpts(Cstring(pointer(region_c)), Cstring(pointer(prefix_c)),
+                             Float64(feature_angle), Float64(normal_tolerance),
+                             Float64(curvature_tolerance), Int64(min_patch_cells),
+                             ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_segment), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CSegmentOpts}, Ptr{_CSegmentReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_patches=Int(rep.num_patches), num_merged=Int(rep.num_merged),
+     num_feature_edges=Int(rep.num_feature_edges),
+     num_boundary_edges=Int(rep.num_boundary_edges),
+     num_non_manifold_edges=Int(rep.num_non_manifold_edges))
+end
+
+const _FIT_TYPES = ("plane", "sphere", "cylinder", "cone", "torus")
+
+"""
+    fit_primitives(m; patch_data="segment:patch", tolerance=1e-3, relative=true,
+                   min_inlier_fraction=0.9,
+                   types=("plane", "sphere", "cylinder", "cone", "torus"),
+                   max_iterations=50)
+        -> (; mesh, num_patches, num_plane, num_sphere, num_cylinder, num_cone,
+             num_torus, num_unfitted)
+
+Fit a plane, sphere, cylinder, cone or torus to each patch of a surface (the
+first accepted in that order, or none). The mesh comes back unchanged plus cell
+data `fit:type`, `fit:rms`, `fit:max` and per-patch field data `fit:patch_*`.
+`patch_data=""` fits the whole surface as one patch. See `doc/fit_primitives.md`.
+"""
+function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
+                        tolerance::Real=1e-3, relative::Bool=true,
+                        min_inlier_fraction::Real=0.9,
+                        types=("plane", "sphere", "cylinder", "cone", "torus"),
+                        max_iterations::Integer=50)
+    mask = UInt32(0)
+    for t in types
+        k = findfirst(==(String(t)), _FIT_TYPES)
+        k === nothing && throw(ArgumentError("meshio++: fit_primitives: unknown type $(t)"))
+        mask |= UInt32(1) << k
+    end
+    report = Ref{_CFitPrimitivesReport}()
+    patch_c = Vector{UInt8}(codeunits(String(patch_data) * "\0"))
+    ptr = GC.@preserve patch_c begin
+        opts = _CFitPrimitivesOpts(Cstring(pointer(patch_c)), Float64(tolerance),
+                                   Float64(min_inlier_fraction), Int32(relative), mask,
+                                   Int64(max_iterations), ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_fit_primitives), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CFitPrimitivesOpts}, Ptr{_CFitPrimitivesReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_patches=Int(rep.num_patches), num_plane=Int(rep.num_plane),
+     num_sphere=Int(rep.num_sphere), num_cylinder=Int(rep.num_cylinder),
+     num_cone=Int(rep.num_cone), num_torus=Int(rep.num_torus),
+     num_unfitted=Int(rep.num_unfitted))
+end
+
+"""
     hausdorff_distance(a, b; face_samples=0, region_a="", region_b="")
         -> (; distance, a_to_b, b_to_a, mean_a_to_b, rms_a_to_b, mean_b_to_a,
              rms_b_to_a, num_samples_a, num_samples_b, worst_point_a, worst_point_b)

@@ -449,6 +449,67 @@ SEXP R_mio_feature_edges(SEXP mesh, SEXP feature_angle, SEXP feature, SEXP bound
     return res;
 }
 
+SEXP R_mio_segment(SEXP mesh, SEXP feature_angle, SEXP normal_tolerance,
+                   SEXP curvature_tolerance, SEXP min_patch_cells, SEXP region, SEXP prefix) {
+    mio_segment_opts opts;
+    mio_segment_report report;
+    mio_mesh *out;
+
+    mio_segment_opts_init(&opts);
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.normal_tolerance = mio_r_double(normal_tolerance, "normal_tolerance");
+    opts.curvature_tolerance = mio_r_double(curvature_tolerance, "curvature_tolerance");
+    opts.min_patch_cells = (int64_t)mio_r_int(min_patch_cells, "min_patch_cells");
+    opts.region = mio_r_opt_string(region);
+    opts.prefix = mio_r_opt_string(prefix);
+
+    out = mio_segment(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("segment");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP np = PROTECT(Rf_ScalarReal((double)report.num_patches));
+    SEXP nm = PROTECT(Rf_ScalarReal((double)report.num_merged));
+    SEXP nf = PROTECT(Rf_ScalarReal((double)report.num_feature_edges));
+    SEXP nb = PROTECT(Rf_ScalarReal((double)report.num_boundary_edges));
+    const char *names[] = {"mesh", "num_patches", "num_merged", "num_feature_edges",
+                           "num_boundary_edges"};
+    SEXP values[] = {mo, np, nm, nf, nb};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
+}
+
+SEXP R_mio_fit_primitives(SEXP mesh, SEXP patch_data, SEXP tolerance, SEXP relative,
+                          SEXP min_inlier_fraction, SEXP types, SEXP max_iterations) {
+    mio_fit_primitives_opts opts;
+    mio_fit_primitives_report report;
+    mio_mesh *out;
+
+    mio_fit_primitives_opts_init(&opts);
+    opts.patch_data = mio_r_string(patch_data, "patch_data");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.relative = mio_r_bool(relative, "relative") ? 1 : 0;
+    opts.min_inlier_fraction = mio_r_double(min_inlier_fraction, "min_inlier_fraction");
+    opts.types = (uint32_t)mio_r_int(types, "types");
+    opts.max_iterations = (int64_t)mio_r_int(max_iterations, "max_iterations");
+
+    out = mio_fit_primitives(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("fit_primitives");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP n0 = PROTECT(Rf_ScalarReal((double)report.num_patches));
+    SEXP n1 = PROTECT(Rf_ScalarReal((double)report.num_plane));
+    SEXP n2 = PROTECT(Rf_ScalarReal((double)report.num_sphere));
+    SEXP n3 = PROTECT(Rf_ScalarReal((double)report.num_cylinder));
+    SEXP n4 = PROTECT(Rf_ScalarReal((double)report.num_cone));
+    SEXP n5 = PROTECT(Rf_ScalarReal((double)report.num_torus));
+    SEXP n6 = PROTECT(Rf_ScalarReal((double)report.num_unfitted));
+    const char *names[] = {"mesh",     "num_patches", "num_plane", "num_sphere",
+                           "num_cylinder", "num_cone", "num_torus", "num_unfitted"};
+    SEXP values[] = {mo, n0, n1, n2, n3, n4, n5, n6};
+    SEXP res = PROTECT(mio_r_named_list(8, names, values));
+    UNPROTECT(9);
+    return res;
+}
+
 SEXP R_mio_region_adjacency(SEXP mesh, SEXP regions) {
     R_xlen_t n = 0;
     mio_region_selector *selectors = NULL;

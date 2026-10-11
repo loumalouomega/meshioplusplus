@@ -85,6 +85,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [PVD](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvd`; a time-indexed collection of serial or parallel VTK XML files, read by ParaView),
 > [PVTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtp`; a parallel index over per-piece `.vtp` files) and
 > [PVTU](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtu`; a parallel index over per-piece `.vtu` files, ghost cells and `partition` output included),
+> [STEP](https://en.wikipedia.org/wiki/ISO_10303-21) (output only; a closed surface as a faceted AP214 solid that CAD tools open) (`.step`, `.stp`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
 > [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones; `.szplt` read-only through a TecIO you supply),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
@@ -166,6 +167,9 @@ meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-sect
 meshioplusplus curvature  in.vtu out.vtu                     # per-vertex mean/Gaussian curvature
 meshioplusplus normals    in.vtu out.vtu --split-angle 30    # point/cell normals, split at creases
 meshioplusplus feature-edges in.stl edges.vtp --angle 45   # sharp/open/non-manifold edges as lines
+meshioplusplus segment    in.stl patches.vtu --curvature-tolerance 1  # smooth patches as regions
+meshioplusplus fit-primitives patches.vtu fits.vtu --json  # plane/sphere/cylinder/cone/torus per patch
+meshioplusplus convert    in.stl part.step               # a closed skin as a faceted CAD solid
 meshioplusplus hausdorff  a.stl b.stl --max 1e-3             # worst-case distance; nonzero exit above it
 meshioplusplus check      part.vtu -r "scaled_jacobian >= 0.2"  # quality gate: exit 1 on failure, 2 if unchecked
 meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
@@ -375,6 +379,19 @@ d = meshioplusplus.hausdorff_distance(before, after, face_samples=4)["distance"]
 edges = meshioplusplus.feature_edges(mesh, feature_angle=45)
 mesh = meshioplusplus.edit_regions(mesh, [{"op": "union", "inputs": ["a", "b"], "output": "inlet"}])
 pairs = meshioplusplus.match_periodic_nodes(mesh, "inlet", "outlet", translate=(2, 0, 0))
+```
+
+#### Skin to CAD: segment, fit primitives, STEP
+
+The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The write-only **`step`** format hands a closed skin to CAD as an AP214 faceted solid (one planar face per facet, shared edges), validated against OpenCASCADE. See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+seg = meshioplusplus.segment(skin, curvature_tolerance=1.0, min_patch_cells=20)
+fit, report = meshioplusplus.fit_primitives(seg, tolerance=2e-3, return_report=True)
+fit.field_data["fit:patch_params"]   # per patch: point, axis, radii, half-angle
+meshioplusplus.write("part.step", skin)
 ```
 
 #### Interfaces and contact

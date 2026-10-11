@@ -1410,6 +1410,16 @@ end
     close(fe.mesh)
     @test_throws MeshioError feature_edges(cube; feature_angle=200)
 
+    seg = segment(cube)
+    @test seg.num_patches == 6
+    @test seg.num_feature_edges == 12
+    fit = fit_primitives(seg.mesh)
+    @test fit.num_plane == 6
+    close(fit.mesh)
+    close(seg.mesh)
+    @test_throws MeshioError segment(cube; feature_angle=200)
+    @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+
     other = Mesh()
     set_points!(other, pts)
     add_cell_block!(other, "triangle", conn)

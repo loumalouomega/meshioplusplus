@@ -436,6 +436,52 @@ struct _CFeatureEdgesReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_segment_opts`. ABI; build through [`segment`](@ref):
+the angle defaults to 30 and `min_patch_cells` to 1."""
+struct _CSegmentOpts
+    region::Cstring
+    prefix::Cstring
+    feature_angle::Cdouble
+    normal_tolerance::Cdouble
+    curvature_tolerance::Cdouble
+    min_patch_cells::Int64
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_segment_report`."""
+struct _CSegmentReport
+    num_patches::Int64
+    num_merged::Int64
+    num_feature_edges::Int64
+    num_boundary_edges::Int64
+    num_non_manifold_edges::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_fit_primitives_opts`. ABI; build through
+[`fit_primitives`](@ref). `types` is the bit mask `1 << type`."""
+struct _CFitPrimitivesOpts
+    patch_data::Cstring
+    tolerance::Cdouble
+    min_inlier_fraction::Cdouble
+    relative::Int32
+    types::UInt32
+    max_iterations::Int64
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_fit_primitives_report`."""
+struct _CFitPrimitivesReport
+    num_patches::Int64
+    num_plane::Int64
+    num_sphere::Int64
+    num_cylinder::Int64
+    num_cone::Int64
+    num_torus::Int64
+    num_unfitted::Int64
+    reserved::NTuple{5,Int64}
+end
+
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
 which initializes the defaults in C and sets only what the caller names."""
 struct _CRenderOpts
@@ -820,6 +866,16 @@ function _check_abi_layout()
     sizeof(_CFeatureEdgesReport) == 64 ||
         error("meshio++: mio_feature_edges_report layout mismatch " *
               "($(sizeof(_CFeatureEdgesReport)) bytes)")
+    sizeof(_CSegmentOpts) == 96 ||
+        error("meshio++: mio_segment_opts layout mismatch ($(sizeof(_CSegmentOpts)) bytes)")
+    sizeof(_CSegmentReport) == 64 ||
+        error("meshio++: mio_segment_report layout mismatch ($(sizeof(_CSegmentReport)) bytes)")
+    sizeof(_CFitPrimitivesOpts) == 88 ||
+        error("meshio++: mio_fit_primitives_opts layout mismatch " *
+              "($(sizeof(_CFitPrimitivesOpts)) bytes)")
+    sizeof(_CFitPrimitivesReport) == 96 ||
+        error("meshio++: mio_fit_primitives_report layout mismatch " *
+              "($(sizeof(_CFitPrimitivesReport)) bytes)")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

@@ -1889,8 +1889,8 @@ contains
     end subroutine
 
     subroutine check_analysis_editing()
-        type(mio_mesh) :: sq, other, edges, edited, bad
-        integer(int64) :: nfeat, nbound, nfixed
+        type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted
+        integer(int64) :: nfeat, nbound, nfixed, npatch, nplane
         integer(int64), allocatable :: s_ids(:), m_ids(:)
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
@@ -1926,6 +1926,18 @@ contains
         call edges%free()
         bad = sq%feature_edges(feature_angle=200.0_real64, stat=ierr)
         call check(ierr /= 0, 'feature_edges rejects an angle above 180')
+
+        ! Segment and fit: six flat faces, six planes.
+        seg = sq%segment(num_patches=npatch, stat=ierr)
+        call check(ierr == 0, 'segment succeeded')
+        call check(npatch == 6_int64, 'a cube segments into 6 patches')
+        fitted = seg%fit_primitives(num_plane=nplane, stat=ierr)
+        call check(ierr == 0, 'fit_primitives succeeded')
+        call check(nplane == 6_int64, 'every cube face fits a plane')
+        call fitted%free()
+        call seg%free()
+        bad = sq%segment(feature_angle=200.0_real64, stat=ierr)
+        call check(ierr /= 0, 'segment rejects an angle above 180')
 
         ! Hausdorff: a cube against itself.
         call other%create()

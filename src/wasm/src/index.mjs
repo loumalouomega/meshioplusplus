@@ -255,6 +255,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
+ *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
+ *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
  *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
  *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
@@ -834,6 +836,28 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.featureEdges(mesh, featureAngle, feature, boundary, nonManifold,
                 inconsistent, region),
+        segment: (
+            mesh,
+            featureAngle = 30,
+            normalTolerance = 0,
+            curvatureTolerance = 0,
+            minPatchCells = 1,
+            region = '',
+            prefix = 'patch',
+        ) =>
+            Module.segment(mesh, featureAngle, normalTolerance, curvatureTolerance,
+                minPatchCells, region, prefix),
+        fitPrimitives: (
+            mesh,
+            patchData = 'segment:patch',
+            tolerance = 1e-3,
+            relative = true,
+            minInlierFraction = 0.9,
+            types = ['plane', 'sphere', 'cylinder', 'cone', 'torus'],
+            maxIterations = 50,
+        ) =>
+            Module.fitPrimitives(mesh, patchData, tolerance, relative, minInlierFraction,
+                Array.isArray(types) ? types : [types], maxIterations),
         render: (mesh, options = {}) => Module.render(mesh, options),
         renderText: (mesh, options = {}, text = {}) => Module.renderText(mesh, options, text),
         renderPng: (mesh, options = {}, compress = 0) => Module.renderPng(mesh, options, compress),

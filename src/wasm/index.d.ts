@@ -1564,7 +1564,7 @@ export interface MeshioPlusPlusModule {
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
    * "convert to" menu: the two lists genuinely differ (`openfoam` is
-   * read-only, `gltf` is write-only), and the set depends on how
+   * read-only, `gltf` and `step` are write-only), and the set depends on how
    * the artifact was built -- an official build carries the HDF5/netCDF-backed
    * formats, one built with `--without-hdf5` does not.
    */
@@ -2326,6 +2326,58 @@ export interface MeshioPlusPlusModule {
     numBoundary: number;
     numNonManifold: number;
     numInconsistent: number;
+  };
+
+  /**
+   * Split a surface into smooth patches by region growing, bounded by its
+   * feature edges. The mesh comes back unchanged plus cell data
+   * `segment:patch` (-1 off the surface), field data `segment:adjacency`
+   * (rows `[a, b, sharedEdges]`) and one cell region per patch,
+   * `<prefix>:<k>`. See doc/segment.md.
+   * @throws {Error} on an option out of range, an unknown region or a volume block.
+   */
+  segment(
+    mesh: Mesh,
+    featureAngle?: number,
+    normalTolerance?: number,
+    curvatureTolerance?: number,
+    minPatchCells?: number,
+    region?: string,
+    prefix?: string,
+  ): {
+    mesh: Mesh;
+    numPatches: number;
+    numMerged: number;
+    numFeatureEdges: number;
+    numBoundaryEdges: number;
+    numNonManifoldEdges: number;
+  };
+
+  /**
+   * Fit a plane, sphere, cylinder, cone or torus to each patch of a surface
+   * (the first accepted in that order, or none). The mesh comes back unchanged
+   * plus cell data `fit:type`, `fit:rms`, `fit:max` and per-patch field data
+   * `fit:patch_*`; `patchData = ''` fits the whole surface. See
+   * doc/fit_primitives.md.
+   * @throws {Error} on a bad option, an unknown type or a missing label array.
+   */
+  fitPrimitives(
+    mesh: Mesh,
+    patchData?: string,
+    tolerance?: number,
+    relative?: boolean,
+    minInlierFraction?: number,
+    types?: Array<'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus'>,
+    maxIterations?: number,
+  ): {
+    mesh: Mesh;
+    numPatches: number;
+    numPlane: number;
+    numSphere: number;
+    numCylinder: number;
+    numCone: number;
+    numTorus: number;
+    numUnfitted: number;
   };
 
   /**

@@ -20561,6 +20561,59 @@ private:
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/radioss_th.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/step.hpp =====
+/**
+ * @file formats/step.hpp
+ * @brief STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted
+ * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work.
+ *
+ * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.2; see doc/spikes.md),
+ * which the core deliberately does not carry.
+ *
+ * Each surface facet becomes an `ADVANCED_FACE` on a `PLANE`, bounded by an
+ * `EDGE_LOOP` of `ORIENTED_EDGE`s over `EDGE_CURVE`s on `LINE`s; an edge two
+ * facets share is one `EDGE_CURVE`, so the shell is topologically closed with
+ * no sewing. Every edge-connected piece of the surface is one
+ * `CLOSED_SHELL` inside one `MANIFOLD_SOLID_BREP`, collected in an
+ * `ADVANCED_BREP_SHAPE_REPRESENTATION` under the usual AP214 product
+ * structure, in millimetres.
+ *
+ *  - **Input**: `triangle`, `quad` and `polygon` blocks (quadratic surface
+ *    cells contribute their corners), or -- when the mesh has volume cells --
+ *    the skin of those (`extract_skin`), as the `stl` writer takes it. Lines
+ *    and vertices are dropped with a warning.
+ *  - **Planarity**: a facet of four or more corners further than `1e-9` of
+ *    its size from its own plane is fanned into triangles from its first
+ *    corner, so every face lies exactly on its `PLANE`.
+ *  - **Closed and oriented**: an open, non-manifold or inconsistently wound
+ *    edge throws `WriteError`, naming the first few as point-id pairs (run
+ *    `repair` first). A piece wound inwards (negative signed volume) is
+ *    written reversed, with a warning, so every solid has positive volume.
+ *  - **Bytes**: coordinates are written with `%.17g` (with the decimal point
+ *    STEP requires) and the header time stamp is fixed, so a file is
+ *    reproducible and the numpy twin writes the same bytes.
+ *
+ * One face per facet: merging coplanar facets into one face is not done.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a closed surface (or a volume mesh's skin) as a STEP faceted solid.
+ * @param rPath the `.step` / `.stp` file to create.
+ * @param rMesh the mesh to write.
+ * @throws WriteError on an open, non-manifold or inconsistently wound surface,
+ *         a degenerate facet, a non-finite coordinate, or no facets at all.
+ */
+MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/step.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/stl.hpp =====
 /**
  * @file stl.hpp
@@ -25974,6 +26027,138 @@ MESHIOPLUSPLUS_API FeatureEdgeResult feature_edges(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/feature_edges.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/fit_primitives.hpp =====
+/**
+ * @file operations/fit_primitives.hpp
+ * @brief Fit a plane, sphere, cylinder, cone or torus to each patch of a
+ * surface, and report how well it fits -- the measurement half of reverse
+ * engineering a triangle skin into a CAD model.
+ *
+ * The patches are a cell-data label (by default `segment:patch`, which
+ * `segment` writes); cells labelled below 0, and cells that are not surface
+ * cells, belong to none. An empty `mPatchData` fits the whole surface as one
+ * patch. Each patch is fitted to its cells' corner points, deterministically:
+ *
+ *  - **plane**: the least-squares plane through the centroid (the smallest
+ *    eigenvector of the covariance); its normal points the way the cells do;
+ *  - **sphere**: an algebraic fit, refined by Levenberg-Marquardt on the
+ *    orthogonal distance;
+ *  - **cylinder** and **cone**: the axis direction is the direction the cell
+ *    normals vary least along, the axis point the least-squares meeting point
+ *    of the normal lines; a cone's apex and half-angle come from a line fit of
+ *    radius against height. Both are then refined;
+ *  - **torus**: the tube-centre circle is found by scanning the minor radius
+ *    (cell centroids moved back along their normals must be cocircular), then
+ *    refined.
+ *
+ * A type is **accepted** when its RMS orthogonal distance is at most the
+ * tolerance and at least `mMinInlierFraction` of the points lie within the
+ * tolerance. The patch takes the first accepted type in the order plane,
+ * sphere, cylinder, cone, torus (the simplest that explains it); when none is
+ * accepted its type is `none` (0) and the report carries the best attempt's
+ * residuals, never a fit rounded to a neat primitive.
+ *
+ * ### Output
+ *
+ * The input, unchanged, plus cell data -- `fit:type` (Int64: -1 no patch,
+ * 0 none, 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus), `fit:rms` and
+ * `fit:max` (Float64, the patch's; NaN with no patch) -- and per-patch field
+ * data, one row per patch label in ascending order:
+ *
+ *  - `fit:patch_id` (Int64): the label;
+ *  - `fit:patch_type` (Int64): as `fit:type`;
+ *  - `fit:patch_params` (Float64, `(m, 10)`): `x, y, z, ax, ay, az, r1, r2,
+ *    angle, 0` -- plane: a point and the unit normal; sphere: the centre and
+ *    `r1` the radius; cylinder: the axis point nearest the patch centroid, the
+ *    unit axis and `r1` the radius; cone: the apex, the unit axis pointing into
+ *    the cone and `angle` the half-angle in degrees; torus: the centre, the
+ *    unit axis, `r1` the major and `r2` the minor radius. Unused entries are 0;
+ *    a patch of type none has NaN throughout. An axis is signed so its
+ *    largest-magnitude component is positive (a cone's points into the cone);
+ *  - `fit:patch_rms`, `fit:patch_max` (Float64): the accepted fit's residuals,
+ *    or the best attempt's;
+ *  - `fit:patch_fraction` (Float64): the share of points within tolerance;
+ *  - `fit:patch_tolerance` (Float64): the absolute tolerance applied.
+ *
+ * Patches are fitted in parallel, each serially, so the output is
+ * byte-identical on every backend and thread count. The numpy twin follows the
+ * same steps and agrees within rounding.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int64): the fitted type of each cell's patch; see `FitPrimitiveType`.
+inline constexpr const char* kFitTypeName = "fit:type";
+/// Cell data (Float64): the RMS distance of the cell's patch to its fit.
+inline constexpr const char* kFitRmsName = "fit:rms";
+/// Cell data (Float64): the largest distance of the cell's patch to its fit.
+inline constexpr const char* kFitMaxName = "fit:max";
+
+/// The values of `fit:type` and `fit:patch_type`.
+enum class FitPrimitiveType : std::int32_t {
+    None = 0,
+    Plane = 1,
+    Sphere = 2,
+    Cylinder = 3,
+    Cone = 4,
+    Torus = 5,
+};
+
+/// `FitPrimitivesOptions::mTypes` bits: `1 << FitPrimitiveType`.
+inline constexpr std::uint32_t kFitAllTypes = (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
+
+/// What `fit_primitives` fits and accepts.
+struct FitPrimitivesOptions {
+    /// The cell-data label naming each cell's patch; empty fits the whole
+    /// surface as one patch.
+    std::string mPatchData = "segment:patch";
+    /// The acceptance tolerance on the orthogonal distance; must be > 0.
+    double mTolerance = 1e-3;
+    /// Whether `mTolerance` is a fraction of each patch's bounding-box diagonal
+    /// (true) or a length (false).
+    bool mRelative = true;
+    /// The share of a patch's points that must lie within tolerance; in `[0, 1]`.
+    double mMinInlierFraction = 0.9;
+    /// Which types to try, as `1 << FitPrimitiveType` bits; must name at least one.
+    std::uint32_t mTypes = kFitAllTypes;
+    /// The cap on Levenberg-Marquardt iterations per refined fit; at least 1.
+    std::int64_t mMaxIterations = 50;
+};
+
+/// The annotated mesh and how many patches took each type.
+struct FitPrimitivesResult {
+    /// The input with the `fit:*` cell and field data.
+    Mesh mMesh;
+    std::int64_t mNumPatches = 0;
+    std::int64_t mNumPlane = 0;
+    std::int64_t mNumSphere = 0;
+    std::int64_t mNumCylinder = 0;
+    std::int64_t mNumCone = 0;
+    std::int64_t mNumTorus = 0;
+    /// Patches no type was accepted for.
+    std::int64_t mNumUnfitted = 0;
+};
+
+/**
+ * @brief Fit analytic primitives to the patches of a surface.
+ *
+ * @param rMesh a surface mesh carrying the patch labels; lines and vertices
+ *        belong to no patch.
+ * @param rOptions see `FitPrimitivesOptions`.
+ * @throws std::invalid_argument on an option out of range, a missing label
+ *         array, or a volume cell block.
+ */
+MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
+                                                      const FitPrimitivesOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/fit_primitives.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/gradient.hpp =====
 /**
  * @file operations/gradient.hpp
@@ -29592,6 +29777,121 @@ MESHIOPLUSPLUS_API RepairResult repair(const Mesh& rMesh, const RepairOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/repair.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/segment.hpp =====
+/**
+ * @file operations/segment.hpp
+ * @brief Split a surface into smooth patches by region growing, bounded by its
+ * feature edges -- the first step of reverse engineering a triangle skin into
+ * a CAD model (`fit_primitives`, then the `step` writer).
+ *
+ * The surface is the mesh's 2-D cells (triangles, quads, polygons and their
+ * quadratic variants, which contribute their corners). Two cells are
+ * neighbours when they share an edge that exactly those two cells use. A patch
+ * grows from its seed -- the lowest-numbered cell not yet in a patch -- across
+ * every neighbour edge that is
+ *
+ *  - **smooth**: the dihedral angle between the two cells' unit normals, after
+ *    reorienting an inconsistently wound pair, is at most `mFeatureAngleDeg`
+ *    (the crease test `feature_edges` reports); and, when enabled,
+ *  - **within the normal tolerance**: the neighbour's (orientation-corrected)
+ *    normal lies within `mNormalToleranceDeg` of the seed's; and
+ *  - **within the curvature tolerance**: the neighbour's curvature estimate
+ *    differs by at most `mCurvatureTolerance` from the mean estimate of the
+ *    cells the patch holds so far (taken in walk order, so it is
+ *    deterministic, and robust to one noisy seed).
+ *
+ * Open, non-manifold and sharp edges are never crossed. A patch smaller than
+ * `mMinPatchCells` is then merged, in one ascending pass, into the neighbouring
+ * patch it shares the most edges with (ties to the lowest patch id); a patch
+ * with no neighbour stays.
+ *
+ * The curvature estimate of a cell is the largest, over its smooth paired
+ * edges, of the edge's dihedral angle in radians divided by the distance
+ * between the two cells' centroids: an estimate of the larger principal
+ * curvature -- `1/r` on a cylinder or sphere of radius `r`, `0` on a plane.
+ * It is in inverse length units, so `mCurvatureTolerance` is too.
+ *
+ * ### Output
+ *
+ * The input, unchanged -- points, connectivity, block order, data and regions
+ * are bit-identical -- plus:
+ *
+ *  - cell data `segment:patch` (Int64): the patch of each cell, numbered from 0
+ *    in the order of each patch's lowest cell; `-1` on cells that are not
+ *    surface cells (lines, vertices) or lie outside `mRegion`;
+ *  - one `Cell` region per patch, named `<prefix>:<k>`. Cell regions already
+ *    named `<prefix>:<integer>` (an earlier run's) are replaced;
+ *  - field data `segment:adjacency` (Int64, `(m, 3)`): one row `(a, b, edges)`
+ *    per pair of patches `a < b` sharing at least one paired edge, ascending.
+ *
+ * ### Determinism
+ *
+ * Normals and the sorted edge table are built in parallel; the growth itself is
+ * a serial breadth-first walk (FIFO queue, neighbours in ascending cell order)
+ * because which patch claims a cell depends on the order the walk reaches it.
+ * The output is byte-identical on every backend and thread count, and to the
+ * numpy twin `meshioplusplus.segment`.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int64): the patch of each cell, or -1.
+inline constexpr const char* kSegmentPatchName = "segment:patch";
+/// Field data (Int64, `(m, 3)`): `(a, b, shared edges)` per adjacent patch pair.
+inline constexpr const char* kSegmentAdjacencyName = "segment:adjacency";
+
+/// How `segment` grows its patches.
+struct SegmentOptions {
+    /// The largest dihedral angle, in degrees, still crossed; in `[0, 180]`.
+    double mFeatureAngleDeg = 30.0;
+    /// The largest angle, in degrees, between a cell's normal and its patch
+    /// seed's; `0` disables the test. In `[0, 180]`.
+    double mNormalToleranceDeg = 0.0;
+    /// The largest difference between a cell's curvature estimate and its
+    /// patch's mean so far, in inverse length units; `0` disables the test.
+    double mCurvatureTolerance = 0.0;
+    /// Patches with fewer cells are merged into a neighbour; at least 1.
+    std::int64_t mMinPatchCells = 1;
+    /// Restrict to the cells of this named `Cell` region; empty takes every cell.
+    std::string mRegion;
+    /// The name prefix of the patch regions: `<prefix>:<k>`. Must not be empty.
+    std::string mPrefix = "patch";
+};
+
+/// The segmented mesh and what the segmentation found.
+struct SegmentResult {
+    /// The input with `segment:patch`, `segment:adjacency` and the patch regions.
+    Mesh mMesh;
+    /// Patches after merging.
+    std::int64_t mNumPatches = 0;
+    /// Patches merged into a neighbour for being smaller than `mMinPatchCells`.
+    std::int64_t mNumMerged = 0;
+    /// Paired edges sharper than the feature angle.
+    std::int64_t mNumFeatureEdges = 0;
+    /// Edges used by one cell.
+    std::int64_t mNumBoundaryEdges = 0;
+    /// Edges used by three or more cells.
+    std::int64_t mNumNonManifoldEdges = 0;
+};
+
+/**
+ * @brief Segment a surface into smooth patches.
+ *
+ * @param rMesh a surface mesh; lines and vertices are carried and labelled -1.
+ * @param rOptions see `SegmentOptions`.
+ * @throws std::invalid_argument on an option out of range, an unknown region
+ *         name, or a volume cell block (take its skin first with `extract_skin`).
+ */
+MESHIOPLUSPLUS_API SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/segment.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/sequence.hpp =====
 /**
  * @file operations/sequence.hpp
@@ -33741,6 +34041,66 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/library_lock.hpp =====
+// ===== begin src/cpp/src/detail/lsq_fit.hpp =====
+/**
+ * @file detail/lsq_fit.hpp
+ * @brief The small dense linear algebra `fit_primitives` needs: a symmetric
+ * 3x3 eigen-decomposition with vectors, a pivoted solver for a few unknowns,
+ * an orthonormal frame around an axis, and a Levenberg-Marquardt loop.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. Every routine is
+ * serial and written so the numpy twin (`_fit_primitives.py`) can follow it
+ * step for step: fixed sweep and iteration caps, no randomness, ties broken by
+ * index.
+ */
+
+// System includes
+#include <cstddef>
+#include <functional>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Eigen-decomposition of a symmetric 3x3 matrix by cyclic Jacobi sweeps.
+ * @param pA the matrix, row-major (9 entries); only read.
+ * @param pW the eigenvalues, ascending (ties keep their index order).
+ * @param pV the eigenvectors, one per row, matching `pW`; each is signed so its
+ *        largest-magnitude component (the first on a tie) is positive.
+ */
+void lsq_sym3_eigen(const double* pA, double* pW, double* pV);
+
+/**
+ * @brief Solve the `K x K` system `A x = b` by Gaussian elimination with
+ * partial pivoting.
+ * @param rA row-major, overwritten.
+ * @param rB the right-hand side on entry, the solution on success.
+ * @return false when a pivot is zero or not finite.
+ */
+bool lsq_solve(std::vector<double>& rA, std::vector<double>& rB, std::size_t K);
+
+/// An orthonormal `(e1, e2)` completing the unit vector `pE3` to a right-handed frame.
+void lsq_frame(const double* pE3, double* pE1, double* pE2);
+
+/// Fills `N` residuals for the parameter vector.
+using LsqResidual = std::function<void(const std::vector<double>& rTheta, double* pOut)>;
+
+/**
+ * @brief Minimise the sum of squared residuals by Levenberg-Marquardt with a
+ * forward-difference Jacobian.
+ * @param rTheta the start on entry, the minimiser on exit.
+ * @param rTypical per parameter, its typical magnitude (sets the difference step).
+ * @param N the number of residuals.
+ * @param MaxIterations the cap on accepted steps.
+ */
+void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<double>& rTypical,
+                             std::size_t N, const LsqResidual& rResidual, int MaxIterations);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/lsq_fit.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -34852,6 +35212,56 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/surface_rings.hpp =====
+/**
+ * @file detail/surface_rings.hpp
+ * @brief The 2-D cells of a mesh as face rings tagged with their global cell
+ * ids -- the surface `segment` grows patches over and `fit_primitives` fits.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Triangles, quads and their quadratic variants contribute their corners (the
+ * leading node of each `cell_edges` entry), polygons their whole row. Lines,
+ * vertices, VTK Lagrange surfaces and cells naming a missing point are
+ * skipped; a volume block (or polyhedron) throws `std::invalid_argument`.
+ * The numpy twin is `_segment.surface_rings`.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Face rings in CSR form, one per kept surface cell.
+struct SurfaceRings {
+    std::vector<std::int64_t> mStart{0};  ///< offsets into `mNodes`, one more than faces
+    std::vector<std::int64_t> mNodes;     ///< the rings' point ids, concatenated
+    std::vector<std::int64_t> mCell;      ///< the global (block-major) cell id of each ring
+
+    std::size_t NumFaces() const { return mCell.size(); }
+};
+
+/**
+ * @brief Collect the selected 2-D cells as face rings.
+ * @param rSelected per global cell, non-zero when the cell is taken.
+ * @param rErrorPrefix prepended to the volume-block error message.
+ * @throws std::invalid_argument on a volume or polyhedron block.
+ */
+SurfaceRings surface_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
+                           const std::string& rErrorPrefix);
+
+/// The mesh's points as a flat `n * 3` array, padded with zeros below 3-D.
+std::vector<double> surface_xyz(const Mesh& rMesh);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_rings.hpp =====
 // ===== begin src/cpp/src/detail/synth.hpp =====
 /**
  * @file detail/synth.hpp
@@ -57545,6 +57955,208 @@ std::recursive_mutex& library_mutex() {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/library_lock.cpp =====
+// ===== begin src/cpp/src/detail/lsq_fit.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <utility>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+void lsq_sym3_eigen(const double* pA, double* pW, double* pV) {
+    double a[3][3];
+    double v[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            a[i][j] = pA[i * 3 + j];
+    static const int kPq[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+    for (int sweep = 0; sweep < 50; ++sweep) {
+        const double off = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
+        const double diag = a[0][0] * a[0][0] + a[1][1] * a[1][1] + a[2][2] * a[2][2];
+        if (off == 0.0 || off <= 1e-32 * diag)
+            break;
+        for (const auto& pq : kPq) {
+            const int p = pq[0], q = pq[1];
+            if (a[p][q] == 0.0)
+                continue;
+            const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+            const double t = (theta >= 0.0 ? 1.0 : -1.0) /
+                             (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+            const double c = 1.0 / std::sqrt(t * t + 1.0);
+            const double s = t * c;
+            for (int k = 0; k < 3; ++k) {
+                const double akp = a[k][p], akq = a[k][q];
+                a[k][p] = c * akp - s * akq;
+                a[k][q] = s * akp + c * akq;
+            }
+            for (int k = 0; k < 3; ++k) {
+                const double apk = a[p][k], aqk = a[q][k];
+                a[p][k] = c * apk - s * aqk;
+                a[q][k] = s * apk + c * aqk;
+            }
+            a[p][q] = 0.0;
+            a[q][p] = 0.0;
+            for (int k = 0; k < 3; ++k) {
+                const double vkp = v[k][p], vkq = v[k][q];
+                v[k][p] = c * vkp - s * vkq;
+                v[k][q] = s * vkp + c * vkq;
+            }
+        }
+    }
+    int order[3] = {0, 1, 2};
+    for (int i = 1; i < 3; ++i)
+        for (int j = i; j > 0 && a[order[j]][order[j]] < a[order[j - 1]][order[j - 1]]; --j)
+            std::swap(order[j], order[j - 1]);
+    for (int r = 0; r < 3; ++r) {
+        const int col = order[r];
+        pW[r] = a[col][col];
+        int big = 0;
+        for (int k = 1; k < 3; ++k)
+            if (std::fabs(v[k][col]) > std::fabs(v[big][col]))
+                big = k;
+        const double sign = v[big][col] < 0.0 ? -1.0 : 1.0;
+        for (int k = 0; k < 3; ++k)
+            pV[r * 3 + k] = sign * v[k][col];
+    }
+}
+
+bool lsq_solve(std::vector<double>& rA, std::vector<double>& rB, std::size_t K) {
+    for (std::size_t col = 0; col < K; ++col) {
+        std::size_t piv = col;
+        for (std::size_t r = col + 1; r < K; ++r)
+            if (std::fabs(rA[r * K + col]) > std::fabs(rA[piv * K + col]))
+                piv = r;
+        const double pv = rA[piv * K + col];
+        if (pv == 0.0 || !std::isfinite(pv))
+            return false;
+        if (piv != col) {
+            for (std::size_t k = 0; k < K; ++k)
+                std::swap(rA[piv * K + k], rA[col * K + k]);
+            std::swap(rB[piv], rB[col]);
+        }
+        for (std::size_t r = col + 1; r < K; ++r) {
+            const double f = rA[r * K + col] / pv;
+            if (f == 0.0)
+                continue;
+            for (std::size_t k = col; k < K; ++k)
+                rA[r * K + k] -= f * rA[col * K + k];
+            rB[r] -= f * rB[col];
+        }
+    }
+    for (std::size_t i = K; i-- > 0;) {
+        double s = rB[i];
+        for (std::size_t k = i + 1; k < K; ++k)
+            s -= rA[i * K + k] * rB[k];
+        rB[i] = s / rA[i * K + i];
+        if (!std::isfinite(rB[i]))
+            return false;
+    }
+    return true;
+}
+
+void lsq_frame(const double* pE3, double* pE1, double* pE2) {
+    int axis = 0;
+    for (int k = 1; k < 3; ++k)
+        if (std::fabs(pE3[k]) < std::fabs(pE3[axis]))
+            axis = k;
+    double h[3] = {0.0, 0.0, 0.0};
+    h[axis] = 1.0;
+    const double d = h[0] * pE3[0] + h[1] * pE3[1] + h[2] * pE3[2];
+    double e1[3] = {h[0] - d * pE3[0], h[1] - d * pE3[1], h[2] - d * pE3[2]};
+    const double len = std::sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+    for (int k = 0; k < 3; ++k)
+        pE1[k] = e1[k] / len;
+    pE2[0] = pE3[1] * pE1[2] - pE3[2] * pE1[1];
+    pE2[1] = pE3[2] * pE1[0] - pE3[0] * pE1[2];
+    pE2[2] = pE3[0] * pE1[1] - pE3[1] * pE1[0];
+}
+
+namespace {
+
+double lsq_cost(const std::vector<double>& rR) {
+    double s = 0.0;
+    for (double x : rR)
+        s += x * x;
+    return s;
+}
+
+}  // namespace
+
+void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<double>& rTypical,
+                             std::size_t N, const LsqResidual& rResidual, int MaxIterations) {
+    const std::size_t k = rTheta.size();
+    if (N < k || k == 0)
+        return;
+    std::vector<double> r(N), rn(N), rj(N), jac(N * k);
+    rResidual(rTheta, r.data());
+    double cost = lsq_cost(r);
+    if (!std::isfinite(cost))
+        return;
+    double lambda = 1e-3;
+    std::vector<double> h(k * k), g(k), m, delta, trial(k), step(k);
+    for (int it = 0; it < MaxIterations; ++it) {
+        for (std::size_t j = 0; j < k; ++j) {
+            std::vector<double> t = rTheta;
+            const double mag = std::fabs(rTheta[j]) > rTypical[j] ? std::fabs(rTheta[j]) : rTypical[j];
+            step[j] = 1.4901161193847656e-08 * mag;
+            t[j] += step[j];
+            rResidual(t, rj.data());
+            for (std::size_t i = 0; i < N; ++i)
+                jac[i * k + j] = (rj[i] - r[i]) / step[j];
+        }
+        for (std::size_t a = 0; a < k; ++a) {
+            double ga = 0.0;
+            for (std::size_t i = 0; i < N; ++i)
+                ga += jac[i * k + a] * r[i];
+            g[a] = ga;
+            for (std::size_t b = 0; b < k; ++b) {
+                double hab = 0.0;
+                for (std::size_t i = 0; i < N; ++i)
+                    hab += jac[i * k + a] * jac[i * k + b];
+                h[a * k + b] = hab;
+            }
+        }
+        bool accepted = false;
+        double cost_new = cost;
+        for (int attempt = 0; attempt < 12; ++attempt) {
+            m = h;
+            delta.assign(k, 0.0);
+            for (std::size_t a = 0; a < k; ++a) {
+                m[a * k + a] += lambda * (h[a * k + a] > 1e-300 ? h[a * k + a] : 1e-300);
+                delta[a] = -g[a];
+            }
+            if (!lsq_solve(m, delta, k)) {
+                lambda *= 10.0;
+                continue;
+            }
+            for (std::size_t a = 0; a < k; ++a)
+                trial[a] = rTheta[a] + delta[a];
+            rResidual(trial, rn.data());
+            cost_new = lsq_cost(rn);
+            if (std::isfinite(cost_new) && cost_new < cost) {
+                accepted = true;
+                break;
+            }
+            lambda *= 10.0;
+        }
+        if (!accepted)
+            break;
+        const double before = cost;
+        rTheta = trial;
+        r.swap(rn);
+        cost = cost_new;
+        lambda = lambda * 0.1 > 1e-15 ? lambda * 0.1 : 1e-15;
+        if (before - cost <= 1e-14 * before)
+            break;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/lsq_fit.cpp =====
 // ===== begin src/cpp/src/detail/marching.cpp =====
 #include <algorithm>
 #include <array>
@@ -63793,6 +64405,90 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_normals.cpp =====
+// ===== begin src/cpp/src/detail/surface_rings.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+SurfaceRings surface_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
+                           const std::string& rErrorPrefix) {
+    SurfaceRings out;
+    const std::size_t n = rMesh.NumPoints();
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+    std::size_t bi = 0;
+    std::vector<std::int64_t> ids;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(bases[bi++]);
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+        if (cb.IsPolyhedron() || cell_type_dimension(ct) == 3)
+            throw std::invalid_argument(rErrorPrefix + "block '" + type +
+                                        "' is a volume block; segment a surface (take the "
+                                        "skin first with extract_skin)");
+        const bool polygon = type.rfind("polygon", 0) == 0;
+        std::vector<std::size_t> corners;
+        if (!polygon) {
+            if (cell_type_dimension(ct) != 2 || cb.IsRagged())
+                continue;
+            for (const CellEdgeDef& ed : cell_edges(ct))
+                corners.push_back(ed.mNodes[0]);
+            if (corners.size() < 3)
+                continue;
+        }
+        const std::size_t npc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            if (!rSelected[base + c])
+                continue;
+            ids.clear();
+            if (polygon && cb.IsRagged()) {
+                ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            } else if (polygon) {
+                // A polygon block can be stored rectangular: one row per cell.
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(read_int(cb.Conn(), c * npc + k));
+            } else {
+                for (std::size_t k : corners)
+                    ids.push_back(read_int(cb.Conn(), c * npc + k));
+            }
+            if (ids.size() < 3)
+                continue;
+            bool ok = true;
+            for (std::int64_t v : ids)
+                ok = ok && v >= 0 && static_cast<std::size_t>(v) < n;
+            if (!ok)
+                continue;
+            out.mNodes.insert(out.mNodes.end(), ids.begin(), ids.end());
+            out.mStart.push_back(static_cast<std::int64_t>(out.mNodes.size()));
+            out.mCell.push_back(static_cast<std::int64_t>(base + c));
+        }
+    }
+    return out;
+}
+
+std::vector<double> surface_xyz(const Mesh& rMesh) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    std::vector<double> xyz(n * 3, 0.0);
+    const NDArray& pts = rMesh.Points();
+    parallel_for_bw(n, [&](std::size_t i) {
+        for (std::size_t d = 0; d < dim && d < 3; ++d)
+            xyz[i * 3 + d] = read_double(pts, i * dim + d);
+    });
+    return xyz;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_rings.cpp =====
 // ===== begin src/cpp/src/detail/sym3_eigen.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -126333,6 +127029,393 @@ void RadiossThSeriesWriter::Finalize() {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/radioss_th.cpp =====
+// ===== begin src/cpp/src/formats/step.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kStepPrefix = "meshio++: step: ";
+
+// A STEP REAL: `%.17g`, with the decimal point the grammar requires and an
+// upper-case exponent ("3" -> "3.", "1e-05" -> "1.E-05").
+std::string step_real(double V) {
+    char buf[64];
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", V);
+    std::string s(buf);
+    const std::size_t e = s.find('e');
+    std::string mant = e == std::string::npos ? s : s.substr(0, e);
+    std::string expo = e == std::string::npos ? "" : "E" + s.substr(e + 1);
+    if (mant.find('.') == std::string::npos)
+        mant += '.';
+    return mant + expo;
+}
+
+// A STEP string body: printable ASCII, apostrophes doubled.
+std::string step_string(const std::string& rText) {
+    std::string out;
+    for (unsigned char c : rText) {
+        if (c == '\'')
+            out += "''";
+        else if (c >= 0x20 && c < 0x7f)
+            out += static_cast<char>(c);
+        else
+            out += '_';
+    }
+    return out;
+}
+
+std::string step_basename(const std::string& rPath) {
+    const std::size_t slash = rPath.find_last_of("/\\");
+    return slash == std::string::npos ? rPath : rPath.substr(slash + 1);
+}
+
+std::int64_t step_find(const std::vector<std::int64_t>& rSorted, std::int64_t Key) {
+    return static_cast<std::int64_t>(std::lower_bound(rSorted.begin(), rSorted.end(), Key) -
+                                     rSorted.begin());
+}
+
+std::size_t step_uf_find(std::vector<std::size_t>& rParent, std::size_t X) {
+    while (rParent[X] != X) {
+        rParent[X] = rParent[rParent[X]];
+        X = rParent[X];
+    }
+    return X;
+}
+
+void step_unit3(const double* pV, double* pOut) {
+    const double len = std::sqrt(pV[0] * pV[0] + pV[1] * pV[1] + pV[2] * pV[2]);
+    for (int k = 0; k < 3; ++k)
+        pOut[k] = len > 0.0 ? pV[k] / len : 0.0;
+}
+
+}  // namespace
+
+void write_step(const std::string& rPath, const Mesh& rMesh) {
+    // The facets: the skin of the volume cells when there are any.
+    Mesh skin;
+    const bool volume = has_skinnable_cells(rMesh);
+    if (volume)
+        skin = extract_skin(rMesh, /*linearize=*/true);
+    const Mesh& surface = volume ? skin : rMesh;
+    std::size_t total = 0;
+    for (const auto cb : surface.CellRange())
+        total += cb.NumCells();
+    detail::SurfaceRings in;
+    try {
+        in = detail::surface_rings(surface, std::vector<std::uint8_t>(total, 1), kStepPrefix);
+    } catch (const std::invalid_argument& rErr) {
+        throw WriteError(rErr.what());
+    }
+    if (in.NumFaces() < total) {
+        log::warn("step: {} cell(s) that are not surface facets (lines, vertices) are dropped",
+                  total - in.NumFaces());
+        detail::provenance_note("cells-dropped", "cells that are not surface facets");
+    }
+    if (in.NumFaces() == 0)
+        throw WriteError(std::string(kStepPrefix) + "no surface facets to write");
+
+    const std::vector<double> xyz = detail::surface_xyz(surface);
+    for (double v : xyz)
+        if (!std::isfinite(v))
+            throw WriteError(std::string(kStepPrefix) + "a coordinate is not finite");
+
+    // Fan every non-planar facet into triangles from its first corner.
+    std::vector<std::int64_t> start{0}, nodes;
+    for (std::size_t f = 0; f < in.NumFaces(); ++f) {
+        const std::int64_t* ring = in.mNodes.data() + in.mStart[f];
+        const std::size_t size = static_cast<std::size_t>(in.mStart[f + 1] - in.mStart[f]);
+        bool planar = true;
+        if (size > 3) {
+            double n[3];
+            detail::ring_unit_normal(xyz.data(), ring, size, n);
+            const double* p0 = &xyz[static_cast<std::size_t>(ring[0]) * 3];
+            double dev = 0.0, extent = 0.0;
+            for (std::size_t k = 1; k < size; ++k) {
+                const double* p = &xyz[static_cast<std::size_t>(ring[k]) * 3];
+                const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
+                const double h = std::fabs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]);
+                const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                dev = h > dev ? h : dev;
+                extent = l > extent ? l : extent;
+            }
+            planar = !(dev > 1e-9 * extent);
+        }
+        if (planar) {
+            nodes.insert(nodes.end(), ring, ring + size);
+            start.push_back(static_cast<std::int64_t>(nodes.size()));
+        } else {
+            for (std::size_t k = 1; k + 1 < size; ++k) {
+                nodes.insert(nodes.end(), {ring[0], ring[k], ring[k + 1]});
+                start.push_back(static_cast<std::int64_t>(nodes.size()));
+            }
+        }
+    }
+    const std::size_t nf = start.size() - 1;
+    std::vector<double> normals(nf * 3);
+    for (std::size_t f = 0; f < nf; ++f) {
+        detail::ring_unit_normal(xyz.data(), nodes.data() + start[f],
+                                 static_cast<std::size_t>(start[f + 1] - start[f]),
+                                 &normals[f * 3]);
+        if (normals[f * 3] == 0.0 && normals[f * 3 + 1] == 0.0 && normals[f * 3 + 2] == 0.0)
+            throw WriteError(std::string(kStepPrefix) + "facet " + std::to_string(f) +
+                             " is degenerate (zero area)");
+    }
+
+    // A solid's shell is closed and consistently wound.
+    {
+        const std::vector<detail::CreaseEdge> bad = detail::crease_edges(start, nodes, normals, 180.0);
+        std::size_t open = 0, nonmanifold = 0, inconsistent = 0;
+        std::string first;
+        std::size_t listed = 0;
+        for (const detail::CreaseEdge& e : bad) {
+            const bool b = e.IsBoundary(), m = e.IsNonManifold(), i = e.mInconsistent;
+            if (!b && !m && !i)
+                continue;
+            open += b ? 1 : 0;
+            nonmanifold += m ? 1 : 0;
+            inconsistent += i ? 1 : 0;
+            if (listed < 5) {
+                first += (listed ? ", (" : "(") + std::to_string(e.mLo) + ", " +
+                         std::to_string(e.mHi) + ")";
+                ++listed;
+            }
+        }
+        if (open + nonmanifold + inconsistent > 0)
+            throw WriteError(std::string(kStepPrefix) +
+                             "the surface is not a closed, consistently wound solid: " +
+                             std::to_string(open) + " open, " + std::to_string(nonmanifold) +
+                             " non-manifold and " + std::to_string(inconsistent) +
+                             " inconsistently wound edge(s), first " + first +
+                             " (point ids); run repair first");
+    }
+
+    // The edges, and the edge-connected pieces (one solid each).
+    std::vector<std::pair<std::int64_t, std::int64_t>> edges;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = start[f], s = start[f + 1] - b;
+        for (std::int64_t k = 0; k < s; ++k) {
+            const std::int64_t u = nodes[static_cast<std::size_t>(b + k)];
+            const std::int64_t v = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
+            edges.emplace_back(std::min(u, v), std::max(u, v));
+        }
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    auto edge_index = [&](std::int64_t U, std::int64_t V) {
+        const std::pair<std::int64_t, std::int64_t> key(std::min(U, V), std::max(U, V));
+        return static_cast<std::size_t>(std::lower_bound(edges.begin(), edges.end(), key) -
+                                        edges.begin());
+    };
+    std::vector<std::size_t> parent(nf);
+    for (std::size_t f = 0; f < nf; ++f)
+        parent[f] = f;
+    {
+        std::vector<std::int64_t> owner(edges.size(), -1);
+        for (std::size_t f = 0; f < nf; ++f) {
+            const std::int64_t b = start[f], s = start[f + 1] - b;
+            for (std::int64_t k = 0; k < s; ++k) {
+                const std::size_t e = edge_index(nodes[static_cast<std::size_t>(b + k)],
+                                                 nodes[static_cast<std::size_t>(b + (k + 1) % s)]);
+                if (owner[e] < 0) {
+                    owner[e] = static_cast<std::int64_t>(f);
+                    continue;
+                }
+                const std::size_t ra = step_uf_find(parent, f);
+                const std::size_t rb = step_uf_find(parent, static_cast<std::size_t>(owner[e]));
+                if (ra != rb)
+                    parent[std::max(ra, rb)] = std::min(ra, rb);
+            }
+        }
+    }
+    std::vector<std::size_t> piece_of(nf);
+    std::vector<std::size_t> roots;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t r = step_uf_find(parent, f);
+        if (r == f)
+            roots.push_back(f);
+        piece_of[f] = static_cast<std::size_t>(
+            std::lower_bound(roots.begin(), roots.end(), r) - roots.begin());
+    }
+    const std::size_t npieces = roots.size();
+
+    // A piece wound inwards is written reversed.
+    std::vector<double> volume_of(npieces, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = start[f], s = start[f + 1] - b;
+        const double* p0 = &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b)]) * 3];
+        for (std::int64_t k = 1; k + 1 < s; ++k) {
+            const double* p1 =
+                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
+            const double* p2 =
+                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k + 1)]) * 3];
+            volume_of[piece_of[f]] += (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) -
+                                       p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
+                                       p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
+                                      6.0;
+        }
+    }
+    std::size_t flipped = 0;
+    for (double v : volume_of)
+        flipped += v < 0.0 ? 1 : 0;
+    if (flipped > 0)
+        log::warn("step: {} piece(s) of the surface are wound inwards; written reversed", flipped);
+
+    // Points used, ascending.
+    std::vector<std::int64_t> used(nodes.begin(), nodes.end());
+    std::sort(used.begin(), used.end());
+    used.erase(std::unique(used.begin(), used.end()), used.end());
+
+    std::string out;
+    out.reserve(256 * (used.size() + edges.size() + nf) + 4096);
+    std::int64_t next = 1;
+    auto ent = [&](const std::string& rBody) {
+        const std::int64_t id = next++;
+        out += '#';
+        out += std::to_string(id);
+        out += '=';
+        out += rBody;
+        out += ";\n";
+        return id;
+    };
+    auto ref = [](std::int64_t Id) { return "#" + std::to_string(Id); };
+    auto triple = [](const double* pV) {
+        return "(" + step_real(pV[0]) + "," + step_real(pV[1]) + "," + step_real(pV[2]) + ")";
+    };
+
+    const std::string name = step_string(step_basename(rPath));
+    out += "ISO-10303-21;\n/*\n";
+    for (std::string line : detail::provenance_lines(detail::SlotTier::Block)) {
+        for (std::size_t at = line.find("*/"); at != std::string::npos; at = line.find("*/", at))
+            line.replace(at, 2, "* /");
+        out += line + "\n";
+    }
+    out += "*/\nHEADER;\n";
+    out += "FILE_DESCRIPTION(('meshio++ faceted B-rep'),'2;1');\n";
+    out += "FILE_NAME('" + name +
+           "','1970-01-01T00:00:00',(''),(''),'meshio++','meshio++','');\n";
+    out += "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
+
+    const std::int64_t app = ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
+    ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000," +
+        ref(app) + ")");
+    const std::int64_t pctx = ent("PRODUCT_CONTEXT(''," + ref(app) + ",'mechanical')");
+    const std::int64_t pdctx = ent("PRODUCT_DEFINITION_CONTEXT('part definition'," + ref(app) + ",'design')");
+    const std::int64_t prod = ent("PRODUCT('" + name + "','" + name + "',''," + "(" + ref(pctx) + "))");
+    ent("PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(" + ref(prod) + "))");
+    const std::int64_t form = ent("PRODUCT_DEFINITION_FORMATION('',''," + ref(prod) + ")");
+    const std::int64_t pdef = ent("PRODUCT_DEFINITION('design',''," + ref(form) + "," + ref(pdctx) + ")");
+    const std::int64_t pshape = ent("PRODUCT_DEFINITION_SHAPE('',''," + ref(pdef) + ")");
+    const std::int64_t len_unit = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    const std::int64_t ang_unit = ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
+    const std::int64_t sol_unit = ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
+    const std::int64_t unc = ent("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)," + ref(len_unit) +
+                                 ",'distance_accuracy_value','confusion accuracy')");
+    const std::int64_t gctx = ent(
+        "(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((" + ref(unc) +
+        "))GLOBAL_UNIT_ASSIGNED_CONTEXT((" + ref(len_unit) + "," + ref(ang_unit) + "," +
+        ref(sol_unit) + "))REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))");
+    const std::int64_t o_pt = ent("CARTESIAN_POINT('',(0.,0.,0.))");
+    const std::int64_t o_z = ent("DIRECTION('',(0.,0.,1.))");
+    const std::int64_t o_x = ent("DIRECTION('',(1.,0.,0.))");
+    const std::int64_t origin = ent("AXIS2_PLACEMENT_3D(''," + ref(o_pt) + "," + ref(o_z) + "," + ref(o_x) + ")");
+
+    // Vertices: a point and a vertex per used point id.
+    std::vector<std::int64_t> point_id(used.size()), vertex_id(used.size());
+    for (std::size_t i = 0; i < used.size(); ++i) {
+        point_id[i] = ent("CARTESIAN_POINT(''," + triple(&xyz[static_cast<std::size_t>(used[i]) * 3]) + ")");
+        vertex_id[i] = ent("VERTEX_POINT(''," + ref(point_id[i]) + ")");
+    }
+    // Edges: a straight EDGE_CURVE from the lower point id to the higher.
+    std::vector<std::int64_t> edge_id(edges.size());
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+        const double* a = &xyz[static_cast<std::size_t>(edges[e].first) * 3];
+        const double* b = &xyz[static_cast<std::size_t>(edges[e].second) * 3];
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (!(len > 0.0))
+            throw WriteError(std::string(kStepPrefix) + "edge (" + std::to_string(edges[e].first) +
+                             ", " + std::to_string(edges[e].second) +
+                             ") has zero length (coincident points; run clean first)");
+        double u[3];
+        step_unit3(d, u);
+        const std::size_t ia = static_cast<std::size_t>(step_find(used, edges[e].first));
+        const std::size_t ib = static_cast<std::size_t>(step_find(used, edges[e].second));
+        const std::int64_t dir = ent("DIRECTION(''," + triple(u) + ")");
+        const std::int64_t vec = ent("VECTOR(''," + ref(dir) + "," + step_real(len) + ")");
+        const std::int64_t line = ent("LINE(''," + ref(point_id[ia]) + "," + ref(vec) + ")");
+        edge_id[e] = ent("EDGE_CURVE(''," + ref(vertex_id[ia]) + "," + ref(vertex_id[ib]) + "," +
+                         ref(line) + ",.T.)");
+    }
+    // Faces: an edge loop on a plane through the first corner.
+    std::vector<std::int64_t> face_id(nf);
+    std::vector<std::int64_t> ring;
+    for (std::size_t f = 0; f < nf; ++f) {
+        ring.assign(nodes.begin() + start[f], nodes.begin() + start[f + 1]);
+        if (volume_of[piece_of[f]] < 0.0)
+            std::reverse(ring.begin(), ring.end());
+        const std::size_t s = ring.size();
+        std::string loop;
+        for (std::size_t k = 0; k < s; ++k) {
+            const std::int64_t u = ring[k], v = ring[(k + 1) % s];
+            const std::int64_t oe = ent("ORIENTED_EDGE('',*,*," + ref(edge_id[edge_index(u, v)]) +
+                                        (u < v ? ",.T.)" : ",.F.)"));
+            loop += (k ? "," : "") + ref(oe);
+        }
+        const std::int64_t el = ent("EDGE_LOOP('',(" + loop + "))");
+        const std::int64_t bound = ent("FACE_OUTER_BOUND(''," + ref(el) + ",.T.)");
+        double n[3];
+        detail::ring_unit_normal(xyz.data(), ring.data(), s, n);
+        const double* p0 = &xyz[static_cast<std::size_t>(ring[0]) * 3];
+        const double* p1 = &xyz[static_cast<std::size_t>(ring[1]) * 3];
+        const double d[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+        const double h = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+        const double t[3] = {d[0] - h * n[0], d[1] - h * n[1], d[2] - h * n[2]};
+        double x[3];
+        step_unit3(t, x);
+        const std::int64_t nz = ent("DIRECTION(''," + triple(n) + ")");
+        const std::int64_t nx = ent("DIRECTION(''," + triple(x) + ")");
+        const std::size_t i0 = static_cast<std::size_t>(step_find(used, ring[0]));
+        const std::int64_t place =
+            ent("AXIS2_PLACEMENT_3D(''," + ref(point_id[i0]) + "," + ref(nz) + "," + ref(nx) + ")");
+        const std::int64_t plane = ent("PLANE(''," + ref(place) + ")");
+        face_id[f] = ent("ADVANCED_FACE('',(" + ref(bound) + ")," + ref(plane) + ",.T.)");
+    }
+    // One closed shell and one solid per piece.
+    std::string solids;
+    for (std::size_t c = 0; c < npieces; ++c) {
+        std::string list;
+        for (std::size_t f = 0; f < nf; ++f)
+            if (piece_of[f] == c)
+                list += (list.empty() ? "" : ",") + ref(face_id[f]);
+        const std::int64_t shell = ent("CLOSED_SHELL('',(" + list + "))");
+        const std::int64_t solid =
+            ent("MANIFOLD_SOLID_BREP('solid" + std::to_string(c + 1) + "'," + ref(shell) + ")");
+        solids += "," + ref(solid);
+    }
+    const std::int64_t rep = ent("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + ref(origin) + solids +
+                                 ")," + ref(gctx) + ")");
+    ent("SHAPE_DEFINITION_REPRESENTATION(" + ref(pshape) + "," + ref(rep) + ")");
+    out += "ENDSEC;\nEND-ISO-10303-21;\n";
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os << out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/step.cpp =====
 // ===== begin src/cpp/src/formats/stl.cpp =====
 #include <array>
 #include <cmath>
@@ -153855,8 +154938,13 @@ void fe_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
             if (!rSelected[base + c])
                 continue;
             ids.clear();
-            if (polygon) {
+            if (cb.IsRagged()) {
                 ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            } else if (polygon) {
+                // A polygon block can be stored rectangular: one row per cell.
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(detail::read_int(cb.Conn(), c * npc + k));
             } else {
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::size_t k : corners)
@@ -153975,6 +155063,702 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/feature_edges.cpp =====
+// ===== begin src/cpp/src/operations/fit_primitives.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kFpPrefix = "meshio++: fit_primitives: ";
+constexpr double kFpPi = 3.14159265358979323846;
+constexpr std::size_t kFpParams = 10;
+
+// One patch's samples, shifted so the points' mean is the origin.
+struct FpPatch {
+    std::vector<double> mPts;      // 3 per point
+    std::vector<double> mNormals;  // 3 per face, unit (or zero)
+    std::vector<double> mCentres;  // 3 per face
+    double mShift[3] = {0.0, 0.0, 0.0};
+    double mDiag = 0.0;
+    std::size_t NumPoints() const { return mPts.size() / 3; }
+    std::size_t NumFaces() const { return mCentres.size() / 3; }
+};
+
+// A candidate: parameters (shifted frame) and the distances of the points.
+struct FpFit {
+    bool mOk = false;
+    double mParams[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double mRms = std::numeric_limits<double>::quiet_NaN();
+    double mMax = std::numeric_limits<double>::quiet_NaN();
+    double mFraction = 0.0;
+};
+
+double fp_dot(const double* pA, const double* pB) {
+    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+}
+
+void fp_normalize(double* pV) {
+    const double len = std::sqrt(fp_dot(pV, pV));
+    if (len > 0.0)
+        for (int k = 0; k < 3; ++k)
+            pV[k] /= len;
+}
+
+// Sign an axis so its largest-magnitude component (the first on a tie) is positive.
+void fp_canonical_axis(double* pV) {
+    int big = 0;
+    for (int k = 1; k < 3; ++k)
+        if (std::fabs(pV[k]) > std::fabs(pV[big]))
+            big = k;
+    if (pV[big] < 0.0)
+        for (int k = 0; k < 3; ++k)
+            pV[k] = -pV[k];
+}
+
+// Covariance (sum of outer products) of 3-vectors about a mean.
+void fp_scatter(const std::vector<double>& rV, const double* pMean, double* pOut) {
+    for (int k = 0; k < 9; ++k)
+        pOut[k] = 0.0;
+    const std::size_t n = rV.size() / 3;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d[3] = {rV[i * 3] - pMean[0], rV[i * 3 + 1] - pMean[1],
+                             rV[i * 3 + 2] - pMean[2]};
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b)
+                pOut[a * 3 + b] += d[a] * d[b];
+    }
+}
+
+void fp_mean(const std::vector<double>& rV, double* pOut) {
+    pOut[0] = pOut[1] = pOut[2] = 0.0;
+    const std::size_t n = rV.size() / 3;
+    for (std::size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 3; ++k)
+            pOut[k] += rV[i * 3 + k];
+    for (int k = 0; k < 3; ++k)
+        pOut[k] /= static_cast<double>(n);
+}
+
+// Residual statistics of a set of signed distances.
+void fp_stats(const std::vector<double>& rDist, double Tol, FpFit& rFit) {
+    double sum = 0.0, mx = 0.0;
+    std::size_t inside = 0;
+    for (double d : rDist) {
+        const double a = std::fabs(d);
+        sum += d * d;
+        mx = a > mx ? a : mx;
+        inside += a <= Tol ? 1 : 0;
+    }
+    const double n = static_cast<double>(rDist.size());
+    rFit.mRms = std::sqrt(sum / n);
+    rFit.mMax = mx;
+    rFit.mFraction = static_cast<double>(inside) / n;
+}
+
+// The axis direction cylinders and cones share: the direction the face
+// normals vary least along; and the axis point nearest every normal line.
+bool fp_axis(const FpPatch& rP, double* pDir, double* pPoint) {
+    const std::size_t nf = rP.NumFaces();
+    if (nf < 2)
+        return false;
+    double mean[3];
+    fp_mean(rP.mNormals, mean);
+    double cov[9];
+    fp_scatter(rP.mNormals, mean, cov);
+    double w[3], v[9];
+    detail::lsq_sym3_eigen(cov, w, v);
+    for (int k = 0; k < 3; ++k)
+        pDir[k] = v[k];
+    std::vector<double> a(9, 0.0), b(3, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const double* n = &rP.mNormals[f * 3];
+        const double* c = &rP.mCentres[f * 3];
+        for (int r = 0; r < 3; ++r)
+            for (int s = 0; s < 3; ++s) {
+                const double m = (r == s ? 1.0 : 0.0) - n[r] * n[s];
+                a[static_cast<std::size_t>(r * 3 + s)] += m;
+                b[static_cast<std::size_t>(r)] += m * c[s];
+            }
+    }
+    const double wt = static_cast<double>(nf);
+    for (int r = 0; r < 3; ++r)
+        for (int s = 0; s < 3; ++s)
+            a[static_cast<std::size_t>(r * 3 + s)] += wt * pDir[r] * pDir[s];
+    if (!detail::lsq_solve(a, b, 3))
+        return false;
+    for (int k = 0; k < 3; ++k)
+        pPoint[k] = b[static_cast<std::size_t>(k)];
+    return true;
+}
+
+// The point and direction of an axis parameterised as an offset and a tilt
+// in the frame (e1, e2, e3) about a base point.
+void fp_axis_from(const double* pBase, const double* pE1, const double* pE2, const double* pE3,
+                  double U, double V, double W, double Ax, double Ay, double* pPoint,
+                  double* pDir) {
+    for (int k = 0; k < 3; ++k) {
+        pPoint[k] = pBase[k] + U * pE1[k] + V * pE2[k] + W * pE3[k];
+        pDir[k] = pE3[k] + Ax * pE1[k] + Ay * pE2[k];
+    }
+    fp_normalize(pDir);
+}
+
+FpFit fp_plane(const FpPatch& rP, double Tol) {
+    FpFit fit;
+    const std::size_t n = rP.NumPoints();
+    if (n < 3)
+        return fit;
+    const double origin[3] = {0.0, 0.0, 0.0};
+    double cov[9], w[3], v[9];
+    fp_scatter(rP.mPts, origin, cov);
+    detail::lsq_sym3_eigen(cov, w, v);
+    double nrm[3] = {v[0], v[1], v[2]};
+    double total[3];
+    fp_mean(rP.mNormals, total);
+    if (fp_dot(total, nrm) < 0.0)
+        for (int k = 0; k < 3; ++k)
+            nrm[k] = -nrm[k];
+    std::vector<double> dist(n);
+    for (std::size_t i = 0; i < n; ++i)
+        dist[i] = fp_dot(&rP.mPts[i * 3], nrm);
+    fp_stats(dist, Tol, fit);
+    for (int k = 0; k < 3; ++k)
+        fit.mParams[3 + k] = nrm[k];
+    fit.mOk = true;
+    return fit;
+}
+
+FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
+    FpFit fit;
+    const std::size_t n = rP.NumPoints();
+    if (n < 4)
+        return fit;
+    std::vector<double> a(16, 0.0), b(4, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double* p = &rP.mPts[i * 3];
+        const double row[4] = {2.0 * p[0], 2.0 * p[1], 2.0 * p[2], 1.0};
+        const double rhs = fp_dot(p, p);
+        for (int r = 0; r < 4; ++r) {
+            for (int s = 0; s < 4; ++s)
+                a[static_cast<std::size_t>(r * 4 + s)] += row[r] * row[s];
+            b[static_cast<std::size_t>(r)] += row[r] * rhs;
+        }
+    }
+    if (!detail::lsq_solve(a, b, 4))
+        return fit;
+    const double r2 = b[3] + b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
+    if (!(r2 > 0.0))
+        return fit;
+    std::vector<double> theta = {b[0], b[1], b[2], std::sqrt(r2)};
+    const std::vector<double> typical = {rP.mDiag, rP.mDiag, rP.mDiag, rP.mDiag};
+    auto resid = [&](const std::vector<double>& rT, double* pOut) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* p = &rP.mPts[i * 3];
+            const double d[3] = {p[0] - rT[0], p[1] - rT[1], p[2] - rT[2]};
+            pOut[i] = std::sqrt(fp_dot(d, d)) - rT[3];
+        }
+    };
+    detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
+    if (!(theta[3] > 0.0) || !(theta[3] < 1e3 * rP.mDiag))
+        return fit;
+    std::vector<double> dist(n);
+    resid(theta, dist.data());
+    fp_stats(dist, Tol, fit);
+    fit.mParams[0] = theta[0];
+    fit.mParams[1] = theta[1];
+    fit.mParams[2] = theta[2];
+    fit.mParams[6] = theta[3];
+    fit.mOk = true;
+    return fit;
+}
+
+// Distance of a point to the line through pPoint along unit pDir.
+double fp_line_distance(const double* pP, const double* pPoint, const double* pDir) {
+    const double v[3] = {pP[0] - pPoint[0], pP[1] - pPoint[1], pP[2] - pPoint[2]};
+    const double h = fp_dot(v, pDir);
+    const double r[3] = {v[0] - h * pDir[0], v[1] - h * pDir[1], v[2] - h * pDir[2]};
+    return std::sqrt(fp_dot(r, r));
+}
+
+// The axis point nearest the origin's projection: the foot of the origin
+// (the shifted centroid) on the line.
+void fp_foot_of_origin(const double* pPoint, const double* pDir, double* pOut) {
+    const double h = -fp_dot(pPoint, pDir);
+    for (int k = 0; k < 3; ++k)
+        pOut[k] = pPoint[k] + h * pDir[k];
+}
+
+FpFit fp_cylinder(const FpPatch& rP, double Tol, int MaxIt) {
+    FpFit fit;
+    const std::size_t n = rP.NumPoints();
+    double dir[3], point[3];
+    if (n < 5 || !fp_axis(rP, dir, point))
+        return fit;
+    double e1[3], e2[3];
+    detail::lsq_frame(dir, e1, e2);
+    double r0 = 0.0;
+    for (std::size_t i = 0; i < n; ++i)
+        r0 += fp_line_distance(&rP.mPts[i * 3], point, dir);
+    r0 /= static_cast<double>(n);
+    std::vector<double> theta = {0.0, 0.0, 0.0, 0.0, r0};
+    const std::vector<double> typical = {rP.mDiag, rP.mDiag, 1.0, 1.0, rP.mDiag};
+    auto resid = [&](const std::vector<double>& rT, double* pOut) {
+        double pt[3], d[3];
+        fp_axis_from(point, e1, e2, dir, rT[0], rT[1], 0.0, rT[2], rT[3], pt, d);
+        for (std::size_t i = 0; i < n; ++i)
+            pOut[i] = fp_line_distance(&rP.mPts[i * 3], pt, d) - rT[4];
+    };
+    detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
+    if (!(theta[4] > 0.0) || !(theta[4] < 1e3 * rP.mDiag))
+        return fit;
+    std::vector<double> dist(n);
+    resid(theta, dist.data());
+    fp_stats(dist, Tol, fit);
+    double pt[3], d[3], foot[3];
+    fp_axis_from(point, e1, e2, dir, theta[0], theta[1], 0.0, theta[2], theta[3], pt, d);
+    fp_canonical_axis(d);
+    fp_foot_of_origin(pt, d, foot);
+    for (int k = 0; k < 3; ++k) {
+        fit.mParams[k] = foot[k];
+        fit.mParams[3 + k] = d[k];
+    }
+    fit.mParams[6] = theta[4];
+    fit.mOk = true;
+    return fit;
+}
+
+FpFit fp_cone(const FpPatch& rP, double Tol, int MaxIt) {
+    FpFit fit;
+    const std::size_t n = rP.NumPoints();
+    double dir[3], point[3];
+    if (n < 6 || !fp_axis(rP, dir, point))
+        return fit;
+    // Radius against height: rho = a + b h.
+    double sh = 0, sr = 0, shh = 0, shr = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double* p = &rP.mPts[i * 3];
+        const double v[3] = {p[0] - point[0], p[1] - point[1], p[2] - point[2]};
+        const double h = fp_dot(v, dir);
+        const double rho = fp_line_distance(p, point, dir);
+        sh += h;
+        sr += rho;
+        shh += h * h;
+        shr += h * rho;
+    }
+    const double nn = static_cast<double>(n);
+    const double den = nn * shh - sh * sh;
+    if (!(den > 0.0))
+        return fit;
+    const double slope = (nn * shr - sh * sr) / den;
+    const double icpt = (sr - slope * sh) / nn;
+    if (!(std::fabs(slope) > 1e-6))
+        return fit;
+    double axis[3] = {dir[0], dir[1], dir[2]};
+    if (slope < 0.0)
+        for (int k = 0; k < 3; ++k)
+            axis[k] = -axis[k];
+    const double h0 = -icpt / slope;
+    double apex[3];
+    for (int k = 0; k < 3; ++k)
+        apex[k] = point[k] + h0 * dir[k];
+    double e1[3], e2[3];
+    detail::lsq_frame(axis, e1, e2);
+    std::vector<double> theta = {0.0, 0.0, 0.0, 0.0, 0.0, std::atan(std::fabs(slope))};
+    const std::vector<double> typical = {rP.mDiag, rP.mDiag, rP.mDiag, 1.0, 1.0, 1.0};
+    auto resid = [&](const std::vector<double>& rT, double* pOut) {
+        double a[3], d[3];
+        fp_axis_from(apex, e1, e2, axis, rT[0], rT[1], rT[2], rT[3], rT[4], a, d);
+        const double ca = std::cos(rT[5]), sa = std::sin(rT[5]);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* p = &rP.mPts[i * 3];
+            const double v[3] = {p[0] - a[0], p[1] - a[1], p[2] - a[2]};
+            const double h = fp_dot(v, d);
+            const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
+            pOut[i] = std::sqrt(fp_dot(r, r)) * ca - h * sa;
+        }
+    };
+    detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
+    if (!(theta[5] > 1e-3) || !(theta[5] < 0.5 * kFpPi - 1e-3))
+        return fit;
+    std::vector<double> dist(n);
+    resid(theta, dist.data());
+    fp_stats(dist, Tol, fit);
+    double a[3], d[3];
+    fp_axis_from(apex, e1, e2, axis, theta[0], theta[1], theta[2], theta[3], theta[4], a, d);
+    for (int k = 0; k < 3; ++k) {
+        fit.mParams[k] = a[k];
+        fit.mParams[3 + k] = d[k];
+    }
+    fit.mParams[8] = theta[5] * 180.0 / kFpPi;
+    fit.mOk = true;
+    return fit;
+}
+
+// Tube centres for a minor radius: centroids moved back along their normals.
+// Returns the circle's centre, axis, major radius and a misfit score.
+bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pAxis,
+                    double& rMajor, double& rScore) {
+    const std::size_t nf = rP.NumFaces();
+    std::vector<double> q(nf * 3);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (int k = 0; k < 3; ++k)
+            q[f * 3 + k] = rP.mCentres[f * 3 + k] - Minor * rP.mNormals[f * 3 + k];
+    double qm[3], cov[9], w[3], v[9];
+    fp_mean(q, qm);
+    fp_scatter(q, qm, cov);
+    detail::lsq_sym3_eigen(cov, w, v);
+    const double axis[3] = {v[0], v[1], v[2]};
+    double e1[3], e2[3];
+    detail::lsq_frame(axis, e1, e2);
+    std::vector<double> a(9, 0.0), b(3, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const double d[3] = {q[f * 3] - qm[0], q[f * 3 + 1] - qm[1], q[f * 3 + 2] - qm[2]};
+        const double u = fp_dot(d, e1), t = fp_dot(d, e2);
+        const double row[3] = {2.0 * u, 2.0 * t, 1.0};
+        const double rhs = u * u + t * t;
+        for (int r = 0; r < 3; ++r) {
+            for (int s = 0; s < 3; ++s)
+                a[static_cast<std::size_t>(r * 3 + s)] += row[r] * row[s];
+            b[static_cast<std::size_t>(r)] += row[r] * rhs;
+        }
+    }
+    if (!detail::lsq_solve(a, b, 3))
+        return false;
+    const double r2 = b[2] + b[0] * b[0] + b[1] * b[1];
+    if (!(r2 > 0.0))
+        return false;
+    rMajor = std::sqrt(r2);
+    double score = 0.0;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const double d[3] = {q[f * 3] - qm[0], q[f * 3 + 1] - qm[1], q[f * 3 + 2] - qm[2]};
+        const double u = fp_dot(d, e1) - b[0], t = fp_dot(d, e2) - b[1];
+        const double radial = std::sqrt(u * u + t * t) - rMajor;
+        const double off = fp_dot(d, axis);
+        score += radial * radial + off * off;
+    }
+    rScore = score;
+    for (int k = 0; k < 3; ++k) {
+        pCentre[k] = qm[k] + b[0] * e1[k] + b[1] * e2[k];
+        pAxis[k] = axis[k];
+    }
+    return true;
+}
+
+FpFit fp_torus(const FpPatch& rP, double Tol, int MaxIt) {
+    FpFit fit;
+    const std::size_t n = rP.NumPoints();
+    if (n < 7 || rP.NumFaces() < 3)
+        return fit;
+    bool found = false;
+    double best = 0.0, centre[3] = {0, 0, 0}, axis[3] = {0, 0, 1}, major = 0.0, minor = 0.0;
+    for (int sign = 0; sign < 2; ++sign)
+        for (int j = 0; j < 48; ++j) {
+            const double rho = rP.mDiag * std::pow(10.0, -3.0 + 3.0 * j / 47.0);
+            const double s = sign == 0 ? rho : -rho;
+            double c[3], ax[3], R, score;
+            if (!fp_torus_guess(rP, s, c, ax, R, score))
+                continue;
+            if (!found || score < best) {
+                found = true;
+                best = score;
+                for (int k = 0; k < 3; ++k) {
+                    centre[k] = c[k];
+                    axis[k] = ax[k];
+                }
+                major = R;
+                minor = rho;
+            }
+        }
+    if (!found)
+        return fit;
+    double e1[3], e2[3];
+    detail::lsq_frame(axis, e1, e2);
+    std::vector<double> theta = {0.0, 0.0, 0.0, 0.0, 0.0, major, minor};
+    const std::vector<double> typical = {rP.mDiag, rP.mDiag, rP.mDiag, 1.0, 1.0, rP.mDiag, rP.mDiag};
+    auto resid = [&](const std::vector<double>& rT, double* pOut) {
+        double c[3], d[3];
+        fp_axis_from(centre, e1, e2, axis, rT[0], rT[1], rT[2], rT[3], rT[4], c, d);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double* p = &rP.mPts[i * 3];
+            const double v[3] = {p[0] - c[0], p[1] - c[1], p[2] - c[2]};
+            const double h = fp_dot(v, d);
+            const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
+            const double radial = std::sqrt(fp_dot(r, r)) - rT[5];
+            pOut[i] = std::sqrt(radial * radial + h * h) - rT[6];
+        }
+    };
+    detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
+    if (!(theta[5] > 0.0) || !(theta[6] > 0.0) || !(theta[5] < 1e3 * rP.mDiag) ||
+        !(theta[6] < 1e3 * rP.mDiag))
+        return fit;
+    std::vector<double> dist(n);
+    resid(theta, dist.data());
+    fp_stats(dist, Tol, fit);
+    double c[3], d[3];
+    fp_axis_from(centre, e1, e2, axis, theta[0], theta[1], theta[2], theta[3], theta[4], c, d);
+    fp_canonical_axis(d);
+    for (int k = 0; k < 3; ++k) {
+        fit.mParams[k] = c[k];
+        fit.mParams[3 + k] = d[k];
+    }
+    fit.mParams[6] = theta[5];
+    fit.mParams[7] = theta[6];
+    fit.mOk = true;
+    return fit;
+}
+
+struct FpOutcome {
+    std::int64_t mType = 0;
+    double mParams[kFpParams];
+    double mRms = std::numeric_limits<double>::quiet_NaN();
+    double mMax = std::numeric_limits<double>::quiet_NaN();
+    double mFraction = 0.0;
+    double mTol = 0.0;
+};
+
+FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) {
+    FpOutcome out;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t k = 0; k < kFpParams; ++k)
+        out.mParams[k] = nan;
+    const double tol = rOptions.mRelative ? rOptions.mTolerance * rP.mDiag : rOptions.mTolerance;
+    out.mTol = tol;
+    if (rP.NumPoints() == 0 || !(rP.mDiag > 0.0))
+        return out;
+    const int max_it = static_cast<int>(std::min<std::int64_t>(rOptions.mMaxIterations, 100000));
+    bool have_best = false;
+    for (int t = 1; t <= 5; ++t) {
+        if (!(rOptions.mTypes & (1u << t)))
+            continue;
+        FpFit fit;
+        switch (t) {
+            case 1: fit = fp_plane(rP, tol); break;
+            case 2: fit = fp_sphere(rP, tol, max_it); break;
+            case 3: fit = fp_cylinder(rP, tol, max_it); break;
+            case 4: fit = fp_cone(rP, tol, max_it); break;
+            default: fit = fp_torus(rP, tol, max_it); break;
+        }
+        if (!fit.mOk || !std::isfinite(fit.mRms))
+            continue;
+        if (fit.mRms <= tol && fit.mFraction >= rOptions.mMinInlierFraction) {
+            out.mType = t;
+            for (std::size_t k = 0; k < kFpParams; ++k)
+                out.mParams[k] = fit.mParams[k];
+            for (int k = 0; k < 3; ++k)
+                out.mParams[k] += rP.mShift[k];  // back from the centred frame
+            out.mRms = fit.mRms;
+            out.mMax = fit.mMax;
+            out.mFraction = fit.mFraction;
+            return out;
+        }
+        if (!have_best || fit.mRms < out.mRms) {
+            have_best = true;
+            out.mRms = fit.mRms;
+            out.mMax = fit.mMax;
+            out.mFraction = fit.mFraction;
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
+    if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kFpPrefix) + "the tolerance must be finite and > 0");
+    if (!(rOptions.mMinInlierFraction >= 0.0 && rOptions.mMinInlierFraction <= 1.0))
+        throw std::invalid_argument(std::string(kFpPrefix) +
+                                    "min_inlier_fraction must lie in [0, 1]");
+    if ((rOptions.mTypes & kFitAllTypes) == 0 || (rOptions.mTypes & ~kFitAllTypes) != 0)
+        throw std::invalid_argument(std::string(kFpPrefix) +
+                                    "types must name at least one of plane, sphere, cylinder, "
+                                    "cone, torus and nothing else");
+    if (rOptions.mMaxIterations < 1)
+        throw std::invalid_argument(std::string(kFpPrefix) + "max_iterations must be >= 1");
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
+    std::vector<std::int64_t> label(ncells, 0);
+    if (!rOptions.mPatchData.empty()) {
+        if (!rMesh.HasCellData(rOptions.mPatchData))
+            throw std::invalid_argument(std::string(kFpPrefix) + "no cell data named '" +
+                                        rOptions.mPatchData +
+                                        "' (run segment first, or name the label array)");
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const NDArray& a = rMesh.CellData(rOptions.mPatchData, b);
+            const std::size_t nc = rMesh.Cells(b).NumCells();
+            if (a.Size() != nc)
+                throw std::invalid_argument(std::string(kFpPrefix) + "cell data '" +
+                                            rOptions.mPatchData +
+                                            "' must hold one label per cell");
+            if (a.Dtype() == DType::Float32 || a.Dtype() == DType::Float64)
+                throw std::invalid_argument(std::string(kFpPrefix) + "cell data '" +
+                                            rOptions.mPatchData + "' must be an integer label");
+            const std::size_t base = static_cast<std::size_t>(bases[b]);
+            for (std::size_t c = 0; c < nc; ++c)
+                label[base + c] = detail::read_int(a, c);
+        }
+    }
+
+    std::vector<std::uint8_t> all(ncells, 1);
+    const detail::SurfaceRings rings = detail::surface_rings(rMesh, all, kFpPrefix);
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
+    const std::size_t nf = rings.NumFaces();
+
+    // Patch rows: one per distinct non-negative label on a surface cell.
+    std::map<std::int64_t, std::size_t> row_of;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t l = label[static_cast<std::size_t>(rings.mCell[f])];
+        if (l >= 0)
+            row_of.emplace(l, 0);
+    }
+    std::vector<std::int64_t> ids;
+    for (auto& kv : row_of) {
+        kv.second = ids.size();
+        ids.push_back(kv.first);
+    }
+    const std::size_t m = ids.size();
+    std::vector<std::vector<std::size_t>> faces_of(m);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t l = label[static_cast<std::size_t>(rings.mCell[f])];
+        if (l >= 0)
+            faces_of[row_of[l]].push_back(f);
+    }
+
+    std::vector<FpOutcome> outcome(m);
+    parallel_for(m, [&](std::size_t r) {
+        FpPatch patch;
+        std::vector<std::int64_t> verts;
+        for (std::size_t f : faces_of[r])
+            for (std::int64_t k = rings.mStart[f]; k < rings.mStart[f + 1]; ++k)
+                verts.push_back(rings.mNodes[static_cast<std::size_t>(k)]);
+        std::sort(verts.begin(), verts.end());
+        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+        patch.mPts.resize(verts.size() * 3);
+        for (std::size_t i = 0; i < verts.size(); ++i)
+            for (int k = 0; k < 3; ++k)
+                patch.mPts[i * 3 + static_cast<std::size_t>(k)] =
+                    xyz[static_cast<std::size_t>(verts[i]) * 3 + static_cast<std::size_t>(k)];
+        if (!verts.empty()) {
+            fp_mean(patch.mPts, patch.mShift);
+            double lo[3], hi[3];
+            for (int k = 0; k < 3; ++k)
+                lo[k] = hi[k] = patch.mPts[static_cast<std::size_t>(k)];
+            for (std::size_t i = 0; i < verts.size(); ++i)
+                for (int k = 0; k < 3; ++k) {
+                    double& v = patch.mPts[i * 3 + static_cast<std::size_t>(k)];
+                    lo[k] = v < lo[k] ? v : lo[k];
+                    hi[k] = v > hi[k] ? v : hi[k];
+                    v -= patch.mShift[k];
+                }
+            const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+            patch.mDiag = std::sqrt(fp_dot(ext, ext));
+        }
+        for (std::size_t f : faces_of[r]) {
+            const std::int64_t* ring = rings.mNodes.data() + rings.mStart[f];
+            const std::size_t size = static_cast<std::size_t>(rings.mStart[f + 1] - rings.mStart[f]);
+            double nrm[3];
+            detail::ring_unit_normal(xyz.data(), ring, size, nrm);
+            double c[3] = {0.0, 0.0, 0.0};
+            for (std::size_t k = 0; k < size; ++k)
+                for (std::size_t d = 0; d < 3; ++d)
+                    c[d] += xyz[static_cast<std::size_t>(ring[k]) * 3 + d];
+            for (std::size_t d = 0; d < 3; ++d) {
+                patch.mNormals.push_back(nrm[d]);
+                patch.mCentres.push_back(c[d] / static_cast<double>(size) - patch.mShift[d]);
+            }
+        }
+        outcome[r] = fp_fit_patch(patch, rOptions);
+    });
+
+    FitPrimitivesResult result;
+    result.mNumPatches = static_cast<std::int64_t>(m);
+    for (const FpOutcome& o : outcome) {
+        switch (o.mType) {
+            case 1: ++result.mNumPlane; break;
+            case 2: ++result.mNumSphere; break;
+            case 3: ++result.mNumCylinder; break;
+            case 4: ++result.mNumCone; break;
+            case 5: ++result.mNumTorus; break;
+            default: ++result.mNumUnfitted; break;
+        }
+    }
+
+    // Per global cell, its patch row (or none).
+    std::vector<std::int64_t> cell_row(ncells, -1);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t c = static_cast<std::size_t>(rings.mCell[f]);
+        if (label[c] >= 0)
+            cell_row[c] = static_cast<std::int64_t>(row_of[label[c]]);
+    }
+
+    Mesh& out = result.mMesh;
+    out = detail::clone_mesh(rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<NDArray> type_blocks, rms_blocks, max_blocks;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        NDArray t = NDArray::Uninit(DType::Int64, {nc});
+        NDArray r = NDArray::Uninit(DType::Float64, {nc});
+        NDArray x = NDArray::Uninit(DType::Float64, {nc});
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::int64_t row = cell_row[base + c];
+            const FpOutcome* o = row >= 0 ? &outcome[static_cast<std::size_t>(row)] : nullptr;
+            t.As<std::int64_t>()[c] = o ? o->mType : -1;
+            r.As<double>()[c] = o ? o->mRms : nan;
+            x.As<double>()[c] = o ? o->mMax : nan;
+        }
+        type_blocks.push_back(std::move(t));
+        rms_blocks.push_back(std::move(r));
+        max_blocks.push_back(std::move(x));
+    }
+    out.AddCellData(kFitTypeName, std::move(type_blocks));
+    out.AddCellData(kFitRmsName, std::move(rms_blocks));
+    out.AddCellData(kFitMaxName, std::move(max_blocks));
+
+    NDArray pid = NDArray::Uninit(DType::Int64, {m});
+    NDArray ptype = NDArray::Uninit(DType::Int64, {m});
+    NDArray params = NDArray::Uninit(DType::Float64, {m, kFpParams});
+    NDArray prms = NDArray::Uninit(DType::Float64, {m});
+    NDArray pmax = NDArray::Uninit(DType::Float64, {m});
+    NDArray pfrac = NDArray::Uninit(DType::Float64, {m});
+    NDArray ptol = NDArray::Uninit(DType::Float64, {m});
+    for (std::size_t r = 0; r < m; ++r) {
+        pid.As<std::int64_t>()[r] = ids[r];
+        ptype.As<std::int64_t>()[r] = outcome[r].mType;
+        for (std::size_t k = 0; k < kFpParams; ++k)
+            params.As<double>()[r * kFpParams + k] = outcome[r].mParams[k];
+        prms.As<double>()[r] = outcome[r].mRms;
+        pmax.As<double>()[r] = outcome[r].mMax;
+        pfrac.As<double>()[r] = outcome[r].mFraction;
+        ptol.As<double>()[r] = outcome[r].mTol;
+    }
+    out.AddFieldData("fit:patch_id", std::move(pid));
+    out.AddFieldData("fit:patch_type", std::move(ptype));
+    out.AddFieldData("fit:patch_params", std::move(params));
+    out.AddFieldData("fit:patch_rms", std::move(prms));
+    out.AddFieldData("fit:patch_max", std::move(pmax));
+    out.AddFieldData("fit:patch_fraction", std::move(pfrac));
+    out.AddFieldData("fit:patch_tolerance", std::move(ptol));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/fit_primitives.cpp =====
 // ===== begin src/cpp/src/operations/gradient.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -160814,6 +162598,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
         {"FeatureEdges",
          {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
+        {"Segment",
+         {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
+          "Prefix"}},
+        {"FitPrimitives",
+         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -161461,6 +163250,57 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumBoundary", static_cast<double>(fr.mNumBoundary)},
                         {"NumNonManifold", static_cast<double>(fr.mNumNonManifold)},
                         {"NumInconsistent", static_cast<double>(fr.mNumInconsistent)}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "Segment") {
+        // A data step: the cells are labelled and grouped, never moved.
+        SegmentOptions opts;
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mNormalToleranceDeg = pipe_number(rStep, "NormalTolerance", 0.0);
+        opts.mCurvatureTolerance = pipe_number(rStep, "CurvatureTolerance", 0.0);
+        opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 1.0));
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        SegmentResult sr = segment(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(sr.mNumPatches)},
+                        {"NumMerged", static_cast<double>(sr.mNumMerged)},
+                        {"NumFeatureEdges", static_cast<double>(sr.mNumFeatureEdges)},
+                        {"NumBoundaryEdges", static_cast<double>(sr.mNumBoundaryEdges)}});
+        return std::move(sr.mMesh);
+    }
+    if (op == "FitPrimitives") {
+        FitPrimitivesOptions opts;
+        opts.mPatchData = pipe_text(rStep, "PatchData", "segment:patch");
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
+        opts.mRelative = pipe_flag(rStep, "Relative", true);
+        opts.mMinInlierFraction = pipe_number(rStep, "MinInlierFraction", 0.9);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
+        const std::vector<std::string> types = pipe_svec(rStep, "Types");
+        if (!types.empty()) {
+            static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+            opts.mTypes = 0;
+            for (const std::string& t : types) {
+                bool found = false;
+                for (int k = 0; k < 5; ++k)
+                    if (t == kNames[k]) {
+                        opts.mTypes |= 1u << (k + 1);
+                        found = true;
+                    }
+                if (!found)
+                    throw std::invalid_argument(
+                        pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
+            }
+        }
+        FitPrimitivesResult fr = fit_primitives(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(fr.mNumPatches)},
+                        {"NumPlane", static_cast<double>(fr.mNumPlane)},
+                        {"NumSphere", static_cast<double>(fr.mNumSphere)},
+                        {"NumCylinder", static_cast<double>(fr.mNumCylinder)},
+                        {"NumCone", static_cast<double>(fr.mNumCone)},
+                        {"NumTorus", static_cast<double>(fr.mNumTorus)},
+                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
         return std::move(fr.mMesh);
     }
     if (op == "Snapshot") {
@@ -172810,6 +174650,421 @@ SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/sdf.cpp =====
+// ===== begin src/cpp/src/operations/segment.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kSegPrefix = "meshio++: segment: ";
+constexpr double kSegPi = 3.14159265358979323846;
+
+// Per global cell, whether the region selects it (all cells when unnamed).
+std::vector<std::uint8_t> seg_selection(const Mesh& rMesh, const std::string& rRegion,
+                                        std::size_t NumCells) {
+    if (rRegion.empty())
+        return std::vector<std::uint8_t>(NumCells, 1);
+    const std::size_t r = rMesh.FindRegion(rRegion, RegionKind::Cell);
+    if (r == Mesh::npos) {
+        std::string names;
+        for (const std::string& n : rMesh.RegionNames())
+            names += (names.empty() ? "" : ", ") + n;
+        throw std::invalid_argument(std::string(kSegPrefix) + "no cell region named '" + rRegion +
+                                    "' (available: " + (names.empty() ? "none" : names) + ")");
+    }
+    std::vector<std::uint8_t> selected(NumCells, 0);
+    const NDArray& entries = rMesh.Region(r).mEntries;
+    for (std::size_t e = 0; e < entries.Size(); ++e) {
+        const std::int64_t c = detail::read_int(entries, e);
+        if (c >= 0 && static_cast<std::size_t>(c) < NumCells)
+            selected[static_cast<std::size_t>(c)] = 1;
+    }
+    return selected;
+}
+
+// One use of an undirected edge by one face ring.
+struct SegEdgeUse {
+    std::int64_t mLo;
+    std::int64_t mHi;
+    std::int64_t mFace;
+    bool mForward;
+};
+
+bool seg_use_less(const SegEdgeUse& rA, const SegEdgeUse& rB) {
+    if (rA.mLo != rB.mLo)
+        return rA.mLo < rB.mLo;
+    if (rA.mHi != rB.mHi)
+        return rA.mHi < rB.mHi;
+    if (rA.mFace != rB.mFace)
+        return rA.mFace < rB.mFace;
+    return rA.mForward < rB.mForward;
+}
+
+// An edge shared by exactly two distinct faces.
+struct SegPair {
+    std::int64_t mA;  // the lower face
+    std::int64_t mB;  // the higher face
+    bool mInconsistent;
+    bool mSmooth;
+    double mAngleRad;  // NaN when either face is degenerate
+};
+
+}  // namespace
+
+SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
+    if (!(rOptions.mFeatureAngleDeg >= 0.0 && rOptions.mFeatureAngleDeg <= 180.0))
+        throw std::invalid_argument(std::string(kSegPrefix) +
+                                    "the feature angle must lie in [0, 180] degrees");
+    if (!(rOptions.mNormalToleranceDeg >= 0.0 && rOptions.mNormalToleranceDeg <= 180.0))
+        throw std::invalid_argument(std::string(kSegPrefix) +
+                                    "the normal tolerance must lie in [0, 180] degrees");
+    if (!(rOptions.mCurvatureTolerance >= 0.0) || !std::isfinite(rOptions.mCurvatureTolerance))
+        throw std::invalid_argument(std::string(kSegPrefix) +
+                                    "the curvature tolerance must be finite and >= 0");
+    if (rOptions.mMinPatchCells < 1)
+        throw std::invalid_argument(std::string(kSegPrefix) + "min_patch_cells must be >= 1");
+    if (rOptions.mPrefix.empty())
+        throw std::invalid_argument(std::string(kSegPrefix) + "the region prefix must not be empty");
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
+    const std::vector<std::uint8_t> selected = seg_selection(rMesh, rOptions.mRegion, ncells);
+
+    const detail::SurfaceRings rings = detail::surface_rings(rMesh, selected, kSegPrefix);
+    const std::vector<std::int64_t>& start = rings.mStart;
+    const std::vector<std::int64_t>& nodes = rings.mNodes;
+    const std::vector<std::int64_t>& cell_of = rings.mCell;
+    const std::size_t nf = rings.NumFaces();
+
+    // Flat coordinates padded to 3-D, unit normals and centroids per face.
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
+    std::vector<double> normals(nf * 3);
+    std::vector<double> centroid(nf * 3);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t* ring = nodes.data() + start[f];
+        const std::size_t size = static_cast<std::size_t>(start[f + 1] - start[f]);
+        detail::ring_unit_normal(xyz.data(), ring, size, &normals[f * 3]);
+        double c[3] = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < size; ++k)
+            for (std::size_t d = 0; d < 3; ++d)
+                c[d] += xyz[static_cast<std::size_t>(ring[k]) * 3 + d];
+        for (std::size_t d = 0; d < 3; ++d)
+            centroid[f * 3 + d] = c[d] / static_cast<double>(size);
+    });
+
+    // Every non-collapsed ring edge is one use; sorted, each run is one edge.
+    std::vector<std::uint64_t> count(nf, 0);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t b = start[f];
+        const std::int64_t s = start[f + 1] - b;
+        std::uint64_t c = 0;
+        for (std::int64_t k = 0; k < s; ++k)
+            c += nodes[static_cast<std::size_t>(b + k)] !=
+                         nodes[static_cast<std::size_t>(b + (k + 1) % s)]
+                     ? 1
+                     : 0;
+        count[f] = c;
+    });
+    std::vector<std::uint64_t> at(nf);
+    const std::uint64_t nuses =
+        parallel_exclusive_scan(count.data(), nf, at.data(), std::uint64_t{0});
+    std::vector<SegEdgeUse> uses(nuses);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t b = start[f];
+        const std::int64_t s = start[f + 1] - b;
+        std::uint64_t w = at[f];
+        for (std::int64_t k = 0; k < s; ++k) {
+            const std::int64_t u = nodes[static_cast<std::size_t>(b + k)];
+            const std::int64_t v = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
+            if (u == v)
+                continue;
+            const std::int64_t face = static_cast<std::int64_t>(f);
+            uses[w++] = u < v ? SegEdgeUse{u, v, face, true} : SegEdgeUse{v, u, face, false};
+        }
+    });
+    parallel_sort(uses.begin(), uses.end(), seg_use_less);
+
+    SegmentResult result;
+    const double cos_feature = std::cos(rOptions.mFeatureAngleDeg * kSegPi / 180.0);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<SegPair> pairs;
+    for (std::size_t b = 0; b < uses.size();) {
+        std::size_t e = b + 1;
+        while (e < uses.size() && uses[e].mLo == uses[b].mLo && uses[e].mHi == uses[b].mHi)
+            ++e;
+        const std::size_t u = e - b;
+        if (u == 1) {
+            ++result.mNumBoundaryEdges;
+        } else if (u >= 3) {
+            ++result.mNumNonManifoldEdges;
+        } else if (uses[b].mFace != uses[b + 1].mFace) {
+            SegPair p;
+            p.mA = uses[b].mFace;
+            p.mB = uses[b + 1].mFace;
+            p.mInconsistent = uses[b].mForward == uses[b + 1].mForward;
+            const double* nx = &normals[static_cast<std::size_t>(p.mA) * 3];
+            const double* ny = &normals[static_cast<std::size_t>(p.mB) * 3];
+            const bool zx = nx[0] == 0.0 && nx[1] == 0.0 && nx[2] == 0.0;
+            const bool zy = ny[0] == 0.0 && ny[1] == 0.0 && ny[2] == 0.0;
+            p.mSmooth = true;
+            p.mAngleRad = nan;
+            if (!zx && !zy) {
+                double dot = nx[0] * ny[0] + nx[1] * ny[1] + nx[2] * ny[2];
+                if (p.mInconsistent)
+                    dot = -dot;
+                p.mSmooth = !(dot < cos_feature);
+                const double c = dot < -1.0 ? -1.0 : (dot > 1.0 ? 1.0 : dot);
+                p.mAngleRad = std::acos(c);
+            }
+            if (!p.mSmooth)
+                ++result.mNumFeatureEdges;
+            pairs.push_back(p);
+        }
+        b = e;
+    }
+
+    // Per face, its neighbours across paired edges, ascending by face then edge.
+    std::vector<std::int64_t> adj_start(nf + 1, 0);
+    for (const SegPair& p : pairs) {
+        ++adj_start[static_cast<std::size_t>(p.mA) + 1];
+        ++adj_start[static_cast<std::size_t>(p.mB) + 1];
+    }
+    for (std::size_t f = 0; f < nf; ++f)
+        adj_start[f + 1] += adj_start[f];
+    std::vector<std::pair<std::int64_t, std::int64_t>> adj(
+        static_cast<std::size_t>(adj_start[nf]));
+    {
+        std::vector<std::int64_t> fill(adj_start.begin(), adj_start.end() - 1);
+        for (std::size_t e = 0; e < pairs.size(); ++e) {
+            const std::int64_t ei = static_cast<std::int64_t>(e);
+            adj[static_cast<std::size_t>(fill[static_cast<std::size_t>(pairs[e].mA)]++)] = {
+                pairs[e].mB, ei};
+            adj[static_cast<std::size_t>(fill[static_cast<std::size_t>(pairs[e].mB)]++)] = {
+                pairs[e].mA, ei};
+        }
+        parallel_for(nf, [&](std::size_t f) {
+            std::sort(adj.begin() + adj_start[f], adj.begin() + adj_start[f + 1]);
+        });
+    }
+
+    // The curvature estimate, only when it is asked for.
+    const bool use_curv = rOptions.mCurvatureTolerance > 0.0;
+    std::vector<double> curv;
+    if (use_curv) {
+        curv.assign(nf, 0.0);
+        for (const SegPair& p : pairs) {
+            if (!p.mSmooth || std::isnan(p.mAngleRad))
+                continue;
+            const double* ca = &centroid[static_cast<std::size_t>(p.mA) * 3];
+            const double* cb = &centroid[static_cast<std::size_t>(p.mB) * 3];
+            const double dx = ca[0] - cb[0], dy = ca[1] - cb[1], dz = ca[2] - cb[2];
+            const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (!(dist > 0.0))
+                continue;
+            const double k = p.mAngleRad / dist;
+            double& ka = curv[static_cast<std::size_t>(p.mA)];
+            double& kb = curv[static_cast<std::size_t>(p.mB)];
+            ka = k > ka ? k : ka;
+            kb = k > kb ? k : kb;
+        }
+    }
+
+    // Region growing: a serial breadth-first walk from each unclaimed face.
+    const bool use_normal = rOptions.mNormalToleranceDeg > 0.0;
+    const double cos_normal = std::cos(rOptions.mNormalToleranceDeg * kSegPi / 180.0);
+    std::vector<std::int64_t> patch(nf, -1);
+    std::vector<std::uint8_t> flip(nf, 0);
+    std::vector<std::int64_t> queue;
+    queue.reserve(nf);
+    std::int64_t npatches = 0;
+    for (std::size_t seed = 0; seed < nf; ++seed) {
+        if (patch[seed] != -1)
+            continue;
+        const std::int64_t p = npatches++;
+        patch[seed] = p;
+        flip[seed] = 0;
+        const double* sn = &normals[seed * 3];
+        // The patch's mean curvature estimate so far, in walk order.
+        double curv_sum = use_curv ? curv[seed] : 0.0;
+        double curv_count = 1.0;
+        queue.clear();
+        queue.push_back(static_cast<std::int64_t>(seed));
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            const std::size_t g = static_cast<std::size_t>(queue[q]);
+            for (std::int64_t k = adj_start[g]; k < adj_start[g + 1]; ++k) {
+                const std::size_t nb = static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].first);
+                const SegPair& e = pairs[static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].second)];
+                if (patch[nb] != -1 || !e.mSmooth)
+                    continue;
+                const std::uint8_t fl = static_cast<std::uint8_t>(flip[g] ^ (e.mInconsistent ? 1 : 0));
+                if (use_normal) {
+                    const double* nn = &normals[nb * 3];
+                    double dot = sn[0] * nn[0] + sn[1] * nn[1] + sn[2] * nn[2];
+                    if (fl)
+                        dot = -dot;
+                    if (dot < cos_normal)
+                        continue;
+                }
+                if (use_curv &&
+                    std::fabs(curv[nb] - curv_sum / curv_count) > rOptions.mCurvatureTolerance)
+                    continue;
+                if (use_curv) {
+                    curv_sum += curv[nb];
+                    curv_count += 1.0;
+                }
+                patch[nb] = p;
+                flip[nb] = fl;
+                queue.push_back(static_cast<std::int64_t>(nb));
+            }
+        }
+    }
+
+    // Merge the patches below the minimum size, in one ascending pass.
+    std::vector<std::int64_t> label(static_cast<std::size_t>(npatches));
+    for (std::int64_t p = 0; p < npatches; ++p)
+        label[static_cast<std::size_t>(p)] = p;
+    if (rOptions.mMinPatchCells > 1 && npatches > 1) {
+        std::vector<std::int64_t> size(static_cast<std::size_t>(npatches), 0);
+        for (std::size_t f = 0; f < nf; ++f)
+            ++size[static_cast<std::size_t>(patch[f])];
+        std::vector<std::map<std::int64_t, std::int64_t>> shared(static_cast<std::size_t>(npatches));
+        for (const SegPair& e : pairs) {
+            const std::int64_t a = patch[static_cast<std::size_t>(e.mA)];
+            const std::int64_t b = patch[static_cast<std::size_t>(e.mB)];
+            if (a == b)
+                continue;
+            ++shared[static_cast<std::size_t>(a)][b];
+            ++shared[static_cast<std::size_t>(b)][a];
+        }
+        for (std::int64_t p = 0; p < npatches; ++p) {
+            const std::size_t ps = static_cast<std::size_t>(p);
+            if (label[ps] != p || size[ps] >= rOptions.mMinPatchCells || shared[ps].empty())
+                continue;
+            std::int64_t best = -1, best_count = -1;
+            for (const auto& kv : shared[ps])
+                if (kv.second > best_count) {
+                    best = kv.first;
+                    best_count = kv.second;
+                }
+            const std::size_t bs = static_cast<std::size_t>(best);
+            for (const auto& kv : shared[ps]) {
+                const std::size_t rs = static_cast<std::size_t>(kv.first);
+                shared[rs].erase(p);
+                if (kv.first == best)
+                    continue;
+                shared[bs][kv.first] += kv.second;
+                shared[rs][best] += kv.second;
+            }
+            shared[ps].clear();
+            size[bs] += size[ps];
+            size[ps] = 0;
+            label[ps] = best;
+            ++result.mNumMerged;
+        }
+        // Resolve chains of merges to their surviving patch.
+        for (std::int64_t p = 0; p < npatches; ++p) {
+            std::int64_t r = p;
+            while (label[static_cast<std::size_t>(r)] != r)
+                r = label[static_cast<std::size_t>(r)];
+            label[static_cast<std::size_t>(p)] = r;
+        }
+    }
+
+    // Final ids in the order of each patch's lowest face.
+    std::vector<std::int64_t> final_id(static_cast<std::size_t>(npatches), -1);
+    std::int64_t nfinal = 0;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t r = static_cast<std::size_t>(label[static_cast<std::size_t>(patch[f])]);
+        if (final_id[r] == -1)
+            final_id[r] = nfinal++;
+        patch[f] = final_id[r];
+    }
+    result.mNumPatches = nfinal;
+
+    // Per global cell, its patch; then the regions and the adjacency table.
+    std::vector<std::int64_t> cell_patch(ncells, -1);
+    for (std::size_t f = 0; f < nf; ++f)
+        cell_patch[static_cast<std::size_t>(cell_of[f])] = patch[f];
+
+    std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> adjacency;
+    for (const SegPair& e : pairs) {
+        std::int64_t a = patch[static_cast<std::size_t>(e.mA)];
+        std::int64_t b = patch[static_cast<std::size_t>(e.mB)];
+        if (a == b)
+            continue;
+        if (a > b)
+            std::swap(a, b);
+        ++adjacency[{a, b}];
+    }
+
+    Mesh& out = result.mMesh;
+    out = detail::clone_mesh(rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
+
+    std::vector<NDArray> blocks;
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const std::size_t base = static_cast<std::size_t>(bases[bi]);
+        const std::size_t nc = rMesh.Cells(bi).NumCells();
+        NDArray a = NDArray::Uninit(DType::Int64, {nc});
+        std::copy(cell_patch.begin() + static_cast<std::ptrdiff_t>(base),
+                  cell_patch.begin() + static_cast<std::ptrdiff_t>(base + nc), a.As<std::int64_t>());
+        blocks.push_back(std::move(a));
+    }
+    out.AddCellData(kSegmentPatchName, std::move(blocks));
+
+    NDArray table = NDArray::Uninit(DType::Int64, {adjacency.size(), std::size_t{3}});
+    {
+        std::int64_t* t = table.As<std::int64_t>();
+        std::size_t r = 0;
+        for (const auto& kv : adjacency) {
+            t[r * 3 + 0] = kv.first.first;
+            t[r * 3 + 1] = kv.first.second;
+            t[r * 3 + 2] = kv.second;
+            ++r;
+        }
+    }
+    out.AddFieldData(kSegmentAdjacencyName, std::move(table));
+
+    // Replace an earlier run's `<prefix>:<integer>` cell regions.
+    const std::string head = rOptions.mPrefix + ":";
+    for (std::size_t i = out.NumRegions(); i-- > 0;) {
+        const meshioplusplus::Region& r = out.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mName.size() <= head.size() ||
+            r.mName.compare(0, head.size(), head) != 0)
+            continue;
+        const bool digits = std::all_of(r.mName.begin() + static_cast<std::ptrdiff_t>(head.size()),
+                                        r.mName.end(), [](char c) { return c >= '0' && c <= '9'; });
+        if (digits)
+            out.RemoveRegion(i);
+    }
+    std::vector<std::vector<std::int64_t>> members(static_cast<std::size_t>(nfinal));
+    for (std::size_t c = 0; c < ncells; ++c)
+        if (cell_patch[c] >= 0)
+            members[static_cast<std::size_t>(cell_patch[c])].push_back(static_cast<std::int64_t>(c));
+    for (std::int64_t p = 0; p < nfinal; ++p) {
+        const std::vector<std::int64_t>& m = members[static_cast<std::size_t>(p)];
+        NDArray entries = NDArray::Uninit(DType::Int64, {m.size()});
+        std::copy(m.begin(), m.end(), entries.As<std::int64_t>());
+        out.AddRegion(meshioplusplus::Region(head + std::to_string(p), RegionKind::Cell, 2, -1,
+                                             std::move(entries)));
+    }
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/segment.cpp =====
 // ===== begin src/cpp/src/operations/sequence.cpp =====
 #include <algorithm>
 #include <array>
@@ -175068,8 +177323,13 @@ SmoothRings smooth_surface_rings(const Mesh& rMesh, std::size_t n) {
         }
         for (std::size_t c = 0; c < cb.NumCells(); ++c) {
             ids.clear();
-            if (polygon) {
+            if (cb.IsRagged()) {
                 ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            } else if (polygon) {
+                // A polygon block can be stored rectangular: one row per cell.
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(detail::read_int(cb.Conn(), c * npc + k));
             } else {
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::uint8_t k : corners)
@@ -179913,6 +182173,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
+        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.2).
+        {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
         // writes); the flat bindings emit them with the fixed default styling
@@ -180138,7 +182400,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".post.bin", "gid"},
         {".post.h5", "gid"},
         {".ply", "ply"},
+        {".step", "step"},
         {".stl", "stl"},
+        {".stp", "step"},
         {".su2", "su2"},
         {".glb", "gltf"},
         {".gltf", "gltf"},

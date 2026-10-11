@@ -71,6 +71,9 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     // glTF is one format with two suffixes; the writer tells the containers apart.
     EXPECT_EQ(resolve_format("model.glb", ""), "gltf");
     EXPECT_EQ(resolve_format("model.gltf", ""), "gltf");
+    // STEP: a write-only faceted solid under either suffix.
+    EXPECT_EQ(resolve_format("part.step", ""), "step");
+    EXPECT_EQ(resolve_format("part.stp", ""), "step");
 }
 
 TEST(Registry, ElmerIsReadWriteByDirectoryNotExtension) {
@@ -89,6 +92,12 @@ TEST(Registry, GltfIsWriteOnly) {
     options.mEncoding = WriteEncoding::Binary;
     Mesh m;
     EXPECT_THROW(registry_write_ex("x.glb", m, "gltf", options), WriteError);
+}
+
+TEST(Registry, StepIsWriteOnly) {
+    EXPECT_EQ(registry_writers().count("step"), 1u);
+    EXPECT_EQ(registry_readers().count("step"), 0u);
+    EXPECT_EQ(registry_readers_ex().count("step"), 0u);
 }
 
 TEST(Registry, ResolveFormatNodeElePairStayTetgen) {

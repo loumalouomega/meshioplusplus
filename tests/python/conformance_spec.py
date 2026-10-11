@@ -1208,6 +1208,10 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "step": {
+        "error": "write-only",
+        "note": "A faceted B-rep solid for CAD tools; a reader needs a CAD kernel (roadmap §6.2.2).",
+    },
     "stl": {
         "cells": {
             "triangle": "lost",
@@ -1595,9 +1599,14 @@ READ_ONLY = {
 }
 
 # The mirror: formats that write without reading. `svg` and `tikz` left it when
-# their readers landed (they are 2-D drawings, read back as planar).
+# their readers landed (they are 2-D drawings, read back as planar); `step` is
+# an exemption, like `ansys_rst_cyclic` above, not a gap.
 WRITE_ONLY = {
     "gltf": "Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader.",
+    "step": (
+        "Exempt, not a gap: reading STEP means a CAD kernel (roadmap §6.2.2). The faceted "
+        "writer is the CAD hand-off of the skin-to-CAD work (roadmap §6.3)."
+    ),
 }
 
 

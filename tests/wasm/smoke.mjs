@@ -4980,6 +4980,13 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(fe.mesh.cells[0].type, 'line');
     assert.throws(() => m.featureEdges(cubeSurface, 200));
 
+    const sg = m.segment(cubeSurface);
+    assert.equal(sg.numPatches, 6);
+    const fp = m.fitPrimitives(sg.mesh);
+    assert.equal(fp.numPlane, 6);
+    assert.throws(() => m.segment(cubeSurface, 200));
+    assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['blob']));
+
     const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
     assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0
     assert.equal(h.numSamplesA, 8 + 12 * 4);

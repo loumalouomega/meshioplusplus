@@ -76,6 +76,7 @@ from .. import (
     extract_surface,
     feature_edges,
     find_interface,
+    fit_primitives,
     geometry_descriptors,
     gradient,
     grid,
@@ -106,7 +107,7 @@ from .. import (
     scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
-from .. import shrinkwrap
+from .. import segment, shrinkwrap
 from .. import slice as _slice_op
 from .. import smooth
 from .. import snapshot as _snapshot_fn
@@ -1873,6 +1874,89 @@ def tool_feature_edges(
         _store(out, output_path, output_format),
         out,
         num_edges=int(len(out.cells[0].data)) if out.cells else 0,
+        **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_segment(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    feature_angle=30.0,
+    normal_tolerance=0.0,
+    curvature_tolerance=0.0,
+    min_patch_cells=1,
+    region="",
+    prefix="patch",
+):
+    """Split a surface into smooth patches by region growing, bounded by its
+    feature edges; written with cell data segment:patch, field data
+    segment:adjacency and one cell region per patch (<prefix>:<k>)."""
+    mesh = _load(input_path, input_format)
+    out, report = segment(
+        mesh,
+        feature_angle=feature_angle,
+        normal_tolerance=normal_tolerance,
+        curvature_tolerance=curvature_tolerance,
+        min_patch_cells=min_patch_cells,
+        region=region,
+        prefix=prefix,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_fit_primitives(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    patch_data="segment:patch",
+    tolerance=1e-3,
+    relative=True,
+    min_inlier_fraction=0.9,
+    types=None,
+    max_iterations=50,
+):
+    """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface;
+    written with cell data fit:type / fit:rms / fit:max and per-patch field
+    data fit:patch_*. The report carries one entry per patch."""
+    from .._fit_primitives import TYPES
+
+    mesh = _load(input_path, input_format)
+    out, report = fit_primitives(
+        mesh,
+        patch_data=patch_data,
+        tolerance=tolerance,
+        relative=relative,
+        min_inlier_fraction=min_inlier_fraction,
+        types=tuple(types) if types else TYPES[1:],
+        max_iterations=max_iterations,
+        return_report=True,
+    )
+    fd = out.field_data
+    patches = []
+    for i, pid in enumerate(fd["fit:patch_id"]):
+        params = fd["fit:patch_params"][i]
+        patches.append(
+            {
+                "patch": int(pid),
+                "type": TYPES[int(fd["fit:patch_type"][i])],
+                "params": [float(x) for x in params],
+                "rms": float(fd["fit:patch_rms"][i]),
+                "max": float(fd["fit:patch_max"][i]),
+                "fraction": float(fd["fit:patch_fraction"][i]),
+            }
+        )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        patches=patches,
         **{k: int(v) for k, v in report.items()},
     )
 
@@ -4300,6 +4384,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "feature_edges",
             {"fn": tool_feature_edges, "wraps": ("feature_edges",), "gated": None},
+        ),
+        (
+            "segment",
+            {"fn": tool_segment, "wraps": ("segment",), "gated": None},
+        ),
+        (
+            "fit_primitives",
+            {"fn": tool_fit_primitives, "wraps": ("fit_primitives",), "gated": None},
         ),
         (
             "region_adjacency",

@@ -101,6 +101,8 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -390,6 +392,8 @@ void print_usage(std::ostream& os) {
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
+          "  segment                 Split a surface into smooth patches (regions)\n"
+          "  fit-primitives          Fit a plane/sphere/cylinder/cone/torus to each patch\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
           "  contact-pairs          Project slave Point regions onto master facets\n"
@@ -1705,6 +1709,130 @@ int cmd_feature_edges(const std::vector<std::string>& rArgs) {
         std::cout << "  boundary:     " << r.mNumBoundary << "\n";
         std::cout << "  non-manifold: " << r.mNumNonManifold << "\n";
         std::cout << "  inconsistent: " << r.mNumInconsistent << "\n";
+    }
+    return 0;
+}
+
+int cmd_segment(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"angle", {}, true},
+                                  {"normal-tolerance", {}, true},
+                                  {"curvature-tolerance", {}, true},
+                                  {"min-patch-cells", {}, true},
+                                  {"region", {}, true},
+                                  {"prefix", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("segment requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::SegmentOptions options;
+    if (has_opt(p, "angle"))
+        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
+    if (has_opt(p, "normal-tolerance"))
+        options.mNormalToleranceDeg =
+            meshioplusplus::detail::stod_c(opt_value(p, "normal-tolerance"));
+    if (has_opt(p, "curvature-tolerance"))
+        options.mCurvatureTolerance =
+            meshioplusplus::detail::stod_c(opt_value(p, "curvature-tolerance"));
+    if (has_opt(p, "min-patch-cells"))
+        options.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
+    options.mRegion = opt_value(p, "region");
+    if (has_opt(p, "prefix"))
+        options.mPrefix = opt_value(p, "prefix");
+    meshioplusplus::SegmentResult r = meshioplusplus::segment(mesh, options);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_patches", r.mNumPatches);
+        json.Field("num_merged", r.mNumMerged);
+        json.Field("num_feature_edges", r.mNumFeatureEdges);
+        json.Field("num_boundary_edges", r.mNumBoundaryEdges);
+        json.Field("num_non_manifold_edges", r.mNumNonManifoldEdges);
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        char deg[32];
+        meshioplusplus::detail::snprintf_c(deg, sizeof(deg), "%g", options.mFeatureAngleDeg);
+        std::cout << "segment (" << deg << " degrees): " << r.mNumPatches << " patch(es)\n";
+        std::cout << "  merged:        " << r.mNumMerged << "\n";
+        std::cout << "  feature edges: " << r.mNumFeatureEdges << "\n";
+        std::cout << "  open edges:    " << r.mNumBoundaryEdges << "\n";
+    }
+    return 0;
+}
+
+int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"patch-data", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"absolute", {}, false},
+                                  {"min-inlier-fraction", {}, true},
+                                  {"types", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("fit-primitives requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+    meshioplusplus::FitPrimitivesOptions options;
+    if (has_opt(p, "patch-data"))
+        options.mPatchData = opt_value(p, "patch-data");
+    if (has_opt(p, "tolerance"))
+        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    options.mRelative = !has_flag(p, "absolute");
+    if (has_opt(p, "min-inlier-fraction"))
+        options.mMinInlierFraction =
+            meshioplusplus::detail::stod_c(opt_value(p, "min-inlier-fraction"));
+    if (has_opt(p, "max-iterations"))
+        options.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    if (has_opt(p, "types")) {
+        options.mTypes = 0;
+        const std::string list = opt_value(p, "types");
+        for (std::size_t at = 0; at <= list.size();) {
+            const std::size_t comma = std::min(list.find(',', at), list.size());
+            const std::string name = list.substr(at, comma - at);
+            at = comma + 1;
+            if (name.empty())
+                continue;
+            bool found = false;
+            for (int t = 0; t < 5; ++t)
+                if (name == kNames[t]) {
+                    options.mTypes |= 1u << (t + 1);
+                    found = true;
+                }
+            if (!found)
+                throw std::runtime_error("fit-primitives: unknown primitive type '" + name + "'");
+        }
+    }
+    meshioplusplus::FitPrimitivesResult r = meshioplusplus::fit_primitives(mesh, options);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_patches", r.mNumPatches);
+        json.Field("num_plane", r.mNumPlane);
+        json.Field("num_sphere", r.mNumSphere);
+        json.Field("num_cylinder", r.mNumCylinder);
+        json.Field("num_cone", r.mNumCone);
+        json.Field("num_torus", r.mNumTorus);
+        json.Field("num_unfitted", r.mNumUnfitted);
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "fit_primitives: " << r.mNumPatches << " patch(es)\n";
+        std::cout << "  plane:     " << r.mNumPlane << "\n";
+        std::cout << "  sphere:    " << r.mNumSphere << "\n";
+        std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
+        std::cout << "  cone:      " << r.mNumCone << "\n";
+        std::cout << "  torus:     " << r.mNumTorus << "\n";
+        std::cout << "  unfitted:  " << r.mNumUnfitted << "\n";
     }
     return 0;
 }
@@ -5304,6 +5432,10 @@ int main(int argc, char** argv) {
             return cmd_check(rest);
         if (cmd == "feature-edges")
             return cmd_feature_edges(rest);
+        if (cmd == "segment")
+            return cmd_segment(rest);
+        if (cmd == "fit-primitives")
+            return cmd_fit_primitives(rest);
         if (cmd == "region-adjacency")
             return cmd_region_adjacency(rest);
         if (cmd == "find-interface")

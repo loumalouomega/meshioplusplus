@@ -94,7 +94,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `fit-primitives`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -106,6 +106,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
 | `resample` | `method`, `num_steps` and the target `times` |
+| `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
+| `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1006,6 +1008,56 @@ The output keeps the input's points and carries cell data `feature:kind` (1 feat
 
 ```sh
 meshioplusplus feature-edges part.stl part_edges.vtp --angle 45
+```
+
+---
+
+## meshioplusplus segment
+
+Split a surface into smooth patches bounded by its feature edges, written as cell data `segment:patch`, field data `segment:adjacency` and one cell region per patch (see [segment](/segment)).
+
+```text
+meshioplusplus segment [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format`, `-o/--output-format` | Explicit formats |
+| `--angle DEG` | Largest dihedral angle still crossed, `[0, 180]` (default `30`) |
+| `--normal-tolerance DEG` | Largest angle between a cell's normal and its patch seed's (default off) |
+| `--curvature-tolerance K` | Largest curvature-estimate difference from the patch mean, 1/length (default off) |
+| `--min-patch-cells N` | Merge smaller patches into a neighbour (default `1`) |
+| `--region NAME` | Restrict to a named cell region |
+| `--prefix NAME` | Patch regions are named `NAME:k` (default `patch`) |
+| `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
+
+```sh
+meshioplusplus segment part.stl part_patches.vtu --curvature-tolerance 1.0 --min-patch-cells 20
+```
+
+---
+
+## meshioplusplus fit-primitives
+
+Fit a plane, sphere, cylinder, cone or torus to each patch and write the input with `fit:*` cell data and `fit:patch_*` field data (see [fit primitives](/fit_primitives)).
+
+```text
+meshioplusplus fit-primitives [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format`, `-o/--output-format` | Explicit formats |
+| `--patch-data NAME` | Integer cell-data patch label (default `segment:patch`); `''` fits the whole surface |
+| `--tolerance T` | Acceptance tolerance on the orthogonal distance (default `1e-3`) |
+| `--absolute` | `T` is a length, not a fraction of each patch's bounding-box diagonal |
+| `--min-inlier-fraction F` | Share of points that must lie within tolerance (default `0.9`) |
+| `--types LIST` | Comma-separated candidates from `plane,sphere,cylinder,cone,torus` (default all) |
+| `--max-iterations N` | Levenberg-Marquardt cap per fit (default `50`) |
+| `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
+
+```sh
+meshioplusplus fit-primitives part_patches.vtu part_fits.vtu --tolerance 2e-3 --json
 ```
 
 ---

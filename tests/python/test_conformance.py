@@ -71,7 +71,9 @@ def test_every_write_only_format_is_declared_with_its_item():
 
 def test_every_gap_names_a_roadmap_item():
     for fmt, reason in {**cs.READ_ONLY, **cs.WRITE_ONLY}.items():
-        assert "roadmap §3." in reason, f"{fmt}: name the roadmap item in its reason"
+        assert "roadmap §" in reason, f"{fmt}: name the roadmap item in its reason"
+        if not reason.startswith("Exempt, not a gap"):
+            assert "roadmap §3." in reason, f"{fmt}: a gap is closed by a §3 item"
 
 
 def test_the_native_registry_agrees():

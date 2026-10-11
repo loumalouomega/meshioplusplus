@@ -48,6 +48,8 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -274,6 +276,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
         {"FeatureEdges",
          {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
+        {"Segment",
+         {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
+          "Prefix"}},
+        {"FitPrimitives",
+         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -921,6 +928,57 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumBoundary", static_cast<double>(fr.mNumBoundary)},
                         {"NumNonManifold", static_cast<double>(fr.mNumNonManifold)},
                         {"NumInconsistent", static_cast<double>(fr.mNumInconsistent)}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "Segment") {
+        // A data step: the cells are labelled and grouped, never moved.
+        SegmentOptions opts;
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mNormalToleranceDeg = pipe_number(rStep, "NormalTolerance", 0.0);
+        opts.mCurvatureTolerance = pipe_number(rStep, "CurvatureTolerance", 0.0);
+        opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 1.0));
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        SegmentResult sr = segment(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(sr.mNumPatches)},
+                        {"NumMerged", static_cast<double>(sr.mNumMerged)},
+                        {"NumFeatureEdges", static_cast<double>(sr.mNumFeatureEdges)},
+                        {"NumBoundaryEdges", static_cast<double>(sr.mNumBoundaryEdges)}});
+        return std::move(sr.mMesh);
+    }
+    if (op == "FitPrimitives") {
+        FitPrimitivesOptions opts;
+        opts.mPatchData = pipe_text(rStep, "PatchData", "segment:patch");
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
+        opts.mRelative = pipe_flag(rStep, "Relative", true);
+        opts.mMinInlierFraction = pipe_number(rStep, "MinInlierFraction", 0.9);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
+        const std::vector<std::string> types = pipe_svec(rStep, "Types");
+        if (!types.empty()) {
+            static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+            opts.mTypes = 0;
+            for (const std::string& t : types) {
+                bool found = false;
+                for (int k = 0; k < 5; ++k)
+                    if (t == kNames[k]) {
+                        opts.mTypes |= 1u << (k + 1);
+                        found = true;
+                    }
+                if (!found)
+                    throw std::invalid_argument(
+                        pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
+            }
+        }
+        FitPrimitivesResult fr = fit_primitives(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(fr.mNumPatches)},
+                        {"NumPlane", static_cast<double>(fr.mNumPlane)},
+                        {"NumSphere", static_cast<double>(fr.mNumSphere)},
+                        {"NumCylinder", static_cast<double>(fr.mNumCylinder)},
+                        {"NumCone", static_cast<double>(fr.mNumCone)},
+                        {"NumTorus", static_cast<double>(fr.mNumTorus)},
+                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
         return std::move(fr.mMesh);
     }
     if (op == "Snapshot") {
