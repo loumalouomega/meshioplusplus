@@ -28,6 +28,15 @@ _COLORBAR_LABELS = 0.30
 _COLORBAR_SEGMENTS = 32
 
 
+def _write_tree(tree, filename):
+    """Writes the tree with LF line ends on every platform. ElementTree opens a
+    filename in text mode, which turns the newlines of the marker comment into
+    CRLF on Windows and breaks byte identity with the C++ writer, which writes
+    binary. A binary file object keeps the newlines as they are."""
+    with open(filename, "wb") as f:
+        tree.write(f)
+
+
 def _append_marker(svg, projected, azimuth, elevation, roll, scale, offset_x, offset_y):
     """The marker comment right after the opening tag: the provenance tag, the
     ``Drawing: ...`` line, then whatever else the provenance block carries.
@@ -270,7 +279,7 @@ def write(
         )
 
     tree = ET.ElementTree(svg)
-    tree.write(filename)
+    _write_tree(tree, filename)
 
 
 def _write_projected(
@@ -373,7 +382,7 @@ def _write_projected(
         _append_colorbar(svg, colors, min_x, min_y, width, height, float_fmt)
 
     tree = ET.ElementTree(svg)
-    tree.write(filename)
+    _write_tree(tree, filename)
 
 
 # ---------------------------------------------------------------------------
