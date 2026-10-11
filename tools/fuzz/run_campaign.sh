@@ -8,7 +8,9 @@
 # runs for SECONDS_PER_FORMAT (default 60) with its dictionary when one exists;
 # findings land in OUT_DIR/<format>/ (crash-*, leak-*, timeout-*, oom-*) and a
 # one-line verdict per format in OUT_DIR/summary.txt. FORMATS (space-separated)
-# narrows the list; SHARD/NSHARDS (0-based) split it for a CI matrix.
+# narrows the list; SHARD/NSHARDS (0-based) split it for a CI matrix. A finding's
+# sanitizer report and its minimized input (base64) also go to stdout: artifacts
+# cannot always be downloaded, the job log always can.
 # MIO_FUZZ_LIBRARY_READERS=1 admits library_formats.txt (instrumented deps only);
 # FUZZ_BINARY selects the structure-aware meshioplusplus_fuzz_hdf5 target.
 # Exit status: 1 when any format produced a finding.
@@ -26,6 +28,25 @@ NSHARDS=${NSHARDS:-1}
 : > "$OUT/summary.txt"
 status=0
 i=0
+
+# Prints a finding's sanitizer report, then its input: minimized by libFuzzer and
+# base64-encoded, so the job log alone reproduces it.
+show_finding() {
+    local fmt=$1 dir=$2 found=$3 input
+    grep -m1 -A40 -E 'ERROR: (AddressSanitizer|libFuzzer)|runtime error:' \
+        "$dir/fuzz.log" | head -60
+    [ -n "$found" ] || return 0
+    input="$dir/$found"
+    MIO_FUZZ_FORMAT=$fmt "$BUILD/${FUZZ_BINARY:-meshioplusplus_fuzz_read}" \
+        -minimize_crash=1 -runs=10000 -timeout=10 -rss_limit_mb=2048 \
+        -malloc_limit_mb=2048 -exact_artifact_path="$dir/minimized-input" \
+        "$input" > "$dir/minimize.log" 2>&1
+    [ -f "$dir/minimized-input" ] && input="$dir/minimized-input"
+    echo "$fmt: input $(basename "$input"), $(wc -c < "$input" | tr -d ' ') bytes, base64:"
+    base64 < "$input" | tr -d '\n'
+    echo
+}
+
 for fmt in $ALL; do
     idx=$i
     i=$((i + 1))
@@ -50,6 +71,7 @@ for fmt in $ALL; do
     found=$(ls "$dir" | grep -E '^(crash|leak|timeout|oom|slow-unit)-' | head -1)
     if [ -n "$found" ] || [ $rc -ne 0 ]; then
         echo "$fmt: FINDING ${found:-exit $rc}" | tee -a "$OUT/summary.txt"
+        show_finding "$fmt" "$dir" "$found"
         status=1
     else
         execs=$(grep -ao 'stat::number_of_executed_units: *[0-9]*' "$dir/fuzz.log" | grep -o '[0-9]*$')
