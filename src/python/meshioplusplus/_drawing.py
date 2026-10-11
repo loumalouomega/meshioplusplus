@@ -48,6 +48,12 @@ def split_blanks(text: str) -> list:
     return [t for t in _BLANK_RUN.split(text) if t]
 
 
+def safe(text: str) -> str:
+    """File text for an error message: anything but printable ASCII becomes ``?``
+    (the twin of ``drawing_safe``)."""
+    return "".join(c if " " <= c <= "~" else "?" for c in text)
+
+
 def num17(value) -> str:
     """``%.17g`` -- what the marker prints numbers with, so the reader restores them."""
     return "%.17g" % value
@@ -71,9 +77,7 @@ def marker_line(projected, azimuth, elevation, roll, scale_offset=None) -> str:
         line += "planar"
     if scale_offset is not None:
         scale, offset_x, offset_y = scale_offset
-        line += (
-            f" scale={num17(scale)} offset={num17(offset_x)},{num17(offset_y)}"
-        )
+        line += f" scale={num17(scale)} offset={num17(offset_x)},{num17(offset_y)}"
     return line
 
 
@@ -144,7 +148,9 @@ def parse_marker(lines, fmt: str, need_scale: bool) -> Marker:
     elif tokens[0] == "projected":
         marker.projected = True
     else:
-        raise ReadError(f"{fmt}: malformed drawing marker, unknown kind '{tokens[0]}'")
+        raise ReadError(
+            f"{fmt}: malformed drawing marker, unknown kind '{safe(tokens[0])}'"
+        )
     seen = set()
     for token in tokens[1:]:
         key, eq, value = token.partition("=")
@@ -232,7 +238,7 @@ def number_value(token: str, fmt: str) -> float:
     """A scanned number's value, or ``ReadError``."""
     value = float(token)
     if not math.isfinite(value):
-        raise ReadError(f"{fmt}: bad number '{token}'")
+        raise ReadError(f"{fmt}: bad number '{safe(token)}'")
     return value
 
 
@@ -287,9 +293,7 @@ class Builder:
         elif n > 4:
             ctype = "polygon"
         else:
-            raise ReadError(
-                f"{self._fmt}: a closed path of {n} vertices is not a face"
-            )
+            raise ReadError(f"{self._fmt}: a closed path of {n} vertices is not a face")
         if not self._blocks or self._blocks[-1][0] != ctype or self._blocks[-1][1] != n:
             self._blocks.append([ctype, n, [], []])
         block = self._blocks[-1]

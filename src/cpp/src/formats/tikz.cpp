@@ -217,7 +217,7 @@ std::string tikzr_construct_at(std::string_view Text, std::size_t Pos) {
     std::size_t end = Pos;
     while (end < Text.size() && !detail::text_is_blank(Text[end]) && end - Pos < 16)
         ++end;
-    return std::string(Text.substr(Pos, end - Pos));
+    return detail::drawing_safe(Text.substr(Pos, end - Pos));
 }
 
 // Splits an option list on the commas outside braces.
@@ -334,7 +334,7 @@ public:
                         in_picture = false;
                     }
                 } else {
-                    throw ReadError("TikZ: the environment '" + std::string(env) +
+                    throw ReadError("TikZ: the environment '" + detail::drawing_safe(env) +
                                     "' is not supported");
                 }
             } else if (name == "draw") {
@@ -397,7 +397,7 @@ private:
             const std::size_t eq = item.find('=');
             const std::string_view key = tikzr_trim(item.substr(0, eq));
             if (key != "scale" && key != "line width")
-                throw ReadError("TikZ: the tikzpicture option '" + std::string(key) +
+                throw ReadError("TikZ: the tikzpicture option '" + detail::drawing_safe(key) +
                                 "' is not supported");
         }
     }
@@ -412,7 +412,7 @@ private:
             const std::size_t eq = item.find('=');
             const std::string_view key = tikzr_trim(item.substr(0, eq));
             if (key != "fill" && key != "draw" && key != "line width")
-                throw ReadError("TikZ: the \\draw option '" + std::string(key) +
+                throw ReadError("TikZ: the \\draw option '" + detail::drawing_safe(key) +
                                 "' is not supported");
             if (key == "fill" && eq != std::string_view::npos)
                 fill = tikzr_rgb(item.substr(eq + 1));
@@ -438,12 +438,13 @@ private:
         mPos = close + 1;
         const std::size_t comma = inside.find(',');
         const std::string_view x = tikzr_trim(inside.substr(0, comma));
-        const std::string_view y =
-            comma == std::string_view::npos ? std::string_view() : tikzr_trim(inside.substr(comma + 1));
+        const std::string_view y = comma == std::string_view::npos
+                                       ? std::string_view()
+                                       : tikzr_trim(inside.substr(comma + 1));
         if (comma == std::string_view::npos || x.empty() || y.empty() ||
             detail::drawing_scan_number(x, 0) != x.size() ||
             detail::drawing_scan_number(y, 0) != y.size())
-            throw ReadError("TikZ: the coordinate (" + std::string(inside) +
+            throw ReadError("TikZ: the coordinate (" + detail::drawing_safe(inside) +
                             ") is not a plain (x,y) pair of numbers (named, polar, calc, 3-D and "
                             "unit-carrying coordinates are not supported)");
         if (!Keep) {
@@ -478,8 +479,9 @@ private:
             mPos += 2;
             SkipBlanks();
             if (mText.substr(mPos, 5) == "cycle" &&
-                (mPos + 5 >= mText.size() || !((mText[mPos + 5] >= 'a' && mText[mPos + 5] <= 'z') ||
-                                               (mText[mPos + 5] >= 'A' && mText[mPos + 5] <= 'Z')))) {
+                (mPos + 5 >= mText.size() ||
+                 !((mText[mPos + 5] >= 'a' && mText[mPos + 5] <= 'z') ||
+                   (mText[mPos + 5] >= 'A' && mText[mPos + 5] <= 'Z')))) {
                 mPos += 5;
                 closed = true;
                 SkipBlanks();

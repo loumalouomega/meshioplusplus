@@ -75,6 +75,16 @@ namespace detail {
 /// The prefix of the marker line, shared by both drawings.
 inline constexpr const char* kDrawingMarkerPrefix = "Drawing: ";
 
+/// File text for an error message: anything but printable ASCII becomes '?', so a
+/// message built from hostile bytes is always valid UTF-8 where it is shown.
+inline std::string drawing_safe(std::string_view Text) {
+    std::string out(Text);
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e)
+            c = '?';
+    return out;
+}
+
 /// `%.17g` -- what the marker prints numbers with, so the reader restores them.
 inline std::string drawing_num17(double Value) {
     char buf[40];
@@ -224,7 +234,7 @@ DrawingMarker parse_drawing_marker(const TLines& rCommentLines, const char* pFor
         marker.mProjected = true;
     else
         throw ReadError(std::string(pFormat) + ": malformed drawing marker, unknown kind '" +
-                        std::string(tokens[0]) + "'");
+                        drawing_safe(tokens[0]) + "'");
     bool has_az = false, has_el = false, has_roll = false, has_scale = false, has_offset = false;
     for (std::size_t i = 1; i < tokens.size(); ++i) {
         const std::size_t eq = tokens[i].find('=');
@@ -249,8 +259,10 @@ DrawingMarker parse_drawing_marker(const TLines& rCommentLines, const char* pFor
             if (comma == std::string_view::npos)
                 throw ReadError(std::string(pFormat) +
                                 ": malformed drawing marker, offset needs two numbers");
-            marker.mOffsetX = drawing_detail::marker_number(value.substr(0, comma), pFormat, "offset");
-            marker.mOffsetY = drawing_detail::marker_number(value.substr(comma + 1), pFormat, "offset");
+            marker.mOffsetX =
+                drawing_detail::marker_number(value.substr(0, comma), pFormat, "offset");
+            marker.mOffsetY =
+                drawing_detail::marker_number(value.substr(comma + 1), pFormat, "offset");
             has_offset = true;
         }
     }
@@ -457,7 +469,7 @@ private:
 inline double drawing_number_value(std::string_view Token, const char* pFormat) {
     double v = 0.0;
     if (!parse_double_token(Token, v) || !std::isfinite(v))
-        throw ReadError(std::string(pFormat) + ": bad number '" + std::string(Token) + "'");
+        throw ReadError(std::string(pFormat) + ": bad number '" + drawing_safe(Token) + "'");
     return v;
 }
 

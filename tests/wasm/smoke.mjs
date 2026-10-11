@@ -2484,9 +2484,12 @@ step('availableFormats reports what this build can read and write', () => {
     const { readers, writers } = m.availableFormats();
     assert.ok(Array.isArray(readers) && Array.isArray(writers));
     assert.ok(readers.includes('vtu') && writers.includes('vtu'));
-    // The two lists genuinely differ: svg/tikz are write-only. A viewer that
-    // assumes one list would offer broken menu items.
-    assert.ok(writers.includes('svg') && !readers.includes('svg'));
+    // The two lists genuinely differ: gltf is write-only. A viewer that
+    // assumes one list would offer broken menu items. svg and tikz read back
+    // the drawings meshio++ writes, so they are in both.
+    assert.ok(writers.includes('gltf') && !readers.includes('gltf'));
+    assert.ok(readers.includes('svg') && writers.includes('svg'));
+    assert.ok(readers.includes('tikz') && writers.includes('tikz'));
     // openfoam was read-only until v9.20.0 -- this step used to assert that.
     assert.ok(readers.includes('openfoam') && writers.includes('openfoam'));
     // The HDF5- and netCDF-backed formats are in this build too (the wasm32

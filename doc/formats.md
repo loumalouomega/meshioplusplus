@@ -78,11 +78,11 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-th) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
-| [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — | [write-only](./conformance.md#svg) |
+| [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [write-only](./conformance.md#svg) |
 | [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | [read-only](./conformance.md#szplt) |
 | [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
-| [`tikz`](./formats/tikz.md) | `.tikz` | — | ✓ | — | [write-only](./conformance.md#tikz) |
+| [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [write-only](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
 | [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
@@ -169,9 +169,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `gltf`** (v15.4.0): Write-only. The **surface** of the mesh as glTF 2.0 for the web, three.js and Blender — the skin of volume cells, 2-D cells, `line` cells as `LINES` and `vertex` cells or a cell-less point cloud as `POINTS`, one named node per cell region. `.glb` writes the binary container, `.gltf` JSON with a `.bin` beside it. Normals are per vertex, so points are duplicated at creases (`split_angle`, sharing the smooth-fan kernel of [`compute_normals`](./normals.md)); every one-to-four component `point_data` array is exported raw as `_NAME`; `color_by` bakes a field through a colormap into linear `COLOR_0` with an unlit material. Y-up, `float32`; the axis change, unit scale and recentring offset live on the root node, not in the coordinates. The C++ core and the Python reference write identical bytes and the output passes the Khronos glTF-Validator with zero errors and warnings; see [glTF](./formats/gltf.md).
 
-**Note on `svg`:** Write-only. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
+**Note on `svg`:** A 2-D drawing: it is read back only as the structure meshio++'s own writer emits, as a planar mesh (`z = 0`, one `svg:fill` RGB array if the paths were coloured), and a file without meshio++'s marker comment is refused unless `strict=False`. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
 
-**Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
+**Note on `tikz`:** A 2-D drawing: it is read back only as the structure meshio++'s own writer emits, as a planar mesh (`z = 0`, one `tikz:fill` RGB array if the faces were coloured), and a file without meshio++'s marker comment is refused unless `strict=False`. Emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
 
 **Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII by default; `binary=True` (v15.5.0) writes little-endian binary at a chosen `label_bits`/`scalar_bits` width, Python/C++ only. Polyhedral cells are native here.
 

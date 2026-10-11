@@ -1227,7 +1227,7 @@ SPEC: dict[str, dict] = {
         "regions": [],
         "input": "2d",
         "note": "A 2-D drawing, read back as planar (z = 0) from the scale and offset "
-        "meshio++ records in a comment. Observed with `float_fmt=\".17g\"`: the default "
+        'meshio++ records in a comment. Observed with `float_fmt=".17g"`: the default '
         "`.3f` keeps three decimals of a drawing 100 units wide, so corners come back to "
         "about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is "
         "that picture. Data arrays are not drawn; a colour comes back as an RGB "

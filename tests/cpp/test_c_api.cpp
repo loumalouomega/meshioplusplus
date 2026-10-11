@@ -894,11 +894,9 @@ TEST(CApi, ErrorPaths) {
     EXPECT_STRNE(mio_last_error(), "");
     EXPECT_EQ(mio_write("mesh.vtu", m, "no_such_format"), MIO_ERR_NOT_FOUND);
     // openfoam gained a writer in v9.20.0, so the "resolvable format with no
-    // writer" case it used to demonstrate needs a different format: svg/tikz
-    // are write-only, so pick the mirror case -- a read-only key no longer
-    // exists in the registry at all.
-    EXPECT_EQ(mio_read("mesh.svg", "svg"), nullptr);
-    // glTF is write-only too: it writes a binary container, and cannot be read back.
+    // writer" case it used to demonstrate needs a different format; svg/tikz
+    // read back the drawings meshio++ writes, so the write-only example is glTF.
+    // glTF is write-only: it writes a binary container, and cannot be read back.
     EXPECT_EQ(mio_read("mesh.glb", "gltf"), nullptr);
 
 #ifndef MESHIOPLUSPLUS_HAS_HDF5

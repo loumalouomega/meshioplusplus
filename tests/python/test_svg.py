@@ -464,9 +464,7 @@ def test_fills_match_the_file(tmp_path):
         helpers_coloring.flat_mesh(), tmp_path, color_by="tag", colorbar=True
     )
     paths = ET.parse(path).getroot().findall(f"{SVG_NS}path")
-    expected = [
-        [int(p.get("fill")[i : i + 2], 16) for i in (1, 3, 5)] for p in paths
-    ]
+    expected = [[int(p.get("fill")[i : i + 2], 16) for i in (1, 3, 5)] for p in paths]
     back = helpers_drawing.read_both("svg", path)
     assert len(back.points) == 4  # the 32 colorbar swatches added no points
     assert back.cell_data["svg:fill"][0].tolist() == expected
@@ -530,7 +528,7 @@ def test_a_file_from_a_release_before_the_marker_is_unmarked(tmp_path):
     path = tmp_path / "old.svg"
     path.write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
-        "<!--Written by meshio++ v10.0.0--><path d=\"M 0 1L 1 1L 1 0Z\" /></svg>"
+        '<!--Written by meshio++ v10.0.0--><path d="M 0 1L 1 1L 1 0Z" /></svg>'
     )
     core, py = helpers_drawing.readers("svg")
     for read in (core, py):
@@ -621,7 +619,10 @@ def test_the_marker_lines_follow_the_tag(tmp_path):
     assert head[1].startswith("Written by meshio++ v")
     assert head[2] == "Drawing: planar scale=100 offset=0,1"
     text = _written(helpers.hex_mesh, tmp_path, name="proj.svg").read_text()
-    assert "\nDrawing: projected azimuth=45 elevation=35.264389682754654 roll=0 scale=" in text
+    assert (
+        "\nDrawing: projected azimuth=45 elevation=35.264389682754654 roll=0 scale="
+        in text
+    )
 
 
 def test_the_marker_survives_a_provenance_block(tmp_path):

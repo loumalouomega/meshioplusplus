@@ -324,9 +324,7 @@ def test_non_dyadic_coordinates_are_bit_exact(tmp_path):
         [[0.1, 0.2], [1.0 / 3.0, 0.0], [0.7, 0.9], [-0.25, 1e-7]],
         [("triangle", [[0, 1, 2], [0, 2, 3]])],
     )
-    back = helpers_drawing.read_both(
-        "tikz", _written(mesh, tmp_path, float_fmt=".17g")
-    )
+    back = helpers_drawing.read_both("tikz", _written(mesh, tmp_path, float_fmt=".17g"))
     assert np.array_equal(back.points[:, :2], mesh.points)
     assert np.array_equal(back.cells[0].data, mesh.cells[0].data)
 

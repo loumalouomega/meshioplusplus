@@ -247,10 +247,10 @@ void svgr_check_element(const pugi::xml_node& rNode) {
     for (const pugi::xml_attribute attr : rNode.attributes()) {
         const std::string_view name = attr.name();
         if (name == "transform")
-            throw ReadError("SVG: a transform on <" + std::string(rNode.name()) +
+            throw ReadError("SVG: a transform on <" + detail::drawing_safe(rNode.name()) +
                             "> is not supported (meshio++ draws absolute coordinates)");
         if (name == "xmlns" && std::string_view(attr.value()) != kSvgrNamespace)
-            throw ReadError("SVG: <" + std::string(rNode.name()) +
+            throw ReadError("SVG: <" + detail::drawing_safe(rNode.name()) +
                             "> is in a namespace other than SVG's");
     }
 }
@@ -340,7 +340,8 @@ void svgr_read_path(std::string_view D, detail::DrawingBuilder& rBuilder,
         } else if (detail::drawing_scan_number(D, pos) != 0) {
             throw ReadError("SVG: repeated coordinates after one path command are not supported");
         } else {
-            throw ReadError(std::string("SVG: unexpected character '") + c + "' in a path");
+            throw ReadError("SVG: unexpected character '" +
+                            detail::drawing_safe(std::string_view(&c, 1)) + "' in a path");
         }
     }
     if (!started)
@@ -592,7 +593,8 @@ Mesh read_svg(const std::string& rPath, const ReadOptions& rOptions) {
                 "SVG: <polygon> is not supported (meshio++ draws faces as <path>; tools such as "
                 "svgo rewrite polygons to paths)");
         } else {
-            throw ReadError("SVG: the element <" + std::string(name) + "> is not supported");
+            throw ReadError("SVG: the element <" + detail::drawing_safe(name) +
+                            "> is not supported");
         }
     }
 

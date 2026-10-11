@@ -28,9 +28,7 @@ _COLORBAR_LABELS = 0.30
 _COLORBAR_SEGMENTS = 32
 
 
-def _append_marker(
-    svg, projected, azimuth, elevation, roll, scale, offset_x, offset_y
-):
+def _append_marker(svg, projected, azimuth, elevation, roll, scale, offset_x, offset_y):
     """The marker comment right after the opening tag: the provenance tag, the
     ``Drawing: ...`` line, then whatever else the provenance block carries.
     Always the multi-line form, with "--" broken apart as the XML comment rules
@@ -450,11 +448,13 @@ def _check_element(node):
     uri, name = _local(node)
     if "transform" in node.attrib:
         raise ReadError(
-            f"SVG: a transform on <{name}> is not supported "
+            f"SVG: a transform on <{_drawing.safe(name)}> is not supported "
             "(meshio++ draws absolute coordinates)"
         )
     if uri not in ("", _SVG_NS):
-        raise ReadError(f"SVG: <{name}> is in a namespace other than SVG's")
+        raise ReadError(
+            f"SVG: <{_drawing.safe(name)}> is in a namespace other than SVG's"
+        )
 
 
 def _view_box(text):
@@ -547,7 +547,7 @@ def _read_path(d, builder, fill):
                 "SVG: repeated coordinates after one path command are not supported"
             )
         else:
-            raise ReadError(f"SVG: unexpected character '{c}' in a path")
+            raise ReadError(f"SVG: unexpected character '{_drawing.safe(c)}' in a path")
     if not started:
         raise ReadError("SVG: an empty path")
     builder.add_cell(ids, closed, fill)
@@ -614,7 +614,9 @@ def read(filename, points_only=False, arrays=None, strict=True):
                 "tools such as svgo rewrite polygons to paths)"
             )
         else:
-            raise ReadError(f"SVG: the element <{name}> is not supported")
+            raise ReadError(
+                f"SVG: the element <{_drawing.safe(name)}> is not supported"
+            )
 
     # model = (x / S + OX, OY - y / S). Without a marker S = 1 and the y-flip is
     # undone from the viewBox: it was about the middle of the drawing's y extent.

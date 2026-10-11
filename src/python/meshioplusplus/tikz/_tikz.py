@@ -325,7 +325,7 @@ def _construct_at(text, pos):
     end = pos
     while end < len(text) and text[end] not in _drawing._BLANKS and end - pos < 16:
         end += 1
-    return text[pos:end]
+    return _drawing.safe(text[pos:end])
 
 
 def _split_options(text):
@@ -388,7 +388,9 @@ def _picture_options(options):
             continue
         key = _strip(item.partition("=")[0])
         if key not in ("scale", "line width"):
-            raise ReadError(f"TikZ: the tikzpicture option '{key}' is not supported")
+            raise ReadError(
+                f"TikZ: the tikzpicture option '{_drawing.safe(key)}' is not supported"
+            )
 
 
 def _draw_options(options):
@@ -402,7 +404,9 @@ def _draw_options(options):
         key, eq, value = item.partition("=")
         key = _strip(key)
         if key not in ("fill", "draw", "line width"):
-            raise ReadError(f"TikZ: the \\draw option '{key}' is not supported")
+            raise ReadError(
+                f"TikZ: the \\draw option '{_drawing.safe(key)}' is not supported"
+            )
         if key == "fill" and eq:
             fill = _rgb(value)
     return fill
@@ -468,7 +472,9 @@ class _Reader:
                             )
                         in_picture = False
                 else:
-                    raise ReadError(f"TikZ: the environment '{env}' is not supported")
+                    raise ReadError(
+                        f"TikZ: the environment '{_drawing.safe(env)}' is not supported"
+                    )
             elif name == "draw":
                 self._require_picture(in_picture, name)
                 self._draw()
@@ -543,7 +549,7 @@ class _Reader:
             or _drawing.NUMBER.fullmatch(y) is None
         ):
             raise ReadError(
-                f"TikZ: the coordinate ({inside}) is not a plain (x,y) pair of "
+                f"TikZ: the coordinate ({_drawing.safe(inside)}) is not a plain (x,y) pair of "
                 "numbers (named, polar, calc, 3-D and unit-carrying coordinates "
                 "are not supported)"
             )

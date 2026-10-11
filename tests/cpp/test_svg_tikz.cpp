@@ -580,8 +580,8 @@ std::int64_t cell_node(const mt::Mesh& rMesh, std::size_t block, std::size_t cel
     return meshioplusplus::detail::read_int(cb.Conn(), cell * cb.NodesPerCell() + node);
 }
 
-std::int64_t fill_at(const mt::Mesh& rMesh, const char* pName, std::size_t block,
-                     std::size_t cell, std::size_t channel) {
+std::int64_t fill_at(const mt::Mesh& rMesh, const char* pName, std::size_t block, std::size_t cell,
+                     std::size_t channel) {
     return meshioplusplus::detail::read_int(rMesh.CellData(pName, block), cell * 3 + channel);
 }
 
@@ -596,7 +596,8 @@ TEST(SvgRead, WritersMarkerNamesTheDrawing) {
 
     std::string proj = mt::temp_path(".svg");
     meshioplusplus::write_svg(proj, non_flat_mesh());
-    EXPECT_NE(slurp(proj).find("\nDrawing: projected azimuth=45 elevation=35.264389682754654 roll=0 scale="),
+    EXPECT_NE(slurp(proj).find(
+                  "\nDrawing: projected azimuth=45 elevation=35.264389682754654 roll=0 scale="),
               std::string::npos);
     std::error_code ec;
     std::filesystem::remove(flat, ec);
@@ -606,8 +607,8 @@ TEST(SvgRead, WritersMarkerNamesTheDrawing) {
 TEST(SvgRead, PlanarRoundTripRestoresModelUnits) {
     // 2 x 1 rectangle in two triangles: image_width 100 scales by 50 and the y-flip is
     // about 0 + 1; the marker's scale and offset bring both back (dyadic, so exactly).
-    const mt::Mesh in = mt::make_mesh({{0, 0}, {2, 0}, {2, 1}, {0, 1}}, "triangle",
-                                      {{0, 1, 2}, {0, 2, 3}});
+    const mt::Mesh in =
+        mt::make_mesh({{0, 0}, {2, 0}, {2, 1}, {0, 1}}, "triangle", {{0, 1, 2}, {0, 2, 3}});
     std::string path = mt::temp_path(".svg");
     meshioplusplus::write_svg(path, in);
     const mt::Mesh out = meshioplusplus::read_svg(path);
@@ -632,7 +633,8 @@ TEST(SvgRead, WeldsOnTheCoordinateText) {
     meshioplusplus::write_svg(path, in);
     EXPECT_EQ(meshioplusplus::read_svg(path).NumPoints(), 4u);
     // Two spellings of one number are two points: the weld is on the text.
-    write_text(path, marked_svg("<path d=\"M 0 0L 1 0L 1 1Z\" /><path d=\"M 0.0 0L 1 0L 1 1Z\" />"));
+    write_text(path,
+               marked_svg("<path d=\"M 0 0L 1 0L 1 1Z\" /><path d=\"M 0.0 0L 1 0L 1 1Z\" />"));
     EXPECT_EQ(meshioplusplus::read_svg(path).NumPoints(), 4u);
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -699,7 +701,8 @@ TEST(SvgRead, FillsComeBackAsRgbAndTheColorbarIsSkipped) {
 }
 
 TEST(SvgRead, ACellWithoutAFillIsMinusOne) {
-    mt::Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}, "triangle", {{0, 1, 2}});
+    mt::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}, "triangle", {{0, 1, 2}});
     m.AddCellBlock("line", mt::conn_from({{1, 3}}));
     std::vector<meshioplusplus::NDArray> tag;
     tag.push_back(mt::data_array({0.0}));
@@ -776,8 +779,9 @@ TEST(SvgRead, UnsupportedConstructsAreRefusedByName) {
             << "body: " << c.body << "\nmessage: " << message;
     }
     // An open path of three vertices is not a line.
-    EXPECT_NE(read_error("svg", marked_svg("<path d=\"M 0 0L 1 0L 1 1\" />")).find("open path of 3"),
-              std::string::npos);
+    EXPECT_NE(
+        read_error("svg", marked_svg("<path d=\"M 0 0L 1 0L 1 1\" />")).find("open path of 3"),
+        std::string::npos);
     // A closed path of two is not a face.
     EXPECT_NE(read_error("svg", marked_svg("<path d=\"M 0 0L 1 0Z\" />")).find("closed path of 2"),
               std::string::npos);
@@ -814,7 +818,8 @@ TEST(SvgRead, TheRegistryReadsItAndPassesTheOptions) {
     std::string path = mt::temp_path(".svg");
     meshioplusplus::write_svg(path, mt::tri_mesh());
     EXPECT_TRUE(meshioplusplus::registry_reader_supports_options("svg"));
-    EXPECT_EQ(meshioplusplus::registry_read(path, "svg", meshioplusplus::ReadOptions()).NumPoints(), 4u);
+    EXPECT_EQ(meshioplusplus::registry_read(path, "svg", meshioplusplus::ReadOptions()).NumPoints(),
+              4u);
     EXPECT_EQ(meshioplusplus::registry_readers().at("svg")(path).NumPoints(), 4u);
     write_text(path, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"></svg>");
     EXPECT_THROW(meshioplusplus::registry_readers().at("svg")(path), meshioplusplus::ReadError);
@@ -836,7 +841,8 @@ TEST(TikzRead, WritersMarkerNamesTheDrawing) {
 
     std::string proj = mt::temp_path(".tikz");
     meshioplusplus::write_tikz(proj, non_flat_mesh(), ".6f", false);
-    EXPECT_NE(slurp(proj).find("\n% Drawing: projected azimuth=45 elevation=35.264389682754654 roll=0\n\\begin{tikzpicture}"),
+    EXPECT_NE(slurp(proj).find("\n% Drawing: projected azimuth=45 elevation=35.264389682754654 "
+                               "roll=0\n\\begin{tikzpicture}"),
               std::string::npos);
     std::error_code ec;
     std::filesystem::remove(flat, ec);
@@ -879,7 +885,8 @@ TEST(TikzRead, TypesLinesAndTheWeld) {
     EXPECT_EQ(std::string(out.Cells(0).Type()), "line");
     EXPECT_EQ(out.Cells(0).NumCells(), 5u);
 
-    write_text(path, marked_tikz("\\draw[fill=gray!30, draw=black] (0,0) -- (4,0) -- (5,2) -- (2,4) -- (-1,2) -- cycle;"));
+    write_text(path, marked_tikz("\\draw[fill=gray!30, draw=black] (0,0) -- (4,0) -- (5,2) -- "
+                                 "(2,4) -- (-1,2) -- cycle;"));
     out = meshioplusplus::read_tikz(path);
     ASSERT_EQ(out.NumCellBlocks(), 1u);
     EXPECT_EQ(std::string(out.Cells(0).Type()), "polygon");
@@ -966,15 +973,22 @@ TEST(TikzRead, UnsupportedConstructsAreRefusedByName) {
         EXPECT_NE(message.find(c.expect), std::string::npos)
             << "body: " << c.body << "\nmessage: " << message;
     }
-    EXPECT_NE(read_error("tikz", "% Written by meshio++ v1\n% Drawing: planar\n").find("no tikzpicture"),
-              std::string::npos);
-    EXPECT_NE(read_error("tikz", "% Written by meshio++ v1\n% Drawing: planar\n\\begin{tikzpicture}[x=1cm]\n\\end{tikzpicture}\n")
+    EXPECT_NE(
+        read_error("tikz", "% Written by meshio++ v1\n% Drawing: planar\n").find("no tikzpicture"),
+        std::string::npos);
+    EXPECT_NE(read_error("tikz",
+                         "% Written by meshio++ v1\n% Drawing: "
+                         "planar\n\\begin{tikzpicture}[x=1cm]\n\\end{tikzpicture}\n")
                   .find("option 'x'"),
               std::string::npos);
-    EXPECT_NE(read_error("tikz", "% Written by meshio++ v1\n% Drawing: planar\n\\begin{tikzpicture}\n\\draw (0,0) -- (1,1);\n")
+    EXPECT_NE(read_error("tikz",
+                         "% Written by meshio++ v1\n% Drawing: "
+                         "planar\n\\begin{tikzpicture}\n\\draw (0,0) -- (1,1);\n")
                   .find("not closed"),
               std::string::npos);
-    EXPECT_NE(read_error("tikz", "% Written by meshio++ v1\n% Drawing: projected azimuth=1\n\\begin{tikzpicture}\n\\end{tikzpicture}\n")
+    EXPECT_NE(read_error("tikz",
+                         "% Written by meshio++ v1\n% Drawing: projected "
+                         "azimuth=1\n\\begin{tikzpicture}\n\\end{tikzpicture}\n")
                   .find("malformed drawing marker"),
               std::string::npos);
 }
