@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1231,11 +1232,21 @@ std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) 
         // format is the exact inverse of what the reader already parses: a
         // per-cell count run, then (for nfaced) a per-face size run, then the
         // node ids. No orientation contract, no global face table.
+        // A polygon block whose cells all share one node count is a
+        // rectangular array (a uniform block from Python, an empty block), so
+        // the cell type -- not `IsRagged()` alone -- decides.
         if (cb.IsPolyhedron()) {
             entries.push_back(&kEnsightNfaced);
             continue;
         }
-        if (cb.IsRagged()) {
+        if (cb.Type().rfind("polyhedron", 0) == 0) {
+            if (cb.NumCells() != 0)
+                throw WriteError("EnSight: polyhedron block '" + cb.Type() +
+                                 "' has no face lists to write as nfaced");
+            entries.push_back(&kEnsightNfaced);
+            continue;
+        }
+        if (cb.IsRagged() || cb.Type().rfind("polygon", 0) == 0) {
             entries.push_back(&kEnsightNsided);
             continue;
         }
@@ -1246,6 +1257,30 @@ std::vector<const EnsightTypeEntry*> ensight_writable_blocks(const Mesh& rMesh) 
     }
     return entries;
 }
+
+// The polygon cells of one `nsided` block, whichever storage the block has: the
+// CSR rows of a jagged block, or the rows of a rectangular array.
+template <class TView>
+class EnsightPolygonRows {
+public:
+    explicit EnsightPolygonRows(const TView& rCb)
+        : mCb(rCb), mCsr(rCb.IsRagged()), mNodesPerCell(rCb.NodesPerCell()) {
+        if (!mCsr && rCb.NumCells() > 0)
+            mRect.emplace(rCb.Conn());
+    }
+
+    std::size_t Size(std::size_t Row) const { return mCsr ? mCb.RowSize(Row) : mNodesPerCell; }
+
+    std::int64_t Node(std::size_t Row, std::size_t K) const {
+        return mCsr ? mCb.Row(Row)[K] : (*mRect)[Row * mNodesPerCell + K];
+    }
+
+private:
+    TView mCb;
+    bool mCsr;
+    std::size_t mNodesPerCell;
+    std::optional<detail::Int64View> mRect;
+};
 
 void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
                              const std::vector<const EnsightTypeEntry*>& rEntries) {
@@ -1316,14 +1351,15 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
         }
         if (entry->mNumNodes == -1) {
             // nsided: nodes-per-cell, then the node ids.
+            const EnsightPolygonRows rows(cb);
             for (std::size_t r = 0; r < ne; ++r) {
-                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.RowSize(r)));
+                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(rows.Size(r)));
                 out += buf;
             }
             for (std::size_t r = 0; r < ne; ++r) {
-                for (std::size_t k = 0; k < cb.RowSize(r); ++k) {
+                for (std::size_t k = 0; k < rows.Size(r); ++k) {
                     std::snprintf(buf, sizeof(buf), "%10lld",
-                                  static_cast<long long>(cb.Row(r)[k]) + 1);
+                                  static_cast<long long>(rows.Node(r, k)) + 1);
                     out += buf;
                 }
                 out += "\n";
@@ -1397,6 +1433,9 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
             std::vector<std::int32_t> sizes;
             std::vector<std::int32_t> nodes;
             const bool faced = entry->mNumNodes == -2;
+            std::optional<EnsightPolygonRows<std::remove_cv_t<decltype(cb)>>> rows;
+            if (!faced)
+                rows.emplace(cb);
             for (std::size_t r = 0; r < ne; ++r) {
                 if (faced) {
                     counts.push_back(static_cast<std::int32_t>(cb.NumFaces(r)));
@@ -1407,9 +1446,9 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
                             nodes.push_back(static_cast<std::int32_t>(face.first[k]) + 1);
                     }
                 } else {
-                    counts.push_back(static_cast<std::int32_t>(cb.RowSize(r)));
-                    for (std::size_t k = 0; k < cb.RowSize(r); ++k)
-                        nodes.push_back(static_cast<std::int32_t>(cb.Row(r)[k]) + 1);
+                    counts.push_back(static_cast<std::int32_t>(rows->Size(r)));
+                    for (std::size_t k = 0; k < rows->Size(r); ++k)
+                        nodes.push_back(static_cast<std::int32_t>(rows->Node(r, k)) + 1);
                 }
             }
             auto append = [&out](const std::vector<std::int32_t>& v) {

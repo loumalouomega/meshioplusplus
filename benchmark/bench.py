@@ -86,7 +86,7 @@ SIZES = {"S": 16, "M": 36, "L": 56}
 # These formats reject the mixed conformance mesh, but accept the harness's
 # single-type input. Keep this explicit rather than treating unknown ("?")
 # conformance cells as proven round trips.
-SINGLE_TYPE_INPUTS = {"mfm": "volume", "gmsh": "volume"}
+SINGLE_TYPE_INPUTS = {"mfm": "volume"}
 POINT_FIELD_INPUTS = {"dex": "benchmark:field"}
 
 

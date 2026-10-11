@@ -2001,8 +2001,10 @@ std::vector<GmshWriteEntity41> gmsh_entity_blocks_41(
 
 /// `gmsh:dim_tags`/`gmsh:geometrical`/`gmsh:physical`, synthesized so they
 /// can be spliced onto a mesh clone (see #gmsh_synthesize_tags_41).
-/// `mGeometrical`/`mPhysical` are identical here -- nothing else
-/// distinguishes a synthesized entity from its physical group.
+/// `mGeometrical` is the entity tag of each block and `mPhysical` its physical
+/// group; the two agree whenever a block's region tag is unique within its
+/// dimension. `mPhysical` is empty when the mesh has no regions at all, so no
+/// physical group is invented for it.
 struct GmshSynthesizedTags {
     NDArray mDimTags;
     std::vector<NDArray> mGeometrical;
@@ -2010,20 +2012,33 @@ struct GmshSynthesizedTags {
 };
 
 /**
- * @brief Synthesize 4.1 entity tag data from `Cell` regions, for a mesh that
- * carries no `gmsh:dim_tags` of its own (v11.5.0, roadmap §1 tier B3).
+ * @brief Synthesize 4.1 entity tag data for a mesh that carries no
+ * `gmsh:dim_tags` of its own: from its `Cell` regions (v11.5.0, roadmap §1 tier
+ * B3), or, with none, from the cell blocks alone.
  *
  * Format 4.1 records physical-group membership only through `$Entities`, so
  * a tag alone (as 2.2's per-element column carries) is not enough here. One
  * entity per cell block: this writer's `$Elements` model is one gmsh element
  * block per meshio++ cell block, so a block whose cells do not all agree on
- * the same resolved tag cannot be split further here -- it keeps entity 0
- * (no physical group), and a warning names it, a documented scope limit
- * rather than a silent drop. A point's entity is the highest-dimension block
- * touching it, ties broken by block order -- gmsh's own convention (a
- * lower-dimension region's nodes inside a volume belong to the volume).
- * @param rFlatTags per-cell resolved tag, block-major, from
- *        #gmsh_flat_tags_from_regions (must be non-empty).
+ * the same resolved tag cannot be split further here -- it keeps physical group
+ * 0 (none), and a warning names it, a documented scope limit rather than a
+ * silent drop.
+ *
+ * An entity is the pair (dimension, tag), so two blocks of one dimension need
+ * two tags. A block keeps its region tag as its entity tag while that tag is
+ * positive and no earlier block of the same dimension has taken it, which
+ * leaves a block-aligned mesh with the bytes it always had. Every other block
+ * (no region, or a region tag another block already holds, as a triangle and a
+ * quad block of one region do) is given the smallest positive tag still free in
+ * its dimension, in block order, so a mixed mesh gets an entity per block
+ * instead of a collision.
+ *
+ * A point's entity is the highest-dimension block touching it, ties broken by
+ * block order -- gmsh's own convention (a lower-dimension region's nodes inside
+ * a volume belong to the volume).
+ * @param rFlatTags per-cell resolved physical tag, block-major, from
+ *        #gmsh_flat_tags_from_regions; empty when the mesh has no regions
+ *        (every block is then untagged and no physical group is synthesized).
  */
 GmshSynthesizedTags gmsh_synthesize_tags_41(
     const Mesh& rMesh, const std::vector<std::int64_t>& rFlatTags,
@@ -2035,6 +2050,8 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
         block_dim[b] = rCellDim(std::string(cb.Type()));
+        if (rFlatTags.empty())
+            continue;
         const std::size_t start = static_cast<std::size_t>(bases[b]);
         const std::size_t end = static_cast<std::size_t>(bases[b + 1]);
         std::int64_t tag = end > start ? rFlatTags[start] : 0;
@@ -2053,6 +2070,27 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
             tag = 0;
         }
         block_tag[b] = tag;
+    }
+
+    // Entity tag per block, unique within each dimension (see above).
+    std::vector<std::int64_t> entity_tag(nblocks, 0);
+    std::set<std::pair<int, std::int64_t>> taken;
+    std::vector<bool> placed(nblocks, false);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        if (block_tag[b] > 0 && taken.emplace(block_dim[b], block_tag[b]).second) {
+            entity_tag[b] = block_tag[b];
+            placed[b] = true;
+        }
+    }
+    std::map<int, std::int64_t> next_free;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        if (placed[b])
+            continue;
+        std::int64_t& candidate = next_free.try_emplace(block_dim[b], 1).first->second;
+        while (taken.count({block_dim[b], candidate}) != 0)
+            ++candidate;
+        taken.emplace(block_dim[b], candidate);
+        entity_tag[b] = candidate;
     }
 
     const std::size_t npts = rMesh.NumPoints();
@@ -2075,7 +2113,7 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
                     continue;
                 if (dim > point_dim[static_cast<std::size_t>(p)]) {
                     point_dim[static_cast<std::size_t>(p)] = dim;
-                    point_tag[static_cast<std::size_t>(p)] = block_tag[b];
+                    point_tag[static_cast<std::size_t>(p)] = entity_tag[b];
                 }
             }
         }
@@ -2089,14 +2127,15 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
         dt[p * 2 + 1] = point_tag[p];
     }
     out.mGeometrical.reserve(nblocks);
-    out.mPhysical.reserve(nblocks);
     for (std::size_t b = 0; b < nblocks; ++b) {
         const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
         NDArray g = NDArray::Uninit(DType::Int64, {n});
-        std::fill(g.As<std::int64_t>(), g.As<std::int64_t>() + n, block_tag[b]);
+        std::fill(g.As<std::int64_t>(), g.As<std::int64_t>() + n, entity_tag[b]);
+        out.mGeometrical.push_back(std::move(g));
+        if (rFlatTags.empty())
+            continue;
         NDArray p = NDArray::Uninit(DType::Int64, {n});
         std::fill(p.As<std::int64_t>(), p.As<std::int64_t>() + n, block_tag[b]);
-        out.mGeometrical.push_back(std::move(g));
         out.mPhysical.push_back(std::move(p));
     }
     return out;
@@ -2310,12 +2349,20 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     bool synthesized = false;
     if (!rMeshIn.HasPointData("gmsh:dim_tags")) {
         const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMeshIn, region_tags);
-        if (!flat.empty()) {
+        // Without regions a mesh of several cell blocks (a mixed mesh) still
+        // needs one entity per block, or its blocks would share an entity; a
+        // single block keeps the legacy one-block output, and so does a mesh
+        // that brings its own entity tags.
+        const bool blocks_only = flat.empty() && rMeshIn.NumCellBlocks() > 1 &&
+                                 rMeshIn.NumPoints() > 0 &&
+                                 !rMeshIn.HasCellData("gmsh:geometrical");
+        if (!flat.empty() || blocks_only) {
             const GmshSynthesizedTags synth = gmsh_synthesize_tags_41(rMeshIn, flat, cell_dim);
             gmsh41_synth = detail::clone_mesh(rMeshIn);
             gmsh41_synth.AddPointData("gmsh:dim_tags", synth.mDimTags);
             gmsh41_synth.AddCellData("gmsh:geometrical", synth.mGeometrical);
-            gmsh41_synth.AddCellData("gmsh:physical", synth.mPhysical);
+            if (!synth.mPhysical.empty())
+                gmsh41_synth.AddCellData("gmsh:physical", synth.mPhysical);
             synthesized = true;
         }
     }

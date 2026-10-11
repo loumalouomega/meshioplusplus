@@ -5094,7 +5094,11 @@ PYBIND11_MODULE(_core, m) {
         "ensight_write",
         [](const std::string& path, py::object pymesh, bool binary, bool fortran) {
             meshioplusplus_py::PyMeshRefs refs;
-            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            // nsided / nfaced are written natively, so jagged polygon and
+            // polyhedron blocks are accepted (copied out of their Python lists).
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                /*lenient_field_data=*/false,
+                                                                /*allow_ragged=*/true)] {
                 return meshioplusplus::write_ensight(path, mesh, binary, fortran);
             });
         },

@@ -690,19 +690,20 @@ SPEC: dict[str, dict] = {
     },
     "gmsh": {
         "cells": {
-            "vertex": "?",
-            "line": "?",
-            "triangle": "?",
-            "quad": "?",
-            "tetra": "?",
-            "hexahedron": "?",
-            "wedge": "?",
-            "pyramid": "?",
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
         },
-        "error": "WriteError",
-        "note": "The Gmsh 4.1 writer needs `gmsh:dim_tags` point data to place more than one "
-        "cell type into entities, and refuses a mixed mesh without it; `gmsh22` "
-        "writes the same mesh.",
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": True,
+        "regions": ["cell"],
     },
     "gmsh22": {
         "cells": {

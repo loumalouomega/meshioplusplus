@@ -46,7 +46,7 @@ the original pure-Python **meshio**, on the formats both libraries support.
 | `text_io_batch17_float64_int64_seq_confirmation.csv` | Two SEQ rounds; see [constant writer allocation overhead, neutral timings and the DEX re-measurement](../doc/benchmarks.md#dtype-hoisted-vtkhdf-mfem-marc-flac3d-ensight-xdmf-ls-dyna-mfm-dex-h5m-mff-vtp-vts-openfoam-xyz-and-mdpa-table-loops). |
 | `plots/` | Generated figures (also copied to `doc/public/benchmarks/`). |
 
-The sweep explicitly includes Gmsh 4.1 on its supported single-type tetrahedral volume input, alongside MFM's single-type exception. This does not change either format's mixed-cell conformance declaration. Gmsh ASCII and binary geometry round trips are tested directly; reader-cursor measurements select ASCII explicitly.
+The sweep explicitly includes MFM on its supported single-type tetrahedral volume input, an exception that does not change its mixed-cell conformance declaration. Gmsh 4.1, once a second exception, is now selected through its passing conformance row like any other format. Gmsh ASCII and binary geometry round trips are tested directly; reader-cursor measurements select ASCII explicitly.
 
 The legacy pure-Python `meshio` is imported from source
 (`/home/vicente/src/meshio_legacy/src`) via `sys.path` — it is pure Python, so
