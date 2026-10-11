@@ -180,7 +180,7 @@ Verified against real `ccx` 2.23 output (`tests/python/meshes/frd/*_bin.frd`, ge
 
 ## The `.dat` tabular print
 
-`*NODE PRINT` and `*EL PRINT` write a companion `jobname.dat` file: whitespace-separated tables, **no mesh** and no fixed-column layout to slice — `meshioplusplus.frd.read_dat(path)` parses it into plain tables, not a `Mesh`. Python-only: `.dat` needs the same free-format tokenizer `detail/fast_number.hpp` does not provide, and the extension already belongs to [Tecplot](./tecplot.md), so this is never registered as a format.
+`*NODE PRINT` and `*EL PRINT` write a companion `jobname.dat` file: whitespace-separated tables, **no mesh** and no fixed-column layout to slice. `meshioplusplus.frd.read_dat(path)` is a helper that parses it into plain tables (a list of dicts, below); it does not return a `Mesh`, is not registered as a format (so `meshioplusplus.read("beam.dat")` does not reach it, the extension already belongs to [Tecplot](./tecplot.md)) and has no writer. It is Python-only by design: `.dat` needs a free-format tokenizer that `detail/fast_number.hpp` does not provide, and a table list has no place in the `Mesh`-in, `Mesh`-out native registry, so no C++, C, Fortran, Julia, R or WASM counterpart is planned.
 
 ```python
 import meshioplusplus

@@ -141,12 +141,139 @@ def test_byteswapped_binary(reader, tmp_path):
     assert np.array_equal(mesh.cells[0].data, [[0, 1, 2, 3]])
 
 
-@pytest.mark.parametrize("writer", [meshioplusplus.ensight.write, _ensight.write])
-def test_ragged_write_raises(writer, tmp_path):
-    # The C++ path raises too; the shim then falls back to the Python writer,
-    # which raises the WriteError seen here.
-    with pytest.raises(meshioplusplus.WriteError):
-        writer(tmp_path / "poly.case", copy.deepcopy(helpers.polygon_mesh))
+def _core_write(path, mesh, binary=True, fortran=False):
+    # Straight through the C++ core: the shim would fall back to the Python
+    # twin if the core declined, which would hide a broken native writer.
+    meshioplusplus._core.ensight_write(str(path), mesh, binary, fortran)
+
+
+_ENGINES = {"core": _core_write, "python": _ensight.write}
+
+
+def _ragged_mesh():
+    """Triangles, a jagged ``polygon`` block (3-, 5- and 4-gons) and an
+    ``nfaced`` block mixing node counts (tetra, pyramid, tetra, hexahedron)."""
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [2.0, 0.5, 0.0],
+            [2.0, 0.5, 1.0],
+        ]
+    )
+    polygons = [[0, 1, 2], [1, 8, 2, 6, 5], [0, 3, 7, 4]]
+    tet = [[0, 2, 1], [0, 1, 4], [1, 2, 4], [0, 4, 2]]
+    pyramid = [[0, 1, 2, 3], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]]
+    hexa = [
+        [0, 3, 2, 1],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [2, 3, 7, 6],
+        [0, 4, 7, 3],
+        [1, 2, 6, 5],
+    ]
+    cells = [
+        ("triangle", np.array([[0, 1, 2], [0, 2, 3]])),
+        ("polygon", [np.array(p) for p in polygons]),
+        (
+            "polyhedron",
+            [[np.array(f) for f in cell] for cell in (tet, pyramid, tet, hexa)],
+        ),
+    ]
+    return meshioplusplus.Mesh(points, cells)
+
+
+def _polygon_rows(block):
+    return [list(map(int, row)) for row in block.data]
+
+
+def _polyhedron_cells(block):
+    return [[list(map(int, face)) for face in cell] for cell in block.data]
+
+
+@pytest.mark.parametrize("engine", sorted(_ENGINES))
+@pytest.mark.parametrize("binary", [False, True])
+def test_nsided_nfaced_round_trip(engine, binary, tmp_path):
+    mesh = _ragged_mesh()
+    case = tmp_path / "ragged.case"
+    _ENGINES[engine](case, copy.deepcopy(mesh), binary=binary)
+    for reader in (meshioplusplus.ensight.read, _ensight.read):
+        back = reader(case)
+        np.testing.assert_allclose(back.points, mesh.points, atol=1.0e-5)
+        # nfaced cells come back grouped by node count, in first-seen order.
+        assert [c.type for c in back.cells] == [
+            "triangle",
+            "polygon",
+            "polyhedron4",
+            "polyhedron5",
+            "polyhedron8",
+        ]
+        assert np.array_equal(back.cells[0].data, mesh.cells[0].data)
+        assert _polygon_rows(back.cells[1]) == _polygon_rows(mesh.cells[1])
+        tet, pyramid, tet2, hexa = _polyhedron_cells(mesh.cells[2])
+        assert _polyhedron_cells(back.cells[2]) == [tet, tet2]
+        assert _polyhedron_cells(back.cells[3]) == [pyramid]
+        assert _polyhedron_cells(back.cells[4]) == [hexa]
+
+
+@pytest.mark.parametrize("engine", sorted(_ENGINES))
+def test_nsided_uniform_polygon_block_round_trips(engine, tmp_path):
+    # A block whose polygons all have one node count is a rectangular array.
+    mesh = copy.deepcopy(helpers.polygon_mesh)
+    assert isinstance(mesh.cells[3].data, np.ndarray)
+    case = tmp_path / "poly.case"
+    _ENGINES[engine](case, mesh, binary=False)
+    back = _ensight.read(case)
+    assert [c.type for c in back.cells] == ["triangle", "quad", "polygon", "polygon"]
+    assert _polygon_rows(back.cells[2]) == _polygon_rows(mesh.cells[2])
+    assert _polygon_rows(back.cells[3]) == _polygon_rows(mesh.cells[3])
+
+
+def _byte_parity_meshes():
+    mixed = _ragged_mesh()
+    empty = copy.deepcopy(helpers.tri_mesh)
+    empty.cells.append(meshioplusplus.CellBlock("polygon", []))
+    empty.cells.append(meshioplusplus.CellBlock("polyhedron", []))
+    return {
+        "mixed": mixed,
+        "polygon_mesh": helpers.polygon_mesh,
+        "polygon_mesh_one_cell": helpers.polygon_mesh_one_cell,
+        "polygon2_mesh": helpers.polygon2_mesh,
+        "polyhedron_mesh": helpers.polyhedron_mesh,
+        "empty_ragged_blocks": empty,
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_byte_parity_meshes()))
+@pytest.mark.parametrize(
+    "binary, fortran", [(False, False), (True, False), (True, True)]
+)
+def test_engines_write_the_same_nsided_nfaced_bytes(name, binary, fortran, tmp_path):
+    mesh = _byte_parity_meshes()[name]
+    a, b = tmp_path / "a.case", tmp_path / "b.case"
+    _core_write(a, copy.deepcopy(mesh), binary=binary, fortran=fortran)
+    _ensight.write(b, copy.deepcopy(mesh), binary=binary, fortran=fortran)
+    assert (tmp_path / "a.geo").read_bytes() == (tmp_path / "b.geo").read_bytes()
+
+
+def test_shim_writes_ragged_blocks_through_the_core(tmp_path):
+    # The public writer reaches the native nsided/nfaced writer (no silent
+    # fall-back to the Python twin): under strict mode a decline would raise.
+    from meshioplusplus import _fallback
+
+    _fallback.set_strict_core(True)
+    try:
+        case = tmp_path / "shim.case"
+        meshioplusplus.ensight.write(case, _ragged_mesh(), binary=True)
+    finally:
+        _fallback.set_strict_core(None)
+    assert [c.type for c in _ensight.read(case).cells][:2] == ["triangle", "polygon"]
 
 
 def test_wildcard_model_raises(tmp_path):

@@ -158,6 +158,55 @@ TEST(Ensight, NsidedPolygonRoundTrip) {
     }
 }
 
+// A uniform polygon block is a rectangular array (that is how a block whose
+// cells all share a node count arrives from Python), and an empty polygon block
+// has no rows at all. Both are nsided, and write the bytes the jagged storage
+// of the same cells does.
+TEST(Ensight, RectangularAndEmptyPolygonBlocksWriteAsNsided) {
+    const auto points = mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0.5, 0}});
+    mt::Mesh jagged;
+    jagged.AssignPoints(points);
+    jagged.AddPolygonBlock("polygon", {{0, 1, 2, 3}, {0, 1, 4, 3}});
+    mt::Mesh rect;
+    rect.AssignPoints(points);
+    rect.AddCellBlock("polygon", mt::conn_from({{0, 1, 2, 3}, {0, 1, 4, 3}}));
+
+    auto slurp = [](const std::string& rPath) {
+        std::ifstream in(rPath, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    for (bool binary : {false, true}) {
+        const std::string a = mt::temp_path(binary ? "_rect_a_b.case" : "_rect_a_a.case");
+        const std::string b = mt::temp_path(binary ? "_rect_b_b.case" : "_rect_b_a.case");
+        meshioplusplus::write_ensight(a, jagged, binary);
+        meshioplusplus::write_ensight(b, rect, binary);
+        const std::string geo_a = a.substr(0, a.size() - 5) + ".geo";
+        const std::string geo_b = b.substr(0, b.size() - 5) + ".geo";
+        EXPECT_EQ(slurp(geo_a), slurp(geo_b)) << "binary=" << binary;
+        const mt::Mesh back = meshioplusplus::read_ensight(b);
+        ASSERT_EQ(back.NumCellBlocks(), 1u);
+        EXPECT_EQ(back.Cells(0).Type(), "polygon");
+        EXPECT_EQ(back.Cells(0).NumCells(), 2u);
+        std::error_code ec;
+        for (const auto& path : {a, b, geo_a, geo_b})
+            std::filesystem::remove(path, ec);
+    }
+
+    mt::Mesh empty;
+    empty.AssignPoints(points);
+    empty.AddCellBlock("polygon", meshioplusplus::NDArray());
+    for (bool binary : {false, true}) {
+        const std::string path = mt::temp_path(binary ? "_empty_b.case" : "_empty_a.case");
+        meshioplusplus::write_ensight(path, empty, binary);
+        const std::string geo = path.substr(0, path.size() - 5) + ".geo";
+        const std::string text = slurp(geo);
+        EXPECT_NE(text.find("nsided"), std::string::npos) << "binary=" << binary;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(geo, ec);
+    }
+}
+
 TEST(Ensight, NfacedPolyhedronRoundTrip) {
     mt::Mesh m;
     m.AssignPoints(mt::points_from(

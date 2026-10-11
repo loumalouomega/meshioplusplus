@@ -12,7 +12,10 @@ given/ignore" id arrays are skipped. Multi-part files are concatenated into
 one point array with the owning part recorded as the ``ensight:part``
 cell_data field (only when there are two or more parts). The writer emits a
 single part with ``node id assign`` / ``element id assign`` and drops
-point/cell/field data (mesh-only scope).
+point/cell/field data (mesh-only scope). ``polygon`` blocks are written as
+``nsided`` and ``polyhedron<N>`` blocks as ``nfaced``, the exact inverse of
+what the reader parses (counts, then for ``nfaced`` the face sizes, then the
+node ids).
 """
 
 import pathlib
@@ -439,6 +442,26 @@ def _str80(s):
     return s.encode("ascii")[:79].ljust(80, b"\0")
 
 
+def _ragged_layout(cell_block):
+    """The ``nsided`` / ``nfaced`` runs of a ``polygon`` / ``polyhedron`` block.
+
+    Returns ``(keyword, counts, sizes, rings)``: the per-cell node count
+    (``nsided``) or face count (``nfaced``), the per-face node count (``nfaced``
+    only, else empty), and the 0-based node-id arrays in file order (one per
+    polygon, or one per face).
+    """
+    if cell_block.type.startswith("polyhedron"):
+        rings = [
+            np.asarray(face, dtype=np.int64)
+            for cell in cell_block.data
+            for face in cell
+        ]
+        counts = [len(cell) for cell in cell_block.data]
+        return "nfaced", counts, [ring.size for ring in rings], rings
+    rings = [np.asarray(row, dtype=np.int64) for row in cell_block.data]
+    return "nsided", [ring.size for ring in rings], [], rings
+
+
 def _write_geo_ascii(fh, points, cells):
     fh.write(b"EnSight Gold Geometry File\n")
     fh.write(f"{_provenance.lines(_provenance.SlotTier.BOUNDED)[0]}\n".encode())
@@ -452,6 +475,17 @@ def _write_geo_ascii(fh, points, cells):
     for c in range(3):
         fh.write("".join(f"{v:12.5e}\n" for v in points[:, c]).encode())
     for cell_block in cells:
+        if cell_block.type.startswith(("polygon", "polyhedron")):
+            keyword, counts, sizes, rings = _ragged_layout(cell_block)
+            fh.write(f"{keyword}\n".encode())
+            fh.write(f"{len(counts):10d}\n".encode())
+            fh.write("".join(f"{n:10d}\n" for n in counts + sizes).encode())
+            fh.write(
+                "".join(
+                    "".join(f"{v + 1:10d}" for v in ring) + "\n" for ring in rings
+                ).encode()
+            )
+            continue
         conn = _permute(cell_block.type, np.asarray(cell_block.data)) + 1
         fh.write(f"{meshio_to_ensight_type[cell_block.type]}\n".encode())
         fh.write(f"{conn.shape[0]:10d}\n".encode())
@@ -491,6 +525,20 @@ def _write_geo_binary(fh, points, cells, fortran=False):
     for c in range(3):
         record(np.ascontiguousarray(points[:, c], dtype=np.float32).tobytes())
     for cell_block in cells:
+        if cell_block.type.startswith(("polygon", "polyhedron")):
+            keyword, counts, sizes, rings = _ragged_layout(cell_block)
+            if len(counts) > int32_max:
+                raise WriteError(
+                    "EnSight: mesh too large for 32-bit binary EnSight output"
+                )
+            record(_str80(keyword))
+            record(np.int32(len(counts)).tobytes())
+            nodes = np.concatenate(rings) + 1 if rings else np.empty(0, dtype=np.int64)
+            # Each non-empty run is one record, as the C++ writer emits them.
+            for run in (counts, sizes, nodes):
+                if len(run):
+                    record(np.asarray(run, dtype=np.int32).tobytes())
+            continue
         conn = _permute(cell_block.type, np.asarray(cell_block.data)) + 1
         if conn.shape[0] > int32_max:
             raise WriteError("EnSight: mesh too large for 32-bit binary EnSight output")
@@ -510,9 +558,7 @@ def write(filename, mesh, binary=True, fortran=False):
         raise WriteError("EnSight: points must have at most three components")
     for cell_block in mesh.cells:
         if cell_block.type.startswith(("polygon", "polyhedron")):
-            raise WriteError(
-                "EnSight: writing nsided/nfaced (ragged) blocks is not supported"
-            )
+            continue  # nsided / nfaced
         if cell_block.type not in meshio_to_ensight_type:
             raise WriteError(
                 f"EnSight: cell type '{cell_block.type}' has no EnSight keyword"
