@@ -59257,7 +59257,10 @@ bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t C
 // ===== end src/cpp/src/detail/nastran_model.cpp =====
 // ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <utility>
+#include <vector>
 
 // Project includes
 
@@ -59266,39 +59269,127 @@ namespace detail {
 
 namespace {
 
-// Adds every ordered pair of a cell's nodes (an element clique). Duplicates
-// and self-loops are removed later by the dedup pass.
-void nodeadj_add_clique(std::vector<std::vector<std::int64_t>>& rAdj,
-                        const std::vector<std::int64_t>& rNodes) {
-    const std::size_t k = rNodes.size();
-    for (std::size_t a = 0; a < k; ++a) {
-        std::vector<std::int64_t>& row = rAdj[static_cast<std::size_t>(rNodes[a])];
-        for (std::size_t b = 0; b < k; ++b)
-            if (a != b)
-                row.push_back(rNodes[b]);
+// Calls `rEmit(u, v)` once per raw adjacency entry "v is a neighbour of u":
+// every ordered pair of a cell's distinct nodes (Clique), or both directions
+// of every in-range, non-loop edge (Edge). The order is fixed (blocks, cells,
+// then pairs/edges), but only the set each node ends up with matters: rows
+// are sorted and deduplicated afterwards.
+template <class Emit>
+void nodeadj_visit(const Mesh& rMesh, std::size_t NumPoints, NodeAdjacencyKind Kind,
+                   const Emit& rEmit) {
+    const auto edge = [&](std::int64_t u, std::int64_t v) {
+        if (u < 0 || v < 0 || u == v)
+            return;
+        if (static_cast<std::size_t>(u) >= NumPoints || static_cast<std::size_t>(v) >= NumPoints)
+            return;
+        rEmit(u, v);
+        rEmit(v, u);
+    };
+    // The closed ring of edges around an ordered node loop (a polygon row or
+    // one face of a polyhedron).
+    const auto ring = [&](const std::int64_t* pNodes, std::size_t Count) {
+        if (Count < 2)
+            return;
+        for (std::size_t k = 0; k < Count; ++k)
+            edge(pNodes[k], pNodes[(k + 1) % Count]);
+    };
+    std::vector<std::int64_t> nodes;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t nc = cb.NumCells();
+        const bool ragged = cb.IsRagged();
+        const bool polyhedron = cb.IsPolyhedron();
+
+        // Hoist the per-block edge table out of the per-cell loop: it is a
+        // table lookup by cell type, which cannot change within a block.
+        const std::vector<CellEdgePair>* p_edges = nullptr;
+        if (Kind == NodeAdjacencyKind::Edge && !ragged && !polyhedron) {
+            const std::vector<CellEdgePair>& e =
+                detail::cell_refine_edges(cell_type_from_name(cb.Type()));
+            if (e.empty())
+                continue;  // unknown edge topology: contributes nothing (see the file docs)
+            p_edges = &e;
+        }
+
+        for (std::size_t c = 0; c < nc; ++c) {
+            if (Kind == NodeAdjacencyKind::Clique) {
+                // The clique over the cell's DISTINCT nodes: a polyhedron
+                // lists each corner once per face, and pairing them by
+                // position would add every edge k^2 times and self-loops.
+                cell_node_ids(cb, c, NumPoints, nodes);
+                std::sort(nodes.begin(), nodes.end());
+                nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+                for (const std::int64_t u : nodes)
+                    for (const std::int64_t v : nodes)
+                        if (u != v)
+                            rEmit(u, v);
+                continue;
+            }
+
+            // --- edge adjacency ---
+            if (polyhedron) {
+                // Each face contributes its own ring of edges.
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    std::pair<const std::int64_t*, std::size_t> face = cb.Face(c, f);
+                    ring(face.first, face.second);
+                }
+            } else if (ragged) {
+                // A jagged polygon row is a closed loop of nodes.
+                ring(cb.Row(c), cb.RowSize(c));
+            } else {
+                // A known edge table (all seven linear types); blocks without
+                // one were skipped wholesale above.
+                const NDArray& conn = cb.Conn();
+                const std::size_t row = c * cb.NodesPerCell();
+                for (const CellEdgePair& e : *p_edges)
+                    edge(detail::read_int(conn, row + e[0]), detail::read_int(conn, row + e[1]));
+            }
+        }
     }
 }
 
-// Adds the undirected edge `(u, v)` in both directions, skipping out-of-range
-// endpoints and self-loops.
-void nodeadj_add_edge(std::vector<std::vector<std::int64_t>>& rAdj, std::size_t NumPoints,
-                      std::int64_t u, std::int64_t v) {
-    if (u < 0 || v < 0 || u == v)
-        return;
-    if (static_cast<std::size_t>(u) >= NumPoints || static_cast<std::size_t>(v) >= NumPoints)
-        return;
-    rAdj[static_cast<std::size_t>(u)].push_back(v);
-    rAdj[static_cast<std::size_t>(v)].push_back(u);
-}
+// The CSR build over raw entries stored as `Id` (32-bit when every node id
+// fits, which halves the scratch): count each node's raw entries, fill them
+// into one flat array, then sort and deduplicate each row in place and pack.
+template <class Id>
+NodeAdjacency nodeadj_build(const Mesh& rMesh, std::size_t NumPoints, NodeAdjacencyKind Kind) {
+    // Pass 1 (serial): raw entries per node, then their start offsets.
+    std::vector<std::size_t> start(NumPoints + 1, 0);
+    nodeadj_visit(rMesh, NumPoints, Kind,
+                  [&](std::int64_t u, std::int64_t) { ++start[static_cast<std::size_t>(u) + 1]; });
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        start[i + 1] += start[i];
 
-// Adds the closed ring of edges around an ordered node loop (a polygon row or
-// one face of a polyhedron).
-void nodeadj_add_ring(std::vector<std::vector<std::int64_t>>& rAdj, std::size_t NumPoints,
-                      const std::int64_t* pNodes, std::size_t Count) {
-    if (Count < 2)
-        return;
-    for (std::size_t k = 0; k < Count; ++k)
-        nodeadj_add_edge(rAdj, NumPoints, pNodes[k], pNodes[(k + 1) % Count]);
+    // Pass 2 (serial): the raw entries, row by row.
+    std::vector<Id> flat(start[NumPoints]);
+    {
+        std::vector<std::size_t> cursor(start.begin(), start.end() - 1);
+        nodeadj_visit(rMesh, NumPoints, Kind, [&](std::int64_t u, std::int64_t v) {
+            flat[cursor[static_cast<std::size_t>(u)]++] = static_cast<Id>(v);
+        });
+    }
+
+    // Pass 3 (parallel): sort + unique each node's row in place. No self-loop
+    // survives the visit, so a row is exactly the node's neighbour set.
+    std::vector<std::int64_t> count(NumPoints, 0);
+    parallel_for(NumPoints, [&](std::size_t i) {
+        Id* lo = flat.data() + start[i];
+        Id* hi = flat.data() + start[i + 1];
+        std::sort(lo, hi);
+        count[i] = std::unique(lo, hi) - lo;
+    });
+
+    // Pass 4: pack into CSR.
+    NodeAdjacency csr;
+    csr.mXadj.resize(NumPoints + 1);
+    csr.mXadj[0] = 0;
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        csr.mXadj[i + 1] = csr.mXadj[i] + count[i];
+    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[NumPoints]));
+    parallel_for_bw(NumPoints, [&](std::size_t i) {
+        std::copy(flat.data() + start[i], flat.data() + start[i] + count[i],
+                  csr.mAdj.begin() + static_cast<std::ptrdiff_t>(csr.mXadj[i]));
+    });
+    return csr;
 }
 
 }  // namespace
@@ -59338,74 +59429,12 @@ bool node_edge_topology_known(const Mesh::CellView& rBlock) {
 
 NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
                                    NodeAdjacencyKind Kind) {
-    // Phase 1 (serial, deterministic): accumulate raw adjacency lists.
-    std::vector<std::vector<std::int64_t>> adj(NumPoints);
-    std::vector<std::int64_t> nodes;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t nc = cb.NumCells();
-        const bool ragged = cb.IsRagged();
-        const bool polyhedron = cb.IsPolyhedron();
-
-        // Hoist the per-block edge table out of the per-cell loop: it is a
-        // table lookup by cell type, which cannot change within a block.
-        const std::vector<CellEdgePair>* p_edges = nullptr;
-        if (Kind == NodeAdjacencyKind::Edge && !ragged && !polyhedron) {
-            const std::vector<CellEdgePair>& e =
-                detail::cell_refine_edges(cell_type_from_name(cb.Type()));
-            if (e.empty())
-                continue;  // unknown edge topology: contributes nothing (see the file docs)
-            p_edges = &e;
-        }
-
-        for (std::size_t c = 0; c < nc; ++c) {
-            if (Kind == NodeAdjacencyKind::Clique) {
-                cell_node_ids(cb, c, NumPoints, nodes);
-                nodeadj_add_clique(adj, nodes);
-                continue;
-            }
-
-            // --- edge adjacency ---
-            if (polyhedron) {
-                // Each face contributes its own ring of edges.
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    std::pair<const std::int64_t*, std::size_t> face = cb.Face(c, f);
-                    nodeadj_add_ring(adj, NumPoints, face.first, face.second);
-                }
-            } else if (ragged) {
-                // A jagged polygon row is a closed loop of nodes.
-                nodeadj_add_ring(adj, NumPoints, cb.Row(c), cb.RowSize(c));
-            } else {
-                // A known edge table (all seven linear types); blocks without
-                // one were skipped wholesale above.
-                const NDArray& conn = cb.Conn();
-                const std::size_t row = c * cb.NodesPerCell();
-                for (const CellEdgePair& e : *p_edges)
-                    nodeadj_add_edge(adj, NumPoints, detail::read_int(conn, row + e[0]),
-                                     detail::read_int(conn, row + e[1]));
-            }
-        }
-    }
-
-    // Phase 2 (parallel): sort + unique each node's list, dropping self-loops.
-    parallel_for(NumPoints, [&](std::size_t i) {
-        std::vector<std::int64_t>& v = adj[i];
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-        v.erase(std::remove(v.begin(), v.end(), static_cast<std::int64_t>(i)), v.end());
-    });
-
-    // Phase 3: pack into CSR.
-    NodeAdjacency csr;
-    csr.mXadj.resize(NumPoints + 1);
-    csr.mXadj[0] = 0;
-    for (std::size_t i = 0; i < NumPoints; ++i)
-        csr.mXadj[i + 1] = csr.mXadj[i] + static_cast<std::int64_t>(adj[i].size());
-    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[NumPoints]));
-    parallel_for_bw(NumPoints, [&](std::size_t i) {
-        std::copy(adj[i].begin(), adj[i].end(),
-                  csr.mAdj.begin() + static_cast<std::ptrdiff_t>(csr.mXadj[i]));
-    });
-    return csr;
+    // One flat array of raw entries rather than a vector per node: a
+    // polyhedral mesh's per-node vectors held 8 KiB each at 10M cells
+    // (roadmap §6.1.2). The rows, and so the CSR, are the same sets.
+    if (NumPoints <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
+        return nodeadj_build<std::uint32_t>(rMesh, NumPoints, Kind);
+    return nodeadj_build<std::int64_t>(rMesh, NumPoints, Kind);
 }
 
 }  // namespace detail
@@ -149266,6 +149295,11 @@ struct CcellsOutBlock {
     std::vector<std::int64_t> mFaceOffsets;
     bool mIsRagged = false;
     bool mIsPolyhedron = false;
+    // A rectangular block already in its final (n, mNodesPerCell) Int64 array,
+    // written in place by simplexify instead of staged in mConn and copied:
+    // at 10M polyhedra the staged copy alone was 4 GB (roadmap §6.1.2).
+    NDArray mReady;
+    bool mHasReady = false;
 };
 
 // Stage an input block unchanged (used for every pass-through case).
@@ -149340,6 +149374,12 @@ void ccells_emit_block(Mesh& rOut, CcellsOutBlock& rBlock,
         else
             rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mFlat),
                                  std::move(rBlock.mRowOffsets));
+    } else if (rBlock.mHasReady) {
+        if (pRemap) {
+            std::int64_t* ids = rBlock.mReady.As<std::int64_t>();
+            parallel_for_bw(rBlock.mReady.Size(), [&](std::size_t i) { ids[i] = map(ids[i]); });
+        }
+        rOut.AddCellBlock(rBlock.mType, std::move(rBlock.mReady));
     } else {
         const std::size_t npc = rBlock.mNodesPerCell;
         const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
@@ -149357,6 +149397,11 @@ void ccells_visit_block_nodes(const CcellsOutBlock& rBlock, TFunc&& rFunc) {
         for (std::int64_t id : rBlock.mFlat)
             rFunc(id);
     } else {
+        if (rBlock.mHasReady) {
+            const std::int64_t* ids = rBlock.mReady.As<std::int64_t>();
+            for (std::size_t i = 0; i < rBlock.mReady.Size(); ++i)
+                rFunc(ids[i]);
+        }
         for (std::int64_t id : rBlock.mConn)
             rFunc(id);
     }
@@ -149562,6 +149607,9 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
     staged.reserve(nblocks);
     std::vector<std::vector<std::int64_t>> first_child(nblocks);
     std::vector<std::vector<std::int64_t>> parent_of_child(nblocks);
+    // Each child's parent row is read only to replicate cell_data and for
+    // RecordParentIds; without either it is not built.
+    const bool need_parents = RecordParentIds || mesh.NumCellData() != 0;
 
     std::size_t bi = 0;
     for (const auto cb : mesh.CellRange()) {
@@ -149599,14 +149647,20 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                     ring_nodes += cb.Face(c, f).second;
                     ++face_count;
                 }
-            out.mConn.reserve(4 * ring_nodes);
-            parents.reserve(ring_nodes);
+            // Exactly ring_nodes tets: cell_rings keeps every face's nodes and
+            // skips only a cell with no faces, and orient_rings refuses a face
+            // it cannot use. Written in place; trimmed below should it fall short.
+            NDArray tets = NDArray::Uninit(DType::Int64, {ring_nodes, 4});
+            std::int64_t* const tet = tets.As<std::int64_t>();
+            std::size_t ntet = 0;
+            if (need_parents)
+                parents.reserve(ring_nodes);
             src_start.reserve(src_start.size() + ncells + face_count);
             src_nodes.reserve(src_nodes.size() + 2 * ring_nodes);
             detail::CellRings rings;
             std::vector<detail::Vec3> coords;
             for (std::size_t c = 0; c < ncells; ++c) {
-                firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 4);
+                firsts[c] = static_cast<std::int64_t>(ntet);
                 if (!detail::cell_rings(cb, c, mesh.Points(), mesh.PointDim(), rings, coords))
                     continue;  // no faces at all: contributes nothing
                 if (detail::orient_rings(rings, coords.data()) ==
@@ -149629,18 +149683,32 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                     for (std::size_t k = 0; k < m; ++k)
                         src_nodes.push_back(rings.mNodes[ring[k]]);
                     src_start.push_back(src_nodes.size());
+                    if (m > ring_nodes - ntet)
+                        throw std::logic_error(
+                            "convert_cells: a polyhedron yielded more tetrahedra than its faces "
+                            "have nodes");
                     for (std::size_t k = 0; k < m; ++k) {
                         // (cell centroid, face centroid, a, b) is positively
                         // oriented for an outward-wound face -- the same
                         // determinant poly_measure accumulates.
-                        out.mConn.push_back(cell_pt);
-                        out.mConn.push_back(face_pt);
-                        out.mConn.push_back(rings.mNodes[ring[k]]);
-                        out.mConn.push_back(rings.mNodes[ring[(k + 1) % m]]);
-                        parents.push_back(static_cast<std::int64_t>(c));
+                        std::int64_t* t = tet + 4 * ntet++;
+                        t[0] = cell_pt;
+                        t[1] = face_pt;
+                        t[2] = rings.mNodes[ring[k]];
+                        t[3] = rings.mNodes[ring[(k + 1) % m]];
+                        if (need_parents)
+                            parents.push_back(static_cast<std::int64_t>(c));
                     }
                 }
             }
+            if (ntet != ring_nodes) {
+                NDArray exact = NDArray::Uninit(DType::Int64, {ntet, 4});
+                if (ntet)
+                    std::memcpy(exact.Data(), tets.Data(), ntet * 4 * sizeof(std::int64_t));
+                tets = std::move(exact);
+            }
+            out.mReady = std::move(tets);
+            out.mHasReady = true;
             staged.push_back(std::move(out));
             ++bi;
             continue;
@@ -149664,21 +149732,28 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
                 num_tris += n > 2 ? n - 2 : 0;
             }
-            out.mConn.reserve(num_tris * 3);
-            parents.reserve(parents.size() + num_tris);
+            NDArray tris = NDArray::Uninit(DType::Int64, {num_tris, 3});
+            std::int64_t* const tri = tris.As<std::int64_t>();
+            std::size_t ntri = 0;
+            if (need_parents)
+                parents.reserve(parents.size() + num_tris);
             for (std::size_t c = 0; c < ncells; ++c) {
-                firsts[c] = static_cast<std::int64_t>(out.mConn.size() / 3);
+                firsts[c] = static_cast<std::int64_t>(ntri);
                 const std::size_t n = ragged ? cb.RowSize(c) : npc;
                 auto node = [&](std::size_t k) {
                     return ragged ? cb.Row(c)[k] : detail::read_int(*conn, c * npc + k);
                 };
                 for (std::size_t k = 1; k + 1 < n; ++k) {
-                    out.mConn.push_back(node(0));
-                    out.mConn.push_back(node(k));
-                    out.mConn.push_back(node(k + 1));
-                    parents.push_back(static_cast<std::int64_t>(c));
+                    std::int64_t* t = tri + 3 * ntri++;
+                    t[0] = node(0);
+                    t[1] = node(k);
+                    t[2] = node(k + 1);
+                    if (need_parents)
+                        parents.push_back(static_cast<std::int64_t>(c));
                 }
             }
+            out.mReady = std::move(tris);
+            out.mHasReady = true;
             staged.push_back(std::move(out));
             ++bi;
             continue;
@@ -149694,7 +149769,8 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
             staged.push_back(ccells_stage_passthrough(cb));
             for (std::size_t c = 0; c < ncells; ++c) {
                 firsts[c] = static_cast<std::int64_t>(c);
-                parents.push_back(static_cast<std::int64_t>(c));
+                if (need_parents)
+                    parents.push_back(static_cast<std::int64_t>(c));
             }
             ++bi;
             continue;
@@ -149709,9 +149785,11 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         CcellsOutBlock out;
         out.mType = cell_type_name(tpl->mChildType);
         out.mNodesPerCell = npc_out;
-        out.mConn.resize(ncells * per_cell * npc_out);
-        parents.resize(ncells * per_cell);
-        std::vector<std::int64_t>& dst = out.mConn;
+        out.mReady = NDArray::Uninit(DType::Int64, {ncells * per_cell, npc_out});
+        out.mHasReady = true;
+        if (need_parents)
+            parents.resize(ncells * per_cell);
+        std::int64_t* const dst = out.mReady.As<std::int64_t>();
         const std::vector<std::uint8_t>& nodes = tpl->mNodes;
         parallel_for_bw(ncells, [&](std::size_t c) {
             const std::size_t base_in = c * npc_in;
@@ -149720,7 +149798,8 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 for (std::size_t k = 0; k < npc_out; ++k)
                     dst[base_out + child * npc_out + k] =
                         conn_v[base_in + nodes[child * npc_out + k]];
-                parents[c * per_cell + child] = static_cast<std::int64_t>(c);
+                if (need_parents)
+                    parents[c * per_cell + child] = static_cast<std::int64_t>(c);
             }
         });
         for (std::size_t c = 0; c < ncells; ++c)
@@ -149758,16 +149837,15 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         sink.Commit();
         out.AssignPoints(std::move(np));
     }
-    for (CcellsOutBlock& block : staged)
-        ccells_emit_block(out, block, nullptr);
-    if (num_new == 0) {
-        ccells_copy_point_data(mesh, out);
-    } else {
+    // The new points' point_data next, while their sources are still here;
+    // then the sources go before the blocks are added (roadmap §6.1.2).
+    std::vector<std::pair<std::string, NDArray>> new_point_data;
+    if (num_new != 0) {
         for (const std::string& name : mesh.PointDataNames()) {
             const NDArray& a = mesh.PointData(name);
             const detail::DoubleView a_v(a);
             if (detail::rows(a) != num_points) {
-                out.AddPointData(name, detail::data_owned_copy(a));
+                new_point_data.emplace_back(name, detail::data_owned_copy(a));
                 continue;  // not per-point data; copy verbatim rather than mangle
             }
             const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
@@ -149788,9 +149866,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                 }
             });
             sink.Commit();
-            out.AddPointData(name, std::move(b));
+            new_point_data.emplace_back(name, std::move(b));
         }
     }
+    std::vector<std::int64_t>().swap(src_nodes);
+    std::vector<std::size_t>().swap(src_start);
+    for (CcellsOutBlock& block : staged) {
+        ccells_emit_block(out, block, nullptr);
+        block = CcellsOutBlock();  // release its staging as soon as it is added
+    }
+    if (num_new == 0)
+        ccells_copy_point_data(mesh, out);
+    for (auto& [name, array] : new_point_data)
+        out.AddPointData(name, std::move(array));
     ccells_copy_field_data(mesh, out);
 
     // cell_data: replicate each parent's row to its children. An array whose
@@ -173509,8 +173597,7 @@ std::vector<std::int64_t> reorder_sfc_perm(const std::vector<std::uint64_t>& rKe
 
 // Scatter the `nrows` rows of `rSrc` so that new row `perm[i]` gets old row `i`,
 // preserving dtype and column shape (a bandwidth-bound byte gather).
-NDArray reorder_scatter_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rPerm,
-                             std::size_t nrows) {
+NDArray reorder_scatter_rows(const NDArray& rSrc, const std::int64_t* pPerm, std::size_t nrows) {
     NDArray dst = NDArray::Uninit(rSrc.Dtype(), rSrc.Shape());
     if (nrows == 0)
         return dst;
@@ -173518,7 +173605,7 @@ NDArray reorder_scatter_rows(const NDArray& rSrc, const std::vector<std::int64_t
     const std::byte* src = rSrc.Data();
     std::byte* out = dst.Data();
     parallel_for_bw(nrows, [&](std::size_t i) {
-        std::memcpy(out + static_cast<std::size_t>(rPerm[i]) * row_bytes, src + i * row_bytes,
+        std::memcpy(out + static_cast<std::size_t>(pPerm[i]) * row_bytes, src + i * row_bytes,
                     row_bytes);
     });
     return dst;
@@ -173548,11 +173635,11 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
     }
 
     // Points scattered by the node permutation.
-    out.AssignPoints(reorder_scatter_rows(rMesh.Points(), node_perm, n));
+    out.AssignPoints(reorder_scatter_rows(rMesh.Points(), node_perm.data(), n));
 
     // Cell blocks: remap connectivity node ids, then reorder cells by min new
-    // node index. Keep each block's cell permutation for the cell_data below.
-    std::vector<std::vector<std::int64_t>> block_cell_perms;
+    // node index. Each block's cell permutation (res.mCellPermutations) also
+    // reorders its cell_data below.
     for (const auto cb : rMesh.CellRange()) {
         const std::size_t nc = cb.NumCells();
 
@@ -173604,7 +173691,9 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             for (std::size_t c = 0; c < nc; ++c)
                 cellorder[start[static_cast<std::size_t>(key[c])]++] = static_cast<std::int64_t>(c);
         }
-        std::vector<std::int64_t> cellperm(nc);  // old -> new
+        std::vector<std::int64_t>().swap(key);  // done with; release before the block copy
+        NDArray cp = NDArray::Uninit(DType::Int64, {nc});  // old -> new
+        std::int64_t* cellperm = cp.As<std::int64_t>();
         for (std::size_t p = 0; p < nc; ++p)
             cellperm[static_cast<std::size_t>(cellorder[p])] = static_cast<std::int64_t>(p);
 
@@ -173639,6 +173728,7 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
                     rows[++row] = static_cast<std::int64_t>(at);
                 }
             });
+            std::vector<std::int64_t>().swap(nodes);
             out.AddPolyhedronBlock(std::string(cb.Type()), std::move(flat), std::move(rows),
                                    std::move(faces));
         } else if (cb.IsRagged()) {
@@ -173670,17 +173760,14 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
             out.AddCellBlock(std::string(cb.Type()), std::move(block));
         }
 
-        NDArray cp = NDArray::Uninit(DType::Int64, {nc});
-        std::memcpy(cp.Data(), cellperm.data(), nc * sizeof(std::int64_t));
         res.mCellPermutations.push_back(std::move(cp));
-        block_cell_perms.push_back(std::move(cellperm));
     }
 
     // point_data: scatter rows that align with the point table; copy the rest.
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
         if (detail::rows(a) == n)
-            out.AddPointData(name, reorder_scatter_rows(a, node_perm, n));
+            out.AddPointData(name, reorder_scatter_rows(a, node_perm.data(), n));
         else
             out.AddPointData(name, reorder_owned_copy(a));
     }
@@ -173692,8 +173779,10 @@ ReorderResult reorder_apply(const Mesh& rMesh, std::vector<std::int64_t> node_pe
         blocks.reserve(nb);
         for (std::size_t b = 0; b < nb; ++b) {
             const NDArray& a = rMesh.CellData(name, b);
-            if (b < block_cell_perms.size() && detail::rows(a) == block_cell_perms[b].size())
-                blocks.push_back(reorder_scatter_rows(a, block_cell_perms[b], detail::rows(a)));
+            if (b < res.mCellPermutations.size() &&
+                detail::rows(a) == res.mCellPermutations[b].Size())
+                blocks.push_back(reorder_scatter_rows(
+                    a, res.mCellPermutations[b].As<std::int64_t>(), detail::rows(a)));
             else
                 blocks.push_back(reorder_owned_copy(a));
         }
@@ -181430,7 +181519,7 @@ bool ug_is_reserved(const std::string& rName) {
 }
 
 // A cell's role in the output, decided once per sibling group.
-enum class UgRole { Keep, AnchorSubstitute, Suppressed };
+enum class UgRole : std::uint8_t { Keep, AnchorSubstitute, Suppressed };
 
 }  // namespace
 
@@ -181445,130 +181534,150 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     const std::vector<std::int64_t> coarse_bases = detail::block_bases(rCoarse);
     const auto total_fine = static_cast<std::size_t>(detail::total_cells(fine_bases));
 
-    const std::vector<std::int64_t> fine_id =
-        ug_read_required(rFine, fine_bases, kRefineCellIdName);
-    const std::vector<std::int64_t> fine_parent =
-        ug_read_required(rFine, fine_bases, kRefineParentIdName);
-    const std::vector<std::int64_t> fine_level =
-        ug_read_required(rFine, fine_bases, kRefineLevelName);
-
-    // --- resolve the coarse mesh's id space: its own recorded ids if valid,
-    // else the implicit global-block-major ids -- refine_attach_hierarchy's
-    // own "start fresh" fallback. --------------------------------------------
-    std::vector<std::int64_t> coarse_ids;
-    std::int64_t coarse_id_base = 0;
-    const detail::RefineHierarchyState state =
-        detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
-    if (state != detail::RefineHierarchyState::Valid) {
-        const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
-        coarse_ids.resize(total_coarse);
-        for (std::size_t i = 0; i < total_coarse; ++i)
-            coarse_ids[i] = static_cast<std::int64_t>(i);
-    }
-    // (id, row) pairs sorted -- a total order -- searched by binary search.
-    std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
-    parallel_for(coarse_ids.size(), [&](std::size_t i) {
-        id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
-    });
-    parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
-
-    const std::vector<std::int64_t> coarse_level =
-        ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
-    auto coarse_level_at = [&](std::int64_t row) -> std::int64_t {
-        return coarse_level.empty() ? 0 : coarse_level[static_cast<std::size_t>(row)];
-    };
-
-    // --- group fine cells by parent_id --------------------------------------
-    // Sorted (parent_id, cell) pairs: each run is one sibling group, its cells
-    // ascending, and the groups come in ascending parent_id -- the same on
-    // every platform, where a hash map's iteration order was not (it decided
-    // which of several malformed groups was reported).
-    std::vector<std::pair<std::int64_t, std::int64_t>> by_parent(total_fine);
-    parallel_for(total_fine, [&](std::size_t g) {
-        by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
-    });
-    parallel_sort(by_parent.begin(), by_parent.end());
-
-    // --- classify every global fine cell's role; for green groups, resolve
-    // the substitution source once ------------------------------------------
+    // What the classification leaves for the output: every global fine cell's
+    // role and green group, and per group its coarse row and size. Everything
+    // else it reads (the three refine:* columns, the id lookup, the sibling
+    // order) lives in the scope below and is released before the output is
+    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1.2).
     std::vector<UgRole> role(total_fine, UgRole::Keep);
     std::vector<std::int64_t> group_id_of(total_fine, -1);
     std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
     std::vector<std::int64_t> group_size;        // indexed by green group id
     std::int64_t next_group_id = 0;
+    {
+        const std::vector<std::int64_t> fine_id =
+            ug_read_required(rFine, fine_bases, kRefineCellIdName);
+        const std::vector<std::int64_t> fine_parent =
+            ug_read_required(rFine, fine_bases, kRefineParentIdName);
+        const std::vector<std::int64_t> fine_level =
+            ug_read_required(rFine, fine_bases, kRefineLevelName);
 
-    std::vector<std::int64_t> members;
-    for (std::size_t r0 = 0, r1 = 0; r0 < by_parent.size(); r0 = r1) {
-        const std::int64_t parent_id = by_parent[r0].first;
-        members.clear();
-        for (r1 = r0; r1 < by_parent.size() && by_parent[r1].first == parent_id; ++r1)
-            members.push_back(by_parent[r1].second);
-
-        if (members.size() == 1) {
-            const std::int64_t g = members.front();
-            if (fine_id[static_cast<std::size_t>(g)] != parent_id)
-                throw std::invalid_argument(
-                    std::string(kUgPrefix) +
-                    "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
-                    "equal its refine:parent_id (cell " +
-                    std::to_string(g) + ")");
-            continue;  // untouched: role stays Keep
+        // --- resolve the coarse mesh's id space: its own recorded ids if valid,
+        // else the implicit global-block-major ids -- refine_attach_hierarchy's
+        // own "start fresh" fallback. --------------------------------------------
+        std::vector<std::int64_t> coarse_ids;
+        std::int64_t coarse_id_base = 0;
+        const detail::RefineHierarchyState state =
+            detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
+        if (state != detail::RefineHierarchyState::Valid) {
+            const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
+            coarse_ids.resize(total_coarse);
+            for (std::size_t i = 0; i < total_coarse; ++i)
+                coarse_ids[i] = static_cast<std::int64_t>(i);
         }
+        // (id, row) pairs sorted -- a total order -- searched by binary search.
+        std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
+        parallel_for(coarse_ids.size(), [&](std::size_t i) {
+            id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
+        });
+        parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
 
-        // The last row with this id, as the former map's overwrite kept it.
-        auto it =
-            std::upper_bound(id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
-                             [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
-                                 return v < rE.first;
-                             });
-        if (it != id_to_coarse_row.begin())
-            --it;
-        if (it == id_to_coarse_row.end() || it->first != parent_id)
-            throw std::invalid_argument(
-                std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
-                " does not resolve in the coarse mesh's id space -- these two meshes are not "
-                "the coarse/fine pair of one refine() call");
-        const std::int64_t coarse_row = it->second;
-        const std::int64_t clevel = coarse_level_at(coarse_row);
+        const std::vector<std::int64_t> coarse_level =
+            ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
+        auto coarse_level_at = [&](std::int64_t row) -> std::int64_t {
+            return coarse_level.empty() ? 0 : coarse_level[static_cast<std::size_t>(row)];
+        };
 
-        const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
-        for (std::int64_t g : members)
-            if (fine_level[static_cast<std::size_t>(g)] != flevel)
-                throw std::invalid_argument(
-                    std::string(kUgPrefix) +
-                    "malformed hierarchy: the sibling group under refine:parent_id " +
-                    std::to_string(parent_id) + " does not agree on refine:level");
-
-        if (flevel == clevel + 1)
-            continue;  // red: a genuine refinement, kept unchanged (role stays Keep)
-
-        if (flevel > clevel + 1)
-            throw std::invalid_argument(
-                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
-                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
-                ", more than one deeper than its coarse parent's own level (" +
-                std::to_string(clevel) +
-                "); undo_green only supports a single-pass (levels=1) hierarchy");
-
-        if (flevel != clevel)
-            throw std::invalid_argument(
-                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
-                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
-                ", which is neither its coarse parent's own level (" + std::to_string(clevel) +
-                ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
-
-        // green: substitute the whole group with one row from the coarse mesh
-        const std::int64_t gid = next_group_id++;
-        group_coarse_row.push_back(coarse_row);
-        group_size.push_back(static_cast<std::int64_t>(members.size()));
-        role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
-        group_id_of[static_cast<std::size_t>(members.front())] = gid;
-        for (std::size_t k = 1; k < members.size(); ++k) {
-            role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
-                UgRole::Suppressed;
-            group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] = gid;
+        // --- group fine cells by parent_id --------------------------------------
+        // Sorted (parent_id, cell) pairs: each run is one sibling group, its cells
+        // ascending, and the groups come in ascending parent_id -- the same on
+        // every platform, where a hash map's iteration order was not (it decided
+        // which of several malformed groups was reported).
+        // refine() writes its cells parent-major, so parent_id usually arrives
+        // non-decreasing: the sorted pairs are then (parent_id[g], g) for g in
+        // order, and the sort (and its N pairs) is skipped.
+        const bool parents_sorted = std::is_sorted(fine_parent.begin(), fine_parent.end());
+        std::vector<std::pair<std::int64_t, std::int64_t>> by_parent;
+        if (!parents_sorted) {
+            by_parent.resize(total_fine);
+            parallel_for(total_fine, [&](std::size_t g) {
+                by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
+            });
+            parallel_sort(by_parent.begin(), by_parent.end());
         }
-    }
+        const auto parent_at = [&](std::size_t k) {
+            return parents_sorted ? fine_parent[k] : by_parent[k].first;
+        };
+        const auto cell_at = [&](std::size_t k) {
+            return parents_sorted ? static_cast<std::int64_t>(k) : by_parent[k].second;
+        };
+
+        // --- classify every global fine cell's role; for green groups, resolve
+        // the substitution source once ------------------------------------------
+        std::vector<std::int64_t> members;
+        for (std::size_t r0 = 0, r1 = 0; r0 < total_fine; r0 = r1) {
+            const std::int64_t parent_id = parent_at(r0);
+            members.clear();
+            for (r1 = r0; r1 < total_fine && parent_at(r1) == parent_id; ++r1)
+                members.push_back(cell_at(r1));
+
+            if (members.size() == 1) {
+                const std::int64_t g = members.front();
+                if (fine_id[static_cast<std::size_t>(g)] != parent_id)
+                    throw std::invalid_argument(
+                        std::string(kUgPrefix) +
+                        "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
+                        "equal its refine:parent_id (cell " +
+                        std::to_string(g) + ")");
+                continue;  // untouched: role stays Keep
+            }
+
+            // The last row with this id, as the former map's overwrite kept it.
+            auto it = std::upper_bound(
+                id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
+                [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
+                    return v < rE.first;
+                });
+            if (it != id_to_coarse_row.begin())
+                --it;
+            if (it == id_to_coarse_row.end() || it->first != parent_id)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
+                    " does not resolve in the coarse mesh's id space -- these two meshes are not "
+                    "the coarse/fine pair of one refine() call");
+            const std::int64_t coarse_row = it->second;
+            const std::int64_t clevel = coarse_level_at(coarse_row);
+
+            const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
+            for (std::int64_t g : members)
+                if (fine_level[static_cast<std::size_t>(g)] != flevel)
+                    throw std::invalid_argument(
+                        std::string(kUgPrefix) +
+                        "malformed hierarchy: the sibling group under refine:parent_id " +
+                        std::to_string(parent_id) + " does not agree on refine:level");
+
+            if (flevel == clevel + 1)
+                continue;  // red: a genuine refinement, kept unchanged (role stays Keep)
+
+            if (flevel > clevel + 1)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                    std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                    ", more than one deeper than its coarse parent's own level (" +
+                    std::to_string(clevel) +
+                    "); undo_green only supports a single-pass (levels=1) hierarchy");
+
+            if (flevel != clevel)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                    std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                    ", which is neither its coarse parent's own level (" + std::to_string(clevel) +
+                    ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
+
+            // green: substitute the whole group with one row from the coarse mesh
+            const std::int64_t gid = next_group_id++;
+            group_coarse_row.push_back(coarse_row);
+            group_size.push_back(static_cast<std::int64_t>(members.size()));
+            role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
+            group_id_of[static_cast<std::size_t>(members.front())] = gid;
+            for (std::size_t k = 1; k < members.size(); ++k) {
+                role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
+                    UgRole::Suppressed;
+                group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
+                    gid;
+            }
+        }
+    }  // the classification scratch is released here
 
     // --- build the output mesh: fine's own block structure, unchanged types
     // and order, rows compacted/substituted -----------------------------------

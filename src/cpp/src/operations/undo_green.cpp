@@ -112,7 +112,7 @@ bool ug_is_reserved(const std::string& rName) {
 }
 
 // A cell's role in the output, decided once per sibling group.
-enum class UgRole { Keep, AnchorSubstitute, Suppressed };
+enum class UgRole : std::uint8_t { Keep, AnchorSubstitute, Suppressed };
 
 }  // namespace
 
@@ -127,130 +127,150 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     const std::vector<std::int64_t> coarse_bases = detail::block_bases(rCoarse);
     const auto total_fine = static_cast<std::size_t>(detail::total_cells(fine_bases));
 
-    const std::vector<std::int64_t> fine_id =
-        ug_read_required(rFine, fine_bases, kRefineCellIdName);
-    const std::vector<std::int64_t> fine_parent =
-        ug_read_required(rFine, fine_bases, kRefineParentIdName);
-    const std::vector<std::int64_t> fine_level =
-        ug_read_required(rFine, fine_bases, kRefineLevelName);
-
-    // --- resolve the coarse mesh's id space: its own recorded ids if valid,
-    // else the implicit global-block-major ids -- refine_attach_hierarchy's
-    // own "start fresh" fallback. --------------------------------------------
-    std::vector<std::int64_t> coarse_ids;
-    std::int64_t coarse_id_base = 0;
-    const detail::RefineHierarchyState state =
-        detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
-    if (state != detail::RefineHierarchyState::Valid) {
-        const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
-        coarse_ids.resize(total_coarse);
-        for (std::size_t i = 0; i < total_coarse; ++i)
-            coarse_ids[i] = static_cast<std::int64_t>(i);
-    }
-    // (id, row) pairs sorted -- a total order -- searched by binary search.
-    std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
-    parallel_for(coarse_ids.size(), [&](std::size_t i) {
-        id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
-    });
-    parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
-
-    const std::vector<std::int64_t> coarse_level =
-        ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
-    auto coarse_level_at = [&](std::int64_t row) -> std::int64_t {
-        return coarse_level.empty() ? 0 : coarse_level[static_cast<std::size_t>(row)];
-    };
-
-    // --- group fine cells by parent_id --------------------------------------
-    // Sorted (parent_id, cell) pairs: each run is one sibling group, its cells
-    // ascending, and the groups come in ascending parent_id -- the same on
-    // every platform, where a hash map's iteration order was not (it decided
-    // which of several malformed groups was reported).
-    std::vector<std::pair<std::int64_t, std::int64_t>> by_parent(total_fine);
-    parallel_for(total_fine, [&](std::size_t g) {
-        by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
-    });
-    parallel_sort(by_parent.begin(), by_parent.end());
-
-    // --- classify every global fine cell's role; for green groups, resolve
-    // the substitution source once ------------------------------------------
+    // What the classification leaves for the output: every global fine cell's
+    // role and green group, and per group its coarse row and size. Everything
+    // else it reads (the three refine:* columns, the id lookup, the sibling
+    // order) lives in the scope below and is released before the output is
+    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1.2).
     std::vector<UgRole> role(total_fine, UgRole::Keep);
     std::vector<std::int64_t> group_id_of(total_fine, -1);
     std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
     std::vector<std::int64_t> group_size;        // indexed by green group id
     std::int64_t next_group_id = 0;
+    {
+        const std::vector<std::int64_t> fine_id =
+            ug_read_required(rFine, fine_bases, kRefineCellIdName);
+        const std::vector<std::int64_t> fine_parent =
+            ug_read_required(rFine, fine_bases, kRefineParentIdName);
+        const std::vector<std::int64_t> fine_level =
+            ug_read_required(rFine, fine_bases, kRefineLevelName);
 
-    std::vector<std::int64_t> members;
-    for (std::size_t r0 = 0, r1 = 0; r0 < by_parent.size(); r0 = r1) {
-        const std::int64_t parent_id = by_parent[r0].first;
-        members.clear();
-        for (r1 = r0; r1 < by_parent.size() && by_parent[r1].first == parent_id; ++r1)
-            members.push_back(by_parent[r1].second);
-
-        if (members.size() == 1) {
-            const std::int64_t g = members.front();
-            if (fine_id[static_cast<std::size_t>(g)] != parent_id)
-                throw std::invalid_argument(
-                    std::string(kUgPrefix) +
-                    "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
-                    "equal its refine:parent_id (cell " +
-                    std::to_string(g) + ")");
-            continue;  // untouched: role stays Keep
+        // --- resolve the coarse mesh's id space: its own recorded ids if valid,
+        // else the implicit global-block-major ids -- refine_attach_hierarchy's
+        // own "start fresh" fallback. --------------------------------------------
+        std::vector<std::int64_t> coarse_ids;
+        std::int64_t coarse_id_base = 0;
+        const detail::RefineHierarchyState state =
+            detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
+        if (state != detail::RefineHierarchyState::Valid) {
+            const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
+            coarse_ids.resize(total_coarse);
+            for (std::size_t i = 0; i < total_coarse; ++i)
+                coarse_ids[i] = static_cast<std::int64_t>(i);
         }
+        // (id, row) pairs sorted -- a total order -- searched by binary search.
+        std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
+        parallel_for(coarse_ids.size(), [&](std::size_t i) {
+            id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
+        });
+        parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
 
-        // The last row with this id, as the former map's overwrite kept it.
-        auto it =
-            std::upper_bound(id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
-                             [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
-                                 return v < rE.first;
-                             });
-        if (it != id_to_coarse_row.begin())
-            --it;
-        if (it == id_to_coarse_row.end() || it->first != parent_id)
-            throw std::invalid_argument(
-                std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
-                " does not resolve in the coarse mesh's id space -- these two meshes are not "
-                "the coarse/fine pair of one refine() call");
-        const std::int64_t coarse_row = it->second;
-        const std::int64_t clevel = coarse_level_at(coarse_row);
+        const std::vector<std::int64_t> coarse_level =
+            ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
+        auto coarse_level_at = [&](std::int64_t row) -> std::int64_t {
+            return coarse_level.empty() ? 0 : coarse_level[static_cast<std::size_t>(row)];
+        };
 
-        const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
-        for (std::int64_t g : members)
-            if (fine_level[static_cast<std::size_t>(g)] != flevel)
-                throw std::invalid_argument(
-                    std::string(kUgPrefix) +
-                    "malformed hierarchy: the sibling group under refine:parent_id " +
-                    std::to_string(parent_id) + " does not agree on refine:level");
-
-        if (flevel == clevel + 1)
-            continue;  // red: a genuine refinement, kept unchanged (role stays Keep)
-
-        if (flevel > clevel + 1)
-            throw std::invalid_argument(
-                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
-                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
-                ", more than one deeper than its coarse parent's own level (" +
-                std::to_string(clevel) +
-                "); undo_green only supports a single-pass (levels=1) hierarchy");
-
-        if (flevel != clevel)
-            throw std::invalid_argument(
-                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
-                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
-                ", which is neither its coarse parent's own level (" + std::to_string(clevel) +
-                ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
-
-        // green: substitute the whole group with one row from the coarse mesh
-        const std::int64_t gid = next_group_id++;
-        group_coarse_row.push_back(coarse_row);
-        group_size.push_back(static_cast<std::int64_t>(members.size()));
-        role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
-        group_id_of[static_cast<std::size_t>(members.front())] = gid;
-        for (std::size_t k = 1; k < members.size(); ++k) {
-            role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
-                UgRole::Suppressed;
-            group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] = gid;
+        // --- group fine cells by parent_id --------------------------------------
+        // Sorted (parent_id, cell) pairs: each run is one sibling group, its cells
+        // ascending, and the groups come in ascending parent_id -- the same on
+        // every platform, where a hash map's iteration order was not (it decided
+        // which of several malformed groups was reported).
+        // refine() writes its cells parent-major, so parent_id usually arrives
+        // non-decreasing: the sorted pairs are then (parent_id[g], g) for g in
+        // order, and the sort (and its N pairs) is skipped.
+        const bool parents_sorted = std::is_sorted(fine_parent.begin(), fine_parent.end());
+        std::vector<std::pair<std::int64_t, std::int64_t>> by_parent;
+        if (!parents_sorted) {
+            by_parent.resize(total_fine);
+            parallel_for(total_fine, [&](std::size_t g) {
+                by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
+            });
+            parallel_sort(by_parent.begin(), by_parent.end());
         }
-    }
+        const auto parent_at = [&](std::size_t k) {
+            return parents_sorted ? fine_parent[k] : by_parent[k].first;
+        };
+        const auto cell_at = [&](std::size_t k) {
+            return parents_sorted ? static_cast<std::int64_t>(k) : by_parent[k].second;
+        };
+
+        // --- classify every global fine cell's role; for green groups, resolve
+        // the substitution source once ------------------------------------------
+        std::vector<std::int64_t> members;
+        for (std::size_t r0 = 0, r1 = 0; r0 < total_fine; r0 = r1) {
+            const std::int64_t parent_id = parent_at(r0);
+            members.clear();
+            for (r1 = r0; r1 < total_fine && parent_at(r1) == parent_id; ++r1)
+                members.push_back(cell_at(r1));
+
+            if (members.size() == 1) {
+                const std::int64_t g = members.front();
+                if (fine_id[static_cast<std::size_t>(g)] != parent_id)
+                    throw std::invalid_argument(
+                        std::string(kUgPrefix) +
+                        "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
+                        "equal its refine:parent_id (cell " +
+                        std::to_string(g) + ")");
+                continue;  // untouched: role stays Keep
+            }
+
+            // The last row with this id, as the former map's overwrite kept it.
+            auto it = std::upper_bound(
+                id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
+                [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
+                    return v < rE.first;
+                });
+            if (it != id_to_coarse_row.begin())
+                --it;
+            if (it == id_to_coarse_row.end() || it->first != parent_id)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
+                    " does not resolve in the coarse mesh's id space -- these two meshes are not "
+                    "the coarse/fine pair of one refine() call");
+            const std::int64_t coarse_row = it->second;
+            const std::int64_t clevel = coarse_level_at(coarse_row);
+
+            const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
+            for (std::int64_t g : members)
+                if (fine_level[static_cast<std::size_t>(g)] != flevel)
+                    throw std::invalid_argument(
+                        std::string(kUgPrefix) +
+                        "malformed hierarchy: the sibling group under refine:parent_id " +
+                        std::to_string(parent_id) + " does not agree on refine:level");
+
+            if (flevel == clevel + 1)
+                continue;  // red: a genuine refinement, kept unchanged (role stays Keep)
+
+            if (flevel > clevel + 1)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                    std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                    ", more than one deeper than its coarse parent's own level (" +
+                    std::to_string(clevel) +
+                    "); undo_green only supports a single-pass (levels=1) hierarchy");
+
+            if (flevel != clevel)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                    std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                    ", which is neither its coarse parent's own level (" + std::to_string(clevel) +
+                    ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
+
+            // green: substitute the whole group with one row from the coarse mesh
+            const std::int64_t gid = next_group_id++;
+            group_coarse_row.push_back(coarse_row);
+            group_size.push_back(static_cast<std::int64_t>(members.size()));
+            role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
+            group_id_of[static_cast<std::size_t>(members.front())] = gid;
+            for (std::size_t k = 1; k < members.size(); ++k) {
+                role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
+                    UgRole::Suppressed;
+                group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
+                    gid;
+            }
+        }
+    }  // the classification scratch is released here
 
     // --- build the output mesh: fine's own block structure, unchanged types
     // and order, rows compacted/substituted -----------------------------------

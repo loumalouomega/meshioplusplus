@@ -240,7 +240,10 @@ Mesh bench_ops_ragged(const Mesh& rVolume) {
     static const int faces[4][3] = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {0, 3, 2}};
     std::vector<std::int64_t> flat, rows{0}, cells{0}, ring, poly_rows{0};
     flat.reserve(nc * 12);
+    rows.reserve(nc * 4 + 1);
+    cells.reserve(nc + 1);
     ring.reserve(nc * 3);
+    poly_rows.reserve(nc + 1);
     for (std::size_t c = 0; c < nc; ++c) {
         const std::int64_t* v = cb.Conn().As<std::int64_t>() + 4 * c;
         for (const auto& f : faces) {
