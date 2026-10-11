@@ -174,6 +174,29 @@ def _tokens(line):
     return line.replace(",", " ").split()
 
 
+def _connectivity_row(idx, line, npc, num_nodes):
+    """One cell's 0-based node ids. Each 1-based id is checked against the zone's
+    node count before it is converted, as the C++ reader checks it before a point
+    offset is added: an id near INT64_MAX would overflow there."""
+    toks = _tokens(line)
+    if len(toks) < npc:
+        raise ReadError(f"Tecplot: zone {idx + 1} has a short connectivity line")
+    row = []
+    for t in toks[:npc]:
+        try:
+            node = int(t)
+        except ValueError as exc:
+            raise ReadError(
+                f"Tecplot: zone {idx + 1} has a connectivity id that is not an integer"
+            ) from exc
+        if not 1 <= node <= num_nodes:
+            raise ReadError(
+                f"Tecplot: zone {idx + 1} connectivity node {node} is out of range"
+            )
+        row.append(node - 1)
+    return row
+
+
 class AsciiSource:
     def __init__(self, lines, zones, nvar):
         self.lines = lines
@@ -247,9 +270,9 @@ class AsciiSource:
                     raise ReadError(
                         f"Tecplot: zone {idx + 1} connectivity is truncated"
                     )
-                rows.append([int(t) for t in _tokens(self.lines[li])[:npc]])
+                rows.append(_connectivity_row(idx, self.lines[li], npc, z.num_nodes))
                 li += 1
-            conn = np.array(rows, dtype=np.int64).reshape(-1, npc) - 1
+            conn = np.array(rows, dtype=np.int64).reshape(-1, npc)
         return cols, conn
 
 

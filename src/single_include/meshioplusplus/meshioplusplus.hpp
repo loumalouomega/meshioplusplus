@@ -128676,8 +128676,17 @@ public:
             if (toks.size() < nn)
                 throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
                                 " has a short connectivity line");
-            for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = detail::zero_based(detail::strtoll_token(toks[j]));
+            for (std::size_t j = 0; j < nn; ++j) {
+                // Checked as a 1-based id, before the subtraction and before any point
+                // offset is added: the lenient parse saturates an id near INT64_MAX,
+                // and adding an offset to that overflows (UBSan).
+                const std::int64_t id = detail::strtoll_token(toks[j]);
+                if (id < 1 || id > static_cast<std::int64_t>(z.mNumNodes))
+                    throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                    " connectivity node " + std::to_string(id) +
+                                    " is out of range");
+                cp[c * nn + j] = id - 1;
+            }
         }
     }
 
@@ -129238,8 +129247,14 @@ public:
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
         const std::int64_t base = tecplot_plt_v7(z.mVersion) ? 1 : 0;  // Tecplot 7 is 1-based
-        for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
-            cp[r] = cur.I32() - base;
+        for (std::size_t r = 0; r < z.mNumCells * nn; ++r) {
+            const std::int64_t id = cur.I32() - base;
+            if (id < 0 || id >= static_cast<std::int64_t>(z.mNumNodes))
+                throw ReadError("Tecplot .plt: zone " + std::to_string(ZoneIdx + 1) +
+                                " connectivity node " + std::to_string(id + base) +
+                                " is out of range");
+            cp[r] = id;
+        }
     }
 
 private:

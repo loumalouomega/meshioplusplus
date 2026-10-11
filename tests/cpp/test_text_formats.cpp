@@ -433,6 +433,30 @@ TEST(Tecplot, AFaceNodeCountThatOverflowsTheRunningSumIsAReadError) {
     EXPECT_THROW(meshioplusplus::read_tecplot(input.string()), meshioplusplus::ReadError);
 }
 
+// The fuzzer's crash (regressions/tecplot/ascii-connectivity-id-overflows-offset):
+// an id near INT64_MAX, saturated by the lenient parse, whose point offset
+// overflowed (UBSan). It is refused before any offset is added.
+TEST(Tecplot, AConnectivityIdNearInt64MaxIsAReadError) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "tecplot" /
+                                        "ascii-connectivity-id-overflows-offset";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    EXPECT_THROW(meshioplusplus::read_tecplot(input.string()), meshioplusplus::ReadError);
+}
+
+// The node count is the bound: id 3 is a 3-node zone's last node, id 4 is past it.
+TEST(Tecplot, AConnectivityIdPastTheNodeCountIsAReadError) {
+    const std::string header =
+        "VARIABLES = \"X\" \"Y\"\n"
+        "ZONE N=3 E=1 DATAPACKING=POINT ZONETYPE=FETRIANGLE\n"
+        "0.0 0.0\n"
+        "1.0 0.0\n"
+        "0.0 1.0\n";
+    EXPECT_NO_THROW(meshioplusplus::read_tecplot(write_temp(".dat", header + "1 2 3\n")));
+    EXPECT_THROW(meshioplusplus::read_tecplot(write_temp(".dat", header + "1 2 4\n")),
+                 meshioplusplus::ReadError);
+}
+
 // An ordered zone with a zero dimension next to two factors of 2^32+1: their
 // product wraps, and the cell count (2^32 times 2^32) wraps to zero. The zero
 // must not hide the wrap from the overflow check.

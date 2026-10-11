@@ -465,9 +465,15 @@ class PltSource:
         if z.conn_offset is not None:
             cur.pos = z.conn_offset
             npc = NODES_PER_CELL[z.type_code]
+            base = 1 if cur.version in (71, 75) else 0  # Tecplot 7 is 1-based
             conn = cur.array("i4", npc * z.num_cells).astype(np.int64).reshape(-1, npc)
-            if cur.version in (71, 75):
-                conn -= 1  # Tecplot 7 connectivity is 1-based
+            conn -= base
+            bad = (conn < 0) | (conn >= z.num_nodes)
+            if bad.any():
+                raise ReadError(
+                    f"Tecplot .plt: zone {idx + 1} connectivity node "
+                    f"{int(conn[bad][0]) + base} is out of range"
+                )
         return cols, conn
 
 
