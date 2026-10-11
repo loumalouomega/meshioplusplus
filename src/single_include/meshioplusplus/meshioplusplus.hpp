@@ -37084,6 +37084,9 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx, i
 // System includes
 #include <cctype>
 #include <cstddef>
+#include <cstring>
+#include <functional>
+#include <ostream>
 #include <string_view>
 #include <vector>
 
@@ -37132,6 +37135,41 @@ NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, 
  */
 void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
                     std::vector<unsigned char>& rOut);
+
+/**
+ * @brief Writes the bytes [Offset, Offset + N) of an array's raw payload to
+ * pDst[0 .. N). The streaming encoders below call it in fixed batches, so a
+ * writer can generate an array (a padded point array, a VTK connectivity
+ * stream) a window at a time instead of materialising it.
+ */
+using VtuFill = std::function<void(std::size_t Offset, std::size_t N, unsigned char* pDst)>;
+
+/**
+ * @brief Writes to @p rOs the text `vtu_encode_binary` returns for the
+ * @p nbytes bytes that @p rFill produces, without holding them, their blocks
+ * or their base64 text: the payload is generated and encoded a fixed batch at
+ * a time, and with @p codec only the compressed blocks are kept (the block
+ * header, which comes first, needs every compressed size). Byte-identical to
+ * `os << vtu_encode_binary(...)`. Roadmap §6.1.1.
+ */
+void vtu_write_binary_stream(std::ostream& rOs, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                             const VtuFill& rFill);
+
+/// `vtu_write_binary_stream` over bytes already in memory: what
+/// `os << vtu_encode_binary(pData, ...)` writes, without the compressed
+/// blocks' copies or the whole base64 string.
+inline void vtu_write_binary_bytes(std::ostream& rOs, const unsigned char* pData,
+                                   std::size_t nbytes, VtkCodec codec, std::size_t hsz) {
+    vtu_write_binary_stream(rOs, nbytes, codec, hsz,
+                            [pData](std::size_t Off, std::size_t N, unsigned char* pDst) {
+                                std::memcpy(pDst, pData + Off, N);
+                            });
+}
+
+/// `vtu_encode_raw` over the bytes @p rFill produces, generated a batch at a
+/// time straight into @p rOut (or, with @p codec, compressed from the batch).
+void vtu_encode_raw_stream(std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                           const VtuFill& rFill, std::vector<unsigned char>& rOut);
 
 /// `vtu_parse_binary(vtu_strip(...), ...)` over a view of the element's text.
 inline NDArray vtu_decode_bin_view(std::string_view Text, DType dt, VtkCodec codec,
@@ -65536,12 +65574,13 @@ void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const ND
         rOs << " NumberOfComponents=\"" << components << "\"";
     }
     rOs << " format=\"" << (Binary ? "binary" : "ascii") << "\">\n";
-    if (Binary)
-        rOs << vtu_encode_binary(reinterpret_cast<const unsigned char*>(rArray.Data()),
-                                 rArray.Nbytes(), Codec, Hsz)
-            << "\n";
-    else
+    if (Binary) {
+        vtu_write_binary_bytes(rOs, reinterpret_cast<const unsigned char*>(rArray.Data()),
+                               rArray.Nbytes(), Codec, Hsz);
+        rOs << "\n";
+    } else {
         vtu_ascii_ndarray(rOs, rArray);
+    }
     rOs << "</DataArray>\n";
 }
 
@@ -66125,6 +66164,7 @@ MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType
 #include <array>
 #include <cstring>
 #include <limits>
+#include <ostream>
 #include <string>
 
 // External includes
@@ -66149,34 +66189,48 @@ const char* b64_table() {
     return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 }
 
-std::string b64encode(const unsigned char* pData, std::size_t len) {
+namespace {
+
+// The full 3-byte groups of pData[0 .. 3 * NGroups) as 4 characters each at
+// pOut[0 .. 4 * NGroups): every group's text sits at a fixed offset, so the
+// groups encode in parallel.
+void vtub_b64_groups(const unsigned char* pData, std::size_t NGroups, char* pOut) {
     const char* tbl = b64_table();
-    // Every 3-byte group maps to 4 output chars at a deterministic offset:
-    // pre-size the output and write by index -> parallel over groups.
-    const std::size_t ngroups = len / 3;  // full groups
-    std::string out(((len + 2) / 3) * 4, '\0');
-    parallel_for(ngroups, [&](std::size_t g) {
+    parallel_for(NGroups, [&](std::size_t g) {
         const std::size_t i = g * 3;
         unsigned n =
             (unsigned(pData[i]) << 16) | (unsigned(pData[i + 1]) << 8) | unsigned(pData[i + 2]);
-        char* o = out.data() + g * 4;
+        char* o = pOut + g * 4;
         o[0] = tbl[(n >> 18) & 63];
         o[1] = tbl[(n >> 12) & 63];
         o[2] = tbl[(n >> 6) & 63];
         o[3] = tbl[n & 63];
     });
-    const std::size_t i = ngroups * 3;
-    if (i < len) {  // trailing 1- or 2-byte group with '=' padding
-        const bool two = (i + 1 < len);
-        unsigned n = unsigned(pData[i]) << 16;
-        if (two)
-            n |= unsigned(pData[i + 1]) << 8;
-        char* o = out.data() + ngroups * 4;
-        o[0] = tbl[(n >> 18) & 63];
-        o[1] = tbl[(n >> 12) & 63];
-        o[2] = two ? tbl[(n >> 6) & 63] : '=';
-        o[3] = '=';
-    }
+}
+
+// The trailing 1- or 2-byte group, with '=' padding, as 4 characters at pOut.
+void vtub_b64_tail(const unsigned char* pData, std::size_t N, char* pOut) {
+    const char* tbl = b64_table();
+    const bool two = N > 1;
+    unsigned n = unsigned(pData[0]) << 16;
+    if (two)
+        n |= unsigned(pData[1]) << 8;
+    pOut[0] = tbl[(n >> 18) & 63];
+    pOut[1] = tbl[(n >> 12) & 63];
+    pOut[2] = two ? tbl[(n >> 6) & 63] : '=';
+    pOut[3] = '=';
+}
+
+}  // namespace
+
+std::string b64encode(const unsigned char* pData, std::size_t len) {
+    // Every 3-byte group maps to 4 output chars at a deterministic offset:
+    // pre-size the output and write by index -> parallel over groups.
+    const std::size_t ngroups = len / 3;  // full groups
+    std::string out(((len + 2) / 3) * 4, '\0');
+    vtub_b64_groups(pData, ngroups, out.data());
+    if (ngroups * 3 < len)
+        vtub_b64_tail(pData + ngroups * 3, len - ngroups * 3, out.data() + ngroups * 4);
     return out;
 }
 
@@ -66806,6 +66860,151 @@ void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec cod
     rOut.insert(rOut.end(), blocks.mHeader.begin(), blocks.mHeader.end());
     for (const auto& b : blocks.mBlocks)
         rOut.insert(rOut.end(), b.begin(), b.end());
+}
+
+namespace {
+
+/// Raw bytes generated and encoded per batch by the streaming encoders: a
+/// whole number of 32 KiB compression blocks, so batch and block boundaries
+/// agree, and a constant, so the work split never depends on the thread count.
+constexpr std::size_t kVtubBlock = 32768;
+constexpr std::size_t kVtubBatch = 256 * kVtubBlock;
+
+// base64 text written to a stream in pieces: the bytes `Put` in any number of
+// calls encode exactly as their concatenation would through `b64encode` (up
+// to two bytes wait in `mCarry` for the rest of their group).
+class VtubB64Writer {
+public:
+    explicit VtubB64Writer(std::ostream& rOs) : mrOs(rOs) {}
+
+    void Put(const unsigned char* pData, std::size_t N) {
+        if (mNCarry) {  // finish the group the previous piece started
+            while (mNCarry < 3 && N) {
+                mCarry[mNCarry++] = *pData++;
+                --N;
+            }
+            if (mNCarry < 3)
+                return;
+            char o[4];
+            vtub_b64_groups(mCarry, 1, o);
+            mrOs.write(o, 4);
+            mNCarry = 0;
+        }
+        const std::size_t ngroups = N / 3;
+        if (ngroups) {
+            mText.resize(ngroups * 4);
+            vtub_b64_groups(pData, ngroups, mText.data());
+            mrOs.write(mText.data(), static_cast<std::streamsize>(mText.size()));
+        }
+        for (std::size_t i = ngroups * 3; i < N; ++i)
+            mCarry[mNCarry++] = pData[i];
+    }
+
+    /// Writes the padded trailing group, if any.
+    void Finish() {
+        if (!mNCarry)
+            return;
+        char o[4];
+        vtub_b64_tail(mCarry, mNCarry, o);
+        mrOs.write(o, 4);
+        mNCarry = 0;
+    }
+
+private:
+    std::ostream& mrOs;
+    unsigned char mCarry[3] = {0, 0, 0};
+    std::size_t mNCarry = 0;
+    std::string mText;
+};
+
+// vtub_compress over generated bytes: the payload is filled a batch at a time
+// and its blocks compressed (in parallel) into one contiguous buffer, so only
+// the compressed bytes are ever held. `rSizes` gets each block's compressed
+// size; `rHeader` the block header vtub_compress builds.
+void vtub_compress_stream(std::size_t nbytes, VtkCodec Codec, std::size_t Hsz, const VtuFill& rFill,
+                          std::vector<unsigned char>& rHeader, std::vector<unsigned char>& rOut) {
+    vtk_codec_require_write(Codec);
+    const std::size_t num_blocks = (nbytes + kVtubBlock - 1) / kVtubBlock;
+    const std::size_t last_block_size =
+        num_blocks ? nbytes - (num_blocks - 1) * kVtubBlock : kVtubBlock;
+    std::vector<std::size_t> sizes;
+    sizes.reserve(num_blocks);
+    std::vector<unsigned char> raw(std::min(nbytes, kVtubBatch));
+    std::vector<std::vector<unsigned char>> blocks(kVtubBatch / kVtubBlock);
+    for (std::size_t lo = 0; lo < nbytes; lo += kVtubBatch) {
+        const std::size_t n = std::min(kVtubBatch, nbytes - lo);
+        rFill(lo, n, raw.data());
+        const std::size_t nb = (n + kVtubBlock - 1) / kVtubBlock;
+        parallel_for(
+            nb,
+            [&](std::size_t b) {
+                const std::size_t off = b * kVtubBlock;
+                blocks[b] = vtk_codec_compress_block(Codec, raw.data() + off,
+                                                     std::min(kVtubBlock, n - off));
+            },
+            /*grain=*/1);  // each block is 32 KB of deflate work
+        for (std::size_t b = 0; b < nb; ++b) {
+            rOut.insert(rOut.end(), blocks[b].begin(), blocks[b].end());
+            sizes.push_back(blocks[b].size());
+            std::vector<unsigned char>().swap(blocks[b]);
+        }
+    }
+    rHeader.reserve((3 + num_blocks) * Hsz);
+    vtub_put(rHeader, num_blocks, Hsz);
+    vtub_put(rHeader, kVtubBlock, Hsz);
+    vtub_put(rHeader, last_block_size, Hsz);
+    for (const std::size_t sz : sizes)
+        vtub_put(rHeader, sz, Hsz);
+}
+
+}  // namespace
+
+void vtu_write_binary_stream(std::ostream& rOs, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                             const VtuFill& rFill) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        // One base64 unit: the size header, then the payload batch by batch.
+        std::vector<unsigned char> head;
+        vtub_put(head, nbytes, hsz);  // refuses before anything is written
+        std::vector<unsigned char> raw(std::min(nbytes, kVtubBatch));
+        VtubB64Writer b64(rOs);
+        b64.Put(head.data(), head.size());
+        for (std::size_t lo = 0; lo < nbytes; lo += kVtubBatch) {
+            const std::size_t n = std::min(kVtubBatch, nbytes - lo);
+            rFill(lo, n, raw.data());
+            b64.Put(raw.data(), n);
+        }
+        b64.Finish();
+        return;
+    }
+    // Two units, as vtu_encode_binary writes them: the block header, then the
+    // concatenated compressed blocks.
+    std::vector<unsigned char> header, compressed;
+    vtub_compress_stream(nbytes, codec, hsz, rFill, header, compressed);
+    VtubB64Writer head(rOs);
+    head.Put(header.data(), header.size());
+    head.Finish();
+    VtubB64Writer body(rOs);
+    body.Put(compressed.data(), compressed.size());
+    body.Finish();
+}
+
+void vtu_encode_raw_stream(std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                           const VtuFill& rFill, std::vector<unsigned char>& rOut) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        vtub_put(rOut, nbytes, hsz);
+        const std::size_t at = rOut.size();
+        rOut.resize(at + nbytes);
+        for (std::size_t lo = 0; lo < nbytes; lo += kVtubBatch)
+            rFill(lo, std::min(kVtubBatch, nbytes - lo), rOut.data() + at + lo);
+        return;
+    }
+    std::vector<unsigned char> header, compressed;
+    vtub_compress_stream(nbytes, codec, hsz, rFill, header, compressed);
+    rOut.reserve(rOut.size() + header.size() + compressed.size());
+    rOut.insert(rOut.end(), header.begin(), header.end());
+    rOut.insert(rOut.end(), compressed.begin(), compressed.end());
 }
 
 namespace {
@@ -136058,7 +136257,8 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        detail::vtu_write_binary_bytes(os, d, n, binary ? codec : detail::VtkCodec::None, hsz);
+        os << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();
@@ -139571,7 +139771,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        detail::vtu_write_binary_bytes(os, d, n, binary ? codec : detail::VtkCodec::None, hsz);
+        os << "\n";
     };
     auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
         da_header("Int64", name, 0);
@@ -139797,7 +139998,8 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        detail::vtu_write_binary_bytes(os, d, n, binary ? codec : detail::VtkCodec::None, hsz);
+        os << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();
@@ -139939,7 +140141,8 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << " format=\"" << fmt << "\">\n";
     };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz) << "\n";
+        detail::vtu_write_binary_bytes(os, d, n, binary ? codec : detail::VtkCodec::None, hsz);
+        os << "\n";
     };
 
     auto ext = detail::make_classic_ostringstream();
@@ -140041,6 +140244,7 @@ MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -140055,6 +140259,51 @@ using detail::read_double;
 using detail::read_int;
 using detail::vtu_ascii_ndarray;
 using detail::vtu_type_str;
+
+// Bytes [Offset, Offset + N) of an array of `Isz`-byte items into pDst, for
+// the streaming encoders (detail::VtuFill): `rItems(First, Last, pOut)` writes
+// the items [First, Last) to pOut. The encoders ask for whole 32 KiB blocks
+// and every item is 1, 2, 4 or 8 bytes, so a window never cuts an item.
+template <class F>
+void vtu_fill_items(std::size_t Offset, std::size_t N, unsigned char* pDst, std::size_t Isz,
+                    const F& rItems) {
+    if (Offset % Isz != 0 || N % Isz != 0)
+        throw WriteError("VTU: a streamed window cuts an item of " + std::to_string(Isz) +
+                         " bytes");
+    rItems(Offset / Isz, (Offset + N) / Isz, pDst);
+}
+
+// One fixed-size cell block of a VTU piece: where its cells and connectivity
+// start in the piece's arrays, and how a row maps to VTK's node order.
+struct VtuBlockRun {
+    std::size_t mCellBase = 0;
+    std::size_t mConnBase = 0;
+    std::size_t mNumCells = 0;
+    std::size_t mK = 0;
+    std::int64_t mType = 0;
+    std::vector<int> mOrder;
+    std::unique_ptr<detail::Int64View> mpConn;
+};
+
+// The int64 items [First, Last) of a piece-wide array whose items belong to
+// blocks by the range [Base(b), Base(b) + Count(b)), as `rValue(b, i)` (i local
+// to the block), written to pOut -- each block's share in parallel.
+template <class B, class C, class V>
+void vtu_fill_block_items(const std::vector<VtuBlockRun>& rRuns, std::size_t First,
+                          std::size_t Last, unsigned char* pOut, const B& rBase, const C& rCount,
+                          const V& rValue) {
+    for (const VtuBlockRun& run : rRuns) {
+        const std::size_t base = rBase(run);
+        const std::size_t lo = std::max(First, base);
+        const std::size_t hi = std::min(Last, base + rCount(run));
+        if (lo >= hi)
+            continue;
+        parallel_for_bw(hi - lo, [&](std::size_t t) {
+            const std::int64_t v = rValue(run, lo + t - base);
+            std::memcpy(pOut + (lo + t - First) * sizeof(std::int64_t), &v, sizeof(v));
+        });
+    }
+}
 
 // The writer behind write_vtu_codec and write_vtu_appended. `Appended` writes
 // every array as `format="appended"`: its size header and payload (or
@@ -140092,12 +140341,23 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             os << " offset=\"" << appended.size() << "\"";
         os << ">\n";
     };
+    // Every binary array goes out through the streaming encoders, which ask
+    // `rFill` for its bytes a fixed batch at a time: an array generated on
+    // the fly (the padded points, the cell arrays) is never held whole, nor
+    // are its compressed blocks' copies or its base64 text (roadmap §6.1.1).
+    auto emit_stream = [&](std::size_t n, const detail::VtuFill& rFill) {
+        if (Appended) {
+            detail::vtu_encode_raw_stream(n, codec, hsz, rFill, appended);
+        } else {
+            detail::vtu_write_binary_stream(os, n, binary ? codec : detail::VtkCodec::None, hsz,
+                                            rFill);
+            os << "\n";
+        }
+    };
     auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        if (Appended)
-            detail::vtu_encode_raw(d, n, codec, hsz, appended);
-        else
-            os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None, hsz)
-               << "\n";
+        emit_stream(n, [d](std::size_t Off, std::size_t N, unsigned char* pDst) {
+            std::memcpy(pDst, d + Off, N);
+        });
     };
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -140164,16 +140424,28 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << "<Points>\n";
     da_header(vtu_type_str(points.Dtype()), "Points", 3);
     if (binary) {
-        // Pre-sized buffer (zero-filled -> the padded z stays 0), indexed
-        // byte writes -> parallel over points.
-        std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
+        // Three components per point, generated a window at a time: a 3-D
+        // array streams as it is, a 2-D one with a zero z per point.
         const auto* src = reinterpret_cast<const unsigned char*>(points.Data());
-        parallel_for(num_points, [&](std::size_t r) {
-            for (std::size_t c = 0; c < dim && c < 3; ++c)
-                std::memcpy(buf.data() + (r * 3 + c) * pt_isz, src + (r * dim + c) * pt_isz,
-                            pt_isz);
-        });
-        emit_bin(buf.data(), buf.size());
+        if (dim == 3) {
+            emit_bin(src, num_points * 3 * pt_isz);
+        } else {
+            emit_stream(
+                num_points * 3 * pt_isz, [&](std::size_t Off, std::size_t N, unsigned char* pDst) {
+                    vtu_fill_items(Off, N, pDst, pt_isz,
+                                   [&](std::size_t First, std::size_t Last, unsigned char* pOut) {
+                                       parallel_for(Last - First, [&](std::size_t t) {
+                                           const std::size_t i = First + t;
+                                           const std::size_t r = i / 3, c = i % 3;
+                                           unsigned char* o = pOut + t * pt_isz;
+                                           if (c < dim)
+                                               std::memcpy(o, src + (r * dim + c) * pt_isz, pt_isz);
+                                           else
+                                               std::memset(o, 0, pt_isz);
+                                       });
+                                   });
+                });
+        }
     } else {
         const detail::DoubleView pv(points);
         const detail::CNumber num;
@@ -140194,115 +140466,183 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         // independent and each block fills in parallel.
         const auto& tmap = meshio_to_vtk_type();
         std::size_t ncells = 0;
-        bool any_polyhedron = false;
+        bool any_polyhedron = false, any_ragged = false;
         for (const auto cb : rMesh.CellRange()) {
             ncells += cb.NumCells();
             if (cb.IsPolyhedron())
                 any_polyhedron = true;
+            else if (cb.IsRagged())
+                any_ragged = true;
         }
-        std::vector<std::int64_t> connectivity, offsets, types;
-        offsets.reserve(ncells);
-        types.reserve(ncells);
-        // VTK_POLYHEDRON's face stream, and one END offset per cell into it.
-        // A NON-polyhedral cell carries -1 -- that is exactly how VTU expresses
-        // a mesh mixing polyhedra with other types, which is why meshio++
-        // supports mixing where the Python reference historically did not (an
-        // OpenFOAM mesh always mixes hexahedra, polyhedra and boundary faces).
-        std::vector<std::int64_t> faces, face_offsets;
-        if (any_polyhedron)
-            face_offsets.reserve(ncells);
-
-        for (const auto cb : rMesh.CellRange()) {
-            const std::size_t nc = cb.NumCells();
-            if (cb.IsPolyhedron()) {
-                for (std::size_t r = 0; r < nc; ++r) {
-                    // The cell-node connectivity VTK wants is the SORTED UNIQUE
-                    // node set of the cell; the face structure lives entirely
-                    // in `faces`. Sorted-unique matches the Python reference
-                    // exactly -- a different order would give ParaView a
-                    // different point set for the same cell.
-                    std::vector<std::int64_t> uniq;
-                    faces.push_back(static_cast<std::int64_t>(cb.NumFaces(r)));
-                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
-                        const auto face = cb.Face(r, f);
-                        faces.push_back(static_cast<std::int64_t>(face.second));
-                        for (std::size_t j = 0; j < face.second; ++j) {
-                            faces.push_back(face.first[j]);
-                            uniq.push_back(face.first[j]);
-                        }
-                    }
-                    std::sort(uniq.begin(), uniq.end());
-                    uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
-                    connectivity.insert(connectivity.end(), uniq.begin(), uniq.end());
-                    offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
-                    types.push_back(42);
-                    face_offsets.push_back(static_cast<std::int64_t>(faces.size()));
-                }
-                continue;
+        if (binary && !any_polyhedron && !any_ragged) {
+            // Fixed-size blocks only: every item of connectivity, offsets and
+            // types is closed-form in its block, so the three arrays are
+            // generated a window at a time by the streaming encoder rather
+            // than built whole (they are 3 x 8 bytes per cell plus 8 per node).
+            std::vector<VtuBlockRun> runs;
+            std::size_t cell_base = 0, conn_base = 0;
+            for (const auto cb : rMesh.CellRange()) {
+                auto it = tmap.find(cb.Type());
+                if (it == tmap.end())
+                    throw WriteError("Unknown cell type for VTU: " + cb.Type());
+                VtuBlockRun run;
+                run.mCellBase = cell_base;
+                run.mConnBase = conn_base;
+                run.mNumCells = cb.NumCells();
+                run.mK = cols(cb.Conn());
+                run.mType = it->second;
+                run.mOrder = meshio_to_vtk_order(cb.Type());
+                run.mpConn = std::make_unique<detail::Int64View>(cb.Conn());
+                cell_base += run.mNumCells;
+                conn_base += run.mNumCells * run.mK;
+                runs.push_back(std::move(run));
             }
-            if (cb.IsRagged()) {
-                // A jagged polygon block: VTK_POLYGON with a per-cell size.
-                for (std::size_t r = 0; r < nc; ++r) {
-                    for (std::size_t j = 0; j < cb.RowSize(r); ++j)
-                        connectivity.push_back(cb.Row(r)[j]);
-                    offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
-                    types.push_back(7);  // VTK_POLYGON
-                    if (any_polyhedron)
-                        face_offsets.push_back(-1);
-                }
-                continue;
-            }
-            const NDArray& conn = cb.Conn();
-            const std::size_t k = cols(conn);
-            std::vector<int> order = meshio_to_vtk_order(cb.Type());
-            auto it = tmap.find(cb.Type());
-            if (it == tmap.end())
-                throw WriteError("Unknown cell type for VTU: " + cb.Type());
-            const std::int64_t vtk_type = it->second;
-            // Rows are independent: each one's slots and offset are closed-form.
-            const detail::Int64View cv(conn);
-            const std::size_t cbase = connectivity.size();
-            const std::size_t rbase = offsets.size();
-            connectivity.resize(cbase + nc * k);
-            offsets.resize(rbase + nc);
-            types.resize(rbase + nc, vtk_type);
+            const auto cell_of = [](const VtuBlockRun& rRun) { return rRun.mCellBase; };
+            const auto cells_in = [](const VtuBlockRun& rRun) { return rRun.mNumCells; };
+            const auto stream_i64 = [&](const char* name, std::size_t count, const auto& rItems) {
+                da_header("Int64", name, 0);
+                emit_stream(count * sizeof(std::int64_t),
+                            [&](std::size_t Off, std::size_t N, unsigned char* pDst) {
+                                vtu_fill_items(Off, N, pDst, sizeof(std::int64_t), rItems);
+                            });
+                os << "</DataArray>\n";
+            };
+            os << "<Cells>\n";
+            stream_i64(
+                "connectivity", conn_base,
+                [&](std::size_t First, std::size_t Last, unsigned char* pOut) {
+                    vtu_fill_block_items(
+                        runs, First, Last, pOut,
+                        [](const VtuBlockRun& rRun) { return rRun.mConnBase; },
+                        [](const VtuBlockRun& rRun) { return rRun.mNumCells * rRun.mK; },
+                        [](const VtuBlockRun& rRun, std::size_t i) {
+                            const std::size_t r = i / rRun.mK, j = i % rRun.mK;
+                            const std::size_t col =
+                                rRun.mOrder.empty() ? j : static_cast<std::size_t>(rRun.mOrder[j]);
+                            return (*rRun.mpConn)[r * rRun.mK + col];
+                        });
+                });
+            stream_i64("offsets", cell_base,
+                       [&](std::size_t First, std::size_t Last, unsigned char* pOut) {
+                           vtu_fill_block_items(runs, First, Last, pOut, cell_of, cells_in,
+                                                [](const VtuBlockRun& rRun, std::size_t r) {
+                                                    return static_cast<std::int64_t>(
+                                                        rRun.mConnBase + (r + 1) * rRun.mK);
+                                                });
+                       });
+            stream_i64("types", cell_base,
+                       [&](std::size_t First, std::size_t Last, unsigned char* pOut) {
+                           vtu_fill_block_items(
+                               runs, First, Last, pOut, cell_of, cells_in,
+                               [](const VtuBlockRun& rRun, std::size_t) { return rRun.mType; });
+                       });
+            os << "</Cells>\n";
+        } else {
+            std::vector<std::int64_t> connectivity, offsets, types;
+            offsets.reserve(ncells);
+            types.reserve(ncells);
+            // VTK_POLYHEDRON's face stream, and one END offset per cell into it.
+            // A NON-polyhedral cell carries -1 -- that is exactly how VTU expresses
+            // a mesh mixing polyhedra with other types, which is why meshio++
+            // supports mixing where the Python reference historically did not (an
+            // OpenFOAM mesh always mixes hexahedra, polyhedra and boundary faces).
+            std::vector<std::int64_t> faces, face_offsets;
             if (any_polyhedron)
-                face_offsets.resize(face_offsets.size() + nc, -1);
-            parallel_for_bw(nc, [&](std::size_t r) {
-                for (std::size_t j = 0; j < k; ++j) {
-                    const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
-                    connectivity[cbase + r * k + j] = cv[r * k + col];
-                }
-                offsets[rbase + r] = static_cast<std::int64_t>(cbase + (r + 1) * k);
-            });
-        }
+                face_offsets.reserve(ncells);
 
-        auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
-            da_header("Int64", name, 0);
-            if (binary) {
-                emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
-                         v.size() * sizeof(std::int64_t));
-            } else {
-                detail::write_row_chunks(
-                    os, v.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
-                        for (std::size_t i = First; i < Last; ++i) {
-                            detail::append_int(rBuf, v[i]);
-                            rBuf += '\n';
+            for (const auto cb : rMesh.CellRange()) {
+                const std::size_t nc = cb.NumCells();
+                if (cb.IsPolyhedron()) {
+                    for (std::size_t r = 0; r < nc; ++r) {
+                        // The cell-node connectivity VTK wants is the SORTED UNIQUE
+                        // node set of the cell; the face structure lives entirely
+                        // in `faces`. Sorted-unique matches the Python reference
+                        // exactly -- a different order would give ParaView a
+                        // different point set for the same cell.
+                        std::vector<std::int64_t> uniq;
+                        faces.push_back(static_cast<std::int64_t>(cb.NumFaces(r)));
+                        for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                            const auto face = cb.Face(r, f);
+                            faces.push_back(static_cast<std::int64_t>(face.second));
+                            for (std::size_t j = 0; j < face.second; ++j) {
+                                faces.push_back(face.first[j]);
+                                uniq.push_back(face.first[j]);
+                            }
                         }
-                    });
+                        std::sort(uniq.begin(), uniq.end());
+                        uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+                        connectivity.insert(connectivity.end(), uniq.begin(), uniq.end());
+                        offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                        types.push_back(42);
+                        face_offsets.push_back(static_cast<std::int64_t>(faces.size()));
+                    }
+                    continue;
+                }
+                if (cb.IsRagged()) {
+                    // A jagged polygon block: VTK_POLYGON with a per-cell size.
+                    for (std::size_t r = 0; r < nc; ++r) {
+                        for (std::size_t j = 0; j < cb.RowSize(r); ++j)
+                            connectivity.push_back(cb.Row(r)[j]);
+                        offsets.push_back(static_cast<std::int64_t>(connectivity.size()));
+                        types.push_back(7);  // VTK_POLYGON
+                        if (any_polyhedron)
+                            face_offsets.push_back(-1);
+                    }
+                    continue;
+                }
+                const NDArray& conn = cb.Conn();
+                const std::size_t k = cols(conn);
+                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                auto it = tmap.find(cb.Type());
+                if (it == tmap.end())
+                    throw WriteError("Unknown cell type for VTU: " + cb.Type());
+                const std::int64_t vtk_type = it->second;
+                // Rows are independent: each one's slots and offset are closed-form.
+                const detail::Int64View cv(conn);
+                const std::size_t cbase = connectivity.size();
+                const std::size_t rbase = offsets.size();
+                connectivity.resize(cbase + nc * k);
+                offsets.resize(rbase + nc);
+                types.resize(rbase + nc, vtk_type);
+                if (any_polyhedron)
+                    face_offsets.resize(face_offsets.size() + nc, -1);
+                parallel_for_bw(nc, [&](std::size_t r) {
+                    for (std::size_t j = 0; j < k; ++j) {
+                        const std::size_t col =
+                            order.empty() ? j : static_cast<std::size_t>(order[j]);
+                        connectivity[cbase + r * k + j] = cv[r * k + col];
+                    }
+                    offsets[rbase + r] = static_cast<std::int64_t>(cbase + (r + 1) * k);
+                });
             }
-            os << "</DataArray>\n";
-        };
 
-        os << "<Cells>\n";
-        emit_i64("connectivity", connectivity);
-        emit_i64("offsets", offsets);
-        emit_i64("types", types);
-        if (any_polyhedron) {
-            emit_i64("faces", faces);
-            emit_i64("faceoffsets", face_offsets);
+            auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
+                da_header("Int64", name, 0);
+                if (binary) {
+                    emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
+                             v.size() * sizeof(std::int64_t));
+                } else {
+                    detail::write_row_chunks(
+                        os, v.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                            for (std::size_t i = First; i < Last; ++i) {
+                                detail::append_int(rBuf, v[i]);
+                                rBuf += '\n';
+                            }
+                        });
+                }
+                os << "</DataArray>\n";
+            };
+
+            os << "<Cells>\n";
+            emit_i64("connectivity", connectivity);
+            emit_i64("offsets", offsets);
+            emit_i64("types", types);
+            if (any_polyhedron) {
+                emit_i64("faces", faces);
+                emit_i64("faceoffsets", face_offsets);
+            }
+            os << "</Cells>\n";
         }
-        os << "</Cells>\n";
     }
 
     if (rMesh.NumPointData() != 0) {
@@ -140336,19 +140676,28 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
                 const NDArray& blk = detail::vtu_disk_array(name, first, scratch);
                 emit_bin(reinterpret_cast<const unsigned char*>(blk.Data()), blk.Nbytes());
             } else if (binary) {
-                std::size_t total = 0;
-                const std::size_t isz = dtype_size(detail::vtu_disk_dtype(name, first.Dtype()));
-                for (std::size_t bi = 0; bi < nblocks; ++bi)
-                    total += rMesh.CellData(name, bi).Size() * isz;
-                std::vector<unsigned char> buf;
-                buf.reserve(total);
+                // The blocks' bytes in turn, streamed from each block in
+                // place rather than concatenated into one buffer first.
+                std::vector<NDArray> scratches(nblocks);
+                std::vector<const NDArray*> blks(nblocks);
+                std::vector<std::size_t> starts(nblocks + 1, 0);
                 for (std::size_t bi = 0; bi < nblocks; ++bi) {
-                    const NDArray& blk =
-                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
-                    const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
-                    buf.insert(buf.end(), p, p + blk.Nbytes());
+                    blks[bi] =
+                        &detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratches[bi]);
+                    starts[bi + 1] = starts[bi] + blks[bi]->Nbytes();
                 }
-                emit_bin(buf.data(), buf.size());
+                emit_stream(starts[nblocks], [&](std::size_t Off, std::size_t N,
+                                                 unsigned char* pDst) {
+                    for (std::size_t bi = 0; bi < nblocks; ++bi) {
+                        const std::size_t lo = std::max(Off, starts[bi]);
+                        const std::size_t hi = std::min(Off + N, starts[bi + 1]);
+                        if (lo < hi)
+                            std::memcpy(pDst + (lo - Off),
+                                        reinterpret_cast<const unsigned char*>(blks[bi]->Data()) +
+                                            (lo - starts[bi]),
+                                        hi - lo);
+                    }
+                });
             } else {
                 for (std::size_t bi = 0; bi < nblocks; ++bi)
                     vtu_ascii_ndarray(

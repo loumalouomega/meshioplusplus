@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -117,4 +118,44 @@ TEST(VtuDecode, InPlaceRefusesWhatTheBufferedDecodeRefuses) {
                  meshioplusplus::ReadError);
     EXPECT_THROW(det::vtu_decode_ndarray("QQ==", 4, 4, det::VtkCodec::None, DType::Float64),
                  meshioplusplus::ReadError);
+}
+
+// Roadmap §6.1.1: the streaming encoders the VTU writer uses write the bytes
+// the one-shot ones return, across the batch (8 MiB) and block (32 KiB)
+// boundaries, and refuse what they refuse.
+TEST(VtuDecode, StreamingEncodersMatchTheOneShotOnes) {
+    std::vector<det::VtkCodec> codecs = {det::VtkCodec::None};
+    for (det::VtkCodec c : {det::VtkCodec::Zlib, det::VtkCodec::LZ4, det::VtkCodec::ZSTD})
+        if (det::vtk_codec_available(c))
+            codecs.push_back(c);
+    const std::size_t batch = std::size_t{256} * 32768;
+    for (std::size_t nbytes :
+         {std::size_t{0}, std::size_t{1}, std::size_t{2}, std::size_t{3}, std::size_t{32768},
+          std::size_t{32768 + 1}, batch - 1, batch, 2 * batch + 5}) {
+        const std::vector<unsigned char> raw = vd_bytes(nbytes);
+        std::size_t calls = 0;
+        const det::VtuFill fill = [&](std::size_t Off, std::size_t N, unsigned char* pDst) {
+            ASSERT_LE(Off + N, raw.size());
+            ASSERT_LE(N, batch);
+            ++calls;
+            std::memcpy(pDst, raw.data() + Off, N);
+        };
+        for (det::VtkCodec codec : codecs)
+            for (std::size_t hsz : {std::size_t{4}, std::size_t{8}}) {
+                std::ostringstream os;
+                det::vtu_write_binary_stream(os, nbytes, codec, hsz, fill);
+                EXPECT_EQ(os.str(), det::vtu_encode_binary(raw.data(), nbytes, codec, hsz))
+                    << nbytes << " " << det::vtk_codec_name(codec) << " " << hsz;
+                std::vector<unsigned char> streamed = {0x5A}, oneshot = {0x5A};
+                det::vtu_encode_raw_stream(nbytes, codec, hsz, fill, streamed);
+                det::vtu_encode_raw(raw.data(), nbytes, codec, hsz, oneshot);
+                EXPECT_EQ(streamed, oneshot) << nbytes << " " << det::vtk_codec_name(codec);
+            }
+        EXPECT_EQ(calls == 0, nbytes == 0);
+    }
+    std::ostringstream os;
+    const det::VtuFill none = [](std::size_t, std::size_t, unsigned char*) {};
+    EXPECT_THROW(det::vtu_write_binary_stream(os, 8, det::VtkCodec::None, 2, none),
+                 meshioplusplus::WriteError);
+    EXPECT_TRUE(os.str().empty());
 }

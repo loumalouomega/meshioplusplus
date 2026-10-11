@@ -20,6 +20,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <ostream>
 #include <string>
 
 // External includes
@@ -48,34 +49,48 @@ const char* b64_table() {
     return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 }
 
-std::string b64encode(const unsigned char* pData, std::size_t len) {
+namespace {
+
+// The full 3-byte groups of pData[0 .. 3 * NGroups) as 4 characters each at
+// pOut[0 .. 4 * NGroups): every group's text sits at a fixed offset, so the
+// groups encode in parallel.
+void vtub_b64_groups(const unsigned char* pData, std::size_t NGroups, char* pOut) {
     const char* tbl = b64_table();
-    // Every 3-byte group maps to 4 output chars at a deterministic offset:
-    // pre-size the output and write by index -> parallel over groups.
-    const std::size_t ngroups = len / 3;  // full groups
-    std::string out(((len + 2) / 3) * 4, '\0');
-    parallel_for(ngroups, [&](std::size_t g) {
+    parallel_for(NGroups, [&](std::size_t g) {
         const std::size_t i = g * 3;
         unsigned n =
             (unsigned(pData[i]) << 16) | (unsigned(pData[i + 1]) << 8) | unsigned(pData[i + 2]);
-        char* o = out.data() + g * 4;
+        char* o = pOut + g * 4;
         o[0] = tbl[(n >> 18) & 63];
         o[1] = tbl[(n >> 12) & 63];
         o[2] = tbl[(n >> 6) & 63];
         o[3] = tbl[n & 63];
     });
-    const std::size_t i = ngroups * 3;
-    if (i < len) {  // trailing 1- or 2-byte group with '=' padding
-        const bool two = (i + 1 < len);
-        unsigned n = unsigned(pData[i]) << 16;
-        if (two)
-            n |= unsigned(pData[i + 1]) << 8;
-        char* o = out.data() + ngroups * 4;
-        o[0] = tbl[(n >> 18) & 63];
-        o[1] = tbl[(n >> 12) & 63];
-        o[2] = two ? tbl[(n >> 6) & 63] : '=';
-        o[3] = '=';
-    }
+}
+
+// The trailing 1- or 2-byte group, with '=' padding, as 4 characters at pOut.
+void vtub_b64_tail(const unsigned char* pData, std::size_t N, char* pOut) {
+    const char* tbl = b64_table();
+    const bool two = N > 1;
+    unsigned n = unsigned(pData[0]) << 16;
+    if (two)
+        n |= unsigned(pData[1]) << 8;
+    pOut[0] = tbl[(n >> 18) & 63];
+    pOut[1] = tbl[(n >> 12) & 63];
+    pOut[2] = two ? tbl[(n >> 6) & 63] : '=';
+    pOut[3] = '=';
+}
+
+}  // namespace
+
+std::string b64encode(const unsigned char* pData, std::size_t len) {
+    // Every 3-byte group maps to 4 output chars at a deterministic offset:
+    // pre-size the output and write by index -> parallel over groups.
+    const std::size_t ngroups = len / 3;  // full groups
+    std::string out(((len + 2) / 3) * 4, '\0');
+    vtub_b64_groups(pData, ngroups, out.data());
+    if (ngroups * 3 < len)
+        vtub_b64_tail(pData + ngroups * 3, len - ngroups * 3, out.data() + ngroups * 4);
     return out;
 }
 
@@ -705,6 +720,151 @@ void vtu_encode_raw(const unsigned char* pData, std::size_t nbytes, VtkCodec cod
     rOut.insert(rOut.end(), blocks.mHeader.begin(), blocks.mHeader.end());
     for (const auto& b : blocks.mBlocks)
         rOut.insert(rOut.end(), b.begin(), b.end());
+}
+
+namespace {
+
+/// Raw bytes generated and encoded per batch by the streaming encoders: a
+/// whole number of 32 KiB compression blocks, so batch and block boundaries
+/// agree, and a constant, so the work split never depends on the thread count.
+constexpr std::size_t kVtubBlock = 32768;
+constexpr std::size_t kVtubBatch = 256 * kVtubBlock;
+
+// base64 text written to a stream in pieces: the bytes `Put` in any number of
+// calls encode exactly as their concatenation would through `b64encode` (up
+// to two bytes wait in `mCarry` for the rest of their group).
+class VtubB64Writer {
+public:
+    explicit VtubB64Writer(std::ostream& rOs) : mrOs(rOs) {}
+
+    void Put(const unsigned char* pData, std::size_t N) {
+        if (mNCarry) {  // finish the group the previous piece started
+            while (mNCarry < 3 && N) {
+                mCarry[mNCarry++] = *pData++;
+                --N;
+            }
+            if (mNCarry < 3)
+                return;
+            char o[4];
+            vtub_b64_groups(mCarry, 1, o);
+            mrOs.write(o, 4);
+            mNCarry = 0;
+        }
+        const std::size_t ngroups = N / 3;
+        if (ngroups) {
+            mText.resize(ngroups * 4);
+            vtub_b64_groups(pData, ngroups, mText.data());
+            mrOs.write(mText.data(), static_cast<std::streamsize>(mText.size()));
+        }
+        for (std::size_t i = ngroups * 3; i < N; ++i)
+            mCarry[mNCarry++] = pData[i];
+    }
+
+    /// Writes the padded trailing group, if any.
+    void Finish() {
+        if (!mNCarry)
+            return;
+        char o[4];
+        vtub_b64_tail(mCarry, mNCarry, o);
+        mrOs.write(o, 4);
+        mNCarry = 0;
+    }
+
+private:
+    std::ostream& mrOs;
+    unsigned char mCarry[3] = {0, 0, 0};
+    std::size_t mNCarry = 0;
+    std::string mText;
+};
+
+// vtub_compress over generated bytes: the payload is filled a batch at a time
+// and its blocks compressed (in parallel) into one contiguous buffer, so only
+// the compressed bytes are ever held. `rSizes` gets each block's compressed
+// size; `rHeader` the block header vtub_compress builds.
+void vtub_compress_stream(std::size_t nbytes, VtkCodec Codec, std::size_t Hsz, const VtuFill& rFill,
+                          std::vector<unsigned char>& rHeader, std::vector<unsigned char>& rOut) {
+    vtk_codec_require_write(Codec);
+    const std::size_t num_blocks = (nbytes + kVtubBlock - 1) / kVtubBlock;
+    const std::size_t last_block_size =
+        num_blocks ? nbytes - (num_blocks - 1) * kVtubBlock : kVtubBlock;
+    std::vector<std::size_t> sizes;
+    sizes.reserve(num_blocks);
+    std::vector<unsigned char> raw(std::min(nbytes, kVtubBatch));
+    std::vector<std::vector<unsigned char>> blocks(kVtubBatch / kVtubBlock);
+    for (std::size_t lo = 0; lo < nbytes; lo += kVtubBatch) {
+        const std::size_t n = std::min(kVtubBatch, nbytes - lo);
+        rFill(lo, n, raw.data());
+        const std::size_t nb = (n + kVtubBlock - 1) / kVtubBlock;
+        parallel_for(
+            nb,
+            [&](std::size_t b) {
+                const std::size_t off = b * kVtubBlock;
+                blocks[b] = vtk_codec_compress_block(Codec, raw.data() + off,
+                                                     std::min(kVtubBlock, n - off));
+            },
+            /*grain=*/1);  // each block is 32 KB of deflate work
+        for (std::size_t b = 0; b < nb; ++b) {
+            rOut.insert(rOut.end(), blocks[b].begin(), blocks[b].end());
+            sizes.push_back(blocks[b].size());
+            std::vector<unsigned char>().swap(blocks[b]);
+        }
+    }
+    rHeader.reserve((3 + num_blocks) * Hsz);
+    vtub_put(rHeader, num_blocks, Hsz);
+    vtub_put(rHeader, kVtubBlock, Hsz);
+    vtub_put(rHeader, last_block_size, Hsz);
+    for (const std::size_t sz : sizes)
+        vtub_put(rHeader, sz, Hsz);
+}
+
+}  // namespace
+
+void vtu_write_binary_stream(std::ostream& rOs, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                             const VtuFill& rFill) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        // One base64 unit: the size header, then the payload batch by batch.
+        std::vector<unsigned char> head;
+        vtub_put(head, nbytes, hsz);  // refuses before anything is written
+        std::vector<unsigned char> raw(std::min(nbytes, kVtubBatch));
+        VtubB64Writer b64(rOs);
+        b64.Put(head.data(), head.size());
+        for (std::size_t lo = 0; lo < nbytes; lo += kVtubBatch) {
+            const std::size_t n = std::min(kVtubBatch, nbytes - lo);
+            rFill(lo, n, raw.data());
+            b64.Put(raw.data(), n);
+        }
+        b64.Finish();
+        return;
+    }
+    // Two units, as vtu_encode_binary writes them: the block header, then the
+    // concatenated compressed blocks.
+    std::vector<unsigned char> header, compressed;
+    vtub_compress_stream(nbytes, codec, hsz, rFill, header, compressed);
+    VtubB64Writer head(rOs);
+    head.Put(header.data(), header.size());
+    head.Finish();
+    VtubB64Writer body(rOs);
+    body.Put(compressed.data(), compressed.size());
+    body.Finish();
+}
+
+void vtu_encode_raw_stream(std::size_t nbytes, VtkCodec codec, std::size_t hsz,
+                           const VtuFill& rFill, std::vector<unsigned char>& rOut) {
+    vtub_check_hsz(hsz);
+    if (codec == VtkCodec::None) {
+        vtub_put(rOut, nbytes, hsz);
+        const std::size_t at = rOut.size();
+        rOut.resize(at + nbytes);
+        for (std::size_t lo = 0; lo < nbytes; lo += kVtubBatch)
+            rFill(lo, std::min(kVtubBatch, nbytes - lo), rOut.data() + at + lo);
+        return;
+    }
+    std::vector<unsigned char> header, compressed;
+    vtub_compress_stream(nbytes, codec, hsz, rFill, header, compressed);
+    rOut.reserve(rOut.size() + header.size() + compressed.size());
+    rOut.insert(rOut.end(), header.begin(), header.end());
+    rOut.insert(rOut.end(), compressed.begin(), compressed.end());
 }
 
 namespace {
