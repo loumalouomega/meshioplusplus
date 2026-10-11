@@ -828,8 +828,13 @@ SmoothRings smooth_surface_rings(const Mesh& rMesh, std::size_t n) {
         }
         for (std::size_t c = 0; c < cb.NumCells(); ++c) {
             ids.clear();
-            if (polygon) {
+            if (cb.IsRagged()) {
                 ids.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            } else if (polygon) {
+                // A polygon block can be stored rectangular: one row per cell.
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t k = 0; k < npc; ++k)
+                    ids.push_back(detail::read_int(cb.Conn(), c * npc + k));
             } else {
                 const std::size_t npc = cb.NodesPerCell();
                 for (std::uint8_t k : corners)
