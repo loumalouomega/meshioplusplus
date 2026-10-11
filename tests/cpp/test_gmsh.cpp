@@ -620,8 +620,10 @@ std::vector<std::int64_t> gmsh_block_entity_tags(const meshioplusplus::Mesh& rMe
 TEST(Gmsh, MixedMeshWithoutDimTagsWritesAnEntityPerBlock) {
     // Every block of each mesh has the same dimension, so the entity tags the
     // file names must all differ.
-    const std::vector<meshioplusplus::Mesh> meshes = {mt::tri_quad_mesh(), gmsh_tet_hex_mesh()};
-    for (const auto& mesh : meshes) {
+    // Built one at a time: a KRATOS mesh is not copy-constructible, so the two
+    // cannot share an initializer list.
+    for (const auto make : {&mt::tri_quad_mesh, &gmsh_tet_hex_mesh}) {
+        const meshioplusplus::Mesh mesh = make();
         for (bool binary : {false, true}) {
             const std::string path = mt::temp_path(".msh");
             meshioplusplus::write_gmsh41(path, mesh, binary);
