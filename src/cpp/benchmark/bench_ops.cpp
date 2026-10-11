@@ -79,6 +79,8 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -303,6 +305,26 @@ double bench_ops_median(const std::function<void()>& rFn, int Runs) {
     return ts[ts.size() / 2];
 }
 
+// A derived input built on first use. At tier XL (10M tetrahedra) every
+// derived mesh held at once is more than a 15 GiB machine has, so a run that
+// selects rows with `--ops` builds only the inputs those rows read. What a row
+// times and hashes is unchanged: the mesh is built before its warmup run.
+class BenchLazyMesh {
+public:
+    explicit BenchLazyMesh(std::function<Mesh()> Make) : mMake(std::move(Make)) {}
+    const Mesh& Get() const {
+        if (!mMesh)
+            mMesh.emplace(mMake());
+        return *mMesh;
+    }
+    operator const Mesh&() const { return Get(); }
+    const Mesh* operator->() const { return &Get(); }
+
+private:
+    std::function<Mesh()> mMake;
+    mutable std::optional<Mesh> mMesh;
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -367,25 +389,29 @@ int main(int argc, char** argv) {
         // point (boundary points slide in their face plane only, which keeps
         // the cube's boundary intact for `optimize_volume`).
         const double h = 1.0 / static_cast<double>(n);
-        const Mesh jittered = bench_ops_moved(volume, [&](std::size_t i, double* pP) {
-            for (int d = 0; d < 3; ++d) {
-                if (pP[d] <= 0.0 || pP[d] >= 1.0)
-                    continue;
-                pP[d] += 0.3 * h * std::sin(1.7 * static_cast<double>(3 * i + d) + 0.3);
-            }
+        const BenchLazyMesh jittered([&] {
+            return bench_ops_moved(volume, [&](std::size_t i, double* pP) {
+                for (int d = 0; d < 3; ++d) {
+                    if (pP[d] <= 0.0 || pP[d] >= 1.0)
+                        continue;
+                    pP[d] += 0.3 * h * std::sin(1.7 * static_cast<double>(3 * i + d) + 0.3);
+                }
+            });
         });
-        const Mesh inflated = bench_ops_moved(surface, [](std::size_t, double* pP) {
-            for (int d = 0; d < 3; ++d)
-                pP[d] = 0.5 + 1.25 * (pP[d] - 0.5);
+        const BenchLazyMesh inflated([&] {
+            return bench_ops_moved(surface, [](std::size_t, double* pP) {
+                for (int d = 0; d < 3; ++d)
+                    pP[d] = 0.5 + 1.25 * (pP[d] - 0.5);
+            });
         });
         // Two copies of the cube, unwelded: the welding rows' input.
-        const Mesh doubled = [&] {
+        const BenchLazyMesh doubled([&] {
             mio::MergeOptions o;
             o.source_tag = false;
             return mio::merge({&volume, &volume}, o).mMesh;
-        }();
+        });
         // The volume with a smooth point field, for `hessian`.
-        const Mesh with_field = [&] {
+        const BenchLazyMesh with_field([&] {
             Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
             NDArray u = NDArray::Uninit(DType::Float64, {m.NumPoints()});
             const double* p = m.Points().As<double>();
@@ -393,27 +419,27 @@ int main(int argc, char** argv) {
                 u.As<double>()[i] = p[3 * i] * p[3 * i] + p[3 * i + 1] * p[3 * i + 2];
             m.AddPointData("u", std::move(u));
             return m;
-        }();
+        });
         // The cube elevated to quadratic tetrahedra, for `linearize`.
-        const Mesh quadratic = [&] {
+        const BenchLazyMesh quadratic([&] {
             mio::ConvertCellsOptions o;
             o.mMode = mio::ConvertCellsMode::Elevate;
             return mio::convert_cells(volume, o).mMesh;
-        }();
+        });
         // A green-closed refinement of every 7th cell, for `undo_green`.
-        const Mesh green = [&] {
+        const BenchLazyMesh green([&] {
             mio::RefineOptions o;
             for (std::size_t c = 0; c < ncells; c += 7)
                 o.mCells.push_back(static_cast<std::int64_t>(c));
             o.mRecordHierarchy = true;
             o.mRecordLevels = true;
             return mio::refine(volume, o).mMesh;
-        }();
+        });
         // The same meshes with float32 points/data and int32 connectivity.
-        const Mesh volume_narrow = bench_ops_narrowed(volume);
-        const Mesh with_field_narrow = bench_ops_narrowed(with_field);
-        const Mesh jittered_narrow = bench_ops_narrowed(jittered);
-        const Mesh quadratic_narrow = bench_ops_narrowed(quadratic);
+        const BenchLazyMesh volume_narrow([&] { return bench_ops_narrowed(volume); });
+        const BenchLazyMesh with_field_narrow([&] { return bench_ops_narrowed(with_field); });
+        const BenchLazyMesh jittered_narrow([&] { return bench_ops_narrowed(jittered); });
+        const BenchLazyMesh quadratic_narrow([&] { return bench_ops_narrowed(quadratic); });
         using Hashed = std::function<void(MeshDigest*)>;
         const auto row = [&](const char* pOp, const Hashed& rFn) {
             if (!wanted(pOp))
@@ -546,7 +572,7 @@ int main(int argc, char** argv) {
         };
         reorder_row("reorder", mio::ReorderMethod::RCM);
         reorder_row("reorder_hilbert", mio::ReorderMethod::Hilbert);
-        const Mesh ragged = bench_ops_ragged(volume);
+        const BenchLazyMesh ragged([&] { return bench_ops_ragged(volume); });
         row("reorder_ragged", [&](MeshDigest* pD) {
             auto r = mio::reorder(ragged, mio::ReorderMethod::RCM);
             of(pD, r.mMesh);
@@ -593,7 +619,7 @@ int main(int argc, char** argv) {
         // block: the per-cell and per-polyhedron scratch rows of roadmap
         // §3.2.3 (quality, data_average, interpolate's cell_data and the SFC
         // partition's centroids) run on it.
-        const Mesh ragged_field = [&] {
+        const BenchLazyMesh ragged_field([&] {
             Mesh m = bench_ops_ragged(volume);
             NDArray u = NDArray::Uninit(DType::Float64, {m.NumPoints()});
             const double* p = m.Points().As<double>();
@@ -609,7 +635,7 @@ int main(int argc, char** argv) {
             }
             m.AddCellData("c", std::move(blocks));
             return m;
-        }();
+        });
         row("quality", [&](MeshDigest* pD) { of(pD, mio::attach_quality(volume)); });
         row("quality_ragged", [&](MeshDigest* pD) { of(pD, mio::attach_quality(ragged)); });
         row("data_average", [&](MeshDigest* pD) { of(pD, mio::point_data_to_cell_data(with_field)); });
@@ -794,6 +820,12 @@ int main(int argc, char** argv) {
         // Rows for roadmap §5's analysis operations (v16.23.0).
         row("feature_edges",
             [&](MeshDigest* pD) { of(pD, mio::feature_edges(volume).mMesh); });
+        // Rows for roadmap §6.3's skin to CAD: the cube's skin segments into its
+        // six faces (the growth is the serial phase), and each face fits a plane.
+        const BenchLazyMesh segmented([&] { return mio::segment(surface).mMesh; });
+        row("segment", [&](MeshDigest* pD) { of(pD, mio::segment(surface).mMesh); });
+        row("fit_primitives",
+            [&](MeshDigest* pD) { of(pD, mio::fit_primitives(segmented).mMesh); });
         // Rows for roadmap §7's software rasterizer (v16.33.0): a terminal-sized
         // frame of the volume (its skin extraction is part of the cost), and a
         // 4x-supersampled image of the field mesh with smooth shading, a mapped
@@ -894,7 +926,7 @@ int main(int argc, char** argv) {
             of(pD, mio::remesh_volume(surface, o).mMesh);
         });
         row("sample_distance", [&](MeshDigest* pD) {
-            const NDArray d = mio::sample_distance(surface, jittered.Points());
+            const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)
                 pD->Array(d);
         });

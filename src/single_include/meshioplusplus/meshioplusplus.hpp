@@ -26111,7 +26111,8 @@ enum class FitPrimitiveType : std::int32_t {
 };
 
 /// `FitPrimitivesOptions::mTypes` bits: `1 << FitPrimitiveType`.
-inline constexpr std::uint32_t kFitAllTypes = (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
+inline constexpr std::uint32_t kFitAllTypes =
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
 
 /// What `fit_primitives` fits and accepts.
 struct FitPrimitivesOptions {
@@ -57983,8 +57984,8 @@ void lsq_sym3_eigen(const double* pA, double* pW, double* pV) {
             if (a[p][q] == 0.0)
                 continue;
             const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-            const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                             (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+            const double t =
+                (theta >= 0.0 ? 1.0 : -1.0) / (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
             const double c = 1.0 / std::sqrt(t * t + 1.0);
             const double s = t * c;
             for (int k = 0; k < 3; ++k) {
@@ -58100,7 +58101,8 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
     for (int it = 0; it < MaxIterations; ++it) {
         for (std::size_t j = 0; j < k; ++j) {
             std::vector<double> t = rTheta;
-            const double mag = std::fabs(rTheta[j]) > rTypical[j] ? std::fabs(rTheta[j]) : rTypical[j];
+            const double mag =
+                std::fabs(rTheta[j]) > rTypical[j] ? std::fabs(rTheta[j]) : rTypical[j];
             step[j] = 1.4901161193847656e-08 * mag;
             t[j] += step[j];
             rResidual(t, rj.data());
@@ -127174,7 +127176,8 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
 
     // A solid's shell is closed and consistently wound.
     {
-        const std::vector<detail::CreaseEdge> bad = detail::crease_edges(start, nodes, normals, 180.0);
+        const std::vector<detail::CreaseEdge> bad =
+            detail::crease_edges(start, nodes, normals, 180.0);
         std::size_t open = 0, nonmanifold = 0, inconsistent = 0;
         std::string first;
         std::size_t listed = 0;
@@ -127192,12 +127195,12 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
             }
         }
         if (open + nonmanifold + inconsistent > 0)
-            throw WriteError(std::string(kStepPrefix) +
-                             "the surface is not a closed, consistently wound solid: " +
-                             std::to_string(open) + " open, " + std::to_string(nonmanifold) +
-                             " non-manifold and " + std::to_string(inconsistent) +
-                             " inconsistently wound edge(s), first " + first +
-                             " (point ids); run repair first");
+            throw WriteError(
+                std::string(kStepPrefix) +
+                "the surface is not a closed, consistently wound solid: " + std::to_string(open) +
+                " open, " + std::to_string(nonmanifold) + " non-manifold and " +
+                std::to_string(inconsistent) + " inconsistently wound edge(s), first " + first +
+                " (point ids); run repair first");
     }
 
     // The edges, and the edge-connected pieces (one solid each).
@@ -127244,8 +127247,8 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
         const std::size_t r = step_uf_find(parent, f);
         if (r == f)
             roots.push_back(f);
-        piece_of[f] = static_cast<std::size_t>(
-            std::lower_bound(roots.begin(), roots.end(), r) - roots.begin());
+        piece_of[f] = static_cast<std::size_t>(std::lower_bound(roots.begin(), roots.end(), r) -
+                                               roots.begin());
     }
     const std::size_t npieces = roots.size();
 
@@ -127259,10 +127262,10 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
                 &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
             const double* p2 =
                 &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k + 1)]) * 3];
-            volume_of[piece_of[f]] += (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) -
-                                       p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
-                                       p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
-                                      6.0;
+            volume_of[piece_of[f]] +=
+                (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) - p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
+                 p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
+                6.0;
         }
     }
     std::size_t flipped = 0;
@@ -127302,38 +127305,45 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
     }
     out += "*/\nHEADER;\n";
     out += "FILE_DESCRIPTION(('meshio++ faceted B-rep'),'2;1');\n";
-    out += "FILE_NAME('" + name +
-           "','1970-01-01T00:00:00',(''),(''),'meshio++','meshio++','');\n";
+    out += "FILE_NAME('" + name + "','1970-01-01T00:00:00',(''),(''),'meshio++','meshio++','');\n";
     out += "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
 
-    const std::int64_t app = ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
+    const std::int64_t app =
+        ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
     ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000," +
         ref(app) + ")");
     const std::int64_t pctx = ent("PRODUCT_CONTEXT(''," + ref(app) + ",'mechanical')");
-    const std::int64_t pdctx = ent("PRODUCT_DEFINITION_CONTEXT('part definition'," + ref(app) + ",'design')");
-    const std::int64_t prod = ent("PRODUCT('" + name + "','" + name + "',''," + "(" + ref(pctx) + "))");
+    const std::int64_t pdctx =
+        ent("PRODUCT_DEFINITION_CONTEXT('part definition'," + ref(app) + ",'design')");
+    const std::int64_t prod =
+        ent("PRODUCT('" + name + "','" + name + "',''," + "(" + ref(pctx) + "))");
     ent("PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(" + ref(prod) + "))");
     const std::int64_t form = ent("PRODUCT_DEFINITION_FORMATION('',''," + ref(prod) + ")");
-    const std::int64_t pdef = ent("PRODUCT_DEFINITION('design',''," + ref(form) + "," + ref(pdctx) + ")");
+    const std::int64_t pdef =
+        ent("PRODUCT_DEFINITION('design',''," + ref(form) + "," + ref(pdctx) + ")");
     const std::int64_t pshape = ent("PRODUCT_DEFINITION_SHAPE('',''," + ref(pdef) + ")");
     const std::int64_t len_unit = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
     const std::int64_t ang_unit = ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
     const std::int64_t sol_unit = ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
-    const std::int64_t unc = ent("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)," + ref(len_unit) +
-                                 ",'distance_accuracy_value','confusion accuracy')");
-    const std::int64_t gctx = ent(
-        "(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((" + ref(unc) +
-        "))GLOBAL_UNIT_ASSIGNED_CONTEXT((" + ref(len_unit) + "," + ref(ang_unit) + "," +
-        ref(sol_unit) + "))REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))");
+    const std::int64_t unc =
+        ent("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)," + ref(len_unit) +
+            ",'distance_accuracy_value','confusion accuracy')");
+    const std::int64_t gctx =
+        ent("(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((" + ref(unc) +
+            "))GLOBAL_UNIT_ASSIGNED_CONTEXT((" + ref(len_unit) + "," + ref(ang_unit) + "," +
+            ref(sol_unit) +
+            "))REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))");
     const std::int64_t o_pt = ent("CARTESIAN_POINT('',(0.,0.,0.))");
     const std::int64_t o_z = ent("DIRECTION('',(0.,0.,1.))");
     const std::int64_t o_x = ent("DIRECTION('',(1.,0.,0.))");
-    const std::int64_t origin = ent("AXIS2_PLACEMENT_3D(''," + ref(o_pt) + "," + ref(o_z) + "," + ref(o_x) + ")");
+    const std::int64_t origin =
+        ent("AXIS2_PLACEMENT_3D(''," + ref(o_pt) + "," + ref(o_z) + "," + ref(o_x) + ")");
 
     // Vertices: a point and a vertex per used point id.
     std::vector<std::int64_t> point_id(used.size()), vertex_id(used.size());
     for (std::size_t i = 0; i < used.size(); ++i) {
-        point_id[i] = ent("CARTESIAN_POINT(''," + triple(&xyz[static_cast<std::size_t>(used[i]) * 3]) + ")");
+        point_id[i] =
+            ent("CARTESIAN_POINT(''," + triple(&xyz[static_cast<std::size_t>(used[i]) * 3]) + ")");
         vertex_id[i] = ent("VERTEX_POINT(''," + ref(point_id[i]) + ")");
     }
     // Edges: a straight EDGE_CURVE from the lower point id to the higher.
@@ -155409,8 +155419,8 @@ FpFit fp_cone(const FpPatch& rP, double Tol, int MaxIt) {
 
 // Tube centres for a minor radius: centroids moved back along their normals.
 // Returns the circle's centre, axis, major radius and a misfit score.
-bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pAxis,
-                    double& rMajor, double& rScore) {
+bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pAxis, double& rMajor,
+                    double& rScore) {
     const std::size_t nf = rP.NumFaces();
     std::vector<double> q(nf * 3);
     for (std::size_t f = 0; f < nf; ++f)
@@ -155487,7 +155497,8 @@ FpFit fp_torus(const FpPatch& rP, double Tol, int MaxIt) {
     double e1[3], e2[3];
     detail::lsq_frame(axis, e1, e2);
     std::vector<double> theta = {0.0, 0.0, 0.0, 0.0, 0.0, major, minor};
-    const std::vector<double> typical = {rP.mDiag, rP.mDiag, rP.mDiag, 1.0, 1.0, rP.mDiag, rP.mDiag};
+    const std::vector<double> typical = {rP.mDiag, rP.mDiag, rP.mDiag, 1.0,
+                                         1.0,      rP.mDiag, rP.mDiag};
     auto resid = [&](const std::vector<double>& rT, double* pOut) {
         double c[3], d[3];
         fp_axis_from(centre, e1, e2, axis, rT[0], rT[1], rT[2], rT[3], rT[4], c, d);
@@ -155545,11 +155556,21 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
             continue;
         FpFit fit;
         switch (t) {
-            case 1: fit = fp_plane(rP, tol); break;
-            case 2: fit = fp_sphere(rP, tol, max_it); break;
-            case 3: fit = fp_cylinder(rP, tol, max_it); break;
-            case 4: fit = fp_cone(rP, tol, max_it); break;
-            default: fit = fp_torus(rP, tol, max_it); break;
+            case 1:
+                fit = fp_plane(rP, tol);
+                break;
+            case 2:
+                fit = fp_sphere(rP, tol, max_it);
+                break;
+            case 3:
+                fit = fp_cylinder(rP, tol, max_it);
+                break;
+            case 4:
+                fit = fp_cone(rP, tol, max_it);
+                break;
+            default:
+                fit = fp_torus(rP, tol, max_it);
+                break;
         }
         if (!fit.mOk || !std::isfinite(fit.mRms))
             continue;
@@ -155578,7 +155599,8 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
 
 FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
     if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
-        throw std::invalid_argument(std::string(kFpPrefix) + "the tolerance must be finite and > 0");
+        throw std::invalid_argument(std::string(kFpPrefix) +
+                                    "the tolerance must be finite and > 0");
     if (!(rOptions.mMinInlierFraction >= 0.0 && rOptions.mMinInlierFraction <= 1.0))
         throw std::invalid_argument(std::string(kFpPrefix) +
                                     "min_inlier_fraction must lie in [0, 1]");
@@ -155602,8 +155624,7 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
             const std::size_t nc = rMesh.Cells(b).NumCells();
             if (a.Size() != nc)
                 throw std::invalid_argument(std::string(kFpPrefix) + "cell data '" +
-                                            rOptions.mPatchData +
-                                            "' must hold one label per cell");
+                                            rOptions.mPatchData + "' must hold one label per cell");
             if (a.Dtype() == DType::Float32 || a.Dtype() == DType::Float64)
                 throw std::invalid_argument(std::string(kFpPrefix) + "cell data '" +
                                             rOptions.mPatchData + "' must be an integer label");
@@ -155669,7 +155690,8 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
         }
         for (std::size_t f : faces_of[r]) {
             const std::int64_t* ring = rings.mNodes.data() + rings.mStart[f];
-            const std::size_t size = static_cast<std::size_t>(rings.mStart[f + 1] - rings.mStart[f]);
+            const std::size_t size =
+                static_cast<std::size_t>(rings.mStart[f + 1] - rings.mStart[f]);
             double nrm[3];
             detail::ring_unit_normal(xyz.data(), ring, size, nrm);
             double c[3] = {0.0, 0.0, 0.0};
@@ -155688,12 +155710,24 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     result.mNumPatches = static_cast<std::int64_t>(m);
     for (const FpOutcome& o : outcome) {
         switch (o.mType) {
-            case 1: ++result.mNumPlane; break;
-            case 2: ++result.mNumSphere; break;
-            case 3: ++result.mNumCylinder; break;
-            case 4: ++result.mNumCone; break;
-            case 5: ++result.mNumTorus; break;
-            default: ++result.mNumUnfitted; break;
+            case 1:
+                ++result.mNumPlane;
+                break;
+            case 2:
+                ++result.mNumSphere;
+                break;
+            case 3:
+                ++result.mNumCylinder;
+                break;
+            case 4:
+                ++result.mNumCone;
+                break;
+            case 5:
+                ++result.mNumTorus;
+                break;
+            default:
+                ++result.mNumUnfitted;
+                break;
         }
     }
 
@@ -155706,7 +155740,8 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     }
 
     Mesh& out = result.mMesh;
-    out = detail::clone_mesh(rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
+    out = detail::clone_mesh(rMesh,
+                             [](DataLocation, const std::string&, std::string&) { return true; });
     const double nan = std::numeric_limits<double>::quiet_NaN();
     std::vector<NDArray> type_blocks, rms_blocks, max_blocks;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -174737,7 +174772,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     if (rOptions.mMinPatchCells < 1)
         throw std::invalid_argument(std::string(kSegPrefix) + "min_patch_cells must be >= 1");
     if (rOptions.mPrefix.empty())
-        throw std::invalid_argument(std::string(kSegPrefix) + "the region prefix must not be empty");
+        throw std::invalid_argument(std::string(kSegPrefix) +
+                                    "the region prefix must not be empty");
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
@@ -174844,8 +174880,7 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     }
     for (std::size_t f = 0; f < nf; ++f)
         adj_start[f + 1] += adj_start[f];
-    std::vector<std::pair<std::int64_t, std::int64_t>> adj(
-        static_cast<std::size_t>(adj_start[nf]));
+    std::vector<std::pair<std::int64_t, std::int64_t>> adj(static_cast<std::size_t>(adj_start[nf]));
     {
         std::vector<std::int64_t> fill(adj_start.begin(), adj_start.end() - 1);
         for (std::size_t e = 0; e < pairs.size(); ++e) {
@@ -174905,11 +174940,14 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
         for (std::size_t q = 0; q < queue.size(); ++q) {
             const std::size_t g = static_cast<std::size_t>(queue[q]);
             for (std::int64_t k = adj_start[g]; k < adj_start[g + 1]; ++k) {
-                const std::size_t nb = static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].first);
-                const SegPair& e = pairs[static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].second)];
+                const std::size_t nb =
+                    static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].first);
+                const SegPair& e =
+                    pairs[static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].second)];
                 if (patch[nb] != -1 || !e.mSmooth)
                     continue;
-                const std::uint8_t fl = static_cast<std::uint8_t>(flip[g] ^ (e.mInconsistent ? 1 : 0));
+                const std::uint8_t fl =
+                    static_cast<std::uint8_t>(flip[g] ^ (e.mInconsistent ? 1 : 0));
                 if (use_normal) {
                     const double* nn = &normals[nb * 3];
                     double dot = sn[0] * nn[0] + sn[1] * nn[1] + sn[2] * nn[2];
@@ -174940,7 +174978,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
         std::vector<std::int64_t> size(static_cast<std::size_t>(npatches), 0);
         for (std::size_t f = 0; f < nf; ++f)
             ++size[static_cast<std::size_t>(patch[f])];
-        std::vector<std::map<std::int64_t, std::int64_t>> shared(static_cast<std::size_t>(npatches));
+        std::vector<std::map<std::int64_t, std::int64_t>> shared(
+            static_cast<std::size_t>(npatches));
         for (const SegPair& e : pairs) {
             const std::int64_t a = patch[static_cast<std::size_t>(e.mA)];
             const std::int64_t b = patch[static_cast<std::size_t>(e.mB)];
@@ -175011,7 +175050,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     }
 
     Mesh& out = result.mMesh;
-    out = detail::clone_mesh(rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
+    out = detail::clone_mesh(rMesh,
+                             [](DataLocation, const std::string&, std::string&) { return true; });
 
     std::vector<NDArray> blocks;
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
@@ -175019,7 +175059,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
         const std::size_t nc = rMesh.Cells(bi).NumCells();
         NDArray a = NDArray::Uninit(DType::Int64, {nc});
         std::copy(cell_patch.begin() + static_cast<std::ptrdiff_t>(base),
-                  cell_patch.begin() + static_cast<std::ptrdiff_t>(base + nc), a.As<std::int64_t>());
+                  cell_patch.begin() + static_cast<std::ptrdiff_t>(base + nc),
+                  a.As<std::int64_t>());
         blocks.push_back(std::move(a));
     }
     out.AddCellData(kSegmentPatchName, std::move(blocks));
@@ -175052,7 +175093,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     std::vector<std::vector<std::int64_t>> members(static_cast<std::size_t>(nfinal));
     for (std::size_t c = 0; c < ncells; ++c)
         if (cell_patch[c] >= 0)
-            members[static_cast<std::size_t>(cell_patch[c])].push_back(static_cast<std::int64_t>(c));
+            members[static_cast<std::size_t>(cell_patch[c])].push_back(
+                static_cast<std::int64_t>(c));
     for (std::int64_t p = 0; p < nfinal; ++p) {
         const std::vector<std::int64_t>& m = members[static_cast<std::size_t>(p)];
         NDArray entries = NDArray::Uninit(DType::Int64, {m.size()});
