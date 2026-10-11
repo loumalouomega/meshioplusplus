@@ -1067,13 +1067,12 @@ def roadmap_map():
         (
             "§6 long run (spike first)",
             [
-                ("VTU writer footprint", "S"),
-                ("peak memory of copying paths", "M"),
+                ("undo_green at XL", "S"),
                 ("NurbsInfo side channel", "M"),
                 ("read-only CAD ingestion", "L"),
                 ("analytic CAD faces (OCC)", "L"),
             ],
-            [(2, 3)],
+            [(1, 2)],
         ),
     ]
     per_row = 4

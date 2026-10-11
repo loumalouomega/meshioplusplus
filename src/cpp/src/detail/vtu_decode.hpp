@@ -107,7 +107,7 @@ using VtuFill = std::function<void(std::size_t Offset, std::size_t N, unsigned c
  * or their base64 text: the payload is generated and encoded a fixed batch at
  * a time, and with @p codec only the compressed blocks are kept (the block
  * header, which comes first, needs every compressed size). Byte-identical to
- * `os << vtu_encode_binary(...)`. Roadmap §6.1.1.
+ * `os << vtu_encode_binary(...)`. Roadmap §6.1 (doc/spikes.md).
  */
 void vtu_write_binary_stream(std::ostream& rOs, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
                              const VtuFill& rFill);

@@ -136,7 +136,7 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     // Every binary array goes out through the streaming encoders, which ask
     // `rFill` for its bytes a fixed batch at a time: an array generated on
     // the fly (the padded points, the cell arrays) is never held whole, nor
-    // are its compressed blocks' copies or its base64 text (roadmap §6.1.1).
+    // are its compressed blocks' copies or its base64 text (roadmap §6.1).
     auto emit_stream = [&](std::size_t n, const detail::VtuFill& rFill) {
         if (Appended) {
             detail::vtu_encode_raw_stream(n, codec, hsz, rFill, appended);

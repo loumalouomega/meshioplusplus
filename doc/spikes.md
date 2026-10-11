@@ -107,6 +107,26 @@ Of 76 rows, 70 completed, 54 of them in under 30 seconds on one thread; the slow
 
 **Decision on 6.1.2 (out-of-core operations).** Not needed for 10M cells: every operation that failed did so holding at most a few copies of a mesh that itself fits comfortably, and the ones that ran long did so in memory. Streaming the block-local operations through a mesh that does not fit would not fix any row above. The item is replaced by what the measurement did find: the **peak memory of the copying paths** — the ragged (polyhedral) paths of `reorder` and `convert_cells` and `undo_green` hold their input, their output and full-size scratch at once, more than 7 GB over the setup peak for a 0.4 GB tetrahedral cube at XL, and are the first to fail as meshes grow. **Replaced, S–M**, with `--tier XL --ops` as the probe. The two distance rows' run time is a performance question, recorded here rather than reopened: the roadmap's performance section is closed and its [landing rules](./benchmarks.md#landing-a-performance-change) apply to any change.
 
+### What landed
+
+Both items were then fixed with every output byte unchanged: the VTU, VTP, VTR, VTS and VTI files written before and after are identical, and every operation digest of the harness at tiers S and M agrees with the earlier build on the `SEQ` backend and with `OPENMP` at one and four threads.
+
+**6.1.1, the VTK XML writers.** Each binary array now goes through a streaming encoder that asks the writer for its bytes 8 MiB at a time, compresses that batch's 32 KiB blocks in parallel into one buffer of compressed bytes, and writes the base64 text as it goes; the VTU writer generates its padded points and, for fixed-size cell blocks, the connectivity, offsets and types a window at a time instead of building them whole. Only the compressed bytes are ever held (the block header, written first, needs every block's size). Writing the XL cube as binary zlib VTU now needs +178 MB, half the mesh, where it needed +1,024 MB, and takes 11.2 s instead of 17.7 s. Ragged and polyhedral blocks and ASCII output still build their cell arrays before writing them, through the same encoder.
+
+**6.1.2, the copying paths.** Each row's largest scratch is released or never built:
+
+- `reorder` on a ragged mesh: the node adjacency was a vector per node fed every ordered pair of a cell's node *list*, so a polyhedron, which lists each corner once per face, added each edge nine times and the rows rounded up to 8 KiB per node (14 GB at XL). It is now one flat array of raw entries over each cell's distinct nodes, 32-bit when the ids fit, counted and then filled; the rows are the same sets, so the CSR and the Reverse Cuthill-McKee order are too.
+- `convert_cells(simplexify)`: the tetrahedra and triangles are written straight into their final arrays, where they were staged in a vector and copied (4 GB at XL); the parent of each child is built only when cell data or `record_parent_ids` reads it; the sources of the new points are freed before the blocks are added.
+- `undo_green`: the classification's scratch (copies of the three `refine:*` columns, the coarse id lookup, the sibling order) is released before the output is built, roles are one byte, and the sibling sort is skipped when the parent ids arrive in order, as `refine` writes them.
+
+| Row | XL before | XL after | XL time after | L peak before → after |
+| --- | --- | --- | --- | --- |
+| `reorder_ragged` | killed at 13.3 GB | 6.3 GB (the setup peak) | 42.5 s | 1,209 → 470 MB |
+| `simplexify_ragged` | killed at 13.3 GB | 9.7 GB | 61.7 s | 1,111 → 726 MB |
+| `undo_green` | killed at 13.3 GB | killed at 13.3 GB | — | 1,294 → 1,039 MB |
+
+`undo_green` is still killed at XL, and by its input more than by itself: the harness's green-refined cube (every seventh cell refined and closed red-green, about 83M tetrahedra with their hierarchy) leaves the process at 11.1 GB once built, and the 3.6 GB output does not fit beside it. At tier L its peak above that input fell from 0.48 GB to 0.23 GB. Reading the `refine:*` columns in place and narrower group ids would bring it to its floor of input plus output, about 16 GB here; that is what [roadmap 6.1.1](./roadmap.md#_6-long-run-spike-first) keeps.
+
 ## How far the data model stretches
 
 **The question (formerly roadmap 6.2.1).** A `CellBlock` is a cell-type string and a node-index array; a rational Bézier or NURBS patch also needs weights and knot vectors, which have nowhere to live. Does a side-channel struct suffice, or does the `Mesh` need a second entity kind?

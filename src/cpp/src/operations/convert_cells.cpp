@@ -209,7 +209,7 @@ struct CcellsOutBlock {
     bool mIsPolyhedron = false;
     // A rectangular block already in its final (n, mNodesPerCell) Int64 array,
     // written in place by simplexify instead of staged in mConn and copied:
-    // at 10M polyhedra the staged copy alone was 4 GB (roadmap §6.1.2).
+    // at 10M polyhedra the staged copy alone was 4 GB (roadmap §6.1).
     NDArray mReady;
     bool mHasReady = false;
 };
@@ -750,7 +750,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         out.AssignPoints(std::move(np));
     }
     // The new points' point_data next, while their sources are still here;
-    // then the sources go before the blocks are added (roadmap §6.1.2).
+    // then the sources go before the blocks are added (roadmap §6.1).
     std::vector<std::pair<std::string, NDArray>> new_point_data;
     if (num_new != 0) {
         for (const std::string& name : mesh.PointDataNames()) {

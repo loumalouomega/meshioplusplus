@@ -37150,7 +37150,7 @@ using VtuFill = std::function<void(std::size_t Offset, std::size_t N, unsigned c
  * or their base64 text: the payload is generated and encoded a fixed batch at
  * a time, and with @p codec only the compressed blocks are kept (the block
  * header, which comes first, needs every compressed size). Byte-identical to
- * `os << vtu_encode_binary(...)`. Roadmap §6.1.1.
+ * `os << vtu_encode_binary(...)`. Roadmap §6.1 (doc/spikes.md).
  */
 void vtu_write_binary_stream(std::ostream& rOs, std::size_t nbytes, VtkCodec codec, std::size_t hsz,
                              const VtuFill& rFill);
@@ -59431,7 +59431,7 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
                                    NodeAdjacencyKind Kind) {
     // One flat array of raw entries rather than a vector per node: a
     // polyhedral mesh's per-node vectors held 8 KiB each at 10M cells
-    // (roadmap §6.1.2). The rows, and so the CSR, are the same sets.
+    // (roadmap §6.1). The rows, and so the CSR, are the same sets.
     if (NumPoints <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
         return nodeadj_build<std::uint32_t>(rMesh, NumPoints, Kind);
     return nodeadj_build<std::int64_t>(rMesh, NumPoints, Kind);
@@ -140373,7 +140373,7 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     // Every binary array goes out through the streaming encoders, which ask
     // `rFill` for its bytes a fixed batch at a time: an array generated on
     // the fly (the padded points, the cell arrays) is never held whole, nor
-    // are its compressed blocks' copies or its base64 text (roadmap §6.1.1).
+    // are its compressed blocks' copies or its base64 text (roadmap §6.1).
     auto emit_stream = [&](std::size_t n, const detail::VtuFill& rFill) {
         if (Appended) {
             detail::vtu_encode_raw_stream(n, codec, hsz, rFill, appended);
@@ -149297,7 +149297,7 @@ struct CcellsOutBlock {
     bool mIsPolyhedron = false;
     // A rectangular block already in its final (n, mNodesPerCell) Int64 array,
     // written in place by simplexify instead of staged in mConn and copied:
-    // at 10M polyhedra the staged copy alone was 4 GB (roadmap §6.1.2).
+    // at 10M polyhedra the staged copy alone was 4 GB (roadmap §6.1).
     NDArray mReady;
     bool mHasReady = false;
 };
@@ -149838,7 +149838,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
         out.AssignPoints(std::move(np));
     }
     // The new points' point_data next, while their sources are still here;
-    // then the sources go before the blocks are added (roadmap §6.1.2).
+    // then the sources go before the blocks are added (roadmap §6.1).
     std::vector<std::pair<std::string, NDArray>> new_point_data;
     if (num_new != 0) {
         for (const std::string& name : mesh.PointDataNames()) {
@@ -181538,7 +181538,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     // role and green group, and per group its coarse row and size. Everything
     // else it reads (the three refine:* columns, the id lookup, the sibling
     // order) lives in the scope below and is released before the output is
-    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1.2).
+    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1).
     std::vector<UgRole> role(total_fine, UgRole::Keep);
     std::vector<std::int64_t> group_id_of(total_fine, -1);
     std::vector<std::int64_t> group_coarse_row;  // indexed by green group id

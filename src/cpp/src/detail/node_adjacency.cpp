@@ -196,7 +196,7 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
                                    NodeAdjacencyKind Kind) {
     // One flat array of raw entries rather than a vector per node: a
     // polyhedral mesh's per-node vectors held 8 KiB each at 10M cells
-    // (roadmap §6.1.2). The rows, and so the CSR, are the same sets.
+    // (roadmap §6.1). The rows, and so the CSR, are the same sets.
     if (NumPoints <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
         return nodeadj_build<std::uint32_t>(rMesh, NumPoints, Kind);
     return nodeadj_build<std::int64_t>(rMesh, NumPoints, Kind);

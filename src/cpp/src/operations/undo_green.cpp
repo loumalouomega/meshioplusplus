@@ -131,7 +131,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     // role and green group, and per group its coarse row and size. Everything
     // else it reads (the three refine:* columns, the id lookup, the sibling
     // order) lives in the scope below and is released before the output is
-    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1.2).
+    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1).
     std::vector<UgRole> role(total_fine, UgRole::Keep);
     std::vector<std::int64_t> group_id_of(total_fine, -1);
     std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
