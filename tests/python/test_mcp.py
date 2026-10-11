@@ -175,6 +175,28 @@ def test_formats_payload():
     assert out["extensions"][".vtu"] == ["vtu"]
 
 
+def test_svg_and_tikz_are_readable_writable_drawings_and_convert(tmp_path):
+    # The 2-D drawings read back only what meshio++ wrote: planar, z = 0.
+    out = _dump(_tools.tool_formats())
+    for fmt, ext in (("svg", ".svg"), ("tikz", ".tikz")):
+        assert fmt in out["readable"] and fmt in out["writable"]
+        assert out["extensions"][ext] == [fmt]
+        mesh = meshioplusplus.Mesh(
+            [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
+            [("triangle", [[0, 1, 2], [0, 2, 3]])],
+        )
+        src = str(tmp_path / "in.vtu")
+        meshioplusplus.write(src, mesh)
+        drawing = str(tmp_path / f"drawing{ext}")
+        _tools.tool_convert(src, drawing)
+        back = str(tmp_path / f"back_{fmt}.vtu")
+        _tools.tool_convert(drawing, back)
+        written = meshioplusplus.read(back)
+        assert [b.type for b in written.cells] == ["triangle"]
+        assert len(written.cells[0].data) == 2
+        assert not written.points[:, 2].any()
+
+
 def test_frd_is_readable_and_writable_and_convert_reaches_its_steps(tmp_path):
     import pathlib
 

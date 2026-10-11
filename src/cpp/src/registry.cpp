@@ -220,6 +220,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
         {"su2", meshioplusplus::read_su2},
+        // 2-D drawings, read only as the structure meshio++ writes; both take a
+        // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
+        {"svg", [](const std::string& path) { return meshioplusplus::read_svg(path); }},
+        {"tikz", [](const std::string& path) { return meshioplusplus::read_tikz(path); }},
         // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
         // bare name ambiguous (the exodus/mdpa/med/cgns story again).
         {"tecplot",
@@ -371,10 +375,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
         {"su2", meshioplusplus::write_su2},
-        // svg/tikz are write-only 2D-visualization formats; the flat bindings
-        // emit them with the fixed default styling (per-call overrides are out
-        // of scope for v1, per registry.hpp).
-        // glTF is write-only too; .glb/.gltf are told apart by the writer, so the
+        // svg/tikz are 2D-drawing formats (read only as the structure meshio++
+        // writes); the flat bindings emit them with the fixed default styling
+        // (per-call overrides are out of scope for v1, per registry.hpp).
+        // glTF is write-only; .glb/.gltf are told apart by the writer, so the
         // flat bindings write the container the suffix names with the defaults.
         {"gltf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); }},
         {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
@@ -807,6 +811,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
          }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
+        // meshio++ marker) and the narrowing options (the fill array).
+        {"svg", [](const std::string& path,
+                   const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
+        {"tikz", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_tikz(path, opts); }},
         // Abaqus .fil honours mTimeStep (its steps are the increments) and the
         // narrowing options.
         {"abaqus_fil",

@@ -5,6 +5,7 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._projection import ISO_AZIMUTH, ISO_ELEVATION
+from ._tikz import read as _py_read
 from ._tikz import write as _py_write
 
 
@@ -95,6 +96,24 @@ def write(
     )
 
 
-register_format("tikz", [".tikz"], None, {"tikz": write})
+def read(filename, points_only=False, arrays=None, strict=True):
+    """Read a TikZ drawing written by :func:`write` back as a planar mesh.
 
-__all__ = ["write"]
+    A drawing is not a mesh, so only the structure meshio++'s own writer emits is
+    read (C++ core for real file paths, Python twin otherwise); anything else is a
+    ``ReadError`` naming the construct. A file without meshio++'s marker comment is
+    refused unless ``strict=False``. ``z`` is always 0, and the read warns once that
+    depth is lost. See ``doc/formats/tikz.md``.
+    """
+    if not is_buffer(filename, "r"):
+        try:
+            return _core.tikz_read(str(filename), points_only, arrays, strict)
+        except Exception as exc:
+            if not core_declined(exc, "tikz", "read", filename):
+                raise
+    return _py_read(filename, points_only=points_only, arrays=arrays, strict=strict)
+
+
+register_format("tikz", [".tikz"], read, {"tikz": write})
+
+__all__ = ["read", "write"]

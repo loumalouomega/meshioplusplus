@@ -85,6 +85,11 @@ DATA_NAMES = {
 
 _PLANAR = ("vertex", "line", "triangle", "quad")
 
+# The formats that draw a mesh rather than store it (roadmap §4, "The one
+# exception: pure 2-D drawings"): their readers return the drawing as planar
+# (z = 0), so they are observed on the planar part of the canonical mesh.
+DRAWINGS = ("svg", "tikz")
+
 
 def canonical_mesh(cell_types=CELL_TYPES, data=True, regions=True, planar=False):
     """The canonical mesh restricted to ``cell_types`` (in canonical order).
@@ -162,12 +167,19 @@ def _target(tmp: pathlib.Path, fmt: str) -> pathlib.Path:
     return tmp / f"mesh{ext}"
 
 
+# Writer options a row is observed with. The SVG writer keeps three decimals of a
+# drawing scaled to 100 units wide, so its default output moves every corner by up
+# to 1.5e-5 of the drawing width and no cell would match its written corners; the
+# row is observed at full precision, and its note states the limit of the default.
+_WRITE_OPTIONS = {"svg": {"float_fmt": ".17g"}}
+
+
 def round_trip(fmt: str, mesh, tmp: pathlib.Path):
     """Write ``mesh`` as ``fmt`` into ``tmp`` and read it back."""
     path = _target(tmp, fmt)
     if path.suffix == "" and fmt in ("elmer", "openfoam"):
         path.mkdir(parents=True, exist_ok=True)
-    meshioplusplus.write(path, mesh, file_format=fmt)
+    meshioplusplus.write(path, mesh, file_format=fmt, **_WRITE_OPTIONS.get(fmt, {}))
     return meshioplusplus.read(path, file_format=_READ_AS.get(fmt, fmt))
 
 
@@ -205,7 +217,9 @@ def observe(fmt: str, cell_types=None, planar=None) -> dict:
     ``cell_types`` is the set to write; ``None`` probes each type on its own
     first (what :data:`SPEC` records as the format's accepted cells). A format
     that takes no 3-D mesh at all is retried with the planar cells in 2-D
-    (``planar``; the result then carries ``"input": "2d"``).
+    (``planar``; the result then carries ``"input": "2d"``). The 2-D drawings
+    (:data:`DRAWINGS`) are only ever observed that way: a 3-D mesh is drawn
+    projected, so nothing of it comes back at its own coordinates.
     """
     formats = meshioplusplus.formats()
     if (
@@ -213,6 +227,8 @@ def observe(fmt: str, cell_types=None, planar=None) -> dict:
         and _READ_AS.get(fmt, fmt) not in formats["readable"]
     ):
         return {"error": "write-only"}
+    if planar is None and fmt in DRAWINGS:
+        planar = True
     if planar is None:
         out = observe(fmt, cell_types, planar=False)
         if out.get("error") == "no cell type round-trips":
@@ -1203,8 +1219,19 @@ SPEC: dict[str, dict] = {
         "regions": [],
     },
     "svg": {
-        "error": "write-only",
-        "note": "A 2-D drawing, write-only until its reader lands (roadmap §3.1.1).",
+        "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "input": "2d",
+        "note": "A 2-D drawing, read back as planar (z = 0) from the scale and offset "
+        "meshio++ records in a comment. Observed with `float_fmt=\".17g\"`: the default "
+        "`.3f` keeps three decimals of a drawing 100 units wide, so corners come back to "
+        "about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is "
+        "that picture. Data arrays are not drawn; a colour comes back as an RGB "
+        "`svg:fill`.",
     },
     "tecplot": {
         "cells": {
@@ -1233,8 +1260,17 @@ SPEC: dict[str, dict] = {
         "regions": [],
     },
     "tikz": {
-        "error": "write-only",
-        "note": "A 2-D drawing, write-only until its reader lands (roadmap §3.1.2).",
+        "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "input": "2d",
+        "note": "A 2-D drawing, read back as planar (z = 0) with its coordinates verbatim, "
+        "to the digits `float_fmt` kept. A 3-D mesh is drawn projected, and what comes "
+        "back is that picture. Data arrays are not drawn; a colour comes back as an RGB "
+        "`tikz:fill`.",
     },
     "triangle": {
         "cells": {"triangle": "exact"},
@@ -1540,14 +1576,10 @@ READ_ONLY = {
     ),
 }
 
-# The mirror: formats that write without reading. `svg` and `tikz` are 2-D
-# drawings, whose reader will parse only the structure meshio++ itself emits.
+# The mirror: formats that write without reading. `svg` and `tikz` left it when
+# their readers landed (they are 2-D drawings, read back as planar).
 WRITE_ONLY = {
     "gltf": "Tracked gap, roadmap §3.1.4: no reader yet. A general glTF 2.0 reader.",
-    "svg": "Tracked gap, roadmap §3.1.1: no reader yet. A 2-D drawing; the reader "
-    "will parse only the structure meshio++'s writer emits.",
-    "tikz": "Tracked gap, roadmap §3.1.2: no reader yet. A 2-D drawing; the reader "
-    "will parse only the structure meshio++'s writer emits.",
 }
 
 
