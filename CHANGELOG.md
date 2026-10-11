@@ -37,6 +37,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **Fixed**: a Tecplot zone header declaring more nodes, cells or faces than its file holds is refused before any column is sized from it (a passive variable on such a zone allocated the declared count and aborted under ASan).
 - **Fixed**: a Tecplot connectivity id outside the zone's node range was used as it stood, and an id near `INT64_MAX` (saturated by the lenient parse) overflowed when the zone's point offset was added (UBSan). Both engines refuse it as a `ReadError`, in ASCII and `.plt` files.
 - **Fixed**: an MFEM element named a vertex its part does not have, and the output-point lookup read past the part's vertex list (ASan). Both engines refuse the element as a `ReadError`.
+- **Fixed**: an unfiltered chunked HDF5 dataset whose stored chunk held fewer bytes than its elements take made HDF5 1.10 copy past the stored bytes (a heap-buffer-overflow inside libhdf5, found by the fuzzer). Every allocated chunk of an unfiltered dataset is now checked against its elements before a read, in the C++ and Python readers alike; a mismatch is a `ReadError`. Filtered chunks are not affected, and libhdf5 before 1.10.5 cannot list the chunks, so it is not checked there.
 - The reproductions are committed under `tests/fuzz/regressions/{xdmf,tecplot,mfem}/`, each with a native test. A data count that does not match its `Dimensions` in the Python XDMF reader is now a `ReadError`, as in the C++ reader, rather than a numpy `ValueError`.
 
 ## v16.38.0 (2026-10-10)

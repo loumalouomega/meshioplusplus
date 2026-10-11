@@ -41,6 +41,28 @@ def _reshape_item(data, dims):
         ) from exc
 
 
+def _check_unfiltered_chunks(dset, name):
+    """The C++ reader's check, for the same datasets: libhdf5 reads an unfiltered
+    chunk from its stored bytes, so a chunk the file stores in fewer bytes than its
+    elements take is refused before the read."""
+    from h5py import h5d
+
+    if not hasattr(dset.id, "get_num_chunks"):
+        return  # libhdf5 before 1.10.5 cannot list the chunks
+    dcpl = dset.id.get_create_plist()
+    if dcpl.get_layout() != h5d.CHUNKED or dcpl.get_nfilters() != 0:
+        return
+    chunk = dcpl.get_chunk()
+    expected = dset.id.get_type().get_size() * int(np.prod(chunk, dtype=object))
+    for i in range(dset.id.get_num_chunks(dset.id.get_space())):
+        size = dset.id.get_chunk_info(i).size
+        if size != expected:
+            raise ReadError(
+                f"HDF5: chunk {i} of dataset '{name}' is stored in {size} bytes, "
+                f"not {expected}"
+            )
+
+
 def _block_dim(block):
     """A block's topological dimension (a polyhedron is 3, a polygon 2)."""
     if block.type.startswith("polyhedron"):
@@ -219,6 +241,7 @@ class XdmfReader:
                 f"XDMF: HDF dataset '{h5path}' is larger than the Dimensions "
                 "its DataItem declares"
             )
+        _check_unfiltered_chunks(f, h5path)
         # `[()]` gives a np.ndarray
         return f[()]
 

@@ -26,6 +26,7 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "../../tests/fuzz/fuzz_bundle.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 
 namespace {
@@ -81,6 +82,39 @@ TEST(Xdmf, HdfDatasetLargerThanItsDeclaredDimensionsIsRefused) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
     std::filesystem::remove(std::filesystem::path(path).replace_extension(".h5"), ec);
+}
+
+// The fuzzer's crash (tests/fuzz/regressions/xdmf/unfiltered-chunk-stored-short):
+// an unfiltered chunked dataset whose one stored chunk holds 36 bytes where its 13
+// int64 elements take 104. libhdf5 copies the elements out of the stored bytes
+// without checking their size (a heap-buffer-overflow inside HDF5 1.10), so the
+// reader refuses the dataset before it is read.
+TEST(Xdmf, AnUnfilteredChunkStoredInFewerBytesIsAReadError) {
+    const std::filesystem::path bundle = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                         "fuzz" / "regressions" / "xdmf" /
+                                         "unfiltered-chunk-stored-short.bundle";
+    ASSERT_TRUE(std::filesystem::exists(bundle)) << bundle;
+    std::vector<std::uint8_t> bytes;
+    {
+        std::ifstream in(bundle, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "meshioplusplus-unfiltered-chunk";
+    std::filesystem::create_directories(dir);
+    std::filesystem::path xml;
+    for (const FuzzBundleEntry& entry : fuzz_bundle_decode(bytes.data(), bytes.size())) {
+        const std::filesystem::path path = dir / entry.first;
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(entry.second.data()),
+                  static_cast<std::streamsize>(entry.second.size()));
+        if (path.extension() == ".xdmf")
+            xml = path;
+    }
+    ASSERT_FALSE(xml.empty());
+    EXPECT_THROW(meshioplusplus::read_xdmf(xml.string()), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 #endif
 

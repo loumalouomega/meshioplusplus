@@ -1,3 +1,5 @@
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -355,6 +357,38 @@ def test_dimensions_the_data_cannot_back_are_read_errors(tmp_path, engine, geome
     path.write_text(_xdmf_document(geometry))
     with pytest.raises(meshioplusplus.ReadError):
         _read_with_engine(engine, path)
+
+
+def _unbundle(bundle, out_dir):
+    # A MIOB bundle: the magic and version, a u16 entry count, then per entry a
+    # u16 name length, the name, a u32 data length and the data.
+    data = bundle.read_bytes()
+    count = int.from_bytes(data[5:7], "little")
+    pos = 7
+    for _ in range(count):
+        n = int.from_bytes(data[pos : pos + 2], "little")
+        name = data[pos + 2 : pos + 2 + n].decode()
+        pos += 2 + n
+        size = int.from_bytes(data[pos : pos + 4], "little")
+        (out_dir / name).write_bytes(data[pos + 4 : pos + 4 + size])
+        pos += 4 + size
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_an_unfiltered_chunk_stored_in_fewer_bytes_is_a_read_error(tmp_path, engine):
+    # The fuzzer's crash: an unfiltered chunk stored in 36 bytes where its 13
+    # int64 elements take 104. libhdf5 copied past the stored bytes, so both
+    # engines refuse the dataset before reading it.
+    bundle = (
+        pathlib.Path(__file__).parent.parent
+        / "fuzz"
+        / "regressions"
+        / "xdmf"
+        / "unfiltered-chunk-stored-short.bundle"
+    )
+    _unbundle(bundle, tmp_path)
+    with pytest.raises(meshioplusplus.ReadError):
+        _read_with_engine(engine, tmp_path / "seed.xdmf")
 
 
 @pytest.mark.parametrize("engine", ["core", "python"])
