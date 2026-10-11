@@ -15,9 +15,10 @@ import pathlib
 import shutil
 import struct
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus import _core
 from meshioplusplus.radioss_th import _th as py_th
 
