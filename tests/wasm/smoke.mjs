@@ -2745,6 +2745,14 @@ step('.frd reads a CalculiX result file: node permutation, steps, tensors, and w
     assert.deepEqual(Array.from(again.cells[0].data), Array.from(first.cells[0].data));
     assert.equal(again.point_data.NDTEMP[19], 20);
     assert.equal(again.field_data['meshio:time'][0], 0.5);
+    // The binary layout is an encoding option: float64 points, float32 results.
+    m.writeMesh('/out_bin.frd', first, '', { encoding: 'binary' });
+    const bin = m.FS.readFile('/out_bin.frd');
+    assert.equal(Buffer.from(bin.slice(bin.length - 6)).toString('latin1'), ' 9999\n');
+    const binary = m.readMesh('/out_bin.frd');
+    assert.deepEqual(Array.from(binary.cells[0].data), Array.from(first.cells[0].data));
+    assert.equal(binary.point_data.NDTEMP[19], 20);
+    assert.equal(binary.field_data['meshio:time'][0], 0.5);
 });
 
 step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one back', () => {

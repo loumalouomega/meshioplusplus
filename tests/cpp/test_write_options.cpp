@@ -260,3 +260,45 @@ TEST(WriteOptions, TextOnlyFormatAcceptsAsciiAndRejectsBinary) {
     }
     std::remove(path.c_str());
 }
+
+TEST(WriteOptions, FrdEncodingSelectsTheAsciiOrTheBinaryLayout) {
+    // roadmap 3.2.1: the CalculiX result file has both layouts, ASCII by default.
+    const Mesh m = mt::tet_mesh();
+    const std::string plain = mt::temp_path("_wo_plain.frd");
+    const std::string a = mt::temp_path("_wo_a.frd");
+    const std::string b = mt::temp_path("_wo_b.frd");
+
+    std::string why;
+    WriteOptions ascii;
+    ascii.mEncoding = WriteEncoding::Ascii;
+    WriteOptions binary;
+    binary.mEncoding = WriteEncoding::Binary;
+    EXPECT_TRUE(registry_write_supports("frd", ascii, why)) << why;
+    EXPECT_TRUE(registry_write_supports("frd", binary, why)) << why;
+    registry_write_ex(plain, m, "frd", WriteOptions{});
+    registry_write_ex(a, m, "frd", ascii);
+    registry_write_ex(b, m, "frd", binary);
+
+    const std::string binary_text = read_all(b);
+    EXPECT_EQ(read_all(plain), read_all(a));
+    EXPECT_NE(read_all(a), binary_text);
+    EXPECT_NE(read_all(a).find("\n -1"), std::string::npos);  // ASCII records
+    EXPECT_EQ(binary_text.find("\n -1"), std::string::npos);  // raw records, no markers
+    EXPECT_EQ(binary_text.substr(binary_text.size() - 6), " 9999\n");
+    // Both read back to the same mesh (binary keeps float64 points).
+    const Mesh back_a = meshioplusplus::registry_read(a, "frd", {});
+    const Mesh back_b = meshioplusplus::registry_read(b, "frd", {});
+    EXPECT_EQ(back_a.NumPoints(), m.NumPoints());
+    EXPECT_EQ(back_b.NumPoints(), m.NumPoints());
+    EXPECT_EQ(back_b.NumCellBlocks(), m.NumCellBlocks());
+
+    WriteOptions codec;
+    codec.mCodecSet = true;
+    EXPECT_FALSE(registry_write_supports("frd", codec, why));
+    WriteOptions appended;
+    appended.mEncoding = WriteEncoding::RawAppended;
+    EXPECT_FALSE(registry_write_supports("frd", appended, why));
+    std::remove(plain.c_str());
+    std::remove(a.c_str());
+    std::remove(b.c_str());
+}

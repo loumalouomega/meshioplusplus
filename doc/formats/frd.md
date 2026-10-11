@@ -6,7 +6,7 @@ The result file of [CalculiX](http://www.dhondt.de/): the ASCII `.frd` that `ccx
 |---|---|
 | **Format name** | `frd` |
 | **Extensions** | `.frd` |
-| **Read / Write** | ✓ / ✓ (ASCII, one step per `write` or a [series](#time-series); the binary variant is still read-only) |
+| **Read / Write** | ✓ / ✓ (ASCII by default or [binary](#binary-output), one step per `write` or a [series](#time-series)) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -39,14 +39,15 @@ mesh = meshioplusplus.read("beam.frd", time_step=-1)
 mesh.point_data["DISP"] *= 2.0                       # or a surrogate's prediction
 meshioplusplus.write("beam_scaled.frd", mesh)        # the long (I10) ASCII layout `ccx` writes
 meshioplusplus.frd.write("small.frd", mesh, long_ids=False)   # the short (I5) layout, 99999 nodes or elements at most
+meshioplusplus.frd.write("beam_bin.frd", mesh, binary=True)   # the binary layout, see below
 ```
 
-`write` is the inverse of `read`, in the ASCII layout `ccx` itself writes, by both engines (the two write the same bytes; `MESHIOPLUSPLUS_STRICT_CORE=1` proves the core wrote it). One `write` is one step; the same step fields drive the `100C` header that `read` fills:
+`write` is the inverse of `read`, in the ASCII layout `ccx` itself writes (or the [binary one](#binary-output)), by both engines (the two write the same bytes; `MESHIOPLUSPLUS_STRICT_CORE=1` proves the core wrote it). One `write` is one step; the same step fields drive the `100C` header that `read` fills:
 
 | Written | From |
 |---|---|
 | `2C` nodes, ids `1…n` | the points (planar points get `z = 0`; a coordinate that is not finite is a `WriteError`) |
-| `3C` elements, ids `1…m` | the cells of the twelve types above, in the file's node order (the inverse of [Node order](#node-order)); `frd:group` (default 0) and `frd:material` (default 1) are each element's group and material and must fit `I5` |
+| `3C` elements, ids `1…m` | the cells of the twelve types above, in the file's node order (the inverse of [Node order](#node-order)); `frd:group` (default 0) and `frd:material` (default 1) are each element's group and material and must fit `I5` (`int32` in the binary layout) |
 | one `-4` block per result | each `point_data` array, under its own name (at most eight printable characters), `(n,)` or `(n, c)`; the `-5` component names are `ccx`'s for `DISP`, `VELO`, `FORC`, `NDTEMP`, `STRESS`, `TOSTRAIN`, `MESTRAIN` and `ZZSTR` and `C1…Cn` otherwise; `DISP` and `FORC` get the calculated `ALL` component `ccx` writes |
 | the `100C` header | `meshio:time` (default 0), `frd:step` (default 1) and `frd:analysis` (default 0, static) |
 
@@ -58,6 +59,25 @@ meshioplusplus.frd.write("small.frd", mesh, long_ids=False)   # the short (I5) l
 - **A node with a non-finite value** in an array is left out of that block (the reader returns NaN there). A value too large for `E12.5` is a `WriteError` and no file is written; one too small is written as zero.
 - **Values keep six significant digits.** Reading a file `ccx` wrote and writing it back reproduces it; a double computed elsewhere is rounded.
 
+### Binary output
+
+```python
+meshioplusplus.frd.write("beam_bin.frd", mesh, binary=True)         # Python; the C++ core writes it
+meshioplusplus.write("beam_bin.frd", mesh, binary=True)             # the generic write passes the keyword on
+meshioplusplus.frd.SeriesWriter("run_bin.frd", binary=True)         # and so does a series
+meshioplusplus.write_sequence("run_bin.frd", steps, binary=True)
+```
+
+`binary=True` (C++: `FrdWriteOptions::mBinary`, or `WriteOptions::mEncoding = WriteEncoding::Binary` through `registry_write_ex`, `mio_write_ex` and the native CLI) writes the layout `ccx` writes for `*NODE OUTPUT` and `*ELEMENT OUTPUT`, which is the [binary layout](#binary-layout) the reader already takes: the ASCII banner and headers, with the `2C` and `3C` format flags 3 and 2 and the `100CL` flag 2, then raw little-endian records with no `-1`/`-2`/`-3` markers, and ` 9999` to end. Ids, element types, groups and materials are `int32` (so a group or material beyond `I5` is fine, one beyond `int32` is a `WriteError`), coordinates are `float64` (so the points round-trip exactly) and results are `float32`. What changes against the ASCII write:
+
+- **Results keep single precision.** A round trip gives back the `float32` rounding of each value (about seven significant digits, against `E12.5`'s six), and a finite value beyond the `float32` range is a `WriteError` with no file written. The ASCII range limit does not apply.
+- **The `100C` node count is the number of records that follow.** A node with a non-finite value is left out of the block as in ASCII, and the binary header counts only the nodes written, because the reader takes the record count from it (the ASCII header still names every node).
+- **`long_ids` does not apply.** A binary file holds as many nodes and elements as `int32` does (the long form's limit).
+- **A buffer has to take bytes** (`io.BytesIO`); the Python writer writes it.
+- The default stays ASCII, and `ascii` / `binary` in-place verbs, `convert --ascii` and the MCP `convert` tool's `mode` (`ascii`, `binary`) reach both layouts. The in-place verbs read the first increment only, as they do for every format, so run them on a multi-step file through `write_sequence` instead.
+
+**How it is checked.** The reader of both engines reads what the writer writes (`tests/python/test_frd.py::TestBinaryWriter`, `tests/cpp/test_frd.cpp`): every fixture, including the three binary files `ccx` 2.23 wrote, round-trips to the single-precision rounding of its values, and the two engines write the same bytes. Reading a real `ccx` binary file and writing it back reproduces `ccx`'s own node and element records byte for byte, and a hand-assembled file in the test pins the layout independently of both. [ccx2paraview](https://github.com/calculix/ccx2paraview) opens the file as text and splits it into lines on the `-1`/`-2` markers, so it cannot read the binary layout (it parses the long ASCII layout only); there is no external validator for the binary files in the test suite or the CI workflow, and `cgx -b` is not available there.
+
 ### Time series
 
 ```python
@@ -66,9 +86,9 @@ with meshioplusplus.frd.SeriesWriter("run.frd") as w:        # or: meshioplusplu
         w.write(time, mesh)
 ```
 
-A result file holds one mesh and any number of increments, so a series writes the mesh with the first step and one `100C` increment (a `1PSTEP` and `100C` header and a `-4` block per array) per step; `read(time_step=k)` reads step `k` back, and `write_sequence` / `convert in_*.vtu out.frd` / the `Sequence` pipeline step reach it as a fan-in. A step's value is the `time` you pass; its number is its `frd:step` when positive and not used by an earlier step, else the next free one; its analysis type is its `frd:analysis`. Every step must have the first step's cells (otherwise a `WriteError` asks for one file per step with `{step}`); points that move are written as the first step's, with one warning. The C++ class is `FrdSeriesWriter`, the Python one `meshioplusplus.frd.SeriesWriter`; both write the same bytes.
+A result file holds one mesh and any number of increments, so a series writes the mesh with the first step and one `100C` increment (a `1PSTEP` and `100C` header and a `-4` block per array) per step; `read(time_step=k)` reads step `k` back, and `write_sequence` / `convert in_*.vtu out.frd` / the `Sequence` pipeline step reach it as a fan-in. A step's value is the `time` you pass; its number is its `frd:step` when positive and not used by an earlier step, else the next free one; its analysis type is its `frd:analysis`. Every step must have the first step's cells (otherwise a `WriteError` asks for one file per step with `{step}`); points that move are written as the first step's, with one warning. The C++ class is `FrdSeriesWriter` (its constructor takes a `FrdWriteOptions` for the [binary layout](#binary-output)), the Python one `meshioplusplus.frd.SeriesWriter(path, long_ids=True, binary=False)`; both write the same bytes. A fan-in reaches the binary layout with `Encoding` = binary (`write_sequence(..., binary=True)`, the C++ `SequenceOutput::mOptions.mEncoding`); ASCII stays the default.
 
-The binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) is read but not yet written. Validator: [ccx2paraview](https://github.com/calculix/ccx2paraview) 3.2.0 (optional, `pip install ccx2paraview vtk`) reads written files in `tests/python/test_frd.py` and returns the same points, cells, `DISP`, `STRESS` and `TOSTRAIN`. It parses the long (`I10`) layout only, and its principal-value step fails under numpy 2 on `ccx`'s own files, so that step is stubbed in the test; `cgx -b` is not in the test environment. See the [roadmap](../roadmap.md#_3-reader-and-writer-parity) (§3.2.1) for the binary variant.
+Validator for the ASCII layout: [ccx2paraview](https://github.com/calculix/ccx2paraview) 3.2.0 (optional, `pip install ccx2paraview vtk`) reads written files in `tests/python/test_frd.py` and returns the same points, cells, `DISP`, `STRESS` and `TOSTRAIN`. It parses the long (`I10`) ASCII layout only, and its principal-value step fails under numpy 2 on `ccx`'s own files, so that step is stubbed in the test; `cgx -b` is not in the test environment. The ccx2paraview test is not wired into the CI workflow either (it skips unless the packages are installed). See the [roadmap](../roadmap.md#_3-reader-and-writer-parity) (§3.2.1) for the validators still to wire.
 
 ## What is read
 
@@ -156,7 +176,7 @@ The format flag is 0 for the **short** ASCII layout (`I5` ids), 1 for the **long
 | `3C` (elements) | `int32` element id, `int32` FRD type, `int32` group, `int32` material, then `nodesPerType` `int32` node ids — the same four-field header and node list as the ASCII long format's `-1`/`-2` lines, concatenated with no markers |
 | `100C` (results) | `int32` node id, then `DataComps` reals (`float32` / flag 2 from `ccx` by default) — `DataComps` is `ncomps` minus any component the `-5` lines mark calculated, exactly as in ASCII |
 
-Verified against real `ccx` 2.23 output (`tests/python/meshes/frd/*_bin.frd`, generated by `tools/gen_frd_fixtures.py`): every value matches the ASCII rendition of the same run to float32 precision. The host is assumed little-endian, like every other binary format in this codebase.
+Verified against real `ccx` 2.23 output (`tests/python/meshes/frd/*_bin.frd`, generated by `tools/gen_frd_fixtures.py`): every value matches the ASCII rendition of the same run to float32 precision. The host is assumed little-endian, like every other binary format in this codebase. The file ends with ` 9999` (one leading space, as `ccx` ends a binary file; the reader accepts the ASCII form's two as well). The writer ([above](#binary-output)) produces this layout: flag 3 on `2C`, 2 on `3C` and `100CL`, `float64` coordinates, `float32` results.
 
 ## The `.dat` tabular print
 

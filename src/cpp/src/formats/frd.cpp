@@ -895,6 +895,38 @@ std::string frd_small(std::int64_t Value, const char* pWhat) {
     return buf;
 }
 
+/// Appends @p Value as four little-endian bytes (the binary layout's integers).
+void frd_put_i32(std::string& rOut, std::int64_t Value, const char* pWhat) {
+    if (Value < std::numeric_limits<std::int32_t>::min() ||
+        Value > std::numeric_limits<std::int32_t>::max())
+        throw WriteError(std::string("CalculiX FRD: ") + pWhat + " " + std::to_string(Value) +
+                         " does not fit a 32-bit integer");
+    const auto word = static_cast<std::uint32_t>(static_cast<std::int32_t>(Value));
+    for (int k = 0; k < 4; ++k)
+        rOut += static_cast<char>((word >> (8 * k)) & 0xFFu);
+}
+
+/// Appends @p Value as eight little-endian bytes (the binary layout's coordinates).
+void frd_put_f64(std::string& rOut, double Value) {
+    std::uint64_t word;
+    std::memcpy(&word, &Value, sizeof(word));
+    for (int k = 0; k < 8; ++k)
+        rOut += static_cast<char>((word >> (8 * k)) & 0xFFu);
+}
+
+/// Appends @p Value as the four little-endian bytes of a `float` (the binary layout's
+/// results); a finite value beyond the `float` range is refused, not turned into inf.
+void frd_put_f32(std::string& rOut, double Value) {
+    if (std::fabs(Value) > static_cast<double>(std::numeric_limits<float>::max()))
+        throw WriteError("CalculiX FRD: " + std::to_string(Value) +
+                         " does not fit a single-precision binary field");
+    const float single = static_cast<float>(Value);
+    std::uint32_t word;
+    std::memcpy(&word, &single, sizeof(word));
+    for (int k = 0; k < 4; ++k)
+        rOut += static_cast<char>((word >> (8 * k)) & 0xFFu);
+}
+
 std::string frd_int_field(std::int64_t Value, std::size_t Width) {
     char buf[40];
     detail::snprintf_c(buf, sizeof(buf), "%*lld", static_cast<int>(Width),
@@ -957,6 +989,7 @@ struct FrdWriteBlock {
 /// What the writer makes of a mesh: the nodes and the cells the format can hold.
 struct FrdWritePlan {
     bool mLong = true;
+    bool mBinary = false;  // the raw little-endian layout: ids are int32 whatever mLong says
     std::size_t mNpts = 0;
     std::size_t mNumCells = 0;
     std::vector<double> mCoords;  // mNpts x 3
@@ -972,9 +1005,12 @@ namespace {
 using detail::frd_writer::FrdWriteBlock;
 using detail::frd_writer::FrdWritePlan;
 
-FrdWritePlan frd_plan(const Mesh& rMesh, bool LongIds) {
+FrdWritePlan frd_plan(const Mesh& rMesh, const FrdWriteOptions& rOpts) {
+    // The binary layout holds int32 ids, as many as the long ASCII form.
+    const bool LongIds = rOpts.mLongIds || rOpts.mBinary;
     FrdWritePlan plan;
     plan.mLong = LongIds;
+    plan.mBinary = rOpts.mBinary;
     plan.mNpts = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
     if (dim > 3)
@@ -1062,15 +1098,51 @@ FrdWritePlan frd_plan(const Mesh& rMesh, bool LongIds) {
     return plan;
 }
 
+/// The binary layout of the mesh: the ASCII banner and `2C`/`3C` headers (flag 3, then
+/// 2) with, after each, a raw little-endian record per entry and no `-1`/`-2`/`-3`
+/// markers: `[int32 id][3 x float64]` per node and `[int32 id, type, group,
+/// material][int32 node x n]` per element, as `ccx` writes `*NODE OUTPUT` and
+/// `*ELEMENT OUTPUT`.
+std::string frd_mesh_binary(const FrdWritePlan& rPlan, const std::string& rTitle) {
+    char buf[160];
+    std::string out = "    1C\n    1U" + rTitle + "\n";
+    detail::snprintf_c(buf, sizeof(buf), "    2C%30zu%37s%d\n", rPlan.mNpts, "", 3);
+    out += buf;
+    out.reserve(out.size() + rPlan.mNpts * 28 + rPlan.mNumCells * 40);
+    for (std::size_t i = 0; i < rPlan.mNpts; ++i) {
+        frd_put_i32(out, static_cast<std::int64_t>(i + 1), "node id");
+        for (std::size_t k = 0; k < 3; ++k)
+            frd_put_f64(out, rPlan.mCoords[i * 3 + k]);
+    }
+    detail::snprintf_c(buf, sizeof(buf), "    3C%30zu%37s%d\n", rPlan.mNumCells, "", 2);
+    out += buf;
+    std::int64_t eid = 0;
+    for (const FrdWriteBlock& block : rPlan.mBlocks) {
+        const std::size_t n = block.mGroup.size();
+        for (std::size_t r = 0; r < n; ++r) {
+            frd_put_i32(out, ++eid, "element id");
+            frd_put_i32(out, block.mCode, "element type");
+            frd_put_i32(out, block.mGroup[r], "group");
+            frd_put_i32(out, block.mMaterial[r], "material");
+            const std::int64_t* ids = block.mConn.data() + r * block.mNodes;
+            for (std::size_t j = 0; j < block.mNodes; ++j)
+                frd_put_i32(out, ids[j] + 1, "node id");
+        }
+    }
+    return out;
+}
+
 std::string frd_mesh_text(const FrdWritePlan& rPlan) {
     const std::size_t w = rPlan.Width();
     const int flag = rPlan.mLong ? 1 : 0;
     char buf[160];
-    std::string out = "    1C\n";
     std::string title = detail::provenance_lines(detail::SlotTier::SingleLine)[0];
     for (char& c : title)
         if (c == '\n' || c == '\r')
             c = ' ';
+    if (rPlan.mBinary)
+        return frd_mesh_binary(rPlan, title);
+    std::string out = "    1C\n";
     out += "    1U" + title + "\n";
     detail::snprintf_c(buf, sizeof(buf), "    2C%30zu%37s%d\n", rPlan.mNpts, "", flag);
     out += buf;
@@ -1105,14 +1177,22 @@ std::string frd_mesh_text(const FrdWritePlan& rPlan) {
     return out;
 }
 
-/// The `-4` blocks of the mesh's point data, one string each, and in @p rUnwritable the
-/// arrays that have none.
-std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan& rPlan,
-                                           std::vector<std::string>& rUnwritable) {
+/// One result block: its `-4`/`-5` records and values, and the number of nodes the `100C`
+/// header names. The ASCII header counts every node (the reader ignores it there); the
+/// binary one must count the records that follow, which a non-finite row leaves out.
+struct FrdResultBlock {
+    std::string mText;
+    std::size_t mRows = 0;
+};
+
+/// The `-4` blocks of the mesh's point data and in @p rUnwritable the arrays that have
+/// none.
+std::vector<FrdResultBlock> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan& rPlan,
+                                              std::vector<std::string>& rUnwritable) {
     static const std::int64_t tensor_index[6][2] = {{1, 1}, {2, 2}, {3, 3}, {1, 2}, {2, 3}, {3, 1}};
     const std::size_t w = rPlan.Width();
     const std::size_t npts = rPlan.mNpts;
-    std::vector<std::string> blocks;
+    std::vector<FrdResultBlock> blocks;
     char buf[160];
     for (const std::string& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
@@ -1163,6 +1243,12 @@ std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan
                 ++skipped;
                 continue;
             }
+            if (rPlan.mBinary) {
+                frd_put_i32(out, static_cast<std::int64_t>(i + 1), "node id");
+                for (std::size_t k = 0; k < nc; ++k)
+                    frd_put_f32(out, row[k]);
+                continue;
+            }
             for (std::size_t k = 0; k < nc; k += frd_values_per_line) {
                 if (k == 0)
                     out += " -1" + frd_int_field(static_cast<std::int64_t>(i + 1), w);
@@ -1176,8 +1262,9 @@ std::vector<std::string> frd_result_blocks(const Mesh& rMesh, const FrdWritePlan
         if (skipped)
             log::warn("CalculiX FRD: {} node(s) of '{}' with a non-finite value left out", skipped,
                       name);
-        out += " -3\n";
-        blocks.push_back(std::move(out));
+        if (!rPlan.mBinary)
+            out += " -3\n";
+        blocks.push_back({std::move(out), rPlan.mBinary ? npts - skipped : npts});
     }
     return blocks;
 }
@@ -1216,25 +1303,31 @@ double frd_field_time(const Mesh& rMesh) {
 }
 
 /// The `1PSTEP`/`100CL` header and `-4` block of every result for one increment.
-std::string frd_frame_text(const FrdWritePlan& rPlan, const std::vector<std::string>& rBlocks,
+std::string frd_frame_text(const FrdWritePlan& rPlan, const std::vector<FrdResultBlock>& rBlocks,
                            double Value, std::int64_t Step, std::int64_t Analysis) {
     if (!std::isfinite(Value))
         throw WriteError("CalculiX FRD: the step time is not finite");
-    const int flag = rPlan.mLong ? 1 : 0;
+    // Flag 2 is the binary layout's float32 result records.
+    const int flag = rPlan.mBinary ? 2 : (rPlan.mLong ? 1 : 0);
     char buf[200];
     std::string out;
-    for (const std::string& block : rBlocks) {
+    for (const FrdResultBlock& block : rBlocks) {
         detail::snprintf_c(buf, sizeof(buf), "    1PSTEP%25s%1lld%11s1%11s%1lld%10s\n", "",
                            static_cast<long long>(Step), "", "", static_cast<long long>(Step), "");
         out += buf;
         detail::snprintf_c(buf, sizeof(buf), "  100CL %4lld%s%12zu%20s%2lld%5lld%10s%2d\n",
                            static_cast<long long>(100 + Step), frd_time_text(Value).c_str(),
-                           rPlan.mNpts, "", static_cast<long long>(Analysis),
+                           block.mRows, "", static_cast<long long>(Analysis),
                            static_cast<long long>(Step), "", flag);
         out += buf;
-        out += block;
+        out += block.mText;
     }
     return out;
+}
+
+/// The last record: `  9999` in the ASCII layout, ` 9999` as `ccx` ends a binary file.
+const char* frd_terminator(const FrdWritePlan& rPlan) {
+    return rPlan.mBinary ? " 9999\n" : "  9999\n";
 }
 
 /// What must not change between the steps of a series: a hash of the cells, and one of
@@ -1269,16 +1362,22 @@ std::pair<std::uint64_t, std::uint64_t> frd_fingerprint(const Mesh& rMesh) {
 }  // namespace
 
 void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
-    const FrdWritePlan plan = frd_plan(rMesh, LongIds);
+    FrdWriteOptions opts;
+    opts.mLongIds = LongIds;
+    write_frd(rPath, rMesh, opts);
+}
+
+void write_frd(const std::string& rPath, const Mesh& rMesh, const FrdWriteOptions& rOpts) {
+    const FrdWritePlan plan = frd_plan(rMesh, rOpts);
     std::vector<std::string> unwritable;
-    const std::vector<std::string> blocks = frd_result_blocks(rMesh, plan, unwritable);
+    const std::vector<FrdResultBlock> blocks = frd_result_blocks(rMesh, plan, unwritable);
     frd_note_dropped_data(rMesh, unwritable);
     // Everything is built before the file is touched, so a refused value leaves no
     // half-written file behind.
     std::string text = frd_mesh_text(plan);
     text += frd_frame_text(plan, blocks, frd_field_time(rMesh), frd_field_int(rMesh, "frd:step", 1),
                            frd_field_int(rMesh, "frd:analysis", 0));
-    text += "  9999\n";
+    text += frd_terminator(plan);
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -1287,10 +1386,9 @@ void write_frd(const std::string& rPath, const Mesh& rMesh, bool LongIds) {
         throw WriteError("Could not write file: " + rPath);
 }
 
-
 struct FrdSeriesWriter::Impl {
     std::string mPath;
-    bool mLong = true;
+    FrdWriteOptions mOpts;
     decltype(detail::make_classic_ofstream("")) mOut;  // opened by make_classic_ofstream
     std::optional<FrdWritePlan> mPlan;
     std::pair<std::uint64_t, std::uint64_t> mFingerprint{0, 0};
@@ -1302,9 +1400,12 @@ struct FrdSeriesWriter::Impl {
 };
 
 FrdSeriesWriter::FrdSeriesWriter(const std::string& rPath, bool LongIds)
+    : FrdSeriesWriter(rPath, FrdWriteOptions{LongIds, false}) {}
+
+FrdSeriesWriter::FrdSeriesWriter(const std::string& rPath, const FrdWriteOptions& rOpts)
     : mpImpl(std::make_unique<Impl>()) {
     mpImpl->mPath = rPath;
-    mpImpl->mLong = LongIds;
+    mpImpl->mOpts = rOpts;
     mpImpl->mOut = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!mpImpl->mOut)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -1323,7 +1424,7 @@ void FrdSeriesWriter::Write(double Time, const Mesh& rMesh) {
     std::string text;
     std::vector<std::string> unwritable;
     if (!s.mPlan) {
-        s.mPlan = frd_plan(rMesh, s.mLong);
+        s.mPlan = frd_plan(rMesh, s.mOpts);
         s.mFingerprint = frd_fingerprint(rMesh);
         text = frd_mesh_text(*s.mPlan);
     } else {
@@ -1340,7 +1441,7 @@ void FrdSeriesWriter::Write(double Time, const Mesh& rMesh) {
                                     "every increment shares the first step's points");
         }
     }
-    const std::vector<std::string> blocks = frd_result_blocks(rMesh, *s.mPlan, unwritable);
+    const std::vector<FrdResultBlock> blocks = frd_result_blocks(rMesh, *s.mPlan, unwritable);
     if (s.mSteps == 0)
         frd_note_dropped_data(rMesh, unwritable);
     std::int64_t step = frd_field_int(rMesh, "frd:step", 0);
@@ -1370,7 +1471,7 @@ void FrdSeriesWriter::Finalize() {
     if (mpImpl->mSteps == 0)
         throw WriteError("CalculiX FRD series: no step was written to " + mpImpl->mPath);
     mpImpl->mClosed = true;
-    mpImpl->mOut << "  9999\n";
+    mpImpl->mOut << frd_terminator(*mpImpl->mPlan);
     mpImpl->mOut.close();
     if (!mpImpl->mOut)
         throw WriteError("CalculiX FRD series: failed writing " + mpImpl->mPath);

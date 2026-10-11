@@ -593,10 +593,6 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
             "select");
-    if (rFormat == "frd" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient CalculiX FRD writer has no ASCII/binary variant "
-            "to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -670,7 +666,7 @@ private:
 /// the mesh with the first step, so `WritePointsCells` has nothing to do.
 class SeqFrdSink final : public SeqSeriesSink {
 public:
-    explicit SeqFrdSink(const std::string& rPath) : mWriter(rPath) {}
+    SeqFrdSink(const std::string& rPath, const FrdWriteOptions& rOpts) : mWriter(rPath, rOpts) {}
     void WritePointsCells(const Mesh&) override {}
     void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
     void Finalize() override { mWriter.Finalize(); }
@@ -714,8 +710,11 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "femap")
         return std::make_unique<SeqFemapSink>(rPath);
-    if (rFormat == "frd")
-        return std::make_unique<SeqFrdSink>(rPath);
+    if (rFormat == "frd") {
+        FrdWriteOptions frd_opts;
+        frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;
+        return std::make_unique<SeqFrdSink>(rPath, frd_opts);
+    }
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);

@@ -1653,7 +1653,7 @@ meshioplusplus decompress [options] INFILE
 
 ## meshioplusplus ascii
 
-Convert a mesh file to its ASCII representation (in-place).
+Convert a mesh file to its ASCII representation (in-place). A CalculiX `.frd` is rewritten in the long ASCII layout; like every in-place verb it keeps only the first increment of a multi-step file.
 
 ```
 meshioplusplus ascii [options] INFILE
@@ -1667,7 +1667,7 @@ meshioplusplus ascii [options] INFILE
 
 ## meshioplusplus binary
 
-Convert a mesh file to its binary representation (in-place).
+Convert a mesh file to its binary representation (in-place). A CalculiX `.frd` is rewritten in the binary layout `ccx` writes for `*NODE OUTPUT` (`float64` points, `float32` results; see [CalculiX results](./formats/frd.md#binary-output)), keeping only the first increment of a multi-step file.
 
 ```
 meshioplusplus binary [options] INFILE

@@ -29,6 +29,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
+#include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
@@ -51,7 +52,7 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" ||
+    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "frd" || rFormat == "gmsh" ||
            rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
            rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
            rFormat == "xdmf" || wopt_is_text_only(rFormat);
@@ -147,6 +148,11 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_ansys(rPath, rMesh, binary);
     } else if (fmt == "flac3d") {
         write_flac3d(rPath, rMesh, r_ff, binary);
+    } else if (fmt == "frd") {
+        // ASCII is the long I10 form `ccx` writes; binary is the raw little-endian layout.
+        FrdWriteOptions wopts;
+        wopts.mBinary = binary;
+        write_frd(rPath, rMesh, wopts);
     } else if (fmt == "gmsh") {
         write_gmsh41(rPath, rMesh, binary);
     } else if (fmt == "openfoam") {

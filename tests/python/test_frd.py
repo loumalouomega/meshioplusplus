@@ -734,9 +734,9 @@ ASCII_FIXTURES = sorted(
 ALL_FIXTURES = sorted(p.stem for p in FIXTURES.glob("*.frd"))
 
 
-def core_write(path, mesh, long_ids=True):
+def core_write(path, mesh, long_ids=True, binary=False):
     """The C++ writer itself, with no fallback to hide a broken native path."""
-    _core.frd_write(str(path), mesh, long_ids)
+    _core.frd_write(str(path), mesh, long_ids, binary)
 
 
 def full(mesh):
@@ -970,14 +970,272 @@ class TestWriter:
         assert buf.getvalue().startswith("    1C\n")
 
 
+def single(mesh):
+    """``mesh`` with its results rounded to ``float32``, which is all a binary file
+    holds of them (the points are ``float64`` in either layout)."""
+    return meshioplusplus.Mesh(
+        mesh.points.copy(),
+        [(c.type, np.asarray(c.data).copy()) for c in mesh.cells],
+        point_data={
+            k: np.asarray(v).astype(np.float32).astype(np.float64)
+            for k, v in mesh.point_data.items()
+        },
+        cell_data={
+            k: [np.asarray(b).copy() for b in v] for k, v in mesh.cell_data.items()
+        },
+        field_data={k: np.asarray(v).copy() for k, v in mesh.field_data.items()},
+    )
+
+
+def mesh_section(raw):
+    """The bytes from the ``2C`` header to the first increment: the node and element
+    records, which carry nothing a writer is free to vary."""
+    return raw[raw.index(b"    2C") : raw.index(b"    1PSTEP")]
+
+
+def i32(*values):
+    return np.array(values, "<i4").tobytes()
+
+
+class TestBinaryWriter:
+    """``binary=True``: ASCII headers, then raw little-endian ``int32`` ids,
+    ``float64`` coordinates and ``float32`` results, with no ``-1``/``-2``/``-3``
+    markers and `` 9999`` to end. The reader is meshio++'s own and the real ccx
+    ``*_bin`` fixtures; ccx2paraview parses only the ASCII layout (see the last test).
+    """
+
+    @pytest.mark.parametrize("name", ALL_FIXTURES)
+    def test_every_fixture_round_trips_in_single_precision(
+        self, write_with, name, tmp_path
+    ):
+        for step in steps_of(name):
+            source = py_frd.read(path_of(name), time_step=step)
+            out = tmp_path / f"{name}_{step}.frd"
+            write_with(out, source, binary=True)
+            expected = full(single(source))
+            for back in (core_read(out), py_frd.read(out)):
+                assert full(back) == expected
+
+    @pytest.mark.parametrize("name", ALL_FIXTURES)
+    def test_both_engines_write_the_same_bytes(self, name, tmp_path):
+        for step in steps_of(name):
+            source = py_frd.read(path_of(name), time_step=step)
+            a, b = tmp_path / "core.frd", tmp_path / "python.frd"
+            core_write(a, source, binary=True)
+            py_frd.write(b, source, binary=True)
+            assert a.read_bytes() == b.read_bytes()
+
+    @pytest.mark.parametrize("name", ["c3d8", "c3d20", "cantilever_static"])
+    def test_the_records_are_the_ones_ccx_writes(self, write_with, name, tmp_path):
+        """Read a real ccx binary file and write it back: the node and element records
+        are byte for byte ccx's, and its single-precision results are not changed."""
+        real = path_of(f"{name}_bin")
+        source = py_frd.read(real)
+        out = tmp_path / "again.frd"
+        write_with(out, source, binary=True)
+        assert mesh_section(out.read_bytes()) == mesh_section(
+            pathlib.Path(real).read_bytes()
+        )
+        assert full(core_read(out)) == full(source)
+
+    def test_the_layout(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0.5]]),
+            [("tetra", np.array([[0, 1, 2, 3]]))],
+            point_data={
+                "NDTEMP": np.array([1.5, 2.5, np.nan, 4.0]),
+                "DISP": np.arange(12.0).reshape(4, 3) / 3,
+            },
+            cell_data={"frd:group": [np.array([7])], "frd:material": [np.array([3])]},
+            field_data={"meshio:time": np.array([0.25]), "frd:step": np.array([2])},
+        )
+        out = tmp_path / "layout.frd"
+        write_with(out, mesh, binary=True)
+        raw = out.read_bytes()
+        nodes = b"".join(
+            i32(k + 1) + np.array(mesh.points[k], "<f8").tobytes() for k in range(4)
+        )
+        element = i32(1, 3, 7, 3, 1, 2, 3, 4)
+        disp = b"".join(
+            i32(k + 1) + np.array(mesh.point_data["DISP"][k], "<f4").tobytes()
+            for k in range(4)
+        )
+        ndtemp = b"".join(
+            i32(k + 1) + np.array([v], "<f4").tobytes()
+            for k, v in ((0, 1.5), (1, 2.5), (3, 4.0))
+        )
+        step = f"    1PSTEP{'':25}2{'':11}1{'':11}2{'':10}\n".encode()
+
+        def increment(rows):
+            return (
+                f"  100CL  102 0.250000000{rows:12d}{'':20} 0{2:5d}{'':10} 2\n".encode()
+            )
+
+        expected = b"".join(
+            [
+                b"    2C" + b"%30d" % 4 + b" " * 37 + b"3\n",
+                nodes,
+                b"    3C" + b"%30d" % 1 + b" " * 37 + b"2\n",
+                element,
+                step + increment(4),
+                b" -4  DISP        4    1\n",
+                b" -5  D1          1    2    1    0\n",
+                b" -5  D2          1    2    2    0\n",
+                b" -5  D3          1    2    3    0\n",
+                b" -5  ALL         1    2    0    0    1ALL\n",
+                disp,
+                step + increment(3),
+                b" -4  NDTEMP      1    1\n",
+                b" -5  T           1    1    0    0\n",
+                ndtemp,
+                b" 9999\n",
+            ]
+        )
+        assert raw[raw.index(b"    2C") :] == expected
+        assert raw.startswith(b"    1C\n    1UWritten by meshio++")
+        assert b" -1" not in raw[: raw.index(b"    2C")]
+
+    def test_ascii_stays_the_default_and_long_ids_do_not_apply(
+        self, write_with, tmp_path
+    ):
+        mesh = py_frd.read(path_of("c3d8"))
+        plain, ascii_, long_, short = (tmp_path / n for n in "abcd")
+        write_with(plain, mesh)
+        write_with(ascii_, mesh, binary=False)
+        assert plain.read_bytes() == ascii_.read_bytes()
+        assert plain.read_bytes().endswith(b" -3\n  9999\n")
+        write_with(long_, mesh, binary=True)
+        write_with(short, mesh, long_ids=False, binary=True)
+        assert long_.read_bytes() == short.read_bytes()
+        assert long_.read_bytes().endswith(b" 9999\n")
+
+    def test_the_header_counts_the_records_that_follow(self, write_with, tmp_path):
+        """A node with a non-finite value is left out, so the count drops with it."""
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"T": np.array([1.0, np.nan, 3.0])},
+        )
+        out = tmp_path / "nan.frd"
+        write_with(out, mesh, binary=True)
+        assert re.search(rb"  100CL  101 0\.000000000 +2 ", out.read_bytes())
+        for back in (core_read(out), py_frd.read(out)):
+            assert back.point_data["T"][[0, 2]].tolist() == [1.0, 3.0]
+            assert np.isnan(back.point_data["T"][1])
+
+    def test_ids_wider_than_i5_are_fine(self, write_with, tmp_path):
+        mesh = py_frd.read(path_of("c3d8"))
+        mesh.cell_data["frd:group"] = [np.array([100000])]
+        mesh.cell_data["frd:material"] = [np.array([2**31 - 1])]
+        out = tmp_path / "wide.frd"
+        write_with(out, mesh, binary=True)
+        back = core_read(out)
+        assert back.cell_data["frd:group"][0].tolist() == [100000]
+        assert back.cell_data["frd:material"][0].tolist() == [2**31 - 1]
+        mesh.cell_data["frd:group"] = [np.array([2**31])]
+        with pytest.raises(WriteError, match="32-bit"):
+            write_with(tmp_path / "toowide.frd", mesh, binary=True)
+        assert not (tmp_path / "toowide.frd").exists()
+
+    def test_a_value_beyond_single_precision_is_refused_and_leaves_no_file(
+        self, write_with, tmp_path
+    ):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"T": np.array([1e39, 0.0, 0.0])},
+        )
+        out = tmp_path / "huge.frd"
+        with pytest.raises(WriteError, match="single-precision"):
+            write_with(out, mesh, binary=True)
+        assert not out.exists()
+        mesh.point_data["T"] = np.array([1e-60, 3.4e38, -3.4e38])
+        write_with(out, mesh, binary=True)  # underflow flushes, the range edge holds
+        assert core_read(out).point_data["T"].tolist() == pytest.approx(
+            [0.0, 3.4e38, -3.4e38], rel=1e-6
+        )
+
+    def test_coordinates_stay_double_precision(self, write_with, tmp_path):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.1, 1 / 3, 2e-300], [1, 0, 0], [0, 1, 0]]),
+            [("triangle", np.array([[0, 1, 2]]))],
+        )
+        out = tmp_path / "exact.frd"
+        write_with(out, mesh, binary=True)
+        for back in (core_read(out), py_frd.read(out)):
+            assert np.array_equal(back.points, mesh.points)
+
+    def test_dropped_data_warns_as_in_ascii(self, write_with, tmp_path, capfd):
+        mesh = py_frd.read(path_of("c3d8"))
+        mesh.cell_data["pressure"] = [np.array([1.0])]
+        mesh.point_data["TOOLONGNAME"] = np.ones(len(mesh.points))
+        write_with(tmp_path / "drop.frd", mesh, binary=True)
+        text = capfd.readouterr().err
+        assert "pressure" in text and "TOOLONGNAME" in text
+
+    def test_the_shim_writes_it_with_the_core_and_no_fallback(self, tmp_path):
+        set_strict_core(True)
+        try:
+            meshioplusplus.frd.write(
+                tmp_path / "strict.frd", py_frd.read(path_of("c3d8")), binary=True
+            )
+        finally:
+            set_strict_core(None)
+        assert full(core_read(tmp_path / "strict.frd")) == full(
+            single(py_frd.read(path_of("c3d8")))
+        )
+
+    def test_a_buffer_is_written_by_the_python_writer(self):
+        buf = io.BytesIO()
+        meshioplusplus.frd.write(buf, py_frd.read(path_of("c3d8")), binary=True)
+        assert buf.getvalue().endswith(b" 9999\n")
+        assert py_frd.read(io.BytesIO(buf.getvalue())).cells[0].type == "hexahedron"
+
+    def test_the_generic_write_reaches_it(self, tmp_path):
+        mesh = py_frd.read(path_of("c3d8"))
+        meshioplusplus.write(tmp_path / "generic.frd", mesh, binary=True)
+        assert (tmp_path / "generic.frd").read_bytes().endswith(b" 9999\n")
+
+    def test_the_cli_and_mcp_variant_tables_have_it(self, tmp_path):
+        from meshioplusplus._cli import _ascii, _binary
+        from meshioplusplus.mcp import _tools
+
+        assert _tools._ASCII_VARIANT["frd"] == {"binary": False}
+        assert _tools._BINARY_VARIANT["frd"] == {"binary": True}
+        src = tmp_path / "a.frd"
+        meshioplusplus.write(src, py_frd.read(path_of("c3d8")))
+
+        class Args:
+            infile = str(src)
+            input_format = None
+
+        assert _binary.binary(Args) is None
+        assert src.read_bytes().endswith(b" 9999\n")
+        assert _ascii.ascii(Args) == 0
+        assert src.read_bytes().endswith(b" -3\n  9999\n")
+
+    def test_ccx2paraview_cannot_read_the_binary_layout(self, tmp_path):
+        """It opens the file as text and splits it into lines on the ``-1``/``-2``
+        markers, so the ASCII layout is its only input (the long form at that): the
+        binary file is not a thing it can check."""
+        pytest.importorskip("ccx2paraview")
+        pytest.importorskip("vtk")
+        from ccx2paraview import common
+
+        out = tmp_path / "bin.frd"
+        meshioplusplus.frd.write(out, py_frd.read(path_of("c3d8")), binary=True)
+        with pytest.raises(UnicodeDecodeError):
+            common.Converter(str(out), ["vtu"]).run()
+
+
 class TestSeriesWriter:
     @pytest.fixture(params=["core", "python"])
     def series(self, request):
         """Both engines' stateful writers behind one signature."""
         if request.param == "core":
 
-            def make(path, long_ids=True):
-                core = _core.FrdSeriesWriter(str(path), long_ids)
+            def make(path, long_ids=True, binary=False):
+                core = _core.FrdSeriesWriter(str(path), long_ids, binary)
 
                 class Wrapper:
                     def write(self, time, mesh):
@@ -1081,6 +1339,62 @@ class TestSeriesWriter:
         with meshioplusplus.frd.SeriesWriter(buf) as writer:
             writer.write(0.5, py_frd.read(path_of("c3d8")))
         assert buf.getvalue().rstrip().endswith("9999")
+        assert not buf.closed
+
+    @pytest.mark.parametrize("name", ["cantilever_static", "cantilever_modes", "mixed"])
+    def test_every_step_reads_back_in_binary(self, series, name, tmp_path):
+        steps = list(_sequence.read_sequence(path_of(name)))
+        out = tmp_path / "series.frd"
+        writer = series(out, binary=True)
+        for time, mesh in steps:
+            writer.write(time, mesh)
+        writer.close()
+        assert out.read_bytes().endswith(b" 9999\n")
+        assert len(py_frd.time_values(out)) == len(steps)
+        for k, (time, mesh) in enumerate(steps):
+            for read in (core_read, py_frd.read):
+                assert full(read(out, time_step=k)) == full(single(mesh)), k
+
+    def test_binary_engines_and_write_sequence_write_the_same_bytes(self, tmp_path):
+        steps = list(_sequence.read_sequence(path_of("cantilever_modes")))
+        a, b, c = (tmp_path / n for n in ("core.frd", "python.frd", "seq.frd"))
+        core = _core.FrdSeriesWriter(str(a), True, True)
+        for time, mesh in steps:
+            core.write(float(time), mesh)
+        core.finalize()
+        with py_frd.SeriesWriter(b, binary=True) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        _sequence.write_sequence(c, steps, binary=True)
+        assert a.read_bytes() == b.read_bytes() == c.read_bytes()
+
+    def test_a_binary_series_of_one_step_is_the_single_step_file(self, tmp_path):
+        mesh = py_frd.read(path_of("c3d8"))
+        mesh.field_data["frd:step"] = np.array([1])
+        a, b = tmp_path / "series.frd", tmp_path / "single.frd"
+        with meshioplusplus.frd.SeriesWriter(a, binary=True) as writer:
+            writer.write(float(mesh.field_data["meshio:time"][0]), mesh)
+        meshioplusplus.frd.write(b, mesh, binary=True)
+        assert a.read_bytes() == b.read_bytes()
+
+    def test_a_binary_shim_series_uses_the_core_without_falling_back(self, tmp_path):
+        steps = list(_sequence.read_sequence(path_of("mixed")))
+        set_strict_core(True)
+        try:
+            with meshioplusplus.frd.SeriesWriter(
+                tmp_path / "strict.frd", binary=True
+            ) as writer:
+                for time, mesh in steps:
+                    writer.write(time, mesh)
+        finally:
+            set_strict_core(None)
+        assert len(py_frd.time_values(tmp_path / "strict.frd")) == len(steps)
+
+    def test_a_binary_buffer_series_is_written_by_the_python_twin(self):
+        buf = io.BytesIO()
+        with meshioplusplus.frd.SeriesWriter(buf, binary=True) as writer:
+            writer.write(0.5, py_frd.read(path_of("c3d8")))
+        assert buf.getvalue().endswith(b" 9999\n")
         assert not buf.closed
 
 

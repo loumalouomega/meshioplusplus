@@ -54,6 +54,11 @@
  * `100C` header. The format is nodal, holds no sets and prints six digits (`E12.5`), so
  * cell data, regions and other field data are dropped with a warning.
  *
+ * `FrdWriteOptions::mBinary` writes the binary layout instead (since v16.39.0): the same
+ * ASCII headers with the `2C`/`3C` flag 3/2, then raw little-endian records with no
+ * `-1`/`-2`/`-3` markers: `int32` ids, `float64` coordinates, `float32` results (so a
+ * round trip keeps single precision), and ` 9999` to end. The reader above reads it back.
+ *
  * See doc/formats/frd.md for the record layouts and the limits.
  */
 
@@ -112,6 +117,31 @@ MESHIOPLUSPLUS_API MeshMetadata read_frd_metadata(const std::string& rPath,
 MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
                                   bool LongIds = true);
 
+/** @brief Format-specific options of `write_frd` and `FrdSeriesWriter`. Since v16.39.0. */
+struct FrdWriteOptions {
+    /** @brief ASCII only: `I10` ids (what `ccx` writes) rather than the short `I5` form. */
+    bool mLongIds = true;
+    /**
+     * @brief Write the binary layout (`int32` ids, `float64` coordinates, `float32`
+     *        results) instead of ASCII. The ids are 32-bit whatever `mLongIds` says.
+     */
+    bool mBinary = false;
+};
+
+/**
+ * @brief Write a CalculiX `.frd` result file, one step, in the ASCII or the binary layout.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh; the point data is the step's results
+ * @param rOpts the layout
+ * @throws WriteError if the file can't be opened, a coordinate is not finite, a value
+ *         does not fit its field (`E12.5`, or `float32` in the binary layout), or the ids
+ *         do not fit the chosen form
+ * @note Since v16.39.0.
+ */
+MESHIOPLUSPLUS_API void write_frd(const std::string& rPath, const Mesh& rMesh,
+                                  const FrdWriteOptions& rOpts);
+
 /**
  * @brief A time series in one result file: the mesh once, then one `100C` increment
  * (a `1PSTEP` header and a `-4` block per point-data array) per step, the increments
@@ -127,6 +157,8 @@ class MESHIOPLUSPLUS_API FrdSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit FrdSeriesWriter(const std::string& rPath, bool LongIds = true);
+    /// The layout of @p rOpts, ASCII or binary.
+    FrdSeriesWriter(const std::string& rPath, const FrdWriteOptions& rOpts);
     ~FrdSeriesWriter();
 
     FrdSeriesWriter(const FrdSeriesWriter&) = delete;

@@ -390,6 +390,8 @@ static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
 
 // The CalculiX reader's option struct (v15.3.0, an addition, ABI unchanged): one `bool`.
 MIO_ABI_LAYOUT(meshioplusplus::FrdReadOptions, 1, 1);
+// The CalculiX writer's option struct (v16.39.0, an addition, ABI unchanged): two `bool`s.
+MIO_ABI_LAYOUT(meshioplusplus::FrdWriteOptions, 2, 1);
 
 // The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
 // and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a
@@ -508,6 +510,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::XyzReadOptions>("XyzReadOptions");
     report<meshioplusplus::detail::CardField>("CardField");
     report<meshioplusplus::FrdReadOptions>("FrdReadOptions");
+    report<meshioplusplus::FrdWriteOptions>("FrdWriteOptions");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

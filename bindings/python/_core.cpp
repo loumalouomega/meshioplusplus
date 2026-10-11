@@ -4579,16 +4579,20 @@ PYBIND11_MODULE(_core, m) {
     });
     // CalculiX results (.frd). `time_step` selects the increment; `derived` adds
     // <NAME>_mises/<NAME>_principal beside each tensor. The writer writes one step
-    // in the ASCII layout, I10 ids (`long_ids`) or the short I5 form.
+    // in the ASCII layout, I10 ids (`long_ids`) or the short I5 form, or with
+    // `binary` the raw little-endian layout (int32 ids, float64 points, float32 results).
     m.def(
         "frd_write",
-        [](const std::string& path, py::object pymesh, bool long_ids) {
+        [](const std::string& path, py::object pymesh, bool long_ids, bool binary) {
             meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::FrdWriteOptions opts;
+            opts.mLongIds = long_ids;
+            opts.mBinary = binary;
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_frd(path, mesh, long_ids);
+                return meshioplusplus::write_frd(path, mesh, opts);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("long_ids") = true);
+        py::arg("path"), py::arg("mesh"), py::arg("long_ids") = true, py::arg("binary") = false);
     m.def("frd_read",
           guard_read("frd",
                      [](const std::string& path, bool points_only, py::object arrays, int time_step,
@@ -4687,7 +4691,13 @@ PYBIND11_MODULE(_core, m) {
     // A time series in one CalculiX result file (v16.39.0): the core half of
     // `meshioplusplus.frd.SeriesWriter`.
     py::class_<meshioplusplus::FrdSeriesWriter>(m, "FrdSeriesWriter")
-        .def(py::init<const std::string&, bool>(), py::arg("path"), py::arg("long_ids") = true)
+        .def(py::init([](const std::string& path, bool long_ids, bool binary) {
+                 meshioplusplus::FrdWriteOptions opts;
+                 opts.mLongIds = long_ids;
+                 opts.mBinary = binary;
+                 return std::make_unique<meshioplusplus::FrdSeriesWriter>(path, opts);
+             }),
+             py::arg("path"), py::arg("long_ids") = true, py::arg("binary") = false)
         .def(
             "write",
             [](meshioplusplus::FrdSeriesWriter& rSelf, double time, py::object pymesh) {

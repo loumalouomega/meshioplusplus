@@ -794,6 +794,22 @@ def test_convert_openfoam_binary_variant(mesh_file, tmp_path):
     assert out["output_format"] == "openfoam"
 
 
+def test_convert_frd_ascii_and_binary_variants(tmp_path):
+    # roadmap 3.2.1: the CalculiX result file joined the ascii/binary variant table.
+    frd = pathlib.Path(__file__).parent / "meshes" / "frd" / "mixed.frd"
+    ascii_out, binary_out = tmp_path / "a.frd", tmp_path / "b.frd"
+    _tools.tool_convert(str(frd), str(ascii_out), mode="ascii", time_step=-1)
+    _tools.tool_convert(str(frd), str(binary_out), mode="binary", time_step=-1)
+    assert ascii_out.read_bytes().endswith(b" -3\n  9999\n")
+    assert binary_out.read_bytes().endswith(b" 9999\n")
+    assert b"\n -1" not in binary_out.read_bytes()
+    a, b = meshioplusplus.read(ascii_out), meshioplusplus.read(binary_out)
+    assert b.field_data["meshio:time"].tolist() == [2.0]
+    np.testing.assert_allclose(a.point_data["DISP"], b.point_data["DISP"], rtol=1e-5)
+    assert _tools._ASCII_VARIANT["frd"] == {"binary": False}
+    assert _tools._BINARY_VARIANT["frd"] == {"binary": True}
+
+
 def test_convert_raw_appended_variant(mesh_file, tmp_path):
     out = _dump(
         _tools.tool_convert(
