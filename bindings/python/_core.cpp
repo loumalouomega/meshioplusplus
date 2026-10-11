@@ -5975,7 +5975,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "#808080");
 
-    // SVG writer (write-only visualization; 3D input renders the projected
+    // SVG writer (3D input renders the projected
     // skin — camera args appended AFTER the existing ones, the Python shim
     // passes everything positionally).
     m.def(
@@ -6002,7 +6002,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "#808080", py::arg("colorbar") = false);
 
-    // TikZ writer (write-only LaTeX visualization; 3D input renders the
+    // TikZ writer (LaTeX; 3D input renders the
     // projected skin — camera args appended AFTER the existing ones).
     m.def(
         "tikz_write",
@@ -6028,6 +6028,32 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("color_by") = "", py::arg("component") = std::nullopt, py::arg("cmap") = "viridis",
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "gray", py::arg("colorbar") = false);
+
+    // SVG / TikZ drawing readers: only the structure the writers above emit, as a
+    // planar (z = 0) mesh. `strict=False` is ReadOptions::mLenient: read a
+    // drawing that lacks the meshio++ marker.
+    m.def("svg_read",
+          guard_read("svg",
+                     [](const std::string& path, bool points_only, py::object arrays, bool strict) {
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&, opts = core_read_options(points_only, arrays, 0,
+                                                                     py::none(), !strict)] {
+                                 return meshioplusplus::read_svg(path, opts);
+                             }));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("strict") = true);
+    m.def("tikz_read",
+          guard_read("tikz",
+                     [](const std::string& path, bool points_only, py::object arrays, bool strict) {
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&, opts = core_read_options(points_only, arrays, 0,
+                                                                     py::none(), !strict)] {
+                                 return meshioplusplus::read_tikz(path, opts);
+                             }));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("strict") = true);
 
     // PERMAS writer / reader (.post/.dato).
     m.def("permas_write", [](const std::string& path, py::object pymesh) {

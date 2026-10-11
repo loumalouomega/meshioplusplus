@@ -1,17 +1,17 @@
 # SVG (`.svg`)
 
-[Scalable Vector Graphics](https://www.w3.org/TR/SVG/) output — a **write-only** visualization format that draws the mesh edges. Flat 2D meshes draw directly; genuinely 3D meshes are **rendered**: the boundary skin of any volume cells is extracted (see [`extract_skin`](../extract_skin.md)) and projected through an orthographic camera, painted back-to-front.
+[Scalable Vector Graphics](https://www.w3.org/TR/SVG/) output — a 2-D drawing of the mesh, written and read back, not a mesh format: the reader parses only the structure meshio++'s own writer emits. Flat 2D meshes draw directly; genuinely 3D meshes are **rendered**: the boundary skin of any volume cells is extracted (see [`extract_skin`](../extract_skin.md)) and projected through an orthographic camera, painted back-to-front.
 
 | | |
 |---|---|
 | **Format name** | `svg` |
 | **Extensions** | `.svg` |
-| **Read / Write** | — / ✓ |
+| **Read / Write** | ✓ (a 2-D drawing, planar) / ✓ |
 | **Extra dependencies** | — |
 
 ## Reading & writing
 
-There is no reader — `register_format` is called with `read=None`. Full write signature:
+`meshioplusplus.svg.read(path, strict=True)` reads a drawing back (see [Reading](#reading)). Full write signature:
 
 ```python
 import meshioplusplus
@@ -43,6 +43,19 @@ meshioplusplus.svg.write(
 - **`azimuth`** / **`elevation`** / **`roll`** — orthographic camera angles in degrees, used only for genuinely 3D input. The view direction is `(cos el·cos az, cos el·sin az, sin el)` with z as the up reference; `roll` rotates the image in-screen. The defaults (`45`, `atan(1/√2) ≈ 35.264°`) look down the `(1,1,1)` diagonal — the classic CAD isometric view.
 - **`color_by`** … **`colorbar`** — data-driven colouring, see below. With `color_by` unset (the default) the output is byte-identical to previous releases.
 
+### Reading
+
+`meshioplusplus.svg.read(path, points_only=False, arrays=None, strict=True)` (and `read_svg` in C++, `mio_read` in the flat bindings) is the exact inverse of the writer and nothing more. A drawing is not a mesh, so anything else in the file, such as another tool's drawing or a hand edit, is a `ReadError` naming the construct, never a guess.
+
+- **Cells.** A closed path of 3 vertices is a `triangle`, of 4 a `quad`, of more a `polygon`; an open 2-vertex path is a `line`. Consecutive cells of one type and size form one block, so a flat write comes back block for block.
+- **Points** are welded on the exact text of their coordinates, in order of first appearance, so corners the writer printed identically come back shared (`0` and `0.0` are two points). Nothing in an SVG says two paths share a vertex, so a mesh's numbering and unused points are not recovered.
+- **Model units.** The writer flips y about `max_y + min_y` and scales the drawing to `image_width`. The marker comment records that scale and the flip (`scale=S offset=OX,OY`, `%.17g`), and the reader restores `x / S + OX` and `OY - y / S`, to the 3 decimals `float_fmt` kept. Without a marker (`strict=False`) the scale is 1 and the flip is undone from the `viewBox`.
+- **`z` is 0.** A 3-D mesh was drawn projected, and what comes back is that picture. The read warns once, either "planar drawing, z = 0 assumed" or "projected from 3-D (azimuth, elevation, roll), depth lost".
+- **Fills.** A path's `fill="#rrggbb"` comes back as the cell array `svg:fill` (`int32`, shape `(n, 3)`, `-1 -1 -1` for a cell with no fill such as a line), present only when some path has one. It is the colour, never the data it was coloured from: a colour map does not invert. The colour bar (`<rect>` and `<text>`) is skipped.
+- **Refused:** `<polygon>`, any `transform`, a curve (`C`, `S`, `Q`, `T`, `A`), a relative command (lowercase), `H` and `V`, several subpaths, coordinates repeated after one command, any element but `svg`, `style`, `path`, `rect` and `text`, and namespace prefixes.
+- **The marker.** A file without the marker comment is refused, because only meshio++'s own drawings are read back; `strict=False` (`ReadOptions::mLenient`, `mio_read_opts.lenient`, `--lenient` on the native CLI) reads it as a plain drawing with a warning. Files written by a release before the marker lack it too. `points_only` and `arrays` drop `svg:fill`.
+- The C++ reader and the Python twin return identical meshes (`tests/python/test_svg.py` reads every file through both and compares them), and a refusal in one is a refusal in the other. They differ only on a file that is not well-formed XML (invalid UTF-8, a repeated attribute), which the C++ core's pugixml tolerates and the Python twin's expat refuses.
+
 ### Data-driven colouring
 
 `color_by` names a `point_data` or `cell_data` array; each drawn face then gets its own `fill` attribute (overriding the document-level `path { fill: … }` rule) instead of the flat `fill` colour.
@@ -73,7 +86,9 @@ A mesh whose points have a non-zero z extent takes the 3D rendering path: if it 
 
 ## File structure
 
-A single `<svg>` root containing one `<path>` element per drawable cell (**not** `<polygon>`) — chosen deliberately: the comment in the source notes that `svgo` (a common SVG optimizer) converts `<polygon>`s to `<path>`s but drops style information when it does so, so meshio++ emits paths directly to sidestep that.
+A single `<svg>` root holding a comment (the marker, below), the `<style>`, then one `<path>` element per drawable cell (**not** `<polygon>`) — chosen deliberately: the comment in the source notes that `svgo` (a common SVG optimizer) converts `<polygon>`s to `<path>`s but drops style information when it does so, so meshio++ emits paths directly to sidestep that.
+
+The marker is an XML comment right after the opening tag: the provenance tag `Written by meshio++ v…`, one line `Drawing: planar scale=S offset=OX,OY` (or `Drawing: projected azimuth=A elevation=E roll=R scale=S offset=OX,OY` for a projected 3-D mesh), then whatever else the [provenance](../provenance.md) block carries. It is there under every provenance mode, and C++ and Python write it byte for byte.
 
 Path `d` templates (space-separated coordinate pairs, `float_fmt`-formatted):
 
@@ -98,13 +113,13 @@ No data array is written to the file. One array can be *read* to drive the face 
 - No diagonal/winding correction on `quad` cells — a "crossed" (non-convex, bowtie) node ordering renders incorrectly with no error raised.
 - Unsupported cells are dropped from the output with a warning naming them.
 - The painter's algorithm sorts whole faces by centroid depth — mutually intersecting faces (which a closed skin never has) can stack in the wrong order; there is no per-pixel depth test.
-- Write-only; there is no way to read an SVG back into a `Mesh`.
+- Reading is limited to meshio++'s own drawings, as planar meshes: see [Reading](#reading).
 - Colouring is a **Python + C++-direct + CLI** feature. The C API, Fortran and WebAssembly surfaces reach this writer through the shared registry, whose `(path, mesh)` writer entries structurally cannot carry parameters, so they always emit the fixed default styling — a documented gap of the same kind as the point/cell-set gaps in `diff`/`merge`/`split`.
 - Only *one* array can drive the colours; there is no multi-field or per-block colouring.
 - The colorbar's labels are the range endpoints only — there are no intermediate ticks.
 
 ## Notes
 
-- Backed by the **C++ core** (`write_svg`) with a pure-Python fallback: `meshioplusplus.svg.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (write-only, fixed default styling, **the default isometric camera and no colouring** — per-call options are exposed only through the Python `write`, the direct C++ call, and the CLI).
+- Backed by the **C++ core** (`write_svg`) with a pure-Python fallback: `meshioplusplus.svg.write` uses the C++ writer for real file paths and falls back to Python for file-object/buffer targets or on any error. Registered in the shared dispatch registry, so it is also reachable from the WASM, C API, and Fortran flat bindings (fixed default styling, **the default isometric camera and no colouring** — per-call options are exposed only through the Python `write`, the direct C++ call, and the CLI).
 - The C++ writer and the pure-Python reference are **byte-identical**, on the flat path, the projected 3D path and the coloured path alike. `tests/python/test_svg.py` asserts exact `read_bytes()` equality across a matrix of colouring options and additionally pins the provenance mapping, the corner averaging, the auto range, clamping, `nan_color` and the colorbar's append-only geometry. `tests/cpp/test_svg_tikz.cpp` covers the C++ writer directly, including the golden `fill="#440154"` spelling and the four invalid-option errors.
 - Colouring shares its resolution layer with the TikZ writer: `src/cpp/include/meshioplusplus/detail/face_color.hpp` and its twin `src/python/meshioplusplus/_facecolor.py`, over the colormap tables in `detail/colormap.{hpp,cpp}` / `_colormap.py`.

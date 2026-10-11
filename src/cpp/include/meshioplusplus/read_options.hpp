@@ -158,8 +158,10 @@ struct ReadOptions {
      * still throw, because continuing past those would hand back a mesh that is
      * quietly wrong rather than merely incomplete.
      *
-     * Currently honoured by `mdpa` and `vtkhdf` (which skips cells with no
-     * meshio++ type -- poly-vertex, poly-line, triangle strips -- with a warning);
+     * Currently honoured by `mdpa`, `vtkhdf` (which skips cells with no
+     * meshio++ type -- poly-vertex, poly-line, triangle strips -- with a warning)
+     * and `svg`/`tikz` (where it is `strict=False`: a drawing that lacks the meshio++
+     * marker comment is read as a plain drawing, with a warning, instead of refused);
      * every other reader ignores it.
      */
     bool mLenient = false;

@@ -18,7 +18,7 @@
 
 /**
  * @file tikz.hpp
- * @brief TikZ/PGF (LaTeX) 2D mesh writer (write-only).
+ * @brief TikZ/PGF (LaTeX) 2D mesh writer and drawing reader.
  *
  * Draws the mesh's `line`/`triangle`/`quad` cells as `\draw` commands inside a
  * `tikzpicture` environment. By default it emits a full, directly
@@ -33,6 +33,8 @@
  * default the classic CAD isometric view) and drawn back-to-front
  * (painter's algorithm — see `detail/projection.hpp`). Non-drawable cells
  * are silently skipped, and no point_data/cell_data/field_data is emitted.
+ * `read_tikz` reads back only the structure the writer emits (a drawing is not
+ * a mesh): see its documentation below.
  */
 
 // System includes
@@ -42,6 +44,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -97,5 +100,31 @@ MESHIOPLUSPLUS_API void write_tikz(const std::string& rPath, const Mesh& rMesh, 
                 const std::optional<double>& rVMin = std::nullopt,
                 const std::optional<double>& rVMax = std::nullopt,
                 const std::string& rNanColor = "gray", bool Colorbar = false);
+
+/**
+ * @brief Read a TikZ figure written by `write_tikz` back as a planar mesh.
+ *
+ * Inverts exactly what the writer emits and refuses everything else with a
+ * `ReadError` naming the construct. One `\draw[...] (x,y) -- ... -- cycle;` is a
+ * face (3 vertices a `triangle`, 4 a `quad`, more a `polygon`) and one
+ * `\draw[...] (x,y) -- (x,y);` a `line`; consecutive cells of one type and size
+ * form one block. Points are welded on the exact text of their coordinates, in
+ * order of first appearance, and are taken verbatim (there is no y-flip and the
+ * picture's `scale=` is not applied), so planar input comes back exactly in x and
+ * y. The colour bar (`\fill ... rectangle` and `\node`) is skipped; a
+ * `fill={rgb,255:red,R;green,G;blue,B}` comes back as the `int32` `(n, 3)` cell
+ * array `tikz:fill` (`-1 -1 -1` where a cell has none). `z` is always 0, and the
+ * read warns once that depth is lost.
+ *
+ * `\path`, `plot`, `circle`, `.. controls ..`, named, polar and relative (`++`)
+ * coordinates, `\foreach` and every other construct are refused.
+ *
+ * @param rPath    the file to read
+ * @param rOptions `mLenient` is `strict=False`: without it a file that lacks the
+ *                 meshio++ marker is refused; `mPointsOnly` and `mDataArrays`
+ *                 narrow `tikz:fill` away
+ * @throws ReadError for anything but a drawing meshio++ wrote
+ */
+MESHIOPLUSPLUS_API Mesh read_tikz(const std::string& rPath, const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
