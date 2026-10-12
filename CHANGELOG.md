@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+## v16.39.0 (2026-10-12)
+
 **Scale (roadmap §6.1): the VTK XML writers stream their arrays, and the ragged `reorder` and `simplexify` paths and `undo_green` hold far less. Output and digests unchanged; no ABI change (private headers and implementation only).**
 
 - **Changed**: the VTU, VTP, VTR, VTS and VTI writers (and the shared field-data writer) encode each binary array in 8 MiB batches, keeping only its compressed bytes, and write the base64 as they go; the VTU writer generates points and fixed-size cell arrays a window at a time. Writing a 10.4M-tetrahedron mesh as zlib VTU needs +178 MB instead of +1,024 MB and takes 11.2 s instead of 17.7 s. Files are byte-identical; `VtuDecode.StreamingEncodersMatchTheOneShotOnes` pins the encoders to the one-shot ones.
