@@ -1210,7 +1210,7 @@ SPEC: dict[str, dict] = {
     },
     "step": {
         "error": "write-only",
-        "note": "A faceted B-rep solid for CAD tools; a reader needs a CAD kernel (roadmap §6.2.2).",
+        "note": "A faceted B-rep solid for CAD tools; a reader needs a CAD kernel (roadmap §6.2.1).",
     },
     "stl": {
         "cells": {
@@ -1604,7 +1604,7 @@ READ_ONLY = {
 WRITE_ONLY = {
     "gltf": "Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader.",
     "step": (
-        "Exempt, not a gap: reading STEP means a CAD kernel (roadmap §6.2.2). The faceted "
+        "Exempt, not a gap: reading STEP means a CAD kernel (roadmap §6.2.1). The faceted "
         "writer is the CAD hand-off of the skin-to-CAD work (roadmap §6.3)."
     ),
 }

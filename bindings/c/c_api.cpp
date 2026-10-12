@@ -62,6 +62,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -285,7 +286,9 @@ struct mio_read_metadata {
 // accessors check the alternative they need, so a handle is never misread.
 struct mio_format_info {
     std::string mFormat;
-    std::variant<std::monostate, meshioplusplus::MdpaInfo, meshioplusplus::GmshInfo> mInfo;
+    std::variant<std::monostate, meshioplusplus::MdpaInfo, meshioplusplus::GmshInfo,
+                 meshioplusplus::NurbsInfo>
+        mInfo;
 };
 
 namespace {
@@ -1119,6 +1122,16 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
             *info = handle.release();
             return mesh.release();
         }
+        if (fmt == "mfem") {
+            auto handle = std::make_unique<mio_format_info>();
+            handle->mFormat = fmt;
+            meshioplusplus::NurbsInfo nurbs;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::read_mfem(path, {}, capi_read_options(opts), nurbs)});
+            handle->mInfo = std::move(nurbs);
+            *info = handle.release();
+            return mesh.release();
+        }
         if (fmt == "mdpa") {
             auto handle = std::make_unique<mio_format_info>();
             handle->mFormat = fmt;
@@ -1158,6 +1171,10 @@ mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const cha
         }
         if (const auto* p_mdpa = std::get_if<meshioplusplus::MdpaInfo>(&info->mInfo)) {
             meshioplusplus::write_mdpa(path, mesh->mMesh, *p_mdpa);
+            return MIO_OK;
+        }
+        if (const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo)) {
+            meshioplusplus::write_mfem(path, mesh->mMesh, false, *p_nurbs);
             return MIO_OK;
         }
         return mio_write(path, mesh, format);
@@ -1233,6 +1250,137 @@ mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int
                 return array_out(link.mNodePairs, data, dtype, ndim, shape);
         }
         return fail(MIO_ERR_INVALID_ARG, "meshio++: unknown gmsh side-channel array field");
+    });
+}
+
+namespace {
+
+/// The NurbsInfo behind a handle, or a throw naming what it is instead.
+const meshioplusplus::NurbsInfo& capi_nurbs(const mio_format_info* pInfo) {
+    if (!pInfo)
+        throw std::invalid_argument("meshio++: format info handle is NULL");
+    const auto* info = std::get_if<meshioplusplus::NurbsInfo>(&pInfo->mInfo);
+    if (!info)
+        throw std::invalid_argument("meshio++: not an mfem (NURBS) side channel");
+    return *info;
+}
+
+std::size_t capi_nurbs_count(const meshioplusplus::NurbsInfo& rInfo, int Section) {
+    switch (Section) {
+        case MIO_NURBS_PATCHES:
+            return rInfo.mPatches.size();
+        case MIO_NURBS_FIELDS:
+            return rInfo.mFieldNames.size();
+        case MIO_NURBS_TOPOLOGY:
+            return rInfo.mTopology.mDimension ? 1 : 0;
+        case MIO_NURBS_CELL_MAP:
+            return rInfo.mPatches.empty() ? 0 : 1;
+        default:
+            throw std::invalid_argument("meshio++: unknown NURBS side-channel section");
+    }
+}
+
+bool capi_nurbs_in_range(const meshioplusplus::NurbsInfo& rInfo, int Section,
+                         std::int64_t Index) {
+    return Section >= MIO_NURBS_PATCHES && Section <= MIO_NURBS_CELL_MAP && Index >= 0 &&
+           static_cast<std::size_t>(Index) < capi_nurbs_count(rInfo, Section);
+}
+
+std::string capi_nurbs_bad_field(int Section, int Field) {
+    return "meshio++: NURBS side-channel section " + std::to_string(Section) +
+           " has no such field " + std::to_string(Field);
+}
+
+}  // namespace
+
+int64_t mio_nurbs_info_count(const mio_format_info* info, int32_t section) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_nurbs_count(capi_nurbs(info), section));
+    });
+}
+
+mio_status mio_nurbs_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                              int32_t field, int64_t* value) {
+    return guarded([&]() -> mio_status {
+        const meshioplusplus::NurbsInfo& r_info = capi_nurbs(info);
+        if (!capi_nurbs_in_range(r_info, section, index))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: NURBS side-channel index out of range");
+        const auto i = static_cast<std::size_t>(index);
+        std::int64_t v = 0;
+        if (section == MIO_NURBS_PATCHES && field == 0)
+            v = static_cast<std::int64_t>(r_info.mPatches[i].mDegrees.size());
+        else if (section == MIO_NURBS_PATCHES && field == 1)
+            v = r_info.mPatches[i].mControlPoints.Shape().size() == 2
+                    ? static_cast<std::int64_t>(r_info.mPatches[i].mControlPoints.Shape()[1])
+                    : 0;
+        else if (section == MIO_NURBS_TOPOLOGY && field == 0)
+            v = r_info.mTopology.mDimension;
+        else if (section == MIO_NURBS_TOPOLOGY && field == 1)
+            v = r_info.mTopology.mNumVertices;
+        else
+            return fail(MIO_ERR_INVALID_ARG, capi_nurbs_bad_field(section, field));
+        if (value)
+            *value = v;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_nurbs_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                int32_t field, const void** data, mio_dtype* dtype, int32_t* ndim,
+                                int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        const meshioplusplus::NurbsInfo& r_info = capi_nurbs(info);
+        if (!capi_nurbs_in_range(r_info, section, index))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: NURBS side-channel index out of range");
+        const auto i = static_cast<std::size_t>(index);
+        if (section == MIO_NURBS_PATCHES) {
+            const meshioplusplus::NurbsPatch& p = r_info.mPatches[i];
+            if (field == 0)
+                return array_out(
+                    meshioplusplus::NDArray::MakeView(
+                        meshioplusplus::DType::Int32, {p.mDegrees.size()},
+                        reinterpret_cast<std::byte*>(const_cast<std::int32_t*>(p.mDegrees.data()))),
+                    data, dtype, ndim, shape);
+            if (field == 1)
+                return array_out(p.mControlPoints, data, dtype, ndim, shape);
+            if (field == 2)
+                return array_out(p.mWeights, data, dtype, ndim, shape);
+            if (field >= 3 && field < 6 && static_cast<std::size_t>(field - 3) < p.mKnots.size()) {
+                const std::vector<double>& k = p.mKnots[static_cast<std::size_t>(field - 3)];
+                return array_out(meshioplusplus::NDArray::MakeView(
+                                     meshioplusplus::DType::Float64, {k.size()},
+                                     reinterpret_cast<std::byte*>(const_cast<double*>(k.data()))),
+                                 data, dtype, ndim, shape);
+            }
+            if (field >= 6 && static_cast<std::size_t>(field - 6) < p.mFields.size())
+                return array_out(p.mFields[static_cast<std::size_t>(field - 6)], data, dtype, ndim,
+                                 shape);
+        } else if (section == MIO_NURBS_TOPOLOGY) {
+            const meshioplusplus::NurbsTopology& t = r_info.mTopology;
+            const meshioplusplus::NDArray* arrays[] = {&t.mPatchVertices, &t.mPatchAttributes,
+                                                       &t.mBoundaryVertices, &t.mBoundaryAttributes,
+                                                       &t.mEdges};
+            if (field >= 0 && field < 5)
+                return array_out(*arrays[field], data, dtype, ndim, shape);
+        } else if (section == MIO_NURBS_CELL_MAP) {
+            const meshioplusplus::NDArray* arrays[] = {&r_info.mCellPatch, &r_info.mCellSpan,
+                                                       &r_info.mBoundaryCellPatch};
+            if (field >= 0 && field < 3)
+                return array_out(*arrays[field], data, dtype, ndim, shape);
+        }
+        return fail(MIO_ERR_INVALID_ARG, capi_nurbs_bad_field(section, field));
+    });
+}
+
+int64_t mio_nurbs_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                              int32_t field, char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        const meshioplusplus::NurbsInfo& r_info = capi_nurbs(info);
+        if (!capi_nurbs_in_range(r_info, section, index))
+            throw std::invalid_argument("meshio++: NURBS side-channel index out of range");
+        if (section == MIO_NURBS_FIELDS && field == 0)
+            return copy_string(r_info.mFieldNames[static_cast<std::size_t>(index)], buf, buflen);
+        throw std::invalid_argument(capi_nurbs_bad_field(section, field));
     });
 }
 

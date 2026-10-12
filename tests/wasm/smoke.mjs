@@ -3209,6 +3209,34 @@ step('info: mdpa entity names and property sets round-trip together', () => {
     assert.equal(back.propertySets[0].values[0].values[0], 2.1e11);
 });
 
+step('info: an MFEM NURBS mesh keeps and writes back its patches', () => {
+    const w = '0.70710678118654757';
+    m.FS.writeFile('/annulus.mesh', [
+        'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', '5 3 0 1 2 3',
+        'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2',
+        'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', '1 2 0 0 1 1',
+        'weights', '1', '1', '1', '1', w, w,
+        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1',
+        '1 0', '0 1', '0 2', '2 0', '1 1', '2 2', '',
+    ].join('\n'));
+    const mesh = m.readMeshSelective('/annulus.mesh', { format: 'mfem', info: true });
+    assert.equal(mesh.info.format, 'mfem');
+    assert.equal(mesh.info.patches.length, 1);
+    const p = mesh.info.patches[0];
+    assert.deepEqual(Array.from(p.degrees), [2, 1]);
+    assert.deepEqual(Array.from(p.knots[1]), [0, 0, 1, 1]);
+    assert.equal(p.spaceDim, 2);
+    assert.deepEqual(Array.from(p.controlPoints.slice(0, 4)), [1, 0, 1, 1]);
+    assert.equal(p.weights[1], Math.SQRT1_2);
+    assert.equal(Number(mesh.info.topology.numVertices), 4);
+    assert.deepEqual(Array.from(mesh.info.cellPatch, Number), [0]);
+    m.writeMesh('/annulus_out.mesh', mesh, 'mfem', { info: mesh.info });
+    assert.ok(new TextDecoder().decode(m.FS.readFile('/annulus_out.mesh')).startsWith('MFEM NURBS mesh v1.0'));
+    const back = m.readMeshSelective('/annulus_out.mesh', { format: 'mfem', info: true });
+    assert.deepEqual(Array.from(back.info.patches[0].controlPoints), Array.from(p.controlPoints));
+    assert.deepEqual(Array.from(back.info.patches[0].weights), Array.from(p.weights));
+});
+
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
     m.FS.writeFile('/side.mdpa', [
         'Begin ModelPartData', '    SOLVER_TYPE static', 'End ModelPartData',

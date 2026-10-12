@@ -4698,19 +4698,124 @@ PYBIND11_MODULE(_core, m) {
                   core_nogil([&] { return meshioplusplus::read_code_aster(path); }));
           }));
 
-    // MFEM mesh (.mesh) and grid functions (.gf) writer / reader.
+    // MFEM mesh (.mesh) and grid functions (.gf) writer / reader. A NURBS mesh's
+    // patches travel as `mesh.info["nurbs"]` (the NurbsInfo side channel): a
+    // dict of NumPy arrays laid out as the struct is, built by the reader and
+    // checked here, key by key, before the writer sees it.
+    auto nurbs_info_to_py = [](meshioplusplus::NurbsInfo&& rInfo) {
+        using meshioplusplus_py::numpy_from_ndarray;
+        py::list patches;
+        for (auto& patch : rInfo.mPatches) {
+            py::dict p;
+            p["degrees"] = py::array_t<std::int32_t>(
+                static_cast<py::ssize_t>(patch.mDegrees.size()), patch.mDegrees.data());
+            py::list knots;
+            for (const auto& k : patch.mKnots)
+                knots.append(py::array_t<double>(static_cast<py::ssize_t>(k.size()), k.data()));
+            p["knots"] = std::move(knots);
+            p["control_points"] = numpy_from_ndarray(std::move(patch.mControlPoints));
+            p["weights"] = numpy_from_ndarray(std::move(patch.mWeights));
+            py::list fields;
+            for (auto& f : patch.mFields)
+                fields.append(numpy_from_ndarray(std::move(f)));
+            p["fields"] = std::move(fields);
+            patches.append(std::move(p));
+        }
+        py::dict out;
+        out["patches"] = std::move(patches);
+        out["field_names"] = py::cast(rInfo.mFieldNames);
+        meshioplusplus::NurbsTopology& t = rInfo.mTopology;
+        if (t.mDimension == 0) {
+            out["topology"] = py::none();
+        } else {
+            py::dict topo;
+            topo["dimension"] = t.mDimension;
+            topo["num_vertices"] = t.mNumVertices;
+            topo["patch_vertices"] = numpy_from_ndarray(std::move(t.mPatchVertices));
+            topo["patch_attributes"] = numpy_from_ndarray(std::move(t.mPatchAttributes));
+            topo["boundary_vertices"] = numpy_from_ndarray(std::move(t.mBoundaryVertices));
+            topo["boundary_attributes"] = numpy_from_ndarray(std::move(t.mBoundaryAttributes));
+            topo["edges"] = numpy_from_ndarray(std::move(t.mEdges));
+            out["topology"] = std::move(topo);
+        }
+        out["cell_patch"] = numpy_from_ndarray(std::move(rInfo.mCellPatch));
+        out["cell_span"] = numpy_from_ndarray(std::move(rInfo.mCellSpan));
+        out["boundary_cell_patch"] = numpy_from_ndarray(std::move(rInfo.mBoundaryCellPatch));
+        return out;
+    };
+    auto nurbs_info_from_py = [](py::handle obj) {
+        const auto key = [](py::handle d, const char* pKey) -> py::object {
+            if (!py::isinstance<py::dict>(d) || !d.cast<py::dict>().contains(pKey))
+                throw py::value_error(std::string("mesh.info['nurbs']: missing '") + pKey + "'");
+            return d.cast<py::dict>()[pKey];
+        };
+        const auto doubles = [](py::handle a, const std::string& rWhat) {
+            auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(a);
+            if (!arr)
+                throw py::value_error("mesh.info['nurbs']: '" + rWhat + "' is not numeric");
+            meshioplusplus::NDArray out = meshioplusplus_py::view_from_numpy(arr);
+            out.MakeOwned();
+            return out;
+        };
+        const auto ints = [](py::handle a, const std::string& rWhat) {
+            auto src = py::array::ensure(a);
+            if (!src || (src.size() && src.dtype().kind() != 'i' && src.dtype().kind() != 'u'))
+                throw py::value_error("mesh.info['nurbs']: '" + rWhat + "' is not integer");
+            auto arr =
+                py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>::ensure(src);
+            meshioplusplus::NDArray out = meshioplusplus_py::view_from_numpy(arr);
+            out.MakeOwned();
+            return out;
+        };
+        meshioplusplus::NurbsInfo info;
+        for (py::handle p : py::cast<py::sequence>(key(obj, "patches"))) {
+            meshioplusplus::NurbsPatch patch;
+            for (py::handle d : py::cast<py::sequence>(key(p, "degrees")))
+                patch.mDegrees.push_back(py::cast<std::int32_t>(d));
+            for (py::handle k : py::cast<py::sequence>(key(p, "knots"))) {
+                const meshioplusplus::NDArray a = doubles(k, "knots");
+                patch.mKnots.emplace_back(a.As<double>(), a.As<double>() + a.Size());
+            }
+            patch.mControlPoints = doubles(key(p, "control_points"), "control_points");
+            patch.mWeights = doubles(key(p, "weights"), "weights");
+            for (py::handle f : py::cast<py::sequence>(key(p, "fields")))
+                patch.mFields.push_back(doubles(f, "fields"));
+            info.mPatches.push_back(std::move(patch));
+        }
+        info.mFieldNames = py::cast<std::vector<std::string>>(key(obj, "field_names"));
+        py::object topo = key(obj, "topology");
+        if (!topo.is_none()) {
+            meshioplusplus::NurbsTopology& t = info.mTopology;
+            t.mDimension = py::cast<std::int32_t>(key(topo, "dimension"));
+            t.mNumVertices = py::cast<std::int64_t>(key(topo, "num_vertices"));
+            t.mPatchVertices = ints(key(topo, "patch_vertices"), "patch_vertices");
+            t.mPatchAttributes = ints(key(topo, "patch_attributes"), "patch_attributes");
+            t.mBoundaryVertices = ints(key(topo, "boundary_vertices"), "boundary_vertices");
+            t.mBoundaryAttributes = ints(key(topo, "boundary_attributes"), "boundary_attributes");
+            t.mEdges = ints(key(topo, "edges"), "edges");
+        }
+        info.mCellPatch = ints(key(obj, "cell_patch"), "cell_patch");
+        info.mCellSpan = ints(key(obj, "cell_span"), "cell_span");
+        info.mBoundaryCellPatch = ints(key(obj, "boundary_cell_patch"), "boundary_cell_patch");
+        return info;
+    };
     m.def(
         "mfem_write",
-        [](const std::string& path, py::object pymesh, bool grid_functions) {
+        [nurbs_info_from_py](const std::string& path, py::object pymesh, bool grid_functions,
+                             py::object nurbs) {
             meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::NurbsInfo info;
+            if (!nurbs.is_none())
+                info = nurbs_info_from_py(nurbs);
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_mfem(path, mesh, grid_functions);
+                return meshioplusplus::write_mfem(path, mesh, grid_functions, info);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("grid_functions") = false);
+        py::arg("path"), py::arg("mesh"), py::arg("grid_functions") = false,
+        py::arg("nurbs") = py::none());
     m.def("mfem_read",
           guard_read("mfem",
-                     [](const std::string& path,
+                     [nurbs_info_to_py](const std::string& path,
                         const std::vector<std::pair<std::string, std::string>>& grid_functions,
                         py::object piece) {
                          std::vector<meshioplusplus::MfemGridFunction> gfs;
@@ -4721,8 +4826,16 @@ PYBIND11_MODULE(_core, m) {
                              opts.mPiece = piece.cast<std::int64_t>();
                              opts.mPieceSet = true;
                          }
-                         return meshioplusplus_py::mesh_to_py(core_nogil(
-                             [&] { return meshioplusplus::read_mfem(path, gfs, opts); }));
+                         meshioplusplus::NurbsInfo info;
+                         py::object pymesh = meshioplusplus_py::mesh_to_py(core_nogil(
+                             [&] { return meshioplusplus::read_mfem(path, gfs, opts, info); }));
+                         if (!info.mPatches.empty()) {
+                             py::object existing = pymesh.attr("info");
+                             py::dict d = existing.is_none() ? py::dict() : py::dict(existing);
+                             d["nurbs"] = nurbs_info_to_py(std::move(info));
+                             pymesh.attr("info") = std::move(d);
+                         }
+                         return pymesh;
                      }),
           py::arg("path"),
           py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{},

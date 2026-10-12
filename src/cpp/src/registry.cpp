@@ -377,7 +377,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
-        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.2).
+        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.1).
         {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++

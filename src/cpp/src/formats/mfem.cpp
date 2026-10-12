@@ -1419,7 +1419,7 @@ struct MfNurbs {
     MfPatchMap BdrPatchMap(std::size_t B, std::vector<int>& rOkv,
                            std::vector<const MfKnotVector*>& rKvs) const;
     std::vector<MfNurbsElement> Elements() const;
-    std::vector<MfElement> Boundary() const;
+    std::vector<MfElement> Boundary(std::vector<std::int64_t>* pPatchOf = nullptr) const;
     void ControlPoints(std::vector<double>& rWeights, std::vector<double>& rXyz,
                        int& rSpaceDim) const;
     void Evaluate(const std::vector<double>& rWeights, const std::vector<double>& rTable,
@@ -1734,12 +1734,15 @@ std::vector<MfNurbsElement> MfNurbs::Elements() const {
     return out;
 }
 
-std::vector<MfElement> MfNurbs::Boundary() const {
+// The boundary elements; `pPatchOf` gets each one's boundary patch.
+std::vector<MfElement> MfNurbs::Boundary(std::vector<std::int64_t>* pPatchOf) const {
     std::vector<MfElement> out;
     const int geom = mf_nurbs_bdr_geom(mDim);
     std::vector<int> okv;
     std::vector<const MfKnotVector*> kvs;
     for (std::size_t b = 0; b < mBPatches.size(); ++b) {
+        if (pPatchOf)
+            pPatchOf->resize(out.size(), static_cast<std::int64_t>(b) - 1);
         const MfPatchMap m = BdrPatchMap(b, okv, kvs);
         MfElement el;
         el.mAttribute = mBPatches[b].mAttribute;
@@ -1768,6 +1771,8 @@ std::vector<MfElement> MfNurbs::Boundary() const {
             }
         }
     }
+    if (pPatchOf)
+        pPatchOf->resize(out.size(), static_cast<std::int64_t>(mBPatches.size()) - 1);
     return out;
 }
 
@@ -3161,12 +3166,99 @@ Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, b
     return mf_read_parts({part}, rF.mNumVertices, Order, false, rPath);
 }
 
+// The rows of `rTable` (`Cols` per control point, MFEM's global numbering) over
+// patch P's own control lattice, direction 0 fastest: what the `patches` form
+// would list.
+NDArray mf_nurbs_gather(const MfNurbs& rN, std::size_t P, const std::vector<double>& rTable,
+                        std::size_t Cols) {
+    const auto& kvs = rN.mCompr[P];
+    std::int64_t n[3] = {1, 1, 1};
+    for (std::size_t d = 0; d < kvs.size(); ++d)
+        n[d] = static_cast<std::int64_t>(kvs[d].mNumCp);
+    const MfPatchMap m = rN.PatchMap(P, true);
+    NDArray out(DType::Float64, {static_cast<std::size_t>(n[0] * n[1] * n[2]), Cols});
+    double* dst = out.As<double>();
+    for (std::int64_t k = 0; k < n[2]; ++k)
+        for (std::int64_t j = 0; j < n[1]; ++j)
+            for (std::int64_t i = 0; i < n[0]; ++i, dst += Cols) {
+                const std::int64_t idx[3] = {i, j, k};
+                const auto g = static_cast<std::size_t>(m.At(idx, rN.mDim));
+                std::copy(rTable.begin() + static_cast<std::ptrdiff_t>(g * Cols),
+                          rTable.begin() + static_cast<std::ptrdiff_t>((g + 1) * Cols), dst);
+            }
+    return out;
+}
+
+// An Int64 `(Rows, Cols)` array from MFEM rows of vertices.
+NDArray mf_nurbs_rows(const std::vector<MfElement>& rRows, std::size_t Cols) {
+    NDArray out(DType::Int64, {rRows.size(), Cols});
+    for (std::size_t r = 0; r < rRows.size(); ++r)
+        for (std::size_t c = 0; c < Cols; ++c)
+            out.As<std::int64_t>()[r * Cols + c] = rRows[r].mVertices[c];
+    return out;
+}
+
+// The side channel of a sampled NURBS mesh: per patch its degrees, knot
+// vectors, control net, weights and field control values; the patch topology;
+// each element cell's patch and knot span, each boundary cell's patch.
+NurbsInfo mf_nurbs_info(const MfNurbs& rN, const std::vector<double>& rWeights,
+                        const std::vector<double>& rXyz, std::size_t SpaceDim,
+                        const std::vector<std::string>& rNames,
+                        const std::vector<std::vector<double>>& rTables,
+                        const std::vector<std::size_t>& rComponents,
+                        const std::vector<MfNurbsElement>& rElements,
+                        const std::vector<std::int64_t>& rBdrPatch) {
+    NurbsInfo info;
+    for (std::size_t p = 0; p < rN.mPatches.size(); ++p) {
+        NurbsPatch patch;
+        for (const MfKnotVector& kv : rN.mCompr[p]) {
+            patch.mDegrees.push_back(kv.mOrder);
+            patch.mKnots.push_back(kv.mKnots);
+        }
+        patch.mControlPoints = mf_nurbs_gather(rN, p, rXyz, SpaceDim);
+        NDArray w = mf_nurbs_gather(rN, p, rWeights, 1);
+        w.Reshape({w.Size()});
+        patch.mWeights = std::move(w);
+        for (std::size_t k = 0; k < rTables.size(); ++k)
+            patch.mFields.push_back(mf_nurbs_gather(rN, p, rTables[k], rComponents[k]));
+        info.mPatches.push_back(std::move(patch));
+    }
+    info.mFieldNames = rNames;
+    const auto d = static_cast<std::size_t>(rN.mDim);
+    NurbsTopology& t = info.mTopology;
+    t.mDimension = rN.mDim;
+    t.mNumVertices = static_cast<std::int64_t>(rN.mNumTopoVertices);
+    t.mPatchVertices = mf_nurbs_rows(rN.mPatches, std::size_t{1} << d);
+    t.mBoundaryVertices = mf_nurbs_rows(rN.mBPatches, std::size_t{1} << (d - 1));
+    t.mPatchAttributes = NDArray(DType::Int64, {rN.mPatches.size()});
+    for (std::size_t p = 0; p < rN.mPatches.size(); ++p)
+        t.mPatchAttributes.As<std::int64_t>()[p] = rN.mPatches[p].mAttribute;
+    t.mBoundaryAttributes = NDArray(DType::Int64, {rN.mBPatches.size()});
+    for (std::size_t b = 0; b < rN.mBPatches.size(); ++b)
+        t.mBoundaryAttributes.As<std::int64_t>()[b] = rN.mBPatches[b].mAttribute;
+    t.mEdges = NDArray(DType::Int64, {rN.mEdgeRows.size(), 3});
+    for (std::size_t e = 0; e < rN.mEdgeRows.size(); ++e)
+        for (std::size_t c = 0; c < 3; ++c)
+            t.mEdges.As<std::int64_t>()[e * 3 + c] = rN.mEdgeRows[e][c];
+    info.mCellPatch = NDArray(DType::Int64, {rElements.size()});
+    info.mCellSpan = NDArray(DType::Int64, {rElements.size(), 3});
+    for (std::size_t e = 0; e < rElements.size(); ++e) {
+        info.mCellPatch.As<std::int64_t>()[e] = static_cast<std::int64_t>(rElements[e].mPatch);
+        for (std::size_t c = 0; c < 3; ++c)
+            info.mCellSpan.As<std::int64_t>()[e * 3 + c] = rElements[e].mSpan[c];
+    }
+    info.mBoundaryCellPatch = NDArray(DType::Int64, {rBdrPatch.size()});
+    std::copy(rBdrPatch.begin(), rBdrPatch.end(), info.mBoundaryCellPatch.As<std::int64_t>());
+    return info;
+}
+
 // A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear and
 // quadratic ones) of the highest knot-vector order, their nodes the rational
 // patch geometry at the cell's lattice; NURBS grid functions on the mesh's own
-// space the same way, element-wise ones as cell data.
-Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
-                   const std::string& rPath) {
+// space the same way, element-wise ones as cell data. `rGfs` are parsed and
+// already sorted into those two kinds; `pInfo`, when given, gets the patches.
+Mesh mf_sample_nurbs(const MfNurbs& rN, const std::vector<MfGridData>& rGfs,
+                     const std::string& rPath, NurbsInfo* pInfo) {
     const std::vector<MfNurbsElement> elements = rN.Elements();
     std::vector<double> weights, xyz;
     int sdim = 0;
@@ -3175,20 +3267,72 @@ Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGrid
     for (const auto& row : rN.mCompr)
         for (const MfKnotVector& kv : row)
             order = std::max(order, kv.mOrder);
-    std::vector<MfGridData> gfs;
     std::vector<std::vector<double>> tables;  // NURBS grid functions, dof-major
+    std::vector<std::string> names;
     std::vector<std::size_t> components = {static_cast<std::size_t>(sdim)};
+    const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
+    for (const MfGridData& g : rGfs) {
+        if (g.mSpace.mKind != MfSpace::Nurbs)
+            continue;
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        std::vector<double> t(ndofs * vdim);
+        for (std::size_t d = 0; d < ndofs; ++d)
+            for (std::size_t c = 0; c < vdim; ++c)
+                t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
+        tables.push_back(std::move(t));
+        names.push_back(g.mName);
+        components.push_back(vdim);
+    }
+    MfFile f;
+    f.mDim = rN.mDim;
+    f.mSpaceDim = sdim;
+    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
+    for (const MfNurbsElement& el : elements)
+        f.mElements.push_back(el.mElement);
+    std::vector<std::int64_t> bdr_patch;
+    f.mBoundary = rN.Boundary(&bdr_patch);
+
+    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
+    std::vector<std::array<double, 3>> refs;
+    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
+        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
+                        static_cast<double>(ijk[2]) / order});
+    std::vector<const std::vector<double>*> nurbs_tables;  // the coordinates, then each field
+    nurbs_tables.push_back(&xyz);
+    for (const auto& t : tables)
+        nurbs_tables.push_back(&t);
+
+    MfPart part;
+    part.mpF = &f;
+    for (const MfGridData& g : rGfs)
+        part.mGfs.push_back(&g);
+    part.mGlobal.resize(f.mNumVertices);
+    for (std::size_t v = 0; v < f.mNumVertices; ++v)
+        part.mGlobal[v] = static_cast<std::int64_t>(v);
+    part.mEvalComponents = components;
+    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
+        rOut.resize(nurbs_tables.size());
+        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
+            rN.Evaluate(weights, *nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
+    };
+    Mesh mesh = mf_read_parts({part}, f.mNumVertices, order, false, rPath);
+    if (pInfo)
+        *pInfo = mf_nurbs_info(rN, weights, xyz, static_cast<std::size_t>(sdim), names, tables,
+                               std::vector<std::size_t>(components.begin() + 1, components.end()),
+                               elements, bdr_patch);
+    return mesh;
+}
+
+// The grid functions a NURBS mesh reads with it: NURBS ones on its own space
+// and element-wise ones; any other is skipped with a warning.
+Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
+                   const std::string& rPath, NurbsInfo* pInfo) {
+    std::vector<MfGridData> gfs;
     const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
     for (const MfemGridFunction& gf : rGridFunctions) {
         MfGridData g = mf_parse_gf(gf);
         const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
         if (g.mSpace.mKind == MfSpace::Nurbs && g.mValues.size() == ndofs * vdim) {
-            std::vector<double> t(ndofs * vdim);
-            for (std::size_t d = 0; d < ndofs; ++d)
-                for (std::size_t c = 0; c < vdim; ++c)
-                    t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
-            tables.push_back(std::move(t));
-            components.push_back(vdim);
             gfs.push_back(std::move(g));
         } else if ((g.mSpace.mKind == MfSpace::L2 || g.mSpace.mKind == MfSpace::L2T1) &&
                    g.mSpace.mOrder == 0) {
@@ -3200,38 +3344,7 @@ Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGrid
                 gf.mPath, g.mSpace.mCollection);
         }
     }
-    MfFile f;
-    f.mDim = rN.mDim;
-    f.mSpaceDim = sdim;
-    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
-    for (const MfNurbsElement& el : elements)
-        f.mElements.push_back(el.mElement);
-    f.mBoundary = rN.Boundary();
-
-    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
-    std::vector<std::array<double, 3>> refs;
-    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
-        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
-                        static_cast<double>(ijk[2]) / order});
-    std::vector<std::vector<double>> nurbs_tables;  // the coordinates, then each field
-    nurbs_tables.push_back(std::move(xyz));
-    for (auto& t : tables)
-        nurbs_tables.push_back(std::move(t));
-
-    MfPart part;
-    part.mpF = &f;
-    for (const MfGridData& g : gfs)
-        part.mGfs.push_back(&g);
-    part.mGlobal.resize(f.mNumVertices);
-    for (std::size_t v = 0; v < f.mNumVertices; ++v)
-        part.mGlobal[v] = static_cast<std::int64_t>(v);
-    part.mEvalComponents = components;
-    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
-        rOut.resize(nurbs_tables.size());
-        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
-            rN.Evaluate(weights, nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
-    };
-    return mf_read_parts({part}, f.mNumVertices, order, false, rPath);
+    return mf_sample_nurbs(rN, gfs, rPath, pInfo);
 }
 
 // `<prefix>.NNNNNN`: the rank a parallel-mesh file name carries, or -1.
@@ -3530,23 +3643,13 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
     return mf_read_parts(parts, static_cast<std::size_t>(nglobal), order, true, rPath);
 }
 
-}  // namespace
-
-Mesh read_mfem(const std::string& rPath) {
-    return read_mfem(rPath, {});
-}
-
-Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
-    return read_mfem(rPath, rGridFunctions, ReadOptions{});
-}
-
-Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
-               const ReadOptions& rOptions) {
+Mesh mf_read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+                  const ReadOptions& rOptions, NurbsInfo* pInfo) {
     MfFile f = mf_parse(rPath);
     if (f.mpNurbs) {
         if (rOptions.mPieceSet && rOptions.mPiece != 0)
             throw ReadError("MFEM mesh: " + rPath + " is not parallel; its only piece is 0");
-        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath);
+        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath, pInfo);
     }
     if (f.mParallel || mf_rank_siblings(rPath))
         return mf_read_parallel(rPath, std::move(f), rGridFunctions, rOptions);
@@ -3930,6 +4033,29 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
     return mesh;
 }
 
+}  // namespace
+
+Mesh read_mfem(const std::string& rPath) {
+    return read_mfem(rPath, {});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
+    return read_mfem(rPath, rGridFunctions, ReadOptions{});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions) {
+    return mf_read_mfem(rPath, rGridFunctions, rOptions, nullptr);
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions, NurbsInfo& rInfo) {
+    NurbsInfo info;
+    Mesh mesh = mf_read_mfem(rPath, rGridFunctions, rOptions, &info);
+    rInfo = std::move(info);
+    return mesh;
+}
+
 // ===========================================================================
 // Writer
 // ===========================================================================
@@ -4020,6 +4146,384 @@ bool mf_generated_name(const std::string& rName, const char* pPrefix, std::int64
         return false;
     return MfLexer::ParseInt(rName.substr(prefix.size()), rId) && rId > 0 &&
            rName.substr(prefix.size()) == std::to_string(rId);
+}
+
+// --- NURBS (the NurbsInfo side channel) ---------------------------------------
+
+constexpr const char* kMfNurbsMismatch = "the mesh no longer matches its NURBS side channel";
+
+[[noreturn]] void mf_nurbs_bad(const std::string& rWhy) {
+    throw WriteError("MFEM NURBS writer: " + rWhy);
+}
+
+std::string mf_shape_text(const NDArray& rA) {
+    std::string out = "(";
+    for (std::size_t i = 0; i < rA.Shape().size(); ++i)
+        out += (i ? ", " : "") + std::to_string(rA.Shape()[i]);
+    return out + (rA.Shape().size() == 1 ? ",)" : ")");
+}
+
+// The shapes and values a side channel must have before anything is built
+// from it (the twin of `_check_nurbs_info`).
+void mf_check_nurbs_info(const NurbsInfo& rInfo) {
+    if (rInfo.mPatches.empty())
+        mf_nurbs_bad("the side channel has no patches");
+    const NurbsTopology& t = rInfo.mTopology;
+    const int dim = t.mDimension;
+    if (dim < 1 || dim > 3)
+        mf_nurbs_bad("the side channel has no patch topology");
+    const std::size_t nnames = rInfo.mFieldNames.size();
+    std::size_t sdim = 0;
+    std::vector<std::size_t> vdims(nnames, 0);
+    for (std::size_t p = 0; p < rInfo.mPatches.size(); ++p) {
+        const NurbsPatch& patch = rInfo.mPatches[p];
+        const std::string at = "patch " + std::to_string(p);
+        if (patch.mDegrees.size() != static_cast<std::size_t>(dim) ||
+            patch.mKnots.size() != static_cast<std::size_t>(dim))
+            mf_nurbs_bad(at + " has " + std::to_string(patch.mDegrees.size()) + " degrees and " +
+                         std::to_string(patch.mKnots.size()) + " knot vectors in a " +
+                         std::to_string(dim) + "-D mesh");
+        std::size_t ncp = 1;
+        for (std::size_t d = 0; d < static_cast<std::size_t>(dim); ++d) {
+            const std::vector<double>& k = patch.mKnots[d];
+            const std::int64_t deg = patch.mDegrees[d];
+            const std::int64_t n = static_cast<std::int64_t>(k.size()) - deg - 1;
+            if (deg < 0 || n < deg + 1)
+                mf_nurbs_bad(at + ", direction " + std::to_string(d) + ": " +
+                             std::to_string(k.size()) + " knots for degree " + std::to_string(deg));
+            for (std::size_t i = 0; i < k.size(); ++i)
+                if (!std::isfinite(k[i]) || (i && k[i] < k[i - 1]))
+                    mf_nurbs_bad(at + ", direction " + std::to_string(d) + ": knots out of order");
+            ncp *= static_cast<std::size_t>(n);
+        }
+        const NDArray& cps = patch.mControlPoints;
+        if (cps.Shape().size() != 2 || cps.Shape()[0] != ncp || cps.Shape()[1] < 1 ||
+            cps.Shape()[1] > 3)
+            mf_nurbs_bad(at + ": control points of shape " + mf_shape_text(cps) + ", not (" +
+                         std::to_string(ncp) + ", 1..3)");
+        if (!sdim)
+            sdim = cps.Shape()[1];
+        if (cps.Shape()[1] != sdim)
+            mf_nurbs_bad("patches of different space dimensions");
+        const NDArray& w = patch.mWeights;
+        bool weights_ok = w.Size() == ncp;
+        if (weights_ok) {
+            const detail::DoubleView wv(w);
+            for (std::size_t i = 0; i < ncp; ++i)
+                weights_ok = weights_ok && std::isfinite(wv[i]) && wv[i] != 0.0;
+        }
+        if (!weights_ok)
+            mf_nurbs_bad(at + ": " + std::to_string(w.Size()) + " weights for " +
+                         std::to_string(ncp) + " control points, or a zero or non-finite one");
+        if (patch.mFields.size() != nnames)
+            mf_nurbs_bad(at + " has " + std::to_string(patch.mFields.size()) + " fields for " +
+                         std::to_string(nnames) + " names");
+        for (std::size_t k = 0; k < nnames; ++k) {
+            const NDArray& a = patch.mFields[k];
+            if (a.Shape().size() != 2 || a.Shape()[0] != ncp)
+                mf_nurbs_bad(at + ": field '" + rInfo.mFieldNames[k] + "' of shape " +
+                             mf_shape_text(a) + ", not (" + std::to_string(ncp) + ", components)");
+            if (!vdims[k])
+                vdims[k] = a.Shape()[1];
+            if (a.Shape()[1] != vdims[k])
+                mf_nurbs_bad("field '" + rInfo.mFieldNames[k] +
+                             "' has different components on different patches");
+        }
+    }
+    const std::size_t np = rInfo.mPatches.size();
+    const std::size_t pcols = std::size_t{1} << dim, bcols = std::size_t{1} << (dim - 1);
+    const NDArray& pv = t.mPatchVertices;
+    if (pv.Shape().size() != 2 || pv.Shape()[0] != np || pv.Shape()[1] != pcols ||
+        t.mPatchAttributes.Size() != np)
+        mf_nurbs_bad("the topology has patch rows of shape " + mf_shape_text(pv) + " for " +
+                     std::to_string(np) + " patches");
+    const NDArray& bv = t.mBoundaryVertices;
+    if (bv.Size() && (bv.Shape().size() != 2 || bv.Shape()[1] != bcols ||
+                      t.mBoundaryAttributes.Size() != bv.Shape()[0]))
+        mf_nurbs_bad("the topology has boundary rows of shape " + mf_shape_text(bv));
+    const std::int64_t nv = t.mNumVertices;
+    const auto in_range = [nv](const NDArray& rA, std::size_t First, std::size_t Stride) {
+        const detail::Int64View a(rA);
+        for (std::size_t i = First; i < rA.Size(); i += Stride)
+            if (a[i] < 0 || a[i] >= nv)
+                return false;
+        return true;
+    };
+    if (!in_range(pv, 0, 1) || !in_range(bv, 0, 1) || !in_range(t.mEdges, 1, 3) ||
+        !in_range(t.mEdges, 2, 3))
+        mf_nurbs_bad("a topology vertex out of range (" + std::to_string(nv) + " vertices)");
+    if (t.mEdges.Size() % 3)
+        mf_nurbs_bad("the topology's edges are not (knot vector, vertex, vertex) rows");
+    const detail::Int64View edges(t.mEdges);
+    for (std::size_t i = 0; i < t.mEdges.Size(); i += 3)
+        if (edges[i] < 0)
+            mf_nurbs_bad("a negative knot vector index in the edges");
+}
+
+MfKnotVector mf_nurbs_knot(std::int32_t Degree, const std::vector<double>& rKnots) {
+    MfKnotVector k;
+    k.mOrder = Degree;
+    k.mKnots = rKnots;
+    k.Finish();
+    return k;
+}
+
+std::string mf_nurbs_collection(const MfNurbs& rN) {
+    std::set<int> orders;
+    for (const MfKnotVector& kv : rN.mKvs)
+        orders.insert(kv.mOrder);
+    return orders.size() == 1 ? "NURBS" + std::to_string(*orders.begin()) : "NURBS";
+}
+
+// The global-form NURBS mesh a side channel describes (the twin of
+// `Nurbs.from_info`): its topology, one knot vector per edge class (taken from
+// a patch that runs along it where one does, so the knots are exact), and the
+// control points, weights and fields scattered into MFEM's numbering; the
+// fields go to `rFields` (dof-major, `rCols` components each).
+MfNurbs mf_nurbs_from_info(const NurbsInfo& rInfo, std::vector<std::vector<double>>& rFields,
+                           std::vector<std::size_t>& rCols) {
+    const NurbsTopology& t = rInfo.mTopology;
+    MfNurbs n;
+    n.mPath = "the NURBS side channel";
+    n.mDim = t.mDimension;
+    const auto rows = [](const NDArray& rVerts, const NDArray& rAttrs, int Geom) {
+        std::vector<MfElement> out;
+        const std::size_t nr = rAttrs.Size();
+        const std::size_t cols = nr ? rVerts.Size() / nr : 0;
+        const detail::Int64View v(rVerts);
+        const detail::Int64View a(rAttrs);
+        for (std::size_t r = 0; r < nr; ++r)
+            out.push_back(MfElement{
+                a[r], Geom,
+                std::vector<std::int64_t>(v.Data() + r * cols, v.Data() + (r + 1) * cols), 0});
+        return out;
+    };
+    n.mPatches = rows(t.mPatchVertices, t.mPatchAttributes, mf_nurbs_geom(n.mDim));
+    n.mBPatches = rows(t.mBoundaryVertices, t.mBoundaryAttributes, mf_nurbs_bdr_geom(n.mDim));
+    const detail::Int64View edges(t.mEdges);
+    for (std::size_t i = 0; i + 2 < t.mEdges.Size(); i += 3)
+        n.mEdgeRows.push_back({edges[i], edges[i + 1], edges[i + 2]});
+    n.mNumTopoVertices = static_cast<std::size_t>(t.mNumVertices);
+    n.mPatchForm = true;
+    std::vector<std::vector<MfKnotVector>> kvs;
+    for (const NurbsPatch& patch : rInfo.mPatches) {
+        MfNurbsPatchData pd;
+        for (std::size_t d = 0; d < patch.mDegrees.size(); ++d)
+            pd.mKvs.push_back(mf_nurbs_knot(patch.mDegrees[d], patch.mKnots[d]));
+        kvs.push_back(pd.mKvs);
+        n.mPatchData.push_back(std::move(pd));
+    }
+    const auto as_write_error = [](const ReadError& rE) -> WriteError {
+        std::string what = rE.what();
+        const std::string prefix = "MFEM NURBS mesh: ";
+        if (what.rfind(prefix, 0) == 0)
+            what = what.substr(prefix.size());
+        return WriteError("MFEM NURBS writer: " + what);
+    };
+    try {
+        n.Topology();
+        // The knot table: per edge class, a patch that runs along it if any.
+        std::vector<MfKnotVector> table = n.mKvs;
+        for (std::size_t k = 0; k < table.size(); ++k) {
+            bool found = false;
+            for (std::size_t p = 0; p < n.mPatches.size() && !found; ++p) {
+                const std::vector<int> kvdir = n.KvDir(p);
+                const std::vector<std::size_t> dirs = n.DirEdges(p);
+                for (std::size_t d = 0; d < dirs.size() && !found; ++d)
+                    if (static_cast<std::size_t>(mf_unsign(n.mEdgeToUkv[dirs[d]])) == k &&
+                        kvdir[d] == 1) {
+                        table[k] = kvs[p][d];
+                        found = true;
+                    }
+            }
+        }
+        n.mKvs = std::move(table);
+        n.mPatchForm = false;
+        n.mPatchData.clear();
+        n.KnotVectors();
+        n.Offsets();
+    } catch (const ReadError& rE) {
+        throw as_write_error(rE);
+    }
+    for (std::size_t p = 0; p < kvs.size(); ++p)
+        for (std::size_t d = 0; d < kvs[p].size(); ++d) {
+            const MfKnotVector& have = kvs[p][d];
+            const MfKnotVector& want = n.mCompr[p][d];
+            double scale = 1.0, diff = 0.0;
+            for (double k : want.mKnots)
+                scale = std::max(scale, std::abs(k));
+            bool same = have.mOrder == want.mOrder && have.mKnots.size() == want.mKnots.size();
+            for (std::size_t i = 0; same && i < have.mKnots.size(); ++i)
+                diff = std::max(diff, std::abs(have.mKnots[i] - want.mKnots[i]));
+            if (!same || diff > 1e-12 * scale)
+                mf_nurbs_bad("patch " + std::to_string(p) + " disagrees in direction " +
+                             std::to_string(d) + " with the knot vector its edge shares");
+        }
+
+    // Scatter every patch's rows into MFEM's numbering; a control point two
+    // patches share must agree.
+    const auto ndofs = static_cast<std::size_t>(n.NumDofs());
+    const std::size_t sdim = rInfo.mPatches[0].mControlPoints.Shape()[1];
+    const std::size_t nfields = rInfo.mFieldNames.size();
+    rCols.assign(nfields, 0);
+    for (std::size_t k = 0; k < nfields; ++k)
+        rCols[k] = rInfo.mPatches[0].mFields[k].Shape()[1];
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<std::vector<double>> tables;
+    tables.emplace_back(ndofs * (sdim + 1), nan);
+    for (std::size_t k = 0; k < nfields; ++k)
+        tables.emplace_back(ndofs * rCols[k], nan);
+    std::vector<std::size_t> cols = {sdim + 1};
+    cols.insert(cols.end(), rCols.begin(), rCols.end());
+    for (std::size_t p = 0; p < rInfo.mPatches.size(); ++p) {
+        const NurbsPatch& patch = rInfo.mPatches[p];
+        const detail::DoubleView xyz(patch.mControlPoints);
+        const detail::DoubleView w(patch.mWeights);
+        std::vector<std::optional<detail::DoubleView>> fv(nfields);
+        for (std::size_t k = 0; k < nfields; ++k)
+            fv[k].emplace(patch.mFields[k]);
+        const MfPatchMap m = n.PatchMap(p, true);
+        std::int64_t cnt[3] = {1, 1, 1};
+        for (std::size_t d = 0; d < n.mCompr[p].size(); ++d)
+            cnt[d] = static_cast<std::int64_t>(n.mCompr[p][d].mNumCp);
+        std::size_t r = 0;
+        std::vector<double> row;
+        for (std::int64_t kk = 0; kk < cnt[2]; ++kk)
+            for (std::int64_t j = 0; j < cnt[1]; ++j)
+                for (std::int64_t i = 0; i < cnt[0]; ++i, ++r) {
+                    const std::int64_t idx[3] = {i, j, kk};
+                    const auto g = static_cast<std::size_t>(m.At(idx, n.mDim));
+                    for (std::size_t q = 0; q < tables.size(); ++q) {
+                        row.assign(cols[q], 0.0);
+                        if (q == 0) {
+                            for (std::size_t c = 0; c < sdim; ++c)
+                                row[c] = xyz[r * sdim + c];
+                            row[sdim] = w[r];
+                        } else {
+                            for (std::size_t c = 0; c < cols[q]; ++c)
+                                row[c] = (*fv[q - 1])[r * cols[q] + c];
+                        }
+                        double* dst = tables[q].data() + g * cols[q];
+                        if (std::isnan(dst[0])) {
+                            std::copy(row.begin(), row.end(), dst);
+                            continue;
+                        }
+                        for (std::size_t c = 0; c < cols[q]; ++c)
+                            if (std::abs(dst[c] - row[c]) > 1e-12 * std::max(1.0, std::abs(row[c])))
+                                mf_nurbs_bad("patch " + std::to_string(p) +
+                                             " disagrees with a neighbour on a control point "
+                                             "they share");
+                    }
+                }
+    }
+    n.mWeights.resize(ndofs);
+    n.mNodes.resize(ndofs * sdim);
+    for (std::size_t g = 0; g < ndofs; ++g) {
+        for (std::size_t c = 0; c < sdim; ++c)
+            n.mNodes[g * sdim + c] = tables[0][g * (sdim + 1) + c];
+        n.mWeights[g] = tables[0][g * (sdim + 1) + sdim];
+    }
+    n.mHasNodes = true;
+    n.mSpace = MfSpace{};
+    n.mSpace.mKind = MfSpace::Nurbs;
+    n.mSpace.mCollection = mf_nurbs_collection(n);
+    n.mSpace.mVDim = static_cast<int>(sdim);
+    n.mSpace.mOrdering = 1;
+    rFields.assign(tables.begin() + 1, tables.end());
+    return n;
+}
+
+// The global form of `rN` as MFEM writes it (`NURBSExtension::Print` and the
+// NURBS nodes), the twin of `_nurbs_text`.
+std::string mf_nurbs_text(const MfNurbs& rN) {
+    std::string out = "MFEM NURBS mesh v1.0\n";
+    out += detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    out += "\ndimension\n" + std::to_string(rN.mDim) + "\n\nelements\n" +
+           std::to_string(rN.mPatches.size()) + "\n";
+    const auto append_rows = [&](const std::vector<MfElement>& rRows) {
+        for (const MfElement& el : rRows) {
+            out += std::to_string(el.mAttribute) + " " + std::to_string(el.mGeom);
+            for (std::int64_t v : el.mVertices)
+                out += " " + std::to_string(v);
+            out += '\n';
+        }
+    };
+    append_rows(rN.mPatches);
+    out += "\nboundary\n" + std::to_string(rN.mBPatches.size()) + "\n";
+    append_rows(rN.mBPatches);
+    out += "\nedges\n" + std::to_string(rN.mEdgeRows.size()) + "\n";
+    for (const auto& e : rN.mEdgeRows)
+        out +=
+            std::to_string(e[0]) + " " + std::to_string(e[1]) + " " + std::to_string(e[2]) + "\n";
+    out += "\nvertices\n" + std::to_string(rN.mNumTopoVertices) + "\n\nknotvectors\n" +
+           std::to_string(rN.mKvs.size()) + "\n";
+    for (const MfKnotVector& kv : rN.mKvs) {
+        out += std::to_string(kv.mOrder) + " " + std::to_string(kv.mNumCp);
+        for (double k : kv.mKnots) {
+            out += ' ';
+            mf_append_real(out, k);
+        }
+        out += '\n';
+    }
+    out += "\nweights\n";
+    for (double w : rN.mWeights) {
+        mf_append_real(out, w);
+        out += '\n';
+    }
+    const auto sdim = static_cast<std::size_t>(rN.mSpace.mVDim);
+    out += "\nFiniteElementSpace\nFiniteElementCollection: " + rN.mSpace.mCollection +
+           "\nVDim: " + std::to_string(sdim) + "\nOrdering: 1\n\n";
+    for (std::size_t g = 0; g * sdim < rN.mNodes.size(); ++g) {
+        for (std::size_t c = 0; c < sdim; ++c) {
+            if (c)
+                out += ' ';
+            mf_append_real(out, rN.mNodes[g * sdim + c]);
+        }
+        out += '\n';
+    }
+    return out;
+}
+
+// Throws unless `rMesh` is what reading the side channel's NURBS mesh gives:
+// the points, the element cells and the fields still present.
+void mf_nurbs_match(const Mesh& rMesh, const Mesh& rExpected,
+                    const std::vector<std::string>& rNames) {
+    const auto mismatch = [](const std::string& rWhat) {
+        throw WriteError(std::string("MFEM NURBS writer: ") + kMfNurbsMismatch + " (" + rWhat +
+                         "); write with nurbs=False to write the sampled cells");
+    };
+    const auto close = [](const NDArray& rA, const NDArray& rB) {
+        if (rA.Size() != rB.Size())
+            return false;
+        const detail::DoubleView a(rA);
+        const detail::DoubleView b(rB);
+        double scale = 1.0, diff = 0.0;
+        for (std::size_t i = 0; i < rB.Size(); ++i) {
+            scale = std::max(scale, std::abs(b[i]));
+            diff = std::max(diff, std::abs(a[i] - b[i]));
+        }
+        return diff <= 1e-9 * scale;
+    };
+    if (rMesh.PointDim() != rExpected.PointDim() || !close(rMesh.Points(), rExpected.Points()))
+        mismatch("its points differ");
+    bool cells = rMesh.NumCellBlocks() >= 1 && rExpected.NumCellBlocks() >= 1;
+    if (cells) {
+        const auto a = rMesh.Cells(0);
+        const auto b = rExpected.Cells(0);
+        cells = a.Type() == b.Type() && !a.IsRagged() && a.NumCells() == b.NumCells() &&
+                a.NodesPerCell() == b.NodesPerCell() && a.Conn().Size() == b.Conn().Size();
+        if (cells) {
+            const detail::Int64View ca(a.Conn());
+            const detail::Int64View cb(b.Conn());
+            for (std::size_t i = 0; cells && i < a.Conn().Size(); ++i)
+                cells = ca[i] == cb[i];
+        }
+    }
+    if (!cells)
+        mismatch("its element cells differ");
+    for (const std::string& name : rNames)
+        if (rMesh.HasPointData(name) && !close(rMesh.PointData(name), rExpected.PointData(name)))
+            mismatch("its point data '" + name + "' differs");
 }
 
 }  // namespace
@@ -4644,6 +5148,117 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
         }
         auto g = open_gf(name);
         g << text;
+    }
+}
+
+void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
+                const NurbsInfo& rInfo) {
+    if (rInfo.mPatches.empty()) {
+        write_mfem(rPath, rMesh, GridFunctions);
+        return;
+    }
+    mf_check_nurbs_info(rInfo);
+    std::vector<std::vector<double>> fields;
+    std::vector<std::size_t> cols;
+    const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
+    std::vector<MfGridData> gfs;
+    for (std::size_t k = 0; k < fields.size(); ++k) {
+        MfGridData g;
+        g.mName = rInfo.mFieldNames[k];
+        g.mSpace.mKind = MfSpace::Nurbs;
+        g.mSpace.mCollection = n.mSpace.mCollection;
+        g.mSpace.mVDim = static_cast<int>(cols[k]);
+        g.mSpace.mOrdering = 1;
+        g.mValues = fields[k];
+        gfs.push_back(std::move(g));
+    }
+    const Mesh expected = mf_sample_nurbs(n, gfs, "the NURBS side channel", nullptr);
+    mf_nurbs_match(rMesh, expected, rInfo.mFieldNames);
+
+    std::vector<std::string> cell_names;
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "mfem:attribute")
+            cell_names.push_back(name);
+    if (!GridFunctions && (rMesh.NumPointData() || !cell_names.empty() || rMesh.NumFieldData())) {
+        log::warn("MFEM mesh writer: data arrays are dropped (write grid functions to keep them)");
+        detail::provenance_note("data-dropped", "an MFEM mesh holds no data arrays");
+    } else if (GridFunctions && rMesh.NumFieldData()) {
+        log::warn("MFEM mesh writer: field data has no grid function; dropped");
+        detail::provenance_note("data-dropped", "field data has no MFEM grid function");
+    }
+    const auto is_field = [&](const std::string& rName) {
+        return std::find(rInfo.mFieldNames.begin(), rInfo.mFieldNames.end(), rName) !=
+               rInfo.mFieldNames.end();
+    };
+    if (GridFunctions)
+        for (const std::string& name : rMesh.PointDataNames())
+            if (!is_field(name)) {
+                log::warn(
+                    "MFEM NURBS writer: point data '{}' is not a field of the NURBS side "
+                    "channel; dropped",
+                    name);
+                detail::provenance_note("data-dropped",
+                                        "point data '" + name + "' has no NURBS grid function");
+            }
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const std::string& name = rMesh.Region(r).mName;
+        std::int64_t id = 0;
+        if (mf_generated_name(name, "attribute_", id) || mf_generated_name(name, "boundary_", id))
+            continue;
+        log::warn("MFEM NURBS writer: region '{}' has no place in a NURBS mesh; dropped", name);
+        detail::provenance_note("regions-dropped", "region '" + name + "' (NURBS mesh)");
+    }
+
+    {
+        auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+        if (!f)
+            throw WriteError("Could not open file for writing: " + rPath);
+        f << mf_nurbs_text(n);
+        if (!f)
+            throw WriteError("MFEM mesh writer: failed writing " + rPath);
+    }
+    if (!GridFunctions)
+        return;
+    namespace fs = std::filesystem;
+    const fs::path mesh_path(rPath);
+    const std::string stem = (mesh_path.parent_path() / mesh_path.stem()).string();
+    const auto write_gf = [&](const std::string& rName, const std::string& rText) {
+        const std::string path = stem + "." + mf_sanitise(rName) + ".gf";
+        auto g = detail::make_classic_ofstream(path, std::ios::binary);
+        if (!g)
+            throw WriteError("Could not open file for writing: " + path);
+        g << rText;
+    };
+    for (const MfGridData& g : gfs) {
+        if (!rMesh.HasPointData(g.mName))
+            continue;
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        std::string text = "FiniteElementSpace\nFiniteElementCollection: " + g.mSpace.mCollection +
+                           "\nVDim: " + std::to_string(vdim) + "\nOrdering: 1\n\n";
+        for (std::size_t i = 0; i < g.mValues.size(); ++i) {
+            if (i % vdim)
+                text += ' ';
+            mf_append_real(text, g.mValues[i]);
+            if (i % vdim == vdim - 1)
+                text += '\n';
+        }
+        write_gf(g.mName, text);
+    }
+    for (const std::string& name : cell_names) {
+        const NDArray& a = rMesh.CellData(name, 0);
+        const std::size_t cols_k = a.Shape().size() > 1 ? detail::cols(a) : 1;
+        std::string text = "FiniteElementSpace\nFiniteElementCollection: L2_" +
+                           std::to_string(n.mDim) + "D_P0\nVDim: " + std::to_string(cols_k) +
+                           "\nOrdering: 1\n\n";
+        const detail::DoubleView v(a);
+        for (std::size_t i = 0; i < a.Size(); ++i) {
+            if (i % cols_k)
+                text += ' ';
+            mf_append_real(text, v[i]);
+            if (i % cols_k == cols_k - 1)
+                text += '\n';
+        }
+        write_gf(name, text);
     }
 }
 

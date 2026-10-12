@@ -256,6 +256,7 @@ def _register_conversion(server: FastMCP) -> None:
         write_grid_functions: bool = False,
         elmer_halo: bool = False,
         patran_results: Optional[Dict[str, str]] = None,
+        write_nurbs: Optional[bool] = None,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
@@ -279,7 +280,10 @@ def _register_conversion(server: FastMCP) -> None:
         inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64 arrays natively;
         Multiple pieces concatenate without welding; VTP/VTS/VTR/VTI retain
         inline output. Legacy VTK structured datasets also read natively.
-        XDMF time-series reads preserve fixed shared point/cell/side regions."""
+        XDMF time-series reads preserve fixed shared point/cell/side regions.
+        An MFEM NURBS input keeps its patches, so an MFEM output is written back
+        as the NURBS mesh; write_nurbs=False writes the sampled cells instead,
+        True refuses anything else."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -297,6 +301,7 @@ def _register_conversion(server: FastMCP) -> None:
             write_grid_functions=write_grid_functions,
             elmer_halo=elmer_halo,
             patran_results=patran_results,
+            write_nurbs=write_nurbs,
         )
 
     @server.tool()

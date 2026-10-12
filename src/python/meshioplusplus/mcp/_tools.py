@@ -814,6 +814,7 @@ def tool_convert(
     write_grid_functions=False,
     elmer_halo=False,
     patran_results=None,
+    write_nurbs=None,
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
 
@@ -831,7 +832,11 @@ def tool_convert(
     input mesh; ``patran_results`` (``{name: path}``) reads Patran 2.5 result
     files onto a Patran neutral input; ``write_grid_functions`` writes the data of an MFEM output as
     ``.gf`` files beside it. ``elmer_halo`` adds ElmerGrid's ``-halo`` layer to
-    the partitioning an Elmer output writes from ``partition:part``."""
+    the partitioning an Elmer output writes from ``partition:part``.
+
+    An MFEM NURBS input keeps its patches (``mesh.info["nurbs"]``), so an MFEM
+    output is written back as the NURBS mesh; ``write_nurbs=False`` writes the
+    sampled cells instead and ``True`` refuses anything else."""
     if grid_functions and patran_results:
         raise ValueError(
             "meshio++: mcp: grid_functions (MFEM) and patran_results (Patran) "
@@ -873,8 +878,11 @@ def tool_convert(
         try:
             candidates = _filetypes_from_path(pathlib.Path(str(output_path)))
             out_fmt = candidates[0] if candidates else None
-            # `.mesh` is Medit's first; asking for grid functions means MFEM.
-            if write_grid_functions and "mfem" in candidates:
+            # `.mesh` is Medit's first; asking for grid functions (or NURBS)
+            # means MFEM.
+            if (
+                write_grid_functions or write_nurbs is not None
+            ) and "mfem" in candidates:
                 out_fmt = output_format = "mfem"
         except Exception:
             out_fmt = None
@@ -896,6 +904,10 @@ def tool_convert(
         if out_fmt != "elmer":
             raise ValueError("meshio++: mcp: elmer_halo needs Elmer output")
         write_kwargs["halo"] = True
+    if write_nurbs is not None:
+        if out_fmt != "mfem":
+            raise ValueError("meshio++: mcp: write_nurbs needs MFEM (.mesh) output")
+        write_kwargs["nurbs"] = bool(write_nurbs)
     resolved = _store(mesh, output_path, output_format, **write_kwargs)
     return _result(resolved, mesh, output_format=out_fmt)
 

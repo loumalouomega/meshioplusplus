@@ -67,6 +67,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/properties.hpp"
+#include "meshioplusplus/nurbs.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
@@ -167,8 +168,14 @@ MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 // deliberate, recorded change instead of a silent one.
 static_assert(static_cast<int>(meshioplusplus::CellType::Triangle7) == 76,
               "meshio++ ABI: CellType::Triangle7 moved (ABI 16 appended it at 76)");
-static_assert(static_cast<int>(meshioplusplus::CellType::Custom) == 77,
-              "meshio++ ABI: CellType::Custom moved (ABI 16 placed it at 77)");
+// ABI 26 appended the seven VTK Bézier types after it (77-83): `Custom`
+// moved again, from 77 to 84.
+static_assert(static_cast<int>(meshioplusplus::CellType::VtkBezierCurve) == 77,
+              "meshio++ ABI: CellType::VtkBezierCurve moved (ABI 26 appended it at 77)");
+static_assert(static_cast<int>(meshioplusplus::CellType::VtkBezierPyramid) == 83,
+              "meshio++ ABI: CellType::VtkBezierPyramid moved (ABI 26 appended it at 83)");
+static_assert(static_cast<int>(meshioplusplus::CellType::Custom) == 84,
+              "meshio++ ABI: CellType::Custom moved (ABI 26 placed it at 84)");
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 288, 8);
@@ -202,6 +209,10 @@ MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 // ABI 22: periodic links join the bounding-entity vector.
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshPeriodicLink, 112, 8);
+// ABI 26: the NURBS side channel (`nurbs.hpp`), new structs pinned from the start.
+MIO_ABI_LAYOUT(meshioplusplus::NurbsPatch, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::NurbsTopology, 376, 8);
+MIO_ABI_LAYOUT(meshioplusplus::NurbsInfo, 640, 8);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
 // blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping
@@ -513,6 +524,9 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::OpenFoamWriteOptions>("OpenFoamWriteOptions");
     report<meshioplusplus::PatranResultFile>("PatranResultFile");
     report<meshioplusplus::GmshInfo>("GmshInfo");
+    report<meshioplusplus::NurbsPatch>("NurbsPatch");
+    report<meshioplusplus::NurbsTopology>("NurbsTopology");
+    report<meshioplusplus::NurbsInfo>("NurbsInfo");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::MdpaGeometryBlock>("MdpaGeometryBlock");
     report<meshioplusplus::MdpaMeshBlock>("MdpaMeshBlock");

@@ -375,6 +375,22 @@ def test_mfem_grid_functions_convert_both_ways(tmp_path):
         _tools.tool_convert(target, str(tmp_path / "x.vtu"), write_grid_functions=True)
 
 
+def test_mfem_nurbs_convert_keeps_the_patches(tmp_path):
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).parent / "meshes" / "mfem" / "nurbs" / "pipe-nurbs.mesh"
+    )
+    nurbs = tmp_path / "pipe.mesh"
+    _tools.tool_convert(str(src), str(nurbs), input_format="mfem", output_format="mfem")
+    assert nurbs.read_text().startswith("MFEM NURBS mesh v1.0")
+    sampled = tmp_path / "sampled.mesh"
+    _tools.tool_convert(str(src), str(sampled), input_format="mfem", write_nurbs=False)
+    assert sampled.read_text().startswith("MFEM mesh v1")
+    with pytest.raises(ValueError, match="write_nurbs needs MFEM"):
+        _tools.tool_convert(str(src), str(tmp_path / "x.vtu"), write_nurbs=True)
+
+
 def test_patran_results_convert(tmp_path):
     import pathlib
 

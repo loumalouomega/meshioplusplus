@@ -1,9 +1,12 @@
 import pathlib
 
 from .. import _core
+from .._common import warn
+from .._exceptions import WriteError
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from ._mfem import _NURBS_MISMATCH, _nurbs_side_channel
 from ._mfem import read as _py_read
 from ._mfem import write as _py_write
 
@@ -46,7 +49,7 @@ def read(filename, grid_functions=None, piece=None):
     return _py_read(filename, dict(items) if items else None, piece=piece)
 
 
-def write(filename, mesh, grid_functions=False):
+def write(filename, mesh, grid_functions=False, nurbs=None):
     """Write an MFEM mesh (``.mesh``).
 
     The highest-dimensional cells are the elements and the cells one dimension
@@ -55,18 +58,36 @@ def write(filename, mesh, grid_functions=False):
     attribute sets. Quadratic cells are written as an ``H1_<d>D_P2`` nodes space
     and VTK Lagrange cells of order p as ``H1_<d>D_P<p>`` (Gauss-Lobatto).
 
+    A mesh read from an ``MFEM NURBS mesh`` carries its patches in
+    ``mesh.info["nurbs"]`` and is written back as that NURBS mesh (MFEM's global
+    form) while it still is their sampling. ``nurbs=None`` (the default) writes
+    the sampled cells instead, with a warning, once the mesh no longer matches;
+    ``nurbs=True`` requires a match and ``nurbs=False`` always writes the cells.
+
     With ``grid_functions=True`` every point data array is also written as an
     ``H1`` grid function ``<stem>.<name>.gf`` next to the mesh (and cell data as
-    ``L2`` order 0); otherwise data arrays are dropped with a warning.
+    ``L2`` order 0; a NURBS mesh's fields as NURBS grid functions); otherwise
+    data arrays are dropped with a warning.
     """
+    info = _nurbs_side_channel(mesh, nurbs)
     if not is_buffer(filename, "w"):
         try:
+            if info is not None:
+                try:
+                    _core.mfem_write(str(filename), mesh, bool(grid_functions), info)
+                    return
+                except WriteError as exc:
+                    if nurbs or _NURBS_MISMATCH not in str(exc):
+                        raise
+                    warn(
+                        f"{str(exc).split('; write with')[0]}; writing the sampled cells"
+                    )
             _core.mfem_write(str(filename), mesh, bool(grid_functions))
             return
         except Exception as exc:
             if not core_declined(exc, "mfem", "write", filename):
                 raise
-    return _py_write(filename, mesh, grid_functions=grid_functions)
+    return _py_write(filename, mesh, grid_functions=grid_functions, nurbs=nurbs)
 
 
 register_format("mfem", [".mesh"], read, {"mfem": write})

@@ -14,13 +14,18 @@ const MIO_MDPA_SUBMODELPARTS = Int32(7)
 const MIO_MDPA_RAW_BLOCKS = Int32(8)
 const MIO_GMSH_BOUNDING_ENTITIES = Int32(0)
 const MIO_GMSH_PERIODIC = Int32(1)
+const MIO_NURBS_PATCHES = Int32(0)
+const MIO_NURBS_FIELDS = Int32(1)
+const MIO_NURBS_TOPOLOGY = Int32(2)
+const MIO_NURBS_CELL_MAP = Int32(3)
 
 """
     FormatInfo
 
 A format's side channel, returned by [`read_with_info`](@ref). Released by a
 finalizer; [`close`](@ref) does it deterministically and is idempotent. Inspect
-an MDPA one with [`mdpa_info`](@ref), or a Gmsh one with [`gmsh_info`](@ref).
+an MDPA one with [`mdpa_info`](@ref), a Gmsh one with [`gmsh_info`](@ref), or an
+MFEM NURBS one with [`nurbs_info`](@ref).
 """
 mutable struct FormatInfo
     ptr::Ptr{Cvoid}
@@ -54,7 +59,7 @@ end
     read_with_info(path; format="", options=nothing) -> (Mesh, Union{FormatInfo,Nothing})
 
 Read a mesh, keeping what it cannot hold. For a format with a side channel
-(currently `"mdpa"` and `"gmsh"`) the second value is a [`FormatInfo`](@ref); for every other
+(currently `"mdpa"`, `"gmsh"` and `"mfem"`) the second value is a [`FormatInfo`](@ref); for every other
 format it is `nothing` and the read is exactly [`read`](@ref)'s.
 """
 function read_with_info(path::AbstractString; format::AbstractString="",
@@ -85,7 +90,7 @@ end
 """
     format_name(info) -> String
 
-The format the side channel belongs to (`"mdpa"` or `"gmsh"`).
+The format the side channel belongs to (`"mdpa"`, `"gmsh"` or `"mfem"`).
 """
 format_name(info::FormatInfo) =
     _getstring((buf, n) -> ccall(_sym(:mio_format_info_format), Int64,
@@ -148,6 +153,62 @@ function gmsh_info(info::FormatInfo)
                 affine=a(MIO_GMSH_PERIODIC, i, 1),
                 node_pairs=a(MIO_GMSH_PERIODIC, i, 2) .+ 1)
                for i in 0:n(MIO_GMSH_PERIODIC)-1])
+end
+
+"""
+    nurbs_info(info) -> NamedTuple
+
+Copy of an MFEM NURBS side channel (v16.40.0): the patches an `MFEM NURBS mesh`
+was sampled from. `patches` holds `(degrees, knots, control_points, weights,
+fields)` per patch, `control_points` a `(space_dimension, points)` matrix with
+direction 1 fastest and each field a `(components, points)` matrix of control
+values; then `field_names`, `topology` (`nothing` when the source states none;
+else `(dimension, num_vertices, patch_vertices, patch_attributes,
+boundary_vertices, boundary_attributes, edges)`, `edges` as `(knot vector,
+vertex, vertex)` columns) and the cell map `cell_patch`, `cell_span` (a
+`(3, cells)` matrix) and `boundary_cell_patch`. Vertices, patches and knot
+spans are 1-based; attributes and knot-vector ids stay as the file spelled
+them. [`write_with_info`](@ref) writes the patches back from the handle.
+"""
+function nurbs_info(info::FormatInfo)
+    h = _handle(info)
+    format_name(info) == "mfem" ||
+        throw(MeshioError(MIO_ERR_INVALID_ARG, "not an mfem (NURBS) side channel"))
+    n(section) = Int(_check_count(ccall(_sym(:mio_nurbs_info_count), Int64,
+                                       (Ptr{Cvoid}, Int32), h, section), "nurbs count"))
+    a(section, i, field) = _mdpa_copy((d, t, nd, s) -> ccall(_sym(:mio_nurbs_info_array), Cint,
+        (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int32}, Ptr{Int64}),
+        h, section, Int64(i), Int32(field), d, t, nd, s))
+    function ival(section, i, field)
+        v = Ref{Int64}(0)
+        _check(ccall(_sym(:mio_nurbs_info_int), Cint, (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{Int64}),
+                     h, section, Int64(i), Int32(field), v))
+        v[]
+    end
+    names = [_getstring((buf, len) -> ccall(_sym(:mio_nurbs_info_string), Int64,
+                                            (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{UInt8}, Int64),
+                                            h, MIO_NURBS_FIELDS, Int64(k), Int32(0), buf, len))
+             for k in 0:n(MIO_NURBS_FIELDS)-1]
+    patches = [(degrees=a(MIO_NURBS_PATCHES, p, 0),
+                knots=[a(MIO_NURBS_PATCHES, p, 3 + d) for d in 0:ival(MIO_NURBS_PATCHES, p, 0)-1],
+                control_points=a(MIO_NURBS_PATCHES, p, 1),
+                weights=a(MIO_NURBS_PATCHES, p, 2),
+                fields=[a(MIO_NURBS_PATCHES, p, 6 + k) for k in 0:length(names)-1])
+               for p in 0:n(MIO_NURBS_PATCHES)-1]
+    topology = if n(MIO_NURBS_TOPOLOGY) == 0
+        nothing
+    else
+        edges = a(MIO_NURBS_TOPOLOGY, 0, 4)
+        edges[2:3, :] .+= 1
+        (dimension=ival(MIO_NURBS_TOPOLOGY, 0, 0), num_vertices=ival(MIO_NURBS_TOPOLOGY, 0, 1),
+         patch_vertices=a(MIO_NURBS_TOPOLOGY, 0, 0) .+ 1,
+         patch_attributes=a(MIO_NURBS_TOPOLOGY, 0, 1),
+         boundary_vertices=a(MIO_NURBS_TOPOLOGY, 0, 2) .+ 1,
+         boundary_attributes=a(MIO_NURBS_TOPOLOGY, 0, 3), edges=edges)
+    end
+    cells(field) = n(MIO_NURBS_CELL_MAP) == 0 ? Int64[] : a(MIO_NURBS_CELL_MAP, 0, field) .+ 1
+    (patches=patches, field_names=names, topology=topology,
+     cell_patch=cells(0), cell_span=cells(1), boundary_cell_patch=cells(2))
 end
 
 function _mdpa_data(h, section, i)

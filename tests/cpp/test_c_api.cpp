@@ -268,6 +268,12 @@ TEST(CApi, CellTypeMetadata) {
     EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_Triangle), 2);
     EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_Custom), -1);
     EXPECT_STREQ(mio_cell_type_name(MIO_CELL_Custom), "");
+    // The VTK Bezier family (ABI 26): variable size, a fixed dimension.
+    EXPECT_STREQ(mio_cell_type_name(MIO_CELL_VtkBezierQuadrilateral), "VTK_BEZIER_QUADRILATERAL");
+    EXPECT_EQ(mio_cell_type_from_name("VTK_BEZIER_PYRAMID"), MIO_CELL_VtkBezierPyramid);
+    EXPECT_EQ(mio_cell_type_num_nodes(MIO_CELL_VtkBezierHexahedron), -1);
+    EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_VtkBezierCurve), 1);
+    EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_VtkBezierWedge), 3);
 }
 
 TEST(CApi, BuildAndInspect) {
@@ -1625,6 +1631,89 @@ TEST(CApi, GmshPeriodicSideChannel) {
             std::remove(path.c_str());
         }
     EXPECT_EQ(mio_gmsh_info_count(nullptr, MIO_GMSH_PERIODIC), -1);
+}
+
+TEST(CApi, NurbsSideChannel) {
+    // A quarter annulus, one NURBS patch of degrees (2, 1) (MFEM global form).
+    const std::string w = "0.70710678118654757";
+    const auto path = mt::temp_path(".mesh");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
+               "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
+               "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
+            << w << "\n" << w
+            << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+               "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
+    }
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(path.c_str(), "mfem", nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_PATCHES), 1);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_FIELDS), 0);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_TOPOLOGY), 1);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_CELL_MAP), 1);
+    EXPECT_EQ(mio_nurbs_info_count(info, 99), -1);
+    EXPECT_EQ(mio_gmsh_info_count(info, MIO_GMSH_PERIODIC), -1);  // not a gmsh handle
+    int64_t v = 0;
+    ASSERT_EQ(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, 0, 0, &v), MIO_OK);
+    EXPECT_EQ(v, 2);
+    ASSERT_EQ(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, 0, 1, &v), MIO_OK);
+    EXPECT_EQ(v, 2);
+    ASSERT_EQ(mio_nurbs_info_int(info, MIO_NURBS_TOPOLOGY, 0, 1, &v), MIO_OK);
+    EXPECT_EQ(v, 4);
+    EXPECT_EQ(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, 1, 0, &v), MIO_ERR_INVALID_ARG);
+    const void* data = nullptr;
+    mio_dtype dtype;
+    int32_t ndim;
+    int64_t shape[MIO_MAX_NDIM]{};
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT32);
+    EXPECT_EQ(static_cast<const int32_t*>(data)[0], 2);
+    EXPECT_EQ(static_cast<const int32_t*>(data)[1], 1);
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 6);
+    EXPECT_EQ(shape[1], 2);
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 2, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_DOUBLE_EQ(static_cast<const double*>(data)[1], 0.70710678118654757);
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 4, &data, &dtype, &ndim, shape),
+              MIO_OK);  // the knot vector of direction 1
+    EXPECT_EQ(shape[0], 4);
+    EXPECT_NE(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 5, &data, &dtype, &ndim, shape),
+              MIO_OK);  // no direction 2
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_CELL_MAP, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(shape[0], 1);
+    EXPECT_EQ(shape[1], 3);
+    EXPECT_EQ(mio_nurbs_info_string(info, MIO_NURBS_FIELDS, 0, 0, nullptr, 0), -1);
+
+    // Written back as the NURBS mesh, and read back the same.
+    const auto output = mt::temp_path(".mesh");
+    ASSERT_EQ(mio_write_with_info(output.c_str(), mesh, "mfem", info), MIO_OK) << mio_last_error();
+    {
+        std::ifstream in(output);
+        std::string first;
+        std::getline(in, first);
+        EXPECT_EQ(first, "MFEM NURBS mesh v1.0");
+    }
+    mio_format_info* info2 = nullptr;
+    mio_mesh* back = mio_read_with_info(output.c_str(), "mfem", nullptr, &info2);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_nurbs_info_array(info2, MIO_NURBS_PATCHES, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(static_cast<const double*>(data)[2], 1.0);  // control point (1, 1)
+    EXPECT_EQ(mio_write_with_info(output.c_str(), mesh, "vtu", info), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(back);
+    mio_format_info_free(info2);
+    mio_mesh_free(mesh);
+    mio_format_info_free(info);
+    std::remove(path.c_str());
+    std::remove(output.c_str());
 }
 
 // ---------------------------------------------------------------------------

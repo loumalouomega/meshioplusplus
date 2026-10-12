@@ -1,6 +1,6 @@
 """STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted B-rep solid.
 
-Write-only: reading STEP means a CAD kernel (roadmap §6.2.2).
+Write-only: reading STEP means a CAD kernel (roadmap §6.2.1).
 """
 
 from .. import _core

@@ -189,7 +189,11 @@ typedef enum mio_dtype {
                                     X(Polyhedron) X(VtkLagrangeCurve) X(VtkLagrangeTriangle)       \
                                         X(VtkLagrangeQuadrilateral) X(VtkLagrangeTetrahedron)      \
                                             X(VtkLagrangeHexahedron) X(VtkLagrangeWedge)           \
-                                                X(VtkLagrangePyramid) X(Triangle7)
+                                                X(VtkLagrangePyramid) X(Triangle7)                 \
+                                                X(VtkBezierCurve)                                  \
+                                                X(VtkBezierTriangle) X(VtkBezierQuadrilateral)     \
+                                                X(VtkBezierTetrahedron) X(VtkBezierHexahedron)     \
+                                                X(VtkBezierWedge) X(VtkBezierPyramid)
 
 /** Integer mirror of the meshio++ cell-type table. The string names (e.g.
  *  "tetra10") are the primary representation everywhere in this API; the
@@ -298,7 +302,7 @@ MIO_API const char* mio_cell_type_name(mio_cell_type t);
 MIO_API mio_cell_type mio_cell_type_from_name(const char* name);
 
 /** @return the fixed nodes-per-cell of `t`, or -1 for variable-size types
- *          (polygon, polyhedron, VTK Lagrange) and MIO_CELL_Custom. */
+ *          (polygon, polyhedron, VTK Lagrange and Bezier) and MIO_CELL_Custom. */
 MIO_API int mio_cell_type_num_nodes(mio_cell_type t);
 
 /** @return the topological dimension (0-3) of `t`, or -1 for MIO_CELL_Custom. */
@@ -624,8 +628,8 @@ typedef struct mio_format_info mio_format_info;
 /**
  * Read a mesh, keeping what it cannot hold in `*info`.
  *
- * Formats with a side channel (currently "mdpa" and "gmsh") read through their full
- * reader and set `*info` to a new handle; every other format reads exactly as
+ * Formats with a side channel (currently "mdpa", "gmsh" and "mfem") read through their
+ * full reader and set `*info` to a new handle; every other format reads exactly as
  * mio_read_ex() and sets `*info` to NULL. `opts` may be NULL (the defaults).
  * @return the mesh, or NULL on failure (`*info` is then NULL too).
  */
@@ -668,6 +672,47 @@ MIO_API int64_t mio_gmsh_info_count(const mio_format_info* info, int32_t section
 MIO_API mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int64_t index,
                                        int32_t field, const void** data, mio_dtype* dtype,
                                        int32_t* ndim, int64_t* shape);
+
+/** NURBS side-channel sections (an "mfem" handle, v16.40.0): the patches an
+ * `MFEM NURBS mesh` was sampled from (`NurbsInfo`, nurbs.hpp). Every index is
+ * 0-based; a handle of a mesh that is not NURBS has no patches.
+ *  - PATCHES: one item per patch. int field 0 = parametric dimension d, 1 =
+ *    space dimension; array field 0 = Int32 degrees [d], 1 = Float64 control
+ *    points (n, space dimension), direction 0 fastest, 2 = Float64 weights [n],
+ *    3 + j (j < d) = Float64 knot vector of direction j, 6 + k = Float64
+ *    (n, components) control values of field k.
+ *  - FIELDS: one item per field. string field 0 = its point-data name.
+ *  - TOPOLOGY: one item (none if the source states no topology). int field 0 =
+ *    dimension, 1 = topological vertices; array field 0 = Int64 patch vertices
+ *    (patches, 2^d), 1 = Int64 patch attributes, 2 = Int64 boundary vertices
+ *    (boundary patches, 2^(d-1)), 3 = Int64 boundary attributes, 4 = Int64
+ *    edges (edges, 3: knot vector, vertex, vertex).
+ *  - CELL_MAP: one item. array field 0 = Int64 patch of each element cell
+ *    (the first block), 1 = Int64 (cells, 3) knot span per direction, 2 =
+ *    Int64 boundary patch of each boundary cell.
+ * mio_write_with_info() writes the patches back as an `MFEM NURBS mesh`; it
+ * fails if the mesh is no longer their sampling. */
+typedef enum mio_nurbs_section {
+    MIO_NURBS_PATCHES = 0,
+    MIO_NURBS_FIELDS = 1,
+    MIO_NURBS_TOPOLOGY = 2,
+    MIO_NURBS_CELL_MAP = 3
+} mio_nurbs_section;
+
+/** Number of items, or -1 on an invalid handle/section. */
+MIO_API int64_t mio_nurbs_info_count(const mio_format_info* info, int32_t section);
+/** Integer field `field` of item `index` into `*value`. */
+MIO_API mio_status mio_nurbs_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                                      int32_t field, int64_t* value);
+/** Borrow array field `field` of item `index` until info is freed. Any out
+ *  pointer may be NULL; `shape` must hold MIO_MAX_NDIM entries. */
+MIO_API mio_status mio_nurbs_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                        int32_t field, const void** data, mio_dtype* dtype,
+                                        int32_t* ndim, int64_t* shape);
+/** Copy string field `field` of item `index` into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_nurbs_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                                      int32_t field, char* buf, int64_t buflen);
 
 /**
  * The sections of an MDPA side channel. Each is a list; the accessors below

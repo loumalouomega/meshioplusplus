@@ -363,3 +363,95 @@ SEXP R_mio_gmsh_info(SEXP x) {
     UNPROTECT(2);
     return out;
 }
+
+/* The NURBS side channel of an MFEM NURBS mesh (v16.40.0), copied: per patch
+ * its degrees, knot vectors, control net (space dimension x points), weights
+ * and field control values; the field names; the patch topology; the cell map.
+ * Vertices, patches and knot spans come back 1-based; attributes and the
+ * edges' knot-vector ids as the file spelled them. */
+static SEXP nurbs_array(const mio_format_info *info, int32_t section, int64_t i, int32_t field,
+                        double shift) {
+    const void *data = NULL;
+    mio_dtype dtype = MIO_FLOAT64;
+    int32_t ndim = 0;
+    int64_t shape[MIO_MAX_NDIM] = {0};
+    mio_r_check(mio_nurbs_info_array(info, section, i, field, &data, &dtype, &ndim, shape),
+                "nurbs_info");
+    return array_to_r(data, dtype, ndim, shape, 0, shift);
+}
+
+static SEXP nurbs_int(const mio_format_info *info, int32_t section, int64_t i, int32_t field) {
+    int64_t v = 0;
+    mio_r_check(mio_nurbs_info_int(info, section, i, field, &v), "nurbs_info");
+    return Rf_ScalarReal((double)v);
+}
+
+SEXP R_mio_nurbs_info(SEXP x) {
+    const mio_format_info *info = info_of(x, 0);
+    const int64_t np = mio_nurbs_info_count(info, MIO_NURBS_PATCHES);
+    const int64_t nf = mio_nurbs_info_count(info, MIO_NURBS_FIELDS);
+    const int64_t nt = mio_nurbs_info_count(info, MIO_NURBS_TOPOLOGY);
+    const int64_t nc = mio_nurbs_info_count(info, MIO_NURBS_CELL_MAP);
+    if (np < 0 || nf < 0 || nt < 0 || nc < 0) mio_r_fail("nurbs_info");
+    SEXP v[6];
+    v[0] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)np));
+    for (int64_t p = 0; p < np; ++p) {
+        int64_t dim = 0;
+        mio_r_check(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, p, 0, &dim), "nurbs_info");
+        SEXP f[5];
+        f[0] = PROTECT(nurbs_array(info, MIO_NURBS_PATCHES, p, 0, 0.0));
+        f[1] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)dim));
+        for (int64_t d = 0; d < dim; ++d)
+            SET_VECTOR_ELT(f[1], d, nurbs_array(info, MIO_NURBS_PATCHES, p, (int32_t)(3 + d), 0.0));
+        f[2] = PROTECT(nurbs_array(info, MIO_NURBS_PATCHES, p, 1, 0.0));
+        f[3] = PROTECT(nurbs_array(info, MIO_NURBS_PATCHES, p, 2, 0.0));
+        f[4] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nf));
+        for (int64_t k = 0; k < nf; ++k)
+            SET_VECTOR_ELT(f[4], k, nurbs_array(info, MIO_NURBS_PATCHES, p, (int32_t)(6 + k), 0.0));
+        const char *names[5] = {"degrees", "knots", "control_points", "weights", "fields"};
+        SET_VECTOR_ELT(v[0], p, mio_r_named_list(5, names, f));
+        UNPROTECT(5);
+    }
+    v[1] = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)nf));
+    for (int64_t k = 0; k < nf; ++k) {
+        const int64_t n = mio_nurbs_info_string(info, MIO_NURBS_FIELDS, k, 0, NULL, 0);
+        if (n < 0) mio_r_fail("nurbs_info");
+        char *buf = R_alloc((size_t)n + 1, 1);
+        mio_nurbs_info_string(info, MIO_NURBS_FIELDS, k, 0, buf, n + 1);
+        SET_STRING_ELT(v[1], k, Rf_mkCharLen(buf, (int)n));
+    }
+    if (nt > 0) {
+        SEXP t[7];
+        t[0] = PROTECT(nurbs_int(info, MIO_NURBS_TOPOLOGY, 0, 0));
+        t[1] = PROTECT(nurbs_int(info, MIO_NURBS_TOPOLOGY, 0, 1));
+        t[2] = PROTECT(nurbs_array(info, MIO_NURBS_TOPOLOGY, 0, 0, 1.0));
+        t[3] = PROTECT(nurbs_array(info, MIO_NURBS_TOPOLOGY, 0, 1, 0.0));
+        t[4] = PROTECT(nurbs_array(info, MIO_NURBS_TOPOLOGY, 0, 2, 1.0));
+        t[5] = PROTECT(nurbs_array(info, MIO_NURBS_TOPOLOGY, 0, 3, 0.0));
+        t[6] = PROTECT(nurbs_array(info, MIO_NURBS_TOPOLOGY, 0, 4, 0.0));
+        if (Rf_isMatrix(t[6])) { /* (knot vector, vertex, vertex) per column */
+            double *e = REAL(t[6]);
+            for (R_xlen_t c = 0; c < Rf_ncols(t[6]); ++c) {
+                e[3 * c + 1] += 1.0;
+                e[3 * c + 2] += 1.0;
+            }
+        }
+        const char *names[7] = {"dimension",         "num_vertices",        "patch_vertices",
+                                "patch_attributes",  "boundary_vertices",   "boundary_attributes",
+                                "edges"};
+        v[2] = mio_r_named_list(7, names, t);
+        UNPROTECT(7);
+    } else {
+        v[2] = R_NilValue;
+    }
+    PROTECT(v[2]);
+    for (int32_t f = 0; f < 3; ++f)
+        v[3 + f] = nc > 0 ? nurbs_array(info, MIO_NURBS_CELL_MAP, 0, f, 1.0)
+                          : Rf_allocVector(REALSXP, 0);
+    for (int32_t f = 0; f < 3; ++f) PROTECT(v[3 + f]);
+    const char *names[6] = {"patches",    "field_names", "topology",
+                            "cell_patch", "cell_span",   "boundary_cell_patch"};
+    SEXP out = mio_r_named_list(6, names, v);
+    UNPROTECT(6);
+    return out;
+}
