@@ -962,6 +962,15 @@ jobs:
         shell: pwsh
         run: echo "CMAKE_ARGS=-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF" >> $env:GITHUB_ENV
 
+      # Windows only: pin the adios2 build the VTX tests last passed with, so a
+      # newer adios2 cannot change what the Windows job runs. The pin installs
+      # first; the step below's plain `pip install adios2` then keeps it.
+      - name: Pin the ADIOS2 build the VTX tests last passed with (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pip install "adios2==2.12.1.1001" || echo "no adios2 wheel: the vtx tests skip"
+
       - name: Install meshio++ and test deps
         run: |
           python -m pip install --upgrade pip
