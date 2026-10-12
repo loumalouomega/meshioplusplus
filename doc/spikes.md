@@ -123,9 +123,9 @@ Both items were then fixed with every output byte unchanged: the VTU, VTP, VTR, 
 | --- | --- | --- | --- | --- |
 | `reorder_ragged` | killed at 13.3 GB | 6.3 GB (the setup peak) | 42.5 s | 1,209 → 470 MB |
 | `simplexify_ragged` | killed at 13.3 GB | 9.7 GB | 61.7 s | 1,111 → 726 MB |
-| `undo_green` | killed at 13.3 GB | killed at 13.3 GB | — | 1,294 → 1,039 MB |
+| `undo_green` | killed at 13.3 GB | killed at 13.3 GB | — | 1,294 → 1,039 → 994 MB |
 
-`undo_green` is still killed at XL, and by its input more than by itself: the harness's green-refined cube (every seventh cell refined and closed red-green, about 83M tetrahedra with their hierarchy) leaves the process at 11.1 GB once built, and the 3.6 GB output does not fit beside it. At tier L its peak above that input fell from 0.48 GB to 0.23 GB. Reading the `refine:*` columns in place and narrower group ids would bring it to its floor of input plus output, about 16 GB here; that is what [roadmap 6.1.1](./roadmap.md#_6-long-run-spike-first) keeps.
+`undo_green` is still killed at XL, and by its input more than by itself: the harness's green-refined cube (every seventh cell refined and closed red-green, about 83M tetrahedra with their hierarchy) leaves the process at 11.1 GB once built, and the 3.6 GB output does not fit beside it. At tier L its peak above that input fell from 0.48 GB to 0.23 GB. Reading the `refine:*` columns in place and narrower group ids were to bring it to its floor of input plus output, about 16 GB here. They landed next (the third L figure above): each `refine:*` column is now read through a view per block, which is the array itself for the Int64 columns `refine` writes (a column of another dtype is converted one block at a time), the group ids are 32-bit and the per-group sizes are gone, and with a coarse mesh that records no hierarchy, as the harness's, the coarse id table is never built. At XL that removes about 2 GB of column copies, 0.33 GB of group ids and 0.25 GB of coarse ids from the classification; at tier L the row also runs in 0.24 s instead of 1.34 s, and every digest at tiers S, M and L is unchanged. What is left is the floor itself, the input and the output side by side, which does not fit in this machine's 15 GiB; [roadmap 6.1.1](./roadmap.md#_6-long-run-spike-first) keeps only the probe on a larger one.
 
 ## How far the data model stretches
 

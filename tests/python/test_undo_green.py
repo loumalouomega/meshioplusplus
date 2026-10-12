@@ -162,6 +162,74 @@ def test_cpp_matches_python_with_no_green_groups():
     assert len(cpp.cells[0].data) == len(fine.cells[0].data)
 
 
+def _relayout(fine, dtype=np.int64, split=None, perm=None):
+    """``fine`` with its rows permuted by ``perm``, split into two blocks at row
+    ``split`` and its three ``refine:*`` id columns stored as ``dtype``."""
+    (block,) = fine.cells
+    n = len(block.data)
+    order = np.arange(n) if perm is None else np.asarray(perm)
+    cuts = [0, n] if split is None else [0, split, n]
+    pieces = [order[a:b] for a, b in zip(cuts[:-1], cuts[1:])]
+    cells = [(block.type, block.data[rows]) for rows in pieces]
+    cell_data = {}
+    for name, (arr,) in fine.cell_data.items():
+        if name in ("refine:cell_id", "refine:parent_id", "refine:level"):
+            arr = arr.astype(dtype)
+        cell_data[name] = [arr[rows] for rows in pieces]
+    return mp.Mesh(
+        fine.points, cells, point_data=dict(fine.point_data), cell_data=cell_data
+    )
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"dtype": np.int32},
+        {"dtype": np.float64},
+        {"split": 7},
+        {"split": 7, "dtype": np.int32},
+        {"perm": "reversed"},
+        {"perm": "reversed", "split": 5},
+    ],
+    ids=[
+        "int32",
+        "float64",
+        "two-blocks",
+        "two-blocks-int32",
+        "unsorted",
+        "unsorted-two-blocks",
+    ],
+)
+def test_cpp_matches_python_for_every_column_layout(layout):
+    # The core reads the refine:* columns in place, per block, whatever their
+    # dtype; the twin concatenates copies. Both must agree on every layout,
+    # including the unsorted-parent path that refine() itself never produces.
+    coarse = _tri_grid(3)
+    fine = _refine_center(coarse)
+    layout = dict(layout)
+    if layout.get("perm") == "reversed":
+        layout["perm"] = np.arange(len(fine.cells[0].data))[::-1]
+    moved = _relayout(fine, **layout)
+
+    cpp, cpp_report = mp.undo_green(coarse, moved, return_report=True)
+    py, py_report = _undo_green_py(coarse, moved)
+    assert cpp_report == py_report
+    assert cpp_report["num_groups_undone"] > 0
+    assert mp.meshes_equal(cpp, py)
+
+    # The same cells come back as from the plain Int64, one-block, sorted input.
+    ref = mp.undo_green(coarse, fine)
+    got = np.concatenate([b.data for b in cpp.cells])
+    want = ref.cells[0].data
+    if "perm" in layout:
+        # Reversed rows reverse the output order (and pick another anchor
+        # per green group, which writes the same coarse row): compare as sets.
+        got = got[np.lexsort(got.T[::-1])]
+        want = want[np.lexsort(want.T[::-1])]
+    np.testing.assert_array_equal(got, want)
+
+
 # --------------------------------------------------------------------------- #
 # regions                                                                      #
 # --------------------------------------------------------------------------- #

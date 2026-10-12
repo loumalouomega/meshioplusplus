@@ -10,6 +10,11 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+**Scale (roadmap 6.1.1): `undo_green` reads its hierarchy in place. Output and digests unchanged; no ABI change (implementation only).**
+
+- **Changed**: `undo_green` reads the three `refine:*` columns through a view per block (the array itself for the Int64 columns `refine` writes; another dtype is converted one block at a time) instead of copying them into global vectors, stores green-group ids in 32 bits (`Unsupported` past 4,294,967,295 groups, where the numpy twin takes over), drops the per-group sizes, and builds no coarse id table when the coarse mesh records no hierarchy. At tier L its peak falls from 1,039 MB to 994 MB and it runs in 0.24 s instead of 1.34 s; at XL about 2.6 GB of scratch is gone, and the row is left at its floor of input plus output, which a 15 GiB machine still cannot hold (roadmap 6.1.1 keeps the probe). Every digest of the harness at tiers S, M and L agrees with the previous build on `SEQ` and on `OPENMP` at one and four threads.
+- **Tests**: both engines on `refine:*` columns stored as Int32 and Float64, on a two-block fine mesh and on unsorted parent ids (the sorting path `refine` itself never takes), in `tests/cpp/test_undo_green.cpp` and `tests/python/test_undo_green.py`.
+
 ## v16.39.0 (2026-10-12)
 
 **Scale (roadmap §6.1): the VTK XML writers stream their arrays, and the ragged `reorder` and `simplexify` paths and `undo_green` hold far less. Output and digests unchanged; no ABI change (private headers and implementation only).**
