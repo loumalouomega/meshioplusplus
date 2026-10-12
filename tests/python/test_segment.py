@@ -152,7 +152,9 @@ def test_cli_verb(tmp_path, capsys):
 
 def test_pipeline_steps_in_both_engines(tmp_path):
     src = tmp_path / "box.vtu"
-    mio.write(src, box_skin(2))
+    # Uncompressed: the C++ leg reads this file, and the Windows wheel is built
+    # without zlib, which refuses a zlib-compressed VTU.
+    mio.write(src, box_skin(2), compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
