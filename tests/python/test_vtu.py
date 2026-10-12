@@ -270,6 +270,20 @@ def test_appended_and_bigendian_framings(reader, name):
     assert mesh.cell_data["material"][0].dtype.isnative
 
 
+def test_a_compressed_block_needs_zlib():
+    # raw_zlib.vtu holds zlib-compressed appended data. The core reads it only
+    # where zlib is built in and refuses it with a ReadError elsewhere.
+    from meshioplusplus import _core
+
+    path = _QUIRKS / "raw_zlib.vtu"
+    if getattr(_core, "__has_zlib__", False):
+        mesh = _core.vtu_read(str(path))
+        assert [c.type for c in mesh.cells] == ["pyramid", "polyhedron8"]
+    else:
+        with pytest.raises(meshioplusplus.ReadError, match="zlib"):
+            _core.vtu_read(str(path))
+
+
 @pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
 def test_two_pieces_with_polyhedra_merge(reader):
     mesh = reader(_QUIRKS / "two_pieces_polyhedron.vtu")

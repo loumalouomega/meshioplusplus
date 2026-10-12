@@ -163,6 +163,8 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
             rSrc.Take(out.data(), out.size());
         return out;
     }
+    // Refuse an absent codec before any block is read, as vtu_decode_blocks does.
+    detail::vtk_codec_require_read(Codec);
     const std::uint64_t num_blocks = next();
     const std::uint64_t max_block = next();
     const std::uint64_t last_block = next();
@@ -356,7 +358,8 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
             throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
         }
     }
-    vtk_codec_require_read(ctx.mCodec);
+    // Checked where a compressed block is decoded, not here: VTK records the
+    // compressor on ASCII files too, and those hold no compressed data.
     const std::string header = root.attribute("header_type").as_string("UInt32");
     if (header != "UInt32" && header != "UInt64")
         throw ReadError("Unknown " + format + " header type '" + header + "'");
