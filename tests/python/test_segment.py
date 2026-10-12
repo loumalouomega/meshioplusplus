@@ -151,8 +151,11 @@ def test_cli_verb(tmp_path, capsys):
 
 
 def test_pipeline_steps_in_both_engines(tmp_path):
+    # Uncompressed input: the C++ leg reads it through _core, and the Windows CI
+    # build of _core has no zlib to inflate the default compressed VTU. These
+    # tests are about the steps, not the codec.
     src = tmp_path / "box.vtu"
-    mio.write(src, box_skin(2))
+    mio.write(src, box_skin(2), compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
