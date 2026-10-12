@@ -577,6 +577,9 @@ module meshioplusplus
     ! MDPA side-channel sections and value kinds (must match the C enums
     ! mio_mdpa_section / mio_mdpa_value_kind; see mio_format_info).
     integer(c_int32_t), parameter, public :: MIO_GMSH_BOUNDING_ENTITIES = 0, MIO_GMSH_PERIODIC = 1
+    !> NURBS side-channel sections (an 'mfem' handle; see meshioplusplus.h).
+    integer(c_int32_t), parameter, public :: MIO_NURBS_PATCHES = 0, MIO_NURBS_FIELDS = 1, &
+                                             MIO_NURBS_TOPOLOGY = 2, MIO_NURBS_CELL_MAP = 3
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -1325,6 +1328,15 @@ module meshioplusplus
         procedure :: gmsh_tags => format_info_gmsh_tags
         procedure :: gmsh_affine => format_info_gmsh_affine
         procedure :: gmsh_pairs => format_info_gmsh_pairs
+        procedure :: nurbs_count => format_info_nurbs_count
+        procedure :: nurbs_int => format_info_nurbs_int
+        procedure :: nurbs_degrees => format_info_nurbs_degrees
+        procedure :: nurbs_knots => format_info_nurbs_knots
+        procedure :: nurbs_control_points => format_info_nurbs_control_points
+        procedure :: nurbs_weights => format_info_nurbs_weights
+        procedure :: nurbs_field => format_info_nurbs_field
+        procedure :: nurbs_field_name => format_info_nurbs_field_name
+        procedure :: nurbs_ids => format_info_nurbs_ids
         procedure :: mdpa_string => format_info_mdpa_string
         procedure :: mdpa_int => format_info_mdpa_int
         procedure :: mdpa_ids => format_info_mdpa_ids
@@ -3601,6 +3613,47 @@ module meshioplusplus
             integer(c_int32_t), intent(out) :: ndim
             integer(c_int64_t), intent(out) :: shape(*)
             integer(c_int) :: st
+        end function
+
+        function c_mio_nurbs_info_count(info, section) &
+                bind(c, name="mio_nurbs_info_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_nurbs_info_int(info, section, index, field, value) &
+                bind(c, name="mio_nurbs_info_int") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            integer(c_int64_t), intent(out) :: value
+            integer(c_int) :: st
+        end function
+
+        function c_mio_nurbs_info_array(info, section, index, field, data, dtype, ndim, shape) &
+                bind(c, name="mio_nurbs_info_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
+        end function
+
+        function c_mio_nurbs_info_string(info, section, index, field, buf, buflen) &
+                bind(c, name="mio_nurbs_info_string") result(n)
+            import :: c_ptr, c_char, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t) :: n
         end function
 
         function c_mio_mdpa_info_string(info, section, index, field, buf, buflen) &
@@ -9700,6 +9753,194 @@ contains
         if (shp(1) == 0) return
         call c_f_pointer(p, vals, [shp(2), shp(1)])
         pairs = int(vals, int64) + 1
+    end function
+
+    !> Number of items in a MIO_NURBS_* section; -1 on error (not an 'mfem'
+    !> handle). A handle of a mesh that is not NURBS has no patches.
+    integer function format_info_nurbs_count(self, section)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section
+        format_info_nurbs_count = int(c_mio_nurbs_info_count(self%handle, int(section, c_int32_t)))
+    end function
+
+    !> Integer field `field` (0-based, see meshioplusplus.h) of item `index`
+    !> (1-based): a patch's parametric (0) or space (1) dimension, the
+    !> topology's dimension (0) or vertex count (1).
+    function format_info_nurbs_int(self, section, index, field, stat, errmsg) result(v)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: v
+        integer(c_int64_t) :: cv
+        cv = 0
+        call handle_status(c_mio_nurbs_info_int(self%handle, int(section, c_int32_t), &
+                                                int(index - 1, c_int64_t), int(field, c_int32_t), cv), &
+                           'nurbs_int', stat, errmsg)
+        v = int(cv, int64)
+    end function
+
+    !> One borrowed array of the NURBS side channel, as a C pointer and shape.
+    subroutine nurbs_array(self, section, index, field, what, p, shp, ok, stat, errmsg)
+        class(mio_format_info), intent(in) :: self
+        integer(c_int32_t), intent(in) :: section
+        integer, intent(in) :: index, field
+        character(*), intent(in) :: what
+        type(c_ptr), intent(out) :: p
+        integer(c_int64_t), intent(out) :: shp(MIO_MAX_NDIM)
+        logical, intent(out) :: ok
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        shp = 0
+        st = c_mio_nurbs_info_array(self%handle, section, int(index - 1, c_int64_t), &
+                                    int(field, c_int32_t), p, dt, nd, shp)
+        call handle_status(st, what, stat, errmsg)
+        ok = st == 0_c_int
+    end subroutine
+
+    !> A patch's degree per parametric direction (patch index 1-based).
+    function format_info_nurbs_degrees(self, patch, stat, errmsg) result(degrees)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int32), allocatable :: degrees(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        integer(c_int32_t), pointer :: vals(:)
+        allocate (degrees(0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 0, 'nurbs_degrees', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        degrees = int(vals, int32)
+    end function
+
+    !> A patch's knot vector along direction `dir` (both 1-based), copied.
+    function format_info_nurbs_knots(self, patch, dir, stat, errmsg) result(knots)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch, dir
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: knots(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:)
+        allocate (knots(0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 2 + dir, 'nurbs_knots', p, shp, ok, &
+                         stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        knots = real(vals, real64)
+    end function
+
+    !> A patch's control net (space dimension, points), direction 0 fastest.
+    function format_info_nurbs_control_points(self, patch, stat, errmsg) result(xyz)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: xyz(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (xyz(0, 0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 1, 'nurbs_control_points', p, shp, ok, &
+                         stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        xyz = real(vals, real64)
+    end function
+
+    !> A patch's control-point weights.
+    function format_info_nurbs_weights(self, patch, stat, errmsg) result(weights)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: weights(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:)
+        allocate (weights(0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 2, 'nurbs_weights', p, shp, ok, stat, &
+                         errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        weights = real(vals, real64)
+    end function
+
+    !> The control values (components, points) of field `k` on a patch (1-based).
+    function format_info_nurbs_field(self, patch, k, stat, errmsg) result(values)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch, k
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: values(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (values(0, 0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 5 + k, 'nurbs_field', p, shp, ok, &
+                         stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        values = real(vals, real64)
+    end function
+
+    !> The point-data name of field `k` (1-based); '' on error.
+    function format_info_nurbs_field_name(self, k) result(name)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: k
+        character(:), allocatable :: name
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        name = ''
+        allocate (buf(1))
+        n = c_mio_nurbs_info_string(self%handle, MIO_NURBS_FIELDS, int(k - 1, c_int64_t), &
+                                    0_c_int32_t, buf, 0_c_int64_t)
+        if (n <= 0) return
+        deallocate (buf)
+        allocate (buf(n + 1))
+        n = c_mio_nurbs_info_string(self%handle, MIO_NURBS_FIELDS, int(k - 1, c_int64_t), &
+                                    0_c_int32_t, buf, n + 1)
+        name = from_c_buf(buf, int(n))
+    end function
+
+    !> An index array of the TOPOLOGY or CELL_MAP section, (columns, rows),
+    !> a one-dimensional one as (1, n). Vertices, patches and knot spans come
+    !> back 1-based; attributes and the edges' knot-vector ids as the file
+    !> spelled them.
+    function format_info_nurbs_ids(self, section, field, stat, errmsg) result(ids)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: ids(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        integer(c_int64_t), pointer :: vals(:, :)
+        integer(c_int64_t) :: cols
+        allocate (ids(0, 0))
+        call nurbs_array(self, int(section, c_int32_t), 1, field, 'nurbs_ids', p, shp, ok, stat, &
+                         errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        cols = max(shp(2), 1_c_int64_t)
+        call c_f_pointer(p, vals, [cols, shp(1)])
+        ids = int(vals, int64)
+        if (section == MIO_NURBS_TOPOLOGY .and. (field == 1 .or. field == 3)) return
+        if (section == MIO_NURBS_TOPOLOGY .and. field == 4) then
+            ids(2:3, :) = ids(2:3, :) + 1
+            return
+        end if
+        ids = ids + 1
     end function
 
     integer function format_info_mdpa_count(self, section)

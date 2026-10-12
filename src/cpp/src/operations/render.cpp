@@ -210,10 +210,13 @@ std::size_t rnd_corner_count(const std::string& rType, CellType Type) {
         case CellType::Vertex:
             return 1;
         case CellType::VtkLagrangeCurve:
+        case CellType::VtkBezierCurve:
             return 2;
         case CellType::VtkLagrangeTriangle:
+        case CellType::VtkBezierTriangle:
             return 3;
         case CellType::VtkLagrangeQuadrilateral:
+        case CellType::VtkBezierQuadrilateral:
             return 4;
         default:
             break;

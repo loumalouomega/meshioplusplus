@@ -58,6 +58,7 @@ test_set = [
     helpers.wedge_mesh,
     _faces_as_arrays(helpers.polyhedron_mesh),
     helpers.lagrange_high_order_mesh,
+    helpers.bezier_mesh,
     helpers.add_point_data(helpers.tri_mesh, 1),
     helpers.add_point_data(helpers.tri_mesh, 2),
     helpers.add_point_data(helpers.tri_mesh, 3),

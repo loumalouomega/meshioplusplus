@@ -16,7 +16,7 @@ numbering so grid functions index them alike.
 
 import numpy as np
 
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
 
 # MFEM's local edges and faces (fem/geom.cpp)
 QUAD_EDGES = [(0, 1), (1, 2), (2, 3), (3, 0)]
@@ -655,11 +655,14 @@ class Nurbs:
                             out.append((attr, geom, v, line, p, (i, j, k)))
         return out
 
-    def boundary(self):
+    def boundary(self, patch_of=None):
+        """The boundary elements; ``patch_of``, a list, gets each one's
+        boundary patch."""
         out = []
         geom = BDR_GEOM_OF_DIM[self.dim]
         for b, (attr, _, _, line) in enumerate(self.bpatches):
             m, okv, kvs = self.bdr_patch_map(b)
+            first = len(out)
             if self.dim == 1:
                 out.append((attr, geom, [m(0)], line))
             elif self.dim == 2:
@@ -675,7 +678,134 @@ class Nurbs:
                         i_ = i if okv[0] >= 0 else nx - 1 - i
                         v = [m(i_, j_), m(i_ + 1, j_), m(i_ + 1, j_ + 1), m(i_, j_ + 1)]
                         out.append((attr, geom, v, line))
+            if patch_of is not None:
+                patch_of.extend([b] * (len(out) - first))
         return out
+
+    # --- the side channel (NurbsInfo) --------------------------------------------
+    def gather(self, table):
+        """Per patch, the rows of ``table`` (one per control point, MFEM's
+        global numbering) over the patch's own control lattice, direction 0
+        fastest: what the ``patches`` form would list."""
+        table = np.asarray(table)
+        out = []
+        for p, kvs in enumerate(self.compr):
+            m = self.patch_map(p, True)
+            idx = [m(*ijk) for ijk in _tensor([kv.ncp for kv in kvs])]
+            out.append(table[np.asarray(idx, dtype=np.int64)])
+        return out
+
+    @classmethod
+    def from_info(cls, info):
+        """The global-form NURBS mesh a side channel describes (the twin of
+        ``mf_nurbs_from_info``): its topology, one knot vector per edge class
+        (taken from a patch that runs along it where one does, so the knots
+        are exact), and the control points, weights and fields scattered into
+        MFEM's numbering. Raises ``WriteError`` for an inconsistent one."""
+        topo = info["topology"]
+        if topo is None or int(topo["dimension"]) == 0:
+            raise WriteError(
+                "MFEM NURBS writer: the side channel has no patch topology"
+            )
+        n = cls.__new__(cls)
+        n.filename = "the NURBS side channel"
+        n.dim = int(topo["dimension"])
+        geom, bgeom = GEOM_OF_DIM[n.dim], BDR_GEOM_OF_DIM[n.dim]
+        pv = np.asarray(topo["patch_vertices"], dtype=np.int64)
+        pa = np.asarray(topo["patch_attributes"], dtype=np.int64)
+        bv = np.asarray(topo["boundary_vertices"], dtype=np.int64)
+        ba = np.asarray(topo["boundary_attributes"], dtype=np.int64)
+        n.patches = [(int(a), geom, [int(v) for v in row], 0) for a, row in zip(pa, pv)]
+        n.bpatches = [
+            (int(a), bgeom, [int(v) for v in row], 0) for a, row in zip(ba, bv)
+        ]
+        n.edge_rows = [
+            tuple(int(v) for v in row)
+            for row in np.asarray(topo["edges"], dtype=np.int64).reshape(-1, 3)
+        ]
+        n.nv = int(topo["num_vertices"])
+        n.kvs = None
+        n.weights = n.space = n.nodes = None
+        patches = info["patches"]
+        kvs = [
+            [KnotVector(int(d), k) for d, k in zip(p["degrees"], p["knots"])]
+            for p in patches
+        ]
+        n.patch_data = [(row, None, None) for row in kvs]
+        try:
+            n._topology()
+        except ReadError as exc:
+            raise WriteError(str(exc).replace("MFEM NURBS mesh:", "MFEM NURBS writer:"))
+        # The knot table: per edge class, a patch that runs along it if any.
+        table = list(n.kvs)
+        for k in range(len(table)):
+            for p in range(len(n.patches)):
+                kvdir = n._kv_dir(p)
+                hit = [
+                    d
+                    for d, e in enumerate(n._dir_edges(p))
+                    if _unsign(n.edge_to_ukv[e]) == k and kvdir[d] == 1
+                ]
+                if hit:
+                    table[k] = kvs[p][hit[0]]
+                    break
+        n.kvs = table
+        n.patch_data = None
+        n._knot_vectors()
+        for p, row in enumerate(kvs):
+            for d, kv in enumerate(row):
+                want = n.compr[p][d]
+                scale = max(1.0, float(np.max(np.abs(want.knots))))
+                if (
+                    kv.order != want.order
+                    or len(kv.knots) != len(want.knots)
+                    or np.max(np.abs(kv.knots - want.knots)) > 1e-12 * scale
+                ):
+                    raise WriteError(
+                        f"MFEM NURBS writer: patch {p} disagrees in direction {d} with "
+                        "the knot vector its edge shares"
+                    )
+        n._offsets()
+        sdim = np.asarray(patches[0]["control_points"]).shape[1]
+        nfields = len(info["field_names"])
+        tables = [np.full((n.num_dofs, sdim + 1), np.nan)]
+        for k in range(nfields):
+            cols = np.asarray(patches[0]["fields"][k]).shape[1]
+            tables.append(np.full((n.num_dofs, cols), np.nan))
+        for p, patch in enumerate(patches):
+            m = n.patch_map(p, True)
+            idx = np.asarray(
+                [m(*ijk) for ijk in _tensor([kv.ncp for kv in n.compr[p]])],
+                dtype=np.int64,
+            )
+            rows = [
+                np.column_stack(
+                    [
+                        np.asarray(patch["control_points"], dtype=np.float64),
+                        np.asarray(patch["weights"], dtype=np.float64),
+                    ]
+                )
+            ] + [np.asarray(f, dtype=np.float64) for f in patch["fields"]]
+            for t, r in zip(tables, rows):
+                old = t[idx]
+                seen = ~np.isnan(old[:, 0])
+                if np.any(
+                    np.abs(old[seen] - r[seen])
+                    > 1e-12 * np.maximum(1.0, np.abs(r[seen]))
+                ):
+                    raise WriteError(
+                        f"MFEM NURBS writer: patch {p} disagrees with a neighbour on a "
+                        "control point they share"
+                    )
+                t[idx[~seen]] = r[~seen]
+        from ._mfem import _Space
+
+        n.space = _Space("NURBS")
+        n.space.vdim, n.space.ordering = sdim, 1
+        n.nodes = tables[0][:, :sdim].ravel()
+        n.weights = tables[0][:, sdim].copy()
+        n.fields = tables[1:]
+        return n
 
     # --- control points -----------------------------------------------------------
     def control_points(self):

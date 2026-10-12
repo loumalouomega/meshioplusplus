@@ -61,7 +61,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
 > [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output, read-only; `nodout` outputs are steps, the other databases field data),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
-> [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
+> [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions, NURBS meshes with their patches kept and written back) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),

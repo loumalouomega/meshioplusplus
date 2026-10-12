@@ -72,7 +72,7 @@ end
 
 # Handles, errors, borrows
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
-export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info
+export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info, nurbs_info
 export write_gltf
 export render, render_text, render_png, write_snapshot, detect_color_depth, Frame, rgba
 export ReadOptions, MeshMetadata, DiffReport

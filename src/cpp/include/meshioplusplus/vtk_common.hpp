@@ -25,8 +25,8 @@
  * `vtk_to_meshio_type`), the one node-order quirk that differs between the
  * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
  * linear wedge), and `is_special_cell`, which flags the cell types whose
- * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_*
- * family) and therefore need the offsets-based reconstruction in
+ * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_* and
+ * VTK_BEZIER_* families) and therefore need the offsets-based reconstruction in
  * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
  */
 
@@ -194,7 +194,9 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @brief Whether a meshio cell type has a variable node count per cell in a
  * VTK/VTU connectivity+offsets representation.
  *
- * True for `"polygon"` and every `VTK_LAGRANGE_*` type. These cannot be
+ * True for `"polygon"` and every `VTK_LAGRANGE_*` and `VTK_BEZIER_*` type
+ * (since v16.40.0: a Bézier cell lists its control points in the Lagrange
+ * cell's node order, so its size varies the same way). These cannot be
  * described by a single fixed nodes-per-cell count, so
  * `detail::reconstruct_cells` (vtk_cells.hpp) reconstructs them from the
  * end-offsets array (grouping same-size runs) instead of slicing a uniform
@@ -203,7 +205,8 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @return `true` if `meshio_type` needs offsets-based reconstruction.
  */
 inline bool is_special_cell(const std::string& rMeshioType) {
-    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0;
+    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0 ||
+           rMeshioType.rfind("VTK_BEZIER_", 0) == 0;
 }
 
 }  // namespace meshioplusplus

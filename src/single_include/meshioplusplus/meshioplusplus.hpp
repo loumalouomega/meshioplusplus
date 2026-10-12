@@ -121,7 +121,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 25
+#define MESHIOPLUSPLUS_ABI_VERSION 26
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -136,7 +136,7 @@
  * geometry-name tables (`backends/kratos_names.hpp`) key off it. The enum
  * covers every fixed-node-count type in `num_nodes_per_cell()` plus the
  * variable-node-count families (`Polygon`, `Polyhedron`, the VTK Lagrange
- * types); anything else maps to `CellType::Custom` and keeps its name
+ * and Bézier types); anything else maps to `CellType::Custom` and keeps its name
  * out-of-band (see `NativeCellBlock::mTypeName`).
  *
  * The single source of truth is the `MESHIOPLUSPLUS_CELL_TYPES` X-macro
@@ -230,7 +230,14 @@ namespace meshioplusplus {
     X(VtkLagrangeHexahedron, "VTK_LAGRANGE_HEXAHEDRON", -1, 3)       \
     X(VtkLagrangeWedge, "VTK_LAGRANGE_WEDGE", -1, 3)                 \
     X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)             \
-    X(Triangle7, "triangle7", 7, 2)
+    X(Triangle7, "triangle7", 7, 2)                                  \
+    X(VtkBezierCurve, "VTK_BEZIER_CURVE", -1, 1)                     \
+    X(VtkBezierTriangle, "VTK_BEZIER_TRIANGLE", -1, 2)               \
+    X(VtkBezierQuadrilateral, "VTK_BEZIER_QUADRILATERAL", -1, 2)     \
+    X(VtkBezierTetrahedron, "VTK_BEZIER_TETRAHEDRON", -1, 3)         \
+    X(VtkBezierHexahedron, "VTK_BEZIER_HEXAHEDRON", -1, 3)           \
+    X(VtkBezierWedge, "VTK_BEZIER_WEDGE", -1, 3)                     \
+    X(VtkBezierPyramid, "VTK_BEZIER_PYRAMID", -1, 3)
 
 /**
  * @brief Compact identifier for a meshio cell type.
@@ -281,7 +288,8 @@ inline CellType cell_type_from_name(const std::string& rName) {
 
 /**
  * @brief Fixed nodes-per-cell of a `CellType`, or -1 for variable-node-count
- * types (`Polygon`, `Polyhedron`, the VTK Lagrange family) and `Custom`.
+ * types (`Polygon`, `Polyhedron`, the VTK Lagrange and Bézier families) and
+ * `Custom`.
  * @param type The cell type to query.
  * @return The node count, or -1.
  */
@@ -3564,7 +3572,7 @@ namespace meshioplusplus {
  * Lazily constructed once (function-local `static`) and returned by
  * `const&`; only rectangular, fixed-node-count cell types appear here — cell
  * types whose node count varies per cell (`"polygon"`, the VTK_LAGRANGE_*
- * family) are represented via `CellBlock`'s ragged storage instead and are
+ * and VTK_BEZIER_* families) are represented via `CellBlock`'s ragged storage instead and are
  * intentionally absent. Covers meshio's linear through high-order elements
  * (e.g. `"line"` through `"line11"`, `"tetra"` through `"tetra286"`).
  * @return Reference to the process-wide singleton lookup table.
@@ -3660,7 +3668,8 @@ inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
  * `const&`. Includes the standard meshio types plus the VTK Lagrange
  * high-order family (`"VTK_LAGRANGE_CURVE"`, `..._TRIANGLE`,
  * `..._QUADRILATERAL`, `..._TETRAHEDRON`, `..._HEXAHEDRON`, `..._WEDGE`,
- * `..._PYRAMID`), which carry a variable node count per cell (see
+ * `..._PYRAMID`) and the VTK Bézier family (`"VTK_BEZIER_CURVE"`, ...,
+ * the same seven shapes), which carry a variable node count per cell (see
  * `vtk_common.hpp`'s `is_special_cell`) but still have a fixed dimension.
  * @return Reference to the process-wide singleton lookup table.
  */
@@ -3738,6 +3747,13 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
         {"VTK_LAGRANGE_HEXAHEDRON", 3},
         {"VTK_LAGRANGE_WEDGE", 3},
         {"VTK_LAGRANGE_PYRAMID", 3},
+        {"VTK_BEZIER_CURVE", 1},
+        {"VTK_BEZIER_TRIANGLE", 2},
+        {"VTK_BEZIER_QUADRILATERAL", 2},
+        {"VTK_BEZIER_TETRAHEDRON", 3},
+        {"VTK_BEZIER_HEXAHEDRON", 3},
+        {"VTK_BEZIER_WEDGE", 3},
+        {"VTK_BEZIER_PYRAMID", 3},
     };
     return m;
 }
@@ -18675,6 +18691,109 @@ MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/medit.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/nurbs.hpp =====
+/**
+ * @file nurbs.hpp
+ * @brief `NurbsInfo`: the NURBS patches a reader sampled into Lagrange cells,
+ * kept beside the `Mesh` (the `GmshInfo`/`MdpaInfo` side-channel pattern).
+ *
+ * A `Mesh` holds linear and Lagrange polytopes only, so a reader of a NURBS
+ * file (MFEM's `MFEM NURBS mesh`, since v16.40.0) evaluates each patch at the
+ * nodes of its knot-span elements. The overload that takes a `NurbsInfo` also
+ * returns what the sampling drops -- every patch's degrees, knot vectors,
+ * control net and weights, the control values of the NURBS fields read with
+ * it, the file's patch topology, and the map from each sampled cell back to its
+ * patch and knot span -- and a writer that knows NURBS (MFEM's) writes the
+ * patches back from it. The shared registry passes none: a plain read drops it
+ * and a plain write writes the sampled cells. Python, WASM and the C API's
+ * read/write-with-info paths (also Fortran, Julia and R) carry it explicitly.
+ *
+ * Nothing here is evaluated or checked when the struct is built; the writer
+ * validates it. Every index is 0-based. See doc/formats/mfem.md.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief One tensor-product NURBS patch of parametric dimension
+ * `mDegrees.size()` (1, 2 or 3).
+ *
+ * The control net has `n0 * n1 * n2` points, `nd = mKnots[d].size() -
+ * mDegrees[d] - 1` per direction, listed with direction 0 fastest. The knot
+ * vectors run along the patch's own parametric directions (MFEM orients each
+ * patch's directions by its first vertex: the edges 0-1, 0-3 and 0-4).
+ */
+struct MESHIOPLUSPLUS_API NurbsPatch {
+    /// Polynomial degree per parametric direction.
+    std::vector<std::int32_t> mDegrees;
+    /// The knot vector of each direction (non-decreasing, `n + degree + 1` knots).
+    std::vector<std::vector<double>> mKnots;
+    /// Float64 `(n0 * n1 * n2, space dimension)`: Cartesian control points.
+    NDArray mControlPoints{DType::Float64, {0, 3}};
+    /// Float64 `(n0 * n1 * n2)`: the weight of each control point.
+    NDArray mWeights{DType::Float64, {0}};
+    /// Float64 `(n0 * n1 * n2, components)` per `NurbsInfo::mFieldNames` entry:
+    /// the field's control values (its NURBS degrees of freedom).
+    std::vector<NDArray> mFields;
+};
+
+/**
+ * @brief The patch topology of an MFEM NURBS mesh, as its file states it
+ * (`mDimension` 0 when the source has none).
+ *
+ * Patch and boundary vertices are MFEM's topological vertices `0 ..
+ * mNumVertices - 1`, which are also the first `mNumVertices` points of the
+ * sampled mesh. Boundary rows are in the orientation the reader normalises
+ * them to, so a rewrite is idempotent.
+ */
+struct MESHIOPLUSPLUS_API NurbsTopology {
+    /// Parametric dimension of the patches (1, 2 or 3); 0 for no topology.
+    std::int32_t mDimension = 0;
+    /// Number of topological vertices (patch corners).
+    std::int64_t mNumVertices = 0;
+    /// Int64 `(patches, 2^dimension)`: each patch's corner vertices, MFEM order.
+    NDArray mPatchVertices{DType::Int64, {0, 0}};
+    /// Int64 `(patches)`: each patch's attribute.
+    NDArray mPatchAttributes{DType::Int64, {0}};
+    /// Int64 `(boundary patches, 2^(dimension - 1))`: their corner vertices.
+    NDArray mBoundaryVertices{DType::Int64, {0, 0}};
+    /// Int64 `(boundary patches)`: each boundary patch's attribute.
+    NDArray mBoundaryAttributes{DType::Int64, {0}};
+    /// Int64 `(edges, 3)`: the `edges` section, `(knot vector, vertex, vertex)`.
+    NDArray mEdges{DType::Int64, {0, 3}};
+};
+
+/**
+ * @brief The NURBS description of a sampled mesh: patches, fields, topology
+ * and the cell-to-patch map. Empty (`mPatches` empty) for a mesh that is not
+ * NURBS.
+ */
+struct MESHIOPLUSPLUS_API NurbsInfo {
+    /// The patches, in file order.
+    std::vector<NurbsPatch> mPatches;
+    /// The NURBS fields carried per patch (`NurbsPatch::mFields`), by name.
+    std::vector<std::string> mFieldNames;
+    /// The patch topology the file states.
+    NurbsTopology mTopology;
+    /// Int64 `(element cells)`: the patch of each cell of the first block.
+    NDArray mCellPatch{DType::Int64, {0}};
+    /// Int64 `(element cells, 3)`: each such cell's knot span per direction,
+    /// counted over the spans of nonzero length (0 for an unused direction).
+    NDArray mCellSpan{DType::Int64, {0, 3}};
+    /// Int64 `(boundary cells)`: the boundary patch of each cell after the
+    /// first block, in block order.
+    NDArray mBoundaryCellPatch{DType::Int64, {0}};
+};
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/nurbs.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/mfem.hpp =====
 /**
  * @file mfem.hpp
@@ -18695,15 +18814,20 @@ MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
  *    degrees of freedom are numbered the way MFEM numbers them -- vertices, then
  *    edges and faces in order of first appearance, then element interiors -- and
  *    the points are those degrees of freedom, in that order.
- *  - Higher orders (and Bernstein or serendipity spaces) keep only the vertices,
- *    with a warning. `L2_T1_<d>D_P1` nodes (periodic meshes) give each element
- *    its own points.
+ *  - Higher orders give VTK Lagrange cells (`H1` and the legacy `Cubic`, since
+ *    v16.11.0); Bernstein and serendipity spaces are evaluated at the Lagrange
+ *    nodes. `L2_T1_<d>D_P1` nodes (periodic meshes) give each element its own
+ *    points.
  *  - Every geometry, the prism included, is in meshio++'s node order (MFEM's own
  *    VTK export reverses prisms for classic VTK's winding; meshio++ does not).
  *
- * Non-conforming (`MFEM NC mesh`, v1.1 `vertex_parents`), NURBS and INLINE
- * meshes are refused. A parallel rank file is read as its local part. See
- * doc/formats/mfem.md.
+ * A non-conforming mesh (`MFEM NC mesh`) is read as its leaf elements, and a
+ * NURBS mesh (`MFEM NURBS mesh` v1.0/v1.1) as its knot-span elements, each a
+ * Lagrange cell of the highest knot-vector order through the rational patch
+ * geometry; the overloads that take a `NurbsInfo` (since v16.40.0) also return
+ * the patches themselves, and write them back. INLINE meshes and NURBS meshes
+ * with non-conforming patches are refused. A parallel rank file is read with
+ * its siblings. See doc/formats/mfem.md.
  */
 
 // System includes
@@ -18769,6 +18893,30 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
                                   const ReadOptions& rOptions);
 
 /**
+ * @brief `read_mfem(rPath, rGridFunctions, rOptions)`, and the NURBS patches of a
+ * NURBS mesh in @p rInfo (since v16.40.0).
+ *
+ * For an `MFEM NURBS mesh`, @p rInfo receives what the sampling into Lagrange
+ * cells drops: per patch its degrees, knot vectors (oriented along the patch's
+ * own directions), control net and weights, and the control values of each
+ * NURBS grid function read with it (`mFieldNames` are their data names); the
+ * file's patch topology; and the patch and knot span of each element cell
+ * (the first block) and the boundary patch of each boundary cell. Any other
+ * mesh leaves @p rInfo empty. @p rInfo is replaced on success and unchanged if
+ * the read fails.
+ *
+ * @param rPath filesystem path of the mesh
+ * @param rGridFunctions the `.gf` files, each with the data name it gets
+ * @param rOptions `mPiece`/`mPieceSet` select one rank of a parallel mesh
+ * @param rInfo receives the NURBS side channel
+ * @return the mesh with the grid functions as data
+ * @throws ReadError as the other overloads
+ */
+MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
+                                  const std::vector<MfemGridFunction>& rGridFunctions,
+                                  const ReadOptions& rOptions, NurbsInfo& rInfo);
+
+/**
  * @brief Write `rMesh` as an MFEM `.mesh` file.
  *
  * The cells of the highest dimension are the elements and those one dimension
@@ -18791,6 +18939,30 @@ MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh);
  * order, cell data as `L2` order 0 (element cells only).
  */
 MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions);
+
+/**
+ * @brief Write the NURBS patches of @p rInfo as an `MFEM NURBS mesh v1.0`
+ * (since v16.40.0); an empty @p rInfo writes as `write_mfem(rPath, rMesh,
+ * GridFunctions)`.
+ *
+ * The file is MFEM's global form (`knotvectors`, `weights` and a `NURBS<p>`
+ * nodes space with Cartesian control points), so `read_mfem` of it gives back
+ * @p rMesh and @p rInfo exactly; the patches, their attributes and the
+ * boundary come from @p rInfo. @p rMesh must still be the sampling of the
+ * patches -- its points, its element cells and the point data of the NURBS
+ * fields equal what reading the file would give, within 1e-9 of their
+ * magnitude -- so a mesh moved or edited after the read is refused rather than
+ * written with stale patches. With `GridFunctions`, each field of @p rInfo
+ * whose point data the mesh still has is written as a NURBS grid function
+ * `<stem>.<name>.gf`, element cell data as `L2` order 0; other point data,
+ * field data and regions other than the attributes are dropped with a warning.
+ * Spacing formulas of a v1.1 file are not kept (its knots are).
+ *
+ * @throws WriteError for an inconsistent @p rInfo, or a mesh that no longer
+ *         matches it ("the mesh no longer matches its NURBS side channel")
+ */
+MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
+                                   const NurbsInfo& rInfo);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mfem.hpp =====
@@ -20567,7 +20739,7 @@ private:
  * @brief STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted
  * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work.
  *
- * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.2; see doc/spikes.md),
+ * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.1; see doc/spikes.md),
  * which the core deliberately does not carry.
  *
  * Each surface facet becomes an `ADVANCED_FACE` on a `PLANE`, bounded by an
@@ -32657,8 +32829,8 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
  * `vtk_to_meshio_type`), the one node-order quirk that differs between the
  * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
  * linear wedge), and `is_special_cell`, which flags the cell types whose
- * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_*
- * family) and therefore need the offsets-based reconstruction in
+ * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_* and
+ * VTK_BEZIER_* families) and therefore need the offsets-based reconstruction in
  * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
  */
 
@@ -32826,7 +32998,9 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @brief Whether a meshio cell type has a variable node count per cell in a
  * VTK/VTU connectivity+offsets representation.
  *
- * True for `"polygon"` and every `VTK_LAGRANGE_*` type. These cannot be
+ * True for `"polygon"` and every `VTK_LAGRANGE_*` and `VTK_BEZIER_*` type
+ * (since v16.40.0: a Bézier cell lists its control points in the Lagrange
+ * cell's node order, so its size varies the same way). These cannot be
  * described by a single fixed nodes-per-cell count, so
  * `detail::reconstruct_cells` (vtk_cells.hpp) reconstructs them from the
  * end-offsets array (grouping same-size runs) instead of slicing a uniform
@@ -32835,7 +33009,8 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @return `true` if `meshio_type` needs offsets-based reconstruction.
  */
 inline bool is_special_cell(const std::string& rMeshioType) {
-    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0;
+    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0 ||
+           rMeshioType.rfind("VTK_BEZIER_", 0) == 0;
 }
 
 }  // namespace meshioplusplus
@@ -35487,6 +35662,105 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/typed_view.hpp =====
+// ===== begin src/cpp/src/detail/vtk_hex_order.hpp =====
+/**
+ * @file detail/vtk_hex_order.hpp
+ * @brief The edge order of VTK's higher-order hexahedra across file versions.
+ *
+ * A **core-private** header (the `typed_view.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * VTK 9.1 swapped the nodes of edges 10 and 11 of `VTK_LAGRANGE_HEXAHEDRON`
+ * and `VTK_BEZIER_HEXAHEDRON` (both edges run along the third direction), and
+ * marks files in the new order by version: VTK XML 2.2 and later, legacy 5.1.
+ * Its readers convert an older file on read and its legacy writer converts on
+ * writing 4.2. meshio++ holds the current order (`lagrange::vtk_lattice`), so a
+ * reader converts a file older than those versions, and a writer of an older
+ * version converts on the way out. The swap is its own inverse.
+ */
+
+// System includes
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Whether a VTK cell type id is a higher-order hexahedron (72 Lagrange, 79 Bezier).
+inline bool vtk_hex_order_applies(std::int64_t VtkType) {
+    return VtkType == 72 || VtkType == 79;
+}
+
+/**
+ * @brief Swap the nodes of edges 10 and 11 of one higher-order hexahedron.
+ * @param pNodes the cell's @p NumNodes nodes, swapped in place
+ * @param NumNodes the cell's node count
+ * @param pDegrees its degrees per direction (VTK's `HigherOrderDegrees`), or
+ *        `nullptr` for an isotropic cell (its degree follows from the count)
+ * @return false when the degrees do not account for the node count (nothing done)
+ */
+inline bool vtk_hex_swap_edges(std::int64_t* pNodes, std::size_t NumNodes,
+                               const std::int64_t* pDegrees) {
+    std::int64_t p[3];
+    if (pDegrees) {
+        std::copy(pDegrees, pDegrees + 3, p);
+    } else {
+        const auto q =
+            static_cast<std::int64_t>(std::llround(std::cbrt(static_cast<double>(NumNodes))));
+        p[0] = p[1] = p[2] = q - 1;
+    }
+    if (p[0] < 1 || p[1] < 1 || p[2] < 1 ||
+        (p[0] + 1) * (p[1] + 1) * (p[2] + 1) != static_cast<std::int64_t>(NumNodes))
+        return false;
+    const std::int64_t m = p[2] - 1;  // nodes on each edge along the third direction
+    const std::int64_t s = 8 + 4 * (p[0] - 1) + 4 * (p[1] - 1) + 2 * m;
+    std::swap_ranges(pNodes + s, pNodes + s + m, pNodes + s + m);
+    return true;
+}
+
+/**
+ * @brief Swap edges 10 and 11 of every higher-order hexahedron of a VTK cell
+ * stream (`rTypes` VTK ids, `rOffsets` the end offsets into @p pConn).
+ *
+ * @p pDegrees is the `HigherOrderDegrees` cell array (one row of three per
+ * cell), or `nullptr`; a cell whose degrees cannot be told is left alone, with
+ * one warning naming @p pWhat.
+ */
+inline void vtk_hex_swap_stream(std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                                const std::vector<std::int64_t>& rTypes, const NDArray* pDegrees,
+                                const char* pWhat) {
+    const bool degrees = pDegrees && pDegrees->Size() == 3 * rTypes.size() && !rTypes.empty();
+    bool warned = false;
+    for (std::size_t c = 0; c < rTypes.size() && c < rOffsets.size(); ++c) {
+        if (!vtk_hex_order_applies(rTypes[c]))
+            continue;
+        const std::int64_t start = c == 0 ? 0 : rOffsets[c - 1];
+        const std::int64_t n = rOffsets[c] - start;
+        std::int64_t deg[3];
+        if (degrees)
+            for (std::size_t k = 0; k < 3; ++k)
+                deg[k] = read_int(*pDegrees, 3 * c + k);
+        if (n > 0 &&
+            !vtk_hex_swap_edges(pConn + start, static_cast<std::size_t>(n),
+                                degrees ? deg : nullptr) &&
+            !warned) {
+            log::warn(
+                "{}: a higher-order hexahedron of {} nodes in a file older than VTK 9.1 has no "
+                "degrees that explain its size; its edge order is left as written",
+                pWhat, n);
+            warned = true;
+        }
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/vtk_hex_order.hpp =====
 // ===== begin src/cpp/src/detail/vtk_xml_pieces.hpp =====
 #include <array>
 #include <cstdint>
@@ -107842,7 +108116,7 @@ struct MfNurbs {
     MfPatchMap BdrPatchMap(std::size_t B, std::vector<int>& rOkv,
                            std::vector<const MfKnotVector*>& rKvs) const;
     std::vector<MfNurbsElement> Elements() const;
-    std::vector<MfElement> Boundary() const;
+    std::vector<MfElement> Boundary(std::vector<std::int64_t>* pPatchOf = nullptr) const;
     void ControlPoints(std::vector<double>& rWeights, std::vector<double>& rXyz,
                        int& rSpaceDim) const;
     void Evaluate(const std::vector<double>& rWeights, const std::vector<double>& rTable,
@@ -108157,12 +108431,15 @@ std::vector<MfNurbsElement> MfNurbs::Elements() const {
     return out;
 }
 
-std::vector<MfElement> MfNurbs::Boundary() const {
+// The boundary elements; `pPatchOf` gets each one's boundary patch.
+std::vector<MfElement> MfNurbs::Boundary(std::vector<std::int64_t>* pPatchOf) const {
     std::vector<MfElement> out;
     const int geom = mf_nurbs_bdr_geom(mDim);
     std::vector<int> okv;
     std::vector<const MfKnotVector*> kvs;
     for (std::size_t b = 0; b < mBPatches.size(); ++b) {
+        if (pPatchOf)
+            pPatchOf->resize(out.size(), static_cast<std::int64_t>(b) - 1);
         const MfPatchMap m = BdrPatchMap(b, okv, kvs);
         MfElement el;
         el.mAttribute = mBPatches[b].mAttribute;
@@ -108191,6 +108468,8 @@ std::vector<MfElement> MfNurbs::Boundary() const {
             }
         }
     }
+    if (pPatchOf)
+        pPatchOf->resize(out.size(), static_cast<std::int64_t>(mBPatches.size()) - 1);
     return out;
 }
 
@@ -109584,12 +109863,99 @@ Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, b
     return mf_read_parts({part}, rF.mNumVertices, Order, false, rPath);
 }
 
+// The rows of `rTable` (`Cols` per control point, MFEM's global numbering) over
+// patch P's own control lattice, direction 0 fastest: what the `patches` form
+// would list.
+NDArray mf_nurbs_gather(const MfNurbs& rN, std::size_t P, const std::vector<double>& rTable,
+                        std::size_t Cols) {
+    const auto& kvs = rN.mCompr[P];
+    std::int64_t n[3] = {1, 1, 1};
+    for (std::size_t d = 0; d < kvs.size(); ++d)
+        n[d] = static_cast<std::int64_t>(kvs[d].mNumCp);
+    const MfPatchMap m = rN.PatchMap(P, true);
+    NDArray out(DType::Float64, {static_cast<std::size_t>(n[0] * n[1] * n[2]), Cols});
+    double* dst = out.As<double>();
+    for (std::int64_t k = 0; k < n[2]; ++k)
+        for (std::int64_t j = 0; j < n[1]; ++j)
+            for (std::int64_t i = 0; i < n[0]; ++i, dst += Cols) {
+                const std::int64_t idx[3] = {i, j, k};
+                const auto g = static_cast<std::size_t>(m.At(idx, rN.mDim));
+                std::copy(rTable.begin() + static_cast<std::ptrdiff_t>(g * Cols),
+                          rTable.begin() + static_cast<std::ptrdiff_t>((g + 1) * Cols), dst);
+            }
+    return out;
+}
+
+// An Int64 `(Rows, Cols)` array from MFEM rows of vertices.
+NDArray mf_nurbs_rows(const std::vector<MfElement>& rRows, std::size_t Cols) {
+    NDArray out(DType::Int64, {rRows.size(), Cols});
+    for (std::size_t r = 0; r < rRows.size(); ++r)
+        for (std::size_t c = 0; c < Cols; ++c)
+            out.As<std::int64_t>()[r * Cols + c] = rRows[r].mVertices[c];
+    return out;
+}
+
+// The side channel of a sampled NURBS mesh: per patch its degrees, knot
+// vectors, control net, weights and field control values; the patch topology;
+// each element cell's patch and knot span, each boundary cell's patch.
+NurbsInfo mf_nurbs_info(const MfNurbs& rN, const std::vector<double>& rWeights,
+                        const std::vector<double>& rXyz, std::size_t SpaceDim,
+                        const std::vector<std::string>& rNames,
+                        const std::vector<std::vector<double>>& rTables,
+                        const std::vector<std::size_t>& rComponents,
+                        const std::vector<MfNurbsElement>& rElements,
+                        const std::vector<std::int64_t>& rBdrPatch) {
+    NurbsInfo info;
+    for (std::size_t p = 0; p < rN.mPatches.size(); ++p) {
+        NurbsPatch patch;
+        for (const MfKnotVector& kv : rN.mCompr[p]) {
+            patch.mDegrees.push_back(kv.mOrder);
+            patch.mKnots.push_back(kv.mKnots);
+        }
+        patch.mControlPoints = mf_nurbs_gather(rN, p, rXyz, SpaceDim);
+        NDArray w = mf_nurbs_gather(rN, p, rWeights, 1);
+        w.Reshape({w.Size()});
+        patch.mWeights = std::move(w);
+        for (std::size_t k = 0; k < rTables.size(); ++k)
+            patch.mFields.push_back(mf_nurbs_gather(rN, p, rTables[k], rComponents[k]));
+        info.mPatches.push_back(std::move(patch));
+    }
+    info.mFieldNames = rNames;
+    const auto d = static_cast<std::size_t>(rN.mDim);
+    NurbsTopology& t = info.mTopology;
+    t.mDimension = rN.mDim;
+    t.mNumVertices = static_cast<std::int64_t>(rN.mNumTopoVertices);
+    t.mPatchVertices = mf_nurbs_rows(rN.mPatches, std::size_t{1} << d);
+    t.mBoundaryVertices = mf_nurbs_rows(rN.mBPatches, std::size_t{1} << (d - 1));
+    t.mPatchAttributes = NDArray(DType::Int64, {rN.mPatches.size()});
+    for (std::size_t p = 0; p < rN.mPatches.size(); ++p)
+        t.mPatchAttributes.As<std::int64_t>()[p] = rN.mPatches[p].mAttribute;
+    t.mBoundaryAttributes = NDArray(DType::Int64, {rN.mBPatches.size()});
+    for (std::size_t b = 0; b < rN.mBPatches.size(); ++b)
+        t.mBoundaryAttributes.As<std::int64_t>()[b] = rN.mBPatches[b].mAttribute;
+    t.mEdges = NDArray(DType::Int64, {rN.mEdgeRows.size(), 3});
+    for (std::size_t e = 0; e < rN.mEdgeRows.size(); ++e)
+        for (std::size_t c = 0; c < 3; ++c)
+            t.mEdges.As<std::int64_t>()[e * 3 + c] = rN.mEdgeRows[e][c];
+    info.mCellPatch = NDArray(DType::Int64, {rElements.size()});
+    info.mCellSpan = NDArray(DType::Int64, {rElements.size(), 3});
+    for (std::size_t e = 0; e < rElements.size(); ++e) {
+        info.mCellPatch.As<std::int64_t>()[e] = static_cast<std::int64_t>(rElements[e].mPatch);
+        for (std::size_t c = 0; c < 3; ++c)
+            info.mCellSpan.As<std::int64_t>()[e * 3 + c] = rElements[e].mSpan[c];
+    }
+    info.mBoundaryCellPatch = NDArray(DType::Int64, {rBdrPatch.size()});
+    std::copy(rBdrPatch.begin(), rBdrPatch.end(), info.mBoundaryCellPatch.As<std::int64_t>());
+    return info;
+}
+
 // A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear and
 // quadratic ones) of the highest knot-vector order, their nodes the rational
 // patch geometry at the cell's lattice; NURBS grid functions on the mesh's own
-// space the same way, element-wise ones as cell data.
-Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
-                   const std::string& rPath) {
+// space the same way, element-wise ones as cell data. `rGfs` are parsed and
+// already sorted into those two kinds; `pInfo`, when given, gets the patches.
+Mesh mf_sample_nurbs(const MfNurbs& rN, const std::vector<MfGridData>& rGfs,
+                     const std::string& rPath, NurbsInfo* pInfo) {
     const std::vector<MfNurbsElement> elements = rN.Elements();
     std::vector<double> weights, xyz;
     int sdim = 0;
@@ -109598,20 +109964,72 @@ Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGrid
     for (const auto& row : rN.mCompr)
         for (const MfKnotVector& kv : row)
             order = std::max(order, kv.mOrder);
-    std::vector<MfGridData> gfs;
     std::vector<std::vector<double>> tables;  // NURBS grid functions, dof-major
+    std::vector<std::string> names;
     std::vector<std::size_t> components = {static_cast<std::size_t>(sdim)};
+    const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
+    for (const MfGridData& g : rGfs) {
+        if (g.mSpace.mKind != MfSpace::Nurbs)
+            continue;
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        std::vector<double> t(ndofs * vdim);
+        for (std::size_t d = 0; d < ndofs; ++d)
+            for (std::size_t c = 0; c < vdim; ++c)
+                t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
+        tables.push_back(std::move(t));
+        names.push_back(g.mName);
+        components.push_back(vdim);
+    }
+    MfFile f;
+    f.mDim = rN.mDim;
+    f.mSpaceDim = sdim;
+    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
+    for (const MfNurbsElement& el : elements)
+        f.mElements.push_back(el.mElement);
+    std::vector<std::int64_t> bdr_patch;
+    f.mBoundary = rN.Boundary(&bdr_patch);
+
+    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
+    std::vector<std::array<double, 3>> refs;
+    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
+        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
+                        static_cast<double>(ijk[2]) / order});
+    std::vector<const std::vector<double>*> nurbs_tables;  // the coordinates, then each field
+    nurbs_tables.push_back(&xyz);
+    for (const auto& t : tables)
+        nurbs_tables.push_back(&t);
+
+    MfPart part;
+    part.mpF = &f;
+    for (const MfGridData& g : rGfs)
+        part.mGfs.push_back(&g);
+    part.mGlobal.resize(f.mNumVertices);
+    for (std::size_t v = 0; v < f.mNumVertices; ++v)
+        part.mGlobal[v] = static_cast<std::int64_t>(v);
+    part.mEvalComponents = components;
+    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
+        rOut.resize(nurbs_tables.size());
+        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
+            rN.Evaluate(weights, *nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
+    };
+    Mesh mesh = mf_read_parts({part}, f.mNumVertices, order, false, rPath);
+    if (pInfo)
+        *pInfo = mf_nurbs_info(rN, weights, xyz, static_cast<std::size_t>(sdim), names, tables,
+                               std::vector<std::size_t>(components.begin() + 1, components.end()),
+                               elements, bdr_patch);
+    return mesh;
+}
+
+// The grid functions a NURBS mesh reads with it: NURBS ones on its own space
+// and element-wise ones; any other is skipped with a warning.
+Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
+                   const std::string& rPath, NurbsInfo* pInfo) {
+    std::vector<MfGridData> gfs;
     const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
     for (const MfemGridFunction& gf : rGridFunctions) {
         MfGridData g = mf_parse_gf(gf);
         const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
         if (g.mSpace.mKind == MfSpace::Nurbs && g.mValues.size() == ndofs * vdim) {
-            std::vector<double> t(ndofs * vdim);
-            for (std::size_t d = 0; d < ndofs; ++d)
-                for (std::size_t c = 0; c < vdim; ++c)
-                    t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
-            tables.push_back(std::move(t));
-            components.push_back(vdim);
             gfs.push_back(std::move(g));
         } else if ((g.mSpace.mKind == MfSpace::L2 || g.mSpace.mKind == MfSpace::L2T1) &&
                    g.mSpace.mOrder == 0) {
@@ -109623,38 +110041,7 @@ Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGrid
                 gf.mPath, g.mSpace.mCollection);
         }
     }
-    MfFile f;
-    f.mDim = rN.mDim;
-    f.mSpaceDim = sdim;
-    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
-    for (const MfNurbsElement& el : elements)
-        f.mElements.push_back(el.mElement);
-    f.mBoundary = rN.Boundary();
-
-    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
-    std::vector<std::array<double, 3>> refs;
-    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
-        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
-                        static_cast<double>(ijk[2]) / order});
-    std::vector<std::vector<double>> nurbs_tables;  // the coordinates, then each field
-    nurbs_tables.push_back(std::move(xyz));
-    for (auto& t : tables)
-        nurbs_tables.push_back(std::move(t));
-
-    MfPart part;
-    part.mpF = &f;
-    for (const MfGridData& g : gfs)
-        part.mGfs.push_back(&g);
-    part.mGlobal.resize(f.mNumVertices);
-    for (std::size_t v = 0; v < f.mNumVertices; ++v)
-        part.mGlobal[v] = static_cast<std::int64_t>(v);
-    part.mEvalComponents = components;
-    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
-        rOut.resize(nurbs_tables.size());
-        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
-            rN.Evaluate(weights, nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
-    };
-    return mf_read_parts({part}, f.mNumVertices, order, false, rPath);
+    return mf_sample_nurbs(rN, gfs, rPath, pInfo);
 }
 
 // `<prefix>.NNNNNN`: the rank a parallel-mesh file name carries, or -1.
@@ -109953,23 +110340,13 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
     return mf_read_parts(parts, static_cast<std::size_t>(nglobal), order, true, rPath);
 }
 
-}  // namespace
-
-Mesh read_mfem(const std::string& rPath) {
-    return read_mfem(rPath, {});
-}
-
-Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
-    return read_mfem(rPath, rGridFunctions, ReadOptions{});
-}
-
-Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
-               const ReadOptions& rOptions) {
+Mesh mf_read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+                  const ReadOptions& rOptions, NurbsInfo* pInfo) {
     MfFile f = mf_parse(rPath);
     if (f.mpNurbs) {
         if (rOptions.mPieceSet && rOptions.mPiece != 0)
             throw ReadError("MFEM mesh: " + rPath + " is not parallel; its only piece is 0");
-        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath);
+        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath, pInfo);
     }
     if (f.mParallel || mf_rank_siblings(rPath))
         return mf_read_parallel(rPath, std::move(f), rGridFunctions, rOptions);
@@ -110353,6 +110730,29 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
     return mesh;
 }
 
+}  // namespace
+
+Mesh read_mfem(const std::string& rPath) {
+    return read_mfem(rPath, {});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
+    return read_mfem(rPath, rGridFunctions, ReadOptions{});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions) {
+    return mf_read_mfem(rPath, rGridFunctions, rOptions, nullptr);
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions, NurbsInfo& rInfo) {
+    NurbsInfo info;
+    Mesh mesh = mf_read_mfem(rPath, rGridFunctions, rOptions, &info);
+    rInfo = std::move(info);
+    return mesh;
+}
+
 // ===========================================================================
 // Writer
 // ===========================================================================
@@ -110443,6 +110843,384 @@ bool mf_generated_name(const std::string& rName, const char* pPrefix, std::int64
         return false;
     return MfLexer::ParseInt(rName.substr(prefix.size()), rId) && rId > 0 &&
            rName.substr(prefix.size()) == std::to_string(rId);
+}
+
+// --- NURBS (the NurbsInfo side channel) ---------------------------------------
+
+constexpr const char* kMfNurbsMismatch = "the mesh no longer matches its NURBS side channel";
+
+[[noreturn]] void mf_nurbs_bad(const std::string& rWhy) {
+    throw WriteError("MFEM NURBS writer: " + rWhy);
+}
+
+std::string mf_shape_text(const NDArray& rA) {
+    std::string out = "(";
+    for (std::size_t i = 0; i < rA.Shape().size(); ++i)
+        out += (i ? ", " : "") + std::to_string(rA.Shape()[i]);
+    return out + (rA.Shape().size() == 1 ? ",)" : ")");
+}
+
+// The shapes and values a side channel must have before anything is built
+// from it (the twin of `_check_nurbs_info`).
+void mf_check_nurbs_info(const NurbsInfo& rInfo) {
+    if (rInfo.mPatches.empty())
+        mf_nurbs_bad("the side channel has no patches");
+    const NurbsTopology& t = rInfo.mTopology;
+    const int dim = t.mDimension;
+    if (dim < 1 || dim > 3)
+        mf_nurbs_bad("the side channel has no patch topology");
+    const std::size_t nnames = rInfo.mFieldNames.size();
+    std::size_t sdim = 0;
+    std::vector<std::size_t> vdims(nnames, 0);
+    for (std::size_t p = 0; p < rInfo.mPatches.size(); ++p) {
+        const NurbsPatch& patch = rInfo.mPatches[p];
+        const std::string at = "patch " + std::to_string(p);
+        if (patch.mDegrees.size() != static_cast<std::size_t>(dim) ||
+            patch.mKnots.size() != static_cast<std::size_t>(dim))
+            mf_nurbs_bad(at + " has " + std::to_string(patch.mDegrees.size()) + " degrees and " +
+                         std::to_string(patch.mKnots.size()) + " knot vectors in a " +
+                         std::to_string(dim) + "-D mesh");
+        std::size_t ncp = 1;
+        for (std::size_t d = 0; d < static_cast<std::size_t>(dim); ++d) {
+            const std::vector<double>& k = patch.mKnots[d];
+            const std::int64_t deg = patch.mDegrees[d];
+            const std::int64_t n = static_cast<std::int64_t>(k.size()) - deg - 1;
+            if (deg < 0 || n < deg + 1)
+                mf_nurbs_bad(at + ", direction " + std::to_string(d) + ": " +
+                             std::to_string(k.size()) + " knots for degree " + std::to_string(deg));
+            for (std::size_t i = 0; i < k.size(); ++i)
+                if (!std::isfinite(k[i]) || (i && k[i] < k[i - 1]))
+                    mf_nurbs_bad(at + ", direction " + std::to_string(d) + ": knots out of order");
+            ncp *= static_cast<std::size_t>(n);
+        }
+        const NDArray& cps = patch.mControlPoints;
+        if (cps.Shape().size() != 2 || cps.Shape()[0] != ncp || cps.Shape()[1] < 1 ||
+            cps.Shape()[1] > 3)
+            mf_nurbs_bad(at + ": control points of shape " + mf_shape_text(cps) + ", not (" +
+                         std::to_string(ncp) + ", 1..3)");
+        if (!sdim)
+            sdim = cps.Shape()[1];
+        if (cps.Shape()[1] != sdim)
+            mf_nurbs_bad("patches of different space dimensions");
+        const NDArray& w = patch.mWeights;
+        bool weights_ok = w.Size() == ncp;
+        if (weights_ok) {
+            const detail::DoubleView wv(w);
+            for (std::size_t i = 0; i < ncp; ++i)
+                weights_ok = weights_ok && std::isfinite(wv[i]) && wv[i] != 0.0;
+        }
+        if (!weights_ok)
+            mf_nurbs_bad(at + ": " + std::to_string(w.Size()) + " weights for " +
+                         std::to_string(ncp) + " control points, or a zero or non-finite one");
+        if (patch.mFields.size() != nnames)
+            mf_nurbs_bad(at + " has " + std::to_string(patch.mFields.size()) + " fields for " +
+                         std::to_string(nnames) + " names");
+        for (std::size_t k = 0; k < nnames; ++k) {
+            const NDArray& a = patch.mFields[k];
+            if (a.Shape().size() != 2 || a.Shape()[0] != ncp)
+                mf_nurbs_bad(at + ": field '" + rInfo.mFieldNames[k] + "' of shape " +
+                             mf_shape_text(a) + ", not (" + std::to_string(ncp) + ", components)");
+            if (!vdims[k])
+                vdims[k] = a.Shape()[1];
+            if (a.Shape()[1] != vdims[k])
+                mf_nurbs_bad("field '" + rInfo.mFieldNames[k] +
+                             "' has different components on different patches");
+        }
+    }
+    const std::size_t np = rInfo.mPatches.size();
+    const std::size_t pcols = std::size_t{1} << dim, bcols = std::size_t{1} << (dim - 1);
+    const NDArray& pv = t.mPatchVertices;
+    if (pv.Shape().size() != 2 || pv.Shape()[0] != np || pv.Shape()[1] != pcols ||
+        t.mPatchAttributes.Size() != np)
+        mf_nurbs_bad("the topology has patch rows of shape " + mf_shape_text(pv) + " for " +
+                     std::to_string(np) + " patches");
+    const NDArray& bv = t.mBoundaryVertices;
+    if (bv.Size() && (bv.Shape().size() != 2 || bv.Shape()[1] != bcols ||
+                      t.mBoundaryAttributes.Size() != bv.Shape()[0]))
+        mf_nurbs_bad("the topology has boundary rows of shape " + mf_shape_text(bv));
+    const std::int64_t nv = t.mNumVertices;
+    const auto in_range = [nv](const NDArray& rA, std::size_t First, std::size_t Stride) {
+        const detail::Int64View a(rA);
+        for (std::size_t i = First; i < rA.Size(); i += Stride)
+            if (a[i] < 0 || a[i] >= nv)
+                return false;
+        return true;
+    };
+    if (!in_range(pv, 0, 1) || !in_range(bv, 0, 1) || !in_range(t.mEdges, 1, 3) ||
+        !in_range(t.mEdges, 2, 3))
+        mf_nurbs_bad("a topology vertex out of range (" + std::to_string(nv) + " vertices)");
+    if (t.mEdges.Size() % 3)
+        mf_nurbs_bad("the topology's edges are not (knot vector, vertex, vertex) rows");
+    const detail::Int64View edges(t.mEdges);
+    for (std::size_t i = 0; i < t.mEdges.Size(); i += 3)
+        if (edges[i] < 0)
+            mf_nurbs_bad("a negative knot vector index in the edges");
+}
+
+MfKnotVector mf_nurbs_knot(std::int32_t Degree, const std::vector<double>& rKnots) {
+    MfKnotVector k;
+    k.mOrder = Degree;
+    k.mKnots = rKnots;
+    k.Finish();
+    return k;
+}
+
+std::string mf_nurbs_collection(const MfNurbs& rN) {
+    std::set<int> orders;
+    for (const MfKnotVector& kv : rN.mKvs)
+        orders.insert(kv.mOrder);
+    return orders.size() == 1 ? "NURBS" + std::to_string(*orders.begin()) : "NURBS";
+}
+
+// The global-form NURBS mesh a side channel describes (the twin of
+// `Nurbs.from_info`): its topology, one knot vector per edge class (taken from
+// a patch that runs along it where one does, so the knots are exact), and the
+// control points, weights and fields scattered into MFEM's numbering; the
+// fields go to `rFields` (dof-major, `rCols` components each).
+MfNurbs mf_nurbs_from_info(const NurbsInfo& rInfo, std::vector<std::vector<double>>& rFields,
+                           std::vector<std::size_t>& rCols) {
+    const NurbsTopology& t = rInfo.mTopology;
+    MfNurbs n;
+    n.mPath = "the NURBS side channel";
+    n.mDim = t.mDimension;
+    const auto rows = [](const NDArray& rVerts, const NDArray& rAttrs, int Geom) {
+        std::vector<MfElement> out;
+        const std::size_t nr = rAttrs.Size();
+        const std::size_t cols = nr ? rVerts.Size() / nr : 0;
+        const detail::Int64View v(rVerts);
+        const detail::Int64View a(rAttrs);
+        for (std::size_t r = 0; r < nr; ++r)
+            out.push_back(MfElement{
+                a[r], Geom,
+                std::vector<std::int64_t>(v.Data() + r * cols, v.Data() + (r + 1) * cols), 0});
+        return out;
+    };
+    n.mPatches = rows(t.mPatchVertices, t.mPatchAttributes, mf_nurbs_geom(n.mDim));
+    n.mBPatches = rows(t.mBoundaryVertices, t.mBoundaryAttributes, mf_nurbs_bdr_geom(n.mDim));
+    const detail::Int64View edges(t.mEdges);
+    for (std::size_t i = 0; i + 2 < t.mEdges.Size(); i += 3)
+        n.mEdgeRows.push_back({edges[i], edges[i + 1], edges[i + 2]});
+    n.mNumTopoVertices = static_cast<std::size_t>(t.mNumVertices);
+    n.mPatchForm = true;
+    std::vector<std::vector<MfKnotVector>> kvs;
+    for (const NurbsPatch& patch : rInfo.mPatches) {
+        MfNurbsPatchData pd;
+        for (std::size_t d = 0; d < patch.mDegrees.size(); ++d)
+            pd.mKvs.push_back(mf_nurbs_knot(patch.mDegrees[d], patch.mKnots[d]));
+        kvs.push_back(pd.mKvs);
+        n.mPatchData.push_back(std::move(pd));
+    }
+    const auto as_write_error = [](const ReadError& rE) -> WriteError {
+        std::string what = rE.what();
+        const std::string prefix = "MFEM NURBS mesh: ";
+        if (what.rfind(prefix, 0) == 0)
+            what = what.substr(prefix.size());
+        return WriteError("MFEM NURBS writer: " + what);
+    };
+    try {
+        n.Topology();
+        // The knot table: per edge class, a patch that runs along it if any.
+        std::vector<MfKnotVector> table = n.mKvs;
+        for (std::size_t k = 0; k < table.size(); ++k) {
+            bool found = false;
+            for (std::size_t p = 0; p < n.mPatches.size() && !found; ++p) {
+                const std::vector<int> kvdir = n.KvDir(p);
+                const std::vector<std::size_t> dirs = n.DirEdges(p);
+                for (std::size_t d = 0; d < dirs.size() && !found; ++d)
+                    if (static_cast<std::size_t>(mf_unsign(n.mEdgeToUkv[dirs[d]])) == k &&
+                        kvdir[d] == 1) {
+                        table[k] = kvs[p][d];
+                        found = true;
+                    }
+            }
+        }
+        n.mKvs = std::move(table);
+        n.mPatchForm = false;
+        n.mPatchData.clear();
+        n.KnotVectors();
+        n.Offsets();
+    } catch (const ReadError& rE) {
+        throw as_write_error(rE);
+    }
+    for (std::size_t p = 0; p < kvs.size(); ++p)
+        for (std::size_t d = 0; d < kvs[p].size(); ++d) {
+            const MfKnotVector& have = kvs[p][d];
+            const MfKnotVector& want = n.mCompr[p][d];
+            double scale = 1.0, diff = 0.0;
+            for (double k : want.mKnots)
+                scale = std::max(scale, std::abs(k));
+            bool same = have.mOrder == want.mOrder && have.mKnots.size() == want.mKnots.size();
+            for (std::size_t i = 0; same && i < have.mKnots.size(); ++i)
+                diff = std::max(diff, std::abs(have.mKnots[i] - want.mKnots[i]));
+            if (!same || diff > 1e-12 * scale)
+                mf_nurbs_bad("patch " + std::to_string(p) + " disagrees in direction " +
+                             std::to_string(d) + " with the knot vector its edge shares");
+        }
+
+    // Scatter every patch's rows into MFEM's numbering; a control point two
+    // patches share must agree.
+    const auto ndofs = static_cast<std::size_t>(n.NumDofs());
+    const std::size_t sdim = rInfo.mPatches[0].mControlPoints.Shape()[1];
+    const std::size_t nfields = rInfo.mFieldNames.size();
+    rCols.assign(nfields, 0);
+    for (std::size_t k = 0; k < nfields; ++k)
+        rCols[k] = rInfo.mPatches[0].mFields[k].Shape()[1];
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<std::vector<double>> tables;
+    tables.emplace_back(ndofs * (sdim + 1), nan);
+    for (std::size_t k = 0; k < nfields; ++k)
+        tables.emplace_back(ndofs * rCols[k], nan);
+    std::vector<std::size_t> cols = {sdim + 1};
+    cols.insert(cols.end(), rCols.begin(), rCols.end());
+    for (std::size_t p = 0; p < rInfo.mPatches.size(); ++p) {
+        const NurbsPatch& patch = rInfo.mPatches[p];
+        const detail::DoubleView xyz(patch.mControlPoints);
+        const detail::DoubleView w(patch.mWeights);
+        std::vector<std::optional<detail::DoubleView>> fv(nfields);
+        for (std::size_t k = 0; k < nfields; ++k)
+            fv[k].emplace(patch.mFields[k]);
+        const MfPatchMap m = n.PatchMap(p, true);
+        std::int64_t cnt[3] = {1, 1, 1};
+        for (std::size_t d = 0; d < n.mCompr[p].size(); ++d)
+            cnt[d] = static_cast<std::int64_t>(n.mCompr[p][d].mNumCp);
+        std::size_t r = 0;
+        std::vector<double> row;
+        for (std::int64_t kk = 0; kk < cnt[2]; ++kk)
+            for (std::int64_t j = 0; j < cnt[1]; ++j)
+                for (std::int64_t i = 0; i < cnt[0]; ++i, ++r) {
+                    const std::int64_t idx[3] = {i, j, kk};
+                    const auto g = static_cast<std::size_t>(m.At(idx, n.mDim));
+                    for (std::size_t q = 0; q < tables.size(); ++q) {
+                        row.assign(cols[q], 0.0);
+                        if (q == 0) {
+                            for (std::size_t c = 0; c < sdim; ++c)
+                                row[c] = xyz[r * sdim + c];
+                            row[sdim] = w[r];
+                        } else {
+                            for (std::size_t c = 0; c < cols[q]; ++c)
+                                row[c] = (*fv[q - 1])[r * cols[q] + c];
+                        }
+                        double* dst = tables[q].data() + g * cols[q];
+                        if (std::isnan(dst[0])) {
+                            std::copy(row.begin(), row.end(), dst);
+                            continue;
+                        }
+                        for (std::size_t c = 0; c < cols[q]; ++c)
+                            if (std::abs(dst[c] - row[c]) > 1e-12 * std::max(1.0, std::abs(row[c])))
+                                mf_nurbs_bad("patch " + std::to_string(p) +
+                                             " disagrees with a neighbour on a control point "
+                                             "they share");
+                    }
+                }
+    }
+    n.mWeights.resize(ndofs);
+    n.mNodes.resize(ndofs * sdim);
+    for (std::size_t g = 0; g < ndofs; ++g) {
+        for (std::size_t c = 0; c < sdim; ++c)
+            n.mNodes[g * sdim + c] = tables[0][g * (sdim + 1) + c];
+        n.mWeights[g] = tables[0][g * (sdim + 1) + sdim];
+    }
+    n.mHasNodes = true;
+    n.mSpace = MfSpace{};
+    n.mSpace.mKind = MfSpace::Nurbs;
+    n.mSpace.mCollection = mf_nurbs_collection(n);
+    n.mSpace.mVDim = static_cast<int>(sdim);
+    n.mSpace.mOrdering = 1;
+    rFields.assign(tables.begin() + 1, tables.end());
+    return n;
+}
+
+// The global form of `rN` as MFEM writes it (`NURBSExtension::Print` and the
+// NURBS nodes), the twin of `_nurbs_text`.
+std::string mf_nurbs_text(const MfNurbs& rN) {
+    std::string out = "MFEM NURBS mesh v1.0\n";
+    out += detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    out += "\ndimension\n" + std::to_string(rN.mDim) + "\n\nelements\n" +
+           std::to_string(rN.mPatches.size()) + "\n";
+    const auto append_rows = [&](const std::vector<MfElement>& rRows) {
+        for (const MfElement& el : rRows) {
+            out += std::to_string(el.mAttribute) + " " + std::to_string(el.mGeom);
+            for (std::int64_t v : el.mVertices)
+                out += " " + std::to_string(v);
+            out += '\n';
+        }
+    };
+    append_rows(rN.mPatches);
+    out += "\nboundary\n" + std::to_string(rN.mBPatches.size()) + "\n";
+    append_rows(rN.mBPatches);
+    out += "\nedges\n" + std::to_string(rN.mEdgeRows.size()) + "\n";
+    for (const auto& e : rN.mEdgeRows)
+        out +=
+            std::to_string(e[0]) + " " + std::to_string(e[1]) + " " + std::to_string(e[2]) + "\n";
+    out += "\nvertices\n" + std::to_string(rN.mNumTopoVertices) + "\n\nknotvectors\n" +
+           std::to_string(rN.mKvs.size()) + "\n";
+    for (const MfKnotVector& kv : rN.mKvs) {
+        out += std::to_string(kv.mOrder) + " " + std::to_string(kv.mNumCp);
+        for (double k : kv.mKnots) {
+            out += ' ';
+            mf_append_real(out, k);
+        }
+        out += '\n';
+    }
+    out += "\nweights\n";
+    for (double w : rN.mWeights) {
+        mf_append_real(out, w);
+        out += '\n';
+    }
+    const auto sdim = static_cast<std::size_t>(rN.mSpace.mVDim);
+    out += "\nFiniteElementSpace\nFiniteElementCollection: " + rN.mSpace.mCollection +
+           "\nVDim: " + std::to_string(sdim) + "\nOrdering: 1\n\n";
+    for (std::size_t g = 0; g * sdim < rN.mNodes.size(); ++g) {
+        for (std::size_t c = 0; c < sdim; ++c) {
+            if (c)
+                out += ' ';
+            mf_append_real(out, rN.mNodes[g * sdim + c]);
+        }
+        out += '\n';
+    }
+    return out;
+}
+
+// Throws unless `rMesh` is what reading the side channel's NURBS mesh gives:
+// the points, the element cells and the fields still present.
+void mf_nurbs_match(const Mesh& rMesh, const Mesh& rExpected,
+                    const std::vector<std::string>& rNames) {
+    const auto mismatch = [](const std::string& rWhat) {
+        throw WriteError(std::string("MFEM NURBS writer: ") + kMfNurbsMismatch + " (" + rWhat +
+                         "); write with nurbs=False to write the sampled cells");
+    };
+    const auto close = [](const NDArray& rA, const NDArray& rB) {
+        if (rA.Size() != rB.Size())
+            return false;
+        const detail::DoubleView a(rA);
+        const detail::DoubleView b(rB);
+        double scale = 1.0, diff = 0.0;
+        for (std::size_t i = 0; i < rB.Size(); ++i) {
+            scale = std::max(scale, std::abs(b[i]));
+            diff = std::max(diff, std::abs(a[i] - b[i]));
+        }
+        return diff <= 1e-9 * scale;
+    };
+    if (rMesh.PointDim() != rExpected.PointDim() || !close(rMesh.Points(), rExpected.Points()))
+        mismatch("its points differ");
+    bool cells = rMesh.NumCellBlocks() >= 1 && rExpected.NumCellBlocks() >= 1;
+    if (cells) {
+        const auto a = rMesh.Cells(0);
+        const auto b = rExpected.Cells(0);
+        cells = a.Type() == b.Type() && !a.IsRagged() && a.NumCells() == b.NumCells() &&
+                a.NodesPerCell() == b.NodesPerCell() && a.Conn().Size() == b.Conn().Size();
+        if (cells) {
+            const detail::Int64View ca(a.Conn());
+            const detail::Int64View cb(b.Conn());
+            for (std::size_t i = 0; cells && i < a.Conn().Size(); ++i)
+                cells = ca[i] == cb[i];
+        }
+    }
+    if (!cells)
+        mismatch("its element cells differ");
+    for (const std::string& name : rNames)
+        if (rMesh.HasPointData(name) && !close(rMesh.PointData(name), rExpected.PointData(name)))
+            mismatch("its point data '" + name + "' differs");
 }
 
 }  // namespace
@@ -111067,6 +111845,117 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
         }
         auto g = open_gf(name);
         g << text;
+    }
+}
+
+void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
+                const NurbsInfo& rInfo) {
+    if (rInfo.mPatches.empty()) {
+        write_mfem(rPath, rMesh, GridFunctions);
+        return;
+    }
+    mf_check_nurbs_info(rInfo);
+    std::vector<std::vector<double>> fields;
+    std::vector<std::size_t> cols;
+    const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
+    std::vector<MfGridData> gfs;
+    for (std::size_t k = 0; k < fields.size(); ++k) {
+        MfGridData g;
+        g.mName = rInfo.mFieldNames[k];
+        g.mSpace.mKind = MfSpace::Nurbs;
+        g.mSpace.mCollection = n.mSpace.mCollection;
+        g.mSpace.mVDim = static_cast<int>(cols[k]);
+        g.mSpace.mOrdering = 1;
+        g.mValues = fields[k];
+        gfs.push_back(std::move(g));
+    }
+    const Mesh expected = mf_sample_nurbs(n, gfs, "the NURBS side channel", nullptr);
+    mf_nurbs_match(rMesh, expected, rInfo.mFieldNames);
+
+    std::vector<std::string> cell_names;
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "mfem:attribute")
+            cell_names.push_back(name);
+    if (!GridFunctions && (rMesh.NumPointData() || !cell_names.empty() || rMesh.NumFieldData())) {
+        log::warn("MFEM mesh writer: data arrays are dropped (write grid functions to keep them)");
+        detail::provenance_note("data-dropped", "an MFEM mesh holds no data arrays");
+    } else if (GridFunctions && rMesh.NumFieldData()) {
+        log::warn("MFEM mesh writer: field data has no grid function; dropped");
+        detail::provenance_note("data-dropped", "field data has no MFEM grid function");
+    }
+    const auto is_field = [&](const std::string& rName) {
+        return std::find(rInfo.mFieldNames.begin(), rInfo.mFieldNames.end(), rName) !=
+               rInfo.mFieldNames.end();
+    };
+    if (GridFunctions)
+        for (const std::string& name : rMesh.PointDataNames())
+            if (!is_field(name)) {
+                log::warn(
+                    "MFEM NURBS writer: point data '{}' is not a field of the NURBS side "
+                    "channel; dropped",
+                    name);
+                detail::provenance_note("data-dropped",
+                                        "point data '" + name + "' has no NURBS grid function");
+            }
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const std::string& name = rMesh.Region(r).mName;
+        std::int64_t id = 0;
+        if (mf_generated_name(name, "attribute_", id) || mf_generated_name(name, "boundary_", id))
+            continue;
+        log::warn("MFEM NURBS writer: region '{}' has no place in a NURBS mesh; dropped", name);
+        detail::provenance_note("regions-dropped", "region '" + name + "' (NURBS mesh)");
+    }
+
+    {
+        auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+        if (!f)
+            throw WriteError("Could not open file for writing: " + rPath);
+        f << mf_nurbs_text(n);
+        if (!f)
+            throw WriteError("MFEM mesh writer: failed writing " + rPath);
+    }
+    if (!GridFunctions)
+        return;
+    namespace fs = std::filesystem;
+    const fs::path mesh_path(rPath);
+    const std::string stem = (mesh_path.parent_path() / mesh_path.stem()).string();
+    const auto write_gf = [&](const std::string& rName, const std::string& rText) {
+        const std::string path = stem + "." + mf_sanitise(rName) + ".gf";
+        auto g = detail::make_classic_ofstream(path, std::ios::binary);
+        if (!g)
+            throw WriteError("Could not open file for writing: " + path);
+        g << rText;
+    };
+    for (const MfGridData& g : gfs) {
+        if (!rMesh.HasPointData(g.mName))
+            continue;
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        std::string text = "FiniteElementSpace\nFiniteElementCollection: " + g.mSpace.mCollection +
+                           "\nVDim: " + std::to_string(vdim) + "\nOrdering: 1\n\n";
+        for (std::size_t i = 0; i < g.mValues.size(); ++i) {
+            if (i % vdim)
+                text += ' ';
+            mf_append_real(text, g.mValues[i]);
+            if (i % vdim == vdim - 1)
+                text += '\n';
+        }
+        write_gf(g.mName, text);
+    }
+    for (const std::string& name : cell_names) {
+        const NDArray& a = rMesh.CellData(name, 0);
+        const std::size_t cols_k = a.Shape().size() > 1 ? detail::cols(a) : 1;
+        std::string text = "FiniteElementSpace\nFiniteElementCollection: L2_" +
+                           std::to_string(n.mDim) + "D_P0\nVDim: " + std::to_string(cols_k) +
+                           "\nOrdering: 1\n\n";
+        const detail::DoubleView v(a);
+        for (std::size_t i = 0; i < a.Size(); ++i) {
+            if (i % cols_k)
+                text += ' ';
+            mf_append_real(text, v[i]);
+            if (i % cols_k == cols_k - 1)
+                text += '\n';
+        }
+        write_gf(name, text);
     }
 }
 
@@ -136368,6 +137257,7 @@ MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vti.cpp =====
 // ===== begin src/cpp/src/formats/vtk.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -136631,14 +137521,59 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             }
         }
     } else {
-        // Version 4.2: interleaved [count, nodes...] per cell, as int32.
+        // Version 4.2: interleaved [count, nodes...] per cell, as int32. VTK
+        // reads the higher-order hexahedra of a file older than 5.1 with edges
+        // 10 and 11 swapped (detail/vtk_hex_order.hpp), so they are written so.
+        std::vector<NDArray> old_order(rMesh.NumCellBlocks());
+        {
+            std::size_t bi = 0;
+            bool warned = false;
+            for (const auto cb : rMesh.CellRange()) {
+                const auto vt = meshio_to_vtk_type().find(std::string(cb.Type()));
+                if (vt != meshio_to_vtk_type().end() && detail::vtk_hex_order_applies(vt->second) &&
+                    !cb.IsRagged() && cb.NumCells()) {
+                    const std::size_t k = cols(cb.Conn());
+                    NDArray swapped(DType::Int64, {cb.NumCells(), k});
+                    const detail::Int64View src(cb.Conn());
+                    std::copy(src.Data(), src.Data() + cb.Conn().Size(),
+                              swapped.As<std::int64_t>());
+                    const bool degrees =
+                        rMesh.HasCellData("HigherOrderDegrees") &&
+                        rMesh.CellDataNumBlocks("HigherOrderDegrees") == rMesh.NumCellBlocks() &&
+                        rMesh.CellData("HigherOrderDegrees", bi).Size() == 3 * cb.NumCells();
+                    for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                        std::int64_t deg[3];
+                        if (degrees)
+                            for (std::size_t q = 0; q < 3; ++q)
+                                deg[q] = detail::read_int(rMesh.CellData("HigherOrderDegrees", bi),
+                                                          3 * r + q);
+                        if (!detail::vtk_hex_swap_edges(swapped.As<std::int64_t>() + r * k, k,
+                                                        degrees ? deg : nullptr) &&
+                            !warned) {
+                            log::warn(
+                                "VTK 4.2 writer: a {} of {} nodes has no degrees that explain "
+                                "its size; VTK will read its edges 10 and 11 swapped (write "
+                                "5.1)",
+                                std::string(cb.Type()), k);
+                            warned = true;
+                        }
+                    }
+                    old_order[bi] = std::move(swapped);
+                }
+                ++bi;
+            }
+        }
+        const auto conn_of = [&](std::size_t Block, const NDArray& rConn) -> const NDArray& {
+            return old_order[Block].Size() ? old_order[Block] : rConn;
+        };
         os << "CELLS " << total_cells << ' ' << (total_idx + total_cells) << '\n';
         if (binary) {
             // Fused: each cell -> [k, v0..v(k-1)] big-endian int32, one pass.
             std::vector<unsigned char> cbuf((total_idx + total_cells) * 4);
             std::size_t p = 0;  // element index into cbuf
+            std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
+                const NDArray& conn = conn_of(bi++, cb.Conn());
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
                 const std::size_t stride = k + 1;
@@ -136664,8 +137599,9 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                      static_cast<std::streamsize>(cbuf.size()));
             os << '\n';
         } else {
+            std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
-                const detail::Int64View conn(cb.Conn());
+                const detail::Int64View conn(conn_of(bi++, cb.Conn()));
                 const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 // Each cell is its count, then its ids: k + 1 lines.
@@ -137269,6 +138205,14 @@ Mesh read_vtk(const std::string& rPath) try {
     if (!moved) {
         detail::check_vtk_cell_arrays(conn_owned ? conn_nd.Size() : conn.size(), offsets, types,
                                       cell_data_raw);
+        // A file older than 5.1 lists the edges 10 and 11 of higher-order
+        // hexahedra the other way round (detail/vtk_hex_order.hpp).
+        if (!is_v5 && !conn_owned) {
+            const auto degrees = cell_data_raw.find("HigherOrderDegrees");
+            detail::vtk_hex_swap_stream(conn.data(), offsets, types,
+                                        degrees == cell_data_raw.end() ? nullptr : &degrees->second,
+                                        "VTK");
+        }
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
     }
     return mesh;
@@ -140389,9 +141333,16 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
     };
 
+    // VTK XML 2.2 (VTK 9.1) is the first version whose higher-order hexahedra
+    // list edges 10 and 11 in the order meshio++ holds; an older one tells VTK to
+    // swap them (detail/vtk_hex_order.hpp), so a mesh with such cells says 2.2.
+    bool hex_order = false;
+    for (const auto cb : rMesh.CellRange())
+        hex_order = hex_order || cb.Type() == "VTK_LAGRANGE_HEXAHEDRON" ||
+                    cb.Type() == "VTK_BEZIER_HEXAHEDRON";
     os << "<?xml version=\"1.0\"?>\n";
-    os << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
-          "byte_order=\"LittleEndian\"";
+    os << "<VTKFile type=\"UnstructuredGrid\" version=\"" << (hex_order ? "2.2" : "0.1")
+       << "\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     if (hsz == 8)
@@ -140674,8 +141625,13 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         }
     }
 
+    // A `RationalWeights` point array and a `HigherOrderDegrees` cell array are
+    // marked as such (since v16.40.0), which is how VTK finds the weights and
+    // degrees of Bezier cells; a mesh without them writes the same bytes.
     if (rMesh.NumPointData() != 0) {
-        os << "<PointData>\n";
+        os << (rMesh.HasPointData("RationalWeights")
+                   ? "<PointData RationalWeights=\"RationalWeights\">\n"
+                   : "<PointData>\n");
         for (const auto& name : rMesh.PointDataNames()) {
             NDArray scratch;
             const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
@@ -140691,7 +141647,9 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     }
 
     if (rMesh.NumCellData() != 0) {
-        os << "<CellData>\n";
+        os << (rMesh.HasCellData("HigherOrderDegrees")
+                   ? "<CellData HigherOrderDegrees=\"HigherOrderDegrees\">\n"
+                   : "<CellData>\n");
         for (const auto& name : rMesh.CellDataNames()) {
             const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
             if (nblocks == 0)
@@ -140900,6 +141858,8 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
             rSrc.Take(out.data(), out.size());
         return out;
     }
+    // Refuse an absent codec before any block is read, as vtu_decode_blocks does.
+    detail::vtk_codec_require_read(Codec);
     const std::uint64_t num_blocks = next();
     const std::uint64_t max_block = next();
     const std::uint64_t last_block = next();
@@ -141093,7 +142053,8 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
             throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
         }
     }
-    vtk_codec_require_read(ctx.mCodec);
+    // Checked where a compressed block is decoded, not here: VTK records the
+    // compressor on ASCII files too, and those hold no compressed data.
     const std::string header = root.attribute("header_type").as_string("UInt32");
     if (header != "UInt32" && header != "UInt64")
         throw ReadError("Unknown " + format + " header type '" + header + "'");
@@ -141199,15 +142160,60 @@ NDArray vtu_concat_rows(std::vector<NDArray>& rParts) {
     return out;
 }
 
+/** @brief Whether a `<VTKFile>` predates VTK XML 2.2, whose higher-order
+ * hexahedra swap edges 10 and 11 (no version attribute means 0.1). */
+bool vtu_read_old_hex_order(pugi::xml_node Root) {
+    const std::string v = Root.attribute("version").as_string("0.1");
+    const std::size_t dot = v.find('.');
+    const long major = std::strtol(v.c_str(), nullptr, 10);
+    const long minor = dot == std::string::npos ? 0 : std::strtol(v.c_str() + dot + 1, nullptr, 10);
+    return major < 2 || (major == 2 && minor < 2);
+}
+
+/** @brief The attribute VTK puts on a `<PointData>` (`RationalWeights`) or
+ * `<CellData>` (`HigherOrderDegrees`) section to name the array that holds the
+ * rational weights or the per-cell degrees of its Bezier cells. */
+const char* vtu_read_marker(const std::string& rSection) {
+    return rSection == "PointData" ? "RationalWeights" : "HigherOrderDegrees";
+}
+
+/** @brief The name the array @p Da of section @p Section is read under (since
+ * v16.40.0): the marked array under the marker's own name, so the weights and
+ * degrees reach every surface under one name; an unmarked array that already
+ * has that name gives way (`""`, skipped with a warning when @p Warn). */
+std::string vtu_read_marked_name(pugi::xml_node Section, pugi::xml_node Da, bool Warn) {
+    const char* marker = vtu_read_marker(Section.name());
+    const std::string marked = Section.attribute(marker).as_string();
+    const std::string name = Da.attribute("Name").as_string();
+    if (marked.empty() || marked == marker)
+        return name;
+    if (name == marked)
+        return marker;
+    if (name == marker) {
+        if (Warn)
+            log::warn(
+                "VTU: the {} array '{}' is read as '{}'; the unmarked array of that name is "
+                "skipped",
+                Section.name(), marked, marker);
+        return "";
+    }
+    return name;
+}
+
 /** @brief `<DataArray>` `Name` attributes under @p rSection present in every
- * piece (a multi-piece read drops the others), sorted. */
+ * piece (a multi-piece read drops the others), sorted, under the names a read
+ * gives them (`vtu_read_marked_name`). */
 std::vector<std::string> vtu_array_names(const std::vector<pugi::xml_node>& rPieces,
                                          const char* pSection) {
     std::vector<std::string> names;
     for (std::size_t k = 0; k < rPieces.size(); ++k) {
         std::vector<std::string> here;
-        for (pugi::xml_node da : rPieces[k].child(pSection).children("DataArray"))
-            here.emplace_back(da.attribute("Name").as_string());
+        const pugi::xml_node section = rPieces[k].child(pSection);
+        for (pugi::xml_node da : section.children("DataArray")) {
+            std::string name = vtu_read_marked_name(section, da, false);
+            if (!name.empty())
+                here.push_back(std::move(name));
+        }
         // The uniform mesh API hands back sorted names; match it so a summary
         // and a real read report data arrays in the same order.
         std::sort(here.begin(), here.end());
@@ -141346,7 +142352,9 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
                 auto& rTarget = tag == "PointData" ? point_data : cell_data;
                 for (pugi::xml_node da : child.children("DataArray")) {
                     int nc = 0;
-                    std::string name = da.attribute("Name").as_string();
+                    const std::string name = vtu_read_marked_name(child, da, k == 0);
+                    if (name.empty())
+                        continue;
                     // The Name attribute is available before the body is
                     // touched, so an unwanted array costs nothing but the
                     // attribute read -- no base64 decode, no inflate, no
@@ -141443,6 +142451,14 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         vtu_read_field_data(rPiece, ctx, rOpts, want_data, field_arrays);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
+    // A file older than VTK XML 2.2 lists the edges 10 and 11 of higher-order
+    // hexahedra the other way round (detail/vtk_hex_order.hpp).
+    if (vtu_read_old_hex_order(h.mGrid.parent())) {
+        const auto degrees = cell_data_raw.find("HigherOrderDegrees");
+        detail::vtk_hex_swap_stream(conn.data(), offsets, types,
+                                    degrees == cell_data_raw.end() ? nullptr : &degrees->second,
+                                    "VTU");
+    }
     std::vector<std::int64_t> file_to_global;
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh,
@@ -170245,10 +171261,13 @@ std::size_t rnd_corner_count(const std::string& rType, CellType Type) {
         case CellType::Vertex:
             return 1;
         case CellType::VtkLagrangeCurve:
+        case CellType::VtkBezierCurve:
             return 2;
         case CellType::VtkLagrangeTriangle:
+        case CellType::VtkBezierTriangle:
             return 3;
         case CellType::VtkLagrangeQuadrilateral:
+        case CellType::VtkBezierQuadrilateral:
             return 4;
         default:
             break;
@@ -181440,6 +182459,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -181447,42 +182468,69 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
 
 constexpr const char* kUgPrefix = "meshio++: undo_green: ";
 
-// Read a required Int64 scalar cell_data array (one value per cell, covering
-// every block) into a flat global-cell-order vector. Throws by name on any
-// mismatch -- undo_green's fine-mesh preconditions are hard requirements,
-// unlike detail::refine_read_hierarchy's warn-and-fall-back contract.
-std::vector<std::int64_t> ug_read_required(const Mesh& rMesh,
-                                           const std::vector<std::int64_t>& rBases,
-                                           const char* pName) {
-    if (!rMesh.HasCellData(pName))
-        throw std::invalid_argument(
-            std::string(kUgPrefix) + "the fine mesh has no '" + pName +
-            "' cell_data; run refine(..., record_hierarchy=True, record_levels=True) first");
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    if (rMesh.CellDataNumBlocks(pName) != nblocks)
-        throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName +
-                                    "' does not cover every cell block");
-    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(rBases)));
-    std::size_t bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
-        const std::size_t ncells = cb.NumCells();
-        const NDArray& a = rMesh.CellData(pName, bi);
-        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
-            throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName + "' block " +
-                                        std::to_string(bi) + " is not one scalar value per cell");
-        for (std::size_t c = 0; c < ncells; ++c)
-            out[base + c] = detail::read_int(a, c);
-        ++bi;
+// A required scalar cell_data array (one value per cell, covering every
+// block), read in place: one view per block, zero-copy for the Int64 arrays
+// refine() writes (a converted copy of that block otherwise), indexed by global
+// cell. The flat copies this replaces were 2 GB at 83M fine cells (roadmap
+// 6.1.1). Throws by name on any mismatch -- undo_green's fine-mesh
+// preconditions are hard requirements, unlike detail::refine_read_hierarchy's
+// warn-and-fall-back contract.
+class UgColumn {
+public:
+    UgColumn(const Mesh& rMesh, const std::vector<std::int64_t>& rBases, const char* pName)
+        : mrBases(rBases) {
+        if (!rMesh.HasCellData(pName))
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "the fine mesh has no '" + pName +
+                "' cell_data; run refine(..., record_hierarchy=True, record_levels=True) first");
+        const std::size_t nblocks = rMesh.NumCellBlocks();
+        if (rMesh.CellDataNumBlocks(pName) != nblocks)
+            throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName +
+                                        "' does not cover every cell block");
+        mViews = std::vector<std::optional<detail::Int64View>>(nblocks);
+        mBlocks.assign(nblocks, nullptr);
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t ncells = cb.NumCells();
+            const NDArray& a = rMesh.CellData(pName, bi);
+            if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
+                throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName + "' block " +
+                                            std::to_string(bi) +
+                                            " is not one scalar value per cell");
+            mViews[bi].emplace(a);
+            mBlocks[bi] = mViews[bi]->Data();
+            ++bi;
+        }
     }
-    return out;
-}
+    UgColumn(const UgColumn&) = delete;
+    UgColumn& operator=(const UgColumn&) = delete;
+
+    /// Block @p bi's values, row-indexed.
+    const std::int64_t* Block(std::size_t bi) const { return mBlocks[bi]; }
+
+    /// The value of global cell @p g.
+    std::int64_t At(std::size_t g) const {
+        if (mBlocks.size() == 1)
+            return mBlocks[0][g];
+        const auto it =
+            std::upper_bound(mrBases.begin() + 1, mrBases.end(), static_cast<std::int64_t>(g));
+        const auto bi = static_cast<std::size_t>(it - mrBases.begin() - 1);
+        return mBlocks[bi][g - static_cast<std::size_t>(mrBases[bi])];
+    }
+
+private:
+    const std::vector<std::int64_t>& mrBases;
+    std::vector<std::optional<detail::Int64View>> mViews;
+    std::vector<const std::int64_t*> mBlocks;
+};
 
 // Same shape check, but returns empty rather than throwing when `pName` is
 // absent or malformed -- used for the coarse mesh's OPTIONAL refine:level,
@@ -181535,42 +182583,55 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     const auto total_fine = static_cast<std::size_t>(detail::total_cells(fine_bases));
 
     // What the classification leaves for the output: every global fine cell's
-    // role and green group, and per group its coarse row and size. Everything
-    // else it reads (the three refine:* columns, the id lookup, the sibling
-    // order) lives in the scope below and is released before the output is
-    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1).
+    // role and green group, and per group its coarse row. Everything else it
+    // reads (the id lookup, the sibling order) lives in the scope below and is
+    // released before the output is built; the three refine:* columns are read
+    // in place. A group id is read only for a substituted or suppressed cell,
+    // so 32 bits each is enough: a green group has at least two cells.
     std::vector<UgRole> role(total_fine, UgRole::Keep);
-    std::vector<std::int64_t> group_id_of(total_fine, -1);
+    std::vector<std::uint32_t> group_id_of(total_fine, 0);
     std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
-    std::vector<std::int64_t> group_size;        // indexed by green group id
-    std::int64_t next_group_id = 0;
+    std::int64_t num_removed = 0;
     {
-        const std::vector<std::int64_t> fine_id =
-            ug_read_required(rFine, fine_bases, kRefineCellIdName);
-        const std::vector<std::int64_t> fine_parent =
-            ug_read_required(rFine, fine_bases, kRefineParentIdName);
-        const std::vector<std::int64_t> fine_level =
-            ug_read_required(rFine, fine_bases, kRefineLevelName);
+        const UgColumn fine_id(rFine, fine_bases, kRefineCellIdName);
+        const UgColumn fine_parent(rFine, fine_bases, kRefineParentIdName);
+        const UgColumn fine_level(rFine, fine_bases, kRefineLevelName);
 
         // --- resolve the coarse mesh's id space: its own recorded ids if valid,
         // else the implicit global-block-major ids -- refine_attach_hierarchy's
-        // own "start fresh" fallback. --------------------------------------------
+        // own "start fresh" fallback, where an id is its row and needs no table.
+        const auto total_coarse = detail::total_cells(coarse_bases);
         std::vector<std::int64_t> coarse_ids;
         std::int64_t coarse_id_base = 0;
-        const detail::RefineHierarchyState state =
-            detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
-        if (state != detail::RefineHierarchyState::Valid) {
-            const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
-            coarse_ids.resize(total_coarse);
-            for (std::size_t i = 0; i < total_coarse; ++i)
-                coarse_ids[i] = static_cast<std::int64_t>(i);
-        }
+        const bool coarse_ids_recorded =
+            detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base) ==
+            detail::RefineHierarchyState::Valid;
         // (id, row) pairs sorted -- a total order -- searched by binary search.
-        std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
-        parallel_for(coarse_ids.size(), [&](std::size_t i) {
-            id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
-        });
-        parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
+        std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row;
+        if (coarse_ids_recorded) {
+            id_to_coarse_row.resize(coarse_ids.size());
+            parallel_for(coarse_ids.size(), [&](std::size_t i) {
+                id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
+            });
+            parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
+        }
+        coarse_ids = std::vector<std::int64_t>();
+        // The coarse row of an id, or -1. With recorded ids, the last row with
+        // this id, as the former map's overwrite kept it.
+        const auto coarse_row_of = [&](std::int64_t id) -> std::int64_t {
+            if (!coarse_ids_recorded)
+                return (id >= 0 && id < total_coarse) ? id : -1;
+            auto it = std::upper_bound(
+                id_to_coarse_row.begin(), id_to_coarse_row.end(), id,
+                [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
+                    return v < rE.first;
+                });
+            if (it != id_to_coarse_row.begin())
+                --it;
+            if (it == id_to_coarse_row.end() || it->first != id)
+                return -1;
+            return it->second;
+        };
 
         const std::vector<std::int64_t> coarse_level =
             ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
@@ -181586,17 +182647,33 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
         // refine() writes its cells parent-major, so parent_id usually arrives
         // non-decreasing: the sorted pairs are then (parent_id[g], g) for g in
         // order, and the sort (and its N pairs) is skipped.
-        const bool parents_sorted = std::is_sorted(fine_parent.begin(), fine_parent.end());
+        bool parents_sorted = true;
+        {
+            const std::int64_t* p_prev = nullptr;
+            for (std::size_t bi = 0; parents_sorted && bi + 1 < fine_bases.size(); ++bi) {
+                const auto n = static_cast<std::size_t>(fine_bases[bi + 1] - fine_bases[bi]);
+                if (n == 0)
+                    continue;
+                const std::int64_t* p = fine_parent.Block(bi);
+                parents_sorted = (p_prev == nullptr || *p_prev <= p[0]) && std::is_sorted(p, p + n);
+                p_prev = p + n - 1;
+            }
+        }
         std::vector<std::pair<std::int64_t, std::int64_t>> by_parent;
         if (!parents_sorted) {
             by_parent.resize(total_fine);
-            parallel_for(total_fine, [&](std::size_t g) {
-                by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
-            });
+            for (std::size_t bi = 0; bi + 1 < fine_bases.size(); ++bi) {
+                const auto base = static_cast<std::size_t>(fine_bases[bi]);
+                const auto n = static_cast<std::size_t>(fine_bases[bi + 1]) - base;
+                const std::int64_t* p = fine_parent.Block(bi);
+                parallel_for(n, [&](std::size_t r) {
+                    by_parent[base + r] = {p[r], static_cast<std::int64_t>(base + r)};
+                });
+            }
             parallel_sort(by_parent.begin(), by_parent.end());
         }
         const auto parent_at = [&](std::size_t k) {
-            return parents_sorted ? fine_parent[k] : by_parent[k].first;
+            return parents_sorted ? fine_parent.At(k) : by_parent[k].first;
         };
         const auto cell_at = [&](std::size_t k) {
             return parents_sorted ? static_cast<std::int64_t>(k) : by_parent[k].second;
@@ -181613,7 +182690,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 
             if (members.size() == 1) {
                 const std::int64_t g = members.front();
-                if (fine_id[static_cast<std::size_t>(g)] != parent_id)
+                if (fine_id.At(static_cast<std::size_t>(g)) != parent_id)
                     throw std::invalid_argument(
                         std::string(kUgPrefix) +
                         "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
@@ -181622,25 +182699,17 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                 continue;  // untouched: role stays Keep
             }
 
-            // The last row with this id, as the former map's overwrite kept it.
-            auto it = std::upper_bound(
-                id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
-                [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
-                    return v < rE.first;
-                });
-            if (it != id_to_coarse_row.begin())
-                --it;
-            if (it == id_to_coarse_row.end() || it->first != parent_id)
+            const std::int64_t coarse_row = coarse_row_of(parent_id);
+            if (coarse_row < 0)
                 throw std::invalid_argument(
                     std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
                     " does not resolve in the coarse mesh's id space -- these two meshes are not "
                     "the coarse/fine pair of one refine() call");
-            const std::int64_t coarse_row = it->second;
             const std::int64_t clevel = coarse_level_at(coarse_row);
 
-            const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
+            const std::int64_t flevel = fine_level.At(static_cast<std::size_t>(members.front()));
             for (std::int64_t g : members)
-                if (fine_level[static_cast<std::size_t>(g)] != flevel)
+                if (fine_level.At(static_cast<std::size_t>(g)) != flevel)
                     throw std::invalid_argument(
                         std::string(kUgPrefix) +
                         "malformed hierarchy: the sibling group under refine:parent_id " +
@@ -181665,17 +182734,18 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                     ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
 
             // green: substitute the whole group with one row from the coarse mesh
-            const std::int64_t gid = next_group_id++;
+            if (group_coarse_row.size() >= std::numeric_limits<std::uint32_t>::max())
+                throw Unsupported(std::string(kUgPrefix) + "more than " +
+                                  std::to_string(std::numeric_limits<std::uint32_t>::max()) +
+                                  " green groups");
+            const auto gid = static_cast<std::uint32_t>(group_coarse_row.size());
             group_coarse_row.push_back(coarse_row);
-            group_size.push_back(static_cast<std::int64_t>(members.size()));
+            num_removed += static_cast<std::int64_t>(members.size()) - 1;
             role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
-            group_id_of[static_cast<std::size_t>(members.front())] = gid;
-            for (std::size_t k = 1; k < members.size(); ++k) {
-                role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
-                    UgRole::Suppressed;
-                group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
-                    gid;
-            }
+            for (std::size_t k = 1; k < members.size(); ++k)
+                role[static_cast<std::size_t>(members[k])] = UgRole::Suppressed;
+            for (std::int64_t g : members)
+                group_id_of[static_cast<std::size_t>(g)] = gid;
         }
     }  // the classification scratch is released here
 
@@ -181700,8 +182770,9 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 
     std::vector<NDArray> cell_maps(nblocks);
     std::vector<NDArray> out_conn(nblocks);
-    std::vector<std::int64_t> group_output_global(static_cast<std::size_t>(next_group_id), -1);
-    std::vector<std::size_t> group_fine_block(static_cast<std::size_t>(next_group_id), 0);
+    const std::size_t num_groups = group_coarse_row.size();
+    std::vector<std::int64_t> group_output_global(num_groups, -1);
+    std::vector<std::uint32_t> group_fine_block(num_groups, 0);
 
     {
         std::size_t bi = 0;
@@ -181717,8 +182788,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
                 if (role[g] == UgRole::Suppressed) {
-                    const std::int64_t gid = group_id_of[g];
-                    cm[r] = group_output_global[static_cast<std::size_t>(gid)];
+                    cm[r] = group_output_global[group_id_of[g]];
                     continue;
                 }
                 if (role[g] == UgRole::Keep) {
@@ -181726,17 +182796,16 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                     for (std::size_t k = 0; k < npc; ++k)
                         dst[out_row * npc + k] = detail::read_int(src, r * npc + k);
                 } else {  // AnchorSubstitute
-                    const std::int64_t gid = group_id_of[g];
-                    const std::int64_t coarse_row = group_coarse_row[static_cast<std::size_t>(gid)];
+                    const std::uint32_t gid = group_id_of[g];
+                    const std::int64_t coarse_row = group_coarse_row[gid];
                     const auto blk_row = detail::global_to_block_row(coarse_bases, coarse_row);
                     const auto ccb = rCoarse.Cells(blk_row.first);
                     const NDArray& csrc = ccb.Conn();
                     for (std::size_t k = 0; k < npc; ++k)
                         dst[out_row * npc + k] = detail::read_int(
                             csrc, static_cast<std::size_t>(blk_row.second) * npc + k);
-                    group_output_global[static_cast<std::size_t>(gid)] =
-                        out_block_base + static_cast<std::int64_t>(out_row);
-                    group_fine_block[static_cast<std::size_t>(gid)] = bi;
+                    group_output_global[gid] = out_block_base + static_cast<std::int64_t>(out_row);
+                    group_fine_block[gid] = static_cast<std::uint32_t>(bi);
                 }
                 cm[r] = out_block_base + static_cast<std::int64_t>(out_row);
                 ++out_row;
@@ -181785,13 +182854,12 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
         // Pre-check every green group's substitution source before touching
         // anything, so a bad array is dropped whole rather than half-built.
         bool ok = true;
-        if (next_group_id > 0) {
+        if (num_groups > 0) {
             if (!rCoarse.HasCellData(name) ||
                 rCoarse.CellDataNumBlocks(name) != rCoarse.NumCellBlocks()) {
                 ok = false;
             } else {
-                for (std::int64_t gid = 0; ok && gid < next_group_id; ++gid) {
-                    const auto ug = static_cast<std::size_t>(gid);
+                for (std::size_t ug = 0; ok && ug < num_groups; ++ug) {
                     const auto blk_row =
                         detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
                     const NDArray& fsrc = rFine.CellData(name, group_fine_block[ug]);
@@ -181833,8 +182901,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                 if (role[g] == UgRole::Keep) {
                     std::memcpy(p_dst + out_row * row_bytes, p_fsrc + r * row_bytes, row_bytes);
                 } else {  // AnchorSubstitute
-                    const std::int64_t gid = group_id_of[g];
-                    const auto ug = static_cast<std::size_t>(gid);
+                    const std::uint32_t ug = group_id_of[g];
                     const auto blk_row =
                         detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
                     const NDArray& csrc = rCoarse.CellData(name, blk_row.first);
@@ -181853,11 +182920,8 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     UndoGreenResult res;
     res.mMesh = std::move(out);
     res.mCellMaps = std::move(cell_maps);
-    res.mNumGroupsUndone = next_group_id;
-    std::int64_t removed = 0;
-    for (std::int64_t sz : group_size)
-        removed += sz - 1;
-    res.mNumCellsRemoved = removed;
+    res.mNumGroupsUndone = static_cast<std::int64_t>(num_groups);
+    res.mNumCellsRemoved = num_removed;
 
     detail::RegionRemap rmap;
     rmap.mCellMapKind = detail::CellMapKind::Direct;
@@ -182673,7 +183737,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
-        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.2).
+        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.1).
         {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++

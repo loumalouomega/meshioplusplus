@@ -21,7 +21,7 @@
  * @brief STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted
  * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work.
  *
- * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.2; see doc/spikes.md),
+ * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.1; see doc/spikes.md),
  * which the core deliberately does not carry.
  *
  * Each surface facet becomes an `ADVANCED_FACE` on a `PLANE`, bounded by an

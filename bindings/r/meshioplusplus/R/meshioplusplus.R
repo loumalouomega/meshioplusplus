@@ -2193,6 +2193,27 @@ mio_mdpa_info <- function(info) .Call(R_mio_mdpa_info, info)
 #' @export
 mio_gmsh_info <- function(info) .Call(R_mio_gmsh_info, info)
 
+#' Copy an MFEM NURBS side channel
+#'
+#' The patches an `MFEM NURBS mesh` was sampled from (v16.40.0), copied into
+#' plain R values: `patches`, each a list of `degrees`, `knots` (one vector per
+#' parametric direction), `control_points` (a `(space_dimension, points)`
+#' matrix, direction 0 fastest), `weights` and `fields` (one
+#' `(components, points)` matrix of control values per field); `field_names`;
+#' `topology` (`dimension`, `num_vertices`, `patch_vertices`,
+#' `patch_attributes`, `boundary_vertices`, `boundary_attributes`, and `edges`
+#' as `(knot vector, vertex, vertex)` columns), `NULL` when the source states
+#' none; and the cell map `cell_patch`, `cell_span` (`(3, cells)`) and
+#' `boundary_cell_patch`. Vertices, patches and knot spans are 1-based;
+#' attributes and knot-vector ids stay as the file spelled them. The copy
+#' remains valid after releasing the handle; `mio_write_with_info()` writes
+#' the patches back from the handle itself.
+#' @param info A format-info handle from `mio_read_with_info()` of an MFEM mesh.
+#' @return A list with `patches`, `field_names`, `topology`, `cell_patch`,
+#'   `cell_span` and `boundary_cell_patch`.
+#' @export
+mio_nurbs_info <- function(info) .Call(R_mio_nurbs_info, info)
+
 #' @rdname mio_read_with_info
 #' @export
 mio_format_info_format <- function(info) .Call(R_mio_format_info_format, info)

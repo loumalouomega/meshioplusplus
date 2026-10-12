@@ -71,6 +71,8 @@ def _is_surface_type(cell_type: str) -> bool:
     return cell_type.startswith(_SURFACE_PREFIXES) or cell_type in (
         "VTK_LAGRANGE_TRIANGLE",
         "VTK_LAGRANGE_QUADRILATERAL",
+        "VTK_BEZIER_TRIANGLE",
+        "VTK_BEZIER_QUADRILATERAL",
     )
 
 

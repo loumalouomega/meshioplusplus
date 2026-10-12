@@ -2011,21 +2011,17 @@ def _read_nurbs(n, grid_functions, filename):
     """A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear
     and quadratic ones) of the highest knot-vector order, their nodes the
     rational patch geometry at the cell's lattice; NURBS grid functions on
-    the mesh's own space the same way, element-wise ones as cell data."""
-    elements = n.elements()
-    boundary = n.boundary()
-    weights, xyz = n.control_points()
-    order = max([1] + [kv.order for row in n.compr for kv in row])
+    the mesh's own space the same way, element-wise ones as cell data. The
+    patches themselves ride along in ``mesh.info["nurbs"]``."""
     if isinstance(grid_functions, dict):
         gf_items = list(grid_functions.items())
     else:
         gf_items = [(pathlib.Path(p).stem, p) for p in (grid_functions or [])]
-    gfs, tables = [], []
+    gfs = []
     for name, path in gf_items:
         name, space, values = _parse_gf(str(name), str(path))
         if space.kind == "nurbs" and len(values) == n.num_dofs * space.vdim:
             gfs.append((name, space, values))
-            tables.append(_field_table(values, space))
         elif space.kind in ("l2", "l2t1") and space.order == 0:
             gfs.append((name, space, values))
         else:
@@ -2033,6 +2029,19 @@ def _read_nurbs(n, grid_functions, filename):
                 f"MFEM grid function '{path}': the '{space.collection}' space is not "
                 f"the NURBS mesh's own nor element-wise; skipped"
             )
+    return _sample_nurbs(n, gfs, filename, with_info=True)
+
+
+def _sample_nurbs(n, gfs, filename, with_info):
+    """``mf_sample_nurbs``: the knot-span mesh of ``n`` with its parsed grid
+    functions ``gfs`` (NURBS ones evaluated, element-wise ones as cell data),
+    and with ``with_info`` the side channel."""
+    elements = n.elements()
+    bpatch = []
+    boundary = n.boundary(bpatch)
+    weights, xyz = n.control_points()
+    order = max([1] + [kv.order for row in n.compr for kv in row])
+    tables = [_field_table(v, sp) for _, sp, v in gfs if sp.kind == "nurbs"]
     f = {
         "dim": n.dim,
         "sdim": xyz.shape[1],
@@ -2061,7 +2070,57 @@ def _read_nurbs(n, grid_functions, filename):
         "eval": evaluate,
         "ncomp": [xyz.shape[1]] + [t.shape[1] for t in tables],
     }
-    return _read_parts([part], n.num_vertices, order, False, filename)
+    mesh = _read_parts([part], n.num_vertices, order, False, filename)
+    if with_info:
+        names = [name for name, sp, _ in gfs if sp.kind == "nurbs"]
+        info = _nurbs_info(n, weights, xyz, names, tables, elements, bpatch)
+        mesh.info = dict(mesh.info or {}, nurbs=info)
+    return mesh
+
+
+def _nurbs_info(n, weights, xyz, names, tables, elements, bpatch):
+    """``mesh.info["nurbs"]``, the twin of the core's ``NurbsInfo``: per patch
+    its degrees, knot vectors, control net, weights and field control values;
+    the patch topology; and each sampled cell's patch and knot span."""
+    cps, ws = n.gather(xyz), n.gather(weights)
+    fields = [n.gather(t) for t in tables]
+    patches = []
+    for p, kvs in enumerate(n.compr):
+        patches.append(
+            {
+                "degrees": np.array([kv.order for kv in kvs], dtype=np.int32),
+                "knots": [np.array(kv.knots, dtype=np.float64) for kv in kvs],
+                "control_points": np.ascontiguousarray(cps[p], dtype=np.float64),
+                "weights": np.ascontiguousarray(ws[p], dtype=np.float64),
+                "fields": [
+                    np.ascontiguousarray(f[p], dtype=np.float64) for f in fields
+                ],
+            }
+        )
+    d = n.dim
+    spans = np.zeros((len(elements), 3), dtype=np.int64)
+    for e, el in enumerate(elements):
+        spans[e, : len(el[5])] = el[5]
+    return {
+        "patches": patches,
+        "field_names": list(names),
+        "topology": {
+            "dimension": d,
+            "num_vertices": int(n.nv),
+            "patch_vertices": np.array(
+                [p[2] for p in n.patches], dtype=np.int64
+            ).reshape(len(n.patches), 2**d),
+            "patch_attributes": np.array([p[0] for p in n.patches], dtype=np.int64),
+            "boundary_vertices": np.array(
+                [b[2] for b in n.bpatches], dtype=np.int64
+            ).reshape(len(n.bpatches), 2 ** (d - 1)),
+            "boundary_attributes": np.array([b[0] for b in n.bpatches], dtype=np.int64),
+            "edges": np.array(n.edge_rows, dtype=np.int64).reshape(-1, 3),
+        },
+        "cell_patch": np.array([el[4] for el in elements], dtype=np.int64),
+        "cell_span": spans,
+        "boundary_cell_patch": np.array(bpatch, dtype=np.int64),
+    }
 
 
 def _read_high_order(f, gfs, nodes_h1, vxyz, order, filename):
@@ -2322,7 +2381,279 @@ def _generated_id(name, prefix):
     return v
 
 
-def write(filename, mesh, grid_functions=False):
+class _NurbsMismatch(WriteError):
+    """The mesh no longer matches its NURBS side channel."""
+
+
+_NURBS_MISMATCH = "the mesh no longer matches its NURBS side channel"
+
+
+def _nurbs_side_channel(mesh, nurbs):
+    """The side channel a write uses: ``mesh.info["nurbs"]`` unless
+    ``nurbs`` is False; ``nurbs=True`` requires one."""
+    info = (getattr(mesh, "info", None) or {}).get("nurbs")
+    if nurbs is False:
+        return None
+    if info is None and nurbs:
+        raise WriteError(
+            "MFEM writer: nurbs=True, but the mesh carries no NURBS side channel "
+            "(mesh.info['nurbs'])"
+        )
+    return info
+
+
+def _check_nurbs_info(info):
+    """``mf_check_nurbs_info``: the shapes and values a NURBS side channel
+    must have before anything is built from it."""
+
+    def bad(why):
+        raise WriteError(f"MFEM NURBS writer: {why}")
+
+    patches = info.get("patches") or []
+    if not patches:
+        bad("the side channel has no patches")
+    topo = info.get("topology")
+    dim = int(topo["dimension"]) if topo is not None else 0
+    if dim not in (1, 2, 3):
+        bad("the side channel has no patch topology")
+    names = list(info.get("field_names") or [])
+    sdim = None
+    vdims = [None] * len(names)
+    for p, patch in enumerate(patches):
+        degrees = np.asarray(patch["degrees"]).reshape(-1)
+        knots = list(patch["knots"])
+        if len(degrees) != dim or len(knots) != dim:
+            bad(
+                f"patch {p} has {len(degrees)} degrees and {len(knots)} knot vectors in a {dim}-D mesh"
+            )
+        ncp = 1
+        for d in range(dim):
+            k = np.asarray(knots[d], dtype=np.float64).reshape(-1)
+            n = len(k) - int(degrees[d]) - 1
+            if int(degrees[d]) < 1 or n < int(degrees[d]) + 1:
+                bad(
+                    f"patch {p}, direction {d}: {len(k)} knots for degree {int(degrees[d])}"
+                )
+            if not np.all(np.isfinite(k)) or np.any(np.diff(k) < 0):
+                bad(f"patch {p}, direction {d}: knots out of order")
+            ncp *= n
+        cps = np.asarray(patch["control_points"])
+        if cps.ndim != 2 or cps.shape[0] != ncp or not 1 <= cps.shape[1] <= 3:
+            bad(f"patch {p}: control points of shape {cps.shape}, not ({ncp}, 1..3)")
+        if sdim is None:
+            sdim = cps.shape[1]
+        if cps.shape[1] != sdim:
+            bad("patches of different space dimensions")
+        w = np.asarray(patch["weights"]).reshape(-1)
+        if len(w) != ncp or not np.all(np.isfinite(w)) or np.any(w == 0):
+            bad(
+                f"patch {p}: {len(w)} weights for {ncp} control points, or a zero or non-finite one"
+            )
+        fields = list(patch.get("fields") or [])
+        if len(fields) != len(names):
+            bad(f"patch {p} has {len(fields)} fields for {len(names)} names")
+        for k, a in enumerate(fields):
+            a = np.asarray(a)
+            if a.ndim != 2 or a.shape[0] != ncp:
+                bad(
+                    f"patch {p}: field '{names[k]}' of shape {a.shape}, not ({ncp}, components)"
+                )
+            if vdims[k] is None:
+                vdims[k] = a.shape[1]
+            if a.shape[1] != vdims[k]:
+                bad(f"field '{names[k]}' has different components on different patches")
+    np_ = len(patches)
+    pv = np.asarray(topo["patch_vertices"])
+    if pv.shape != (np_, 2**dim) or len(np.asarray(topo["patch_attributes"])) != np_:
+        bad(f"the topology has patch rows of shape {pv.shape} for {np_} patches")
+    bv = np.asarray(topo["boundary_vertices"])
+    if bv.reshape(-1).size and (
+        bv.ndim != 2
+        or bv.shape[1] != 2 ** (dim - 1)
+        or len(np.asarray(topo["boundary_attributes"])) != bv.shape[0]
+    ):
+        bad(f"the topology has boundary rows of shape {bv.shape}")
+    nv = int(topo["num_vertices"])
+    edges = np.asarray(topo["edges"]).reshape(-1, 3)
+    for rows in (pv, bv.reshape(-1), edges[:, 1:]):
+        if np.asarray(rows).size and (np.min(rows) < 0 or np.max(rows) >= nv):
+            bad(f"a topology vertex out of range ({nv} vertices)")
+    if edges.size and np.min(edges[:, 0]) < 0:
+        bad("a negative knot vector index in the edges")
+
+
+def _nurbs_text(n):
+    """The global form of ``n`` as MFEM writes it (``NURBSExtension::Print``
+    and the NURBS nodes), the twin of ``mf_nurbs_text``."""
+    d = n.dim
+    out = ["MFEM NURBS mesh v1.0\n"]
+    out.append(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
+    out.append(f"\ndimension\n{d}\n\nelements\n{len(n.patches)}\n")
+    for attr, geom, verts, _ in n.patches:
+        out.append(f"{attr} {geom}" + "".join(f" {v}" for v in verts) + "\n")
+    out.append(f"\nboundary\n{len(n.bpatches)}\n")
+    for attr, geom, verts, _ in n.bpatches:
+        out.append(f"{attr} {geom}" + "".join(f" {v}" for v in verts) + "\n")
+    out.append(f"\nedges\n{len(n.edge_rows)}\n")
+    for kv, a, b in n.edge_rows:
+        out.append(f"{kv} {a} {b}\n")
+    out.append(f"\nvertices\n{n.nv}\n\nknotvectors\n{len(n.kvs)}\n")
+    for kv in n.kvs:
+        out.append(
+            f"{kv.order} {kv.ncp}" + "".join(" " + _fmt(k) for k in kv.knots) + "\n"
+        )
+    out.append("\nweights\n")
+    for w in n.weights:
+        out.append(_fmt(w) + "\n")
+    sdim = n.space.vdim
+    out.append(
+        f"\nFiniteElementSpace\nFiniteElementCollection: {_nurbs_collection(n)}\n"
+        f"VDim: {sdim}\nOrdering: 1\n\n"
+    )
+    xyz = np.asarray(n.nodes).reshape(-1, sdim)
+    for row in xyz:
+        out.append(" ".join(_fmt(v) for v in row) + "\n")
+    return "".join(out)
+
+
+def _nurbs_collection(n):
+    orders = {kv.order for kv in n.kvs}
+    return f"NURBS{orders.pop()}" if len(orders) == 1 else "NURBS"
+
+
+def _nurbs_match(mesh, expected, names):
+    """Raise ``_NurbsMismatch`` unless ``mesh`` is what reading the side
+    channel's NURBS mesh gives: the points, the element cells and the fields."""
+
+    def mismatch(what):
+        raise _NurbsMismatch(
+            f"MFEM NURBS writer: {_NURBS_MISMATCH} ({what}); write with nurbs=False "
+            "to write the sampled cells"
+        )
+
+    def close(a, b):
+        a = np.asarray(a, dtype=np.float64)
+        b = np.asarray(b, dtype=np.float64)
+        if a.shape != b.shape:
+            return False
+        if a.size == 0:
+            return True
+        tol = 1e-9 * max(1.0, float(np.max(np.abs(b))))
+        return float(np.max(np.abs(a - b))) <= tol
+
+    if not close(mesh.points, expected.points):
+        mismatch("its points differ")
+    if (
+        not mesh.cells
+        or mesh.cells[0].type != expected.cells[0].type
+        or not isinstance(mesh.cells[0].data, np.ndarray)
+        or not np.array_equal(mesh.cells[0].data, expected.cells[0].data)
+    ):
+        mismatch("its element cells differ")
+    for name in names:
+        if name in mesh.point_data and not close(
+            mesh.point_data[name], expected.point_data[name]
+        ):
+            mismatch(f"its point data '{name}' differs")
+
+
+def _write_nurbs(filename, mesh, info, grid_functions):
+    """``mf_write_nurbs``: the side channel's patches as an ``MFEM NURBS mesh
+    v1.0`` in the global form, after checking that ``mesh`` still is their
+    sampling; with ``grid_functions`` its fields as NURBS grid functions and
+    element-wise cell data as ``L2`` order 0."""
+    _check_nurbs_info(info)
+    n = _nurbs.Nurbs.from_info(info)
+    names = list(info["field_names"])
+    gfs = []
+    for name, table in zip(names, n.fields):
+        space = _Space(_nurbs_collection(n))
+        space.vdim, space.ordering = table.shape[1], 1
+        gfs.append((name, space, table.ravel()))
+    expected = _sample_nurbs(n, gfs, "the NURBS side channel", with_info=False)
+    _nurbs_match(mesh, expected, names)
+
+    cell_names = [k for k in sorted(mesh.cell_data) if k != "mfem:attribute"]
+    if not grid_functions and (mesh.point_data or cell_names or mesh.field_data):
+        warn(
+            "MFEM mesh writer: data arrays are dropped (write grid functions to keep "
+            "them)"
+        )
+        _provenance.note("data-dropped", "an MFEM mesh holds no data arrays")
+    elif grid_functions and mesh.field_data:
+        warn("MFEM mesh writer: field data has no grid function; dropped")
+        _provenance.note("data-dropped", "field data has no MFEM grid function")
+    if grid_functions:
+        for name in sorted(mesh.point_data):
+            if name not in names:
+                warn(
+                    f"MFEM NURBS writer: point data '{name}' is not a field of the "
+                    "NURBS side channel; dropped"
+                )
+                _provenance.note(
+                    "data-dropped", f"point data '{name}' has no NURBS grid function"
+                )
+    for r in sorted(getattr(mesh, "regions", []) or [], key=lambda r: r.key):
+        if (
+            _generated_id(r.name, "attribute_") is None
+            and _generated_id(r.name, "boundary_") is None
+        ):
+            warn(
+                f"MFEM NURBS writer: region '{r.name}' has no place in a NURBS mesh; "
+                "dropped"
+            )
+            _provenance.note("regions-dropped", f"region '{r.name}' (NURBS mesh)")
+
+    with open_file(filename, "w", newline="\n") as fh:
+        fh.write(_nurbs_text(n))
+    if not grid_functions:
+        return
+    path = pathlib.Path(filename)
+    stem = os.path.join(os.path.dirname(str(filename)), path.stem)
+    for (name, space, values), present in zip(
+        gfs, [k in mesh.point_data for k in names]
+    ):
+        if not present:
+            continue
+        text = [
+            f"FiniteElementSpace\nFiniteElementCollection: {space.collection}\n"
+            f"VDim: {space.vdim}\nOrdering: 1\n\n"
+        ]
+        for row in np.asarray(values).reshape(-1, space.vdim):
+            text.append(" ".join(_fmt(v) for v in row) + "\n")
+        with open(f"{stem}.{_sanitise(name)}.gf", "w", newline="\n") as fh:
+            fh.write("".join(text))
+    for name in cell_names:
+        a = np.asarray(mesh.cell_data[name][0], dtype=np.float64)
+        cols = a.shape[1] if a.ndim > 1 else 1
+        text = [
+            f"FiniteElementSpace\nFiniteElementCollection: L2_{n.dim}D_P0\n"
+            f"VDim: {cols}\nOrdering: 1\n\n"
+        ]
+        for row in a.reshape(-1, cols):
+            text.append(" ".join(_fmt(v) for v in row) + "\n")
+        with open(f"{stem}.{_sanitise(name)}.gf", "w", newline="\n") as fh:
+            fh.write("".join(text))
+
+
+def write(filename, mesh, grid_functions=False, nurbs=None):
+    """Write an MFEM mesh. A mesh read from a NURBS file carries its patches in
+    ``mesh.info["nurbs"]``, and is written back as that NURBS mesh unless
+    ``nurbs=False``; if the mesh no longer matches them (``nurbs=None``) the
+    sampled cells are written instead, with a warning. ``nurbs=True`` requires
+    the side channel and a match."""
+    info = _nurbs_side_channel(mesh, nurbs)
+    if info is not None:
+        try:
+            return _write_nurbs(filename, mesh, info, grid_functions)
+        except _NurbsMismatch as exc:
+            if nurbs:
+                raise
+            warn(f"{str(exc).split('; write with')[0]}; writing the sampled cells")
+    return _write_lagrange(filename, mesh, grid_functions)
+
+
+def _write_lagrange(filename, mesh, grid_functions=False):
     points = np.asarray(mesh.points)
     pdim = points.shape[1] if points.ndim == 2 else 0
     if pdim < 1 or pdim > 3:

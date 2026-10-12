@@ -185,7 +185,7 @@ export interface Mesh {
   /**
    * Format-specific side-channel metadata a generic `Mesh` cannot represent,
    * attached by `readMeshSelective(path, {info: true})`. Present only for
-   * formats with one (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus); absent
+   * formats with one (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus/mfem); absent
    * otherwise, even when `info: true` was requested. Its own `format` field
    * is what `writeMesh` checks before reusing it on a write with no explicit
    * `options.info`. See doc/wasm.md's "Side channel (info)" section.
@@ -201,7 +201,8 @@ export type MeshInfo =
   | AnsysInfo
   | UnvInfo
   | GmshInfo
-  | ExodusInfo;
+  | ExodusInfo
+  | MfemInfo;
 
 /** OpenFOAM's side channel: `readMeshSelective`'s cell_tags/patch-type map, reshaped per patch. */
 export interface OpenFoamInfo {
@@ -303,6 +304,54 @@ export interface GmshInfo {
   /** Entity tags are raw ids; nodePairs is flattened (N,2), 0-based point rows.
    * Ordering/duplicates survive I/O; mesh operations do not remap these rows. */
   periodic?: { entity: number[]; affine: number[]; nodePairs: BigInt64Array | number[] }[];
+}
+
+/**
+ * MFEM's side channel (v16.40.0): the NURBS patches an `MFEM NURBS mesh` was
+ * sampled from (C++ `NurbsInfo`). Arrays are flat, their widths given beside
+ * them; every index is 0-based. `writeMesh` writes the patches back as an
+ * `MFEM NURBS mesh` while the mesh still is their sampling (it refuses a mesh
+ * moved or edited since). A mesh that is not NURBS has no patches.
+ */
+export interface MfemInfo {
+  format: 'mfem';
+  patches: {
+    /** Degree per parametric direction. */
+    degrees: number[];
+    /** One knot vector per parametric direction. */
+    knots: number[][];
+    /** Components of each control point. */
+    spaceDim: number;
+    /** (points, spaceDim) Cartesian control points, direction 0 fastest. */
+    controlPoints: Float64Array;
+    /** One weight per control point. */
+    weights: Float64Array;
+    /** Per field (see `fieldNames`): (points, fieldComponents[k]) control values. */
+    fields: Float64Array[];
+  }[];
+  /** The point-data name of each field the patches carry. */
+  fieldNames: string[];
+  /** Components of each field. */
+  fieldComponents: number[];
+  /** The file's patch topology, or null when the source states none. */
+  topology: {
+    dimension: number;
+    numVertices: number;
+    /** (patches, 2^dimension) corner vertices. */
+    patchVertices: BigInt64Array | number[];
+    patchAttributes: BigInt64Array | number[];
+    /** (boundary patches, 2^(dimension-1)) corner vertices. */
+    boundaryVertices: BigInt64Array | number[];
+    boundaryAttributes: BigInt64Array | number[];
+    /** (edges, 3): knot vector, vertex, vertex. */
+    edges: BigInt64Array | number[];
+  } | null;
+  /** The patch of each element cell (the first block). */
+  cellPatch: BigInt64Array | number[];
+  /** (element cells, 3): each one's knot span per direction. */
+  cellSpan: BigInt64Array | number[];
+  /** The boundary patch of each boundary cell. */
+  boundaryCellPatch: BigInt64Array | number[];
 }
 
 /** Exodus's side channel: info/QA records. Read-only -- there is no Info-bearing Exodus writer. */

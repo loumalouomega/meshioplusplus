@@ -199,6 +199,43 @@ end
     end
 end
 
+@testset "MFEM NURBS side channel" begin
+    mktempdir() do dir
+        path = joinpath(dir, "annulus.mesh")
+        w = "0.70710678118654757"
+        Base.write(path, join(["MFEM NURBS mesh v1.0", "dimension", "2", "elements", "1",
+                               "5 3 0 1 2 3", "boundary", "0", "edges", "4", "0 0 1", "0 3 2",
+                               "1 0 3", "1 1 2", "vertices", "4", "knotvectors", "2",
+                               "2 3 0 0 0 1 1 1", "1 2 0 0 1 1", "weights", "1", "1", "1", "1",
+                               w, w, "FiniteElementSpace", "FiniteElementCollection: NURBS2",
+                               "VDim: 2", "Ordering: 1", "1 0", "0 1", "0 2", "2 0", "1 1",
+                               "2 2"], "\n") * "\n")
+        mesh, info = read_with_info(path; format="mfem")
+        @test format_name(info) == "mfem"
+        copied = nurbs_info(info)
+        @test length(copied.patches) == 1
+        p = copied.patches[1]
+        @test p.degrees == Int32[2, 1]
+        @test p.knots[2] == [0.0, 0.0, 1.0, 1.0]
+        @test size(p.control_points) == (2, 6)
+        @test p.control_points[:, 2] == [1.0, 1.0]
+        @test p.weights[2] == sqrt(0.5)
+        @test isempty(copied.field_names)
+        @test copied.topology.num_vertices == 4
+        @test copied.topology.patch_vertices[:, 1] == [1, 2, 3, 4]
+        @test copied.topology.edges[:, 1] == [0, 1, 2]
+        @test copied.cell_patch == [1]
+        output = joinpath(dir, "output.mesh")
+        write_with_info(mesh, info, output; format="mfem")
+        @test startswith(Base.read(output, String), "MFEM NURBS mesh v1.0")
+        back, back_info = read_with_info(output; format="mfem")
+        @test nurbs_info(back_info).patches == copied.patches
+        close(back); close(back_info)
+        @test_throws MeshioError gmsh_info(info)
+        close(mesh); close(info)
+    end
+end
+
 @testset "column-major shape identity" begin
     m = fixture()
     p = points(m)

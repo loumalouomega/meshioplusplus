@@ -7,7 +7,7 @@ import pytest
 import meshioplusplus
 from meshioplusplus.vtu import _vtu
 
-from . import helpers
+from . import bezier_vtu_files, helpers
 
 test_set = [
     # helpers.empty_mesh,
@@ -29,6 +29,7 @@ test_set = [
     helpers.wedge_mesh,
     helpers.polyhedron_mesh,
     helpers.lagrange_high_order_mesh,
+    helpers.bezier_mesh,
     helpers.add_point_data(helpers.tri_mesh, 1),
     helpers.add_point_data(helpers.tri_mesh, 2),
     helpers.add_point_data(helpers.tri_mesh, 3),
@@ -269,6 +270,20 @@ def test_appended_and_bigendian_framings(reader, name):
     assert mesh.cell_data["material"][0].dtype.isnative
 
 
+def test_a_compressed_block_needs_zlib():
+    # raw_zlib.vtu holds zlib-compressed appended data. The core reads it only
+    # where zlib is built in and refuses it with a ReadError elsewhere.
+    from meshioplusplus import _core
+
+    path = _QUIRKS / "raw_zlib.vtu"
+    if getattr(_core, "__has_zlib__", False):
+        mesh = _core.vtu_read(str(path))
+        assert [c.type for c in mesh.cells] == ["pyramid", "polyhedron8"]
+    else:
+        with pytest.raises(meshioplusplus.ReadError, match="zlib"):
+            _core.vtu_read(str(path))
+
+
 @pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
 def test_two_pieces_with_polyhedra_merge(reader):
     mesh = reader(_QUIRKS / "two_pieces_polyhedron.vtu")
@@ -349,3 +364,164 @@ def test_uint64_above_int64_max_survives_an_ascii_round_trip(tmp_path):
             got = np.asarray(read(path).point_data["u"])
             assert got.dtype == np.uint64
             np.testing.assert_array_equal(got, values)
+
+
+# --- Bezier cells and their weights (v16.40.0) -------------------------------
+
+_BEZIER_VTU = """<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian">
+<UnstructuredGrid><Piece NumberOfPoints="9" NumberOfCells="1">
+<Points><DataArray type="Float64" NumberOfComponents="3" format="ascii">
+1 0 0 2 0 0 0 2 0 0 1 0 1.5 0 0 2 2 0 0 1.5 0 1 1 0 1.5 1.5 0
+</DataArray></Points>
+<Cells>
+<DataArray type="Int64" Name="connectivity" format="ascii">0 1 2 3 4 5 6 7 8</DataArray>
+<DataArray type="Int64" Name="offsets" format="ascii">9</DataArray>
+<DataArray type="UInt8" Name="types" format="ascii">77</DataArray>
+</Cells>
+<PointData RationalWeights="w">
+<DataArray type="Float64" Name="RationalWeights" format="ascii">0 0 0 0 0 0 0 0 0</DataArray>
+<DataArray type="Float64" Name="w" format="ascii">
+1 1 1 1 1 0.70710678118654757 1 0.70710678118654757 0.70710678118654757
+</DataArray>
+</PointData>
+<CellData HigherOrderDegrees="deg">
+<DataArray type="Float64" Name="deg" NumberOfComponents="3" format="ascii">2 2 0</DataArray>
+</CellData>
+</Piece></UnstructuredGrid></VTKFile>
+"""
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+def test_bezier_marked_arrays_read_under_their_vtk_names(reader, tmp_path):
+    # VTK marks the weights and degrees of Bezier cells with a section
+    # attribute naming the array; both engines read the marked array under the
+    # attribute's own name, and an unmarked array of that name gives way.
+    p = tmp_path / "bezier.vtu"
+    p.write_text(_BEZIER_VTU)
+    mesh = reader(p)
+    assert [c.type for c in mesh.cells] == ["VTK_BEZIER_QUADRILATERAL"]
+    np.testing.assert_array_equal(mesh.cells[0].data, [np.arange(9)])
+    assert sorted(mesh.point_data) == ["RationalWeights"]
+    np.testing.assert_allclose(
+        mesh.point_data["RationalWeights"],
+        helpers.bezier_mesh.point_data["RationalWeights"],
+    )
+    assert sorted(mesh.cell_data) == ["HigherOrderDegrees"]
+    np.testing.assert_array_equal(
+        np.asarray(mesh.cell_data["HigherOrderDegrees"][0]).reshape(-1), [2, 2, 0]
+    )
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_bezier_weights_are_marked_on_write(engine, tmp_path):
+    p = tmp_path / "bezier.vtu"
+    writer = meshioplusplus.vtu.write if engine == "core" else _vtu.write
+    writer(p, helpers.bezier_mesh, binary=False)
+    text = p.read_text()
+    assert 'RationalWeights="RationalWeights"' in text
+    assert 'HigherOrderDegrees="HigherOrderDegrees"' in text
+    for read in (_core_vtu_read, _vtu.read):
+        mesh = read(p)
+        assert [c.type for c in mesh.cells] == [
+            c.type for c in helpers.bezier_mesh.cells
+        ]
+        np.testing.assert_allclose(
+            mesh.point_data["RationalWeights"],
+            helpers.bezier_mesh.point_data["RationalWeights"],
+        )
+    # A mesh with neither array writes no marker.
+    writer(p, helpers.tri_mesh, binary=False)
+    assert "RationalWeights" not in p.read_text()
+
+
+def test_vtk_reads_the_weights_we_mark(tmp_path):
+    vtk = pytest.importorskip("vtk")
+    p = tmp_path / "bezier.vtu"
+    meshioplusplus.vtu.write(p, helpers.bezier_mesh)
+    reader = vtk.vtkXMLUnstructuredGridReader()
+    reader.SetFileName(str(p))
+    reader.Update()
+    grid = reader.GetOutput()
+    assert grid.GetCellType(0) == 77
+    weights = grid.GetPointData().GetRationalWeights()
+    assert weights is not None and weights.GetName() == "RationalWeights"
+    assert abs(weights.GetValue(5) - np.sqrt(0.5)) < 1e-15
+    assert grid.GetCellData().GetHigherOrderDegrees() is not None
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+@pytest.mark.parametrize("encoding", ["ascii", "binary"])
+def test_bezier_files_vtk_wrote(reader, encoding, tmp_path):
+    # Written by VTK 9.7.1 (tools/gen_bezier_vtu_fixtures.py): the marked
+    # arrays are named "Weights" and "Degrees" there.
+    def vtk_file(name):
+        p = tmp_path / f"{name}_{encoding}.vtu"
+        p.write_bytes(getattr(bezier_vtu_files, f"{name}_{encoding}".upper()))
+        return p
+
+    quad = reader(vtk_file("quarter_annulus"))
+    assert [c.type for c in quad.cells] == ["VTK_BEZIER_QUADRILATERAL"]
+    np.testing.assert_allclose(quad.points, helpers.bezier_mesh.points)
+    np.testing.assert_array_equal(
+        quad.point_data["RationalWeights"],
+        helpers.bezier_mesh.point_data["RationalWeights"],
+    )
+    np.testing.assert_array_equal(
+        np.asarray(quad.cell_data["HigherOrderDegrees"][0]).reshape(-1), [2, 2, 0]
+    )
+    hexa = reader(vtk_file("anisotropic_hex"))
+    assert [c.type for c in hexa.cells] == ["VTK_BEZIER_HEXAHEDRON"]
+    assert hexa.cells[0].data.shape == (1, 12)
+    np.testing.assert_array_equal(
+        hexa.point_data["RationalWeights"], [1.0] * 8 + [2.0] * 4
+    )
+    np.testing.assert_array_equal(
+        np.asarray(hexa.cell_data["HigherOrderDegrees"][0]).reshape(-1), [2, 1, 1]
+    )
+
+
+# --- the edge order of higher-order hexahedra across versions (VTK 9.1) -----
+
+
+def _hex27(cell_type):
+    pts = np.array([[i, i % 3, i % 5] for i in range(27)], dtype=float)
+    return meshioplusplus.Mesh(pts, [(cell_type, np.arange(27).reshape(1, 27))])
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+@pytest.mark.parametrize(
+    "cell_type", ["VTK_LAGRANGE_HEXAHEDRON", "VTK_BEZIER_HEXAHEDRON"]
+)
+def test_higher_order_hexahedra_are_written_as_vtk_reads_them(
+    engine, cell_type, tmp_path
+):
+    # VTK 9.1 swapped the nodes of edges 10 and 11 and reads a file older than
+    # XML 2.2 the old way; meshio++ holds the new order, so it writes 2.2.
+    vtk = pytest.importorskip("vtk")
+    p = tmp_path / "hex.vtu"
+    writer = meshioplusplus.vtu.write if engine == "core" else _vtu.write
+    writer(p, _hex27(cell_type), binary=False)
+    assert 'version="2.2"' in p.read_text()
+    reader = vtk.vtkXMLUnstructuredGridReader()
+    reader.SetFileName(str(p))
+    reader.Update()
+    cell = reader.GetOutput().GetCell(0)
+    assert [cell.GetPointId(i) for i in range(27)] == list(range(27))
+    for read in (_core_vtu_read, _vtu.read):
+        np.testing.assert_array_equal(read(p).cells[0].data, [np.arange(27)])
+    # Without such cells the version (and so every byte) is as before.
+    writer(p, helpers.tri_mesh, binary=False)
+    assert 'version="0.1"' in p.read_text()
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+@pytest.mark.parametrize("version", ["0.1", "1.0", "2.2", "2.3"])
+def test_an_older_file_has_its_hexahedron_edges_swapped(reader, version, tmp_path):
+    p = tmp_path / "hex.vtu"
+    meshioplusplus.vtu.write(p, _hex27("VTK_LAGRANGE_HEXAHEDRON"), binary=False)
+    p.write_text(p.read_text().replace('version="2.2"', f'version="{version}"'))
+    want = np.arange(27)
+    if version in ("0.1", "1.0"):
+        want[[18, 19]] = want[[19, 18]]
+    np.testing.assert_array_equal(reader(p).cells[0].data, [want])

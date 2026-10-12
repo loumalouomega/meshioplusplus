@@ -152,9 +152,16 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
     };
 
+    // VTK XML 2.2 (VTK 9.1) is the first version whose higher-order hexahedra
+    // list edges 10 and 11 in the order meshio++ holds; an older one tells VTK to
+    // swap them (detail/vtk_hex_order.hpp), so a mesh with such cells says 2.2.
+    bool hex_order = false;
+    for (const auto cb : rMesh.CellRange())
+        hex_order = hex_order || cb.Type() == "VTK_LAGRANGE_HEXAHEDRON" ||
+                    cb.Type() == "VTK_BEZIER_HEXAHEDRON";
     os << "<?xml version=\"1.0\"?>\n";
-    os << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
-          "byte_order=\"LittleEndian\"";
+    os << "<VTKFile type=\"UnstructuredGrid\" version=\"" << (hex_order ? "2.2" : "0.1")
+       << "\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     if (hsz == 8)
@@ -437,8 +444,13 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         }
     }
 
+    // A `RationalWeights` point array and a `HigherOrderDegrees` cell array are
+    // marked as such (since v16.40.0), which is how VTK finds the weights and
+    // degrees of Bezier cells; a mesh without them writes the same bytes.
     if (rMesh.NumPointData() != 0) {
-        os << "<PointData>\n";
+        os << (rMesh.HasPointData("RationalWeights")
+                   ? "<PointData RationalWeights=\"RationalWeights\">\n"
+                   : "<PointData>\n");
         for (const auto& name : rMesh.PointDataNames()) {
             NDArray scratch;
             const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
@@ -454,7 +466,9 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     }
 
     if (rMesh.NumCellData() != 0) {
-        os << "<CellData>\n";
+        os << (rMesh.HasCellData("HigherOrderDegrees")
+                   ? "<CellData HigherOrderDegrees=\"HigherOrderDegrees\">\n"
+                   : "<CellData>\n");
         for (const auto& name : rMesh.CellDataNames()) {
             const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
             if (nblocks == 0)

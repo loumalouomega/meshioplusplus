@@ -45,6 +45,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/vtk_hex_order.hpp"
 
 namespace meshioplusplus {
 
@@ -565,6 +566,14 @@ Mesh read_vtk(const std::string& rPath) try {
     if (!moved) {
         detail::check_vtk_cell_arrays(conn_owned ? conn_nd.Size() : conn.size(), offsets, types,
                                       cell_data_raw);
+        // A file older than 5.1 lists the edges 10 and 11 of higher-order
+        // hexahedra the other way round (detail/vtk_hex_order.hpp).
+        if (!is_v5 && !conn_owned) {
+            const auto degrees = cell_data_raw.find("HigherOrderDegrees");
+            detail::vtk_hex_swap_stream(conn.data(), offsets, types,
+                                        degrees == cell_data_raw.end() ? nullptr : &degrees->second,
+                                        "VTK");
+        }
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
     }
     return mesh;

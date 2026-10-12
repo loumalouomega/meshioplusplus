@@ -39,6 +39,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
@@ -49,6 +50,7 @@
 namespace {
 
 using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 using meshioplusplus::ReadError;
 using meshioplusplus::RegionKind;
 namespace detail = meshioplusplus::detail;
@@ -393,6 +395,151 @@ TEST(Mfem, NurbsPatchSampledAtItsLattice) {
     EXPECT_EQ(detail::read_int(mesh.CellData("mfem:attribute", 0), 0), 5);
     EXPECT_THROW(meshioplusplus::read_mfem(write_file("MFEM NURBS NC-patch mesh v1.0\n")),
                  ReadError);
+}
+
+// The quarter annulus above, with its field: the NURBS side channel.
+namespace {
+
+std::string mfem_annulus_mesh() {
+    const std::string w = "0.70710678118654757";
+    return "MFEM NURBS mesh v1.0\n"
+           "dimension\n2\n"
+           "elements\n1\n5 3 0 1 2 3\n"
+           "boundary\n0\n"
+           "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\n"
+           "vertices\n4\n"
+           "knotvectors\n2\n2 3 0 0 0 1 1 1\n1 2 0 0 1 1\n"
+           "weights\n1\n1\n1\n1\n" +
+           w + "\n" + w +
+           "\n"
+           "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+           "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
+}
+
+std::string mfem_annulus_gf() {
+    return "MFEM FiniteElementSpace v1.0\nFiniteElementCollection: NURBS2\nVDim: 1\nOrdering: "
+           "0\nEnd: MFEM FiniteElementSpace v1.0\n\n1\n0\n0\n2\n1\n2\n";
+}
+
+std::vector<double> mfem_values(const NDArray& rA) {
+    std::vector<double> out;
+    for (std::size_t i = 0; i < rA.Size(); ++i)
+        out.push_back(detail::read_double(rA, i));
+    return out;
+}
+
+void mfem_expect_same_info(const meshioplusplus::NurbsInfo& rA,
+                           const meshioplusplus::NurbsInfo& rB) {
+    ASSERT_EQ(rA.mPatches.size(), rB.mPatches.size());
+    for (std::size_t p = 0; p < rA.mPatches.size(); ++p) {
+        const auto& a = rA.mPatches[p];
+        const auto& b = rB.mPatches[p];
+        EXPECT_EQ(a.mDegrees, b.mDegrees);
+        EXPECT_EQ(a.mKnots, b.mKnots);
+        EXPECT_EQ(a.mControlPoints.Shape(), b.mControlPoints.Shape());
+        EXPECT_EQ(mfem_values(a.mControlPoints), mfem_values(b.mControlPoints));
+        EXPECT_EQ(mfem_values(a.mWeights), mfem_values(b.mWeights));
+        ASSERT_EQ(a.mFields.size(), b.mFields.size());
+        for (std::size_t k = 0; k < a.mFields.size(); ++k)
+            EXPECT_EQ(mfem_values(a.mFields[k]), mfem_values(b.mFields[k]));
+    }
+    EXPECT_EQ(rA.mFieldNames, rB.mFieldNames);
+    EXPECT_EQ(rA.mTopology.mDimension, rB.mTopology.mDimension);
+    EXPECT_EQ(rA.mTopology.mNumVertices, rB.mTopology.mNumVertices);
+    EXPECT_EQ(mfem_values(rA.mTopology.mPatchVertices), mfem_values(rB.mTopology.mPatchVertices));
+    EXPECT_EQ(mfem_values(rA.mTopology.mBoundaryVertices),
+              mfem_values(rB.mTopology.mBoundaryVertices));
+    EXPECT_EQ(mfem_values(rA.mTopology.mEdges), mfem_values(rB.mTopology.mEdges));
+    EXPECT_EQ(mfem_values(rA.mCellPatch), mfem_values(rB.mCellPatch));
+    EXPECT_EQ(mfem_values(rA.mCellSpan), mfem_values(rB.mCellSpan));
+    EXPECT_EQ(mfem_values(rA.mBoundaryCellPatch), mfem_values(rB.mBoundaryCellPatch));
+}
+
+}  // namespace
+
+TEST(Mfem, NurbsInfoKeepsWhatTheSamplingDrops) {
+    const std::string mesh_path = write_file(mfem_annulus_mesh());
+    const std::string gf = write_file(mfem_annulus_gf(), ".gf");
+    meshioplusplus::NurbsInfo info;
+    const Mesh mesh = meshioplusplus::read_mfem(mesh_path, {{"u", gf}}, {}, info);
+    ASSERT_EQ(info.mPatches.size(), 1u);
+    const auto& p = info.mPatches[0];
+    EXPECT_EQ(p.mDegrees, (std::vector<std::int32_t>{2, 1}));
+    EXPECT_EQ(p.mKnots[0], (std::vector<double>{0, 0, 0, 1, 1, 1}));
+    EXPECT_EQ(p.mKnots[1], (std::vector<double>{0, 0, 1, 1}));
+    // the control net in the patch's own lattice order, direction 0 fastest
+    EXPECT_EQ(p.mControlPoints.Shape(), (std::vector<std::size_t>{6, 2}));
+    EXPECT_EQ(mfem_values(p.mControlPoints),
+              (std::vector<double>{1, 0, 1, 1, 0, 1, 2, 0, 2, 2, 0, 2}));
+    EXPECT_EQ(mfem_values(p.mWeights),
+              (std::vector<double>{1, 0.70710678118654757, 1, 1, 0.70710678118654757, 1}));
+    EXPECT_EQ(info.mFieldNames, (std::vector<std::string>{"u"}));
+    EXPECT_EQ(mfem_values(p.mFields[0]), (std::vector<double>{1, 1, 0, 2, 2, 0}));
+    EXPECT_EQ(info.mTopology.mDimension, 2);
+    EXPECT_EQ(info.mTopology.mNumVertices, 4);
+    EXPECT_EQ(mfem_values(info.mCellPatch), std::vector<double>{0});
+    EXPECT_EQ(mfem_values(info.mCellSpan), (std::vector<double>{0, 0, 0}));
+    EXPECT_EQ(info.mBoundaryCellPatch.Size(), mesh.Cells(1).NumCells());
+    // a mesh that is not NURBS clears it
+    meshioplusplus::read_mfem(write_file("MFEM mesh v1.0\ndimension\n1\nelements\n1\n1 1 0 1\n"
+                                         "boundary\n0\nvertices\n2\n1\n0\n1\n"),
+                              {}, {}, info);
+    EXPECT_TRUE(info.mPatches.empty());
+}
+
+TEST(Mfem, NurbsWritesBackExactly) {
+    const std::string gf = write_file(mfem_annulus_gf(), ".gf");
+    meshioplusplus::NurbsInfo info;
+    const Mesh mesh =
+        meshioplusplus::read_mfem(write_file(mfem_annulus_mesh()), {{"u", gf}}, {}, info);
+    const std::string out = mt::temp_path(".mesh");
+    meshioplusplus::write_mfem(out, mesh, true, info);
+    const std::string out_gf = out.substr(0, out.size() - 5) + ".u.gf";
+    meshioplusplus::NurbsInfo back_info;
+    const Mesh back = meshioplusplus::read_mfem(out, {{"u", out_gf}}, {}, back_info);
+    EXPECT_EQ(mfem_values(back.Points()), mfem_values(mesh.Points()));
+    EXPECT_EQ(mfem_values(back.Cells(0).Conn()), mfem_values(mesh.Cells(0).Conn()));
+    EXPECT_EQ(mfem_values(back.PointData("u")), mfem_values(mesh.PointData("u")));
+    mfem_expect_same_info(back_info, info);
+
+    // An empty side channel is the plain writer.
+    const std::string a = mt::temp_path(".mesh"), b = mt::temp_path(".mesh");
+    meshioplusplus::write_mfem(a, mesh, false, meshioplusplus::NurbsInfo{});
+    meshioplusplus::write_mfem(b, mesh, false);
+    std::ifstream fa(a), fb(b);
+    std::stringstream sa, sb;
+    sa << fa.rdbuf();
+    sb << fb.rdbuf();
+    EXPECT_EQ(sa.str(), sb.str());
+    EXPECT_EQ(sa.str().rfind("MFEM mesh v1", 0), 0u);
+}
+
+TEST(Mfem, NurbsWriterRefusesAStaleOrMalformedSideChannel) {
+    meshioplusplus::NurbsInfo info;
+    Mesh mesh = meshioplusplus::read_mfem(write_file(mfem_annulus_mesh()), {}, {}, info);
+    const std::string out = mt::temp_path(".mesh");
+    // a moved point: the patches no longer describe the mesh
+    NDArray pts = meshioplusplus::detail::data_owned_copy(mesh.Points());
+    pts.As<double>()[0] += 0.25;
+    Mesh moved;
+    moved.AssignPoints(std::move(pts));
+    for (const auto cb : mesh.CellRange())
+        moved.AddCellBlock(std::string(cb.Type()),
+                           meshioplusplus::detail::data_owned_copy(cb.Conn()));
+    try {
+        meshioplusplus::write_mfem(out, moved, false, info);
+        FAIL() << "a moved mesh was written with its old patches";
+    } catch (const meshioplusplus::WriteError& rE) {
+        EXPECT_NE(std::string(rE.what()).find("no longer matches"), std::string::npos);
+    }
+    // a zero weight and a knot vector of the wrong length
+    meshioplusplus::NurbsInfo zero = info;
+    zero.mPatches[0].mWeights.As<double>()[0] = 0.0;
+    EXPECT_THROW(meshioplusplus::write_mfem(out, mesh, false, zero), meshioplusplus::WriteError);
+    meshioplusplus::NurbsInfo short_knots = info;
+    short_knots.mPatches[0].mKnots[0].pop_back();
+    EXPECT_THROW(meshioplusplus::write_mfem(out, mesh, false, short_knots),
+                 meshioplusplus::WriteError);
 }
 
 // One unit square with order-2 nodes whose bottom edge is pulled down, in

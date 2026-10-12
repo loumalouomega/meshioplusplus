@@ -146,6 +146,61 @@ program test_fortran_api
         close (unit, status='delete')
     end block
 
+    ! ---- the NURBS side channel of an MFEM NURBS mesh -------------------
+    block
+        type(mio_mesh) :: nurbs_mesh, back
+        type(mio_format_info) :: info, back_info
+        integer :: unit
+        integer(int64), allocatable :: ids(:, :)
+        real(real64), allocatable :: xyz(:, :), weights(:)
+        character(:), allocatable :: input_path, output_path
+
+        input_path = prefix//'_nurbs.mesh'
+        output_path = prefix//'_nurbs_out.mesh'
+        open (newunit=unit, file=input_path, status='replace')
+        write (unit, '(a)') 'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', &
+            '5 3 0 1 2 3', 'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2', &
+            'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', '1 2 0 0 1 1', 'weights', &
+            '1', '1', '1', '1', '0.70710678118654757', '0.70710678118654757', &
+            'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1', &
+            '1 0', '0 1', '0 2', '2 0', '1 1', '2 2'
+        close (unit)
+        call nurbs_mesh%read_with_info(input_path, info, 'mfem', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'nurbs read_with_info succeeds')
+        if (ierr == 0) then
+            call check(info%format() == 'mfem', 'nurbs format name')
+            call check(info%nurbs_count(MIO_NURBS_PATCHES) == 1, 'nurbs patch count')
+            call check(info%nurbs_count(MIO_NURBS_FIELDS) == 0, 'nurbs field count')
+            call check(info%nurbs_int(MIO_NURBS_PATCHES, 1, 0) == 2_int64, 'nurbs dimension')
+            call check(all(info%nurbs_degrees(1) == [2, 1]), 'nurbs degrees')
+            call check(all(info%nurbs_knots(1, 2) == [0.0_real64, 0.0_real64, 1.0_real64, &
+                                                      1.0_real64]), 'nurbs knots')
+            xyz = info%nurbs_control_points(1)
+            call check(all(shape(xyz) == [2, 6]), 'nurbs control net shape')
+            call check(all(xyz(:, 2) == [1.0_real64, 1.0_real64]), 'nurbs control point')
+            weights = info%nurbs_weights(1)
+            call check(abs(weights(2) - sqrt(0.5_real64)) < 1e-15_real64, 'nurbs weight')
+            ids = info%nurbs_ids(MIO_NURBS_TOPOLOGY, 0)
+            call check(all(ids(:, 1) == [1_int64, 2_int64, 3_int64, 4_int64]), &
+                       'nurbs 1-based patch vertices')
+            ids = info%nurbs_ids(MIO_NURBS_CELL_MAP, 0)
+            call check(all(shape(ids) == [1, 1]) .and. ids(1, 1) == 1_int64, 'nurbs cell patch')
+            call nurbs_mesh%write_with_info(output_path, info, 'mfem', stat=ierr)
+            call check(ierr == 0, 'nurbs write_with_info succeeds')
+            call back%read_with_info(output_path, back_info, 'mfem', stat=ierr)
+            call check(ierr == 0, 'nurbs reread succeeds')
+            call check(all(back_info%nurbs_control_points(1) == xyz), 'nurbs round trip')
+            call back%free()
+            call back_info%free()
+            open (newunit=unit, file=output_path, status='old')
+            close (unit, status='delete')
+        end if
+        call nurbs_mesh%free()
+        call info%free()
+        open (newunit=unit, file=input_path, status='old')
+        close (unit, status='delete')
+    end block
+
     points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
                       1.1_real64, 0.2_real64, 0.3_real64, &
                       0.4_real64, 1.2_real64, 0.5_real64, &

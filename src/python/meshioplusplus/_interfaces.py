@@ -727,7 +727,7 @@ def _contact_facets(mesh, mask):
             if not mask[cell]:
                 continue
             nodes = np.asarray(data[row], dtype=np.int64).reshape(-1)
-            if block.type.startswith("VTK_LAGRANGE_"):
+            if block.type.startswith(("VTK_LAGRANGE_", "VTK_BEZIER_")):
                 boundary_mask[cell] = False
                 continue
             if block.type.startswith("triangle"):
