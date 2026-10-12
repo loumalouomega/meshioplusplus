@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+## v16.40.0 (2026-10-12)
+
 **Scale (roadmap 6.1.1): `undo_green` reads its hierarchy in place. Output and digests unchanged; no ABI change (implementation only).**
 
 - **Changed**: `undo_green` reads the three `refine:*` columns through a view per block (the array itself for the Int64 columns `refine` writes; another dtype is converted one block at a time) instead of copying them into global vectors, stores green-group ids in 32 bits (`Unsupported` past 4,294,967,295 groups, where the numpy twin takes over), drops the per-group sizes, and builds no coarse id table when the coarse mesh records no hierarchy. At tier L its peak falls from 1,039 MB to 994 MB and it runs in 0.24 s instead of 1.34 s; at XL about 2.6 GB of scratch is gone, and the row is left at its floor of input plus output, which a 15 GiB machine still cannot hold (roadmap 6.1.1 keeps the probe). Every digest of the harness at tiers S, M and L agrees with the previous build on `SEQ` and on `OPENMP` at one and four threads.
@@ -24,6 +26,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **Breaking (ABI 26)**: `CellType` gains the Bézier types after `Triangle7`, so `CellType::Custom` moves from 77 to 84, and the C API's `MIO_CELL_Custom` with it; consumers compiled against an older header must be rebuilt. `NurbsPatch`, `NurbsTopology` and `NurbsInfo` are pinned in `test_abi_layout.cpp`.
 - **Docs**: `doc/formats/mfem.md` (the NURBS side channel and its writer), `doc/formats/vtu.md` (Bézier cells and rational weights), `doc/cell_types.md`, the C, Fortran, Julia, R, WASM and MCP pages, `doc/abi.md`, the formats table and README; the roadmap drops 6.2.1 and renumbers 6.2, and `doc/spikes.md` records what landed. Notebook 16 draws the patches and their control nets.
 - **Tests**: the side channel in both engines on all six NURBS fixtures (identical arrays, an exact round trip, identical bytes), its values on `pipe-nurbs`, the refusals (`test_mfem.py`); C++ `Mfem.Nurbs*`, `CApi.NurbsSideChannel`, `VtkBezier.*`; Fortran, Julia, R and WASM round trips of an inline quarter annulus; Bézier and hexahedron-order checks against VTK 9.7.1 (`test_vtu.py`, `test_vtk.py`). The four `BASELINE_HASHES` of `test_io_baseline.py`, left at v16.38.0's version string by the v16.39.0 bump, are refreshed (with v16.38.0 substituted, the files written now give exactly the old hashes).
+- **Fixed**: an ASCII VTU file whose root element declares a compressor is now read on builds without zlib (VTK writes the marker even though ASCII data is never compressed); the codec is checked where a compressed block is decoded instead of at the root element, so the C++ reader agrees with the Python reader and the Windows wheels read such files, while a genuinely compressed file on a build without zlib is still refused with the same `ReadError` (`test_a_compressed_block_needs_zlib`).
 
 ## v16.39.0 (2026-10-12)
 
