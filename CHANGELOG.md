@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+## v16.41.0 (2026-10-13)
+
 **Skin to CAD (roadmap 6.3.3, 6.3.4): an optional OpenCASCADE backend and `fit_cad`, analytic CAD faces sewn into a checked solid and written as STEP. No ABI change (additions only).**
 
 - **Added**: **`fit_cad`** (`operations/fit_cad.hpp`) turns the fitted patches of a closed skin into a CAD solid: every patch `fit_primitives` accepted becomes a plane, sphere, cylinder, cone or torus face trimmed by the patch boundary (exact intersection curves where the surfaces meet stably, smoothed B-splines along tangent junctions), the rest planar facets; OpenCASCADE sews, checks and closes the solid, and a face that fails the B-rep check or strays beyond the tolerance from the skin is demoted to facets and the solid rebuilt, so a feature the fitter cannot explain comes back faceted, never silently wrong. It returns the solid re-meshed with `fit_cad:face`, `fit_cad:type` and `fit_cad:patch` cell data and a report (validity, volume ratio against the skin, the Hausdorff deviation, faces by type, demoted patches, exact and approximated edges), and writes AP214 STEP with reproducible bytes. On every surface but WASM: Python (`mp.fit_cad`), C (`mio_fit_cad`, `mio_has_occt`), Fortran, Julia, R, both CLIs (`to-cad`), the MCP server (`fit_cad`, reporting `occt_available`) and the pipeline step `FitCad`.
