@@ -18,14 +18,24 @@ const MIO_NURBS_PATCHES = Int32(0)
 const MIO_NURBS_FIELDS = Int32(1)
 const MIO_NURBS_TOPOLOGY = Int32(2)
 const MIO_NURBS_CELL_MAP = Int32(3)
+const MIO_BREP_FILE = Int32(0)
+const MIO_BREP_BREPS = Int32(1)
+const MIO_BREP_PATCHES = Int32(2)
+const MIO_BREP_FACES = Int32(3)
+const MIO_BREP_LOOPS = Int32(4)
+const MIO_BREP_TRIMS = Int32(5)
+const MIO_BREP_EDGES = Int32(6)
+const MIO_BREP_VERTICES = Int32(7)
+const MIO_BREP_REFS = Int32(8)
 
 """
     FormatInfo
 
 A format's side channel, returned by [`read_with_info`](@ref). Released by a
 finalizer; [`close`](@ref) does it deterministically and is idempotent. Inspect
-an MDPA one with [`mdpa_info`](@ref), a Gmsh one with [`gmsh_info`](@ref), or an
-MFEM NURBS one with [`nurbs_info`](@ref).
+an MDPA one with [`mdpa_info`](@ref), a Gmsh one with [`gmsh_info`](@ref), an
+MFEM NURBS one with [`nurbs_info`](@ref), or a B-rep one (Kratos CAD JSON, STEP,
+IGES) with [`brep_info`](@ref).
 """
 mutable struct FormatInfo
     ptr::Ptr{Cvoid}
@@ -209,6 +219,92 @@ function nurbs_info(info::FormatInfo)
     cells(field) = n(MIO_NURBS_CELL_MAP) == 0 ? Int64[] : a(MIO_NURBS_CELL_MAP, 0, field) .+ 1
     (patches=patches, field_names=names, topology=topology,
      cell_patch=cells(0), cell_span=cells(1), boundary_cell_patch=cells(2))
+end
+
+"""
+    brep_info(info) -> NamedTuple
+
+Copy of a B-rep side channel: a Kratos CAD JSON handle (`"cad_json"`), or a
+STEP/IGES one read through OpenCASCADE. `patches` holds `(degrees, knots,
+control_points, weights)` per face surface, `control_points` a `(3, points)`
+matrix with direction 1 fastest and the knots in the full form; `faces` holds
+`(id, name, patch, swapped_normal, trimmed, rational, reduced_knots,
+control_point_ids, loops, embedded_edges, surface_extra, extra)`, each loop
+`(type, trims, extra)` and each trim `(trim_index, direction, curve, extra)`;
+`edges` holds `(id, name, curve, topology, extra)` (`curve` is `nothing` for an
+edge without a 3-D curve) and `vertices` `(id, name, topology, extra)`, each
+topology entry `(id, name, trim_index, relative_direction, local_coordinates,
+extra)`; `breps` holds `(id, name, faces, edges, vertices, extra)`; and
+`extra` is the file's other members. A curve is `(degree, knots, reduced_knots,
+rational, control_points, weights, ids, active_range, extra)`. Indices (a
+face's `patch`, a brep's lists) are 1-based; ids (-1 where the file names the
+entity instead), trim indices and the `extra` JSON texts stay as the file
+spelled them. [`write_with_info`](@ref) writes the B-rep back as CAD JSON.
+"""
+function brep_info(info::FormatInfo)
+    h = _handle(info)
+    format_name(info) in ("cad_json", "step", "iges") ||
+        throw(MeshioError(MIO_ERR_INVALID_ARG, "not a B-rep side channel"))
+    n(section) = Int(_check_count(ccall(_sym(:mio_brep_info_count), Int64,
+                                       (Ptr{Cvoid}, Int32), h, section), "brep count"))
+    a(section, i, field) = _mdpa_copy((d, t, nd, s) -> ccall(_sym(:mio_brep_info_array), Cint,
+        (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int32}, Ptr{Int64}),
+        h, section, Int64(i), Int32(field), d, t, nd, s))
+    function ival(section, i, field)
+        v = Ref{Int64}(0)
+        _check(ccall(_sym(:mio_brep_info_int), Cint, (Ptr{Cvoid}, Int32, Int64, Int32, Ptr{Int64}),
+                     h, section, Int64(i), Int32(field), v))
+        v[]
+    end
+    str(section, i, field) = _getstring((buf, len) -> ccall(_sym(:mio_brep_info_string), Int64,
+                                                            (Ptr{Cvoid}, Int32, Int64, Int32,
+                                                             Ptr{UInt8}, Int64),
+                                                            h, section, Int64(i), Int32(field),
+                                                            buf, len))
+    curve(section, i) = (degree=Int(ival(section, i, 10)), knots=a(section, i, 12),
+                         reduced_knots=ival(section, i, 12) != 0,
+                         rational=ival(section, i, 11) != 0, control_points=a(section, i, 10),
+                         weights=a(section, i, 11), ids=a(section, i, 13),
+                         active_range=a(section, i, 14), extra=str(section, i, 10))
+    trim(t) = (trim_index=ival(MIO_BREP_TRIMS, t, 2), direction=ival(MIO_BREP_TRIMS, t, 3) != 0,
+               curve=curve(MIO_BREP_TRIMS, t), extra=str(MIO_BREP_TRIMS, t, 0))
+    ref(r) = (id=ival(MIO_BREP_REFS, r, 0), name=str(MIO_BREP_REFS, r, 0),
+              trim_index=ival(MIO_BREP_REFS, r, 1), relative_direction=ival(MIO_BREP_REFS, r, 2),
+              local_coordinates=a(MIO_BREP_REFS, r, 0), extra=str(MIO_BREP_REFS, r, 1))
+    span(first, count) = first:first+count-1
+    patches = [(degrees=Int32[ival(MIO_BREP_PATCHES, p, 0), ival(MIO_BREP_PATCHES, p, 1)],
+                knots=[a(MIO_BREP_PATCHES, p, 2), a(MIO_BREP_PATCHES, p, 3)],
+                control_points=a(MIO_BREP_PATCHES, p, 0), weights=a(MIO_BREP_PATCHES, p, 1))
+               for p in 0:n(MIO_BREP_PATCHES)-1]
+    faces = map(0:n(MIO_BREP_FACES)-1) do f
+        iv(k) = ival(MIO_BREP_FACES, f, k)
+        loops = [(type=str(MIO_BREP_LOOPS, l, 0),
+                  trims=[trim(t) for t in span(ival(MIO_BREP_LOOPS, l, 1), ival(MIO_BREP_LOOPS, l, 2))],
+                  extra=str(MIO_BREP_LOOPS, l, 1))
+                 for l in span(iv(6), iv(7))]
+        embedded = [trim(t) for t in span(iv(8), iv(9)) if ival(MIO_BREP_TRIMS, t, 1) < 0]
+        (id=iv(0), name=str(MIO_BREP_FACES, f, 0), patch=Int(iv(1)) + 1,
+         swapped_normal=iv(2) != 0, trimmed=iv(3) != 0, rational=iv(4) != 0,
+         reduced_knots=iv(5) != 0, control_point_ids=a(MIO_BREP_FACES, f, 0), loops=loops,
+         embedded_edges=embedded, surface_extra=str(MIO_BREP_FACES, f, 2),
+         extra=str(MIO_BREP_FACES, f, 1))
+    end
+    edges = [(id=ival(MIO_BREP_EDGES, e, 0), name=str(MIO_BREP_EDGES, e, 0),
+              curve=ival(MIO_BREP_EDGES, e, 1) != 0 ? curve(MIO_BREP_EDGES, e) : nothing,
+              topology=[ref(r) for r in span(ival(MIO_BREP_EDGES, e, 2), ival(MIO_BREP_EDGES, e, 3))],
+              extra=str(MIO_BREP_EDGES, e, 1))
+             for e in 0:n(MIO_BREP_EDGES)-1]
+    vertices = [(id=ival(MIO_BREP_VERTICES, v, 0), name=str(MIO_BREP_VERTICES, v, 0),
+                 topology=[ref(r) for r in span(ival(MIO_BREP_VERTICES, v, 1),
+                                                ival(MIO_BREP_VERTICES, v, 2))],
+                 extra=str(MIO_BREP_VERTICES, v, 1))
+                for v in 0:n(MIO_BREP_VERTICES)-1]
+    breps = [(id=ival(MIO_BREP_BREPS, b, 0), name=str(MIO_BREP_BREPS, b, 0),
+              faces=a(MIO_BREP_BREPS, b, 0) .+ 1, edges=a(MIO_BREP_BREPS, b, 1) .+ 1,
+              vertices=a(MIO_BREP_BREPS, b, 2) .+ 1, extra=str(MIO_BREP_BREPS, b, 1))
+             for b in 0:n(MIO_BREP_BREPS)-1]
+    (patches=patches, breps=breps, faces=faces, edges=edges, vertices=vertices,
+     extra=str(MIO_BREP_FILE, 0, 0))
 end
 
 function _mdpa_data(h, section, i)

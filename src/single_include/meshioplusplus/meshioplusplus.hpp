@@ -122,7 +122,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 26
+#define MESHIOPLUSPLUS_ABI_VERSION 27
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -5307,6 +5307,292 @@ struct Mesh {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/nurbs.hpp =====
+/**
+ * @file nurbs.hpp
+ * @brief `NurbsInfo`: the NURBS patches a reader sampled into Lagrange cells,
+ * kept beside the `Mesh` (the `GmshInfo`/`MdpaInfo` side-channel pattern).
+ *
+ * A `Mesh` holds linear and Lagrange polytopes only, so a reader of a NURBS
+ * file (MFEM's `MFEM NURBS mesh`, since v16.40.0) evaluates each patch at the
+ * nodes of its knot-span elements. The overload that takes a `NurbsInfo` also
+ * returns what the sampling drops -- every patch's degrees, knot vectors,
+ * control net and weights, the control values of the NURBS fields read with
+ * it, the file's patch topology, and the map from each sampled cell back to its
+ * patch and knot span -- and a writer that knows NURBS (MFEM's) writes the
+ * patches back from it. The shared registry passes none: a plain read drops it
+ * and a plain write writes the sampled cells. Python, WASM and the C API's
+ * read/write-with-info paths (also Fortran, Julia and R) carry it explicitly.
+ *
+ * Nothing here is evaluated or checked when the struct is built; the writer
+ * validates it. Every index is 0-based. See doc/formats/mfem.md.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief One tensor-product NURBS patch of parametric dimension
+ * `mDegrees.size()` (1, 2 or 3).
+ *
+ * The control net has `n0 * n1 * n2` points, `nd = mKnots[d].size() -
+ * mDegrees[d] - 1` per direction, listed with direction 0 fastest. The knot
+ * vectors run along the patch's own parametric directions (MFEM orients each
+ * patch's directions by its first vertex: the edges 0-1, 0-3 and 0-4).
+ */
+struct MESHIOPLUSPLUS_API NurbsPatch {
+    /// Polynomial degree per parametric direction.
+    std::vector<std::int32_t> mDegrees;
+    /// The knot vector of each direction (non-decreasing, `n + degree + 1` knots).
+    std::vector<std::vector<double>> mKnots;
+    /// Float64 `(n0 * n1 * n2, space dimension)`: Cartesian control points.
+    NDArray mControlPoints{DType::Float64, {0, 3}};
+    /// Float64 `(n0 * n1 * n2)`: the weight of each control point.
+    NDArray mWeights{DType::Float64, {0}};
+    /// Float64 `(n0 * n1 * n2, components)` per `NurbsInfo::mFieldNames` entry:
+    /// the field's control values (its NURBS degrees of freedom).
+    std::vector<NDArray> mFields;
+};
+
+/**
+ * @brief The patch topology of an MFEM NURBS mesh, as its file states it
+ * (`mDimension` 0 when the source has none).
+ *
+ * Patch and boundary vertices are MFEM's topological vertices `0 ..
+ * mNumVertices - 1`, which are also the first `mNumVertices` points of the
+ * sampled mesh. Boundary rows are in the orientation the reader normalises
+ * them to, so a rewrite is idempotent.
+ */
+struct MESHIOPLUSPLUS_API NurbsTopology {
+    /// Parametric dimension of the patches (1, 2 or 3); 0 for no topology.
+    std::int32_t mDimension = 0;
+    /// Number of topological vertices (patch corners).
+    std::int64_t mNumVertices = 0;
+    /// Int64 `(patches, 2^dimension)`: each patch's corner vertices, MFEM order.
+    NDArray mPatchVertices{DType::Int64, {0, 0}};
+    /// Int64 `(patches)`: each patch's attribute.
+    NDArray mPatchAttributes{DType::Int64, {0}};
+    /// Int64 `(boundary patches, 2^(dimension - 1))`: their corner vertices.
+    NDArray mBoundaryVertices{DType::Int64, {0, 0}};
+    /// Int64 `(boundary patches)`: each boundary patch's attribute.
+    NDArray mBoundaryAttributes{DType::Int64, {0}};
+    /// Int64 `(edges, 3)`: the `edges` section, `(knot vector, vertex, vertex)`.
+    NDArray mEdges{DType::Int64, {0, 3}};
+};
+
+/**
+ * @brief The NURBS description of a sampled mesh: patches, fields, topology
+ * and the cell-to-patch map. Empty (`mPatches` empty) for a mesh that is not
+ * NURBS.
+ */
+struct MESHIOPLUSPLUS_API NurbsInfo {
+    /// The patches, in file order.
+    std::vector<NurbsPatch> mPatches;
+    /// The NURBS fields carried per patch (`NurbsPatch::mFields`), by name.
+    std::vector<std::string> mFieldNames;
+    /// The patch topology the file states.
+    NurbsTopology mTopology;
+    /// Int64 `(element cells)`: the patch of each cell of the first block.
+    NDArray mCellPatch{DType::Int64, {0}};
+    /// Int64 `(element cells, 3)`: each such cell's knot span per direction,
+    /// counted over the spans of nonzero length (0 for an unused direction).
+    NDArray mCellSpan{DType::Int64, {0, 3}};
+    /// Int64 `(boundary cells)`: the boundary patch of each cell after the
+    /// first block, in block order.
+    NDArray mBoundaryCellPatch{DType::Int64, {0}};
+};
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/nurbs.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/brep.hpp =====
+/**
+ * @file brep.hpp
+ * @brief `BrepInfo`: a NURBS boundary representation -- trimmed NURBS faces,
+ * their trimming loops, edges and vertices -- kept beside the `Mesh` a reader
+ * sampled it into (the `NurbsInfo`/`MdpaInfo` side-channel pattern).
+ *
+ * A `Mesh` holds linear and Lagrange polytopes only, so a reader of a B-rep
+ * file samples it: Kratos CAD JSON (`formats/cad_json.hpp`, the IGA geometry
+ * of Kratos Multiphysics) evaluates every knot span of every face, and STEP
+ * and IGES (`formats/step.hpp`, `formats/iges.hpp`, through the optional
+ * OpenCASCADE backend) are triangulated at a tolerance. The overloads that
+ * take a `BrepInfo` also return the exact geometry the sampling drops; the
+ * CAD JSON writer writes it back, so a CAD JSON file read and written keeps
+ * every face, loop, edge and vertex. The shared registry passes none.
+ *
+ * Every patch is a `NurbsPatch` of parametric dimension 2 with its knot
+ * vectors in the full form (`n + p + 1` knots); a file that writes them in
+ * Kratos's reduced form (`n + p - 1`, without the outer knots) sets
+ * `mReducedKnots` so the writer can restore it. Weights are carried as the
+ * file writes them; a face or curve whose `mRational` is false is evaluated
+ * as a polynomial B-spline whatever they are (as Kratos does).
+ *
+ * The members a format has that meshio++ does not model are kept, per object,
+ * in `mExtra` as compact JSON object text (`{}` or empty for none), and
+ * written back. Every index is 0-based. See doc/formats/cad_json.md.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// A NURBS curve: a 3-D edge curve or a trimming curve in a face's (u, v).
+struct MESHIOPLUSPLUS_API BrepCurve {
+    /// Polynomial degree.
+    std::int32_t mDegree = 1;
+    /// Full knot vector (`n + degree + 1` knots).
+    std::vector<double> mKnots;
+    /// Whether the file wrote the reduced form (without the two outer knots).
+    bool mReducedKnots = false;
+    /// Whether the curve is rational (weights used).
+    bool mRational = false;
+    /// Float64 `(n, 3)`: control points; a trimming curve's are `(u, v, 0)`.
+    NDArray mControlPoints{DType::Float64, {0, 3}};
+    /// Float64 `(n)`: the weights as written.
+    NDArray mWeights{DType::Float64, {0}};
+    /// Int64 `(n)`: the control points' ids (Kratos node ids); empty when the
+    /// file gives none.
+    NDArray mIds{DType::Int64, {0}};
+    /// The active parameter range `[t0, t1]`, or empty for none.
+    std::vector<double> mActiveRange;
+    /// Members not modelled, as compact JSON object text.
+    std::string mExtra;
+};
+
+/// One trimming curve of a loop (or an embedded edge of a face).
+struct MESHIOPLUSPLUS_API BrepTrim {
+    /// The trim index the edges refer to; -1 when the file gives none.
+    std::int64_t mTrimIndex = -1;
+    /// Whether the loop runs along the curve's direction (`curve_direction`).
+    bool mDirection = true;
+    /// The curve in the face's parameter space.
+    BrepCurve mCurve;
+    std::string mExtra;
+};
+
+/// A boundary loop of a face.
+struct MESHIOPLUSPLUS_API BrepLoop {
+    /// `"outer"` or `"inner"`.
+    std::string mType = "outer";
+    std::vector<BrepTrim> mTrims;
+    std::string mExtra;
+};
+
+/// A reference from an edge or vertex to the face (and trim) it lies on.
+struct MESHIOPLUSPLUS_API BrepRef {
+    /// The referenced entity's id; -1 when it is named instead.
+    std::int64_t mId = -1;
+    /// The referenced entity's name (`brep_name`), or empty.
+    std::string mName;
+    /// The trim index on that face; -1 when absent.
+    std::int64_t mTrimIndex = -1;
+    /// `relative_direction`: 1 true, 0 false, -1 absent.
+    std::int32_t mRelativeDirection = -1;
+    /// A vertex's parametric position on the face, or empty.
+    std::vector<double> mLocalCoordinates;
+    std::string mExtra;
+};
+
+/// A trimmed NURBS face.
+struct MESHIOPLUSPLUS_API BrepFace {
+    /// `brep_id`; -1 when the face is named instead.
+    std::int64_t mId = -1;
+    /// `brep_name`, or empty.
+    std::string mName;
+    /// Its surface: an index into `BrepInfo::mPatches`.
+    std::int64_t mPatch = -1;
+    bool mSwappedNormal = false;
+    /// Whether the surface is trimmed by `mLoops` (`is_trimmed`).
+    bool mTrimmed = false;
+    bool mRational = false;
+    bool mReducedKnots = false;
+    /// Int64 `(n)`: the surface's control-point ids, or empty.
+    NDArray mControlPointIds{DType::Int64, {0}};
+    std::vector<BrepLoop> mLoops;
+    /// Curves embedded in the face (`embedded_edges`).
+    std::vector<BrepTrim> mEmbeddedEdges;
+    /// The surface object's members not modelled.
+    std::string mSurfaceExtra;
+    std::string mExtra;
+};
+
+/// An edge: an optional 3-D curve and the trims it is (its topology).
+struct MESHIOPLUSPLUS_API BrepEdge {
+    std::int64_t mId = -1;
+    std::string mName;
+    bool mHasCurve = false;
+    /// The `3d_curve`, when `mHasCurve`.
+    BrepCurve mCurve;
+    std::vector<BrepRef> mTopology;
+    std::string mExtra;
+};
+
+/// A vertex: the points on faces or edges it is.
+struct MESHIOPLUSPLUS_API BrepVertex {
+    std::int64_t mId = -1;
+    std::string mName;
+    std::vector<BrepRef> mTopology;
+    std::string mExtra;
+};
+
+/// One `breps` entry: indices into `BrepInfo`'s face, edge and vertex lists.
+struct MESHIOPLUSPLUS_API Brep {
+    std::int64_t mId = -1;
+    std::string mName;
+    std::vector<std::int64_t> mFaces;
+    std::vector<std::int64_t> mEdges;
+    std::vector<std::int64_t> mVertices;
+    std::string mExtra;
+};
+
+/**
+ * @brief The B-rep a sampled mesh came from. Empty (`mFaces`, `mEdges` and
+ * `mVertices` empty) for a mesh that has none.
+ *
+ * The sampled mesh links its cells back through cell data: `cad:kind` (0 a
+ * face cell, 1 an edge cell), `cad:index` (into `mFaces` or `mEdges`),
+ * `cad:id` (that entity's id), `cad:span` (the knot span per direction,
+ * counted over the spans of nonzero length, -1 for none) and `cad:trimmed`
+ * (1 for a cell the trimming crossed).
+ */
+struct MESHIOPLUSPLUS_API BrepInfo {
+    /// The face surfaces.
+    std::vector<NurbsPatch> mPatches;
+    std::vector<Brep> mBreps;
+    std::vector<BrepFace> mFaces;
+    std::vector<BrepEdge> mEdges;
+    std::vector<BrepVertex> mVertices;
+    /// The file's top-level members besides `breps` (Kratos: `tolerances`,
+    /// `version_number`), as compact JSON object text.
+    std::string mExtra;
+};
+
+/// How a STEP or IGES B-rep is triangulated (`read_step`, `read_iges`).
+struct CadReadOptions {
+    /// The chordal deflection, as a length; at most 0 takes 1e-3 of the
+    /// bounding-box diagonal.
+    double mDeflection = 0.0;
+    /// The angular deflection, in radians.
+    double mAngularDeflection = 0.5;
+};
+
+/// Whether this build reads STEP and IGES (it carries the OpenCASCADE backend,
+/// `-DMESHIOPLUSPLUS_WITH_OCCT=ON`).
+MESHIOPLUSPLUS_API bool cad_read_has_occt() noexcept;
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/brep.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/abaqus_types.hpp =====
 /**
  * @file detail/abaqus_types.hpp
@@ -10400,6 +10686,35 @@ MESHIOPLUSPLUS_API hid_t file_type(DType dt);
 MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
 
 /**
+ * @brief Verifies the chunks of a chunked dataset before it is read.
+ *
+ * libhdf5 1.10 over-reads a chunk that delivers fewer bytes than its elements
+ * take, so every reader of a chunked dataset calls this, or `verify_chunk_rows`,
+ * before `H5Dread`. Raw chunks must hold their full size, deflated chunks must
+ * inflate to it, and a trailing fletcher32 checksum is left out of that size: libhdf5
+ * checks it on the read. A pipeline this check cannot verify, such as deflate followed
+ * by shuffle, is read unverified, so the over-read stays possible for it.
+ * @param dset An open dataset.
+ * @param rName The dataset's name, for error messages.
+ * @throws ReadError when a chunk cannot be verified or does not match.
+ */
+MESHIOPLUSPLUS_API void verify_chunks(hid_t dset, const std::string& rName);
+
+/**
+ * @brief Verifies the chunks that hold rows `[Row0, Row0 + Count)` before a row read.
+ *
+ * A row read reaches only the chunks that hold those rows, so only they are
+ * verified; the rest of a long time series is not inflated for each slice.
+ * @param dset An open dataset.
+ * @param rName The dataset's name, for error messages.
+ * @param Row0 The first row read.
+ * @param Count The number of rows read; zero verifies nothing.
+ * @throws ReadError when one of those chunks cannot be verified or does not match.
+ */
+MESHIOPLUSPLUS_API void verify_chunk_rows(hid_t dset, const std::string& rName, std::size_t Row0,
+                                          std::size_t Count);
+
+/**
  * @brief Reads a full HDF5 dataset into a freshly-allocated, owning `NDArray`.
  *
  * The output shape and dtype are taken from the file. A dataset whose
@@ -15103,6 +15418,94 @@ MESHIOPLUSPLUS_API Mesh read_avsucd(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/avsucd.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/cad_json.hpp =====
+/**
+ * @file formats/cad_json.hpp
+ * @brief Kratos CAD JSON (`*.cad.json`): the NURBS boundary representation
+ * Kratos Multiphysics' IGA reads (`CadJsonInput`, `CadIoModeler`) and writes
+ * (`CadJsonOutput`) -- trimmed NURBS faces, their boundary loops of trimming
+ * curves, edges with 3-D curves and the coupling topology between faces, in
+ * the JSON schema of Teschemacher et al. (AMSES 2018). The reader also takes
+ * the `Surfaces`/`Lines` dialect of Kratos's `ImportNurbsSbmModeler`.
+ *
+ * ### The mesh
+ *
+ * Every knot span of every face becomes one Lagrange quadrilateral of the
+ * face's higher degree (`quad`, `quad9`, else `VTK_LAGRANGE_QUADRILATERAL`),
+ * its nodes the exact surface at the cell's lattice; `mSubdivisions` splits
+ * each span further (by default only on a trimmed face, so its trim shows). A trimmed face keeps the cells whose parametric centre
+ * lies inside its boundary loops (even-odd over all of its loops, sampled at
+ * `mTrimSamples` points per knot span), so the trimmed edge of the mesh is
+ * staircase-accurate to a cell while the trimming curves stay exact in the
+ * side channel. Each edge with a 3-D curve becomes Lagrange line cells. Cell
+ * data `cad:kind`, `cad:index`, `cad:id`, `cad:span` and `cad:trimmed` link
+ * every cell back (see `BrepInfo`). Points are shared within a face or edge,
+ * not between them.
+ *
+ * ### The side channel
+ *
+ * The overloads taking a `BrepInfo` return the faces, loops, edges and
+ * vertices exactly, and `write_cad_json` with a non-empty `BrepInfo` writes
+ * them back, in the layout of Kratos's own `PrettyPrintJsonString`; a file
+ * meshio++ writes reads back to the same `BrepInfo` and rewrites to the same
+ * bytes. Without one (the registry, a plain write) the writer turns every
+ * `quad` cell into an untrimmed bilinear face and every `line` cell into an
+ * edge, and drops other cells with a warning.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How a B-rep is sampled into a mesh.
+struct CadJsonReadOptions {
+    /// Cells per knot span and direction, 1 to 64; 0 (automatic) keeps one per
+    /// span except on a clipped face, refined to about 16 cells per direction.
+    std::int32_t mSubdivisions = 0;
+    /// Points per knot span a trimming curve is sampled at for the clip, 2 to 4096.
+    std::int32_t mTrimSamples = 16;
+    /// Whether edges with a 3-D curve become line cells.
+    bool mEdges = true;
+    /// Whether trimmed faces are clipped by their loops (false keeps every span).
+    bool mTrim = true;
+};
+
+/// Read a CAD JSON file as its sampled mesh.
+MESHIOPLUSPLUS_API Mesh read_cad_json(const std::string& rPath);
+
+/// Read a CAD JSON file as its sampled mesh and its B-rep.
+/// @throws ReadError on a malformed file or an inconsistent NURBS.
+MESHIOPLUSPLUS_API Mesh read_cad_json(const std::string& rPath, BrepInfo& rInfo,
+                                      const CadJsonReadOptions& rOptions = {});
+
+/// Read only the B-rep of a CAD JSON file (no sampling).
+MESHIOPLUSPLUS_API BrepInfo read_cad_json_info(const std::string& rPath);
+
+/**
+ * @brief Sample a B-rep into a mesh, as `read_cad_json` does.
+ * @throws std::invalid_argument on an option out of range or an inconsistent
+ * `BrepInfo` (an index out of range, a control net that does not match its
+ * knots).
+ */
+MESHIOPLUSPLUS_API Mesh sample_brep(const BrepInfo& rInfo, const CadJsonReadOptions& rOptions = {});
+
+/// Write a mesh as CAD JSON: `quad` cells as bilinear faces, `line` cells as edges.
+MESHIOPLUSPLUS_API void write_cad_json(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief Write CAD JSON from a B-rep; an empty @p rInfo writes @p rMesh as the
+ * one-argument overload does.
+ * @throws WriteError on an inconsistent `BrepInfo` or an unwritable path.
+ */
+MESHIOPLUSPLUS_API void write_cad_json(const std::string& rPath, const Mesh& rMesh,
+                                       const BrepInfo& rInfo);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/cad_json.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/cgns.hpp =====
 /**
  * @file cgns.hpp
@@ -17471,6 +17874,38 @@ MESHIOPLUSPLUS_API Mesh read_hmf(const std::string& rPath);
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/include/meshioplusplus/formats/hmf.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/iges.hpp =====
+/**
+ * @file formats/iges.hpp
+ * @brief IGES (`.igs`, `.iges`) reader, through the optional OpenCASCADE
+ * backend: the twin of `read_step` (formats/step.hpp) for IGES files.
+ *
+ * Read-only. The file's shape is triangulated by `BRepMesh` at
+ * `CadReadOptions::mDeflection` into one `triangle` block with the `cad:*`
+ * cell data of `BrepInfo`; the overload taking a `BrepInfo` also returns the
+ * shape as NURBS faces, trimming loops and edges, which `write_cad_json`
+ * writes as Kratos CAD JSON. Without `-DMESHIOPLUSPLUS_WITH_OCCT=ON` both
+ * throw `Unsupported` naming the flag. See doc/formats/iges.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Read an IGES file as its triangulation.
+/// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
+///         OpenCASCADE cannot read or transfer.
+MESHIOPLUSPLUS_API Mesh read_iges(const std::string& rPath);
+
+/// Read an IGES file as its triangulation and its B-rep.
+MESHIOPLUSPLUS_API Mesh read_iges(const std::string& rPath, BrepInfo& rInfo,
+                                  const CadReadOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/iges.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/ip.hpp =====
 /**
  * @file ip.hpp
@@ -18304,6 +18739,39 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
 MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
                                   const ReadOptions& rOptions = {});
 
+/**
+ * @brief The Kratos CAD JSON geometry that goes with an MDPA deck, or "".
+ *
+ * Kratos keeps IGA geometry (trimmed NURBS faces) in a `*.cad.json` file its
+ * `CadIoModeler` reads, not in the deck. The sidecar is `<stem>.cad.json`
+ * beside the deck, else the `geometry_file_name` of the `CadIoModeler` in a
+ * `ProjectParameters.json` beside it (with `.cad.json` appended when the name
+ * lacks it, as Kratos appends it), relative to the deck's directory; "" when
+ * neither names an existing file.
+ */
+MESHIOPLUSPLUS_API std::string mdpa_cad_json_path(const std::string& rPath);
+
+/**
+ * @brief Read an MDPA deck and the Kratos CAD JSON geometry beside it.
+ *
+ * The deck exactly as `read_mdpa(path, info, options)` reads it, plus the
+ * B-rep of @p rCadJsonPath (or, when it is empty, of `mdpa_cad_json_path`,
+ * none being no error) in @p rBrep. The geometry is not sampled into the mesh.
+ * @throws ReadError as the MDPA and CAD JSON readers do, and when an explicit
+ *         @p rCadJsonPath does not exist
+ */
+MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, BrepInfo& rBrep,
+                                  const ReadOptions& rOptions = {},
+                                  const std::string& rCadJsonPath = {});
+
+/**
+ * @brief Write an MDPA deck and, when @p rBrep holds a B-rep, its CAD JSON
+ * geometry to @p rCadJsonPath (`<stem>.cad.json` beside the deck when empty).
+ */
+MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
+                                   const MdpaInfo& rInfo, const BrepInfo& rBrep,
+                                   const std::string& rCadJsonPath = {});
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mdpa.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/med.hpp =====
@@ -18692,109 +19160,6 @@ MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/medit.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/nurbs.hpp =====
-/**
- * @file nurbs.hpp
- * @brief `NurbsInfo`: the NURBS patches a reader sampled into Lagrange cells,
- * kept beside the `Mesh` (the `GmshInfo`/`MdpaInfo` side-channel pattern).
- *
- * A `Mesh` holds linear and Lagrange polytopes only, so a reader of a NURBS
- * file (MFEM's `MFEM NURBS mesh`, since v16.40.0) evaluates each patch at the
- * nodes of its knot-span elements. The overload that takes a `NurbsInfo` also
- * returns what the sampling drops -- every patch's degrees, knot vectors,
- * control net and weights, the control values of the NURBS fields read with
- * it, the file's patch topology, and the map from each sampled cell back to its
- * patch and knot span -- and a writer that knows NURBS (MFEM's) writes the
- * patches back from it. The shared registry passes none: a plain read drops it
- * and a plain write writes the sampled cells. Python, WASM and the C API's
- * read/write-with-info paths (also Fortran, Julia and R) carry it explicitly.
- *
- * Nothing here is evaluated or checked when the struct is built; the writer
- * validates it. Every index is 0-based. See doc/formats/mfem.md.
- */
-
-// System includes
-#include <cstdint>
-#include <string>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/**
- * @brief One tensor-product NURBS patch of parametric dimension
- * `mDegrees.size()` (1, 2 or 3).
- *
- * The control net has `n0 * n1 * n2` points, `nd = mKnots[d].size() -
- * mDegrees[d] - 1` per direction, listed with direction 0 fastest. The knot
- * vectors run along the patch's own parametric directions (MFEM orients each
- * patch's directions by its first vertex: the edges 0-1, 0-3 and 0-4).
- */
-struct MESHIOPLUSPLUS_API NurbsPatch {
-    /// Polynomial degree per parametric direction.
-    std::vector<std::int32_t> mDegrees;
-    /// The knot vector of each direction (non-decreasing, `n + degree + 1` knots).
-    std::vector<std::vector<double>> mKnots;
-    /// Float64 `(n0 * n1 * n2, space dimension)`: Cartesian control points.
-    NDArray mControlPoints{DType::Float64, {0, 3}};
-    /// Float64 `(n0 * n1 * n2)`: the weight of each control point.
-    NDArray mWeights{DType::Float64, {0}};
-    /// Float64 `(n0 * n1 * n2, components)` per `NurbsInfo::mFieldNames` entry:
-    /// the field's control values (its NURBS degrees of freedom).
-    std::vector<NDArray> mFields;
-};
-
-/**
- * @brief The patch topology of an MFEM NURBS mesh, as its file states it
- * (`mDimension` 0 when the source has none).
- *
- * Patch and boundary vertices are MFEM's topological vertices `0 ..
- * mNumVertices - 1`, which are also the first `mNumVertices` points of the
- * sampled mesh. Boundary rows are in the orientation the reader normalises
- * them to, so a rewrite is idempotent.
- */
-struct MESHIOPLUSPLUS_API NurbsTopology {
-    /// Parametric dimension of the patches (1, 2 or 3); 0 for no topology.
-    std::int32_t mDimension = 0;
-    /// Number of topological vertices (patch corners).
-    std::int64_t mNumVertices = 0;
-    /// Int64 `(patches, 2^dimension)`: each patch's corner vertices, MFEM order.
-    NDArray mPatchVertices{DType::Int64, {0, 0}};
-    /// Int64 `(patches)`: each patch's attribute.
-    NDArray mPatchAttributes{DType::Int64, {0}};
-    /// Int64 `(boundary patches, 2^(dimension - 1))`: their corner vertices.
-    NDArray mBoundaryVertices{DType::Int64, {0, 0}};
-    /// Int64 `(boundary patches)`: each boundary patch's attribute.
-    NDArray mBoundaryAttributes{DType::Int64, {0}};
-    /// Int64 `(edges, 3)`: the `edges` section, `(knot vector, vertex, vertex)`.
-    NDArray mEdges{DType::Int64, {0, 3}};
-};
-
-/**
- * @brief The NURBS description of a sampled mesh: patches, fields, topology
- * and the cell-to-patch map. Empty (`mPatches` empty) for a mesh that is not
- * NURBS.
- */
-struct MESHIOPLUSPLUS_API NurbsInfo {
-    /// The patches, in file order.
-    std::vector<NurbsPatch> mPatches;
-    /// The NURBS fields carried per patch (`NurbsPatch::mFields`), by name.
-    std::vector<std::string> mFieldNames;
-    /// The patch topology the file states.
-    NurbsTopology mTopology;
-    /// Int64 `(element cells)`: the patch of each cell of the first block.
-    NDArray mCellPatch{DType::Int64, {0}};
-    /// Int64 `(element cells, 3)`: each such cell's knot span per direction,
-    /// counted over the spans of nonzero length (0 for an unused direction).
-    NDArray mCellSpan{DType::Int64, {0, 3}};
-    /// Int64 `(boundary cells)`: the boundary patch of each cell after the
-    /// first block, in block order.
-    NDArray mBoundaryCellPatch{DType::Int64, {0}};
-};
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/nurbs.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/mfem.hpp =====
 /**
  * @file mfem.hpp
@@ -20738,10 +21103,20 @@ private:
 /**
  * @file formats/step.hpp
  * @brief STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted
- * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work.
+ * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work;
+ * and, through the optional OpenCASCADE backend, the STEP reader.
  *
- * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.1; see doc/spikes.md),
- * which the core deliberately does not carry.
+ * ### Reading
+ *
+ * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT exception, bring your
+ * own) and throws `Unsupported` naming the flag without it. The file's shape
+ * is triangulated by `BRepMesh` at `CadReadOptions::mDeflection` into one
+ * `triangle` block with the `cad:*` cell data of `BrepInfo`; the overload
+ * taking a `BrepInfo` also returns the shape as NURBS -- every face's surface,
+ * its trimming loops and the edges' curves and topology -- which
+ * `write_cad_json` writes as Kratos CAD JSON. See doc/formats/step.md.
+ *
+ * ### Writing
  *
  * Each surface facet becomes an `ADVANCED_FACE` on a `PLANE`, bounded by an
  * `EDGE_LOOP` of `ORIENTED_EDGE`s over `EDGE_CURVE`s on `LINE`s; an edge two
@@ -20784,6 +21159,15 @@ namespace meshioplusplus {
  *         a degenerate facet, a non-finite coordinate, or no facets at all.
  */
 MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
+
+/// Read a STEP file as its triangulation (see "Reading" above).
+/// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
+///         OpenCASCADE cannot read or transfer.
+MESHIOPLUSPLUS_API Mesh read_step(const std::string& rPath);
+
+/// Read a STEP file as its triangulation and its B-rep.
+MESHIOPLUSPLUS_API Mesh read_step(const std::string& rPath, BrepInfo& rInfo,
+                                  const CadReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/step.hpp =====
@@ -26350,10 +26734,21 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  * ### How the solid is built
  *
  *  - **Patches.** A patch whose fit was accepted, and whose type is in
- *    `mTypes`, becomes one analytic face on its fitted surface. Every other
- *    surface cell (an unfitted patch, a type left out, a cell with no patch)
- *    becomes planar faces, one per facet, as the faceted `step` writer
- *    writes them.
+ *    `mTypes`, becomes one analytic face on its fitted surface. A patch no
+ *    primitive explains becomes, with `mFreeform`, a B-spline face (roadmap
+ *    6.3.2, below). Every other surface cell (a patch neither explains, a
+ *    type left out, a cell with no patch) becomes planar faces, one per
+ *    facet, as the faceted `step` writer writes them.
+ *  - **Freeform faces.** The patch is flattened over its best-fit plane, or,
+ *    when that folds it, unrolled around the axis its normals are most
+ *    perpendicular to (a cylinder of the circle its points fit); a patch
+ *    both fold is left to facets. Its offset from that plane or cylinder is
+ *    resampled on a grid (inside the patch by interpolation over its facets,
+ *    outside it from the nearest boundary point), approximated by a C2
+ *    B-spline of degree `mFreeformDegree` (`GeomAPI_PointsToBSplineSurface`)
+ *    and kept once every patch vertex lies within the tolerance of it, the
+ *    grid doubling up to `mFreeformMaxControl` points per direction. The
+ *    face is then trimmed, sewn and checked like an analytic one.
  *  - **Edges.** Where two patches meet, the mesh edges between them form
  *    chains from one junction (a point three or more patches meet at) to the
  *    next; a closed chain is split in two. A chain between two analytic faces
@@ -26383,8 +26778,11 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  * block (points shared between faces are welded), with cell data
  * `fit_cad:face` (Int64, the B-rep face), `fit_cad:type` (Int64, the face's
  * type: 0 a facet, 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, as
- * `fit:type`) and `fit_cad:patch` (Int64, the `segment:patch` label it was
- * built from, -1 for a facet of a cell with no patch), and the report below.
+ * `fit:type`, and 6 a freeform B-spline) and `fit_cad:patch` (Int64, the
+ * `segment:patch` label it was built from, -1 for a facet of a cell with no
+ * patch), the report below, and the solid as NURBS in `mBrep` (face `i` of
+ * `fit_cad:face` is its face `i`, id `i + 1`), which `write_cad_json` writes
+ * as Kratos CAD JSON.
  * With a non-empty path, the solid is also written as AP214 STEP in
  * millimetres, with the header timestamp pinned so the bytes are
  * reproducible.
@@ -26409,6 +26807,8 @@ inline constexpr const char* kFitCadFaceName = "fit_cad:face";
 inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 /// Cell data (Int64): the `segment:patch` label the face was built from, or -1.
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
+/// `fit_cad:type` of a freeform B-spline face.
+inline constexpr std::int64_t kFitCadBsplineType = 6;
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -26428,6 +26828,12 @@ struct FitCadOptions {
     /// How many times a failed face may be demoted and the solid rebuilt
     /// before every patch is faceted; at least 0.
     std::int64_t mMaxDemotionRounds = 8;
+    /// Whether a patch no primitive explains is tried as a B-spline face.
+    bool mFreeform = true;
+    /// The freeform B-spline's highest degree per direction, 3 to 8.
+    std::int32_t mFreeformDegree = 3;
+    /// The most grid points per direction a freeform fit may sample, 4 to 1024.
+    std::int64_t mFreeformMaxControl = 64;
 };
 
 /// The re-meshed solid and what was built.
@@ -26464,6 +26870,10 @@ struct FitCadResult {
     std::int64_t mNumApproxEdges = 0;
     /// Solids written (one per edge-connected piece of the skin).
     std::int64_t mNumSolids = 0;
+    /// Freeform B-spline faces.
+    std::int64_t mNumBspline = 0;
+    /// The solid as NURBS faces, loops and edges.
+    BrepInfo mBrep;
 };
 
 /**
@@ -34362,6 +34772,122 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
+// ===== begin src/cpp/src/detail/json_value.hpp =====
+/**
+ * @file detail/json_value.hpp
+ * @brief A small JSON document model, parser and writer for the readers and
+ * writers of JSON formats (Kratos CAD JSON today).
+ *
+ * The core's other JSON user, the pipeline parser, links the vendored
+ * nlohmann/json behind `MESHIOPLUSPLUS_WITH_JSON`; a format reader cannot
+ * depend on an optional submodule (the single header, WASM and every build
+ * must read the file), so this one is dependency-free:
+ *
+ *  - **Parsing** is strict RFC 8259 plus line and block comments, which
+ *    Kratos's own `Parameters` accept. Nesting is bounded, numbers go through
+ *    `detail::parse_double` (locale-independent), `\u` escapes (surrogate
+ *    pairs included) become UTF-8, and every malformed input throws
+ *    `ReadError` naming the format and the byte offset.
+ *  - **Objects keep their member order** (a vector of pairs, not a map), so a
+ *    rewrite keeps the file's layout; a duplicate key keeps both, and `Find`
+ *    returns the first.
+ *  - **Writing** is the layout nlohmann's `dump(4)` (and so Kratos's
+ *    `PrettyPrintJsonString`) produces, or compact. A number that was an
+ *    integer lexeme, or is integral and within 2^53, is written as an integer;
+ *    any other as the shortest of `%.15g`, `%.16g` and `%.17g` that reads back
+ *    exactly. The Python twin (`meshioplusplus/_json_text.py`) writes the
+ *    same bytes.
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// An object member, defined below JsonValue (which it holds by value).
+struct JsonMember;
+
+/// One JSON value; a plain aggregate, its members public.
+struct JsonValue {
+    enum class Kind : std::uint8_t { Null, Bool, Number, String, Array, Object };
+
+    Kind mKind = Kind::Null;
+    bool mBool = false;
+    /// The value of a number.
+    double mNumber = 0.0;
+    /// Whether the number was written as an integer that fits an int64.
+    bool mIsInteger = false;
+    /// Its value then.
+    std::int64_t mInteger = 0;
+    /// A string's UTF-8 bytes.
+    std::string mString;
+    /// An array's items.
+    std::vector<JsonValue> mItems;
+    /// An object's members, in file order.
+    std::vector<JsonMember> mMembers;
+
+    bool IsNull() const noexcept { return mKind == Kind::Null; }
+    bool IsBool() const noexcept { return mKind == Kind::Bool; }
+    bool IsNumber() const noexcept { return mKind == Kind::Number; }
+    bool IsString() const noexcept { return mKind == Kind::String; }
+    bool IsArray() const noexcept { return mKind == Kind::Array; }
+    bool IsObject() const noexcept { return mKind == Kind::Object; }
+
+    /// The first member named @p Key of an object, or null.
+    const JsonValue* Find(std::string_view Key) const noexcept;
+
+    static JsonValue Null();
+    static JsonValue Boolean(bool Value);
+    static JsonValue Number(double Value);
+    static JsonValue Integer(std::int64_t Value);
+    static JsonValue String(std::string Value);
+    static JsonValue Array();
+    static JsonValue Object();
+
+    /// Append to an array.
+    JsonValue& Push(JsonValue Value);
+    /// Append a member to an object (no check for an existing key).
+    JsonValue& Add(std::string Key, JsonValue Value);
+};
+
+/// One member of an object: its key and value. A named struct, not a
+/// `std::pair`: clang with libstdc++ cannot complete a vector of pairs holding
+/// the type being defined.
+struct JsonMember {
+    std::string mKey;
+    JsonValue mValue;
+
+    JsonMember(std::string Key, JsonValue Value)
+        : mKey(std::move(Key)), mValue(std::move(Value)) {}
+};
+
+/// Whether two values are equal: same kind, numbers by value, objects member
+/// by member in order.
+bool json_equal(const JsonValue& rA, const JsonValue& rB) noexcept;
+
+/**
+ * @brief Parse a whole JSON text.
+ * @param Text the bytes (a UTF-8 BOM is skipped).
+ * @param pFormat the format name for error messages.
+ * @throws ReadError on malformed input, nesting deeper than 256, or trailing
+ * content.
+ */
+JsonValue parse_json(std::string_view Text, const char* pFormat);
+
+/// The text of @p rValue, `dump(4)`-style when @p Indent > 0, else compact.
+std::string write_json(const JsonValue& rValue, int Indent = 4);
+
+/// Append @p Value's JSON spelling (see the file comment) to @p rOut.
+void append_json_number(std::string& rOut, double Value);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/json_value.hpp =====
 // ===== begin src/cpp/src/detail/keyword_card_view.hpp =====
 #include <cstdint>
 #include <string>
@@ -34487,6 +35013,219 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/lsq_fit.hpp =====
+// ===== begin src/cpp/src/detail/nurbs_eval.hpp =====
+/**
+ * @file detail/nurbs_eval.hpp
+ * @brief Point evaluation of B-spline and NURBS curves and tensor-product
+ * surfaces at arbitrary parameters (The NURBS Book, algorithms A2.1, A2.2,
+ * A3.1/A4.1 and A3.5/A4.3).
+ *
+ * Knot vectors are in the full form, `n + p + 1` knots for `n` control
+ * points. Control nets list direction 0 fastest (Kratos's and MFEM's order),
+ * each point `Dim` doubles. A null weight pointer evaluates the polynomial
+ * B-spline, with no division; otherwise the rational map. The arithmetic is
+ * the order the Python twin (`meshioplusplus/_nurbs_eval.py`) follows, so
+ * the two give the same bits.
+ *
+ * Core-private (not installed). The MFEM reader keeps its own kernel, which
+ * works on MFEM's compressed knot spans.
+ */
+
+// System includes
+#include <cstddef>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// The knot span index `i` (`p <= i <= n - 1`) with `U[i] <= u < U[i+1]`;
+/// the last span for `u >= U[n]`, the first for `u <= U[p]`.
+inline std::size_t nurbs_find_span(int P, const std::vector<double>& rKnots, std::size_t N,
+                                   double U) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t n = N - 1;
+    if (U >= rKnots[n + 1]) {
+        std::size_t s = n;
+        while (s > p && rKnots[s] == rKnots[s + 1])
+            --s;
+        return s;
+    }
+    if (U <= rKnots[p]) {
+        std::size_t s = p;
+        while (s < n && rKnots[s] == rKnots[s + 1])
+            ++s;
+        return s;
+    }
+    std::size_t low = p, high = n + 1, mid = (low + high) / 2;
+    while (U < rKnots[mid] || U >= rKnots[mid + 1]) {
+        if (U < rKnots[mid])
+            high = mid;
+        else
+            low = mid;
+        mid = (low + high) / 2;
+    }
+    return mid;
+}
+
+/// The `p + 1` nonzero basis functions of span `Span` at `U` into `pN`.
+inline void nurbs_basis(std::size_t Span, double U, int P, const std::vector<double>& rKnots,
+                        double* pN) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> left(p + 1), right(p + 1);
+    pN[0] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            const double temp = pN[r] / (right[r + 1] + left[j - r]);
+            pN[r] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        pN[j] = saved;
+    }
+}
+
+/// The spans of nonzero length as `(knot index, knot index + 1)` pairs:
+/// `i` from `p` to `n - 1` with `U[i] < U[i+1]`.
+inline std::vector<std::size_t> nurbs_spans(int P, const std::vector<double>& rKnots,
+                                            std::size_t N) {
+    std::vector<std::size_t> spans;
+    for (std::size_t i = static_cast<std::size_t>(P); i + 1 <= N; ++i)
+        if (rKnots[i] < rKnots[i + 1])
+            spans.push_back(i);
+    return spans;
+}
+
+/// A curve point at `U` in span `Span` (from `nurbs_find_span` or a cell's
+/// own span): `pOut[0 .. Dim)`.
+inline void nurbs_curve_point_in_span(int P, const std::vector<double>& rKnots,
+                                      const double* pCps, const double* pW, std::size_t Dim,
+                                      std::size_t Span, double U, double* pOut) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> nb(p + 1);
+    nurbs_basis(Span, U, P, rKnots, nb.data());
+    for (std::size_t d = 0; d < Dim; ++d)
+        pOut[d] = 0.0;
+    double w = 0.0;
+    for (std::size_t k = 0; k <= p; ++k) {
+        const std::size_t i = Span - p + k;
+        const double c = pW ? nb[k] * pW[i] : nb[k];
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] += c * pCps[i * Dim + d];
+        w += c;
+    }
+    if (pW)
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] /= w;
+}
+
+/// A surface point at `(U, V)` in spans `(SpanU, SpanV)`.
+inline void nurbs_surface_point_in_span(int P, int Q, const std::vector<double>& rKnotsU,
+                                        const std::vector<double>& rKnotsV, const double* pCps,
+                                        const double* pW, std::size_t Nu, std::size_t Dim,
+                                        std::size_t SpanU, std::size_t SpanV, double U, double V,
+                                        double* pOut) {
+    const auto p = static_cast<std::size_t>(P);
+    const auto q = static_cast<std::size_t>(Q);
+    std::vector<double> nu(p + 1), nv(q + 1), temp(Dim + 1);
+    nurbs_basis(SpanU, U, P, rKnotsU, nu.data());
+    nurbs_basis(SpanV, V, Q, rKnotsV, nv.data());
+    for (std::size_t d = 0; d < Dim; ++d)
+        pOut[d] = 0.0;
+    double w = 0.0;
+    for (std::size_t l = 0; l <= q; ++l) {
+        for (std::size_t d = 0; d <= Dim; ++d)
+            temp[d] = 0.0;
+        const std::size_t j = SpanV - q + l;
+        for (std::size_t k = 0; k <= p; ++k) {
+            const std::size_t i = SpanU - p + k;
+            const std::size_t idx = j * Nu + i;
+            const double c = pW ? nu[k] * pW[idx] : nu[k];
+            for (std::size_t d = 0; d < Dim; ++d)
+                temp[d] += c * pCps[idx * Dim + d];
+            temp[Dim] += c;
+        }
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] += nv[l] * temp[d];
+        w += nv[l] * temp[Dim];
+    }
+    if (pW)
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] /= w;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/nurbs_eval.hpp =====
+// ===== begin src/cpp/src/detail/occt_brep.hpp =====
+/**
+ * @file detail/occt_brep.hpp
+ * @brief An OpenCASCADE shape as meshio++ sees it: its faces, loops and edges
+ * as a `BrepInfo` (NURBS throughout) and its triangulation as a `Mesh`. The
+ * STEP and IGES readers and `fit_cad` share it.
+ *
+ * The shape is first converted with `BRepBuilderAPI_NurbsConvert`, which turns
+ * every surface into a `Geom_BSplineSurface` and every parameter curve into a
+ * `Geom2d_BSplineCurve` *consistently*: converting a face's surface alone
+ * reparametrises a cylinder or a sphere and leaves its trimming curves in the
+ * old parameters. Faces get ids `1 .. F` and edges `F + 1 .. F + E` (Kratos
+ * gives every geometry one id space), control points ids from 1, so the
+ * `BrepInfo` writes as CAD JSON Kratos loads.
+ *
+ * Core-private (not installed); compiled only with `MESHIOPLUSPLUS_HAS_OCCT`.
+ */
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
+// System includes
+#include <string>
+
+// External includes (OpenCASCADE)
+#include <TopoDS_Shape.hxx>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The shape a STEP (or, with @p Iges, an IGES) file transfers to.
+/// @throws ReadError when OpenCASCADE cannot read or transfer it.
+TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
+
+/// The shape with every surface and curve as a NURBS.
+TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape);
+
+/// The faces, loops and edges of a NURBS-converted shape.
+BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);
+
+/**
+ * @brief The shape triangulated by `BRepMesh_IncrementalMesh`: one `triangle`
+ * block, points shared between faces welded where they coincide exactly, and
+ * the `cad:*` cell data of `BrepInfo` (`cad:span` from each triangle's centre
+ * in the face's parameters, -1 where the triangulation has none).
+ * @param Deflection the chordal deflection (a length); at most 0 takes 1e-3 of
+ *        the bounding-box diagonal.
+ * @param Angular the angular deflection in radians.
+ */
+Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
+                     double Angular);
+
+/// Detach OpenCASCADE's message printers (it prints to stdout) while alive.
+class OcctQuiet {
+public:
+    OcctQuiet();
+    OcctQuiet(const OcctQuiet&) = delete;
+    OcctQuiet& operator=(const OcctQuiet&) = delete;
+    ~OcctQuiet();
+
+private:
+    struct Impl;
+    Impl* mpImpl;
+};
+
+}  // namespace meshioplusplus::detail
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT
+// ===== end src/cpp/src/detail/occt_brep.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -57475,17 +58214,54 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 }
 #endif
 
-// libhdf5 reads an unfiltered chunk straight from its stored bytes, but sizes the
-// read by the chunk's elements: a record shorter than the chunk makes the read copy
-// past the stored bytes (a heap-buffer-overflow inside HDF5 1.10, found by the
-// fuzzer). Each allocated chunk of an unfiltered dataset is checked before a read.
-// A filtered chunk is decoded into a buffer of the full size and is not affected.
+// libhdf5 1.10 copies a chunk's elements out of the bytes the chunk delivers without
+// checking that there are enough of them: a heap-buffer-overflow inside HDF5 1.10,
+// found by the fuzzer. A chunk delivers its stored record when its filters were
+// skipped, and its inflated output when deflate was applied (a shuffle keeps the
+// size). So each allocated chunk that a read reaches is verified before the read: a
+// chunk stored as its elements must hold the whole chunk, and a deflated one must
+// inflate to exactly the whole chunk. A read of rows [Row0, Row1) reaches only the
+// chunks that hold them; a whole-dataset read passes [0, max). Only shuffle and
+// deflate, in that order, can be verified here, plus a trailing fletcher32 checksum,
+// which libhdf5 checks on the read and whose 4 bytes are left out of the sizes below.
+// Any other pipeline, such as deflate followed by shuffle (which MSC Nastran writes),
+// is read unverified, so the over-read stays possible for it.
 // Listing the chunks needs HDF5 1.10.5; older libraries are not checked.
-void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
+void h5_check_chunks(hid_t dset, const std::string& rName, hsize_t Row0, hsize_t Row1) {
 #if H5_VERSION_GE(1, 10, 5)
     Hid dcpl(H5Dget_create_plist(dset), H5Pclose);
-    if (H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 0)
+    if (H5Pget_layout(dcpl) != H5D_CHUNKED)
         return;
+    const int nfilters = H5Pget_nfilters(dcpl);
+    if (nfilters < 0)
+        throw ReadError("HDF5: could not list the filters of dataset '" + rName + "'");
+    std::vector<H5Z_filter_t> ids(static_cast<std::size_t>(nfilters));
+    for (int f = 0; f < nfilters; ++f) {
+        unsigned flags = 0;
+        unsigned config = 0;
+        std::size_t nelmts = 0;
+        ids[static_cast<std::size_t>(f)] = H5Pget_filter2(dcpl, static_cast<unsigned>(f), &flags,
+                                                          &nelmts, nullptr, 0, nullptr, &config);
+    }
+    // A checksum must come last: libhdf5 verifies it and strips its 4 bytes.
+    const bool checksum = nfilters > 0 && ids.back() == H5Z_FILTER_FLETCHER32;
+    const int inner = checksum ? nfilters - 1 : nfilters;
+    bool deflate = false;
+    for (int f = 0; f < inner; ++f) {
+        const bool last = f == inner - 1;
+        const H5Z_filter_t id = ids[static_cast<std::size_t>(f)];
+        if (id == H5Z_FILTER_SHUFFLE && f == 0)
+            continue;
+        if (id == H5Z_FILTER_DEFLATE && last) {
+            deflate = true;
+            continue;
+        }
+        return;  // not a pipeline this check can verify: the dataset is read unverified
+    }
+#ifndef MESHIOPLUSPLUS_HAS_ZLIB
+    if (deflate)
+        return;  // this build cannot inflate a chunk to verify it: read it unverified
+#endif
     Hid space(H5Dget_space(dset), H5Sclose);
     const int rank = H5Sget_simple_extent_ndims(space);
     if (rank <= 0)
@@ -57505,7 +58281,12 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
     hsize_t nchunks = 0;
     if (H5Dget_num_chunks(dset, space, &nchunks) < 0)
         throw ReadError("HDF5: could not list the chunks of dataset '" + rName + "'");
+    // Mask bits index the whole pipeline: a set bit means that filter was skipped.
+    const unsigned deflate_bit = deflate ? 1u << static_cast<unsigned>(inner - 1) : 0u;
+    const unsigned checksum_bit = checksum ? 1u << static_cast<unsigned>(nfilters - 1) : 0u;
     std::vector<hsize_t> offset(static_cast<std::size_t>(rank));
+    std::vector<std::uint8_t> stored;
+    std::vector<std::uint8_t> inflated;
     for (hsize_t i = 0; i < nchunks; ++i) {
         unsigned mask = 0;
         haddr_t addr = 0;
@@ -57513,10 +58294,52 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
         if (H5Dget_chunk_info(dset, space, i, offset.data(), &mask, &addr, &size) < 0)
             throw ReadError("HDF5: could not read chunk " + std::to_string(i) + " of dataset '" +
                             rName + "'");
-        if (size != expected)
+        // Only the chunks that hold rows [Row0, Row1) are read, so only they are checked.
+        if (offset[0] >= Row1 || offset[0] + chunk[0] <= Row0)
+            continue;
+        // libhdf5 strips the checksum, the 4 bytes at the end of the record, when it was applied.
+        const bool checksummed = checksum && !(mask & checksum_bit);
+        if (checksummed && size < 4)
             throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
-                            "' is stored in " + std::to_string(size) + " bytes, not " +
-                            std::to_string(expected));
+                            "' is shorter than its checksum");
+        const hsize_t payload = checksummed ? size - 4 : size;
+        if (!deflate || (mask & deflate_bit)) {
+            if (payload != expected)
+                throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
+                                "' is stored in " + std::to_string(payload) + " bytes, not " +
+                                std::to_string(expected));
+            continue;
+        }
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        // A zlib stream expands at most 1032 to 1, which bounds the buffer below.
+        if (payload > std::numeric_limits<hsize_t>::max() / 1032 ||
+            expected > payload * 1032 + 1024)
+            throw ReadError("HDF5: a compressed chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "' cannot inflate to " + std::to_string(expected) + " bytes");
+        stored.resize(static_cast<std::size_t>(size));
+        inflated.resize(static_cast<std::size_t>(expected));
+        unsigned read_mask = 0;
+#if H5_VERSION_GE(2, 0, 0)
+        std::size_t got = stored.size();
+        const herr_t rc =
+            H5Dread_chunk2(dset, H5P_DEFAULT, offset.data(), &read_mask, stored.data(), &got);
+        if (rc < 0 || got != stored.size())
+#else
+        const herr_t rc =
+            H5Dread_chunk(dset, H5P_DEFAULT, offset.data(), &read_mask, stored.data());
+        if (rc < 0)
+#endif
+            throw ReadError("HDF5: could not read compressed chunk " + std::to_string(i) +
+                            " of dataset '" + rName + "'");
+        uLongf n = static_cast<uLongf>(inflated.size());
+        const int zrc = uncompress(inflated.data(), &n, stored.data(), static_cast<uLong>(payload));
+        if (zrc != Z_OK || static_cast<std::size_t>(n) != inflated.size())
+            throw ReadError("HDF5: a compressed chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "' does not inflate to " + std::to_string(expected) + " bytes");
+#else
+        throw ReadError("HDF5: dataset '" + rName +
+                        "' is compressed, and this build has no zlib to verify it");
+#endif
     }
 #else
     (void)dset;
@@ -57526,11 +58349,24 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
 
 }  // namespace
 
+void verify_chunks(hid_t dset, const std::string& rName) {
+    h5_check_chunks(dset, rName, 0, std::numeric_limits<hsize_t>::max());
+}
+
+void verify_chunk_rows(hid_t dset, const std::string& rName, std::size_t Row0, std::size_t Count) {
+    if (Count == 0)
+        return;
+    const hsize_t max = std::numeric_limits<hsize_t>::max();
+    const hsize_t row0 = static_cast<hsize_t>(Row0);
+    const hsize_t count = static_cast<hsize_t>(Count);
+    h5_check_chunks(dset, rName, row0, count > max - row0 ? max : row0 + count);
+}
+
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
         throw ReadError("HDF5: missing dataset '" + rName + "'");
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunks(d, rName);
     Hid space(H5Dget_space(d), H5Sclose);
     int ndim = H5Sget_simple_extent_ndims(space);
     std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
@@ -57773,7 +58609,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
 
     std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
     std::vector<hsize_t> count(dims);
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunk_rows(d, rName, Row0, Count);
     start[0] = Row0;
     count[0] = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, start.data(), nullptr, count.data(), nullptr) <
@@ -58064,7 +58900,7 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
     Hid mem_type(H5Tcreate(H5T_COMPOUND, H5Tget_size(elem)), H5Tclose);
     if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, elem) < 0)
         throw ReadError("HDF5: could not build a memory type for '" + rName + "/" + rMember + "'");
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunk_rows(d, rName, Row0, Count);
     const hsize_t start = Row0;
     const hsize_t count = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr) < 0)
@@ -58080,6 +58916,599 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/json_value.cpp =====
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+constexpr int kJsonMaxDepth = 256;
+
+// The offset of the first byte of @p rText that is not well-formed UTF-8
+// (overlong forms, surrogates and code points past U+10FFFF included, as
+// Python's strict decoder rejects them), or npos.
+std::size_t json_invalid_utf8_at(std::string_view Text) noexcept {
+    const auto* p = reinterpret_cast<const unsigned char*>(Text.data());
+    const std::size_t n = Text.size();
+    for (std::size_t i = 0; i < n;) {
+        const unsigned char c = p[i];
+        if (c < 0x80) {
+            ++i;
+            continue;
+        }
+        std::size_t len = 0;
+        unsigned char lo = 0x80, hi = 0xBF;  // the second byte's range
+        if (c >= 0xC2 && c <= 0xDF) {
+            len = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            len = 3;
+            if (c == 0xE0)
+                lo = 0xA0;  // no overlong forms
+            else if (c == 0xED)
+                hi = 0x9F;  // no surrogates
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            len = 4;
+            if (c == 0xF0)
+                lo = 0x90;
+            else if (c == 0xF4)
+                hi = 0x8F;  // nothing past U+10FFFF
+        } else {
+            return i;
+        }
+        if (i + len > n || p[i + 1] < lo || p[i + 1] > hi)
+            return i;
+        for (std::size_t k = 2; k < len; ++k)
+            if (p[i + k] < 0x80 || p[i + k] > 0xBF)
+                return i;
+        i += len;
+    }
+    return std::string_view::npos;
+}
+
+class JsonParser {
+public:
+    JsonParser(std::string_view Text, const char* pFormat) : mText(Text), mpFormat(pFormat) {
+        if (mText.size() >= 3 && static_cast<unsigned char>(mText[0]) == 0xEF &&
+            static_cast<unsigned char>(mText[1]) == 0xBB &&
+            static_cast<unsigned char>(mText[2]) == 0xBF)
+            mPos = 3;
+        // JSON text is UTF-8 (RFC 8259), and a string read from it reaches
+        // callers (Python among them) that must be able to decode it.
+        const std::size_t bad = json_invalid_utf8_at(mText);
+        if (bad != std::string_view::npos) {
+            mPos = bad;
+            Fail("the text is not valid UTF-8");
+        }
+    }
+
+    JsonValue ParseDocument() {
+        SkipSpace();
+        JsonValue v = ParseValue(0);
+        SkipSpace();
+        if (mPos != mText.size())
+            Fail("unexpected content after the document");
+        return v;
+    }
+
+private:
+    [[noreturn]] void Fail(const std::string& rWhat) const {
+        throw ReadError(std::string("meshio++: ") + mpFormat + ": malformed JSON at byte " +
+                        std::to_string(mPos) + ": " + rWhat);
+    }
+
+    bool AtEnd() const noexcept { return mPos >= mText.size(); }
+    char Peek() const noexcept { return AtEnd() ? '\0' : mText[mPos]; }
+
+    void SkipSpace() {
+        while (!AtEnd()) {
+            const char c = mText[mPos];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++mPos;
+            } else if (c == '/' && mPos + 1 < mText.size() && mText[mPos + 1] == '/') {
+                while (!AtEnd() && mText[mPos] != '\n')
+                    ++mPos;
+            } else if (c == '/' && mPos + 1 < mText.size() && mText[mPos + 1] == '*') {
+                const std::size_t close = mText.find("*/", mPos + 2);
+                if (close == std::string_view::npos)
+                    Fail("unterminated comment");
+                mPos = close + 2;
+            } else {
+                break;
+            }
+        }
+    }
+
+    void Expect(std::string_view Word) {
+        if (mText.substr(mPos, Word.size()) != Word)
+            Fail("expected '" + std::string(Word) + "'");
+        mPos += Word.size();
+    }
+
+    JsonValue ParseValue(int Depth) {
+        if (Depth > kJsonMaxDepth)
+            Fail("nesting deeper than " + std::to_string(kJsonMaxDepth));
+        switch (Peek()) {
+            case '{':
+                return ParseObject(Depth);
+            case '[':
+                return ParseArray(Depth);
+            case '"':
+                return JsonValue::String(ParseString());
+            case 't':
+                Expect("true");
+                return JsonValue::Boolean(true);
+            case 'f':
+                Expect("false");
+                return JsonValue::Boolean(false);
+            case 'n':
+                Expect("null");
+                return JsonValue::Null();
+            default:
+                if (Peek() == '-' || (Peek() >= '0' && Peek() <= '9'))
+                    return ParseNumber();
+                Fail(AtEnd() ? "unexpected end of input" : "unexpected character");
+        }
+    }
+
+    JsonValue ParseObject(int Depth) {
+        ++mPos;
+        JsonValue v = JsonValue::Object();
+        SkipSpace();
+        if (Peek() == '}') {
+            ++mPos;
+            return v;
+        }
+        for (;;) {
+            SkipSpace();
+            if (Peek() != '"')
+                Fail("expected a member name");
+            std::string key = ParseString();
+            SkipSpace();
+            if (Peek() != ':')
+                Fail("expected ':'");
+            ++mPos;
+            SkipSpace();
+            JsonValue item = ParseValue(Depth + 1);
+            v.mMembers.emplace_back(std::move(key), std::move(item));
+            SkipSpace();
+            if (Peek() == ',') {
+                ++mPos;
+                continue;
+            }
+            if (Peek() == '}') {
+                ++mPos;
+                return v;
+            }
+            Fail("expected ',' or '}'");
+        }
+    }
+
+    JsonValue ParseArray(int Depth) {
+        ++mPos;
+        JsonValue v = JsonValue::Array();
+        SkipSpace();
+        if (Peek() == ']') {
+            ++mPos;
+            return v;
+        }
+        for (;;) {
+            SkipSpace();
+            v.mItems.push_back(ParseValue(Depth + 1));
+            SkipSpace();
+            if (Peek() == ',') {
+                ++mPos;
+                continue;
+            }
+            if (Peek() == ']') {
+                ++mPos;
+                return v;
+            }
+            Fail("expected ',' or ']'");
+        }
+    }
+
+    unsigned ParseHex4() {
+        if (mPos + 4 > mText.size())
+            Fail("truncated \\u escape");
+        unsigned code = 0;
+        for (int i = 0; i < 4; ++i) {
+            const char c = mText[mPos++];
+            code <<= 4;
+            if (c >= '0' && c <= '9')
+                code |= static_cast<unsigned>(c - '0');
+            else if (c >= 'a' && c <= 'f')
+                code |= static_cast<unsigned>(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F')
+                code |= static_cast<unsigned>(c - 'A' + 10);
+            else
+                Fail("bad \\u escape");
+        }
+        return code;
+    }
+
+    static void AppendUtf8(std::string& rOut, unsigned Code) {
+        if (Code < 0x80) {
+            rOut += static_cast<char>(Code);
+        } else if (Code < 0x800) {
+            rOut += static_cast<char>(0xC0 | (Code >> 6));
+            rOut += static_cast<char>(0x80 | (Code & 0x3F));
+        } else if (Code < 0x10000) {
+            rOut += static_cast<char>(0xE0 | (Code >> 12));
+            rOut += static_cast<char>(0x80 | ((Code >> 6) & 0x3F));
+            rOut += static_cast<char>(0x80 | (Code & 0x3F));
+        } else {
+            rOut += static_cast<char>(0xF0 | (Code >> 18));
+            rOut += static_cast<char>(0x80 | ((Code >> 12) & 0x3F));
+            rOut += static_cast<char>(0x80 | ((Code >> 6) & 0x3F));
+            rOut += static_cast<char>(0x80 | (Code & 0x3F));
+        }
+    }
+
+    std::string ParseString() {
+        ++mPos;  // the opening quote
+        std::string out;
+        for (;;) {
+            if (AtEnd())
+                Fail("unterminated string");
+            const char c = mText[mPos++];
+            if (c == '"')
+                return out;
+            if (static_cast<unsigned char>(c) < 0x20)
+                Fail("control character in a string");
+            if (c != '\\') {
+                out += c;
+                continue;
+            }
+            if (AtEnd())
+                Fail("unterminated escape");
+            const char e = mText[mPos++];
+            switch (e) {
+                case '"':
+                case '\\':
+                case '/':
+                    out += e;
+                    break;
+                case 'b':
+                    out += '\b';
+                    break;
+                case 'f':
+                    out += '\f';
+                    break;
+                case 'n':
+                    out += '\n';
+                    break;
+                case 'r':
+                    out += '\r';
+                    break;
+                case 't':
+                    out += '\t';
+                    break;
+                case 'u': {
+                    unsigned code = ParseHex4();
+                    if (code >= 0xD800 && code <= 0xDBFF) {
+                        if (mPos + 2 > mText.size() || mText[mPos] != '\\' || mText[mPos + 1] != 'u')
+                            Fail("unpaired surrogate");
+                        mPos += 2;
+                        const unsigned low = ParseHex4();
+                        if (low < 0xDC00 || low > 0xDFFF)
+                            Fail("unpaired surrogate");
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                        Fail("unpaired surrogate");
+                    }
+                    AppendUtf8(out, code);
+                    break;
+                }
+                default:
+                    Fail("bad escape");
+            }
+        }
+    }
+
+    JsonValue ParseNumber() {
+        const std::size_t start = mPos;
+        auto digit = [this]() { return !AtEnd() && mText[mPos] >= '0' && mText[mPos] <= '9'; };
+        bool integral = true;
+        if (Peek() == '-')
+            ++mPos;
+        if (Peek() == '0') {
+            ++mPos;
+        } else if (digit()) {
+            while (digit())
+                ++mPos;
+        } else {
+            Fail("bad number");
+        }
+        if (Peek() == '.') {
+            integral = false;
+            ++mPos;
+            if (!digit())
+                Fail("bad number");
+            while (digit())
+                ++mPos;
+        }
+        if (Peek() == 'e' || Peek() == 'E') {
+            integral = false;
+            ++mPos;
+            if (Peek() == '+' || Peek() == '-')
+                ++mPos;
+            if (!digit())
+                Fail("bad number");
+            while (digit())
+                ++mPos;
+        }
+        const std::string lexeme(mText.substr(start, mPos - start));
+        JsonValue v;
+        v.mKind = JsonValue::Kind::Number;
+        v.mNumber = parse_double(lexeme);
+        if (integral) {
+            // Exact int64 when it fits; otherwise the double alone.
+            const bool negative = lexeme[0] == '-';
+            std::uint64_t magnitude = 0;
+            bool fits = true;
+            for (std::size_t i = negative ? 1 : 0; i < lexeme.size(); ++i) {
+                const auto d = static_cast<std::uint64_t>(lexeme[i] - '0');
+                if (magnitude > (std::numeric_limits<std::uint64_t>::max() - d) / 10) {
+                    fits = false;
+                    break;
+                }
+                magnitude = magnitude * 10 + d;
+            }
+            const std::uint64_t limit =
+                negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1
+                         : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+            if (fits && magnitude <= limit && !(negative && magnitude == 0)) {
+                v.mIsInteger = true;
+                v.mInteger = negative ? static_cast<std::int64_t>(0 - magnitude)
+                                      : static_cast<std::int64_t>(magnitude);
+            }
+        }
+        return v;
+    }
+
+    std::string_view mText;
+    const char* mpFormat;
+    std::size_t mPos = 0;
+};
+
+void json_append_string(std::string& rOut, const std::string& rText) {
+    static const char kHex[] = "0123456789abcdef";
+    rOut += '"';
+    for (const char ch : rText) {
+        const auto c = static_cast<unsigned char>(ch);
+        switch (c) {
+            case '"':
+                rOut += "\\\"";
+                break;
+            case '\\':
+                rOut += "\\\\";
+                break;
+            case '\b':
+                rOut += "\\b";
+                break;
+            case '\f':
+                rOut += "\\f";
+                break;
+            case '\n':
+                rOut += "\\n";
+                break;
+            case '\r':
+                rOut += "\\r";
+                break;
+            case '\t':
+                rOut += "\\t";
+                break;
+            default:
+                if (c < 0x20) {
+                    rOut += "\\u00";
+                    rOut += kHex[c >> 4];
+                    rOut += kHex[c & 0xF];
+                } else {
+                    rOut += ch;
+                }
+        }
+    }
+    rOut += '"';
+}
+
+void json_write(std::string& rOut, const JsonValue& rV, int Indent, int Level) {
+    auto newline = [&](int L) {
+        if (Indent <= 0)
+            return;
+        rOut += '\n';
+        rOut.append(static_cast<std::size_t>(Indent) * static_cast<std::size_t>(L), ' ');
+    };
+    switch (rV.mKind) {
+        case JsonValue::Kind::Null:
+            rOut += "null";
+            return;
+        case JsonValue::Kind::Bool:
+            rOut += rV.mBool ? "true" : "false";
+            return;
+        case JsonValue::Kind::Number:
+            if (rV.mIsInteger)
+                rOut += std::to_string(rV.mInteger);
+            else
+                append_json_number(rOut, rV.mNumber);
+            return;
+        case JsonValue::Kind::String:
+            json_append_string(rOut, rV.mString);
+            return;
+        case JsonValue::Kind::Array:
+            if (rV.mItems.empty()) {
+                rOut += "[]";
+                return;
+            }
+            rOut += '[';
+            for (std::size_t i = 0; i < rV.mItems.size(); ++i) {
+                if (i)
+                    rOut += ',';
+                newline(Level + 1);
+                json_write(rOut, rV.mItems[i], Indent, Level + 1);
+            }
+            newline(Level);
+            rOut += ']';
+            return;
+        case JsonValue::Kind::Object:
+            if (rV.mMembers.empty()) {
+                rOut += "{}";
+                return;
+            }
+            rOut += '{';
+            for (std::size_t i = 0; i < rV.mMembers.size(); ++i) {
+                if (i)
+                    rOut += ',';
+                newline(Level + 1);
+                json_append_string(rOut, rV.mMembers[i].mKey);
+                rOut += Indent > 0 ? ": " : ":";
+                json_write(rOut, rV.mMembers[i].mValue, Indent, Level + 1);
+            }
+            newline(Level);
+            rOut += '}';
+            return;
+    }
+}
+
+}  // namespace
+
+const JsonValue* JsonValue::Find(std::string_view Key) const noexcept {
+    for (const auto& m : mMembers)
+        if (m.mKey == Key)
+            return &m.mValue;
+    return nullptr;
+}
+
+JsonValue JsonValue::Null() {
+    return {};
+}
+
+JsonValue JsonValue::Boolean(bool Value) {
+    JsonValue v;
+    v.mKind = Kind::Bool;
+    v.mBool = Value;
+    return v;
+}
+
+JsonValue JsonValue::Number(double Value) {
+    JsonValue v;
+    v.mKind = Kind::Number;
+    v.mNumber = Value;
+    return v;
+}
+
+JsonValue JsonValue::Integer(std::int64_t Value) {
+    JsonValue v;
+    v.mKind = Kind::Number;
+    v.mNumber = static_cast<double>(Value);
+    v.mIsInteger = true;
+    v.mInteger = Value;
+    return v;
+}
+
+JsonValue JsonValue::String(std::string Value) {
+    JsonValue v;
+    v.mKind = Kind::String;
+    v.mString = std::move(Value);
+    return v;
+}
+
+JsonValue JsonValue::Array() {
+    JsonValue v;
+    v.mKind = Kind::Array;
+    return v;
+}
+
+JsonValue JsonValue::Object() {
+    JsonValue v;
+    v.mKind = Kind::Object;
+    return v;
+}
+
+JsonValue& JsonValue::Push(JsonValue Value) {
+    mItems.push_back(std::move(Value));
+    return mItems.back();
+}
+
+JsonValue& JsonValue::Add(std::string Key, JsonValue Value) {
+    mMembers.emplace_back(std::move(Key), std::move(Value));
+    return mMembers.back().mValue;
+}
+
+bool json_equal(const JsonValue& rA, const JsonValue& rB) noexcept {
+    if (rA.mKind != rB.mKind)
+        return false;
+    switch (rA.mKind) {
+        case JsonValue::Kind::Null:
+            return true;
+        case JsonValue::Kind::Bool:
+            return rA.mBool == rB.mBool;
+        case JsonValue::Kind::Number:
+            if (rA.mIsInteger && rB.mIsInteger)
+                return rA.mInteger == rB.mInteger;
+            return rA.mNumber == rB.mNumber;
+        case JsonValue::Kind::String:
+            return rA.mString == rB.mString;
+        case JsonValue::Kind::Array:
+            if (rA.mItems.size() != rB.mItems.size())
+                return false;
+            for (std::size_t i = 0; i < rA.mItems.size(); ++i)
+                if (!json_equal(rA.mItems[i], rB.mItems[i]))
+                    return false;
+            return true;
+        case JsonValue::Kind::Object:
+            if (rA.mMembers.size() != rB.mMembers.size())
+                return false;
+            for (std::size_t i = 0; i < rA.mMembers.size(); ++i)
+                if (rA.mMembers[i].mKey != rB.mMembers[i].mKey ||
+                    !json_equal(rA.mMembers[i].mValue, rB.mMembers[i].mValue))
+                    return false;
+            return true;
+    }
+    return false;
+}
+
+JsonValue parse_json(std::string_view Text, const char* pFormat) {
+    return JsonParser(Text, pFormat).ParseDocument();
+}
+
+std::string write_json(const JsonValue& rValue, int Indent) {
+    std::string out;
+    json_write(out, rValue, Indent, 0);
+    return out;
+}
+
+void append_json_number(std::string& rOut, double Value) {
+    if (!std::isfinite(Value)) {
+        rOut += "null";  // JSON has no spelling for them (nlohmann's choice too)
+        return;
+    }
+    if (Value == std::floor(Value) && std::fabs(Value) < 9007199254740992.0 &&
+        !(Value == 0.0 && std::signbit(Value))) {
+        rOut += std::to_string(static_cast<std::int64_t>(Value));
+        return;
+    }
+    char buf[40];
+    for (const char* fmt : {"%.15g", "%.16g", "%.17g"}) {
+        snprintf_c(buf, sizeof(buf), fmt, Value);
+        if (parse_double(std::string(buf)) == Value)
+            break;
+    }
+    rOut += buf;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/json_value.cpp =====
 // ===== begin src/cpp/src/detail/keyword_card.cpp =====
 #include <cctype>
 #include <cerrno>
@@ -60313,6 +61742,455 @@ std::vector<std::pair<std::string_view, std::string_view>> node_order_keys() {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/node_order.cpp =====
+// ===== begin src/cpp/src/detail/occt_brep.cpp =====
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// External includes (OpenCASCADE)
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
+#include <Geom2dConvert.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <GeomConvert.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <IGESControl_Reader.hxx>
+#include <Poly_Triangulation.hxx>
+#include <STEPControl_Reader.hxx>
+#include <Standard_Failure.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Wire.hxx>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+template <class T>
+using ObHandle = opencascade::handle<T>;
+
+std::vector<double> ob_knots(const TColStd_Array1OfReal& rSeq) {
+    std::vector<double> out;
+    out.reserve(static_cast<std::size_t>(rSeq.Length()));
+    for (int i = rSeq.Lower(); i <= rSeq.Upper(); ++i)
+        out.push_back(rSeq.Value(i));
+    return out;
+}
+
+NDArray ob_ids(std::int64_t& rNext, std::size_t N) {
+    NDArray ids(DType::Int64, {N});
+    for (std::size_t i = 0; i < N; ++i)
+        ids.As<std::int64_t>()[i] = rNext++;
+    return ids;
+}
+
+// A 3-D or 2-D B-spline curve as a BrepCurve (2-D points as (u, v, 0)).
+template <class TCurve>
+BrepCurve ob_curve(const ObHandle<TCurve>& rC, double First, double Last) {
+    BrepCurve out;
+    out.mDegree = rC->Degree();
+    out.mRational = rC->IsRational() == Standard_True;
+    out.mKnots = ob_knots(rC->KnotSequence());
+    const auto n = static_cast<std::size_t>(rC->NbPoles());
+    out.mControlPoints = NDArray(DType::Float64, {n, 3});
+    out.mWeights = NDArray(DType::Float64, {n});
+    double* xyz = out.mControlPoints.As<double>();
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto p = rC->Pole(static_cast<int>(i) + 1);
+        xyz[i * 3] = p.X();
+        xyz[i * 3 + 1] = p.Y();
+        if constexpr (std::is_same_v<TCurve, Geom_BSplineCurve>)
+            xyz[i * 3 + 2] = p.Z();
+        else
+            xyz[i * 3 + 2] = 0.0;
+        out.mWeights.As<double>()[i] = rC->Weight(static_cast<int>(i) + 1);
+    }
+    out.mActiveRange = {First, Last};
+    return out;
+}
+
+// The face's surface as a non-periodic B-spline in the world frame.
+ObHandle<Geom_BSplineSurface> ob_surface(const TopoDS_Face& rFace) {
+    TopLoc_Location loc;
+    ObHandle<Geom_Surface> s = BRep_Tool::Surface(rFace, loc);
+    if (s.IsNull())
+        return {};
+    ObHandle<Geom_BSplineSurface> bs = ObHandle<Geom_BSplineSurface>::DownCast(s);
+    if (bs.IsNull()) {
+        // NurbsConvert leaves nothing else; a surface it could not convert is
+        // approximated over the face's bounds.
+        double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+        BRepTools::UVBounds(rFace, u0, u1, v0, v1);
+        bs = GeomConvert::SurfaceToBSplineSurface(
+            new Geom_RectangularTrimmedSurface(s, u0, u1, v0, v1));
+        if (bs.IsNull())
+            return {};
+    } else {
+        bs = ObHandle<Geom_BSplineSurface>::DownCast(bs->Copy());
+    }
+    if (bs->IsUPeriodic())
+        bs->SetUNotPeriodic();
+    if (bs->IsVPeriodic())
+        bs->SetVNotPeriodic();
+    if (!loc.IsIdentity())
+        bs->Transform(loc.Transformation());
+    return bs;
+}
+
+ObHandle<Geom2d_BSplineCurve> ob_pcurve(const TopoDS_Edge& rEdge, const TopoDS_Face& rFace,
+                                        double& rFirst, double& rLast) {
+    ObHandle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(rEdge, rFace, rFirst, rLast);
+    if (c.IsNull())
+        return {};
+    ObHandle<Geom2d_BSplineCurve> bc = ObHandle<Geom2d_BSplineCurve>::DownCast(c);
+    if (bc.IsNull()) {
+        bc = Geom2dConvert::CurveToBSplineCurve(new Geom2d_TrimmedCurve(c, rFirst, rLast));
+        if (bc.IsNull())
+            return {};
+        rFirst = bc->FirstParameter();
+        rLast = bc->LastParameter();
+    } else {
+        bc = ObHandle<Geom2d_BSplineCurve>::DownCast(bc->Copy());
+    }
+    if (bc->IsPeriodic())
+        bc->SetNotPeriodic();
+    return bc;
+}
+
+ObHandle<Geom_BSplineCurve> ob_edge_curve(const TopoDS_Edge& rEdge, double& rFirst,
+                                          double& rLast) {
+    if (BRep_Tool::Degenerated(rEdge))
+        return {};
+    TopLoc_Location loc;
+    ObHandle<Geom_Curve> c = BRep_Tool::Curve(rEdge, loc, rFirst, rLast);
+    if (c.IsNull())
+        return {};
+    ObHandle<Geom_BSplineCurve> bc = ObHandle<Geom_BSplineCurve>::DownCast(c);
+    if (bc.IsNull()) {
+        bc = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(c, rFirst, rLast));
+        if (bc.IsNull())
+            return {};
+        rFirst = bc->FirstParameter();
+        rLast = bc->LastParameter();
+    } else {
+        bc = ObHandle<Geom_BSplineCurve>::DownCast(bc->Copy());
+    }
+    if (bc->IsPeriodic())
+        bc->SetNotPeriodic();
+    if (!loc.IsIdentity())
+        bc->Transform(loc.Transformation());
+    return bc;
+}
+
+// The ordinal, among the spans of nonzero length, of the span holding U.
+std::int64_t ob_span_ordinal(int P, const std::vector<double>& rKnots, double U) {
+    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
+    const std::size_t span = nurbs_find_span(P, rKnots, n, U);
+    const std::vector<std::size_t> spans = nurbs_spans(P, rKnots, n);
+    return static_cast<std::int64_t>(std::lower_bound(spans.begin(), spans.end(), span) -
+                                     spans.begin());
+}
+
+}  // namespace
+
+struct OcctQuiet::Impl {
+    ObHandle<Message_Messenger> mMessenger;
+    Message_SequenceOfPrinters mSaved;
+};
+
+OcctQuiet::OcctQuiet() : mpImpl(new Impl) {
+    mpImpl->mMessenger = Message::DefaultMessenger();
+    if (!mpImpl->mMessenger.IsNull()) {
+        mpImpl->mSaved = mpImpl->mMessenger->Printers();
+        mpImpl->mMessenger->ChangePrinters().Clear();
+    }
+}
+
+OcctQuiet::~OcctQuiet() {
+    if (!mpImpl->mMessenger.IsNull())
+        mpImpl->mMessenger->ChangePrinters() = mpImpl->mSaved;
+    delete mpImpl;
+}
+
+TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat) {
+    const std::string prefix = std::string("meshio++: ") + pFormat + ": ";
+    try {
+        TopoDS_Shape shape;
+        if (Iges) {
+            IGESControl_Reader reader;
+            if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
+                throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
+            reader.TransferRoots();
+            shape = reader.OneShape();
+        } else {
+            STEPControl_Reader reader;
+            if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
+                throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
+            reader.TransferRoots();
+            shape = reader.OneShape();
+        }
+        if (shape.IsNull())
+            throw ReadError(prefix + "'" + rPath + "' holds no shape OpenCASCADE can transfer");
+        return shape;
+    } catch (const Standard_Failure& rErr) {
+        throw ReadError(prefix + "OpenCASCADE failed reading '" + rPath +
+                        "': " + rErr.GetMessageString());
+    }
+}
+
+TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape) {
+    BRepBuilderAPI_NurbsConvert convert(rShape, Standard_True);
+    return convert.IsDone() ? convert.Shape() : rShape;
+}
+
+BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
+    BrepInfo info;
+    info.mExtra = "{\"version_number\":1}";
+    TopTools_IndexedMapOfShape faces, edges;
+    TopExp::MapShapes(rNurbs, TopAbs_FACE, faces);
+    TopExp::MapShapes(rNurbs, TopAbs_EDGE, edges);
+    const auto nf = static_cast<std::int64_t>(faces.Extent());
+    const auto ne = static_cast<std::int64_t>(edges.Extent());
+    std::vector<std::vector<BrepRef> > edge_refs(static_cast<std::size_t>(ne));
+    std::int64_t next_id = 1;
+    Brep brep;
+    brep.mId = nf + ne + 1;
+    for (int fi = 1; fi <= faces.Extent(); ++fi) {
+        const TopoDS_Face face = TopoDS::Face(faces(fi));
+        const ObHandle<Geom_BSplineSurface> bs = ob_surface(face);
+        if (bs.IsNull())
+            continue;
+        NurbsPatch patch;
+        patch.mDegrees = {bs->UDegree(), bs->VDegree()};
+        patch.mKnots = {ob_knots(bs->UKnotSequence()), ob_knots(bs->VKnotSequence())};
+        const auto nu = static_cast<std::size_t>(bs->NbUPoles());
+        const auto nv = static_cast<std::size_t>(bs->NbVPoles());
+        patch.mControlPoints = NDArray(DType::Float64, {nu * nv, 3});
+        patch.mWeights = NDArray(DType::Float64, {nu * nv});
+        for (std::size_t j = 0; j < nv; ++j)
+            for (std::size_t i = 0; i < nu; ++i) {
+                const gp_Pnt p = bs->Pole(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
+                const std::size_t k = j * nu + i;
+                patch.mControlPoints.As<double>()[k * 3] = p.X();
+                patch.mControlPoints.As<double>()[k * 3 + 1] = p.Y();
+                patch.mControlPoints.As<double>()[k * 3 + 2] = p.Z();
+                patch.mWeights.As<double>()[k] =
+                    bs->Weight(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
+            }
+        BrepFace f;
+        f.mId = fi;
+        f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
+        f.mSwappedNormal = face.Orientation() == TopAbs_REVERSED;
+        f.mRational = bs->IsURational() || bs->IsVRational();
+        f.mControlPointIds = ob_ids(next_id, nu * nv);
+        // Loops in the surface's own orientation: the outer one first.
+        const TopoDS_Face fwd = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
+        const TopoDS_Wire outer = BRepTools::OuterWire(fwd);
+        std::vector<TopoDS_Wire> wires;
+        if (!outer.IsNull())
+            wires.push_back(outer);
+        for (TopExp_Explorer ex(fwd, TopAbs_WIRE); ex.More(); ex.Next())
+            if (!ex.Current().IsSame(outer))
+                wires.push_back(TopoDS::Wire(ex.Current()));
+        std::int64_t trim_index = 0;
+        for (const TopoDS_Wire& w : wires) {
+            BrepLoop loop;
+            loop.mType = w.IsSame(outer) ? "outer" : "inner";
+            for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
+                const TopoDS_Edge& e = we.Current();
+                double a = 0.0, b = 0.0;
+                const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b);
+                if (pc.IsNull())
+                    continue;
+                BrepTrim t;
+                t.mTrimIndex = trim_index++;
+                t.mDirection = e.Orientation() != TopAbs_REVERSED;
+                t.mCurve = ob_curve(pc, a, b);
+                const int ei = edges.FindIndex(e);
+                if (ei > 0) {
+                    BrepRef r;
+                    r.mId = f.mId;
+                    r.mTrimIndex = t.mTrimIndex;
+                    // Edge and trim share their parameter in OpenCASCADE.
+                    r.mRelativeDirection = 1;
+                    edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
+                }
+                loop.mTrims.push_back(std::move(t));
+            }
+            if (!loop.mTrims.empty())
+                f.mLoops.push_back(std::move(loop));
+        }
+        f.mTrimmed = !f.mLoops.empty();
+        info.mPatches.push_back(std::move(patch));
+        brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
+        info.mFaces.push_back(std::move(f));
+    }
+    for (int ei = 1; ei <= edges.Extent(); ++ei) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges(ei));
+        BrepEdge e;
+        e.mId = nf + ei;
+        double a = 0.0, b = 0.0;
+        const ObHandle<Geom_BSplineCurve> c = ob_edge_curve(edge, a, b);
+        if (!c.IsNull()) {
+            e.mHasCurve = true;
+            e.mCurve = ob_curve(c, a, b);
+            e.mCurve.mIds = ob_ids(next_id, e.mCurve.mWeights.Size());
+        }
+        e.mTopology = std::move(edge_refs[static_cast<std::size_t>(ei - 1)]);
+        brep.mEdges.push_back(static_cast<std::int64_t>(info.mEdges.size()));
+        info.mEdges.push_back(std::move(e));
+    }
+    info.mBreps.push_back(std::move(brep));
+    return info;
+}
+
+Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
+                     double Angular) {
+    double deflection = Deflection;
+    if (!(deflection > 0.0)) {
+        Bnd_Box box;
+        BRepBndLib::Add(rNurbs, box);
+        double x0 = 0.0, y0 = 0.0, z0 = 0.0, x1 = 0.0, y1 = 0.0, z1 = 0.0;
+        if (!box.IsVoid())
+            box.Get(x0, y0, z0, x1, y1, z1);
+        const double diag = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0) +
+                                      (z1 - z0) * (z1 - z0));
+        deflection = diag > 0.0 ? 1e-3 * diag : 1e-3;
+    }
+    BRepMesh_IncrementalMesh mesher(rNurbs, deflection, Standard_False, Angular, Standard_False);
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(rNurbs, TopAbs_FACE, faces);
+    // Faces by id: occt_brep_info numbers them by the same map.
+    std::unordered_map<std::int64_t, std::size_t> face_of_id;
+    for (std::size_t i = 0; i < rInfo.mFaces.size(); ++i)
+        face_of_id.emplace(rInfo.mFaces[i].mId, i);
+
+    struct Key {
+        std::array<std::uint64_t, 3> mBits;
+        bool operator==(const Key& rO) const { return mBits == rO.mBits; }
+    };
+    struct KeyHash {
+        std::size_t operator()(const Key& rK) const {
+            std::uint64_t h = 1469598103934665603ull;
+            for (std::uint64_t b : rK.mBits)
+                h = (h ^ b) * 1099511628211ull;
+            return static_cast<std::size_t>(h);
+        }
+    };
+    std::unordered_map<Key, std::int64_t, KeyHash> id;
+    std::vector<double> xyz;
+    std::vector<std::int64_t> tris, index, ids, span;
+    for (int fi = 1; fi <= faces.Extent(); ++fi) {
+        const TopoDS_Face face = TopoDS::Face(faces(fi));
+        TopLoc_Location loc;
+        const ObHandle<Poly_Triangulation> tri = BRep_Tool::Triangulation(face, loc);
+        if (tri.IsNull())
+            continue;
+        auto fit = face_of_id.find(fi);
+        const BrepFace* pFace = fit == face_of_id.end() ? nullptr : &rInfo.mFaces[fit->second];
+        const NurbsPatch* pPatch =
+            pFace ? &rInfo.mPatches[static_cast<std::size_t>(pFace->mPatch)] : nullptr;
+        const gp_Trsf trsf = loc.Transformation();
+        std::vector<std::int64_t> local(static_cast<std::size_t>(tri->NbNodes()) + 1, -1);
+        for (int i = 1; i <= tri->NbNodes(); ++i) {
+            const gp_Pnt p = tri->Node(i).Transformed(trsf);
+            const double c[3] = {p.X() + 0.0, p.Y() + 0.0, p.Z() + 0.0};
+            Key k;
+            for (int j = 0; j < 3; ++j)
+                std::memcpy(&k.mBits[static_cast<std::size_t>(j)], &c[j], sizeof(double));
+            auto ins = id.emplace(k, static_cast<std::int64_t>(xyz.size() / 3));
+            if (ins.second)
+                xyz.insert(xyz.end(), c, c + 3);
+            local[static_cast<std::size_t>(i)] = ins.first->second;
+        }
+        const bool reversed = face.Orientation() == TopAbs_REVERSED;
+        for (int t = 1; t <= tri->NbTriangles(); ++t) {
+            int a = 0, b = 0, c = 0;
+            tri->Triangle(t).Get(a, b, c);
+            if (reversed)
+                std::swap(b, c);
+            const std::int64_t ia = local[static_cast<std::size_t>(a)];
+            const std::int64_t ib = local[static_cast<std::size_t>(b)];
+            const std::int64_t ic = local[static_cast<std::size_t>(c)];
+            if (ia == ib || ib == ic || ia == ic)
+                continue;
+            tris.insert(tris.end(), {ia, ib, ic});
+            index.push_back(pFace ? static_cast<std::int64_t>(fit->second) : -1);
+            ids.push_back(pFace ? pFace->mId : -1);
+            std::int64_t su = -1, sv = -1;
+            if (pPatch && tri->HasUVNodes()) {
+                const gp_Pnt2d uv0 = tri->UVNode(a), uv1 = tri->UVNode(b), uv2 = tri->UVNode(c);
+                const double u = (uv0.X() + uv1.X() + uv2.X()) / 3.0;
+                const double v = (uv0.Y() + uv1.Y() + uv2.Y()) / 3.0;
+                su = ob_span_ordinal(pPatch->mDegrees[0], pPatch->mKnots[0], u);
+                sv = ob_span_ordinal(pPatch->mDegrees[1], pPatch->mKnots[1], v);
+            }
+            span.insert(span.end(), {su, sv});
+        }
+    }
+    Mesh mesh;
+    const std::size_t np = xyz.size() / 3, nt = tris.size() / 3;
+    NDArray pts(DType::Float64, {np, 3});
+    std::copy(xyz.begin(), xyz.end(), pts.As<double>());
+    mesh.AssignPoints(std::move(pts));
+    if (nt == 0)
+        return mesh;
+    NDArray conn(DType::Int64, {nt, 3});
+    std::copy(tris.begin(), tris.end(), conn.As<std::int64_t>());
+    mesh.AddCellBlock("triangle", std::move(conn));
+    auto column = [nt](const std::vector<std::int64_t>& rV, std::size_t Width) {
+        NDArray a(DType::Int64, Width == 1 ? std::vector<std::size_t>{nt}
+                                           : std::vector<std::size_t>{nt, Width});
+        std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(a));
+        return blocks;
+    };
+    mesh.AddCellData("cad:id", column(ids, 1));
+    mesh.AddCellData("cad:index", column(index, 1));
+    mesh.AddCellData("cad:kind", column(std::vector<std::int64_t>(nt, 0), 1));
+    mesh.AddCellData("cad:span", column(span, 2));
+    mesh.AddCellData("cad:trimmed", column(std::vector<std::int64_t>(nt, 0), 1));
+    return mesh;
+}
+
+}  // namespace meshioplusplus::detail
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT
+// ===== end src/cpp/src/detail/occt_brep.cpp =====
 // ===== begin src/cpp/src/detail/png_write.cpp =====
 #include <algorithm>
 #include <array>
@@ -74103,6 +75981,1427 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/avsucd.cpp =====
+// ===== begin src/cpp/src/formats/cad_json.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+using detail::JsonValue;
+
+constexpr const char* kCjFormat = "cad_json";
+constexpr int kCjMaxDegree = 32;
+constexpr double kCjCorner = 0.999999;
+// Automatic subdivision: a clipped face gets about this many cells per direction.
+constexpr std::size_t kCjAutoCells = 16;
+
+// ---------------------------------------------------------------------------
+// Reading: JSON -> BrepInfo
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void cj_fail(const std::string& rWhat) {
+    throw ReadError(std::string("meshio++: cad_json: ") + rWhat);
+}
+
+double cj_number(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsNumber() || !std::isfinite(rV.mNumber))
+        cj_fail(rWhat + " is not a finite number");
+    return rV.mNumber;
+}
+
+std::int64_t cj_integer(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsNumber())
+        cj_fail(rWhat + " is not a number");
+    if (rV.mIsInteger)
+        return rV.mInteger;
+    const double x = rV.mNumber;
+    if (!std::isfinite(x) || x != std::floor(x) || std::fabs(x) > 9007199254740992.0)
+        cj_fail(rWhat + " is not an integer");
+    return static_cast<std::int64_t>(x);
+}
+
+bool cj_bool(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsBool())
+        cj_fail(rWhat + " is not a boolean");
+    return rV.mBool;
+}
+
+const JsonValue& cj_array(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsArray())
+        cj_fail(rWhat + " is not an array");
+    return rV;
+}
+
+const JsonValue& cj_object(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsObject())
+        cj_fail(rWhat + " is not an object");
+    return rV;
+}
+
+// The members of @p rObj outside @p rKnown, as compact object text ("" for none).
+std::string cj_extra(const JsonValue& rObj, std::initializer_list<std::string_view> Known) {
+    JsonValue extra = JsonValue::Object();
+    for (const auto& m : rObj.mMembers) {
+        bool known = false;
+        for (std::string_view k : Known)
+            if (m.mKey == k) {
+                known = true;
+                break;
+            }
+        if (!known)
+            extra.mMembers.push_back(m);
+    }
+    return extra.mMembers.empty() ? std::string() : detail::write_json(extra, 0);
+}
+
+// `brep_id` / `brep_name`.
+void cj_identity(const JsonValue& rObj, const std::string& rWhat, std::int64_t& rId,
+                 std::string& rName) {
+    rId = -1;
+    rName.clear();
+    if (const JsonValue* id = rObj.Find("brep_id")) {
+        rId = cj_integer(*id, rWhat + " brep_id");
+        if (rId < 0)
+            cj_fail(rWhat + " brep_id is negative");
+    }
+    if (const JsonValue* name = rObj.Find("brep_name")) {
+        if (!name->IsString())
+            cj_fail(rWhat + " brep_name is not a string");
+        rName = name->mString;
+    }
+}
+
+std::vector<double> cj_vector(const JsonValue& rV, const std::string& rWhat) {
+    cj_array(rV, rWhat);
+    std::vector<double> out;
+    out.reserve(rV.mItems.size());
+    for (std::size_t i = 0; i < rV.mItems.size(); ++i)
+        out.push_back(cj_number(rV.mItems[i], rWhat + "[" + std::to_string(i) + "]"));
+    return out;
+}
+
+void cj_check_knots(const std::vector<double>& rKnots, const std::string& rWhat) {
+    for (std::size_t i = 1; i < rKnots.size(); ++i)
+        if (rKnots[i] < rKnots[i - 1])
+            cj_fail(rWhat + " decreases at entry " + std::to_string(i));
+}
+
+// `[[id, [x, y, z, w]], ...]` or `[[x, y, z, w], ...]`.
+void cj_control_points(const JsonValue& rV, const std::string& rWhat, NDArray& rXyz,
+                       NDArray& rWeights, NDArray& rIds) {
+    cj_array(rV, rWhat);
+    const std::size_t n = rV.mItems.size();
+    rXyz = NDArray(DType::Float64, {n, 3});
+    rWeights = NDArray(DType::Float64, {n});
+    int form = -1;  // 1 with ids, 0 without
+    std::vector<std::int64_t> ids;
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::string what = rWhat + "[" + std::to_string(i) + "]";
+        const JsonValue& cp = cj_array(rV.mItems[i], what);
+        const JsonValue* coords = nullptr;
+        int this_form;
+        if (cp.mItems.size() == 2 && cp.mItems[1].IsArray()) {
+            this_form = 1;
+            ids.push_back(cj_integer(cp.mItems[0], what + " id"));
+            coords = &cp.mItems[1];
+        } else {
+            this_form = 0;
+            coords = &cp;
+            if (cp.mItems.size() == 1 && cp.mItems[0].IsArray())
+                coords = &cp.mItems[0];
+        }
+        if (form >= 0 && this_form != form)
+            cj_fail(rWhat + " mixes control points with and without ids");
+        form = this_form;
+        if (coords->mItems.size() != 4)
+            cj_fail(what + " needs [x, y, z, weight]");
+        for (std::size_t d = 0; d < 3; ++d)
+            rXyz.As<double>()[i * 3 + d] = cj_number(coords->mItems[d], what);
+        rWeights.As<double>()[i] = cj_number(coords->mItems[3], what + " weight");
+    }
+    rIds = NDArray(DType::Int64, {ids.size()});
+    std::copy(ids.begin(), ids.end(), rIds.As<std::int64_t>());
+}
+
+// A full knot vector from one in Kratos's reduced (n + p - 1) or the full form.
+void cj_fit_knots(std::vector<double>& rKnots, bool Reduced) {
+    if (!Reduced)
+        return;
+    std::vector<double> full;
+    full.reserve(rKnots.size() + 2);
+    full.push_back(rKnots.front());
+    full.insert(full.end(), rKnots.begin(), rKnots.end());
+    full.push_back(rKnots.back());
+    rKnots = std::move(full);
+}
+
+std::int32_t cj_degree(const JsonValue& rV, const std::string& rWhat) {
+    const std::int64_t p = cj_integer(rV, rWhat);
+    if (p < 1 || p > kCjMaxDegree)
+        cj_fail(rWhat + " " + std::to_string(p) + " is outside 1.." + std::to_string(kCjMaxDegree));
+    return static_cast<std::int32_t>(p);
+}
+
+void cj_check_weights(const NDArray& rW, bool Rational, const std::string& rWhat) {
+    if (!Rational)
+        return;
+    for (std::size_t i = 0; i < rW.Size(); ++i)
+        if (!(rW.As<double>()[i] > 0.0))
+            cj_fail(rWhat + " has a weight that is not positive");
+}
+
+BrepCurve cj_curve(const JsonValue& rObj, const std::string& rWhat) {
+    cj_object(rObj, rWhat);
+    BrepCurve c;
+    if (const JsonValue* r = rObj.Find("is_rational"))
+        c.mRational = cj_bool(*r, rWhat + " is_rational");
+    const JsonValue* deg = rObj.Find("degree");
+    const JsonValue* knots = rObj.Find("knot_vector");
+    const JsonValue* cps = rObj.Find("control_points");
+    if (!deg || !knots || !cps)
+        cj_fail(rWhat + " needs degree, knot_vector and control_points");
+    c.mDegree = cj_degree(*deg, rWhat + " degree");
+    c.mKnots = cj_vector(*knots, rWhat + " knot_vector");
+    cj_control_points(*cps, rWhat + " control_points", c.mControlPoints, c.mWeights, c.mIds);
+    const std::size_t n = c.mWeights.Size();
+    const std::size_t p = static_cast<std::size_t>(c.mDegree);
+    if (n < p + 1)
+        cj_fail(rWhat + " has fewer than degree + 1 control points");
+    const std::size_t k = c.mKnots.size();
+    if (k + 1 == n + p)
+        c.mReducedKnots = true;
+    else if (k != n + p + 1)
+        cj_fail(rWhat + " has " + std::to_string(k) + " knots for " + std::to_string(n) +
+                " control points of degree " + std::to_string(p));
+    cj_check_knots(c.mKnots, rWhat + " knot_vector");
+    cj_fit_knots(c.mKnots, c.mReducedKnots);
+    cj_check_weights(c.mWeights, c.mRational, rWhat);
+    if (const JsonValue* range = rObj.Find("active_range")) {
+        c.mActiveRange = cj_vector(*range, rWhat + " active_range");
+        if (c.mActiveRange.size() != 2)
+            cj_fail(rWhat + " active_range needs two values");
+    }
+    c.mExtra = cj_extra(rObj, {"is_rational", "degree", "knot_vector", "active_range",
+                               "control_points"});
+    return c;
+}
+
+BrepTrim cj_trim(const JsonValue& rObj, const std::string& rWhat) {
+    cj_object(rObj, rWhat);
+    BrepTrim t;
+    if (const JsonValue* idx = rObj.Find("trim_index")) {
+        t.mTrimIndex = cj_integer(*idx, rWhat + " trim_index");
+        if (t.mTrimIndex < 0)
+            cj_fail(rWhat + " trim_index is negative");
+    }
+    if (const JsonValue* dir = rObj.Find("curve_direction"))
+        t.mDirection = cj_bool(*dir, rWhat + " curve_direction");
+    const JsonValue* curve = rObj.Find("parameter_curve");
+    if (!curve)
+        cj_fail(rWhat + " has no parameter_curve");
+    t.mCurve = cj_curve(*curve, rWhat + " parameter_curve");
+    t.mExtra = cj_extra(rObj, {"trim_index", "curve_direction", "parameter_curve"});
+    return t;
+}
+
+BrepRef cj_ref(const JsonValue& rObj, const std::string& rWhat) {
+    cj_object(rObj, rWhat);
+    BrepRef r;
+    cj_identity(rObj, rWhat, r.mId, r.mName);
+    if (const JsonValue* idx = rObj.Find("trim_index")) {
+        r.mTrimIndex = cj_integer(*idx, rWhat + " trim_index");
+        if (r.mTrimIndex < 0)
+            cj_fail(rWhat + " trim_index is negative");
+    }
+    if (const JsonValue* dir = rObj.Find("relative_direction"))
+        r.mRelativeDirection = cj_bool(*dir, rWhat + " relative_direction") ? 1 : 0;
+    if (const JsonValue* lc = rObj.Find("local_coordinates"))
+        r.mLocalCoordinates = cj_vector(*lc, rWhat + " local_coordinates");
+    r.mExtra = cj_extra(rObj, {"brep_id", "brep_name", "trim_index", "relative_direction",
+                               "local_coordinates"});
+    return r;
+}
+
+std::vector<BrepRef> cj_topology(const JsonValue& rObj, const std::string& rWhat) {
+    std::vector<BrepRef> out;
+    if (const JsonValue* topo = rObj.Find("topology")) {
+        cj_array(*topo, rWhat + " topology");
+        for (std::size_t i = 0; i < topo->mItems.size(); ++i)
+            out.push_back(cj_ref(topo->mItems[i], rWhat + " topology[" + std::to_string(i) + "]"));
+    }
+    return out;
+}
+
+void cj_face(const JsonValue& rObj, const std::string& rWhat, BrepInfo& rInfo) {
+    cj_object(rObj, rWhat);
+    BrepFace f;
+    cj_identity(rObj, rWhat, f.mId, f.mName);
+    if (const JsonValue* sw = rObj.Find("swapped_surface_normal"))
+        f.mSwappedNormal = cj_bool(*sw, rWhat + " swapped_surface_normal");
+    const JsonValue* surface = rObj.Find("surface");
+    if (!surface)
+        cj_fail(rWhat + " has no surface");
+    const std::string sw = rWhat + " surface";
+    cj_object(*surface, sw);
+    if (const JsonValue* t = surface->Find("is_trimmed"))
+        f.mTrimmed = cj_bool(*t, sw + " is_trimmed");
+    if (const JsonValue* r = surface->Find("is_rational"))
+        f.mRational = cj_bool(*r, sw + " is_rational");
+    const JsonValue* degs = surface->Find("degrees");
+    const JsonValue* knots = surface->Find("knot_vectors");
+    const JsonValue* cps = surface->Find("control_points");
+    if (!degs || !knots || !cps)
+        cj_fail(sw + " needs degrees, knot_vectors and control_points");
+    cj_array(*degs, sw + " degrees");
+    cj_array(*knots, sw + " knot_vectors");
+    if (degs->mItems.size() != 2 || knots->mItems.size() != 2)
+        cj_fail(sw + " needs two degrees and two knot vectors");
+    NurbsPatch patch;
+    for (std::size_t d = 0; d < 2; ++d) {
+        patch.mDegrees.push_back(cj_degree(degs->mItems[d], sw + " degree"));
+        patch.mKnots.push_back(cj_vector(knots->mItems[d], sw + " knot vector"));
+        cj_check_knots(patch.mKnots.back(), sw + " knot vector");
+    }
+    cj_control_points(*cps, sw + " control_points", patch.mControlPoints, patch.mWeights,
+                      f.mControlPointIds);
+    const std::size_t n = patch.mWeights.Size();
+    const std::size_t p = static_cast<std::size_t>(patch.mDegrees[0]);
+    const std::size_t q = static_cast<std::size_t>(patch.mDegrees[1]);
+    const std::size_t ku = patch.mKnots[0].size(), kv = patch.mKnots[1].size();
+    // Kratos's own test (NurbsSurfaceGeometry::CheckAndFitKnotVectors): the
+    // reduced form first, then the full one.
+    if (ku + 1 > p && kv + 1 > q && (ku + 1 - p) * (kv + 1 - q) == n)
+        f.mReducedKnots = true;
+    else if (!(ku > p + 1 && kv > q + 1 && (ku - p - 1) * (kv - q - 1) == n))
+        cj_fail(sw + ": " + std::to_string(n) + " control points do not match knot vectors of " +
+                std::to_string(ku) + " and " + std::to_string(kv) + " knots at degrees " +
+                std::to_string(p) + ", " + std::to_string(q));
+    for (auto& k : patch.mKnots)
+        cj_fit_knots(k, f.mReducedKnots);
+    if (patch.mKnots[0].size() - p - 1 < p + 1 || patch.mKnots[1].size() - q - 1 < q + 1)
+        cj_fail(sw + " has fewer than degree + 1 control points in a direction");
+    cj_check_weights(patch.mWeights, f.mRational, sw);
+    f.mSurfaceExtra = cj_extra(*surface, {"is_trimmed", "is_rational", "degrees",
+                                          "knot_vectors", "control_points"});
+    if (const JsonValue* loops = rObj.Find("boundary_loops")) {
+        cj_array(*loops, rWhat + " boundary_loops");
+        for (std::size_t l = 0; l < loops->mItems.size(); ++l) {
+            const std::string lw = rWhat + " boundary_loops[" + std::to_string(l) + "]";
+            const JsonValue& lo = cj_object(loops->mItems[l], lw);
+            BrepLoop loop;
+            if (const JsonValue* t = lo.Find("loop_type")) {
+                if (!t->IsString())
+                    cj_fail(lw + " loop_type is not a string");
+                loop.mType = t->mString;
+            } else {
+                cj_fail(lw + " has no loop_type");
+            }
+            const JsonValue* trims = lo.Find("trimming_curves");
+            if (!trims)
+                cj_fail(lw + " has no trimming_curves");
+            cj_array(*trims, lw + " trimming_curves");
+            for (std::size_t t = 0; t < trims->mItems.size(); ++t)
+                loop.mTrims.push_back(
+                    cj_trim(trims->mItems[t], lw + " trimming_curves[" + std::to_string(t) + "]"));
+            loop.mExtra = cj_extra(lo, {"loop_type", "trimming_curves"});
+            f.mLoops.push_back(std::move(loop));
+        }
+    }
+    if (const JsonValue* emb = rObj.Find("embedded_edges")) {
+        cj_array(*emb, rWhat + " embedded_edges");
+        for (std::size_t t = 0; t < emb->mItems.size(); ++t)
+            f.mEmbeddedEdges.push_back(
+                cj_trim(emb->mItems[t], rWhat + " embedded_edges[" + std::to_string(t) + "]"));
+    }
+    f.mExtra = cj_extra(rObj, {"brep_id", "brep_name", "swapped_surface_normal", "surface",
+                               "boundary_loops", "embedded_edges"});
+    f.mPatch = static_cast<std::int64_t>(rInfo.mPatches.size());
+    rInfo.mPatches.push_back(std::move(patch));
+    rInfo.mFaces.push_back(std::move(f));
+}
+
+void cj_read_breps(const JsonValue& rRoot, BrepInfo& rInfo) {
+    const JsonValue& breps = cj_array(*rRoot.Find("breps"), "breps");
+    for (std::size_t b = 0; b < breps.mItems.size(); ++b) {
+        const std::string bw = "breps[" + std::to_string(b) + "]";
+        const JsonValue& bo = cj_object(breps.mItems[b], bw);
+        Brep brep;
+        cj_identity(bo, bw, brep.mId, brep.mName);
+        if (const JsonValue* faces = bo.Find("faces")) {
+            cj_array(*faces, bw + " faces");
+            for (std::size_t i = 0; i < faces->mItems.size(); ++i) {
+                brep.mFaces.push_back(static_cast<std::int64_t>(rInfo.mFaces.size()));
+                cj_face(faces->mItems[i], bw + " faces[" + std::to_string(i) + "]", rInfo);
+            }
+        }
+        if (const JsonValue* edges = bo.Find("edges")) {
+            cj_array(*edges, bw + " edges");
+            for (std::size_t i = 0; i < edges->mItems.size(); ++i) {
+                const std::string ew = bw + " edges[" + std::to_string(i) + "]";
+                const JsonValue& eo = cj_object(edges->mItems[i], ew);
+                BrepEdge e;
+                cj_identity(eo, ew, e.mId, e.mName);
+                if (const JsonValue* c = eo.Find("3d_curve")) {
+                    e.mHasCurve = true;
+                    e.mCurve = cj_curve(*c, ew + " 3d_curve");
+                }
+                e.mTopology = cj_topology(eo, ew);
+                e.mExtra = cj_extra(eo, {"brep_id", "brep_name", "3d_curve", "topology"});
+                brep.mEdges.push_back(static_cast<std::int64_t>(rInfo.mEdges.size()));
+                rInfo.mEdges.push_back(std::move(e));
+            }
+        }
+        if (const JsonValue* verts = bo.Find("vertices")) {
+            cj_array(*verts, bw + " vertices");
+            for (std::size_t i = 0; i < verts->mItems.size(); ++i) {
+                const std::string vw = bw + " vertices[" + std::to_string(i) + "]";
+                const JsonValue& vo = cj_object(verts->mItems[i], vw);
+                BrepVertex v;
+                cj_identity(vo, vw, v.mId, v.mName);
+                v.mTopology = cj_topology(vo, vw);
+                v.mExtra = cj_extra(vo, {"brep_id", "brep_name", "topology"});
+                brep.mVertices.push_back(static_cast<std::int64_t>(rInfo.mVertices.size()));
+                rInfo.mVertices.push_back(std::move(v));
+            }
+        }
+        brep.mExtra = cj_extra(bo, {"brep_id", "brep_name", "faces", "edges", "vertices"});
+        rInfo.mBreps.push_back(std::move(brep));
+    }
+    rInfo.mExtra = cj_extra(rRoot, {"breps"});
+}
+
+// `CPCoordinates` [[x, y, z]...] and `Weights` of the import dialect.
+void cj_import_net(const JsonValue& rObj, const std::string& rWhat, NDArray& rXyz,
+                   NDArray& rWeights) {
+    const JsonValue* coords = rObj.Find("CPCoordinates");
+    if (!coords)
+        cj_fail(rWhat + " has no CPCoordinates");
+    cj_array(*coords, rWhat + " CPCoordinates");
+    const std::size_t n = coords->mItems.size();
+    rXyz = NDArray(DType::Float64, {n, 3});
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::vector<double> xyz = cj_vector(coords->mItems[i], rWhat + " CPCoordinates");
+        if (xyz.size() < 2 || xyz.size() > 3)
+            cj_fail(rWhat + " CPCoordinates need two or three values");
+        for (std::size_t d = 0; d < 3; ++d)
+            rXyz.As<double>()[i * 3 + d] = d < xyz.size() ? xyz[d] : 0.0;
+    }
+    rWeights = NDArray(DType::Float64, {n});
+    const JsonValue* w = rObj.Find("Weights");
+    if (!w) {
+        for (std::size_t i = 0; i < n; ++i)
+            rWeights.As<double>()[i] = 1.0;
+        return;
+    }
+    const std::vector<double> ws = cj_vector(*w, rWhat + " Weights");
+    if (ws.size() != n)
+        cj_fail(rWhat + " has " + std::to_string(ws.size()) + " weights for " + std::to_string(n) +
+                " control points");
+    std::copy(ws.begin(), ws.end(), rWeights.As<double>());
+}
+
+bool cj_import_rational(const NDArray& rW) {
+    bool all_one = true, all_zero = true;
+    for (std::size_t i = 0; i < rW.Size(); ++i) {
+        all_one = all_one && rW.As<double>()[i] == 1.0;
+        all_zero = all_zero && rW.As<double>()[i] == 0.0;
+    }
+    return !all_one && !all_zero;
+}
+
+void cj_read_import(const JsonValue& rRoot, BrepInfo& rInfo) {
+    Brep brep;
+    if (const JsonValue* surfaces = rRoot.Find("Surfaces")) {
+        cj_array(*surfaces, "Surfaces");
+        for (std::size_t i = 0; i < surfaces->mItems.size(); ++i) {
+            const std::string sw = "Surfaces[" + std::to_string(i) + "]";
+            const JsonValue& so = cj_object(surfaces->mItems[i], sw);
+            BrepFace f;
+            NurbsPatch patch;
+            if (const JsonValue* id = so.Find("id"))
+                f.mId = cj_integer(*id, sw + " id");
+            const JsonValue* pu = so.Find("pDegreeU");
+            const JsonValue* pv = so.Find("pDegreeV");
+            const JsonValue* kvs = so.Find("knotVectors");
+            if (!pu || !pv || !kvs)
+                cj_fail(sw + " needs pDegreeU, pDegreeV and knotVectors");
+            patch.mDegrees = {cj_degree(*pu, sw + " pDegreeU"), cj_degree(*pv, sw + " pDegreeV")};
+            cj_object(*kvs, sw + " knotVectors");
+            const JsonValue* xi = kvs->Find("Xi");
+            const JsonValue* eta = kvs->Find("Eta");
+            if (!xi || !eta)
+                cj_fail(sw + " knotVectors needs Xi and Eta");
+            patch.mKnots = {cj_vector(*xi, sw + " Xi"), cj_vector(*eta, sw + " Eta")};
+            for (const auto& k : patch.mKnots)
+                cj_check_knots(k, sw + " knot vector");
+            cj_import_net(so, sw, patch.mControlPoints, patch.mWeights);
+            const std::size_t n = patch.mWeights.Size();
+            const std::size_t p = static_cast<std::size_t>(patch.mDegrees[0]);
+            const std::size_t q = static_cast<std::size_t>(patch.mDegrees[1]);
+            const std::size_t ku = patch.mKnots[0].size(), kv = patch.mKnots[1].size();
+            if (ku + 1 > p && kv + 1 > q && (ku + 1 - p) * (kv + 1 - q) == n)
+                f.mReducedKnots = true;
+            else if (!(ku > p + 1 && kv > q + 1 && (ku - p - 1) * (kv - q - 1) == n))
+                cj_fail(sw + ": the control points do not match the knot vectors");
+            for (auto& k : patch.mKnots)
+                cj_fit_knots(k, f.mReducedKnots);
+            if (patch.mKnots[0].size() - p - 1 < p + 1 || patch.mKnots[1].size() - q - 1 < q + 1)
+                cj_fail(sw + " has fewer than degree + 1 control points in a direction");
+            // ImportNurbsSbmModeler reads no surface weights; all zero or all
+            // one is a polynomial surface.
+            f.mRational = cj_import_rational(patch.mWeights);
+            cj_check_weights(patch.mWeights, f.mRational, sw);
+            f.mExtra = cj_extra(so, {"id", "pDegreeU", "pDegreeV", "knotVectors",
+                                     "CPCoordinates", "Weights"});
+            f.mPatch = static_cast<std::int64_t>(rInfo.mPatches.size());
+            rInfo.mPatches.push_back(std::move(patch));
+            brep.mFaces.push_back(static_cast<std::int64_t>(rInfo.mFaces.size()));
+            rInfo.mFaces.push_back(std::move(f));
+        }
+    }
+    if (const JsonValue* lines = rRoot.Find("Lines")) {
+        cj_array(*lines, "Lines");
+        for (std::size_t i = 0; i < lines->mItems.size(); ++i) {
+            const std::string lw = "Lines[" + std::to_string(i) + "]";
+            const JsonValue& lo = cj_object(lines->mItems[i], lw);
+            BrepEdge e;
+            e.mHasCurve = true;
+            if (const JsonValue* id = lo.Find("id"))
+                e.mId = cj_integer(*id, lw + " id");
+            const JsonValue* deg = lo.Find("pDegree");
+            const JsonValue* kv = lo.Find("knotVector");
+            if (!deg || !kv)
+                cj_fail(lw + " needs pDegree and knotVector");
+            BrepCurve& c = e.mCurve;
+            c.mDegree = cj_degree(*deg, lw + " pDegree");
+            c.mKnots = cj_vector(*kv, lw + " knotVector");
+            cj_check_knots(c.mKnots, lw + " knotVector");
+            cj_import_net(lo, lw, c.mControlPoints, c.mWeights);
+            const std::size_t n = c.mWeights.Size();
+            const std::size_t p = static_cast<std::size_t>(c.mDegree);
+            if (n < p + 1)
+                cj_fail(lw + " has fewer than degree + 1 control points");
+            if (c.mKnots.size() + 1 == n + p)
+                c.mReducedKnots = true;
+            else if (c.mKnots.size() != n + p + 1)
+                cj_fail(lw + ": the control points do not match the knot vector");
+            cj_fit_knots(c.mKnots, c.mReducedKnots);
+            // ImportNurbsSbmModeler builds every line as a rational curve.
+            c.mRational = true;
+            cj_check_weights(c.mWeights, true, lw);
+            e.mExtra = cj_extra(lo, {"id", "pDegree", "knotVector", "CPCoordinates", "Weights"});
+            brep.mEdges.push_back(static_cast<std::int64_t>(rInfo.mEdges.size()));
+            rInfo.mEdges.push_back(std::move(e));
+        }
+    }
+    rInfo.mBreps.push_back(std::move(brep));
+    rInfo.mExtra = cj_extra(rRoot, {"Surfaces", "Lines"});
+}
+
+BrepInfo cj_parse(const std::string& rPath) {
+    const std::size_t bytes = detail::file_bytes(rPath);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("meshio++: cad_json: cannot open " + rPath);
+    std::string text(bytes, '\0');
+    in.read(text.data(), static_cast<std::streamsize>(bytes));
+    text.resize(static_cast<std::size_t>(in.gcount()));
+    const JsonValue root = detail::parse_json(text, kCjFormat);
+    if (!root.IsObject())
+        cj_fail("the document is not an object");
+    BrepInfo info;
+    if (root.Find("breps"))
+        cj_read_breps(root, info);
+    else if (root.Find("Surfaces") || root.Find("Lines"))
+        cj_read_import(root, info);
+    else
+        cj_fail("neither a \"breps\" list (CadJsonInput) nor \"Surfaces\"/\"Lines\" "
+                "(ImportNurbsSbmModeler)");
+    return info;
+}
+
+// ---------------------------------------------------------------------------
+// Sampling: BrepInfo -> Mesh
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void cj_bad(const std::string& rWhat) {
+    throw std::invalid_argument("meshio++: sample_brep: " + rWhat);
+}
+
+std::string cj_quad_type(int Order) {
+    return Order <= 1 ? "quad" : Order == 2 ? "quad9" : "VTK_LAGRANGE_QUADRILATERAL";
+}
+
+std::string cj_line_type(int Order) {
+    return Order <= 1 ? "line" : Order == 2 ? "line3" : "VTK_LAGRANGE_CURVE";
+}
+
+// The cell boundaries along one direction: every nonzero span split in S.
+struct CjAxis {
+    std::vector<double> mLo, mHi;     // per cell
+    std::vector<std::size_t> mSpan;   // knot index of each cell's span
+    std::vector<std::int64_t> mSpanNo;  // the span's ordinal among nonzero spans
+};
+
+CjAxis cj_axis(int P, const std::vector<double>& rKnots, std::size_t N, int S,
+               const std::vector<double>* pRange) {
+    CjAxis a;
+    const std::vector<std::size_t> spans = detail::nurbs_spans(P, rKnots, N);
+    for (std::size_t s = 0; s < spans.size(); ++s) {
+        double k0 = rKnots[spans[s]], k1 = rKnots[spans[s] + 1];
+        if (pRange && pRange->size() == 2) {
+            const double r0 = std::min((*pRange)[0], (*pRange)[1]);
+            const double r1 = std::max((*pRange)[0], (*pRange)[1]);
+            k0 = std::max(k0, r0);
+            k1 = std::min(k1, r1);
+            if (!(k0 < k1))
+                continue;
+        }
+        for (int j = 0; j < S; ++j) {
+            const double lo = k0 + (k1 - k0) * (static_cast<double>(j) / S);
+            const double hi = j + 1 == S ? k1 : k0 + (k1 - k0) * (static_cast<double>(j + 1) / S);
+            a.mLo.push_back(lo);
+            a.mHi.push_back(hi);
+            a.mSpan.push_back(spans[s]);
+            a.mSpanNo.push_back(static_cast<std::int64_t>(s));
+        }
+    }
+    return a;
+}
+
+// The lattice coordinates of one axis: cell c's node i at index c * K + i.
+std::vector<double> cj_lattice(const CjAxis& rA, int K) {
+    const std::size_t n = rA.mLo.size();
+    std::vector<double> g(n * static_cast<std::size_t>(K) + 1, 0.0);
+    for (std::size_t c = 0; c < n; ++c)
+        for (int i = 0; i < K; ++i)
+            g[c * static_cast<std::size_t>(K) + static_cast<std::size_t>(i)] =
+                rA.mLo[c] + (rA.mHi[c] - rA.mLo[c]) * (static_cast<double>(i) / K);
+    if (n)
+        g[n * static_cast<std::size_t>(K)] = rA.mHi[n - 1];
+    return g;
+}
+
+void cj_check_curve(const BrepCurve& rC, const std::string& rWhat) {
+    const std::size_t n = rC.mWeights.Size();
+    if (rC.mDegree < 1 || rC.mDegree > kCjMaxDegree)
+        cj_bad(rWhat + " degree is out of range");
+    if (rC.mControlPoints.Dtype() != DType::Float64 || rC.mControlPoints.Shape().size() != 2 ||
+        rC.mControlPoints.Shape()[0] != n || rC.mControlPoints.Shape()[1] != 3 ||
+        rC.mWeights.Dtype() != DType::Float64)
+        cj_bad(rWhat + " control points are not Float64 (n, 3) beside n weights");
+    if (n < static_cast<std::size_t>(rC.mDegree) + 1 ||
+        rC.mKnots.size() != n + static_cast<std::size_t>(rC.mDegree) + 1)
+        cj_bad(rWhat + " knot vector does not match its control points");
+    for (std::size_t i = 1; i < rC.mKnots.size(); ++i)
+        if (!(rC.mKnots[i] >= rC.mKnots[i - 1]))
+            cj_bad(rWhat + " knot vector decreases");
+    if (rC.mIds.Size() != 0 && (rC.mIds.Size() != n || rC.mIds.Dtype() != DType::Int64))
+        cj_bad(rWhat + " ids do not match its control points");
+}
+
+void cj_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
+    if (rP.mDegrees.size() != 2 || rP.mKnots.size() != 2)
+        cj_bad(rWhat + " is not a surface patch (two degrees, two knot vectors)");
+    std::size_t n = 1;
+    for (std::size_t d = 0; d < 2; ++d) {
+        if (rP.mDegrees[d] < 1 || rP.mDegrees[d] > kCjMaxDegree)
+            cj_bad(rWhat + " degree is out of range");
+        const auto p = static_cast<std::size_t>(rP.mDegrees[d]);
+        if (rP.mKnots[d].size() < 2 * p + 2)
+            cj_bad(rWhat + " knot vector is too short");
+        for (std::size_t i = 1; i < rP.mKnots[d].size(); ++i)
+            if (!(rP.mKnots[d][i] >= rP.mKnots[d][i - 1]))
+                cj_bad(rWhat + " knot vector decreases");
+        n *= rP.mKnots[d].size() - p - 1;
+    }
+    if (rP.mControlPoints.Dtype() != DType::Float64 || rP.mControlPoints.Shape().size() != 2 ||
+        rP.mControlPoints.Shape()[0] != n || rP.mControlPoints.Shape()[1] != 3 ||
+        rP.mWeights.Dtype() != DType::Float64 || rP.mWeights.Size() != n)
+        cj_bad(rWhat + " control net does not match its knot vectors");
+}
+
+// A loop as a closed polygon in (u, v): every trim sampled at Samples points
+// per knot span of its active range, in loop order.
+std::vector<std::array<double, 2>> cj_loop_polygon(const BrepLoop& rLoop, int Samples) {
+    std::vector<std::array<double, 2>> poly;
+    for (const BrepTrim& t : rLoop.mTrims) {
+        const BrepCurve& c = t.mCurve;
+        const std::size_t n = c.mWeights.Size();
+        const CjAxis axis = cj_axis(c.mDegree, c.mKnots, n, 1, &c.mActiveRange);
+        std::vector<std::array<double, 2>> pts;
+        const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
+        for (std::size_t s = 0; s < axis.mLo.size(); ++s)
+            for (int j = 0; j < Samples; ++j) {
+                const double u =
+                    axis.mLo[s] + (axis.mHi[s] - axis.mLo[s]) * (static_cast<double>(j) / Samples);
+                double xyz[3];
+                detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(),
+                                                  w, 3, axis.mSpan[s], u, xyz);
+                pts.push_back({xyz[0], xyz[1]});
+            }
+        if (!axis.mLo.empty()) {
+            const std::size_t s = axis.mLo.size() - 1;
+            double xyz[3];
+            detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(), w,
+                                              3, axis.mSpan[s], axis.mHi[s], xyz);
+            pts.push_back({xyz[0], xyz[1]});
+        }
+        if (!t.mDirection)
+            std::reverse(pts.begin(), pts.end());
+        poly.insert(poly.end(), pts.begin(), pts.end());
+    }
+    return poly;
+}
+
+// Even-odd point-in-polygon over every loop of a face.
+bool cj_inside(const std::vector<std::vector<std::array<double, 2>>>& rLoops, double U,
+               double V) {
+    bool inside = false;
+    for (const auto& poly : rLoops) {
+        const std::size_t n = poly.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            const auto& a = poly[i];
+            const auto& b = poly[j];
+            if ((a[1] > V) != (b[1] > V) && U < (b[0] - a[0]) * (V - a[1]) / (b[1] - a[1]) + a[0])
+                inside = !inside;
+        }
+    }
+    return inside;
+}
+
+struct CjBlock {
+    std::string mType;
+    std::vector<std::int64_t> mConn;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mKind, mIndex, mId, mSpan, mTrimmed;
+};
+
+CjBlock& cj_block(std::vector<CjBlock>& rBlocks, const std::string& rType, std::size_t Nodes) {
+    for (auto& b : rBlocks)
+        if (b.mType == rType)
+            return b;
+    rBlocks.push_back(CjBlock{});
+    rBlocks.back().mType = rType;
+    rBlocks.back().mNodes = Nodes;
+    return rBlocks.back();
+}
+
+// What one face or edge contributes before its points are evaluated: the
+// lattice points it uses (as lattice indices) and its cells.
+struct CjPending {
+    bool mFace = true;
+    std::size_t mEntity = 0;
+    std::vector<double> mU, mV;              // lattice coordinates
+    std::vector<std::size_t> mSpanU, mSpanV;  // span per lattice line
+    std::size_t mNu = 0;                      // lattice width
+    std::vector<std::size_t> mPoints;         // lattice index of each new point
+};
+
+void cj_check_options(const CadJsonReadOptions& rOpt) {
+    if (rOpt.mSubdivisions < 0 || rOpt.mSubdivisions > 64)
+        cj_bad("subdivisions must be 0 (automatic) to 64");
+    if (rOpt.mTrimSamples < 2 || rOpt.mTrimSamples > 4096)
+        cj_bad("trim_samples must be 2 to 4096");
+}
+
+Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
+    cj_check_options(rOpt);
+    // Automatic (0): knot-span cells, except that a clipped face is refined
+    // to about kCjAutoCells cells per direction so its trim shows.
+    const int S = std::max(rOpt.mSubdivisions, 1);
+    auto auto_split = [&](int P, const std::vector<double>& rKnots, std::size_t N, bool Clip) {
+        if (rOpt.mSubdivisions > 0)
+            return rOpt.mSubdivisions;
+        if (!Clip)
+            return 1;
+        const std::size_t spans = std::max<std::size_t>(detail::nurbs_spans(P, rKnots, N).size(), 1);
+        return static_cast<int>(std::min<std::size_t>((kCjAutoCells + spans - 1) / spans, 64));
+    };
+    for (std::size_t i = 0; i < rInfo.mPatches.size(); ++i)
+        cj_check_patch(rInfo.mPatches[i], "patch " + std::to_string(i));
+    std::vector<CjBlock> blocks;
+    std::vector<CjPending> pending;
+    std::size_t num_points = 0;
+
+    for (std::size_t fi = 0; fi < rInfo.mFaces.size(); ++fi) {
+        const BrepFace& face = rInfo.mFaces[fi];
+        const std::string fw = "face " + std::to_string(fi);
+        if (face.mPatch < 0 || static_cast<std::size_t>(face.mPatch) >= rInfo.mPatches.size())
+            cj_bad(fw + " names no patch");
+        const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(face.mPatch)];
+        const int p = patch.mDegrees[0], q = patch.mDegrees[1];
+        const std::size_t nu = patch.mKnots[0].size() - static_cast<std::size_t>(p) - 1;
+        const std::size_t nv = patch.mKnots[1].size() - static_cast<std::size_t>(q) - 1;
+        for (const BrepLoop& loop : face.mLoops)
+            for (const BrepTrim& t : loop.mTrims)
+                cj_check_curve(t.mCurve, fw + " trimming curve");
+        const int k = std::max(p, q);
+        const bool clip = rOpt.mTrim && face.mTrimmed && !face.mLoops.empty();
+        const CjAxis au = cj_axis(p, patch.mKnots[0], nu, auto_split(p, patch.mKnots[0], nu, clip),
+                                  nullptr);
+        const CjAxis av = cj_axis(q, patch.mKnots[1], nv, auto_split(q, patch.mKnots[1], nv, clip),
+                                  nullptr);
+        CjPending pd;
+        pd.mFace = true;
+        pd.mEntity = fi;
+        pd.mU = cj_lattice(au, k);
+        pd.mV = cj_lattice(av, k);
+        pd.mNu = pd.mU.size();
+        for (std::size_t i = 0; i < pd.mU.size(); ++i)
+            pd.mSpanU.push_back(au.mSpan.empty() ? 0 : au.mSpan[std::min(i / k, au.mSpan.size() - 1)]);
+        for (std::size_t i = 0; i < pd.mV.size(); ++i)
+            pd.mSpanV.push_back(av.mSpan.empty() ? 0 : av.mSpan[std::min(i / k, av.mSpan.size() - 1)]);
+        std::vector<std::vector<std::array<double, 2>>> loops;
+        if (clip)
+            for (const BrepLoop& loop : face.mLoops) {
+                auto poly = cj_loop_polygon(loop, rOpt.mTrimSamples);
+                if (poly.size() >= 3)
+                    loops.push_back(std::move(poly));
+            }
+        const auto lattice = lagrange::vtk_lattice(lagrange::Shape::Quad, k);
+        std::vector<std::int64_t> local(au.mLo.empty() || av.mLo.empty() ? 0 : pd.mU.size() * pd.mV.size(), -1);
+        CjBlock& blk = cj_block(blocks, cj_quad_type(k), lattice.size());
+        for (std::size_t jv = 0; jv < av.mLo.size(); ++jv)
+            for (std::size_t iu = 0; iu < au.mLo.size(); ++iu) {
+                std::int64_t trimmed = 0;
+                if (clip) {
+                    const double u0 = au.mLo[iu], u1 = au.mHi[iu];
+                    const double v0 = av.mLo[jv], v1 = av.mHi[jv];
+                    const double uc = (u0 + u1) * 0.5, vc = (v0 + v1) * 0.5;
+                    if (!cj_inside(loops, uc, vc))
+                        continue;
+                    // The corners pulled a hair towards the centre, so a cell
+                    // whose side lies on a loop is not counted as crossed.
+                    const double a0 = uc + (u0 - uc) * kCjCorner, a1 = uc + (u1 - uc) * kCjCorner;
+                    const double b0 = vc + (v0 - vc) * kCjCorner, b1 = vc + (v1 - vc) * kCjCorner;
+                    if (!cj_inside(loops, a0, b0) || !cj_inside(loops, a1, b0) ||
+                        !cj_inside(loops, a1, b1) || !cj_inside(loops, a0, b1))
+                        trimmed = 1;
+                }
+                for (const auto& ijk : lattice) {
+                    const std::size_t gi = iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
+                    const std::size_t gj = jv * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[1]);
+                    const std::size_t g = gj * pd.mNu + gi;
+                    if (local[g] < 0) {
+                        local[g] = static_cast<std::int64_t>(num_points + pd.mPoints.size());
+                        pd.mPoints.push_back(g);
+                    }
+                    blk.mConn.push_back(local[g]);
+                }
+                blk.mKind.push_back(0);
+                blk.mIndex.push_back(static_cast<std::int64_t>(fi));
+                blk.mId.push_back(face.mId);
+                blk.mSpan.push_back(au.mSpanNo[iu]);
+                blk.mSpan.push_back(av.mSpanNo[jv]);
+                blk.mTrimmed.push_back(trimmed);
+            }
+        num_points += pd.mPoints.size();
+        pending.push_back(std::move(pd));
+    }
+
+    if (rOpt.mEdges)
+        for (std::size_t ei = 0; ei < rInfo.mEdges.size(); ++ei) {
+            const BrepEdge& edge = rInfo.mEdges[ei];
+            if (!edge.mHasCurve)
+                continue;
+            const BrepCurve& c = edge.mCurve;
+            cj_check_curve(c, "edge " + std::to_string(ei) + " 3d_curve");
+            const int k = c.mDegree;
+            const CjAxis axis = cj_axis(k, c.mKnots, c.mWeights.Size(), S, &c.mActiveRange);
+            CjPending pd;
+            pd.mFace = false;
+            pd.mEntity = ei;
+            pd.mU = cj_lattice(axis, k);
+            pd.mNu = pd.mU.size();
+            for (std::size_t i = 0; i < pd.mU.size(); ++i)
+                pd.mSpanU.push_back(axis.mSpan.empty() ? 0
+                                                       : axis.mSpan[std::min(i / k, axis.mSpan.size() - 1)]);
+            const auto lattice = lagrange::vtk_lattice(lagrange::Shape::Line, k);
+            std::vector<std::int64_t> local(pd.mU.size(), -1);
+            CjBlock& blk = cj_block(blocks, cj_line_type(k), lattice.size());
+            for (std::size_t iu = 0; iu < axis.mLo.size(); ++iu) {
+                for (const auto& ijk : lattice) {
+                    const std::size_t g = iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
+                    if (local[g] < 0) {
+                        local[g] = static_cast<std::int64_t>(num_points + pd.mPoints.size());
+                        pd.mPoints.push_back(g);
+                    }
+                    blk.mConn.push_back(local[g]);
+                }
+                blk.mKind.push_back(1);
+                blk.mIndex.push_back(static_cast<std::int64_t>(ei));
+                blk.mId.push_back(edge.mId);
+                blk.mSpan.push_back(axis.mSpanNo[iu]);
+                blk.mSpan.push_back(-1);
+                blk.mTrimmed.push_back(0);
+            }
+            num_points += pd.mPoints.size();
+            pending.push_back(std::move(pd));
+        }
+
+    NDArray points(DType::Float64, {num_points, 3});
+    double* xyz = points.As<double>();
+    std::size_t offset = 0;
+    for (const CjPending& pd : pending) {
+        double* out = xyz + offset * 3;
+        if (pd.mFace) {
+            const BrepFace& face = rInfo.mFaces[pd.mEntity];
+            const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(face.mPatch)];
+            const std::size_t nu = patch.mKnots[0].size() - static_cast<std::size_t>(patch.mDegrees[0]) - 1;
+            const double* cps = patch.mControlPoints.As<double>();
+            const double* w = face.mRational ? patch.mWeights.As<double>() : nullptr;
+            parallel_for(pd.mPoints.size(), [&](std::size_t i) {
+                const std::size_t g = pd.mPoints[i];
+                const std::size_t gi = g % pd.mNu, gj = g / pd.mNu;
+                detail::nurbs_surface_point_in_span(patch.mDegrees[0], patch.mDegrees[1],
+                                                    patch.mKnots[0], patch.mKnots[1], cps, w, nu, 3,
+                                                    pd.mSpanU[gi], pd.mSpanV[gj], pd.mU[gi],
+                                                    pd.mV[gj], out + i * 3);
+            });
+        } else {
+            const BrepCurve& c = rInfo.mEdges[pd.mEntity].mCurve;
+            const double* cps = c.mControlPoints.As<double>();
+            const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
+            parallel_for(pd.mPoints.size(), [&](std::size_t i) {
+                const std::size_t g = pd.mPoints[i];
+                detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, cps, w, 3, pd.mSpanU[g],
+                                                  pd.mU[g], out + i * 3);
+            });
+        }
+        offset += pd.mPoints.size();
+    }
+
+    Mesh mesh;
+    mesh.AssignPoints(std::move(points));
+    std::vector<NDArray> kind, index, id, span, trimmed;
+    // A face trimmed away or an edge outside its range leaves no cells: keep
+    // only the blocks that have some.
+    blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                                [](const CjBlock& rB) { return rB.mKind.empty(); }),
+                 blocks.end());
+    for (CjBlock& b : blocks) {
+        const std::size_t n = b.mKind.size();
+        NDArray conn(DType::Int64, {n, b.mNodes});
+        std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
+        mesh.AddCellBlock(b.mType, std::move(conn));
+        auto column = [n](const std::vector<std::int64_t>& rV, std::size_t Width) {
+            NDArray a(DType::Int64, Width == 1 ? std::vector<std::size_t>{n}
+                                               : std::vector<std::size_t>{n, Width});
+            std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+            return a;
+        };
+        kind.push_back(column(b.mKind, 1));
+        index.push_back(column(b.mIndex, 1));
+        id.push_back(column(b.mId, 1));
+        span.push_back(column(b.mSpan, 2));
+        trimmed.push_back(column(b.mTrimmed, 1));
+    }
+    if (!blocks.empty()) {
+        mesh.AddCellData("cad:id", std::move(id));
+        mesh.AddCellData("cad:index", std::move(index));
+        mesh.AddCellData("cad:kind", std::move(kind));
+        mesh.AddCellData("cad:span", std::move(span));
+        mesh.AddCellData("cad:trimmed", std::move(trimmed));
+    }
+    return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// Writing: BrepInfo -> JSON
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void cj_wfail(const std::string& rWhat) {
+    throw WriteError("meshio++: cad_json: " + rWhat);
+}
+
+// Append the members of compact object text @p rExtra to @p rObj.
+void cj_add_extra(JsonValue& rObj, const std::string& rExtra, const std::string& rWhat) {
+    if (rExtra.empty())
+        return;
+    JsonValue extra;
+    try {
+        extra = detail::parse_json(rExtra, kCjFormat);
+    } catch (const ReadError&) {
+        cj_wfail(rWhat + " extra is not JSON object text");
+    }
+    if (!extra.IsObject())
+        cj_wfail(rWhat + " extra is not JSON object text");
+    for (auto& m : extra.mMembers)
+        rObj.mMembers.push_back(std::move(m));
+}
+
+void cj_add_identity(JsonValue& rObj, std::int64_t Id, const std::string& rName) {
+    if (Id >= 0)
+        rObj.Add("brep_id", JsonValue::Integer(Id));
+    if (!rName.empty())
+        rObj.Add("brep_name", JsonValue::String(rName));
+}
+
+JsonValue cj_numbers(const std::vector<double>& rV) {
+    JsonValue a = JsonValue::Array();
+    for (double x : rV)
+        a.Push(JsonValue::Number(x));
+    return a;
+}
+
+std::vector<double> cj_written_knots(const std::vector<double>& rKnots, bool Reduced) {
+    if (!Reduced || rKnots.size() < 2)
+        return rKnots;
+    return std::vector<double>(rKnots.begin() + 1, rKnots.end() - 1);
+}
+
+JsonValue cj_net(const NDArray& rXyz, const NDArray& rW, const NDArray& rIds,
+                 const std::string& rWhat) {
+    const std::size_t n = rW.Size();
+    if (rXyz.Dtype() != DType::Float64 || rXyz.Shape().size() != 2 || rXyz.Shape()[0] != n ||
+        rXyz.Shape()[1] != 3 || rW.Dtype() != DType::Float64)
+        cj_wfail(rWhat + " control points are not Float64 (n, 3) beside n weights");
+    if (rIds.Size() != 0 && (rIds.Size() != n || rIds.Dtype() != DType::Int64))
+        cj_wfail(rWhat + " ids do not match its control points");
+    JsonValue a = JsonValue::Array();
+    for (std::size_t i = 0; i < n; ++i) {
+        JsonValue c = JsonValue::Array();
+        for (std::size_t d = 0; d < 3; ++d)
+            c.Push(JsonValue::Number(rXyz.As<double>()[i * 3 + d]));
+        c.Push(JsonValue::Number(rW.As<double>()[i]));
+        if (rIds.Size()) {
+            JsonValue e = JsonValue::Array();
+            e.Push(JsonValue::Integer(rIds.As<std::int64_t>()[i]));
+            e.Push(std::move(c));
+            a.Push(std::move(e));
+        } else {
+            JsonValue e = JsonValue::Array();
+            e.Push(std::move(c));
+            a.Push(std::move(e));
+        }
+    }
+    return a;
+}
+
+JsonValue cj_curve_json(const BrepCurve& rC, const std::string& rWhat) {
+    try {
+        cj_check_curve(rC, rWhat);
+    } catch (const std::invalid_argument& e) {
+        cj_wfail(e.what());
+    }
+    JsonValue o = JsonValue::Object();
+    o.Add("is_rational", JsonValue::Boolean(rC.mRational));
+    o.Add("degree", JsonValue::Integer(rC.mDegree));
+    o.Add("knot_vector", cj_numbers(cj_written_knots(rC.mKnots, rC.mReducedKnots)));
+    if (!rC.mActiveRange.empty()) {
+        if (rC.mActiveRange.size() != 2)
+            cj_wfail(rWhat + " active range needs two values");
+        o.Add("active_range", cj_numbers(rC.mActiveRange));
+    }
+    o.Add("control_points", cj_net(rC.mControlPoints, rC.mWeights, rC.mIds, rWhat));
+    cj_add_extra(o, rC.mExtra, rWhat);
+    return o;
+}
+
+JsonValue cj_trim_json(const BrepTrim& rT, const std::string& rWhat) {
+    JsonValue o = JsonValue::Object();
+    if (rT.mTrimIndex >= 0)
+        o.Add("trim_index", JsonValue::Integer(rT.mTrimIndex));
+    o.Add("curve_direction", JsonValue::Boolean(rT.mDirection));
+    o.Add("parameter_curve", cj_curve_json(rT.mCurve, rWhat + " parameter curve"));
+    cj_add_extra(o, rT.mExtra, rWhat);
+    return o;
+}
+
+JsonValue cj_topology_json(const std::vector<BrepRef>& rRefs, const std::string& rWhat) {
+    JsonValue a = JsonValue::Array();
+    for (const BrepRef& r : rRefs) {
+        JsonValue o = JsonValue::Object();
+        cj_add_identity(o, r.mId, r.mName);
+        if (r.mTrimIndex >= 0)
+            o.Add("trim_index", JsonValue::Integer(r.mTrimIndex));
+        if (r.mRelativeDirection >= 0)
+            o.Add("relative_direction", JsonValue::Boolean(r.mRelativeDirection != 0));
+        if (!r.mLocalCoordinates.empty())
+            o.Add("local_coordinates", cj_numbers(r.mLocalCoordinates));
+        cj_add_extra(o, r.mExtra, rWhat);
+        a.Push(std::move(o));
+    }
+    return a;
+}
+
+JsonValue cj_face_json(const BrepInfo& rInfo, const BrepFace& rF, const std::string& rWhat) {
+    if (rF.mPatch < 0 || static_cast<std::size_t>(rF.mPatch) >= rInfo.mPatches.size())
+        cj_wfail(rWhat + " names no patch");
+    const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(rF.mPatch)];
+    try {
+        cj_check_patch(patch, rWhat + " patch");
+    } catch (const std::invalid_argument& e) {
+        cj_wfail(e.what());
+    }
+    JsonValue o = JsonValue::Object();
+    cj_add_identity(o, rF.mId, rF.mName);
+    o.Add("swapped_surface_normal", JsonValue::Boolean(rF.mSwappedNormal));
+    JsonValue s = JsonValue::Object();
+    s.Add("is_trimmed", JsonValue::Boolean(rF.mTrimmed));
+    s.Add("is_rational", JsonValue::Boolean(rF.mRational));
+    JsonValue degs = JsonValue::Array();
+    degs.Push(JsonValue::Integer(patch.mDegrees[0]));
+    degs.Push(JsonValue::Integer(patch.mDegrees[1]));
+    s.Add("degrees", std::move(degs));
+    JsonValue kvs = JsonValue::Array();
+    kvs.Push(cj_numbers(cj_written_knots(patch.mKnots[0], rF.mReducedKnots)));
+    kvs.Push(cj_numbers(cj_written_knots(patch.mKnots[1], rF.mReducedKnots)));
+    s.Add("knot_vectors", std::move(kvs));
+    s.Add("control_points",
+          cj_net(patch.mControlPoints, patch.mWeights, rF.mControlPointIds, rWhat + " surface"));
+    cj_add_extra(s, rF.mSurfaceExtra, rWhat + " surface");
+    o.Add("surface", std::move(s));
+    JsonValue loops = JsonValue::Array();
+    for (std::size_t l = 0; l < rF.mLoops.size(); ++l) {
+        const BrepLoop& loop = rF.mLoops[l];
+        JsonValue lo = JsonValue::Object();
+        lo.Add("loop_type", JsonValue::String(loop.mType));
+        JsonValue trims = JsonValue::Array();
+        for (const BrepTrim& t : loop.mTrims)
+            trims.Push(cj_trim_json(t, rWhat + " loop " + std::to_string(l)));
+        lo.Add("trimming_curves", std::move(trims));
+        cj_add_extra(lo, loop.mExtra, rWhat + " loop");
+        loops.Push(std::move(lo));
+    }
+    o.Add("boundary_loops", std::move(loops));
+    JsonValue emb = JsonValue::Array();
+    for (const BrepTrim& t : rF.mEmbeddedEdges)
+        emb.Push(cj_trim_json(t, rWhat + " embedded edge"));
+    o.Add("embedded_edges", std::move(emb));
+    cj_add_extra(o, rF.mExtra, rWhat);
+    return o;
+}
+
+std::string cj_render(const BrepInfo& rInfo) {
+    // Kratos makes model-part nodes of surface and 3-D curve control points,
+    // which need ids; trimming curves' are points and may go without.
+    std::size_t bare = 0;
+    for (const auto& f : rInfo.mFaces)
+        bare += f.mControlPointIds.Size() == 0 ? 1 : 0;
+    for (const auto& e : rInfo.mEdges)
+        bare += e.mHasCurve && e.mCurve.mIds.Size() == 0 ? 1 : 0;
+    if (bare)
+        log::warn("cad_json: {} surface or 3-D curve control nets have no ids; Kratos's "
+                  "CadJsonInput needs [id, [x, y, z, w]] for them",
+                  bare);
+    JsonValue root = JsonValue::Object();
+    cj_add_extra(root, rInfo.mExtra, "the file");
+    std::vector<Brep> breps = rInfo.mBreps;
+    if (breps.empty()) {
+        // A B-rep built in memory with no grouping: one entry holding all.
+        Brep all;
+        std::int64_t next = 0;
+        for (const auto& f : rInfo.mFaces)
+            next = std::max(next, f.mId);
+        for (const auto& e : rInfo.mEdges)
+            next = std::max(next, e.mId);
+        for (const auto& v : rInfo.mVertices)
+            next = std::max(next, v.mId);
+        all.mId = next + 1;
+        for (std::size_t i = 0; i < rInfo.mFaces.size(); ++i)
+            all.mFaces.push_back(static_cast<std::int64_t>(i));
+        for (std::size_t i = 0; i < rInfo.mEdges.size(); ++i)
+            all.mEdges.push_back(static_cast<std::int64_t>(i));
+        for (std::size_t i = 0; i < rInfo.mVertices.size(); ++i)
+            all.mVertices.push_back(static_cast<std::int64_t>(i));
+        breps.push_back(std::move(all));
+    }
+    JsonValue list = JsonValue::Array();
+    for (std::size_t b = 0; b < breps.size(); ++b) {
+        const Brep& brep = breps[b];
+        const std::string bw = "brep " + std::to_string(b);
+        JsonValue bo = JsonValue::Object();
+        cj_add_identity(bo, brep.mId, brep.mName);
+        JsonValue faces = JsonValue::Array();
+        for (std::int64_t fi : brep.mFaces) {
+            if (fi < 0 || static_cast<std::size_t>(fi) >= rInfo.mFaces.size())
+                cj_wfail(bw + " names face " + std::to_string(fi) + ", which does not exist");
+            faces.Push(cj_face_json(rInfo, rInfo.mFaces[static_cast<std::size_t>(fi)],
+                                    "face " + std::to_string(fi)));
+        }
+        bo.Add("faces", std::move(faces));
+        JsonValue edges = JsonValue::Array();
+        for (std::int64_t ei : brep.mEdges) {
+            if (ei < 0 || static_cast<std::size_t>(ei) >= rInfo.mEdges.size())
+                cj_wfail(bw + " names edge " + std::to_string(ei) + ", which does not exist");
+            const BrepEdge& e = rInfo.mEdges[static_cast<std::size_t>(ei)];
+            const std::string ew = "edge " + std::to_string(ei);
+            JsonValue eo = JsonValue::Object();
+            cj_add_identity(eo, e.mId, e.mName);
+            if (e.mHasCurve)
+                eo.Add("3d_curve", cj_curve_json(e.mCurve, ew + " 3d_curve"));
+            eo.Add("topology", cj_topology_json(e.mTopology, ew));
+            cj_add_extra(eo, e.mExtra, ew);
+            edges.Push(std::move(eo));
+        }
+        bo.Add("edges", std::move(edges));
+        JsonValue verts = JsonValue::Array();
+        for (std::int64_t vi : brep.mVertices) {
+            if (vi < 0 || static_cast<std::size_t>(vi) >= rInfo.mVertices.size())
+                cj_wfail(bw + " names vertex " + std::to_string(vi) + ", which does not exist");
+            const BrepVertex& v = rInfo.mVertices[static_cast<std::size_t>(vi)];
+            const std::string vw = "vertex " + std::to_string(vi);
+            JsonValue vo = JsonValue::Object();
+            cj_add_identity(vo, v.mId, v.mName);
+            vo.Add("topology", cj_topology_json(v.mTopology, vw));
+            cj_add_extra(vo, v.mExtra, vw);
+            verts.Push(std::move(vo));
+        }
+        bo.Add("vertices", std::move(verts));
+        cj_add_extra(bo, brep.mExtra, bw);
+        list.Push(std::move(bo));
+    }
+    root.Add("breps", std::move(list));
+    return detail::write_json(root, 4) + "\n";
+}
+
+// A plain mesh as a B-rep: quads as bilinear faces, lines as edges.
+BrepInfo cj_from_mesh(const Mesh& rMesh) {
+    BrepInfo info;
+    info.mExtra = "{\"version_number\":1}";
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t npts = rMesh.NumPoints();
+    auto coord = [&](std::int64_t P, std::size_t D) -> double {
+        if (D >= dim)
+            return 0.0;
+        const std::size_t i = static_cast<std::size_t>(P) * dim + D;
+        switch (pts.Dtype()) {
+            case DType::Float32:
+                return static_cast<double>(pts.As<float>()[i]);
+            case DType::Float64:
+                return pts.As<double>()[i];
+            default:
+                cj_wfail("points are not floating point");
+        }
+    };
+    std::int64_t next_id = 1;
+    std::size_t dropped = 0;
+    Brep brep;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type = cb.Type();
+        const bool quad = type == "quad", line = type == "line";
+        if (!(quad || line) || cb.IsRagged()) {
+            dropped += cb.NumCells();
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            std::vector<std::int64_t> nodes(k);
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::int64_t v = conn.Dtype() == DType::Int32
+                                           ? conn.As<std::int32_t>()[c * k + j]
+                                           : conn.As<std::int64_t>()[c * k + j];
+                if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                    cj_wfail("a cell names point " + std::to_string(v) + ", which does not exist");
+                nodes[j] = v;
+            }
+            // The net runs u fastest: corners 0, 1, 3, 2 of the quad.
+            const std::vector<std::int64_t> order =
+                quad ? std::vector<std::int64_t>{nodes[0], nodes[1], nodes[3], nodes[2]} : nodes;
+            NDArray xyz(DType::Float64, {order.size(), 3});
+            NDArray w(DType::Float64, {order.size()});
+            NDArray ids(DType::Int64, {order.size()});
+            for (std::size_t j = 0; j < order.size(); ++j) {
+                for (std::size_t d = 0; d < 3; ++d)
+                    xyz.As<double>()[j * 3 + d] = coord(order[j], d);
+                w.As<double>()[j] = 1.0;
+                ids.As<std::int64_t>()[j] = order[j] + 1;
+            }
+            if (quad) {
+                NurbsPatch patch;
+                patch.mDegrees = {1, 1};
+                patch.mKnots = {{0.0, 0.0, 1.0, 1.0}, {0.0, 0.0, 1.0, 1.0}};
+                patch.mControlPoints = std::move(xyz);
+                patch.mWeights = std::move(w);
+                BrepFace f;
+                f.mId = next_id++;
+                f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
+                f.mControlPointIds = std::move(ids);
+                info.mPatches.push_back(std::move(patch));
+                brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
+                info.mFaces.push_back(std::move(f));
+            } else {
+                BrepEdge e;
+                e.mId = next_id++;
+                e.mHasCurve = true;
+                e.mCurve.mDegree = 1;
+                e.mCurve.mKnots = {0.0, 0.0, 1.0, 1.0};
+                e.mCurve.mControlPoints = std::move(xyz);
+                e.mCurve.mWeights = std::move(w);
+                e.mCurve.mIds = std::move(ids);
+                brep.mEdges.push_back(static_cast<std::int64_t>(info.mEdges.size()));
+                info.mEdges.push_back(std::move(e));
+            }
+        }
+    }
+    if (dropped)
+        log::warn("cad_json: {} cells that are neither quad nor line were not written", dropped);
+    if (info.mFaces.empty() && info.mEdges.empty())
+        cj_wfail("the mesh has no quad or line cells to write as faces or edges");
+    brep.mId = next_id;
+    info.mBreps.push_back(std::move(brep));
+    return info;
+}
+
+void cj_write_text(const std::string& rPath, const std::string& rText) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("meshio++: cad_json: cannot open " + rPath + " for writing");
+    out.write(rText.data(), static_cast<std::streamsize>(rText.size()));
+    if (!out)
+        throw WriteError("meshio++: cad_json: failed writing " + rPath);
+}
+
+}  // namespace
+
+Mesh read_cad_json(const std::string& rPath) {
+    BrepInfo info;
+    return read_cad_json(rPath, info);
+}
+
+Mesh read_cad_json(const std::string& rPath, BrepInfo& rInfo, const CadJsonReadOptions& rOptions) {
+    cj_check_options(rOptions);
+    BrepInfo info = cj_parse(rPath);
+    Mesh mesh;
+    try {
+        mesh = cj_sample(info, rOptions);
+    } catch (const std::invalid_argument& e) {
+        // The parse checks what sampling needs; this is a file it let through.
+        throw ReadError(std::string("meshio++: cad_json: ") + e.what());
+    }
+    rInfo = std::move(info);
+    return mesh;
+}
+
+BrepInfo read_cad_json_info(const std::string& rPath) {
+    return cj_parse(rPath);
+}
+
+Mesh sample_brep(const BrepInfo& rInfo, const CadJsonReadOptions& rOptions) {
+    return cj_sample(rInfo, rOptions);
+}
+
+void write_cad_json(const std::string& rPath, const Mesh& rMesh) {
+    cj_write_text(rPath, cj_render(cj_from_mesh(rMesh)));
+}
+
+void write_cad_json(const std::string& rPath, const Mesh& rMesh, const BrepInfo& rInfo) {
+    if (rInfo.mFaces.empty() && rInfo.mEdges.empty() && rInfo.mVertices.empty()) {
+        write_cad_json(rPath, rMesh);
+        return;
+    }
+    cj_write_text(rPath, cj_render(rInfo));
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/cad_json.cpp =====
+// ===== begin src/cpp/src/formats/cad_read.cpp =====
+#include <cmath>
+#include <stdexcept>
+#include <string>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+// Project includes (private, not installed)
+#endif
+
+namespace meshioplusplus {
+
+namespace {
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
+                    const CadReadOptions& rOptions) {
+    const char* fmt = Iges ? "iges" : "step";
+    if (!std::isfinite(rOptions.mDeflection) || !(rOptions.mAngularDeflection > 0.0) ||
+        !std::isfinite(rOptions.mAngularDeflection))
+        throw std::invalid_argument(std::string("meshio++: ") + fmt +
+                                    ": the deflection must be finite and the angular "
+                                    "deflection positive");
+    detail::LibraryLock lock;
+    detail::OcctQuiet quiet;
+    const TopoDS_Shape shape =
+        detail::occt_nurbs_shape(detail::occt_read_cad_file(rPath, Iges, fmt));
+    BrepInfo info = detail::occt_brep_info(shape);
+    Mesh mesh = detail::occt_tessellate(shape, info, rOptions.mDeflection,
+                                        rOptions.mAngularDeflection);
+    rInfo = std::move(info);
+    return mesh;
+}
+#else
+[[noreturn]] void cad_read_unsupported(const char* pFormat) {
+    throw Unsupported(std::string("meshio++: ") + pFormat +
+                      ": reading needs the OpenCASCADE backend; rebuild with "
+                      "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)");
+}
+#endif
+
+}  // namespace
+
+bool cad_read_has_occt() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return true;
+#else
+    return false;
+#endif
+}
+
+Mesh read_step(const std::string& rPath) {
+    BrepInfo info;
+    return read_step(rPath, info);
+}
+
+Mesh read_step(const std::string& rPath, BrepInfo& rInfo, const CadReadOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return cad_read_shape(rPath, false, rInfo, rOptions);
+#else
+    (void)rPath;
+    (void)rInfo;
+    (void)rOptions;
+    cad_read_unsupported("step");
+#endif
+}
+
+Mesh read_iges(const std::string& rPath) {
+    BrepInfo info;
+    return read_iges(rPath, info);
+}
+
+Mesh read_iges(const std::string& rPath, BrepInfo& rInfo, const CadReadOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return cad_read_shape(rPath, true, rInfo, rOptions);
+#else
+    (void)rPath;
+    (void)rInfo;
+    (void)rOptions;
+    cad_read_unsupported("iges");
+#endif
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/cad_read.cpp =====
 // ===== begin src/cpp/src/formats/cgns.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
@@ -92704,8 +96003,11 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     std::vector<std::size_t> shape = rA.Shape();
     shape[0] = r1 - r0;
     NDArray out(rA.Dtype(), shape);
-    if (r1 > r0)
-        std::memcpy(out.Data(), rA.Data() + r0 * nc * isz, (r1 - r0) * nc * isz);
+    // A zero-width array has null buffers: copy only a non-empty range, since
+    // memcpy with a null pointer is undefined even for zero bytes (UBSan's nonnull).
+    const std::size_t bytes = r1 > r0 ? (r1 - r0) * nc * isz : 0;
+    if (bytes > 0)
+        std::memcpy(out.Data(), rA.Data() + r0 * nc * isz, bytes);
     return out;
 }
 
@@ -102710,8 +106012,10 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <ostream>
@@ -102720,6 +106024,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -104618,6 +107923,87 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     // ---- Raw blocks, verbatim ---------------------------------------------
     for (const MdpaRawBlock& r_raw : rInfo.mRawBlocks)
         os << r_raw.mHeader << "\n" << r_raw.mBody << r_raw.mEnd << "\n\n";
+}
+
+
+namespace {
+
+// `<deck stem>.cad.json` beside the deck.
+std::filesystem::path mdpa_sidecar_default(const std::string& rPath) {
+    std::filesystem::path p(rPath);
+    std::string stem = p.filename().string();
+    if (stem.size() > 5 && stem.compare(stem.size() - 5, 5, ".mdpa") == 0)
+        stem.resize(stem.size() - 5);
+    return p.parent_path() / (stem + ".cad.json");
+}
+
+}  // namespace
+
+std::string mdpa_cad_json_path(const std::string& rPath) {
+    std::error_code ec;
+    const std::filesystem::path own = mdpa_sidecar_default(rPath);
+    if (std::filesystem::is_regular_file(own, ec))
+        return own.string();
+    const std::filesystem::path dir = std::filesystem::path(rPath).parent_path();
+    const std::filesystem::path params = dir / "ProjectParameters.json";
+    if (!std::filesystem::is_regular_file(params, ec))
+        return {};
+    auto in = detail::make_classic_ifstream(params, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    detail::JsonValue root;
+    try {
+        root = detail::parse_json(text, "ProjectParameters.json");
+    } catch (const ReadError&) {
+        return {};  // not ours to judge; there is simply no sidecar named
+    }
+    const detail::JsonValue* modelers = root.IsObject() ? root.Find("modelers") : nullptr;
+    if (!modelers || !modelers->IsArray())
+        return {};
+    for (const detail::JsonValue& m : modelers->mItems) {
+        const detail::JsonValue* name = m.IsObject() ? m.Find("modeler_name") : nullptr;
+        if (!name || !name->IsString() || name->mString != "CadIoModeler")
+            continue;
+        const detail::JsonValue* parameters = m.Find("Parameters");
+        const detail::JsonValue* file =
+            parameters && parameters->IsObject() ? parameters->Find("geometry_file_name") : nullptr;
+        if (!file || !file->IsString() || file->mString.empty())
+            continue;
+        std::string f = file->mString;
+        if (f.size() < 9 || f.compare(f.size() - 9, 9, ".cad.json") != 0)
+            f += ".cad.json";
+        const std::filesystem::path candidate = dir / f;
+        if (std::filesystem::is_regular_file(candidate, ec))
+            return candidate.string();
+    }
+    return {};
+}
+
+Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, BrepInfo& rBrep,
+               const ReadOptions& rOptions, const std::string& rCadJsonPath) {
+    Mesh mesh = read_mdpa(rPath, rInfo, rOptions);
+    rBrep = BrepInfo{};
+    std::string sidecar = rCadJsonPath;
+    if (sidecar.empty()) {
+        sidecar = mdpa_cad_json_path(rPath);
+    } else {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(sidecar, ec))
+            throw ReadError("meshio++: mdpa: the CAD JSON geometry '" + sidecar +
+                            "' does not exist");
+    }
+    if (!sidecar.empty())
+        rBrep = read_cad_json_info(sidecar);
+    return mesh;
+}
+
+void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo,
+                const BrepInfo& rBrep, const std::string& rCadJsonPath) {
+    write_mdpa(rPath, rMesh, rInfo);
+    if (rBrep.mFaces.empty() && rBrep.mEdges.empty() && rBrep.mVertices.empty())
+        return;
+    const std::string sidecar =
+        rCadJsonPath.empty() ? mdpa_sidecar_default(rPath).string() : rCadJsonPath;
+    write_cad_json(sidecar, rMesh, rBrep);
 }
 
 }  // namespace meshioplusplus
@@ -114531,6 +117917,8 @@ std::vector<std::string> nh5_string_member(hid_t file, const std::string& rPath,
                                            const std::string& rMember, std::size_t Row0,
                                            std::size_t Count) {
     h5::Hid d(H5Dopen2(file, rPath.c_str(), H5P_DEFAULT), H5Dclose);
+    // This read is a raw H5Dread, so the chunks it reaches are verified here, as hdf5_util does.
+    h5::verify_chunk_rows(d, rPath, Row0, Count);
     h5::Hid ftype(H5Dget_type(d), H5Tclose);
     const int index = H5Tget_member_index(ftype, rMember.c_str());
     if (index < 0)
@@ -156813,6 +160201,10 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <gp_Pnt2d.hxx>
 #include <GeomAPI_IntSS.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
+#include <Approx_ParametrizationType.hxx>
+#include <GeomAPI_PointsToBSplineSurface.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <TColgp_Array2OfPnt.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomLProp_SLProps.hxx>
@@ -157946,6 +161338,343 @@ void fc_write_step(const TopoDS_Shape& rShape, const std::string& rPath) {
         throw WriteError(std::string(kFcPrefix) + "cannot write '" + rPath + "'");
 }
 
+// A freeform patch flattened: per vertex its (s, t) parameters and its offset
+// h from the plane or cylinder it is flattened over, with the map back.
+struct FcFlat {
+    bool mCylinder = false;
+    gp_XYZ mOrigin, mE1, mE2, mAxis;  // plane: origin, in-plane axes, normal
+    double mRadius = 0.0, mTheta0 = 0.0;
+    std::vector<double> mS, mT, mH;
+
+    gp_Pnt At(double S, double T, double H) const {
+        if (!mCylinder)
+            return gp_Pnt(mOrigin + mE1 * S + mE2 * T + mAxis * H);
+        const double th = mTheta0 + S / mRadius;
+        return gp_Pnt(mOrigin + mAxis * T +
+                      (mE1 * std::cos(th) + mE2 * std::sin(th)) * (mRadius + H));
+    }
+};
+
+// Two unit vectors completing @p rA to a right-handed frame.
+void fc_frame(const gp_XYZ& rA, gp_XYZ& rE1, gp_XYZ& rE2) {
+    const gp_XYZ seed = std::fabs(rA.X()) < 0.9 ? gp_XYZ(1.0, 0.0, 0.0) : gp_XYZ(0.0, 1.0, 0.0);
+    rE1 = seed - rA * seed.Dot(rA);
+    rE1.Normalize();
+    rE2 = rA.Crossed(rE1);
+}
+
+// Flatten over the best-fit plane (Kind 0) or unroll around the axis the
+// normals are most perpendicular to (Kind 1); false when that is degenerate.
+bool fc_flatten(int Kind, const std::vector<gp_Pnt>& rPts, const std::vector<gp_XYZ>& rNormals,
+                const std::vector<double>& rAreas, FcFlat& rOut) {
+    const std::size_t n = rPts.size();
+    gp_XYZ c(0.0, 0.0, 0.0);
+    for (const gp_Pnt& p : rPts)
+        c += p.XYZ();
+    c /= static_cast<double>(n);
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    rOut = FcFlat{};
+    if (Kind == 0) {
+        for (const gp_Pnt& p : rPts) {
+            const gp_XYZ d = p.XYZ() - c;
+            const double x[3] = {d.X(), d.Y(), d.Z()};
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    m[i * 3 + j] += x[i] * x[j];
+        }
+        detail::lsq_sym3_eigen(m, w, v);
+        rOut.mOrigin = c;
+        rOut.mAxis = gp_XYZ(v[0], v[1], v[2]);  // the smallest spread: the normal
+        rOut.mE1 = gp_XYZ(v[6], v[7], v[8]);
+        rOut.mE2 = rOut.mAxis.Crossed(rOut.mE1);
+        for (const gp_Pnt& p : rPts) {
+            const gp_XYZ d = p.XYZ() - c;
+            rOut.mS.push_back(d.Dot(rOut.mE1));
+            rOut.mT.push_back(d.Dot(rOut.mE2));
+            rOut.mH.push_back(d.Dot(rOut.mAxis));
+        }
+        return true;
+    }
+    for (std::size_t f = 0; f < rNormals.size(); ++f) {
+        const double x[3] = {rNormals[f].X(), rNormals[f].Y(), rNormals[f].Z()};
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += rAreas[f] * x[i] * x[j];
+    }
+    detail::lsq_sym3_eigen(m, w, v);
+    gp_XYZ axis(v[0], v[1], v[2]);
+    if (axis.Modulus() < 0.5)
+        return false;
+    axis.Normalize();
+    gp_XYZ e1, e2;
+    fc_frame(axis, e1, e2);
+    // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
+    double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
+    for (const gp_Pnt& p : rPts) {
+        const gp_XYZ d = p.XYZ() - c;
+        const double x = d.Dot(e1), y = d.Dot(e2), r[3] = {x, y, 1.0};
+        const double rhs = -(x * x + y * y);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j)
+                a[i * 3 + j] += r[i] * r[j];
+            b[i] += r[i] * rhs;
+        }
+    }
+    // Solve the 3x3 normal equations by Cramer's rule.
+    auto det3 = [](const double* q) {
+        return q[0] * (q[4] * q[8] - q[5] * q[7]) - q[1] * (q[3] * q[8] - q[5] * q[6]) +
+               q[2] * (q[3] * q[7] - q[4] * q[6]);
+    };
+    const double d0 = det3(a);
+    if (!(std::fabs(d0) > 0.0))
+        return false;
+    double sol[3];
+    for (int k = 0; k < 3; ++k) {
+        double q[9];
+        std::copy(a, a + 9, q);
+        for (int i = 0; i < 3; ++i)
+            q[i * 3 + k] = b[i];
+        sol[k] = det3(q) / d0;
+    }
+    const double cx = -sol[0] / 2.0, cy = -sol[1] / 2.0;
+    const double r2 = cx * cx + cy * cy - sol[2];
+    if (!(r2 > 0.0) || !std::isfinite(r2))
+        return false;
+    const double radius = std::sqrt(r2);
+    const gp_XYZ origin = c + e1 * cx + e2 * cy;
+    std::vector<double> theta(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const gp_XYZ d = rPts[i].XYZ() - origin;
+        theta[i] = std::atan2(d.Dot(e2), d.Dot(e1));
+    }
+    // Cut the circle in the widest gap between the points' angles.
+    std::vector<double> sorted = theta;
+    std::sort(sorted.begin(), sorted.end());
+    double gap = sorted.front() + 2.0 * kFcPi - sorted.back(), cut = sorted.back();
+    for (std::size_t i = 1; i < sorted.size(); ++i)
+        if (sorted[i] - sorted[i - 1] > gap) {
+            gap = sorted[i] - sorted[i - 1];
+            cut = sorted[i - 1];
+        }
+    if (!(gap > 1e-6))
+        return false;
+    rOut.mCylinder = true;
+    rOut.mOrigin = origin;
+    rOut.mAxis = axis;
+    rOut.mE1 = e1;
+    rOut.mE2 = e2;
+    rOut.mRadius = radius;
+    rOut.mTheta0 = cut + gap / 2.0;  // the parameter starts just past the gap's middle
+    for (std::size_t i = 0; i < n; ++i) {
+        double th = theta[i] - rOut.mTheta0;
+        th -= 2.0 * kFcPi * std::floor(th / (2.0 * kFcPi));
+        const gp_XYZ d = rPts[i].XYZ() - origin;
+        rOut.mS.push_back(radius * th);
+        rOut.mT.push_back(d.Dot(axis));
+        const gp_XYZ radial = d - axis * d.Dot(axis);
+        rOut.mH.push_back(radial.Modulus() - radius);
+    }
+    return true;
+}
+
+// A B-spline face surface for a patch no primitive explains, or a null handle.
+// @p rTris: the patch's triangles as local vertex indices; @p rPts: its points.
+FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
+                                   const std::vector<std::array<std::size_t, 3> >& rTris,
+                                   double Tol, int Degree, std::int64_t MaxControl) {
+    const std::size_t nt = rTris.size();
+    if (rPts.size() < 4 || nt < 2)
+        return {};
+    std::vector<gp_XYZ> normals(nt);
+    std::vector<double> areas(nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const gp_XYZ e1 = rPts[rTris[t][1]].XYZ() - rPts[rTris[t][0]].XYZ();
+        const gp_XYZ e2 = rPts[rTris[t][2]].XYZ() - rPts[rTris[t][0]].XYZ();
+        gp_XYZ nrm = e1.Crossed(e2);
+        areas[t] = 0.5 * nrm.Modulus();
+        if (nrm.Modulus() > 0.0)
+            nrm.Normalize();
+        normals[t] = nrm;
+    }
+    // Boundary edges: those one triangle has.
+    std::map<std::pair<std::size_t, std::size_t>, int> edge_count;
+    for (const auto& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            ++edge_count[{std::min(a, b), std::max(a, b)}];
+        }
+    std::vector<std::pair<std::size_t, std::size_t> > boundary;
+    for (const auto& kv : edge_count)
+        if (kv.second == 1)
+            boundary.push_back(kv.first);
+
+    for (int kind = 0; kind < 2; ++kind) {
+        FcFlat flat;
+        if (!fc_flatten(kind, rPts, normals, areas, flat))
+            continue;
+        // A fold (triangles of both orientations) means this flattening is not
+        // a parametrisation of the patch.
+        double max_area = 0.0, pos = 0.0, neg = 0.0;
+        std::vector<double> signed_area(nt);
+        for (std::size_t t = 0; t < nt; ++t) {
+            const auto& tr = rTris[t];
+            const double ax = flat.mS[tr[1]] - flat.mS[tr[0]], ay = flat.mT[tr[1]] - flat.mT[tr[0]];
+            const double bx = flat.mS[tr[2]] - flat.mS[tr[0]], by = flat.mT[tr[2]] - flat.mT[tr[0]];
+            signed_area[t] = 0.5 * (ax * by - ay * bx);
+            max_area = std::max(max_area, std::fabs(signed_area[t]));
+            (signed_area[t] > 0.0 ? pos : neg) += std::fabs(signed_area[t]);
+        }
+        const double sign = pos >= neg ? 1.0 : -1.0;
+        bool folds = !(max_area > 0.0);
+        for (double sa : signed_area)
+            folds = folds || sa * sign < -1e-9 * max_area;
+        if (folds) {
+            log::debug("fit_cad: a freeform patch folds over its {}", kind ? "cylinder" : "plane");
+            continue;
+        }
+        double s0 = flat.mS[0], s1 = s0, t0 = flat.mT[0], t1 = t0;
+        for (std::size_t i = 0; i < rPts.size(); ++i) {
+            s0 = std::min(s0, flat.mS[i]);
+            s1 = std::max(s1, flat.mS[i]);
+            t0 = std::min(t0, flat.mT[i]);
+            t1 = std::max(t1, flat.mT[i]);
+        }
+        if (!(s1 > s0) || !(t1 > t0))
+            continue;
+        // Bins over the triangles in (s, t), for locating grid points.
+        const std::size_t nb = std::max<std::size_t>(
+            1, static_cast<std::size_t>(std::sqrt(static_cast<double>(nt))));
+        std::vector<std::vector<std::size_t> > bins(nb * nb);
+        auto bin = [&](double S, double T, std::size_t& rI, std::size_t& rJ) {
+            rI = std::min(nb - 1, static_cast<std::size_t>(std::max(0.0, (S - s0) / (s1 - s0) * nb)));
+            rJ = std::min(nb - 1, static_cast<std::size_t>(std::max(0.0, (T - t0) / (t1 - t0) * nb)));
+        };
+        for (std::size_t t = 0; t < nt; ++t) {
+            double ls = flat.mS[rTris[t][0]], hs = ls, lt = flat.mT[rTris[t][0]], ht = lt;
+            for (std::size_t k = 1; k < 3; ++k) {
+                ls = std::min(ls, flat.mS[rTris[t][k]]);
+                hs = std::max(hs, flat.mS[rTris[t][k]]);
+                lt = std::min(lt, flat.mT[rTris[t][k]]);
+                ht = std::max(ht, flat.mT[rTris[t][k]]);
+            }
+            std::size_t i0, j0, i1, j1;
+            bin(ls, lt, i0, j0);
+            bin(hs, ht, i1, j1);
+            for (std::size_t j = j0; j <= j1; ++j)
+                for (std::size_t i = i0; i <= i1; ++i)
+                    bins[j * nb + i].push_back(t);
+        }
+        // The offset at (S, T): interpolated inside the patch, else that of the
+        // nearest boundary point.
+        auto height = [&](double S, double T) {
+            std::size_t bi, bj;
+            bin(S, T, bi, bj);
+            for (std::size_t t : bins[bj * nb + bi]) {
+                const auto& tr = rTris[t];
+                const double x0 = flat.mS[tr[0]], y0 = flat.mT[tr[0]];
+                const double ax = flat.mS[tr[1]] - x0, ay = flat.mT[tr[1]] - y0;
+                const double bx = flat.mS[tr[2]] - x0, by = flat.mT[tr[2]] - y0;
+                const double det = ax * by - ay * bx;
+                if (det == 0.0)
+                    continue;
+                const double l1 = ((S - x0) * by - (T - y0) * bx) / det;
+                const double l2 = (ax * (T - y0) - ay * (S - x0)) / det;
+                const double l0 = 1.0 - l1 - l2;
+                const double eps = -1e-12;
+                if (l0 >= eps && l1 >= eps && l2 >= eps)
+                    return l0 * flat.mH[tr[0]] + l1 * flat.mH[tr[1]] + l2 * flat.mH[tr[2]];
+            }
+            double best = std::numeric_limits<double>::infinity(), h = 0.0;
+            for (const auto& e : boundary) {
+                const double x0 = flat.mS[e.first], y0 = flat.mT[e.first];
+                const double dx = flat.mS[e.second] - x0, dy = flat.mT[e.second] - y0;
+                const double len2 = dx * dx + dy * dy;
+                double u = len2 > 0.0 ? ((S - x0) * dx + (T - y0) * dy) / len2 : 0.0;
+                u = std::clamp(u, 0.0, 1.0);
+                const double qx = x0 + u * dx - S, qy = y0 + u * dy - T;
+                const double d2 = qx * qx + qy * qy;
+                if (d2 < best) {
+                    best = d2;
+                    h = (1.0 - u) * flat.mH[e.first] + u * flat.mH[e.second];
+                }
+            }
+            return h;
+        };
+        const double aspect = (t1 - t0) / (s1 - s0);
+        const std::int64_t g_min = std::max<std::int64_t>(Degree + 1, 4);
+        std::int64_t g = std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(std::sqrt(static_cast<double>(rPts.size()))), g_min,
+            MaxControl);
+        for (;; g = std::min(MaxControl, 2 * g)) {
+            const std::int64_t nu =
+                std::clamp<std::int64_t>(static_cast<std::int64_t>(std::lround(
+                                             static_cast<double>(g) / std::sqrt(aspect))),
+                                         g_min, MaxControl);
+            const std::int64_t nv =
+                std::clamp<std::int64_t>(static_cast<std::int64_t>(std::lround(
+                                             static_cast<double>(g) * std::sqrt(aspect))),
+                                         g_min, MaxControl);
+            TColgp_Array2OfPnt grid(1, static_cast<int>(nu), 1, static_cast<int>(nv));
+            for (std::int64_t j = 0; j < nv; ++j)
+                for (std::int64_t i = 0; i < nu; ++i) {
+                    const double S = s0 + (s1 - s0) * static_cast<double>(i) / static_cast<double>(nu - 1);
+                    const double T = t0 + (t1 - t0) * static_cast<double>(j) / static_cast<double>(nv - 1);
+                    grid.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
+                                  flat.At(S, T, height(S, T)));
+                }
+            try {
+                // Iso-parametric: the grid's (i, j) are the surface's
+                // parameters, so (s, t) maps to (u, v) affinely and a point is
+                // checked by one evaluation instead of a projection.
+                GeomAPI_PointsToBSplineSurface fit(grid, Approx_IsoParametric, std::min(3, Degree),
+                                                   Degree, GeomAbs_C2, 0.1 * Tol);
+                if (fit.IsDone()) {
+                    FcHandle<Geom_Surface> surf(fit.Surface());
+                    double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+                    surf->Bounds(u0, u1, v0, v1);
+                    // Within half the tolerance at every vertex, and within it
+                    // at every facet centre (the surface point at the same
+                    // (s, t), no nearer than the closest one): the face is held
+                    // to the tolerance between vertices later, where a smooth
+                    // surface is a facet's chordal error away from it, so a fit
+                    // loose there would only be demoted. `worst` is the
+                    // excess over each point's allowance, in tolerances.
+                    double worst = 0.0;
+                    for (std::size_t k = 0; k < rPts.size() + nt && worst <= 1.0; ++k) {
+                        gp_Pnt p;
+                        double S = 0.0, T = 0.0;
+                        if (k < rPts.size()) {
+                            p = rPts[k];
+                            S = flat.mS[k];
+                            T = flat.mT[k];
+                        } else {
+                            const auto& tr = rTris[k - rPts.size()];
+                            S = (flat.mS[tr[0]] + flat.mS[tr[1]] + flat.mS[tr[2]]) / 3.0;
+                            T = (flat.mT[tr[0]] + flat.mT[tr[1]] + flat.mT[tr[2]]) / 3.0;
+                            p = gp_Pnt((rPts[tr[0]].XYZ() + rPts[tr[1]].XYZ() + rPts[tr[2]].XYZ()) /
+                                       3.0);
+                        }
+                        const double u = u0 + (S - s0) / (s1 - s0) * (u1 - u0);
+                        const double v = v0 + (T - t0) / (t1 - t0) * (v1 - v0);
+                        const double allowance = k < rPts.size() ? 0.5 * Tol : Tol;
+                        worst = std::max(worst, surf->Value(u, v).Distance(p) / allowance);
+                    }
+                    if (worst <= 1.0)
+                        return surf;
+                    log::debug("fit_cad: a {}x{} freeform grid leaves the patch {} of its "
+                               "allowance away",
+                               nu, nv, worst);
+                }
+            } catch (const Standard_Failure&) {
+            }
+            if (g >= MaxControl)
+                break;
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
@@ -157959,6 +161688,11 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                                     "types may name only plane, sphere, cylinder, cone and torus");
     if (rOptions.mMaxDemotionRounds < 0)
         throw std::invalid_argument(std::string(kFcPrefix) + "max_demotion_rounds must be >= 0");
+    if (rOptions.mFreeformDegree < 3 || rOptions.mFreeformDegree > 8)
+        throw std::invalid_argument(std::string(kFcPrefix) + "freeform_degree must be 3 to 8");
+    if (rOptions.mFreeformMaxControl < 4 || rOptions.mFreeformMaxControl > 1024)
+        throw std::invalid_argument(std::string(kFcPrefix) +
+                                    "freeform_max_control must be 4 to 1024");
 
     detail::LibraryLock lock;
     FcQuietMessenger quiet;
@@ -158166,6 +161900,64 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         }
     }
 
+    // Freeform faces (roadmap 6.3.2): a B-spline for each patch no primitive
+    // explains, oriented like the analytic ones.
+    std::int64_t num_freeform_tried = 0;
+    for (std::size_t r = 0; rOptions.mFreeform && r < m; ++r) {
+        FcPatch& p = skin.mPatches[r];
+        bool finite = true;
+        for (double x : p.mParams)
+            finite = finite && std::isfinite(x);
+        if (facets_of[r].empty() || analytic[r] || (p.mType >= 1 && p.mType <= 5 && finite))
+            continue;
+        ++num_freeform_tried;
+        std::unordered_map<std::int64_t, std::size_t> local;
+        std::vector<gp_Pnt> pts;
+        std::vector<std::array<std::size_t, 3> > tris;
+        auto vid = [&](std::int64_t V) {
+            auto ins = local.emplace(V, pts.size());
+            if (ins.second)
+                pts.push_back(fc_point(fc.mXyz, V));
+            return ins.first->second;
+        };
+        for (std::size_t f : facets_of[r]) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
+            for (std::int64_t k = 1; k + 1 < n; ++k)
+                tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
+                                vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+        }
+        try {
+            FcHandle<Geom_Surface> s =
+                fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
+            if (s.IsNull())
+                continue;
+            const std::size_t step = std::max<std::size_t>(1, facets_of[r].size() / 64);
+            double agree = 0.0;
+            for (std::size_t i = 0; i < facets_of[r].size(); i += step) {
+                const std::size_t f = facets_of[r][i];
+                gp_XYZ c(0.0, 0.0, 0.0);
+                for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                    c += fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]).XYZ();
+                c /= static_cast<double>(fc.mStart[f + 1] - fc.mStart[f]);
+                const gp_Vec nrm = fc_normal_at(s, gp_Pnt(c));
+                agree += nrm.X() * fc.mNormals[f * 3] + nrm.Y() * fc.mNormals[f * 3 + 1] +
+                         nrm.Z() * fc.mNormals[f * 3 + 2];
+            }
+            if (agree < 0.0)
+                s = s->UReversed();
+            surface[r] = s;
+            analytic[r] = 1;
+            p.mType = static_cast<std::int32_t>(kFitCadBsplineType);
+            p.mAccepted = true;
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: no freeform face for patch {}: {}", p.mLabel,
+                       rErr.GetMessageString());
+        }
+    }
+    if (num_freeform_tried > 0)
+        log::debug("fit_cad: {} patch(es) tried as freeform B-spline faces", num_freeform_tried);
+
     // Build, check, demote and rebuild.
     FcBuild build;
     FcTriangulation tri;
@@ -158299,6 +162091,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             case 5:
                 ++result.mNumTorus;
                 break;
+            case kFitCadBsplineType:
+                ++result.mNumBspline;
+                break;
             default:
                 ++result.mNumFacetedFaces;
                 break;
@@ -158335,6 +162130,13 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::warn("fit_cad: the solid does not pass OpenCASCADE's B-rep check");
     if (result.mNumDemoted > 0)
         log::info("fit_cad: {} fitted patch(es) demoted to facets", result.mNumDemoted);
+    // The solid as NURBS, its faces in the order fit_cad:face numbers them.
+    try {
+        result.mBrep = detail::occt_brep_info(detail::occt_nurbs_shape(build.mShape));
+    } catch (const Standard_Failure& rErr) {
+        log::warn("fit_cad: the solid could not be converted to NURBS: {}",
+                  rErr.GetMessageString());
+    }
     if (!rStepPath.empty())
         fc_write_step(build.mShape, rStepPath);
     return result;
@@ -165928,7 +169730,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
-         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds"}},
+         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
+          "Freeform", "FreeformDegree", "FreeformMaxControl"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -166626,6 +170429,10 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             static_cast<std::int64_t>(pipe_number(rStep, "MaxDemotionRounds", 8.0));
         if (pipe_find(rStep, "Types"))
             opts.mTypes = pipe_fit_types(rStep);
+        opts.mFreeform = pipe_flag(rStep, "Freeform", true);
+        opts.mFreeformDegree = static_cast<std::int32_t>(pipe_number(rStep, "FreeformDegree", 3.0));
+        opts.mFreeformMaxControl =
+            static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControl", 64.0));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         pipe_push_step(rReport, rStep,
                        {{"Valid", cr.mValid ? 1.0 : 0.0},
@@ -166633,6 +170440,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"MaxDeviation", cr.mMaxDeviation},
                         {"NumFaces", static_cast<double>(cr.mNumFaces)},
                         {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
                         {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
         return std::move(cr.mMesh);
     }
@@ -181691,6 +185499,13 @@ std::string sniff_format(const std::string& rPath) {
         sniff_starts_with(stripped, "MFEM NURBS mesh") ||
         sniff_starts_with(stripped, "MFEM INLINE mesh"))
         return "mfem";
+    // Kratos CAD JSON: an object with a "breps" list (CadJsonInput), or the
+    // "Surfaces"/"Lines" lists of control points ImportNurbsSbmModeler reads.
+    if (sniff_starts_with(stripped, "{") &&
+        (sniff_contains(head, "\"breps\"") ||
+         ((sniff_contains(head, "\"Surfaces\"") || sniff_contains(head, "\"Lines\"")) &&
+          sniff_contains(head, "\"CPCoordinates\""))))
+        return "cad_json";
     if (sniff_starts_with(stripped, "libMesh-"))
         return "libmesh";
     if (sniff_is_abaqus_fil_ascii(stripped))
@@ -185398,7 +189213,13 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // cannot write GiD at all, yet read the ascii flavour fine. For the
         // same reason gid must NOT appear in registry_compiled_out(): there is
         // no missing dependency to name.
+        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
+        {"cad_json", [](const std::string& p) { return meshioplusplus::read_cad_json(p); }},
         {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
+        // IGES and STEP read through the optional OpenCASCADE backend
+        // (roadmap 6.2.1); registered either way, so a build without it
+        // throws Unsupported naming the flag instead of "unknown format".
+        {"iges", [](const std::string& p) { return meshioplusplus::read_iges(p); }},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
@@ -185425,6 +189246,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"permas", meshioplusplus::read_permas},
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
+        {"step", [](const std::string& p) { return meshioplusplus::read_step(p); }},
         {"su2", meshioplusplus::read_su2},
         // 2-D drawings, read only as the structure meshio++ writes; both take a
         // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
@@ -185552,6 +189374,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // gmsh:physical from Cell regions when the mesh has none of its own.
         // Was reachable only from Python (gmsh22_write) until this entry; the
         // flat bindings (WASM/C API/Fortran) had no way to select it at all.
+        {"cad_json",
+         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
         {"gmsh22", [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
@@ -185582,7 +189406,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
-        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.1).
+        // STEP is read through the optional OpenCASCADE backend (roadmap
+        // §6.2.1) and written as a faceted solid without it.
         {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
@@ -185805,10 +189630,14 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         // throws naming the missing build flags, which is strictly better
         // than ".post.msh" silently resolving to another format.
         {".post.msh", "gid"},
+        // Kratos CAD JSON; a bare ".json" stays unclaimed (sniffed by content).
+        {".cad.json", "cad_json"},
         {".post.res", "gid"},
         {".post.bin", "gid"},
         {".post.h5", "gid"},
         {".ply", "ply"},
+        {".igs", "iges"},
+        {".iges", "iges"},
         {".step", "step"},
         {".stl", "stl"},
         {".stp", "step"},

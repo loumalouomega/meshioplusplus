@@ -533,6 +533,13 @@ std::string sniff_format(const std::string& rPath) {
         sniff_starts_with(stripped, "MFEM NURBS mesh") ||
         sniff_starts_with(stripped, "MFEM INLINE mesh"))
         return "mfem";
+    // Kratos CAD JSON: an object with a "breps" list (CadJsonInput), or the
+    // "Surfaces"/"Lines" lists of control points ImportNurbsSbmModeler reads.
+    if (sniff_starts_with(stripped, "{") &&
+        (sniff_contains(head, "\"breps\"") ||
+         ((sniff_contains(head, "\"Surfaces\"") || sniff_contains(head, "\"Lines\"")) &&
+          sniff_contains(head, "\"CPCoordinates\""))))
+        return "cad_json";
     if (sniff_starts_with(stripped, "libMesh-"))
         return "libmesh";
     if (sniff_is_abaqus_fil_ascii(stripped))

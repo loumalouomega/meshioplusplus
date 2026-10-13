@@ -38,8 +38,10 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/step.hpp"
+#include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
@@ -193,7 +195,13 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // cannot write GiD at all, yet read the ascii flavour fine. For the
         // same reason gid must NOT appear in registry_compiled_out(): there is
         // no missing dependency to name.
+        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
+        {"cad_json", [](const std::string& p) { return meshioplusplus::read_cad_json(p); }},
         {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
+        // IGES and STEP read through the optional OpenCASCADE backend
+        // (roadmap 6.2.1); registered either way, so a build without it
+        // throws Unsupported naming the flag instead of "unknown format".
+        {"iges", [](const std::string& p) { return meshioplusplus::read_iges(p); }},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
@@ -220,6 +228,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"permas", meshioplusplus::read_permas},
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
+        {"step", [](const std::string& p) { return meshioplusplus::read_step(p); }},
         {"su2", meshioplusplus::read_su2},
         // 2-D drawings, read only as the structure meshio++ writes; both take a
         // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
@@ -347,6 +356,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // gmsh:physical from Cell regions when the mesh has none of its own.
         // Was reachable only from Python (gmsh22_write) until this entry; the
         // flat bindings (WASM/C API/Fortran) had no way to select it at all.
+        {"cad_json",
+         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
         {"gmsh22", [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
@@ -377,7 +388,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
-        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.1).
+        // STEP is read through the optional OpenCASCADE backend (roadmap
+        // §6.2.1) and written as a faceted solid without it.
         {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
@@ -600,10 +612,14 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         // throws naming the missing build flags, which is strictly better
         // than ".post.msh" silently resolving to another format.
         {".post.msh", "gid"},
+        // Kratos CAD JSON; a bare ".json" stays unclaimed (sniffed by content).
+        {".cad.json", "cad_json"},
         {".post.res", "gid"},
         {".post.bin", "gid"},
         {".post.h5", "gid"},
         {".ply", "ply"},
+        {".igs", "iges"},
+        {".iges", "iges"},
         {".step", "step"},
         {".stl", "stl"},
         {".stp", "step"},

@@ -466,6 +466,16 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
+    "cad_json": {
+        "cells": {"line": "exact", "quad": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Kratos IGA geometry: without a B-rep side channel, quads are written as "
+        "bilinear NURBS faces and lines as edges.",
+    },
     "cae": {
         "cells": {
             "triangle": "lost",
@@ -1209,8 +1219,20 @@ SPEC: dict[str, dict] = {
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
     "step": {
-        "error": "write-only",
-        "note": "A faceted B-rep solid for CAD tools; a reader needs a CAD kernel (roadmap §6.2.1).",
+        "cells": {
+            "tetra": "as triangle",
+            "hexahedron": "as triangle",
+            "wedge": "as triangle",
+            "pyramid": "as triangle",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A faceted B-rep solid for CAD tools, read back through the optional "
+        "OpenCASCADE backend as its triangulation: volume cells come back as their "
+        "skin, and data is not kept. Checked only in a build with the backend.",
     },
     "stl": {
         "cells": {
@@ -1570,6 +1592,10 @@ _GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
 _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
     "abaqus_fil": _GAP.format(item="3.2.6", why=_RESULT.format(tool="Abaqus")),
+    "iges": (
+        "Exempt, not a gap: a CAD exchange format read through the optional "
+        "OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes."
+    ),
     "ansys_rst": _GAP.format(item="3.2.5", why=_RESULT.format(tool="Ansys")),
     "ansys_rst_cyclic": (
         "Exempt, not a gap: not a file of its own but the full rotor that a static "
@@ -1603,10 +1629,6 @@ READ_ONLY = {
 # an exemption, like `ansys_rst_cyclic` above, not a gap.
 WRITE_ONLY = {
     "gltf": "Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader.",
-    "step": (
-        "Exempt, not a gap: reading STEP means a CAD kernel (roadmap §6.2.1). The faceted "
-        "writer is the CAD hand-off of the skin-to-CAD work (roadmap §6.3)."
-    ),
 }
 
 

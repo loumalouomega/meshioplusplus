@@ -23,6 +23,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — | [read-only](./conformance.md#ansys-rst) |
 | [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — | [read-only](./conformance.md#ansys-rst-cyclic) |
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#avsucd) |
+| [`cad_json`](./formats/cad_json.md) | `.cad.json` (Kratos IGA geometry; a `.json` by content) | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#cad-json) |
 | [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#cae) |
 | [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` | [8/8 cells · data P](./conformance.md#cgns) |
 | [`code_aster`](./formats/code_aster.md) | `.mail` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#code-aster) |
@@ -42,6 +43,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | [8/8 cells · data PCF · regions C](./conformance.md#gmsh) |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |
+| [`iges`](./formats/iges.md) | `.igs`, `.iges` | ✓ (OpenCASCADE) | — | OpenCASCADE | [read-only](./conformance.md#iges) |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#ip) |
 | [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading needs zlib; bzip2 and compressed writing are Python-only | [8/8 cells · no data · regions CPS](./conformance.md#libmesh) |
 | [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — | [8/8 cells · no data · regions CPS](./conformance.md#lsdyna) |
@@ -76,7 +78,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
 | [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#radioss-th) |
-| [`step`](./formats/step.md) | `.step`, `.stp` | — | ✓ | — | [write-only](./conformance.md#step) |
+| [`step`](./formats/step.md) | `.step`, `.stp` | ✓ (OpenCASCADE) | ✓ | reading: OpenCASCADE | [0/8 cells · no data](./conformance.md#step) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
 | [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |
@@ -170,7 +172,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `gltf`** (v15.4.0): Write-only. The **surface** of the mesh as glTF 2.0 for the web, three.js and Blender — the skin of volume cells, 2-D cells, `line` cells as `LINES` and `vertex` cells or a cell-less point cloud as `POINTS`, one named node per cell region. `.glb` writes the binary container, `.gltf` JSON with a `.bin` beside it. Normals are per vertex, so points are duplicated at creases (`split_angle`, sharing the smooth-fan kernel of [`compute_normals`](./normals.md)); every one-to-four component `point_data` array is exported raw as `_NAME`; `color_by` bakes a field through a colormap into linear `COLOR_0` with an unlit material. Y-up, `float32`; the axis change, unit scale and recentring offset live on the root node, not in the coordinates. The C++ core and the Python reference write identical bytes and the output passes the Khronos glTF-Validator with zero errors and warnings; see [glTF](./formats/gltf.md).
 
-**Note on `step`** (unreleased): Write-only. A closed, consistently wound surface — or a volume mesh's skin — as an AP214 faceted solid that CAD tools open: one planar `ADVANCED_FACE` per facet over shared `EDGE_CURVE`s, one `MANIFOLD_SOLID_BREP` per edge-connected piece, in millimetres. An open, non-manifold or inconsistently wound edge is refused by name; run `repair` first. No reader: that needs a CAD kernel. The C++ core and the Python reference write identical bytes, and OpenCASCADE 8.0.1 reads every test file as a valid solid of the right volume; see [STEP](./formats/step.md) and [skin to CAD](./cad_fit.md).
+**Note on `step`** (v16.39.0): A closed, consistently wound surface — or a volume mesh's skin — as an AP214 faceted solid that CAD tools open: one planar `ADVANCED_FACE` per facet over shared `EDGE_CURVE`s, one `MANIFOLD_SOLID_BREP` per edge-connected piece, in millimetres. An open, non-manifold or inconsistently wound edge is refused by name; run `repair` first. Reading needs the optional OpenCASCADE backend, which returns the triangulation and the NURBS B-rep. The C++ core and the Python reference write identical bytes, and OpenCASCADE 8.0.1 reads every test file as a valid solid of the right volume; see [STEP](./formats/step.md) and [skin to CAD](./cad_fit.md).
 
 **Note on `svg`:** A 2-D drawing: it is read back only as the structure meshio++'s own writer emits, as a planar mesh (`z = 0`, one `svg:fill` RGB array if the paths were coloured), and a file without meshio++'s marker comment is refused unless `strict=False`. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
 
@@ -222,6 +224,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `ansys` | Section `(0 "text")` is the format's own comment section | Anywhere before `(0 ...)` sections | Yes (writer uses the `(1 "...")` program/version record, not a `(0 ...)` comment) |
 | `ansysInp` | `!` or `/` prefix | Anywhere | — |
 | `avsucd` | `#` prefix | Top of file | Yes |
+| `cad_json` | `//` and `/* ... */` comments (Kratos's `Parameters` parser accepts them; strict JSON does not) | Anywhere between tokens | — (a comment would break strict JSON readers) |
 | `cae` | A bytes array written as the archive's **first** zip member; NUL-padded rows | The file's first bytes, so the ordinary head scanner finds it | Yes |
 | `cgns` | None (HDF5/CGNS binary container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
 | `code_aster` | `%` prefix | Anywhere; the writer puts it first | Yes |
@@ -262,7 +265,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `permas` | `!` prefix | Top of file | Yes |
 | `ply` | `comment ` prefix (the format's own keyword) | Anywhere in the header, before `end_header` | Yes |
 | `pmsh` | None — a memmap directory has no free-text field, and a sidecar would add a file upstream's own loader never wrote | n/a | — |
-| `step` | A `/* ... */` comment block after `ISO-10303-21;` | Before `HEADER;` | — (write-only) |
+| `step` | A `/* ... */` comment block after `ISO-10303-21;` | Before `HEADER;` | Yes (the OpenCASCADE reader skips it) |
 | `stl` | Binary: an 80-byte free header slot. ASCII: none (the `solid` line names the object, not a comment) | Binary: the first 80 bytes. ASCII: none | Yes (binary only) |
 | `su2` | `%` prefix | Anywhere | — |
 | `usd` | The root layer's `documentation` metadata field | Stage metadata, at the top of a `.usda` | Yes (a binary crate layer needs `usd-core` to read it back) |

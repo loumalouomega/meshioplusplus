@@ -1388,6 +1388,54 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
     assert os.path.exists(tmp_path / "solid.vtu")
 
 
+def test_cad_json_brep_rides_through_convert(tmp_path):
+    src = str(
+        pathlib.Path(__file__).parent
+        / "meshes"
+        / "cad_json"
+        / "plate_with_hole.cad.json"
+    )
+    out = _dump(_tools.tool_convert(src, str(tmp_path / "copy.cad.json")))
+    assert out["brep"] == {
+        "faces": 1,
+        "trimmed_faces": 1,
+        "rational_faces": 0,
+        "loops": 2,
+        "edges": 8,
+        "vertices": 0,
+    }
+    # the side channel, not the sampling, is what was written
+    again = meshioplusplus.read(tmp_path / "copy.cad.json")
+    assert len(again.info["brep"]["faces"][0]["loops"]) == 2
+    assert "cad_json" in _tools.tool_formats()["writable"]
+
+
+def test_fit_cad_tool_writes_kratos_cad_json(tmp_path):
+    from meshioplusplus._fit_cad import has_occt
+
+    if not has_occt():
+        pytest.skip("needs a core built with OpenCASCADE")
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "cube.step"),
+                "cad_json_output_path": str(tmp_path / "cube.cad.json"),
+                "freeform": False,
+            },
+        )
+    )
+    assert out["num_bspline"] == 0
+    assert out["cad_json_path"].endswith("cube.cad.json")
+    assert out["brep"]["faces"] == 6 and out["brep"]["edges"] == 12
+    assert (
+        len(meshioplusplus.read(tmp_path / "cube.cad.json").info["brep"]["faces"]) == 6
+    )
+
+
 def test_feature_edges_and_hausdorff(tmp_path):
     src = str(tmp_path / "cube.vtu")
     meshioplusplus.write(src, _unit_cube_quads())

@@ -30,6 +30,9 @@
 #include <vector>
 
 #include <hdf5.h>
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -1312,6 +1315,212 @@ TEST(H5Util, AppendableDatasetIsChunkedAndGrowsAlongAxisZero) {
         EXPECT_EQ(u.template As<std::int64_t>()[i], i);
     auto flat = h5::read_dataset_rows(file, "flat", 1, 3);
     EXPECT_EQ(flat.template As<std::int64_t>()[0], 11);
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+namespace {
+// Writes "d" as one chunk of `n` elements of `elem` bytes with the deflate filter, and
+// the `payload` bytes as the chunk: deflated by zlib with the filter applied (`deflated`),
+// or stored as given with the filter skipped. `shuffle` puts the byte shuffle first.
+void write_one_chunk(const std::string& rPath, std::size_t elem, hsize_t n, std::size_t payload,
+                     bool deflated, bool shuffle) {
+    std::vector<unsigned char> raw(payload);
+    for (std::size_t i = 0; i < payload; ++i)
+        raw[i] = static_cast<unsigned char>(i * 7 + 1);
+    if (shuffle) {
+        std::vector<unsigned char> sh(payload);
+        const std::size_t ne = payload / elem;
+        for (std::size_t i = 0; i < ne; ++i)
+            for (std::size_t b = 0; b < elem; ++b)
+                sh[b * ne + i] = raw[i * elem + b];
+        raw = sh;
+    }
+    std::vector<unsigned char> stored = raw;
+    if (deflated) {
+        uLongf cl = compressBound(static_cast<uLong>(payload));
+        stored.resize(cl);
+        ASSERT_EQ(compress2(stored.data(), &cl, raw.data(), static_cast<uLong>(payload), 6), Z_OK);
+        stored.resize(cl);
+    }
+    hid_t file = H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    hid_t type = H5Tcopy(H5T_STD_I64LE);
+    H5Tset_size(type, elem);
+    hsize_t dims[1] = {n};
+    hid_t space = H5Screate_simple(1, dims, nullptr);
+    hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+    H5Pset_chunk(dcpl, 1, dims);
+    if (shuffle)
+        H5Pset_shuffle(dcpl);
+    H5Pset_deflate(dcpl, 1);
+    hid_t dset = H5Dcreate2(file, "d", type, space, H5P_DEFAULT, dcpl, H5P_DEFAULT);
+    hsize_t offset[1] = {0};
+    // Filter mask 0: the bytes are already filtered. Mask 1: the deflate filter is skipped.
+    const herr_t rc =
+        H5Dwrite_chunk(dset, H5P_DEFAULT, deflated ? 0u : 1u, offset, stored.size(), stored.data());
+    H5Dclose(dset);
+    H5Pclose(dcpl);
+    H5Sclose(space);
+    H5Tclose(type);
+    H5Fclose(file);
+    ASSERT_GE(rc, 0);
+}
+}  // namespace
+
+// libhdf5 1.10 over-reads a deflated chunk that inflates shorter than its elements
+// take (the fuzzer's crash in tests/fuzz/regressions/xdmf): the read is refused first.
+TEST(H5Util, ADeflatedChunkThatInflatesShortIsRefusedBeforeTheRead) {
+    H5utilTempFile f(".h5");
+    write_one_chunk(f.mPath, 8, 40, 16, /*deflated=*/true, /*shuffle=*/false);
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_THROW(h5::read_dataset(file, "d"), meshioplusplus::ReadError);
+}
+
+TEST(H5Util, ADeflatedChunkOfWideElementsInflatingShortIsRefused) {
+    H5utilTempFile f(".h5");
+    write_one_chunk(f.mPath, 65, 3, 24, /*deflated=*/true, /*shuffle=*/false);
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_THROW(h5::read_dataset(file, "d"), meshioplusplus::ReadError);
+}
+
+// A chunk whose deflate filter was skipped holds its elements as stored, so the stored
+// record must be the whole chunk on a filtered dataset too.
+TEST(H5Util, ARawChunkOfAFilteredDatasetMustHoldItsWholeChunk) {
+    H5utilTempFile f(".h5");
+    write_one_chunk(f.mPath, 8, 40, 16, /*deflated=*/false, /*shuffle=*/false);
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_THROW(h5::read_dataset(file, "d"), meshioplusplus::ReadError);
+}
+
+TEST(H5Util, AShuffledDeflatedChunkIsVerifiedToo) {
+    H5utilTempFile shortf(".h5");
+    write_one_chunk(shortf.mPath, 8, 40, 16, /*deflated=*/true, /*shuffle=*/true);
+    h5::Hid short_file = h5::open_file_read(shortf.mPath);
+    EXPECT_THROW(h5::read_dataset(short_file, "d"), meshioplusplus::ReadError);
+}
+
+TEST(H5Util, WellFormedFilteredChunksStillRead) {
+    H5utilTempFile deflated(".h5");
+    write_one_chunk(deflated.mPath, 8, 40, 320, /*deflated=*/true, /*shuffle=*/false);
+    h5::Hid file = h5::open_file_read(deflated.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 40u);
+    H5utilTempFile shuffled(".h5");
+    write_one_chunk(shuffled.mPath, 8, 40, 320, /*deflated=*/true, /*shuffle=*/true);
+    h5::Hid shuffled_file = h5::open_file_read(shuffled.mPath);
+    EXPECT_EQ(h5::read_dataset(shuffled_file, "d").Size(), 40u);
+    H5utilTempFile raw(".h5");
+    write_one_chunk(raw.mPath, 8, 40, 320, /*deflated=*/false, /*shuffle=*/false);
+    h5::Hid raw_file = h5::open_file_read(raw.mPath);
+    EXPECT_EQ(h5::read_dataset(raw_file, "d").Size(), 40u);
+}
+
+namespace {
+// Writes "d" as deflated chunks of `chunk` 8-byte elements, one chunk per entry of
+// `rPayloads`: chunk i stores its payload deflated, so it inflates to that many bytes.
+void write_deflated_chunks(const std::string& rPath, hsize_t chunk,
+                           const std::vector<std::size_t>& rPayloads) {
+    hsize_t dims[1] = {chunk * rPayloads.size()};
+    hsize_t cdims[1] = {chunk};
+    hid_t file = H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    hid_t type = H5Tcopy(H5T_STD_I64LE);
+    hid_t space = H5Screate_simple(1, dims, nullptr);
+    hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+    H5Pset_chunk(dcpl, 1, cdims);
+    H5Pset_deflate(dcpl, 1);
+    hid_t dset = H5Dcreate2(file, "d", type, space, H5P_DEFAULT, dcpl, H5P_DEFAULT);
+    for (std::size_t i = 0; i < rPayloads.size(); ++i) {
+        std::vector<unsigned char> raw(rPayloads[i]);
+        for (std::size_t b = 0; b < raw.size(); ++b)
+            raw[b] = static_cast<unsigned char>(b * 7 + 1);
+        uLongf cl = compressBound(static_cast<uLong>(raw.size()));
+        std::vector<unsigned char> z(cl);
+        ASSERT_EQ(compress2(z.data(), &cl, raw.data(), static_cast<uLong>(raw.size()), 6), Z_OK);
+        hsize_t offset[1] = {static_cast<hsize_t>(i) * chunk};
+        ASSERT_GE(H5Dwrite_chunk(dset, H5P_DEFAULT, 0u, offset, cl, z.data()), 0);
+    }
+    H5Dclose(dset);
+    H5Pclose(dcpl);
+    H5Sclose(space);
+    H5Tclose(type);
+    H5Fclose(file);
+}
+}  // namespace
+
+// Only the chunks a row read reaches are verified: a slice of the valid chunk reads, a
+// slice reaching the short chunk is refused, and so is a read of the whole dataset.
+TEST(H5Util, ARowSliceVerifiesOnlyTheChunksItReads) {
+    H5utilTempFile f(".h5");
+    write_deflated_chunks(f.mPath, 40, {320, 16});  // chunk 1 inflates to 16 of 40 * 8 bytes
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset_rows(file, "d", 0, 40).Size(), 40u);
+    EXPECT_THROW(h5::read_dataset_rows(file, "d", 40, 40), meshioplusplus::ReadError);
+    EXPECT_THROW(h5::read_dataset_rows(file, "d", 39, 2), meshioplusplus::ReadError);
+    EXPECT_THROW(h5::read_dataset(file, "d"), meshioplusplus::ReadError);
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZLIB
+
+namespace {
+// Writes "d" as four int64 values in one chunk, with the filters `setup` adds.
+template <typename Setup>
+void write_four_values(const std::string& rPath, Setup setup) {
+    h5::Hid file = h5::create_file(rPath);
+    hsize_t dims[1] = {4};
+    h5::Hid space(H5Screate_simple(1, dims, nullptr), H5Sclose);
+    h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
+    H5Pset_chunk(dcpl, 1, dims);
+    setup(dcpl);
+    h5::Hid dset(H5Dcreate2(file, "d", H5T_STD_I64LE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
+                 H5Dclose);
+    const std::int64_t values[4] = {1, 2, 3, 4};
+    EXPECT_GE(H5Dwrite(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, values), 0);
+}
+}  // namespace
+
+// A pipeline meshio++ does not verify is read as libhdf5 always read it (NBIT here).
+TEST(H5Util, AnUnverifiedFilterIsReadAsLibhdf5ReadsIt) {
+    H5utilTempFile f(".h5");
+    write_four_values(f.mPath, [](hid_t dcpl) { H5Pset_nbit(dcpl); });
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 4u);
+}
+
+// MSC Nastran writes deflate followed by shuffle: that order is read unverified too.
+TEST(H5Util, DeflateThenShuffleIsReadUnverified) {
+    H5utilTempFile f(".h5");
+    write_four_values(f.mPath, [](hid_t dcpl) {
+        H5Pset_deflate(dcpl, 1);
+        H5Pset_shuffle(dcpl);
+    });
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 4u);
+}
+
+// libhdf5 verifies a trailing fletcher32 checksum and strips it; a valid chunk reads.
+TEST(H5Util, AValidFletcher32ChunkReads) {
+    H5utilTempFile f(".h5");
+    write_four_values(f.mPath, [](hid_t dcpl) { H5Pset_fletcher32(dcpl); });
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 4u);
+}
+
+// A raw chunk whose checksum was skipped holds its elements as stored: a short one is
+// refused before the read.
+TEST(H5Util, AShortRawChunkWithAFletcher32ChecksumIsRefused) {
+    H5utilTempFile f(".h5");
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        hsize_t dims[1] = {4};
+        h5::Hid space(H5Screate_simple(1, dims, nullptr), H5Sclose);
+        h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
+        H5Pset_chunk(dcpl, 1, dims);
+        H5Pset_fletcher32(dcpl);
+        h5::Hid dset(H5Dcreate2(file, "d", H5T_STD_I64LE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
+                     H5Dclose);
+        const unsigned char raw[16] = {};  // 16 bytes where 4 int64 values take 32
+        hsize_t offset[1] = {0};
+        ASSERT_GE(H5Dwrite_chunk(dset, H5P_DEFAULT, 1u, offset, sizeof raw, raw), 0);  // mask 1
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_THROW(h5::read_dataset(file, "d"), meshioplusplus::ReadError);
 }
 
 TEST(H5Util, RewriteDatasetOverwritesInPlaceAndRefusesAShapeChange) {

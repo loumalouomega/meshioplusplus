@@ -403,6 +403,15 @@ def _sniff_format_py(path) -> str:
         (b"MFEM mesh v1.", b"MFEM NC mesh", b"MFEM NURBS mesh", b"MFEM INLINE mesh")
     ):
         return "mfem"
+    # Kratos CAD JSON: an object with a "breps" list (CadJsonInput), or the
+    # "Surfaces"/"Lines" lists of control points ImportNurbsSbmModeler reads.
+    if stripped.startswith(b"{") and (
+        b'"breps"' in head
+        or (
+            (b'"Surfaces"' in head or b'"Lines"' in head) and b'"CPCoordinates"' in head
+        )
+    ):
+        return "cad_json"
     if stripped.startswith(b"libMesh-"):
         return "libmesh"
     if _is_abaqus_fil_ascii(stripped):

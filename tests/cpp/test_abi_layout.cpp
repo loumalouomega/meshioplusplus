@@ -68,6 +68,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/properties.hpp"
 #include "meshioplusplus/nurbs.hpp"
+#include "meshioplusplus/brep.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
@@ -214,6 +216,20 @@ MIO_ABI_LAYOUT(meshioplusplus::GmshPeriodicLink, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::NurbsPatch, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::NurbsTopology, 376, 8);
 MIO_ABI_LAYOUT(meshioplusplus::NurbsInfo, 640, 8);
+// The B-rep side channel (Kratos CAD JSON, STEP/IGES through OpenCASCADE),
+// pinned from the release that introduces it, with the read options passed by
+// const-ref through `read_cad_json()`, `read_step()` and `read_iges()`.
+MIO_ABI_LAYOUT(meshioplusplus::BrepCurve, 312, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepTrim, 360, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepLoop, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepRef, 112, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepFace, 240, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepEdge, 416, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepVertex, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::Brep, 144, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepInfo, 152, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CadJsonReadOptions, 12, 4);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
 // blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping
@@ -347,7 +363,8 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
-MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 32, 8);
+// ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes.
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 48, 8);
 
 // The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
 // TextOptions and SnapshotOptions are passed by const-ref through the exported
@@ -530,6 +547,17 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::NurbsPatch>("NurbsPatch");
     report<meshioplusplus::NurbsTopology>("NurbsTopology");
     report<meshioplusplus::NurbsInfo>("NurbsInfo");
+    report<meshioplusplus::BrepCurve>("BrepCurve");
+    report<meshioplusplus::BrepTrim>("BrepTrim");
+    report<meshioplusplus::BrepLoop>("BrepLoop");
+    report<meshioplusplus::BrepRef>("BrepRef");
+    report<meshioplusplus::BrepFace>("BrepFace");
+    report<meshioplusplus::BrepEdge>("BrepEdge");
+    report<meshioplusplus::BrepVertex>("BrepVertex");
+    report<meshioplusplus::Brep>("Brep");
+    report<meshioplusplus::BrepInfo>("BrepInfo");
+    report<meshioplusplus::CadReadOptions>("CadReadOptions");
+    report<meshioplusplus::CadJsonReadOptions>("CadJsonReadOptions");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::MdpaGeometryBlock>("MdpaGeometryBlock");
     report<meshioplusplus::MdpaMeshBlock>("MdpaMeshBlock");

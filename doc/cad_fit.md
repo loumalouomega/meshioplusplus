@@ -5,7 +5,7 @@ A triangle skin — an STL from a scan or a 3-D-printing download, the output of
 1. [**`segment`**](/segment) groups the facets into smooth patches bounded by the feature edges, with a curvature test that separates a fillet from its tangent planes;
 2. [**`fit_primitives`**](/fit_primitives) fits a plane, sphere, cylinder, cone or torus to each patch and reports the residual, refusing any fit outside the tolerance;
 3. the [**`step`**](/formats/step) writer hands the closed skin to CAD as a faceted solid;
-4. [**`fit_cad`**](/fit_cad), with OpenCASCADE, turns the fitted patches into analytic CAD faces trimmed by the patch boundaries, sews them into a checked solid and writes STEP a CAD tool can edit; a patch it cannot build comes back faceted.
+4. [**`fit_cad`**](/fit_cad), with OpenCASCADE, turns the fitted patches into analytic CAD faces trimmed by the patch boundaries, and a patch no primitive explains into a [freeform B-spline face](/fit_cad#freeform-faces), sews them into a checked solid and writes STEP a CAD tool can edit, or [Kratos CAD JSON](/formats/cad_json) for isogeometric analysis; a patch it cannot build comes back faceted.
 
 ```python
 import meshioplusplus as mp
@@ -37,6 +37,6 @@ With a core built `-DMESHIOPLUSPLUS_WITH_OCCT=ON`, [`fit_cad`](/fit_cad) writes 
 
 ## What is not done yet
 
-Rolling-ball fillets, swept fillets and threads (a second pass over the fitted patches) and a B-spline fallback for what no primitive explains are on the [roadmap](/roadmap), now on top of the OpenCASCADE backend; until then such a feature comes back faceted. Reading STEP or IGES is not done yet either. The [findings](/spikes#the-opencascade-dependency) record how the backend was decided.
+Rolling-ball fillets, swept fillets and threads (a second pass over the fitted patches) are on the [roadmap](/roadmap), on top of the OpenCASCADE backend; until then such a feature comes back faceted, or as a freeform face where one surface explains it. The same backend [reads STEP](/formats/step#reading) and [IGES](/formats/iges) models as their triangulation and NURBS B-rep. The [findings](/spikes#the-opencascade-dependency) record how the backend was decided.
 
 The reference for the whole pipeline is [stl2curves](https://github.com/Duvdivan/stl2curves) (MIT), a CLI and FreeCAD add-on built on OpenCASCADE; meshio++ read its README only, and no code was taken from it.

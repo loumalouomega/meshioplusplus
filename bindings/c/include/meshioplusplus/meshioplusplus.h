@@ -628,7 +628,8 @@ typedef struct mio_format_info mio_format_info;
 /**
  * Read a mesh, keeping what it cannot hold in `*info`.
  *
- * Formats with a side channel (currently "mdpa", "gmsh" and "mfem") read through their
+ * Formats with a side channel (currently "mdpa", "gmsh", "mfem" and "cad_json", plus
+ * "step" and "iges" in a build with OpenCASCADE) read through their
  * full reader and set `*info` to a new handle; every other format reads exactly as
  * mio_read_ex() and sets `*info` to NULL. `opts` may be NULL (the defaults).
  * @return the mesh, or NULL on failure (`*info` is then NULL too).
@@ -713,6 +714,70 @@ MIO_API mio_status mio_nurbs_info_array(const mio_format_info* info, int32_t sec
  *  @return the required length excluding the NUL, or -1 on error. */
 MIO_API int64_t mio_nurbs_info_string(const mio_format_info* info, int32_t section, int64_t index,
                                       int32_t field, char* buf, int64_t buflen);
+
+/** B-rep side-channel sections (a "cad_json" handle, or "step"/"iges" in a
+ * build with OpenCASCADE): the trimmed NURBS faces, loops, edges and
+ * vertices a mesh was sampled from (`BrepInfo`, brep.hpp). Every index is
+ * 0-based, and nested lists are flattened in file order, each owner naming its
+ * first item and how many it has. Ids are -1 where the file names the entity
+ * by `brep_name` instead (string field 0); flags are 0/1.
+ *  - FILE: one item. string field 0 = the file's members besides `breps`
+ *    (compact JSON object text).
+ *  - BREPS: int field 0 = id; array field 0/1/2 = Int64 indices of its
+ *    faces, edges and vertices; string field 0 = name, 1 = extra members.
+ *  - PATCHES: the face surfaces. int field 0/1 = degree in u/v; array field
+ *    0 = Float64 control points (n, 3), u fastest, 1 = Float64 weights [n],
+ *    2/3 = Float64 full knot vector in u/v.
+ *  - FACES: int field 0 = id, 1 = patch, 2 = swapped normal, 3 = trimmed,
+ *    4 = rational, 5 = reduced knots, 6/7 = first loop/number of loops,
+ *    8/9 = first trim/number of trims (its loops' trims, then its embedded
+ *    edges); array field 0 = Int64 control-point ids; string field 0 = name,
+ *    1 = extra, 2 = the surface's extra.
+ *  - LOOPS: int field 0 = face, 1/2 = first trim/number of trims; string
+ *    field 0 = type ("outer", "inner"), 1 = extra.
+ *  - TRIMS: int field 0 = face, 1 = loop (-1 for an embedded edge), 2 =
+ *    trim index (-1 absent), 3 = curve direction; string field 0 = extra.
+ *    Curve fields below describe its parameter curve.
+ *  - EDGES: int field 0 = id, 1 = has a 3-D curve, 2/3 = first ref/number of
+ *    refs; string field 0 = name, 1 = extra. Curve fields describe the 3-D
+ *    curve.
+ *  - VERTICES: int field 0 = id, 1/2 = first ref/number of refs; string field
+ *    0 = name, 1 = extra.
+ *  - REFS: the edges' topology entries, then the vertices'. int field 0 = id,
+ *    1 = trim index (-1 absent), 2 = relative direction (-1 absent); array
+ *    field 0 = Float64 local coordinates; string field 0 = name, 1 = extra.
+ * Curve fields (TRIMS, EDGES): int field 10 = degree, 11 = rational, 12 =
+ * reduced knots; array field 10 = Float64 control points (n, 3), 11 = Float64
+ * weights, 12 = Float64 full knot vector, 13 = Int64 ids (empty for none),
+ * 14 = Float64 active range ([2] or empty); string field 10 = curve extra.
+ * mio_write_with_info() writes the B-rep as Kratos CAD JSON ("cad_json");
+ * a "step"/"iges" handle may be written that way too. */
+typedef enum mio_brep_section {
+    MIO_BREP_FILE = 0,
+    MIO_BREP_BREPS = 1,
+    MIO_BREP_PATCHES = 2,
+    MIO_BREP_FACES = 3,
+    MIO_BREP_LOOPS = 4,
+    MIO_BREP_TRIMS = 5,
+    MIO_BREP_EDGES = 6,
+    MIO_BREP_VERTICES = 7,
+    MIO_BREP_REFS = 8
+} mio_brep_section;
+
+/** Number of items, or -1 on an invalid handle/section. */
+MIO_API int64_t mio_brep_info_count(const mio_format_info* info, int32_t section);
+/** Integer field `field` of item `index` into `*value`. */
+MIO_API mio_status mio_brep_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                                     int32_t field, int64_t* value);
+/** Borrow array field `field` of item `index` until info is freed. Any out
+ *  pointer may be NULL; `shape` must hold MIO_MAX_NDIM entries. */
+MIO_API mio_status mio_brep_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                       int32_t field, const void** data, mio_dtype* dtype,
+                                       int32_t* ndim, int64_t* shape);
+/** Copy string field `field` of item `index` into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_brep_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                                     int32_t field, char* buf, int64_t buflen);
 
 /**
  * The sections of an MDPA side channel. Each is a list; the accessors below
@@ -4444,11 +4509,20 @@ typedef struct mio_fit_cad_opts {
     /** The accepted types that become analytic faces, as `1 << mio_fit_type`
      *  bits; MIO_FIT_ALL_TYPES by default, 0 facets everything. */
     uint32_t types;
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    /** Nonzero: a patch no primitive explains is tried as a freeform B-spline
+     *  face (on after mio_fit_cad_opts_init; a zero-filled struct keeps it
+     *  off, as before the field existed). */
+    int32_t freeform;
+    /** The freeform B-spline's highest degree, 3 to 8; 0 takes 3. */
+    int32_t freeform_degree;
+    /** The most grid points per direction a freeform fit samples, 4 to 1024;
+     *  0 takes 64. */
+    int64_t freeform_max_control;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts;
 
 /** Initialize fit_cad options: automatic tolerance and deflection, 8 rounds,
- *  exact edges, every type. */
+ *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64. */
 MIO_API void mio_fit_cad_opts_init(mio_fit_cad_opts* opts);
 
 /** What mio_fit_cad built. */
@@ -4472,7 +4546,8 @@ typedef struct mio_fit_cad_report {
     int64_t num_solids;
     int32_t valid;       /**< nonzero when the solid passed OpenCASCADE's B-rep check */
     int32_t reserved0;   /**< zero */
-    int64_t reserved[6]; /**< zero; room for additive growth */
+    int64_t num_bspline; /**< freeform B-spline faces */
+    int64_t reserved[5]; /**< zero; room for additive growth */
 } mio_fit_cad_report;
 
 /** Nonzero when this library was built with the OpenCASCADE backend

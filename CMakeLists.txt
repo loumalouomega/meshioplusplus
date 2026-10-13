@@ -275,7 +275,7 @@ endif()
 # binaries; fit_cad throws Unsupported naming this flag where it is absent.
 # 7.6 is the floor (Ubuntu 24.04's packages); 7.8 renamed the STEP toolkits
 # into TKDESTEP, so the target list is picked by what exists.
-option(MESHIOPLUSPLUS_WITH_OCCT "Build the OpenCASCADE-backed fit_cad operation" OFF)
+option(MESHIOPLUSPLUS_WITH_OCCT "Build the OpenCASCADE-backed fit_cad operation and STEP/IGES reading" OFF)
 if(MESHIOPLUSPLUS_WITH_OCCT AND NOT EMSCRIPTEN)
   find_package(OpenCASCADE CONFIG QUIET)
   if(OpenCASCADE_FOUND AND OpenCASCADE_VERSION VERSION_LESS 7.6)
@@ -291,6 +291,12 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND OpenCASCADE_FOUND)
     list(APPEND _mio_occt_libs TKDESTEP TKXSBase)
   else()
     list(APPEND _mio_occt_libs TKSTEP TKSTEPBase TKSTEPAttr TKSTEP209 TKXSBase)
+  endif()
+  # IGES reading (roadmap 6.2.1); 7.8 renamed TKIGES into TKDEIGES as well.
+  if(TARGET TKDEIGES)
+    list(APPEND _mio_occt_libs TKDEIGES)
+  else()
+    list(APPEND _mio_occt_libs TKIGES)
   endif()
   foreach(_t IN LISTS _mio_occt_libs)
     if(NOT TARGET ${_t})
@@ -753,16 +759,17 @@ elseif(MESHIOPLUSPLUS_WITH_KAHIP)
 endif()
 
 if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
-  message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} enabled (fit_cad)")
+  message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} enabled (fit_cad, STEP/IGES reading)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_OCCT)
-  # Only fit_cad.cpp includes OCCT headers, and some packagings (Debian's)
+  # Only fit_cad.cpp, detail/occt_brep.cpp and the STEP/IGES readers include
+  # OCCT headers, and some packagings (Debian's)
   # export toolkit targets without include directories: add them privately,
   # as system headers so their deprecation warnings stay theirs.
   list(APPEND _mio_core_sys_incs ${OpenCASCADE_INCLUDE_DIR})
   list(APPEND _mio_core_libs ${_mio_occt_libs})
 elseif(MESHIOPLUSPLUS_WITH_OCCT)
   message(STATUS "meshio++: OpenCASCADE requested but not found (set OpenCASCADE_DIR) - "
-                 "fit_cad will raise")
+                 "fit_cad and STEP/IGES reading will raise")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)

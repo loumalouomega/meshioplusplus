@@ -4688,6 +4688,111 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, BrepSideChannel) {
+    // A degree-(1, 1) face with one outer loop of one trim, and an edge on it.
+    const auto path = mt::temp_path(".cad.json");
+    std::ofstream(path, std::ios::binary)
+        << R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "surface": {
+           "is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 1], [0, 1]],
+           "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+           "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+             {"trim_index": 0, "curve_direction": false, "parameter_curve": {"degree": 1,
+              "knot_vector": [0, 0, 1, 1], "active_range": [0, 1],
+              "control_points": [[[0, 0, 0, 1]], [[1, 0, 0, 1]]]}}]}]}],
+           "edges": [{"brep_id": 3, "topology": [{"brep_id": 2, "trim_index": 0}]}]}]})";
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    ASSERT_NE(info, nullptr);
+    char fmt[16];
+    ASSERT_EQ(mio_format_info_format(info, fmt, sizeof(fmt)), 8);
+    EXPECT_STREQ(fmt, "cad_json");
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_FILE), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_FACES), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_LOOPS), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_TRIMS), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_EDGES), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_REFS), 1);
+    EXPECT_EQ(mio_brep_info_count(info, 99), -1);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_PATCHES), -1);  // not an mfem handle
+    int64_t v = -7;
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 0, 0, &v), MIO_OK);
+    EXPECT_EQ(v, 2);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 0, 5, &v), MIO_OK);  // reduced knots
+    EXPECT_EQ(v, 1);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 0, 9, &v), MIO_OK);  // trims
+    EXPECT_EQ(v, 1);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_TRIMS, 0, 3, &v), MIO_OK);  // direction
+    EXPECT_EQ(v, 0);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_TRIMS, 0, 10, &v), MIO_OK);  // curve degree
+    EXPECT_EQ(v, 1);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_EDGES, 0, 1, &v), MIO_OK);  // no 3-D curve
+    EXPECT_EQ(v, 0);
+    EXPECT_EQ(mio_brep_info_int(info, MIO_BREP_EDGES, 0, 10, &v), MIO_ERR_INVALID_ARG);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_REFS, 0, 2, &v), MIO_OK);  // direction absent
+    EXPECT_EQ(v, -1);
+    EXPECT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 1, 0, &v), MIO_ERR_INVALID_ARG);
+    const void* data = nullptr;
+    mio_dtype dtype;
+    int32_t ndim;
+    int64_t shape[MIO_MAX_NDIM]{};
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_PATCHES, 0, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_FLOAT64);
+    EXPECT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 4);
+    EXPECT_EQ(shape[1], 3);
+    EXPECT_EQ(static_cast<const double*>(data)[3], 2.0);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_PATCHES, 0, 2, &data, &dtype, &ndim, shape),
+              MIO_OK);  // the full knot vector in u
+    EXPECT_EQ(shape[0], 4);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_TRIMS, 0, 14, &data, &dtype, &ndim, shape),
+              MIO_OK);  // the active range
+    EXPECT_EQ(shape[0], 2);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_BREPS, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(static_cast<const int64_t*>(data)[0], 0);
+    char buf[16];
+    EXPECT_EQ(mio_brep_info_string(info, MIO_BREP_LOOPS, 0, 0, buf, sizeof(buf)), 5);
+    EXPECT_STREQ(buf, "outer");
+    EXPECT_EQ(mio_brep_info_string(info, MIO_BREP_FACES, 0, 7, buf, sizeof(buf)), -1);
+
+    const auto output = mt::temp_path(".cad.json");
+    ASSERT_EQ(mio_write_with_info(output.c_str(), mesh, nullptr, info), MIO_OK) << mio_last_error();
+    mio_format_info* back = nullptr;
+    mio_mesh* again = mio_read_with_info(output.c_str(), nullptr, nullptr, &back);
+    ASSERT_NE(again, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_brep_info_count(back, MIO_BREP_TRIMS), 1);
+    EXPECT_EQ(mio_write_with_info(mt::temp_path(".mesh").c_str(), mesh, "mfem", info),
+              MIO_ERR_INVALID_ARG);  // a cad_json side channel is not an mfem one
+    mio_format_info_free(back);
+    mio_mesh_free(again);
+    mio_format_info_free(info);
+    mio_mesh_free(mesh);
+}
+
+TEST(CApi, StepAndIgesReadOrNameTheBackend) {
+    // A STEP written by the faceted writer reads back through OpenCASCADE.
+    mio_mesh* m = capi_cube_surface();
+    const auto step = mt::temp_path(".step");
+    ASSERT_EQ(mio_write(step.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    mio_format_info* info = nullptr;
+    mio_mesh* back = mio_read_with_info(step.c_str(), nullptr, nullptr, &info);
+    if (mio_has_occt()) {
+        ASSERT_NE(back, nullptr) << mio_last_error();
+        EXPECT_GE(mio_brep_info_count(info, MIO_BREP_FACES), 6);
+        EXPECT_GT(mio_brep_info_count(info, MIO_BREP_EDGES), 0);
+        mio_format_info_free(info);
+        mio_mesh_free(back);
+    } else {
+        EXPECT_EQ(back, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_OCCT"),
+                  std::string::npos);
+    }
+    mio_mesh_free(m);
+}
+
 TEST(CApi, WritesAStepSolid) {
     mio_mesh* m = capi_cube_surface();
     const std::string path =

@@ -11,7 +11,10 @@ mio_fit_cad(
   exact_edges = TRUE,
   types = c("plane", "sphere", "cylinder", "cone", "torus"),
   mesh_deflection = 0,
-  max_demotion_rounds = 8
+  max_demotion_rounds = 8,
+  freeform = TRUE,
+  freeform_degree = 3,
+  freeform_max_control = 64
 )
 }
 \arguments{
@@ -31,6 +34,14 @@ takes a quarter of the tolerance.}
 
 \item{max_demotion_rounds}{Rounds of demoting failed faces before every
 patch is faceted.}
+
+\item{freeform}{Whether a patch no primitive explains is tried as a
+B-spline face.}
+
+\item{freeform_degree}{That B-spline's highest degree, 3 to 8.}
+
+\item{freeform_max_control}{The most grid points per direction its fit
+samples, 4 to 1024.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -38,7 +49,7 @@ A list of `mesh` (the solid re-meshed, with cell data
   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
-  `num_exact_edges`, `num_approx_edges` and `num_solids`.
+  `num_exact_edges`, `num_approx_edges`, `num_solids` and `num_bspline`.
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

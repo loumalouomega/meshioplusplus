@@ -103,6 +103,63 @@ def test_types_mask_and_empty_types_facet_the_rest():
     assert report["num_demoted"] == 0
 
 
+def _bumped_box(n=32, amp=0.15):
+    """The unit cube whose top carries a smooth bump no primitive explains."""
+    skin = box_skin(n)
+    p = skin.points.copy()
+    top = np.isclose(p[:, 2], 1.0)
+    x, y = p[top, 0], p[top, 1]
+    p[top, 2] += (
+        amp
+        * np.exp(-((x - 0.5) ** 2 + (y - 0.5) ** 2) / 0.03)
+        * 16
+        * x
+        * (1 - x)
+        * y
+        * (1 - y)
+    )
+    return mio.Mesh(p, skin.cells)
+
+
+@needs_occt
+def test_unexplained_patch_becomes_a_freeform_face(tmp_path):
+    fit = _fitted(_bumped_box())
+    assert 0 in fit.field_data["fit:patch_type"].tolist()  # the bump is no primitive
+    out, report = mio.fit_cad(fit, tmp_path / "bump.step", return_report=True)
+    assert report["valid"]
+    assert report["num_bspline"] == 1 and report["num_plane"] == 5
+    assert report["num_faceted_faces"] == 0 and report["num_demoted"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    assert report["volume_ratio"] == pytest.approx(1.0, abs=1e-4)
+    assert 6 in out.cell_data["fit_cad:type"][0].tolist()
+    # The solid as NURBS, ready for Kratos: six trimmed faces.
+    brep = out.info["brep"]
+    assert len(brep["faces"]) == 6 and all(f["trimmed"] for f in brep["faces"])
+    mio.write(tmp_path / "bump.cad.json", out)
+    assert len(mio.read(tmp_path / "bump.cad.json").info["brep"]["faces"]) == 6
+
+
+@needs_occt
+def test_freeform_off_or_a_coarse_skin_stays_faceted():
+    _out, report = mio.fit_cad(
+        _fitted(_bumped_box()), freeform=False, return_report=True
+    )
+    assert report["num_bspline"] == 0 and report["num_faceted_faces"] > 0
+    # A skin coarser than the tolerance cannot be a smooth face within it: the
+    # fit refuses it up front rather than building a face to demote.
+    _out, report = mio.fit_cad(
+        _fitted(_bumped_box(16)), tolerance=2e-3, return_report=True
+    )
+    assert report["num_bspline"] == 0 and report["num_demoted"] == 0
+
+
+def test_freeform_options_are_checked_before_the_core():
+    with pytest.raises(ValueError, match="freeform_degree"):
+        mio.fit_cad(box_skin(2), freeform_degree=9)
+    with pytest.raises(ValueError, match="freeform_max_control"):
+        mio.fit_cad(box_skin(2), freeform_max_control=2)
+
+
 @needs_occt
 def test_unlabelled_skin_is_segmented_first():
     _out, report = mio.fit_cad(box_skin(2), return_report=True)

@@ -209,6 +209,35 @@ MESHIOPLUSPLUS_API hid_t file_type(DType dt);
 MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
 
 /**
+ * @brief Verifies the chunks of a chunked dataset before it is read.
+ *
+ * libhdf5 1.10 over-reads a chunk that delivers fewer bytes than its elements
+ * take, so every reader of a chunked dataset calls this, or `verify_chunk_rows`,
+ * before `H5Dread`. Raw chunks must hold their full size, deflated chunks must
+ * inflate to it, and a trailing fletcher32 checksum is left out of that size: libhdf5
+ * checks it on the read. A pipeline this check cannot verify, such as deflate followed
+ * by shuffle, is read unverified, so the over-read stays possible for it.
+ * @param dset An open dataset.
+ * @param rName The dataset's name, for error messages.
+ * @throws ReadError when a chunk cannot be verified or does not match.
+ */
+MESHIOPLUSPLUS_API void verify_chunks(hid_t dset, const std::string& rName);
+
+/**
+ * @brief Verifies the chunks that hold rows `[Row0, Row0 + Count)` before a row read.
+ *
+ * A row read reaches only the chunks that hold those rows, so only they are
+ * verified; the rest of a long time series is not inflated for each slice.
+ * @param dset An open dataset.
+ * @param rName The dataset's name, for error messages.
+ * @param Row0 The first row read.
+ * @param Count The number of rows read; zero verifies nothing.
+ * @throws ReadError when one of those chunks cannot be verified or does not match.
+ */
+MESHIOPLUSPLUS_API void verify_chunk_rows(hid_t dset, const std::string& rName, std::size_t Row0,
+                                          std::size_t Count);
+
+/**
  * @brief Reads a full HDF5 dataset into a freshly-allocated, owning `NDArray`.
  *
  * The output shape and dtype are taken from the file. A dataset whose

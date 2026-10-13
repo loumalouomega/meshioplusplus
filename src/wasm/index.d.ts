@@ -202,7 +202,8 @@ export type MeshInfo =
   | UnvInfo
   | GmshInfo
   | ExodusInfo
-  | MfemInfo;
+  | MfemInfo
+  | CadJsonInfo;
 
 /** OpenFOAM's side channel: `readMeshSelective`'s cell_tags/patch-type map, reshaped per patch. */
 export interface OpenFoamInfo {
@@ -304,6 +305,80 @@ export interface GmshInfo {
   /** Entity tags are raw ids; nodePairs is flattened (N,2), 0-based point rows.
    * Ordering/duplicates survive I/O; mesh operations do not remap these rows. */
   periodic?: { entity: number[]; affine: number[]; nodePairs: BigInt64Array | number[] }[];
+}
+
+/** One NURBS curve of a B-rep: a trimming curve in a face's (u, v), or an edge's 3-D curve. */
+export interface BrepCurve {
+  degree: number;
+  /** The full knot vector (`n + degree + 1` knots). */
+  knots: number[];
+  /** Whether the file wrote Kratos's reduced form (without the outer knots). */
+  reducedKnots: boolean;
+  rational: boolean;
+  /** (points, 3) control points; a trimming curve's are (u, v, 0). */
+  controlPoints: Float64Array;
+  weights: Float64Array;
+  /** The control points' ids (Kratos node ids), empty when the file gives none. */
+  ids: BigInt64Array | number[];
+  /** `[t0, t1]`, or empty. */
+  activeRange: number[];
+  /** Members not modelled, as compact JSON object text. */
+  extra: string;
+}
+
+/** A trimming curve of a loop, or an embedded edge of a face. */
+export interface BrepTrim {
+  /** -1 when the file gives none. */
+  trimIndex: number;
+  direction: boolean;
+  curve: BrepCurve;
+  extra: string;
+}
+
+/** A topology entry: the face (and trim) an edge or vertex lies on. */
+export interface BrepRef {
+  /** -1 when the entity is named instead. */
+  id: number;
+  name: string;
+  /** -1 when absent. */
+  trimIndex: number;
+  /** 1 true, 0 false, -1 absent. */
+  relativeDirection: number;
+  localCoordinates: number[];
+  extra: string;
+}
+
+/**
+ * Kratos CAD JSON's side channel: the NURBS boundary representation (C++
+ * `BrepInfo`) the mesh was sampled from -- trimmed faces, their loops, edges
+ * and vertices, as Kratos's `CadJsonInput` reads them. Every index is 0-based;
+ * ids are -1 where an entity is named by `name` instead. `writeMesh` writes it
+ * back as CAD JSON.
+ */
+export interface CadJsonInfo {
+  format: 'cad_json';
+  /** The face surfaces: two degrees, two full knot vectors, (points, 3) control net (u fastest). */
+  patches: { degrees: number[]; knots: number[][]; controlPoints: Float64Array; weights: Float64Array }[];
+  breps: { id: number; name: string; faces: number[]; edges: number[]; vertices: number[]; extra: string }[];
+  faces: {
+    id: number;
+    name: string;
+    /** Index into `patches`. */
+    patch: number;
+    swappedNormal: boolean;
+    trimmed: boolean;
+    rational: boolean;
+    reducedKnots: boolean;
+    controlPointIds: BigInt64Array | number[];
+    loops: { type: string; trims: BrepTrim[]; extra: string }[];
+    embeddedEdges: BrepTrim[];
+    surfaceExtra: string;
+    extra: string;
+  }[];
+  edges: { id: number; name: string; curve: BrepCurve | null; topology: BrepRef[]; extra: string }[];
+  vertices: { id: number; name: string; topology: BrepRef[]; extra: string }[];
+  /** The file's other top-level members (Kratos: tolerances, version_number). */
+  extra: string;
 }
 
 /**

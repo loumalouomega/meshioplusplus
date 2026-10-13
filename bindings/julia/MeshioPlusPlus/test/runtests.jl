@@ -199,6 +199,42 @@ end
     end
 end
 
+@testset "Kratos CAD JSON B-rep side channel" begin
+    mktempdir() do dir
+        path = joinpath(dir, "plate.cad.json")
+        Base.write(path, """{"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "surface": {
+            "is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 1], [0, 1]],
+            "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+            "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+              {"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,
+               "knot_vector": [0, 0, 1, 1], "active_range": [0, 1],
+               "control_points": [[[0, 0, 0, 1]], [[1, 0, 0, 1]]]}}]}]}],
+            "edges": [{"brep_id": 3, "topology": [{"brep_id": 2, "trim_index": 0}]}]}]}""")
+        mesh, info = read_with_info(path)
+        @test format_name(info) == "cad_json"
+        b = brep_info(info)
+        @test length(b.faces) == 1
+        f = b.faces[1]
+        @test f.id == 2 && f.patch == 1 && f.trimmed && f.reduced_knots
+        @test f.control_point_ids == [1, 2, 3, 4]
+        @test b.patches[1].knots[1] == [0.0, 0.0, 1.0, 1.0]
+        @test size(b.patches[1].control_points) == (3, 4)
+        @test f.loops[1].type == "outer"
+        @test f.loops[1].trims[1].trim_index == 0
+        @test size(f.loops[1].trims[1].curve.control_points) == (3, 2)
+        @test b.edges[1].curve === nothing
+        @test b.edges[1].topology[1].relative_direction == -1
+        @test b.breps[1].edges == [1]
+        output = joinpath(dir, "output.cad.json")
+        write_with_info(mesh, info, output)
+        back, back_info = read_with_info(output)
+        @test brep_info(back_info).patches == b.patches
+        close(back); close(back_info)
+        @test_throws MeshioError nurbs_info(info)
+        close(mesh); close(info)
+    end
+end
+
 @testset "MFEM NURBS side channel" begin
     mktempdir() do dir
         path = joinpath(dir, "annulus.mesh")

@@ -122,6 +122,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/properties.hpp"
@@ -412,5 +413,38 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
  */
 MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
                                   const ReadOptions& rOptions = {});
+
+/**
+ * @brief The Kratos CAD JSON geometry that goes with an MDPA deck, or "".
+ *
+ * Kratos keeps IGA geometry (trimmed NURBS faces) in a `*.cad.json` file its
+ * `CadIoModeler` reads, not in the deck. The sidecar is `<stem>.cad.json`
+ * beside the deck, else the `geometry_file_name` of the `CadIoModeler` in a
+ * `ProjectParameters.json` beside it (with `.cad.json` appended when the name
+ * lacks it, as Kratos appends it), relative to the deck's directory; "" when
+ * neither names an existing file.
+ */
+MESHIOPLUSPLUS_API std::string mdpa_cad_json_path(const std::string& rPath);
+
+/**
+ * @brief Read an MDPA deck and the Kratos CAD JSON geometry beside it.
+ *
+ * The deck exactly as `read_mdpa(path, info, options)` reads it, plus the
+ * B-rep of @p rCadJsonPath (or, when it is empty, of `mdpa_cad_json_path`,
+ * none being no error) in @p rBrep. The geometry is not sampled into the mesh.
+ * @throws ReadError as the MDPA and CAD JSON readers do, and when an explicit
+ *         @p rCadJsonPath does not exist
+ */
+MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, BrepInfo& rBrep,
+                                  const ReadOptions& rOptions = {},
+                                  const std::string& rCadJsonPath = {});
+
+/**
+ * @brief Write an MDPA deck and, when @p rBrep holds a B-rep, its CAD JSON
+ * geometry to @p rCadJsonPath (`<stem>.cad.json` beside the deck when empty).
+ */
+MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
+                                   const MdpaInfo& rInfo, const BrepInfo& rBrep,
+                                   const std::string& rCadJsonPath = {});
 
 }  // namespace meshioplusplus

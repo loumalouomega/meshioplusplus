@@ -3218,6 +3218,10 @@ def _register_gated(server: FastMCP) -> None:
         types: Optional[List[str]] = None,
         mesh_deflection: Optional[float] = None,
         max_demotion_rounds: int = 8,
+        freeform: bool = True,
+        freeform_degree: int = 3,
+        freeform_max_control: int = 64,
+        cad_json_output_path: Optional[str] = None,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -3227,12 +3231,16 @@ def _register_gated(server: FastMCP) -> None:
         min_patch_cells in the tens).
 
         Each accepted fit becomes a plane, sphere, cylinder, cone or torus face
-        (types narrows which), the rest planar facets; OpenCASCADE sews and
-        checks the solid, and a face that fails or lies further than tolerance
-        from the skin is demoted to facets. The report gives valid, the volume
-        ratio against the skin, max_deviation (Hausdorff), faces by type,
-        num_demoted and exact/approximated edges; mesh_output_path also writes
-        the re-meshed solid. Needs a core built with OpenCASCADE
+        (types narrows which); a patch no primitive explains becomes, with
+        freeform, a B-spline face (degree up to freeform_degree, fitted on at
+        most freeform_max_control grid points per direction), the rest planar
+        facets; OpenCASCADE sews and checks the solid, and a face that fails or
+        lies further than tolerance from the skin is demoted to facets. The
+        report gives valid, the volume ratio against the skin, max_deviation
+        (Hausdorff), faces by type (num_bspline the freeform ones), num_demoted
+        and exact/approximated edges; mesh_output_path also writes the
+        re-meshed solid and cad_json_output_path the solid as Kratos CAD JSON
+        (NURBS faces, trimming loops, edges). Needs a core built with OpenCASCADE
         (-DMESHIOPLUSPLUS_WITH_OCCT=ON); without it the error names the flag
         and occt_available is false."""
         return _guard(
@@ -3249,6 +3257,10 @@ def _register_gated(server: FastMCP) -> None:
             types=types,
             mesh_deflection=mesh_deflection,
             max_demotion_rounds=max_demotion_rounds,
+            freeform=freeform,
+            freeform_degree=freeform_degree,
+            freeform_max_control=freeform_max_control,
+            cad_json_output_path=cad_json_output_path,
         )
 
     @server.tool()

@@ -353,17 +353,54 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 }
 #endif
 
-// libhdf5 reads an unfiltered chunk straight from its stored bytes, but sizes the
-// read by the chunk's elements: a record shorter than the chunk makes the read copy
-// past the stored bytes (a heap-buffer-overflow inside HDF5 1.10, found by the
-// fuzzer). Each allocated chunk of an unfiltered dataset is checked before a read.
-// A filtered chunk is decoded into a buffer of the full size and is not affected.
+// libhdf5 1.10 copies a chunk's elements out of the bytes the chunk delivers without
+// checking that there are enough of them: a heap-buffer-overflow inside HDF5 1.10,
+// found by the fuzzer. A chunk delivers its stored record when its filters were
+// skipped, and its inflated output when deflate was applied (a shuffle keeps the
+// size). So each allocated chunk that a read reaches is verified before the read: a
+// chunk stored as its elements must hold the whole chunk, and a deflated one must
+// inflate to exactly the whole chunk. A read of rows [Row0, Row1) reaches only the
+// chunks that hold them; a whole-dataset read passes [0, max). Only shuffle and
+// deflate, in that order, can be verified here, plus a trailing fletcher32 checksum,
+// which libhdf5 checks on the read and whose 4 bytes are left out of the sizes below.
+// Any other pipeline, such as deflate followed by shuffle (which MSC Nastran writes),
+// is read unverified, so the over-read stays possible for it.
 // Listing the chunks needs HDF5 1.10.5; older libraries are not checked.
-void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
+void h5_check_chunks(hid_t dset, const std::string& rName, hsize_t Row0, hsize_t Row1) {
 #if H5_VERSION_GE(1, 10, 5)
     Hid dcpl(H5Dget_create_plist(dset), H5Pclose);
-    if (H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 0)
+    if (H5Pget_layout(dcpl) != H5D_CHUNKED)
         return;
+    const int nfilters = H5Pget_nfilters(dcpl);
+    if (nfilters < 0)
+        throw ReadError("HDF5: could not list the filters of dataset '" + rName + "'");
+    std::vector<H5Z_filter_t> ids(static_cast<std::size_t>(nfilters));
+    for (int f = 0; f < nfilters; ++f) {
+        unsigned flags = 0;
+        unsigned config = 0;
+        std::size_t nelmts = 0;
+        ids[static_cast<std::size_t>(f)] = H5Pget_filter2(dcpl, static_cast<unsigned>(f), &flags,
+                                                          &nelmts, nullptr, 0, nullptr, &config);
+    }
+    // A checksum must come last: libhdf5 verifies it and strips its 4 bytes.
+    const bool checksum = nfilters > 0 && ids.back() == H5Z_FILTER_FLETCHER32;
+    const int inner = checksum ? nfilters - 1 : nfilters;
+    bool deflate = false;
+    for (int f = 0; f < inner; ++f) {
+        const bool last = f == inner - 1;
+        const H5Z_filter_t id = ids[static_cast<std::size_t>(f)];
+        if (id == H5Z_FILTER_SHUFFLE && f == 0)
+            continue;
+        if (id == H5Z_FILTER_DEFLATE && last) {
+            deflate = true;
+            continue;
+        }
+        return;  // not a pipeline this check can verify: the dataset is read unverified
+    }
+#ifndef MESHIOPLUSPLUS_HAS_ZLIB
+    if (deflate)
+        return;  // this build cannot inflate a chunk to verify it: read it unverified
+#endif
     Hid space(H5Dget_space(dset), H5Sclose);
     const int rank = H5Sget_simple_extent_ndims(space);
     if (rank <= 0)
@@ -383,7 +420,12 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
     hsize_t nchunks = 0;
     if (H5Dget_num_chunks(dset, space, &nchunks) < 0)
         throw ReadError("HDF5: could not list the chunks of dataset '" + rName + "'");
+    // Mask bits index the whole pipeline: a set bit means that filter was skipped.
+    const unsigned deflate_bit = deflate ? 1u << static_cast<unsigned>(inner - 1) : 0u;
+    const unsigned checksum_bit = checksum ? 1u << static_cast<unsigned>(nfilters - 1) : 0u;
     std::vector<hsize_t> offset(static_cast<std::size_t>(rank));
+    std::vector<std::uint8_t> stored;
+    std::vector<std::uint8_t> inflated;
     for (hsize_t i = 0; i < nchunks; ++i) {
         unsigned mask = 0;
         haddr_t addr = 0;
@@ -391,10 +433,52 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
         if (H5Dget_chunk_info(dset, space, i, offset.data(), &mask, &addr, &size) < 0)
             throw ReadError("HDF5: could not read chunk " + std::to_string(i) + " of dataset '" +
                             rName + "'");
-        if (size != expected)
+        // Only the chunks that hold rows [Row0, Row1) are read, so only they are checked.
+        if (offset[0] >= Row1 || offset[0] + chunk[0] <= Row0)
+            continue;
+        // libhdf5 strips the checksum, the 4 bytes at the end of the record, when it was applied.
+        const bool checksummed = checksum && !(mask & checksum_bit);
+        if (checksummed && size < 4)
             throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
-                            "' is stored in " + std::to_string(size) + " bytes, not " +
-                            std::to_string(expected));
+                            "' is shorter than its checksum");
+        const hsize_t payload = checksummed ? size - 4 : size;
+        if (!deflate || (mask & deflate_bit)) {
+            if (payload != expected)
+                throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
+                                "' is stored in " + std::to_string(payload) + " bytes, not " +
+                                std::to_string(expected));
+            continue;
+        }
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        // A zlib stream expands at most 1032 to 1, which bounds the buffer below.
+        if (payload > std::numeric_limits<hsize_t>::max() / 1032 ||
+            expected > payload * 1032 + 1024)
+            throw ReadError("HDF5: a compressed chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "' cannot inflate to " + std::to_string(expected) + " bytes");
+        stored.resize(static_cast<std::size_t>(size));
+        inflated.resize(static_cast<std::size_t>(expected));
+        unsigned read_mask = 0;
+#if H5_VERSION_GE(2, 0, 0)
+        std::size_t got = stored.size();
+        const herr_t rc =
+            H5Dread_chunk2(dset, H5P_DEFAULT, offset.data(), &read_mask, stored.data(), &got);
+        if (rc < 0 || got != stored.size())
+#else
+        const herr_t rc =
+            H5Dread_chunk(dset, H5P_DEFAULT, offset.data(), &read_mask, stored.data());
+        if (rc < 0)
+#endif
+            throw ReadError("HDF5: could not read compressed chunk " + std::to_string(i) +
+                            " of dataset '" + rName + "'");
+        uLongf n = static_cast<uLongf>(inflated.size());
+        const int zrc = uncompress(inflated.data(), &n, stored.data(), static_cast<uLong>(payload));
+        if (zrc != Z_OK || static_cast<std::size_t>(n) != inflated.size())
+            throw ReadError("HDF5: a compressed chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "' does not inflate to " + std::to_string(expected) + " bytes");
+#else
+        throw ReadError("HDF5: dataset '" + rName +
+                        "' is compressed, and this build has no zlib to verify it");
+#endif
     }
 #else
     (void)dset;
@@ -404,11 +488,24 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
 
 }  // namespace
 
+void verify_chunks(hid_t dset, const std::string& rName) {
+    h5_check_chunks(dset, rName, 0, std::numeric_limits<hsize_t>::max());
+}
+
+void verify_chunk_rows(hid_t dset, const std::string& rName, std::size_t Row0, std::size_t Count) {
+    if (Count == 0)
+        return;
+    const hsize_t max = std::numeric_limits<hsize_t>::max();
+    const hsize_t row0 = static_cast<hsize_t>(Row0);
+    const hsize_t count = static_cast<hsize_t>(Count);
+    h5_check_chunks(dset, rName, row0, count > max - row0 ? max : row0 + count);
+}
+
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
         throw ReadError("HDF5: missing dataset '" + rName + "'");
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunks(d, rName);
     Hid space(H5Dget_space(d), H5Sclose);
     int ndim = H5Sget_simple_extent_ndims(space);
     std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
@@ -651,7 +748,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
 
     std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
     std::vector<hsize_t> count(dims);
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunk_rows(d, rName, Row0, Count);
     start[0] = Row0;
     count[0] = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, start.data(), nullptr, count.data(), nullptr) <
@@ -942,7 +1039,7 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
     Hid mem_type(H5Tcreate(H5T_COMPOUND, H5Tget_size(elem)), H5Tclose);
     if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, elem) < 0)
         throw ReadError("HDF5: could not build a memory type for '" + rName + "/" + rMember + "'");
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunk_rows(d, rName, Row0, Count);
     const hsize_t start = Row0;
     const hsize_t count = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr) < 0)

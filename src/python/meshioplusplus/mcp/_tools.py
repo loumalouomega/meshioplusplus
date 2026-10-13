@@ -432,8 +432,22 @@ def _store(mesh, output_path, output_format=None, **write_kwargs):
     return resolved
 
 
-def _mesh_summary(mesh):
+def _brep_summary(brep):
+    """What a B-rep side channel (``mesh.info["brep"]``: Kratos CAD JSON, STEP,
+    IGES, fit_cad) holds, by count."""
+    faces = brep.get("faces", [])
     return {
+        "faces": len(faces),
+        "trimmed_faces": sum(1 for f in faces if f.get("trimmed")),
+        "rational_faces": sum(1 for f in faces if f.get("rational")),
+        "loops": sum(len(f.get("loops", [])) for f in faces),
+        "edges": len(brep.get("edges", [])),
+        "vertices": len(brep.get("vertices", [])),
+    }
+
+
+def _mesh_summary(mesh):
+    out = {
         "num_points": int(len(mesh.points)),
         "num_cells": int(sum(len(b) for b in mesh.cells)),
         "cell_blocks": [{"type": b.type, "num_cells": int(len(b))} for b in mesh.cells],
@@ -442,6 +456,10 @@ def _mesh_summary(mesh):
         "field_data": sorted(mesh.field_data),
         "num_regions": len(mesh.regions),
     }
+    info = getattr(mesh, "info", None)
+    if isinstance(info, dict) and info.get("brep"):
+        out["brep"] = _brep_summary(info["brep"])
+    return out
 
 
 def _result(output_path, mesh, **extra):
@@ -1987,11 +2005,17 @@ def tool_fit_cad(
     types=None,
     mesh_deflection=None,
     max_demotion_rounds=8,
+    freeform=True,
+    freeform_degree=3,
+    freeform_max_control=64,
+    cad_json_output_path=None,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
-    faces, written to output_path as STEP (needs a core built with
-    OpenCASCADE). A skin without segment:patch / fit:patch_* is segmented
-    (curvature_tolerance, min_patch_cells) and fitted (fit_tolerance) first."""
+    faces (and freeform B-spline ones for what no primitive explains), written
+    to output_path as STEP (needs a core built with OpenCASCADE), and to
+    cad_json_output_path as Kratos CAD JSON. A skin without segment:patch /
+    fit:patch_* is segmented (curvature_tolerance, min_patch_cells) and fitted
+    (fit_tolerance) first."""
     from .._fit_cad import has_occt
 
     if not has_occt():
@@ -2020,10 +2044,18 @@ def tool_fit_cad(
         types=list(types) if types is not None else None,
         mesh_deflection=mesh_deflection,
         max_demotion_rounds=max_demotion_rounds,
+        freeform=freeform,
+        freeform_degree=freeform_degree,
+        freeform_max_control=freeform_max_control,
         return_report=True,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": True, **report}
+    if cad_json_output_path:
+        cad_path = _resolve(cad_json_output_path, for_write=True)
+        write(cad_path, out, file_format="cad_json")
+        _cache_invalidate(cad_path)
+        extra["cad_json_path"] = cad_path
     if mesh_output_path:
         return _result(_store(out, mesh_output_path), out, **extra)
     return _json_safe({"output_path": step_path, **_mesh_summary(out), **extra})
