@@ -28,6 +28,14 @@ The C++ core also compiles to WebAssembly and ships as an npm package, [`@meshio
 npm install @meshioplusplus/wasm
 ```
 
+## Publishing a release to npm
+
+Pushing a `v*` tag builds the WASM artifacts and publishes `@meshioplusplus/wasm` at that tag's version through the `publish-npm` job in `.github/workflows/wasm.yml`.
+
+Authentication is npm trusted publishing (OIDC), so there is no long-lived token to expire. It needs a one-time setup by a package maintainer on npmjs.com: on the package's Access page, add a Trusted Publisher for GitHub Actions with owner `loumalouomega`, repository `meshioplusplus`, workflow file name `wasm.yml`, and environment `npm` (matching the job's `environment:`). Until that entry exists, the job falls back to the `NPM_TOKEN` repo secret; a rejected token fails the job's `npm whoami` check with an actionable error instead of npm's cryptic scoped-PUT 404 (the registry masks auth failures on scoped publishes as "not in this registry").
+
+If a publish fails after the artifacts built fine, fix the credential (the trusted-publisher entry, or a fresh `NPM_TOKEN`) and re-run only the failed job with `gh run rerun <run-id> --failed`. The job skips publishing when the version is already on the registry, so re-runs are safe.
+
 ## Usage
 
 ```js
