@@ -1,6 +1,6 @@
 # Kratos CAD JSON (`.cad.json`)
 
-The NURBS boundary representation that [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos)' isogeometric analysis (IGA) reads and writes: trimmed NURBS faces, the loops of trimming curves that bound them, edges with 3-D curves and the coupling topology between faces. Kratos's `CadJsonInput` (`kratos/input_output/cad_json_input.h`, behind the `CadIoModeler`) reads it, and `CadJsonOutput` writes it, in the schema of Breitenberger et al., *Analysis in computer aided design* (AMSES 2018). Kratos's `.mdpa` decks hold no NURBS (their `Begin Geometries` blocks take only Lagrange geometry names), so this file is where a Kratos IGA model's geometry lives; see [the MDPA sidecar](#the-mdpa-sidecar).
+The NURBS boundary representation that [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos)' isogeometric analysis (IGA) reads and writes: trimmed NURBS faces, the loops of trimming curves that bound them, edges with 3-D curves and the coupling topology between faces. Kratos's `CadJsonInput` (`kratos/input_output/cad_json_input.h`, behind the `CadIoModeler`) reads it, and `CadJsonOutput` writes it, in the schema of Teschemacher et al., [*Realization of CAD-integrated shell simulation based on isogeometric B-Rep analysis*](https://doi.org/10.1186/s40323-018-0109-4) (AMSES 2018). Kratos's `.mdpa` decks hold no NURBS (their `Begin Geometries` blocks take only Lagrange geometry names), so this file is where a Kratos IGA model's geometry lives; see [the MDPA sidecar](#the-mdpa-sidecar).
 
 | | |
 |---|---|

@@ -119,6 +119,18 @@ license: MIT
 # both directions. See doc/formats/cae.md, doc/formats/usd.md,
 # doc/formats/pmsh.md and doc/formats/zarr.md.
 #
+# The `cad_json` format (src/python/meshioplusplus/cad_json/,
+# src/cpp/src/formats/cad_json.cpp) reads and writes the CAD JSON schema of
+# T. Teschemacher, A. M. Bauer, T. Oberbichler, M. Breitenberger, R. Rossi,
+# R. Wuechner and K.-U. Bletzinger, "Realization of CAD-integrated shell
+# simulation based on isogeometric B-Rep analysis", Advanced Modeling and
+# Simulation in Engineering Sciences 5:19 (2018),
+# https://doi.org/10.1186/s40323-018-0109-4, as the Kratos
+# Multiphysics CadJsonInput/CadJsonOutput and ImportNurbsSbmModeler
+# (BSD-4-Clause) read it. No Kratos code is copied, and the fixtures in
+# tests/python/meshes/cad_json/ are generated from closed-form geometry by
+# tools/gen_cad_json_fixtures.py. See doc/formats/cad_json.md.
+#
 # The isotropic clustering engine behind the `remesh` operation
 # (src/cpp/src/operations/remesh.cpp) is derived from pyacvd
 # (https://github.com/pyvista/pyacvd), MIT License, Copyright (c) 2017-2024

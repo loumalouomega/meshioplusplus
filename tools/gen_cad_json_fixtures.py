@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the Kratos CAD JSON fixtures in ``tests/python/meshes/cad_json/``.
 
-The files follow the schema Kratos's ``CadJsonInput`` reads (Breitenberger et
+The files follow the schema Kratos's ``CadJsonInput`` reads (Teschemacher et
 al., AMSES 2018; ``kratos/input_output/cad_json_input.h``) and the
 ``Surfaces``/``Lines`` dialect of ``ImportNurbsSbmModeler``. They are built
 here from closed-form geometry, not copied from Kratos, and written with

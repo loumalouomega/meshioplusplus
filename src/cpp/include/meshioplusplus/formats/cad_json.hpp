@@ -22,7 +22,7 @@
  * Kratos Multiphysics' IGA reads (`CadJsonInput`, `CadIoModeler`) and writes
  * (`CadJsonOutput`) -- trimmed NURBS faces, their boundary loops of trimming
  * curves, edges with 3-D curves and the coupling topology between faces, in
- * the JSON schema of Breitenberger et al. (AMSES 2018). The reader also takes
+ * the JSON schema of Teschemacher et al. (AMSES 2018). The reader also takes
  * the `Surfaces`/`Lines` dialect of Kratos's `ImportNurbsSbmModeler`.
  *
  * ### The mesh
