@@ -285,6 +285,11 @@ BAD = {
     "mixed_ids": '{"breps":[{"edges":[{"3d_curve":{"degree":1,"knot_vector":[0,1],'
     '"control_points":[[1,[0,0,0,1]],[[1,0,0,1]]]}}]}]}',
     "truncated": '{"breps":[{"faces":[',
+    # JSON is UTF-8: a name the core could not hand to Python is refused by
+    # both engines (found by mutation fuzzing; the core used to accept it).
+    "invalid_utf8": b'{"breps":[{"brep_name":"\xfd"}]}',
+    "overlong_utf8": b'{"breps":[{"brep_name":"\xc0\xaf"}]}',
+    "surrogate_utf8": b'{"breps":[{"brep_name":"\xed\xa0\x80"}]}',
 }
 
 
@@ -294,7 +299,8 @@ def test_malformed_files_are_read_errors(tmp_path, engine, name):
     if engine == "core" and _core is None:
         pytest.skip("needs the compiled core")
     path = tmp_path / f"{name}.cad.json"
-    path.write_text(BAD[name])
+    body = BAD[name]
+    path.write_bytes(body if isinstance(body, bytes) else body.encode())
     reader = _core.cad_json_read if engine == "core" else ref.read
     with pytest.raises(ReadError):
         reader(str(path))

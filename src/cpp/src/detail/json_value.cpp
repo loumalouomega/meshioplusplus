@@ -39,6 +39,47 @@ namespace {
 
 constexpr int kJsonMaxDepth = 256;
 
+// The offset of the first byte of @p rText that is not well-formed UTF-8
+// (overlong forms, surrogates and code points past U+10FFFF included, as
+// Python's strict decoder rejects them), or npos.
+std::size_t json_invalid_utf8_at(std::string_view Text) noexcept {
+    const auto* p = reinterpret_cast<const unsigned char*>(Text.data());
+    const std::size_t n = Text.size();
+    for (std::size_t i = 0; i < n;) {
+        const unsigned char c = p[i];
+        if (c < 0x80) {
+            ++i;
+            continue;
+        }
+        std::size_t len = 0;
+        unsigned char lo = 0x80, hi = 0xBF;  // the second byte's range
+        if (c >= 0xC2 && c <= 0xDF) {
+            len = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            len = 3;
+            if (c == 0xE0)
+                lo = 0xA0;  // no overlong forms
+            else if (c == 0xED)
+                hi = 0x9F;  // no surrogates
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            len = 4;
+            if (c == 0xF0)
+                lo = 0x90;
+            else if (c == 0xF4)
+                hi = 0x8F;  // nothing past U+10FFFF
+        } else {
+            return i;
+        }
+        if (i + len > n || p[i + 1] < lo || p[i + 1] > hi)
+            return i;
+        for (std::size_t k = 2; k < len; ++k)
+            if (p[i + k] < 0x80 || p[i + k] > 0xBF)
+                return i;
+        i += len;
+    }
+    return std::string_view::npos;
+}
+
 class JsonParser {
 public:
     JsonParser(std::string_view Text, const char* pFormat) : mText(Text), mpFormat(pFormat) {
@@ -46,6 +87,13 @@ public:
             static_cast<unsigned char>(mText[1]) == 0xBB &&
             static_cast<unsigned char>(mText[2]) == 0xBF)
             mPos = 3;
+        // JSON text is UTF-8 (RFC 8259), and a string read from it reaches
+        // callers (Python among them) that must be able to decode it.
+        const std::size_t bad = json_invalid_utf8_at(mText);
+        if (bad != std::string_view::npos) {
+            mPos = bad;
+            Fail("the text is not valid UTF-8");
+        }
     }
 
     JsonValue ParseDocument() {

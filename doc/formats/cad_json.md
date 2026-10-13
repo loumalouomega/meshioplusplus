@@ -26,7 +26,7 @@ fine = mp.cad_json.read("geometry.cad.json", subdivisions=8)
 - **The rest.** Members meshio++ does not model (Kratos's `tolerances` and `version_number`, a face's `embedded_loops` and `embedded_points`, anything a newer schema adds) are kept per object as compact JSON text (`extra`) and written back in place, so nothing a file carries is dropped.
 - **The import dialect.** The `Surfaces`/`Lines` files Kratos's `ImportNurbsSbmModeler` reads (shifted-boundary IGA: `CPCoordinates`, `Weights`, `knotVector`/`knotVectors`, `pDegree`, `Layer`) are read too: surfaces as untrimmed faces, lines as rational edge curves (as that modeler builds them). That modeler reads no surface weights, and its files often give them as zeros: weights all zero or all one make a polynomial surface. Such a file is written back in the `breps` schema.
 
-Parsing is strict JSON plus comments (Kratos's `Parameters` accept them). A malformed file, a control net that does not match its knots, a decreasing knot vector, a degree outside 1–32, or a non-positive weight on a rational entity is a `ReadError`.
+Parsing is strict JSON plus comments (Kratos's `Parameters` accept them). A malformed file, text that is not UTF-8, a control net that does not match its knots, a decreasing knot vector, a degree outside 1–32, or a non-positive weight on a rational entity is a `ReadError`.
 
 ## The mesh
 

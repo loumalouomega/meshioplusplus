@@ -223,12 +223,25 @@ TEST(CadJson, MalformedInputIsReadError) {
          {"", "[1]", "{\"breps\": [", "{\"x\": 1}",
           R"({"breps":[{"faces":[{"surface":{"degrees":[1,1],"knot_vectors":[[0,1],[0,1]],"control_points":[[[0,0,0,1]]]}}]}]})",
           R"({"breps":[{"edges":[{"3d_curve":{"degree":1,"knot_vector":[1,0],"control_points":[[1,[0,0,0,1]],[2,[1,0,0,1]]]}}]}]})",
-          R"({"breps":[{"edges":[{"3d_curve":{"is_rational":true,"degree":1,"knot_vector":[0,1],"control_points":[[1,[0,0,0,-1]],[2,[1,0,0,1]]]}}]}]})"}) {
+          R"({"breps":[{"edges":[{"3d_curve":{"is_rational":true,"degree":1,"knot_vector":[0,1],"control_points":[[1,[0,0,0,-1]],[2,[1,0,0,1]]]}}]}]})",
+          // Not UTF-8: a stray byte, an overlong form, a surrogate.
+          "{\"breps\":[{\"brep_name\":\"\xfd\"}]}", "{\"breps\":[{\"brep_name\":\"\xc0\xaf\"}]}",
+          "{\"breps\":[{\"brep_name\":\"\xed\xa0\x80\"}]}"}) {
         BrepInfo info;
         EXPECT_THROW(meshioplusplus::read_cad_json(write_file(body), info),
                      meshioplusplus::ReadError)
             << body;
     }
+}
+
+TEST(CadJson, NonAsciiNamesAreKept) {
+    BrepInfo info;
+    (void)meshioplusplus::read_cad_json(
+        write_file(R"({"breps":[{"brep_name":"Öffnung Ω","faces":[]}]})"
+                   "\n// \xc3\xa9 in a comment\n"),
+        info);
+    ASSERT_EQ(info.mBreps.size(), 1u);
+    EXPECT_EQ(info.mBreps[0].mName, "\xc3\x96" "ffnung \xe2\x84\xa6");
 }
 
 TEST(CadJson, BadOptionsAndInconsistentInfo) {
