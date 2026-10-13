@@ -24,6 +24,7 @@ meshioplusplus.xdmf.write("out.xdmf", mesh,
 
 - **`data_format`** — where DataItem payloads are stored: `"XML"` (inline text), `"Binary"` (external `.bin` files, one per array), or `"HDF"` (a companion `.h5` file).
 - **`compression`** / **`compression_opts`** — gzip filter for HDF data.
+- **Reading compressed HDF data** with the native core accepts only the deflate filter, alone or behind a shuffle. Each chunk a read reaches is verified before it is read: a compressed chunk must inflate to its full size, and any other HDF5 filter raises a read error, because libhdf5 1.10 can over-read a chunk that delivers fewer bytes than its elements take. Builds without zlib refuse compressed chunks, and HDF5 older than 1.10.5 is not checked. Python readers that open HDF data through h5py (XDMF, VTKHDF, H5M, HMF, CGNS and Nastran H5) read through their own libhdf5 and are not covered by this check yet.
 
 ## File structure
 
