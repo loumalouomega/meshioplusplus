@@ -1100,6 +1100,42 @@ function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
 end
 
 """
+    tessellate(m; levels=2, curved=true, fields=true, record_stencil=false)
+        -> (; mesh, num_source_points, num_source_cells, num_curved_source_cells,
+             num_pass_through_source_cells, num_points, num_cells,
+             num_boundary_facets, num_interior_facets, num_facets_with_bad_count)
+
+Tessellate the curved (quadratic) cells isoparametrically: every `triangle6`,
+`quad8`, `quad9`, `tetra10` or `hexahedron27` cell is sampled on a reference
+lattice and mapped through its own shape functions (curved surface cells become
+triangles, curved volume cells tetras); every other cell passes through. The
+output carries point data `tessellate:source_point` (the 0-based source point,
+or -1) and cell data `tessellate:source_cell` / `tessellate:sub_index`;
+`record_stencil=true` adds the `(27, num_points)` `tessellate:stencil` and
+`tessellate:weights`. `num_facets_with_bad_count == 0` for a conforming result.
+See `doc/tessellation.md`.
+"""
+function tessellate(m::Mesh; levels::Integer=2, curved::Bool=true, fields::Bool=true,
+                    record_stencil::Bool=false)
+    report = Ref{_CTessellateReport}()
+    opts = _CTessellateOpts(Int64(levels), Int32(curved), Int32(fields),
+                            Int32(record_stencil), Int32(0), ntuple(_ -> Int64(0), 6))
+    ptr = ccall(_sym(:mio_tessellate), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CTessellateOpts}, Ptr{_CTessellateReport}),
+                _handle(m), Ref(opts), report)
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_source_points=Int(rep.num_source_points),
+     num_source_cells=Int(rep.num_source_cells),
+     num_curved_source_cells=Int(rep.num_curved_source_cells),
+     num_pass_through_source_cells=Int(rep.num_pass_through_source_cells),
+     num_points=Int(rep.num_points), num_cells=Int(rep.num_cells),
+     num_boundary_facets=Int(rep.num_boundary_facets),
+     num_interior_facets=Int(rep.num_interior_facets),
+     num_facets_with_bad_count=Int(rep.num_facets_with_bad_count))
+end
+
+"""
     decimate(mesh; ratio=-1.0, target_faces=-1, max_error=-1.0, placement="optimal",
              preserve_boundary=true, preserve_features=true, feature_angle=30.0)
         -> (; mesh, point_map, cell_maps, faces_removed, points_removed,

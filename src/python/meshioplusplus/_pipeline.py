@@ -76,6 +76,7 @@ from ._split import split
 from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._tensor_invariants import tensor_invariants
+from ._tessellation import tessellate
 from ._transform import transform
 from ._undo_green import undo_green
 from ._voxelize import voxelize
@@ -351,6 +352,7 @@ _OP_TABLE = {
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
     "Subdivide": ("RecordParentIds",),
+    "Tessellate": ("Levels", "Curved", "Fields", "RecordStencil"),
     "Agglomerate": (
         "TargetGroupSize",
         "MergeCoplanarFaces",
@@ -1380,6 +1382,25 @@ def _apply_step(mesh, step, steps, warnings):
         mesh = subdivide(
             mesh,
             record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+    elif op == "Tessellate":
+        tess = tessellate(
+            mesh,
+            levels=int(_number(step, "Levels", 2.0)),
+            curved=_flag(step, "Curved", True),
+            fields=_flag(step, "Fields", True),
+            record_stencil=_flag(step, "RecordStencil", False),
+        )
+        mesh = tess.mesh
+        schema = tess.schema
+        entry["NumCurvedSourceCells"] = float(schema["num_curved_source_cells"])
+        entry["NumPassThroughSourceCells"] = float(
+            schema["num_pass_through_source_cells"]
+        )
+        entry["NumPoints"] = float(schema["num_points"])
+        entry["NumCells"] = float(schema["num_cells"])
+        entry["NumFacetsWithBadCount"] = float(
+            schema["watertight"]["num_facets_with_bad_count"]
         )
     elif op == "Agglomerate":
         mesh, report = agglomerate(

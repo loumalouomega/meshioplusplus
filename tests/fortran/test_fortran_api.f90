@@ -1686,6 +1686,7 @@ program test_fortran_api
     ! ---- per-vertex curvature --------------------------------------------
     call check_curvature()
     call check_normals()
+    call check_tessellate()
     call check_analysis_editing()
     call check_render(prefix)
     call check_repair_shrinkwrap_sobolev()
@@ -2003,6 +2004,58 @@ contains
         bad = sq%normals(split_angle=270.0_real64, stat=ierr)
         call check(ierr /= 0, 'normals rejects a split angle above 180')
         call sq%free()
+    end subroutine
+
+    !> Tessellate one straight-sided tetra10: the default two levels give the
+    !> 35-point, 64-tetra lattice with every facet used once or twice.
+    subroutine check_tessellate()
+        type(mio_mesh) :: t10, out, bad
+        integer(int64) :: ncurved, npts, ncells, nbound, ninner, nbad
+        integer :: ierr
+        real(real64) :: pts(3, 10)
+        integer(int64) :: conn(10, 1)
+
+        pts = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                       1.0_real64, 0.0_real64, 0.0_real64, &
+                       0.0_real64, 1.0_real64, 0.0_real64, &
+                       0.0_real64, 0.0_real64, 1.0_real64, &
+                       0.5_real64, 0.0_real64, 0.0_real64, &
+                       0.5_real64, 0.5_real64, 0.0_real64, &
+                       0.0_real64, 0.5_real64, 0.0_real64, &
+                       0.0_real64, 0.0_real64, 0.5_real64, &
+                       0.5_real64, 0.0_real64, 0.5_real64, &
+                       0.0_real64, 0.5_real64, 0.5_real64], [3, 10])
+        conn = reshape([1_int64, 2_int64, 3_int64, 4_int64, 5_int64, &
+                        6_int64, 7_int64, 8_int64, 9_int64, 10_int64], [10, 1])
+        call t10%create()
+        call t10%set_points(pts)
+        call t10%add_cell_block('tetra10', conn)
+
+        out = t10%tessellate(num_curved_source_cells=ncurved, num_points=npts, &
+                             num_cells=ncells, num_boundary_facets=nbound, &
+                             num_interior_facets=ninner, num_facets_with_bad_count=nbad, &
+                             stat=ierr)
+        call check(ierr == 0, 'tessellate succeeded')
+        call check(ncurved == 1_int64, 'tessellate counts one curved cell')
+        call check(npts == 35_int64 .and. out%num_points() == 35_int64, &
+                   'a twice-split tetra10 has 35 points')
+        call check(ncells == 64_int64, 'a twice-split tetra10 has 64 tetras')
+        call check(nbound == 64_int64 .and. ninner == 96_int64, 'tessellate facet counts')
+        call check(nbad == 0_int64, 'tessellate is conforming')
+        call check(out%num_point_data() == 1_int64, 'tessellate adds source_point')
+        call check(out%point_data_name(1) == 'tessellate:source_point', &
+                   'tessellate:source_point attached')
+        call out%free()
+
+        out = t10%tessellate(levels=1_int64, record_stencil=.true., num_cells=ncells, &
+                             stat=ierr)
+        call check(ierr == 0 .and. ncells == 8_int64, 'one level splits into 8 tetras')
+        call check(out%num_point_data() == 3_int64, 'record_stencil adds stencil and weights')
+        call out%free()
+
+        bad = t10%tessellate(levels=-1_int64, stat=ierr)
+        call check(ierr /= 0, 'tessellate rejects negative levels')
+        call t10%free()
     end subroutine
 
     subroutine check_analysis_editing()

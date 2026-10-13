@@ -173,6 +173,13 @@ def files(tmp_path_factory):
             mio.Mesh(pts, [("quad", quads)], point_data={"u": pts[:, 0] + 10.0 * k}),
         )
     paths["seq"] = str(d / "seq_*.vtu")
+    # two quadratic tetrahedra with a point field, for tessellate
+    curved = mio.convert_cells(
+        mio.Mesh(parts.points, [("tetra", parts.cells[0].data)]), mode="elevate"
+    )
+    curved.point_data["u"] = curved.points[:, 0] + 2.0 * curved.points[:, 2]
+    paths["curved"] = str(d / "curved.vtu")
+    mio.write(paths["curved"], curved)
     mio.write(paths["grid"], grid)
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
@@ -243,6 +250,23 @@ WRITING = [
     (
         "segment",
         lambda f, out: ["segment", f["grid"], out + ".vtu", "--json"],
+    ),
+    (
+        "tessellate",
+        lambda f, out: ["tessellate", f["curved"], out + ".vtu", "--json"],
+    ),
+    (
+        "tessellate_options",
+        lambda f, out: [
+            "tessellate",
+            f["curved"],
+            out + ".vtu",
+            "--levels",
+            "1",
+            "--no-fields",
+            "--record-stencil",
+            "--json",
+        ],
     ),
     (
         "fit_primitives",

@@ -109,6 +109,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -361,6 +362,7 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 // exported `segment()` and `fit_primitives()`, pinned from the release that
 // introduces them. Their results embed a Mesh and are not pinned.
 MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TessellateOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
 // ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes.

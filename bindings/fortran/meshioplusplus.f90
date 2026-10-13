@@ -739,6 +739,31 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(5) = 0
     end type
 
+    !> Interop mirror of C `mio_tessellate_opts`. Field order/types are ABI; the
+    !> defaults mirror `mio_tessellate_opts_init` (called anyway).
+    type, bind(c) :: mio_tessellate_opts_t
+        integer(c_int64_t) :: levels = 2
+        integer(c_int32_t) :: curved = 1
+        integer(c_int32_t) :: fields = 1
+        integer(c_int32_t) :: record_stencil = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_tessellate_report`.
+    type, bind(c) :: mio_tessellate_report_t
+        integer(c_int64_t) :: num_source_points = 0
+        integer(c_int64_t) :: num_source_cells = 0
+        integer(c_int64_t) :: num_curved_source_cells = 0
+        integer(c_int64_t) :: num_pass_through_source_cells = 0
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_boundary_facets = 0
+        integer(c_int64_t) :: num_interior_facets = 0
+        integer(c_int64_t) :: num_facets_with_bad_count = 0
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
     !> Interop mirror of C `mio_smooth_opts`. Field order and types are ABI
     !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
     !> exactly; `reserved_pad0`/`reserved_pad1`/`reserved` are padding for
@@ -1045,6 +1070,7 @@ module meshioplusplus
         procedure :: subdivide => mesh_subdivide
         procedure :: agglomerate => mesh_agglomerate
         procedure :: refine => mesh_refine
+        procedure :: tessellate => mesh_tessellate
         procedure :: decimate => mesh_decimate
         procedure :: partition => mesh_partition
         procedure :: partition_labels => mesh_partition_labels
@@ -2695,6 +2721,19 @@ module meshioplusplus
             import :: c_ptr, mio_refine_opts_t
             type(c_ptr), value :: h
             type(mio_refine_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_tessellate_opts_init(opts) bind(c, name="mio_tessellate_opts_init")
+            import :: mio_tessellate_opts_t
+            type(mio_tessellate_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_tessellate(h, opts, report) bind(c, name="mio_tessellate") result(r)
+            import :: c_ptr, mio_tessellate_opts_t, mio_tessellate_report_t
+            type(c_ptr), value :: h
+            type(mio_tessellate_opts_t), intent(in) :: opts
+            type(mio_tessellate_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -7506,6 +7545,65 @@ contains
             call handle_failure('refine', mio_error_message(), stat, errmsg)
             return
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Tessellate this mesh's curved (quadratic) cells isoparametrically:
+    !> triangle6/quad8/quad9 become triangles and tetra10/hexahedron27 tetras
+    !> on a reference lattice; every other cell passes through. The output
+    !> carries point data `tessellate:source_point` (0-based source point, or
+    !> -1) and cell data `tessellate:source_cell` / `tessellate:sub_index`;
+    !> `record_stencil` adds `tessellate:stencil` / `tessellate:weights`.
+    !> `levels` defaults to 2, `curved` and `fields` to true. See
+    !> doc/tessellation.md.
+    function mesh_tessellate(self, levels, curved, fields, record_stencil, &
+                             num_source_points, num_source_cells, num_curved_source_cells, &
+                             num_pass_through_source_cells, num_points, num_cells, &
+                             num_boundary_facets, num_interior_facets, &
+                             num_facets_with_bad_count, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in), optional :: levels
+        logical, intent(in), optional :: curved, fields, record_stencil
+        integer(int64), intent(out), optional :: num_source_points, num_source_cells
+        integer(int64), intent(out), optional :: num_curved_source_cells
+        integer(int64), intent(out), optional :: num_pass_through_source_cells
+        integer(int64), intent(out), optional :: num_points, num_cells
+        integer(int64), intent(out), optional :: num_boundary_facets, num_interior_facets
+        integer(int64), intent(out), optional :: num_facets_with_bad_count
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_tessellate_opts_t) :: opts
+        type(mio_tessellate_report_t) :: report
+
+        call c_mio_tessellate_opts_init(opts)
+        if (present(levels)) opts%levels = int(levels, c_int64_t)
+        if (present(curved)) opts%curved = merge(1_c_int32_t, 0_c_int32_t, curved)
+        if (present(fields)) opts%fields = merge(1_c_int32_t, 0_c_int32_t, fields)
+        if (present(record_stencil)) &
+            opts%record_stencil = merge(1_c_int32_t, 0_c_int32_t, record_stencil)
+        res = c_mio_tessellate(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('tessellate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_source_points)) &
+            num_source_points = int(report%num_source_points, int64)
+        if (present(num_source_cells)) num_source_cells = int(report%num_source_cells, int64)
+        if (present(num_curved_source_cells)) &
+            num_curved_source_cells = int(report%num_curved_source_cells, int64)
+        if (present(num_pass_through_source_cells)) &
+            num_pass_through_source_cells = int(report%num_pass_through_source_cells, int64)
+        if (present(num_points)) num_points = int(report%num_points, int64)
+        if (present(num_cells)) num_cells = int(report%num_cells, int64)
+        if (present(num_boundary_facets)) &
+            num_boundary_facets = int(report%num_boundary_facets, int64)
+        if (present(num_interior_facets)) &
+            num_interior_facets = int(report%num_interior_facets, int64)
+        if (present(num_facets_with_bad_count)) &
+            num_facets_with_bad_count = int(report%num_facets_with_bad_count, int64)
         call clear_status(stat, errmsg)
     end function
 

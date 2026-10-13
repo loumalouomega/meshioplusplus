@@ -98,6 +98,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
@@ -3028,6 +3029,49 @@ mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t b
 
 void mio_refine_result_free(mio_refine_result* result) {
     delete result;
+}
+
+static_assert(sizeof(mio_tessellate_opts) == 72,
+              "mio_tessellate_opts grew outside its reserved tail");
+static_assert(sizeof(mio_tessellate_report) == 112,
+              "mio_tessellate_report grew outside its reserved tail");
+
+void mio_tessellate_opts_init(mio_tessellate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_tessellate_opts{};
+    opts->levels = 2;
+    opts->curved = 1;
+    opts->fields = 1;
+}
+
+mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
+                         mio_tessellate_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::TessellateOptions options;
+        if (opts) {
+            options.mLevels = opts->levels;
+            options.mCurved = opts->curved != 0;
+            options.mFields = opts->fields != 0;
+            options.mRecordStencil = opts->record_stencil != 0;
+        }
+        meshioplusplus::TessellateResult r = meshioplusplus::tessellate(mesh->mMesh, options);
+        if (report) {
+            *report = mio_tessellate_report{};
+            report->num_source_points = r.mNumSourcePoints;
+            report->num_source_cells = r.mNumSourceCells;
+            report->num_curved_source_cells = r.mNumCurvedSourceCells;
+            report->num_pass_through_source_cells = r.mNumPassThroughSourceCells;
+            report->num_points = r.mNumPoints;
+            report->num_cells = r.mNumCells;
+            report->num_boundary_facets = r.mNumBoundaryFacets;
+            report->num_interior_facets = r.mNumInteriorFacets;
+            report->num_facets_with_bad_count = r.mNumFacetsWithBadCount;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
 }
 
 namespace {

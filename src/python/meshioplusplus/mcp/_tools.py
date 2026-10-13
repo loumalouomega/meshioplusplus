@@ -2573,6 +2573,8 @@ def tool_tessellate(
         _store(tess.mesh, output_path, output_format),
         tess.mesh,
         levels=int(levels),
+        num_source_points=tess.schema["num_source_points"],
+        num_source_cells=tess.schema["num_source_cells"],
         num_curved_source_cells=tess.schema["num_curved_source_cells"],
         num_pass_through_source_cells=tess.schema["num_pass_through_source_cells"],
         watertight=tess.schema["watertight"],

@@ -165,6 +165,31 @@ struct _CRefineOpts
     reserved::NTuple{5,Int64}
 end
 
+"""Mirror of C `mio_tessellate_opts`. ABI; build through [`tessellate`](@ref):
+`levels` defaults to 2 and `curved`/`fields` to on."""
+struct _CTessellateOpts
+    levels::Int64
+    curved::Int32
+    fields::Int32
+    record_stencil::Int32
+    reserved0::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_tessellate_report`."""
+struct _CTessellateReport
+    num_source_points::Int64
+    num_source_cells::Int64
+    num_curved_source_cells::Int64
+    num_pass_through_source_cells::Int64
+    num_points::Int64
+    num_cells::Int64
+    num_boundary_facets::Int64
+    num_interior_facets::Int64
+    num_facets_with_bad_count::Int64
+    reserved::NTuple{5,Int64}
+end
+
 """
 Mirror of C `mio_smooth_opts`. Field order, types and the trailing `reserved`
 padding are ABI: they must match `meshioplusplus.h` exactly. Always build one
@@ -873,6 +898,11 @@ function _check_abi_layout()
         error("meshio++: mio_region_info layout mismatch ($(sizeof(_CRegionInfo)) bytes)")
     sizeof(_CRefineOpts) == 112 ||
         error("meshio++: mio_refine_opts layout mismatch ($(sizeof(_CRefineOpts)) bytes)")
+    sizeof(_CTessellateOpts) == 72 ||
+        error("meshio++: mio_tessellate_opts layout mismatch ($(sizeof(_CTessellateOpts)) bytes)")
+    sizeof(_CTessellateReport) == 112 ||
+        error("meshio++: mio_tessellate_report layout mismatch " *
+              "($(sizeof(_CTessellateReport)) bytes)")
     sizeof(_CSmoothOpts) == 104 ||
         error("meshio++: mio_smooth_opts layout mismatch ($(sizeof(_CSmoothOpts)) bytes)")
     sizeof(_CDecimateOpts) == 96 ||

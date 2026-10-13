@@ -116,6 +116,7 @@ export segment, fit_primitives, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
+export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export sets_to_data, data_to_sets
 export data_calc, data_condition, data_info, data_integrate, tensor_invariants

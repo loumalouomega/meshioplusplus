@@ -1424,6 +1424,45 @@ SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SE
     return res;
 }
 
+SEXP R_mio_tessellate(SEXP mesh, SEXP levels, SEXP curved, SEXP fields, SEXP record_stencil) {
+    mio_tessellate_opts opts;
+    mio_tessellate_report report;
+    mio_mesh *out;
+
+    mio_tessellate_opts_init(&opts);
+    opts.levels = mio_r_int64(levels, "levels");
+    opts.curved = mio_r_bool(curved, "curved");
+    opts.fields = mio_r_bool(fields, "fields");
+    opts.record_stencil = mio_r_bool(record_stencil, "record_stencil");
+
+    out = mio_tessellate(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("tessellate");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP n0 = PROTECT(Rf_ScalarReal((double)report.num_source_points));
+    SEXP n1 = PROTECT(Rf_ScalarReal((double)report.num_source_cells));
+    SEXP n2 = PROTECT(Rf_ScalarReal((double)report.num_curved_source_cells));
+    SEXP n3 = PROTECT(Rf_ScalarReal((double)report.num_pass_through_source_cells));
+    SEXP n4 = PROTECT(Rf_ScalarReal((double)report.num_points));
+    SEXP n5 = PROTECT(Rf_ScalarReal((double)report.num_cells));
+    SEXP n6 = PROTECT(Rf_ScalarReal((double)report.num_boundary_facets));
+    SEXP n7 = PROTECT(Rf_ScalarReal((double)report.num_interior_facets));
+    SEXP n8 = PROTECT(Rf_ScalarReal((double)report.num_facets_with_bad_count));
+    const char *names[] = {"mesh",
+                           "num_source_points",
+                           "num_source_cells",
+                           "num_curved_source_cells",
+                           "num_pass_through_source_cells",
+                           "num_points",
+                           "num_cells",
+                           "num_boundary_facets",
+                           "num_interior_facets",
+                           "num_facets_with_bad_count"};
+    SEXP values[] = {mo, n0, n1, n2, n3, n4, n5, n6, n7, n8};
+    SEXP res = PROTECT(mio_r_named_list(10, names, values));
+    UNPROTECT(11);
+    return res;
+}
+
 SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_error,
                     SEXP placement, SEXP preserve_boundary, SEXP preserve_features,
                     SEXP feature_angle, SEXP frozen) {

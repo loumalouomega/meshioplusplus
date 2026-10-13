@@ -16,6 +16,7 @@
 //
 // System includes
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <set>
@@ -134,6 +135,7 @@
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -3428,6 +3430,48 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
         py::arg("boundary") = true, py::arg("non_manifold") = true, py::arg("inconsistent") = true,
         py::arg("region") = "");
+
+    // Isoparametric tessellation of curved cells. See operations/tessellate.hpp.
+    m.def(
+        "tessellate",
+        [](py::object pymesh, std::int64_t levels, bool curved, bool fields, bool record_stencil) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::TessellateOptions options;
+            options.mLevels = levels;
+            options.mCurved = curved;
+            options.mFields = fields;
+            options.mRecordStencil = record_stencil;
+            meshioplusplus::TessellateResult r =
+                core_nogil([&] { return meshioplusplus::tessellate(cpp, options); });
+            const std::size_t np = static_cast<std::size_t>(r.mNumPoints);
+            const std::size_t width = meshioplusplus::kTessellateStencilWidth;
+            py::array_t<std::int64_t> stencil({np, width});
+            py::array_t<double> weights({np, width});
+            if (np) {
+                std::memcpy(stencil.mutable_data(), r.mStencil.data(),
+                            r.mStencil.size() * sizeof(std::int64_t));
+                std::memcpy(weights.mutable_data(), r.mWeights.data(),
+                            r.mWeights.size() * sizeof(double));
+            }
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["stencil"] = stencil;
+            out["weights"] = weights;
+            out["num_source_points"] = r.mNumSourcePoints;
+            out["num_source_cells"] = r.mNumSourceCells;
+            out["num_curved_source_cells"] = r.mNumCurvedSourceCells;
+            out["num_pass_through_source_cells"] = r.mNumPassThroughSourceCells;
+            out["num_points"] = r.mNumPoints;
+            out["num_cells"] = r.mNumCells;
+            out["num_boundary_facets"] = r.mNumBoundaryFacets;
+            out["num_interior_facets"] = r.mNumInteriorFacets;
+            out["num_facets_with_bad_count"] = r.mNumFacetsWithBadCount;
+            return out;
+        },
+        py::arg("mesh"), py::arg("levels") = 2, py::arg("curved") = true, py::arg("fields") = true,
+        py::arg("record_stencil") = false);
 
     // Smooth patches by region growing. See operations/segment.hpp.
     m.def(

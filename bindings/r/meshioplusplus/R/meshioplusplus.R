@@ -1947,6 +1947,38 @@ mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
   )
 }
 
+#' Tessellate the curved cells of a mesh
+#'
+#' Isoparametric tessellation: every `triangle6`, `quad8`, `quad9`, `tetra10`
+#' or `hexahedron27` cell is sampled on a reference lattice and mapped through
+#' its own quadratic shape functions; curved surface cells become one
+#' `triangle` block and curved volume cells one `tetra` block, after the
+#' pass-through blocks. Every other cell passes through unchanged. Cells that
+#' share an edge or a face share its points, so the output is conforming. See
+#' `doc/tessellation.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param levels Divisions per axis for `quad8`/`quad9`/`hexahedron27`, or
+#'   recursive splits for `triangle6`/`tetra10` (`2^levels` per edge); >= 0.
+#' @param curved `FALSE` passes every cell through unchanged.
+#' @param fields Interpolate point data and copy cell data onto the output.
+#' @param record_stencil Also store the `(num_points, 27)` point data
+#'   `tessellate:stencil` and `tessellate:weights`.
+#' @return A list of `mesh` (with point data `tessellate:source_point`, the
+#'   0-based source point or -1, and cell data `tessellate:source_cell` and
+#'   `tessellate:sub_index`), `num_source_points`, `num_source_cells`,
+#'   `num_curved_source_cells`, `num_pass_through_source_cells`, `num_points`,
+#'   `num_cells`, `num_boundary_facets`, `num_interior_facets` and
+#'   `num_facets_with_bad_count` (zero for a conforming tessellation).
+#' @export
+mio_tessellate <- function(mesh, levels = 2, curved = TRUE, fields = TRUE,
+                           record_stencil = FALSE) {
+  .Call(
+    R_mio_tessellate, mesh, as.numeric(levels), isTRUE(curved), isTRUE(fields),
+    isTRUE(record_stencil)
+  )
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_decimate <- function(mesh, ratio = -1, target_faces = -1, max_error = -1,

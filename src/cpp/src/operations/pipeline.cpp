@@ -51,6 +51,7 @@
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -351,6 +352,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
+        {"Tessellate", {"Levels", "Curved", "Fields", "RecordStencil"}},
         {"Agglomerate",
          {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
@@ -1429,6 +1431,22 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = subdivide(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
+    }
+    if (op == "Tessellate") {
+        TessellateOptions opts;
+        opts.mLevels = static_cast<std::int64_t>(pipe_number(rStep, "Levels", 2.0));
+        opts.mCurved = pipe_flag(rStep, "Curved", true);
+        opts.mFields = pipe_flag(rStep, "Fields", true);
+        opts.mRecordStencil = pipe_flag(rStep, "RecordStencil", false);
+        TessellateResult tr = tessellate(mesh, opts);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumCurvedSourceCells", static_cast<double>(tr.mNumCurvedSourceCells)},
+             {"NumPassThroughSourceCells", static_cast<double>(tr.mNumPassThroughSourceCells)},
+             {"NumPoints", static_cast<double>(tr.mNumPoints)},
+             {"NumCells", static_cast<double>(tr.mNumCells)},
+             {"NumFacetsWithBadCount", static_cast<double>(tr.mNumFacetsWithBadCount)}});
+        return std::move(tr.mMesh);
     }
     if (op == "Agglomerate") {
         AgglomerateOptions opts;

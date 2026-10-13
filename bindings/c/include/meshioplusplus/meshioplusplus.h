@@ -2045,6 +2045,71 @@ MIO_API mio_status mio_refine_result_cell_map(const mio_refine_result* result, i
 MIO_API void mio_refine_result_free(mio_refine_result* result);
 
 /**
+ * Options for mio_tessellate. Same ABI rules as mio_refine_opts; always
+ * initialize through mio_tessellate_opts_init(): levels defaults to 2 and
+ * curved/fields to 1, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_tessellate_opts {
+    /** Divisions per axis (quad8/quad9/hexahedron27) or recursive splits
+     *  (triangle6/tetra10, 2^levels divisions per edge); >= 0. */
+    int64_t levels;
+    /** Nonzero tessellates the curved cells; zero passes every cell through. */
+    int32_t curved;
+    /** Nonzero interpolates point data and copies cell data onto the output. */
+    int32_t fields;
+    /** Nonzero also stores "tessellate:stencil" / "tessellate:weights". */
+    int32_t record_stencil;
+    int32_t reserved0;   /**< must be zero; padding */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_tessellate_opts;
+
+/** Initialize tessellate options: levels 2, curved and fields on, no stencil. */
+MIO_API void mio_tessellate_opts_init(mio_tessellate_opts* opts);
+
+/** What mio_tessellate did. */
+typedef struct mio_tessellate_report {
+    int64_t num_source_points;
+    int64_t num_source_cells;
+    /** Source cells of a curved type that were tessellated. */
+    int64_t num_curved_source_cells;
+    /** Source cells passed through unchanged. */
+    int64_t num_pass_through_source_cells;
+    int64_t num_points;
+    int64_t num_cells;
+    /** Over every output tetra block: triangular facets used once. */
+    int64_t num_boundary_facets;
+    /** Facets used twice. */
+    int64_t num_interior_facets;
+    /** Facets used three or more times: zero for a conforming tessellation. */
+    int64_t num_facets_with_bad_count;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_tessellate_report;
+
+/**
+ * Tessellate a mesh's curved (quadratic) cells isoparametrically: every
+ * triangle6, quad8, quad9, tetra10 or hexahedron27 cell is sampled on a
+ * reference lattice and mapped through its own shape functions; every other
+ * cell passes through unchanged. Curved surface cells become one triangle
+ * block and curved volume cells one tetra block, after the pass-through blocks
+ * in input order. Shared edges and faces share their points, so the output is
+ * conforming. The output carries Int64 point data "tessellate:source_point"
+ * (the source point, or -1) and Int64 cell data "tessellate:source_cell" (the
+ * global block-major source cell) and "tessellate:sub_index" (the child
+ * index); with record_stencil it also carries "tessellate:stencil" (Int64) and
+ * "tessellate:weights" (Float64), both (num_points, 27) point data. With
+ * fields, point data is interpolated (Float64) and cell data copied to the
+ * children. See doc/tessellation.md.
+ *
+ * @param mesh   any mesh.
+ * @param opts   options; NULL means every mio_tessellate_opts_init() default.
+ * @param report optional out: the counts.
+ * @return the tessellated mesh (free with mio_mesh_free), or NULL on failure
+ *         (negative levels, or point data with the wrong row count).
+ */
+MIO_API mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
+                                 mio_tessellate_report* report);
+
+/**
  * Decimate a SURFACE mesh by greedy quadric-error-metric (Garland-Heckbert)
  * edge collapse — the resolution-reducing inverse of mio_refine. The output is
  * all-triangle (quad/polygon blocks are triangulated first) with the block

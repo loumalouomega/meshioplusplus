@@ -191,6 +191,46 @@ def test_subdivide_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_tessellate_pipeline_step(settings_env):
+    """Tessellate dispatches off the same _OP_TABLE/pipeline_op_table pair;
+    elevating the tet fixture first gives it curved cells to subdivide. Both
+    engines run the core's tessellate, so their meshes and reports agree."""
+    settings = make_settings(
+        settings_env,
+        [
+            {"Op": "ConvertCells", "Mode": "elevate"},
+            {"Op": "Tessellate", "Levels": 1, "RecordStencil": True},
+        ],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    step = report["steps"][1]
+    assert step["op"] == "Tessellate"
+    # helpers.tet_mesh's two tetra10 cells -> 8 tetra children each
+    assert step["NumCurvedSourceCells"] == 2
+    assert step["NumPassThroughSourceCells"] == 0
+    assert step["NumCells"] == 16
+    assert step["NumFacetsWithBadCount"] == 0
+    out = meshioplusplus.read(settings_env["out"])
+    assert step["NumPoints"] == len(out.points)
+    assert [b.type for b in out.cells] == ["tetra"]
+    assert "tessellate:stencil" in out.point_data
+    assert "temperature" in out.point_data
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+        assert cpp_report["steps"] == report["steps"]
+
+    bad = make_settings(settings_env, [{"Op": "Tessellate", "Levels": -1}])
+    with pytest.raises(Exception, match="levels must be >= 0"):
+        meshioplusplus.run_pipeline(bad)
+    if hasattr(_core, "run_pipeline_json"):
+        with pytest.raises(Exception, match="levels must be >= 0"):
+            _core.run_pipeline_json(json.dumps(bad))
+
+
 def test_agglomerate_pipeline_step(settings_env):
     """Agglomerate dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair, and like Subdivide has no numpy fallback, so both

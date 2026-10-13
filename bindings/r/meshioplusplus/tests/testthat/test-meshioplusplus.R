@@ -350,6 +350,45 @@ test_that("transform moves points and leaves topology alone", {
   mio_release(t)
 })
 
+test_that("tessellate splits a tetra10 conformingly", {
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, matrix(c(
+    0, 0, 0,
+    1, 0, 0,
+    0, 1, 0,
+    0, 0, 1,
+    0.5, 0, 0,
+    0.5, 0.5, 0,
+    0, 0.5, 0,
+    0, 0, 0.5,
+    0.5, 0, 0.5,
+    0, 0.5, 0.5
+  ), nrow = 3))
+  mio_add_cell_block(m, "tetra10", matrix(1:10, nrow = 10))
+
+  t <- mio_tessellate(m)
+  expect_equal(t$num_curved_source_cells, 1)
+  expect_equal(t$num_points, 35)
+  expect_equal(mio_num_points(t$mesh), 35)
+  expect_equal(t$num_cells, 64)
+  expect_equal(t$num_boundary_facets, 64)
+  expect_equal(t$num_interior_facets, 96)
+  expect_equal(t$num_facets_with_bad_count, 0)
+  src_pt <- as.vector(mio_point_data(t$mesh, "tessellate:source_point"))
+  expect_equal(src_pt[1:5], c(0, 1, 2, 3, -1))
+  mio_release(t$mesh)
+
+  s <- mio_tessellate(m, levels = 1, record_stencil = TRUE)
+  expect_equal(s$num_cells, 8)
+  expect_equal(dim(mio_point_data(s$mesh, "tessellate:weights")), c(27, 10))
+  mio_release(s$mesh)
+  p <- mio_tessellate(m, curved = FALSE)
+  expect_equal(p$num_pass_through_source_cells, 1)
+  mio_release(p$mesh)
+  expect_error(mio_tessellate(m, levels = -1))
+})
+
 test_that("refine reports 1-based maps with a 0 sentinel", {
   m <- fixture()
   on.exit(mio_release(m))
