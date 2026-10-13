@@ -68,7 +68,30 @@ def add_args(parser):
         help="rounds of demoting failed faces before faceting all (default: 8)",
     )
     parser.add_argument(
+        "--no-freeform",
+        action="store_true",
+        help="facet the patches no primitive explains instead of fitting B-spline faces",
+    )
+    parser.add_argument(
+        "--freeform-degree",
+        type=int,
+        default=3,
+        help="highest degree of a freeform B-spline face, 3 to 8 (default: 3)",
+    )
+    parser.add_argument(
+        "--freeform-max-control",
+        type=int,
+        default=64,
+        help="most grid points per direction a freeform fit samples (default: 64)",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
+    )
+    parser.add_argument(
+        "--cad-json",
+        type=str,
+        default=None,
+        help="also write the solid as Kratos CAD JSON (NURBS faces, loops, edges) here",
     )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
@@ -94,10 +117,15 @@ def to_cad_cmd(args):
         types=[t.strip() for t in args.types.split(",") if t.strip()],
         mesh_deflection=args.mesh_deflection,
         max_demotion_rounds=args.max_demotion_rounds,
+        freeform=not args.no_freeform,
+        freeform_degree=args.freeform_degree,
+        freeform_max_control=args.freeform_max_control,
         return_report=True,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
+    if args.cad_json:
+        write(args.cad_json, out, file_format="cad_json")
     if args.json:
         emit_json(report)
     elif not args.quiet:
@@ -107,6 +135,7 @@ def to_cad_cmd(args):
         )
         for t in TYPES[1:]:
             print(f"  {t + ':':10s} {report['num_' + t]}")
+        print(f"  {'bspline:':10s} {report['num_bspline']}")
         print(f"  {'facets:':10s} {report['num_faceted_faces']}")
         print(f"  {'demoted:':10s} {report['num_demoted']} patch(es)")
         print(

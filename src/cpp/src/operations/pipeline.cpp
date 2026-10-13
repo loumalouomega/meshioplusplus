@@ -301,7 +301,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
-         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds"}},
+         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
+          "Freeform", "FreeformDegree", "FreeformMaxControl"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -999,6 +1000,10 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             static_cast<std::int64_t>(pipe_number(rStep, "MaxDemotionRounds", 8.0));
         if (pipe_find(rStep, "Types"))
             opts.mTypes = pipe_fit_types(rStep);
+        opts.mFreeform = pipe_flag(rStep, "Freeform", true);
+        opts.mFreeformDegree = static_cast<std::int32_t>(pipe_number(rStep, "FreeformDegree", 3.0));
+        opts.mFreeformMaxControl =
+            static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControl", 64.0));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         pipe_push_step(rReport, rStep,
                        {{"Valid", cr.mValid ? 1.0 : 0.0},
@@ -1006,6 +1011,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"MaxDeviation", cr.mMaxDeviation},
                         {"NumFaces", static_cast<double>(cr.mNumFaces)},
                         {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
                         {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
         return std::move(cr.mMesh);
     }

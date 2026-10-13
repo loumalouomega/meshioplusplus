@@ -1328,16 +1328,23 @@ mio_has_occt <- function() {
 #'   takes a quarter of the tolerance.
 #' @param max_demotion_rounds Rounds of demoting failed faces before every
 #'   patch is faceted.
+#' @param freeform Whether a patch no primitive explains is tried as a
+#'   B-spline face.
+#' @param freeform_degree That B-spline's highest degree, 3 to 8.
+#' @param freeform_max_control The most grid points per direction its fit
+#'   samples, 4 to 1024.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
 #'   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
 #'   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
-#'   `num_exact_edges`, `num_approx_edges` and `num_solids`.
+#'   `num_exact_edges`, `num_approx_edges`, `num_solids` and `num_bspline`.
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
-                        mesh_deflection = 0, max_demotion_rounds = 8) {
+                        mesh_deflection = 0, max_demotion_rounds = 8,
+                        freeform = TRUE, freeform_degree = 3,
+                        freeform_max_control = 64) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1347,7 +1354,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
   .Call(
     R_mio_fit_cad, mesh, as.character(step_path), as.numeric(tolerance),
     isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
-    as.numeric(max_demotion_rounds)
+    as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
+    as.numeric(freeform_max_control)
   )
 }
 
@@ -2267,6 +2275,32 @@ mio_gmsh_info <- function(info) .Call(R_mio_gmsh_info, info)
 #'   `cell_span` and `boundary_cell_patch`.
 #' @export
 mio_nurbs_info <- function(info) .Call(R_mio_nurbs_info, info)
+
+#' Copy a B-rep side channel
+#'
+#' The trimmed NURBS faces, loops, edges and vertices of a Kratos CAD JSON
+#' handle (or a STEP/IGES one read through OpenCASCADE), copied into plain R
+#' values: `patches` (`degrees`, `knots` in the full form, `control_points` as
+#' a `(3, points)` matrix with direction 0 fastest, `weights`); `breps` (`id`,
+#' `name`, 1-based `faces`, `edges`, `vertices`, `extra`); `faces` (`id`,
+#' `name`, 1-based `patch`, `swapped_normal`, `trimmed`, `rational`,
+#' `reduced_knots`, `control_point_ids`, `loops` of `type`, `trims` and `extra`,
+#' `embedded_edges`, `surface_extra`, `extra`), each trim `trim_index`,
+#' `direction`, `curve`, `extra`; `edges` (`id`, `name`, `curve` or `NULL`,
+#' `topology`, `extra`) and `vertices` (`id`, `name`, `topology`, `extra`), each
+#' topology entry `id`, `name`, `trim_index`, `relative_direction`,
+#' `local_coordinates`, `extra`; and `extra`, the file's other members. A curve
+#' is `degree`, `knots`, `reduced_knots`, `rational`, `control_points`,
+#' `weights`, `ids`, `active_range`, `extra`. Ids are -1 where the file names
+#' the entity instead; the `extra` members are compact JSON text. The copy
+#' remains valid after releasing the handle; `mio_write_with_info()` writes the
+#' B-rep back as CAD JSON from the handle itself.
+#' @param info A format-info handle from `mio_read_with_info()` of a CAD JSON
+#'   (or STEP/IGES) file.
+#' @return A list with `patches`, `breps`, `faces`, `edges`, `vertices` and
+#'   `extra`.
+#' @export
+mio_brep_info <- function(info) .Call(R_mio_brep_info, info)
 
 #' @rdname mio_read_with_info
 #' @export

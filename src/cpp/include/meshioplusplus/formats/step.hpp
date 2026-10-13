@@ -19,10 +19,20 @@
 /**
  * @file formats/step.hpp
  * @brief STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted
- * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work.
+ * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work;
+ * and, through the optional OpenCASCADE backend, the STEP reader.
  *
- * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.1; see doc/spikes.md),
- * which the core deliberately does not carry.
+ * ### Reading
+ *
+ * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT exception, bring your
+ * own) and throws `Unsupported` naming the flag without it. The file's shape
+ * is triangulated by `BRepMesh` at `CadReadOptions::mDeflection` into one
+ * `triangle` block with the `cad:*` cell data of `BrepInfo`; the overload
+ * taking a `BrepInfo` also returns the shape as NURBS -- every face's surface,
+ * its trimming loops and the edges' curves and topology -- which
+ * `write_cad_json` writes as Kratos CAD JSON. See doc/formats/step.md.
+ *
+ * ### Writing
  *
  * Each surface facet becomes an `ADVANCED_FACE` on a `PLANE`, bounded by an
  * `EDGE_LOOP` of `ORIENTED_EDGE`s over `EDGE_CURVE`s on `LINE`s; an edge two
@@ -54,6 +64,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 
@@ -67,5 +78,14 @@ namespace meshioplusplus {
  *         a degenerate facet, a non-finite coordinate, or no facets at all.
  */
 MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
+
+/// Read a STEP file as its triangulation (see "Reading" above).
+/// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
+///         OpenCASCADE cannot read or transfer.
+MESHIOPLUSPLUS_API Mesh read_step(const std::string& rPath);
+
+/// Read a STEP file as its triangulation and its B-rep.
+MESHIOPLUSPLUS_API Mesh read_step(const std::string& rPath, BrepInfo& rInfo,
+                                  const CadReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus

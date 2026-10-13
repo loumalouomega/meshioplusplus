@@ -692,7 +692,7 @@ jobs:
       - name: Build
         run: cmake --build build-occt
       - name: Run the fit_cad suites (OpenCASCADE cases live)
-        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|Step|AbiLayout|Pipeline" --output-on-failure
+        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry" --output-on-failure
       - name: Run the native to-cad verb
         run: |
           python - <<'PY'
@@ -704,14 +704,17 @@ jobs:
           lines.append("endsolid cube")
           open("cube.stl", "w").write("\n".join(lines) + "\n")
           PY
-          build-occt/meshioplusplus to-cad cube.stl cube.step --json
+          build-occt/meshioplusplus to-cad cube.stl cube.step --json --cad-json cube.cad.json
           grep -q PLANE cube.step
+          grep -q '"breps"' cube.cad.json
+          build-occt/meshioplusplus convert cube.step copy.cad.json
+          grep -q '"boundary_loops"' copy.cad.json
       - name: Install meshioplusplus with OpenCASCADE
         run: CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_OCCT=ON" pip install . -v
       - name: Run the Python fit_cad suite
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_occt__"
-          python -m pytest tests/python/test_fit_cad.py -v
+          python -m pytest tests/python/test_fit_cad.py tests/python/test_step.py tests/python/test_cad_json.py -v
 
   # The two read-only formats behind a library that is never a default
   # (v16.13.0): DOLFINx VTX `.bp` through ADIOS2 (Ubuntu's serial package) and

@@ -184,6 +184,9 @@ _OP_TABLE = {
         "Types",
         "MeshDeflection",
         "MaxDemotionRounds",
+        "Freeform",
+        "FreeformDegree",
+        "FreeformMaxControl",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
     "RegionAdjacency": ("Regions",),
@@ -1034,6 +1037,9 @@ def _apply_step(mesh, step, steps, warnings):
             types=types,
             mesh_deflection=deflection if deflection > 0.0 else None,
             max_demotion_rounds=int(_number(step, "MaxDemotionRounds", 8.0)),
+            freeform=_flag(step, "Freeform", True),
+            freeform_degree=int(_number(step, "FreeformDegree", 3.0)),
+            freeform_max_control=int(_number(step, "FreeformMaxControl", 64.0)),
             return_report=True,
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
@@ -1041,6 +1047,7 @@ def _apply_step(mesh, step, steps, warnings):
         entry["MaxDeviation"] = report["max_deviation"]
         entry["NumFaces"] = report["num_faces"]
         entry["NumFacetedFaces"] = report["num_faceted_faces"]
+        entry["NumBspline"] = report["num_bspline"]
         entry["NumDemoted"] = report["num_demoted"]
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and

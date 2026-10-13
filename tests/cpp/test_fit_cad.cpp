@@ -176,13 +176,36 @@ TEST(FitCad, ClosedTorusAndSphereAreNaturalFaces) {
     EXPECT_NEAR(s.mVolumeRatio, 1.0, 0.03);
 }
 
-TEST(FitCad, UnexplainedPatchComesBackFaceted) {
-    const FitCadResult r = fit_cad(fitted(saddle_box(6)));
+TEST(FitCad, UnexplainedPatchComesBackFacetedWithoutFreeform) {
+    FitCadOptions o;
+    o.mFreeform = false;
+    const FitCadResult r = fit_cad(fitted(saddle_box(6)), "", o);
     EXPECT_TRUE(r.mValid);
     EXPECT_GT(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mNumBspline, 0);
     EXPECT_EQ(r.mNumPlane, 5);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-9);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+}
+
+TEST(FitCad, UnexplainedPatchBecomesAFreeformFace) {
+    // The saddle top no primitive explains is a B-spline face (roadmap 6.3.2).
+    const FitCadResult r = fit_cad(fitted(saddle_box(24)));
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumBspline, 1);
+    EXPECT_EQ(r.mNumPlane, 5);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mNumFaces, 6);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-3);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    // The solid comes back as NURBS too, its faces numbered as fit_cad:face.
+    ASSERT_EQ(r.mBrep.mFaces.size(), 6u);
+    EXPECT_EQ(r.mBrep.mFaces[0].mId, 1);
+    bool any_bspline_type = false;
+    const NDArray& types = r.mMesh.CellData(kFitCadTypeName, 0);
+    for (std::size_t i = 0; i < types.Size(); ++i)
+        any_bspline_type = any_bspline_type || types.As<std::int64_t>()[i] == kFitCadBsplineType;
+    EXPECT_TRUE(any_bspline_type);
 }
 
 TEST(FitCad, TypesMaskFacetsTheRest) {
@@ -273,6 +296,12 @@ TEST(FitCad, RefusesOpenSkinsAndBadOptions) {
     EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
     o = FitCadOptions{};
     o.mTolerance = std::nan("");
+    EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
+    o = FitCadOptions{};
+    o.mFreeformDegree = 2;
+    EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
+    o = FitCadOptions{};
+    o.mFreeformMaxControl = 3;
     EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
 }
 

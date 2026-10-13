@@ -38,6 +38,8 @@
 #include "../../src/cpp/cli/tui/loop.hpp"
 #include "../../src/cpp/cli/tui/series.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
@@ -1048,6 +1050,314 @@ meshioplusplus::MdpaInfo core_mdpa_info_from_py(const py::dict& rInfo) {
                 py::cast<std::string>(d["end"])});
         }
     return info;
+}
+
+// ---------------------------------------------------------------------------
+// BrepInfo <-> `mesh.info["brep"]` (see meshioplusplus/cad_json/_cad_json.py
+// for the dict layout; both engines build it the same way).
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void core_brep_bad(const std::string& rWhat) {
+    throw py::value_error("mesh.info['brep']: " + rWhat);
+}
+
+py::object core_brep_key(py::handle d, const char* pKey) {
+    if (!py::isinstance<py::dict>(d) || !d.cast<py::dict>().contains(pKey))
+        core_brep_bad(std::string("missing '") + pKey + "'");
+    return d.cast<py::dict>()[pKey];
+}
+
+meshioplusplus::NDArray core_brep_doubles(py::handle a, const char* pWhat) {
+    auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(a);
+    if (!arr)
+        core_brep_bad(std::string("'") + pWhat + "' is not numeric");
+    meshioplusplus::NDArray out = meshioplusplus_py::view_from_numpy(arr);
+    out.MakeOwned();
+    return out;
+}
+
+meshioplusplus::NDArray core_brep_ints(py::handle a, const char* pWhat) {
+    auto src = py::array::ensure(a);
+    if (!src || (src.size() && src.dtype().kind() != 'i' && src.dtype().kind() != 'u'))
+        core_brep_bad(std::string("'") + pWhat + "' is not integer");
+    auto arr = py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>::ensure(src);
+    meshioplusplus::NDArray out = meshioplusplus_py::view_from_numpy(arr);
+    out.MakeOwned();
+    return out;
+}
+
+std::vector<double> core_brep_vector(py::handle a, const char* pWhat) {
+    const meshioplusplus::NDArray v = core_brep_doubles(a, pWhat);
+    return std::vector<double>(v.As<double>(), v.As<double>() + v.Size());
+}
+
+py::array core_brep_array(const std::vector<double>& rV) {
+    return py::array_t<double>(static_cast<py::ssize_t>(rV.size()), rV.data());
+}
+
+py::dict core_brep_curve_to_py(meshioplusplus::BrepCurve&& rC) {
+    using meshioplusplus_py::numpy_from_ndarray;
+    py::dict c;
+    c["degree"] = rC.mDegree;
+    c["knots"] = core_brep_array(rC.mKnots);
+    c["reduced_knots"] = rC.mReducedKnots;
+    c["rational"] = rC.mRational;
+    c["control_points"] = numpy_from_ndarray(std::move(rC.mControlPoints));
+    c["weights"] = numpy_from_ndarray(std::move(rC.mWeights));
+    c["ids"] = numpy_from_ndarray(std::move(rC.mIds));
+    c["active_range"] = py::cast(rC.mActiveRange);
+    c["extra"] = rC.mExtra;
+    return c;
+}
+
+meshioplusplus::BrepCurve core_brep_curve_from_py(py::handle d) {
+    meshioplusplus::BrepCurve c;
+    c.mDegree = py::cast<std::int32_t>(core_brep_key(d, "degree"));
+    c.mKnots = core_brep_vector(core_brep_key(d, "knots"), "knots");
+    c.mReducedKnots = py::cast<bool>(core_brep_key(d, "reduced_knots"));
+    c.mRational = py::cast<bool>(core_brep_key(d, "rational"));
+    c.mControlPoints = core_brep_doubles(core_brep_key(d, "control_points"), "control_points");
+    c.mWeights = core_brep_doubles(core_brep_key(d, "weights"), "weights");
+    c.mIds = core_brep_ints(core_brep_key(d, "ids"), "ids");
+    c.mActiveRange = py::cast<std::vector<double>>(core_brep_key(d, "active_range"));
+    c.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+    return c;
+}
+
+py::list core_brep_trims_to_py(std::vector<meshioplusplus::BrepTrim>&& rTrims) {
+    py::list out;
+    for (auto& t : rTrims) {
+        py::dict d;
+        d["trim_index"] = t.mTrimIndex;
+        d["direction"] = t.mDirection;
+        d["curve"] = core_brep_curve_to_py(std::move(t.mCurve));
+        d["extra"] = t.mExtra;
+        out.append(std::move(d));
+    }
+    return out;
+}
+
+std::vector<meshioplusplus::BrepTrim> core_brep_trims_from_py(py::handle l) {
+    std::vector<meshioplusplus::BrepTrim> out;
+    for (py::handle d : py::cast<py::sequence>(l)) {
+        meshioplusplus::BrepTrim t;
+        t.mTrimIndex = py::cast<std::int64_t>(core_brep_key(d, "trim_index"));
+        t.mDirection = py::cast<bool>(core_brep_key(d, "direction"));
+        t.mCurve = core_brep_curve_from_py(core_brep_key(d, "curve"));
+        t.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+        out.push_back(std::move(t));
+    }
+    return out;
+}
+
+py::list core_brep_refs_to_py(std::vector<meshioplusplus::BrepRef>&& rRefs) {
+    py::list out;
+    for (auto& r : rRefs) {
+        py::dict d;
+        d["id"] = r.mId;
+        d["name"] = r.mName;
+        d["trim_index"] = r.mTrimIndex;
+        d["relative_direction"] = r.mRelativeDirection;
+        d["local_coordinates"] = py::cast(r.mLocalCoordinates);
+        d["extra"] = r.mExtra;
+        out.append(std::move(d));
+    }
+    return out;
+}
+
+std::vector<meshioplusplus::BrepRef> core_brep_refs_from_py(py::handle l) {
+    std::vector<meshioplusplus::BrepRef> out;
+    for (py::handle d : py::cast<py::sequence>(l)) {
+        meshioplusplus::BrepRef r;
+        r.mId = py::cast<std::int64_t>(core_brep_key(d, "id"));
+        r.mName = py::cast<std::string>(core_brep_key(d, "name"));
+        r.mTrimIndex = py::cast<std::int64_t>(core_brep_key(d, "trim_index"));
+        r.mRelativeDirection = py::cast<std::int32_t>(core_brep_key(d, "relative_direction"));
+        r.mLocalCoordinates = py::cast<std::vector<double>>(core_brep_key(d, "local_coordinates"));
+        r.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+py::dict core_brep_to_py(meshioplusplus::BrepInfo&& rInfo) {
+    using meshioplusplus_py::numpy_from_ndarray;
+    py::list patches;
+    for (auto& patch : rInfo.mPatches) {
+        py::dict p;
+        p["degrees"] = py::array_t<std::int32_t>(static_cast<py::ssize_t>(patch.mDegrees.size()),
+                                                 patch.mDegrees.data());
+        py::list knots;
+        for (const auto& k : patch.mKnots)
+            knots.append(core_brep_array(k));
+        p["knots"] = std::move(knots);
+        p["control_points"] = numpy_from_ndarray(std::move(patch.mControlPoints));
+        p["weights"] = numpy_from_ndarray(std::move(patch.mWeights));
+        py::list fields;
+        for (auto& f : patch.mFields)
+            fields.append(numpy_from_ndarray(std::move(f)));
+        p["fields"] = std::move(fields);
+        patches.append(std::move(p));
+    }
+    py::list breps;
+    for (auto& b : rInfo.mBreps) {
+        py::dict d;
+        d["id"] = b.mId;
+        d["name"] = b.mName;
+        d["faces"] = py::cast(b.mFaces);
+        d["edges"] = py::cast(b.mEdges);
+        d["vertices"] = py::cast(b.mVertices);
+        d["extra"] = b.mExtra;
+        breps.append(std::move(d));
+    }
+    py::list faces;
+    for (auto& f : rInfo.mFaces) {
+        py::dict d;
+        d["id"] = f.mId;
+        d["name"] = f.mName;
+        d["patch"] = f.mPatch;
+        d["swapped_normal"] = f.mSwappedNormal;
+        d["trimmed"] = f.mTrimmed;
+        d["rational"] = f.mRational;
+        d["reduced_knots"] = f.mReducedKnots;
+        d["control_point_ids"] = numpy_from_ndarray(std::move(f.mControlPointIds));
+        py::list loops;
+        for (auto& l : f.mLoops) {
+            py::dict ld;
+            ld["type"] = l.mType;
+            ld["trims"] = core_brep_trims_to_py(std::move(l.mTrims));
+            ld["extra"] = l.mExtra;
+            loops.append(std::move(ld));
+        }
+        d["loops"] = std::move(loops);
+        d["embedded_edges"] = core_brep_trims_to_py(std::move(f.mEmbeddedEdges));
+        d["surface_extra"] = f.mSurfaceExtra;
+        d["extra"] = f.mExtra;
+        faces.append(std::move(d));
+    }
+    py::list edges;
+    for (auto& e : rInfo.mEdges) {
+        py::dict d;
+        d["id"] = e.mId;
+        d["name"] = e.mName;
+        d["curve"] = e.mHasCurve ? py::object(core_brep_curve_to_py(std::move(e.mCurve)))
+                                 : py::object(py::none());
+        d["topology"] = core_brep_refs_to_py(std::move(e.mTopology));
+        d["extra"] = e.mExtra;
+        edges.append(std::move(d));
+    }
+    py::list vertices;
+    for (auto& v : rInfo.mVertices) {
+        py::dict d;
+        d["id"] = v.mId;
+        d["name"] = v.mName;
+        d["topology"] = core_brep_refs_to_py(std::move(v.mTopology));
+        d["extra"] = v.mExtra;
+        vertices.append(std::move(d));
+    }
+    py::dict out;
+    out["patches"] = std::move(patches);
+    out["breps"] = std::move(breps);
+    out["faces"] = std::move(faces);
+    out["edges"] = std::move(edges);
+    out["vertices"] = std::move(vertices);
+    out["extra"] = rInfo.mExtra;
+    return out;
+}
+
+meshioplusplus::BrepInfo core_brep_from_py(py::handle obj) {
+    meshioplusplus::BrepInfo info;
+    for (py::handle p : py::cast<py::sequence>(core_brep_key(obj, "patches"))) {
+        meshioplusplus::NurbsPatch patch;
+        for (py::handle d : py::cast<py::sequence>(core_brep_key(p, "degrees")))
+            patch.mDegrees.push_back(py::cast<std::int32_t>(d));
+        for (py::handle k : py::cast<py::sequence>(core_brep_key(p, "knots")))
+            patch.mKnots.push_back(core_brep_vector(k, "knots"));
+        patch.mControlPoints = core_brep_doubles(core_brep_key(p, "control_points"), "control_points");
+        patch.mWeights = core_brep_doubles(core_brep_key(p, "weights"), "weights");
+        const py::dict pd = py::cast<py::dict>(p);
+        if (pd.contains("fields"))
+            for (py::handle f : py::cast<py::sequence>(pd["fields"]))
+                patch.mFields.push_back(core_brep_doubles(f, "fields"));
+        info.mPatches.push_back(std::move(patch));
+    }
+    for (py::handle d : py::cast<py::sequence>(core_brep_key(obj, "breps"))) {
+        meshioplusplus::Brep b;
+        b.mId = py::cast<std::int64_t>(core_brep_key(d, "id"));
+        b.mName = py::cast<std::string>(core_brep_key(d, "name"));
+        b.mFaces = py::cast<std::vector<std::int64_t>>(core_brep_key(d, "faces"));
+        b.mEdges = py::cast<std::vector<std::int64_t>>(core_brep_key(d, "edges"));
+        b.mVertices = py::cast<std::vector<std::int64_t>>(core_brep_key(d, "vertices"));
+        b.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+        info.mBreps.push_back(std::move(b));
+    }
+    for (py::handle d : py::cast<py::sequence>(core_brep_key(obj, "faces"))) {
+        meshioplusplus::BrepFace f;
+        f.mId = py::cast<std::int64_t>(core_brep_key(d, "id"));
+        f.mName = py::cast<std::string>(core_brep_key(d, "name"));
+        f.mPatch = py::cast<std::int64_t>(core_brep_key(d, "patch"));
+        f.mSwappedNormal = py::cast<bool>(core_brep_key(d, "swapped_normal"));
+        f.mTrimmed = py::cast<bool>(core_brep_key(d, "trimmed"));
+        f.mRational = py::cast<bool>(core_brep_key(d, "rational"));
+        f.mReducedKnots = py::cast<bool>(core_brep_key(d, "reduced_knots"));
+        f.mControlPointIds = core_brep_ints(core_brep_key(d, "control_point_ids"), "control_point_ids");
+        for (py::handle l : py::cast<py::sequence>(core_brep_key(d, "loops"))) {
+            meshioplusplus::BrepLoop loop;
+            loop.mType = py::cast<std::string>(core_brep_key(l, "type"));
+            loop.mTrims = core_brep_trims_from_py(core_brep_key(l, "trims"));
+            loop.mExtra = py::cast<std::string>(core_brep_key(l, "extra"));
+            f.mLoops.push_back(std::move(loop));
+        }
+        f.mEmbeddedEdges = core_brep_trims_from_py(core_brep_key(d, "embedded_edges"));
+        f.mSurfaceExtra = py::cast<std::string>(core_brep_key(d, "surface_extra"));
+        f.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+        info.mFaces.push_back(std::move(f));
+    }
+    for (py::handle d : py::cast<py::sequence>(core_brep_key(obj, "edges"))) {
+        meshioplusplus::BrepEdge e;
+        e.mId = py::cast<std::int64_t>(core_brep_key(d, "id"));
+        e.mName = py::cast<std::string>(core_brep_key(d, "name"));
+        const py::object curve = core_brep_key(d, "curve");
+        e.mHasCurve = !curve.is_none();
+        if (e.mHasCurve)
+            e.mCurve = core_brep_curve_from_py(curve);
+        e.mTopology = core_brep_refs_from_py(core_brep_key(d, "topology"));
+        e.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+        info.mEdges.push_back(std::move(e));
+    }
+    for (py::handle d : py::cast<py::sequence>(core_brep_key(obj, "vertices"))) {
+        meshioplusplus::BrepVertex v;
+        v.mId = py::cast<std::int64_t>(core_brep_key(d, "id"));
+        v.mName = py::cast<std::string>(core_brep_key(d, "name"));
+        v.mTopology = core_brep_refs_from_py(core_brep_key(d, "topology"));
+        v.mExtra = py::cast<std::string>(core_brep_key(d, "extra"));
+        info.mVertices.push_back(std::move(v));
+    }
+    info.mExtra = py::cast<std::string>(core_brep_key(obj, "extra"));
+    return info;
+}
+
+// Sampling options, checked here so a bad one is a ValueError, as in Python.
+meshioplusplus::CadJsonReadOptions core_brep_options(int Subdivisions, int TrimSamples,
+                                                     bool Edges, bool Trim) {
+    if (Subdivisions < 0 || Subdivisions > 64)
+        throw py::value_error("meshio++: sample_brep: subdivisions must be 0 (automatic) to 64");
+    if (TrimSamples < 2 || TrimSamples > 4096)
+        throw py::value_error("meshio++: sample_brep: trim_samples must be 2 to 4096");
+    meshioplusplus::CadJsonReadOptions o;
+    o.mSubdivisions = Subdivisions;
+    o.mTrimSamples = TrimSamples;
+    o.mEdges = Edges;
+    o.mTrim = Trim;
+    return o;
+}
+
+// Attach a B-rep to a Python mesh as `info["brep"]`.
+void core_attach_brep(py::object& rPyMesh, meshioplusplus::BrepInfo&& rInfo) {
+    py::object existing = rPyMesh.attr("info");
+    py::dict d = existing.is_none() ? py::dict() : py::dict(existing);
+    d["brep"] = core_brep_to_py(std::move(rInfo));
+    rPyMesh.attr("info") = std::move(d);
 }
 
 }  // namespace
@@ -3186,7 +3496,8 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "fit_cad",
         [](py::object pymesh, const std::string& path, double tolerance, bool exact_edges,
-           std::uint32_t types, double mesh_deflection, std::int64_t max_demotion_rounds) {
+           std::uint32_t types, double mesh_deflection, std::int64_t max_demotion_rounds,
+           bool freeform, std::int32_t freeform_degree, std::int64_t freeform_max_control) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3196,6 +3507,9 @@ PYBIND11_MODULE(_core, m) {
             options.mTypes = types;
             options.mMeshDeflection = mesh_deflection;
             options.mMaxDemotionRounds = max_demotion_rounds;
+            options.mFreeform = freeform;
+            options.mFreeformDegree = freeform_degree;
+            options.mFreeformMaxControl = freeform_max_control;
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -3218,11 +3532,15 @@ PYBIND11_MODULE(_core, m) {
             out["num_exact_edges"] = r.mNumExactEdges;
             out["num_approx_edges"] = r.mNumApproxEdges;
             out["num_solids"] = r.mNumSolids;
+            out["num_bspline"] = r.mNumBspline;
+            out["brep"] = core_brep_to_py(std::move(r.mBrep));
             return out;
         },
         py::arg("mesh"), py::arg("path") = "", py::arg("tolerance") = 0.0,
         py::arg("exact_edges") = true, py::arg("types") = meshioplusplus::kFitAllTypes,
-        py::arg("mesh_deflection") = 0.0, py::arg("max_demotion_rounds") = 8);
+        py::arg("mesh_deflection") = 0.0, py::arg("max_demotion_rounds") = 8,
+        py::arg("freeform") = true, py::arg("freeform_degree") = 3,
+        py::arg("freeform_max_control") = 64);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See
@@ -4888,6 +5206,81 @@ PYBIND11_MODULE(_core, m) {
           py::arg("path"),
           py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{},
           py::arg("piece") = py::none());
+
+    // Kratos CAD JSON (.cad.json): the sampled mesh, its B-rep as
+    // `mesh.info["brep"]` (the BrepInfo side channel).
+    m.def(
+        "cad_json_read",
+        [](const std::string& path, int subdivisions, int trim_samples, bool edges, bool trim) {
+            const meshioplusplus::CadJsonReadOptions opts =
+                core_brep_options(subdivisions, trim_samples, edges, trim);
+            return guard_read("cad_json", [&opts](const std::string& p) {
+                meshioplusplus::BrepInfo info;
+                py::object pymesh = meshioplusplus_py::mesh_to_py(
+                    core_nogil([&] { return meshioplusplus::read_cad_json(p, info, opts); }));
+                core_attach_brep(pymesh, std::move(info));
+                return pymesh;
+            })(path);
+        },
+        py::arg("path"), py::arg("subdivisions") = 0, py::arg("trim_samples") = 16,
+        py::arg("edges") = true, py::arg("trim") = true);
+    m.def("mdpa_cad_json_path", [](const std::string& path) {
+        return meshioplusplus::mdpa_cad_json_path(path);
+    });
+    m.def("cad_json_read_info", guard_read("cad_json", [](const std::string& path) {
+              return core_brep_to_py(
+                  core_nogil([&] { return meshioplusplus::read_cad_json_info(path); }));
+          }));
+    m.def(
+        "cad_json_write",
+        [](const std::string& path, py::object pymesh, py::object brep) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::BrepInfo info;
+            if (!brep.is_none())
+                info = core_brep_from_py(brep);
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_cad_json(path, mesh, info);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("brep") = py::none());
+    // STEP and IGES through the optional OpenCASCADE backend: the triangulated
+    // shape, its B-rep as `mesh.info["brep"]`. Unsupported (NotImplementedError)
+    // without the backend; there is no Python twin of a CAD kernel.
+    for (const char* fmt : {"step", "iges"}) {
+        const bool iges = std::string(fmt) == "iges";
+        m.def(
+            (std::string(fmt) + "_read").c_str(),
+            [iges](const std::string& path, double deflection, double angular) {
+                meshioplusplus::CadReadOptions opts;
+                opts.mDeflection = deflection;
+                opts.mAngularDeflection = angular;
+                if (!std::isfinite(deflection) || !(angular > 0.0) || !std::isfinite(angular))
+                    throw py::value_error("meshio++: the deflection must be finite and the "
+                                          "angular deflection positive");
+                return guard_read(iges ? "iges" : "step", [&](const std::string& p) {
+                    meshioplusplus::BrepInfo info;
+                    py::object pymesh = meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                        return iges ? meshioplusplus::read_iges(p, info, opts)
+                                    : meshioplusplus::read_step(p, info, opts);
+                    }));
+                    core_attach_brep(pymesh, std::move(info));
+                    return pymesh;
+                })(path);
+            },
+            py::arg("path"), py::arg("deflection") = 0.0, py::arg("angular_deflection") = 0.5);
+    }
+
+    m.def(
+        "brep_sample",
+        [](py::object brep, int subdivisions, int trim_samples, bool edges, bool trim) {
+            const meshioplusplus::CadJsonReadOptions opts =
+                core_brep_options(subdivisions, trim_samples, edges, trim);
+            const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
+            return meshioplusplus_py::mesh_to_py(
+                core_nogil([&] { return meshioplusplus::sample_brep(info, opts); }));
+        },
+        py::arg("brep"), py::arg("subdivisions") = 0, py::arg("trim_samples") = 16,
+        py::arg("edges") = true, py::arg("trim") = true);
 
     // Femap neutral file (.neu) reader / mesh writer.
     m.def(

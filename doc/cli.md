@@ -31,6 +31,8 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
 | `--json` | | Print a JSON summary of what was written (see [JSON output](#json-output)) |
 
+**CAD geometry** — a [Kratos CAD JSON](formats/cad_json.md), STEP or IGES input converted to a `.cad.json` output carries its B-rep (the NURBS faces, trimming loops and edges) rather than its sampling, in both CLIs: `meshioplusplus convert part.step part.cad.json` turns a CAD model into Kratos IGA geometry (STEP and IGES reading needs the OpenCASCADE backend).
+
 **Transient sequences** — treat a set of files, or the steps inside one file, as one dataset (see [sequences](sequences.md)):
 
 | Option | Description |
@@ -108,7 +110,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `resample` | `method`, `num_steps` and the target `times` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
-| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges and `num_solids` |
+| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline` among them), `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges and `num_solids` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1065,7 +1067,7 @@ meshioplusplus fit-primitives part_patches.vtu part_fits.vtu --tolerance 2e-3 --
 
 ## meshioplusplus to-cad
 
-Turn the fitted patches of a closed skin into a CAD solid with analytic faces and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
 
 ```text
 meshioplusplus to-cad [options] INFILE OUTFILE.step
@@ -1082,7 +1084,11 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--types LIST` | Fitted types kept as analytic faces, from `plane,sphere,cylinder,cone,torus` (default all) |
 | `--mesh-deflection D` | Chordal deflection of the re-meshed solid (default a quarter of the tolerance) |
 | `--max-demotion-rounds N` | Rounds of demoting failed faces before every patch is faceted (default `8`) |
+| `--no-freeform` | Keep the patches no primitive explains faceted instead of fitting [B-spline faces](/fit_cad#freeform-faces) |
+| `--freeform-degree P` | Highest degree of a freeform face, 3–8 (default `3`) |
+| `--freeform-max-control N` | Largest freeform sample grid per direction, 4–1024 (default `64`) |
 | `--mesh-out FILE` | Also write the re-meshed solid |
+| `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |
 
 ```sh

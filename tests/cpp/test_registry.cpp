@@ -94,10 +94,16 @@ TEST(Registry, GltfIsWriteOnly) {
     EXPECT_THROW(registry_write_ex("x.glb", m, "gltf", options), WriteError);
 }
 
-TEST(Registry, StepIsWriteOnly) {
+TEST(Registry, StepReadsThroughTheCadBackendAndIgesIsReadOnly) {
+    // The readers are registered in every build and name the OpenCASCADE flag
+    // in one without it (tests/cpp/test_cad_read.cpp).
     EXPECT_EQ(registry_writers().count("step"), 1u);
-    EXPECT_EQ(registry_readers().count("step"), 0u);
+    EXPECT_EQ(registry_readers().count("step"), 1u);
     EXPECT_EQ(registry_readers_ex().count("step"), 0u);
+    EXPECT_EQ(registry_readers().count("iges"), 1u);
+    EXPECT_EQ(registry_writers().count("iges"), 0u);
+    EXPECT_EQ(registry_readers().count("cad_json"), 1u);
+    EXPECT_EQ(registry_writers().count("cad_json"), 1u);
 }
 
 TEST(Registry, ResolveFormatNodeElePairStayTetgen) {

@@ -201,6 +201,68 @@ program test_fortran_api
         close (unit, status='delete')
     end block
 
+    ! ---- the B-rep side channel of a Kratos CAD JSON file -----------------
+    block
+        type(mio_mesh) :: cad_mesh, back
+        type(mio_format_info) :: info, back_info
+        integer :: unit
+        integer(int64), allocatable :: ids(:)
+        real(real64), allocatable :: xyz(:, :), knots(:)
+        character(:), allocatable :: input_path, output_path
+
+        input_path = prefix//'_brep.cad.json'
+        output_path = prefix//'_brep_out.cad.json'
+        open (newunit=unit, file=input_path, status='replace')
+        write (unit, '(a)') '{"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "surface": {', &
+            '"is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 1], [0, 1]],', &
+            '"control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},', &
+            '"boundary_loops": [{"loop_type": "outer", "trimming_curves": [', &
+            '{"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,', &
+            '"knot_vector": [0, 0, 1, 1], "active_range": [0, 1],', &
+            '"control_points": [[[0, 0, 0, 1]], [[1, 0, 0, 1]]]}}]}]}],', &
+            '"edges": [{"brep_id": 3, "topology": [{"brep_id": 2, "trim_index": 0}]}]}]}'
+        close (unit)
+        call cad_mesh%read_with_info(input_path, info, 'cad_json', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'brep read_with_info succeeds')
+        if (ierr == 0) then
+            call check(info%format() == 'cad_json', 'brep format name')
+            call check(info%brep_count(MIO_BREP_FACES) == 1, 'brep face count')
+            call check(info%brep_count(MIO_BREP_TRIMS) == 1, 'brep trim count')
+            call check(info%brep_int(MIO_BREP_FACES, 1, 0) == 2_int64, 'brep face id')
+            call check(info%brep_int(MIO_BREP_FACES, 1, 1) == 1_int64, 'brep 1-based patch')
+            call check(info%brep_int(MIO_BREP_FACES, 1, 5) == 1_int64, 'brep reduced knots')
+            call check(info%brep_int(MIO_BREP_TRIMS, 1, 1) == 1_int64, 'brep 1-based loop')
+            call check(info%brep_int(MIO_BREP_PATCHES, 1, 0) == 1_int64, 'brep degree')
+            knots = info%brep_values(MIO_BREP_PATCHES, 1, 2)
+            call check(all(knots == [0.0_real64, 0.0_real64, 1.0_real64, 1.0_real64]), &
+                       'brep full knots')
+            xyz = info%brep_points(MIO_BREP_PATCHES, 1, 0)
+            call check(all(shape(xyz) == [3, 4]) .and. xyz(1, 2) == 2.0_real64, 'brep net')
+            xyz = info%brep_points(MIO_BREP_TRIMS, 1, 10)
+            call check(all(shape(xyz) == [3, 2]), 'brep trim curve')
+            ids = info%brep_ids(MIO_BREP_FACES, 1, 0)
+            call check(all(ids == [1_int64, 2_int64, 3_int64, 4_int64]), 'brep control ids')
+            ids = info%brep_ids(MIO_BREP_BREPS, 1, 1)
+            call check(all(ids == [1_int64]), 'brep 1-based edge list')
+            call check(info%brep_string(MIO_BREP_LOOPS, 1, 0) == 'outer', 'brep loop type')
+            call check(info%brep_int(MIO_BREP_REFS, 1, 1) == 0_int64, 'brep ref trim index')
+            call cad_mesh%write_with_info(output_path, info, 'cad_json', stat=ierr)
+            call check(ierr == 0, 'brep write_with_info succeeds')
+            call back%read_with_info(output_path, back_info, 'cad_json', stat=ierr)
+            call check(ierr == 0, 'brep reread succeeds')
+            call check(all(back_info%brep_points(MIO_BREP_PATCHES, 1, 0) == &
+                           info%brep_points(MIO_BREP_PATCHES, 1, 0)), 'brep round trip')
+            call back%free()
+            call back_info%free()
+            open (newunit=unit, file=output_path, status='old')
+            close (unit, status='delete')
+        end if
+        call cad_mesh%free()
+        call info%free()
+        open (newunit=unit, file=input_path, status='old')
+        close (unit, status='delete')
+    end block
+
     points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
                       1.1_real64, 0.2_real64, 0.3_real64, &
                       0.4_real64, 1.2_real64, 0.5_real64, &

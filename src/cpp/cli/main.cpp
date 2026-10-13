@@ -42,6 +42,7 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -102,6 +103,9 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/formats/iges.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -395,7 +399,8 @@ void print_usage(std::ostream& os) {
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
           "  segment                 Split a surface into smooth patches (regions)\n"
           "  fit-primitives          Fit a plane/sphere/cylinder/cone/torus to each patch\n"
-          "  to-cad                  Fitted patches as a STEP solid with analytic faces\n"
+          "  to-cad                  Fitted patches as a STEP solid with analytic and\n"
+          "                            freeform B-spline faces (--cad-json: as Kratos CAD JSON too)\n"
           "                            (needs a build with -DMESHIOPLUSPLUS_WITH_OCCT=ON)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
@@ -843,9 +848,25 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("--colorbar has no meaning for gltf output (svg/tikz only)");
     }
 
+    // A B-rep (CAD JSON, or STEP/IGES through OpenCASCADE) converted to CAD
+    // JSON keeps its NURBS faces, loops and edges rather than its sampling.
+    std::optional<meshioplusplus::BrepInfo> brep;
     Mesh mesh = [&]() -> Mesh {
-        if (!has_opt(p, "mesh-name"))
+        if (!has_opt(p, "mesh-name")) {
+            std::string from, to;
+            try {
+                from = meshioplusplus::resolve_format(infile, in_fmt);
+                to = meshioplusplus::resolve_write_format(outfile, out_fmt);
+            } catch (const std::exception&) {
+            }
+            if (to == "cad_json" && (from == "cad_json" || from == "step" || from == "iges")) {
+                brep.emplace();
+                return from == "cad_json" ? meshioplusplus::read_cad_json(infile, *brep)
+                       : from == "step"   ? meshioplusplus::read_step(infile, *brep)
+                                          : meshioplusplus::read_iges(infile, *brep);
+            }
             return read_mesh_cli(infile, in_fmt, opts);
+        }
         if (meshioplusplus::resolve_format(infile, in_fmt) != "med")
             throw std::invalid_argument("--mesh-name is only supported for MED inputs");
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -908,6 +929,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         if (!float_fmt.empty())
             std::cerr << "note: --float-format only affects ASCII output (--ascii)\n";
         meshioplusplus::registry_write_ex(outfile, mesh, fmt, wopts);
+    } else if (brep) {
+        meshioplusplus::write_cad_json(outfile, mesh, *brep);
     } else {
         if (!float_fmt.empty())
             std::cerr << "note: --float-format only affects ASCII output (--ascii)\n";
@@ -1856,7 +1879,11 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"types", {}, true},
                                   {"mesh-deflection", {}, true},
                                   {"max-demotion-rounds", {}, true},
+                                  {"no-freeform", {}, false},
+                                  {"freeform-degree", {}, true},
+                                  {"freeform-max-control", {}, true},
                                   {"mesh-out", {}, true},
+                                  {"cad-json", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -1890,9 +1917,16 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         options.mMeshDeflection = meshioplusplus::detail::stod_c(opt_value(p, "mesh-deflection"));
     if (has_opt(p, "max-demotion-rounds"))
         options.mMaxDemotionRounds = std::stoll(opt_value(p, "max-demotion-rounds"));
+    options.mFreeform = !has_flag(p, "no-freeform");
+    if (has_opt(p, "freeform-degree"))
+        options.mFreeformDegree = static_cast<std::int32_t>(std::stoi(opt_value(p, "freeform-degree")));
+    if (has_opt(p, "freeform-max-control"))
+        options.mFreeformMaxControl = std::stoll(opt_value(p, "freeform-max-control"));
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
     if (has_opt(p, "mesh-out"))
         write_mesh_cli(opt_value(p, "mesh-out"), r.mMesh, "");
+    if (has_opt(p, "cad-json"))
+        meshioplusplus::write_cad_json(opt_value(p, "cad-json"), r.mMesh, r.mBrep);
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
         json.BeginObject();
@@ -1914,6 +1948,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_exact_edges", r.mNumExactEdges);
         json.Field("num_approx_edges", r.mNumApproxEdges);
         json.Field("num_solids", r.mNumSolids);
+        json.Field("num_bspline", r.mNumBspline);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
@@ -1923,6 +1958,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
         std::cout << "  cone:      " << r.mNumCone << "\n";
         std::cout << "  torus:     " << r.mNumTorus << "\n";
+        std::cout << "  bspline:   " << r.mNumBspline << "\n";
         std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
         std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation
