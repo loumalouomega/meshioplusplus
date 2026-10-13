@@ -214,8 +214,9 @@ MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
  * libhdf5 1.10 over-reads a chunk that delivers fewer bytes than its elements
  * take, so every reader of a chunked dataset calls this, or `verify_chunk_rows`,
  * before `H5Dread`. Raw chunks must hold their full size, deflated chunks must
- * inflate to it, and only the shuffle and deflate filters (in that order) are
- * accepted.
+ * inflate to it, and a trailing fletcher32 checksum is left out of that size: libhdf5
+ * checks it on the read. A pipeline this check cannot verify, such as deflate followed
+ * by shuffle, is read unverified, so the over-read stays possible for it.
  * @param dset An open dataset.
  * @param rName The dataset's name, for error messages.
  * @throws ReadError when a chunk cannot be verified or does not match.

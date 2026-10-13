@@ -1458,7 +1458,53 @@ TEST(H5Util, ARowSliceVerifiesOnlyTheChunksItReads) {
 }
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
 
-TEST(H5Util, AFilterOtherThanShuffleAndDeflateIsRefused) {
+namespace {
+// Writes "d" as four int64 values in one chunk, with the filters `setup` adds.
+template <typename Setup>
+void write_four_values(const std::string& rPath, Setup setup) {
+    h5::Hid file = h5::create_file(rPath);
+    hsize_t dims[1] = {4};
+    h5::Hid space(H5Screate_simple(1, dims, nullptr), H5Sclose);
+    h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
+    H5Pset_chunk(dcpl, 1, dims);
+    setup(dcpl);
+    h5::Hid dset(H5Dcreate2(file, "d", H5T_STD_I64LE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
+                 H5Dclose);
+    const std::int64_t values[4] = {1, 2, 3, 4};
+    EXPECT_GE(H5Dwrite(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, values), 0);
+}
+}  // namespace
+
+// A pipeline meshio++ does not verify is read as libhdf5 always read it (NBIT here).
+TEST(H5Util, AnUnverifiedFilterIsReadAsLibhdf5ReadsIt) {
+    H5utilTempFile f(".h5");
+    write_four_values(f.mPath, [](hid_t dcpl) { H5Pset_nbit(dcpl); });
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 4u);
+}
+
+// MSC Nastran writes deflate followed by shuffle: that order is read unverified too.
+TEST(H5Util, DeflateThenShuffleIsReadUnverified) {
+    H5utilTempFile f(".h5");
+    write_four_values(f.mPath, [](hid_t dcpl) {
+        H5Pset_deflate(dcpl, 1);
+        H5Pset_shuffle(dcpl);
+    });
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 4u);
+}
+
+// libhdf5 verifies a trailing fletcher32 checksum and strips it; a valid chunk reads.
+TEST(H5Util, AValidFletcher32ChunkReads) {
+    H5utilTempFile f(".h5");
+    write_four_values(f.mPath, [](hid_t dcpl) { H5Pset_fletcher32(dcpl); });
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_dataset(file, "d").Size(), 4u);
+}
+
+// A raw chunk whose checksum was skipped holds its elements as stored: a short one is
+// refused before the read.
+TEST(H5Util, AShortRawChunkWithAFletcher32ChecksumIsRefused) {
     H5utilTempFile f(".h5");
     {
         h5::Hid file = h5::create_file(f.mPath);
@@ -1466,11 +1512,12 @@ TEST(H5Util, AFilterOtherThanShuffleAndDeflateIsRefused) {
         h5::Hid space(H5Screate_simple(1, dims, nullptr), H5Sclose);
         h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
         H5Pset_chunk(dcpl, 1, dims);
-        H5Pset_fletcher32(dcpl);  // a checksum filter, which this reader does not verify
+        H5Pset_fletcher32(dcpl);
         h5::Hid dset(H5Dcreate2(file, "d", H5T_STD_I64LE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
                      H5Dclose);
-        const std::int64_t values[4] = {1, 2, 3, 4};
-        H5Dwrite(dset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, values);
+        const unsigned char raw[16] = {};  // 16 bytes where 4 int64 values take 32
+        hsize_t offset[1] = {0};
+        ASSERT_GE(H5Dwrite_chunk(dset, H5P_DEFAULT, 1u, offset, sizeof raw, raw), 0);  // mask 1
     }
     h5::Hid file = h5::open_file_read(f.mPath);
     EXPECT_THROW(h5::read_dataset(file, "d"), meshioplusplus::ReadError);
