@@ -68,6 +68,7 @@ module meshioplusplus
     public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
+    public :: mio_has_occt
     public :: mio_pipeline_run_file_report, mio_pipeline_run_json_report
     public :: mio_sequence_pipeline_run_file_report, mio_sequence_pipeline_run_json_report
     public :: mio_med_mesh_names, mio_med_read_named, mio_med_write_multi
@@ -263,6 +264,41 @@ module meshioplusplus
         integer(c_int64_t) :: num_torus = 0
         integer(c_int64_t) :: num_unfitted = 0
         integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_opts` (`types` as for fit_primitives;
+    !> 0 facets every patch).
+    type, bind(c) :: mio_fit_cad_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: mesh_deflection = 0.0_c_double
+        integer(c_int64_t) :: max_demotion_rounds = 8
+        integer(c_int32_t) :: exact_edges = 1
+        integer(c_int32_t) :: types = 62
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_report`.
+    type, bind(c) :: mio_fit_cad_report_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        real(c_double) :: skin_volume = 0.0_c_double
+        real(c_double) :: volume_ratio = 0.0_c_double
+        real(c_double) :: max_deviation = 0.0_c_double
+        integer(c_int64_t) :: num_faces = 0
+        integer(c_int64_t) :: num_plane = 0
+        integer(c_int64_t) :: num_sphere = 0
+        integer(c_int64_t) :: num_cylinder = 0
+        integer(c_int64_t) :: num_cone = 0
+        integer(c_int64_t) :: num_torus = 0
+        integer(c_int64_t) :: num_faceted_faces = 0
+        integer(c_int64_t) :: num_patches = 0
+        integer(c_int64_t) :: num_demoted = 0
+        integer(c_int64_t) :: num_exact_edges = 0
+        integer(c_int64_t) :: num_approx_edges = 0
+        integer(c_int64_t) :: num_solids = 0
+        integer(c_int32_t) :: valid = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -981,6 +1017,7 @@ module meshioplusplus
         procedure :: feature_edges => mesh_feature_edges
         procedure :: segment => mesh_segment
         procedure :: fit_primitives => mesh_fit_primitives
+        procedure :: fit_cad => mesh_fit_cad
         procedure :: render => mesh_render
         procedure :: render_text => mesh_render_text
         procedure :: write_snapshot => mesh_write_snapshot
@@ -2062,6 +2099,26 @@ module meshioplusplus
             type(mio_fit_primitives_opts_t), intent(in) :: opts
             type(mio_fit_primitives_report_t), intent(out) :: report
             type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_fit_cad_opts_init(opts) &
+                bind(c, name="mio_fit_cad_opts_init")
+            import :: mio_fit_cad_opts_t
+            type(mio_fit_cad_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_fit_cad(h, path, opts, report) &
+                bind(c, name="mio_fit_cad") result(r)
+            import :: c_ptr, mio_fit_cad_opts_t, mio_fit_cad_report_t
+            type(c_ptr), value :: h, path
+            type(mio_fit_cad_opts_t), intent(in) :: opts
+            type(mio_fit_cad_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_has_occt() bind(c, name="mio_has_occt") result(r)
+            import :: c_int
+            integer(c_int) :: r
         end function
 
         function c_mio_hausdorff_distance(a, b, opts, report) &
@@ -4184,6 +4241,12 @@ contains
     end subroutine
 
     !> Whether this build carries the JSON pipeline parser.
+    !> Whether the library carries the OpenCASCADE backend fit_cad needs.
+    function mio_has_occt() result(has)
+        logical :: has
+        has = c_mio_has_occt() /= 0
+    end function
+
     function mio_pipeline_has_json() result(has)
         logical :: has
         has = c_mio_pipeline_has_json() /= 0
@@ -5550,6 +5613,62 @@ contains
         if (present(num_cone)) num_cone = int(report%num_cone, int64)
         if (present(num_torus)) num_torus = int(report%num_torus, int64)
         if (present(num_unfitted)) num_unfitted = int(report%num_unfitted, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Build a CAD solid from the fitted patches of this closed skin (needs a
+    !> library built with -DMESHIOPLUSPLUS_WITH_OCCT=ON; mio_has_occt() tells):
+    !> accepted fits become plane, sphere, cylinder, cone and torus faces, the
+    !> rest planar facets, and a face that fails OpenCASCADE's check or strays
+    !> beyond `tolerance` is demoted to facets. Writes AP214 STEP to
+    !> `step_path` when given; returns the solid re-meshed as triangles with
+    !> cell data `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`. See
+    !> doc/fit_cad.md.
+    function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
+                          mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
+                          max_deviation, num_faces, num_faceted_faces, num_demoted, &
+                          stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: step_path
+        real(real64), intent(in), optional :: tolerance, mesh_deflection
+        logical, intent(in), optional :: exact_edges
+        integer, intent(in), optional :: types
+        integer(int64), intent(in), optional :: max_demotion_rounds
+        logical, intent(out), optional :: valid
+        real(real64), intent(out), optional :: volume_ratio, max_deviation
+        integer(int64), intent(out), optional :: num_faces, num_faceted_faces, num_demoted
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res, path_ptr
+        type(mio_fit_cad_opts_t) :: opts
+        type(mio_fit_cad_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: path_buf
+
+        call c_mio_fit_cad_opts_init(opts)
+        path_ptr = c_null_ptr
+        if (present(step_path)) then
+            path_buf = trim(step_path)//c_null_char
+            path_ptr = c_loc(path_buf(1:1))
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(mesh_deflection)) opts%mesh_deflection = real(mesh_deflection, c_double)
+        if (present(exact_edges)) opts%exact_edges = merge(1_c_int32_t, 0_c_int32_t, exact_edges)
+        if (present(types)) opts%types = int(types, c_int32_t)
+        if (present(max_demotion_rounds)) &
+            opts%max_demotion_rounds = int(max_demotion_rounds, c_int64_t)
+        res = c_mio_fit_cad(self%handle, path_ptr, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(valid)) valid = report%valid /= 0
+        if (present(volume_ratio)) volume_ratio = real(report%volume_ratio, real64)
+        if (present(max_deviation)) max_deviation = real(report%max_deviation, real64)
+        if (present(num_faces)) num_faces = int(report%num_faces, int64)
+        if (present(num_faceted_faces)) num_faceted_faces = int(report%num_faceted_faces, int64)
+        if (present(num_demoted)) num_demoted = int(report%num_demoted, int64)
         call clear_status(stat, errmsg)
     end function
 

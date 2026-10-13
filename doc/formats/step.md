@@ -11,7 +11,7 @@
 
 ## Reading & writing
 
-There is no reader: reading STEP means evaluating its curves and surfaces, which is a CAD kernel's job (OpenCASCADE), and the core deliberately carries none (see the [OpenCASCADE decision](/spikes#the-opencascade-dependency)). The format is recorded as an exemption, not a gap, on the [conformance page](/conformance#formats-missing-a-direction). Writing takes no options:
+There is no reader: reading STEP means evaluating its curves and surfaces, which is a CAD kernel's job (OpenCASCADE). The core carries one only as the optional backend of [`fit_cad`](/fit_cad), which writes analytic STEP solids; reading through it is roadmap 6.2.1 (see the [OpenCASCADE decision](/spikes#the-opencascade-dependency)). The format is recorded as an exemption, not a gap, on the [conformance page](/conformance#formats-missing-a-direction). Writing takes no options:
 
 ```python
 import meshioplusplus as mp
@@ -48,5 +48,5 @@ Checked with OpenCASCADE 8.0.1 (the `cadquery-ocp` 8.0.1.1 wheels): `STEPControl
 ## Not supported
 
 - Reading (see above).
-- Analytic faces — cylinders, cones, spheres, tori and B-spline surfaces fitted to the skin. [`fit_primitives`](/fit_primitives) measures them; writing them as faces needs a CAD kernel to trim and sew them, the optional OpenCASCADE backend the [roadmap](/roadmap) keeps queued.
+- Analytic faces — this writer is faceted by design. [`fit_cad`](/fit_cad) writes the fitted cylinders, cones, spheres and tori as CAD faces through the optional OpenCASCADE backend; B-spline faces for what no primitive explains are on the [roadmap](/roadmap).
 - Colours, layers, assemblies, and AP242 product manufacturing information.

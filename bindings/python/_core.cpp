@@ -129,6 +129,7 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -1106,6 +1107,11 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_kahip__") = true;
 #else
     m.attr("__has_kahip__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    m.attr("__has_occt__") = true;
+#else
+    m.attr("__has_occt__") = false;
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
     m.attr("__has_gidpost__") = true;
@@ -3175,6 +3181,48 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("patch_data") = "segment:patch", py::arg("tolerance") = 1e-3,
         py::arg("relative") = true, py::arg("min_inlier_fraction") = 0.9,
         py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50);
+
+    // Analytic CAD faces sewn into a solid (OpenCASCADE). See operations/fit_cad.hpp.
+    m.def(
+        "fit_cad",
+        [](py::object pymesh, const std::string& path, double tolerance, bool exact_edges,
+           std::uint32_t types, double mesh_deflection, std::int64_t max_demotion_rounds) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::FitCadOptions options;
+            options.mTolerance = tolerance;
+            options.mExactEdges = exact_edges;
+            options.mTypes = types;
+            options.mMeshDeflection = mesh_deflection;
+            options.mMaxDemotionRounds = max_demotion_rounds;
+            meshioplusplus::FitCadResult r =
+                core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["valid"] = r.mValid;
+            out["tolerance"] = r.mTolerance;
+            out["volume"] = r.mVolume;
+            out["skin_volume"] = r.mSkinVolume;
+            out["volume_ratio"] = r.mVolumeRatio;
+            out["max_deviation"] = r.mMaxDeviation;
+            out["num_faces"] = r.mNumFaces;
+            out["num_plane"] = r.mNumPlane;
+            out["num_sphere"] = r.mNumSphere;
+            out["num_cylinder"] = r.mNumCylinder;
+            out["num_cone"] = r.mNumCone;
+            out["num_torus"] = r.mNumTorus;
+            out["num_faceted_faces"] = r.mNumFacetedFaces;
+            out["num_patches"] = r.mNumPatches;
+            out["num_demoted"] = r.mNumDemoted;
+            out["num_exact_edges"] = r.mNumExactEdges;
+            out["num_approx_edges"] = r.mNumApproxEdges;
+            out["num_solids"] = r.mNumSolids;
+            return out;
+        },
+        py::arg("mesh"), py::arg("path") = "", py::arg("tolerance") = 0.0,
+        py::arg("exact_edges") = true, py::arg("types") = meshioplusplus::kFitAllTypes,
+        py::arg("mesh_deflection") = 0.0, py::arg("max_demotion_rounds") = 8);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

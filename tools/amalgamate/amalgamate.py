@@ -259,6 +259,7 @@ BANNER = """\
 //      MESHIOPLUSPLUS_HAS_BZIP2 (libMesh .bz2 meshes)        -> link bz2
 //      MESHIOPLUSPLUS_HAS_ADIOS2 (DOLFINx VTX .bp)           -> link adios2_cxx11
 //      MESHIOPLUSPLUS_HAS_TECIO (Tecplot .szplt)             -> link tecio (+ pthread)
+//      MESHIOPLUSPLUS_HAS_OCCT  (fit_cad, OpenCASCADE 7.6+)  -> link the TK* toolkits (LGPL-2.1)
 """
 
 DEFAULTS = """\

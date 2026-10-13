@@ -4659,6 +4659,35 @@ TEST(CApi, SegmentAndFitACube) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, FitCadBuildsOrNamesTheBackend) {
+    mio_mesh* m = capi_cube_surface();
+    mio_fit_cad_opts opts;
+    mio_fit_cad_opts_init(&opts);
+    EXPECT_EQ(opts.max_demotion_rounds, 8);
+    EXPECT_EQ(opts.exact_edges, 1);
+    EXPECT_EQ(opts.types, MIO_FIT_ALL_TYPES);
+    mio_fit_cad_report report;
+    mio_mesh* solid = mio_fit_cad(m, nullptr, &opts, &report);
+    if (mio_has_occt()) {
+        ASSERT_NE(solid, nullptr) << mio_last_error();
+        EXPECT_EQ(report.valid, 1);
+        EXPECT_EQ(report.num_plane, 6);
+        EXPECT_EQ(report.num_faces, 6);
+        EXPECT_EQ(report.num_exact_edges, 12);  // each a single mesh edge
+        EXPECT_NEAR(report.volume_ratio, 1.0, 1e-9);
+        EXPECT_EQ(mio_mesh_num_cell_blocks(solid), 1);
+        mio_mesh_free(solid);
+        opts.max_demotion_rounds = -1;
+        EXPECT_EQ(mio_fit_cad(m, nullptr, &opts, nullptr), nullptr);
+    } else {
+        EXPECT_EQ(solid, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_OCCT"),
+                  std::string::npos);
+    }
+    EXPECT_EQ(mio_fit_cad(nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, WritesAStepSolid) {
     mio_mesh* m = capi_cube_surface();
     const std::string path =

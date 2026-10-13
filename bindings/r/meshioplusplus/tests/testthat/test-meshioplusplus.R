@@ -1337,6 +1337,15 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_error(mio_segment(m, feature_angle = 200))
   expect_error(mio_fit_primitives(m))
   expect_error(mio_fit_primitives(sg$mesh, types = "blob"))
+  if (mio_has_occt()) {
+    cad <- mio_fit_cad(m)
+    on.exit(mio_release(cad$mesh), add = TRUE)
+    expect_true(cad$valid)
+    expect_equal(cad$num_plane, 6)
+  } else {
+    expect_error(mio_fit_cad(m), "MESHIOPLUSPLUS_WITH_OCCT")
+  }
+  expect_error(mio_fit_cad(m, types = "blob"))
 
   h <- mio_hausdorff_distance(m, m, face_samples = 2)
   expect_equal(h$distance, 0)

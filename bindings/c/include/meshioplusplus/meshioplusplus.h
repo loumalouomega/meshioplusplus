@@ -4427,6 +4427,81 @@ MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primiti
                                      mio_fit_primitives_report* report);
 
 /**
+ * Options for mio_fit_cad. Same ABI rules as above; always initialize through
+ * mio_fit_cad_opts_init(): exact_edges, types and max_demotion_rounds are not
+ * zero by default.
+ */
+typedef struct mio_fit_cad_opts {
+    /** The largest distance a face may lie from the skin; <= 0 takes three times
+     *  the largest accepted "fit:patch_tolerance". */
+    double tolerance;
+    /** The chordal deflection of the re-meshed solid; <= 0 takes tolerance / 4. */
+    double mesh_deflection;
+    /** Rounds of demoting failed faces before every patch is faceted; >= 0. */
+    int64_t max_demotion_rounds;
+    /** Nonzero: try the exact intersection of two analytic surfaces first. */
+    int32_t exact_edges;
+    /** The accepted types that become analytic faces, as `1 << mio_fit_type`
+     *  bits; MIO_FIT_ALL_TYPES by default, 0 facets everything. */
+    uint32_t types;
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_fit_cad_opts;
+
+/** Initialize fit_cad options: automatic tolerance and deflection, 8 rounds,
+ *  exact edges, every type. */
+MIO_API void mio_fit_cad_opts_init(mio_fit_cad_opts* opts);
+
+/** What mio_fit_cad built. */
+typedef struct mio_fit_cad_report {
+    double tolerance;     /**< the tolerance applied */
+    double volume;        /**< the solid's volume */
+    double skin_volume;   /**< the volume the skin encloses */
+    double volume_ratio;  /**< volume / skin_volume */
+    double max_deviation; /**< symmetric Hausdorff distance, skin to re-meshed solid */
+    int64_t num_faces;
+    int64_t num_plane;
+    int64_t num_sphere;
+    int64_t num_cylinder;
+    int64_t num_cone;
+    int64_t num_torus;
+    int64_t num_faceted_faces;
+    int64_t num_patches;
+    int64_t num_demoted; /**< accepted patches demoted to facets: the features dropped */
+    int64_t num_exact_edges;
+    int64_t num_approx_edges;
+    int64_t num_solids;
+    int32_t valid;       /**< nonzero when the solid passed OpenCASCADE's B-rep check */
+    int32_t reserved0;   /**< zero */
+    int64_t reserved[6]; /**< zero; room for additive growth */
+} mio_fit_cad_report;
+
+/** Nonzero when this library was built with the OpenCASCADE backend
+ *  (-DMESHIOPLUSPLUS_WITH_OCCT=ON) that mio_fit_cad needs. */
+MIO_API int mio_has_occt(void);
+
+/**
+ * Build a CAD solid from the fitted patches of a closed skin: each accepted
+ * patch becomes a plane, sphere, cylinder, cone or torus face, the rest planar
+ * facets, sewn and checked by OpenCASCADE; a face that fails the check or
+ * strays beyond the tolerance is demoted to facets. Without "segment:patch" or
+ * the "fit:patch_*" table, segment and fit_primitives run first with their
+ * defaults. See doc/fit_cad.md.
+ *
+ * Fails (NULL, with mio_last_error() naming -DMESHIOPLUSPLUS_WITH_OCCT=ON) in
+ * a build without OpenCASCADE; mio_has_occt() tells in advance.
+ *
+ * @param mesh      a closed, consistently wound surface mesh.
+ * @param step_path write the solid here as AP214 STEP; NULL or "" writes nothing.
+ * @param opts      options; NULL means every mio_fit_cad_opts_init() default.
+ * @param report    optional out: what was built.
+ * @return the solid re-meshed as triangles with Int64 cell data "fit_cad:face",
+ *         "fit_cad:type" and "fit_cad:patch" (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path,
+                              const mio_fit_cad_opts* opts, mio_fit_cad_report* report);
+
+/**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero
  * struct IS the default here, but initialize through mio_hausdorff_opts_init().
  */

@@ -76,6 +76,7 @@ from .. import (
     extract_surface,
     feature_edges,
     find_interface,
+    fit_cad,
     fit_primitives,
     geometry_descriptors,
     gradient,
@@ -1971,6 +1972,61 @@ def tool_fit_primitives(
         patches=patches,
         **{k: int(v) for k, v in report.items()},
     )
+
+
+def tool_fit_cad(
+    input_path,
+    output_path,
+    input_format=None,
+    mesh_output_path=None,
+    curvature_tolerance=0.0,
+    min_patch_cells=1,
+    fit_tolerance=1e-3,
+    tolerance=None,
+    exact_edges=True,
+    types=None,
+    mesh_deflection=None,
+    max_demotion_rounds=8,
+):
+    """Turn the fitted patches of a closed skin into a CAD solid with analytic
+    faces, written to output_path as STEP (needs a core built with
+    OpenCASCADE). A skin without segment:patch / fit:patch_* is segmented
+    (curvature_tolerance, min_patch_cells) and fitted (fit_tolerance) first."""
+    from .._fit_cad import has_occt
+
+    if not has_occt():
+        # The guarded error shape, plus the capability itself.
+        return {
+            "error": "meshio++: fit_cad: this build has no OpenCASCADE backend; "
+            "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)",
+            "error_type": "NotImplementedError",
+            "occt_available": False,
+        }
+    mesh = _load(input_path, input_format)
+    if "segment:patch" not in mesh.cell_data:
+        mesh = segment(
+            mesh,
+            curvature_tolerance=curvature_tolerance,
+            min_patch_cells=min_patch_cells,
+        )
+    if "fit:patch_id" not in mesh.field_data:
+        mesh = fit_primitives(mesh, tolerance=fit_tolerance)
+    step_path = _resolve(output_path, for_write=True)
+    out, report = fit_cad(
+        mesh,
+        step_path,
+        tolerance=tolerance,
+        exact_edges=exact_edges,
+        types=list(types) if types is not None else None,
+        mesh_deflection=mesh_deflection,
+        max_demotion_rounds=max_demotion_rounds,
+        return_report=True,
+    )
+    _cache_invalidate(step_path)
+    extra = {"step_path": step_path, "occt_available": True, **report}
+    if mesh_output_path:
+        return _result(_store(out, mesh_output_path), out, **extra)
+    return _json_safe({"output_path": step_path, **_mesh_summary(out), **extra})
 
 
 def tool_region_adjacency(
@@ -4404,6 +4460,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "fit_primitives",
             {"fn": tool_fit_primitives, "wraps": ("fit_primitives",), "gated": None},
+        ),
+        (
+            "fit_cad",
+            {"fn": tool_fit_cad, "wraps": ("fit_cad",), "gated": "occt"},
         ),
         (
             "region_adjacency",

@@ -137,4 +137,73 @@ inline meshioplusplus::Mesh torus(double Major = 3.0, double Minor = 1.0, int N 
     return mt::make_mesh(pts, "quad", quads);
 }
 
+// A closed surface of revolution about z: the (r, z) profile revolved into
+// quads split into triangles, with triangle fans closing each end whose
+// radius is not zero at the axis points (0, 0, z_first) and (0, 0, z_last).
+// Wound outwards when the profile runs from the bottom pole to the top one.
+inline meshioplusplus::Mesh closed_revolve(const std::vector<std::pair<double, double>>& rProfile,
+                                           double ZBottom, double ZTop, int N = 32) {
+    std::vector<std::vector<double>> pts;
+    pts.push_back({0.0, 0.0, ZBottom});
+    for (const auto& rz : rProfile)
+        for (int k = 0; k < N; ++k) {
+            const double a = 2.0 * kPi * k / N;
+            pts.push_back({rz.first * std::cos(a), rz.first * std::sin(a), rz.second});
+        }
+    const std::int64_t top = static_cast<std::int64_t>(pts.size());
+    pts.push_back({0.0, 0.0, ZTop});
+    auto ring = [&](std::size_t I, int K) {
+        return 1 + static_cast<std::int64_t>(I) * N + (K % N);
+    };
+    const std::size_t last = rProfile.size() - 1;
+    std::vector<std::vector<std::int64_t>> tris;
+    for (int k = 0; k < N; ++k)
+        tris.push_back({0, ring(0, k + 1), ring(0, k)});
+    for (int k = 0; k < N; ++k)
+        tris.push_back({top, ring(last, k), ring(last, k + 1)});
+    for (std::size_t i = 0; i < last; ++i)
+        for (int k = 0; k < N; ++k) {
+            tris.push_back({ring(i, k), ring(i, k + 1), ring(i + 1, k + 1)});
+            tris.push_back({ring(i, k), ring(i + 1, k + 1), ring(i + 1, k)});
+        }
+    return mt::make_mesh(pts, "triangle", tris);
+}
+
+// A capped cylinder of radius R from z = 0 to H: two flat caps and a wall.
+inline meshioplusplus::Mesh capped_cylinder(double R = 1.0, double H = 2.0, int M = 6, int N = 32) {
+    std::vector<std::pair<double, double>> prof;
+    for (int i = 1; i <= 3; ++i)
+        prof.push_back({R * i / 3.0, 0.0});
+    for (int i = 1; i <= M; ++i)
+        prof.push_back({R, H * i / M});
+    for (int i = 2; i >= 1; --i)
+        prof.push_back({R * i / 3.0, H});
+    return closed_revolve(prof, 0.0, H, N);
+}
+
+// The turned part of tests/python/analytic_surfaces.py: a flat base, a
+// cylinder wall, a toroidal fillet tangent to the wall and to a flat
+// shoulder, a cone and a spherical dome, closed by fans at the poles.
+inline meshioplusplus::Mesh turned_part(int N = 64) {
+    std::vector<std::pair<double, double>> prof;
+    for (int i = 1; i <= 4; ++i)
+        prof.push_back({2.0 * i / 4, 0.0});
+    for (int i = 1; i <= 8; ++i)
+        prof.push_back({2.0, 1.5 * i / 8});
+    for (int i = 1; i <= 8; ++i) {
+        const double a = (kPi / 2) * i / 8;
+        prof.push_back({1.5 + 0.5 * std::cos(a), 1.5 + 0.5 * std::sin(a)});
+    }
+    for (int i = 1; i <= 3; ++i)
+        prof.push_back({1.5 - 0.5 * i / 3, 2.0});
+    for (int i = 1; i <= 6; ++i)
+        prof.push_back({1.0 - 0.4 * i / 6, 2.0 + 1.0 * i / 6});
+    const double zc = 1.625, big_r = 1.5, a0 = std::asin(0.6 / big_r);
+    for (int i = 1; i <= 5; ++i) {
+        const double a = a0 * (1.0 - i / 6.0);
+        prof.push_back({big_r * std::sin(a), zc + big_r * std::cos(a)});
+    }
+    return closed_revolve(prof, 0.0, zc + big_r, N);
+}
+
 }  // namespace analytic

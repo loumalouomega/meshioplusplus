@@ -101,6 +101,7 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -394,6 +395,8 @@ void print_usage(std::ostream& os) {
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
           "  segment                 Split a surface into smooth patches (regions)\n"
           "  fit-primitives          Fit a plane/sphere/cylinder/cone/torus to each patch\n"
+          "  to-cad                  Fitted patches as a STEP solid with analytic faces\n"
+          "                            (needs a build with -DMESHIOPLUSPLUS_WITH_OCCT=ON)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
           "  contact-pairs          Project slave Point regions onto master facets\n"
@@ -1765,6 +1768,29 @@ int cmd_segment(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// The `1 << type` mask of a comma-separated list of primitive names.
+std::uint32_t cli_fit_types(const std::string& rList, const char* pCommand) {
+    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+    std::uint32_t mask = 0;
+    for (std::size_t at = 0; at <= rList.size();) {
+        const std::size_t comma = std::min(rList.find(',', at), rList.size());
+        const std::string name = rList.substr(at, comma - at);
+        at = comma + 1;
+        if (name.empty())
+            continue;
+        bool found = false;
+        for (int t = 0; t < 5; ++t)
+            if (name == kNames[t]) {
+                mask |= 1u << (t + 1);
+                found = true;
+            }
+        if (!found)
+            throw std::runtime_error(std::string(pCommand) + ": unknown primitive type '" + name +
+                                     "'");
+    }
+    return mask;
+}
+
 int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -1781,7 +1807,6 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("fit-primitives requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
-    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
     meshioplusplus::FitPrimitivesOptions options;
     if (has_opt(p, "patch-data"))
         options.mPatchData = opt_value(p, "patch-data");
@@ -1793,25 +1818,8 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
             meshioplusplus::detail::stod_c(opt_value(p, "min-inlier-fraction"));
     if (has_opt(p, "max-iterations"))
         options.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
-    if (has_opt(p, "types")) {
-        options.mTypes = 0;
-        const std::string list = opt_value(p, "types");
-        for (std::size_t at = 0; at <= list.size();) {
-            const std::size_t comma = std::min(list.find(',', at), list.size());
-            const std::string name = list.substr(at, comma - at);
-            at = comma + 1;
-            if (name.empty())
-                continue;
-            bool found = false;
-            for (int t = 0; t < 5; ++t)
-                if (name == kNames[t]) {
-                    options.mTypes |= 1u << (t + 1);
-                    found = true;
-                }
-            if (!found)
-                throw std::runtime_error("fit-primitives: unknown primitive type '" + name + "'");
-        }
-    }
+    if (has_opt(p, "types"))
+        options.mTypes = cli_fit_types(opt_value(p, "types"), "fit-primitives");
     meshioplusplus::FitPrimitivesResult r = meshioplusplus::fit_primitives(mesh, options);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
@@ -1835,6 +1843,92 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
         std::cout << "  unfitted:  " << r.mNumUnfitted << "\n";
     }
     return 0;
+}
+
+int cmd_to_cad(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"curvature-tolerance", {}, true},
+                                  {"min-patch-cells", {}, true},
+                                  {"fit-tolerance", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"no-exact-edges", {}, false},
+                                  {"types", {}, true},
+                                  {"mesh-deflection", {}, true},
+                                  {"max-demotion-rounds", {}, true},
+                                  {"mesh-out", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("to-cad requires exactly INFILE and OUTFILE.step");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    // An unlabelled skin is segmented and fitted here, so the two tolerances
+    // that matter most for a scan are reachable from the command line.
+    if (!mesh.HasCellData("segment:patch")) {
+        meshioplusplus::SegmentOptions so;
+        if (has_opt(p, "curvature-tolerance"))
+            so.mCurvatureTolerance =
+                meshioplusplus::detail::stod_c(opt_value(p, "curvature-tolerance"));
+        if (has_opt(p, "min-patch-cells"))
+            so.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
+        mesh = meshioplusplus::segment(mesh, so).mMesh;
+    }
+    if (!mesh.HasFieldData("fit:patch_id")) {
+        meshioplusplus::FitPrimitivesOptions fo;
+        if (has_opt(p, "fit-tolerance"))
+            fo.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "fit-tolerance"));
+        mesh = meshioplusplus::fit_primitives(mesh, fo).mMesh;
+    }
+    meshioplusplus::FitCadOptions options;
+    if (has_opt(p, "tolerance"))
+        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    options.mExactEdges = !has_flag(p, "no-exact-edges");
+    if (has_opt(p, "types"))
+        options.mTypes = cli_fit_types(opt_value(p, "types"), "to-cad");
+    if (has_opt(p, "mesh-deflection"))
+        options.mMeshDeflection = meshioplusplus::detail::stod_c(opt_value(p, "mesh-deflection"));
+    if (has_opt(p, "max-demotion-rounds"))
+        options.mMaxDemotionRounds = std::stoll(opt_value(p, "max-demotion-rounds"));
+    meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
+    if (has_opt(p, "mesh-out"))
+        write_mesh_cli(opt_value(p, "mesh-out"), r.mMesh, "");
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("valid", r.mValid);
+        json.Field("tolerance", r.mTolerance);
+        json.Field("volume", r.mVolume);
+        json.Field("skin_volume", r.mSkinVolume);
+        json.Field("volume_ratio", r.mVolumeRatio);
+        json.Field("max_deviation", r.mMaxDeviation);
+        json.Field("num_faces", r.mNumFaces);
+        json.Field("num_plane", r.mNumPlane);
+        json.Field("num_sphere", r.mNumSphere);
+        json.Field("num_cylinder", r.mNumCylinder);
+        json.Field("num_cone", r.mNumCone);
+        json.Field("num_torus", r.mNumTorus);
+        json.Field("num_faceted_faces", r.mNumFacetedFaces);
+        json.Field("num_patches", r.mNumPatches);
+        json.Field("num_demoted", r.mNumDemoted);
+        json.Field("num_exact_edges", r.mNumExactEdges);
+        json.Field("num_approx_edges", r.mNumApproxEdges);
+        json.Field("num_solids", r.mNumSolids);
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
+                  << (r.mValid ? "valid" : "NOT valid") << "\n";
+        std::cout << "  plane:     " << r.mNumPlane << "\n";
+        std::cout << "  sphere:    " << r.mNumSphere << "\n";
+        std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
+        std::cout << "  cone:      " << r.mNumCone << "\n";
+        std::cout << "  torus:     " << r.mNumTorus << "\n";
+        std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
+        std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
+        std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation
+                  << " (tolerance " << r.mTolerance << ")\n";
+    }
+    return r.mValid ? 0 : 2;
 }
 
 int cmd_region_adjacency(const std::vector<std::string>& rArgs) {
@@ -5436,6 +5530,8 @@ int main(int argc, char** argv) {
             return cmd_segment(rest);
         if (cmd == "fit-primitives")
             return cmd_fit_primitives(rest);
+        if (cmd == "to-cad")
+            return cmd_to_cad(rest);
         if (cmd == "region-adjacency")
             return cmd_region_adjacency(rest);
         if (cmd == "find-interface")

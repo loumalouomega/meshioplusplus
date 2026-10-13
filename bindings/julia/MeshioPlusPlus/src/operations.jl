@@ -1943,6 +1943,62 @@ function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
 end
 
 """
+    has_occt() -> Bool
+
+Whether the library carries the OpenCASCADE backend [`fit_cad`](@ref) needs
+(a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`).
+"""
+has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
+
+"""
+    fit_cad(m; step_path="", tolerance=0.0, exact_edges=true,
+            types=("plane", "sphere", "cylinder", "cone", "torus"),
+            mesh_deflection=0.0, max_demotion_rounds=8)
+        -> (; mesh, valid, tolerance, volume, skin_volume, volume_ratio,
+             max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
+             num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
+             num_exact_edges, num_approx_edges, num_solids)
+
+Build a CAD solid from the fitted patches of a closed skin through the
+OpenCASCADE backend: accepted fits become analytic faces, the rest planar
+facets, and a face that fails the B-rep check or strays beyond `tolerance` is
+demoted to facets. `step_path` also writes the solid as STEP; the mesh is the
+solid re-meshed with cell data `fit_cad:face`, `fit_cad:type` and
+`fit_cad:patch`. A tolerance or deflection of 0 is automatic. Throws a
+`MeshioError` naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in a build without
+OpenCASCADE ([`has_occt`](@ref)). See `doc/fit_cad.md`.
+"""
+function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
+                 exact_edges::Bool=true,
+                 types=("plane", "sphere", "cylinder", "cone", "torus"),
+                 mesh_deflection::Real=0.0, max_demotion_rounds::Integer=8)
+    mask = UInt32(0)
+    for t in types
+        k = findfirst(==(String(t)), _FIT_TYPES)
+        k === nothing && throw(ArgumentError("meshio++: fit_cad: unknown type $(t)"))
+        mask |= UInt32(1) << k
+    end
+    report = Ref{_CFitCadReport}()
+    opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
+                        Int64(max_demotion_rounds), Int32(exact_edges), mask,
+                        ntuple(_ -> Int64(0), 6))
+    ptr = ccall(_sym(:mio_fit_cad), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ptr{_CFitCadReport}),
+                _handle(m), String(step_path), Ref(opts), report)
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), valid=rep.valid != 0, tolerance=rep.tolerance, volume=rep.volume,
+     skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
+     max_deviation=rep.max_deviation, num_faces=Int(rep.num_faces),
+     num_plane=Int(rep.num_plane), num_sphere=Int(rep.num_sphere),
+     num_cylinder=Int(rep.num_cylinder), num_cone=Int(rep.num_cone),
+     num_torus=Int(rep.num_torus), num_faceted_faces=Int(rep.num_faceted_faces),
+     num_patches=Int(rep.num_patches), num_demoted=Int(rep.num_demoted),
+     num_exact_edges=Int(rep.num_exact_edges), num_approx_edges=Int(rep.num_approx_edges),
+     num_solids=Int(rep.num_solids))
+end
+
+"""
     hausdorff_distance(a, b; face_samples=0, region_a="", region_b="")
         -> (; distance, a_to_b, b_to_a, mean_a_to_b, rms_a_to_b, mean_b_to_a,
              rms_b_to_a, num_samples_a, num_samples_b, worst_point_a, worst_point_b)

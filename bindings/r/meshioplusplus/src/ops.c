@@ -510,6 +510,58 @@ SEXP R_mio_fit_primitives(SEXP mesh, SEXP patch_data, SEXP tolerance, SEXP relat
     return res;
 }
 
+SEXP R_mio_has_occt(void) {
+    return Rf_ScalarLogical(mio_has_occt() != 0);
+}
+
+SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, SEXP types,
+                   SEXP mesh_deflection, SEXP max_demotion_rounds) {
+    mio_fit_cad_opts opts;
+    mio_fit_cad_report report;
+    mio_mesh *out;
+
+    mio_fit_cad_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.exact_edges = mio_r_bool(exact_edges, "exact_edges") ? 1 : 0;
+    opts.types = (uint32_t)mio_r_int(types, "types");
+    opts.mesh_deflection = mio_r_double(mesh_deflection, "mesh_deflection");
+    opts.max_demotion_rounds = (int64_t)mio_r_int(max_demotion_rounds, "max_demotion_rounds");
+
+    out = mio_fit_cad(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &report);
+    if (out == NULL) mio_r_fail("fit_cad");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP valid = PROTECT(Rf_ScalarLogical(report.valid != 0));
+    SEXP tol = PROTECT(Rf_ScalarReal(report.tolerance));
+    SEXP vol = PROTECT(Rf_ScalarReal(report.volume));
+    SEXP svol = PROTECT(Rf_ScalarReal(report.skin_volume));
+    SEXP ratio = PROTECT(Rf_ScalarReal(report.volume_ratio));
+    SEXP dev = PROTECT(Rf_ScalarReal(report.max_deviation));
+    SEXP nfaces = PROTECT(Rf_ScalarReal((double)report.num_faces));
+    SEXP nplane = PROTECT(Rf_ScalarReal((double)report.num_plane));
+    SEXP nsphere = PROTECT(Rf_ScalarReal((double)report.num_sphere));
+    SEXP ncyl = PROTECT(Rf_ScalarReal((double)report.num_cylinder));
+    SEXP ncone = PROTECT(Rf_ScalarReal((double)report.num_cone));
+    SEXP ntorus = PROTECT(Rf_ScalarReal((double)report.num_torus));
+    SEXP nfacet = PROTECT(Rf_ScalarReal((double)report.num_faceted_faces));
+    SEXP npatch = PROTECT(Rf_ScalarReal((double)report.num_patches));
+    SEXP ndem = PROTECT(Rf_ScalarReal((double)report.num_demoted));
+    SEXP nexact = PROTECT(Rf_ScalarReal((double)report.num_exact_edges));
+    SEXP napprox = PROTECT(Rf_ScalarReal((double)report.num_approx_edges));
+    SEXP nsolid = PROTECT(Rf_ScalarReal((double)report.num_solids));
+    const char *names[] = {"mesh",          "valid",         "tolerance",
+                           "volume",        "skin_volume",   "volume_ratio",
+                           "max_deviation", "num_faces",     "num_plane",
+                           "num_sphere",    "num_cylinder",  "num_cone",
+                           "num_torus",     "num_faceted_faces", "num_patches",
+                           "num_demoted",   "num_exact_edges", "num_approx_edges",
+                           "num_solids"};
+    SEXP values[] = {mo,    valid, tol,    vol,    svol,  ratio,  dev,     nfaces,  nplane, nsphere,
+                     ncyl,  ncone, ntorus, nfacet, npatch, ndem, nexact, napprox, nsolid};
+    SEXP res = PROTECT(mio_r_named_list(19, names, values));
+    UNPROTECT(20);
+    return res;
+}
+
 SEXP R_mio_region_adjacency(SEXP mesh, SEXP regions) {
     R_xlen_t n = 0;
     mio_region_selector *selectors = NULL;

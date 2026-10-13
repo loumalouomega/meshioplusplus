@@ -1944,8 +1944,10 @@ contains
     end subroutine
 
     subroutine check_analysis_editing()
-        type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted
-        integer(int64) :: nfeat, nbound, nfixed, npatch, nplane
+        type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted, solid
+        integer(int64) :: nfeat, nbound, nfixed, npatch, nplane, nfaces
+        logical :: cad_valid
+        character(:), allocatable :: msg
         integer(int64), allocatable :: s_ids(:), m_ids(:)
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
@@ -1991,6 +1993,18 @@ contains
         call check(nplane == 6_int64, 'every cube face fits a plane')
         call fitted%free()
         call seg%free()
+
+        ! fit_cad: six exact planes with OpenCASCADE, the flag named without.
+        solid = sq%fit_cad(valid=cad_valid, num_faces=nfaces, stat=ierr, errmsg=msg)
+        if (mio_has_occt()) then
+            call check(ierr == 0, 'fit_cad succeeded')
+            call check(cad_valid, 'the cube solid is valid')
+            call check(nfaces == 6_int64, 'the cube solid has 6 faces')
+            call solid%free()
+        else
+            call check(ierr /= 0, 'fit_cad fails without OpenCASCADE')
+            call check(index(msg, 'MESHIOPLUSPLUS_WITH_OCCT') > 0, 'fit_cad names the flag')
+        end if
         bad = sq%segment(feature_angle=200.0_real64, stat=ierr)
         call check(ierr /= 0, 'segment rejects an angle above 180')
 

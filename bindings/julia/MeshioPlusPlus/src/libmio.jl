@@ -482,6 +482,40 @@ struct _CFitPrimitivesReport
     reserved::NTuple{5,Int64}
 end
 
+"""Mirror of C `mio_fit_cad_opts`. ABI; build through [`fit_cad`](@ref)."""
+struct _CFitCadOpts
+    tolerance::Cdouble
+    mesh_deflection::Cdouble
+    max_demotion_rounds::Int64
+    exact_edges::Int32
+    types::UInt32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_report`."""
+struct _CFitCadReport
+    tolerance::Cdouble
+    volume::Cdouble
+    skin_volume::Cdouble
+    volume_ratio::Cdouble
+    max_deviation::Cdouble
+    num_faces::Int64
+    num_plane::Int64
+    num_sphere::Int64
+    num_cylinder::Int64
+    num_cone::Int64
+    num_torus::Int64
+    num_faceted_faces::Int64
+    num_patches::Int64
+    num_demoted::Int64
+    num_exact_edges::Int64
+    num_approx_edges::Int64
+    num_solids::Int64
+    valid::Int32
+    reserved0::Int32
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
 which initializes the defaults in C and sets only what the caller names."""
 struct _CRenderOpts
@@ -876,6 +910,10 @@ function _check_abi_layout()
     sizeof(_CFitPrimitivesReport) == 96 ||
         error("meshio++: mio_fit_primitives_report layout mismatch " *
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
+    sizeof(_CFitCadOpts) == 80 ||
+        error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
+    sizeof(_CFitCadReport) == 192 ||
+        error("meshio++: mio_fit_cad_report layout mismatch ($(sizeof(_CFitCadReport)) bytes)")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||
