@@ -1110,7 +1110,9 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov \
-            libgl1 libglx-mesa0
+            libgl1 libglx-mesa0 pkg-config \
+            libocct-foundation-dev libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev libocct-data-exchange-dev
 
       # pyvista/trimesh/pyarrow/pandas/polars/zarr are here (not just the
       # dedicated `interop` job) so tests/python/test_interop.py's and
@@ -1154,6 +1156,7 @@ jobs:
             -DMESHIOPLUSPLUS_BUILD_TESTS=ON \
             -DMESHIOPLUSPLUS_BUILD_C_API=ON \
             -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_WITH_OCCT=ON \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -1166,6 +1169,10 @@ jobs:
       # SKBUILD_EDITABLE_REBUILD=false stops scikit-build-core from rebuilding
       # the extension on first import during pytest -- that rebuild would race
       # the instrumented objects lcov is about to capture.
+      # The OpenCASCADE backend is on in this job too: its code (and the Python
+      # and binding paths that only run with it) is part of the patch Codecov
+      # measures, and the occt job is where those suites run without
+      # instrumentation.
       - name: Build instrumented _core and run the Python tests
         if: steps.lfs.outputs.available != 'false'
         env:
@@ -1174,6 +1181,7 @@ jobs:
             -DMESHIOPLUSPLUS_WITH_HDF5=ON
             -DMESHIOPLUSPLUS_WITH_NETCDF=ON
             -DMESHIOPLUSPLUS_WITH_ZLIB=ON
+            -DMESHIOPLUSPLUS_WITH_OCCT=ON
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           SKBUILD_CMAKE_BUILD_TYPE: Debug
