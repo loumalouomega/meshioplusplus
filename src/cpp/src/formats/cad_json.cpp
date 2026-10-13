@@ -106,7 +106,7 @@ std::string cj_extra(const JsonValue& rObj, std::initializer_list<std::string_vi
     for (const auto& m : rObj.mMembers) {
         bool known = false;
         for (std::string_view k : Known)
-            if (m.first == k) {
+            if (m.mKey == k) {
                 known = true;
                 break;
             }

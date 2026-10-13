@@ -34781,6 +34781,9 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 
 namespace meshioplusplus::detail {
 
+/// An object member, defined below JsonValue (which it holds by value).
+struct JsonMember;
+
 /// One JSON value; a plain aggregate, its members public.
 struct JsonValue {
     enum class Kind : std::uint8_t { Null, Bool, Number, String, Array, Object };
@@ -34798,7 +34801,7 @@ struct JsonValue {
     /// An array's items.
     std::vector<JsonValue> mItems;
     /// An object's members, in file order.
-    std::vector<std::pair<std::string, JsonValue>> mMembers;
+    std::vector<JsonMember> mMembers;
 
     bool IsNull() const noexcept { return mKind == Kind::Null; }
     bool IsBool() const noexcept { return mKind == Kind::Bool; }
@@ -34810,7 +34813,7 @@ struct JsonValue {
     /// The first member named @p Key of an object, or null.
     const JsonValue* Find(std::string_view Key) const noexcept;
 
-    static JsonValue Null() { return {}; }
+    static JsonValue Null();
     static JsonValue Boolean(bool Value);
     static JsonValue Number(double Value);
     static JsonValue Integer(std::int64_t Value);
@@ -34822,6 +34825,17 @@ struct JsonValue {
     JsonValue& Push(JsonValue Value);
     /// Append a member to an object (no check for an existing key).
     JsonValue& Add(std::string Key, JsonValue Value);
+};
+
+/// One member of an object: its key and value. A named struct, not a
+/// `std::pair`: clang with libstdc++ cannot complete a vector of pairs holding
+/// the type being defined.
+struct JsonMember {
+    std::string mKey;
+    JsonValue mValue;
+
+    JsonMember(std::string Key, JsonValue Value)
+        : mKey(std::move(Key)), mValue(std::move(Value)) {}
 };
 
 /// Whether two values are equal: same kind, numbers by value, objects member
@@ -59230,9 +59244,9 @@ void json_write(std::string& rOut, const JsonValue& rV, int Indent, int Level) {
                 if (i)
                     rOut += ',';
                 newline(Level + 1);
-                json_append_string(rOut, rV.mMembers[i].first);
+                json_append_string(rOut, rV.mMembers[i].mKey);
                 rOut += Indent > 0 ? ": " : ":";
-                json_write(rOut, rV.mMembers[i].second, Indent, Level + 1);
+                json_write(rOut, rV.mMembers[i].mValue, Indent, Level + 1);
             }
             newline(Level);
             rOut += '}';
@@ -59244,9 +59258,13 @@ void json_write(std::string& rOut, const JsonValue& rV, int Indent, int Level) {
 
 const JsonValue* JsonValue::Find(std::string_view Key) const noexcept {
     for (const auto& m : mMembers)
-        if (m.first == Key)
-            return &m.second;
+        if (m.mKey == Key)
+            return &m.mValue;
     return nullptr;
+}
+
+JsonValue JsonValue::Null() {
+    return {};
 }
 
 JsonValue JsonValue::Boolean(bool Value) {
@@ -59298,7 +59316,7 @@ JsonValue& JsonValue::Push(JsonValue Value) {
 
 JsonValue& JsonValue::Add(std::string Key, JsonValue Value) {
     mMembers.emplace_back(std::move(Key), std::move(Value));
-    return mMembers.back().second;
+    return mMembers.back().mValue;
 }
 
 bool json_equal(const JsonValue& rA, const JsonValue& rB) noexcept {
@@ -59326,8 +59344,8 @@ bool json_equal(const JsonValue& rA, const JsonValue& rB) noexcept {
             if (rA.mMembers.size() != rB.mMembers.size())
                 return false;
             for (std::size_t i = 0; i < rA.mMembers.size(); ++i)
-                if (rA.mMembers[i].first != rB.mMembers[i].first ||
-                    !json_equal(rA.mMembers[i].second, rB.mMembers[i].second))
+                if (rA.mMembers[i].mKey != rB.mMembers[i].mKey ||
+                    !json_equal(rA.mMembers[i].mValue, rB.mMembers[i].mValue))
                     return false;
             return true;
     }
@@ -75917,7 +75935,7 @@ std::string cj_extra(const JsonValue& rObj, std::initializer_list<std::string_vi
     for (const auto& m : rObj.mMembers) {
         bool known = false;
         for (std::string_view k : Known)
-            if (m.first == k) {
+            if (m.mKey == k) {
                 known = true;
                 break;
             }

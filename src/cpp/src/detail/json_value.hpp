@@ -53,6 +53,9 @@
 
 namespace meshioplusplus::detail {
 
+/// An object member, defined below JsonValue (which it holds by value).
+struct JsonMember;
+
 /// One JSON value; a plain aggregate, its members public.
 struct JsonValue {
     enum class Kind : std::uint8_t { Null, Bool, Number, String, Array, Object };
@@ -70,7 +73,7 @@ struct JsonValue {
     /// An array's items.
     std::vector<JsonValue> mItems;
     /// An object's members, in file order.
-    std::vector<std::pair<std::string, JsonValue>> mMembers;
+    std::vector<JsonMember> mMembers;
 
     bool IsNull() const noexcept { return mKind == Kind::Null; }
     bool IsBool() const noexcept { return mKind == Kind::Bool; }
@@ -82,7 +85,7 @@ struct JsonValue {
     /// The first member named @p Key of an object, or null.
     const JsonValue* Find(std::string_view Key) const noexcept;
 
-    static JsonValue Null() { return {}; }
+    static JsonValue Null();
     static JsonValue Boolean(bool Value);
     static JsonValue Number(double Value);
     static JsonValue Integer(std::int64_t Value);
@@ -94,6 +97,17 @@ struct JsonValue {
     JsonValue& Push(JsonValue Value);
     /// Append a member to an object (no check for an existing key).
     JsonValue& Add(std::string Key, JsonValue Value);
+};
+
+/// One member of an object: its key and value. A named struct, not a
+/// `std::pair`: clang with libstdc++ cannot complete a vector of pairs holding
+/// the type being defined.
+struct JsonMember {
+    std::string mKey;
+    JsonValue mValue;
+
+    JsonMember(std::string Key, JsonValue Value)
+        : mKey(std::move(Key)), mValue(std::move(Value)) {}
 };
 
 /// Whether two values are equal: same kind, numbers by value, objects member
