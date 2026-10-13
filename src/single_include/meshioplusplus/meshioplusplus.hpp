@@ -156768,6 +156768,12 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/feature_edges.cpp =====
 // ===== begin src/cpp/src/operations/fit_cad.cpp =====
+#include <string>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+// System includes
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -156778,14 +156784,10 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <map>
 #include <numeric>
 #include <stdexcept>
-#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-// Project includes
-
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
 // Project includes
 
 // Project includes (private, not installed)

@@ -17,6 +17,14 @@
 // fit_cad. See operations/fit_cad.hpp for the contract.
 
 // System includes
+#include <string>
+
+// Project includes
+#include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/exceptions.hpp"
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+// System includes
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -27,16 +35,10 @@
 #include <map>
 #include <numeric>
 #include <stdexcept>
-#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-// Project includes
-#include "meshioplusplus/operations/fit_cad.hpp"
-#include "meshioplusplus/exceptions.hpp"
-
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
 // Project includes
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
