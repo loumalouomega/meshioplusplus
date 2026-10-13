@@ -1361,6 +1361,33 @@ def test_segment_fit_and_step(tmp_path):
     assert "step" in _tools.tool_formats()["writable"]
 
 
+def test_fit_cad_tool_reports_the_capability(tmp_path):
+    from meshioplusplus._fit_cad import has_occt
+
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "cube.step"),
+                "mesh_output_path": str(tmp_path / "solid.vtu"),
+            },
+        )
+    )
+    assert out["occt_available"] is has_occt()
+    if not has_occt():
+        assert out["error_type"] == "NotImplementedError"
+        assert "MESHIOPLUSPLUS_WITH_OCCT" in out["error"]
+        return
+    assert out["valid"] is True
+    assert out["num_plane"] == 6
+    assert out["step_path"].endswith("cube.step")
+    assert "fit_cad:face" in out["cell_data"]
+    assert os.path.exists(tmp_path / "solid.vtu")
+
+
 def test_feature_edges_and_hausdorff(tmp_path):
     src = str(tmp_path / "cube.vtu")
     meshioplusplus.write(src, _unit_cube_quads())
@@ -1825,7 +1852,7 @@ def test_wraps_names_are_real_public_api():
 def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
-        assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo"), name
+        assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo", "occt"), name
 
 
 def test_sets_data_tool_and_cache_isolation(mesh_file, tmp_path):

@@ -3205,6 +3205,53 @@ def _register_training(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_gated(server: FastMCP) -> None:
     @server.tool()
+    def fit_cad(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        mesh_output_path: Optional[str] = None,
+        curvature_tolerance: float = 0.0,
+        min_patch_cells: int = 1,
+        fit_tolerance: float = 1e-3,
+        tolerance: Optional[float] = None,
+        exact_edges: bool = True,
+        types: Optional[List[str]] = None,
+        mesh_deflection: Optional[float] = None,
+        max_demotion_rounds: int = 8,
+    ) -> dict:
+        """Turn a closed triangle skin into a CAD solid with analytic faces,
+        written to output_path as AP214 STEP -- the last step of skin to CAD
+        after segment and fit_primitives (run here first, with
+        curvature_tolerance, min_patch_cells and fit_tolerance, when the skin
+        has no segment:patch / fit:patch_* data; a noisy scan wants
+        min_patch_cells in the tens).
+
+        Each accepted fit becomes a plane, sphere, cylinder, cone or torus face
+        (types narrows which), the rest planar facets; OpenCASCADE sews and
+        checks the solid, and a face that fails or lies further than tolerance
+        from the skin is demoted to facets. The report gives valid, the volume
+        ratio against the skin, max_deviation (Hausdorff), faces by type,
+        num_demoted and exact/approximated edges; mesh_output_path also writes
+        the re-meshed solid. Needs a core built with OpenCASCADE
+        (-DMESHIOPLUSPLUS_WITH_OCCT=ON); without it the error names the flag
+        and occt_available is false."""
+        return _guard(
+            _tools.tool_fit_cad,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            mesh_output_path=mesh_output_path,
+            curvature_tolerance=curvature_tolerance,
+            min_patch_cells=min_patch_cells,
+            fit_tolerance=fit_tolerance,
+            tolerance=tolerance,
+            exact_edges=exact_edges,
+            types=types,
+            mesh_deflection=mesh_deflection,
+            max_demotion_rounds=max_demotion_rounds,
+        )
+
+    @server.tool()
     def data_export(
         input_path: str,
         output_path: str,

@@ -42,6 +42,7 @@ from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._feature_edges import feature_edges
+from ._fit_cad import fit_cad
 from ._fit_primitives import TYPES, fit_primitives, types_mask
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
@@ -175,6 +176,14 @@ _OP_TABLE = {
         "MinInlierFraction",
         "Types",
         "MaxIterations",
+    ),
+    "FitCad": (
+        "Path",
+        "Tolerance",
+        "ExactEdges",
+        "Types",
+        "MeshDeflection",
+        "MaxDemotionRounds",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
     "RegionAdjacency": ("Regions",),
@@ -1008,6 +1017,31 @@ def _apply_step(mesh, step, steps, warnings):
         for t in TYPES[1:]:
             entry["Num" + t.capitalize()] = report["num_" + t]
         entry["NumUnfitted"] = report["num_unfitted"]
+    elif op == "FitCad":
+        # The fitted skin becomes a CAD solid, written to `Path` when given; the
+        # mesh continues as the solid re-meshed.
+        types = _svec(step, "Types") if "Types" in step else None
+        bad = [t for t in (types or ()) if t not in TYPES[1:]]
+        if bad:
+            raise _err(op, f"unknown primitive type '{bad[0]}' in 'Types'")
+        tolerance = _number(step, "Tolerance", 0.0)
+        deflection = _number(step, "MeshDeflection", 0.0)
+        mesh, report = fit_cad(
+            mesh,
+            _text(step, "Path", "") or None,
+            tolerance=tolerance if tolerance > 0.0 else None,
+            exact_edges=_flag(step, "ExactEdges", True),
+            types=types,
+            mesh_deflection=deflection if deflection > 0.0 else None,
+            max_demotion_rounds=int(_number(step, "MaxDemotionRounds", 8.0)),
+            return_report=True,
+        )
+        entry["Valid"] = 1.0 if report["valid"] else 0.0
+        entry["VolumeRatio"] = report["volume_ratio"]
+        entry["MaxDeviation"] = report["max_deviation"]
+        entry["NumFaces"] = report["num_faces"]
+        entry["NumFacetedFaces"] = report["num_faceted_faces"]
+        entry["NumDemoted"] = report["num_demoted"]
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and
         # the frame is written to `Path` (.png, .txt, .ansi, .html or .cast).

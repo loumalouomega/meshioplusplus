@@ -27,6 +27,7 @@ set "WITH_ZLIB=OFF"
 set "WITH_GIDPOST=ON"
 set "WITH_BZIP2=OFF"
 set "WITH_ADIOS2=OFF"
+set "WITH_OCCT=OFF"
 set "WITH_TECIO=OFF"
 set "TECIO_ROOT_DIR="
 set "TESTS=OFF"
@@ -54,6 +55,7 @@ if /I "%~1"=="--with-gidpost"   set "WITH_GIDPOST=ON" & shift & goto parse
 if /I "%~1"=="--without-gidpost" set "WITH_GIDPOST=OFF" & shift & goto parse
 if /I "%~1"=="--with-bzip2"     set "WITH_BZIP2=ON" & shift & goto parse
 if /I "%~1"=="--with-adios2"    set "WITH_ADIOS2=ON" & shift & goto parse
+if /I "%~1"=="--with-occt"      set "WITH_OCCT=ON" & shift & goto parse
 if /I "%~1"=="--with-tecio"     set "WITH_TECIO=ON" & set "TECIO_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
 if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
@@ -124,7 +126,7 @@ echo   backend:   %BACKEND%
 echo   mesh:      %MESH_BACKEND% (Python extension: %BUILD_PYTHON%)
 echo   HDF5:      %WITH_HDF5%   netCDF: %WITH_NETCDF%   zlib: %WITH_ZLIB%
 echo   gidpost:   %WITH_GIDPOST%  (GiD postprocess writer)
-echo   bzip2:     %WITH_BZIP2%   ADIOS2: %WITH_ADIOS2%   TecIO: %WITH_TECIO%
+echo   bzip2:     %WITH_BZIP2%   ADIOS2: %WITH_ADIOS2%   TecIO: %WITH_TECIO%   OCCT: %WITH_OCCT%
 echo   tests:     %TESTS%
 echo   C API:     %C_API%   Fortran: %FORTRAN%
 echo   C++ API:   %INSTALL_CPP%
@@ -142,6 +144,7 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_GIDPOST=%WITH_GIDPOST% ^
     -DMESHIOPLUSPLUS_WITH_BZIP2=%WITH_BZIP2% ^
     -DMESHIOPLUSPLUS_WITH_ADIOS2=%WITH_ADIOS2% ^
+    -DMESHIOPLUSPLUS_WITH_OCCT=%WITH_OCCT% ^
     -DMESHIOPLUSPLUS_WITH_TECIO=%WITH_TECIO% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
     -DMESHIOPLUSPLUS_BUILD_C_API=%C_API% ^
@@ -182,6 +185,7 @@ echo   --with-zlib / --without-zlib
 echo   --with-gidpost / --without-gidpost  GiD postprocess writer (default: on; needs zlib)
 echo   --with-bzip2                     native bzip2 (libMesh .bz2 meshes; default: off)
 echo   --with-adios2                    ADIOS2-backed DOLFINx VTX .bp reader (default: off)
+echo   --with-occt                      OpenCASCADE-backed fit_cad (default: off; LGPL-2.1)
 echo   --with-tecio ^<dir^>               TecIO-backed Tecplot .szplt reader (default: off;
 echo                                    ^<dir^> holds TECIO.h and tecio.lib)
 echo   --tests                          also build the GoogleTest suite (CTest)

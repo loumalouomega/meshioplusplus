@@ -104,6 +104,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -345,6 +346,8 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 // introduces them. Their results embed a Mesh and are not pinned.
 MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
+// fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 32, 8);
 
 // The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
 // TextOptions and SnapshotOptions are passed by const-ref through the exported

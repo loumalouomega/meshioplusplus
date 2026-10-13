@@ -116,6 +116,7 @@ export default defineConfig({
               { text: "Feature edges", link: "/feature_edges" },
               { text: "Segment (smooth patches)", link: "/segment" },
               { text: "Fit primitives", link: "/fit_primitives" },
+              { text: "Fit CAD", link: "/fit_cad" },
               { text: "Skin to CAD", link: "/cad_fit" },
               { text: "Interfaces and contact", link: "/region_adjacency" },
               { text: "Periodic node pairs", link: "/periodic" },

@@ -123,6 +123,7 @@ if TYPE_CHECKING:
     from ._diff import diff, meshes_equal
     from ._error import estimate_error
     from ._feature_edges import feature_edges
+    from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
     from ._gpu import (
         from_cupy,
@@ -269,6 +270,7 @@ _LAZY_ATTRS = {
     "meshes_equal": "_diff",
     "estimate_error": "_error",
     "feature_edges": "_feature_edges",
+    "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
     "segment": "_segment",
     "from_cupy": "_gpu",
@@ -485,6 +487,7 @@ __all__ = [
     "compute_curvature",
     "compute_normals",
     "feature_edges",
+    "fit_cad",
     "fit_primitives",
     "segment",
     "hausdorff_distance",

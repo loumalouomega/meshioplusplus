@@ -112,6 +112,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -5708,6 +5709,9 @@ static_assert(sizeof(mio_fit_primitives_opts) == 88,
               "mio_fit_primitives_opts grew outside its reserved tail");
 static_assert(sizeof(mio_fit_primitives_report) == 96,
               "mio_fit_primitives_report grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_opts) == 80, "mio_fit_cad_opts grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_report) == 192,
+              "mio_fit_cad_report grew outside its reserved tail");
 static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
               "MIO_FIT_ALL_TYPES must match kFitAllTypes");
 static_assert(MIO_FIT_TORUS == static_cast<int>(meshioplusplus::FitPrimitiveType::Torus),
@@ -5838,6 +5842,59 @@ mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts
             report->num_cone = r.mNumCone;
             report->num_torus = r.mNumTorus;
             report->num_unfitted = r.mNumUnfitted;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_cad_opts{};
+    opts->max_demotion_rounds = 8;
+    opts->exact_edges = 1;
+    opts->types = MIO_FIT_ALL_TYPES;
+}
+
+int mio_has_occt(void) {
+    return meshioplusplus::fit_cad_has_occt() ? 1 : 0;
+}
+
+mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                      mio_fit_cad_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::FitCadOptions options;
+        if (opts) {
+            options.mTolerance = opts->tolerance;
+            options.mMeshDeflection = opts->mesh_deflection;
+            options.mMaxDemotionRounds = opts->max_demotion_rounds;
+            options.mExactEdges = opts->exact_edges != 0;
+            options.mTypes = opts->types;
+        }
+        meshioplusplus::FitCadResult r =
+            meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
+        if (report) {
+            *report = mio_fit_cad_report{};
+            report->tolerance = r.mTolerance;
+            report->volume = r.mVolume;
+            report->skin_volume = r.mSkinVolume;
+            report->volume_ratio = r.mVolumeRatio;
+            report->max_deviation = r.mMaxDeviation;
+            report->num_faces = r.mNumFaces;
+            report->num_plane = r.mNumPlane;
+            report->num_sphere = r.mNumSphere;
+            report->num_cylinder = r.mNumCylinder;
+            report->num_cone = r.mNumCone;
+            report->num_torus = r.mNumTorus;
+            report->num_faceted_faces = r.mNumFacetedFaces;
+            report->num_patches = r.mNumPatches;
+            report->num_demoted = r.mNumDemoted;
+            report->num_exact_edges = r.mNumExactEdges;
+            report->num_approx_edges = r.mNumApproxEdges;
+            report->num_solids = r.mNumSolids;
+            report->valid = r.mValid ? 1 : 0;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

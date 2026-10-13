@@ -1297,6 +1297,60 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
   )
 }
 
+#' Whether the library carries the OpenCASCADE backend
+#'
+#' `mio_fit_cad()` needs a library built with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`;
+#' this reports whether the loaded one was.
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_occt <- function() {
+  .Call(R_mio_has_occt)
+}
+
+#' Turn fitted patches into a CAD solid
+#'
+#' Builds a CAD solid from the fitted patches of a closed skin through the
+#' OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
+#' cone or torus face, the rest planar facets, and a face that fails the B-rep
+#' check or strays beyond `tolerance` is demoted to facets. Without
+#' `segment:patch` or the `fit:patch_*` table, segment and fit_primitives run
+#' first with their defaults. Fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in
+#' a build without OpenCASCADE (see `mio_has_occt()`). See `doc/fit_cad.md`.
+#'
+#' @param mesh A closed, consistently wound surface `mio_mesh`.
+#' @param step_path Write the solid here as AP214 STEP; `""` writes nothing.
+#' @param tolerance The largest distance a face may lie from the skin; 0 takes
+#'   three times the largest accepted patch tolerance.
+#' @param exact_edges Whether to try exact surface intersections first.
+#' @param types The fitted types kept as analytic faces.
+#' @param mesh_deflection The chordal deflection of the re-meshed solid; 0
+#'   takes a quarter of the tolerance.
+#' @param max_demotion_rounds Rounds of demoting failed faces before every
+#'   patch is faceted.
+#' @return A list of `mesh` (the solid re-meshed, with cell data
+#'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
+#'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
+#'   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
+#'   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
+#'   `num_exact_edges`, `num_approx_edges` and `num_solids`.
+#' @export
+mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
+                        types = c("plane", "sphere", "cylinder", "cone", "torus"),
+                        mesh_deflection = 0, max_demotion_rounds = 8) {
+  known <- c("plane", "sphere", "cylinder", "cone", "torus")
+  bad <- setdiff(types, known)
+  if (length(bad) > 0) {
+    stop("meshio++: fit_cad: unknown primitive type ", bad[[1]])
+  }
+  mask <- sum(2^match(unique(types), known))
+  .Call(
+    R_mio_fit_cad, mesh, as.character(step_path), as.numeric(tolerance),
+    isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
+    as.numeric(max_demotion_rounds)
+  )
+}
+
 #' Render a mesh into an RGBA frame
 #'
 #' A deterministic software rasterizer: no display, GPU or windowing library, and

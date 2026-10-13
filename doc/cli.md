@@ -108,6 +108,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `resample` | `method`, `num_steps` and the target `times` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
+| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges and `num_solids` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1058,6 +1059,34 @@ meshioplusplus fit-primitives [options] INFILE OUTFILE
 
 ```sh
 meshioplusplus fit-primitives part_patches.vtu part_fits.vtu --tolerance 2e-3 --json
+```
+
+---
+
+## meshioplusplus to-cad
+
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
+
+```text
+meshioplusplus to-cad [options] INFILE OUTFILE.step
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format` | Explicit input format |
+| `--curvature-tolerance C` | `segment`'s curvature test, for an unsegmented skin (default off) |
+| `--min-patch-cells N` | `segment`'s smallest patch, for an unsegmented skin (default `1`; a noisy scan wants tens) |
+| `--fit-tolerance T` | `fit_primitives`' relative tolerance, for an unfitted skin (default `1e-3`) |
+| `--tolerance T` | The largest distance a face may lie from the skin (default three times the largest accepted patch tolerance) |
+| `--no-exact-edges` | Approximate every edge between analytic faces with a B-spline |
+| `--types LIST` | Fitted types kept as analytic faces, from `plane,sphere,cylinder,cone,torus` (default all) |
+| `--mesh-deflection D` | Chordal deflection of the re-meshed solid (default a quarter of the tolerance) |
+| `--max-demotion-rounds N` | Rounds of demoting failed faces before every patch is faceted (default `8`) |
+| `--mesh-out FILE` | Also write the re-meshed solid |
+| `--json`, `-q/--quiet` | Machine-readable report, or no summary |
+
+```sh
+meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
 ```
 
 ---

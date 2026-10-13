@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,8 +37,8 @@
 #include "meshioplusplus/skin.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/closed_facets.hpp"
 #include "../detail/crease_edges.hpp"
-#include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -105,98 +106,24 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
     if (volume)
         skin = extract_skin(rMesh, /*linearize=*/true);
     const Mesh& surface = volume ? skin : rMesh;
-    std::size_t total = 0;
-    for (const auto cb : surface.CellRange())
-        total += cb.NumCells();
-    detail::SurfaceRings in;
+    detail::ClosedFacets shell;
     try {
-        in = detail::surface_rings(surface, std::vector<std::uint8_t>(total, 1), kStepPrefix);
+        shell = detail::closed_facets(surface, kStepPrefix);
     } catch (const std::invalid_argument& rErr) {
         throw WriteError(rErr.what());
     }
-    if (in.NumFaces() < total) {
+    if (shell.mNumSkipped > 0) {
         log::warn("step: {} cell(s) that are not surface facets (lines, vertices) are dropped",
-                  total - in.NumFaces());
+                  shell.mNumSkipped);
         detail::provenance_note("cells-dropped", "cells that are not surface facets");
     }
-    if (in.NumFaces() == 0)
+    if (shell.NumFacets() == 0)
         throw WriteError(std::string(kStepPrefix) + "no surface facets to write");
-
-    const std::vector<double> xyz = detail::surface_xyz(surface);
-    for (double v : xyz)
-        if (!std::isfinite(v))
-            throw WriteError(std::string(kStepPrefix) + "a coordinate is not finite");
-
-    // Fan every non-planar facet into triangles from its first corner.
-    std::vector<std::int64_t> start{0}, nodes;
-    for (std::size_t f = 0; f < in.NumFaces(); ++f) {
-        const std::int64_t* ring = in.mNodes.data() + in.mStart[f];
-        const std::size_t size = static_cast<std::size_t>(in.mStart[f + 1] - in.mStart[f]);
-        bool planar = true;
-        if (size > 3) {
-            double n[3];
-            detail::ring_unit_normal(xyz.data(), ring, size, n);
-            const double* p0 = &xyz[static_cast<std::size_t>(ring[0]) * 3];
-            double dev = 0.0, extent = 0.0;
-            for (std::size_t k = 1; k < size; ++k) {
-                const double* p = &xyz[static_cast<std::size_t>(ring[k]) * 3];
-                const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
-                const double h = std::fabs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]);
-                const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                dev = h > dev ? h : dev;
-                extent = l > extent ? l : extent;
-            }
-            planar = !(dev > 1e-9 * extent);
-        }
-        if (planar) {
-            nodes.insert(nodes.end(), ring, ring + size);
-            start.push_back(static_cast<std::int64_t>(nodes.size()));
-        } else {
-            for (std::size_t k = 1; k + 1 < size; ++k) {
-                nodes.insert(nodes.end(), {ring[0], ring[k], ring[k + 1]});
-                start.push_back(static_cast<std::int64_t>(nodes.size()));
-            }
-        }
-    }
-    const std::size_t nf = start.size() - 1;
-    std::vector<double> normals(nf * 3);
-    for (std::size_t f = 0; f < nf; ++f) {
-        detail::ring_unit_normal(xyz.data(), nodes.data() + start[f],
-                                 static_cast<std::size_t>(start[f + 1] - start[f]),
-                                 &normals[f * 3]);
-        if (normals[f * 3] == 0.0 && normals[f * 3 + 1] == 0.0 && normals[f * 3 + 2] == 0.0)
-            throw WriteError(std::string(kStepPrefix) + "facet " + std::to_string(f) +
-                             " is degenerate (zero area)");
-    }
-
-    // A solid's shell is closed and consistently wound.
-    {
-        const std::vector<detail::CreaseEdge> bad =
-            detail::crease_edges(start, nodes, normals, 180.0);
-        std::size_t open = 0, nonmanifold = 0, inconsistent = 0;
-        std::string first;
-        std::size_t listed = 0;
-        for (const detail::CreaseEdge& e : bad) {
-            const bool b = e.IsBoundary(), m = e.IsNonManifold(), i = e.mInconsistent;
-            if (!b && !m && !i)
-                continue;
-            open += b ? 1 : 0;
-            nonmanifold += m ? 1 : 0;
-            inconsistent += i ? 1 : 0;
-            if (listed < 5) {
-                first += (listed ? ", (" : "(") + std::to_string(e.mLo) + ", " +
-                         std::to_string(e.mHi) + ")";
-                ++listed;
-            }
-        }
-        if (open + nonmanifold + inconsistent > 0)
-            throw WriteError(
-                std::string(kStepPrefix) +
-                "the surface is not a closed, consistently wound solid: " + std::to_string(open) +
-                " open, " + std::to_string(nonmanifold) + " non-manifold and " +
-                std::to_string(inconsistent) + " inconsistently wound edge(s), first " + first +
-                " (point ids); run repair first");
-    }
+    const std::vector<double>& xyz = shell.mXyz;
+    const std::vector<std::int64_t>& start = shell.mStart;
+    const std::vector<std::int64_t>& nodes = shell.mNodes;
+    const std::vector<double>& normals = shell.mNormals;
+    const std::size_t nf = shell.NumFacets();
 
     // The edges, and the edge-connected pieces (one solid each).
     std::vector<std::pair<std::int64_t, std::int64_t>> edges;

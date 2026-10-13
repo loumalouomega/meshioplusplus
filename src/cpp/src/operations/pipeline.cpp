@@ -48,6 +48,7 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -210,6 +211,24 @@ std::vector<std::string> pipe_svec(const PipelineStep& rStep, const char* pKey) 
         pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of strings"));
 }
 
+/// The `1 << FitPrimitiveType` mask of a `Types` list of primitive names.
+std::uint32_t pipe_fit_types(const PipelineStep& rStep) {
+    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+    std::uint32_t mask = 0;
+    for (const std::string& t : pipe_svec(rStep, "Types")) {
+        bool found = false;
+        for (int k = 0; k < 5; ++k)
+            if (t == kNames[k]) {
+                mask |= 1u << (k + 1);
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(
+                pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
+    }
+    return mask;
+}
+
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
@@ -281,6 +300,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Prefix"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
+        {"FitCad",
+         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -954,22 +975,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mRelative = pipe_flag(rStep, "Relative", true);
         opts.mMinInlierFraction = pipe_number(rStep, "MinInlierFraction", 0.9);
         opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
-        const std::vector<std::string> types = pipe_svec(rStep, "Types");
-        if (!types.empty()) {
-            static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
-            opts.mTypes = 0;
-            for (const std::string& t : types) {
-                bool found = false;
-                for (int k = 0; k < 5; ++k)
-                    if (t == kNames[k]) {
-                        opts.mTypes |= 1u << (k + 1);
-                        found = true;
-                    }
-                if (!found)
-                    throw std::invalid_argument(
-                        pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
-            }
-        }
+        if (!pipe_svec(rStep, "Types").empty())
+            opts.mTypes = pipe_fit_types(rStep);
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},
@@ -980,6 +987,27 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumTorus", static_cast<double>(fr.mNumTorus)},
                         {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
         return std::move(fr.mMesh);
+    }
+    if (op == "FitCad") {
+        // The fitted skin becomes a CAD solid, written to `Path` when given; the
+        // mesh continues as the solid re-meshed.
+        FitCadOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mExactEdges = pipe_flag(rStep, "ExactEdges", true);
+        opts.mMeshDeflection = pipe_number(rStep, "MeshDeflection", 0.0);
+        opts.mMaxDemotionRounds =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxDemotionRounds", 8.0));
+        if (pipe_find(rStep, "Types"))
+            opts.mTypes = pipe_fit_types(rStep);
+        FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Valid", cr.mValid ? 1.0 : 0.0},
+                        {"VolumeRatio", cr.mVolumeRatio},
+                        {"MaxDeviation", cr.mMaxDeviation},
+                        {"NumFaces", static_cast<double>(cr.mNumFaces)},
+                        {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+                        {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
+        return std::move(cr.mMesh);
     }
     if (op == "Snapshot") {
         // A side output, not a transform: the mesh passes through untouched and

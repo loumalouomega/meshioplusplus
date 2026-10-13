@@ -1456,6 +1456,21 @@ end
     close(seg.mesh)
     @test_throws MeshioError segment(cube; feature_angle=200)
     @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+    if has_occt()
+        cad = fit_cad(cube)
+        @test cad.valid
+        @test cad.num_plane == 6
+        close(cad.mesh)
+    else
+        err = try
+            fit_cad(cube)
+            nothing
+        catch e
+            e
+        end
+        @test err isa MeshioError
+        @test occursin("MESHIOPLUSPLUS_WITH_OCCT", sprint(showerror, err))
+    end
 
     other = Mesh()
     set_points!(other, pts)
