@@ -67,6 +67,7 @@
 
 // Project includes
 #include "fuzz_bundle.hpp"
+#include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -167,6 +168,11 @@ extern "C" int LLVMFuzzerInitialize(int* pArgc, char*** pArgv) {
  * entry's top-level directory (the `.bp` directory the reader opens).
  */
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* pData, std::size_t size) {
+    // Without OpenCASCADE the STEP and IGES readers refuse every input before
+    // reading it (Unsupported, naming the flag; CadRead.AbsentBackendIsNamed), so
+    // there is no input-dependent behaviour to fuzz.
+    if ((gFormat == "step" || gFormat == "iges") && !meshioplusplus::cad_read_has_occt())
+        return 0;
     std::string main_path;
     const bool is_bundle_format = fuzz_is_bundle_format(gFormat);
     const bool is_bundle =

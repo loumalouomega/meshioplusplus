@@ -808,8 +808,11 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     std::vector<std::size_t> shape = rA.Shape();
     shape[0] = r1 - r0;
     NDArray out(rA.Dtype(), shape);
-    if (r1 > r0)
-        std::memcpy(out.Data(), rA.Data() + r0 * nc * isz, (r1 - r0) * nc * isz);
+    // A zero-width array has null buffers: copy only a non-empty range, since
+    // memcpy with a null pointer is undefined even for zero bytes (UBSan's nonnull).
+    const std::size_t bytes = r1 > r0 ? (r1 - r0) * nc * isz : 0;
+    if (bytes > 0)
+        std::memcpy(out.Data(), rA.Data() + r0 * nc * isz, bytes);
     return out;
 }
 
