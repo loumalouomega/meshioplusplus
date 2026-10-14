@@ -134,6 +134,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -5295,6 +5296,147 @@ PYBIND11_MODULE(_core, m) {
             });
         },
         py::arg("path"), py::arg("mesh"), py::arg("brep") = py::none());
+
+    // The isogeometric layer (operations/iga.hpp): a NURBS model is the
+    // `mesh.info["nurbs"]` or `mesh.info["brep"]` dict, an evaluation a dict of
+    // arrays, a refinement or sampling a mesh with the (refined) model attached.
+    {
+        const auto attach = [](py::object& rPyMesh, const char* pKey, py::object model) {
+            py::object existing = rPyMesh.attr("info");
+            py::dict d = existing.is_none() ? py::dict() : py::dict(existing);
+            d[pKey] = std::move(model);
+            rPyMesh.attr("info") = std::move(d);
+        };
+        const auto refine_options = [](std::array<std::int32_t, 3> subdivisions,
+                                       std::array<std::int32_t, 3> elevate) {
+            meshioplusplus::IgaRefineOptions o;
+            o.mSubdivisions = subdivisions;
+            o.mElevate = elevate;
+            return o;
+        };
+        const auto params_view = [](py::handle a) {
+            auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(a);
+            if (!arr)
+                throw py::value_error("iga: parameters are not numeric");
+            meshioplusplus::NDArray out = meshioplusplus_py::view_from_numpy(arr);
+            out.MakeOwned();
+            return out;
+        };
+        const auto evaluation_to_py = [](meshioplusplus::IgaEvaluation&& rE, bool WithInside) {
+            using meshioplusplus_py::numpy_from_ndarray;
+            py::dict out;
+            out["points"] = numpy_from_ndarray(std::move(rE.mPoints));
+            if (rE.mDerivatives.Size())
+                out["derivatives"] = numpy_from_ndarray(std::move(rE.mDerivatives));
+            if (rE.mNormals.Size())
+                out["normals"] = numpy_from_ndarray(std::move(rE.mNormals));
+            py::list fields;
+            for (auto& f : rE.mFields)
+                fields.append(numpy_from_ndarray(std::move(f)));
+            out["fields"] = std::move(fields);
+            if (WithInside)
+                out["inside"] = numpy_from_ndarray(std::move(rE.mInside));
+            return out;
+        };
+        m.def(
+            "iga_refine_nurbs",
+            [=](py::object nurbs, std::array<std::int32_t, 3> subdivisions,
+                std::array<std::int32_t, 3> elevate, int sample_subdivisions) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                meshioplusplus::IgaSampleOptions so;
+                so.mSubdivisions = sample_subdivisions;
+                meshioplusplus::NurbsInfo mapped;
+                meshioplusplus::Mesh mesh = core_nogil([&] {
+                    const meshioplusplus::NurbsInfo refined =
+                        meshioplusplus::iga_refine(in, refine_options(subdivisions, elevate));
+                    return meshioplusplus::iga_sample(refined, so, &mapped);
+                });
+                py::object pymesh = meshioplusplus_py::mesh_to_py(std::move(mesh));
+                attach(pymesh, "nurbs", nurbs_info_to_py(std::move(mapped)));
+                return pymesh;
+            },
+            py::arg("nurbs"), py::arg("subdivisions") = std::array<std::int32_t, 3>{1, 1, 1},
+            py::arg("elevate") = std::array<std::int32_t, 3>{0, 0, 0},
+            py::arg("sample_subdivisions") = 0);
+        m.def(
+            "iga_refine_brep",
+            [=](py::object brep, std::array<std::int32_t, 3> subdivisions,
+                std::array<std::int32_t, 3> elevate, int sample_subdivisions, int trim_samples,
+                bool edges, bool trim) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                meshioplusplus::IgaSampleOptions so;
+                so.mSubdivisions = sample_subdivisions;
+                so.mTrimSamples = trim_samples;
+                so.mEdges = edges;
+                so.mTrim = trim;
+                meshioplusplus::BrepInfo refined;
+                meshioplusplus::Mesh mesh = core_nogil([&] {
+                    refined = meshioplusplus::iga_refine(in, refine_options(subdivisions, elevate));
+                    return meshioplusplus::iga_sample(refined, so);
+                });
+                py::object pymesh = meshioplusplus_py::mesh_to_py(std::move(mesh));
+                attach(pymesh, "brep", core_brep_to_py(std::move(refined)));
+                return pymesh;
+            },
+            py::arg("brep"), py::arg("subdivisions") = std::array<std::int32_t, 3>{1, 1, 1},
+            py::arg("elevate") = std::array<std::int32_t, 3>{0, 0, 0},
+            py::arg("sample_subdivisions") = 0, py::arg("trim_samples") = 16,
+            py::arg("edges") = true, py::arg("trim") = true);
+        m.def(
+            "iga_sample_nurbs",
+            [=](py::object nurbs, int subdivisions) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                meshioplusplus::IgaSampleOptions so;
+                so.mSubdivisions = subdivisions;
+                meshioplusplus::NurbsInfo mapped;
+                meshioplusplus::Mesh mesh =
+                    core_nogil([&] { return meshioplusplus::iga_sample(in, so, &mapped); });
+                py::object pymesh = meshioplusplus_py::mesh_to_py(std::move(mesh));
+                attach(pymesh, "nurbs", nurbs_info_to_py(std::move(mapped)));
+                return pymesh;
+            },
+            py::arg("nurbs"), py::arg("subdivisions") = 0);
+        m.def(
+            "iga_sample_brep",
+            [=](py::object brep, int subdivisions, int trim_samples, bool edges, bool trim) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                meshioplusplus::IgaSampleOptions so;
+                so.mSubdivisions = subdivisions;
+                so.mTrimSamples = trim_samples;
+                so.mEdges = edges;
+                so.mTrim = trim;
+                py::object pymesh = meshioplusplus_py::mesh_to_py(
+                    core_nogil([&] { return meshioplusplus::iga_sample(in, so); }));
+                attach(pymesh, "brep", core_brep_to_py(meshioplusplus::BrepInfo(in)));
+                return pymesh;
+            },
+            py::arg("brep"), py::arg("subdivisions") = 0, py::arg("trim_samples") = 16,
+            py::arg("edges") = true, py::arg("trim") = true);
+        m.def(
+            "iga_evaluate_nurbs",
+            [=](py::object nurbs, std::size_t patch, py::object params, int derivatives) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                const meshioplusplus::NDArray p = params_view(params);
+                return evaluation_to_py(core_nogil(
+                    [&] { return meshioplusplus::iga_evaluate(in, patch, p, derivatives); }),
+                    false);
+            },
+            py::arg("nurbs"), py::arg("patch"), py::arg("params"), py::arg("derivatives") = 0);
+        m.def(
+            "iga_evaluate_brep",
+            [=](py::object brep, std::size_t face, py::object params, int derivatives,
+                int trim_samples) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                const meshioplusplus::NDArray p = params_view(params);
+                return evaluation_to_py(core_nogil([&] {
+                    return meshioplusplus::iga_evaluate(in, face, p, derivatives, trim_samples);
+                }),
+                                        true);
+            },
+            py::arg("brep"), py::arg("face"), py::arg("params"), py::arg("derivatives") = 0,
+            py::arg("trim_samples") = 16);
+    }
+
     // STEP and IGES through the optional OpenCASCADE backend: the triangulated
     // shape, its B-rep as `mesh.info["brep"]`. Unsupported (NotImplementedError)
     // without the backend; there is no Python twin of a CAD kernel.

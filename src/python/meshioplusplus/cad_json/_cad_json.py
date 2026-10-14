@@ -768,8 +768,10 @@ class _Block:
 
 
 def _block(blocks, cell_type, nodes):
+    # Keyed by node count too: faces of degrees 3 and 4 are both
+    # VTK_LAGRANGE_QUADRILATERAL, with 16 and 25 nodes.
     for b in blocks:
-        if b.type == cell_type:
+        if b.type == cell_type and b.nodes == nodes:
             return b
     blocks.append(_Block(cell_type, nodes))
     return blocks[-1]

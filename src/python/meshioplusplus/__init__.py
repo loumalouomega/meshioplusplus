@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     from ._feature_edges import feature_edges
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
+    from ._iga import iga_evaluate, iga_refine, iga_sample
     from ._gpu import (
         from_cupy,
         has_cuda_device,
@@ -274,6 +275,9 @@ _LAZY_ATTRS = {
     "feature_edges": "_feature_edges",
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
+    "iga_evaluate": "_iga",
+    "iga_refine": "_iga",
+    "iga_sample": "_iga",
     "segment": "_segment",
     "from_cupy": "_gpu",
     "has_cuda_device": "_gpu",
@@ -493,6 +497,9 @@ __all__ = [
     "feature_edges",
     "fit_cad",
     "fit_primitives",
+    "iga_evaluate",
+    "iga_refine",
+    "iga_sample",
     "segment",
     "hausdorff_distance",
     "match_periodic_nodes",
