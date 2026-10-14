@@ -28,6 +28,7 @@ from . import (
     _grid_transfer,
     _guard,
     _hausdorff,
+    _iga,
     _info,
     _interpolate,
     _isosurface,
@@ -158,6 +159,26 @@ def main(argv=None):
     )
     _fit_primitives.add_args(parser)
     parser.set_defaults(func=_fit_primitives.fit_primitives_cmd)
+
+    parser = subparsers.add_parser(
+        "iga-refine",
+        help="Refine a NURBS model exactly (knot insertion, degree elevation)",
+    )
+    _iga.add_refine_args(parser)
+    parser.set_defaults(func=_iga.refine_cmd)
+
+    parser = subparsers.add_parser(
+        "iga-sample", help="Sample a NURBS model into Lagrange cells"
+    )
+    _iga.add_sample_args(parser)
+    parser.set_defaults(func=_iga.sample_cmd)
+
+    parser = subparsers.add_parser(
+        "iga-evaluate",
+        help="Evaluate a patch of a NURBS model at parametric coordinates (JSON)",
+    )
+    _iga.add_evaluate_args(parser)
+    parser.set_defaults(func=_iga.evaluate_cmd)
 
     parser = subparsers.add_parser(
         "to-cad",

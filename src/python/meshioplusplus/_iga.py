@@ -29,6 +29,7 @@ import math
 import numpy as np
 
 from . import _nurbs_eval as ne
+from ._exceptions import WriteError
 from ._fallback import core_op_declined
 from ._lagrange import vtk_lattice
 from ._mesh import Mesh
@@ -48,8 +49,36 @@ def _fail(what):
 # ---------------------------------------------------------------------------
 
 
+def _complete_nurbs(data):
+    """A ``nurbs`` model dict with the optional parts a hand-built one may
+    leave out filled in (no fields, no topology, unit weights, no cell map)."""
+    out = dict(data)
+    out.setdefault("field_names", [])
+    out.setdefault("topology", None)
+    out.setdefault("cell_patch", np.zeros(0, dtype=np.int64))
+    out.setdefault("cell_span", np.zeros((0, 3), dtype=np.int64))
+    out.setdefault("boundary_cell_patch", np.zeros(0, dtype=np.int64))
+    patches = []
+    for p in data["patches"]:
+        q = dict(p)
+        q["degrees"] = np.asarray(p["degrees"], dtype=np.int32)
+        q["knots"] = [np.asarray(k, dtype=np.float64) for k in p["knots"]]
+        q["control_points"] = np.asarray(p["control_points"], dtype=np.float64)
+        n = q["control_points"].shape[0]
+        q["weights"] = np.asarray(p.get("weights", np.ones(n)), dtype=np.float64)
+        q["fields"] = [np.asarray(f, dtype=np.float64) for f in p.get("fields", [])]
+        patches.append(q)
+    out["patches"] = patches
+    return out
+
+
 def _model(mesh, model):
     """``(kind, dict)`` of the model a mesh (or a bare model dict) carries."""
+    kind, data = _find_model(mesh, model)
+    return kind, (_complete_nurbs(data) if kind == "nurbs" else data)
+
+
+def _find_model(mesh, model):
     if model not in ("auto", "nurbs", "brep"):
         _fail(f"model must be 'auto', 'nurbs' or 'brep', not {model!r}")
     if isinstance(mesh, dict):
@@ -371,6 +400,19 @@ def _refine_patch(patch, rational, subdivisions, elevate, what):
     sh = _check_patch(patch, what)
     if rational:
         _check_weights(patch, what)
+    # Nothing to do: the patch itself, not its homogeneous round trip (which
+    # can move a rational control point by an ulp).
+    identity = all(
+        elevate[d] == 0 and subdivisions[d] == 1 for d in range(sh["dim"])
+    )
+    if identity and (rational or not _is_rational(patch)):
+        return {
+            "degrees": np.array(sh["degrees"], dtype=np.int32),
+            "knots": [k.copy() for k in sh["knots"]],
+            "control_points": np.array(patch["control_points"], dtype=np.float64),
+            "weights": np.array(patch["weights"], dtype=np.float64),
+            "fields": [np.array(f, dtype=np.float64) for f in patch.get("fields", [])],
+        }
     net = _make_net(patch, sh, rational)
     for d in range(sh["dim"]):
         if elevate[d] < 0:
@@ -579,6 +621,24 @@ def _sample_nurbs(model, subdivisions):
     patches = model["patches"]
     if not patches:
         _fail("the model has no patches")
+    topo = model.get("topology")
+    if sub == 0 and topo is not None and int(topo["dimension"]) != 0:
+        # A model with its MFEM patch topology samples as the MFEM reader does.
+        from .mfem import _mfem
+
+        try:
+            mesh = _mfem.sample_nurbs(model)
+        except WriteError as exc:
+            _fail(f"the patch topology is inconsistent: {exc}")
+        # The model stays as it is (the sampler regathers its control points
+        # from MFEM's numbering, which can move a shared one by an ulp); only
+        # the cell maps are the sampling's.
+        derived = mesh.info["nurbs"]
+        mesh.info = None
+        mapped = dict(model)
+        for key in ("cell_patch", "cell_span", "boundary_cell_patch"):
+            mapped[key] = derived[key]
+        return mesh, mapped
     s = max(sub, 1)
     shapes, tables = [], []
     dim = sdim = None
@@ -745,6 +805,19 @@ def _refine_brep(model, subdivisions, elevate):
 def _refine_nurbs(model, subdivisions, elevate):
     if not model["patches"]:
         _fail("the model has no patches")
+    topo = model.get("topology")
+    if topo is not None and int(topo["dimension"]) != 0:
+        # The patches' directions follow their own edges, so a per-direction
+        # refinement would not agree on the knot vector two patches share.
+        dim = min(int(topo["dimension"]), 3)
+        if any(
+            subdivisions[d] != subdivisions[0] or elevate[d] != elevate[0]
+            for d in range(1, dim)
+        ):
+            _fail(
+                "a model with a patch topology refines every direction alike (its "
+                "patches share knot vectors along differently oriented directions)"
+            )
     out = {
         "patches": [],
         "field_names": list(model["field_names"]),

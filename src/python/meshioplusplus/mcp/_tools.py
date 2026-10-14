@@ -83,6 +83,9 @@ from .. import (
     grid,
     hausdorff_distance,
     hessian,
+    iga_evaluate,
+    iga_refine,
+    iga_sample,
     interpolate,
     isosurface,
     match_periodic_nodes,
@@ -446,6 +449,20 @@ def _brep_summary(brep):
     }
 
 
+def _nurbs_summary(nurbs):
+    """What a NURBS side channel (``mesh.info["nurbs"]``: MFEM NURBS meshes)
+    holds, by count."""
+    patches = nurbs.get("patches", [])
+    topo = nurbs.get("topology") or {}
+    return {
+        "patches": len(patches),
+        "dimension": int(topo["dimension"]) if topo else None,
+        "degrees": sorted({int(d) for p in patches for d in p["degrees"]}),
+        "control_points": int(sum(len(p["weights"]) for p in patches)),
+        "fields": list(nurbs.get("field_names", [])),
+    }
+
+
 def _mesh_summary(mesh):
     out = {
         "num_points": int(len(mesh.points)),
@@ -459,6 +476,8 @@ def _mesh_summary(mesh):
     info = getattr(mesh, "info", None)
     if isinstance(info, dict) and info.get("brep"):
         out["brep"] = _brep_summary(info["brep"])
+    if isinstance(info, dict) and info.get("nurbs"):
+        out["nurbs"] = _nurbs_summary(info["nurbs"])
     return out
 
 
@@ -1989,6 +2008,105 @@ def tool_fit_primitives(
         out,
         patches=patches,
         **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_iga_refine(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    subdivisions=1,
+    elevate=0,
+    sample_subdivisions=0,
+    model="auto",
+    trim_samples=16,
+    edges=True,
+    trim=True,
+):
+    """Refine every patch of a NURBS model exactly: degree elevation (elevate),
+    then knot insertion splitting each knot span in subdivisions parts. The
+    geometry, fields and a trimmed face's trimming loops do not change; the
+    refined model is written (an MFEM NURBS mesh or CAD JSON keeps its patches,
+    any other format gets the sampled cells)."""
+    mesh = _load(input_path, input_format)
+    out = iga_refine(
+        mesh,
+        subdivisions=subdivisions,
+        elevate=elevate,
+        sample_subdivisions=sample_subdivisions,
+        model=model,
+        trim_samples=trim_samples,
+        edges=edges,
+        trim=trim,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_iga_sample(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    subdivisions=0,
+    model="auto",
+    trim_samples=16,
+    edges=True,
+    trim=True,
+):
+    """Sample a NURBS model (MFEM NURBS mesh, CAD JSON, STEP, IGES) into
+    Lagrange cells, subdivisions cells per knot span and direction (0 is
+    automatic), the exact rational geometry at each cell's lattice."""
+    mesh = _load(input_path, input_format)
+    out = iga_sample(
+        mesh,
+        subdivisions=subdivisions,
+        model=model,
+        trim_samples=trim_samples,
+        edges=edges,
+        trim=trim,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+_IGA_MAX_POINTS = 10000
+
+
+def tool_iga_evaluate(
+    input_path,
+    params,
+    input_format=None,
+    patch=0,
+    derivatives=0,
+    model="auto",
+    trim_samples=16,
+):
+    """Evaluate a patch of a NURBS model (a face of a B-rep) at parametric
+    coordinates params (a list of [u], [u, v] or [u, v, w]): points, with
+    derivatives=1 the first derivatives and surface normals, the NURBS fields,
+    and for a B-rep face whether each point lies inside its trimming loops."""
+    points = np.asarray(params, dtype=np.float64)
+    if points.ndim == 1:
+        points = points[:, None]
+    if len(points) > _IGA_MAX_POINTS:
+        raise ValueError(
+            f"iga_evaluate: {len(points)} points; at most {_IGA_MAX_POINTS} per call"
+        )
+    mesh = _load(input_path, input_format)
+    res = iga_evaluate(
+        mesh,
+        points,
+        patch=patch,
+        derivatives=derivatives,
+        model=model,
+        trim_samples=trim_samples,
+    )
+    return _json_safe(
+        {
+            "num_points": int(len(points)),
+            **{k: v for k, v in res.items() if k != "fields"},
+            "fields": list(res["fields"]),
+        }
     )
 
 
@@ -4504,6 +4622,18 @@ TOOL_REGISTRY = OrderedDict(
         (
             "fit_cad",
             {"fn": tool_fit_cad, "wraps": ("fit_cad",), "gated": "occt"},
+        ),
+        (
+            "iga_refine",
+            {"fn": tool_iga_refine, "wraps": ("iga_refine",), "gated": None},
+        ),
+        (
+            "iga_sample",
+            {"fn": tool_iga_sample, "wraps": ("iga_sample",), "gated": None},
+        ),
+        (
+            "iga_evaluate",
+            {"fn": tool_iga_evaluate, "wraps": ("iga_evaluate",), "gated": None},
         ),
         (
             "region_adjacency",

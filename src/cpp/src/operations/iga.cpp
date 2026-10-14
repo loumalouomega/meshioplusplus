@@ -29,7 +29,9 @@
 
 // Project includes
 #include "meshioplusplus/operations/iga.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
@@ -183,6 +185,13 @@ NurbsPatch iga_refine_patch(const NurbsPatch& rP, bool Rational, const IgaRefine
     const IgaShape sh = iga_check_patch(rP, rWhat);
     if (Rational)
         iga_check_weights(rP, rWhat);
+    // Nothing to do: the patch itself, not its homogeneous round trip (which
+    // can move a rational control point by an ulp).
+    bool identity = true;
+    for (std::size_t d = 0; d < sh.mDim; ++d)
+        identity = identity && rOpt.mElevate[d] == 0 && rOpt.mSubdivisions[d] == 1;
+    if (identity && (Rational || !iga_is_rational(rP)))
+        return rP;
     detail::IgaNet net = iga_make_net(rP, sh, Rational);
     for (std::size_t d = 0; d < sh.mDim; ++d) {
         if (rOpt.mElevate[d] < 0)
@@ -366,6 +375,17 @@ NurbsPatch iga_elevate_degree(const NurbsPatch& rPatch, std::int32_t Direction, 
 NurbsInfo iga_refine(const NurbsInfo& rInfo, const IgaRefineOptions& rOptions) {
     if (rInfo.mPatches.empty())
         iga_fail("the model has no patches");
+    if (rInfo.mTopology.mDimension != 0) {
+        // The patches' directions follow their own edges, so a per-direction
+        // refinement would not agree on the knot vector two patches share.
+        const auto dim = static_cast<std::size_t>(rInfo.mTopology.mDimension);
+        for (std::size_t d = 1; d < std::min<std::size_t>(dim, 3); ++d)
+            if (rOptions.mSubdivisions[d] != rOptions.mSubdivisions[0] ||
+                rOptions.mElevate[d] != rOptions.mElevate[0])
+                iga_fail(
+                    "a model with a patch topology refines every direction alike (its patches "
+                    "share knot vectors along differently oriented directions)");
+    }
     NurbsInfo out;
     out.mFieldNames = rInfo.mFieldNames;
     out.mTopology = rInfo.mTopology;
@@ -467,6 +487,25 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
         iga_fail("subdivisions must be 0 (automatic) to " + std::to_string(kIgaMaxSubdivisions));
     if (rInfo.mPatches.empty())
         iga_fail("the model has no patches");
+    if (rOptions.mSubdivisions == 0 && rInfo.mTopology.mDimension != 0) {
+        // A model with its MFEM patch topology samples as `read_mfem` does.
+        try {
+            // The model stays as it is (the sampler regathers its control
+            // points from MFEM's numbering, which can move a shared one by an
+            // ulp); only the cell maps are the sampling's.
+            NurbsInfo derived;
+            Mesh mesh = sample_mfem_nurbs(rInfo, pMapped ? &derived : nullptr);
+            if (pMapped) {
+                *pMapped = rInfo;
+                pMapped->mCellPatch = std::move(derived.mCellPatch);
+                pMapped->mCellSpan = std::move(derived.mCellSpan);
+                pMapped->mBoundaryCellPatch = std::move(derived.mBoundaryCellPatch);
+            }
+            return mesh;
+        } catch (const WriteError& rE) {
+            iga_fail(std::string("the patch topology is inconsistent: ") + rE.what());
+        }
+    }
     const int S = std::max(rOptions.mSubdivisions, 1);
     std::vector<IgaTable> tables;
     int k = 1;

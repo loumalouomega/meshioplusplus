@@ -77,7 +77,8 @@ struct IgaRefineOptions {
 /// How `iga_sample` turns a model into cells.
 struct IgaSampleOptions {
     /// Cells per knot span and direction; 0 is automatic (one per span; on a
-    /// trimmed face about 16 per direction so its trim shows).
+    /// trimmed face about 16 per direction so its trim shows; for a `NurbsInfo`
+    /// with a patch topology, the MFEM reader's own sampling).
     std::int32_t mSubdivisions = 0;
     /// `BrepInfo` only: points per knot span a trimming curve is sampled at, 2 to 4096.
     std::int32_t mTrimSamples = 16;
@@ -168,7 +169,11 @@ MESHIOPLUSPLUS_API IgaEvaluation iga_evaluate(const BrepInfo& rInfo, std::size_t
  * (rational) geometry at the cell's lattice, the NURBS fields evaluated as
  * point data, `iga:patch` and `iga:span` as cell data.
  *
- * Points are shared within a patch, not between patches.
+ * Points are shared within a patch, not between patches. A model with its
+ * MFEM patch topology (`mTopology`) and `mSubdivisions == 0` samples as
+ * `sample_mfem_nurbs` does instead -- exactly the mesh `read_mfem` gives, with
+ * its points shared across patches and its boundary cells -- so a refined
+ * model writes back through `write_mfem`.
  * @param pMapped When not null, receives @p rInfo with `mCellPatch` and
  * `mCellSpan` filled from the cells and `mBoundaryCellPatch` cleared.
  */

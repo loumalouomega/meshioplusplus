@@ -2078,6 +2078,20 @@ def _sample_nurbs(n, gfs, filename, with_info):
     return mesh
 
 
+def sample_nurbs(info):
+    """The mesh a NURBS side channel samples to: exactly what reading the NURBS
+    mesh :func:`write` writes from it gives (the twin of ``sample_mfem_nurbs``),
+    with the side channel as the reader returns it in ``mesh.info["nurbs"]``."""
+    _check_nurbs_info(info)
+    n = _nurbs.Nurbs.from_info(info)
+    gfs = []
+    for name, table in zip(info["field_names"], n.fields):
+        space = _Space(_nurbs_collection(n))
+        space.vdim, space.ordering = table.shape[1], 1
+        gfs.append((name, space, table.ravel()))
+    return _sample_nurbs(n, gfs, "the NURBS side channel", with_info=True)
+
+
 def _nurbs_info(n, weights, xyz, names, tables, elements, bpatch):
     """``mesh.info["nurbs"]``, the twin of the core's ``NurbsInfo``: per patch
     its degrees, knot vectors, control net, weights and field control values;
