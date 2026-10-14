@@ -103951,6 +103951,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 #include <limits>
 #include <optional>
 #include <set>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -103967,6 +103968,12 @@ constexpr std::int64_t kLbCd = 2, kLbVariable = 4, kLbBegin = 5, kLbOffset = 7, 
 
 [[noreturn]] void lb_fail(const std::string& rMessage) {
     throw ReadError("LS-DYNA binout: " + rMessage);
+}
+
+// Whether the N bytes at Pos lie inside a file of Size bytes. Pos and N come from the file,
+// so the sum is never formed: it wraps for values near 2^64 and would pass the check.
+bool lb_within(std::uint64_t Pos, std::uint64_t N, std::uint64_t Size) {
+    return Pos <= Size && N <= Size - Pos;
 }
 
 // One LSDA file: its field sizes, byte order and bytes.
@@ -103989,7 +103996,7 @@ struct LbFile {
     }
 
     std::uint64_t UInt(std::size_t Pos, std::size_t N) const {
-        if (Pos + N > mSource.Size())
+        if (!lb_within(Pos, N, mSource.Size()))
             lb_fail("a record runs past the end of the file");
         const auto* p = reinterpret_cast<const unsigned char*>(mSource.Data() + Pos);
         std::uint64_t v = 0;
@@ -104132,13 +104139,19 @@ private:
     std::string Raw(const LbVar& rVar) const {
         const LbFile& f = *rVar.mpFile;
         static const std::size_t kSize[] = {0, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 1};
-        const std::size_t head = f.mLength + f.mCommand + f.mType;
-        const auto name_len = static_cast<std::size_t>(f.UInt(rVar.mOffset + head, 1));
-        const std::size_t pos = rVar.mOffset + head + 1 + name_len;
-        const std::size_t size = kSize[std::clamp<std::int64_t>(rVar.mType, 0, 11)] * rVar.mLength;
-        if (pos + size > f.mSource.Size())
+        const std::uint64_t file = f.mSource.Size();
+        // Checked before the offset is summed below, which would wrap for a value near 2^64.
+        if (rVar.mOffset > file)
             lb_fail("a variable's data runs past the end of the file");
-        return std::string(f.mSource.Data() + pos, size);
+        const std::uint64_t head = f.mLength + f.mCommand + f.mType;
+        const auto name_len =
+            static_cast<std::size_t>(f.UInt(static_cast<std::size_t>(rVar.mOffset + head), 1));
+        const std::uint64_t pos = rVar.mOffset + head + 1 + name_len;
+        const std::uint64_t width = kSize[std::clamp<std::int64_t>(rVar.mType, 0, 11)];
+        if (pos > file || (width != 0 && rVar.mLength > (file - pos) / width))
+            lb_fail("a variable's data runs past the end of the file");
+        const std::size_t size = static_cast<std::size_t>(width * rVar.mLength);
+        return std::string(f.mSource.Data() + static_cast<std::size_t>(pos), size);
     }
 
     void ReadSymbols(const LbFile& rF) {
@@ -104149,11 +104162,19 @@ private:
         pos += lc;
         LbDir* cwd = &mRoot;
         std::vector<std::string> cwd_path;
+        // The tables read so far: a table whose next-table offset names an earlier one (or
+        // itself) would otherwise be read again, forever.
+        std::unordered_set<std::uint64_t> tables;
         for (;;) {
             const std::uint64_t offset = rF.UInt(pos, rF.mOffset);
             if (offset == 0)
                 return;
-            pos = offset;
+            // Checked before `pos` is used in sums below, which would wrap near 2^64.
+            if (offset > rF.mSource.Size())
+                lb_fail("a symbol table runs past the end of the file");
+            if (!tables.insert(offset).second)
+                lb_fail("the symbol tables loop back to the table at " + std::to_string(offset));
+            pos = static_cast<std::size_t>(offset);
             if (rF.UInt(pos + rF.mLength, rF.mCommand) != static_cast<std::uint64_t>(kLbBegin))
                 return;
             pos += lc;
@@ -104162,26 +104183,28 @@ private:
                 const std::uint64_t cmd = rF.UInt(pos + rF.mLength, rF.mCommand);
                 if (length < lc)
                     lb_fail("a symbol table record is shorter than its header");
-                const std::size_t body = length - lc;
+                const std::uint64_t body = length - lc;
                 pos += lc;
                 if (cmd == static_cast<std::uint64_t>(kLbCd)) {
-                    if (pos + body > rF.mSource.Size())
+                    if (!lb_within(pos, body, rF.mSource.Size()))
                         lb_fail("a record runs past the end of the file");
-                    Cd(cwd, cwd_path, std::string(rF.mSource.Data() + pos, body));
-                    pos += body;
+                    Cd(cwd, cwd_path,
+                       std::string(rF.mSource.Data() + pos, static_cast<std::size_t>(body)));
+                    pos += static_cast<std::size_t>(body);
                 } else if (cmd == static_cast<std::uint64_t>(kLbVariable)) {
                     const std::size_t tail = rF.mType + rF.mOffset + rF.mLength;
-                    if (body < tail || pos + body > rF.mSource.Size())
+                    if (body < tail || !lb_within(pos, body, rF.mSource.Size()))
                         lb_fail("a variable record is malformed");
-                    const std::string name(rF.mSource.Data() + pos, body - tail);
-                    const std::size_t p = pos + body - tail;
+                    const std::size_t name_len = static_cast<std::size_t>(body) - tail;
+                    const std::string name(rF.mSource.Data() + pos, name_len);
+                    const std::size_t p = pos + name_len;
                     LbVar v;
                     v.mType = static_cast<std::int64_t>(rF.UInt(p, rF.mType));
                     v.mOffset = rF.UInt(p + rF.mType, rF.mOffset);
                     v.mLength = rF.UInt(p + rF.mType + rF.mOffset, rF.mLength);
                     v.mpFile = &rF;
                     cwd->mVars[name] = v;
-                    pos += body;
+                    pos += static_cast<std::size_t>(body);
                 } else {  // the end of this table: the next table's offset follows
                     break;
                 }

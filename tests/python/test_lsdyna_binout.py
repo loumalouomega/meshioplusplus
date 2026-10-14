@@ -5,6 +5,8 @@ lasso-python's ``Binout`` reading (frozen in ``binout_reference.npz`` by
 
 import pathlib
 import shutil
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -17,6 +19,9 @@ MESHES = pathlib.Path(__file__).parent / "meshes" / "lsdyna_binout"
 GLSTAT = MESHES / "binout_glstat"
 NODOUT = MESHES / "nodout" / "binout"
 REFERENCE = MESHES / "binout_reference.npz"
+FUZZ_REGRESSIONS = pathlib.Path(__file__).parent.parent / "fuzz" / "regressions"
+# The fuzzer's input whose first table names itself as the next table (a loop).
+FUZZ_CYCLE = FUZZ_REGRESSIONS / "lsdyna_binout" / "symbol-table-cycle"
 
 
 @pytest.fixture(params=["core", "python"])
@@ -152,3 +157,35 @@ def test_refusals(engine, tmp_path):
     truncated.write_bytes(NODOUT.read_bytes()[:5000])
     with pytest.raises(meshioplusplus.ReadError):
         engine.read(truncated)
+
+
+def test_a_table_offset_past_the_end_is_refused(engine, tmp_path):
+    path = tmp_path / "binout"
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    meshioplusplus.lsdyna_binout.write(path, meshioplusplus.Mesh(points, []))
+    data = bytearray(path.read_bytes())
+    data[17:25] = (2**64 - 8).to_bytes(8, "little")  # the first table's offset
+    path.write_bytes(bytes(data))
+    with pytest.raises(meshioplusplus.ReadError):
+        engine.read(path)
+
+
+@pytest.mark.parametrize("reader", ["core", "python"])
+def test_a_symbol_table_that_loops_back_is_refused(reader):
+    """Each reader runs in its own process under a timeout, so a reader that loops
+    forever on the fuzzer's input fails this test instead of hanging the suite."""
+    child = {
+        "core": "import sys; import meshioplusplus as mp; mp.lsdyna_binout.read(sys.argv[1])",
+        "python": (
+            "import sys; from meshioplusplus.lsdyna_binout import _binout; "
+            "_binout.read(sys.argv[1])"
+        ),
+    }[reader]
+    run = subprocess.run(
+        [sys.executable, "-c", child, str(FUZZ_CYCLE)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode != 0, run.stdout
+    assert "ReadError" in run.stderr and "loop back" in run.stderr, run.stderr

@@ -186,6 +186,47 @@ TEST(LsdynaBinout, ResolvedSniffedNarrowedAndRefused) {
                  ReadError);
 }
 
+namespace {
+
+// Overwrites the eight bytes at At with V (the file is little-endian).
+void patch_u64(std::string& rBytes, std::size_t At, std::uint64_t V) {
+    std::memcpy(&rBytes[At], &V, 8);
+}
+
+}  // namespace
+
+// A table whose next-table offset names itself: a loop, which the reader refuses rather than
+// reading the table again forever.
+TEST(LsdynaBinout, ATableThatNamesItselfAsTheNextIsRefused) {
+    std::string bytes = binout();
+    std::uint64_t first = 0;
+    std::memcpy(&first, bytes.data() + 17, 8);  // the first table's offset
+    patch_u64(bytes, bytes.size() - 8, first);  // the last table's next-table offset
+    EXPECT_THROW(meshioplusplus::read_lsdyna_binout(write_file(bytes)), ReadError);
+}
+
+// The fuzzer's input for the same loop (tests/fuzz/regressions/lsdyna_binout).
+TEST(LsdynaBinout, TheFuzzersSymbolTableCycleIsRefused) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "lsdyna_binout" /
+                                        "symbol-table-cycle";
+    ASSERT_TRUE(std::filesystem::exists(input));
+    EXPECT_THROW(meshioplusplus::read_lsdyna_binout(input.string()), ReadError);
+}
+
+// Offsets and lengths near 2^64 wrap when added to a position: each one is refused, not read.
+TEST(LsdynaBinout, OffsetsAndLengthsNearTwoToTheSixtyFourAreRefused) {
+    std::string past_end = binout();
+    patch_u64(past_end, 17, 0xFFFFFFFFFFFFFFF8ull);  // the first table's offset
+    EXPECT_THROW(meshioplusplus::read_lsdyna_binout(write_file(past_end)), ReadError);
+
+    std::string huge = binout();
+    std::uint64_t first = 0;
+    std::memcpy(&first, huge.data() + 17, 8);
+    patch_u64(huge, first + 9, 0xFFFFFFFFFFFFFFFFull);  // the first record's length
+    EXPECT_THROW(meshioplusplus::read_lsdyna_binout(write_file(huge)), ReadError);
+}
+
 // ---------------------------------------------------------------------------------------
 // The writer
 // ---------------------------------------------------------------------------------------
