@@ -15148,6 +15148,8 @@ MESHIOPLUSPLUS_API Mesh read_abaqus(const std::string& rPath);
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15176,6 +15178,74 @@ MESHIOPLUSPLUS_API std::vector<double> abaqus_fil_time_values(const std::string&
  */
 MESHIOPLUSPLUS_API MeshMetadata read_abaqus_fil_metadata(const std::string& rPath,
                                                          const ReadOptions& rOpts);
+
+/**
+ * @brief Write a mesh as a one-increment Abaqus results file.
+ *
+ * The inverse of `read_abaqus_fil`. The model is the points (`abaqus:id` labels,
+ * else 1 to n), the cells (`abaqus:id` labels over the written cells, else 1 to
+ * n; a cell type becomes the Abaqus element `T3D2`, `S3`, `S4R`, `STRI65`,
+ * `S8R`, `S9R5`, `C3D4`, `C3D10`, `C3D5`, `C3D13`, `C3D6`, `C3D15`, `C3D8R` or
+ * `C3D20R`) and the point and cell regions as node and element sets (a name
+ * over 8 characters through a 1940 label). The increment holds the point data
+ * named like an Abaqus nodal result (`U`, `V`, `A`, `RF`, `key_<n>`...) and the
+ * cell data named like an element result (`S`, `E`, `MISES`, `NFORC`,
+ * `key_<n>`...): an array with an `abaqus:layout:<name>` of
+ * `(points, components)` is per integration point (per element node for
+ * `NFORC` and the `@el` names), any other one set of values per element; a
+ * point-data array named like an element result is averaged at the nodes. A
+ * `@sp<k>` suffix is the section point, `@rebar:<name>` a rebar. The
+ * increment's time is `meshio:time` (0 when absent), its step, number, step time
+ * and procedure the `abaqus:step`, `abaqus:increment`, `abaqus:step_time` and
+ * `abaqus:procedure` field data, and a `abaqus:mode` (with its eigenvalue,
+ * generalized mass, damping and participation factors) a 1980 record. NaN rows
+ * are left out, trailing NaN components are trimmed and an inner NaN is
+ * written as 0. With @p Binary the file is the little-endian binary layout
+ * (512-word blocks), else ASCII. Cells with no Abaqus element, side regions and
+ * other arrays are dropped with a warning. The Python twin writes the same
+ * bytes.
+ *
+ * @throws WriteError on a label that is not positive and unique, a cell or
+ *         region naming a point the mesh does not have, a value outside what a
+ *         `D22.15` item holds, a layout that does not match its array, or a
+ *         file that cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh,
+                                         bool Binary = false);
+
+/**
+ * @brief A results file written step by step: the model with the first step,
+ *        then an increment per step.
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and cell blocks (a `WriteError` otherwise). The time of a step is the
+ * argument, not its `meshio:time`. One step is `write_abaqus_fil`'s bytes. The
+ * Python twin, `meshioplusplus.abaqus_fil.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API AbaqusFilSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit AbaqusFilSeriesWriter(const std::string& rPath, bool Binary = false);
+    ~AbaqusFilSeriesWriter();
+
+    AbaqusFilSeriesWriter(const AbaqusFilSeriesWriter&) = delete;
+    AbaqusFilSeriesWriter& operator=(const AbaqusFilSeriesWriter&) = delete;
+    AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept;
+    AbaqusFilSeriesWriter& operator=(AbaqusFilSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/abaqus_fil.hpp =====
@@ -18100,11 +18170,16 @@ MESHIOPLUSPLUS_API Mesh read_lsdyna(const std::string& rPath);
  * `binout:<database>:<variable>` (`binout:elout/beam:axial`), with its
  * `binout:<database>:time` and, from its metadata, `binout:<database>:ids`.
  *
+ * The writer (`write_lsdyna_binout`, `LsdynaBinoutSeriesWriter`) is the
+ * reader's inverse: one little-endian LSDA file with 8-byte lengths and
+ * offsets, reals stored as `float32` and integers as `int32`.
+ *
  * See doc/formats/lsdyna_binout.md.
  */
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18145,6 +18220,67 @@ MESHIOPLUSPLUS_API bool is_binout_filename(const std::string& rPath);
  *        symbol-table offset command.
  */
 MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
+
+/**
+ * @brief Write a mesh as a one-output binout.
+ *
+ * `nodout` is the points (`x_coordinate`, `y_coordinate`, `z_coordinate`),
+ * their ids (`lsdyna:nid`, else 1 to n), the vectors `displacement`,
+ * `rotation`, `velocity`, `rotational_velocity`, `acceleration` and
+ * `rotational_acceleration` (`n x 3`), every other one-dimensional per-point
+ * array (for 2 or more points) under its own name, and the
+ * `binout:nodout:<variable>` field data. Every other database is
+ * `binout:<database>:<variable>` field data (`<database>` may nest with `/`,
+ * `binout:elout/beam:axial`), with `binout:<database>:time` its output's time
+ * (else the step's) and `binout:<database>:ids` its metadata ids. Reals are
+ * stored as `float32` and integers as `int32`; the output's time is
+ * `meshio:time` (0 when absent). Cells, regions and other arrays are dropped
+ * with a warning. The Python twin writes the same bytes.
+ *
+ * @throws WriteError on an id outside the 32-bit range, a variable or
+ *         database name a binout cannot hold, a variable repeated, a mesh with
+ *         no point and no `binout:*` field data, or a file that cannot be
+ *         opened
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A binout written step by step: `nodout`'s ids once and an output
+ *        folder per step, and any other database's output whenever its own
+ *        `binout:<database>:time` changes (so a database written less often
+ *        than `nodout` keeps its own cadence).
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and ids and, for each database, its first output's variables (a
+ * database may be absent from a step and appear later); a step that does not
+ * is a `WriteError`. The time of a step is the argument, not its
+ * `meshio:time`. One step is `write_lsdyna_binout`'s bytes. The Python twin,
+ * `meshioplusplus.lsdyna_binout.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API LsdynaBinoutSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit LsdynaBinoutSeriesWriter(const std::string& rPath);
+    ~LsdynaBinoutSeriesWriter();
+
+    LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter& operator=(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept;
+    LsdynaBinoutSeriesWriter& operator=(LsdynaBinoutSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/lsdyna_binout.hpp =====
@@ -19707,10 +19843,16 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_h5_metadata(const std::string& rPat
  * Complex, random and SORT2 tables, other element types and other tables are
  * skipped with a warning naming them.
  *
+ * The writer (`write_nastran_op2`, `NastranOp2SeriesWriter`) is the reader's
+ * inverse for the core of the format: 32-bit little-endian words, the MSC
+ * dialect, SORT1 real tables. See `write_nastran_op2`.
+ *
  * See doc/formats/nastran_op2.md.
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -19738,6 +19880,75 @@ MESHIOPLUSPLUS_API std::vector<double> nastran_op2_time_values(const std::string
  */
 MESHIOPLUSPLUS_API MeshMetadata read_nastran_op2_metadata(const std::string& rPath,
                                                           const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a mesh as a one-step OP2 result file.
+ *
+ * The model is the points (`GEOM1` GRIDs, numbered from 1), the cells (`GEOM2`
+ * element cards: `triangle` CTRIA3, `quad` CQUAD4, `tetra` CTETRA, `pyramid`
+ * CPYRAM, `wedge` CPENTA, `hexahedron` CHEXA, their quadratic forms, a `line`
+ * as CROD, CTUBE (property `PTUBE_<pid>`) or, with no property, CONROD, and a
+ * `vertex` as CONM2), with `nastran:eid` and `nastran:pid` when the mesh has
+ * them (else numbered from 1, and one property id per family), one `EPT`
+ * property card per property id and a unit `MAT1`. The results are the point
+ * data `DISPLACEMENT`, `EIGENVECTOR`, `VELOCITY`, `ACCELERATION`, `SPC_FORCE`,
+ * `MPC_FORCE` and `APPLIED_LOAD` (each `(n, 3)` with a `_ROT` twin) and
+ * `TEMPERATURE`, and the centre `STRESS:<M>`/`STRAIN:<M>` cell data of the
+ * linear shells (33, 74), solids (39, 67, 68, 255; the corners from
+ * `<name>@corner`, else the centre value) and rods (1, 3, 10), under the
+ * reader's member names. A member the mesh lacks, or a NaN in a written row, is
+ * written as 0; a row with every member NaN, or a point with every component
+ * NaN, is left out. The step is `nastran:subcase`, `nastran:analysis` and
+ * `nastran:mode` of the field data (default 1, 1 or 6 by the time, 1) and
+ * `meshio:time` (0 when absent). Other arrays are dropped with a warning. The
+ * Python twin writes the same bytes.
+ *
+ * @throws WriteError on a non-positive or repeated element id, a property id
+ *         shared by shells, solids and rods, an array of the wrong size, or a
+ *         file that cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_nastran_op2(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief An OP2 file written step by step: the model from the first step, then
+ *        a block per step in each result table.
+ *
+ * The tables hold every step, so the steps are kept and the file is written by
+ * `Finalize`. Every step must have the first step's points count, cell blocks
+ * and result arrays (a `WriteError` otherwise), and a subcase, analysis and
+ * mode or time of its own. The time of a step is the argument, not its
+ * `meshio:time`. One step is `write_nastran_op2`'s bytes. The Python twin,
+ * `meshioplusplus.nastran_op2.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API NastranOp2SeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit NastranOp2SeriesWriter(const std::string& rPath);
+    ~NastranOp2SeriesWriter();
+
+    NastranOp2SeriesWriter(const NastranOp2SeriesWriter&) = delete;
+    NastranOp2SeriesWriter& operator=(const NastranOp2SeriesWriter&) = delete;
+    NastranOp2SeriesWriter(NastranOp2SeriesWriter&&) noexcept;
+    NastranOp2SeriesWriter& operator=(NastranOp2SeriesWriter&&) noexcept;
+
+    /**
+     * @brief Add one step.
+     * @throws WriteError when the step's points, cells or result arrays differ
+     *         from the first step's, its subcase, analysis and mode or time
+     *         repeat an earlier step's, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/nastran_op2.hpp =====
@@ -71860,6 +72071,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 #include <algorithm>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -71868,10 +72080,12 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -72987,6 +73201,912 @@ MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOption
     meta.mFormat = "abaqus_fil";
     meta.mTimeValues = abaqus_fil_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: the reader's inverse for the model, the nodal and element results, in the
+// ASCII layout or the binary one (512-word blocks, little-endian). The twin of
+// abaqus_fil/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+[[noreturn]] void filw_fail(const std::string& rMessage) {
+    throw WriteError("Abaqus .fil: " + rMessage);
+}
+
+/// One item of a record: an integer word, a real word or an 8-character text.
+struct FilwItem {
+    char mTag = 'I';
+    std::int64_t mInt = 0;
+    double mReal = 0.0;
+    std::string mText;
+};
+using FilwRecord = std::vector<FilwItem>;
+
+FilwItem filw_i(std::int64_t V) {
+    FilwItem it;
+    it.mTag = 'I';
+    it.mInt = V;
+    return it;
+}
+
+FilwItem filw_d(double V) {
+    if (V != V || std::isinf(V))
+        filw_fail("a value is not finite");
+    if (V != 0.0 && !(std::fabs(V) >= 1e-99 && std::fabs(V) < 1e100))
+        filw_fail("a value is outside the range a D22.15 item holds");
+    FilwItem it;
+    it.mTag = 'D';
+    it.mReal = V;
+    return it;
+}
+
+/// The text as the file holds it: ASCII, a `?` for every other byte.
+std::string filw_ascii(const std::string& rText) {
+    std::string out = rText;
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) >= 0x80)
+            c = '?';
+    return out;
+}
+
+FilwItem filw_a(const std::string& rText) {
+    std::string t = filw_ascii(rText);
+    t.resize(8, ' ');
+    FilwItem it;
+    it.mTag = 'A';
+    it.mText = t;
+    return it;
+}
+
+void filw_text_items(FilwRecord& rOut, const std::string& rText, std::size_t Words = 10) {
+    std::string t = filw_ascii(rText);
+    t.resize(8 * Words, ' ');
+    for (std::size_t k = 0; k < Words; ++k)
+        rOut.push_back(filw_a(t.substr(8 * k, 8)));
+}
+
+FilwRecord filw_rec(std::int64_t Key) {
+    return FilwRecord{filw_i(Key)};
+}
+
+std::string filw_ascii_bytes(const std::vector<FilwRecord>& rRecords) {
+    std::string text, line;
+    const auto put = [&](const std::string& rPiece) {
+        line += rPiece;
+        while (line.size() >= 80) {
+            text += line.substr(0, 80);
+            text += '\n';
+            line.erase(0, 80);
+        }
+    };
+    for (const FilwRecord& r : rRecords) {
+        put("*");
+        std::vector<FilwItem> items;
+        items.push_back(filw_i(static_cast<std::int64_t>(r.size()) + 1));
+        items.insert(items.end(), r.begin(), r.end());
+        for (const FilwItem& it : items) {
+            if (it.mTag == 'I') {
+                const std::string digits = std::to_string(it.mInt);
+                std::string count = std::to_string(digits.size());
+                if (count.size() < 2)
+                    count.insert(0, 2 - count.size(), ' ');
+                put("I" + count + digits);
+            } else if (it.mTag == 'D') {
+                char buf[64];
+                detail::snprintf_c(buf, sizeof(buf), "% .15E", it.mReal);
+                std::string v = buf;
+                std::replace(v.begin(), v.end(), 'E', 'D');
+                put("D" + v);
+            } else {
+                put("A" + it.mText);
+            }
+        }
+        if (r[0].mInt == 2001) {
+            line.resize(80, ' ');
+            text += line + "\n" + std::string(80, ' ') + "\n";
+            line.clear();
+        }
+    }
+    if (!line.empty())
+        text += line + "\n";
+    return text;
+}
+
+void filw_put_le(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = 0; i < N; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords) {
+    constexpr std::size_t kBlock = 512;
+    std::vector<std::string> words;
+    for (const FilwRecord& r : rRecords) {
+        std::vector<std::string> rec_words;
+        std::string w;
+        filw_put_le(w, static_cast<std::uint64_t>(r.size() + 1), 8);
+        rec_words.push_back(w);
+        for (const FilwItem& it : r) {
+            std::string x;
+            if (it.mTag == 'I') {
+                filw_put_le(x, static_cast<std::uint64_t>(it.mInt), 8);
+            } else if (it.mTag == 'D') {
+                filw_put_le(x, std::bit_cast<std::uint64_t>(it.mReal), 8);
+            } else {
+                x = it.mText;
+            }
+            rec_words.push_back(x);
+        }
+        if (r[0].mInt == 2001) {
+            // The last record of an increment pads to the end of its block.
+            const std::size_t pad = (kBlock - (words.size() + rec_words.size()) % kBlock) % kBlock;
+            std::string len;
+            filw_put_le(len, rec_words.size() + pad, 8);
+            rec_words[0] = len;
+            for (std::size_t k = 0; k < pad; ++k)
+                rec_words.push_back(std::string(8, '\0'));
+        }
+        words.insert(words.end(), rec_words.begin(), rec_words.end());
+    }
+    const std::size_t tail = (kBlock - words.size() % kBlock) % kBlock;
+    for (std::size_t k = 0; k < tail; ++k)
+        words.push_back(std::string(8, '\0'));
+    std::string marker;
+    filw_put_le(marker, 8 * kBlock, 4);
+    std::string out;
+    for (std::size_t b = 0; b < words.size(); b += kBlock) {
+        out += marker;
+        for (std::size_t k = b; k < b + kBlock; ++k)
+            out += words[k];
+        out += marker;
+    }
+    return out;
+}
+
+const std::map<std::string, std::string>& filw_types() {
+    static const std::map<std::string, std::string> types = {
+        {"line", "T3D2"},     {"line3", "T3D3"},       {"triangle", "S3"},
+        {"quad", "S4R"},      {"triangle6", "STRI65"}, {"quad8", "S8R"},
+        {"quad9", "S9R5"},    {"tetra", "C3D4"},       {"tetra10", "C3D10"},
+        {"pyramid", "C3D5"},  {"pyramid13", "C3D13"},  {"wedge", "C3D6"},
+        {"wedge15", "C3D15"}, {"hexahedron", "C3D8R"}, {"hexahedron20", "C3D20R"},
+    };
+    return types;
+}
+
+bool filw_is_shell(const std::string& rType) {
+    return rType == "triangle" || rType == "quad" || rType == "triangle6" || rType == "quad8" ||
+           rType == "quad9";
+}
+
+/// The Abaqus key of a result name: the reader's names inverted (`key_<n>` is `<n>`).
+std::optional<std::int64_t> filw_key_of(const std::string& rName, bool Nodal) {
+    static const std::unordered_map<std::string, std::int64_t> nodal = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1; k < 1000; ++k)
+            if (const char* n = fil_nodal_name(k))
+                m.emplace(n, k);
+        return m;
+    }();
+    static const std::unordered_map<std::string, std::int64_t> element = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1; k < 1000; ++k)
+            if (const char* n = fil_element_name(k))
+                m.emplace(n, k);
+        m["RATIO"] = 79;
+        m["ERV"] = 79;
+        return m;
+    }();
+    const auto& table = Nodal ? nodal : element;
+    const auto it = table.find(rName);
+    if (it != table.end())
+        return it->second;
+    if (rName.size() > 4 && rName.compare(0, 4, "key_") == 0 && rName.size() < 12 &&
+        std::all_of(rName.begin() + 4, rName.end(), [](char C) { return C >= '0' && C <= '9'; }))
+        return std::stoll(rName.substr(4));
+    return std::nullopt;
+}
+
+std::vector<std::int64_t> filw_labels(const std::vector<std::int64_t>* pGiven, std::size_t Count,
+                                      const char* pWhat) {
+    std::vector<std::int64_t> labels;
+    if (pGiven == nullptr) {
+        for (std::size_t i = 0; i < Count; ++i)
+            labels.push_back(static_cast<std::int64_t>(i + 1));
+        return labels;
+    }
+    labels = *pGiven;
+    if (labels.size() != Count)
+        filw_fail(std::string("'abaqus:id' must hold one label per ") + pWhat);
+    for (const std::int64_t v : labels)
+        if (v <= 0)
+            filw_fail(std::string(pWhat) + " labels must be positive");
+    std::vector<std::int64_t> sorted = labels;
+    std::sort(sorted.begin(), sorted.end());
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        filw_fail(std::string(pWhat) + " labels are not unique");
+    return labels;
+}
+
+using FilwSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
+
+FilwSignature filw_signature(const Mesh& rMesh) {
+    FilwSignature sig;
+    sig.emplace_back("points", rMesh.NumPoints(), 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
+    }
+    return sig;
+}
+
+/// The mesh as the file holds it: records, labels and the written cells.
+class FilwModel {
+public:
+    explicit FilwModel(const Mesh& rMesh) {
+        mSignature = filw_signature(rMesh);
+        const std::size_t n = rMesh.NumPoints();
+        const std::size_t pdim = rMesh.PointDim();
+        mDim = pdim == 2 ? 2 : 3;
+        std::vector<std::int64_t> node_ids;
+        const bool have_ids = rMesh.HasPointData("abaqus:id");
+        if (have_ids) {
+            const detail::Int64View v(rMesh.PointData("abaqus:id"));
+            node_ids.assign(v.Data(), v.Data() + rMesh.PointData("abaqus:id").Size());
+        }
+        mNodeLabels = filw_labels(have_ids ? &node_ids : nullptr, n, "node");
+        std::vector<double> points(n * mDim, 0.0);
+        {
+            const detail::DoubleView pts(rMesh.Points());
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < mDim && k < pdim; ++k)
+                    points[i * mDim + k] = pts.Data()[i * pdim + k];
+        }
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            total += rMesh.Cells(b).NumCells();
+        std::vector<std::int64_t> cell_ids;
+        const bool have_cell_ids = rMesh.HasCellData("abaqus:id");
+        if (have_cell_ids)
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& a = rMesh.CellData("abaqus:id", b);
+                const detail::Int64View v(a);
+                cell_ids.insert(cell_ids.end(), v.Data(), v.Data() + a.Size());
+            }
+        mCellLabels = filw_labels(have_cell_ids ? &cell_ids : nullptr, total, "element");
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const auto it = filw_types().find(cb.Type());
+            for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
+                if (it == filw_types().end())
+                    ++mSkipped[cb.Type()];
+                else
+                    mCells.push_back({g, it->second, b, r});
+            }
+        }
+        for (const Cell& c : mCells)
+            mWritten.insert(c.mGlobal);
+        BuildRecords(rMesh, points);
+    }
+
+    struct Cell {
+        std::size_t mGlobal;
+        std::string mName;
+        std::size_t mBlock, mRow;
+    };
+    const FilwSignature& Signature() const { return mSignature; }
+    const std::vector<FilwRecord>& Records() const { return mRecords; }
+    const std::vector<std::int64_t>& NodeLabels() const { return mNodeLabels; }
+    const std::vector<std::int64_t>& CellLabels() const { return mCellLabels; }
+    const std::vector<Cell>& Cells() const { return mCells; }
+    const std::map<std::string, std::size_t>& Skipped() const { return mSkipped; }
+    std::set<std::string> mDropped;
+
+private:
+    void BuildRecords(const Mesh& rMesh, const std::vector<double>& rPoints) {
+        FilwRecord head = filw_rec(1921);
+        for (int k = 0; k < 4; ++k)
+            head.push_back(k == 0 ? filw_a("meshio++") : filw_a(""));
+        head.push_back(filw_i(static_cast<std::int64_t>(mCells.size())));
+        head.push_back(filw_i(static_cast<std::int64_t>(mNodeLabels.size())));
+        head.push_back(filw_d(1.0));
+        mRecords.push_back(std::move(head));
+        FilwRecord title = filw_rec(1922);
+        filw_text_items(title, "meshio++ results file");
+        mRecords.push_back(std::move(title));
+        // the active degrees of freedom (1, 2 and, in 3-D, 3); 35 words
+        FilwRecord dof = filw_rec(1902);
+        const std::int64_t dofs[3] = {1, 2, mDim == 3 ? 3 : 0};
+        for (const std::int64_t d : dofs)
+            dof.push_back(filw_i(d));
+        for (int k = 0; k < 32; ++k)
+            dof.push_back(filw_i(0));
+        mRecords.push_back(std::move(dof));
+        constexpr std::size_t kChunk = 10;
+        for (const Cell& c : mCells) {
+            const auto cb = rMesh.Cells(c.mBlock);
+            const detail::Int64View conn(cb.Conn());
+            const std::size_t k = cb.NodesPerCell();
+            std::vector<std::int64_t> labels;
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::int64_t p = conn.Data()[c.mRow * k + j];
+                if (p < 0 || static_cast<std::size_t>(p) >= mNodeLabels.size())
+                    filw_fail("a cell refers to a point the mesh does not have");
+                labels.push_back(mNodeLabels[static_cast<std::size_t>(p)]);
+            }
+            FilwRecord r = filw_rec(1900);
+            r.push_back(filw_i(mCellLabels[c.mGlobal]));
+            r.push_back(filw_a(c.mName));
+            for (std::size_t j = 0; j < std::min(kChunk, labels.size()); ++j)
+                r.push_back(filw_i(labels[j]));
+            mRecords.push_back(std::move(r));
+            for (std::size_t j = kChunk; j < labels.size(); j += kChunk) {
+                FilwRecord more = filw_rec(1990);
+                for (std::size_t m = j; m < std::min(j + kChunk, labels.size()); ++m)
+                    more.push_back(filw_i(labels[m]));
+                mRecords.push_back(std::move(more));
+            }
+        }
+        for (std::size_t i = 0; i < mNodeLabels.size(); ++i) {
+            FilwRecord r = filw_rec(1901);
+            r.push_back(filw_i(mNodeLabels[i]));
+            for (std::size_t k = 0; k < mDim; ++k)
+                r.push_back(filw_d(rPoints[i * mDim + k]));
+            mRecords.push_back(std::move(r));
+        }
+        Sets(rMesh);
+    }
+
+    void Sets(const Mesh& rMesh) {
+        struct Ref {
+            std::string mKind, mName;
+            std::size_t mIndex;
+        };
+        std::vector<Ref> order;
+        std::set<std::int64_t> used_digits;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const std::string& name = rMesh.Region(i).mName;
+            order.push_back({region_kind_name(rMesh.Region(i).mKind), name, i});
+            if (!name.empty() && name.size() < 18 &&
+                std::all_of(name.begin(), name.end(), [](char C) { return C >= '0' && C <= '9'; }))
+                used_digits.insert(std::stoll(name));
+        }
+        std::stable_sort(order.begin(), order.end(), [](const Ref& A, const Ref& B) {
+            return std::tie(A.mKind, A.mName) < std::tie(B.mKind, B.mName);
+        });
+        std::vector<FilwRecord> refs;
+        std::int64_t label = 0;
+        constexpr std::size_t kChunk = 10;
+        for (const Ref& ref : order) {
+            const auto& region = rMesh.Region(ref.mIndex);
+            if (region.mKind == RegionKind::Side) {
+                mDropped.insert("region '" + region.mName + "' (side)");
+                continue;
+            }
+            std::string name = filw_ascii(region.mName);
+            if (name.size() > 80)
+                filw_fail("region name '" + name.substr(0, 20) +
+                          "...' is longer than 80 characters");
+            if (name.size() > 8) {
+                ++label;
+                while (used_digits.count(label) != 0)
+                    ++label;
+                FilwRecord r = filw_rec(1940);
+                r.push_back(filw_i(label));
+                filw_text_items(r, name);
+                refs.push_back(std::move(r));
+                name = std::to_string(label);
+            }
+            const detail::Int64View entries(region.mEntries);
+            std::vector<std::int64_t> values;
+            const bool point = region.mKind == RegionKind::Point;
+            for (std::size_t k = 0; k < region.mEntries.Size(); ++k) {
+                const std::int64_t e = entries.Data()[k];
+                if (point) {
+                    if (e < 0 || static_cast<std::size_t>(e) >= mNodeLabels.size())
+                        filw_fail("region '" + region.mName +
+                                  "' names a point the mesh does not have");
+                    values.push_back(mNodeLabels[static_cast<std::size_t>(e)]);
+                } else if (e >= 0 && mWritten.count(static_cast<std::size_t>(e)) != 0) {
+                    values.push_back(mCellLabels[static_cast<std::size_t>(e)]);
+                }
+            }
+            FilwRecord r = filw_rec(point ? 1931 : 1933);
+            r.push_back(filw_a(name));
+            for (std::size_t k = 0; k < std::min<std::size_t>(5, values.size()); ++k)
+                r.push_back(filw_i(values[k]));
+            mRecords.push_back(std::move(r));
+            for (std::size_t k = 5; k < values.size(); k += kChunk) {
+                FilwRecord more = filw_rec(point ? 1932 : 1934);
+                for (std::size_t m = k; m < std::min(k + kChunk, values.size()); ++m)
+                    more.push_back(filw_i(values[m]));
+                mRecords.push_back(std::move(more));
+            }
+        }
+        mRecords.insert(mRecords.end(), refs.begin(), refs.end());
+    }
+
+    FilwSignature mSignature;
+    std::size_t mDim = 3;
+    std::vector<std::int64_t> mNodeLabels, mCellLabels;
+    std::vector<Cell> mCells;
+    std::set<std::size_t> mWritten;
+    std::map<std::string, std::size_t> mSkipped;
+    std::vector<FilwRecord> mRecords;
+};
+
+/// A record's values: trailing NaN dropped, an inner NaN written as 0.
+std::vector<double> filw_trim(const double* pValues, std::size_t N) {
+    std::vector<double> v(pValues, pValues + N);
+    while (!v.empty() && v.back() != v.back())
+        v.pop_back();
+    for (double& x : v)
+        if (x != x)
+            x = 0.0;
+    return v;
+}
+
+struct FilwName {
+    std::string mBase;
+    std::optional<std::int64_t> mSection;
+    std::optional<std::string> mRebar;
+    std::string mCollision;
+    bool mValid = true;
+};
+
+/// `(base, section point, rebar, collision suffix)` of a cell array name.
+FilwName filw_split_name(const std::string& rName) {
+    FilwName out;
+    const std::size_t at = rName.find('@');
+    out.mBase = rName.substr(0, at);
+    if (at == std::string::npos)
+        return out;
+    std::size_t start = at;
+    while (start < rName.size()) {
+        const std::size_t next = rName.find('@', start + 1);
+        const std::string part =
+            rName.substr(start + 1, (next == std::string::npos ? rName.size() : next) - start - 1);
+        start = next == std::string::npos ? rName.size() : next;
+        if (part.empty())
+            continue;
+        if (part.compare(0, 2, "sp") == 0 && part.size() > 2 &&
+            std::all_of(part.begin() + 2, part.end(),
+                        [](char C) { return C >= '0' && C <= '9'; }) &&
+            part.size() < 12)
+            out.mSection = std::stoll(part.substr(2));
+        else if (part.compare(0, 6, "rebar:") == 0)
+            out.mRebar = part.substr(6);
+        else if (part == "ip" || part == "el")
+            out.mCollision = part;
+        else {
+            out.mBase = rName;
+            out.mSection.reset();
+            out.mRebar.reset();
+            out.mCollision.clear();
+            return out;
+        }
+    }
+    return out;
+}
+
+void filw_ndi_nshr(std::size_t Count, std::int64_t& rNdi, std::int64_t& rNshr) {
+    rNdi = Count == 6 ? 3 : Count == 4 ? 3 : Count == 3 ? 2 : 0;
+    rNshr = Count == 6 ? 3 : Count == 4 ? 1 : Count == 3 ? 1 : 0;
+}
+
+bool filw_ends_with(const std::string& rS, const std::string& rSuffix) {
+    return rS.size() >= rSuffix.size() &&
+           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+}
+
+std::optional<double> filw_scalar(const Mesh& rMesh, const std::string& rName) {
+    if (!rMesh.HasFieldData(rName))
+        return std::nullopt;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return std::nullopt;
+    return detail::DoubleView(a).Data()[0];
+}
+
+std::optional<std::int64_t> filw_int_scalar(const Mesh& rMesh, const std::string& rName) {
+    if (!rMesh.HasFieldData(rName))
+        return std::nullopt;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return std::nullopt;
+    return detail::Int64View(a).Data()[0];
+}
+
+/// One increment: a 2000 record, the step's results and a 2001 record.
+struct FilwIncrement {
+    std::vector<FilwRecord> mRecords;
+    std::set<std::string> mDropped;
+
+    FilwIncrement(const FilwModel& rModel, const Mesh& rMesh, double Time, std::size_t Index) {
+        const double step_time = filw_scalar(rMesh, "abaqus:step_time").value_or(Time);
+        const std::int64_t procedure = filw_int_scalar(rMesh, "abaqus:procedure").value_or(1);
+        const std::int64_t step = filw_int_scalar(rMesh, "abaqus:step").value_or(1);
+        const std::int64_t increment = filw_int_scalar(rMesh, "abaqus:increment")
+                                           .value_or(static_cast<std::int64_t>(Index + 1));
+        FilwRecord head = filw_rec(2000);
+        head.push_back(filw_d(Time));
+        head.push_back(filw_d(step_time));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_i(procedure));
+        head.push_back(filw_i(step));
+        head.push_back(filw_i(increment));
+        head.push_back(filw_i(0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(1.0));
+        filw_text_items(head, "");
+        mRecords.push_back(std::move(head));
+        Mode(rMesh);
+        const std::vector<FilwRecord> element = Element(rModel, rMesh);
+        const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
+        if (!element.empty()) {
+            FilwRecord request = filw_rec(1911);
+            request.push_back(filw_i(0));
+            request.push_back(filw_a(""));
+            request.push_back(filw_a(""));
+            mRecords.push_back(std::move(request));
+            mRecords.insert(mRecords.end(), element.begin(), element.end());
+        }
+        if (!nodal.empty()) {
+            FilwRecord request = filw_rec(1911);
+            request.push_back(filw_i(1));
+            request.push_back(filw_a(""));
+            mRecords.push_back(std::move(request));
+            mRecords.insert(mRecords.end(), nodal.begin(), nodal.end());
+        }
+        mRecords.push_back(filw_rec(2001));
+        static const std::set<std::string> known = {
+            kSequenceTimeKey,           "abaqus:step",
+            "abaqus:increment",         "abaqus:step_time",
+            "abaqus:procedure",         "abaqus:mode",
+            "abaqus:eigenvalue",        "abaqus:generalized_mass",
+            "abaqus:composite_damping", "abaqus:participation_factor",
+            "abaqus:effective_mass"};
+        for (const std::string& name : rMesh.FieldDataNames())
+            if (known.count(name) == 0 && name.compare(0, 14, "abaqus:layout:") != 0)
+                mDropped.insert(name);
+    }
+
+private:
+    void Mode(const Mesh& rMesh) {
+        const auto mode = filw_int_scalar(rMesh, "abaqus:mode");
+        if (!mode)
+            return;
+        std::vector<double> factors, masses;
+        if (rMesh.HasFieldData("abaqus:participation_factor")) {
+            const NDArray& a = rMesh.FieldData("abaqus:participation_factor");
+            const detail::DoubleView v(a);
+            factors.assign(v.Data(), v.Data() + a.Size());
+        }
+        if (rMesh.HasFieldData("abaqus:effective_mass")) {
+            const NDArray& a = rMesh.FieldData("abaqus:effective_mass");
+            const detail::DoubleView v(a);
+            masses.assign(v.Data(), v.Data() + a.Size());
+        }
+        if (factors.size() != masses.size())
+            filw_fail("'abaqus:participation_factor' and 'abaqus:effective_mass' differ");
+        FilwRecord r = filw_rec(1980);
+        r.push_back(filw_i(*mode));
+        for (const char* name :
+             {"abaqus:eigenvalue", "abaqus:generalized_mass", "abaqus:composite_damping"})
+            r.push_back(filw_d(filw_scalar(rMesh, name).value_or(0.0)));
+        for (std::size_t k = 0; k < factors.size(); ++k) {
+            r.push_back(filw_d(factors[k]));
+            r.push_back(filw_d(masses[k]));
+        }
+        mRecords.push_back(std::move(r));
+    }
+
+    std::vector<FilwRecord> Nodal(const FilwModel& rModel, const Mesh& rMesh) {
+        std::vector<FilwRecord> out;
+        const std::size_t n = rModel.NodeLabels().size();
+        for (const std::string& name : rMesh.PointDataNames()) {
+            if (name == "abaqus:id" || filw_ends_with(name, "@avg"))
+                continue;
+            const auto key = filw_key_of(name, true);
+            if (!key) {
+                if (!filw_key_of(name, false))
+                    mDropped.insert(name);
+                continue;
+            }
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n) {
+                mDropped.insert(name);
+                continue;
+            }
+            const detail::DoubleView v(a);
+            const std::size_t cols = a.Size() / n;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord r = filw_rec(*key);
+                r.push_back(filw_i(rModel.NodeLabels()[i]));
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                out.push_back(std::move(r));
+            }
+        }
+        return out;
+    }
+
+    std::vector<FilwRecord> Element(const FilwModel& rModel, const Mesh& rMesh) {
+        std::map<std::size_t, std::size_t> index;  // global cell -> position
+        for (std::size_t k = 0; k < rModel.Cells().size(); ++k)
+            index[rModel.Cells()[k].mGlobal] = k;
+        using SlotKey = std::tuple<std::size_t, int, std::int64_t, std::int64_t, std::string>;
+        std::map<SlotKey, std::vector<std::pair<std::int64_t, std::vector<double>>>> slots;
+        std::vector<std::size_t> offsets{0};
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            offsets.push_back(offsets.back() + rMesh.Cells(b).NumCells());
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (name == "abaqus:id")
+                continue;
+            const FilwName parsed = filw_split_name(name);
+            const auto key = filw_key_of(parsed.mBase, false);
+            if (!key) {
+                mDropped.insert(name);
+                continue;
+            }
+            std::vector<std::int64_t> layout;
+            if (rMesh.HasFieldData("abaqus:layout:" + name)) {
+                const NDArray& l = rMesh.FieldData("abaqus:layout:" + name);
+                const detail::Int64View v(l);
+                layout.assign(v.Data(), v.Data() + l.Size());
+                if (layout.size() != 2 || layout[0] < 1 || layout[1] < 1)
+                    filw_fail("'abaqus:layout:" + name + "' must be (points, components)");
+            }
+            int location = 1;
+            if (parsed.mRebar)
+                location = 3;
+            else if (!layout.empty())
+                location = (parsed.mBase == "NFORC" || parsed.mCollision == "el") ? 2 : 0;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const auto cb = rMesh.Cells(b);
+                const std::size_t n = cb.NumCells();
+                const NDArray& a = rMesh.CellData(name, b);
+                if (n == 0 || a.Shape().empty() || a.Shape()[0] != n)
+                    continue;
+                const std::size_t cols = a.Size() / n;
+                const detail::DoubleView v(a);
+                const std::int64_t sec =
+                    parsed.mSection ? *parsed.mSection : (filw_is_shell(cb.Type()) ? 1 : 0);
+                if (!layout.empty() && cols != static_cast<std::size_t>(layout[0]) *
+                                                   static_cast<std::size_t>(layout[1]))
+                    filw_fail("'" + name + "' does not match its 'abaqus:layout:" + name + "'");
+                const detail::Int64View conn(cb.Conn());
+                for (std::size_t r = 0; r < n; ++r) {
+                    const auto at = index.find(offsets[b] + r);
+                    if (at == index.end())
+                        continue;
+                    const double* row = v.Data() + r * cols;
+                    if (layout.empty()) {
+                        const std::vector<double> values = filw_trim(row, cols);
+                        if (!values.empty())
+                            slots[{at->second, location, sec, 0, ""}].emplace_back(*key, values);
+                        continue;
+                    }
+                    for (std::int64_t p = 0; p < layout[0]; ++p) {
+                        const std::vector<double> values =
+                            filw_trim(row + p * layout[1], static_cast<std::size_t>(layout[1]));
+                        if (values.empty())
+                            continue;
+                        std::int64_t point = p + 1;
+                        if (location == 2) {
+                            if (static_cast<std::size_t>(p) >= cb.NodesPerCell())
+                                continue;
+                            point = rModel.NodeLabels()[static_cast<std::size_t>(
+                                conn.Data()[r * cb.NodesPerCell() + static_cast<std::size_t>(p)])];
+                        }
+                        slots[{at->second, location, sec, point, parsed.mRebar.value_or("")}]
+                            .emplace_back(*key, values);
+                    }
+                }
+            }
+        }
+        std::vector<FilwRecord> out;
+        for (const auto& [slot, items] : slots) {
+            const auto& [position, location, sec, point, rebar] = slot;
+            const std::size_t g = rModel.Cells()[position].mGlobal;
+            std::int64_t ndi = 0, nshr = 0;
+            for (const auto& item : items) {
+                const std::size_t c = item.second.size();
+                if (c == 3 || c == 4 || c == 6) {
+                    filw_ndi_nshr(c, ndi, nshr);
+                    break;
+                }
+            }
+            FilwRecord h = filw_rec(1);
+            h.push_back(filw_i(rModel.CellLabels()[g]));
+            h.push_back(filw_i(point));
+            h.push_back(filw_i(sec));
+            h.push_back(filw_i(location));
+            h.push_back(filw_a(rebar));
+            h.push_back(filw_i(ndi));
+            h.push_back(filw_i(nshr));
+            h.push_back(filw_i(0));
+            h.push_back(filw_i(0));
+            out.push_back(std::move(h));
+            for (const auto& [key, values] : items) {
+                FilwRecord r = filw_rec(key);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                out.push_back(std::move(r));
+            }
+        }
+        Averaged(rModel, rMesh, out);
+        return out;
+    }
+
+    /// Point data named like an element result: averaged at the nodes (location 4).
+    void Averaged(const FilwModel& rModel, const Mesh& rMesh, std::vector<FilwRecord>& rOut) {
+        const std::size_t n = rModel.NodeLabels().size();
+        for (const std::string& name : rMesh.PointDataNames()) {
+            std::string base = name;
+            while (filw_ends_with(base, "@avg"))
+                base.erase(base.size() - 4);
+            if (base == "abaqus:id")
+                continue;
+            if (base == name && filw_key_of(base, true))
+                continue;  // a nodal result
+            const auto key = filw_key_of(base, false);
+            if (!key)
+                continue;
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n)
+                continue;
+            const detail::DoubleView v(a);
+            const std::size_t cols = a.Size() / n;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord h = filw_rec(1);
+                h.push_back(filw_i(rModel.NodeLabels()[i]));
+                for (int k = 0; k < 2; ++k)
+                    h.push_back(filw_i(0));
+                h.push_back(filw_i(4));
+                h.push_back(filw_a(""));
+                for (int k = 0; k < 4; ++k)
+                    h.push_back(filw_i(0));
+                rOut.push_back(std::move(h));
+                FilwRecord r = filw_rec(*key);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                rOut.push_back(std::move(r));
+            }
+        }
+    }
+};
+
+}  // namespace
+
+namespace {
+
+std::string filw_encode(bool Binary, const std::vector<FilwRecord>& rRecords) {
+    return Binary ? filw_binary_bytes(rRecords) : filw_ascii_bytes(rRecords);
+}
+
+bool filw_has_results(const Mesh& rMesh) {
+    if (rMesh.HasFieldData(kSequenceTimeKey))
+        return true;
+    for (const std::string& n : rMesh.PointDataNames())
+        if (n != "abaqus:id")
+            return true;
+    for (const std::string& n : rMesh.CellDataNames())
+        if (n != "abaqus:id")
+            return true;
+    return false;
+}
+
+double filw_time_of(const Mesh& rMesh) {
+    return filw_scalar(rMesh, kSequenceTimeKey).value_or(0.0);
+}
+
+void filw_warn_dropped(const FilwModel& rModel, const std::vector<FilwIncrement>& rIncrements) {
+    std::set<std::string> names = rModel.mDropped;
+    for (const FilwIncrement& inc : rIncrements)
+        names.insert(inc.mDropped.begin(), inc.mDropped.end());
+    if (!names.empty()) {
+        std::string list;
+        for (const std::string& n : names)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Abaqus .fil: arrays and sets without a place in the file are not written: {}",
+                  list);
+    }
+    if (!rModel.Skipped().empty()) {
+        std::string list;
+        for (const auto& [type, count] : rModel.Skipped())
+            list += (list.empty() ? "" : ", ") + type;
+        log::warn("Abaqus .fil: cell blocks with no Abaqus element type are not written: {}", list);
+    }
+}
+
+void filw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        filw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh, bool Binary) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const FilwModel model(rMesh);
+    std::vector<FilwIncrement> increments;
+    if (filw_has_results(rMesh))
+        increments.emplace_back(model, rMesh, filw_time_of(rMesh), 0);
+    filw_warn_dropped(model, increments);
+    std::vector<FilwRecord> records = model.Records();
+    for (const FilwIncrement& inc : increments)
+        records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
+    filw_save(rPath, filw_encode(Binary, records));
+}
+
+struct AbaqusFilSeriesWriter::Impl {
+    std::string mPath;
+    bool mBinary = false;
+    std::optional<FilwModel> mModel;
+    std::vector<FilwIncrement> mIncrements;
+    bool mDone = false;
+};
+
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(const std::string& rPath, bool Binary)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mBinary = Binary;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+AbaqusFilSeriesWriter::~AbaqusFilSeriesWriter() = default;
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept = default;
+AbaqusFilSeriesWriter& AbaqusFilSeriesWriter::operator=(AbaqusFilSeriesWriter&&) noexcept = default;
+
+void AbaqusFilSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        filw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    const std::size_t index = s.mIncrements.size();
+    if (!s.mModel) {
+        s.mModel.emplace(rMesh);
+    } else if (s.mModel->Signature() != filw_signature(rMesh)) {
+        filw_fail("series: step " + std::to_string(index) +
+                  "'s points or cells differ from the first step's; a results file holds one "
+                  "model -- write one file per step with '{step}'");
+    }
+    s.mIncrements.emplace_back(*s.mModel, rMesh, Time, index);
+}
+
+std::size_t AbaqusFilSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mIncrements.size() : 0;
+}
+
+void AbaqusFilSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mIncrements.empty())
+        filw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    filw_warn_dropped(*mpImpl->mModel, mpImpl->mIncrements);
+    std::vector<FilwRecord> records = mpImpl->mModel->Records();
+    for (const FilwIncrement& inc : mpImpl->mIncrements)
+        records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
+    filw_save(mpImpl->mPath, filw_encode(mpImpl->mBinary, records));
 }
 
 }  // namespace meshioplusplus
@@ -102818,6 +103938,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/lsdyna_binout.cpp =====
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -102829,6 +103950,8 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 #include <array>
 #include <limits>
 #include <optional>
+#include <set>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -102845,6 +103968,12 @@ constexpr std::int64_t kLbCd = 2, kLbVariable = 4, kLbBegin = 5, kLbOffset = 7, 
 
 [[noreturn]] void lb_fail(const std::string& rMessage) {
     throw ReadError("LS-DYNA binout: " + rMessage);
+}
+
+// Whether the N bytes at Pos lie inside a file of Size bytes. Pos and N come from the file,
+// so the sum is never formed: it wraps for values near 2^64 and would pass the check.
+bool lb_within(std::uint64_t Pos, std::uint64_t N, std::uint64_t Size) {
+    return Pos <= Size && N <= Size - Pos;
 }
 
 // One LSDA file: its field sizes, byte order and bytes.
@@ -102867,7 +103996,7 @@ struct LbFile {
     }
 
     std::uint64_t UInt(std::size_t Pos, std::size_t N) const {
-        if (Pos + N > mSource.Size())
+        if (!lb_within(Pos, N, mSource.Size()))
             lb_fail("a record runs past the end of the file");
         const auto* p = reinterpret_cast<const unsigned char*>(mSource.Data() + Pos);
         std::uint64_t v = 0;
@@ -103010,13 +104139,19 @@ private:
     std::string Raw(const LbVar& rVar) const {
         const LbFile& f = *rVar.mpFile;
         static const std::size_t kSize[] = {0, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 1};
-        const std::size_t head = f.mLength + f.mCommand + f.mType;
-        const auto name_len = static_cast<std::size_t>(f.UInt(rVar.mOffset + head, 1));
-        const std::size_t pos = rVar.mOffset + head + 1 + name_len;
-        const std::size_t size = kSize[std::clamp<std::int64_t>(rVar.mType, 0, 11)] * rVar.mLength;
-        if (pos + size > f.mSource.Size())
+        const std::uint64_t file = f.mSource.Size();
+        // Checked before the offset is summed below, which would wrap for a value near 2^64.
+        if (rVar.mOffset > file)
             lb_fail("a variable's data runs past the end of the file");
-        return std::string(f.mSource.Data() + pos, size);
+        const std::uint64_t head = f.mLength + f.mCommand + f.mType;
+        const auto name_len =
+            static_cast<std::size_t>(f.UInt(static_cast<std::size_t>(rVar.mOffset + head), 1));
+        const std::uint64_t pos = rVar.mOffset + head + 1 + name_len;
+        const std::uint64_t width = kSize[std::clamp<std::int64_t>(rVar.mType, 0, 11)];
+        if (pos > file || (width != 0 && rVar.mLength > (file - pos) / width))
+            lb_fail("a variable's data runs past the end of the file");
+        const std::size_t size = static_cast<std::size_t>(width * rVar.mLength);
+        return std::string(f.mSource.Data() + static_cast<std::size_t>(pos), size);
     }
 
     void ReadSymbols(const LbFile& rF) {
@@ -103027,11 +104162,19 @@ private:
         pos += lc;
         LbDir* cwd = &mRoot;
         std::vector<std::string> cwd_path;
+        // The tables read so far: a table whose next-table offset names an earlier one (or
+        // itself) would otherwise be read again, forever.
+        std::unordered_set<std::uint64_t> tables;
         for (;;) {
             const std::uint64_t offset = rF.UInt(pos, rF.mOffset);
             if (offset == 0)
                 return;
-            pos = offset;
+            // Checked before `pos` is used in sums below, which would wrap near 2^64.
+            if (offset > rF.mSource.Size())
+                lb_fail("a symbol table runs past the end of the file");
+            if (!tables.insert(offset).second)
+                lb_fail("the symbol tables loop back to the table at " + std::to_string(offset));
+            pos = static_cast<std::size_t>(offset);
             if (rF.UInt(pos + rF.mLength, rF.mCommand) != static_cast<std::uint64_t>(kLbBegin))
                 return;
             pos += lc;
@@ -103040,26 +104183,28 @@ private:
                 const std::uint64_t cmd = rF.UInt(pos + rF.mLength, rF.mCommand);
                 if (length < lc)
                     lb_fail("a symbol table record is shorter than its header");
-                const std::size_t body = length - lc;
+                const std::uint64_t body = length - lc;
                 pos += lc;
                 if (cmd == static_cast<std::uint64_t>(kLbCd)) {
-                    if (pos + body > rF.mSource.Size())
+                    if (!lb_within(pos, body, rF.mSource.Size()))
                         lb_fail("a record runs past the end of the file");
-                    Cd(cwd, cwd_path, std::string(rF.mSource.Data() + pos, body));
-                    pos += body;
+                    Cd(cwd, cwd_path,
+                       std::string(rF.mSource.Data() + pos, static_cast<std::size_t>(body)));
+                    pos += static_cast<std::size_t>(body);
                 } else if (cmd == static_cast<std::uint64_t>(kLbVariable)) {
                     const std::size_t tail = rF.mType + rF.mOffset + rF.mLength;
-                    if (body < tail || pos + body > rF.mSource.Size())
+                    if (body < tail || !lb_within(pos, body, rF.mSource.Size()))
                         lb_fail("a variable record is malformed");
-                    const std::string name(rF.mSource.Data() + pos, body - tail);
-                    const std::size_t p = pos + body - tail;
+                    const std::size_t name_len = static_cast<std::size_t>(body) - tail;
+                    const std::string name(rF.mSource.Data() + pos, name_len);
+                    const std::size_t p = pos + name_len;
                     LbVar v;
                     v.mType = static_cast<std::int64_t>(rF.UInt(p, rF.mType));
                     v.mOffset = rF.UInt(p + rF.mType, rF.mOffset);
                     v.mLength = rF.UInt(p + rF.mType + rF.mOffset, rF.mLength);
                     v.mpFile = &rF;
                     cwd->mVars[name] = v;
-                    pos += body;
+                    pos += static_cast<std::size_t>(body);
                 } else {  // the end of this table: the next table's offset follows
                     break;
                 }
@@ -103412,6 +104557,525 @@ MeshMetadata read_lsdyna_binout_metadata(const std::string& rPath, const ReadOpt
     meta.mFormat = "lsdyna_binout";
     meta.mTimeValues = lsdyna_binout_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: one little-endian LSDA file with 8-byte lengths and offsets. The twin of
+// lsdyna_binout/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::int32_t kLbwCd = 2, kLbwData = 3, kLbwVariable = 4, kLbwBegin = 5, kLbwEnd = 6,
+                       kLbwOffset = 7;
+constexpr std::uint8_t kLbwInt32 = 3, kLbwFloat32 = 9;
+
+[[noreturn]] void lbw_fail(const std::string& rMessage) {
+    throw WriteError("LS-DYNA binout: " + rMessage);
+}
+
+/// A double as the file's single precision, rounded like numpy's cast (an overflow is an
+/// infinity).
+float lbw_float(double V) {
+    if (V != V)
+        return std::numeric_limits<float>::quiet_NaN();
+    if (std::fabs(V) >= 3.4028235677973366e38)
+        return V < 0 ? -std::numeric_limits<float>::infinity()
+                     : std::numeric_limits<float>::infinity();
+    return static_cast<float>(V);
+}
+
+void lbw_put(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = 0; i < N; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+/// One variable's values: floats or integers, never both.
+struct LbwArray {
+    std::string mName;
+    bool mFloat = false;
+    std::vector<double> mReals;
+    std::vector<std::int64_t> mInts;
+};
+
+LbwArray lbw_array(const std::string& rName, const NDArray& rData) {
+    LbwArray a;
+    a.mName = rName;
+    a.mFloat = detail::is_float_dtype(rData.Dtype());
+    if (a.mFloat) {
+        const detail::DoubleView v(rData);
+        a.mReals.assign(v.Data(), v.Data() + rData.Size());
+    } else {
+        const detail::Int64View v(rData);
+        a.mInts.assign(v.Data(), v.Data() + rData.Size());
+    }
+    return a;
+}
+
+LbwArray lbw_column(const std::string& rName, const double* pValues, std::size_t N,
+                    std::size_t Stride) {
+    LbwArray a;
+    a.mName = rName;
+    a.mFloat = true;
+    a.mReals.resize(N);
+    for (std::size_t i = 0; i < N; ++i)
+        a.mReals[i] = pValues[i * Stride];
+    return a;
+}
+
+void lbw_check_name(const std::string& rName, const char* pWhat) {
+    bool ascii = true;
+    for (const char c : rName)
+        ascii = ascii && static_cast<unsigned char>(c) < 0x80;
+    if (rName.empty() || rName.size() > 255 || rName.find('/') != std::string::npos || !ascii)
+        lbw_fail(std::string(pWhat) + " '" + rName + "' is not a name a binout can hold");
+}
+
+/// DATA records as they are added, and the entries of the symbol table.
+class LbwLsda {
+public:
+    LbwLsda() {
+        mData.assign(reinterpret_cast<const char*>(kHeader), 8);
+        lbw_put(mData, 17, 8);
+        lbw_put(mData, static_cast<std::uint64_t>(kLbwOffset), 1);
+        lbw_put(mData, 0, 8);
+    }
+
+    void Var(const std::string& rDir, const LbwArray& rArray) {
+        const std::string what = "'" + rDir + "/" + rArray.mName + "'";
+        std::string raw;
+        std::size_t count;
+        std::uint8_t code;
+        if (rArray.mFloat) {
+            code = kLbwFloat32;
+            count = rArray.mReals.size();
+            for (const double v : rArray.mReals) {
+                const float f = lbw_float(v);
+                std::uint32_t bits;
+                std::memcpy(&bits, &f, 4);
+                lbw_put(raw, bits, 4);
+            }
+        } else {
+            code = kLbwInt32;
+            count = rArray.mInts.size();
+            for (const std::int64_t v : rArray.mInts) {
+                if (v < -2147483648LL || v > 2147483647LL)
+                    lbw_fail(what + " holds an integer outside the 32-bit range");
+                lbw_put(raw, static_cast<std::uint32_t>(static_cast<std::int32_t>(v)), 4);
+            }
+        }
+        const std::size_t offset = mData.size();
+        lbw_put(mData, 8 + 1 + 1 + 1 + rArray.mName.size() + raw.size(), 8);
+        lbw_put(mData, kLbwData, 1);
+        lbw_put(mData, code, 1);
+        lbw_put(mData, rArray.mName.size(), 1);
+        mData += rArray.mName;
+        mData += raw;
+        mEntries.push_back({rDir, rArray.mName, code, offset, count});
+    }
+
+    std::string Finish() const {
+        std::string out = mData;
+        const std::uint64_t table = out.size();
+        for (std::size_t i = 0; i < 8; ++i)
+            out[17 + i] = static_cast<char>((table >> (8 * i)) & 0xffu);
+        lbw_put(out, 9, 8);
+        lbw_put(out, kLbwBegin, 1);
+        std::string cwd;
+        for (const Entry& e : mEntries) {
+            if (e.mDir != cwd) {
+                lbw_put(out, 9 + e.mDir.size(), 8);
+                lbw_put(out, kLbwCd, 1);
+                out += e.mDir;
+                cwd = e.mDir;
+            }
+            lbw_put(out, 9 + e.mName.size() + 1 + 8 + 8, 8);
+            lbw_put(out, kLbwVariable, 1);
+            out += e.mName;
+            lbw_put(out, e.mCode, 1);
+            lbw_put(out, e.mOffset, 8);
+            lbw_put(out, e.mCount, 8);
+        }
+        lbw_put(out, 17, 8);
+        lbw_put(out, kLbwEnd, 1);
+        lbw_put(out, 0, 8);
+        return out;
+    }
+
+private:
+    struct Entry {
+        std::string mDir, mName;
+        std::uint8_t mCode;
+        std::size_t mOffset, mCount;
+    };
+    static constexpr unsigned char kHeader[8] = {8, 8, 8, 1, 1, 1, 0, 0};
+    std::string mData;
+    std::vector<Entry> mEntries;
+};
+
+/// One database's variables of one step.
+struct LbwOutput {
+    double mTime = 0.0;
+    std::vector<LbwArray> mVars;
+    std::optional<std::vector<std::int64_t>> mIds;
+
+    std::vector<std::pair<std::string, bool>> Layout() const {
+        std::vector<std::pair<std::string, bool>> out;
+        for (const LbwArray& a : mVars)
+            out.emplace_back(a.mName, a.mFloat);
+        return out;
+    }
+};
+
+using LbwSignature = std::size_t;
+
+const std::pair<const char*, std::array<const char*, 3>> kLbwVectors[] = {
+    {"displacement", {"x_displacement", "y_displacement", "z_displacement"}},
+    {"rotation", {"rx_displacement", "ry_displacement", "rz_displacement"}},
+    {"velocity", {"x_velocity", "y_velocity", "z_velocity"}},
+    {"rotational_velocity", {"rx_velocity", "ry_velocity", "rz_velocity"}},
+    {"acceleration", {"x_acceleration", "y_acceleration", "z_acceleration"}},
+    {"rotational_acceleration", {"rx_acceleration", "ry_acceleration", "rz_acceleration"}},
+};
+const char* const kLbwCoordinates[3] = {"x_coordinate", "y_coordinate", "z_coordinate"};
+
+bool lbw_is_step_name(const std::string& rName) {
+    return rName.size() > 1 && rName[0] == 'd' &&
+           std::all_of(rName.begin() + 1, rName.end(), [](char C) { return C >= '0' && C <= '9'; });
+}
+
+std::vector<std::string> lbw_split(const std::string& rText, char Sep) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t at = rText.find(Sep, start);
+        parts.push_back(rText.substr(start, at == std::string::npos ? at : at - start));
+        if (at == std::string::npos)
+            return parts;
+        start = at + 1;
+    }
+}
+
+/// One step of the mesh, as the file holds it.
+class LbwStep {
+public:
+    LbwStep(const Mesh& rMesh, double Time) : mTime(static_cast<double>(lbw_float(Time))) {
+        mNpoints = rMesh.NumPoints();
+        std::map<std::string, std::map<std::string, std::pair<std::string, const NDArray*>>> fields;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            if (name == kSequenceTimeKey)
+                continue;
+            const std::vector<std::string> parts = lbw_split(name, ':');
+            if (parts[0] != "binout" || parts.size() < 3) {
+                mDropped.insert(name);
+                continue;
+            }
+            std::string database = parts[1];
+            for (std::size_t i = 2; i + 1 < parts.size(); ++i)
+                database += ":" + parts[i];
+            fields[database][parts.back()] = {name, &rMesh.FieldData(name)};
+        }
+        std::set<std::string> used;
+        if (mNpoints > 0)
+            mNodout = Nodout(rMesh, used, fields["nodout"]);
+        for (const auto& [database, items] : fields)
+            Database(database, items);
+        for (const std::string& name : rMesh.PointDataNames())
+            if (used.count(name) == 0)
+                mDropped.insert(name);
+        for (const std::string& name : rMesh.CellDataNames())
+            mDropped.insert(name);
+    }
+
+    double mTime = 0.0;
+    std::size_t mNpoints = 0;
+    std::optional<LbwOutput> mNodout;
+    std::map<std::string, LbwOutput> mDatabases;
+    std::set<std::string> mDropped;
+
+private:
+    LbwOutput Nodout(const Mesh& rMesh, std::set<std::string>& rUsed,
+                     const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
+        const std::size_t n = mNpoints;
+        const std::size_t dim = rMesh.PointDim();
+        const detail::DoubleView pts(rMesh.Points());
+        std::vector<double> points(n * 3, 0.0);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < 3 && k < dim; ++k)
+                points[3 * i + k] = pts.Data()[i * dim + k];
+        LbwOutput out;
+        out.mTime = mTime;
+        for (std::size_t k = 0; k < 3; ++k)
+            out.mVars.push_back(lbw_column(kLbwCoordinates[k], points.data() + k, n, 3));
+        for (const auto& [name, parts] : kLbwVectors) {
+            if (!rMesh.HasPointData(name))
+                continue;
+            rUsed.insert(name);
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() != 3 * n) {
+                mDropped.insert(name);
+                continue;
+            }
+            const detail::DoubleView v(a);
+            for (std::size_t k = 0; k < 3; ++k)
+                out.mVars.push_back(lbw_column(parts[k], v.Data() + k, n, 3));
+        }
+        std::vector<std::int64_t> ids(n);
+        rUsed.insert("lsdyna:nid");
+        if (rMesh.HasPointData("lsdyna:nid")) {
+            const NDArray& a = rMesh.PointData("lsdyna:nid");
+            if (a.Size() != n || detail::is_float_dtype(a.Dtype()))
+                lbw_fail("'lsdyna:nid' must hold one integer per point");
+            const detail::Int64View v(a);
+            ids.assign(v.Data(), v.Data() + n);
+        } else {
+            for (std::size_t i = 0; i < n; ++i)
+                ids[i] = static_cast<std::int64_t>(i + 1);
+        }
+        const auto has_variable = [&](const std::string& rName) {
+            return std::any_of(out.mVars.begin(), out.mVars.end(),
+                               [&](const LbwArray& A) { return A.mName == rName; });
+        };
+        for (const std::string& name : rMesh.PointDataNames()) {
+            const NDArray& a = rMesh.PointData(name);
+            if (rUsed.count(name) != 0)
+                continue;
+            bool vector_name = false;
+            for (const auto& [vname, parts] : kLbwVectors)
+                vector_name = vector_name || name == vname;
+            if (vector_name)
+                continue;
+            if (a.Size() != n || a.Shape().size() != 1 || n < 2)
+                continue;
+            lbw_check_name(name, "point data");
+            if (name == "time" || has_variable(name))
+                lbw_fail("point data '" + name + "' is a variable of nodout of its own");
+            rUsed.insert(name);
+            out.mVars.push_back(lbw_array(name, a));
+        }
+        for (const auto& [variable, item] : rItems) {
+            lbw_check_name(variable, "variable");
+            if (variable == "time" || variable == "ids") {
+                mDropped.insert(item.first);
+                continue;
+            }
+            if (has_variable(variable))
+                lbw_fail("'" + item.first + "' repeats a variable of nodout");
+            out.mVars.push_back(lbw_array(variable, *item.second));
+        }
+        out.mIds = std::move(ids);
+        return out;
+    }
+
+    void Database(const std::string& rDatabase,
+                  const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
+        if (rDatabase == "nodout") {
+            if (!mNodout)  // no points: nodout is not a database of its own
+                for (const auto& [variable, item] : rItems)
+                    mDropped.insert(item.first);
+            return;
+        }
+        for (const std::string& part : lbw_split(rDatabase, '/')) {
+            lbw_check_name(part, "database");
+            if (lbw_is_step_name(part) || part == "metadata")
+                lbw_fail("'" + rDatabase + "' is not a name a database can have");
+        }
+        LbwOutput out;
+        out.mTime = mTime;
+        for (const auto& [variable, item] : rItems) {
+            lbw_check_name(variable, "variable");
+            const NDArray& a = *item.second;
+            if (variable == "time") {
+                if (a.Size() > 0)
+                    out.mTime = static_cast<double>(lbw_float(detail::DoubleView(a).Data()[0]));
+                continue;
+            }
+            if (variable == "ids") {
+                if (detail::is_float_dtype(a.Dtype())) {
+                    mDropped.insert(item.first);
+                } else {
+                    const detail::Int64View v(a);
+                    out.mIds = std::vector<std::int64_t>(v.Data(), v.Data() + a.Size());
+                }
+                continue;
+            }
+            out.mVars.push_back(lbw_array(variable, a));
+        }
+        mDatabases[rDatabase] = std::move(out);
+    }
+};
+
+/// The whole file: every step added so far.
+class LbwArchive {
+public:
+    void Add(const LbwStep& rStep) {
+        const std::size_t index = mSteps;
+        if (mSteps == 0) {
+            mNpoints = rStep.mNpoints;
+            if (rStep.mNodout)
+                mNodoutLayout = rStep.mNodout->Layout();
+        } else if (rStep.mNpoints != mNpoints) {
+            lbw_fail("series: step " + std::to_string(index) + " has " +
+                     std::to_string(rStep.mNpoints) + " points, the first " +
+                     std::to_string(mNpoints) +
+                     "; a binout holds one set of nodes -- write one file per step with "
+                     "'{step}'");
+        }
+        if (rStep.mNodout)
+            Nodout(*rStep.mNodout, index);
+        for (const auto& [database, out] : rStep.mDatabases)
+            Output(database, out, index);
+        ++mSteps;
+    }
+
+    std::size_t Steps() const { return mSteps; }
+
+    std::string Finish() const {
+        if (mCounts.empty())
+            lbw_fail("the mesh holds no database: no points and no binout:* field data");
+        return mLsda.Finish();
+    }
+
+private:
+    void Nodout(const LbwOutput& rOut, std::size_t Index) {
+        if (mSteps == 0) {
+            mIds = *rOut.mIds;
+            LbwArray ids;
+            ids.mName = "ids";
+            ids.mInts = mIds;
+            mLsda.Var("/nodout/metadata", ids);
+        } else if (rOut.Layout() != mNodoutLayout || *rOut.mIds != mIds) {
+            lbw_fail("series: step " + std::to_string(Index) +
+                     "'s nodes or variables differ from the first step's; a binout holds one "
+                     "set of them");
+        }
+        Folder("nodout", rOut);
+    }
+
+    void Output(const std::string& rDatabase, const LbwOutput& rOut, std::size_t Index) {
+        const auto layout = rOut.Layout();
+        const auto it = mDbLayout.find(rDatabase);
+        if (it == mDbLayout.end()) {
+            mDbLayout[rDatabase] = layout;
+            if (rOut.mIds) {
+                LbwArray ids;
+                ids.mName = "ids";
+                ids.mInts = *rOut.mIds;
+                mLsda.Var("/" + rDatabase + "/metadata", ids);
+            }
+        } else if (layout != it->second) {
+            lbw_fail("series: step " + std::to_string(Index) + "'s variables of '" + rDatabase +
+                     "' differ from its first output's");
+        }
+        // An output is new when its time moved: the reader carries the latest.
+        const auto last = mLast.find(rDatabase);
+        if (last != mLast.end() && last->second == rOut.mTime)
+            return;
+        Folder(rDatabase, rOut);
+    }
+
+    void Folder(const std::string& rDatabase, const LbwOutput& rOut) {
+        const std::size_t count = ++mCounts[rDatabase];
+        mLast[rDatabase] = rOut.mTime;
+        std::string number = std::to_string(count);
+        number.insert(0, number.size() < 6 ? 6 - number.size() : 0, '0');
+        const std::string dir = "/" + rDatabase + "/d" + number;
+        LbwArray time;
+        time.mName = "time";
+        time.mFloat = true;
+        time.mReals = {rOut.mTime};
+        mLsda.Var(dir, time);
+        for (const LbwArray& a : rOut.mVars)
+            mLsda.Var(dir, a);
+    }
+
+    LbwLsda mLsda;
+    std::vector<std::pair<std::string, bool>> mNodoutLayout;
+    std::map<std::string, std::vector<std::pair<std::string, bool>>> mDbLayout;
+    std::map<std::string, std::size_t> mCounts;
+    std::map<std::string, double> mLast;
+    std::vector<std::int64_t> mIds;
+    std::size_t mNpoints = 0;
+    std::size_t mSteps = 0;
+};
+
+void lbw_warn_dropped(const LbwStep& rStep) {
+    if (rStep.mDropped.empty())
+        return;
+    std::string list;
+    for (const std::string& n : rStep.mDropped)
+        list += (list.empty() ? "" : ", ") + n;
+    log::warn("LS-DYNA binout: arrays without a place in the file are not written: {}", list);
+}
+
+double lbw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+void lbw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        lbw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const LbwStep step(rMesh, lbw_time_of(rMesh));
+    lbw_warn_dropped(step);
+    LbwArchive archive;
+    archive.Add(step);
+    lbw_save(rPath, archive.Finish());
+}
+
+struct LsdynaBinoutSeriesWriter::Impl {
+    std::string mPath;
+    LbwArchive mArchive;
+    bool mDone = false;
+};
+
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+LsdynaBinoutSeriesWriter::~LsdynaBinoutSeriesWriter() = default;
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept = default;
+LsdynaBinoutSeriesWriter& LsdynaBinoutSeriesWriter::operator=(LsdynaBinoutSeriesWriter&&) noexcept =
+    default;
+
+void LsdynaBinoutSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        lbw_fail("series: the writer was moved from");
+    const LbwStep step(rMesh, Time);
+    if (mpImpl->mArchive.Steps() == 0)
+        lbw_warn_dropped(step);
+    mpImpl->mArchive.Add(step);
+}
+
+std::size_t LsdynaBinoutSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mArchive.Steps() : 0;
+}
+
+void LsdynaBinoutSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mArchive.Steps() == 0)
+        lbw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    lbw_save(mpImpl->mPath, mpImpl->mArchive.Finish());
 }
 
 }  // namespace meshioplusplus
@@ -119742,8 +121406,11 @@ MeshMetadata read_nastran_h5_metadata(const std::string& rPath, const ReadOption
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <unordered_map>
@@ -121751,6 +123418,949 @@ MeshMetadata read_nastran_op2_metadata(const std::string& rPath, const ReadOptio
     meta.mFormat = "nastran_op2";
     meta.mTimeValues = nastran_op2_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: 32-bit little-endian MSC OP2, SORT1 real. The twin of
+// nastran_op2/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr detail::FortranRecordLayout kOp2wLayout{4, false};
+constexpr std::int32_t kOp2wDevice = 1;
+constexpr const char* kOp2wVersion = "XXXXXXXX";
+constexpr const char* kOp2wTapeId = "NASTRAN FORT TAPE ID CODE - ";
+
+[[noreturn]] void op2w_fail(const std::string& rMessage) {
+    throw WriteError(kOp2Who + ": " + rMessage);
+}
+
+/// A double as the file's single precision, rounded like numpy's cast (an
+/// overflow is an infinity).
+float op2w_float(double V) {
+    if (V != V)
+        return std::numeric_limits<float>::quiet_NaN();
+    if (std::fabs(V) >= 3.4028235677973366e38)
+        return V < 0 ? -std::numeric_limits<float>::infinity()
+                     : std::numeric_limits<float>::infinity();
+    return static_cast<float>(V);
+}
+
+void op2w_i32(std::string& rBuf, std::int64_t V) {
+    detail::fortran_put_int32(rBuf, static_cast<std::int32_t>(V), false);
+}
+
+void op2w_f32(std::string& rBuf, double V) {
+    detail::fortran_put_float32(rBuf, op2w_float(V), false);
+}
+
+/// A row of @p Size words, filled by index.
+struct Op2wRowBuf {
+    explicit Op2wRowBuf(std::size_t Size) : mWords(Size, 0u) {}
+    void I(std::size_t At, std::int64_t V) { mWords[At] = static_cast<std::uint32_t>(V); }
+    void F(std::size_t At, double V) { mWords[At] = std::bit_cast<std::uint32_t>(op2w_float(V)); }
+    void Append(std::string& rOut) const {
+        for (const std::uint32_t w : mWords)
+            op2w_i32(rOut, static_cast<std::int32_t>(w));
+    }
+    std::vector<std::uint32_t> mWords;
+};
+
+void op2w_marker(std::string& rOut, std::int32_t V) {
+    std::string payload;
+    detail::fortran_put_int32(payload, V, false);
+    detail::fortran_append_record(rOut, payload.data(), payload.size(), kOp2wLayout);
+}
+
+void op2w_record(std::string& rOut, const std::string& rPayload) {
+    op2w_marker(rOut, static_cast<std::int32_t>(rPayload.size() / 4));
+    detail::fortran_append_record(rOut, rPayload.data(), rPayload.size(), kOp2wLayout);
+}
+
+std::string op2w_text(const std::string& rText) {
+    std::string t = rText.substr(0, 8);
+    t.resize(8, ' ');
+    return t;
+}
+
+std::string op2w_key(std::int32_t K1, std::int32_t K2, std::int32_t K3) {
+    std::string key;
+    op2w_i32(key, K1);
+    op2w_i32(key, K2);
+    op2w_i32(key, K3);
+    return key;
+}
+
+/// A named table: its name, the 7-word header, then every record behind a marker
+/// triple, and the closing triple and 0.
+std::string op2w_table(const std::string& rName, const std::vector<std::string>& rRecords) {
+    std::string out;
+    op2w_record(out, op2w_text(rName));
+    op2w_marker(out, -1);
+    std::string head;
+    op2w_i32(head, 101);
+    for (int i = 0; i < 6; ++i)
+        op2w_i32(head, 0);
+    op2w_record(out, head);
+    std::int32_t k = -2;
+    const auto triple = [&] {
+        op2w_marker(out, k);
+        op2w_marker(out, 1);
+        op2w_marker(out, 0);
+    };
+    triple();
+    op2w_record(out, op2w_text(rName));
+    for (const std::string& r : rRecords) {
+        --k;
+        triple();
+        op2w_record(out, r);
+    }
+    --k;
+    triple();
+    op2w_marker(out, 0);
+    return out;
+}
+
+std::string op2w_file_header() {
+    std::string out;
+    op2w_marker(out, 3);
+    std::string date;
+    op2w_i32(date, 1);
+    op2w_i32(date, 1);
+    op2w_i32(date, 0);
+    detail::fortran_append_record(out, date.data(), date.size(), kOp2wLayout);
+    op2w_marker(out, 7);
+    const std::string tape = kOp2wTapeId;
+    detail::fortran_append_record(out, tape.data(), tape.size(), kOp2wLayout);
+    op2w_record(out, op2w_text(kOp2wVersion));
+    op2w_marker(out, -1);
+    op2w_marker(out, 0);
+    return out;
+}
+
+// -- the element cards ---------------------------------------------------------------
+
+enum Op2wProp { kOp2wNoProp = -1, kOp2wProd = 0, kOp2wPshell, kOp2wPsolid, kOp2wPtube };
+enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
+
+constexpr int kOp2wHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                 10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
+constexpr int kOp2wPenta15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
+
+struct Op2wCard {
+    const char* mName;
+    std::int32_t mK1, mK2, mK3;
+    std::size_t mSize;    // record words
+    std::size_t mLinear;  // nodes of the linear card
+    std::size_t mFirst;   // first node word
+    const int* mPerm;     // to Nastran's order for the quadratic cell
+    Op2wProp mProp;
+    std::size_t mCorners;  // corner nodes with results (solids)
+};
+
+// In card-name order: the order of the GEOM2 records.
+constexpr Op2wCard kOp2wCards[] = {
+    {"CHEXA", 7308, 73, 253, 22, 8, 2, kOp2wHexa20, kOp2wPsolid, 8},
+    {"CONM2", 1501, 15, 64, 13, 1, 1, nullptr, kOp2wNoProp, 0},
+    {"CONROD", 1601, 16, 47, 8, 2, 1, nullptr, kOp2wNoProp, 0},
+    {"CPENTA", 4108, 41, 280, 17, 6, 2, kOp2wPenta15, kOp2wPsolid, 6},
+    {"CPYRAM", 17200, 172, 1000, 16, 5, 2, nullptr, kOp2wPsolid, 5},
+    {"CQUAD", 9108, 91, 507, 11, 4, 2, nullptr, kOp2wPshell, 0},
+    {"CQUAD4", 2958, 51, 177, 14, 4, 2, nullptr, kOp2wPshell, 0},
+    {"CQUAD8", 4701, 47, 326, 17, 4, 2, nullptr, kOp2wPshell, 0},
+    {"CROD", 3001, 30, 48, 4, 2, 2, nullptr, kOp2wProd, 0},
+    {"CTETRA", 5508, 55, 217, 12, 4, 2, nullptr, kOp2wPsolid, 4},
+    {"CTRIA3", 5959, 59, 282, 13, 3, 2, nullptr, kOp2wPshell, 0},
+    {"CTRIA6", 4801, 48, 327, 14, 3, 2, nullptr, kOp2wPshell, 0},
+    {"CTUBE", 3701, 37, 49, 4, 2, 2, nullptr, kOp2wPtube, 0},
+};
+constexpr std::size_t kOp2wNumCards = sizeof(kOp2wCards) / sizeof(kOp2wCards[0]);
+
+std::size_t op2w_card_index(std::string_view Name) {
+    for (std::size_t i = 0; i < kOp2wNumCards; ++i)
+        if (Name == kOp2wCards[i].mName)
+            return i;
+    return kOp2wNumCards;
+}
+
+/// Result families in file order: element type, card, kind.
+struct Op2wFamily {
+    std::int32_t mEtype;
+    const char* mCard;
+    Op2wKind mKind;
+};
+constexpr Op2wFamily kOp2wFamilies[] = {
+    {1, "CROD", kOp2wRod},      {3, "CTUBE", kOp2wRod},     {10, "CONROD", kOp2wRod},
+    {33, "CQUAD4", kOp2wPlate}, {39, "CTETRA", kOp2wSolid}, {67, "CHEXA", kOp2wSolid},
+    {68, "CPENTA", kOp2wSolid}, {74, "CTRIA3", kOp2wPlate}, {255, "CPYRAM", kOp2wSolid},
+};
+
+struct Op2wTypeSpec {
+    const char* mType;
+    const char* mCard;  // null: a line takes CROD, CTUBE or CONROD by its property
+    std::size_t mNodes;
+    std::int64_t mPid;  // the property id of a block with no 'nastran:pid'
+};
+constexpr Op2wTypeSpec kOp2wTypes[] = {
+    {"vertex", "CONM2", 1, -1},    {"line", nullptr, 2, 3},        {"triangle", "CTRIA3", 3, 1},
+    {"triangle6", "CTRIA6", 6, 1}, {"quad", "CQUAD4", 4, 1},       {"quad8", "CQUAD8", 8, 1},
+    {"quad9", "CQUAD", 9, 1},      {"tetra", "CTETRA", 4, 2},      {"tetra10", "CTETRA", 10, 2},
+    {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
+    {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
+};
+
+const Op2wTypeSpec* op2w_type_spec(const std::string& rType) {
+    for (const Op2wTypeSpec& t : kOp2wTypes)
+        if (rType == t.mType)
+            return &t;
+    return nullptr;
+}
+
+/// The mesh block (and cells) behind one element row.
+struct Op2wBlock {
+    std::size_t mIndex = 0;  // the mesh's block
+    std::size_t mCount = 0;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
+    std::vector<std::int64_t> mEids;
+    std::vector<std::int64_t> mPids;
+    std::vector<std::size_t> mCards;  // card index per cell
+};
+
+struct Op2wRow {
+    std::int64_t mEid;
+    std::size_t mBlock;  // into Op2wModel::mBlocks
+    std::size_t mRow;
+};
+
+/// What every step of a series shares: the points' count and the cell blocks'
+/// types and shapes.
+using Op2wSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
+
+Op2wSignature op2w_signature(const Mesh& rMesh) {
+    Op2wSignature sig;
+    sig.emplace_back("points", rMesh.NumPoints(), 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
+    }
+    return sig;
+}
+
+/// The digits of "<PTYPE>_<digits>" when the prefix is @p rPtype, else -1.
+std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype) {
+    if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
+        rName[rPtype.size()] != '_')
+        return -1;
+    std::int64_t pid = 0;
+    for (std::size_t i = rPtype.size() + 1; i < rName.size(); ++i) {
+        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
+            return -1;
+        pid = pid * 10 + (rName[i] - '0');
+    }
+    return pid;
+}
+
+class Op2wModel {
+public:
+    explicit Op2wModel(const Mesh& rMesh) {
+        mSignature = op2w_signature(rMesh);
+        mNpoints = rMesh.NumPoints();
+        {
+            const NDArray& pts = rMesh.Points();
+            const std::size_t dim = rMesh.PointDim();
+            const detail::DoubleView view(pts);
+            mPoints.assign(mNpoints * 3, 0.0);
+            for (std::size_t i = 0; i < mNpoints; ++i)
+                for (std::size_t k = 0; k < 3 && k < dim; ++k)
+                    mPoints[3 * i + k] = view.Data()[i * dim + k];
+        }
+        std::set<std::int64_t> ptube;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const std::int64_t pid = op2w_ptype_pid(rMesh.Region(i).mName, "PTUBE");
+            if (pid >= 0)
+                ptube.insert(pid);
+        }
+        const bool have_eid = rMesh.HasCellData("nastran:eid");
+        const bool have_pid = rMesh.HasCellData("nastran:pid");
+        std::int64_t sequential = 1;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const Op2wTypeSpec* spec = op2w_type_spec(cb.Type());
+            if (spec == nullptr) {
+                if (cb.NumCells() > 0)
+                    mSkipped.insert(cb.Type());
+                continue;
+            }
+            Op2wBlock blk;
+            blk.mIndex = b;
+            blk.mCount = cb.NumCells();
+            blk.mNodes = cb.NodesPerCell();
+            if (blk.mCount > 0 && blk.mNodes != spec->mNodes)
+                op2w_fail("a '" + cb.Type() + "' block needs " + std::to_string(spec->mNodes) +
+                          " nodes per cell");
+            const detail::Int64View conn(cb.Conn());
+            blk.mConn.assign(conn.Data(), conn.Data() + blk.mCount * blk.mNodes);
+            for (const std::int64_t node : blk.mConn)
+                if (node < 0 || static_cast<std::size_t>(node) >= mNpoints)
+                    op2w_fail("a '" + cb.Type() +
+                              "' cell refers to a point the mesh does not have");
+            blk.mEids.resize(blk.mCount);
+            blk.mPids.resize(blk.mCount);
+            if (have_eid) {
+                const NDArray& a = rMesh.CellData("nastran:eid", b);
+                if (a.Size() != blk.mCount)
+                    op2w_fail("'nastran:eid' must have one value per cell");
+                const detail::Int64View view(a);
+                blk.mEids.assign(view.Data(), view.Data() + blk.mCount);
+            } else {
+                for (std::size_t i = 0; i < blk.mCount; ++i)
+                    blk.mEids[i] = sequential + static_cast<std::int64_t>(i);
+            }
+            sequential += static_cast<std::int64_t>(blk.mCount);
+            if (have_pid) {
+                const NDArray& a = rMesh.CellData("nastran:pid", b);
+                if (a.Size() != blk.mCount)
+                    op2w_fail("'nastran:pid' must have one value per cell");
+                const detail::Int64View view(a);
+                blk.mPids.assign(view.Data(), view.Data() + blk.mCount);
+            } else {
+                blk.mPids.assign(blk.mCount, spec->mPid);
+            }
+            blk.mCards.resize(blk.mCount);
+            for (std::size_t i = 0; i < blk.mCount; ++i) {
+                if (spec->mCard != nullptr) {
+                    blk.mCards[i] = op2w_card_index(spec->mCard);
+                } else {
+                    const std::int64_t pid = blk.mPids[i];
+                    blk.mCards[i] = op2w_card_index(pid <= 0                ? "CONROD"
+                                                    : ptube.count(pid) != 0 ? "CTUBE"
+                                                                            : "CROD");
+                }
+            }
+            mBlocks.push_back(std::move(blk));
+        }
+        std::vector<std::int64_t> every;
+        for (const Op2wBlock& blk : mBlocks) {
+            for (const std::int64_t e : blk.mEids)
+                if (e <= 0)
+                    op2w_fail("element ids must be positive");
+            every.insert(every.end(), blk.mEids.begin(), blk.mEids.end());
+        }
+        std::sort(every.begin(), every.end());
+        if (std::adjacent_find(every.begin(), every.end()) != every.end())
+            op2w_fail("element ids are not unique");
+        // Cards in name order, each one's rows by element id.
+        mRows.resize(kOp2wNumCards);
+        for (std::size_t bi = 0; bi < mBlocks.size(); ++bi)
+            for (std::size_t r = 0; r < mBlocks[bi].mCount; ++r)
+                mRows[mBlocks[bi].mCards[r]].push_back({mBlocks[bi].mEids[r], bi, r});
+        for (auto& rows : mRows)
+            std::stable_sort(rows.begin(), rows.end(), [](const Op2wRow& rA, const Op2wRow& rB) {
+                return rA.mEid < rB.mEid;
+            });
+        // Property ids by family.
+        for (const Op2wBlock& blk : mBlocks)
+            for (std::size_t r = 0; r < blk.mCount; ++r) {
+                const Op2wProp prop = kOp2wCards[blk.mCards[r]].mProp;
+                if (prop != kOp2wNoProp)
+                    mProps[prop].insert(blk.mPids[r]);
+            }
+        static const char* const names[] = {"PROD", "PSHELL", "PSOLID", "PTUBE"};
+        std::map<std::int64_t, int> used;
+        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube})
+            for (const std::int64_t p : mProps[prop]) {
+                const auto it = used.find(p);
+                if (it != used.end())
+                    op2w_fail("property id " + std::to_string(p) + " is used by " +
+                              names[it->second] + " and " + names[prop] +
+                              " elements: shells, solids and rods need ids of their own");
+                used[p] = prop;
+            }
+        for (const auto& [pid, prop] : used)
+            if (pid <= 0)
+                op2w_fail("property ids must be positive");
+    }
+
+    const Op2wSignature& Signature() const { return mSignature; }
+    std::size_t NumPoints() const { return mNpoints; }
+    const std::vector<Op2wBlock>& Blocks() const { return mBlocks; }
+    const std::vector<Op2wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
+    const std::set<std::string>& Skipped() const { return mSkipped; }
+    bool HasProperties() const {
+        for (const auto& s : mProps)
+            if (!s.empty())
+                return true;
+        return false;
+    }
+
+    std::string Geom1() const {
+        std::string rows;
+        for (std::size_t i = 0; i < mNpoints; ++i) {
+            Op2wRowBuf w(8);
+            w.I(0, static_cast<std::int64_t>(i + 1));
+            for (std::size_t k = 0; k < 3; ++k)
+                w.F(2 + k, mPoints[3 * i + k]);
+            w.Append(rows);
+        }
+        return op2w_table("GEOM1", {op2w_key(4501, 45, 1) + rows, op2w_key(65535, 65535, 65535)});
+    }
+
+    std::string Geom2() const {
+        std::vector<std::string> records;
+        for (std::size_t c = 0; c < kOp2wNumCards; ++c) {
+            if (mRows[c].empty())
+                continue;
+            const Op2wCard& card = kOp2wCards[c];
+            std::string rows;
+            for (const Op2wRow& row : mRows[c]) {
+                const Op2wBlock& blk = mBlocks[row.mBlock];
+                Op2wRowBuf w(card.mSize);
+                w.I(0, row.mEid);
+                std::vector<std::int64_t> nodes(blk.mNodes);
+                const std::int64_t* conn = blk.mConn.data() + row.mRow * blk.mNodes;
+                for (std::size_t k = 0; k < blk.mNodes; ++k) {
+                    const std::size_t at =
+                        (blk.mNodes > card.mLinear && card.mPerm != nullptr) ? card.mPerm[k] : k;
+                    nodes[at] = conn[k] + 1;
+                }
+                if (std::string_view(card.mName) == "CONM2") {
+                    w.I(1, nodes[0]);
+                } else if (std::string_view(card.mName) == "CONROD") {
+                    w.I(1, nodes[0]);
+                    w.I(2, nodes[1]);
+                    w.I(3, 1);    // MID
+                    w.F(4, 1.0);  // A
+                } else {
+                    w.I(1, blk.mPids[row.mRow]);
+                    for (std::size_t k = 0; k < nodes.size(); ++k)
+                        w.I(2 + k, nodes[k]);
+                }
+                w.Append(rows);
+            }
+            records.push_back(op2w_key(card.mK1, card.mK2, card.mK3) + rows);
+        }
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("GEOM2", records);
+    }
+
+    std::string Ept() const {
+        struct Prop {
+            Op2wProp mProp;
+            std::int32_t mK1, mK2, mK3;
+            std::size_t mSize;
+        };
+        static const Prop props[] = {{kOp2wProd, 902, 9, 29, 6},
+                                     {kOp2wPshell, 2302, 23, 283, 11},
+                                     {kOp2wPsolid, 2402, 24, 281, 7},
+                                     {kOp2wPtube, 1602, 16, 30, 5}};
+        std::vector<std::string> records;
+        for (const Prop& p : props) {
+            if (mProps[p.mProp].empty())
+                continue;
+            std::string rows;
+            for (const std::int64_t pid : mProps[p.mProp]) {
+                Op2wRowBuf w(p.mSize);
+                w.I(0, pid);
+                w.I(1, 1);  // MID
+                if (p.mProp == kOp2wPsolid)
+                    w.I(6, 0x43454D53);  // FCTN 'SMEC'
+                else
+                    w.F(2, 1.0);  // T, A, OD
+                w.Append(rows);
+            }
+            records.push_back(op2w_key(p.mK1, p.mK2, p.mK3) + rows);
+        }
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("EPT", records);
+    }
+
+    /// The one material the properties name: a unit-modulus MAT1.
+    static std::string Mpt() {
+        Op2wRowBuf w(12);
+        w.I(0, 1);
+        w.F(1, 1.0);
+        w.F(2, 0.0);
+        w.F(3, 0.3);
+        std::string rows;
+        w.Append(rows);
+        return op2w_table("MPT", {op2w_key(103, 1, 77) + rows, op2w_key(65535, 65535, 65535)});
+    }
+
+private:
+    Op2wSignature mSignature;
+    std::size_t mNpoints = 0;
+    std::vector<double> mPoints;
+    std::vector<Op2wBlock> mBlocks;
+    std::vector<std::vector<Op2wRow>> mRows;
+    std::set<std::int64_t> mProps[4];
+    std::set<std::string> mSkipped;
+};
+
+// -- steps -----------------------------------------------------------------------------
+
+std::int64_t op2w_scalar_int(const Mesh& rMesh, const std::string& rName, std::int64_t Default) {
+    if (!rMesh.HasFieldData(rName))
+        return Default;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return Default;
+    return detail::Int64View(a).Data()[0];
+}
+
+double op2w_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+/// The step words every result header carries.
+struct Op2wHeader {
+    Op2wHeader(const Mesh& rMesh, double Time) {
+        mTime = static_cast<double>(op2w_float(Time));
+        mSubcase = op2w_scalar_int(rMesh, "nastran:subcase", 1);
+        mAnalysis = op2w_scalar_int(rMesh, "nastran:analysis", mTime == 0.0 ? 1 : 6);
+        mMode = op2w_scalar_int(rMesh, "nastran:mode", 1);
+        if (mSubcase <= 0 || mAnalysis <= 0 || mAnalysis > 99)
+            op2w_fail("'nastran:subcase' and 'nastran:analysis' must be positive codes");
+        mW5 = 1;
+        mW6 = 0.0;
+        if (mAnalysis == 5 || mAnalysis == 6 || mAnalysis == 10 || mAnalysis == 12) {
+            mW5 = std::bit_cast<std::int32_t>(op2w_float(mTime));
+        } else if (mAnalysis == 2 || mAnalysis == 8 || mAnalysis == 9) {
+            mW5 = mMode;
+            mW6 = mTime;
+        }
+    }
+
+    std::tuple<std::int64_t, std::int64_t, std::int64_t> Key() const {
+        return {mSubcase, mAnalysis, mW5};
+    }
+
+    std::string Words(std::int32_t TCode, std::int32_t EType, std::size_t NumWide,
+                      std::int32_t SCode = 0, std::int32_t Thermal = 0) const {
+        Op2wRowBuf w(146);
+        for (std::size_t i = 50; i < 146; ++i)
+            w.mWords[i] = 0x20202020u;  // the title, subtitle and label: blanks
+        w.I(0, mAnalysis * 10 + kOp2wDevice);
+        w.I(1, TCode);
+        w.I(2, EType);
+        w.I(3, mSubcase);
+        w.mWords[4] = static_cast<std::uint32_t>(mW5);
+        w.F(5, mW6);
+        w.I(8, 1);
+        w.I(9, static_cast<std::int64_t>(NumWide));
+        w.I(10, SCode);
+        w.I(22, Thermal);
+        std::string out;
+        w.Append(out);
+        return out;
+    }
+
+    double mTime = 0.0;
+    std::int64_t mSubcase = 1, mAnalysis = 1, mMode = 1, mW5 = 1;
+    double mW6 = 0.0;
+};
+
+/// One step's records per result table, and the (table, table code, element
+/// type) of every block.
+struct Op2wStep {
+    std::map<std::string, std::vector<std::string>> mTables;
+    std::vector<std::tuple<std::string, std::int32_t, std::int32_t>> mLayout;
+    std::tuple<std::int64_t, std::int64_t, std::int64_t> mKey;
+};
+
+struct Op2wNodal {
+    const char* mName;
+    const char* mTable;
+    std::int32_t mTCode;
+    bool mThermal;
+};
+constexpr Op2wNodal kOp2wNodal[] = {
+    {"DISPLACEMENT", "OUGV1", 1, false}, {"EIGENVECTOR", "OUGV1", 7, false},
+    {"VELOCITY", "OUGV1", 10, false},    {"ACCELERATION", "OUGV1", 11, false},
+    {"TEMPERATURE", "OUGV1", 1, true},   {"SPC_FORCE", "OQG1", 3, false},
+    {"MPC_FORCE", "OQMG1", 3, false},    {"APPLIED_LOAD", "OPG1", 2, false},
+};
+constexpr const char* kOp2wTables[] = {"OUGV1", "OQG1", "OQMG1", "OPG1", "OES1X1", "OSTR1X"};
+
+const char* const kOp2wRodMembers[] = {"A", "MSA", "T", "MST"};
+const char* const kOp2wTubeMembers[] = {"AS", "MSA", "TS", "MST"};
+const char* const kOp2wPlateMembers[] = {"FD1",    "X1",     "Y1",     "TXY1", "ANGLE1", "MAJOR1",
+                                         "MINOR1", "VM1",    "FD2",    "X2",   "Y2",     "TXY2",
+                                         "ANGLE2", "MAJOR2", "MINOR2", "VM2"};
+
+/// The word of a solid's 21-word node block that holds a member.
+std::size_t op2w_solid_word(const std::string& rMember) {
+    static const std::pair<const char*, std::size_t> words[] = {
+        {"X", 1},        {"TXY", 2},       {"PRINCIPAL_A", 3},
+        {"PRESSURE", 7}, {"VON_MISES", 8}, {"OCT_SHEAR", 8},
+        {"Y", 9},        {"TYZ", 10},      {"PRINCIPAL_B", 11},
+        {"Z", 15},       {"TZX", 16},      {"PRINCIPAL_C", 17}};
+    for (const auto& [name, word] : words)
+        if (rMember == name)
+            return word;
+    return 0;
+}
+
+/// A cell-data array of the cells of a card, in the card's row order: one value per
+/// row (the first column of a wider array), or @p Width per row for a per-corner
+/// array. Empty when no block has it.
+std::vector<double> op2w_gather(const Mesh& rMesh, const Op2wModel& rModel,
+                                const std::string& rName, const std::vector<Op2wRow>& rRows,
+                                std::size_t Width) {
+    if (!rMesh.HasCellData(rName))
+        return {};
+    const std::size_t stride = Width == 0 ? 1 : Width;
+    std::vector<double> out(rRows.size() * stride, std::numeric_limits<double>::quiet_NaN());
+    std::vector<std::unique_ptr<detail::DoubleView>> views(rModel.Blocks().size());
+    std::vector<std::size_t> columns(rModel.Blocks().size(), 0);
+    for (std::size_t bi = 0; bi < rModel.Blocks().size(); ++bi) {
+        const Op2wBlock& blk = rModel.Blocks()[bi];
+        if (blk.mCount == 0)
+            continue;
+        const NDArray& a = rMesh.CellData(rName, blk.mIndex);
+        const auto& shape = a.Shape();
+        if (Width == 0) {
+            if (a.Size() < blk.mCount || a.Size() % blk.mCount != 0)
+                op2w_fail("'" + rName + "' must have one value per cell");
+            columns[bi] = a.Size() / blk.mCount;
+        } else {
+            if (shape.size() != 2 || shape[0] != blk.mCount)
+                continue;
+            columns[bi] = shape[1];
+        }
+        views[bi] = std::make_unique<detail::DoubleView>(a);
+    }
+    for (std::size_t r = 0; r < rRows.size(); ++r) {
+        const std::size_t bi = rRows[r].mBlock;
+        if (!views[bi])
+            continue;
+        const double* row = views[bi]->Data() + rRows[r].mRow * columns[bi];
+        for (std::size_t k = 0; k < (Width == 0 ? 1 : std::min(Width, columns[bi])); ++k)
+            out[r * stride + k] = row[k];
+    }
+    return out;
+}
+
+void op2w_element_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
+                         const std::string& rGroup, const char* pTable, Op2wStep& rStep,
+                         std::set<std::string>& rTaken) {
+    const std::string prefix = rGroup + ":";
+    for (const Op2wFamily& family : kOp2wFamilies) {
+        const std::size_t card = op2w_card_index(family.mCard);
+        const std::vector<Op2wRow>& rows = rModel.Rows(card);
+        if (rows.empty())
+            continue;
+        std::vector<std::string> members;
+        switch (family.mKind) {
+            case kOp2wRod:
+                if (std::string_view(family.mCard) == "CTUBE")
+                    members.assign(std::begin(kOp2wTubeMembers), std::end(kOp2wTubeMembers));
+                else
+                    members.assign(std::begin(kOp2wRodMembers), std::end(kOp2wRodMembers));
+                break;
+            case kOp2wPlate: {
+                bool shear = false;
+                for (const char* k : {"1", "2"})
+                    shear = shear || (rMesh.HasCellData(prefix + "MAX_SHEAR" + k) &&
+                                      !rMesh.HasCellData(prefix + "VON_MISES" + k));
+                for (const char* m : kOp2wPlateMembers) {
+                    std::string name = m;
+                    if (name.compare(0, 2, "VM") == 0)
+                        name = std::string(shear ? "MAX_SHEAR" : "VON_MISES") + name.substr(2);
+                    members.push_back(name);
+                }
+                break;
+            }
+            case kOp2wSolid: {
+                const bool octa = rMesh.HasCellData(prefix + "OCT_SHEAR") &&
+                                  !rMesh.HasCellData(prefix + "VON_MISES");
+                members = {"X",
+                           "Y",
+                           "Z",
+                           "TXY",
+                           "TYZ",
+                           "TZX",
+                           "PRINCIPAL_A",
+                           "PRINCIPAL_B",
+                           "PRINCIPAL_C",
+                           "PRESSURE",
+                           octa ? "OCT_SHEAR" : "VON_MISES"};
+                break;
+            }
+        }
+        const std::size_t count = rows.size();
+        std::map<std::string, std::vector<double>> columns;
+        for (const std::string& m : members) {
+            std::vector<double> column = op2w_gather(rMesh, rModel, prefix + m, rows, 0);
+            if (!column.empty()) {
+                rTaken.insert(prefix + m);
+                columns[m] = std::move(column);
+            }
+        }
+        std::map<std::string, std::vector<double>> corners;
+        const std::size_t ncorner = kOp2wCards[card].mCorners;
+        if (family.mKind == kOp2wSolid) {
+            for (const std::string& m : members) {
+                std::vector<double> matrix =
+                    op2w_gather(rMesh, rModel, prefix + m + "@corner", rows, ncorner);
+                if (!matrix.empty()) {
+                    rTaken.insert(prefix + m + "@corner");
+                    corners[m] = std::move(matrix);
+                }
+            }
+        }
+        std::vector<std::size_t> keep;
+        for (std::size_t r = 0; r < count; ++r) {
+            bool shown = false;
+            for (const auto& [name, column] : columns)
+                shown = shown || !std::isnan(column[r]);
+            if (shown)
+                keep.push_back(r);
+        }
+        if (keep.empty())
+            continue;
+        const auto value = [&](const std::string& rMember, std::size_t Row) {
+            const auto it = columns.find(rMember);
+            if (it == columns.end() || std::isnan(it->second[Row]))
+                return 0.0;
+            return it->second[Row];
+        };
+        const std::int32_t bit0 =
+            (members.back() == "OCT_SHEAR" || members.back() == "MAX_SHEAR2") ? 0 : 1;
+        const std::int32_t s_code = (rGroup == "STRAIN" ? 10 : 0) | bit0;
+        const std::size_t wide =
+            family.mKind == kOp2wSolid ? 4 + 21 * (1 + ncorner) : 1 + members.size();
+        std::string data;
+        for (const std::size_t r : keep) {
+            Op2wRowBuf w(wide);
+            w.I(0, rows[r].mEid * 10 + kOp2wDevice);
+            if (family.mKind != kOp2wSolid) {
+                for (std::size_t j = 0; j < members.size(); ++j)
+                    w.F(1 + j, value(members[j], r));
+            } else {
+                const Op2wBlock& blk = rModel.Blocks()[rows[r].mBlock];
+                const std::int64_t* conn = blk.mConn.data() + rows[r].mRow * blk.mNodes;
+                w.mWords[2] = 0x44495247u;  // 'GRID'
+                w.I(3, static_cast<std::int64_t>(ncorner));
+                for (std::size_t k = 0; k < 1 + ncorner; ++k) {
+                    const std::size_t base = 4 + 21 * k;
+                    w.mWords[base] =
+                        k == 0 ? 0x2F4E4543u : static_cast<std::uint32_t>(conn[k - 1] + 1);
+                    for (const std::string& m : members) {
+                        double v = value(m, r);
+                        if (k > 0) {
+                            const auto it = corners.find(m);
+                            if (it != corners.end() && !std::isnan(it->second[r * ncorner + k - 1]))
+                                v = it->second[r * ncorner + k - 1];
+                        }
+                        w.F(base + op2w_solid_word(m), v);
+                    }
+                }
+            }
+            w.Append(data);
+        }
+        rStep.mLayout.emplace_back(pTable, 5, family.mEtype);
+        auto& records = rStep.mTables[pTable];
+        records.push_back(rHeader.Words(5, family.mEtype, wide, s_code));
+        records.push_back(std::move(data));
+    }
+}
+
+Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Time,
+                          std::set<std::string>& rTaken) {
+    const Op2wHeader header(rMesh, Time);
+    Op2wStep step;
+    step.mKey = header.Key();
+    const std::size_t npts = rModel.NumPoints();
+    for (const Op2wNodal& nodal : kOp2wNodal) {
+        if (!rMesh.HasPointData(nodal.mName))
+            continue;
+        rTaken.insert(nodal.mName);
+        const NDArray& base_array = rMesh.PointData(nodal.mName);
+        const std::size_t ncomp = nodal.mThermal ? 1 : 3;
+        if (base_array.Size() != npts * ncomp)
+            op2w_fail(std::string("'") + nodal.mName + "' must have " + std::to_string(ncomp) +
+                      " component(s) per point");
+        const detail::DoubleView base(base_array);
+        std::optional<detail::DoubleView> rot;
+        if (!nodal.mThermal) {
+            const std::string rot_name = std::string(nodal.mName) + "_ROT";
+            if (rMesh.HasPointData(rot_name)) {
+                rTaken.insert(rot_name);
+                const NDArray& rot_array = rMesh.PointData(rot_name);
+                if (rot_array.Size() != npts * 3)
+                    op2w_fail("'" + rot_name + "' must have 3 components per point");
+                rot.emplace(rot_array);
+            }
+        }
+        std::string data;
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < npts; ++i) {
+            bool all_nan = true;
+            for (std::size_t k = 0; k < ncomp; ++k)
+                all_nan = all_nan && std::isnan(base.Data()[i * ncomp + k]);
+            if (all_nan)
+                continue;
+            ++kept;
+            Op2wRowBuf w(8);
+            w.I(0, static_cast<std::int64_t>((i + 1) * 10 + kOp2wDevice));
+            w.I(1, 1);
+            for (std::size_t k = 0; k < ncomp; ++k)
+                w.F(2 + k, base.Data()[i * ncomp + k]);
+            if (rot)
+                for (std::size_t k = 0; k < 3; ++k)
+                    w.F(5 + k, rot->Data()[i * 3 + k]);
+            w.Append(data);
+        }
+        if (kept == 0)
+            continue;
+        step.mLayout.emplace_back(nodal.mTable, nodal.mTCode, 0);
+        auto& records = step.mTables[nodal.mTable];
+        records.push_back(header.Words(nodal.mTCode, 0, 8, 0, nodal.mThermal ? 1 : 0));
+        records.push_back(std::move(data));
+    }
+    op2w_element_tables(rMesh, rModel, header, "STRESS", "OES1X1", step, rTaken);
+    op2w_element_tables(rMesh, rModel, header, "STRAIN", "OSTR1X", step, rTaken);
+    return step;
+}
+
+void op2w_warn_dropped(const Mesh& rMesh, const Op2wModel& rModel,
+                       const std::set<std::string>& rTaken) {
+    std::set<std::string> names;
+    for (const std::string& n : rMesh.PointDataNames())
+        if (rTaken.count(n) == 0 && n != "nastran:cp" && n != "nastran:cd")
+            names.insert(n);
+    for (const std::string& n : rMesh.CellDataNames())
+        if (rTaken.count(n) == 0 && n != "nastran:eid" && n != "nastran:pid")
+            names.insert(n);
+    for (const std::string& n : rMesh.FieldDataNames())
+        if (n != kSequenceTimeKey && n.rfind("nastran:", 0) != 0)
+            names.insert(n);
+    if (!names.empty()) {
+        std::string list;
+        for (const std::string& n : names)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Nastran OP2: arrays without a place in the file are not written: {}", list);
+    }
+    if (!rModel.Skipped().empty()) {
+        std::string list;
+        for (const std::string& n : rModel.Skipped())
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Nastran OP2: cell blocks with no element card are not written: {}", list);
+    }
+}
+
+/// The whole file: header, model tables, then every result table with all steps'
+/// blocks, step by step.
+std::string op2w_assemble(const Op2wModel& rModel, const std::vector<Op2wStep>& rSteps) {
+    std::string out = op2w_file_header();
+    out += rModel.Geom1();
+    out += rModel.Geom2();
+    out += rModel.Ept();
+    if (rModel.HasProperties())
+        out += Op2wModel::Mpt();
+    for (const char* table : kOp2wTables) {
+        std::vector<std::string> records;
+        for (const Op2wStep& step : rSteps) {
+            const auto it = step.mTables.find(table);
+            if (it != step.mTables.end())
+                records.insert(records.end(), it->second.begin(), it->second.end());
+        }
+        if (!records.empty())
+            out += op2w_table(table, records);
+    }
+    op2w_marker(out, 0);  // the end of the file
+    return out;
+}
+
+void op2w_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        op2w_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_nastran_op2(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const Op2wModel model(rMesh);
+    std::set<std::string> taken;
+    const Op2wStep step = op2w_step_tables(rMesh, model, op2w_time_of(rMesh), taken);
+    op2w_warn_dropped(rMesh, model, taken);
+    op2w_save(rPath, op2w_assemble(model, {step}));
+}
+
+struct NastranOp2SeriesWriter::Impl {
+    std::string mPath;
+    std::optional<Op2wModel> mModel;
+    std::vector<Op2wStep> mSteps;
+    bool mDone = false;
+};
+
+NastranOp2SeriesWriter::NastranOp2SeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+NastranOp2SeriesWriter::~NastranOp2SeriesWriter() = default;
+NastranOp2SeriesWriter::NastranOp2SeriesWriter(NastranOp2SeriesWriter&&) noexcept = default;
+NastranOp2SeriesWriter& NastranOp2SeriesWriter::operator=(NastranOp2SeriesWriter&&) noexcept =
+    default;
+
+void NastranOp2SeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        op2w_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    const std::size_t index = s.mSteps.size();
+    if (!s.mModel) {
+        s.mModel.emplace(rMesh);
+    } else if (s.mModel->Signature() != op2w_signature(rMesh)) {
+        op2w_fail("series: step " + std::to_string(index) +
+                  "'s points or cells differ from the first step's; an OP2 file holds one "
+                  "model -- write one file per step with '{step}'");
+    }
+    std::set<std::string> taken;
+    Op2wStep step = op2w_step_tables(rMesh, *s.mModel, Time, taken);
+    if (s.mSteps.empty()) {
+        op2w_warn_dropped(rMesh, *s.mModel, taken);
+    } else if (step.mLayout != s.mSteps.front().mLayout) {
+        op2w_fail("series: step " + std::to_string(index) +
+                  "'s result arrays differ from the first step's; a result table holds one "
+                  "block per step");
+    }
+    // A step with no result table is no step of the file: its key is free.
+    if (!step.mLayout.empty())
+        for (const Op2wStep& earlier : s.mSteps)
+            if (earlier.mKey == step.mKey)
+                op2w_fail("series: step " + std::to_string(index) +
+                          " has the subcase, analysis and load set, mode or time of an earlier "
+                          "step; give it a 'nastran:subcase' or a different time");
+    s.mSteps.push_back(std::move(step));
+}
+
+std::size_t NastranOp2SeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps.size() : 0;
+}
+
+void NastranOp2SeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mSteps.empty())
+        op2w_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    op2w_save(mpImpl->mPath, op2w_assemble(*mpImpl->mModel, mpImpl->mSteps));
 }
 
 }  // namespace meshioplusplus
@@ -183775,13 +186385,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th") {
+        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
+        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th' and 'exodus' can); "
+           "'frd', 'radioss_th', 'nastran_op2', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -184070,13 +186681,16 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
             "select");
-    const char* who = rFormat == "exodus"       ? "Exodus"
-                      : rFormat == "vtkhdf"     ? "VTKHDF"
-                      : rFormat == "pvd"        ? "PVD"
-                      : rFormat == "femap"      ? "Femap"
-                      : rFormat == "frd"        ? "CalculiX FRD"
-                      : rFormat == "radioss_th" ? "Radioss time-history"
-                                                : "XDMF";
+    const char* who = rFormat == "exodus"          ? "Exodus"
+                      : rFormat == "vtkhdf"        ? "VTKHDF"
+                      : rFormat == "pvd"           ? "PVD"
+                      : rFormat == "femap"         ? "Femap"
+                      : rFormat == "frd"           ? "CalculiX FRD"
+                      : rFormat == "radioss_th"    ? "Radioss time-history"
+                      : rFormat == "nastran_op2"   ? "Nastran OP2"
+                      : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
+                      : rFormat == "abaqus_fil"    ? "Abaqus results"
+                                                   : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -184093,6 +186707,14 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (rFormat == "radioss_th" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient Radioss time-history writer has no ASCII/binary "
+            "variant to select");
+    if (rFormat == "nastran_op2" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
             "variant to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
@@ -184189,6 +186811,47 @@ private:
     RadiossThSeriesWriter mWriter;
 };
 
+/// An OP2 file holds the model once and a block per step in each result table: the writer
+/// keeps the steps and writes the file when it is finalized, so `WritePointsCells` has
+/// nothing to do.
+class SeqNastranOp2Sink final : public SeqSeriesSink {
+public:
+    explicit SeqNastranOp2Sink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    NastranOp2SeriesWriter mWriter;
+};
+
+/// An Abaqus results file holds the model once and an increment per step: the writer keeps
+/// the steps and writes the file when it is finalized (`Encoding` binary writes the binary
+/// layout), so `WritePointsCells` has nothing to do.
+class SeqAbaqusFilSink final : public SeqSeriesSink {
+public:
+    SeqAbaqusFilSink(const std::string& rPath, bool Binary) : mWriter(rPath, Binary) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    AbaqusFilSeriesWriter mWriter;
+};
+
+/// A binout keeps every output's records and writes the file when it is finalized, so
+/// `WritePointsCells` has nothing to do.
+class SeqLsdynaBinoutSink final : public SeqSeriesSink {
+public:
+    explicit SeqLsdynaBinoutSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    LsdynaBinoutSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -184231,6 +186894,13 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "radioss_th")
         return std::make_unique<SeqRadiossThSink>(rPath);
+    if (rFormat == "nastran_op2")
+        return std::make_unique<SeqNastranOp2Sink>(rPath);
+    if (rFormat == "lsdyna_binout")
+        return std::make_unique<SeqLsdynaBinoutSink>(rPath);
+    if (rFormat == "abaqus_fil")
+        return std::make_unique<SeqAbaqusFilSink>(rPath,
+                                                  rOptions.mEncoding == WriteEncoding::Binary);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);
@@ -191700,6 +194370,11 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
         // No extension (`<run>T01`): by name or explicit format only.
         {"radioss_th", meshioplusplus::write_radioss_th},
+        {"nastran_op2", meshioplusplus::write_nastran_op2},
+        // No extension (`binout`): by name or explicit format only.
+        {"lsdyna_binout", meshioplusplus::write_lsdyna_binout},
+        {"abaqus_fil",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",
@@ -192501,10 +195176,10 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "frd" || rFormat == "gmsh" ||
-           rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
-           rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
-           rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "abaqus_fil" || rFormat == "ansys" || rFormat == "flac3d" ||
+           rFormat == "frd" || rFormat == "gmsh" || rFormat == "openfoam" || rFormat == "pcd" ||
+           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
+           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -192593,7 +195268,10 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     const std::string& r_ff =
         rOptions.mFloatFormat.empty() ? std::string(".16e") : rOptions.mFloatFormat;
 
-    if (fmt == "ansys") {
+    if (fmt == "abaqus_fil") {
+        // ASCII is `*FILE FORMAT, ASCII`; binary is the 512-word block layout, little-endian.
+        write_abaqus_fil(rPath, rMesh, binary);
+    } else if (fmt == "ansys") {
         write_ansys(rPath, rMesh, binary);
     } else if (fmt == "flac3d") {
         write_flac3d(rPath, rMesh, r_ff, binary);

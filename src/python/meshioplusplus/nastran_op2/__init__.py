@@ -4,6 +4,8 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._op2 import read as _py_read
 from ._op2 import time_values as _py_time_values
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import write as _py_write
 
 
 def read(filename, points_only=False, arrays=None, time_step=0):
@@ -45,6 +47,82 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-register_format("nastran_op2", [".op2"], read, {})
+def write(filename, mesh):
+    """Write a mesh as a one-step Nastran OP2 result file.
 
-__all__ = ["read", "time_values"]
+    The inverse of :func:`read` for the core of the format: 32-bit
+    little-endian words, the MSC dialect, SORT1 real tables. The model is the
+    points (``GEOM1`` GRIDs, numbered from 1), the cells (``GEOM2`` element
+    cards, with ``nastran:eid`` and ``nastran:pid`` when the mesh has them) and
+    one property card per property id. The results are the point data
+    ``DISPLACEMENT``, ``EIGENVECTOR``, ``VELOCITY``, ``ACCELERATION``,
+    ``SPC_FORCE``, ``MPC_FORCE``, ``APPLIED_LOAD`` (each ``(n, 3)`` with a
+    ``_ROT`` twin) and ``TEMPERATURE``, and the centre ``STRESS:<M>`` and
+    ``STRAIN:<M>`` cell data of shells, solids and rods. The step is
+    ``nastran:subcase``, ``nastran:analysis``, ``nastran:mode`` and
+    ``meshio:time`` of the field data. Other arrays are dropped with a warning.
+    """
+    if not is_buffer(filename, "w"):
+        try:
+            _core.nastran_op2_write(str(filename), mesh)
+            return
+        except Exception as exc:
+            if not core_declined(exc, "nastran_op2", "write", filename):
+                raise
+    return _py_write(filename, mesh)
+
+
+class SeriesWriter:
+    """Write a time series into one OP2 file: the model once, and every
+    table's block per step, which ``read`` gives back by ``time_step``. The
+    file is assembled when the writer closes. A step's time is the argument,
+    not its ``meshio:time``; its subcase, analysis and mode come from its
+    ``nastran:*`` field data. Every step must have the first step's cells and
+    arrays, and its own subcase, analysis and mode or time.
+    ``write_sequence(path, steps, file_format="nastran_op2")`` uses it.
+
+    >>> with meshioplusplus.nastran_op2.SeriesWriter("run.op2") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+
+    The C++ core writes the file; the Python twin, which writes the same bytes,
+    when the core declines to open it.
+    """
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.NastranOp2SeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "nastran_op2", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            if self._core.num_steps():
+                self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+register_format("nastran_op2", [".op2"], read, {"nastran_op2": write})
+
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

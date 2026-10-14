@@ -60,6 +60,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -91,5 +93,73 @@ MESHIOPLUSPLUS_API std::vector<double> abaqus_fil_time_values(const std::string&
  */
 MESHIOPLUSPLUS_API MeshMetadata read_abaqus_fil_metadata(const std::string& rPath,
                                                          const ReadOptions& rOpts);
+
+/**
+ * @brief Write a mesh as a one-increment Abaqus results file.
+ *
+ * The inverse of `read_abaqus_fil`. The model is the points (`abaqus:id` labels,
+ * else 1 to n), the cells (`abaqus:id` labels over the written cells, else 1 to
+ * n; a cell type becomes the Abaqus element `T3D2`, `S3`, `S4R`, `STRI65`,
+ * `S8R`, `S9R5`, `C3D4`, `C3D10`, `C3D5`, `C3D13`, `C3D6`, `C3D15`, `C3D8R` or
+ * `C3D20R`) and the point and cell regions as node and element sets (a name
+ * over 8 characters through a 1940 label). The increment holds the point data
+ * named like an Abaqus nodal result (`U`, `V`, `A`, `RF`, `key_<n>`...) and the
+ * cell data named like an element result (`S`, `E`, `MISES`, `NFORC`,
+ * `key_<n>`...): an array with an `abaqus:layout:<name>` of
+ * `(points, components)` is per integration point (per element node for
+ * `NFORC` and the `@el` names), any other one set of values per element; a
+ * point-data array named like an element result is averaged at the nodes. A
+ * `@sp<k>` suffix is the section point, `@rebar:<name>` a rebar. The
+ * increment's time is `meshio:time` (0 when absent), its step, number, step time
+ * and procedure the `abaqus:step`, `abaqus:increment`, `abaqus:step_time` and
+ * `abaqus:procedure` field data, and a `abaqus:mode` (with its eigenvalue,
+ * generalized mass, damping and participation factors) a 1980 record. NaN rows
+ * are left out, trailing NaN components are trimmed and an inner NaN is
+ * written as 0. With @p Binary the file is the little-endian binary layout
+ * (512-word blocks), else ASCII. Cells with no Abaqus element, side regions and
+ * other arrays are dropped with a warning. The Python twin writes the same
+ * bytes.
+ *
+ * @throws WriteError on a label that is not positive and unique, a cell or
+ *         region naming a point the mesh does not have, a value outside what a
+ *         `D22.15` item holds, a layout that does not match its array, or a
+ *         file that cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh,
+                                         bool Binary = false);
+
+/**
+ * @brief A results file written step by step: the model with the first step,
+ *        then an increment per step.
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and cell blocks (a `WriteError` otherwise). The time of a step is the
+ * argument, not its `meshio:time`. One step is `write_abaqus_fil`'s bytes. The
+ * Python twin, `meshioplusplus.abaqus_fil.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API AbaqusFilSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit AbaqusFilSeriesWriter(const std::string& rPath, bool Binary = false);
+    ~AbaqusFilSeriesWriter();
+
+    AbaqusFilSeriesWriter(const AbaqusFilSeriesWriter&) = delete;
+    AbaqusFilSeriesWriter& operator=(const AbaqusFilSeriesWriter&) = delete;
+    AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept;
+    AbaqusFilSeriesWriter& operator=(AbaqusFilSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

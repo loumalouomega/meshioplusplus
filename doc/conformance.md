@@ -16,6 +16,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | Format | vtx | line | tri | quad | tet | hex | wdg | pyr | Points | Point data | Cell data | F | Regions |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | <span id="abaqus">`abaqus`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | — | — | — | cell, point, side |
+| <span id="abaqus-fil">`abaqus_fil`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="ansys">`ansys`</span> |  |  | ✗ | ✗ | ↻ | ↻ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="ansysinp">`ansysInp`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="avsucd">`avsucd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64 | — | — |
@@ -43,6 +44,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="ip">`ip`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | exact | `p_f64` float64, `p_i32` float64 | — | — | — |
 | <span id="libmesh">`libmesh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna">`lsdyna`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="lsdyna-binout">`lsdyna_binout`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` float64 | — | — | — |
 | <span id="marc">`marc`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="mdpa">`mdpa`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="med">`med`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point |
@@ -53,6 +55,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="mphbin">`mphbin`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="mphtxt">`mphtxt`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="nastran">`nastran`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
+| <span id="nastran-op2">`nastran_op2`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | — | — | — | — |
 | <span id="netgen">`netgen`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | ✓ | — |
 | <span id="neuroglancer">`neuroglancer`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="obj">`obj`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
@@ -97,6 +100,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 
 ## Notes
 
+- **`abaqus_fil`**: A results file holds the model and the results Abaqus names: only point data named like a nodal result (`U`, `RF`...) and cell data named like an element result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; a `vertex` has no Abaqus element and side regions are dropped.
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.
 - **`cad_json`**: Kratos IGA geometry: without a B-rep side channel, quads are written as bilinear NURBS faces and lines as edges.
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
@@ -104,9 +108,11 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
 - **`gltf`**: Written for viewers; no glTF reader exists yet (roadmap §3.1.1).
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
+- **`lsdyna_binout`**: A binout holds `nodout`'s nodes, not elements: the points come back as a `vertex` cloud, single precision, and only `nodout`'s own vectors (`displacement`...) are `(n, 3)`; per-point scalars come back as float64 (an integer one is stored as `int32`, and the reader widens every per-point array to float64), and the canonical `fd` is not a `binout:` name.
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
+- **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and regions have no place; cells come back ordered by element card.
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
@@ -132,16 +138,13 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
-| <span id="abaqus-fil">`abaqus_fil`</span> | writer | Tracked gap, roadmap §3.2.6: no writer yet. Abaqus's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
 | <span id="gltf">`gltf`</span> | reader | Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader. |
 | <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
-| <span id="lsdyna-binout">`lsdyna_binout`</span> | writer | Tracked gap, roadmap §3.2.3: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
 | <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
 | <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
 | <span id="nastran-h5">`nastran_h5`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. MSC Nastran's result file; the writer is the physics-ML loop's missing half. |
-| <span id="nastran-op2">`nastran_op2`</span> | writer | Tracked gap, roadmap §3.2.1: no writer yet. Nastran's result file; the writer is the physics-ML loop's missing half. |
 | <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
 | <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
 | <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |

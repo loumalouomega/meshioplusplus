@@ -44,6 +44,9 @@
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
+#include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
+#include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
@@ -280,13 +283,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th") {
+        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
+        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th' and 'exodus' can); "
+           "'frd', 'radioss_th', 'nastran_op2', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -575,13 +579,16 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
             "select");
-    const char* who = rFormat == "exodus"       ? "Exodus"
-                      : rFormat == "vtkhdf"     ? "VTKHDF"
-                      : rFormat == "pvd"        ? "PVD"
-                      : rFormat == "femap"      ? "Femap"
-                      : rFormat == "frd"        ? "CalculiX FRD"
-                      : rFormat == "radioss_th" ? "Radioss time-history"
-                                                : "XDMF";
+    const char* who = rFormat == "exodus"          ? "Exodus"
+                      : rFormat == "vtkhdf"        ? "VTKHDF"
+                      : rFormat == "pvd"           ? "PVD"
+                      : rFormat == "femap"         ? "Femap"
+                      : rFormat == "frd"           ? "CalculiX FRD"
+                      : rFormat == "radioss_th"    ? "Radioss time-history"
+                      : rFormat == "nastran_op2"   ? "Nastran OP2"
+                      : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
+                      : rFormat == "abaqus_fil"    ? "Abaqus results"
+                                                   : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -598,6 +605,14 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (rFormat == "radioss_th" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient Radioss time-history writer has no ASCII/binary "
+            "variant to select");
+    if (rFormat == "nastran_op2" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
             "variant to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
@@ -694,6 +709,47 @@ private:
     RadiossThSeriesWriter mWriter;
 };
 
+/// An OP2 file holds the model once and a block per step in each result table: the writer
+/// keeps the steps and writes the file when it is finalized, so `WritePointsCells` has
+/// nothing to do.
+class SeqNastranOp2Sink final : public SeqSeriesSink {
+public:
+    explicit SeqNastranOp2Sink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    NastranOp2SeriesWriter mWriter;
+};
+
+/// An Abaqus results file holds the model once and an increment per step: the writer keeps
+/// the steps and writes the file when it is finalized (`Encoding` binary writes the binary
+/// layout), so `WritePointsCells` has nothing to do.
+class SeqAbaqusFilSink final : public SeqSeriesSink {
+public:
+    SeqAbaqusFilSink(const std::string& rPath, bool Binary) : mWriter(rPath, Binary) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    AbaqusFilSeriesWriter mWriter;
+};
+
+/// A binout keeps every output's records and writes the file when it is finalized, so
+/// `WritePointsCells` has nothing to do.
+class SeqLsdynaBinoutSink final : public SeqSeriesSink {
+public:
+    explicit SeqLsdynaBinoutSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    LsdynaBinoutSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -736,6 +792,13 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "radioss_th")
         return std::make_unique<SeqRadiossThSink>(rPath);
+    if (rFormat == "nastran_op2")
+        return std::make_unique<SeqNastranOp2Sink>(rPath);
+    if (rFormat == "lsdyna_binout")
+        return std::make_unique<SeqLsdynaBinoutSink>(rPath);
+    if (rFormat == "abaqus_fil")
+        return std::make_unique<SeqAbaqusFilSink>(rPath,
+                                                  rOptions.mEncoding == WriteEncoding::Binary);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);

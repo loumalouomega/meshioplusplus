@@ -2941,6 +2941,7 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
         assert fmt in out["readable"], fmt
     assert "z88" in out["writable"]
     assert "libmesh" in out["writable"]  # v16.11.0
+    assert "abaqus_fil" in out["writable"]
     for ext in (".xda", ".xdr", ".xda.gz", ".xdr.gz", ".xda.bz2", ".xdr.bz2"):
         assert out["extensions"][ext] == ["libmesh"], ext
     assert out["extensions"][".fil"] == ["abaqus_fil"]
@@ -3010,9 +3011,9 @@ def test_d3plot_and_op2_formats(tmp_path):
 
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
-    for fmt in ("lsdyna_d3plot", "nastran_op2"):
-        assert fmt in out["readable"], fmt
-        assert fmt not in out["writable"], fmt
+    assert "lsdyna_d3plot" in out["readable"]
+    assert "lsdyna_d3plot" not in out["writable"]
+    assert "nastran_op2" in out["readable"] and "nastran_op2" in out["writable"]
     assert out["extensions"][".op2"] == ["nastran_op2"]
     # d3plot has no extension: the file name and the control block tell.
     d3plot = meshes / "lsdyna_d3plot" / "generated" / "shell_solid" / "d3plot"
@@ -3026,6 +3027,57 @@ def test_d3plot_and_op2_formats(tmp_path):
     mode = str(tmp_path / "mode.vtu")
     _tools.tool_convert(str(op2), mode, time_step=-1)
     assert "EIGENVECTOR" in meshioplusplus.read(mode).point_data
+
+
+def test_a_result_mesh_converts_to_nastran_op2(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float),
+        [("quad", np.array([[0, 1, 2, 3]]))],
+    )
+    mesh.point_data["DISPLACEMENT"] = np.arange(12, dtype=float).reshape(4, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    op2 = str(tmp_path / "result.op2")
+    _tools.tool_convert(source, op2)
+    assert _dump(_tools.tool_sniff(op2))["format"] == "nastran_op2"
+    back = meshioplusplus.read(op2)
+    np.testing.assert_allclose(
+        back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"]
+    )
+
+
+def test_a_result_mesh_converts_to_a_binout(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], dtype=float),
+        [("vertex", np.arange(3)[:, None])],
+    )
+    mesh.point_data["displacement"] = np.arange(9, dtype=float).reshape(3, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    out = _dump(_tools.tool_formats())
+    assert "lsdyna_binout" in out["readable"] and "lsdyna_binout" in out["writable"]
+    binout = str(tmp_path / "binout")
+    _tools.tool_convert(source, binout)
+    assert _dump(_tools.tool_sniff(binout))["format"] == "lsdyna_binout"
+    back = meshioplusplus.read(binout)
+    np.testing.assert_allclose(
+        back.point_data["displacement"], mesh.point_data["displacement"]
+    )
+
+
+def test_a_result_mesh_converts_to_an_abaqus_results_file(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2]]))],
+    )
+    mesh.point_data["U"] = np.arange(9, dtype=float).reshape(3, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    fil = str(tmp_path / "result.fil")
+    _tools.tool_convert(source, fil)
+    assert _dump(_tools.tool_sniff(fil))["format"] == "abaqus_fil"
+    back = meshioplusplus.read(fil)
+    np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
 
 
 def test_marc_and_ansys_results_formats(tmp_path):
