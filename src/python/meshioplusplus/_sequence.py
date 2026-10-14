@@ -95,6 +95,10 @@ TIME_KEY = "meshio:time"
 # **`nastran_op2` joined with the same writer shape**: the model once and a
 # block per step in each result table (`nastran_op2.SeriesWriter`, which holds
 # the tables and assembles the file when it closes).
+#
+# **`lsdyna_binout` joined likewise**: `nodout`'s ids once and an output folder
+# per step, any other database's whenever its own time moves
+# (`lsdyna_binout.SeriesWriter`, which assembles the file when it closes).
 _SERIES_WRITERS = (
     "xdmf",
     "gid",
@@ -105,6 +109,7 @@ _SERIES_WRITERS = (
     "frd",
     "radioss_th",
     "nastran_op2",
+    "lsdyna_binout",
     "exodus",
 )
 
@@ -863,6 +868,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
 
         # Pushed: each step's tables are held, and the file is assembled when
         # the writer closes (a result table holds every step).
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "lsdyna_binout":
+        from .lsdyna_binout import SeriesWriter
+
+        # Pushed: an output per step, assembled into the file when it closes.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

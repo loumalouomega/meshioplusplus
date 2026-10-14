@@ -5440,6 +5440,26 @@ PYBIND11_MODULE(_core, m) {
         .def("num_steps", &meshioplusplus::NastranOp2SeriesWriter::NumSteps)
         .def("finalize", &meshioplusplus::NastranOp2SeriesWriter::Finalize);
 
+    // LS-DYNA binout writer, and the step-by-step series writer behind
+    // `meshioplusplus.lsdyna_binout.SeriesWriter`.
+    m.def("lsdyna_binout_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_lsdyna_binout(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::LsdynaBinoutSeriesWriter>(m, "LsdynaBinoutSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::LsdynaBinoutSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::LsdynaBinoutSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::LsdynaBinoutSeriesWriter::Finalize);
+
     // LS-DYNA d3plot state database reader.
     m.def(
         "lsdyna_d3plot_read",

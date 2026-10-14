@@ -18100,11 +18100,16 @@ MESHIOPLUSPLUS_API Mesh read_lsdyna(const std::string& rPath);
  * `binout:<database>:<variable>` (`binout:elout/beam:axial`), with its
  * `binout:<database>:time` and, from its metadata, `binout:<database>:ids`.
  *
+ * The writer (`write_lsdyna_binout`, `LsdynaBinoutSeriesWriter`) is the
+ * reader's inverse: one little-endian LSDA file with 8-byte lengths and
+ * offsets, reals stored as `float32` and integers as `int32`.
+ *
  * See doc/formats/lsdyna_binout.md.
  */
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18145,6 +18150,67 @@ MESHIOPLUSPLUS_API bool is_binout_filename(const std::string& rPath);
  *        symbol-table offset command.
  */
 MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
+
+/**
+ * @brief Write a mesh as a one-output binout.
+ *
+ * `nodout` is the points (`x_coordinate`, `y_coordinate`, `z_coordinate`),
+ * their ids (`lsdyna:nid`, else 1 to n), the vectors `displacement`,
+ * `rotation`, `velocity`, `rotational_velocity`, `acceleration` and
+ * `rotational_acceleration` (`n x 3`), every other one-dimensional per-point
+ * array (for 2 or more points) under its own name, and the
+ * `binout:nodout:<variable>` field data. Every other database is
+ * `binout:<database>:<variable>` field data (`<database>` may nest with `/`,
+ * `binout:elout/beam:axial`), with `binout:<database>:time` its output's time
+ * (else the step's) and `binout:<database>:ids` its metadata ids. Reals are
+ * stored as `float32` and integers as `int32`; the output's time is
+ * `meshio:time` (0 when absent). Cells, regions and other arrays are dropped
+ * with a warning. The Python twin writes the same bytes.
+ *
+ * @throws WriteError on an id outside the 32-bit range, a variable or
+ *         database name a binout cannot hold, a variable repeated, a mesh with
+ *         no point and no `binout:*` field data, or a file that cannot be
+ *         opened
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A binout written step by step: `nodout`'s ids once and an output
+ *        folder per step, and any other database's output whenever its own
+ *        `binout:<database>:time` changes (so a database written less often
+ *        than `nodout` keeps its own cadence).
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and ids and, for each database, its first output's variables (a
+ * database may be absent from a step and appear later); a step that does not
+ * is a `WriteError`. The time of a step is the argument, not its
+ * `meshio:time`. One step is `write_lsdyna_binout`'s bytes. The Python twin,
+ * `meshioplusplus.lsdyna_binout.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API LsdynaBinoutSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit LsdynaBinoutSeriesWriter(const std::string& rPath);
+    ~LsdynaBinoutSeriesWriter();
+
+    LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter& operator=(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept;
+    LsdynaBinoutSeriesWriter& operator=(LsdynaBinoutSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/lsdyna_binout.hpp =====
@@ -102893,6 +102959,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/lsdyna_binout.cpp =====
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -102904,6 +102971,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 #include <array>
 #include <limits>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -103487,6 +103555,525 @@ MeshMetadata read_lsdyna_binout_metadata(const std::string& rPath, const ReadOpt
     meta.mFormat = "lsdyna_binout";
     meta.mTimeValues = lsdyna_binout_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: one little-endian LSDA file with 8-byte lengths and offsets. The twin of
+// lsdyna_binout/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::int32_t kLbwCd = 2, kLbwData = 3, kLbwVariable = 4, kLbwBegin = 5, kLbwEnd = 6,
+                       kLbwOffset = 7;
+constexpr std::uint8_t kLbwInt32 = 3, kLbwFloat32 = 9;
+
+[[noreturn]] void lbw_fail(const std::string& rMessage) {
+    throw WriteError("LS-DYNA binout: " + rMessage);
+}
+
+/// A double as the file's single precision, rounded like numpy's cast (an overflow is an
+/// infinity).
+float lbw_float(double V) {
+    if (V != V)
+        return std::numeric_limits<float>::quiet_NaN();
+    if (std::fabs(V) >= 3.4028235677973366e38)
+        return V < 0 ? -std::numeric_limits<float>::infinity()
+                     : std::numeric_limits<float>::infinity();
+    return static_cast<float>(V);
+}
+
+void lbw_put(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = 0; i < N; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+/// One variable's values: floats or integers, never both.
+struct LbwArray {
+    std::string mName;
+    bool mFloat = false;
+    std::vector<double> mReals;
+    std::vector<std::int64_t> mInts;
+};
+
+LbwArray lbw_array(const std::string& rName, const NDArray& rData) {
+    LbwArray a;
+    a.mName = rName;
+    a.mFloat = detail::is_float_dtype(rData.Dtype());
+    if (a.mFloat) {
+        const detail::DoubleView v(rData);
+        a.mReals.assign(v.Data(), v.Data() + rData.Size());
+    } else {
+        const detail::Int64View v(rData);
+        a.mInts.assign(v.Data(), v.Data() + rData.Size());
+    }
+    return a;
+}
+
+LbwArray lbw_column(const std::string& rName, const double* pValues, std::size_t N,
+                    std::size_t Stride) {
+    LbwArray a;
+    a.mName = rName;
+    a.mFloat = true;
+    a.mReals.resize(N);
+    for (std::size_t i = 0; i < N; ++i)
+        a.mReals[i] = pValues[i * Stride];
+    return a;
+}
+
+void lbw_check_name(const std::string& rName, const char* pWhat) {
+    bool ascii = true;
+    for (const char c : rName)
+        ascii = ascii && static_cast<unsigned char>(c) < 0x80;
+    if (rName.empty() || rName.size() > 255 || rName.find('/') != std::string::npos || !ascii)
+        lbw_fail(std::string(pWhat) + " '" + rName + "' is not a name a binout can hold");
+}
+
+/// DATA records as they are added, and the entries of the symbol table.
+class LbwLsda {
+public:
+    LbwLsda() {
+        mData.assign(reinterpret_cast<const char*>(kHeader), 8);
+        lbw_put(mData, 17, 8);
+        lbw_put(mData, static_cast<std::uint64_t>(kLbwOffset), 1);
+        lbw_put(mData, 0, 8);
+    }
+
+    void Var(const std::string& rDir, const LbwArray& rArray) {
+        const std::string what = "'" + rDir + "/" + rArray.mName + "'";
+        std::string raw;
+        std::size_t count;
+        std::uint8_t code;
+        if (rArray.mFloat) {
+            code = kLbwFloat32;
+            count = rArray.mReals.size();
+            for (const double v : rArray.mReals) {
+                const float f = lbw_float(v);
+                std::uint32_t bits;
+                std::memcpy(&bits, &f, 4);
+                lbw_put(raw, bits, 4);
+            }
+        } else {
+            code = kLbwInt32;
+            count = rArray.mInts.size();
+            for (const std::int64_t v : rArray.mInts) {
+                if (v < -2147483648LL || v > 2147483647LL)
+                    lbw_fail(what + " holds an integer outside the 32-bit range");
+                lbw_put(raw, static_cast<std::uint32_t>(static_cast<std::int32_t>(v)), 4);
+            }
+        }
+        const std::size_t offset = mData.size();
+        lbw_put(mData, 8 + 1 + 1 + 1 + rArray.mName.size() + raw.size(), 8);
+        lbw_put(mData, kLbwData, 1);
+        lbw_put(mData, code, 1);
+        lbw_put(mData, rArray.mName.size(), 1);
+        mData += rArray.mName;
+        mData += raw;
+        mEntries.push_back({rDir, rArray.mName, code, offset, count});
+    }
+
+    std::string Finish() const {
+        std::string out = mData;
+        const std::uint64_t table = out.size();
+        for (std::size_t i = 0; i < 8; ++i)
+            out[17 + i] = static_cast<char>((table >> (8 * i)) & 0xffu);
+        lbw_put(out, 9, 8);
+        lbw_put(out, kLbwBegin, 1);
+        std::string cwd;
+        for (const Entry& e : mEntries) {
+            if (e.mDir != cwd) {
+                lbw_put(out, 9 + e.mDir.size(), 8);
+                lbw_put(out, kLbwCd, 1);
+                out += e.mDir;
+                cwd = e.mDir;
+            }
+            lbw_put(out, 9 + e.mName.size() + 1 + 8 + 8, 8);
+            lbw_put(out, kLbwVariable, 1);
+            out += e.mName;
+            lbw_put(out, e.mCode, 1);
+            lbw_put(out, e.mOffset, 8);
+            lbw_put(out, e.mCount, 8);
+        }
+        lbw_put(out, 17, 8);
+        lbw_put(out, kLbwEnd, 1);
+        lbw_put(out, 0, 8);
+        return out;
+    }
+
+private:
+    struct Entry {
+        std::string mDir, mName;
+        std::uint8_t mCode;
+        std::size_t mOffset, mCount;
+    };
+    static constexpr unsigned char kHeader[8] = {8, 8, 8, 1, 1, 1, 0, 0};
+    std::string mData;
+    std::vector<Entry> mEntries;
+};
+
+/// One database's variables of one step.
+struct LbwOutput {
+    double mTime = 0.0;
+    std::vector<LbwArray> mVars;
+    std::optional<std::vector<std::int64_t>> mIds;
+
+    std::vector<std::pair<std::string, bool>> Layout() const {
+        std::vector<std::pair<std::string, bool>> out;
+        for (const LbwArray& a : mVars)
+            out.emplace_back(a.mName, a.mFloat);
+        return out;
+    }
+};
+
+using LbwSignature = std::size_t;
+
+const std::pair<const char*, std::array<const char*, 3>> kLbwVectors[] = {
+    {"displacement", {"x_displacement", "y_displacement", "z_displacement"}},
+    {"rotation", {"rx_displacement", "ry_displacement", "rz_displacement"}},
+    {"velocity", {"x_velocity", "y_velocity", "z_velocity"}},
+    {"rotational_velocity", {"rx_velocity", "ry_velocity", "rz_velocity"}},
+    {"acceleration", {"x_acceleration", "y_acceleration", "z_acceleration"}},
+    {"rotational_acceleration", {"rx_acceleration", "ry_acceleration", "rz_acceleration"}},
+};
+const char* const kLbwCoordinates[3] = {"x_coordinate", "y_coordinate", "z_coordinate"};
+
+bool lbw_is_step_name(const std::string& rName) {
+    return rName.size() > 1 && rName[0] == 'd' &&
+           std::all_of(rName.begin() + 1, rName.end(), [](char C) { return C >= '0' && C <= '9'; });
+}
+
+std::vector<std::string> lbw_split(const std::string& rText, char Sep) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t at = rText.find(Sep, start);
+        parts.push_back(rText.substr(start, at == std::string::npos ? at : at - start));
+        if (at == std::string::npos)
+            return parts;
+        start = at + 1;
+    }
+}
+
+/// One step of the mesh, as the file holds it.
+class LbwStep {
+public:
+    LbwStep(const Mesh& rMesh, double Time) : mTime(static_cast<double>(lbw_float(Time))) {
+        mNpoints = rMesh.NumPoints();
+        std::map<std::string, std::map<std::string, std::pair<std::string, const NDArray*>>> fields;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            if (name == kSequenceTimeKey)
+                continue;
+            const std::vector<std::string> parts = lbw_split(name, ':');
+            if (parts[0] != "binout" || parts.size() < 3) {
+                mDropped.insert(name);
+                continue;
+            }
+            std::string database = parts[1];
+            for (std::size_t i = 2; i + 1 < parts.size(); ++i)
+                database += ":" + parts[i];
+            fields[database][parts.back()] = {name, &rMesh.FieldData(name)};
+        }
+        std::set<std::string> used;
+        if (mNpoints > 0)
+            mNodout = Nodout(rMesh, used, fields["nodout"]);
+        for (const auto& [database, items] : fields)
+            Database(database, items);
+        for (const std::string& name : rMesh.PointDataNames())
+            if (used.count(name) == 0)
+                mDropped.insert(name);
+        for (const std::string& name : rMesh.CellDataNames())
+            mDropped.insert(name);
+    }
+
+    double mTime = 0.0;
+    std::size_t mNpoints = 0;
+    std::optional<LbwOutput> mNodout;
+    std::map<std::string, LbwOutput> mDatabases;
+    std::set<std::string> mDropped;
+
+private:
+    LbwOutput Nodout(const Mesh& rMesh, std::set<std::string>& rUsed,
+                     const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
+        const std::size_t n = mNpoints;
+        const std::size_t dim = rMesh.PointDim();
+        const detail::DoubleView pts(rMesh.Points());
+        std::vector<double> points(n * 3, 0.0);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < 3 && k < dim; ++k)
+                points[3 * i + k] = pts.Data()[i * dim + k];
+        LbwOutput out;
+        out.mTime = mTime;
+        for (std::size_t k = 0; k < 3; ++k)
+            out.mVars.push_back(lbw_column(kLbwCoordinates[k], points.data() + k, n, 3));
+        for (const auto& [name, parts] : kLbwVectors) {
+            if (!rMesh.HasPointData(name))
+                continue;
+            rUsed.insert(name);
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() != 3 * n) {
+                mDropped.insert(name);
+                continue;
+            }
+            const detail::DoubleView v(a);
+            for (std::size_t k = 0; k < 3; ++k)
+                out.mVars.push_back(lbw_column(parts[k], v.Data() + k, n, 3));
+        }
+        std::vector<std::int64_t> ids(n);
+        rUsed.insert("lsdyna:nid");
+        if (rMesh.HasPointData("lsdyna:nid")) {
+            const NDArray& a = rMesh.PointData("lsdyna:nid");
+            if (a.Size() != n || detail::is_float_dtype(a.Dtype()))
+                lbw_fail("'lsdyna:nid' must hold one integer per point");
+            const detail::Int64View v(a);
+            ids.assign(v.Data(), v.Data() + n);
+        } else {
+            for (std::size_t i = 0; i < n; ++i)
+                ids[i] = static_cast<std::int64_t>(i + 1);
+        }
+        const auto has_variable = [&](const std::string& rName) {
+            return std::any_of(out.mVars.begin(), out.mVars.end(),
+                               [&](const LbwArray& A) { return A.mName == rName; });
+        };
+        for (const std::string& name : rMesh.PointDataNames()) {
+            const NDArray& a = rMesh.PointData(name);
+            if (rUsed.count(name) != 0)
+                continue;
+            bool vector_name = false;
+            for (const auto& [vname, parts] : kLbwVectors)
+                vector_name = vector_name || name == vname;
+            if (vector_name)
+                continue;
+            if (a.Size() != n || a.Shape().size() != 1 || n < 2)
+                continue;
+            lbw_check_name(name, "point data");
+            if (name == "time" || has_variable(name))
+                lbw_fail("point data '" + name + "' is a variable of nodout of its own");
+            rUsed.insert(name);
+            out.mVars.push_back(lbw_array(name, a));
+        }
+        for (const auto& [variable, item] : rItems) {
+            lbw_check_name(variable, "variable");
+            if (variable == "time" || variable == "ids") {
+                mDropped.insert(item.first);
+                continue;
+            }
+            if (has_variable(variable))
+                lbw_fail("'" + item.first + "' repeats a variable of nodout");
+            out.mVars.push_back(lbw_array(variable, *item.second));
+        }
+        out.mIds = std::move(ids);
+        return out;
+    }
+
+    void Database(const std::string& rDatabase,
+                  const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
+        if (rDatabase == "nodout") {
+            if (!mNodout)  // no points: nodout is not a database of its own
+                for (const auto& [variable, item] : rItems)
+                    mDropped.insert(item.first);
+            return;
+        }
+        for (const std::string& part : lbw_split(rDatabase, '/')) {
+            lbw_check_name(part, "database");
+            if (lbw_is_step_name(part) || part == "metadata")
+                lbw_fail("'" + rDatabase + "' is not a name a database can have");
+        }
+        LbwOutput out;
+        out.mTime = mTime;
+        for (const auto& [variable, item] : rItems) {
+            lbw_check_name(variable, "variable");
+            const NDArray& a = *item.second;
+            if (variable == "time") {
+                if (a.Size() > 0)
+                    out.mTime = static_cast<double>(lbw_float(detail::DoubleView(a).Data()[0]));
+                continue;
+            }
+            if (variable == "ids") {
+                if (detail::is_float_dtype(a.Dtype())) {
+                    mDropped.insert(item.first);
+                } else {
+                    const detail::Int64View v(a);
+                    out.mIds = std::vector<std::int64_t>(v.Data(), v.Data() + a.Size());
+                }
+                continue;
+            }
+            out.mVars.push_back(lbw_array(variable, a));
+        }
+        mDatabases[rDatabase] = std::move(out);
+    }
+};
+
+/// The whole file: every step added so far.
+class LbwArchive {
+public:
+    void Add(const LbwStep& rStep) {
+        const std::size_t index = mSteps;
+        if (mSteps == 0) {
+            mNpoints = rStep.mNpoints;
+            if (rStep.mNodout)
+                mNodoutLayout = rStep.mNodout->Layout();
+        } else if (rStep.mNpoints != mNpoints) {
+            lbw_fail("series: step " + std::to_string(index) + " has " +
+                     std::to_string(rStep.mNpoints) + " points, the first " +
+                     std::to_string(mNpoints) +
+                     "; a binout holds one set of nodes -- write one file per step with "
+                     "'{step}'");
+        }
+        if (rStep.mNodout)
+            Nodout(*rStep.mNodout, index);
+        for (const auto& [database, out] : rStep.mDatabases)
+            Output(database, out, index);
+        ++mSteps;
+    }
+
+    std::size_t Steps() const { return mSteps; }
+
+    std::string Finish() const {
+        if (mCounts.empty())
+            lbw_fail("the mesh holds no database: no points and no binout:* field data");
+        return mLsda.Finish();
+    }
+
+private:
+    void Nodout(const LbwOutput& rOut, std::size_t Index) {
+        if (mSteps == 0) {
+            mIds = *rOut.mIds;
+            LbwArray ids;
+            ids.mName = "ids";
+            ids.mInts = mIds;
+            mLsda.Var("/nodout/metadata", ids);
+        } else if (rOut.Layout() != mNodoutLayout || *rOut.mIds != mIds) {
+            lbw_fail("series: step " + std::to_string(Index) +
+                     "'s nodes or variables differ from the first step's; a binout holds one "
+                     "set of them");
+        }
+        Folder("nodout", rOut);
+    }
+
+    void Output(const std::string& rDatabase, const LbwOutput& rOut, std::size_t Index) {
+        const auto layout = rOut.Layout();
+        const auto it = mDbLayout.find(rDatabase);
+        if (it == mDbLayout.end()) {
+            mDbLayout[rDatabase] = layout;
+            if (rOut.mIds) {
+                LbwArray ids;
+                ids.mName = "ids";
+                ids.mInts = *rOut.mIds;
+                mLsda.Var("/" + rDatabase + "/metadata", ids);
+            }
+        } else if (layout != it->second) {
+            lbw_fail("series: step " + std::to_string(Index) + "'s variables of '" + rDatabase +
+                     "' differ from its first output's");
+        }
+        // An output is new when its time moved: the reader carries the latest.
+        const auto last = mLast.find(rDatabase);
+        if (last != mLast.end() && last->second == rOut.mTime)
+            return;
+        Folder(rDatabase, rOut);
+    }
+
+    void Folder(const std::string& rDatabase, const LbwOutput& rOut) {
+        const std::size_t count = ++mCounts[rDatabase];
+        mLast[rDatabase] = rOut.mTime;
+        std::string number = std::to_string(count);
+        number.insert(0, number.size() < 6 ? 6 - number.size() : 0, '0');
+        const std::string dir = "/" + rDatabase + "/d" + number;
+        LbwArray time;
+        time.mName = "time";
+        time.mFloat = true;
+        time.mReals = {rOut.mTime};
+        mLsda.Var(dir, time);
+        for (const LbwArray& a : rOut.mVars)
+            mLsda.Var(dir, a);
+    }
+
+    LbwLsda mLsda;
+    std::vector<std::pair<std::string, bool>> mNodoutLayout;
+    std::map<std::string, std::vector<std::pair<std::string, bool>>> mDbLayout;
+    std::map<std::string, std::size_t> mCounts;
+    std::map<std::string, double> mLast;
+    std::vector<std::int64_t> mIds;
+    std::size_t mNpoints = 0;
+    std::size_t mSteps = 0;
+};
+
+void lbw_warn_dropped(const LbwStep& rStep) {
+    if (rStep.mDropped.empty())
+        return;
+    std::string list;
+    for (const std::string& n : rStep.mDropped)
+        list += (list.empty() ? "" : ", ") + n;
+    log::warn("LS-DYNA binout: arrays without a place in the file are not written: {}", list);
+}
+
+double lbw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+void lbw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        lbw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const LbwStep step(rMesh, lbw_time_of(rMesh));
+    lbw_warn_dropped(step);
+    LbwArchive archive;
+    archive.Add(step);
+    lbw_save(rPath, archive.Finish());
+}
+
+struct LsdynaBinoutSeriesWriter::Impl {
+    std::string mPath;
+    LbwArchive mArchive;
+    bool mDone = false;
+};
+
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+LsdynaBinoutSeriesWriter::~LsdynaBinoutSeriesWriter() = default;
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept = default;
+LsdynaBinoutSeriesWriter& LsdynaBinoutSeriesWriter::operator=(LsdynaBinoutSeriesWriter&&) noexcept =
+    default;
+
+void LsdynaBinoutSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        lbw_fail("series: the writer was moved from");
+    const LbwStep step(rMesh, Time);
+    if (mpImpl->mArchive.Steps() == 0)
+        lbw_warn_dropped(step);
+    mpImpl->mArchive.Add(step);
+}
+
+std::size_t LsdynaBinoutSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mArchive.Steps() : 0;
+}
+
+void LsdynaBinoutSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mArchive.Steps() == 0)
+        lbw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    lbw_save(mpImpl->mPath, mpImpl->mArchive.Finish());
 }
 
 }  // namespace meshioplusplus
@@ -184797,13 +185384,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
-        rFormat == "nastran_op2") {
+        rFormat == "nastran_op2" || rFormat == "lsdyna_binout") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'nastran_op2' and 'exodus' can); "
+           "'frd', 'radioss_th', 'nastran_op2', 'lsdyna_binout' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -185092,14 +185679,15 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
             "select");
-    const char* who = rFormat == "exodus"        ? "Exodus"
-                      : rFormat == "vtkhdf"      ? "VTKHDF"
-                      : rFormat == "pvd"         ? "PVD"
-                      : rFormat == "femap"       ? "Femap"
-                      : rFormat == "frd"         ? "CalculiX FRD"
-                      : rFormat == "radioss_th"  ? "Radioss time-history"
-                      : rFormat == "nastran_op2" ? "Nastran OP2"
-                                                 : "XDMF";
+    const char* who = rFormat == "exodus"          ? "Exodus"
+                      : rFormat == "vtkhdf"        ? "VTKHDF"
+                      : rFormat == "pvd"           ? "PVD"
+                      : rFormat == "femap"         ? "Femap"
+                      : rFormat == "frd"           ? "CalculiX FRD"
+                      : rFormat == "radioss_th"    ? "Radioss time-history"
+                      : rFormat == "nastran_op2"   ? "Nastran OP2"
+                      : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
+                                                   : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -185121,6 +185709,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
             "to select");
+    if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
+            "variant to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
@@ -185230,6 +185822,19 @@ private:
     NastranOp2SeriesWriter mWriter;
 };
 
+/// A binout keeps every output's records and writes the file when it is finalized, so
+/// `WritePointsCells` has nothing to do.
+class SeqLsdynaBinoutSink final : public SeqSeriesSink {
+public:
+    explicit SeqLsdynaBinoutSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    LsdynaBinoutSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -185274,6 +185879,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqRadiossThSink>(rPath);
     if (rFormat == "nastran_op2")
         return std::make_unique<SeqNastranOp2Sink>(rPath);
+    if (rFormat == "lsdyna_binout")
+        return std::make_unique<SeqLsdynaBinoutSink>(rPath);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);
@@ -192744,6 +193351,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // No extension (`<run>T01`): by name or explicit format only.
         {"radioss_th", meshioplusplus::write_radioss_th},
         {"nastran_op2", meshioplusplus::write_nastran_op2},
+        // No extension (`binout`): by name or explicit format only.
+        {"lsdyna_binout", meshioplusplus::write_lsdyna_binout},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",

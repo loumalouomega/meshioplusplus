@@ -325,6 +325,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // No extension (`<run>T01`): by name or explicit format only.
         {"radioss_th", meshioplusplus::write_radioss_th},
         {"nastran_op2", meshioplusplus::write_nastran_op2},
+        // No extension (`binout`): by name or explicit format only.
+        {"lsdyna_binout", meshioplusplus::write_lsdyna_binout},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",

@@ -4,6 +4,8 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._binout import read as _py_read
 from ._binout import time_values as _py_time_values
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import write as _py_write
 
 
 def read(filename, points_only=False, arrays=None, time_step=0):
@@ -41,7 +43,83 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-# Found by its file name (``binout``...) or its LSDA header, never an extension.
-register_format("lsdyna_binout", [], read, {})
+def write(filename, mesh):
+    """Write a mesh as a one-output LS-DYNA binout (``binout``).
 
-__all__ = ["read", "time_values"]
+    The inverse of :func:`read`: a single LSDA file. ``nodout`` is the points
+    (``x_coordinate``...), their ids (``lsdyna:nid``, else 1 to n), the vectors
+    ``displacement``, ``rotation``, ``velocity``, ``rotational_velocity``,
+    ``acceleration`` and ``rotational_acceleration`` (``(n, 3)``), any other
+    per-point array under its own name and ``binout:nodout:<variable>`` field
+    data. Every other database is ``binout:<database>:<variable>`` field data
+    (``binout:glstat:kinetic_energy``, ``binout:elout/beam:axial``) with its
+    ``binout:<database>:time`` and ``binout:<database>:ids``. Reals are stored
+    as ``float32`` and integers as ``int32``. The output's time is
+    ``meshio:time`` (0 when absent). Cells, regions and other arrays are
+    dropped with a warning.
+    """
+    if not is_buffer(filename, "w"):
+        try:
+            _core.lsdyna_binout_write(str(filename), mesh)
+            return
+        except Exception as exc:
+            if not core_declined(exc, "lsdyna_binout", "write", filename):
+                raise
+    return _py_write(filename, mesh)
+
+
+class SeriesWriter:
+    """Write a time series into one binout: ``nodout``'s ids once and an output
+    per step, and any other database's output whenever its own
+    ``binout:<database>:time`` changes, so a database written less often than
+    ``nodout`` keeps its own cadence (the inverse of what ``read`` attaches to a
+    step). A step's time is the argument, not its ``meshio:time``. Every step
+    must have the first step's points and each database's variables.
+    ``write_sequence(path, steps, file_format="lsdyna_binout")`` uses it.
+
+    >>> with meshioplusplus.lsdyna_binout.SeriesWriter("binout") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+
+    The C++ core writes the file; the Python twin, which writes the same bytes,
+    when the core declines to open it.
+    """
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.LsdynaBinoutSeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "lsdyna_binout", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            if self._core.num_steps():
+                self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+# Found by its file name (``binout``...) or its LSDA header, never an extension.
+register_format("lsdyna_binout", [], read, {"lsdyna_binout": write})
+
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

@@ -3045,6 +3045,25 @@ def test_a_result_mesh_converts_to_nastran_op2(tmp_path):
     )
 
 
+def test_a_result_mesh_converts_to_a_binout(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], dtype=float),
+        [("vertex", np.arange(3)[:, None])],
+    )
+    mesh.point_data["displacement"] = np.arange(9, dtype=float).reshape(3, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    out = _dump(_tools.tool_formats())
+    assert "lsdyna_binout" in out["readable"] and "lsdyna_binout" in out["writable"]
+    binout = str(tmp_path / "binout")
+    _tools.tool_convert(source, binout)
+    assert _dump(_tools.tool_sniff(binout))["format"] == "lsdyna_binout"
+    back = meshioplusplus.read(binout)
+    np.testing.assert_allclose(
+        back.point_data["displacement"], mesh.point_data["displacement"]
+    )
+
+
 def test_marc_and_ansys_results_formats(tmp_path):
     import pathlib
 

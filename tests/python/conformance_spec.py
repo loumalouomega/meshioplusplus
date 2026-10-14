@@ -1238,6 +1238,28 @@ SPEC: dict[str, dict] = {
         "(`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and "
         "regions have no place; cells come back ordered by element card.",
     },
+    "lsdyna_binout": {
+        "cells": {
+            "vertex": "exact",
+            "line": "as vertex",
+            "triangle": "as vertex",
+            "quad": "as vertex",
+            "tetra": "as vertex",
+            "hexahedron": "as vertex",
+            "wedge": "as vertex",
+            "pyramid": "as vertex",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A binout holds `nodout`'s nodes, not elements: the points come back as a "
+        "`vertex` cloud, single precision, and only `nodout`'s own vectors "
+        "(`displacement`...) are `(n, 3)`; per-point scalars come back as float64 "
+        "(an integer one is stored as `int32`, and the reader widens every per-point "
+        "array to float64), and the canonical `fd` is not a `binout:` name.",
+    },
     "step": {
         "cells": {
             "tetra": "as triangle",
@@ -1622,7 +1644,6 @@ READ_ONLY = {
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
         "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
     ),
-    "lsdyna_binout": _GAP.format(item="3.2.3", why=_RESULT.format(tool="LS-DYNA")),
     "lsdyna_d3plot": _GAP.format(item="3.2.2", why=_RESULT.format(tool="LS-DYNA")),
     "marc_t19": _GAP.format(
         item="3.2.11",

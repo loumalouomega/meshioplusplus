@@ -61,7 +61,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, also gzip/bzip2; active cells of refined meshes, subdomains, side, edge, shell-face and node sets as named regions, written back in the 1.8.0 layout),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
-> [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output, read-only; `nodout` outputs are steps, the other databases field data),
+> [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output; `nodout` outputs are steps, the other databases field data; written too, a `nodout` cloud per step with each database on its own cadence),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions, NURBS meshes with their patches kept and written back) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
