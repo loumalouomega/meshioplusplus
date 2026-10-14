@@ -8,6 +8,10 @@
  */
 import { expect, test } from '@playwright/test';
 
+// The COOP/COEP service worker reloads a fresh page once, which can land during the first
+// poll in openSample. Picking does not need cross-origin isolation, so block that service worker.
+test.use({ serviceWorkers: 'block' });
+
 async function openSample(page, label) {
     await page.goto('./');
     await expect.poll(() => page.evaluate(() => window.__viewerState.status)).toBe('idle');
