@@ -155,6 +155,8 @@ def test_pipeline_steps_in_both_engines(tmp_path):
     # build of _core has no zlib to inflate the default compressed VTU. These
     # tests are about the steps, not the codec.
     src = tmp_path / "box.vtu"
+    # Uncompressed: the C++ leg reads this file, and the Windows wheel is built
+    # without zlib, which refuses a zlib-compressed VTU.
     mio.write(src, box_skin(2), compression=None)
     settings = {
         "Version": 1,
