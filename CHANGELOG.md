@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Benchmarks** (roadmap 6.1, closed): the `undo_green` row of the operations harness now completes at `--tier XL` (10,368,000 tetrahedra): 2.05 s and a 12.0 GB peak on one thread, where it was killed by the out-of-memory killer at 13.3 GB before its scratch was released. `benchmark/xl_ops_seq.csv`, `doc/spikes.md` and `doc/benchmarks.md` carry the measurement; no library change.
+
 ## v16.43.0 (2026-10-14)
 
 **The isogeometric layer (roadmap 6.2.2, closing 6.2): evaluate, refine and sample the NURBS models that `NurbsInfo` (MFEM) and `BrepInfo` (Kratos CAD JSON, STEP, IGES) carry, without going through their sampling.**
