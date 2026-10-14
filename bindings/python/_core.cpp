@@ -5440,6 +5440,29 @@ PYBIND11_MODULE(_core, m) {
         .def("num_steps", &meshioplusplus::NastranOp2SeriesWriter::NumSteps)
         .def("finalize", &meshioplusplus::NastranOp2SeriesWriter::Finalize);
 
+    // Abaqus results-file writer, and the increment-by-increment series writer behind
+    // `meshioplusplus.abaqus_fil.SeriesWriter`.
+    m.def(
+        "abaqus_fil_write",
+        [](const std::string& path, py::object pymesh, bool binary) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_abaqus_fil(path, mesh, binary);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = false);
+    py::class_<meshioplusplus::AbaqusFilSeriesWriter>(m, "AbaqusFilSeriesWriter")
+        .def(py::init<const std::string&, bool>(), py::arg("path"), py::arg("binary") = false)
+        .def(
+            "write",
+            [](meshioplusplus::AbaqusFilSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::AbaqusFilSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::AbaqusFilSeriesWriter::Finalize);
+
     // LS-DYNA binout writer, and the step-by-step series writer behind
     // `meshioplusplus.lsdyna_binout.SeriesWriter`.
     m.def("lsdyna_binout_write", [](const std::string& path, py::object pymesh) {

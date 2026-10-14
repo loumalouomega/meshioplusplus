@@ -2941,6 +2941,7 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
         assert fmt in out["readable"], fmt
     assert "z88" in out["writable"]
     assert "libmesh" in out["writable"]  # v16.11.0
+    assert "abaqus_fil" in out["writable"]
     for ext in (".xda", ".xdr", ".xda.gz", ".xdr.gz", ".xda.bz2", ".xdr.bz2"):
         assert out["extensions"][ext] == ["libmesh"], ext
     assert out["extensions"][".fil"] == ["abaqus_fil"]
@@ -3062,6 +3063,21 @@ def test_a_result_mesh_converts_to_a_binout(tmp_path):
     np.testing.assert_allclose(
         back.point_data["displacement"], mesh.point_data["displacement"]
     )
+
+
+def test_a_result_mesh_converts_to_an_abaqus_results_file(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2]]))],
+    )
+    mesh.point_data["U"] = np.arange(9, dtype=float).reshape(3, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    fil = str(tmp_path / "result.fil")
+    _tools.tool_convert(source, fil)
+    assert _dump(_tools.tool_sniff(fil))["format"] == "abaqus_fil"
+    back = meshioplusplus.read(fil)
+    np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
 
 
 def test_marc_and_ansys_results_formats(tmp_path):

@@ -6,7 +6,7 @@ The results file Abaqus/Standard (and Explicit, with `*FILE OUTPUT`) writes on r
 |---|---|
 | **Format name** | `abaqus_fil` |
 | **Extensions** | `.fil` (also recognised by content, ASCII and binary) |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#abaqus-fil): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.6) |
+| **Read / Write** | ✓ / ✓ ([writing](#writing); the remaining gaps are in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.6) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -69,6 +69,35 @@ Keys that differ between Abaqus/Standard and Abaqus/Explicit follow the incremen
 **Element matrices** (`*ELEMENT MATRIX OUTPUT`, v16.12.0) are field data, read from the whole file: the values of every element one after the other in `abaqus:stiffness`, `abaqus:mass` and `abaqus:load` (a record split into continuation records is joined), and per element a row `(element label, offset, count, flag)` in `abaqus:<kind>:index`, the flag being 1 for a symmetric matrix (its upper triangle by columns, as the file stores it), 0 for a nonsymmetric one (full, by columns) and the load case for a load vector. The degrees of freedom of each element (record 1002) are `abaqus:matrix_dofs` with the same index.
 
 Components keep the file's order, as every reader does ([mesh data model](../mesh_data_model.md)): a solid's `S` is 11, 22, 33, 12, **13, 23**, where meshio++'s six-component convention is `xx yy zz xy yz zx`. Von Mises does not depend on the order of the shear components; for principal values, swap the last two first. Von Mises is also `SINV`'s first component when the run wrote invariants; otherwise compute it from `S` with the [tensor-invariants operation](../tensor_invariants.md) on a `(cells, 6)` array, such as the mean over the points.
+
+## Writing
+
+```python
+import meshioplusplus
+
+meshioplusplus.write("job.fil", mesh)                       # ASCII, one increment
+meshioplusplus.write("job.fil", mesh, binary=True)          # 512-word blocks, little-endian, 8-byte words
+
+with meshioplusplus.abaqus_fil.SeriesWriter("job.fil") as w:   # the model once, an increment per step
+    for time, mesh in steps:
+        w.write(time, mesh)
+meshioplusplus.write_sequence("job.fil", steps, binary=True)   # the same
+```
+
+`meshioplusplus.abaqus_fil.write(filename, mesh, binary=False)`. Both engines write the same bytes; the C++ core writes the file and the Python twin takes over when it declines. The writer is the reader's inverse:
+
+- **The model** is written once: a 1921 header, the active degrees of freedom (1902), the nodes (1901, labels from `point_data["abaqus:id"]`, else 1 to n), the elements (1900 and its 1990 continuations, labels from `cell_data["abaqus:id"]`, else numbered block by block) and the `point` and `cell` regions as node sets (1931/1932) and element sets (1933/1934). A region name longer than 8 characters goes through a 1940 label cross-reference, as Abaqus does. Labels must be positive and unique, and a region or cell that refers to a point the mesh does not have is a `WriteError`.
+- **Cell types** become Abaqus element types the results file can name: `line` T3D2, `line3` T3D3, `triangle` S3, `quad` S4R, `triangle6` STRI65, `quad8` S8R, `quad9` S9R5, `tetra` C3D4, `tetra10` C3D10, `pyramid` C3D5, `pyramid13` C3D13, `wedge` C3D6, `wedge15` C3D15, `hexahedron` C3D8R and `hexahedron20` C3D20R. A block with no Abaqus type is left out with a warning.
+- **An increment** is a 2000 record (total time `meshio:time`, else the step's time; `abaqus:step_time`, `abaqus:procedure`, `abaqus:step` and `abaqus:increment` when present), its results and a 2001 record. Per-point arrays named by an Abaqus identifier (`U`, `V`, `A`, `RF`, `NT`, …, or `key_<n>`) are nodal records; per-cell arrays (`S`, `E`, `PEEQ`, …) are element records, at the integration points (width `points × components`, from `abaqus:layout:<name>`), at section points (`@sp<k>`), at the element nodes, at the centroid or for the whole element, and at rebar (`@rebar:<name>`): the inverse of the table under [Steps and data](#steps-and-data). A trailing NaN is trimmed from a record and an inner NaN written as 0, so a node or element with no value has no record. A value that is not finite elsewhere, or outside the range of a `D22.15` item, is a `WriteError`.
+- **Modes**: `abaqus:mode`, `abaqus:eigenvalue` and the frequency step's mass and participation fields become a 1980 record before the mode's nodal records.
+- **Not written**, and named in one warning: arrays and regions with no place in the file, `side` regions, contact output, element matrices, total energies and the mode-based dynamics records (301 to 310).
+- **ASCII** puts each record on 80-column lines starting with `*` (`I`, `D` with a `D` exponent, `A`, a blank line after 2001); **binary** writes 512-word blocks with 4-byte Fortran markers and pads the 2001 record to the block end.
+
+A series writes the model from the first step and an increment per step; a step whose points or cells differ from the first step's is a `WriteError` (`{step}` in the path writes one file per step instead). The step's time is the argument of `write` (or the pair's first item in `write_sequence`). One step is `write`'s bytes.
+
+pybaqus 0.2.17 reads the ASCII files (it does not read binary `.fil` files); this reader reads both layouts back. They were not opened in Abaqus/CAE.
+
+Not yet: contact output, element matrices, energies and the mode-based dynamics records, byte orders other than little-endian and 4-byte words (the rest of [roadmap 3.2.6](../roadmap.md#_3-reader-and-writer-parity)).
 
 ## Validation
 

@@ -1260,6 +1260,26 @@ SPEC: dict[str, dict] = {
         "(an integer one is stored as `int32`, and the reader widens every per-point "
         "array to float64), and the canonical `fd` is not a `binout:` name.",
     },
+    "abaqus_fil": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "A results file holds the model and the results Abaqus names: only point "
+        "data named like a nodal result (`U`, `RF`...) and cell data named like an element "
+        "result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; "
+        "a `vertex` has no Abaqus element and side regions are dropped.",
+    },
     "step": {
         "cells": {
             "tetra": "as triangle",
@@ -1633,7 +1653,6 @@ SPEC: dict[str, dict] = {
 _GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
 _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
-    "abaqus_fil": _GAP.format(item="3.2.6", why=_RESULT.format(tool="Abaqus")),
     "iges": (
         "Exempt, not a gap: a CAD exchange format read through the optional "
         "OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes."

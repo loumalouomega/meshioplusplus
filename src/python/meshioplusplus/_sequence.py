@@ -99,6 +99,9 @@ TIME_KEY = "meshio:time"
 # **`lsdyna_binout` joined likewise**: `nodout`'s ids once and an output folder
 # per step, any other database's whenever its own time moves
 # (`lsdyna_binout.SeriesWriter`, which assembles the file when it closes).
+#
+# **`abaqus_fil` joined likewise**: the model once and an increment per step
+# (`abaqus_fil.SeriesWriter`; `binary=True` writes the binary layout).
 _SERIES_WRITERS = (
     "xdmf",
     "gid",
@@ -110,6 +113,7 @@ _SERIES_WRITERS = (
     "radioss_th",
     "nastran_op2",
     "lsdyna_binout",
+    "abaqus_fil",
     "exodus",
 )
 
@@ -877,6 +881,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         from .lsdyna_binout import SeriesWriter
 
         # Pushed: an output per step, assembled into the file when it closes.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "abaqus_fil":
+        from .abaqus_fil import SeriesWriter
+
+        # Pushed: the model with the first step, then an increment per step.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

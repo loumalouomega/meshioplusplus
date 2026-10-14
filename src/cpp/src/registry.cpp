@@ -327,6 +327,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"nastran_op2", meshioplusplus::write_nastran_op2},
         // No extension (`binout`): by name or explicit format only.
         {"lsdyna_binout", meshioplusplus::write_lsdyna_binout},
+        {"abaqus_fil",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",
