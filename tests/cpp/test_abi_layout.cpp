@@ -79,6 +79,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
@@ -263,6 +264,9 @@ MIO_ABI_LAYOUT(meshioplusplus::FrdSeriesWriter, 8, 8);
 // `RadiossThSeriesWriter` is the same shape, pinned from the release that
 // introduces it.
 MIO_ABI_LAYOUT(meshioplusplus::RadiossThSeriesWriter, 8, 8);
+// `NastranOp2SeriesWriter` is the same shape, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::NastranOp2SeriesWriter, 8, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both

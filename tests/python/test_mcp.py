@@ -3010,9 +3010,9 @@ def test_d3plot_and_op2_formats(tmp_path):
 
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
-    for fmt in ("lsdyna_d3plot", "nastran_op2"):
-        assert fmt in out["readable"], fmt
-        assert fmt not in out["writable"], fmt
+    assert "lsdyna_d3plot" in out["readable"]
+    assert "lsdyna_d3plot" not in out["writable"]
+    assert "nastran_op2" in out["readable"] and "nastran_op2" in out["writable"]
     assert out["extensions"][".op2"] == ["nastran_op2"]
     # d3plot has no extension: the file name and the control block tell.
     d3plot = meshes / "lsdyna_d3plot" / "generated" / "shell_solid" / "d3plot"
@@ -3026,6 +3026,23 @@ def test_d3plot_and_op2_formats(tmp_path):
     mode = str(tmp_path / "mode.vtu")
     _tools.tool_convert(str(op2), mode, time_step=-1)
     assert "EIGENVECTOR" in meshioplusplus.read(mode).point_data
+
+
+def test_a_result_mesh_converts_to_nastran_op2(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float),
+        [("quad", np.array([[0, 1, 2, 3]]))],
+    )
+    mesh.point_data["DISPLACEMENT"] = np.arange(12, dtype=float).reshape(4, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    op2 = str(tmp_path / "result.op2")
+    _tools.tool_convert(source, op2)
+    assert _dump(_tools.tool_sniff(op2))["format"] == "nastran_op2"
+    back = meshioplusplus.read(op2)
+    np.testing.assert_allclose(
+        back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"]
+    )
 
 
 def test_marc_and_ansys_results_formats(tmp_path):

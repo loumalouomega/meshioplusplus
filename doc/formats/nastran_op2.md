@@ -6,7 +6,7 @@ The binary result file [MSC Nastran](https://hexagon.com/products/product-groups
 |---|---|
 | **Format name** | `nastran_op2` |
 | **Extensions** | `.op2` |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#nastran-op2): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.1) |
+| **Read / Write** | ✓ / ✓ (the core of the format is written: the model, the nodal tables and the centre stress and strain of shells, solids and rods; the rest is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.1) |
 | **Extra dependencies** | none |
 
 ## Reading
@@ -33,7 +33,7 @@ meshioplusplus.nastran_op2.time_values("job.op2")
 meshioplusplus convert job.op2 'mode_{step}.vtu'
 ```
 
-Both engines read the whole format: the C++ core, and a Python reference reader the core falls back to. `.op2` is read-only.
+Both engines read the whole format: the C++ core, and a Python reference reader the core falls back to. The writer is [below](#writing).
 
 ## Which files
 
@@ -103,6 +103,42 @@ The members common to [`nastran_h5`](./nastran_h5.md) (`X1`, `TXY1`, `X`, `TZX`,
 Since v16.10.0 the values beyond the centre are read too, with the arrays and `nastran:layout:<name>` field data of [`nastran_h5`](./nastran_h5.md#several-values-per-element): `<name>@corner` for the corners of solids (39, 67, 68, 255) and corner-output shells (64, 70, 75, 82, 144), `<name>@ply` for the composite plies (column `PLY - 1`) and `<name>@station` for `CBEAM`'s 11 stations and `CBAR`'s station entries (stations not output stay NaN). The grid point force tables (`OGPFB*`) give `GRID_FORCE:F1`...`M3` per element node and `GRID_FORCE:<label>:<M>` point data for the rows of no element (`*TOTALS*`, `APP-LOAD`, `F-OF-SPC`..., named without blanks and asterisks: `GRID_FORCE:TOTALS:F1`), rotated from each GRID's `CD` to basic. MSC writes a different header word 5 in `OGPFB1` than in the other tables of the subcase, so grid point forces join the step the subcase's other tables made instead of starting their own.
 
 **Not read**, and named in one warning: complex grid point forces, heat-transfer temperature rates and loads, nonlinear stress tables (`OESNLX*`), energy loss (`OEDE`), every other element type, and every other table (contact and bolt tables...).
+
+## Writing
+
+```python
+import meshioplusplus
+
+meshioplusplus.write("model.op2", mesh)                            # one step
+meshioplusplus.write("model.bin", mesh, file_format="nastran_op2")
+
+with meshioplusplus.nastran_op2.SeriesWriter("run.op2") as w:     # one file, a block per step
+    for time, mesh in steps:
+        w.write(time, mesh)
+meshioplusplus.write_sequence("run.op2", steps)                    # the same
+```
+
+```bash
+meshioplusplus convert result.vtu model.op2
+```
+
+The writer is the reader's inverse for the core of the format: an MSC-dialect file of 32-bit little-endian words and SORT1 real tables, the one a Nastran post-processor reads with no flags. The model is written the way the reader builds it:
+
+- **Points** are the `GEOM1` GRIDs, numbered from 1 in point order, in the basic system (`CP = CD = 0`); a 2-D point set gets `z = 0`.
+- **Cells** are the `GEOM2` element cards, one record per card in card-name order and each card's elements by id: `triangle` is `CTRIA3`, `quad` `CQUAD4`, `tetra` `CTETRA`, `pyramid` `CPYRAM`, `wedge` `CPENTA`, `hexahedron` `CHEXA`, `triangle6` `CTRIA6`, `quad8` `CQUAD8`, `quad9` `CQUAD`, the quadratic solids with their mid-side nodes in Nastran's order (the inverse of the permutation the reader applies to `hexahedron20` and `wedge15`), a `vertex` `CONM2` and a `line` `CROD`, `CTUBE` (when its property id belongs to a region named `PTUBE_<pid>`) or `CONROD` (when `nastran:pid` is zero or negative). Element ids are `nastran:eid`, else 1, 2, ... over the written blocks; they must be positive and unique. A cell block of another type (a polygon...) is not written, with a warning naming it.
+- **Properties.** `nastran:pid` gives each cell's property id, else 1 for shells, 2 for solids and 3 for rods. One `EPT` card is written per id, by the cell family it belongs to: `PSHELL`, `PSOLID`, `PROD` or `PTUBE`, so that the reader names the regions `PSHELL_<pid>` and so on. A property id shared by two families is a `WriteError`. The cards are placeholders: a thickness, an area or an outer diameter of 1, and material 1, which one unit `MAT1` (`E = 1`, `nu = 0.3`) defines, so the file loads and cross-references; they are not the model's, and only the id and the family carry over. Cards the writer does not produce (`CBAR`, `CBEAM`, `CBUSH`, the springs and dampers, composite and bush properties...) are not written back: a mesh read from an OP2 keeps its cells as the plain cards above.
+
+The results are the arrays the reader returns, under the same names:
+
+- **Point data**: `DISPLACEMENT` and `EIGENVECTOR` (`OUGV1`, table codes 1 and 7), `VELOCITY` and `ACCELERATION` (10, 11), `TEMPERATURE` (`OUGV1`, a thermal table), `SPC_FORCE` (`OQG1`), `MPC_FORCE` (`OQMG1`) and `APPLIED_LOAD` (`OPG1`), each `(n, 3)` with a `_ROT` twin for the rotations (zeros when absent) and `TEMPERATURE` `(n,)`. A point whose components are all NaN is left out of the table; the reader gives it NaN back.
+- **Cell data**: `STRESS:<M>` (`OES1X1`) and `STRAIN:<M>` (`OSTR1X`) under the reader's member names, for the linear shells `CQUAD4` and `CTRIA3` (`FD1`...`VON_MISES2`, or `MAX_SHEAR1` and `MAX_SHEAR2` when the mesh has those and no von Mises), the solids `CTETRA`, `CHEXA`, `CPENTA` and `CPYRAM` (`X`...`TZX`, `PRINCIPAL_A`...`C`, `PRESSURE`, `VON_MISES` or `OCT_SHEAR`; quadratic solids write the same table, for their corner nodes) and the rods `CROD` and `CONROD` (`A`, `MSA`, `T`, `MST`) and `CTUBE` (`AS`, `MSA`, `TS`, `MST`). A solid's table holds its centre and its corners: the corner values are `<M>@corner` when the mesh has them, else the centre value repeated, so a read of the file gains the `@corner` arrays. A member the mesh lacks, and a NaN inside a written row, are written as 0; a cell with every member NaN is left out.
+- **Not written**, and named in one warning: every other array (complex, random and SORT2 tables, `@ply` and `@station` values, element forces, heat fluxes, energies, grid point forces and the results of quadratic shells, bars and beams), field data other than `nastran:*` and `meshio:time`, regions, and `nastran:cp` and `nastran:cd`.
+
+A step is `nastran:subcase` (default 1), `nastran:analysis` (default 1, or 6 when `meshio:time` is not 0) and `nastran:mode` (default 1) of the field data, and `meshio:time` (0 when absent). The reader's own rules are inverted: a statics, buckling or other subcase is told apart by its subcase alone, a mode (analyses 2, 8 and 9) by its mode number with the eigenvalue as its time, and a time or frequency step (5, 6, 10 and 12) by its time, stored in single precision. A series is the model once and a block per step in each result table, so the file is assembled when the writer closes. Every step must have the first step's points count, cell blocks and result arrays, and a subcase, analysis and mode or time of its own; a step that does not is a `WriteError` naming it, and `{step}` in the path writes one file per step instead. A step's time is the argument of `write` (or the pair's first item in `write_sequence`), not its `meshio:time`. One step is `write`'s bytes.
+
+Values are stored as `float32` and ids as `int32`, so a read of a written file returns the values rounded to single precision. The bytes depend on the mesh only (the header's date is fixed): the C++ `write_nastran_op2` and `NastranOp2SeriesWriter` and their Python twins write the same bytes, which the test suite compares, and a hand-framed oracle spells out. A repeated element id, a property id shared by shells, solids and rods, an array of the wrong size, a subcase or analysis that is not a positive code and a step that breaks the series rules are a `WriteError`.
+
+The files were read back by [pyNastran](https://github.com/SteveDoyle2/pyNastran) 1.3.4 (`read_op2`, and `read_op2_geom` with cross-referencing): the displacements and rotations of every step, the plate, solid and rod stress and strain, and the nodes, elements, properties and material, for the one-step, mode, transient and static files and for a mesh of every cell type. They were not opened in Femap or Patran.
 
 ## Verification
 

@@ -91,6 +91,10 @@ TIME_KEY = "meshio:time"
 # **`radioss_th` joined with the same writer shape**: a time-history file holds
 # its variables once and an output per step (`radioss_th.SeriesWriter`, pushed
 # like Femap's).
+#
+# **`nastran_op2` joined with the same writer shape**: the model once and a
+# block per step in each result table (`nastran_op2.SeriesWriter`, which holds
+# the tables and assembles the file when it closes).
 _SERIES_WRITERS = (
     "xdmf",
     "gid",
@@ -100,6 +104,7 @@ _SERIES_WRITERS = (
     "femap",
     "frd",
     "radioss_th",
+    "nastran_op2",
     "exodus",
 )
 
@@ -848,6 +853,16 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         from .radioss_th import SeriesWriter
 
         # Pushed: the descriptions with the first step, then one output per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "nastran_op2":
+        from .nastran_op2 import SeriesWriter
+
+        # Pushed: each step's tables are held, and the file is assembled when
+        # the writer closes (a result table holds every step).
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

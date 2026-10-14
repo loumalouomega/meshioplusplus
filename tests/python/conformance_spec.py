@@ -1218,6 +1218,26 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "nastran_op2": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Single precision; results are the OP2 tables' own point and cell data "
+        "(`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and "
+        "regions have no place; cells come back ordered by element card.",
+    },
     "step": {
         "cells": {
             "tetra": "as triangle",
@@ -1609,7 +1629,6 @@ READ_ONLY = {
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
     ),
     "nastran_h5": _GAP.format(item="3.2.4", why=_RESULT.format(tool="MSC Nastran")),
-    "nastran_op2": _GAP.format(item="3.2.1", why=_RESULT.format(tool="Nastran")),
     "radioss_anim": _GAP.format(
         item="3.2.8", why=_RESULT.format(tool="the OpenRadioss engine")
     ),

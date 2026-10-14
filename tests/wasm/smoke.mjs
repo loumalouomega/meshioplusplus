@@ -2553,9 +2553,10 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('marc') && writers.includes('marc'));
     for (const fmt of ['marc_t19', 'ansys_rst_cyclic'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    // LS-DYNA d3plot state databases and Nastran OP2 results (v16.9.0): read-only.
-    for (const fmt of ['lsdyna_d3plot', 'nastran_op2'])
-        assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
+    // LS-DYNA d3plot state databases (v16.9.0) are read-only; Nastran OP2 results
+    // (read v16.9.0, written since) go both ways.
+    assert.ok(readers.includes('lsdyna_d3plot') && !writers.includes('lsdyna_d3plot'));
+    assert.ok(readers.includes('nastran_op2') && writers.includes('nastran_op2'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
     // DOLFINx VTX and Tecplot SZL (v16.13.0) need ADIOS2 and TecIO, which the

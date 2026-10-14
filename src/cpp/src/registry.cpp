@@ -324,6 +324,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
         // No extension (`<run>T01`): by name or explicit format only.
         {"radioss_th", meshioplusplus::write_radioss_th},
+        {"nastran_op2", meshioplusplus::write_nastran_op2},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",
