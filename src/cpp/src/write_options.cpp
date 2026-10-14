@@ -27,6 +27,7 @@
 #include "meshioplusplus/write_options.hpp"
 
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/frd.hpp"
@@ -52,10 +53,10 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "frd" || rFormat == "gmsh" ||
-           rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
-           rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
-           rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "abaqus_fil" || rFormat == "ansys" || rFormat == "flac3d" ||
+           rFormat == "frd" || rFormat == "gmsh" || rFormat == "openfoam" || rFormat == "pcd" ||
+           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
+           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -144,7 +145,10 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     const std::string& r_ff =
         rOptions.mFloatFormat.empty() ? std::string(".16e") : rOptions.mFloatFormat;
 
-    if (fmt == "ansys") {
+    if (fmt == "abaqus_fil") {
+        // ASCII is `*FILE FORMAT, ASCII`; binary is the 512-word block layout, little-endian.
+        write_abaqus_fil(rPath, rMesh, binary);
+    } else if (fmt == "ansys") {
         write_ansys(rPath, rMesh, binary);
     } else if (fmt == "flac3d") {
         write_flac3d(rPath, rMesh, r_ff, binary);

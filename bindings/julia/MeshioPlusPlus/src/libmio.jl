@@ -165,6 +165,31 @@ struct _CRefineOpts
     reserved::NTuple{5,Int64}
 end
 
+"""Mirror of C `mio_tessellate_opts`. ABI; build through [`tessellate`](@ref):
+`levels` defaults to 2 and `curved`/`fields` to on."""
+struct _CTessellateOpts
+    levels::Int64
+    curved::Int32
+    fields::Int32
+    record_stencil::Int32
+    reserved0::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_tessellate_report`."""
+struct _CTessellateReport
+    num_source_points::Int64
+    num_source_cells::Int64
+    num_curved_source_cells::Int64
+    num_pass_through_source_cells::Int64
+    num_points::Int64
+    num_cells::Int64
+    num_boundary_facets::Int64
+    num_interior_facets::Int64
+    num_facets_with_bad_count::Int64
+    reserved::NTuple{5,Int64}
+end
+
 """
 Mirror of C `mio_smooth_opts`. Field order, types and the trailing `reserved`
 padding are ABI: they must match `meshioplusplus.h` exactly. Always build one
@@ -480,6 +505,51 @@ struct _CFitPrimitivesReport
     num_torus::Int64
     num_unfitted::Int64
     reserved::NTuple{5,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_opts`. ABI; build through [`fit_cad`](@ref)."""
+struct _CFitCadOpts
+    tolerance::Cdouble
+    mesh_deflection::Cdouble
+    max_demotion_rounds::Int64
+    exact_edges::Int32
+    types::UInt32
+    freeform::Int32
+    freeform_degree::Int32
+    freeform_max_control::Int64
+    freeform_split::Int32
+    fillets::Int32
+    threads::Int32
+    reserved1::Int32
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_report`."""
+struct _CFitCadReport
+    tolerance::Cdouble
+    volume::Cdouble
+    skin_volume::Cdouble
+    volume_ratio::Cdouble
+    max_deviation::Cdouble
+    num_faces::Int64
+    num_plane::Int64
+    num_sphere::Int64
+    num_cylinder::Int64
+    num_cone::Int64
+    num_torus::Int64
+    num_faceted_faces::Int64
+    num_patches::Int64
+    num_demoted::Int64
+    num_exact_edges::Int64
+    num_approx_edges::Int64
+    num_solids::Int64
+    valid::Int32
+    reserved0::Int32
+    num_bspline::Int64
+    num_split_patches::Int64
+    num_fillet::Int64
+    num_helical::Int64
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
@@ -835,6 +905,11 @@ function _check_abi_layout()
         error("meshio++: mio_region_info layout mismatch ($(sizeof(_CRegionInfo)) bytes)")
     sizeof(_CRefineOpts) == 112 ||
         error("meshio++: mio_refine_opts layout mismatch ($(sizeof(_CRefineOpts)) bytes)")
+    sizeof(_CTessellateOpts) == 72 ||
+        error("meshio++: mio_tessellate_opts layout mismatch ($(sizeof(_CTessellateOpts)) bytes)")
+    sizeof(_CTessellateReport) == 112 ||
+        error("meshio++: mio_tessellate_report layout mismatch " *
+              "($(sizeof(_CTessellateReport)) bytes)")
     sizeof(_CSmoothOpts) == 104 ||
         error("meshio++: mio_smooth_opts layout mismatch ($(sizeof(_CSmoothOpts)) bytes)")
     sizeof(_CDecimateOpts) == 96 ||
@@ -876,6 +951,10 @@ function _check_abi_layout()
     sizeof(_CFitPrimitivesReport) == 96 ||
         error("meshio++: mio_fit_primitives_report layout mismatch " *
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
+    sizeof(_CFitCadOpts) == 80 ||
+        error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
+    sizeof(_CFitCadReport) == 192 ||
+        error("meshio++: mio_fit_cad_report layout mismatch ($(sizeof(_CFitCadReport)) bytes)")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

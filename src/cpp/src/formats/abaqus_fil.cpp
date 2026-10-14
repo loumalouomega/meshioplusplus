@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -26,10 +27,12 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -42,12 +45,15 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/fortran_records.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/region.hpp"
 #include "abaqus_face.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -1158,6 +1164,912 @@ MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOption
     meta.mFormat = "abaqus_fil";
     meta.mTimeValues = abaqus_fil_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: the reader's inverse for the model, the nodal and element results, in the
+// ASCII layout or the binary one (512-word blocks, little-endian). The twin of
+// abaqus_fil/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+[[noreturn]] void filw_fail(const std::string& rMessage) {
+    throw WriteError("Abaqus .fil: " + rMessage);
+}
+
+/// One item of a record: an integer word, a real word or an 8-character text.
+struct FilwItem {
+    char mTag = 'I';
+    std::int64_t mInt = 0;
+    double mReal = 0.0;
+    std::string mText;
+};
+using FilwRecord = std::vector<FilwItem>;
+
+FilwItem filw_i(std::int64_t V) {
+    FilwItem it;
+    it.mTag = 'I';
+    it.mInt = V;
+    return it;
+}
+
+FilwItem filw_d(double V) {
+    if (V != V || std::isinf(V))
+        filw_fail("a value is not finite");
+    if (V != 0.0 && !(std::fabs(V) >= 1e-99 && std::fabs(V) < 1e100))
+        filw_fail("a value is outside the range a D22.15 item holds");
+    FilwItem it;
+    it.mTag = 'D';
+    it.mReal = V;
+    return it;
+}
+
+/// The text as the file holds it: ASCII, a `?` for every other byte.
+std::string filw_ascii(const std::string& rText) {
+    std::string out = rText;
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) >= 0x80)
+            c = '?';
+    return out;
+}
+
+FilwItem filw_a(const std::string& rText) {
+    std::string t = filw_ascii(rText);
+    t.resize(8, ' ');
+    FilwItem it;
+    it.mTag = 'A';
+    it.mText = t;
+    return it;
+}
+
+void filw_text_items(FilwRecord& rOut, const std::string& rText, std::size_t Words = 10) {
+    std::string t = filw_ascii(rText);
+    t.resize(8 * Words, ' ');
+    for (std::size_t k = 0; k < Words; ++k)
+        rOut.push_back(filw_a(t.substr(8 * k, 8)));
+}
+
+FilwRecord filw_rec(std::int64_t Key) {
+    return FilwRecord{filw_i(Key)};
+}
+
+std::string filw_ascii_bytes(const std::vector<FilwRecord>& rRecords) {
+    std::string text, line;
+    const auto put = [&](const std::string& rPiece) {
+        line += rPiece;
+        while (line.size() >= 80) {
+            text += line.substr(0, 80);
+            text += '\n';
+            line.erase(0, 80);
+        }
+    };
+    for (const FilwRecord& r : rRecords) {
+        put("*");
+        std::vector<FilwItem> items;
+        items.push_back(filw_i(static_cast<std::int64_t>(r.size()) + 1));
+        items.insert(items.end(), r.begin(), r.end());
+        for (const FilwItem& it : items) {
+            if (it.mTag == 'I') {
+                const std::string digits = std::to_string(it.mInt);
+                std::string count = std::to_string(digits.size());
+                if (count.size() < 2)
+                    count.insert(0, 2 - count.size(), ' ');
+                put("I" + count + digits);
+            } else if (it.mTag == 'D') {
+                char buf[64];
+                detail::snprintf_c(buf, sizeof(buf), "% .15E", it.mReal);
+                std::string v = buf;
+                std::replace(v.begin(), v.end(), 'E', 'D');
+                put("D" + v);
+            } else {
+                put("A" + it.mText);
+            }
+        }
+        if (r[0].mInt == 2001) {
+            line.resize(80, ' ');
+            text += line + "\n" + std::string(80, ' ') + "\n";
+            line.clear();
+        }
+    }
+    if (!line.empty())
+        text += line + "\n";
+    return text;
+}
+
+void filw_put_le(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = 0; i < N; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords) {
+    constexpr std::size_t kBlock = 512;
+    std::vector<std::string> words;
+    for (const FilwRecord& r : rRecords) {
+        std::vector<std::string> rec_words;
+        std::string w;
+        filw_put_le(w, static_cast<std::uint64_t>(r.size() + 1), 8);
+        rec_words.push_back(w);
+        for (const FilwItem& it : r) {
+            std::string x;
+            if (it.mTag == 'I') {
+                filw_put_le(x, static_cast<std::uint64_t>(it.mInt), 8);
+            } else if (it.mTag == 'D') {
+                filw_put_le(x, std::bit_cast<std::uint64_t>(it.mReal), 8);
+            } else {
+                x = it.mText;
+            }
+            rec_words.push_back(x);
+        }
+        if (r[0].mInt == 2001) {
+            // The last record of an increment pads to the end of its block.
+            const std::size_t pad = (kBlock - (words.size() + rec_words.size()) % kBlock) % kBlock;
+            std::string len;
+            filw_put_le(len, rec_words.size() + pad, 8);
+            rec_words[0] = len;
+            for (std::size_t k = 0; k < pad; ++k)
+                rec_words.push_back(std::string(8, '\0'));
+        }
+        words.insert(words.end(), rec_words.begin(), rec_words.end());
+    }
+    const std::size_t tail = (kBlock - words.size() % kBlock) % kBlock;
+    for (std::size_t k = 0; k < tail; ++k)
+        words.push_back(std::string(8, '\0'));
+    std::string marker;
+    filw_put_le(marker, 8 * kBlock, 4);
+    std::string out;
+    for (std::size_t b = 0; b < words.size(); b += kBlock) {
+        out += marker;
+        for (std::size_t k = b; k < b + kBlock; ++k)
+            out += words[k];
+        out += marker;
+    }
+    return out;
+}
+
+const std::map<std::string, std::string>& filw_types() {
+    static const std::map<std::string, std::string> types = {
+        {"line", "T3D2"},     {"line3", "T3D3"},       {"triangle", "S3"},
+        {"quad", "S4R"},      {"triangle6", "STRI65"}, {"quad8", "S8R"},
+        {"quad9", "S9R5"},    {"tetra", "C3D4"},       {"tetra10", "C3D10"},
+        {"pyramid", "C3D5"},  {"pyramid13", "C3D13"},  {"wedge", "C3D6"},
+        {"wedge15", "C3D15"}, {"hexahedron", "C3D8R"}, {"hexahedron20", "C3D20R"},
+    };
+    return types;
+}
+
+bool filw_is_shell(const std::string& rType) {
+    return rType == "triangle" || rType == "quad" || rType == "triangle6" || rType == "quad8" ||
+           rType == "quad9";
+}
+
+/// The Abaqus key of a result name: the reader's names inverted (`key_<n>` is `<n>`).
+std::optional<std::int64_t> filw_key_of(const std::string& rName, bool Nodal) {
+    static const std::unordered_map<std::string, std::int64_t> nodal = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1; k < 1000; ++k)
+            if (const char* n = fil_nodal_name(k))
+                m.emplace(n, k);
+        return m;
+    }();
+    static const std::unordered_map<std::string, std::int64_t> element = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1; k < 1000; ++k)
+            if (const char* n = fil_element_name(k))
+                m.emplace(n, k);
+        m["RATIO"] = 79;
+        m["ERV"] = 79;
+        return m;
+    }();
+    const auto& table = Nodal ? nodal : element;
+    const auto it = table.find(rName);
+    if (it != table.end())
+        return it->second;
+    if (rName.size() > 4 && rName.compare(0, 4, "key_") == 0 && rName.size() < 12 &&
+        std::all_of(rName.begin() + 4, rName.end(), [](char C) { return C >= '0' && C <= '9'; }))
+        return std::stoll(rName.substr(4));
+    return std::nullopt;
+}
+
+std::vector<std::int64_t> filw_labels(const std::vector<std::int64_t>* pGiven, std::size_t Count,
+                                      const char* pWhat) {
+    std::vector<std::int64_t> labels;
+    if (pGiven == nullptr) {
+        for (std::size_t i = 0; i < Count; ++i)
+            labels.push_back(static_cast<std::int64_t>(i + 1));
+        return labels;
+    }
+    labels = *pGiven;
+    if (labels.size() != Count)
+        filw_fail(std::string("'abaqus:id' must hold one label per ") + pWhat);
+    for (const std::int64_t v : labels)
+        if (v <= 0)
+            filw_fail(std::string(pWhat) + " labels must be positive");
+    std::vector<std::int64_t> sorted = labels;
+    std::sort(sorted.begin(), sorted.end());
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        filw_fail(std::string(pWhat) + " labels are not unique");
+    return labels;
+}
+
+using FilwSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
+
+FilwSignature filw_signature(const Mesh& rMesh) {
+    FilwSignature sig;
+    sig.emplace_back("points", rMesh.NumPoints(), 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
+    }
+    return sig;
+}
+
+/// The mesh as the file holds it: records, labels and the written cells.
+class FilwModel {
+public:
+    explicit FilwModel(const Mesh& rMesh) {
+        mSignature = filw_signature(rMesh);
+        const std::size_t n = rMesh.NumPoints();
+        const std::size_t pdim = rMesh.PointDim();
+        mDim = pdim == 2 ? 2 : 3;
+        std::vector<std::int64_t> node_ids;
+        const bool have_ids = rMesh.HasPointData("abaqus:id");
+        if (have_ids) {
+            const detail::Int64View v(rMesh.PointData("abaqus:id"));
+            node_ids.assign(v.Data(), v.Data() + rMesh.PointData("abaqus:id").Size());
+        }
+        mNodeLabels = filw_labels(have_ids ? &node_ids : nullptr, n, "node");
+        std::vector<double> points(n * mDim, 0.0);
+        {
+            const detail::DoubleView pts(rMesh.Points());
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < mDim && k < pdim; ++k)
+                    points[i * mDim + k] = pts.Data()[i * pdim + k];
+        }
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            total += rMesh.Cells(b).NumCells();
+        std::vector<std::int64_t> cell_ids;
+        const bool have_cell_ids = rMesh.HasCellData("abaqus:id");
+        if (have_cell_ids)
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& a = rMesh.CellData("abaqus:id", b);
+                const detail::Int64View v(a);
+                cell_ids.insert(cell_ids.end(), v.Data(), v.Data() + a.Size());
+            }
+        mCellLabels = filw_labels(have_cell_ids ? &cell_ids : nullptr, total, "element");
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const auto it = filw_types().find(cb.Type());
+            for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
+                if (it == filw_types().end())
+                    ++mSkipped[cb.Type()];
+                else
+                    mCells.push_back({g, it->second, b, r});
+            }
+        }
+        for (const Cell& c : mCells)
+            mWritten.insert(c.mGlobal);
+        BuildRecords(rMesh, points);
+    }
+
+    struct Cell {
+        std::size_t mGlobal;
+        std::string mName;
+        std::size_t mBlock, mRow;
+    };
+    const FilwSignature& Signature() const { return mSignature; }
+    const std::vector<FilwRecord>& Records() const { return mRecords; }
+    const std::vector<std::int64_t>& NodeLabels() const { return mNodeLabels; }
+    const std::vector<std::int64_t>& CellLabels() const { return mCellLabels; }
+    const std::vector<Cell>& Cells() const { return mCells; }
+    const std::map<std::string, std::size_t>& Skipped() const { return mSkipped; }
+    std::set<std::string> mDropped;
+
+private:
+    void BuildRecords(const Mesh& rMesh, const std::vector<double>& rPoints) {
+        FilwRecord head = filw_rec(1921);
+        for (int k = 0; k < 4; ++k)
+            head.push_back(k == 0 ? filw_a("meshio++") : filw_a(""));
+        head.push_back(filw_i(static_cast<std::int64_t>(mCells.size())));
+        head.push_back(filw_i(static_cast<std::int64_t>(mNodeLabels.size())));
+        head.push_back(filw_d(1.0));
+        mRecords.push_back(std::move(head));
+        FilwRecord title = filw_rec(1922);
+        filw_text_items(title, "meshio++ results file");
+        mRecords.push_back(std::move(title));
+        // the active degrees of freedom (1, 2 and, in 3-D, 3); 35 words
+        FilwRecord dof = filw_rec(1902);
+        const std::int64_t dofs[3] = {1, 2, mDim == 3 ? 3 : 0};
+        for (const std::int64_t d : dofs)
+            dof.push_back(filw_i(d));
+        for (int k = 0; k < 32; ++k)
+            dof.push_back(filw_i(0));
+        mRecords.push_back(std::move(dof));
+        constexpr std::size_t kChunk = 10;
+        for (const Cell& c : mCells) {
+            const auto cb = rMesh.Cells(c.mBlock);
+            const detail::Int64View conn(cb.Conn());
+            const std::size_t k = cb.NodesPerCell();
+            std::vector<std::int64_t> labels;
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::int64_t p = conn.Data()[c.mRow * k + j];
+                if (p < 0 || static_cast<std::size_t>(p) >= mNodeLabels.size())
+                    filw_fail("a cell refers to a point the mesh does not have");
+                labels.push_back(mNodeLabels[static_cast<std::size_t>(p)]);
+            }
+            FilwRecord r = filw_rec(1900);
+            r.push_back(filw_i(mCellLabels[c.mGlobal]));
+            r.push_back(filw_a(c.mName));
+            for (std::size_t j = 0; j < std::min(kChunk, labels.size()); ++j)
+                r.push_back(filw_i(labels[j]));
+            mRecords.push_back(std::move(r));
+            for (std::size_t j = kChunk; j < labels.size(); j += kChunk) {
+                FilwRecord more = filw_rec(1990);
+                for (std::size_t m = j; m < std::min(j + kChunk, labels.size()); ++m)
+                    more.push_back(filw_i(labels[m]));
+                mRecords.push_back(std::move(more));
+            }
+        }
+        for (std::size_t i = 0; i < mNodeLabels.size(); ++i) {
+            FilwRecord r = filw_rec(1901);
+            r.push_back(filw_i(mNodeLabels[i]));
+            for (std::size_t k = 0; k < mDim; ++k)
+                r.push_back(filw_d(rPoints[i * mDim + k]));
+            mRecords.push_back(std::move(r));
+        }
+        Sets(rMesh);
+    }
+
+    void Sets(const Mesh& rMesh) {
+        struct Ref {
+            std::string mKind, mName;
+            std::size_t mIndex;
+        };
+        std::vector<Ref> order;
+        std::set<std::int64_t> used_digits;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const std::string& name = rMesh.Region(i).mName;
+            order.push_back({region_kind_name(rMesh.Region(i).mKind), name, i});
+            if (!name.empty() && name.size() < 18 &&
+                std::all_of(name.begin(), name.end(), [](char C) { return C >= '0' && C <= '9'; }))
+                used_digits.insert(std::stoll(name));
+        }
+        std::stable_sort(order.begin(), order.end(), [](const Ref& A, const Ref& B) {
+            return std::tie(A.mKind, A.mName) < std::tie(B.mKind, B.mName);
+        });
+        std::vector<FilwRecord> refs;
+        std::int64_t label = 0;
+        constexpr std::size_t kChunk = 10;
+        for (const Ref& ref : order) {
+            const auto& region = rMesh.Region(ref.mIndex);
+            if (region.mKind == RegionKind::Side) {
+                mDropped.insert("region '" + region.mName + "' (side)");
+                continue;
+            }
+            std::string name = filw_ascii(region.mName);
+            if (name.size() > 80)
+                filw_fail("region name '" + name.substr(0, 20) +
+                          "...' is longer than 80 characters");
+            if (name.size() > 8) {
+                ++label;
+                while (used_digits.count(label) != 0)
+                    ++label;
+                FilwRecord r = filw_rec(1940);
+                r.push_back(filw_i(label));
+                filw_text_items(r, name);
+                refs.push_back(std::move(r));
+                name = std::to_string(label);
+            }
+            const detail::Int64View entries(region.mEntries);
+            std::vector<std::int64_t> values;
+            const bool point = region.mKind == RegionKind::Point;
+            for (std::size_t k = 0; k < region.mEntries.Size(); ++k) {
+                const std::int64_t e = entries.Data()[k];
+                if (point) {
+                    if (e < 0 || static_cast<std::size_t>(e) >= mNodeLabels.size())
+                        filw_fail("region '" + region.mName +
+                                  "' names a point the mesh does not have");
+                    values.push_back(mNodeLabels[static_cast<std::size_t>(e)]);
+                } else if (e >= 0 && mWritten.count(static_cast<std::size_t>(e)) != 0) {
+                    values.push_back(mCellLabels[static_cast<std::size_t>(e)]);
+                }
+            }
+            FilwRecord r = filw_rec(point ? 1931 : 1933);
+            r.push_back(filw_a(name));
+            for (std::size_t k = 0; k < std::min<std::size_t>(5, values.size()); ++k)
+                r.push_back(filw_i(values[k]));
+            mRecords.push_back(std::move(r));
+            for (std::size_t k = 5; k < values.size(); k += kChunk) {
+                FilwRecord more = filw_rec(point ? 1932 : 1934);
+                for (std::size_t m = k; m < std::min(k + kChunk, values.size()); ++m)
+                    more.push_back(filw_i(values[m]));
+                mRecords.push_back(std::move(more));
+            }
+        }
+        mRecords.insert(mRecords.end(), refs.begin(), refs.end());
+    }
+
+    FilwSignature mSignature;
+    std::size_t mDim = 3;
+    std::vector<std::int64_t> mNodeLabels, mCellLabels;
+    std::vector<Cell> mCells;
+    std::set<std::size_t> mWritten;
+    std::map<std::string, std::size_t> mSkipped;
+    std::vector<FilwRecord> mRecords;
+};
+
+/// A record's values: trailing NaN dropped, an inner NaN written as 0.
+std::vector<double> filw_trim(const double* pValues, std::size_t N) {
+    std::vector<double> v(pValues, pValues + N);
+    while (!v.empty() && v.back() != v.back())
+        v.pop_back();
+    for (double& x : v)
+        if (x != x)
+            x = 0.0;
+    return v;
+}
+
+struct FilwName {
+    std::string mBase;
+    std::optional<std::int64_t> mSection;
+    std::optional<std::string> mRebar;
+    std::string mCollision;
+    bool mValid = true;
+};
+
+/// `(base, section point, rebar, collision suffix)` of a cell array name.
+FilwName filw_split_name(const std::string& rName) {
+    FilwName out;
+    const std::size_t at = rName.find('@');
+    out.mBase = rName.substr(0, at);
+    if (at == std::string::npos)
+        return out;
+    std::size_t start = at;
+    while (start < rName.size()) {
+        const std::size_t next = rName.find('@', start + 1);
+        const std::string part =
+            rName.substr(start + 1, (next == std::string::npos ? rName.size() : next) - start - 1);
+        start = next == std::string::npos ? rName.size() : next;
+        if (part.empty())
+            continue;
+        if (part.compare(0, 2, "sp") == 0 && part.size() > 2 &&
+            std::all_of(part.begin() + 2, part.end(),
+                        [](char C) { return C >= '0' && C <= '9'; }) &&
+            part.size() < 12)
+            out.mSection = std::stoll(part.substr(2));
+        else if (part.compare(0, 6, "rebar:") == 0)
+            out.mRebar = part.substr(6);
+        else if (part == "ip" || part == "el")
+            out.mCollision = part;
+        else {
+            out.mBase = rName;
+            out.mSection.reset();
+            out.mRebar.reset();
+            out.mCollision.clear();
+            return out;
+        }
+    }
+    return out;
+}
+
+void filw_ndi_nshr(std::size_t Count, std::int64_t& rNdi, std::int64_t& rNshr) {
+    rNdi = Count == 6 ? 3 : Count == 4 ? 3 : Count == 3 ? 2 : 0;
+    rNshr = Count == 6 ? 3 : Count == 4 ? 1 : Count == 3 ? 1 : 0;
+}
+
+bool filw_ends_with(const std::string& rS, const std::string& rSuffix) {
+    return rS.size() >= rSuffix.size() &&
+           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+}
+
+std::optional<double> filw_scalar(const Mesh& rMesh, const std::string& rName) {
+    if (!rMesh.HasFieldData(rName))
+        return std::nullopt;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return std::nullopt;
+    return detail::DoubleView(a).Data()[0];
+}
+
+std::optional<std::int64_t> filw_int_scalar(const Mesh& rMesh, const std::string& rName) {
+    if (!rMesh.HasFieldData(rName))
+        return std::nullopt;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return std::nullopt;
+    return detail::Int64View(a).Data()[0];
+}
+
+/// One increment: a 2000 record, the step's results and a 2001 record.
+struct FilwIncrement {
+    std::vector<FilwRecord> mRecords;
+    std::set<std::string> mDropped;
+
+    FilwIncrement(const FilwModel& rModel, const Mesh& rMesh, double Time, std::size_t Index) {
+        const double step_time = filw_scalar(rMesh, "abaqus:step_time").value_or(Time);
+        const std::int64_t procedure = filw_int_scalar(rMesh, "abaqus:procedure").value_or(1);
+        const std::int64_t step = filw_int_scalar(rMesh, "abaqus:step").value_or(1);
+        const std::int64_t increment = filw_int_scalar(rMesh, "abaqus:increment")
+                                           .value_or(static_cast<std::int64_t>(Index + 1));
+        FilwRecord head = filw_rec(2000);
+        head.push_back(filw_d(Time));
+        head.push_back(filw_d(step_time));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_i(procedure));
+        head.push_back(filw_i(step));
+        head.push_back(filw_i(increment));
+        head.push_back(filw_i(0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(1.0));
+        filw_text_items(head, "");
+        mRecords.push_back(std::move(head));
+        Mode(rMesh);
+        const std::vector<FilwRecord> element = Element(rModel, rMesh);
+        const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
+        if (!element.empty()) {
+            FilwRecord request = filw_rec(1911);
+            request.push_back(filw_i(0));
+            request.push_back(filw_a(""));
+            request.push_back(filw_a(""));
+            mRecords.push_back(std::move(request));
+            mRecords.insert(mRecords.end(), element.begin(), element.end());
+        }
+        if (!nodal.empty()) {
+            FilwRecord request = filw_rec(1911);
+            request.push_back(filw_i(1));
+            request.push_back(filw_a(""));
+            mRecords.push_back(std::move(request));
+            mRecords.insert(mRecords.end(), nodal.begin(), nodal.end());
+        }
+        mRecords.push_back(filw_rec(2001));
+        static const std::set<std::string> known = {
+            kSequenceTimeKey,           "abaqus:step",
+            "abaqus:increment",         "abaqus:step_time",
+            "abaqus:procedure",         "abaqus:mode",
+            "abaqus:eigenvalue",        "abaqus:generalized_mass",
+            "abaqus:composite_damping", "abaqus:participation_factor",
+            "abaqus:effective_mass"};
+        for (const std::string& name : rMesh.FieldDataNames())
+            if (known.count(name) == 0 && name.compare(0, 14, "abaqus:layout:") != 0)
+                mDropped.insert(name);
+    }
+
+private:
+    void Mode(const Mesh& rMesh) {
+        const auto mode = filw_int_scalar(rMesh, "abaqus:mode");
+        if (!mode)
+            return;
+        std::vector<double> factors, masses;
+        if (rMesh.HasFieldData("abaqus:participation_factor")) {
+            const NDArray& a = rMesh.FieldData("abaqus:participation_factor");
+            const detail::DoubleView v(a);
+            factors.assign(v.Data(), v.Data() + a.Size());
+        }
+        if (rMesh.HasFieldData("abaqus:effective_mass")) {
+            const NDArray& a = rMesh.FieldData("abaqus:effective_mass");
+            const detail::DoubleView v(a);
+            masses.assign(v.Data(), v.Data() + a.Size());
+        }
+        if (factors.size() != masses.size())
+            filw_fail("'abaqus:participation_factor' and 'abaqus:effective_mass' differ");
+        FilwRecord r = filw_rec(1980);
+        r.push_back(filw_i(*mode));
+        for (const char* name :
+             {"abaqus:eigenvalue", "abaqus:generalized_mass", "abaqus:composite_damping"})
+            r.push_back(filw_d(filw_scalar(rMesh, name).value_or(0.0)));
+        for (std::size_t k = 0; k < factors.size(); ++k) {
+            r.push_back(filw_d(factors[k]));
+            r.push_back(filw_d(masses[k]));
+        }
+        mRecords.push_back(std::move(r));
+    }
+
+    std::vector<FilwRecord> Nodal(const FilwModel& rModel, const Mesh& rMesh) {
+        std::vector<FilwRecord> out;
+        const std::size_t n = rModel.NodeLabels().size();
+        for (const std::string& name : rMesh.PointDataNames()) {
+            if (name == "abaqus:id" || filw_ends_with(name, "@avg"))
+                continue;
+            const auto key = filw_key_of(name, true);
+            if (!key) {
+                if (!filw_key_of(name, false))
+                    mDropped.insert(name);
+                continue;
+            }
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n) {
+                mDropped.insert(name);
+                continue;
+            }
+            const detail::DoubleView v(a);
+            const std::size_t cols = a.Size() / n;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord r = filw_rec(*key);
+                r.push_back(filw_i(rModel.NodeLabels()[i]));
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                out.push_back(std::move(r));
+            }
+        }
+        return out;
+    }
+
+    std::vector<FilwRecord> Element(const FilwModel& rModel, const Mesh& rMesh) {
+        std::map<std::size_t, std::size_t> index;  // global cell -> position
+        for (std::size_t k = 0; k < rModel.Cells().size(); ++k)
+            index[rModel.Cells()[k].mGlobal] = k;
+        using SlotKey = std::tuple<std::size_t, int, std::int64_t, std::int64_t, std::string>;
+        std::map<SlotKey, std::vector<std::pair<std::int64_t, std::vector<double>>>> slots;
+        std::vector<std::size_t> offsets{0};
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            offsets.push_back(offsets.back() + rMesh.Cells(b).NumCells());
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (name == "abaqus:id")
+                continue;
+            const FilwName parsed = filw_split_name(name);
+            const auto key = filw_key_of(parsed.mBase, false);
+            if (!key) {
+                mDropped.insert(name);
+                continue;
+            }
+            std::vector<std::int64_t> layout;
+            if (rMesh.HasFieldData("abaqus:layout:" + name)) {
+                const NDArray& l = rMesh.FieldData("abaqus:layout:" + name);
+                const detail::Int64View v(l);
+                layout.assign(v.Data(), v.Data() + l.Size());
+                if (layout.size() != 2 || layout[0] < 1 || layout[1] < 1)
+                    filw_fail("'abaqus:layout:" + name + "' must be (points, components)");
+            }
+            int location = 1;
+            if (parsed.mRebar)
+                location = 3;
+            else if (!layout.empty())
+                location = (parsed.mBase == "NFORC" || parsed.mCollision == "el") ? 2 : 0;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const auto cb = rMesh.Cells(b);
+                const std::size_t n = cb.NumCells();
+                const NDArray& a = rMesh.CellData(name, b);
+                if (n == 0 || a.Shape().empty() || a.Shape()[0] != n)
+                    continue;
+                const std::size_t cols = a.Size() / n;
+                const detail::DoubleView v(a);
+                const std::int64_t sec =
+                    parsed.mSection ? *parsed.mSection : (filw_is_shell(cb.Type()) ? 1 : 0);
+                if (!layout.empty() && cols != static_cast<std::size_t>(layout[0]) *
+                                                   static_cast<std::size_t>(layout[1]))
+                    filw_fail("'" + name + "' does not match its 'abaqus:layout:" + name + "'");
+                const detail::Int64View conn(cb.Conn());
+                for (std::size_t r = 0; r < n; ++r) {
+                    const auto at = index.find(offsets[b] + r);
+                    if (at == index.end())
+                        continue;
+                    const double* row = v.Data() + r * cols;
+                    if (layout.empty()) {
+                        const std::vector<double> values = filw_trim(row, cols);
+                        if (!values.empty())
+                            slots[{at->second, location, sec, 0, ""}].emplace_back(*key, values);
+                        continue;
+                    }
+                    for (std::int64_t p = 0; p < layout[0]; ++p) {
+                        const std::vector<double> values =
+                            filw_trim(row + p * layout[1], static_cast<std::size_t>(layout[1]));
+                        if (values.empty())
+                            continue;
+                        std::int64_t point = p + 1;
+                        if (location == 2) {
+                            if (static_cast<std::size_t>(p) >= cb.NodesPerCell())
+                                continue;
+                            point = rModel.NodeLabels()[static_cast<std::size_t>(
+                                conn.Data()[r * cb.NodesPerCell() + static_cast<std::size_t>(p)])];
+                        }
+                        slots[{at->second, location, sec, point, parsed.mRebar.value_or("")}]
+                            .emplace_back(*key, values);
+                    }
+                }
+            }
+        }
+        std::vector<FilwRecord> out;
+        for (const auto& [slot, items] : slots) {
+            const auto& [position, location, sec, point, rebar] = slot;
+            const std::size_t g = rModel.Cells()[position].mGlobal;
+            std::int64_t ndi = 0, nshr = 0;
+            for (const auto& item : items) {
+                const std::size_t c = item.second.size();
+                if (c == 3 || c == 4 || c == 6) {
+                    filw_ndi_nshr(c, ndi, nshr);
+                    break;
+                }
+            }
+            FilwRecord h = filw_rec(1);
+            h.push_back(filw_i(rModel.CellLabels()[g]));
+            h.push_back(filw_i(point));
+            h.push_back(filw_i(sec));
+            h.push_back(filw_i(location));
+            h.push_back(filw_a(rebar));
+            h.push_back(filw_i(ndi));
+            h.push_back(filw_i(nshr));
+            h.push_back(filw_i(0));
+            h.push_back(filw_i(0));
+            out.push_back(std::move(h));
+            for (const auto& [key, values] : items) {
+                FilwRecord r = filw_rec(key);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                out.push_back(std::move(r));
+            }
+        }
+        Averaged(rModel, rMesh, out);
+        return out;
+    }
+
+    /// Point data named like an element result: averaged at the nodes (location 4).
+    void Averaged(const FilwModel& rModel, const Mesh& rMesh, std::vector<FilwRecord>& rOut) {
+        const std::size_t n = rModel.NodeLabels().size();
+        for (const std::string& name : rMesh.PointDataNames()) {
+            std::string base = name;
+            while (filw_ends_with(base, "@avg"))
+                base.erase(base.size() - 4);
+            if (base == "abaqus:id")
+                continue;
+            if (base == name && filw_key_of(base, true))
+                continue;  // a nodal result
+            const auto key = filw_key_of(base, false);
+            if (!key)
+                continue;
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n)
+                continue;
+            const detail::DoubleView v(a);
+            const std::size_t cols = a.Size() / n;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord h = filw_rec(1);
+                h.push_back(filw_i(rModel.NodeLabels()[i]));
+                for (int k = 0; k < 2; ++k)
+                    h.push_back(filw_i(0));
+                h.push_back(filw_i(4));
+                h.push_back(filw_a(""));
+                for (int k = 0; k < 4; ++k)
+                    h.push_back(filw_i(0));
+                rOut.push_back(std::move(h));
+                FilwRecord r = filw_rec(*key);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                rOut.push_back(std::move(r));
+            }
+        }
+    }
+};
+
+}  // namespace
+
+namespace {
+
+std::string filw_encode(bool Binary, const std::vector<FilwRecord>& rRecords) {
+    return Binary ? filw_binary_bytes(rRecords) : filw_ascii_bytes(rRecords);
+}
+
+bool filw_has_results(const Mesh& rMesh) {
+    if (rMesh.HasFieldData(kSequenceTimeKey))
+        return true;
+    for (const std::string& n : rMesh.PointDataNames())
+        if (n != "abaqus:id")
+            return true;
+    for (const std::string& n : rMesh.CellDataNames())
+        if (n != "abaqus:id")
+            return true;
+    return false;
+}
+
+double filw_time_of(const Mesh& rMesh) {
+    return filw_scalar(rMesh, kSequenceTimeKey).value_or(0.0);
+}
+
+void filw_warn_dropped(const FilwModel& rModel, const std::vector<FilwIncrement>& rIncrements) {
+    std::set<std::string> names = rModel.mDropped;
+    for (const FilwIncrement& inc : rIncrements)
+        names.insert(inc.mDropped.begin(), inc.mDropped.end());
+    if (!names.empty()) {
+        std::string list;
+        for (const std::string& n : names)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Abaqus .fil: arrays and sets without a place in the file are not written: {}",
+                  list);
+    }
+    if (!rModel.Skipped().empty()) {
+        std::string list;
+        for (const auto& [type, count] : rModel.Skipped())
+            list += (list.empty() ? "" : ", ") + type;
+        log::warn("Abaqus .fil: cell blocks with no Abaqus element type are not written: {}", list);
+    }
+}
+
+void filw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        filw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh, bool Binary) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const FilwModel model(rMesh);
+    std::vector<FilwIncrement> increments;
+    if (filw_has_results(rMesh))
+        increments.emplace_back(model, rMesh, filw_time_of(rMesh), 0);
+    filw_warn_dropped(model, increments);
+    std::vector<FilwRecord> records = model.Records();
+    for (const FilwIncrement& inc : increments)
+        records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
+    filw_save(rPath, filw_encode(Binary, records));
+}
+
+struct AbaqusFilSeriesWriter::Impl {
+    std::string mPath;
+    bool mBinary = false;
+    std::optional<FilwModel> mModel;
+    std::vector<FilwIncrement> mIncrements;
+    bool mDone = false;
+};
+
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(const std::string& rPath, bool Binary)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mBinary = Binary;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+AbaqusFilSeriesWriter::~AbaqusFilSeriesWriter() = default;
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept = default;
+AbaqusFilSeriesWriter& AbaqusFilSeriesWriter::operator=(AbaqusFilSeriesWriter&&) noexcept = default;
+
+void AbaqusFilSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        filw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    const std::size_t index = s.mIncrements.size();
+    if (!s.mModel) {
+        s.mModel.emplace(rMesh);
+    } else if (s.mModel->Signature() != filw_signature(rMesh)) {
+        filw_fail("series: step " + std::to_string(index) +
+                  "'s points or cells differ from the first step's; a results file holds one "
+                  "model -- write one file per step with '{step}'");
+    }
+    s.mIncrements.emplace_back(*s.mModel, rMesh, Time, index);
+}
+
+std::size_t AbaqusFilSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mIncrements.size() : 0;
+}
+
+void AbaqusFilSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mIncrements.empty())
+        filw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    filw_warn_dropped(*mpImpl->mModel, mpImpl->mIncrements);
+    std::vector<FilwRecord> records = mpImpl->mModel->Records();
+    for (const FilwIncrement& inc : mpImpl->mIncrements)
+        records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
+    filw_save(mpImpl->mPath, filw_encode(mpImpl->mBinary, records));
 }
 
 }  // namespace meshioplusplus

@@ -84,38 +84,61 @@ TEST(Xdmf, HdfDatasetLargerThanItsDeclaredDimensionsIsRefused) {
     std::filesystem::remove(std::filesystem::path(path).replace_extension(".h5"), ec);
 }
 
-// The fuzzer's crash (tests/fuzz/regressions/xdmf/unfiltered-chunk-stored-short):
-// an unfiltered chunked dataset whose one stored chunk holds 36 bytes where its 13
-// int64 elements take 104. libhdf5 copies the elements out of the stored bytes
-// without checking their size (a heap-buffer-overflow inside HDF5 1.10), so the
-// reader refuses the dataset before it is read.
-TEST(Xdmf, AnUnfilteredChunkStoredInFewerBytesIsAReadError) {
+namespace {
+// Extracts a bundle of tests/fuzz/regressions/xdmf into `rDir` and returns its .xdmf entry.
+std::filesystem::path extract_xdmf_regression(const std::string& rBundleName,
+                                              const std::filesystem::path& rDir) {
     const std::filesystem::path bundle = std::filesystem::path(__FILE__).parent_path() / ".." /
-                                         "fuzz" / "regressions" / "xdmf" /
-                                         "unfiltered-chunk-stored-short.bundle";
-    ASSERT_TRUE(std::filesystem::exists(bundle)) << bundle;
+                                         "fuzz" / "regressions" / "xdmf" / rBundleName;
+    EXPECT_TRUE(std::filesystem::exists(bundle)) << bundle;
     std::vector<std::uint8_t> bytes;
     {
         std::ifstream in(bundle, std::ios::binary);
         bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }
-    const std::filesystem::path dir =
-        std::filesystem::temp_directory_path() / "meshioplusplus-unfiltered-chunk";
-    std::filesystem::create_directories(dir);
+    std::filesystem::create_directories(rDir);
     std::filesystem::path xml;
     for (const meshioplusplus::FuzzBundleEntry& entry :
          meshioplusplus::fuzz_bundle_decode(bytes.data(), bytes.size())) {
-        const std::filesystem::path path = dir / entry.first;
+        const std::filesystem::path path = rDir / entry.first;
         std::ofstream out(path, std::ios::binary);
         out.write(reinterpret_cast<const char*>(entry.second.data()),
                   static_cast<std::streamsize>(entry.second.size()));
         if (path.extension() == ".xdmf")
             xml = path;
     }
+    return xml;
+}
+
+// Expects the reader to refuse a regression bundle with a ReadError.
+void expect_xdmf_regression_refused(const std::string& rBundleName, const std::string& rDirName) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / rDirName;
+    const std::filesystem::path xml = extract_xdmf_regression(rBundleName, dir);
     ASSERT_FALSE(xml.empty());
     EXPECT_THROW(meshioplusplus::read_xdmf(xml.string()), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
+}
+}  // namespace
+
+// The fuzzer's crash (tests/fuzz/regressions/xdmf/unfiltered-chunk-stored-short):
+// an unfiltered chunked dataset whose one stored chunk holds 36 bytes where its 13
+// int64 elements take 104. libhdf5 copies the elements out of the stored bytes
+// without checking their size (a heap-buffer-overflow inside HDF5 1.10), so the
+// reader refuses the dataset before it is read.
+TEST(Xdmf, AnUnfilteredChunkStoredInFewerBytesIsAReadError) {
+    expect_xdmf_regression_refused("unfiltered-chunk-stored-short.bundle",
+                                   "meshioplusplus-unfiltered-chunk");
+}
+
+// The fuzzer's crash (tests/fuzz/regressions/xdmf/deflated-chunk-inflates-short): the
+// /data3 dataset declares 65-byte integers, one deflated chunk of three elements (195
+// bytes), and the chunk inflates to 24. libhdf5 1.10 copies the 195 bytes out of the
+// 32-byte inflated buffer (a heap-buffer-overflow READ), so the reader verifies that
+// every deflated chunk inflates to its full size before the read.
+TEST(Xdmf, ADeflatedChunkInflatingShorterThanItsElementsIsAReadError) {
+    expect_xdmf_regression_refused("deflated-chunk-inflates-short.bundle",
+                                   "meshioplusplus-deflated-chunk");
 }
 #endif
 

@@ -8,7 +8,7 @@ meshioplusplus --help
 meshioplusplus <subcommand> --help
 ```
 
-The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`), or download a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page. It has no Python fallback for formats whose C++ reader raises. Named sets are [regions](./regions.md) in the core: `info` prints them, `diff` compares them, and single-mesh `convert -s/-d` converts point/cell sets↔scalar integer data. Neither conversion flag combines with selective reads or sequences; use the pipeline `SetsToData` / `DataToSets` steps instead. Everything below otherwise applies identically to both, except for the verbs each section marks **Python only**: `tessellate`, the `grid-*` family, `subsample`, `proximity-graph`, `predict`, `guard-fit`/`guard-check` and `dataset` have no native binary counterpart (the native binary does have a `surface` alias for `extract-surface`, not documented as its own section since it behaves identically).
+The same verbs are also available as a **standalone native C++ binary** that needs no Python interpreter and no pybind11 extension — see [Native CLI (C API)](./c_api.md#native-command-line-binary) for how to build it (`build/configure.sh --cli --build`), or download a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page. It has no Python fallback for formats whose C++ reader raises. Named sets are [regions](./regions.md) in the core: `info` prints them, `diff` compares them, and single-mesh `convert -s/-d` converts point/cell sets↔scalar integer data. Neither conversion flag combines with selective reads or sequences; use the pipeline `SetsToData` / `DataToSets` steps instead. Everything below otherwise applies identically to both, except for the verbs each section marks **Python only**: the `grid-*` family, `subsample`, `proximity-graph`, `predict`, `guard-fit`/`guard-check` and `dataset` have no native binary counterpart (the native binary does have a `surface` alias for `extract-surface`, not documented as its own section since it behaves identically).
 
 ---
 
@@ -30,6 +30,8 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
 | `--json` | | Print a JSON summary of what was written (see [JSON output](#json-output)) |
+
+**CAD geometry** — a [Kratos CAD JSON](formats/cad_json.md), STEP or IGES input converted to a `.cad.json` output carries its B-rep (the NURBS faces, trimming loops and edges) rather than its sampling, in both CLIs: `meshioplusplus convert part.step part.cad.json` turns a CAD model into Kratos IGA geometry (STEP and IGES reading needs the OpenCASCADE backend).
 
 **Transient sequences** — treat a set of files, or the steps inside one file, as one dataset (see [sequences](sequences.md)):
 
@@ -94,7 +96,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `fit-primitives`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -108,6 +110,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `resample` | `method`, `num_steps` and the target `times` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
+| `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
+| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them), `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -588,7 +592,7 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ## meshioplusplus tessellate
 
-*(Python only — no native equivalent.)* Isoparametric subdivision of a mesh's five higher-order cell types onto a refinement lattice, so a curved cell becomes a set of ordinary linear ones a downstream tool can render or mesh further (see [curved tessellation](/tessellation)).
+Isoparametric subdivision of a mesh's five higher-order cell types onto a refinement lattice, so a curved cell becomes a set of ordinary linear ones a downstream tool can render or mesh further (see [curved tessellation](/tessellation)).
 
 ```
 meshioplusplus tessellate [options] INFILE OUTFILE
@@ -600,16 +604,18 @@ meshioplusplus tessellate [options] INFILE OUTFILE
 | `--no-curved` | Disable curved-cell handling entirely (a full no-op) |
 | `--no-fields` | Do not interpolate point_data/cell_data onto the output |
 | `--record-stencil` | Also attach `tessellate:stencil`/`weights` as real point_data (expensive; needed to reconstruct a `Tessellation` after a file round trip) |
+| `--json` | Print the report as JSON instead of the summary |
 | `--quiet` (`-q`) | Suppress the summary output |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-A provenance map (`Tessellation.gather`/`.scatter`/`.aggregate`) moves data between the tessellated mesh and its source; the summary reports `num_curved_source_cells`/`num_pass_through_source_cells` and whether the output is watertight.
+A provenance map (`Tessellation.gather`/`.scatter`/`.aggregate`) moves data between the tessellated mesh and its source; the summary reports `num_curved_source_cells`/`num_pass_through_source_cells` and whether the output is watertight. `--json` prints the full report, the same keys from both CLIs: `levels`, `curved`, `num_source_points`, `num_source_cells`, `num_curved_source_cells`, `num_pass_through_source_cells`, `num_points`, `num_cells`, `stencil_width` and a `watertight` object with `num_boundary_facets`, `num_interior_facets` and `num_facets_with_bad_count` (zero for a conforming tessellation) — `Tessellation.schema` without its `version`.
 
 **Examples:**
 
 ```sh
 meshioplusplus tessellate curved.msh flat.vtu
 meshioplusplus tessellate curved.msh flat.vtu --levels 4 --record-stencil
+meshioplusplus tessellate curved.msh flat.vtu --json
 ```
 
 ---
@@ -1058,6 +1064,41 @@ meshioplusplus fit-primitives [options] INFILE OUTFILE
 
 ```sh
 meshioplusplus fit-primitives part_patches.vtu part_fits.vtu --tolerance 2e-3 --json
+```
+
+---
+
+## meshioplusplus to-cad
+
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet, thread flank and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
+
+```text
+meshioplusplus to-cad [options] INFILE OUTFILE.step
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format` | Explicit input format |
+| `--curvature-tolerance C` | `segment`'s curvature test, for an unsegmented skin (default off) |
+| `--min-patch-cells N` | `segment`'s smallest patch, for an unsegmented skin (default `1`; a noisy scan wants tens) |
+| `--fit-tolerance T` | `fit_primitives`' relative tolerance, for an unfitted skin (default `1e-3`) |
+| `--tolerance T` | The largest distance a face may lie from the skin (default three times the largest accepted patch tolerance) |
+| `--no-exact-edges` | Approximate every edge between analytic faces with a B-spline |
+| `--types LIST` | Fitted types kept as analytic faces, from `plane,sphere,cylinder,cone,torus` (default all) |
+| `--mesh-deflection D` | Chordal deflection of the re-meshed solid (default a quarter of the tolerance) |
+| `--max-demotion-rounds N` | Rounds of demoting failed faces before every patch is faceted (default `8`) |
+| `--no-freeform` | Keep the patches no primitive explains faceted instead of fitting [B-spline faces](/fit_cad#freeform-faces) |
+| `--freeform-degree P` | Highest degree of a freeform face, 3–8 (default `3`) |
+| `--freeform-max-control N` | Largest freeform sample grid per direction, 4–1024 (default `64`) |
+| `--no-freeform-split` | Leave a freeform patch that folds over every flattening faceted instead of [splitting it into pieces](/fit_cad#splitting-curled-patches) |
+| `--no-fillets` | Do not try a patch between two analytic faces as a [rolling-ball fillet](/fit_cad#fillets-and-threads) |
+| `--no-threads` | Do not try a patch beside a cylinder or cone as a [thread flank](/fit_cad#fillets-and-threads) |
+| `--mesh-out FILE` | Also write the re-meshed solid |
+| `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
+| `--json`, `-q/--quiet` | Machine-readable report, or no summary |
+
+```sh
+meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
 ```
 
 ---
@@ -1737,7 +1778,7 @@ The `--input-format` and `--output-format` options accept any of the registered 
 
 `abaqus`, `abaqus_fil`, `ansys`, `ansys_rst`, `ansys_rst_cyclic`, `ansysinp`, `avsucd`, `cgns`, `code_aster`, `dolfin-xml`, `elmer`, `exodus`, `febio`, `femap`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `libmesh`, `lsdyna`, `lsdyna_binout`, `lsdyna_d3plot`, `marc`, `marc_t19`, `mdpa`, `med`, `medit`, `mfem`, `mphbin`, `mphtxt`, `nastran`, `nastran_op2`, `netgen`, `obj`, `off`, `patran`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `radioss`, `radioss_anim`, `radioss_th`, `stl`, `su2`, `svg`, `szplt` (needs TecIO), `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `vtx` (needs ADIOS2), `wkt`, `xdmf`, `xplt`, `xyz`, `z88`
 
-An input with no recognised extension is sniffed by content, a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than Medit (v16.5.0), Z88's fixed file names (`z88i1.txt`, `z88structure.txt`, `z88o2.txt`, `z88o3.txt`) are `z88` rather than xyz, as input and as output (v16.7.0), a `.dat` file that opens as an MSC Marc input deck is read as `marc` rather than Tecplot (v16.8.0), a file named `d3plot` is LS-DYNA's state database, `lsdyna_d3plot`, and its numbered members (`d3plot01`...) are refused with the base file's name (v16.9.0), a file named like `crashA001` (a stem, `A` and three or more digits) is an OpenRadioss animation file, `radioss_anim`, whose run is a sequence (`convert 'crashA*' crash.vtkhdf`, v16.11.0), a file named `binout` (or `binout0000`…) is LS-DYNA's `lsdyna_binout` and one named like `crashT01` an OpenRadioss time-history file, `radioss_th` (both v16.12.0, both also found by content; `radioss_th` is also written, from the `radioss_th:*` field data, to an output named like that or given `-o radioss_th`, and `convert 'in_*.vtu' runT01` of a sequence writes one output per step), and a **directory** by the files it holds (v16.2.0): an Elmer mesh directory, an OpenFOAM case or a DOLFINx VTX `.bp` directory (v16.13.0) needs no `-i` (`meshioplusplus convert box box.vtu`). An output is never sniffed: since v16.17.0, resolving a write goes through `resolve_write_format`, a name-and-extension-only function, so a `.dat` output is always `tecplot` (never `marc`, even though a `.dat` input can read as one) and a Marc deck needs `-o marc` explicitly; writing a directory format to an extension-less path needs `-o` the same way (`meshioplusplus convert box.msh box -o elmer`). Naming a read-only format as the output says so directly ("can be read but not written"), rather than failing as an unknown format. The `ascii`, `binary`, `compress` and `decompress` verbs take the format from the extension alone, so they do not accept a directory.
+An input with no recognised extension is sniffed by content, a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than Medit (v16.5.0), Z88's fixed file names (`z88i1.txt`, `z88structure.txt`, `z88o2.txt`, `z88o3.txt`) are `z88` rather than xyz, as input and as output (v16.7.0), a `.dat` file that opens as an MSC Marc input deck is read as `marc` rather than Tecplot (v16.8.0), a file named `d3plot` is LS-DYNA's state database, `lsdyna_d3plot`, and its numbered members (`d3plot01`...) are refused with the base file's name (v16.9.0), a file named like `crashA001` (a stem, `A` and three or more digits) is an OpenRadioss animation file, `radioss_anim`, whose run is a sequence (`convert 'crashA*' crash.vtkhdf`, v16.11.0), a file named `binout` (or `binout0000`…) is LS-DYNA's `lsdyna_binout` and one named like `crashT01` an OpenRadioss time-history file, `radioss_th` (both v16.12.0, both also found by content; `radioss_th` is also written, from the `radioss_th:*` field data, to an output named like that or given `-o radioss_th`, and `convert 'in_*.vtu' runT01` of a sequence writes one output per step; `nastran_op2` is written too, to a `.op2` file, and `convert 'in_*.vtu' run.op2` of a sequence writes one file with a block per step; `lsdyna_binout` is written to an output named `binout` or given `-o lsdyna_binout`, and a sequence writes one file with an output folder per step; `abaqus_fil` is written to a `.fil` file, and a sequence writes the model once and an increment per step), and a **directory** by the files it holds (v16.2.0): an Elmer mesh directory, an OpenFOAM case or a DOLFINx VTX `.bp` directory (v16.13.0) needs no `-i` (`meshioplusplus convert box box.vtu`). An output is never sniffed: since v16.17.0, resolving a write goes through `resolve_write_format`, a name-and-extension-only function, so a `.dat` output is always `tecplot` (never `marc`, even though a `.dat` input can read as one) and a Marc deck needs `-o marc` explicitly; writing a directory format to an extension-less path needs `-o` the same way (`meshioplusplus convert box.msh box -o elmer`). Naming a read-only format as the output says so directly ("can be read but not written"), rather than failing as an unknown format. The `ascii`, `binary`, `compress` and `decompress` verbs take the format from the extension alone, so they do not accept a directory.
 
 ## Selective reads and fast summaries
 

@@ -675,6 +675,41 @@ lagrange_high_order_mesh = meshioplusplus.Mesh(
     ],
 )
 
+# A rational quadratic Bezier quadrilateral that is exactly a quarter of the
+# annulus 1 <= r <= 2 (control points in the VTK Lagrange quad order: corners,
+# then edges 0-1, 1-2, 3-2, 0-3, then the interior), and a quadratic Bezier
+# curve along its inner arc. The weights and degrees ride as plain data here;
+# the VTU attributes that mark them are tested in test_vtu.py.
+_W = np.sqrt(0.5)
+bezier_mesh = meshioplusplus.Mesh(
+    np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.5, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 1.5, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.5, 1.5, 0.0],
+        ]
+    ),
+    [
+        ("VTK_BEZIER_QUADRILATERAL", np.arange(9, dtype=np.int64).reshape(1, 9)),
+        ("VTK_BEZIER_CURVE", np.array([[0, 3, 7]], dtype=np.int64)),
+    ],
+    point_data={
+        "RationalWeights": np.array([1.0, 1.0, 1.0, 1.0, 1.0, _W, 1.0, _W, _W]),
+    },
+    cell_data={
+        "HigherOrderDegrees": [
+            np.array([[2.0, 2.0, 0.0]]),
+            np.array([[2.0, 0.0, 0.0]]),
+        ],
+    },
+)
+
 
 def add_point_data(mesh, dim, num_tags=2, seed=0, dtype=float):
     rng = np.random.default_rng(seed)

@@ -257,6 +257,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
  *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
  *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
+ *   tessellate: (mesh: Mesh, levels?: number, curved?: boolean, fields?: boolean, recordStencil?: boolean) => {mesh: Mesh, numSourcePoints: number, numSourceCells: number, numCurvedSourceCells: number, numPassThroughSourceCells: number, numPoints: number, numCells: number, numBoundaryFacets: number, numInteriorFacets: number, numFacetsWithBadCount: number},
  *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
  *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
@@ -858,6 +859,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.fitPrimitives(mesh, patchData, tolerance, relative, minInlierFraction,
                 Array.isArray(types) ? types : [types], maxIterations),
+        tessellate: (mesh, levels = 2, curved = true, fields = true, recordStencil = false) =>
+            Module.tessellate(mesh, levels, curved, fields, recordStencil),
         render: (mesh, options = {}) => Module.render(mesh, options),
         renderText: (mesh, options = {}, text = {}) => Module.renderText(mesh, options, text),
         renderPng: (mesh, options = {}, compress = 0) => Module.renderPng(mesh, options, compress),

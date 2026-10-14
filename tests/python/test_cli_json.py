@@ -173,6 +173,13 @@ def files(tmp_path_factory):
             mio.Mesh(pts, [("quad", quads)], point_data={"u": pts[:, 0] + 10.0 * k}),
         )
     paths["seq"] = str(d / "seq_*.vtu")
+    # two quadratic tetrahedra with a point field, for tessellate
+    curved = mio.convert_cells(
+        mio.Mesh(parts.points, [("tetra", parts.cells[0].data)]), mode="elevate"
+    )
+    curved.point_data["u"] = curved.points[:, 0] + 2.0 * curved.points[:, 2]
+    paths["curved"] = str(d / "curved.vtu")
+    mio.write(paths["curved"], curved)
     mio.write(paths["grid"], grid)
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
@@ -243,6 +250,23 @@ WRITING = [
     (
         "segment",
         lambda f, out: ["segment", f["grid"], out + ".vtu", "--json"],
+    ),
+    (
+        "tessellate",
+        lambda f, out: ["tessellate", f["curved"], out + ".vtu", "--json"],
+    ),
+    (
+        "tessellate_options",
+        lambda f, out: [
+            "tessellate",
+            f["curved"],
+            out + ".vtu",
+            "--levels",
+            "1",
+            "--no-fields",
+            "--record-stencil",
+            "--json",
+        ],
     ),
     (
         "fit_primitives",
@@ -407,3 +431,47 @@ def test_check_exit_codes(files, tmp_path):
         assert _native(["check", files["grid"], "-r", "aspect_ratio <= 0.5"])[0] == 1
         assert _native(["check", files["grid"], "-r", "bogus >= 1"])[0] == 2
         assert _native(["check", files["grid"], "--gate", str(gate)])[0] == 0
+
+
+@pytest.mark.parametrize(
+    "flags", [[], ["--no-freeform-split", "--no-fillets", "--no-threads"]]
+)
+def test_to_cad_json_agrees(tmp_path, flags):
+    from meshioplusplus._fit_cad import has_occt
+
+    if not has_occt():
+        pytest.skip("needs a core built with OpenCASCADE")
+    pts = np.array(
+        [[x, y, z] for z in (0.0, 1.0) for y in (0.0, 1.0) for x in (0.0, 1.0)]
+    )
+    quads = np.array(
+        [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ]
+    )
+    src = str(tmp_path / "cube.vtu")
+    mio.write(src, mio.Mesh(pts, [("quad", quads)]))
+    code_py, text_py = _python(
+        ["to-cad", src, str(tmp_path / "py.step"), *flags, "--json"]
+    )
+    doc_py = _strict(text_py)
+    assert code_py == 0
+    assert doc_py["num_plane"] == 6
+    for key in ("num_split_patches", "num_fillet", "num_helical"):
+        assert doc_py[key] == 0
+    if NATIVE is None:
+        pytest.skip("no native CLI binary built; checked the Python output only")
+    r = subprocess.run(
+        [NATIVE, "to-cad", src, str(tmp_path / "native.step"), *flags, "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 and "MESHIOPLUSPLUS_WITH_OCCT" in r.stderr:
+        pytest.skip("the native CLI was built without OpenCASCADE")
+    assert r.returncode == code_py
+    _same(doc_py, _strict(r.stdout))

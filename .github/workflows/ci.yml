@@ -649,6 +649,73 @@ jobs:
           python -c "from meshioplusplus import _core; assert not _core.__has_kahip__"
           python -m pytest tests/python/test_partition.py -v
 
+  # The OpenCASCADE backend of fit_cad (roadmap 6.3.3). Its own job, like
+  # KaHIP's: OCCT is LGPL-2.1 and bring-your-own, so no default leg, wheel,
+  # WASM build or release CLI binary carries it, and those legs exercise the
+  # named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead. Ubuntu
+  # 24.04's packages are OCCT 7.6, the supported floor; they export toolkit
+  # targets that link TBB, hence libtbb-dev.
+  occt:
+    name: OpenCASCADE fit_cad backend
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          # See the kahip job: an unused, preinstalled third-party apt source
+          # must not take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libtbb-dev pkg-config \
+            libocct-foundation-dev libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev libocct-data-exchange-dev
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
+      - name: Configure C++ tests with OpenCASCADE
+        run: >-
+          cmake -S . -B build-occt -G Ninja
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_BUILD_CLI=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_WITH_HDF5=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_WITH_OCCT=ON
+      - name: Build
+        run: cmake --build build-occt
+      - name: Run the fit_cad suites (OpenCASCADE cases live)
+        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry" --output-on-failure
+      - name: Run the native to-cad verb
+        run: |
+          python - <<'PY'
+          lines = ["solid cube"]
+          v = [(0,0,0),(1,0,0),(1,1,0),(0,1,0),(0,0,1),(1,0,1),(1,1,1),(0,1,1)]
+          tris = [(0,2,1),(0,3,2),(4,5,6),(4,6,7),(0,1,5),(0,5,4),(1,2,6),(1,6,5),(2,3,7),(2,7,6),(3,0,4),(3,4,7)]
+          for t in tris:
+              lines += ["facet normal 0 0 0", " outer loop"] + [f"  vertex {v[i][0]} {v[i][1]} {v[i][2]}" for i in t] + [" endloop", "endfacet"]
+          lines.append("endsolid cube")
+          open("cube.stl", "w").write("\n".join(lines) + "\n")
+          PY
+          build-occt/meshioplusplus to-cad cube.stl cube.step --json --cad-json cube.cad.json
+          grep -q PLANE cube.step
+          grep -q '"breps"' cube.cad.json
+          build-occt/meshioplusplus convert cube.step copy.cad.json
+          grep -q '"boundary_loops"' copy.cad.json
+      - name: Install meshioplusplus with OpenCASCADE
+        run: CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_OCCT=ON" pip install . -v
+      - name: Run the Python fit_cad suite
+        run: |
+          python -c "from meshioplusplus import _core; assert _core.__has_occt__"
+          python -m pytest tests/python/test_fit_cad.py tests/python/test_step.py tests/python/test_cad_json.py -v
+
   # The two read-only formats behind a library that is never a default
   # (v16.13.0): DOLFINx VTX `.bp` through ADIOS2 (Ubuntu's serial package) and
   # Tecplot SZL through TecIO (the redistributable TecIO source SU2 vendors,
@@ -962,6 +1029,15 @@ jobs:
         shell: pwsh
         run: echo "CMAKE_ARGS=-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF" >> $env:GITHUB_ENV
 
+      # Windows only: pin the adios2 build the VTX tests last passed with, so a
+      # newer adios2 cannot change what the Windows job runs. The pin installs
+      # first; the step below's plain `pip install adios2` then keeps it.
+      - name: Pin the ADIOS2 build the VTX tests last passed with (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pip install "adios2==2.12.1.1001" || echo "no adios2 wheel: the vtx tests skip"
+
       - name: Install meshio++ and test deps
         run: |
           python -m pip install --upgrade pip
@@ -1037,7 +1113,9 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev liblzma-dev libtbb-dev lcov \
-            libgl1 libglx-mesa0
+            libgl1 libglx-mesa0 pkg-config \
+            libocct-foundation-dev libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev libocct-data-exchange-dev
 
       # pyvista/trimesh/pyarrow/pandas/polars/zarr are here (not just the
       # dedicated `interop` job) so tests/python/test_interop.py's and
@@ -1081,6 +1159,7 @@ jobs:
             -DMESHIOPLUSPLUS_BUILD_TESTS=ON \
             -DMESHIOPLUSPLUS_BUILD_C_API=ON \
             -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_WITH_OCCT=ON \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -1093,6 +1172,10 @@ jobs:
       # SKBUILD_EDITABLE_REBUILD=false stops scikit-build-core from rebuilding
       # the extension on first import during pytest -- that rebuild would race
       # the instrumented objects lcov is about to capture.
+      # The OpenCASCADE backend is on in this job too: its code (and the Python
+      # and binding paths that only run with it) is part of the patch Codecov
+      # measures, and the occt job is where those suites run without
+      # instrumentation.
       - name: Build instrumented _core and run the Python tests
         if: steps.lfs.outputs.available != 'false'
         env:
@@ -1101,6 +1184,7 @@ jobs:
             -DMESHIOPLUSPLUS_WITH_HDF5=ON
             -DMESHIOPLUSPLUS_WITH_NETCDF=ON
             -DMESHIOPLUSPLUS_WITH_ZLIB=ON
+            -DMESHIOPLUSPLUS_WITH_OCCT=ON
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           SKBUILD_CMAKE_BUILD_TYPE: Debug

@@ -130,6 +130,13 @@ def vtk_cells_from_data(connectivity, offsets, types, cell_data_raw):
             "VTK_LAGRANGE_HEXAHEDRON",
             "VTK_LAGRANGE_WEDGE",
             "VTK_LAGRANGE_PYRAMID",
+            "VTK_BEZIER_CURVE",
+            "VTK_BEZIER_TRIANGLE",
+            "VTK_BEZIER_QUADRILATERAL",
+            "VTK_BEZIER_TETRAHEDRON",
+            "VTK_BEZIER_HEXAHEDRON",
+            "VTK_BEZIER_WEDGE",
+            "VTK_BEZIER_PYRAMID",
         ]
         if meshio_type in special_cells:
             # Polygons have unknown and varying number of nodes per cell.
@@ -207,3 +214,55 @@ class Info:
         # first-class section.  To associate it with POINT/CELL_DATA, we store the
         # `active` section in this variable.
         self.section = None
+
+
+# VTK 9.1 swapped the nodes of edges 10 and 11 of its higher-order hexahedra
+# (both run along the third direction) and marks files in the new order by
+# version: XML 2.2 and later, legacy 5.1. meshio++ holds the new order, so a
+# reader converts an older file and a writer of an older version converts on
+# the way out (the twin of the core's detail/vtk_hex_order.hpp). The swap is
+# its own inverse.
+HEX_ORDER_TYPES = (72, 79)  # VTK_LAGRANGE_HEXAHEDRON, VTK_BEZIER_HEXAHEDRON
+
+
+def hex_swap_edges(nodes, degrees=None):
+    """Swap edges 10 and 11 of one higher-order hexahedron in place; False when
+    the degrees (given, or from the node count) do not explain its size."""
+    n = len(nodes)
+    if degrees is None:
+        q = int(round(n ** (1.0 / 3.0)))
+        p = (q - 1, q - 1, q - 1)
+    else:
+        p = tuple(int(d) for d in degrees)
+    if min(p) < 1 or (p[0] + 1) * (p[1] + 1) * (p[2] + 1) != n:
+        return False
+    m = p[2] - 1
+    s = 8 + 4 * (p[0] - 1) + 4 * (p[1] - 1) + 2 * m
+    a = nodes[s : s + m].copy()
+    nodes[s : s + m] = nodes[s + m : s + 2 * m]
+    nodes[s + m : s + 2 * m] = a
+    return True
+
+
+def hex_swap_stream(conn, offsets, types, degrees, what):
+    """Swap edges 10 and 11 of every higher-order hexahedron of a VTK cell
+    stream (``offsets`` are end offsets into ``conn``, changed in place);
+    ``degrees`` is the ``HigherOrderDegrees`` cell array or None."""
+    types = np.asarray(types).reshape(-1)
+    if degrees is not None:
+        degrees = np.asarray(degrees).reshape(-1)
+        degrees = degrees.reshape(-1, 3) if degrees.size == 3 * len(types) else None
+    warned = False
+    for c in np.flatnonzero(np.isin(types, HEX_ORDER_TYPES)):
+        start = 0 if c == 0 else int(offsets[c - 1])
+        end = int(offsets[c])
+        if end > start and not hex_swap_edges(
+            conn[start:end], None if degrees is None else degrees[c]
+        ):
+            if not warned:
+                warn(
+                    f"{what}: a higher-order hexahedron of {end - start} nodes in a file "
+                    "older than VTK 9.1 has no degrees that explain its size; its edge "
+                    "order is left as written"
+                )
+                warned = True

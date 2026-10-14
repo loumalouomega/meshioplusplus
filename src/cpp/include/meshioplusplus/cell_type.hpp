@@ -28,7 +28,7 @@
  * geometry-name tables (`backends/kratos_names.hpp`) key off it. The enum
  * covers every fixed-node-count type in `num_nodes_per_cell()` plus the
  * variable-node-count families (`Polygon`, `Polyhedron`, the VTK Lagrange
- * types); anything else maps to `CellType::Custom` and keeps its name
+ * and Bézier types); anything else maps to `CellType::Custom` and keeps its name
  * out-of-band (see `NativeCellBlock::mTypeName`).
  *
  * The single source of truth is the `MESHIOPLUSPLUS_CELL_TYPES` X-macro
@@ -122,7 +122,14 @@ namespace meshioplusplus {
     X(VtkLagrangeHexahedron, "VTK_LAGRANGE_HEXAHEDRON", -1, 3)       \
     X(VtkLagrangeWedge, "VTK_LAGRANGE_WEDGE", -1, 3)                 \
     X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)             \
-    X(Triangle7, "triangle7", 7, 2)
+    X(Triangle7, "triangle7", 7, 2)                                  \
+    X(VtkBezierCurve, "VTK_BEZIER_CURVE", -1, 1)                     \
+    X(VtkBezierTriangle, "VTK_BEZIER_TRIANGLE", -1, 2)               \
+    X(VtkBezierQuadrilateral, "VTK_BEZIER_QUADRILATERAL", -1, 2)     \
+    X(VtkBezierTetrahedron, "VTK_BEZIER_TETRAHEDRON", -1, 3)         \
+    X(VtkBezierHexahedron, "VTK_BEZIER_HEXAHEDRON", -1, 3)           \
+    X(VtkBezierWedge, "VTK_BEZIER_WEDGE", -1, 3)                     \
+    X(VtkBezierPyramid, "VTK_BEZIER_PYRAMID", -1, 3)
 
 /**
  * @brief Compact identifier for a meshio cell type.
@@ -173,7 +180,8 @@ inline CellType cell_type_from_name(const std::string& rName) {
 
 /**
  * @brief Fixed nodes-per-cell of a `CellType`, or -1 for variable-node-count
- * types (`Polygon`, `Polyhedron`, the VTK Lagrange family) and `Custom`.
+ * types (`Polygon`, `Polyhedron`, the VTK Lagrange and Bézier families) and
+ * `Custom`.
  * @param type The cell type to query.
  * @return The node count, or -1.
  */

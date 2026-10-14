@@ -746,6 +746,133 @@ def test_nurbs_skips_other_grid_functions(engine, tmp_path, capfd):
     assert "not the NURBS mesh's own" in " ".join(capfd.readouterr().err.split())
 
 
+# --- the NURBS side channel (mesh.info["nurbs"], NurbsInfo) -------------------------------
+
+
+def _same_tree(a, b, where="info"):
+    """Two side channels, key by key: equal values, dtypes and shapes."""
+    if isinstance(a, dict):
+        assert sorted(a) == sorted(b), where
+        for k in a:
+            _same_tree(a[k], b[k], f"{where}[{k!r}]")
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b), where
+        for i, (x, y) in enumerate(zip(a, b)):
+            _same_tree(x, y, f"{where}[{i}]")
+    elif isinstance(a, np.ndarray):
+        assert isinstance(b, np.ndarray) and a.dtype == b.dtype, where
+        np.testing.assert_array_equal(a, b, err_msg=where)
+    else:
+        assert a == b, where
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_nurbs_side_channel_engines_agree(name):
+    core = _nurbs(meshioplusplus.mfem, name).info["nurbs"]
+    _same_tree(core, _nurbs(py_mfem, name).info["nurbs"])
+    mesh = _nurbs(meshioplusplus.mfem, name)
+    topo = core["topology"]
+    d = topo["dimension"]
+    assert core["field_names"] == ["u"]
+    assert topo["patch_vertices"].shape == (len(core["patches"]), 2**d)
+    # one entry per element cell (the first block) and per boundary cell
+    assert len(core["cell_patch"]) == len(mesh.cells[0].data)
+    assert core["cell_span"].shape == (len(mesh.cells[0].data), 3)
+    assert len(core["boundary_cell_patch"]) == sum(len(b.data) for b in mesh.cells[1:])
+    for patch in core["patches"]:
+        n = np.prod([len(k) - p - 1 for k, p in zip(patch["knots"], patch["degrees"])])
+        assert patch["control_points"].shape[0] == n == len(patch["weights"])
+        assert patch["fields"][0].shape == (n, 1)
+
+
+def test_nurbs_side_channel_values():
+    # pipe-nurbs: four quadratic patches, two knot spans along the pipe, the
+    # rational weights of a circle (1, sqrt(1/2)) times those of the wall
+    # (1, sqrt(1/2)), the inner radius 2
+    info = _nurbs(meshioplusplus.mfem, "pipe-nurbs").info["nurbs"]
+    p0 = info["patches"][0]
+    np.testing.assert_array_equal(p0["degrees"], [2, 2, 2])
+    np.testing.assert_array_equal(p0["knots"][2], [0, 0, 0, 1, 1, 2, 2, 2])
+    np.testing.assert_allclose(np.unique(p0["weights"]), [0.5, np.sqrt(0.5), 1.0])
+    radii = np.hypot(p0["control_points"][:, 0], p0["control_points"][:, 1])
+    assert radii.min() == 2.0
+    assert info["topology"]["num_vertices"] == 16
+    np.testing.assert_array_equal(info["cell_patch"], np.repeat([0, 1, 2, 3], 2))
+    np.testing.assert_array_equal(info["cell_span"][:2], [[0, 0, 0], [0, 0, 1]])
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_nurbs_round_trip_is_exact(name, tmp_path):
+    # write -> read gives back the mesh, the field and the side channel, and
+    # the two engines write the same bytes
+    mesh = _nurbs(meshioplusplus.mfem, name)
+    paths = {}
+    for label, writer in (("core", meshioplusplus.mfem), ("python", py_mfem)):
+        out = tmp_path / label / f"{name}.mesh"
+        out.parent.mkdir()
+        writer.write(out, mesh, grid_functions=True)
+        assert out.read_text().startswith("MFEM NURBS mesh v1.0\n")
+        paths[label] = out
+        for engine in (meshioplusplus.mfem, py_mfem):
+            back = engine.read(out, {"u": str(out.with_name(f"{name}.u.gf"))})
+            _same(back, mesh)
+            _same_tree(back.info["nurbs"], mesh.info["nurbs"])
+    for suffix in (".mesh", ".u.gf"):
+        a = paths["core"].with_name(name + suffix).read_bytes()
+        b = paths["python"].with_name(name + suffix).read_bytes()
+        assert a == b, suffix
+
+
+def test_nurbs_false_writes_the_sampled_cells(engine, tmp_path):
+    mesh = _nurbs(meshioplusplus.mfem, "pipe-nurbs")
+    engine.write(tmp_path / "a.mesh", mesh, nurbs=False)
+    plain = _nurbs(meshioplusplus.mfem, "pipe-nurbs")
+    plain.info = None
+    engine.write(tmp_path / "b.mesh", plain)
+    assert (tmp_path / "a.mesh").read_bytes() == (tmp_path / "b.mesh").read_bytes()
+    assert (tmp_path / "a.mesh").read_text().startswith("MFEM mesh v1")
+
+
+def test_a_moved_mesh_is_not_written_with_stale_patches(engine, tmp_path, capfd):
+    mesh = _nurbs(meshioplusplus.mfem, "cube-nurbs")
+    mesh.points = mesh.points * 2.0
+    with pytest.raises(meshioplusplus.WriteError, match="no longer matches"):
+        engine.write(tmp_path / "a.mesh", mesh, nurbs=True)
+    engine.write(tmp_path / "a.mesh", mesh)  # nurbs=None: the cells, with a warning
+    assert (tmp_path / "a.mesh").read_text().startswith("MFEM mesh v1")
+    assert "writing the sampled cells" in " ".join(capfd.readouterr().err.split())
+    np.testing.assert_allclose(engine.read(tmp_path / "a.mesh").points, mesh.points)
+
+
+def test_nurbs_true_needs_a_side_channel(engine, tmp_path):
+    with pytest.raises(meshioplusplus.WriteError, match="no NURBS side channel"):
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+            [("quad", np.array([[0, 1, 2, 3]]))],
+        )
+        engine.write(tmp_path / "a.mesh", mesh, nurbs=True)
+
+
+@pytest.mark.parametrize(
+    "spoil, message",
+    [
+        (lambda i: i["patches"][0]["degrees"].__setitem__(0, 7), "knots for degree"),
+        (
+            lambda i: i["patches"][0].__setitem__("weights", np.zeros(8)),
+            "zero or non-finite",
+        ),
+        (lambda i: i["patches"][0]["knots"][0].__setitem__(0, 5.0), "out of order"),
+        (lambda i: i["topology"].__setitem__("num_vertices", 2), "out of range"),
+        (lambda i: i.__setitem__("field_names", ["u", "v"]), "fields for 2 names"),
+    ],
+)
+def test_a_malformed_side_channel_is_refused(engine, tmp_path, spoil, message):
+    mesh = _nurbs(meshioplusplus.mfem, "cube-nurbs")
+    spoil(mesh.info["nurbs"])
+    with pytest.raises(meshioplusplus.WriteError, match=message):
+        engine.write(tmp_path / "a.mesh", mesh, nurbs=True)
+
+
 # --- Bernstein and serendipity spaces ------------------------------------------------------
 
 MODAL = [

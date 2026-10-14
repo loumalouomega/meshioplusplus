@@ -68,6 +68,7 @@ module meshioplusplus
     public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
+    public :: mio_has_occt
     public :: mio_pipeline_run_file_report, mio_pipeline_run_json_report
     public :: mio_sequence_pipeline_run_file_report, mio_sequence_pipeline_run_json_report
     public :: mio_med_mesh_names, mio_med_read_named, mio_med_write_multi
@@ -263,6 +264,52 @@ module meshioplusplus
         integer(c_int64_t) :: num_torus = 0
         integer(c_int64_t) :: num_unfitted = 0
         integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_opts` (`types` as for fit_primitives;
+    !> 0 facets every patch).
+    type, bind(c) :: mio_fit_cad_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: mesh_deflection = 0.0_c_double
+        integer(c_int64_t) :: max_demotion_rounds = 8
+        integer(c_int32_t) :: exact_edges = 1
+        integer(c_int32_t) :: types = 62
+        integer(c_int32_t) :: freeform = 1
+        integer(c_int32_t) :: freeform_degree = 3
+        integer(c_int64_t) :: freeform_max_control = 64
+        integer(c_int32_t) :: freeform_split = 1
+        integer(c_int32_t) :: fillets = 1
+        integer(c_int32_t) :: threads = 1
+        integer(c_int32_t) :: reserved1 = 0
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_report`.
+    type, bind(c) :: mio_fit_cad_report_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        real(c_double) :: skin_volume = 0.0_c_double
+        real(c_double) :: volume_ratio = 0.0_c_double
+        real(c_double) :: max_deviation = 0.0_c_double
+        integer(c_int64_t) :: num_faces = 0
+        integer(c_int64_t) :: num_plane = 0
+        integer(c_int64_t) :: num_sphere = 0
+        integer(c_int64_t) :: num_cylinder = 0
+        integer(c_int64_t) :: num_cone = 0
+        integer(c_int64_t) :: num_torus = 0
+        integer(c_int64_t) :: num_faceted_faces = 0
+        integer(c_int64_t) :: num_patches = 0
+        integer(c_int64_t) :: num_demoted = 0
+        integer(c_int64_t) :: num_exact_edges = 0
+        integer(c_int64_t) :: num_approx_edges = 0
+        integer(c_int64_t) :: num_solids = 0
+        integer(c_int32_t) :: valid = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: num_bspline = 0
+        integer(c_int64_t) :: num_split_patches = 0
+        integer(c_int64_t) :: num_fillet = 0
+        integer(c_int64_t) :: num_helical = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -577,6 +624,16 @@ module meshioplusplus
     ! MDPA side-channel sections and value kinds (must match the C enums
     ! mio_mdpa_section / mio_mdpa_value_kind; see mio_format_info).
     integer(c_int32_t), parameter, public :: MIO_GMSH_BOUNDING_ENTITIES = 0, MIO_GMSH_PERIODIC = 1
+    !> NURBS side-channel sections (an 'mfem' handle; see meshioplusplus.h).
+    integer(c_int32_t), parameter, public :: MIO_NURBS_PATCHES = 0, MIO_NURBS_FIELDS = 1, &
+                                             MIO_NURBS_TOPOLOGY = 2, MIO_NURBS_CELL_MAP = 3
+    !> B-rep side-channel sections (a 'cad_json' handle, or 'step'/'iges' with
+    !> OpenCASCADE; see meshioplusplus.h). Curve fields are 10 and up.
+    integer(c_int32_t), parameter, public :: MIO_BREP_FILE = 0, MIO_BREP_BREPS = 1, &
+                                             MIO_BREP_PATCHES = 2, MIO_BREP_FACES = 3, &
+                                             MIO_BREP_LOOPS = 4, MIO_BREP_TRIMS = 5, &
+                                             MIO_BREP_EDGES = 6, MIO_BREP_VERTICES = 7, &
+                                             MIO_BREP_REFS = 8
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -686,6 +743,31 @@ module meshioplusplus
         !> attached even when the closure leaves no hanging node. Takes one of
         !> the former `reserved` slots; size unchanged.
         integer(c_int64_t) :: record_hierarchy = 0
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_tessellate_opts`. Field order/types are ABI; the
+    !> defaults mirror `mio_tessellate_opts_init` (called anyway).
+    type, bind(c) :: mio_tessellate_opts_t
+        integer(c_int64_t) :: levels = 2
+        integer(c_int32_t) :: curved = 1
+        integer(c_int32_t) :: fields = 1
+        integer(c_int32_t) :: record_stencil = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_tessellate_report`.
+    type, bind(c) :: mio_tessellate_report_t
+        integer(c_int64_t) :: num_source_points = 0
+        integer(c_int64_t) :: num_source_cells = 0
+        integer(c_int64_t) :: num_curved_source_cells = 0
+        integer(c_int64_t) :: num_pass_through_source_cells = 0
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_boundary_facets = 0
+        integer(c_int64_t) :: num_interior_facets = 0
+        integer(c_int64_t) :: num_facets_with_bad_count = 0
         integer(c_int64_t) :: reserved(5) = 0
     end type
 
@@ -978,6 +1060,7 @@ module meshioplusplus
         procedure :: feature_edges => mesh_feature_edges
         procedure :: segment => mesh_segment
         procedure :: fit_primitives => mesh_fit_primitives
+        procedure :: fit_cad => mesh_fit_cad
         procedure :: render => mesh_render
         procedure :: render_text => mesh_render_text
         procedure :: write_snapshot => mesh_write_snapshot
@@ -994,6 +1077,7 @@ module meshioplusplus
         procedure :: subdivide => mesh_subdivide
         procedure :: agglomerate => mesh_agglomerate
         procedure :: refine => mesh_refine
+        procedure :: tessellate => mesh_tessellate
         procedure :: decimate => mesh_decimate
         procedure :: partition => mesh_partition
         procedure :: partition_labels => mesh_partition_labels
@@ -1325,6 +1409,21 @@ module meshioplusplus
         procedure :: gmsh_tags => format_info_gmsh_tags
         procedure :: gmsh_affine => format_info_gmsh_affine
         procedure :: gmsh_pairs => format_info_gmsh_pairs
+        procedure :: nurbs_count => format_info_nurbs_count
+        procedure :: nurbs_int => format_info_nurbs_int
+        procedure :: nurbs_degrees => format_info_nurbs_degrees
+        procedure :: nurbs_knots => format_info_nurbs_knots
+        procedure :: nurbs_control_points => format_info_nurbs_control_points
+        procedure :: nurbs_weights => format_info_nurbs_weights
+        procedure :: nurbs_field => format_info_nurbs_field
+        procedure :: nurbs_field_name => format_info_nurbs_field_name
+        procedure :: nurbs_ids => format_info_nurbs_ids
+        procedure :: brep_count => format_info_brep_count
+        procedure :: brep_int => format_info_brep_int
+        procedure :: brep_values => format_info_brep_values
+        procedure :: brep_points => format_info_brep_points
+        procedure :: brep_ids => format_info_brep_ids
+        procedure :: brep_string => format_info_brep_string
         procedure :: mdpa_string => format_info_mdpa_string
         procedure :: mdpa_int => format_info_mdpa_int
         procedure :: mdpa_ids => format_info_mdpa_ids
@@ -2052,6 +2151,26 @@ module meshioplusplus
             type(c_ptr) :: r
         end function
 
+        subroutine c_mio_fit_cad_opts_init(opts) &
+                bind(c, name="mio_fit_cad_opts_init")
+            import :: mio_fit_cad_opts_t
+            type(mio_fit_cad_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_fit_cad(h, path, opts, report) &
+                bind(c, name="mio_fit_cad") result(r)
+            import :: c_ptr, mio_fit_cad_opts_t, mio_fit_cad_report_t
+            type(c_ptr), value :: h, path
+            type(mio_fit_cad_opts_t), intent(in) :: opts
+            type(mio_fit_cad_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_has_occt() bind(c, name="mio_has_occt") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
         function c_mio_hausdorff_distance(a, b, opts, report) &
                 bind(c, name="mio_hausdorff_distance") result(r)
             import :: c_ptr, c_int, mio_hausdorff_opts_t, mio_hausdorff_report_t
@@ -2609,6 +2728,19 @@ module meshioplusplus
             import :: c_ptr, mio_refine_opts_t
             type(c_ptr), value :: h
             type(mio_refine_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_tessellate_opts_init(opts) bind(c, name="mio_tessellate_opts_init")
+            import :: mio_tessellate_opts_t
+            type(mio_tessellate_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_tessellate(h, opts, report) bind(c, name="mio_tessellate") result(r)
+            import :: c_ptr, mio_tessellate_opts_t, mio_tessellate_report_t
+            type(c_ptr), value :: h
+            type(mio_tessellate_opts_t), intent(in) :: opts
+            type(mio_tessellate_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -3603,6 +3735,88 @@ module meshioplusplus
             integer(c_int) :: st
         end function
 
+        function c_mio_nurbs_info_count(info, section) &
+                bind(c, name="mio_nurbs_info_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_nurbs_info_int(info, section, index, field, value) &
+                bind(c, name="mio_nurbs_info_int") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            integer(c_int64_t), intent(out) :: value
+            integer(c_int) :: st
+        end function
+
+        function c_mio_nurbs_info_array(info, section, index, field, data, dtype, ndim, shape) &
+                bind(c, name="mio_nurbs_info_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
+        end function
+
+        function c_mio_nurbs_info_string(info, section, index, field, buf, buflen) &
+                bind(c, name="mio_nurbs_info_string") result(n)
+            import :: c_ptr, c_char, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_brep_info_count(info, section) &
+                bind(c, name="mio_brep_info_count") result(n)
+            import :: c_ptr, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_brep_info_int(info, section, index, field, value) &
+                bind(c, name="mio_brep_info_int") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            integer(c_int64_t), intent(out) :: value
+            integer(c_int) :: st
+        end function
+
+        function c_mio_brep_info_array(info, section, index, field, data, dtype, ndim, shape) &
+                bind(c, name="mio_brep_info_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
+        end function
+
+        function c_mio_brep_info_string(info, section, index, field, buf, buflen) &
+                bind(c, name="mio_brep_info_string") result(n)
+            import :: c_ptr, c_char, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int32_t), value :: section, field
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t) :: n
+        end function
+
         function c_mio_mdpa_info_string(info, section, index, field, buf, buflen) &
                 bind(c, name="mio_mdpa_info_string") result(n)
             import :: c_ptr, c_char, c_int32_t, c_int64_t
@@ -4131,6 +4345,12 @@ contains
     end subroutine
 
     !> Whether this build carries the JSON pipeline parser.
+    !> Whether the library carries the OpenCASCADE backend fit_cad needs.
+    function mio_has_occt() result(has)
+        logical :: has
+        has = c_mio_has_occt() /= 0
+    end function
+
     function mio_pipeline_has_json() result(has)
         logical :: has
         has = c_mio_pipeline_has_json() /= 0
@@ -5497,6 +5717,88 @@ contains
         if (present(num_cone)) num_cone = int(report%num_cone, int64)
         if (present(num_torus)) num_torus = int(report%num_torus, int64)
         if (present(num_unfitted)) num_unfitted = int(report%num_unfitted, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Build a CAD solid from the fitted patches of this closed skin (needs a
+    !> library built with -DMESHIOPLUSPLUS_WITH_OCCT=ON; mio_has_occt() tells):
+    !> accepted fits become plane, sphere, cylinder, cone and torus faces, the
+    !> rest planar facets, and a face that fails OpenCASCADE's check or strays
+    !> beyond `tolerance` is demoted to facets. Writes AP214 STEP to
+    !> `step_path` when given; returns the solid re-meshed as triangles with
+    !> cell data `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`. A patch no
+    !> primitive explains becomes, with `fillets` (default on), a rolling-ball
+    !> fillet face between two analytic faces, with `threads` (default on), a
+    !> thread flank face beside a cylinder or cone, and otherwise, with
+    !> `freeform` (default on), a B-spline face of degree up to
+    !> `freeform_degree` on at most `freeform_max_control` grid points per
+    !> direction; with `freeform_split` (default on), a freeform patch that
+    !> folds over both flattenings is split into pieces. See doc/fit_cad.md.
+    function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
+                          mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
+                          max_deviation, num_faces, num_faceted_faces, num_demoted, &
+                          stat, errmsg, freeform, freeform_degree, freeform_max_control, &
+                          num_bspline, freeform_split, fillets, threads, &
+                          num_split_patches, num_fillet, num_helical) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: step_path
+        real(real64), intent(in), optional :: tolerance, mesh_deflection
+        logical, intent(in), optional :: exact_edges
+        integer, intent(in), optional :: types
+        integer(int64), intent(in), optional :: max_demotion_rounds
+        logical, intent(out), optional :: valid
+        real(real64), intent(out), optional :: volume_ratio, max_deviation
+        integer(int64), intent(out), optional :: num_faces, num_faceted_faces, num_demoted
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: freeform
+        integer, intent(in), optional :: freeform_degree
+        integer(int64), intent(in), optional :: freeform_max_control
+        integer(int64), intent(out), optional :: num_bspline
+        logical, intent(in), optional :: freeform_split, fillets, threads
+        integer(int64), intent(out), optional :: num_split_patches, num_fillet, num_helical
+        type(mio_mesh) :: out
+        type(c_ptr) :: res, path_ptr
+        type(mio_fit_cad_opts_t) :: opts
+        type(mio_fit_cad_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: path_buf
+
+        call c_mio_fit_cad_opts_init(opts)
+        path_ptr = c_null_ptr
+        if (present(step_path)) then
+            path_buf = trim(step_path)//c_null_char
+            path_ptr = c_loc(path_buf(1:1))
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(mesh_deflection)) opts%mesh_deflection = real(mesh_deflection, c_double)
+        if (present(exact_edges)) opts%exact_edges = merge(1_c_int32_t, 0_c_int32_t, exact_edges)
+        if (present(types)) opts%types = int(types, c_int32_t)
+        if (present(max_demotion_rounds)) &
+            opts%max_demotion_rounds = int(max_demotion_rounds, c_int64_t)
+        if (present(freeform)) opts%freeform = merge(1_c_int32_t, 0_c_int32_t, freeform)
+        if (present(freeform_degree)) opts%freeform_degree = int(freeform_degree, c_int32_t)
+        if (present(freeform_max_control)) &
+            opts%freeform_max_control = int(freeform_max_control, c_int64_t)
+        if (present(freeform_split)) &
+            opts%freeform_split = merge(1_c_int32_t, 0_c_int32_t, freeform_split)
+        if (present(fillets)) opts%fillets = merge(1_c_int32_t, 0_c_int32_t, fillets)
+        if (present(threads)) opts%threads = merge(1_c_int32_t, 0_c_int32_t, threads)
+        res = c_mio_fit_cad(self%handle, path_ptr, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(valid)) valid = report%valid /= 0
+        if (present(volume_ratio)) volume_ratio = real(report%volume_ratio, real64)
+        if (present(max_deviation)) max_deviation = real(report%max_deviation, real64)
+        if (present(num_faces)) num_faces = int(report%num_faces, int64)
+        if (present(num_faceted_faces)) num_faceted_faces = int(report%num_faceted_faces, int64)
+        if (present(num_demoted)) num_demoted = int(report%num_demoted, int64)
+        if (present(num_bspline)) num_bspline = int(report%num_bspline, int64)
+        if (present(num_split_patches)) num_split_patches = int(report%num_split_patches, int64)
+        if (present(num_fillet)) num_fillet = int(report%num_fillet, int64)
+        if (present(num_helical)) num_helical = int(report%num_helical, int64)
         call clear_status(stat, errmsg)
     end function
 
@@ -7264,6 +7566,65 @@ contains
             call handle_failure('refine', mio_error_message(), stat, errmsg)
             return
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Tessellate this mesh's curved (quadratic) cells isoparametrically:
+    !> triangle6/quad8/quad9 become triangles and tetra10/hexahedron27 tetras
+    !> on a reference lattice; every other cell passes through. The output
+    !> carries point data `tessellate:source_point` (0-based source point, or
+    !> -1) and cell data `tessellate:source_cell` / `tessellate:sub_index`;
+    !> `record_stencil` adds `tessellate:stencil` / `tessellate:weights`.
+    !> `levels` defaults to 2, `curved` and `fields` to true. See
+    !> doc/tessellation.md.
+    function mesh_tessellate(self, levels, curved, fields, record_stencil, &
+                             num_source_points, num_source_cells, num_curved_source_cells, &
+                             num_pass_through_source_cells, num_points, num_cells, &
+                             num_boundary_facets, num_interior_facets, &
+                             num_facets_with_bad_count, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in), optional :: levels
+        logical, intent(in), optional :: curved, fields, record_stencil
+        integer(int64), intent(out), optional :: num_source_points, num_source_cells
+        integer(int64), intent(out), optional :: num_curved_source_cells
+        integer(int64), intent(out), optional :: num_pass_through_source_cells
+        integer(int64), intent(out), optional :: num_points, num_cells
+        integer(int64), intent(out), optional :: num_boundary_facets, num_interior_facets
+        integer(int64), intent(out), optional :: num_facets_with_bad_count
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_tessellate_opts_t) :: opts
+        type(mio_tessellate_report_t) :: report
+
+        call c_mio_tessellate_opts_init(opts)
+        if (present(levels)) opts%levels = int(levels, c_int64_t)
+        if (present(curved)) opts%curved = merge(1_c_int32_t, 0_c_int32_t, curved)
+        if (present(fields)) opts%fields = merge(1_c_int32_t, 0_c_int32_t, fields)
+        if (present(record_stencil)) &
+            opts%record_stencil = merge(1_c_int32_t, 0_c_int32_t, record_stencil)
+        res = c_mio_tessellate(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('tessellate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_source_points)) &
+            num_source_points = int(report%num_source_points, int64)
+        if (present(num_source_cells)) num_source_cells = int(report%num_source_cells, int64)
+        if (present(num_curved_source_cells)) &
+            num_curved_source_cells = int(report%num_curved_source_cells, int64)
+        if (present(num_pass_through_source_cells)) &
+            num_pass_through_source_cells = int(report%num_pass_through_source_cells, int64)
+        if (present(num_points)) num_points = int(report%num_points, int64)
+        if (present(num_cells)) num_cells = int(report%num_cells, int64)
+        if (present(num_boundary_facets)) &
+            num_boundary_facets = int(report%num_boundary_facets, int64)
+        if (present(num_interior_facets)) &
+            num_interior_facets = int(report%num_interior_facets, int64)
+        if (present(num_facets_with_bad_count)) &
+            num_facets_with_bad_count = int(report%num_facets_with_bad_count, int64)
         call clear_status(stat, errmsg)
     end function
 
@@ -9700,6 +10061,338 @@ contains
         if (shp(1) == 0) return
         call c_f_pointer(p, vals, [shp(2), shp(1)])
         pairs = int(vals, int64) + 1
+    end function
+
+    !> Number of items in a MIO_NURBS_* section; -1 on error (not an 'mfem'
+    !> handle). A handle of a mesh that is not NURBS has no patches.
+    integer function format_info_nurbs_count(self, section)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section
+        format_info_nurbs_count = int(c_mio_nurbs_info_count(self%handle, int(section, c_int32_t)))
+    end function
+
+    !> Integer field `field` (0-based, see meshioplusplus.h) of item `index`
+    !> (1-based): a patch's parametric (0) or space (1) dimension, the
+    !> topology's dimension (0) or vertex count (1).
+    function format_info_nurbs_int(self, section, index, field, stat, errmsg) result(v)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: v
+        integer(c_int64_t) :: cv
+        cv = 0
+        call handle_status(c_mio_nurbs_info_int(self%handle, int(section, c_int32_t), &
+                                                int(index - 1, c_int64_t), int(field, c_int32_t), cv), &
+                           'nurbs_int', stat, errmsg)
+        v = int(cv, int64)
+    end function
+
+    !> One borrowed array of the NURBS side channel, as a C pointer and shape.
+    subroutine nurbs_array(self, section, index, field, what, p, shp, ok, stat, errmsg)
+        class(mio_format_info), intent(in) :: self
+        integer(c_int32_t), intent(in) :: section
+        integer, intent(in) :: index, field
+        character(*), intent(in) :: what
+        type(c_ptr), intent(out) :: p
+        integer(c_int64_t), intent(out) :: shp(MIO_MAX_NDIM)
+        logical, intent(out) :: ok
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        shp = 0
+        st = c_mio_nurbs_info_array(self%handle, section, int(index - 1, c_int64_t), &
+                                    int(field, c_int32_t), p, dt, nd, shp)
+        call handle_status(st, what, stat, errmsg)
+        ok = st == 0_c_int
+    end subroutine
+
+    !> A patch's degree per parametric direction (patch index 1-based).
+    function format_info_nurbs_degrees(self, patch, stat, errmsg) result(degrees)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int32), allocatable :: degrees(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        integer(c_int32_t), pointer :: vals(:)
+        allocate (degrees(0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 0, 'nurbs_degrees', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        degrees = int(vals, int32)
+    end function
+
+    !> A patch's knot vector along direction `dir` (both 1-based), copied.
+    function format_info_nurbs_knots(self, patch, dir, stat, errmsg) result(knots)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch, dir
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: knots(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:)
+        allocate (knots(0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 2 + dir, 'nurbs_knots', p, shp, ok, &
+                         stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        knots = real(vals, real64)
+    end function
+
+    !> A patch's control net (space dimension, points), direction 0 fastest.
+    function format_info_nurbs_control_points(self, patch, stat, errmsg) result(xyz)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: xyz(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (xyz(0, 0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 1, 'nurbs_control_points', p, shp, ok, &
+                         stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        xyz = real(vals, real64)
+    end function
+
+    !> A patch's control-point weights.
+    function format_info_nurbs_weights(self, patch, stat, errmsg) result(weights)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: weights(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:)
+        allocate (weights(0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 2, 'nurbs_weights', p, shp, ok, stat, &
+                         errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        weights = real(vals, real64)
+    end function
+
+    !> The control values (components, points) of field `k` on a patch (1-based).
+    function format_info_nurbs_field(self, patch, k, stat, errmsg) result(values)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch, k
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: values(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (values(0, 0))
+        call nurbs_array(self, MIO_NURBS_PATCHES, patch, 5 + k, 'nurbs_field', p, shp, ok, &
+                         stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        values = real(vals, real64)
+    end function
+
+    !> The point-data name of field `k` (1-based); '' on error.
+    function format_info_nurbs_field_name(self, k) result(name)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: k
+        character(:), allocatable :: name
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        name = ''
+        allocate (buf(1))
+        n = c_mio_nurbs_info_string(self%handle, MIO_NURBS_FIELDS, int(k - 1, c_int64_t), &
+                                    0_c_int32_t, buf, 0_c_int64_t)
+        if (n <= 0) return
+        deallocate (buf)
+        allocate (buf(n + 1))
+        n = c_mio_nurbs_info_string(self%handle, MIO_NURBS_FIELDS, int(k - 1, c_int64_t), &
+                                    0_c_int32_t, buf, n + 1)
+        name = from_c_buf(buf, int(n))
+    end function
+
+    !> An index array of the TOPOLOGY or CELL_MAP section, (columns, rows),
+    !> a one-dimensional one as (1, n). Vertices, patches and knot spans come
+    !> back 1-based; attributes and the edges' knot-vector ids as the file
+    !> spelled them.
+    function format_info_nurbs_ids(self, section, field, stat, errmsg) result(ids)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: ids(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        integer(c_int64_t), pointer :: vals(:, :)
+        integer(c_int64_t) :: cols
+        allocate (ids(0, 0))
+        call nurbs_array(self, int(section, c_int32_t), 1, field, 'nurbs_ids', p, shp, ok, stat, &
+                         errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        cols = max(shp(2), 1_c_int64_t)
+        call c_f_pointer(p, vals, [cols, shp(1)])
+        ids = int(vals, int64)
+        if (section == MIO_NURBS_TOPOLOGY .and. (field == 1 .or. field == 3)) return
+        if (section == MIO_NURBS_TOPOLOGY .and. field == 4) then
+            ids(2:3, :) = ids(2:3, :) + 1
+            return
+        end if
+        ids = ids + 1
+    end function
+
+    !> Number of items in a MIO_BREP_* section; -1 on error (not a B-rep handle).
+    integer function format_info_brep_count(self, section)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section
+        format_info_brep_count = int(c_mio_brep_info_count(self%handle, int(section, c_int32_t)))
+    end function
+
+    !> Whether int field `field` of a B-rep section is an index into another
+    !> section (returned 1-based here, 0 for none).
+    logical function brep_int_is_index(section, field)
+        integer, intent(in) :: section, field
+        select case (section)
+        case (MIO_BREP_FACES)
+            brep_int_is_index = field == 1 .or. field == 6 .or. field == 8
+        case (MIO_BREP_LOOPS)
+            brep_int_is_index = field == 0 .or. field == 1
+        case (MIO_BREP_TRIMS)
+            brep_int_is_index = field == 0 .or. field == 1
+        case (MIO_BREP_EDGES)
+            brep_int_is_index = field == 2
+        case (MIO_BREP_VERTICES)
+            brep_int_is_index = field == 1
+        case default
+            brep_int_is_index = .false.
+        end select
+    end function
+
+    !> Integer field `field` (0-based, see meshioplusplus.h) of item `index`
+    !> (1-based). Fields that index another section (a face's patch, first
+    !> loop or trim; a loop's or trim's face; a trim's loop; an edge's or
+    !> vertex's first reference) come back 1-based, 0 for none; ids, flags,
+    !> counts, degrees and trim indices as the file spells them.
+    function format_info_brep_int(self, section, index, field, stat, errmsg) result(v)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: v
+        integer(c_int64_t) :: cv
+        cv = 0
+        call handle_status(c_mio_brep_info_int(self%handle, int(section, c_int32_t), &
+                                               int(index - 1, c_int64_t), int(field, c_int32_t), cv), &
+                           'brep_int', stat, errmsg)
+        v = int(cv, int64)
+        if (brep_int_is_index(section, field)) v = v + 1
+    end function
+
+    !> One borrowed array of the B-rep side channel, as a C pointer and shape.
+    subroutine brep_array(self, section, index, field, what, p, shp, ok, stat, errmsg)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        character(*), intent(in) :: what
+        type(c_ptr), intent(out) :: p
+        integer(c_int64_t), intent(out) :: shp(MIO_MAX_NDIM)
+        logical, intent(out) :: ok
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        shp = 0
+        st = c_mio_brep_info_array(self%handle, int(section, c_int32_t), int(index - 1, c_int64_t), &
+                                   int(field, c_int32_t), p, dt, nd, shp)
+        call handle_status(st, what, stat, errmsg)
+        ok = st == 0_c_int
+    end subroutine
+
+    !> A Float64 vector field (weights, knots, an active range, local
+    !> coordinates) of item `index` (1-based), copied.
+    function format_info_brep_values(self, section, index, field, stat, errmsg) result(values)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: values(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:)
+        allocate (values(0))
+        call brep_array(self, section, index, field, 'brep_values', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        values = real(vals, real64)
+    end function
+
+    !> A control net (3, points) of item `index` (1-based): a patch's (field
+    !> 0) or a curve's (field 10), copied.
+    function format_info_brep_points(self, section, index, field, stat, errmsg) result(xyz)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: xyz(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (xyz(0, 0))
+        call brep_array(self, section, index, field, 'brep_points', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        xyz = real(vals, real64)
+    end function
+
+    !> An Int64 field of item `index` (1-based): control-point ids as the file
+    !> spells them, or a brep's face/edge/vertex indices (fields 0/1/2 of
+    !> MIO_BREP_BREPS), 1-based.
+    function format_info_brep_ids(self, section, index, field, stat, errmsg) result(ids)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), allocatable :: ids(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        integer(c_int64_t), pointer :: vals(:)
+        allocate (ids(0))
+        call brep_array(self, section, index, field, 'brep_ids', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        ids = int(vals, int64)
+        if (section == MIO_BREP_BREPS) ids = ids + 1
+    end function
+
+    !> String field `field` of item `index` (1-based); '' on error.
+    function format_info_brep_string(self, section, index, field) result(text)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: section, index, field
+        character(:), allocatable :: text
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        text = ''
+        allocate (buf(1))
+        n = c_mio_brep_info_string(self%handle, int(section, c_int32_t), int(index - 1, c_int64_t), &
+                                   int(field, c_int32_t), buf, 0_c_int64_t)
+        if (n <= 0) return
+        deallocate (buf)
+        allocate (buf(n + 1))
+        n = c_mio_brep_info_string(self%handle, int(section, c_int32_t), int(index - 1, c_int64_t), &
+                                   int(field, c_int32_t), buf, n + 1)
+        text = from_c_buf(buf, int(n))
     end function
 
     integer function format_info_mdpa_count(self, section)

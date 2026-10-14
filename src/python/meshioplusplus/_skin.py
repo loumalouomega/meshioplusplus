@@ -131,6 +131,10 @@ def _is_volume_type(cell_type: str) -> bool:
         "VTK_LAGRANGE_HEXAHEDRON",
         "VTK_LAGRANGE_WEDGE",
         "VTK_LAGRANGE_PYRAMID",
+        "VTK_BEZIER_TETRAHEDRON",
+        "VTK_BEZIER_HEXAHEDRON",
+        "VTK_BEZIER_WEDGE",
+        "VTK_BEZIER_PYRAMID",
     )
 
 

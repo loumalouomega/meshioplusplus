@@ -31,7 +31,7 @@ XDMF time-series writers preserve fixed point, cell and side regions alongside t
 Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple pieces and appended raw/base64 arrays in both the native core and Python reference, with UInt32/UInt64 headers and either byte order. Pieces concatenate without welding; VTP/VTS/VTR/VTI writers remain inline. Native legacy `.vtk` reads also support structured points, structured grids and rectilinear grids in ASCII and big-endian binary; see the [format documentation](doc/formats.md).
 
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
-> [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary, read-only; every increment is a step, nodal and element results by output location),
+> [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary; every increment is a step, nodal and element results by output location; written too, the model and an increment per step),
 > [ANSYS Fluent](https://www.ansys.com/products/fluids/ansys-fluent) mesh (`.msh`; cells rebuilt from faces, written face-based as Fluent reads it, zones as named regions),
 > [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`, read-only; nodal solution, reactions and element nodal stresses, strains and forces, every result set is a step; distributed solves merged, the full rotor of a static cyclic model),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
@@ -53,20 +53,22 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [Code_Aster](https://code-aster.org) native mesh (`.mail`; `GROUP_MA`/`GROUP_NO` as named regions, Code_Aster's own node order),
 > [CalculiX](http://www.dhondt.de/) results (`.frd`, ASCII or binary written too; every increment is a step, tensors keep the file order, opt-in von Mises and principal values),
 > [HMF](https://loumalouomega.github.io/meshioplusplus/formats/hmf) (`.hmf`, experimental, meshio++-specific),
+> [IGES](https://loumalouomega.github.io/meshioplusplus/formats/iges) (`.igs`, `.iges`, read-only, with the optional OpenCASCADE backend; triangulated, with its NURBS B-rep),
 > [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`, `.uff`),
 > [ANSYS Fluent interpolation](https://github.com/victorsndvg/FEconv) (`.ip`),
-> [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`; tables, geometries, `Mesh` blocks and `Constraints`, including nested sub-model-part geometry/constraint membership, kept in a side channel on every surface),
+> [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`; tables, geometries, `Mesh` blocks and `Constraints`, including nested sub-model-part geometry/constraint membership, kept in a side channel on every surface; the Kratos IGA geometry beside a deck loaded with it),
+> [Kratos CAD JSON](https://loumalouomega.github.io/meshioplusplus/formats/cad_json) (`.cad.json`; trimmed NURBS faces, trimming loops and coupling edges for Kratos IGA, sampled as Lagrange cells and kept exactly in a side channel on every surface, and the `ImportNurbsSbmModeler` dialect),
 > [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, also gzip/bzip2; active cells of refined meshes, subdomains, side, edge, shell-face and node sets as named regions, written back in the 1.8.0 layout),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
-> [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output, read-only; `nodout` outputs are steps, the other databases field data),
+> [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output; `nodout` outputs are steps, the other databases field data; written too, a `nodout` cloud per step with each database on its own cadence),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
-> [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
+> [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions, NURBS meshes with their patches kept and written back) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),
-> [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),
-> [Nastran OP2](https://loumalouomega.github.io/meshioplusplus/formats/nastran_op2) results (`.op2`, MSC and NX, 32- and 64-bit, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),
+> [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values; written too, with nodal results and the centre stress and strain of shells, solids and rods, one step per call or a series),
+> [Nastran OP2](https://loumalouomega.github.io/meshioplusplus/formats/nastran_op2) results (`.op2`, MSC and NX, 32- and 64-bit; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
 > [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`; native periodic reads across language bindings via format metadata, periodic writes in 2.2/4.1),
@@ -85,7 +87,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [PVD](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvd`; a time-indexed collection of serial or parallel VTK XML files, read by ParaView),
 > [PVTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtp`; a parallel index over per-piece `.vtp` files) and
 > [PVTU](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtu`; a parallel index over per-piece `.vtu` files, ghost cells and `partition` output included),
-> [STEP](https://en.wikipedia.org/wiki/ISO_10303-21) (output only; a closed surface as a faceted AP214 solid that CAD tools open) (`.step`, `.stp`),
+> [STEP](https://en.wikipedia.org/wiki/ISO_10303-21) (a closed surface written as a faceted AP214 solid that CAD tools open; read with the optional OpenCASCADE backend as a triangulation plus its NURBS B-rep) (`.step`, `.stp`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
 > [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones; `.szplt` read-only through a TecIO you supply),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
@@ -169,7 +171,9 @@ meshioplusplus normals    in.vtu out.vtu --split-angle 30    # point/cell normal
 meshioplusplus feature-edges in.stl edges.vtp --angle 45   # sharp/open/non-manifold edges as lines
 meshioplusplus segment    in.stl patches.vtu --curvature-tolerance 1  # smooth patches as regions
 meshioplusplus fit-primitives patches.vtu fits.vtu --json  # plane/sphere/cylinder/cone/torus per patch
+meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cells 20  # analytic STEP solid (OpenCASCADE builds)
 meshioplusplus convert    in.stl part.step               # a closed skin as a faceted CAD solid
+meshioplusplus convert    part.step part.cad.json        # a CAD model as Kratos IGA geometry (OpenCASCADE builds)
 meshioplusplus hausdorff  a.stl b.stl --max 1e-3             # worst-case distance; nonzero exit above it
 meshioplusplus check      part.vtu -r "scaled_jacobian >= 0.2"  # quality gate: exit 1 on failure, 2 if unchecked
 meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
@@ -381,9 +385,9 @@ mesh = meshioplusplus.edit_regions(mesh, [{"op": "union", "inputs": ["a", "b"], 
 pairs = meshioplusplus.match_periodic_nodes(mesh, "inlet", "outlet", translate=(2, 0, 0))
 ```
 
-#### Skin to CAD: segment, fit primitives, STEP
+#### Skin to CAD: segment, fit primitives, STEP, CAD faces
 
-The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The write-only **`step`** format hands a closed skin to CAD as an AP214 faceted solid (one planar face per facet, shared edges), validated against OpenCASCADE. See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit).
+The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The write-only **`step`** format hands a closed skin to CAD as an AP214 faceted solid (one planar face per facet, shared edges), validated against OpenCASCADE. With the optional OpenCASCADE backend (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`, LGPL-2.1, bring-your-own, never in the wheels), **`meshioplusplus.fit_cad(mesh, path)`** does the CAD half: each fitted patch becomes an analytic face trimmed by its boundary, a constant-radius rolling-ball fillet or a straight thread flank its own face, and any other patch no primitive explains a freeform B-spline face (split first into pieces a plane or an unrolled cylinder parametrises), sewn into a checked solid and written as STEP a CAD tool can edit (or as Kratos CAD JSON), with anything the kernel cannot build demoted to facets, never silently wrong (every surface but WASM; `to-cad` in both CLIs). See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit) and [fit CAD](https://loumalouomega.github.io/meshioplusplus/fit_cad).
 
 <!--pytest-codeblocks:skip-->
 
@@ -391,7 +395,8 @@ The mesh-side half of reverse engineering a triangle skin into a CAD model, with
 seg = meshioplusplus.segment(skin, curvature_tolerance=1.0, min_patch_cells=20)
 fit, report = meshioplusplus.fit_primitives(seg, tolerance=2e-3, return_report=True)
 fit.field_data["fit:patch_params"]   # per patch: point, axis, radii, half-angle
-meshioplusplus.write("part.step", skin)
+meshioplusplus.write("part.step", skin)                     # faceted solid
+solid = meshioplusplus.fit_cad(fit, "part_cad.step")         # analytic faces (OpenCASCADE)
 ```
 
 #### Interfaces and contact
@@ -457,7 +462,7 @@ Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-
 
 #### Curved tessellation
 
-**`meshioplusplus.tessellate`** isoparametrically subdivides the five higher-order cell types (`triangle6`/`quad8`/`quad9`/`tetra10`/`hexahedron27`, deliberately excluding `hexahedron20` — see `doc/tessellation.md`) onto a refinement lattice, using each cell's own shape functions so a curved boundary tessellates onto the curve rather than being chopped straight. Unlike `convert_cells(mode="simplexify")`, it records a full provenance map (`Tessellation.source_point`/`source_cell`) from every synthetic point and tessellated cell back to the higher-order cell it was carved out of, so a prediction made on a tetrahedron is written onto the hexahedron it was carved out of via `Tessellation.gather`/`.scatter`/`.aggregate`. `fields=True` (default) interpolates the input's own `point_data`/`cell_data` onto the tessellated mesh. See `doc/tessellation.md`.
+**`meshioplusplus.tessellate`** isoparametrically subdivides the five higher-order cell types (`triangle6`/`quad8`/`quad9`/`tetra10`/`hexahedron27`, deliberately excluding `hexahedron20` — see `doc/tessellation.md`) onto a refinement lattice, using each cell's own shape functions so a curved boundary tessellates onto the curve rather than being chopped straight. Unlike `convert_cells(mode="simplexify")`, it records a full provenance map (`Tessellation.source_point`/`source_cell`) from every synthetic point and tessellated cell back to the higher-order cell it was carved out of, so a prediction made on a tetrahedron is written onto the hexahedron it was carved out of via `Tessellation.gather`/`.scatter`/`.aggregate`. `fields=True` (default) interpolates the input's own `point_data`/`cell_data` onto the tessellated mesh. The kernel is in the C++ core, so the native CLI, every flat binding (C, Fortran, Julia, R, WASM) and the pipeline's `Tessellate` step run it too. See `doc/tessellation.md`.
 
 <!--pytest-codeblocks:skip-->
 
@@ -1188,7 +1193,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.38.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.42.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -1381,6 +1386,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |
+| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | CMake (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) | `fit_cad`: analytic CAD faces sewn into a STEP solid; never in the wheels | LGPL-2.1 with the OCCT exception |
 | [zstandard](https://github.com/indygreg/python-zstandard), [lz4](https://github.com/python-lz4/python-lz4) | `[codecs]` | the Python fallback for the optional VTK block codecs | BSD-3-Clause / BSD-2-Clause |
 
 #### Bundled and build-time

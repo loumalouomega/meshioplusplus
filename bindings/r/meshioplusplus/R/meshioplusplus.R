@@ -1297,6 +1297,80 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
   )
 }
 
+#' Whether the library carries the OpenCASCADE backend
+#'
+#' `mio_fit_cad()` needs a library built with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`;
+#' this reports whether the loaded one was.
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_occt <- function() {
+  .Call(R_mio_has_occt)
+}
+
+#' Turn fitted patches into a CAD solid
+#'
+#' Builds a CAD solid from the fitted patches of a closed skin through the
+#' OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
+#' cone or torus face, a patch no primitive explains a rolling-ball fillet,
+#' thread flank or freeform B-spline face where one fits (`fit_cad:type` 7, 8
+#' and 6), the rest planar facets, and a face that fails the B-rep
+#' check or strays beyond `tolerance` is demoted to facets. Without
+#' `segment:patch` or the `fit:patch_*` table, segment and fit_primitives run
+#' first with their defaults. Fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in
+#' a build without OpenCASCADE (see `mio_has_occt()`). See `doc/fit_cad.md`.
+#'
+#' @param mesh A closed, consistently wound surface `mio_mesh`.
+#' @param step_path Write the solid here as AP214 STEP; `""` writes nothing.
+#' @param tolerance The largest distance a face may lie from the skin; 0 takes
+#'   three times the largest accepted patch tolerance.
+#' @param exact_edges Whether to try exact surface intersections first.
+#' @param types The fitted types kept as analytic faces.
+#' @param mesh_deflection The chordal deflection of the re-meshed solid; 0
+#'   takes a quarter of the tolerance.
+#' @param max_demotion_rounds Rounds of demoting failed faces before every
+#'   patch is faceted.
+#' @param freeform Whether a patch no primitive explains is tried as a
+#'   B-spline face.
+#' @param freeform_degree That B-spline's highest degree, 3 to 8.
+#' @param freeform_max_control The most grid points per direction its fit
+#'   samples, 4 to 1024.
+#' @param freeform_split Whether a freeform patch that folds over both its
+#'   best-fit plane and an unrolled cylinder is split into pieces fitted as
+#'   their own B-spline faces.
+#' @param fillets Whether a patch between two analytic faces is tried as a
+#'   rolling-ball fillet.
+#' @param threads Whether a patch beside a cylinder or cone is tried as a
+#'   thread flank.
+#' @return A list of `mesh` (the solid re-meshed, with cell data
+#'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
+#'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
+#'   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
+#'   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
+#'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
+#'   `num_split_patches`, `num_fillet` and `num_helical`.
+#' @export
+mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
+                        types = c("plane", "sphere", "cylinder", "cone", "torus"),
+                        mesh_deflection = 0, max_demotion_rounds = 8,
+                        freeform = TRUE, freeform_degree = 3,
+                        freeform_max_control = 64, freeform_split = TRUE,
+                        fillets = TRUE, threads = TRUE) {
+  known <- c("plane", "sphere", "cylinder", "cone", "torus")
+  bad <- setdiff(types, known)
+  if (length(bad) > 0) {
+    stop("meshio++: fit_cad: unknown primitive type ", bad[[1]])
+  }
+  mask <- sum(2^match(unique(types), known))
+  .Call(
+    R_mio_fit_cad, mesh, as.character(step_path), as.numeric(tolerance),
+    isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
+    as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
+    as.numeric(freeform_max_control), isTRUE(freeform_split), isTRUE(fillets),
+    isTRUE(threads)
+  )
+}
+
 #' Render a mesh into an RGBA frame
 #'
 #' A deterministic software rasterizer: no display, GPU or windowing library, and
@@ -1885,6 +1959,38 @@ mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
   )
 }
 
+#' Tessellate the curved cells of a mesh
+#'
+#' Isoparametric tessellation: every `triangle6`, `quad8`, `quad9`, `tetra10`
+#' or `hexahedron27` cell is sampled on a reference lattice and mapped through
+#' its own quadratic shape functions; curved surface cells become one
+#' `triangle` block and curved volume cells one `tetra` block, after the
+#' pass-through blocks. Every other cell passes through unchanged. Cells that
+#' share an edge or a face share its points, so the output is conforming. See
+#' `doc/tessellation.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param levels Divisions per axis for `quad8`/`quad9`/`hexahedron27`, or
+#'   recursive splits for `triangle6`/`tetra10` (`2^levels` per edge); >= 0.
+#' @param curved `FALSE` passes every cell through unchanged.
+#' @param fields Interpolate point data and copy cell data onto the output.
+#' @param record_stencil Also store the `(num_points, 27)` point data
+#'   `tessellate:stencil` and `tessellate:weights`.
+#' @return A list of `mesh` (with point data `tessellate:source_point`, the
+#'   0-based source point or -1, and cell data `tessellate:source_cell` and
+#'   `tessellate:sub_index`), `num_source_points`, `num_source_cells`,
+#'   `num_curved_source_cells`, `num_pass_through_source_cells`, `num_points`,
+#'   `num_cells`, `num_boundary_facets`, `num_interior_facets` and
+#'   `num_facets_with_bad_count` (zero for a conforming tessellation).
+#' @export
+mio_tessellate <- function(mesh, levels = 2, curved = TRUE, fields = TRUE,
+                           record_stencil = FALSE) {
+  .Call(
+    R_mio_tessellate, mesh, as.numeric(levels), isTRUE(curved), isTRUE(fields),
+    isTRUE(record_stencil)
+  )
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_decimate <- function(mesh, ratio = -1, target_faces = -1, max_error = -1,
@@ -2192,6 +2298,53 @@ mio_mdpa_info <- function(info) .Call(R_mio_mdpa_info, info)
 #' @return A list with `bounding_entities` and `periodic`.
 #' @export
 mio_gmsh_info <- function(info) .Call(R_mio_gmsh_info, info)
+
+#' Copy an MFEM NURBS side channel
+#'
+#' The patches an `MFEM NURBS mesh` was sampled from (v16.40.0), copied into
+#' plain R values: `patches`, each a list of `degrees`, `knots` (one vector per
+#' parametric direction), `control_points` (a `(space_dimension, points)`
+#' matrix, direction 0 fastest), `weights` and `fields` (one
+#' `(components, points)` matrix of control values per field); `field_names`;
+#' `topology` (`dimension`, `num_vertices`, `patch_vertices`,
+#' `patch_attributes`, `boundary_vertices`, `boundary_attributes`, and `edges`
+#' as `(knot vector, vertex, vertex)` columns), `NULL` when the source states
+#' none; and the cell map `cell_patch`, `cell_span` (`(3, cells)`) and
+#' `boundary_cell_patch`. Vertices, patches and knot spans are 1-based;
+#' attributes and knot-vector ids stay as the file spelled them. The copy
+#' remains valid after releasing the handle; `mio_write_with_info()` writes
+#' the patches back from the handle itself.
+#' @param info A format-info handle from `mio_read_with_info()` of an MFEM mesh.
+#' @return A list with `patches`, `field_names`, `topology`, `cell_patch`,
+#'   `cell_span` and `boundary_cell_patch`.
+#' @export
+mio_nurbs_info <- function(info) .Call(R_mio_nurbs_info, info)
+
+#' Copy a B-rep side channel
+#'
+#' The trimmed NURBS faces, loops, edges and vertices of a Kratos CAD JSON
+#' handle (or a STEP/IGES one read through OpenCASCADE), copied into plain R
+#' values: `patches` (`degrees`, `knots` in the full form, `control_points` as
+#' a `(3, points)` matrix with direction 0 fastest, `weights`); `breps` (`id`,
+#' `name`, 1-based `faces`, `edges`, `vertices`, `extra`); `faces` (`id`,
+#' `name`, 1-based `patch`, `swapped_normal`, `trimmed`, `rational`,
+#' `reduced_knots`, `control_point_ids`, `loops` of `type`, `trims` and `extra`,
+#' `embedded_edges`, `surface_extra`, `extra`), each trim `trim_index`,
+#' `direction`, `curve`, `extra`; `edges` (`id`, `name`, `curve` or `NULL`,
+#' `topology`, `extra`) and `vertices` (`id`, `name`, `topology`, `extra`), each
+#' topology entry `id`, `name`, `trim_index`, `relative_direction`,
+#' `local_coordinates`, `extra`; and `extra`, the file's other members. A curve
+#' is `degree`, `knots`, `reduced_knots`, `rational`, `control_points`,
+#' `weights`, `ids`, `active_range`, `extra`. Ids are -1 where the file names
+#' the entity instead; the `extra` members are compact JSON text. The copy
+#' remains valid after releasing the handle; `mio_write_with_info()` writes the
+#' B-rep back as CAD JSON from the handle itself.
+#' @param info A format-info handle from `mio_read_with_info()` of a CAD JSON
+#'   (or STEP/IGES) file.
+#' @return A list with `patches`, `breps`, `faces`, `edges`, `vertices` and
+#'   `extra`.
+#' @export
+mio_brep_info <- function(info) .Call(R_mio_brep_info, info)
 
 #' @rdname mio_read_with_info
 #' @export

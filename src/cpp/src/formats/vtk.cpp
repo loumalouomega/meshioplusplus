@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -37,6 +39,7 @@
 // Project includes (private, not installed)
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/vtk_hex_order.hpp"
 
 namespace meshioplusplus {
 
@@ -290,14 +293,59 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             }
         }
     } else {
-        // Version 4.2: interleaved [count, nodes...] per cell, as int32.
+        // Version 4.2: interleaved [count, nodes...] per cell, as int32. VTK
+        // reads the higher-order hexahedra of a file older than 5.1 with edges
+        // 10 and 11 swapped (detail/vtk_hex_order.hpp), so they are written so.
+        std::vector<NDArray> old_order(rMesh.NumCellBlocks());
+        {
+            std::size_t bi = 0;
+            bool warned = false;
+            for (const auto cb : rMesh.CellRange()) {
+                const auto vt = meshio_to_vtk_type().find(std::string(cb.Type()));
+                if (vt != meshio_to_vtk_type().end() && detail::vtk_hex_order_applies(vt->second) &&
+                    !cb.IsRagged() && cb.NumCells()) {
+                    const std::size_t k = cols(cb.Conn());
+                    NDArray swapped(DType::Int64, {cb.NumCells(), k});
+                    const detail::Int64View src(cb.Conn());
+                    std::copy(src.Data(), src.Data() + cb.Conn().Size(),
+                              swapped.As<std::int64_t>());
+                    const bool degrees =
+                        rMesh.HasCellData("HigherOrderDegrees") &&
+                        rMesh.CellDataNumBlocks("HigherOrderDegrees") == rMesh.NumCellBlocks() &&
+                        rMesh.CellData("HigherOrderDegrees", bi).Size() == 3 * cb.NumCells();
+                    for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                        std::int64_t deg[3];
+                        if (degrees)
+                            for (std::size_t q = 0; q < 3; ++q)
+                                deg[q] = detail::read_int(rMesh.CellData("HigherOrderDegrees", bi),
+                                                          3 * r + q);
+                        if (!detail::vtk_hex_swap_edges(swapped.As<std::int64_t>() + r * k, k,
+                                                        degrees ? deg : nullptr) &&
+                            !warned) {
+                            log::warn(
+                                "VTK 4.2 writer: a {} of {} nodes has no degrees that explain "
+                                "its size; VTK will read its edges 10 and 11 swapped (write "
+                                "5.1)",
+                                std::string(cb.Type()), k);
+                            warned = true;
+                        }
+                    }
+                    old_order[bi] = std::move(swapped);
+                }
+                ++bi;
+            }
+        }
+        const auto conn_of = [&](std::size_t Block, const NDArray& rConn) -> const NDArray& {
+            return old_order[Block].Size() ? old_order[Block] : rConn;
+        };
         os << "CELLS " << total_cells << ' ' << (total_idx + total_cells) << '\n';
         if (binary) {
             // Fused: each cell -> [k, v0..v(k-1)] big-endian int32, one pass.
             std::vector<unsigned char> cbuf((total_idx + total_cells) * 4);
             std::size_t p = 0;  // element index into cbuf
+            std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
+                const NDArray& conn = conn_of(bi++, cb.Conn());
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
                 const std::size_t stride = k + 1;
@@ -323,8 +371,9 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                      static_cast<std::streamsize>(cbuf.size()));
             os << '\n';
         } else {
+            std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
-                const detail::Int64View conn(cb.Conn());
+                const detail::Int64View conn(conn_of(bi++, cb.Conn()));
                 const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 // Each cell is its count, then its ids: k + 1 lines.

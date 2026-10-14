@@ -21,8 +21,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <ostream>
@@ -31,6 +33,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -38,6 +41,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/backends/kratos_names.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -48,6 +52,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/json_value.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -1943,6 +1948,87 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     // ---- Raw blocks, verbatim ---------------------------------------------
     for (const MdpaRawBlock& r_raw : rInfo.mRawBlocks)
         os << r_raw.mHeader << "\n" << r_raw.mBody << r_raw.mEnd << "\n\n";
+}
+
+
+namespace {
+
+// `<deck stem>.cad.json` beside the deck.
+std::filesystem::path mdpa_sidecar_default(const std::string& rPath) {
+    std::filesystem::path p(rPath);
+    std::string stem = p.filename().string();
+    if (stem.size() > 5 && stem.compare(stem.size() - 5, 5, ".mdpa") == 0)
+        stem.resize(stem.size() - 5);
+    return p.parent_path() / (stem + ".cad.json");
+}
+
+}  // namespace
+
+std::string mdpa_cad_json_path(const std::string& rPath) {
+    std::error_code ec;
+    const std::filesystem::path own = mdpa_sidecar_default(rPath);
+    if (std::filesystem::is_regular_file(own, ec))
+        return own.string();
+    const std::filesystem::path dir = std::filesystem::path(rPath).parent_path();
+    const std::filesystem::path params = dir / "ProjectParameters.json";
+    if (!std::filesystem::is_regular_file(params, ec))
+        return {};
+    auto in = detail::make_classic_ifstream(params, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    detail::JsonValue root;
+    try {
+        root = detail::parse_json(text, "ProjectParameters.json");
+    } catch (const ReadError&) {
+        return {};  // not ours to judge; there is simply no sidecar named
+    }
+    const detail::JsonValue* modelers = root.IsObject() ? root.Find("modelers") : nullptr;
+    if (!modelers || !modelers->IsArray())
+        return {};
+    for (const detail::JsonValue& m : modelers->mItems) {
+        const detail::JsonValue* name = m.IsObject() ? m.Find("modeler_name") : nullptr;
+        if (!name || !name->IsString() || name->mString != "CadIoModeler")
+            continue;
+        const detail::JsonValue* parameters = m.Find("Parameters");
+        const detail::JsonValue* file =
+            parameters && parameters->IsObject() ? parameters->Find("geometry_file_name") : nullptr;
+        if (!file || !file->IsString() || file->mString.empty())
+            continue;
+        std::string f = file->mString;
+        if (f.size() < 9 || f.compare(f.size() - 9, 9, ".cad.json") != 0)
+            f += ".cad.json";
+        const std::filesystem::path candidate = dir / f;
+        if (std::filesystem::is_regular_file(candidate, ec))
+            return candidate.string();
+    }
+    return {};
+}
+
+Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, BrepInfo& rBrep,
+               const ReadOptions& rOptions, const std::string& rCadJsonPath) {
+    Mesh mesh = read_mdpa(rPath, rInfo, rOptions);
+    rBrep = BrepInfo{};
+    std::string sidecar = rCadJsonPath;
+    if (sidecar.empty()) {
+        sidecar = mdpa_cad_json_path(rPath);
+    } else {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(sidecar, ec))
+            throw ReadError("meshio++: mdpa: the CAD JSON geometry '" + sidecar +
+                            "' does not exist");
+    }
+    if (!sidecar.empty())
+        rBrep = read_cad_json_info(sidecar);
+    return mesh;
+}
+
+void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo,
+                const BrepInfo& rBrep, const std::string& rCadJsonPath) {
+    write_mdpa(rPath, rMesh, rInfo);
+    if (rBrep.mFaces.empty() && rBrep.mEdges.empty() && rBrep.mVertices.empty())
+        return;
+    const std::string sidecar =
+        rCadJsonPath.empty() ? mdpa_sidecar_default(rPath).string() : rCadJsonPath;
+    write_cad_json(sidecar, rMesh, rBrep);
 }
 
 }  // namespace meshioplusplus

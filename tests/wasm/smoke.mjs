@@ -2542,20 +2542,21 @@ step('availableFormats reports what this build can read and write', () => {
     // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0),
     // OpenRadioss starter decks (read v16.7.0, written v16.17.0) and
     // OpenRadioss time-history files (read v16.12.0, written since) both ways.
-    // OpenRadioss animation files (v16.11.0) and LS-DYNA binouts (v16.12.0)
-    // read-only.
-    for (const fmt of ['abaqus_fil', 'radioss_anim', 'lsdyna_binout'])
+    // OpenRadioss animation files (v16.11.0) read-only; LS-DYNA binouts and Abaqus
+    // results files (read v16.12.0 and v16.7.0, written since) both ways.
+    for (const fmt of ['radioss_anim'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    for (const fmt of ['z88', 'libmesh', 'radioss', 'radioss_th'])
+    for (const fmt of ['z88', 'libmesh', 'radioss', 'radioss_th', 'lsdyna_binout', 'abaqus_fil'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // MSC Marc decks (read v16.8.0, written v16.17.0) both ways; its post files
     // and the full rotor of a cyclic Ansys .rst (v16.8.0) read-only.
     assert.ok(readers.includes('marc') && writers.includes('marc'));
     for (const fmt of ['marc_t19', 'ansys_rst_cyclic'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    // LS-DYNA d3plot state databases and Nastran OP2 results (v16.9.0): read-only.
-    for (const fmt of ['lsdyna_d3plot', 'nastran_op2'])
-        assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
+    // LS-DYNA d3plot state databases (v16.9.0) are read-only; Nastran OP2 results
+    // (read v16.9.0, written since) go both ways.
+    assert.ok(readers.includes('lsdyna_d3plot') && !writers.includes('lsdyna_d3plot'));
+    assert.ok(readers.includes('nastran_op2') && writers.includes('nastran_op2'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
     // DOLFINx VTX and Tecplot SZL (v16.13.0) need ADIOS2 and TecIO, which the
@@ -3207,6 +3208,34 @@ step('info: mdpa entity names and property sets round-trip together', () => {
     assert.equal(back.propertySets[0].id, 1);
     assert.equal(back.propertySets[0].values[0].key, 'YOUNG_MODULUS');
     assert.equal(back.propertySets[0].values[0].values[0], 2.1e11);
+});
+
+step('info: an MFEM NURBS mesh keeps and writes back its patches', () => {
+    const w = '0.70710678118654757';
+    m.FS.writeFile('/annulus.mesh', [
+        'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', '5 3 0 1 2 3',
+        'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2',
+        'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', '1 2 0 0 1 1',
+        'weights', '1', '1', '1', '1', w, w,
+        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1',
+        '1 0', '0 1', '0 2', '2 0', '1 1', '2 2', '',
+    ].join('\n'));
+    const mesh = m.readMeshSelective('/annulus.mesh', { format: 'mfem', info: true });
+    assert.equal(mesh.info.format, 'mfem');
+    assert.equal(mesh.info.patches.length, 1);
+    const p = mesh.info.patches[0];
+    assert.deepEqual(Array.from(p.degrees), [2, 1]);
+    assert.deepEqual(Array.from(p.knots[1]), [0, 0, 1, 1]);
+    assert.equal(p.spaceDim, 2);
+    assert.deepEqual(Array.from(p.controlPoints.slice(0, 4)), [1, 0, 1, 1]);
+    assert.equal(p.weights[1], Math.SQRT1_2);
+    assert.equal(Number(mesh.info.topology.numVertices), 4);
+    assert.deepEqual(Array.from(mesh.info.cellPatch, Number), [0]);
+    m.writeMesh('/annulus_out.mesh', mesh, 'mfem', { info: mesh.info });
+    assert.ok(new TextDecoder().decode(m.FS.readFile('/annulus_out.mesh')).startsWith('MFEM NURBS mesh v1.0'));
+    const back = m.readMeshSelective('/annulus_out.mesh', { format: 'mfem', info: true });
+    assert.deepEqual(Array.from(back.info.patches[0].controlPoints), Array.from(p.controlPoints));
+    assert.deepEqual(Array.from(back.info.patches[0].weights), Array.from(p.weights));
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
@@ -5013,6 +5042,63 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(p.numFixed, 0);
     shift[11] = 0.5;
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
+});
+
+step('tessellate: curved tetra10 + quad9, pass-through line', () => {
+    // A straight-sided tetra10 (points 0-9), a slightly bowed quad9
+    // (points 10-18) and a pass-through line. levels 2 is 2^2 = 4 divisions per
+    // tetra edge (64 tets, 35 lattice points, 4 * 16 boundary facets) and 2 per
+    // quad axis (8 triangles, 9 points); the counts match the numpy twin.
+    const tc = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const tetEdges = [[0, 1], [1, 2], [0, 2], [0, 3], [1, 3], [2, 3]];
+    const curvedMesh = {
+        points: new Float64Array([
+            ...tc.flat(),
+            ...tetEdges.flatMap(([a, b]) => tc[a].map((x, k) => (x + tc[b][k]) / 2)),
+            2, 0, 0, 3, 0, 0, 3, 1, 0, 2, 1, 0,
+            2.5, -0.2, 0, 3, 0.5, 0, 2.5, 1, 0, 2, 0.5, 0, 2.5, 0.5, 0,
+        ]),
+        dim: 3,
+        cells: [
+            { type: 'line', data: new Int32Array([0, 1]), nodesPerCell: 2 },
+            { type: 'tetra10', data: Int32Array.from({ length: 10 }, (_, i) => i), nodesPerCell: 10 },
+            { type: 'quad9', data: Int32Array.from({ length: 9 }, (_, i) => 10 + i), nodesPerCell: 9 },
+        ],
+        point_data: { t: Float64Array.from({ length: 19 }, (_, i) => i) },
+        cell_data: {},
+        field_data: {},
+    };
+    const ts = m.tessellate(curvedMesh);
+    assert.equal(ts.numSourcePoints, 19);
+    assert.equal(ts.numSourceCells, 3);
+    assert.equal(ts.numCurvedSourceCells, 2);
+    assert.equal(ts.numPassThroughSourceCells, 1);
+    assert.equal(ts.numPoints, 44);
+    assert.equal(ts.numCells, 73);
+    assert.equal(ts.numBoundaryFacets, 64);
+    assert.equal(ts.numInteriorFacets, 96);
+    assert.equal(ts.numFacetsWithBadCount, 0);
+    assert.deepEqual(ts.mesh.cells.map((c) => c.type), ['line', 'triangle', 'tetra']);
+    assert.equal(ts.mesh.points.length, 44 * 3);
+    const tsSource = Array.from(ts.mesh.point_data['tessellate:source_point'], Number);
+    assert.equal(tsSource.length, 44);
+    assert.deepEqual(tsSource.slice(0, 9), [0, 1, 2, 3, 10, 11, 12, 13, -1]);
+    assert.equal(tsSource.filter((s) => s >= 0).length, 8);
+    assert.ok(ts.mesh.cell_data['tessellate:source_cell']);
+    assert.ok(ts.mesh.cell_data['tessellate:sub_index']);
+    assert.deepEqual(Array.from(ts.mesh.point_data.t.slice(0, 8)), [0, 1, 2, 3, 10, 11, 12, 13]);
+    assert.equal(ts.mesh.point_data['tessellate:stencil'], undefined);
+    const tsStencil = m.tessellate(curvedMesh, 2, true, false, true);
+    assert.equal(tsStencil.mesh.point_data['tessellate:stencil'].length, 44 * 27);
+    assert.equal(tsStencil.mesh.point_data['tessellate:weights'].length, 44 * 27);
+    assert.equal(tsStencil.mesh.point_data_components['tessellate:stencil'], 27);
+    assert.equal(tsStencil.mesh.point_data.t, undefined);
+    const tsFlat = m.tessellate(curvedMesh, 2, false);
+    assert.equal(tsFlat.numCurvedSourceCells, 0);
+    assert.equal(tsFlat.numPassThroughSourceCells, 3);
+    assert.deepEqual(tsFlat.mesh.cells.map((c) => c.type), ['line', 'tetra10', 'quad9']);
+    assert.throws(() => m.tessellate(curvedMesh, -1), /levels/);
+    assert.throws(() => m.tessellate(curvedMesh, 1.5), /levels/);
 });
 
 step('findInterface, contactPairs and splitInterface', () => {

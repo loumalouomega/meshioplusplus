@@ -23,7 +23,12 @@ from .._region_field_data import (
     regions_from_field_arrays,
     regions_to_field_arrays,
 )
-from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
+from .._vtk_common import (
+    hex_swap_stream,
+    meshio_to_vtk_order,
+    meshio_to_vtk_type,
+    vtk_cells_from_data,
+)
 
 
 class _OptionalCodec:
@@ -552,10 +557,13 @@ class VtuReader:
             tpe = root.attrib["type"]
             raise ReadError(f"Expected type UnstructuredGrid, found {tpe}")
 
-        if "version" in root.attrib:
-            version = root.attrib["version"]
-            if version not in ["0.1", "1.0"]:
-                raise ReadError(f"Unknown VTU file version '{version}'.")
+        # 2.2 is the first version whose higher-order hexahedra are in the
+        # order meshio++ holds (VTK 9.1); VTK writes 2.3 for them since 9.4.
+        version = root.attrib.get("version", "0.1")
+        parsed = re.fullmatch(r"(\d+)\.(\d+)", version)
+        if parsed is None or int(parsed.group(1)) > 2:
+            raise ReadError(f"Unknown VTU file version '{version}'.")
+        old_hex_order = (int(parsed.group(1)), int(parsed.group(2))) < (2, 2)
 
         # fix empty NumberOfComponents attributes as produced by Firedrake
         for da_tag in root.findall(".//DataArray[@NumberOfComponents='']"):
@@ -665,8 +673,11 @@ class VtuReader:
                     for c in child:
                         if c.tag != "DataArray":
                             raise ReadError()
+                        name = _marked_name(child, c, piece is pieces[0])
+                        if name is None:
+                            continue
                         try:
-                            piece_point_data[c.attrib["Name"]] = self.read_data(c)
+                            piece_point_data[name] = self.read_data(c)
                         except CorruptionError as e:
                             warn(e.args[0] + " Skipping.")
 
@@ -674,7 +685,10 @@ class VtuReader:
                     for c in child:
                         if c.tag != "DataArray":
                             raise ReadError()
-                        piece_cell_data_raw[c.attrib["Name"]] = self.read_data(c)
+                        name = _marked_name(child, c, piece is pieces[0])
+                        if name is None:
+                            continue
+                        piece_cell_data_raw[name] = self.read_data(c)
                 elif child.tag == "FieldData":
                     # VTK also accepts field data inside a piece; it is dataset
                     # metadata all the same, and overrides the grid's.
@@ -700,6 +714,20 @@ class VtuReader:
         self.point_data = {
             key: np.concatenate([pd[key] for pd in point_data]) for key in sorted(names)
         } or None
+
+        # A file older than VTK XML 2.2 lists the edges 10 and 11 of
+        # higher-order hexahedra the other way round (``hex_swap_stream``).
+        if old_hex_order:
+            for raw, piece_cells in zip(cell_data_raw, cells):
+                conn = np.array(piece_cells["connectivity"], dtype=np.int64).reshape(-1)
+                hex_swap_stream(
+                    conn,
+                    np.asarray(piece_cells["offsets"]).reshape(-1),
+                    piece_cells["types"],
+                    raw.get("HigherOrderDegrees"),
+                    "VTU",
+                )
+                piece_cells["connectivity"] = conn
 
         # A hidden file-index array rides through the cell reconstruction, so
         # region arrays (file cell order) can be translated to the built blocks.
@@ -903,6 +931,32 @@ class VtuReader:
         return data
 
 
+# The attribute VTK puts on a <PointData>/<CellData> section to name the array
+# holding the rational weights or per-cell degrees of its Bezier cells.
+_MARKERS = {"PointData": "RationalWeights", "CellData": "HigherOrderDegrees"}
+
+
+def _marked_name(section, data_array, warn_once):
+    """The name ``data_array`` is read under (the twin of the core's
+    ``vtu_read_marked_name``): the marked array under the marker's own name;
+    an unmarked array that already has that name gives way (``None``)."""
+    marker = _MARKERS[section.tag]
+    marked = section.attrib.get(marker, "")
+    name = data_array.attrib["Name"]
+    if not marked or marked == marker:
+        return name
+    if name == marked:
+        return marker
+    if name == marker:
+        if warn_once:
+            warn(
+                f"VTU: the {section.tag} array '{marked}' is read as '{marker}'; "
+                "the unmarked array of that name is skipped"
+            )
+        return None
+    return name
+
+
 def read(filename):
     reader = VtuReader(filename)
     mesh = Mesh(
@@ -960,10 +1014,16 @@ def write(
     else:
         points = mesh.points
 
+    # 2.2 (VTK 9.1) is the first version whose higher-order hexahedra are in
+    # the order meshio++ holds; an older one tells VTK to swap edges 10 and 11.
+    hex_order = any(
+        c.type in ("VTK_LAGRANGE_HEXAHEDRON", "VTK_BEZIER_HEXAHEDRON")
+        for c in mesh.cells
+    )
     vtk_file = ET.Element(
         "VTKFile",
         type="UnstructuredGrid",
-        version="0.1",
+        version="2.2" if hex_order else "0.1",
         # Use the native endianness. Not strictly necessary, but this simplifies things
         # a bit.
         byte_order=("LittleEndian" if sys.byteorder == "little" else "BigEndian"),
@@ -1292,13 +1352,20 @@ def write(
             numpy_to_xml_array(cls, "faces", np.array(faces, dtype=int))
             numpy_to_xml_array(cls, "faceoffsets", np.array(faceoffsets, dtype=int))
 
+    # A ``RationalWeights`` point array and a ``HigherOrderDegrees`` cell array
+    # are marked as such, which is how VTK finds the weights and degrees of
+    # Bezier cells (the core's writer does the same).
     if mesh.point_data:
         pd = ET.SubElement(piece, "PointData")
+        if "RationalWeights" in mesh.point_data:
+            pd.set("RationalWeights", "RationalWeights")
         for name, data in mesh.point_data.items():
             numpy_to_xml_array(pd, name, data)
 
     if mesh.cell_data:
         cd = ET.SubElement(piece, "CellData")
+        if "HigherOrderDegrees" in mesh.cell_data:
+            cd.set("HigherOrderDegrees", "HigherOrderDegrees")
         for name, data in raw_from_cell_data(mesh.cell_data).items():
             numpy_to_xml_array(cd, name, data)
 

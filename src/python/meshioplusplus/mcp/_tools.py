@@ -76,6 +76,7 @@ from .. import (
     extract_surface,
     feature_edges,
     find_interface,
+    fit_cad,
     fit_primitives,
     geometry_descriptors,
     gradient,
@@ -431,8 +432,22 @@ def _store(mesh, output_path, output_format=None, **write_kwargs):
     return resolved
 
 
-def _mesh_summary(mesh):
+def _brep_summary(brep):
+    """What a B-rep side channel (``mesh.info["brep"]``: Kratos CAD JSON, STEP,
+    IGES, fit_cad) holds, by count."""
+    faces = brep.get("faces", [])
     return {
+        "faces": len(faces),
+        "trimmed_faces": sum(1 for f in faces if f.get("trimmed")),
+        "rational_faces": sum(1 for f in faces if f.get("rational")),
+        "loops": sum(len(f.get("loops", [])) for f in faces),
+        "edges": len(brep.get("edges", [])),
+        "vertices": len(brep.get("vertices", [])),
+    }
+
+
+def _mesh_summary(mesh):
+    out = {
         "num_points": int(len(mesh.points)),
         "num_cells": int(sum(len(b) for b in mesh.cells)),
         "cell_blocks": [{"type": b.type, "num_cells": int(len(b))} for b in mesh.cells],
@@ -441,6 +456,10 @@ def _mesh_summary(mesh):
         "field_data": sorted(mesh.field_data),
         "num_regions": len(mesh.regions),
     }
+    info = getattr(mesh, "info", None)
+    if isinstance(info, dict) and info.get("brep"):
+        out["brep"] = _brep_summary(info["brep"])
+    return out
 
 
 def _result(output_path, mesh, **extra):
@@ -814,6 +833,7 @@ def tool_convert(
     write_grid_functions=False,
     elmer_halo=False,
     patran_results=None,
+    write_nurbs=None,
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
 
@@ -831,7 +851,11 @@ def tool_convert(
     input mesh; ``patran_results`` (``{name: path}``) reads Patran 2.5 result
     files onto a Patran neutral input; ``write_grid_functions`` writes the data of an MFEM output as
     ``.gf`` files beside it. ``elmer_halo`` adds ElmerGrid's ``-halo`` layer to
-    the partitioning an Elmer output writes from ``partition:part``."""
+    the partitioning an Elmer output writes from ``partition:part``.
+
+    An MFEM NURBS input keeps its patches (``mesh.info["nurbs"]``), so an MFEM
+    output is written back as the NURBS mesh; ``write_nurbs=False`` writes the
+    sampled cells instead and ``True`` refuses anything else."""
     if grid_functions and patran_results:
         raise ValueError(
             "meshio++: mcp: grid_functions (MFEM) and patran_results (Patran) "
@@ -873,8 +897,11 @@ def tool_convert(
         try:
             candidates = _filetypes_from_path(pathlib.Path(str(output_path)))
             out_fmt = candidates[0] if candidates else None
-            # `.mesh` is Medit's first; asking for grid functions means MFEM.
-            if write_grid_functions and "mfem" in candidates:
+            # `.mesh` is Medit's first; asking for grid functions (or NURBS)
+            # means MFEM.
+            if (
+                write_grid_functions or write_nurbs is not None
+            ) and "mfem" in candidates:
                 out_fmt = output_format = "mfem"
         except Exception:
             out_fmt = None
@@ -896,6 +923,10 @@ def tool_convert(
         if out_fmt != "elmer":
             raise ValueError("meshio++: mcp: elmer_halo needs Elmer output")
         write_kwargs["halo"] = True
+    if write_nurbs is not None:
+        if out_fmt != "mfem":
+            raise ValueError("meshio++: mcp: write_nurbs needs MFEM (.mesh) output")
+        write_kwargs["nurbs"] = bool(write_nurbs)
     resolved = _store(mesh, output_path, output_format, **write_kwargs)
     return _result(resolved, mesh, output_format=out_fmt)
 
@@ -1961,6 +1992,81 @@ def tool_fit_primitives(
     )
 
 
+def tool_fit_cad(
+    input_path,
+    output_path,
+    input_format=None,
+    mesh_output_path=None,
+    curvature_tolerance=0.0,
+    min_patch_cells=1,
+    fit_tolerance=1e-3,
+    tolerance=None,
+    exact_edges=True,
+    types=None,
+    mesh_deflection=None,
+    max_demotion_rounds=8,
+    freeform=True,
+    freeform_degree=3,
+    freeform_max_control=64,
+    cad_json_output_path=None,
+    freeform_split=True,
+    fillets=True,
+    threads=True,
+):
+    """Turn the fitted patches of a closed skin into a CAD solid with analytic
+    faces (and, for what no primitive explains, rolling-ball fillet, thread
+    flank and freeform B-spline ones), written to output_path as STEP (needs a
+    core built with OpenCASCADE), and to cad_json_output_path as Kratos CAD
+    JSON. A skin without segment:patch / fit:patch_* is segmented
+    (curvature_tolerance, min_patch_cells) and fitted (fit_tolerance) first."""
+    from .._fit_cad import has_occt
+
+    if not has_occt():
+        # The guarded error shape, plus the capability itself.
+        return {
+            "error": "meshio++: fit_cad: this build has no OpenCASCADE backend; "
+            "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)",
+            "error_type": "NotImplementedError",
+            "occt_available": False,
+        }
+    mesh = _load(input_path, input_format)
+    if "segment:patch" not in mesh.cell_data:
+        mesh = segment(
+            mesh,
+            curvature_tolerance=curvature_tolerance,
+            min_patch_cells=min_patch_cells,
+        )
+    if "fit:patch_id" not in mesh.field_data:
+        mesh = fit_primitives(mesh, tolerance=fit_tolerance)
+    step_path = _resolve(output_path, for_write=True)
+    out, report = fit_cad(
+        mesh,
+        step_path,
+        tolerance=tolerance,
+        exact_edges=exact_edges,
+        types=list(types) if types is not None else None,
+        mesh_deflection=mesh_deflection,
+        max_demotion_rounds=max_demotion_rounds,
+        freeform=freeform,
+        freeform_degree=freeform_degree,
+        freeform_max_control=freeform_max_control,
+        freeform_split=freeform_split,
+        fillets=fillets,
+        threads=threads,
+        return_report=True,
+    )
+    _cache_invalidate(step_path)
+    extra = {"step_path": step_path, "occt_available": True, **report}
+    if cad_json_output_path:
+        cad_path = _resolve(cad_json_output_path, for_write=True)
+        write(cad_path, out, file_format="cad_json")
+        _cache_invalidate(cad_path)
+        extra["cad_json_path"] = cad_path
+    if mesh_output_path:
+        return _result(_store(out, mesh_output_path), out, **extra)
+    return _json_safe({"output_path": step_path, **_mesh_summary(out), **extra})
+
+
 def tool_region_adjacency(
     input_path,
     output_path,
@@ -2473,6 +2579,8 @@ def tool_tessellate(
         _store(tess.mesh, output_path, output_format),
         tess.mesh,
         levels=int(levels),
+        num_source_points=tess.schema["num_source_points"],
+        num_source_cells=tess.schema["num_source_cells"],
         num_curved_source_cells=tess.schema["num_curved_source_cells"],
         num_pass_through_source_cells=tess.schema["num_pass_through_source_cells"],
         watertight=tess.schema["watertight"],
@@ -4392,6 +4500,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "fit_primitives",
             {"fn": tool_fit_primitives, "wraps": ("fit_primitives",), "gated": None},
+        ),
+        (
+            "fit_cad",
+            {"fn": tool_fit_cad, "wraps": ("fit_cad",), "gated": "occt"},
         ),
         (
             "region_adjacency",

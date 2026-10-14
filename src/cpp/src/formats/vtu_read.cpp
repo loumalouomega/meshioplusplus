@@ -46,6 +46,7 @@
 #include "../detail/vtu_decode.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/vtk_xml_read.hpp"
+#include "../detail/vtk_hex_order.hpp"
 
 namespace meshioplusplus {
 
@@ -162,6 +163,8 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
             rSrc.Take(out.data(), out.size());
         return out;
     }
+    // Refuse an absent codec before any block is read, as vtu_decode_blocks does.
+    detail::vtk_codec_require_read(Codec);
     const std::uint64_t num_blocks = next();
     const std::uint64_t max_block = next();
     const std::uint64_t last_block = next();
@@ -355,7 +358,8 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
             throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
         }
     }
-    vtk_codec_require_read(ctx.mCodec);
+    // Checked where a compressed block is decoded, not here: VTK records the
+    // compressor on ASCII files too, and those hold no compressed data.
     const std::string header = root.attribute("header_type").as_string("UInt32");
     if (header != "UInt32" && header != "UInt64")
         throw ReadError("Unknown " + format + " header type '" + header + "'");
@@ -461,15 +465,60 @@ NDArray vtu_concat_rows(std::vector<NDArray>& rParts) {
     return out;
 }
 
+/** @brief Whether a `<VTKFile>` predates VTK XML 2.2, whose higher-order
+ * hexahedra swap edges 10 and 11 (no version attribute means 0.1). */
+bool vtu_read_old_hex_order(pugi::xml_node Root) {
+    const std::string v = Root.attribute("version").as_string("0.1");
+    const std::size_t dot = v.find('.');
+    const long major = std::strtol(v.c_str(), nullptr, 10);
+    const long minor = dot == std::string::npos ? 0 : std::strtol(v.c_str() + dot + 1, nullptr, 10);
+    return major < 2 || (major == 2 && minor < 2);
+}
+
+/** @brief The attribute VTK puts on a `<PointData>` (`RationalWeights`) or
+ * `<CellData>` (`HigherOrderDegrees`) section to name the array that holds the
+ * rational weights or the per-cell degrees of its Bezier cells. */
+const char* vtu_read_marker(const std::string& rSection) {
+    return rSection == "PointData" ? "RationalWeights" : "HigherOrderDegrees";
+}
+
+/** @brief The name the array @p Da of section @p Section is read under (since
+ * v16.40.0): the marked array under the marker's own name, so the weights and
+ * degrees reach every surface under one name; an unmarked array that already
+ * has that name gives way (`""`, skipped with a warning when @p Warn). */
+std::string vtu_read_marked_name(pugi::xml_node Section, pugi::xml_node Da, bool Warn) {
+    const char* marker = vtu_read_marker(Section.name());
+    const std::string marked = Section.attribute(marker).as_string();
+    const std::string name = Da.attribute("Name").as_string();
+    if (marked.empty() || marked == marker)
+        return name;
+    if (name == marked)
+        return marker;
+    if (name == marker) {
+        if (Warn)
+            log::warn(
+                "VTU: the {} array '{}' is read as '{}'; the unmarked array of that name is "
+                "skipped",
+                Section.name(), marked, marker);
+        return "";
+    }
+    return name;
+}
+
 /** @brief `<DataArray>` `Name` attributes under @p rSection present in every
- * piece (a multi-piece read drops the others), sorted. */
+ * piece (a multi-piece read drops the others), sorted, under the names a read
+ * gives them (`vtu_read_marked_name`). */
 std::vector<std::string> vtu_array_names(const std::vector<pugi::xml_node>& rPieces,
                                          const char* pSection) {
     std::vector<std::string> names;
     for (std::size_t k = 0; k < rPieces.size(); ++k) {
         std::vector<std::string> here;
-        for (pugi::xml_node da : rPieces[k].child(pSection).children("DataArray"))
-            here.emplace_back(da.attribute("Name").as_string());
+        const pugi::xml_node section = rPieces[k].child(pSection);
+        for (pugi::xml_node da : section.children("DataArray")) {
+            std::string name = vtu_read_marked_name(section, da, false);
+            if (!name.empty())
+                here.push_back(std::move(name));
+        }
         // The uniform mesh API hands back sorted names; match it so a summary
         // and a real read report data arrays in the same order.
         std::sort(here.begin(), here.end());
@@ -608,7 +657,9 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
                 auto& rTarget = tag == "PointData" ? point_data : cell_data;
                 for (pugi::xml_node da : child.children("DataArray")) {
                     int nc = 0;
-                    std::string name = da.attribute("Name").as_string();
+                    const std::string name = vtu_read_marked_name(child, da, k == 0);
+                    if (name.empty())
+                        continue;
                     // The Name attribute is available before the body is
                     // touched, so an unwanted array costs nothing but the
                     // attribute read -- no base64 decode, no inflate, no
@@ -705,6 +756,14 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         vtu_read_field_data(rPiece, ctx, rOpts, want_data, field_arrays);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
+    // A file older than VTK XML 2.2 lists the edges 10 and 11 of higher-order
+    // hexahedra the other way round (detail/vtk_hex_order.hpp).
+    if (vtu_read_old_hex_order(h.mGrid.parent())) {
+        const auto degrees = cell_data_raw.find("HigherOrderDegrees");
+        detail::vtk_hex_swap_stream(conn.data(), offsets, types,
+                                    degrees == cell_data_raw.end() ? nullptr : &degrees->second,
+                                    "VTU");
+    }
     std::vector<std::int64_t> file_to_global;
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh,

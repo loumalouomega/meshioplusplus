@@ -137,6 +137,26 @@ mio_mesh_free(mesh);
 
 Fortran (`m%read_with_info(path, info)`, `info%mdpa_count(...)`), Julia (`read_with_info`, `mdpa_info(info)` → a `NamedTuple`), R (`mio_read_with_info()`, `mio_mdpa_info()` → a list) and WebAssembly (`readMeshSelective(path, {info: true}).info`, extended with `modelPartData`, `tables`, `geometries`, `meshBlocks`, `subModelParts`, `rawBlocks`) mirror it; see each binding's page.
 
+## The Kratos IGA geometry beside a deck
+
+An `.mdpa` deck holds no NURBS: its `Begin Geometries` blocks take only Lagrange geometry names. A Kratos isogeometric (IGA) project keeps its trimmed NURBS faces, trimming loops and coupling edges in a [Kratos CAD JSON](./cad_json.md) file that Kratos's `CadIoModeler` reads beside the deck. The reader and writer can carry that file with the deck:
+
+```python
+import meshioplusplus as mp
+
+mesh = mp.mdpa.read("model.mdpa", cad_json=True)          # the deck, and its geometry if found
+brep = mesh.info.get("brep")                              # the CAD JSON side channel, or None
+mesh = mp.mdpa.read("model.mdpa", cad_json="geometry.cad.json")
+mp.mdpa.write("out.mdpa", mesh, cad_json=True)            # also writes out.cad.json
+mp.mdpa.cad_json_path("model.mdpa")                       # where the geometry is, or None
+```
+
+- **Where it is.** `cad_json=True` takes `<stem>.cad.json` beside the deck, else the `geometry_file_name` of the `CadIoModeler` in a `ProjectParameters.json` beside it, with `.cad.json` appended when the name lacks it, as Kratos appends it. Finding none is no error; a named path that does not exist is a `ReadError`.
+- **What it adds.** Only `mesh.info["brep"]`: the deck's mesh is unchanged and the geometry is not sampled into it (read the `.cad.json` as its own format for that). The default (`cad_json=None`) reads the deck alone.
+- **Writing.** `cad_json=True` writes `mesh.info["brep"]` to `<stem>.cad.json` beside the written deck, a path to that path; a mesh without a B-rep is a `WriteError`.
+
+C++: `mdpa_cad_json_path(path)`, `read_mdpa(path, info, brep, options, cadPath)` (an empty `cadPath` resolves the sidecar as above; none found leaves `brep` empty) and `write_mdpa(path, mesh, info, brep, cadPath)` in `formats/mdpa.hpp`. The flat bindings reach the geometry by reading the `.cad.json` file itself, through `mio_read_with_info`.
+
 ## Notes
 
 - `tests/python/meshes/mdpa/test_small_cube.mdpa` — a small unit-cube tet mesh.

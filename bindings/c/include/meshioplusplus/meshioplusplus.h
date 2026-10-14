@@ -189,7 +189,11 @@ typedef enum mio_dtype {
                                     X(Polyhedron) X(VtkLagrangeCurve) X(VtkLagrangeTriangle)       \
                                         X(VtkLagrangeQuadrilateral) X(VtkLagrangeTetrahedron)      \
                                             X(VtkLagrangeHexahedron) X(VtkLagrangeWedge)           \
-                                                X(VtkLagrangePyramid) X(Triangle7)
+                                                X(VtkLagrangePyramid) X(Triangle7)                 \
+                                                X(VtkBezierCurve)                                  \
+                                                X(VtkBezierTriangle) X(VtkBezierQuadrilateral)     \
+                                                X(VtkBezierTetrahedron) X(VtkBezierHexahedron)     \
+                                                X(VtkBezierWedge) X(VtkBezierPyramid)
 
 /** Integer mirror of the meshio++ cell-type table. The string names (e.g.
  *  "tetra10") are the primary representation everywhere in this API; the
@@ -250,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 38
+#define MIO_VERSION_MINOR 42
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -298,7 +302,7 @@ MIO_API const char* mio_cell_type_name(mio_cell_type t);
 MIO_API mio_cell_type mio_cell_type_from_name(const char* name);
 
 /** @return the fixed nodes-per-cell of `t`, or -1 for variable-size types
- *          (polygon, polyhedron, VTK Lagrange) and MIO_CELL_Custom. */
+ *          (polygon, polyhedron, VTK Lagrange and Bezier) and MIO_CELL_Custom. */
 MIO_API int mio_cell_type_num_nodes(mio_cell_type t);
 
 /** @return the topological dimension (0-3) of `t`, or -1 for MIO_CELL_Custom. */
@@ -624,8 +628,9 @@ typedef struct mio_format_info mio_format_info;
 /**
  * Read a mesh, keeping what it cannot hold in `*info`.
  *
- * Formats with a side channel (currently "mdpa" and "gmsh") read through their full
- * reader and set `*info` to a new handle; every other format reads exactly as
+ * Formats with a side channel (currently "mdpa", "gmsh", "mfem" and "cad_json", plus
+ * "step" and "iges" in a build with OpenCASCADE) read through their
+ * full reader and set `*info` to a new handle; every other format reads exactly as
  * mio_read_ex() and sets `*info` to NULL. `opts` may be NULL (the defaults).
  * @return the mesh, or NULL on failure (`*info` is then NULL too).
  */
@@ -668,6 +673,111 @@ MIO_API int64_t mio_gmsh_info_count(const mio_format_info* info, int32_t section
 MIO_API mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int64_t index,
                                        int32_t field, const void** data, mio_dtype* dtype,
                                        int32_t* ndim, int64_t* shape);
+
+/** NURBS side-channel sections (an "mfem" handle, v16.40.0): the patches an
+ * `MFEM NURBS mesh` was sampled from (`NurbsInfo`, nurbs.hpp). Every index is
+ * 0-based; a handle of a mesh that is not NURBS has no patches.
+ *  - PATCHES: one item per patch. int field 0 = parametric dimension d, 1 =
+ *    space dimension; array field 0 = Int32 degrees [d], 1 = Float64 control
+ *    points (n, space dimension), direction 0 fastest, 2 = Float64 weights [n],
+ *    3 + j (j < d) = Float64 knot vector of direction j, 6 + k = Float64
+ *    (n, components) control values of field k.
+ *  - FIELDS: one item per field. string field 0 = its point-data name.
+ *  - TOPOLOGY: one item (none if the source states no topology). int field 0 =
+ *    dimension, 1 = topological vertices; array field 0 = Int64 patch vertices
+ *    (patches, 2^d), 1 = Int64 patch attributes, 2 = Int64 boundary vertices
+ *    (boundary patches, 2^(d-1)), 3 = Int64 boundary attributes, 4 = Int64
+ *    edges (edges, 3: knot vector, vertex, vertex).
+ *  - CELL_MAP: one item. array field 0 = Int64 patch of each element cell
+ *    (the first block), 1 = Int64 (cells, 3) knot span per direction, 2 =
+ *    Int64 boundary patch of each boundary cell.
+ * mio_write_with_info() writes the patches back as an `MFEM NURBS mesh`; it
+ * fails if the mesh is no longer their sampling. */
+typedef enum mio_nurbs_section {
+    MIO_NURBS_PATCHES = 0,
+    MIO_NURBS_FIELDS = 1,
+    MIO_NURBS_TOPOLOGY = 2,
+    MIO_NURBS_CELL_MAP = 3
+} mio_nurbs_section;
+
+/** Number of items, or -1 on an invalid handle/section. */
+MIO_API int64_t mio_nurbs_info_count(const mio_format_info* info, int32_t section);
+/** Integer field `field` of item `index` into `*value`. */
+MIO_API mio_status mio_nurbs_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                                      int32_t field, int64_t* value);
+/** Borrow array field `field` of item `index` until info is freed. Any out
+ *  pointer may be NULL; `shape` must hold MIO_MAX_NDIM entries. */
+MIO_API mio_status mio_nurbs_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                        int32_t field, const void** data, mio_dtype* dtype,
+                                        int32_t* ndim, int64_t* shape);
+/** Copy string field `field` of item `index` into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_nurbs_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                                      int32_t field, char* buf, int64_t buflen);
+
+/** B-rep side-channel sections (a "cad_json" handle, or "step"/"iges" in a
+ * build with OpenCASCADE): the trimmed NURBS faces, loops, edges and
+ * vertices a mesh was sampled from (`BrepInfo`, brep.hpp). Every index is
+ * 0-based, and nested lists are flattened in file order, each owner naming its
+ * first item and how many it has. Ids are -1 where the file names the entity
+ * by `brep_name` instead (string field 0); flags are 0/1.
+ *  - FILE: one item. string field 0 = the file's members besides `breps`
+ *    (compact JSON object text).
+ *  - BREPS: int field 0 = id; array field 0/1/2 = Int64 indices of its
+ *    faces, edges and vertices; string field 0 = name, 1 = extra members.
+ *  - PATCHES: the face surfaces. int field 0/1 = degree in u/v; array field
+ *    0 = Float64 control points (n, 3), u fastest, 1 = Float64 weights [n],
+ *    2/3 = Float64 full knot vector in u/v.
+ *  - FACES: int field 0 = id, 1 = patch, 2 = swapped normal, 3 = trimmed,
+ *    4 = rational, 5 = reduced knots, 6/7 = first loop/number of loops,
+ *    8/9 = first trim/number of trims (its loops' trims, then its embedded
+ *    edges); array field 0 = Int64 control-point ids; string field 0 = name,
+ *    1 = extra, 2 = the surface's extra.
+ *  - LOOPS: int field 0 = face, 1/2 = first trim/number of trims; string
+ *    field 0 = type ("outer", "inner"), 1 = extra.
+ *  - TRIMS: int field 0 = face, 1 = loop (-1 for an embedded edge), 2 =
+ *    trim index (-1 absent), 3 = curve direction; string field 0 = extra.
+ *    Curve fields below describe its parameter curve.
+ *  - EDGES: int field 0 = id, 1 = has a 3-D curve, 2/3 = first ref/number of
+ *    refs; string field 0 = name, 1 = extra. Curve fields describe the 3-D
+ *    curve.
+ *  - VERTICES: int field 0 = id, 1/2 = first ref/number of refs; string field
+ *    0 = name, 1 = extra.
+ *  - REFS: the edges' topology entries, then the vertices'. int field 0 = id,
+ *    1 = trim index (-1 absent), 2 = relative direction (-1 absent); array
+ *    field 0 = Float64 local coordinates; string field 0 = name, 1 = extra.
+ * Curve fields (TRIMS, EDGES): int field 10 = degree, 11 = rational, 12 =
+ * reduced knots; array field 10 = Float64 control points (n, 3), 11 = Float64
+ * weights, 12 = Float64 full knot vector, 13 = Int64 ids (empty for none),
+ * 14 = Float64 active range ([2] or empty); string field 10 = curve extra.
+ * mio_write_with_info() writes the B-rep as Kratos CAD JSON ("cad_json");
+ * a "step"/"iges" handle may be written that way too. */
+typedef enum mio_brep_section {
+    MIO_BREP_FILE = 0,
+    MIO_BREP_BREPS = 1,
+    MIO_BREP_PATCHES = 2,
+    MIO_BREP_FACES = 3,
+    MIO_BREP_LOOPS = 4,
+    MIO_BREP_TRIMS = 5,
+    MIO_BREP_EDGES = 6,
+    MIO_BREP_VERTICES = 7,
+    MIO_BREP_REFS = 8
+} mio_brep_section;
+
+/** Number of items, or -1 on an invalid handle/section. */
+MIO_API int64_t mio_brep_info_count(const mio_format_info* info, int32_t section);
+/** Integer field `field` of item `index` into `*value`. */
+MIO_API mio_status mio_brep_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                                     int32_t field, int64_t* value);
+/** Borrow array field `field` of item `index` until info is freed. Any out
+ *  pointer may be NULL; `shape` must hold MIO_MAX_NDIM entries. */
+MIO_API mio_status mio_brep_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                       int32_t field, const void** data, mio_dtype* dtype,
+                                       int32_t* ndim, int64_t* shape);
+/** Copy string field `field` of item `index` into `buf`.
+ *  @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_brep_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                                     int32_t field, char* buf, int64_t buflen);
 
 /**
  * The sections of an MDPA side channel. Each is a list; the accessors below
@@ -1933,6 +2043,71 @@ MIO_API mio_status mio_refine_result_cell_map(const mio_refine_result* result, i
 
 /** Free a refine result (and the mesh it still owns). */
 MIO_API void mio_refine_result_free(mio_refine_result* result);
+
+/**
+ * Options for mio_tessellate. Same ABI rules as mio_refine_opts; always
+ * initialize through mio_tessellate_opts_init(): levels defaults to 2 and
+ * curved/fields to 1, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_tessellate_opts {
+    /** Divisions per axis (quad8/quad9/hexahedron27) or recursive splits
+     *  (triangle6/tetra10, 2^levels divisions per edge); >= 0. */
+    int64_t levels;
+    /** Nonzero tessellates the curved cells; zero passes every cell through. */
+    int32_t curved;
+    /** Nonzero interpolates point data and copies cell data onto the output. */
+    int32_t fields;
+    /** Nonzero also stores "tessellate:stencil" / "tessellate:weights". */
+    int32_t record_stencil;
+    int32_t reserved0;   /**< must be zero; padding */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_tessellate_opts;
+
+/** Initialize tessellate options: levels 2, curved and fields on, no stencil. */
+MIO_API void mio_tessellate_opts_init(mio_tessellate_opts* opts);
+
+/** What mio_tessellate did. */
+typedef struct mio_tessellate_report {
+    int64_t num_source_points;
+    int64_t num_source_cells;
+    /** Source cells of a curved type that were tessellated. */
+    int64_t num_curved_source_cells;
+    /** Source cells passed through unchanged. */
+    int64_t num_pass_through_source_cells;
+    int64_t num_points;
+    int64_t num_cells;
+    /** Over every output tetra block: triangular facets used once. */
+    int64_t num_boundary_facets;
+    /** Facets used twice. */
+    int64_t num_interior_facets;
+    /** Facets used three or more times: zero for a conforming tessellation. */
+    int64_t num_facets_with_bad_count;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_tessellate_report;
+
+/**
+ * Tessellate a mesh's curved (quadratic) cells isoparametrically: every
+ * triangle6, quad8, quad9, tetra10 or hexahedron27 cell is sampled on a
+ * reference lattice and mapped through its own shape functions; every other
+ * cell passes through unchanged. Curved surface cells become one triangle
+ * block and curved volume cells one tetra block, after the pass-through blocks
+ * in input order. Shared edges and faces share their points, so the output is
+ * conforming. The output carries Int64 point data "tessellate:source_point"
+ * (the source point, or -1) and Int64 cell data "tessellate:source_cell" (the
+ * global block-major source cell) and "tessellate:sub_index" (the child
+ * index); with record_stencil it also carries "tessellate:stencil" (Int64) and
+ * "tessellate:weights" (Float64), both (num_points, 27) point data. With
+ * fields, point data is interpolated (Float64) and cell data copied to the
+ * children. See doc/tessellation.md.
+ *
+ * @param mesh   any mesh.
+ * @param opts   options; NULL means every mio_tessellate_opts_init() default.
+ * @param report optional out: the counts.
+ * @return the tessellated mesh (free with mio_mesh_free), or NULL on failure
+ *         (negative levels, or point data with the wrong row count).
+ */
+MIO_API mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
+                                 mio_tessellate_report* report);
 
 /**
  * Decimate a SURFACE mesh by greedy quadric-error-metric (Garland-Heckbert)
@@ -4380,6 +4555,111 @@ typedef struct mio_fit_primitives_report {
  */
 MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
                                      mio_fit_primitives_report* report);
+
+/**
+ * Options for mio_fit_cad. Same ABI rules as above; always initialize through
+ * mio_fit_cad_opts_init(): exact_edges, types and max_demotion_rounds are not
+ * zero by default.
+ */
+typedef struct mio_fit_cad_opts {
+    /** The largest distance a face may lie from the skin; <= 0 takes three times
+     *  the largest accepted "fit:patch_tolerance". */
+    double tolerance;
+    /** The chordal deflection of the re-meshed solid; <= 0 takes tolerance / 4. */
+    double mesh_deflection;
+    /** Rounds of demoting failed faces before every patch is faceted; >= 0. */
+    int64_t max_demotion_rounds;
+    /** Nonzero: try the exact intersection of two analytic surfaces first. */
+    int32_t exact_edges;
+    /** The accepted types that become analytic faces, as `1 << mio_fit_type`
+     *  bits; MIO_FIT_ALL_TYPES by default, 0 facets everything. */
+    uint32_t types;
+    /** Nonzero: a patch no primitive explains is tried as a freeform B-spline
+     *  face (on after mio_fit_cad_opts_init; a zero-filled struct keeps it
+     *  off, as before the field existed). */
+    int32_t freeform;
+    /** The freeform B-spline's highest degree, 3 to 8; 0 takes 3. */
+    int32_t freeform_degree;
+    /** The most grid points per direction a freeform fit samples, 4 to 1024;
+     *  0 takes 64. */
+    int64_t freeform_max_control;
+    /** Nonzero: a freeform patch that folds over both its best-fit plane and
+     *  an unrolled cylinder is split into pieces fitted as their own B-spline
+     *  faces (on after mio_fit_cad_opts_init; a zero-filled struct keeps it
+     *  off, as before the field existed). */
+    int32_t freeform_split;
+    /** Nonzero: a patch no primitive explains, between two analytic faces, is
+     *  tried as a rolling-ball fillet face ("fit_cad:type" 7). On after
+     *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
+    int32_t fillets;
+    /** Nonzero: a patch no primitive explains, beside a cylinder or cone, is
+     *  tried as a straight-flank thread face ("fit_cad:type" 8). On after
+     *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
+    int32_t threads;
+    int32_t reserved1;   /**< must be zero */
+    int64_t reserved[2]; /**< must be zero; room for additive growth */
+} mio_fit_cad_opts;
+
+/** Initialize fit_cad options: automatic tolerance and deflection, 8 rounds,
+ *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64,
+ *  freeform splitting, fillet faces and thread faces. */
+MIO_API void mio_fit_cad_opts_init(mio_fit_cad_opts* opts);
+
+/** What mio_fit_cad built. */
+typedef struct mio_fit_cad_report {
+    double tolerance;     /**< the tolerance applied */
+    double volume;        /**< the solid's volume */
+    double skin_volume;   /**< the volume the skin encloses */
+    double volume_ratio;  /**< volume / skin_volume */
+    double max_deviation; /**< symmetric Hausdorff distance, skin to re-meshed solid */
+    int64_t num_faces;
+    int64_t num_plane;
+    int64_t num_sphere;
+    int64_t num_cylinder;
+    int64_t num_cone;
+    int64_t num_torus;
+    int64_t num_faceted_faces;
+    int64_t num_patches;
+    int64_t num_demoted; /**< accepted patches demoted to facets: the features dropped */
+    int64_t num_exact_edges;
+    int64_t num_approx_edges;
+    int64_t num_solids;
+    int32_t valid;             /**< nonzero when the solid passed OpenCASCADE's B-rep check */
+    int32_t reserved0;         /**< zero */
+    int64_t num_bspline;       /**< freeform B-spline faces ("fit_cad:type" 6) */
+    int64_t num_split_patches; /**< pieces folding freeform patches were split into */
+    int64_t num_fillet;        /**< rolling-ball fillet faces ("fit_cad:type" 7) */
+    int64_t num_helical;       /**< thread flank faces ("fit_cad:type" 8) */
+    int64_t reserved[2];       /**< zero; room for additive growth */
+} mio_fit_cad_report;
+
+/** Nonzero when this library was built with the OpenCASCADE backend
+ *  (-DMESHIOPLUSPLUS_WITH_OCCT=ON) that mio_fit_cad needs. */
+MIO_API int mio_has_occt(void);
+
+/**
+ * Build a CAD solid from the fitted patches of a closed skin: each accepted
+ * patch becomes a plane, sphere, cylinder, cone or torus face ("fit_cad:type"
+ * 1 to 5, as mio_fit_type), a patch no primitive explains a rolling-ball
+ * fillet (7), thread flank (8) or freeform B-spline (6) face where one fits,
+ * the rest planar facets (0), sewn and checked by OpenCASCADE; a face that fails the check or
+ * strays beyond the tolerance is demoted to facets. Without "segment:patch" or
+ * the "fit:patch_*" table, segment and fit_primitives run first with their
+ * defaults. See doc/fit_cad.md.
+ *
+ * Fails (NULL, with mio_last_error() naming -DMESHIOPLUSPLUS_WITH_OCCT=ON) in
+ * a build without OpenCASCADE; mio_has_occt() tells in advance.
+ *
+ * @param mesh      a closed, consistently wound surface mesh.
+ * @param step_path write the solid here as AP214 STEP; NULL or "" writes nothing.
+ * @param opts      options; NULL means every mio_fit_cad_opts_init() default.
+ * @param report    optional out: what was built.
+ * @return the solid re-meshed as triangles with Int64 cell data "fit_cad:face",
+ *         "fit_cad:type" and "fit_cad:patch" (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path,
+                              const mio_fit_cad_opts* opts, mio_fit_cad_report* report);
 
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero

@@ -38,7 +38,10 @@ test_set = {
 }
 
 
-@pytest.mark.parametrize("mesh", test_set.union({helpers.lagrange_high_order_mesh}))
+@pytest.mark.parametrize(
+    "mesh",
+    test_set.union({helpers.lagrange_high_order_mesh, helpers.bezier_mesh}),
+)
 @pytest.mark.parametrize("binary", [True, False])
 def test(mesh, binary, tmp_path):
     def writer(*args, **kwargs):
@@ -166,3 +169,39 @@ def test_vtk_missing_cells_section_raises(tmp_path):
     )
     with pytest.raises(meshioplusplus.ReadError):
         _vtk51_py_read(str(p))
+
+
+@pytest.mark.parametrize("fmt_version", ["4.2", "5.1"])
+@pytest.mark.parametrize(
+    "cell_type", ["VTK_LAGRANGE_HEXAHEDRON", "VTK_BEZIER_HEXAHEDRON"]
+)
+def test_higher_order_hexahedra_in_the_order_vtk_reads(
+    fmt_version, cell_type, tmp_path
+):
+    # VTK 9.1 swapped the nodes of edges 10 and 11 of higher-order hexahedra
+    # and reads a legacy file older than 5.1 the old way: a 4.2 file is written
+    # in that order and converted back on read, by both engines.
+    from meshioplusplus.vtk import _main as py_vtk
+
+    pts = np.array([[i, i % 3, i % 5] for i in range(27)], dtype=float)
+    mesh = meshioplusplus.Mesh(pts, [(cell_type, np.arange(27).reshape(1, 27))])
+    for write in (
+        lambda p: meshioplusplus.vtk.write(
+            p, mesh, fmt_version=fmt_version, binary=False
+        ),
+        lambda p: py_vtk.write(p, mesh, fmt_version=fmt_version, binary=False),
+    ):
+        p = tmp_path / "hex.vtk"
+        write(p)
+        # (the reference reader of 4.2 files refuses variable-size cells)
+        readers = [meshioplusplus.vtk.read] + (
+            [py_vtk.read] if fmt_version == "5.1" else []
+        )
+        for read in readers:
+            np.testing.assert_array_equal(read(p).cells[0].data, [np.arange(27)])
+        vtk = pytest.importorskip("vtk")
+        reader = vtk.vtkUnstructuredGridReader()
+        reader.SetFileName(str(p))
+        reader.Update()
+        cell = reader.GetOutput().GetCell(0)
+        assert [cell.GetPointId(i) for i in range(27)] == list(range(27))

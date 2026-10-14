@@ -268,6 +268,12 @@ TEST(CApi, CellTypeMetadata) {
     EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_Triangle), 2);
     EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_Custom), -1);
     EXPECT_STREQ(mio_cell_type_name(MIO_CELL_Custom), "");
+    // The VTK Bezier family (ABI 26): variable size, a fixed dimension.
+    EXPECT_STREQ(mio_cell_type_name(MIO_CELL_VtkBezierQuadrilateral), "VTK_BEZIER_QUADRILATERAL");
+    EXPECT_EQ(mio_cell_type_from_name("VTK_BEZIER_PYRAMID"), MIO_CELL_VtkBezierPyramid);
+    EXPECT_EQ(mio_cell_type_num_nodes(MIO_CELL_VtkBezierHexahedron), -1);
+    EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_VtkBezierCurve), 1);
+    EXPECT_EQ(mio_cell_type_dimension(MIO_CELL_VtkBezierWedge), 3);
 }
 
 TEST(CApi, BuildAndInspect) {
@@ -1625,6 +1631,89 @@ TEST(CApi, GmshPeriodicSideChannel) {
             std::remove(path.c_str());
         }
     EXPECT_EQ(mio_gmsh_info_count(nullptr, MIO_GMSH_PERIODIC), -1);
+}
+
+TEST(CApi, NurbsSideChannel) {
+    // A quarter annulus, one NURBS patch of degrees (2, 1) (MFEM global form).
+    const std::string w = "0.70710678118654757";
+    const auto path = mt::temp_path(".mesh");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
+               "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
+               "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
+            << w << "\n" << w
+            << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+               "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
+    }
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(path.c_str(), "mfem", nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_PATCHES), 1);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_FIELDS), 0);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_TOPOLOGY), 1);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_CELL_MAP), 1);
+    EXPECT_EQ(mio_nurbs_info_count(info, 99), -1);
+    EXPECT_EQ(mio_gmsh_info_count(info, MIO_GMSH_PERIODIC), -1);  // not a gmsh handle
+    int64_t v = 0;
+    ASSERT_EQ(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, 0, 0, &v), MIO_OK);
+    EXPECT_EQ(v, 2);
+    ASSERT_EQ(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, 0, 1, &v), MIO_OK);
+    EXPECT_EQ(v, 2);
+    ASSERT_EQ(mio_nurbs_info_int(info, MIO_NURBS_TOPOLOGY, 0, 1, &v), MIO_OK);
+    EXPECT_EQ(v, 4);
+    EXPECT_EQ(mio_nurbs_info_int(info, MIO_NURBS_PATCHES, 1, 0, &v), MIO_ERR_INVALID_ARG);
+    const void* data = nullptr;
+    mio_dtype dtype;
+    int32_t ndim;
+    int64_t shape[MIO_MAX_NDIM]{};
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT32);
+    EXPECT_EQ(static_cast<const int32_t*>(data)[0], 2);
+    EXPECT_EQ(static_cast<const int32_t*>(data)[1], 1);
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 6);
+    EXPECT_EQ(shape[1], 2);
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 2, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_DOUBLE_EQ(static_cast<const double*>(data)[1], 0.70710678118654757);
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 4, &data, &dtype, &ndim, shape),
+              MIO_OK);  // the knot vector of direction 1
+    EXPECT_EQ(shape[0], 4);
+    EXPECT_NE(mio_nurbs_info_array(info, MIO_NURBS_PATCHES, 0, 5, &data, &dtype, &ndim, shape),
+              MIO_OK);  // no direction 2
+    ASSERT_EQ(mio_nurbs_info_array(info, MIO_NURBS_CELL_MAP, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(shape[0], 1);
+    EXPECT_EQ(shape[1], 3);
+    EXPECT_EQ(mio_nurbs_info_string(info, MIO_NURBS_FIELDS, 0, 0, nullptr, 0), -1);
+
+    // Written back as the NURBS mesh, and read back the same.
+    const auto output = mt::temp_path(".mesh");
+    ASSERT_EQ(mio_write_with_info(output.c_str(), mesh, "mfem", info), MIO_OK) << mio_last_error();
+    {
+        std::ifstream in(output);
+        std::string first;
+        std::getline(in, first);
+        EXPECT_EQ(first, "MFEM NURBS mesh v1.0");
+    }
+    mio_format_info* info2 = nullptr;
+    mio_mesh* back = mio_read_with_info(output.c_str(), "mfem", nullptr, &info2);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_nurbs_info_array(info2, MIO_NURBS_PATCHES, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(static_cast<const double*>(data)[2], 1.0);  // control point (1, 1)
+    EXPECT_EQ(mio_write_with_info(output.c_str(), mesh, "vtu", info), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(back);
+    mio_format_info_free(info2);
+    mio_mesh_free(mesh);
+    mio_format_info_free(info);
+    std::remove(path.c_str());
+    std::remove(output.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -4532,6 +4621,117 @@ TEST(CApi, FeatureEdgesOfACube) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, TessellateATetra10) {
+    // One straight-sided tetra10 carrying T = x: the default two levels give
+    // the 35-point, 64-tetra lattice, and T interpolates exactly.
+    // clang-format off
+    const std::vector<double> pts = {0,   0,   0,   1,   0,   0,   0, 1,   0,   0, 0,   1,
+                                     0.5, 0,   0,   0.5, 0.5, 0,   0, 0.5, 0,   0, 0,   0.5,
+                                     0.5, 0,   0.5, 0,   0.5, 0.5};
+    // clang-format on
+    const std::vector<int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 10, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra10", 1, 10, MIO_INT64, conn.data()), MIO_OK);
+    std::vector<double> temperature(10);
+    for (std::size_t i = 0; i < 10; ++i)
+        temperature[i] = pts[3 * i];
+    const int64_t tshape[1] = {10};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "T", MIO_FLOAT64, 1, tshape, temperature.data()), MIO_OK);
+
+    mio_tessellate_opts opts;
+    mio_tessellate_opts_init(&opts);
+    EXPECT_EQ(opts.levels, 2);  // an all-zero struct is NOT the default
+    EXPECT_EQ(opts.curved, 1);
+    EXPECT_EQ(opts.fields, 1);
+    EXPECT_EQ(opts.record_stencil, 0);
+    mio_tessellate_report report;
+    mio_mesh* out = mio_tessellate(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_source_points, 10);
+    EXPECT_EQ(report.num_source_cells, 1);
+    EXPECT_EQ(report.num_curved_source_cells, 1);
+    EXPECT_EQ(report.num_pass_through_source_cells, 0);
+    EXPECT_EQ(report.num_points, 35);
+    EXPECT_EQ(report.num_cells, 64);
+    EXPECT_EQ(report.num_boundary_facets, 64);
+    EXPECT_EQ(report.num_interior_facets, 96);
+    EXPECT_EQ(report.num_facets_with_bad_count, 0);
+    EXPECT_EQ(mio_mesh_num_points(out), 35);
+
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    int32_t ndim = 0;
+    int64_t shape[MIO_MAX_NDIM] = {};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "tessellate:source_point", &data, &dtype, &ndim, shape),
+              MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(dtype, MIO_INT64);
+    ASSERT_EQ(ndim, 1);
+    ASSERT_EQ(shape[0], 35);
+    const auto* source = static_cast<const int64_t*>(data);
+    for (int64_t i = 0; i < 4; ++i)
+        EXPECT_EQ(source[i], i);  // the kept corners first, ascending
+    EXPECT_EQ(source[4], -1);
+    EXPECT_EQ(mio_mesh_cell_data_num_blocks(out, "tessellate:source_cell"), 1);
+    EXPECT_EQ(mio_mesh_cell_data_num_blocks(out, "tessellate:sub_index"), 1);
+    // T = x interpolates exactly onto the lattice.
+    ASSERT_EQ(mio_mesh_get_point_data(out, "T", &data, &dtype, &ndim, shape), MIO_OK);
+    ASSERT_EQ(dtype, MIO_FLOAT64);
+    const void* points = nullptr;
+    mio_dtype pdtype = MIO_FLOAT64;
+    const int64_t np = mio_mesh_num_points(out);
+    const int64_t dim = mio_mesh_point_dim(out);
+    ASSERT_EQ(mio_mesh_get_points(out, &points, &pdtype), MIO_OK);
+    ASSERT_EQ(pdtype, MIO_FLOAT64);
+    for (int64_t i = 0; i < np; ++i)
+        EXPECT_NEAR(static_cast<const double*>(data)[i],
+                    static_cast<const double*>(points)[i * dim], 1e-12);
+    mio_mesh_free(out);
+
+    // NULL opts means the defaults; the report is optional.
+    out = mio_tessellate(m, nullptr, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(out), 35);
+    EXPECT_EQ(
+        mio_mesh_get_point_data(out, "tessellate:stencil", nullptr, nullptr, nullptr, nullptr),
+        MIO_ERR_NOT_FOUND);
+    mio_mesh_free(out);
+
+    // One level with the stencil recorded: (P, 27) stencil and weights.
+    opts.levels = 1;
+    opts.record_stencil = 1;
+    out = mio_tessellate(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_cells, 8);
+    ASSERT_EQ(mio_mesh_get_point_data(out, "tessellate:weights", &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 10);
+    EXPECT_EQ(shape[1], 27);
+    ASSERT_EQ(mio_mesh_get_point_data(out, "tessellate:stencil", &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    mio_mesh_free(out);
+
+    // curved = 0 passes the cell through.
+    opts.curved = 0;
+    out = mio_tessellate(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_pass_through_source_cells, 1);
+    EXPECT_EQ(report.num_cells, 1);
+    mio_mesh_free(out);
+
+    // Negative levels and a NULL mesh fail with an error.
+    opts.curved = 1;
+    opts.levels = -1;
+    EXPECT_EQ(mio_tessellate(m, &opts, &report), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("levels"), std::string::npos) << mio_last_error();
+    EXPECT_EQ(mio_tessellate(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, SegmentAndFitACube) {
     mio_mesh* m = capi_cube_surface();
     mio_segment_opts sopts;
@@ -4567,6 +4767,157 @@ TEST(CApi, SegmentAndFitACube) {
     EXPECT_EQ(mio_segment(nullptr, nullptr, nullptr), nullptr);
     EXPECT_EQ(mio_fit_primitives(nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(seg);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, FitCadBuildsOrNamesTheBackend) {
+    mio_mesh* m = capi_cube_surface();
+    mio_fit_cad_opts opts;
+    mio_fit_cad_opts_init(&opts);
+    EXPECT_EQ(opts.max_demotion_rounds, 8);
+    EXPECT_EQ(opts.exact_edges, 1);
+    EXPECT_EQ(opts.types, MIO_FIT_ALL_TYPES);
+    EXPECT_EQ(opts.freeform, 1);
+    EXPECT_EQ(opts.freeform_split, 1);
+    EXPECT_EQ(opts.fillets, 1);
+    EXPECT_EQ(opts.threads, 1);
+    EXPECT_EQ(opts.reserved1, 0);
+    mio_fit_cad_report report;
+    mio_mesh* solid = mio_fit_cad(m, nullptr, &opts, &report);
+    if (mio_has_occt()) {
+        ASSERT_NE(solid, nullptr) << mio_last_error();
+        EXPECT_EQ(report.valid, 1);
+        EXPECT_EQ(report.num_plane, 6);
+        EXPECT_EQ(report.num_faces, 6);
+        EXPECT_EQ(report.num_exact_edges, 12);  // each a single mesh edge
+        EXPECT_NEAR(report.volume_ratio, 1.0, 1e-9);
+        EXPECT_EQ(report.num_bspline, 0);
+        EXPECT_EQ(report.num_split_patches, 0);
+        EXPECT_EQ(report.num_fillet, 0);
+        EXPECT_EQ(report.num_helical, 0);
+        EXPECT_EQ(mio_mesh_num_cell_blocks(solid), 1);
+        mio_mesh_free(solid);
+        // Fillets, threads and splitting off still build the six planes.
+        opts.freeform_split = 0;
+        opts.fillets = 0;
+        opts.threads = 0;
+        solid = mio_fit_cad(m, nullptr, &opts, &report);
+        ASSERT_NE(solid, nullptr) << mio_last_error();
+        EXPECT_EQ(report.num_plane, 6);
+        mio_mesh_free(solid);
+        opts.max_demotion_rounds = -1;
+        EXPECT_EQ(mio_fit_cad(m, nullptr, &opts, nullptr), nullptr);
+    } else {
+        EXPECT_EQ(solid, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_OCCT"),
+                  std::string::npos);
+    }
+    EXPECT_EQ(mio_fit_cad(nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, BrepSideChannel) {
+    // A degree-(1, 1) face with one outer loop of one trim, and an edge on it.
+    const auto path = mt::temp_path(".cad.json");
+    std::ofstream(path, std::ios::binary)
+        << R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "surface": {
+           "is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 1], [0, 1]],
+           "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+           "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+             {"trim_index": 0, "curve_direction": false, "parameter_curve": {"degree": 1,
+              "knot_vector": [0, 0, 1, 1], "active_range": [0, 1],
+              "control_points": [[[0, 0, 0, 1]], [[1, 0, 0, 1]]]}}]}]}],
+           "edges": [{"brep_id": 3, "topology": [{"brep_id": 2, "trim_index": 0}]}]}]})";
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    ASSERT_NE(info, nullptr);
+    char fmt[16];
+    ASSERT_EQ(mio_format_info_format(info, fmt, sizeof(fmt)), 8);
+    EXPECT_STREQ(fmt, "cad_json");
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_FILE), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_FACES), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_LOOPS), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_TRIMS), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_EDGES), 1);
+    EXPECT_EQ(mio_brep_info_count(info, MIO_BREP_REFS), 1);
+    EXPECT_EQ(mio_brep_info_count(info, 99), -1);
+    EXPECT_EQ(mio_nurbs_info_count(info, MIO_NURBS_PATCHES), -1);  // not an mfem handle
+    int64_t v = -7;
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 0, 0, &v), MIO_OK);
+    EXPECT_EQ(v, 2);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 0, 5, &v), MIO_OK);  // reduced knots
+    EXPECT_EQ(v, 1);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 0, 9, &v), MIO_OK);  // trims
+    EXPECT_EQ(v, 1);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_TRIMS, 0, 3, &v), MIO_OK);  // direction
+    EXPECT_EQ(v, 0);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_TRIMS, 0, 10, &v), MIO_OK);  // curve degree
+    EXPECT_EQ(v, 1);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_EDGES, 0, 1, &v), MIO_OK);  // no 3-D curve
+    EXPECT_EQ(v, 0);
+    EXPECT_EQ(mio_brep_info_int(info, MIO_BREP_EDGES, 0, 10, &v), MIO_ERR_INVALID_ARG);
+    ASSERT_EQ(mio_brep_info_int(info, MIO_BREP_REFS, 0, 2, &v), MIO_OK);  // direction absent
+    EXPECT_EQ(v, -1);
+    EXPECT_EQ(mio_brep_info_int(info, MIO_BREP_FACES, 1, 0, &v), MIO_ERR_INVALID_ARG);
+    const void* data = nullptr;
+    mio_dtype dtype;
+    int32_t ndim;
+    int64_t shape[MIO_MAX_NDIM]{};
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_PATCHES, 0, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_FLOAT64);
+    EXPECT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 4);
+    EXPECT_EQ(shape[1], 3);
+    EXPECT_EQ(static_cast<const double*>(data)[3], 2.0);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_PATCHES, 0, 2, &data, &dtype, &ndim, shape),
+              MIO_OK);  // the full knot vector in u
+    EXPECT_EQ(shape[0], 4);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_TRIMS, 0, 14, &data, &dtype, &ndim, shape),
+              MIO_OK);  // the active range
+    EXPECT_EQ(shape[0], 2);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_BREPS, 0, 1, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(static_cast<const int64_t*>(data)[0], 0);
+    char buf[16];
+    EXPECT_EQ(mio_brep_info_string(info, MIO_BREP_LOOPS, 0, 0, buf, sizeof(buf)), 5);
+    EXPECT_STREQ(buf, "outer");
+    EXPECT_EQ(mio_brep_info_string(info, MIO_BREP_FACES, 0, 7, buf, sizeof(buf)), -1);
+
+    const auto output = mt::temp_path(".cad.json");
+    ASSERT_EQ(mio_write_with_info(output.c_str(), mesh, nullptr, info), MIO_OK) << mio_last_error();
+    mio_format_info* back = nullptr;
+    mio_mesh* again = mio_read_with_info(output.c_str(), nullptr, nullptr, &back);
+    ASSERT_NE(again, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_brep_info_count(back, MIO_BREP_TRIMS), 1);
+    EXPECT_EQ(mio_write_with_info(mt::temp_path(".mesh").c_str(), mesh, "mfem", info),
+              MIO_ERR_INVALID_ARG);  // a cad_json side channel is not an mfem one
+    mio_format_info_free(back);
+    mio_mesh_free(again);
+    mio_format_info_free(info);
+    mio_mesh_free(mesh);
+}
+
+TEST(CApi, StepAndIgesReadOrNameTheBackend) {
+    // A STEP written by the faceted writer reads back through OpenCASCADE.
+    mio_mesh* m = capi_cube_surface();
+    const auto step = mt::temp_path(".step");
+    ASSERT_EQ(mio_write(step.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    mio_format_info* info = nullptr;
+    mio_mesh* back = mio_read_with_info(step.c_str(), nullptr, nullptr, &info);
+    if (mio_has_occt()) {
+        ASSERT_NE(back, nullptr) << mio_last_error();
+        EXPECT_GE(mio_brep_info_count(info, MIO_BREP_FACES), 6);
+        EXPECT_GT(mio_brep_info_count(info, MIO_BREP_EDGES), 0);
+        mio_format_info_free(info);
+        mio_mesh_free(back);
+    } else {
+        EXPECT_EQ(back, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_OCCT"),
+                  std::string::npos);
+    }
     mio_mesh_free(m);
 }
 

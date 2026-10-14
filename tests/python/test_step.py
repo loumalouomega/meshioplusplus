@@ -71,13 +71,74 @@ def _count(text, entity):
     return len(re.findall(r"=" + entity + r"\(", text))
 
 
-def test_the_format_is_write_only():
+def test_the_format_reads_through_opencascade_only():
     formats = mio.formats()
-    assert "step" in formats["writable"] and "step" not in formats["readable"]
+    assert "step" in formats["writable"] and "step" in formats["readable"]
+    assert "iges" in formats["readable"] and "iges" not in formats["writable"]
     assert formats["extensions"][".step"] == ["step"]
     assert formats["extensions"][".stp"] == ["step"]
+    assert formats["extensions"][".igs"] == ["iges"]
     with pytest.raises(Exception):
         mio.read("nothing.step")
+
+
+HAS_OCCT = bool(getattr(_core, "__has_occt__", False)) if _core is not None else False
+
+
+@pytest.mark.skipif(HAS_OCCT, reason="checks the build without OpenCASCADE")
+@pytest.mark.parametrize("fmt", ["step", "iges"])
+def test_reading_without_opencascade_is_named(tmp_path, fmt):
+    path = tmp_path / "box.step"
+    _step.write(path, box_skin(2))
+    with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_OCCT"):
+        mio.read(path, file_format=fmt)
+
+
+@pytest.mark.skipif(
+    not HAS_OCCT, reason="core built without -DMESHIOPLUSPLUS_WITH_OCCT=ON"
+)
+def test_opencascade_reads_back_the_faceted_solid(tmp_path):
+    path = tmp_path / "box.step"
+    mio.write(path, box_skin(2))
+    mesh = mio.read(path)
+    assert mesh.cells[0].type == "triangle"
+    brep = mesh.info["brep"]
+    assert len(brep["faces"]) == 24 and len(brep["patches"]) == 24
+    assert all(f["trimmed"] and len(f["loops"]) == 1 for f in brep["faces"])
+    assert np.allclose(mesh.points.min(axis=0), 0.0) and np.allclose(
+        mesh.points.max(axis=0), 1.0
+    )
+    face_ids = {f["id"] for f in brep["faces"]}
+    assert set(np.unique(mesh.cell_data["cad:id"][0]).tolist()) == face_ids
+    # Every inner mesh edge of the box bounds two faces, every one is a 3-D curve.
+    assert all(
+        e["curve"] is not None and len(e["topology"]) == 2 for e in brep["edges"]
+    )
+    # A STEP read writes as Kratos CAD JSON, which samples back onto the box.
+    mio.write(tmp_path / "box.cad.json", mesh)
+    back = mio.read(tmp_path / "box.cad.json")
+    assert len(back.info["brep"]["faces"]) == 24
+    assert np.allclose(back.points.min(axis=0), 0.0, atol=1e-12)
+    assert np.allclose(back.points.max(axis=0), 1.0, atol=1e-12)
+
+
+@pytest.mark.skipif(
+    not HAS_OCCT, reason="core built without -DMESHIOPLUSPLUS_WITH_OCCT=ON"
+)
+def test_deflection_controls_the_triangulation(tmp_path):
+    # A curved face: the faceted writer's planar ones triangulate the same at
+    # any deflection, so the torus goes through fit_cad as one toroidal face.
+    path = tmp_path / "torus.step"
+    mio.fit_cad(mio.fit_primitives(mio.segment(torus()), tolerance=1e-3), path)
+    coarse = mio.step.read(path, deflection=0.2)
+    fine = mio.step.read(path, deflection=0.01)
+    assert len(fine.cells[0].data) > len(coarse.cells[0].data)
+    with pytest.raises(ValueError):
+        mio.step.read(path, angular_deflection=0.0)
+    with pytest.raises(Exception):
+        bad = tmp_path / "bad.step"
+        bad.write_text("not a step file\n")
+        mio.read(bad)
 
 
 @pytest.mark.parametrize("name", sorted(CASES))

@@ -48,8 +48,10 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -210,6 +212,24 @@ std::vector<std::string> pipe_svec(const PipelineStep& rStep, const char* pKey) 
         pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of strings"));
 }
 
+/// The `1 << FitPrimitiveType` mask of a `Types` list of primitive names.
+std::uint32_t pipe_fit_types(const PipelineStep& rStep) {
+    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+    std::uint32_t mask = 0;
+    for (const std::string& t : pipe_svec(rStep, "Types")) {
+        bool found = false;
+        for (int k = 0; k < 5; ++k)
+            if (t == kNames[k]) {
+                mask |= 1u << (k + 1);
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(
+                pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
+    }
+    return mask;
+}
+
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
@@ -281,6 +301,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Prefix"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
+        {"FitCad",
+         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
+          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
+          "Threads"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -329,6 +353,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
+        {"Tessellate", {"Levels", "Curved", "Fields", "RecordStencil"}},
         {"Agglomerate",
          {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
@@ -954,22 +979,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mRelative = pipe_flag(rStep, "Relative", true);
         opts.mMinInlierFraction = pipe_number(rStep, "MinInlierFraction", 0.9);
         opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
-        const std::vector<std::string> types = pipe_svec(rStep, "Types");
-        if (!types.empty()) {
-            static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
-            opts.mTypes = 0;
-            for (const std::string& t : types) {
-                bool found = false;
-                for (int k = 0; k < 5; ++k)
-                    if (t == kNames[k]) {
-                        opts.mTypes |= 1u << (k + 1);
-                        found = true;
-                    }
-                if (!found)
-                    throw std::invalid_argument(
-                        pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
-            }
-        }
+        if (!pipe_svec(rStep, "Types").empty())
+            opts.mTypes = pipe_fit_types(rStep);
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},
@@ -980,6 +991,38 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumTorus", static_cast<double>(fr.mNumTorus)},
                         {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
         return std::move(fr.mMesh);
+    }
+    if (op == "FitCad") {
+        // The fitted skin becomes a CAD solid, written to `Path` when given; the
+        // mesh continues as the solid re-meshed.
+        FitCadOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mExactEdges = pipe_flag(rStep, "ExactEdges", true);
+        opts.mMeshDeflection = pipe_number(rStep, "MeshDeflection", 0.0);
+        opts.mMaxDemotionRounds =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxDemotionRounds", 8.0));
+        if (pipe_find(rStep, "Types"))
+            opts.mTypes = pipe_fit_types(rStep);
+        opts.mFreeform = pipe_flag(rStep, "Freeform", true);
+        opts.mFreeformDegree = static_cast<std::int32_t>(pipe_number(rStep, "FreeformDegree", 3.0));
+        opts.mFreeformMaxControl =
+            static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControl", 64.0));
+        opts.mFreeformSplit = pipe_flag(rStep, "FreeformSplit", true);
+        opts.mFillets = pipe_flag(rStep, "Fillets", true);
+        opts.mThreads = pipe_flag(rStep, "Threads", true);
+        FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Valid", cr.mValid ? 1.0 : 0.0},
+                        {"VolumeRatio", cr.mVolumeRatio},
+                        {"MaxDeviation", cr.mMaxDeviation},
+                        {"NumFaces", static_cast<double>(cr.mNumFaces)},
+                        {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
+                        {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
+                        {"NumFillet", static_cast<double>(cr.mNumFillet)},
+                        {"NumHelical", static_cast<double>(cr.mNumHelical)},
+                        {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
+        return std::move(cr.mMesh);
     }
     if (op == "Snapshot") {
         // A side output, not a transform: the mesh passes through untouched and
@@ -1395,6 +1438,22 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = subdivide(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
+    }
+    if (op == "Tessellate") {
+        TessellateOptions opts;
+        opts.mLevels = static_cast<std::int64_t>(pipe_number(rStep, "Levels", 2.0));
+        opts.mCurved = pipe_flag(rStep, "Curved", true);
+        opts.mFields = pipe_flag(rStep, "Fields", true);
+        opts.mRecordStencil = pipe_flag(rStep, "RecordStencil", false);
+        TessellateResult tr = tessellate(mesh, opts);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumCurvedSourceCells", static_cast<double>(tr.mNumCurvedSourceCells)},
+             {"NumPassThroughSourceCells", static_cast<double>(tr.mNumPassThroughSourceCells)},
+             {"NumPoints", static_cast<double>(tr.mNumPoints)},
+             {"NumCells", static_cast<double>(tr.mNumCells)},
+             {"NumFacetsWithBadCount", static_cast<double>(tr.mNumFacetsWithBadCount)}});
+        return std::move(tr.mMesh);
     }
     if (op == "Agglomerate") {
         AgglomerateOptions opts;

@@ -100,6 +100,9 @@ _C_WITHOUT_JS = {
     # already exposes the per-cell metrics as cell_data, and
     # `surfaceWatertightCheck` covers the surface-quality summary case.
     "quality_counts",
+    # The OpenCASCADE backend is LGPL-2.1 and bring-your-own, never in the
+    # WASM build (doc/fit_cad.md), so the operation has no JS counterpart.
+    "fit_cad",
 }
 
 

@@ -61,6 +61,7 @@ from . import (
     _stats,
     _subdivide,
     _tessellate,
+    _to_cad,
     _transform,
     _tui,
     _undo_green,
@@ -157,6 +158,13 @@ def main(argv=None):
     )
     _fit_primitives.add_args(parser)
     parser.set_defaults(func=_fit_primitives.fit_primitives_cmd)
+
+    parser = subparsers.add_parser(
+        "to-cad",
+        help="Fitted patches as a STEP solid with analytic faces (needs OpenCASCADE)",
+    )
+    _to_cad.add_args(parser)
+    parser.set_defaults(func=_to_cad.to_cad_cmd)
 
     parser = subparsers.add_parser(
         "region-adjacency",

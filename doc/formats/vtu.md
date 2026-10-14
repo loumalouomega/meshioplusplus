@@ -63,13 +63,17 @@ With `appended=True` the arrays declare `format="appended" offset="..."` instead
 
 ## Cell types
 
-The full VTK cell set, including VTK Lagrange high-order cells (`VTK_LAGRANGE_*`). See [VTK](./vtk.md) for the shared numeric type-code table.
+The full VTK cell set, including VTK Lagrange high-order cells (`VTK_LAGRANGE_*`) and, since v16.40.0, VTK's rational Bézier cells (`VTK_BEZIER_*`, types 75–81). See [VTK](./vtk.md) for the shared numeric type-code table.
 
 ## Data mapping
 
 `<PointData>`/`<CellData>` map generically to `point_data`/`cell_data`; [named regions](../regions.md#the-vtk-xml-convention) round-trip as `region:<kind>:<name>` `<FieldData>` arrays (v16.27.0; VTU has no native set concept, so this is a meshio++ convention, documented there). `point_sets`/`cell_sets` are views over regions and travel the same way; before v16.27.0 they were converted into data arrays.
 
 `<FieldData>` ↔ `mesh.field_data` (v15.0.0): mesh-level arrays travel in a `<FieldData>` element on the grid, before the `<Piece>`, exactly where VTK's own writers put it, one `<DataArray>` per name with the `NumberOfTuples` VTK requires (and `NumberOfComponents` for a two-or-more-dimensional array; a higher rank is flattened to `(tuples, components)`, and a rank-0 scalar reads back as a length-1 array). Reading accepts it on the grid and inside a `<Piece>` (the piece's overriding the grid's); an array of a non-numeric type (`type="String"`) has no meshio++ dtype and is skipped with a warning rather than failing the read. A mesh without field data writes no `<FieldData>` element at all, so every existing file is byte-identical. A `TimeValue` array is VTK's "time in field data" convention: ParaView reads it as the dataset's time step (verified against ParaView 6.1.1), and a [`.pvd`](./pvd.md) entry with no `timestep=` takes its step time from it. A value that is not a numeric array has no VTK type and is not written (Python warns).
+
+### Bézier cells and rational weights
+
+A Bézier cell (since v16.40.0) is read as a ragged `VTK_BEZIER_*` block, its control points in the node order of the Lagrange cell of the same shape ([cell types](../cell_types.md#vtk-bezier-types)). VTK finds a Bézier cell's weights and degrees through two section attributes, `<PointData RationalWeights="…">` and `<CellData HigherOrderDegrees="…">`, each naming one of the section's arrays. Both engines read the array an attribute names under the attribute's own name, `RationalWeights` (point data) or `HigherOrderDegrees` (cell data), whatever the file calls it, so the weights reach every surface without a side channel; an unmarked array that already has that name gives way, with a warning. Writing marks a `RationalWeights` point array and a `HigherOrderDegrees` cell array the same way, which is what VTK and ParaView read (`test_vtk_reads_the_weights_we_mark` checks it against VTK 9.7.1); a mesh with neither writes the same bytes as before. `.pvtu` index files and VTKHDF carry the cells but not the markers. The test files in `tests/python/bezier_vtu_files.py` were written by VTK itself (`tools/gen_bezier_vtu_fixtures.py` regenerates them).
 
 ## Quirks & limitations
 

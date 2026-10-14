@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <array>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -62,6 +63,10 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/formats/iges.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -93,6 +98,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
@@ -111,6 +117,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -281,11 +288,35 @@ struct mio_read_metadata {
     meshioplusplus::MeshMetadata mMeta;
 };
 
+// The flattened lists the B-rep accessors index (loops, trims and topology
+// references are nested per face, edge and vertex in BrepInfo), built once
+// when a handle is made; the pointers are into the handle's own BrepInfo.
+struct CapiBrepIndex {
+    struct Loop {
+        std::int64_t mFace;
+        std::int64_t mFirstTrim;
+        const meshioplusplus::BrepLoop* mpLoop;
+    };
+    struct Trim {
+        std::int64_t mFace;
+        std::int64_t mLoop;
+        const meshioplusplus::BrepTrim* mpTrim;
+    };
+    std::vector<Loop> mLoops;
+    std::vector<Trim> mTrims;
+    std::vector<std::array<std::int64_t, 4>> mFaces;  // first loop, loops, first trim, trims
+    std::vector<const meshioplusplus::BrepRef*> mRefs;
+    std::vector<std::array<std::int64_t, 2>> mEdgeRefs, mVertexRefs;  // first, count
+};
+
 // One side channel, tagged by format. Later formats add alternatives; the
 // accessors check the alternative they need, so a handle is never misread.
 struct mio_format_info {
     std::string mFormat;
-    std::variant<std::monostate, meshioplusplus::MdpaInfo, meshioplusplus::GmshInfo> mInfo;
+    std::variant<std::monostate, meshioplusplus::MdpaInfo, meshioplusplus::GmshInfo,
+                 meshioplusplus::NurbsInfo, meshioplusplus::BrepInfo>
+        mInfo;
+    std::unique_ptr<CapiBrepIndex> mBrepIndex;
 };
 
 namespace {
@@ -1101,6 +1132,44 @@ mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* form
     });
 }
 
+namespace {
+
+// Flatten a B-rep handle's nested lists for the accessors (see CapiBrepIndex).
+void capi_index_brep(mio_format_info& rHandle) {
+    const auto& b = std::get<meshioplusplus::BrepInfo>(rHandle.mInfo);
+    auto idx = std::make_unique<CapiBrepIndex>();
+    for (std::size_t f = 0; f < b.mFaces.size(); ++f) {
+        const auto& face = b.mFaces[f];
+        const auto fi = static_cast<std::int64_t>(f);
+        const auto first_loop = static_cast<std::int64_t>(idx->mLoops.size());
+        const auto first_trim = static_cast<std::int64_t>(idx->mTrims.size());
+        for (std::size_t l = 0; l < face.mLoops.size(); ++l) {
+            idx->mLoops.push_back({fi, static_cast<std::int64_t>(idx->mTrims.size()), &face.mLoops[l]});
+            for (const auto& t : face.mLoops[l].mTrims)
+                idx->mTrims.push_back({fi, static_cast<std::int64_t>(idx->mLoops.size() - 1), &t});
+        }
+        for (const auto& t : face.mEmbeddedEdges)
+            idx->mTrims.push_back({fi, -1, &t});
+        idx->mFaces.push_back({first_loop, static_cast<std::int64_t>(face.mLoops.size()), first_trim,
+                               static_cast<std::int64_t>(idx->mTrims.size()) - first_trim});
+    }
+    for (const auto& e : b.mEdges) {
+        idx->mEdgeRefs.push_back({static_cast<std::int64_t>(idx->mRefs.size()),
+                                  static_cast<std::int64_t>(e.mTopology.size())});
+        for (const auto& r : e.mTopology)
+            idx->mRefs.push_back(&r);
+    }
+    for (const auto& v : b.mVertices) {
+        idx->mVertexRefs.push_back({static_cast<std::int64_t>(idx->mRefs.size()),
+                                    static_cast<std::int64_t>(v.mTopology.size())});
+        for (const auto& r : v.mTopology)
+            idx->mRefs.push_back(&r);
+    }
+    rHandle.mBrepIndex = std::move(idx);
+}
+
+}  // namespace
+
 mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_read_opts* opts,
                              mio_format_info** info) {
     if (info)
@@ -1116,6 +1185,29 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
             auto mesh = std::make_unique<mio_mesh>(
                 mio_mesh{meshioplusplus::read_gmsh(path, gmsh, capi_read_options(opts))});
             handle->mInfo = std::move(gmsh);
+            *info = handle.release();
+            return mesh.release();
+        }
+        if (fmt == "mfem") {
+            auto handle = std::make_unique<mio_format_info>();
+            handle->mFormat = fmt;
+            meshioplusplus::NurbsInfo nurbs;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::read_mfem(path, {}, capi_read_options(opts), nurbs)});
+            handle->mInfo = std::move(nurbs);
+            *info = handle.release();
+            return mesh.release();
+        }
+        if (fmt == "cad_json" || fmt == "step" || fmt == "iges") {
+            auto handle = std::make_unique<mio_format_info>();
+            handle->mFormat = fmt;
+            meshioplusplus::BrepInfo brep;
+            auto mesh = std::make_unique<mio_mesh>(mio_mesh{
+                fmt == "cad_json" ? meshioplusplus::read_cad_json(path, brep)
+                : fmt == "step"   ? meshioplusplus::read_step(path, brep)
+                                  : meshioplusplus::read_iges(path, brep)});
+            handle->mInfo = std::move(brep);
+            capi_index_brep(*handle);
             *info = handle.release();
             return mesh.release();
         }
@@ -1144,7 +1236,10 @@ mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const cha
         if (!info)
             return mio_write(path, mesh, format);
         const std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
-        if (fmt != info->mFormat && !(fmt == "gmsh22" && info->mFormat == "gmsh"))
+        const bool brep_as_cad_json =
+            fmt == "cad_json" && std::holds_alternative<meshioplusplus::BrepInfo>(info->mInfo);
+        if (fmt != info->mFormat && !(fmt == "gmsh22" && info->mFormat == "gmsh") &&
+            !brep_as_cad_json)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: a '" + info->mFormat +
                                                  "' side channel cannot be written as '" + fmt +
                                                  "'");
@@ -1159,6 +1254,16 @@ mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const cha
         if (const auto* p_mdpa = std::get_if<meshioplusplus::MdpaInfo>(&info->mInfo)) {
             meshioplusplus::write_mdpa(path, mesh->mMesh, *p_mdpa);
             return MIO_OK;
+        }
+        if (const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo)) {
+            meshioplusplus::write_mfem(path, mesh->mMesh, false, *p_nurbs);
+            return MIO_OK;
+        }
+        if (const auto* p_brep = std::get_if<meshioplusplus::BrepInfo>(&info->mInfo)) {
+            if (fmt == "cad_json") {
+                meshioplusplus::write_cad_json(path, mesh->mMesh, *p_brep);
+                return MIO_OK;
+            }
         }
         return mio_write(path, mesh, format);
     });
@@ -1233,6 +1338,381 @@ mio_status mio_gmsh_info_array(const mio_format_info* info, int32_t section, int
                 return array_out(link.mNodePairs, data, dtype, ndim, shape);
         }
         return fail(MIO_ERR_INVALID_ARG, "meshio++: unknown gmsh side-channel array field");
+    });
+}
+
+namespace {
+
+/// The NurbsInfo behind a handle, or a throw naming what it is instead.
+const meshioplusplus::NurbsInfo& capi_nurbs(const mio_format_info* pInfo) {
+    if (!pInfo)
+        throw std::invalid_argument("meshio++: format info handle is NULL");
+    const auto* info = std::get_if<meshioplusplus::NurbsInfo>(&pInfo->mInfo);
+    if (!info)
+        throw std::invalid_argument("meshio++: not an mfem (NURBS) side channel");
+    return *info;
+}
+
+std::size_t capi_nurbs_count(const meshioplusplus::NurbsInfo& rInfo, int Section) {
+    switch (Section) {
+        case MIO_NURBS_PATCHES:
+            return rInfo.mPatches.size();
+        case MIO_NURBS_FIELDS:
+            return rInfo.mFieldNames.size();
+        case MIO_NURBS_TOPOLOGY:
+            return rInfo.mTopology.mDimension ? 1 : 0;
+        case MIO_NURBS_CELL_MAP:
+            return rInfo.mPatches.empty() ? 0 : 1;
+        default:
+            throw std::invalid_argument("meshio++: unknown NURBS side-channel section");
+    }
+}
+
+bool capi_nurbs_in_range(const meshioplusplus::NurbsInfo& rInfo, int Section,
+                         std::int64_t Index) {
+    return Section >= MIO_NURBS_PATCHES && Section <= MIO_NURBS_CELL_MAP && Index >= 0 &&
+           static_cast<std::size_t>(Index) < capi_nurbs_count(rInfo, Section);
+}
+
+std::string capi_nurbs_bad_field(int Section, int Field) {
+    return "meshio++: NURBS side-channel section " + std::to_string(Section) +
+           " has no such field " + std::to_string(Field);
+}
+
+}  // namespace
+
+int64_t mio_nurbs_info_count(const mio_format_info* info, int32_t section) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_nurbs_count(capi_nurbs(info), section));
+    });
+}
+
+mio_status mio_nurbs_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                              int32_t field, int64_t* value) {
+    return guarded([&]() -> mio_status {
+        const meshioplusplus::NurbsInfo& r_info = capi_nurbs(info);
+        if (!capi_nurbs_in_range(r_info, section, index))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: NURBS side-channel index out of range");
+        const auto i = static_cast<std::size_t>(index);
+        std::int64_t v = 0;
+        if (section == MIO_NURBS_PATCHES && field == 0)
+            v = static_cast<std::int64_t>(r_info.mPatches[i].mDegrees.size());
+        else if (section == MIO_NURBS_PATCHES && field == 1)
+            v = r_info.mPatches[i].mControlPoints.Shape().size() == 2
+                    ? static_cast<std::int64_t>(r_info.mPatches[i].mControlPoints.Shape()[1])
+                    : 0;
+        else if (section == MIO_NURBS_TOPOLOGY && field == 0)
+            v = r_info.mTopology.mDimension;
+        else if (section == MIO_NURBS_TOPOLOGY && field == 1)
+            v = r_info.mTopology.mNumVertices;
+        else
+            return fail(MIO_ERR_INVALID_ARG, capi_nurbs_bad_field(section, field));
+        if (value)
+            *value = v;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_nurbs_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                                int32_t field, const void** data, mio_dtype* dtype, int32_t* ndim,
+                                int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        const meshioplusplus::NurbsInfo& r_info = capi_nurbs(info);
+        if (!capi_nurbs_in_range(r_info, section, index))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: NURBS side-channel index out of range");
+        const auto i = static_cast<std::size_t>(index);
+        if (section == MIO_NURBS_PATCHES) {
+            const meshioplusplus::NurbsPatch& p = r_info.mPatches[i];
+            if (field == 0)
+                return array_out(
+                    meshioplusplus::NDArray::MakeView(
+                        meshioplusplus::DType::Int32, {p.mDegrees.size()},
+                        reinterpret_cast<std::byte*>(const_cast<std::int32_t*>(p.mDegrees.data()))),
+                    data, dtype, ndim, shape);
+            if (field == 1)
+                return array_out(p.mControlPoints, data, dtype, ndim, shape);
+            if (field == 2)
+                return array_out(p.mWeights, data, dtype, ndim, shape);
+            if (field >= 3 && field < 6 && static_cast<std::size_t>(field - 3) < p.mKnots.size()) {
+                const std::vector<double>& k = p.mKnots[static_cast<std::size_t>(field - 3)];
+                return array_out(meshioplusplus::NDArray::MakeView(
+                                     meshioplusplus::DType::Float64, {k.size()},
+                                     reinterpret_cast<std::byte*>(const_cast<double*>(k.data()))),
+                                 data, dtype, ndim, shape);
+            }
+            if (field >= 6 && static_cast<std::size_t>(field - 6) < p.mFields.size())
+                return array_out(p.mFields[static_cast<std::size_t>(field - 6)], data, dtype, ndim,
+                                 shape);
+        } else if (section == MIO_NURBS_TOPOLOGY) {
+            const meshioplusplus::NurbsTopology& t = r_info.mTopology;
+            const meshioplusplus::NDArray* arrays[] = {&t.mPatchVertices, &t.mPatchAttributes,
+                                                       &t.mBoundaryVertices, &t.mBoundaryAttributes,
+                                                       &t.mEdges};
+            if (field >= 0 && field < 5)
+                return array_out(*arrays[field], data, dtype, ndim, shape);
+        } else if (section == MIO_NURBS_CELL_MAP) {
+            const meshioplusplus::NDArray* arrays[] = {&r_info.mCellPatch, &r_info.mCellSpan,
+                                                       &r_info.mBoundaryCellPatch};
+            if (field >= 0 && field < 3)
+                return array_out(*arrays[field], data, dtype, ndim, shape);
+        }
+        return fail(MIO_ERR_INVALID_ARG, capi_nurbs_bad_field(section, field));
+    });
+}
+
+int64_t mio_nurbs_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                              int32_t field, char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        const meshioplusplus::NurbsInfo& r_info = capi_nurbs(info);
+        if (!capi_nurbs_in_range(r_info, section, index))
+            throw std::invalid_argument("meshio++: NURBS side-channel index out of range");
+        if (section == MIO_NURBS_FIELDS && field == 0)
+            return copy_string(r_info.mFieldNames[static_cast<std::size_t>(index)], buf, buflen);
+        throw std::invalid_argument(capi_nurbs_bad_field(section, field));
+    });
+}
+
+namespace {
+
+/// The BrepInfo (and its index) behind a handle, or a throw naming what it is.
+const meshioplusplus::BrepInfo& capi_brep(const mio_format_info* pInfo) {
+    if (!pInfo)
+        throw std::invalid_argument("meshio++: format info handle is NULL");
+    const auto* info = std::get_if<meshioplusplus::BrepInfo>(&pInfo->mInfo);
+    if (!info || !pInfo->mBrepIndex)
+        throw std::invalid_argument("meshio++: not a B-rep side channel ('" + pInfo->mFormat +
+                                    "')");
+    return *info;
+}
+
+std::size_t capi_brep_count(const mio_format_info* pInfo, int Section) {
+    const meshioplusplus::BrepInfo& b = capi_brep(pInfo);
+    const CapiBrepIndex& idx = *pInfo->mBrepIndex;
+    switch (Section) {
+        case MIO_BREP_FILE:
+            return 1;
+        case MIO_BREP_BREPS:
+            return b.mBreps.size();
+        case MIO_BREP_PATCHES:
+            return b.mPatches.size();
+        case MIO_BREP_FACES:
+            return b.mFaces.size();
+        case MIO_BREP_LOOPS:
+            return idx.mLoops.size();
+        case MIO_BREP_TRIMS:
+            return idx.mTrims.size();
+        case MIO_BREP_EDGES:
+            return b.mEdges.size();
+        case MIO_BREP_VERTICES:
+            return b.mVertices.size();
+        case MIO_BREP_REFS:
+            return idx.mRefs.size();
+        default:
+            throw std::invalid_argument("meshio++: unknown B-rep side-channel section");
+    }
+}
+
+void capi_brep_check(const mio_format_info* pInfo, int Section, std::int64_t Index) {
+    if (Index < 0 || static_cast<std::size_t>(Index) >= capi_brep_count(pInfo, Section))
+        throw std::invalid_argument("meshio++: B-rep side-channel index out of range");
+}
+
+[[noreturn]] void capi_brep_bad_field(int Section, int Field) {
+    throw std::invalid_argument("meshio++: B-rep side-channel section " + std::to_string(Section) +
+                                " has no such field " + std::to_string(Field));
+}
+
+/// The curve an item's curve fields describe (a trim's parameter curve, an
+/// edge's 3-D curve), or null.
+const meshioplusplus::BrepCurve* capi_brep_curve(const mio_format_info* pInfo, int Section,
+                                                 std::size_t Index) {
+    const meshioplusplus::BrepInfo& b = capi_brep(pInfo);
+    if (Section == MIO_BREP_TRIMS)
+        return &pInfo->mBrepIndex->mTrims[Index].mpTrim->mCurve;
+    if (Section == MIO_BREP_EDGES && b.mEdges[Index].mHasCurve)
+        return &b.mEdges[Index].mCurve;
+    return nullptr;
+}
+
+meshioplusplus::NDArray capi_doubles_view(const std::vector<double>& rV) {
+    return meshioplusplus::NDArray::MakeView(
+        meshioplusplus::DType::Float64, {rV.size()},
+        reinterpret_cast<std::byte*>(const_cast<double*>(rV.data())));
+}
+
+meshioplusplus::NDArray capi_int64s_view(const std::vector<std::int64_t>& rV) {
+    return meshioplusplus::NDArray::MakeView(
+        meshioplusplus::DType::Int64, {rV.size()},
+        reinterpret_cast<std::byte*>(const_cast<std::int64_t*>(rV.data())));
+}
+
+// guarded(), with a bad handle, section, index or field reported as
+// MIO_ERR_INVALID_ARG rather than an internal error.
+extern "C++" {
+template <class F>
+mio_status capi_brep_guarded(F&& f) {
+    return guarded([&]() -> mio_status {
+        try {
+            return f();
+        } catch (const std::invalid_argument& e) {
+            return fail(MIO_ERR_INVALID_ARG, e.what());
+        }
+    });
+}
+}  // extern "C++"
+
+}  // namespace
+
+int64_t mio_brep_info_count(const mio_format_info* info, int32_t section) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        return static_cast<std::int64_t>(capi_brep_count(info, section));
+    });
+}
+
+mio_status mio_brep_info_int(const mio_format_info* info, int32_t section, int64_t index,
+                             int32_t field, int64_t* value) {
+    return capi_brep_guarded([&]() -> mio_status {
+        capi_brep_check(info, section, index);
+        const meshioplusplus::BrepInfo& b = capi_brep(info);
+        const CapiBrepIndex& idx = *info->mBrepIndex;
+        const auto i = static_cast<std::size_t>(index);
+        std::int64_t v = 0;
+        bool found = true;
+        if (field >= 10) {
+            const meshioplusplus::BrepCurve* c = capi_brep_curve(info, section, i);
+            if (!c)
+                capi_brep_bad_field(section, field);
+            if (field == 10)
+                v = c->mDegree;
+            else if (field == 11)
+                v = c->mRational;
+            else if (field == 12)
+                v = c->mReducedKnots;
+            else
+                found = false;
+        } else if (section == MIO_BREP_BREPS && field == 0) {
+            v = b.mBreps[i].mId;
+        } else if (section == MIO_BREP_PATCHES && (field == 0 || field == 1)) {
+            const auto& d = b.mPatches[i].mDegrees;
+            v = static_cast<std::size_t>(field) < d.size() ? d[static_cast<std::size_t>(field)] : 0;
+        } else if (section == MIO_BREP_FACES) {
+            const auto& f = b.mFaces[i];
+            const std::int64_t fields[] = {f.mId,       f.mPatch,           f.mSwappedNormal,
+                                           f.mTrimmed,  f.mRational,        f.mReducedKnots,
+                                           idx.mFaces[i][0], idx.mFaces[i][1], idx.mFaces[i][2],
+                                           idx.mFaces[i][3]};
+            if (field >= 0 && field < 10)
+                v = fields[field];
+            else
+                found = false;
+        } else if (section == MIO_BREP_LOOPS && field >= 0 && field <= 2) {
+            const auto& l = idx.mLoops[i];
+            v = field == 0 ? l.mFace
+                : field == 1 ? l.mFirstTrim
+                             : static_cast<std::int64_t>(l.mpLoop->mTrims.size());
+        } else if (section == MIO_BREP_TRIMS && field >= 0 && field <= 3) {
+            const auto& t = idx.mTrims[i];
+            v = field == 0 ? t.mFace
+                : field == 1 ? t.mLoop
+                : field == 2 ? t.mpTrim->mTrimIndex
+                             : static_cast<std::int64_t>(t.mpTrim->mDirection);
+        } else if (section == MIO_BREP_EDGES && field >= 0 && field <= 3) {
+            const auto& e = b.mEdges[i];
+            v = field == 0 ? e.mId
+                : field == 1 ? static_cast<std::int64_t>(e.mHasCurve)
+                             : idx.mEdgeRefs[i][static_cast<std::size_t>(field - 2)];
+        } else if (section == MIO_BREP_VERTICES && field >= 0 && field <= 2) {
+            v = field == 0 ? b.mVertices[i].mId : idx.mVertexRefs[i][static_cast<std::size_t>(field - 1)];
+        } else if (section == MIO_BREP_REFS && field >= 0 && field <= 2) {
+            const auto* r = idx.mRefs[i];
+            v = field == 0 ? r->mId : field == 1 ? r->mTrimIndex : r->mRelativeDirection;
+        } else {
+            found = false;
+        }
+        if (!found)
+            capi_brep_bad_field(section, field);
+        if (value)
+            *value = v;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_brep_info_array(const mio_format_info* info, int32_t section, int64_t index,
+                               int32_t field, const void** data, mio_dtype* dtype, int32_t* ndim,
+                               int64_t* shape) {
+    return capi_brep_guarded([&]() -> mio_status {
+        capi_brep_check(info, section, index);
+        const meshioplusplus::BrepInfo& b = capi_brep(info);
+        const auto i = static_cast<std::size_t>(index);
+        if (field >= 10) {
+            const meshioplusplus::BrepCurve* c = capi_brep_curve(info, section, i);
+            if (c) {
+                if (field == 10)
+                    return array_out(c->mControlPoints, data, dtype, ndim, shape);
+                if (field == 11)
+                    return array_out(c->mWeights, data, dtype, ndim, shape);
+                if (field == 12)
+                    return array_out(capi_doubles_view(c->mKnots), data, dtype, ndim, shape);
+                if (field == 13)
+                    return array_out(c->mIds, data, dtype, ndim, shape);
+                if (field == 14)
+                    return array_out(capi_doubles_view(c->mActiveRange), data, dtype, ndim, shape);
+            }
+        } else if (section == MIO_BREP_BREPS && field >= 0 && field <= 2) {
+            const auto& br = b.mBreps[i];
+            const std::vector<std::int64_t>* lists[] = {&br.mFaces, &br.mEdges, &br.mVertices};
+            return array_out(capi_int64s_view(*lists[field]), data, dtype, ndim, shape);
+        } else if (section == MIO_BREP_PATCHES) {
+            const auto& p = b.mPatches[i];
+            if (field == 0)
+                return array_out(p.mControlPoints, data, dtype, ndim, shape);
+            if (field == 1)
+                return array_out(p.mWeights, data, dtype, ndim, shape);
+            if ((field == 2 || field == 3) && static_cast<std::size_t>(field - 2) < p.mKnots.size())
+                return array_out(capi_doubles_view(p.mKnots[static_cast<std::size_t>(field - 2)]),
+                                 data, dtype, ndim, shape);
+        } else if (section == MIO_BREP_FACES && field == 0) {
+            return array_out(b.mFaces[i].mControlPointIds, data, dtype, ndim, shape);
+        } else if (section == MIO_BREP_REFS && field == 0) {
+            return array_out(capi_doubles_view(info->mBrepIndex->mRefs[i]->mLocalCoordinates), data,
+                             dtype, ndim, shape);
+        }
+        capi_brep_bad_field(section, field);
+    });
+}
+
+int64_t mio_brep_info_string(const mio_format_info* info, int32_t section, int64_t index,
+                             int32_t field, char* buf, int64_t buflen) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        capi_brep_check(info, section, index);
+        const meshioplusplus::BrepInfo& b = capi_brep(info);
+        const CapiBrepIndex& idx = *info->mBrepIndex;
+        const auto i = static_cast<std::size_t>(index);
+        const std::string* text = nullptr;
+        if (field == 10) {
+            if (const meshioplusplus::BrepCurve* c = capi_brep_curve(info, section, i))
+                text = &c->mExtra;
+        } else if (section == MIO_BREP_FILE && field == 0) {
+            text = &b.mExtra;
+        } else if (section == MIO_BREP_BREPS && (field == 0 || field == 1)) {
+            text = field == 0 ? &b.mBreps[i].mName : &b.mBreps[i].mExtra;
+        } else if (section == MIO_BREP_FACES && field >= 0 && field <= 2) {
+            const auto& f = b.mFaces[i];
+            text = field == 0 ? &f.mName : field == 1 ? &f.mExtra : &f.mSurfaceExtra;
+        } else if (section == MIO_BREP_LOOPS && (field == 0 || field == 1)) {
+            text = field == 0 ? &idx.mLoops[i].mpLoop->mType : &idx.mLoops[i].mpLoop->mExtra;
+        } else if (section == MIO_BREP_TRIMS && field == 0) {
+            text = &idx.mTrims[i].mpTrim->mExtra;
+        } else if (section == MIO_BREP_EDGES && (field == 0 || field == 1)) {
+            text = field == 0 ? &b.mEdges[i].mName : &b.mEdges[i].mExtra;
+        } else if (section == MIO_BREP_VERTICES && (field == 0 || field == 1)) {
+            text = field == 0 ? &b.mVertices[i].mName : &b.mVertices[i].mExtra;
+        } else if (section == MIO_BREP_REFS && (field == 0 || field == 1)) {
+            text = field == 0 ? &idx.mRefs[i]->mName : &idx.mRefs[i]->mExtra;
+        }
+        if (!text)
+            capi_brep_bad_field(section, field);
+        return copy_string(*text, buf, buflen);
     });
 }
 
@@ -2549,6 +3029,49 @@ mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t b
 
 void mio_refine_result_free(mio_refine_result* result) {
     delete result;
+}
+
+static_assert(sizeof(mio_tessellate_opts) == 72,
+              "mio_tessellate_opts grew outside its reserved tail");
+static_assert(sizeof(mio_tessellate_report) == 112,
+              "mio_tessellate_report grew outside its reserved tail");
+
+void mio_tessellate_opts_init(mio_tessellate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_tessellate_opts{};
+    opts->levels = 2;
+    opts->curved = 1;
+    opts->fields = 1;
+}
+
+mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
+                         mio_tessellate_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::TessellateOptions options;
+        if (opts) {
+            options.mLevels = opts->levels;
+            options.mCurved = opts->curved != 0;
+            options.mFields = opts->fields != 0;
+            options.mRecordStencil = opts->record_stencil != 0;
+        }
+        meshioplusplus::TessellateResult r = meshioplusplus::tessellate(mesh->mMesh, options);
+        if (report) {
+            *report = mio_tessellate_report{};
+            report->num_source_points = r.mNumSourcePoints;
+            report->num_source_cells = r.mNumSourceCells;
+            report->num_curved_source_cells = r.mNumCurvedSourceCells;
+            report->num_pass_through_source_cells = r.mNumPassThroughSourceCells;
+            report->num_points = r.mNumPoints;
+            report->num_cells = r.mNumCells;
+            report->num_boundary_facets = r.mNumBoundaryFacets;
+            report->num_interior_facets = r.mNumInteriorFacets;
+            report->num_facets_with_bad_count = r.mNumFacetsWithBadCount;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
 }
 
 namespace {
@@ -5560,6 +6083,9 @@ static_assert(sizeof(mio_fit_primitives_opts) == 88,
               "mio_fit_primitives_opts grew outside its reserved tail");
 static_assert(sizeof(mio_fit_primitives_report) == 96,
               "mio_fit_primitives_report grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_opts) == 80, "mio_fit_cad_opts grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_report) == 192,
+              "mio_fit_cad_report grew outside its reserved tail");
 static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
               "MIO_FIT_ALL_TYPES must match kFitAllTypes");
 static_assert(MIO_FIT_TORUS == static_cast<int>(meshioplusplus::FitPrimitiveType::Torus),
@@ -5690,6 +6216,78 @@ mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts
             report->num_cone = r.mNumCone;
             report->num_torus = r.mNumTorus;
             report->num_unfitted = r.mNumUnfitted;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_cad_opts{};
+    opts->max_demotion_rounds = 8;
+    opts->exact_edges = 1;
+    opts->types = MIO_FIT_ALL_TYPES;
+    opts->freeform = 1;
+    opts->freeform_degree = 3;
+    opts->freeform_max_control = 64;
+    opts->freeform_split = 1;
+    opts->fillets = 1;
+    opts->threads = 1;
+}
+
+int mio_has_occt(void) {
+    return meshioplusplus::fit_cad_has_occt() ? 1 : 0;
+}
+
+mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                      mio_fit_cad_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::FitCadOptions options;
+        if (opts) {
+            options.mTolerance = opts->tolerance;
+            options.mMeshDeflection = opts->mesh_deflection;
+            options.mMaxDemotionRounds = opts->max_demotion_rounds;
+            options.mExactEdges = opts->exact_edges != 0;
+            options.mTypes = opts->types;
+            // A struct zero-filled before these fields existed keeps freeform,
+            // splitting, fillets and threads off and the defaults for the rest.
+            options.mFreeform = opts->freeform != 0;
+            options.mFreeformDegree = opts->freeform_degree ? opts->freeform_degree : 3;
+            options.mFreeformMaxControl =
+                opts->freeform_max_control ? opts->freeform_max_control : 64;
+            options.mFreeformSplit = opts->freeform_split != 0;
+            options.mFillets = opts->fillets != 0;
+            options.mThreads = opts->threads != 0;
+        }
+        meshioplusplus::FitCadResult r =
+            meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
+        if (report) {
+            *report = mio_fit_cad_report{};
+            report->tolerance = r.mTolerance;
+            report->volume = r.mVolume;
+            report->skin_volume = r.mSkinVolume;
+            report->volume_ratio = r.mVolumeRatio;
+            report->max_deviation = r.mMaxDeviation;
+            report->num_faces = r.mNumFaces;
+            report->num_plane = r.mNumPlane;
+            report->num_sphere = r.mNumSphere;
+            report->num_cylinder = r.mNumCylinder;
+            report->num_cone = r.mNumCone;
+            report->num_torus = r.mNumTorus;
+            report->num_faceted_faces = r.mNumFacetedFaces;
+            report->num_patches = r.mNumPatches;
+            report->num_demoted = r.mNumDemoted;
+            report->num_exact_edges = r.mNumExactEdges;
+            report->num_approx_edges = r.mNumApproxEdges;
+            report->num_solids = r.mNumSolids;
+            report->valid = r.mValid ? 1 : 0;
+            report->num_bspline = r.mNumBspline;
+            report->num_split_patches = r.mNumSplitPatches;
+            report->num_fillet = r.mNumFillet;
+            report->num_helical = r.mNumHelical;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

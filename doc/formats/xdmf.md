@@ -24,6 +24,7 @@ meshioplusplus.xdmf.write("out.xdmf", mesh,
 
 - **`data_format`** — where DataItem payloads are stored: `"XML"` (inline text), `"Binary"` (external `.bin` files, one per array), or `"HDF"` (a companion `.h5` file).
 - **`compression`** / **`compression_opts`** — gzip filter for HDF data.
+- **Reading compressed HDF data** with the native core verifies each chunk a read reaches before libhdf5 reads it, because libhdf5 1.10 can over-read a chunk that delivers fewer bytes than its elements take: a stored chunk must hold its full size, a deflated chunk must inflate to it, and a trailing fletcher32 checksum is left out of those sizes and checked by libhdf5 on the read. The shuffle and deflate filters are verified, alone or as shuffle then deflate. Any other pipeline is read unverified, so the over-read stays possible in those files. That covers deflate then shuffle (the order MSC Nastran writes), szip and lzf, a residual risk this check does not close. Builds without zlib read deflated chunks unverified, and HDF5 older than 1.10.5 is not checked. Python readers that open HDF data through h5py (XDMF, VTKHDF, H5M, HMF, CGNS and Nastran H5) read through their own libhdf5 and are not covered by this check yet.
 
 ## File structure
 

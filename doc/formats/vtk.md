@@ -47,7 +47,7 @@ Structured dataset types (`STRUCTURED_POINTS`/`STRUCTURED_GRID`/ `RECTILINEAR_GR
 
 ## Cell types
 
-Shared with VTU — see [VTU](./vtu.md#cell-types) for the full numeric type-code table. Only `wedge` needs a node-order permutation relative to VTK (`[0,2,1,3,5,4]`, self-inverse); every other type uses natural order.
+Shared with VTU — see [VTU](./vtu.md#cell-types) for the full numeric type-code table. The legacy format reads and writes the VTK Bézier cells too (since v16.40.0); it has no marker for their weights, so those travel as an ordinary array (name it `RationalWeights` to have the [VTU](./vtu.md#bezier-cells-and-rational-weights) writer mark it). Only `wedge` needs a node-order permutation relative to VTK (`[0,2,1,3,5,4]`, self-inverse); every other type uses natural order.
 
 ## Data mapping
 

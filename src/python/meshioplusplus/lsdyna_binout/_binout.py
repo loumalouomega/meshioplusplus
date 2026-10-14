@@ -99,7 +99,8 @@ class _File:
         size, self.lsize, self.osize, self.csize, self.tsize, order = d[:6]
         self.order = "<" if order == 1 else ">"
         self.start = size
-        self.icode = {1: "b", 2: "h", 4: "i", 8: "q"}
+        # Unsigned: an offset of 2^63 or more must not read as a negative position.
+        self.icode = {1: "B", 2: "H", 4: "I", 8: "Q"}
 
     def uint(self, pos, n):
         if pos + n > len(self.data):
@@ -125,10 +126,14 @@ class _Archive:
             return
         pos += lc
         cwd = [self.root, []]  # the directory dict and its path
+        tables = set()  # the tables read: one that names an earlier table loops
         while True:
             offset = f.uint(pos, f.osize)
             if offset == 0:
                 return
+            if offset in tables:
+                _fail(f"the symbol tables loop back to the table at {offset}")
+            tables.add(offset)
             pos = offset
             length, cmd = f.uint(pos, f.lsize), f.uint(pos + f.lsize, f.csize)
             pos += lc
@@ -136,13 +141,20 @@ class _Archive:
                 return
             while True:
                 length, cmd = f.uint(pos, f.lsize), f.uint(pos + f.lsize, f.csize)
+                if length < lc:
+                    _fail("a symbol table record is shorter than its header")
                 body = length - lc
                 pos += lc
                 if cmd == _CD:
+                    if pos + body > len(f.data):
+                        _fail("a record runs past the end of the file")
                     cwd = self._cd(cwd, f.data[pos : pos + body].decode("latin-1"))
                     pos += body
                 elif cmd == _VARIABLE:
-                    n = body - (f.tsize + f.osize + f.lsize)
+                    tail = f.tsize + f.osize + f.lsize
+                    if body < tail or pos + body > len(f.data):
+                        _fail("a variable record is malformed")
+                    n = body - tail
                     name = f.data[pos : pos + n].decode("latin-1")
                     p = pos + n
                     typ = f.uint(p, f.tsize)

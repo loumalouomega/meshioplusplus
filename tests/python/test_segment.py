@@ -151,6 +151,9 @@ def test_cli_verb(tmp_path, capsys):
 
 
 def test_pipeline_steps_in_both_engines(tmp_path):
+    # Uncompressed input: the C++ leg reads it through _core, and the Windows CI
+    # build of _core has no zlib to inflate the default compressed VTU. These
+    # tests are about the steps, not the codec.
     src = tmp_path / "box.vtu"
     # Uncompressed: the C++ leg reads this file, and the Windows wheel is built
     # without zlib, which refuses a zlib-compressed VTU.

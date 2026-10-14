@@ -85,6 +85,13 @@ topological_dimension = {
     "VTK_LAGRANGE_HEXAHEDRON": 3,
     "VTK_LAGRANGE_WEDGE": 3,
     "VTK_LAGRANGE_PYRAMID": 3,
+    "VTK_BEZIER_CURVE": 1,
+    "VTK_BEZIER_TRIANGLE": 2,
+    "VTK_BEZIER_QUADRILATERAL": 2,
+    "VTK_BEZIER_TETRAHEDRON": 3,
+    "VTK_BEZIER_HEXAHEDRON": 3,
+    "VTK_BEZIER_WEDGE": 3,
+    "VTK_BEZIER_PYRAMID": 3,
 }
 
 
@@ -276,6 +283,13 @@ class Mesh:
             "VTK_LAGRANGE_HEXAHEDRON",
             "VTK_LAGRANGE_WEDGE",
             "VTK_LAGRANGE_PYRAMID",
+            "VTK_BEZIER_CURVE",
+            "VTK_BEZIER_TRIANGLE",
+            "VTK_BEZIER_QUADRILATERAL",
+            "VTK_BEZIER_TETRAHEDRON",
+            "VTK_BEZIER_HEXAHEDRON",
+            "VTK_BEZIER_WEDGE",
+            "VTK_BEZIER_PYRAMID",
         ]
         if len(self.cells) > 0:
             lines.append("  Number of cells:")

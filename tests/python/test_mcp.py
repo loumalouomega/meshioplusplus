@@ -375,6 +375,22 @@ def test_mfem_grid_functions_convert_both_ways(tmp_path):
         _tools.tool_convert(target, str(tmp_path / "x.vtu"), write_grid_functions=True)
 
 
+def test_mfem_nurbs_convert_keeps_the_patches(tmp_path):
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).parent / "meshes" / "mfem" / "nurbs" / "pipe-nurbs.mesh"
+    )
+    nurbs = tmp_path / "pipe.mesh"
+    _tools.tool_convert(str(src), str(nurbs), input_format="mfem", output_format="mfem")
+    assert nurbs.read_text().startswith("MFEM NURBS mesh v1.0")
+    sampled = tmp_path / "sampled.mesh"
+    _tools.tool_convert(str(src), str(sampled), input_format="mfem", write_nurbs=False)
+    assert sampled.read_text().startswith("MFEM mesh v1")
+    with pytest.raises(ValueError, match="write_nurbs needs MFEM"):
+        _tools.tool_convert(str(src), str(tmp_path / "x.vtu"), write_nurbs=True)
+
+
 def test_patran_results_convert(tmp_path):
     import pathlib
 
@@ -1345,6 +1361,142 @@ def test_segment_fit_and_step(tmp_path):
     assert "step" in _tools.tool_formats()["writable"]
 
 
+def _two_tetra10():
+    tets = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]], dtype=float),
+        [("tetra", np.array([[0, 1, 2, 3], [0, 2, 1, 4]]))],
+    )
+    mesh = meshioplusplus.convert_cells(tets, mode="elevate")
+    mesh.point_data["u"] = mesh.points[:, 0]
+    return mesh
+
+
+def test_tessellate_reports_counts_and_watertightness(tmp_path):
+    src = str(tmp_path / "curved.vtu")
+    meshioplusplus.write(src, _two_tetra10())
+    out = _dump(_tools.tool_tessellate(src, str(tmp_path / "flat.vtu"), levels=1))
+    # one 2^1 split per edge: 8 children per tetra10, sharing the middle face
+    assert out["levels"] == 1
+    assert out["num_source_points"] == 14 and out["num_source_cells"] == 2
+    assert out["num_curved_source_cells"] == 2
+    assert out["num_pass_through_source_cells"] == 0
+    assert out["num_cells"] == 16 and out["cell_blocks"] == [
+        {"type": "tetra", "num_cells": 16}
+    ]
+    assert out["watertight"] == {
+        "num_boundary_facets": 24,
+        "num_interior_facets": 20,
+        "num_facets_with_bad_count": 0,
+    }
+    assert "tessellate:source_point" in out["point_data"] and "u" in out["point_data"]
+    assert "tessellate:source_cell" in out["cell_data"]
+    flat = meshioplusplus.read(out["output_path"])
+    assert len(flat.points) == out["num_points"]
+    # curved=False passes every cell through; record_stencil adds the stencil
+    off = _dump(
+        _tools.call_tool(
+            "tessellate",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "same.vtu"),
+                "curved": False,
+                "fields": False,
+                "record_stencil": True,
+            },
+        )
+    )
+    assert off["num_curved_source_cells"] == 0
+    assert off["num_pass_through_source_cells"] == 2
+    assert off["cell_blocks"] == [{"type": "tetra10", "num_cells": 2}]
+    assert "tessellate:stencil" in off["point_data"] and "u" not in off["point_data"]
+    bad = _tools.call_tool(
+        "tessellate",
+        {"input_path": src, "output_path": str(tmp_path / "x.vtu"), "levels": -1},
+    )
+    assert bad["error_type"] == "ValueError" and "levels" in bad["error"]
+
+
+def test_fit_cad_tool_reports_the_capability(tmp_path):
+    from meshioplusplus._fit_cad import has_occt
+
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "cube.step"),
+                "mesh_output_path": str(tmp_path / "solid.vtu"),
+            },
+        )
+    )
+    assert out["occt_available"] is has_occt()
+    if not has_occt():
+        assert out["error_type"] == "NotImplementedError"
+        assert "MESHIOPLUSPLUS_WITH_OCCT" in out["error"]
+        return
+    assert out["valid"] is True
+    assert out["num_plane"] == 6
+    assert out["num_split_patches"] == 0
+    assert out["num_fillet"] == 0 and out["num_helical"] == 0
+    assert out["step_path"].endswith("cube.step")
+    assert "fit_cad:face" in out["cell_data"]
+    assert os.path.exists(tmp_path / "solid.vtu")
+
+
+def test_cad_json_brep_rides_through_convert(tmp_path):
+    src = str(
+        pathlib.Path(__file__).parent
+        / "meshes"
+        / "cad_json"
+        / "plate_with_hole.cad.json"
+    )
+    out = _dump(_tools.tool_convert(src, str(tmp_path / "copy.cad.json")))
+    assert out["brep"] == {
+        "faces": 1,
+        "trimmed_faces": 1,
+        "rational_faces": 0,
+        "loops": 2,
+        "edges": 8,
+        "vertices": 0,
+    }
+    # the side channel, not the sampling, is what was written
+    again = meshioplusplus.read(tmp_path / "copy.cad.json")
+    assert len(again.info["brep"]["faces"][0]["loops"]) == 2
+    assert "cad_json" in _tools.tool_formats()["writable"]
+
+
+def test_fit_cad_tool_writes_kratos_cad_json(tmp_path):
+    from meshioplusplus._fit_cad import has_occt
+
+    if not has_occt():
+        pytest.skip("needs a core built with OpenCASCADE")
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "cube.step"),
+                "cad_json_output_path": str(tmp_path / "cube.cad.json"),
+                "freeform": False,
+                "freeform_split": False,
+                "fillets": False,
+                "threads": False,
+            },
+        )
+    )
+    assert out["num_bspline"] == 0
+    assert out["num_fillet"] == 0 and out["num_helical"] == 0
+    assert out["cad_json_path"].endswith("cube.cad.json")
+    assert out["brep"]["faces"] == 6 and out["brep"]["edges"] == 12
+    assert (
+        len(meshioplusplus.read(tmp_path / "cube.cad.json").info["brep"]["faces"]) == 6
+    )
+
+
 def test_feature_edges_and_hausdorff(tmp_path):
     src = str(tmp_path / "cube.vtu")
     meshioplusplus.write(src, _unit_cube_quads())
@@ -1809,7 +1961,7 @@ def test_wraps_names_are_real_public_api():
 def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
-        assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo"), name
+        assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo", "occt"), name
 
 
 def test_sets_data_tool_and_cache_isolation(mesh_file, tmp_path):
@@ -2772,9 +2924,10 @@ def test_server_mirrors_the_train_start_and_predict_file_parameters():
         if isinstance(node, ast.FunctionDef) and node.name in (
             "train_start",
             "predict_file",
+            "fit_cad",
         ):
             mirrored[node.name] = [a.arg for a in node.args.args]
-    for name in ("train_start", "predict_file"):
+    for name in ("train_start", "predict_file", "fit_cad"):
         pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
         assert mirrored[name] == pure, name
 
@@ -2788,6 +2941,7 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
         assert fmt in out["readable"], fmt
     assert "z88" in out["writable"]
     assert "libmesh" in out["writable"]  # v16.11.0
+    assert "abaqus_fil" in out["writable"]
     for ext in (".xda", ".xdr", ".xda.gz", ".xdr.gz", ".xda.bz2", ".xdr.bz2"):
         assert out["extensions"][ext] == ["libmesh"], ext
     assert out["extensions"][".fil"] == ["abaqus_fil"]
@@ -2857,9 +3011,9 @@ def test_d3plot_and_op2_formats(tmp_path):
 
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
-    for fmt in ("lsdyna_d3plot", "nastran_op2"):
-        assert fmt in out["readable"], fmt
-        assert fmt not in out["writable"], fmt
+    assert "lsdyna_d3plot" in out["readable"]
+    assert "lsdyna_d3plot" not in out["writable"]
+    assert "nastran_op2" in out["readable"] and "nastran_op2" in out["writable"]
     assert out["extensions"][".op2"] == ["nastran_op2"]
     # d3plot has no extension: the file name and the control block tell.
     d3plot = meshes / "lsdyna_d3plot" / "generated" / "shell_solid" / "d3plot"
@@ -2873,6 +3027,57 @@ def test_d3plot_and_op2_formats(tmp_path):
     mode = str(tmp_path / "mode.vtu")
     _tools.tool_convert(str(op2), mode, time_step=-1)
     assert "EIGENVECTOR" in meshioplusplus.read(mode).point_data
+
+
+def test_a_result_mesh_converts_to_nastran_op2(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float),
+        [("quad", np.array([[0, 1, 2, 3]]))],
+    )
+    mesh.point_data["DISPLACEMENT"] = np.arange(12, dtype=float).reshape(4, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    op2 = str(tmp_path / "result.op2")
+    _tools.tool_convert(source, op2)
+    assert _dump(_tools.tool_sniff(op2))["format"] == "nastran_op2"
+    back = meshioplusplus.read(op2)
+    np.testing.assert_allclose(
+        back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"]
+    )
+
+
+def test_a_result_mesh_converts_to_a_binout(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], dtype=float),
+        [("vertex", np.arange(3)[:, None])],
+    )
+    mesh.point_data["displacement"] = np.arange(9, dtype=float).reshape(3, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    out = _dump(_tools.tool_formats())
+    assert "lsdyna_binout" in out["readable"] and "lsdyna_binout" in out["writable"]
+    binout = str(tmp_path / "binout")
+    _tools.tool_convert(source, binout)
+    assert _dump(_tools.tool_sniff(binout))["format"] == "lsdyna_binout"
+    back = meshioplusplus.read(binout)
+    np.testing.assert_allclose(
+        back.point_data["displacement"], mesh.point_data["displacement"]
+    )
+
+
+def test_a_result_mesh_converts_to_an_abaqus_results_file(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2]]))],
+    )
+    mesh.point_data["U"] = np.arange(9, dtype=float).reshape(3, 3)
+    source = str(tmp_path / "result.vtu")
+    meshioplusplus.write(source, mesh)
+    fil = str(tmp_path / "result.fil")
+    _tools.tool_convert(source, fil)
+    assert _dump(_tools.tool_sniff(fil))["format"] == "abaqus_fil"
+    back = meshioplusplus.read(fil)
+    np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
 
 
 def test_marc_and_ansys_results_formats(tmp_path):

@@ -20,10 +20,12 @@ from . import conformance_spec as cs
 REPO = pathlib.Path(__file__).resolve().parents[2]
 WRITABLE = sorted(meshioplusplus.formats()["writable"])
 
-# Writers with no Python engine that exist only in some native builds, keyed to
-# the core flag that says so. The declaration describes a build that has them;
-# a build without one (the Windows CI job has no zlib, so no gidpost) skips.
-_NEEDS_CORE = {"gid": "__has_gidpost__"}
+# Writers (or the reader of a round trip) with no Python engine that exist only
+# in some native builds, keyed to the core flag that says so. The declaration
+# describes a build that has them; a build without one (the Windows CI job has
+# no zlib, so no gidpost; the wheels have no OpenCASCADE, so STEP does not read
+# back) skips.
+_NEEDS_CORE = {"gid": "__has_gidpost__", "step": "__has_occt__"}
 
 
 def test_every_writable_format_is_declared():

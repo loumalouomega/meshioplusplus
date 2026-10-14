@@ -146,6 +146,8 @@ std::vector<std::string> nh5_string_member(hid_t file, const std::string& rPath,
                                            const std::string& rMember, std::size_t Row0,
                                            std::size_t Count) {
     h5::Hid d(H5Dopen2(file, rPath.c_str(), H5P_DEFAULT), H5Dclose);
+    // This read is a raw H5Dread, so the chunks it reaches are verified here, as hdf5_util does.
+    h5::verify_chunk_rows(d, rPath, Row0, Count);
     h5::Hid ftype(H5Dget_type(d), H5Tclose);
     const int index = H5Tget_member_index(ftype, rMember.c_str());
     if (index < 0)

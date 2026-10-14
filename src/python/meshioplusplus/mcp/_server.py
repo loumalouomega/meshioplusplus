@@ -256,6 +256,7 @@ def _register_conversion(server: FastMCP) -> None:
         write_grid_functions: bool = False,
         elmer_halo: bool = False,
         patran_results: Optional[Dict[str, str]] = None,
+        write_nurbs: Optional[bool] = None,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
@@ -279,7 +280,10 @@ def _register_conversion(server: FastMCP) -> None:
         inputs (VTU/VTP/VTS/VTR/VTI) accept appended raw/base64 arrays natively;
         Multiple pieces concatenate without welding; VTP/VTS/VTR/VTI retain
         inline output. Legacy VTK structured datasets also read natively.
-        XDMF time-series reads preserve fixed shared point/cell/side regions."""
+        XDMF time-series reads preserve fixed shared point/cell/side regions.
+        An MFEM NURBS input keeps its patches, so an MFEM output is written back
+        as the NURBS mesh; write_nurbs=False writes the sampled cells instead,
+        True refuses anything else."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -297,6 +301,7 @@ def _register_conversion(server: FastMCP) -> None:
             write_grid_functions=write_grid_functions,
             elmer_halo=elmer_halo,
             patran_results=patran_results,
+            write_nurbs=write_nurbs,
         )
 
     @server.tool()
@@ -3199,6 +3204,76 @@ def _register_training(server: FastMCP) -> None:
 # Gated tools (optional extras)                                               #
 # --------------------------------------------------------------------------- #
 def _register_gated(server: FastMCP) -> None:
+    @server.tool()
+    def fit_cad(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        mesh_output_path: Optional[str] = None,
+        curvature_tolerance: float = 0.0,
+        min_patch_cells: int = 1,
+        fit_tolerance: float = 1e-3,
+        tolerance: Optional[float] = None,
+        exact_edges: bool = True,
+        types: Optional[List[str]] = None,
+        mesh_deflection: Optional[float] = None,
+        max_demotion_rounds: int = 8,
+        freeform: bool = True,
+        freeform_degree: int = 3,
+        freeform_max_control: int = 64,
+        cad_json_output_path: Optional[str] = None,
+        freeform_split: bool = True,
+        fillets: bool = True,
+        threads: bool = True,
+    ) -> dict:
+        """Turn a closed triangle skin into a CAD solid with analytic faces,
+        written to output_path as AP214 STEP -- the last step of skin to CAD
+        after segment and fit_primitives (run here first, with
+        curvature_tolerance, min_patch_cells and fit_tolerance, when the skin
+        has no segment:patch / fit:patch_* data; a noisy scan wants
+        min_patch_cells in the tens).
+
+        Each accepted fit becomes a plane, sphere, cylinder, cone or torus face
+        (types narrows which); a patch no primitive explains becomes, with
+        fillets, a rolling-ball fillet face when it runs between two analytic
+        faces, with threads, a thread flank face beside a cylinder or cone,
+        and otherwise, with freeform, a B-spline face (degree up to
+        freeform_degree, fitted on at most freeform_max_control grid points
+        per direction; with freeform_split, a patch folding over every
+        flattening is split into pieces first), the rest planar facets;
+        OpenCASCADE sews and checks the solid, and a face that fails or lies
+        further than tolerance from the skin is demoted to facets. The report
+        gives valid, the volume ratio against the skin, max_deviation
+        (Hausdorff), faces by type (num_bspline the freeform ones, num_fillet,
+        num_helical), num_split_patches, num_demoted and exact/approximated
+        edges; mesh_output_path also writes the
+        re-meshed solid and cad_json_output_path the solid as Kratos CAD JSON
+        (NURBS faces, trimming loops, edges). Needs a core built with OpenCASCADE
+        (-DMESHIOPLUSPLUS_WITH_OCCT=ON); without it the error names the flag
+        and occt_available is false."""
+        return _guard(
+            _tools.tool_fit_cad,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            mesh_output_path=mesh_output_path,
+            curvature_tolerance=curvature_tolerance,
+            min_patch_cells=min_patch_cells,
+            fit_tolerance=fit_tolerance,
+            tolerance=tolerance,
+            exact_edges=exact_edges,
+            types=types,
+            mesh_deflection=mesh_deflection,
+            max_demotion_rounds=max_demotion_rounds,
+            freeform=freeform,
+            freeform_degree=freeform_degree,
+            freeform_max_control=freeform_max_control,
+            cad_json_output_path=cad_json_output_path,
+            freeform_split=freeform_split,
+            fillets=fillets,
+            threads=threads,
+        )
+
     @server.tool()
     def data_export(
         input_path: str,

@@ -466,6 +466,16 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
+    "cad_json": {
+        "cells": {"line": "exact", "quad": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Kratos IGA geometry: without a B-rep side channel, quads are written as "
+        "bilinear NURBS faces and lines as edges.",
+    },
     "cae": {
         "cells": {
             "triangle": "lost",
@@ -1208,9 +1218,83 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "nastran_op2": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Single precision; results are the OP2 tables' own point and cell data "
+        "(`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and "
+        "regions have no place; cells come back ordered by element card.",
+    },
+    "lsdyna_binout": {
+        "cells": {
+            "vertex": "exact",
+            "line": "as vertex",
+            "triangle": "as vertex",
+            "quad": "as vertex",
+            "tetra": "as vertex",
+            "hexahedron": "as vertex",
+            "wedge": "as vertex",
+            "pyramid": "as vertex",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A binout holds `nodout`'s nodes, not elements: the points come back as a "
+        "`vertex` cloud, single precision, and only `nodout`'s own vectors "
+        "(`displacement`...) are `(n, 3)`; per-point scalars come back as float64 "
+        "(an integer one is stored as `int32`, and the reader widens every per-point "
+        "array to float64), and the canonical `fd` is not a `binout:` name.",
+    },
+    "abaqus_fil": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "A results file holds the model and the results Abaqus names: only point "
+        "data named like a nodal result (`U`, `RF`...) and cell data named like an element "
+        "result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; "
+        "a `vertex` has no Abaqus element and side regions are dropped.",
+    },
     "step": {
-        "error": "write-only",
-        "note": "A faceted B-rep solid for CAD tools; a reader needs a CAD kernel (roadmap §6.2.2).",
+        "cells": {
+            "tetra": "as triangle",
+            "hexahedron": "as triangle",
+            "wedge": "as triangle",
+            "pyramid": "as triangle",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A faceted B-rep solid for CAD tools, read back through the optional "
+        "OpenCASCADE backend as its triangulation: volume cells come back as their "
+        "skin, and data is not kept. Checked only in a build with the backend.",
     },
     "stl": {
         "cells": {
@@ -1569,21 +1653,22 @@ SPEC: dict[str, dict] = {
 _GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
 _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
-    "abaqus_fil": _GAP.format(item="3.2.6", why=_RESULT.format(tool="Abaqus")),
+    "iges": (
+        "Exempt, not a gap: a CAD exchange format read through the optional "
+        "OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes."
+    ),
     "ansys_rst": _GAP.format(item="3.2.5", why=_RESULT.format(tool="Ansys")),
     "ansys_rst_cyclic": (
         "Exempt, not a gap: not a file of its own but the full rotor that a static "
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
         "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
     ),
-    "lsdyna_binout": _GAP.format(item="3.2.3", why=_RESULT.format(tool="LS-DYNA")),
     "lsdyna_d3plot": _GAP.format(item="3.2.2", why=_RESULT.format(tool="LS-DYNA")),
     "marc_t19": _GAP.format(
         item="3.2.11",
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
     ),
     "nastran_h5": _GAP.format(item="3.2.4", why=_RESULT.format(tool="MSC Nastran")),
-    "nastran_op2": _GAP.format(item="3.2.1", why=_RESULT.format(tool="Nastran")),
     "radioss_anim": _GAP.format(
         item="3.2.8", why=_RESULT.format(tool="the OpenRadioss engine")
     ),
@@ -1603,10 +1688,6 @@ READ_ONLY = {
 # an exemption, like `ansys_rst_cyclic` above, not a gap.
 WRITE_ONLY = {
     "gltf": "Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader.",
-    "step": (
-        "Exempt, not a gap: reading STEP means a CAD kernel (roadmap §6.2.2). The faceted "
-        "writer is the CAD hand-off of the skin-to-CAD work (roadmap §6.3)."
-    ),
 }
 
 

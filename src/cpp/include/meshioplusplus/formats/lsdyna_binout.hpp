@@ -36,11 +36,16 @@
  * `binout:<database>:<variable>` (`binout:elout/beam:axial`), with its
  * `binout:<database>:time` and, from its metadata, `binout:<database>:ids`.
  *
+ * The writer (`write_lsdyna_binout`, `LsdynaBinoutSeriesWriter`) is the
+ * reader's inverse: one little-endian LSDA file with 8-byte lengths and
+ * offsets, reals stored as `float32` and integers as `int32`.
+ *
  * See doc/formats/lsdyna_binout.md.
  */
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -84,5 +89,66 @@ MESHIOPLUSPLUS_API bool is_binout_filename(const std::string& rPath);
  *        symbol-table offset command.
  */
 MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
+
+/**
+ * @brief Write a mesh as a one-output binout.
+ *
+ * `nodout` is the points (`x_coordinate`, `y_coordinate`, `z_coordinate`),
+ * their ids (`lsdyna:nid`, else 1 to n), the vectors `displacement`,
+ * `rotation`, `velocity`, `rotational_velocity`, `acceleration` and
+ * `rotational_acceleration` (`n x 3`), every other one-dimensional per-point
+ * array (for 2 or more points) under its own name, and the
+ * `binout:nodout:<variable>` field data. Every other database is
+ * `binout:<database>:<variable>` field data (`<database>` may nest with `/`,
+ * `binout:elout/beam:axial`), with `binout:<database>:time` its output's time
+ * (else the step's) and `binout:<database>:ids` its metadata ids. Reals are
+ * stored as `float32` and integers as `int32`; the output's time is
+ * `meshio:time` (0 when absent). Cells, regions and other arrays are dropped
+ * with a warning. The Python twin writes the same bytes.
+ *
+ * @throws WriteError on an id outside the 32-bit range, a variable or
+ *         database name a binout cannot hold, a variable repeated, a mesh with
+ *         no point and no `binout:*` field data, or a file that cannot be
+ *         opened
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A binout written step by step: `nodout`'s ids once and an output
+ *        folder per step, and any other database's output whenever its own
+ *        `binout:<database>:time` changes (so a database written less often
+ *        than `nodout` keeps its own cadence).
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and ids and, for each database, its first output's variables (a
+ * database may be absent from a step and appear later); a step that does not
+ * is a `WriteError`. The time of a step is the argument, not its
+ * `meshio:time`. One step is `write_lsdyna_binout`'s bytes. The Python twin,
+ * `meshioplusplus.lsdyna_binout.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API LsdynaBinoutSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit LsdynaBinoutSeriesWriter(const std::string& rPath);
+    ~LsdynaBinoutSeriesWriter();
+
+    LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter& operator=(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept;
+    LsdynaBinoutSeriesWriter& operator=(LsdynaBinoutSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

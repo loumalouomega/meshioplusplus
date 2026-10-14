@@ -163,3 +163,19 @@ Higher-order VTK Lagrange elements (arbitrary polynomial order, controlled at ru
 | `VTK_LAGRANGE_PYRAMID` |
 
 These are read and written by the VTK/VTU readers/writers, and read and written by the [MFEM](formats/mfem.md) reader and writer for meshes and fields of order 3 and up (v16.11.0; `VTK_LAGRANGE_PYRAMID` excepted). They are ragged blocks: the node count follows from the order, which is not stored in the type.
+
+## VTK Bézier types
+
+VTK's rational Bézier elements (since v16.40.0), the same seven shapes:
+
+| Type |
+|------|
+| `VTK_BEZIER_CURVE` |
+| `VTK_BEZIER_TRIANGLE` |
+| `VTK_BEZIER_QUADRILATERAL` |
+| `VTK_BEZIER_TETRAHEDRON` |
+| `VTK_BEZIER_HEXAHEDRON` |
+| `VTK_BEZIER_WEDGE` |
+| `VTK_BEZIER_PYRAMID` |
+
+A Bézier cell lists its control points in the node order of the Lagrange cell of the same shape and degree, so it is a ragged block in the same way; but only its corners lie on the geometry, so operations do not treat it as a Lagrange cell, and drawing it ([`render`](./tui.md)) goes through its corners. VTK/VTU, VTKHDF and the legacy VTK format read and write them; a VTU's rational weights and per-cell degrees travel as the `RationalWeights` point data and the `HigherOrderDegrees` cell data ([VTU](formats/vtu.md#bezier-cells-and-rational-weights)).

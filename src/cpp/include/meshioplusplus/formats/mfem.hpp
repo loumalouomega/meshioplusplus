@@ -35,15 +35,20 @@
  *    degrees of freedom are numbered the way MFEM numbers them -- vertices, then
  *    edges and faces in order of first appearance, then element interiors -- and
  *    the points are those degrees of freedom, in that order.
- *  - Higher orders (and Bernstein or serendipity spaces) keep only the vertices,
- *    with a warning. `L2_T1_<d>D_P1` nodes (periodic meshes) give each element
- *    its own points.
+ *  - Higher orders give VTK Lagrange cells (`H1` and the legacy `Cubic`, since
+ *    v16.11.0); Bernstein and serendipity spaces are evaluated at the Lagrange
+ *    nodes. `L2_T1_<d>D_P1` nodes (periodic meshes) give each element its own
+ *    points.
  *  - Every geometry, the prism included, is in meshio++'s node order (MFEM's own
  *    VTK export reverses prisms for classic VTK's winding; meshio++ does not).
  *
- * Non-conforming (`MFEM NC mesh`, v1.1 `vertex_parents`), NURBS and INLINE
- * meshes are refused. A parallel rank file is read as its local part. See
- * doc/formats/mfem.md.
+ * A non-conforming mesh (`MFEM NC mesh`) is read as its leaf elements, and a
+ * NURBS mesh (`MFEM NURBS mesh` v1.0/v1.1) as its knot-span elements, each a
+ * Lagrange cell of the highest knot-vector order through the rational patch
+ * geometry; the overloads that take a `NurbsInfo` (since v16.40.0) also return
+ * the patches themselves, and write them back. INLINE meshes and NURBS meshes
+ * with non-conforming patches are refused. A parallel rank file is read with
+ * its siblings. See doc/formats/mfem.md.
  */
 
 // System includes
@@ -53,6 +58,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/nurbs.hpp"
 #include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
@@ -112,6 +118,30 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
                                   const ReadOptions& rOptions);
 
 /**
+ * @brief `read_mfem(rPath, rGridFunctions, rOptions)`, and the NURBS patches of a
+ * NURBS mesh in @p rInfo (since v16.40.0).
+ *
+ * For an `MFEM NURBS mesh`, @p rInfo receives what the sampling into Lagrange
+ * cells drops: per patch its degrees, knot vectors (oriented along the patch's
+ * own directions), control net and weights, and the control values of each
+ * NURBS grid function read with it (`mFieldNames` are their data names); the
+ * file's patch topology; and the patch and knot span of each element cell
+ * (the first block) and the boundary patch of each boundary cell. Any other
+ * mesh leaves @p rInfo empty. @p rInfo is replaced on success and unchanged if
+ * the read fails.
+ *
+ * @param rPath filesystem path of the mesh
+ * @param rGridFunctions the `.gf` files, each with the data name it gets
+ * @param rOptions `mPiece`/`mPieceSet` select one rank of a parallel mesh
+ * @param rInfo receives the NURBS side channel
+ * @return the mesh with the grid functions as data
+ * @throws ReadError as the other overloads
+ */
+MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
+                                  const std::vector<MfemGridFunction>& rGridFunctions,
+                                  const ReadOptions& rOptions, NurbsInfo& rInfo);
+
+/**
  * @brief Write `rMesh` as an MFEM `.mesh` file.
  *
  * The cells of the highest dimension are the elements and those one dimension
@@ -134,5 +164,29 @@ MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh);
  * order, cell data as `L2` order 0 (element cells only).
  */
 MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions);
+
+/**
+ * @brief Write the NURBS patches of @p rInfo as an `MFEM NURBS mesh v1.0`
+ * (since v16.40.0); an empty @p rInfo writes as `write_mfem(rPath, rMesh,
+ * GridFunctions)`.
+ *
+ * The file is MFEM's global form (`knotvectors`, `weights` and a `NURBS<p>`
+ * nodes space with Cartesian control points), so `read_mfem` of it gives back
+ * @p rMesh and @p rInfo exactly; the patches, their attributes and the
+ * boundary come from @p rInfo. @p rMesh must still be the sampling of the
+ * patches -- its points, its element cells and the point data of the NURBS
+ * fields equal what reading the file would give, within 1e-9 of their
+ * magnitude -- so a mesh moved or edited after the read is refused rather than
+ * written with stale patches. With `GridFunctions`, each field of @p rInfo
+ * whose point data the mesh still has is written as a NURBS grid function
+ * `<stem>.<name>.gf`, element cell data as `L2` order 0; other point data,
+ * field data and regions other than the attributes are dropped with a warning.
+ * Spacing formulas of a v1.1 file are not kept (its knots are).
+ *
+ * @throws WriteError for an inconsistent @p rInfo, or a mesh that no longer
+ *         matches it ("the mesh no longer matches its NURBS side channel")
+ */
+MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
+                                   const NurbsInfo& rInfo);
 
 }  // namespace meshioplusplus

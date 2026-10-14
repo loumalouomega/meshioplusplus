@@ -1067,12 +1067,11 @@ def roadmap_map():
         (
             "§6 long run (spike first)",
             [
-                ("undo_green at XL", "S"),
-                ("NurbsInfo side channel", "M"),
+                ("undo_green XL probe", "S"),
                 ("read-only CAD ingestion", "L"),
                 ("analytic CAD faces (OCC)", "L"),
             ],
-            [(1, 2)],
+            [],
         ),
     ]
     per_row = 4

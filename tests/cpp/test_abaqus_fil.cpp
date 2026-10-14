@@ -18,7 +18,10 @@
  * @file test_abaqus_fil.cpp
  * @brief Abaqus `.fil` reader: one model and two increments written as ASCII and
  *        as little- and big-endian binary (built here record by record), node
- *        and element results, long set labels, steps and metadata.
+ *        and element results, long set labels, steps and metadata. And the writer:
+ *        a model read from those files written back in both layouts, results by
+ *        node and element, series, refusals, and the registry and sequence
+ *        driver.
  */
 
 // External includes
@@ -29,7 +32,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <optional>
 #include <random>
 #include <string>
 #include <variant>
@@ -40,15 +46,19 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
+#include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
 
 namespace {
 
 using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 using meshioplusplus::ReadError;
 using meshioplusplus::ReadOptions;
 using meshioplusplus::RegionKind;
+using meshioplusplus::WriteError;
 namespace detail = meshioplusplus::detail;
 
 // A record item: integer, real or 8-character text.
@@ -277,4 +287,207 @@ TEST(AbaqusFil, ModesContactEnergiesAndRebar) {
     EXPECT_DOUBLE_EQ(detail::read_double(dyn.FieldData("abaqus:ALLWK"), 0), 3.0);
     EXPECT_DOUBLE_EQ(detail::read_double(dyn.CellData("S@rebar:RB1", 0), 0), 123.0);
     EXPECT_DOUBLE_EQ(detail::read_double(dyn.PointData("CSTRESS"), 2 * 3), 7.0);
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+NDArray reals(std::initializer_list<double> Values, std::vector<std::size_t> Shape) {
+    NDArray a(meshioplusplus::DType::Float64, std::move(Shape));
+    std::copy(Values.begin(), Values.end(), a.As<double>());
+    return a;
+}
+
+NDArray ints(std::initializer_list<std::int64_t> Values) {
+    NDArray a(meshioplusplus::DType::Int64, {Values.size()});
+    std::copy(Values.begin(), Values.end(), a.As<std::int64_t>());
+    return a;
+}
+
+std::string read_all(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::string temp_fil(const std::string& rName = "written.fil") {
+    const std::filesystem::path dir(
+        mt::temp_path("_fil_w_" + std::to_string(std::random_device{}())));
+    std::filesystem::create_directories(dir);
+    return (dir / rName).string();
+}
+
+// A hexahedron with U per node, S at the centroid and a node set.
+Mesh unit_hex(double Scale = 1.0, std::optional<double> Time = std::nullopt) {
+    Mesh m = mt::hex_mesh();
+    NDArray u(meshioplusplus::DType::Float64, {std::size_t{8}, std::size_t{3}});
+    for (int i = 0; i < 24; ++i)
+        u.As<double>()[i] = Scale * i / 8.0;
+    m.AddPointData("U", std::move(u));
+    m.AddCellData("S",
+                  {reals({Scale, 2 * Scale, 3 * Scale, 4 * Scale, 5 * Scale, 6 * Scale}, {1, 6})});
+    if (Time)
+        m.AddFieldData("meshio:time", reals({*Time}, {1}));
+    return m;
+}
+
+ReadOptions step_of(int Step) {
+    ReadOptions o;
+    o.mTimeStep = Step;
+    return o;
+}
+
+}  // namespace
+
+TEST(AbaqusFilWriter, ResultsComeBackInBothLayouts) {
+    for (const bool binary : {false, true}) {
+        const std::string path = temp_fil();
+        meshioplusplus::write_abaqus_fil(path, unit_hex(2.0, 0.5), binary);
+        const std::string bytes = read_all(path);
+        if (binary) {
+            EXPECT_EQ(bytes.size() % 4104, 0u);  // 512 words of 8 bytes and two 4-byte markers
+            EXPECT_NE(bytes[0], '*');
+        } else {
+            EXPECT_EQ(bytes[0], '*');
+        }
+        const Mesh back = meshioplusplus::read_abaqus_fil(path);
+        ASSERT_EQ(back.NumPoints(), 8u);
+        EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+        EXPECT_EQ(back.PointData("abaqus:id").As<std::int64_t>()[7], 8);
+        for (int i = 0; i < 24; ++i)
+            EXPECT_EQ(back.PointData("U").As<double>()[i], 2.0 * i / 8.0);
+        for (int c = 0; c < 6; ++c)
+            EXPECT_EQ(back.CellData("S", 0).As<double>()[c], 2.0 * (c + 1));
+        EXPECT_EQ(back.FieldData("meshio:time").As<double>()[0], 0.5);
+    }
+}
+
+TEST(AbaqusFilWriter, TheModelOfTheReaderFixtureSurvivesARewrite) {
+    const std::string source = write_file(ascii());
+    const Mesh first = meshioplusplus::read_abaqus_fil(source, step_of(1));
+    for (const bool binary : {false, true}) {
+        const std::string path = temp_fil();
+        meshioplusplus::write_abaqus_fil(path, first, binary);
+        const Mesh back = meshioplusplus::read_abaqus_fil(path);
+        mt::expect_same_geometry(first, back);
+        ASSERT_EQ(back.NumRegions(), 1u);
+        EXPECT_EQ(back.Region(0).mName, "ASSEMBLY_BOTTOM_NODES");
+        EXPECT_EQ(back.Region(0).mEntries.Size(), first.Region(0).mEntries.Size());
+        for (int i = 0; i < 24; ++i)
+            EXPECT_EQ(back.PointData("U").As<double>()[i], first.PointData("U").As<double>()[i]);
+        EXPECT_EQ(back.CellData("S", 0).As<double>()[5], first.CellData("S", 0).As<double>()[5]);
+        for (const char* key : {"abaqus:step", "abaqus:increment", "abaqus:procedure"})
+            EXPECT_EQ(back.FieldData(key).As<std::int64_t>()[0],
+                      first.FieldData(key).As<std::int64_t>()[0]);
+    }
+}
+
+TEST(AbaqusFilWriter, ASeriesIsTheModelOnceThenAnIncrementPerStep) {
+    for (const bool binary : {false, true}) {
+        const std::string path = temp_fil();
+        meshioplusplus::AbaqusFilSeriesWriter writer(path, binary);
+        writer.Write(0.5, unit_hex(1.0));
+        EXPECT_THROW(writer.Write(1.0, mt::tri_mesh()), WriteError);
+        EXPECT_EQ(writer.NumSteps(), 1u);
+        writer.Write(1.0, unit_hex(2.0));
+        writer.Write(2.5, unit_hex(3.0));
+        writer.Finalize();
+        writer.Finalize();
+        EXPECT_EQ(meshioplusplus::abaqus_fil_time_values(path),
+                  (std::vector<double>{0.5, 1.0, 2.5}));
+        const Mesh last = meshioplusplus::read_abaqus_fil(path, step_of(-1));
+        EXPECT_EQ(last.PointData("U").As<double>()[23], 3.0 * 23 / 8.0);
+        EXPECT_EQ(last.FieldData("abaqus:increment").As<std::int64_t>()[0], 3);
+        meshioplusplus::AbaqusFilSeriesWriter empty(temp_fil(), binary);
+        EXPECT_THROW(empty.Finalize(), WriteError);
+    }
+}
+
+TEST(AbaqusFilWriter, ASeriesIsOneStepsBytesWhenItHoldsOne) {
+    for (const bool binary : {false, true}) {
+        const Mesh mesh = unit_hex(1.5, 0.5);
+        const std::string plain = temp_fil(), series = temp_fil();
+        meshioplusplus::write_abaqus_fil(plain, mesh, binary);
+        meshioplusplus::AbaqusFilSeriesWriter writer(series, binary);
+        writer.Write(0.5, mesh);
+        writer.Finalize();
+        EXPECT_EQ(read_all(plain), read_all(series));
+    }
+}
+
+TEST(AbaqusFilWriter, IntegrationPointsSectionPointsAndNodesKeepTheirPlaces) {
+    Mesh m = mt::tet_mesh();  // two tetrahedra over five points
+    m.AddCellData("abaqus:id", {ints({7, 9})});
+    m.AddCellData("S", {reals({1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
+                               13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24},
+                              {2, 12})});
+    m.AddFieldData("abaqus:layout:S", ints({2, 6}));
+    m.AddCellData("MISES@sp3", {reals({10.0, 20.0}, {2})});
+    m.AddCellData("NFORC", {reals({1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
+                                   13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24},
+                                  {2, 12})});
+    m.AddFieldData("abaqus:layout:NFORC", ints({4, 3}));
+    const std::string path = temp_fil();
+    meshioplusplus::write_abaqus_fil(path, m);
+    const Mesh back = meshioplusplus::read_abaqus_fil(path);
+    EXPECT_EQ(back.CellData("abaqus:id", 0).As<std::int64_t>()[1], 9);
+    for (int i = 0; i < 24; ++i) {
+        EXPECT_EQ(back.CellData("S", 0).As<double>()[i], i + 1);
+        EXPECT_EQ(back.CellData("NFORC", 0).As<double>()[i], i + 1);
+    }
+    EXPECT_EQ(back.FieldData("abaqus:layout:S").As<std::int64_t>()[0], 2);
+    EXPECT_EQ(back.CellData("MISES@sp3", 0).As<double>()[1], 20.0);
+}
+
+TEST(AbaqusFilWriter, NaNAndRefusals) {
+    Mesh nan = unit_hex();
+    NDArray u(meshioplusplus::DType::Float64, {std::size_t{8}, std::size_t{3}});
+    for (int i = 0; i < 24; ++i)
+        u.As<double>()[i] = i;
+    for (int c = 0; c < 3; ++c)
+        u.As<double>()[3 + c] = std::nan("");
+    u.As<double>()[8] = std::nan("");
+    nan.AddPointData("U", std::move(u));
+    const std::string path = temp_fil();
+    meshioplusplus::write_abaqus_fil(path, nan);
+    const Mesh back = meshioplusplus::read_abaqus_fil(path);
+    EXPECT_TRUE(std::isnan(back.PointData("U").As<double>()[3]));
+    EXPECT_EQ(back.PointData("U").As<double>()[6], 6.0);
+    EXPECT_TRUE(std::isnan(back.PointData("U").As<double>()[8]));
+
+    Mesh dup = unit_hex();
+    dup.AddPointData("abaqus:id", ints({1, 2, 3, 4, 5, 6, 7, 7}));
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), dup), WriteError);
+    Mesh zero = unit_hex();
+    zero.AddPointData("abaqus:id", ints({0, 1, 2, 3, 4, 5, 6, 7}));
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), zero), WriteError);
+    Mesh layout = unit_hex();
+    layout.AddFieldData("abaqus:layout:S", ints({2, 6}));
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), layout), WriteError);
+    Mesh huge = unit_hex();
+    NDArray h(meshioplusplus::DType::Float64, {std::size_t{8}, std::size_t{3}});
+    for (int i = 0; i < 24; ++i)
+        h.As<double>()[i] = i == 0 ? 1e150 : 0.0;
+    huge.AddPointData("U", std::move(h));
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), huge), WriteError);
+    Mesh outside = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}}, "triangle", {{0, 1, 3}});
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), outside), WriteError);
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil("/no/such/dir/x.fil", unit_hex()), WriteError);
+}
+
+TEST(AbaqusFilWriter, TheRegistryAndTheSequenceDriverWriteIt) {
+    EXPECT_EQ(meshioplusplus::resolve_write_format("/a/job.fil", ""), "abaqus_fil");
+    const std::string path = temp_fil("by_name.bin");
+    meshioplusplus::registry_writers().at("abaqus_fil")(path, unit_hex());
+    EXPECT_EQ(read_all(path)[0], '*');
+    EXPECT_EQ(meshioplusplus::sniff_format(path), "abaqus_fil");
+    std::string why;
+    EXPECT_TRUE(meshioplusplus::sequence_write_supports_time("abaqus_fil", why));
+    meshioplusplus::WriteOptions options;
+    options.mEncoding = meshioplusplus::WriteEncoding::Binary;
+    const std::string bin = temp_fil("binary.fil");
+    meshioplusplus::registry_write_ex(bin, unit_hex(), "abaqus_fil", options);
+    EXPECT_NE(read_all(bin)[0], '*');
 }

@@ -42,7 +42,7 @@ namespace meshioplusplus {
  * Lazily constructed once (function-local `static`) and returned by
  * `const&`; only rectangular, fixed-node-count cell types appear here — cell
  * types whose node count varies per cell (`"polygon"`, the VTK_LAGRANGE_*
- * family) are represented via `CellBlock`'s ragged storage instead and are
+ * and VTK_BEZIER_* families) are represented via `CellBlock`'s ragged storage instead and are
  * intentionally absent. Covers meshio's linear through high-order elements
  * (e.g. `"line"` through `"line11"`, `"tetra"` through `"tetra286"`).
  * @return Reference to the process-wide singleton lookup table.
@@ -138,7 +138,8 @@ inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
  * `const&`. Includes the standard meshio types plus the VTK Lagrange
  * high-order family (`"VTK_LAGRANGE_CURVE"`, `..._TRIANGLE`,
  * `..._QUADRILATERAL`, `..._TETRAHEDRON`, `..._HEXAHEDRON`, `..._WEDGE`,
- * `..._PYRAMID`), which carry a variable node count per cell (see
+ * `..._PYRAMID`) and the VTK Bézier family (`"VTK_BEZIER_CURVE"`, ...,
+ * the same seven shapes), which carry a variable node count per cell (see
  * `vtk_common.hpp`'s `is_special_cell`) but still have a fixed dimension.
  * @return Reference to the process-wide singleton lookup table.
  */
@@ -216,6 +217,13 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
         {"VTK_LAGRANGE_HEXAHEDRON", 3},
         {"VTK_LAGRANGE_WEDGE", 3},
         {"VTK_LAGRANGE_PYRAMID", 3},
+        {"VTK_BEZIER_CURVE", 1},
+        {"VTK_BEZIER_TRIANGLE", 2},
+        {"VTK_BEZIER_QUADRILATERAL", 2},
+        {"VTK_BEZIER_TETRAHEDRON", 3},
+        {"VTK_BEZIER_HEXAHEDRON", 3},
+        {"VTK_BEZIER_WEDGE", 3},
+        {"VTK_BEZIER_PYRAMID", 3},
     };
     return m;
 }

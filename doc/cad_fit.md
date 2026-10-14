@@ -1,10 +1,11 @@
 # Skin to CAD
 
-A triangle skin — an STL from a scan or a 3-D-printing download, the output of [`extract_skin`](/extract_skin) or [`isosurface`](/isosurface) — is thousands of flat facets nobody can select, dimension or edit in a CAD tool. Reverse engineering it means recovering the surfaces it was made of: planes, cylinders, cones, spheres and tori, then freeform patches, sewn into a solid. meshio++ does the mesh-side half of that work with no CAD kernel in the loop:
+A triangle skin — an STL from a scan or a 3-D-printing download, the output of [`extract_skin`](/extract_skin) or [`isosurface`](/isosurface) — is thousands of flat facets nobody can select, dimension or edit in a CAD tool. Reverse engineering it means recovering the surfaces it was made of: planes, cylinders, cones, spheres and tori, then freeform patches, sewn into a solid. meshio++ does the mesh-side half of that work with no CAD kernel in the loop, and the CAD half through an optional OpenCASCADE backend:
 
 1. [**`segment`**](/segment) groups the facets into smooth patches bounded by the feature edges, with a curvature test that separates a fillet from its tangent planes;
 2. [**`fit_primitives`**](/fit_primitives) fits a plane, sphere, cylinder, cone or torus to each patch and reports the residual, refusing any fit outside the tolerance;
-3. the [**`step`**](/formats/step) writer hands the closed skin to CAD as a faceted solid.
+3. the [**`step`**](/formats/step) writer hands the closed skin to CAD as a faceted solid;
+4. [**`fit_cad`**](/fit_cad), with OpenCASCADE, turns the fitted patches into analytic CAD faces trimmed by the patch boundaries, and a patch no primitive explains into a [freeform B-spline face](/fit_cad#freeform-faces), sews them into a checked solid and writes STEP a CAD tool can edit, or [Kratos CAD JSON](/formats/cad_json) for isogeometric analysis; a patch it cannot build comes back faceted.
 
 ```python
 import meshioplusplus as mp
@@ -18,7 +19,8 @@ for pid, t, p in zip(fd["fit:patch_id"], fd["fit:patch_type"], fd["fit:patch_par
     if t == 3:                                          # a cylinder: a hole or a boss
         print(f"patch {pid}: radius {p[6]:.3f} along {p[3:6]}")
 
-mp.write("part.step", skin)                            # opens in CAD as a solid
+mp.write("part.step", skin)                            # opens in CAD as a faceted solid
+solid, rep = mp.fit_cad(fit, "part_cad.step", return_report=True)  # analytic faces (OpenCASCADE)
 ```
 
 ![A noisy turned part segmented into six patches: base, wall, fillet, shoulder, cone and dome](/images/skin_to_cad_patches.png)
@@ -27,10 +29,14 @@ The part above is a turned part tessellated into 2,240 facets with every point m
 
 ![The same part coloured by fitted type: two planes, a cylinder, a torus, a cone and a sphere](/images/skin_to_cad_fits.png)
 
-The same chain is a [pipeline](/pipeline) — `[{"Op": "Segment"}, {"Op": "FitPrimitives"}]` — and three verbs of both CLIs (`segment`, `fit-primitives`, and `convert` to a `.step` file); every language surface and the MCP server expose it. Notebook [34](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/34_skin_to_cad.ipynb) builds that part, segments it, fits it and writes it as STEP.
+The same chain is a [pipeline](/pipeline) — `[{"Op": "Segment"}, {"Op": "FitPrimitives"}]` — and three verbs of both CLIs (`segment`, `fit-primitives`, and `convert` to a `.step` file); every language surface and the MCP server expose it. Notebook [34](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/34_skin_to_cad.ipynb) builds that part, segments it, fits it, writes it as STEP and, where the core carries OpenCASCADE, builds its analytic solid.
 
-## What is not done yet
+## Analytic faces
 
-Writing the fitted surfaces themselves as CAD faces — a cylinder face where the skin has a ring of facets — needs a CAD kernel to trim, sew and validate them, and so does reading STEP. Both wait on one decision, whether to add an optional OpenCASCADE backend; the [findings](/spikes#the-opencascade-dependency) record where it stands. Rolling-ball fillets, swept fillets and threads (a second pass over the fitted patches) and a B-spline fallback for what no primitive explains are on the [roadmap](/roadmap) behind it. Until then the solid's faces stay flat, and the fits are measurements.
+With a core built `-DMESHIOPLUSPLUS_WITH_OCCT=ON`, [`fit_cad`](/fit_cad) writes the fitted surfaces themselves: on the turned part above, the base and the shoulder become planes, the wall a cylinder, the fillet a torus, the cone a cone and the dome a sphere, six faces in one valid solid within `1e-2` of the skin. Where a fillet meets its wall tangentially the edge between them is a B-spline; elsewhere it is the exact circle where the two surfaces meet. The same chain runs as the pipeline step `FitCad` and as the `to-cad` verb of both CLIs, and every surface but WASM exposes it.
+
+## Fillets, threads and curled patches
+
+A patch no primitive explains is not given up on: `fit_cad` tries it as a constant-radius rolling-ball fillet between its two analytic neighbours (a pipe around the spine the two surfaces meet along once each is offset by the radius, so a fillet swept along a curved edge works as well as a straight one), as a straight-flank thread about the axis of a neighbouring cylinder or cone (a ruled helicoid), and otherwise as a freeform B-spline face; a patch no plane or unrolled cylinder parametrises is split into pieces that one does first. See [fillets and threads](/fit_cad#fillets-and-threads). Variable-radius fillets, blends between freeform faces and rounded thread profiles still come back freeform or faceted. The same backend [reads STEP](/formats/step#reading) and [IGES](/formats/iges) models as their triangulation and NURBS B-rep. The [findings](/spikes#the-opencascade-dependency) record how the backend was decided.
 
 The reference for the whole pipeline is [stl2curves](https://github.com/Duvdivan/stl2curves) (MIT), a CLI and FreeCAD add-on built on OpenCASCADE; meshio++ read its README only, and no code was taken from it.

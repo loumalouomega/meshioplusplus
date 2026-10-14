@@ -67,6 +67,9 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/properties.hpp"
+#include "meshioplusplus/nurbs.hpp"
+#include "meshioplusplus/brep.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
@@ -74,8 +77,11 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
@@ -103,8 +109,10 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -167,8 +175,14 @@ MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 // deliberate, recorded change instead of a silent one.
 static_assert(static_cast<int>(meshioplusplus::CellType::Triangle7) == 76,
               "meshio++ ABI: CellType::Triangle7 moved (ABI 16 appended it at 76)");
-static_assert(static_cast<int>(meshioplusplus::CellType::Custom) == 77,
-              "meshio++ ABI: CellType::Custom moved (ABI 16 placed it at 77)");
+// ABI 26 appended the seven VTK Bézier types after it (77-83): `Custom`
+// moved again, from 77 to 84.
+static_assert(static_cast<int>(meshioplusplus::CellType::VtkBezierCurve) == 77,
+              "meshio++ ABI: CellType::VtkBezierCurve moved (ABI 26 appended it at 77)");
+static_assert(static_cast<int>(meshioplusplus::CellType::VtkBezierPyramid) == 83,
+              "meshio++ ABI: CellType::VtkBezierPyramid moved (ABI 26 appended it at 83)");
+static_assert(static_cast<int>(meshioplusplus::CellType::Custom) == 84,
+              "meshio++ ABI: CellType::Custom moved (ABI 26 placed it at 84)");
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 288, 8);
@@ -202,6 +216,24 @@ MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 // ABI 22: periodic links join the bounding-entity vector.
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshPeriodicLink, 112, 8);
+// ABI 26: the NURBS side channel (`nurbs.hpp`), new structs pinned from the start.
+MIO_ABI_LAYOUT(meshioplusplus::NurbsPatch, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::NurbsTopology, 376, 8);
+MIO_ABI_LAYOUT(meshioplusplus::NurbsInfo, 640, 8);
+// The B-rep side channel (Kratos CAD JSON, STEP/IGES through OpenCASCADE),
+// pinned from the release that introduces it, with the read options passed by
+// const-ref through `read_cad_json()`, `read_step()` and `read_iges()`.
+MIO_ABI_LAYOUT(meshioplusplus::BrepCurve, 312, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepTrim, 360, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepLoop, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepRef, 112, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepFace, 240, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepEdge, 416, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepVertex, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::Brep, 144, 8);
+MIO_ABI_LAYOUT(meshioplusplus::BrepInfo, 152, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CadJsonReadOptions, 12, 4);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
 // blocks, sub-model-part data and raw blocks), 72 -> 216 bytes, bumping
@@ -234,6 +266,15 @@ MIO_ABI_LAYOUT(meshioplusplus::FrdSeriesWriter, 8, 8);
 // `RadiossThSeriesWriter` is the same shape, pinned from the release that
 // introduces it.
 MIO_ABI_LAYOUT(meshioplusplus::RadiossThSeriesWriter, 8, 8);
+// `NastranOp2SeriesWriter` is the same shape, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::NastranOp2SeriesWriter, 8, 8);
+// `LsdynaBinoutSeriesWriter` is the same shape, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::LsdynaBinoutSeriesWriter, 8, 8);
+// `AbaqusFilSeriesWriter` is the same shape, pinned from the release that
+// introduces it.
+MIO_ABI_LAYOUT(meshioplusplus::AbaqusFilSeriesWriter, 8, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both
@@ -333,7 +374,12 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 // exported `segment()` and `fit_primitives()`, pinned from the release that
 // introduces them. Their results embed a Mesh and are not pinned.
 MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TessellateOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
+// fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
+// ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes; ABI 28
+// added mFreeformSplit, mFillets and mThreads (roadmap 6.3.1, 6.3.2): 48 -> 56.
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 56, 8);
 
 // The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
 // TextOptions and SnapshotOptions are passed by const-ref through the exported
@@ -513,6 +559,20 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::OpenFoamWriteOptions>("OpenFoamWriteOptions");
     report<meshioplusplus::PatranResultFile>("PatranResultFile");
     report<meshioplusplus::GmshInfo>("GmshInfo");
+    report<meshioplusplus::NurbsPatch>("NurbsPatch");
+    report<meshioplusplus::NurbsTopology>("NurbsTopology");
+    report<meshioplusplus::NurbsInfo>("NurbsInfo");
+    report<meshioplusplus::BrepCurve>("BrepCurve");
+    report<meshioplusplus::BrepTrim>("BrepTrim");
+    report<meshioplusplus::BrepLoop>("BrepLoop");
+    report<meshioplusplus::BrepRef>("BrepRef");
+    report<meshioplusplus::BrepFace>("BrepFace");
+    report<meshioplusplus::BrepEdge>("BrepEdge");
+    report<meshioplusplus::BrepVertex>("BrepVertex");
+    report<meshioplusplus::Brep>("Brep");
+    report<meshioplusplus::BrepInfo>("BrepInfo");
+    report<meshioplusplus::CadReadOptions>("CadReadOptions");
+    report<meshioplusplus::CadJsonReadOptions>("CadJsonReadOptions");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::MdpaGeometryBlock>("MdpaGeometryBlock");
     report<meshioplusplus::MdpaMeshBlock>("MdpaMeshBlock");

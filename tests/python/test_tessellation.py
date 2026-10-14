@@ -749,3 +749,196 @@ def test_regions_are_carried_for_pass_through_points():
     mesh.regions.append(Region("corner", "point", np.array([0]), dim=0, tag=1))
     tess = tessellate(mesh)
     assert tess.mesh.regions
+
+
+# --------------------------------------------------------------------------- #
+# the C++ core and its numpy twin                                            #
+# --------------------------------------------------------------------------- #
+try:
+    from meshioplusplus import _core
+except ImportError:  # pragma: no cover - pure-Python install
+    _core = None
+
+needs_core = pytest.mark.skipif(_core is None, reason="needs the compiled core")
+
+
+def _perturbed_curved_mesh(curved_type, seed=0):
+    """One perturbed cell of ``curved_type`` beside a ``vertex`` block, with
+    scalar, vector, float32 and integer point data, rectangular cell data and
+    a point and a cell region."""
+    rng = np.random.default_rng(seed)
+    coords = _NODE_COORDS[curved_type]
+    n = coords.shape[0]
+    pts = np.zeros((n, 3))
+    pts[:, : coords.shape[1]] = coords
+    pts += 0.05 * rng.standard_normal(pts.shape)
+    return mio.Mesh(
+        pts,
+        [(curved_type, np.arange(n).reshape(1, -1)), ("vertex", np.array([[0]]))],
+        point_data={
+            "u": rng.standard_normal(n),
+            "v": rng.standard_normal((n, 3)).astype(np.float32),
+            "i": np.arange(n),
+        },
+        cell_data={
+            "c": [np.array([7]), np.array([3])],
+            "m": [np.ones((1, 2)), np.zeros((1, 2))],
+        },
+        regions=[
+            Region("tip", "point", np.array([0, 1]), dim=0, tag=1),
+            Region("dot", "cell", np.array([1]), dim=0, tag=2),
+        ],
+    )
+
+
+def _assert_same_tessellation(a, b):
+    """Integers exactly; coordinates, weights and interpolated data within
+    rounding (numpy's matrix products sum in their own order)."""
+    assert a.schema == b.schema
+    np.testing.assert_array_equal(a.source_point, b.source_point)
+    np.testing.assert_array_equal(a.source_cell, b.source_cell)
+    np.testing.assert_array_equal(a.sub_index, b.sub_index)
+    np.testing.assert_array_equal(a.stencil, b.stencil)
+    np.testing.assert_allclose(a.weights, b.weights, rtol=0, atol=1e-14)
+    np.testing.assert_allclose(a.mesh.points, b.mesh.points, rtol=0, atol=1e-13)
+    assert [c.type for c in a.mesh.cells] == [c.type for c in b.mesh.cells]
+    for x, y in zip(a.mesh.cells, b.mesh.cells):
+        np.testing.assert_array_equal(x.data, y.data)
+    assert a.mesh.point_data.keys() == b.mesh.point_data.keys()
+    for name in a.mesh.point_data:
+        np.testing.assert_allclose(
+            a.mesh.point_data[name], b.mesh.point_data[name], rtol=0, atol=1e-12
+        )
+    assert a.mesh.cell_data.keys() == b.mesh.cell_data.keys()
+    for name in a.mesh.cell_data:
+        for x, y in zip(a.mesh.cell_data[name], b.mesh.cell_data[name]):
+            np.testing.assert_array_equal(x, y)
+    ra = {(r.name, r.kind): np.asarray(r.entries) for r in a.mesh.regions}
+    rb = {(r.name, r.kind): np.asarray(r.entries) for r in b.mesh.regions}
+    assert ra.keys() == rb.keys()
+    for key in ra:
+        np.testing.assert_array_equal(np.sort(ra[key]), np.sort(rb[key]))
+
+
+@needs_core
+@pytest.mark.parametrize("curved_type", CURVED_TYPES)
+@pytest.mark.parametrize("levels", [0, 1, 2, 3])
+def test_twin_matches_the_core(curved_type, levels):
+    mesh = _perturbed_curved_mesh(curved_type)
+    core = tessellate(mesh, levels=levels, record_stencil=True)
+    twin = T._tessellate_py(mesh, levels, True, True, True)
+    _assert_same_tessellation(core, twin)
+
+
+@needs_core
+def test_twin_matches_the_core_on_shared_faces_and_mixed_blocks():
+    mesh = _two_hex27_sharing_a_face(scramble_b=True)
+    mesh.cells.append(mio.CellBlock("triangle", np.array([[0, 1, 2]])))
+    _assert_same_tessellation(
+        tessellate(mesh, levels=2), T._tessellate_py(mesh, 2, True, True, False)
+    )
+
+
+def _hex_corner_rotations():
+    """The 24 proper rotations of the reference hexahedron, as corner
+    permutations of the standard numbering."""
+    ref = _NODE_COORDS["hexahedron27"][:8]
+    out = []
+    for perm in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        for signs in np.ndindex(2, 2, 2):
+            rot = np.zeros((3, 3))
+            for i, p in enumerate(perm):
+                rot[i, p] = 1.0 if signs[i] == 0 else -1.0
+            if np.linalg.det(rot) < 0:
+                continue
+            moved = ref @ rot.T
+            out.append(
+                [int(np.flatnonzero((ref == row).all(axis=1))[0]) for row in moved]
+            )
+    return out
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_a_shared_hexahedron_face_conforms_in_every_orientation(engine):
+    """Cell B, numbered by each of the 24 rotations of the cube, shares a face
+    with cell A: the tessellation must be conforming every time. Keying a
+    face by its corners in ascending local order (not a cycle for four of
+    the six faces) failed 16 of them."""
+    if engine == "core" and _core is None:
+        pytest.skip("needs the compiled core")
+    wc = _corner_weights("hexahedron", _NODE_COORDS["hexahedron27"])
+    a = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=np.float64,
+    )
+    rotations = _hex_corner_rotations()
+    assert len(rotations) == 24
+    for order in rotations:
+        pts = np.vstack([wc @ a, wc @ (a[order] + [1.0, 0.0, 0.0])])
+        uniq, inv = np.unique(np.round(pts, 9), axis=0, return_inverse=True)
+        inv = inv.reshape(-1)
+        mesh = mio.Mesh(uniq, [("hexahedron27", np.stack([inv[:27], inv[27:]]))])
+        tess = (
+            tessellate(mesh, levels=2)
+            if engine == "core"
+            else T._tessellate_py(mesh, 2, True, True, False)
+        )
+        assert tess.schema["watertight"]["num_facets_with_bad_count"] == 0
+        assert np.unique(np.round(tess.mesh.points, 9), axis=0).shape[0] == len(
+            tess.mesh.points
+        )
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_stale_bookkeeping_in_the_input_is_not_interpolated(engine):
+    """An input already carrying ``tessellate:*`` arrays (an earlier run's)
+    must not overwrite the new run's with interpolated copies of the old."""
+    if engine == "core" and _core is None:
+        pytest.skip("needs the compiled core")
+    mesh = _perturbed_curved_mesh("quad9")
+    mesh.point_data[SOURCE_POINT_NAME] = np.full(len(mesh.points), 99)
+    mesh.cell_data[SOURCE_CELL_NAME] = [np.array([5]), np.array([5])]
+    tess = (
+        tessellate(mesh, levels=1)
+        if engine == "core"
+        else T._tessellate_py(mesh, 1, True, True, False)
+    )
+    np.testing.assert_array_equal(
+        tess.mesh.point_data[SOURCE_POINT_NAME], tess.source_point
+    )
+    np.testing.assert_array_equal(
+        np.concatenate(tess.mesh.cell_data[SOURCE_CELL_NAME]), tess.source_cell
+    )
+    assert 99 not in tess.source_point
+
+
+def test_point_data_with_the_wrong_row_count_is_refused():
+    mesh = _perturbed_curved_mesh("triangle6")
+    mesh.point_data["bad"] = np.zeros(2)
+    with pytest.raises(ValueError, match="rows"):
+        tessellate(mesh)
+
+
+def test_levels_beyond_the_lattice_limit_are_refused():
+    with pytest.raises(ValueError, match="<= 20"):
+        tessellate(_perturbed_curved_mesh("triangle6"), levels=21)
+
+
+def test_cell_data_the_core_cannot_copy_runs_the_twin():
+    """Blocks of one cell data array with different dtypes: the core copies
+    rows byte for byte, so the shim hands such a mesh to the twin."""
+    mesh = _perturbed_curved_mesh("quad8")
+    mesh.cell_data["mixed"] = [np.array([1], dtype=np.int32), np.array([2.5])]
+    tess = tessellate(mesh, levels=1)
+    vertex, triangles = tess.mesh.cell_data["mixed"]
+    np.testing.assert_array_equal(vertex, [2.5])
+    np.testing.assert_array_equal(triangles, np.ones(len(triangles)))

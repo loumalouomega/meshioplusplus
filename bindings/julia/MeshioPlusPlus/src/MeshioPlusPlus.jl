@@ -72,7 +72,8 @@ end
 
 # Handles, errors, borrows
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
-export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info
+export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info, nurbs_info,
+       brep_info
 export write_gltf
 export render, render_text, render_png, write_snapshot, detect_color_depth, Frame, rgba
 export ReadOptions, MeshMetadata, DiffReport
@@ -111,10 +112,11 @@ export remesh_volume
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
-export segment, fit_primitives
+export segment, fit_primitives, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
+export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export sets_to_data, data_to_sets
 export data_calc, data_condition, data_info, data_integrate, tensor_invariants

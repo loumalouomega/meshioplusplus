@@ -26,6 +26,7 @@
 //      MESHIOPLUSPLUS_HAS_BZIP2 (libMesh .bz2 meshes)        -> link bz2
 //      MESHIOPLUSPLUS_HAS_ADIOS2 (DOLFINx VTX .bp)           -> link adios2_cxx11
 //      MESHIOPLUSPLUS_HAS_TECIO (Tecplot .szplt)             -> link tecio (+ pthread)
+//      MESHIOPLUSPLUS_HAS_OCCT  (fit_cad, OpenCASCADE 7.6+)  -> link the TK* toolkits (LGPL-2.1)
 #pragma once
 
 #if !defined(MESHIOPLUSPLUS_PARALLEL_SEQ) && !defined(MESHIOPLUSPLUS_PARALLEL_STL) && \
@@ -121,7 +122,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 25
+#define MESHIOPLUSPLUS_ABI_VERSION 28
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -136,7 +137,7 @@
  * geometry-name tables (`backends/kratos_names.hpp`) key off it. The enum
  * covers every fixed-node-count type in `num_nodes_per_cell()` plus the
  * variable-node-count families (`Polygon`, `Polyhedron`, the VTK Lagrange
- * types); anything else maps to `CellType::Custom` and keeps its name
+ * and Bézier types); anything else maps to `CellType::Custom` and keeps its name
  * out-of-band (see `NativeCellBlock::mTypeName`).
  *
  * The single source of truth is the `MESHIOPLUSPLUS_CELL_TYPES` X-macro
@@ -230,7 +231,14 @@ namespace meshioplusplus {
     X(VtkLagrangeHexahedron, "VTK_LAGRANGE_HEXAHEDRON", -1, 3)       \
     X(VtkLagrangeWedge, "VTK_LAGRANGE_WEDGE", -1, 3)                 \
     X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)             \
-    X(Triangle7, "triangle7", 7, 2)
+    X(Triangle7, "triangle7", 7, 2)                                  \
+    X(VtkBezierCurve, "VTK_BEZIER_CURVE", -1, 1)                     \
+    X(VtkBezierTriangle, "VTK_BEZIER_TRIANGLE", -1, 2)               \
+    X(VtkBezierQuadrilateral, "VTK_BEZIER_QUADRILATERAL", -1, 2)     \
+    X(VtkBezierTetrahedron, "VTK_BEZIER_TETRAHEDRON", -1, 3)         \
+    X(VtkBezierHexahedron, "VTK_BEZIER_HEXAHEDRON", -1, 3)           \
+    X(VtkBezierWedge, "VTK_BEZIER_WEDGE", -1, 3)                     \
+    X(VtkBezierPyramid, "VTK_BEZIER_PYRAMID", -1, 3)
 
 /**
  * @brief Compact identifier for a meshio cell type.
@@ -281,7 +289,8 @@ inline CellType cell_type_from_name(const std::string& rName) {
 
 /**
  * @brief Fixed nodes-per-cell of a `CellType`, or -1 for variable-node-count
- * types (`Polygon`, `Polyhedron`, the VTK Lagrange family) and `Custom`.
+ * types (`Polygon`, `Polyhedron`, the VTK Lagrange and Bézier families) and
+ * `Custom`.
  * @param type The cell type to query.
  * @return The node count, or -1.
  */
@@ -3564,7 +3573,7 @@ namespace meshioplusplus {
  * Lazily constructed once (function-local `static`) and returned by
  * `const&`; only rectangular, fixed-node-count cell types appear here — cell
  * types whose node count varies per cell (`"polygon"`, the VTK_LAGRANGE_*
- * family) are represented via `CellBlock`'s ragged storage instead and are
+ * and VTK_BEZIER_* families) are represented via `CellBlock`'s ragged storage instead and are
  * intentionally absent. Covers meshio's linear through high-order elements
  * (e.g. `"line"` through `"line11"`, `"tetra"` through `"tetra286"`).
  * @return Reference to the process-wide singleton lookup table.
@@ -3660,7 +3669,8 @@ inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
  * `const&`. Includes the standard meshio types plus the VTK Lagrange
  * high-order family (`"VTK_LAGRANGE_CURVE"`, `..._TRIANGLE`,
  * `..._QUADRILATERAL`, `..._TETRAHEDRON`, `..._HEXAHEDRON`, `..._WEDGE`,
- * `..._PYRAMID`), which carry a variable node count per cell (see
+ * `..._PYRAMID`) and the VTK Bézier family (`"VTK_BEZIER_CURVE"`, ...,
+ * the same seven shapes), which carry a variable node count per cell (see
  * `vtk_common.hpp`'s `is_special_cell`) but still have a fixed dimension.
  * @return Reference to the process-wide singleton lookup table.
  */
@@ -3738,6 +3748,13 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
         {"VTK_LAGRANGE_HEXAHEDRON", 3},
         {"VTK_LAGRANGE_WEDGE", 3},
         {"VTK_LAGRANGE_PYRAMID", 3},
+        {"VTK_BEZIER_CURVE", 1},
+        {"VTK_BEZIER_TRIANGLE", 2},
+        {"VTK_BEZIER_QUADRILATERAL", 2},
+        {"VTK_BEZIER_TETRAHEDRON", 3},
+        {"VTK_BEZIER_HEXAHEDRON", 3},
+        {"VTK_BEZIER_WEDGE", 3},
+        {"VTK_BEZIER_PYRAMID", 3},
     };
     return m;
 }
@@ -5290,6 +5307,292 @@ struct Mesh {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/backends/meshio_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/nurbs.hpp =====
+/**
+ * @file nurbs.hpp
+ * @brief `NurbsInfo`: the NURBS patches a reader sampled into Lagrange cells,
+ * kept beside the `Mesh` (the `GmshInfo`/`MdpaInfo` side-channel pattern).
+ *
+ * A `Mesh` holds linear and Lagrange polytopes only, so a reader of a NURBS
+ * file (MFEM's `MFEM NURBS mesh`, since v16.40.0) evaluates each patch at the
+ * nodes of its knot-span elements. The overload that takes a `NurbsInfo` also
+ * returns what the sampling drops -- every patch's degrees, knot vectors,
+ * control net and weights, the control values of the NURBS fields read with
+ * it, the file's patch topology, and the map from each sampled cell back to its
+ * patch and knot span -- and a writer that knows NURBS (MFEM's) writes the
+ * patches back from it. The shared registry passes none: a plain read drops it
+ * and a plain write writes the sampled cells. Python, WASM and the C API's
+ * read/write-with-info paths (also Fortran, Julia and R) carry it explicitly.
+ *
+ * Nothing here is evaluated or checked when the struct is built; the writer
+ * validates it. Every index is 0-based. See doc/formats/mfem.md.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief One tensor-product NURBS patch of parametric dimension
+ * `mDegrees.size()` (1, 2 or 3).
+ *
+ * The control net has `n0 * n1 * n2` points, `nd = mKnots[d].size() -
+ * mDegrees[d] - 1` per direction, listed with direction 0 fastest. The knot
+ * vectors run along the patch's own parametric directions (MFEM orients each
+ * patch's directions by its first vertex: the edges 0-1, 0-3 and 0-4).
+ */
+struct MESHIOPLUSPLUS_API NurbsPatch {
+    /// Polynomial degree per parametric direction.
+    std::vector<std::int32_t> mDegrees;
+    /// The knot vector of each direction (non-decreasing, `n + degree + 1` knots).
+    std::vector<std::vector<double>> mKnots;
+    /// Float64 `(n0 * n1 * n2, space dimension)`: Cartesian control points.
+    NDArray mControlPoints{DType::Float64, {0, 3}};
+    /// Float64 `(n0 * n1 * n2)`: the weight of each control point.
+    NDArray mWeights{DType::Float64, {0}};
+    /// Float64 `(n0 * n1 * n2, components)` per `NurbsInfo::mFieldNames` entry:
+    /// the field's control values (its NURBS degrees of freedom).
+    std::vector<NDArray> mFields;
+};
+
+/**
+ * @brief The patch topology of an MFEM NURBS mesh, as its file states it
+ * (`mDimension` 0 when the source has none).
+ *
+ * Patch and boundary vertices are MFEM's topological vertices `0 ..
+ * mNumVertices - 1`, which are also the first `mNumVertices` points of the
+ * sampled mesh. Boundary rows are in the orientation the reader normalises
+ * them to, so a rewrite is idempotent.
+ */
+struct MESHIOPLUSPLUS_API NurbsTopology {
+    /// Parametric dimension of the patches (1, 2 or 3); 0 for no topology.
+    std::int32_t mDimension = 0;
+    /// Number of topological vertices (patch corners).
+    std::int64_t mNumVertices = 0;
+    /// Int64 `(patches, 2^dimension)`: each patch's corner vertices, MFEM order.
+    NDArray mPatchVertices{DType::Int64, {0, 0}};
+    /// Int64 `(patches)`: each patch's attribute.
+    NDArray mPatchAttributes{DType::Int64, {0}};
+    /// Int64 `(boundary patches, 2^(dimension - 1))`: their corner vertices.
+    NDArray mBoundaryVertices{DType::Int64, {0, 0}};
+    /// Int64 `(boundary patches)`: each boundary patch's attribute.
+    NDArray mBoundaryAttributes{DType::Int64, {0}};
+    /// Int64 `(edges, 3)`: the `edges` section, `(knot vector, vertex, vertex)`.
+    NDArray mEdges{DType::Int64, {0, 3}};
+};
+
+/**
+ * @brief The NURBS description of a sampled mesh: patches, fields, topology
+ * and the cell-to-patch map. Empty (`mPatches` empty) for a mesh that is not
+ * NURBS.
+ */
+struct MESHIOPLUSPLUS_API NurbsInfo {
+    /// The patches, in file order.
+    std::vector<NurbsPatch> mPatches;
+    /// The NURBS fields carried per patch (`NurbsPatch::mFields`), by name.
+    std::vector<std::string> mFieldNames;
+    /// The patch topology the file states.
+    NurbsTopology mTopology;
+    /// Int64 `(element cells)`: the patch of each cell of the first block.
+    NDArray mCellPatch{DType::Int64, {0}};
+    /// Int64 `(element cells, 3)`: each such cell's knot span per direction,
+    /// counted over the spans of nonzero length (0 for an unused direction).
+    NDArray mCellSpan{DType::Int64, {0, 3}};
+    /// Int64 `(boundary cells)`: the boundary patch of each cell after the
+    /// first block, in block order.
+    NDArray mBoundaryCellPatch{DType::Int64, {0}};
+};
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/nurbs.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/brep.hpp =====
+/**
+ * @file brep.hpp
+ * @brief `BrepInfo`: a NURBS boundary representation -- trimmed NURBS faces,
+ * their trimming loops, edges and vertices -- kept beside the `Mesh` a reader
+ * sampled it into (the `NurbsInfo`/`MdpaInfo` side-channel pattern).
+ *
+ * A `Mesh` holds linear and Lagrange polytopes only, so a reader of a B-rep
+ * file samples it: Kratos CAD JSON (`formats/cad_json.hpp`, the IGA geometry
+ * of Kratos Multiphysics) evaluates every knot span of every face, and STEP
+ * and IGES (`formats/step.hpp`, `formats/iges.hpp`, through the optional
+ * OpenCASCADE backend) are triangulated at a tolerance. The overloads that
+ * take a `BrepInfo` also return the exact geometry the sampling drops; the
+ * CAD JSON writer writes it back, so a CAD JSON file read and written keeps
+ * every face, loop, edge and vertex. The shared registry passes none.
+ *
+ * Every patch is a `NurbsPatch` of parametric dimension 2 with its knot
+ * vectors in the full form (`n + p + 1` knots); a file that writes them in
+ * Kratos's reduced form (`n + p - 1`, without the outer knots) sets
+ * `mReducedKnots` so the writer can restore it. Weights are carried as the
+ * file writes them; a face or curve whose `mRational` is false is evaluated
+ * as a polynomial B-spline whatever they are (as Kratos does).
+ *
+ * The members a format has that meshio++ does not model are kept, per object,
+ * in `mExtra` as compact JSON object text (`{}` or empty for none), and
+ * written back. Every index is 0-based. See doc/formats/cad_json.md.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// A NURBS curve: a 3-D edge curve or a trimming curve in a face's (u, v).
+struct MESHIOPLUSPLUS_API BrepCurve {
+    /// Polynomial degree.
+    std::int32_t mDegree = 1;
+    /// Full knot vector (`n + degree + 1` knots).
+    std::vector<double> mKnots;
+    /// Whether the file wrote the reduced form (without the two outer knots).
+    bool mReducedKnots = false;
+    /// Whether the curve is rational (weights used).
+    bool mRational = false;
+    /// Float64 `(n, 3)`: control points; a trimming curve's are `(u, v, 0)`.
+    NDArray mControlPoints{DType::Float64, {0, 3}};
+    /// Float64 `(n)`: the weights as written.
+    NDArray mWeights{DType::Float64, {0}};
+    /// Int64 `(n)`: the control points' ids (Kratos node ids); empty when the
+    /// file gives none.
+    NDArray mIds{DType::Int64, {0}};
+    /// The active parameter range `[t0, t1]`, or empty for none.
+    std::vector<double> mActiveRange;
+    /// Members not modelled, as compact JSON object text.
+    std::string mExtra;
+};
+
+/// One trimming curve of a loop (or an embedded edge of a face).
+struct MESHIOPLUSPLUS_API BrepTrim {
+    /// The trim index the edges refer to; -1 when the file gives none.
+    std::int64_t mTrimIndex = -1;
+    /// Whether the loop runs along the curve's direction (`curve_direction`).
+    bool mDirection = true;
+    /// The curve in the face's parameter space.
+    BrepCurve mCurve;
+    std::string mExtra;
+};
+
+/// A boundary loop of a face.
+struct MESHIOPLUSPLUS_API BrepLoop {
+    /// `"outer"` or `"inner"`.
+    std::string mType = "outer";
+    std::vector<BrepTrim> mTrims;
+    std::string mExtra;
+};
+
+/// A reference from an edge or vertex to the face (and trim) it lies on.
+struct MESHIOPLUSPLUS_API BrepRef {
+    /// The referenced entity's id; -1 when it is named instead.
+    std::int64_t mId = -1;
+    /// The referenced entity's name (`brep_name`), or empty.
+    std::string mName;
+    /// The trim index on that face; -1 when absent.
+    std::int64_t mTrimIndex = -1;
+    /// `relative_direction`: 1 true, 0 false, -1 absent.
+    std::int32_t mRelativeDirection = -1;
+    /// A vertex's parametric position on the face, or empty.
+    std::vector<double> mLocalCoordinates;
+    std::string mExtra;
+};
+
+/// A trimmed NURBS face.
+struct MESHIOPLUSPLUS_API BrepFace {
+    /// `brep_id`; -1 when the face is named instead.
+    std::int64_t mId = -1;
+    /// `brep_name`, or empty.
+    std::string mName;
+    /// Its surface: an index into `BrepInfo::mPatches`.
+    std::int64_t mPatch = -1;
+    bool mSwappedNormal = false;
+    /// Whether the surface is trimmed by `mLoops` (`is_trimmed`).
+    bool mTrimmed = false;
+    bool mRational = false;
+    bool mReducedKnots = false;
+    /// Int64 `(n)`: the surface's control-point ids, or empty.
+    NDArray mControlPointIds{DType::Int64, {0}};
+    std::vector<BrepLoop> mLoops;
+    /// Curves embedded in the face (`embedded_edges`).
+    std::vector<BrepTrim> mEmbeddedEdges;
+    /// The surface object's members not modelled.
+    std::string mSurfaceExtra;
+    std::string mExtra;
+};
+
+/// An edge: an optional 3-D curve and the trims it is (its topology).
+struct MESHIOPLUSPLUS_API BrepEdge {
+    std::int64_t mId = -1;
+    std::string mName;
+    bool mHasCurve = false;
+    /// The `3d_curve`, when `mHasCurve`.
+    BrepCurve mCurve;
+    std::vector<BrepRef> mTopology;
+    std::string mExtra;
+};
+
+/// A vertex: the points on faces or edges it is.
+struct MESHIOPLUSPLUS_API BrepVertex {
+    std::int64_t mId = -1;
+    std::string mName;
+    std::vector<BrepRef> mTopology;
+    std::string mExtra;
+};
+
+/// One `breps` entry: indices into `BrepInfo`'s face, edge and vertex lists.
+struct MESHIOPLUSPLUS_API Brep {
+    std::int64_t mId = -1;
+    std::string mName;
+    std::vector<std::int64_t> mFaces;
+    std::vector<std::int64_t> mEdges;
+    std::vector<std::int64_t> mVertices;
+    std::string mExtra;
+};
+
+/**
+ * @brief The B-rep a sampled mesh came from. Empty (`mFaces`, `mEdges` and
+ * `mVertices` empty) for a mesh that has none.
+ *
+ * The sampled mesh links its cells back through cell data: `cad:kind` (0 a
+ * face cell, 1 an edge cell), `cad:index` (into `mFaces` or `mEdges`),
+ * `cad:id` (that entity's id), `cad:span` (the knot span per direction,
+ * counted over the spans of nonzero length, -1 for none) and `cad:trimmed`
+ * (1 for a cell the trimming crossed).
+ */
+struct MESHIOPLUSPLUS_API BrepInfo {
+    /// The face surfaces.
+    std::vector<NurbsPatch> mPatches;
+    std::vector<Brep> mBreps;
+    std::vector<BrepFace> mFaces;
+    std::vector<BrepEdge> mEdges;
+    std::vector<BrepVertex> mVertices;
+    /// The file's top-level members besides `breps` (Kratos: `tolerances`,
+    /// `version_number`), as compact JSON object text.
+    std::string mExtra;
+};
+
+/// How a STEP or IGES B-rep is triangulated (`read_step`, `read_iges`).
+struct CadReadOptions {
+    /// The chordal deflection, as a length; at most 0 takes 1e-3 of the
+    /// bounding-box diagonal.
+    double mDeflection = 0.0;
+    /// The angular deflection, in radians.
+    double mAngularDeflection = 0.5;
+};
+
+/// Whether this build reads STEP and IGES (it carries the OpenCASCADE backend,
+/// `-DMESHIOPLUSPLUS_WITH_OCCT=ON`).
+MESHIOPLUSPLUS_API bool cad_read_has_occt() noexcept;
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/brep.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/abaqus_types.hpp =====
 /**
  * @file detail/abaqus_types.hpp
@@ -10383,6 +10686,35 @@ MESHIOPLUSPLUS_API hid_t file_type(DType dt);
 MESHIOPLUSPLUS_API DType dtype_from_h5(hid_t type_id);
 
 /**
+ * @brief Verifies the chunks of a chunked dataset before it is read.
+ *
+ * libhdf5 1.10 over-reads a chunk that delivers fewer bytes than its elements
+ * take, so every reader of a chunked dataset calls this, or `verify_chunk_rows`,
+ * before `H5Dread`. Raw chunks must hold their full size, deflated chunks must
+ * inflate to it, and a trailing fletcher32 checksum is left out of that size: libhdf5
+ * checks it on the read. A pipeline this check cannot verify, such as deflate followed
+ * by shuffle, is read unverified, so the over-read stays possible for it.
+ * @param dset An open dataset.
+ * @param rName The dataset's name, for error messages.
+ * @throws ReadError when a chunk cannot be verified or does not match.
+ */
+MESHIOPLUSPLUS_API void verify_chunks(hid_t dset, const std::string& rName);
+
+/**
+ * @brief Verifies the chunks that hold rows `[Row0, Row0 + Count)` before a row read.
+ *
+ * A row read reaches only the chunks that hold those rows, so only they are
+ * verified; the rest of a long time series is not inflated for each slice.
+ * @param dset An open dataset.
+ * @param rName The dataset's name, for error messages.
+ * @param Row0 The first row read.
+ * @param Count The number of rows read; zero verifies nothing.
+ * @throws ReadError when one of those chunks cannot be verified or does not match.
+ */
+MESHIOPLUSPLUS_API void verify_chunk_rows(hid_t dset, const std::string& rName, std::size_t Row0,
+                                          std::size_t Count);
+
+/**
  * @brief Reads a full HDF5 dataset into a freshly-allocated, owning `NDArray`.
  *
  * The output shape and dtype are taken from the file. A dataset whose
@@ -11837,7 +12169,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 38
+#define MESHIOPLUSPLUS_VERSION_MINOR 42
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -11847,7 +12179,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.38.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.42.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -14816,6 +15148,8 @@ MESHIOPLUSPLUS_API Mesh read_abaqus(const std::string& rPath);
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14844,6 +15178,74 @@ MESHIOPLUSPLUS_API std::vector<double> abaqus_fil_time_values(const std::string&
  */
 MESHIOPLUSPLUS_API MeshMetadata read_abaqus_fil_metadata(const std::string& rPath,
                                                          const ReadOptions& rOpts);
+
+/**
+ * @brief Write a mesh as a one-increment Abaqus results file.
+ *
+ * The inverse of `read_abaqus_fil`. The model is the points (`abaqus:id` labels,
+ * else 1 to n), the cells (`abaqus:id` labels over the written cells, else 1 to
+ * n; a cell type becomes the Abaqus element `T3D2`, `S3`, `S4R`, `STRI65`,
+ * `S8R`, `S9R5`, `C3D4`, `C3D10`, `C3D5`, `C3D13`, `C3D6`, `C3D15`, `C3D8R` or
+ * `C3D20R`) and the point and cell regions as node and element sets (a name
+ * over 8 characters through a 1940 label). The increment holds the point data
+ * named like an Abaqus nodal result (`U`, `V`, `A`, `RF`, `key_<n>`...) and the
+ * cell data named like an element result (`S`, `E`, `MISES`, `NFORC`,
+ * `key_<n>`...): an array with an `abaqus:layout:<name>` of
+ * `(points, components)` is per integration point (per element node for
+ * `NFORC` and the `@el` names), any other one set of values per element; a
+ * point-data array named like an element result is averaged at the nodes. A
+ * `@sp<k>` suffix is the section point, `@rebar:<name>` a rebar. The
+ * increment's time is `meshio:time` (0 when absent), its step, number, step time
+ * and procedure the `abaqus:step`, `abaqus:increment`, `abaqus:step_time` and
+ * `abaqus:procedure` field data, and a `abaqus:mode` (with its eigenvalue,
+ * generalized mass, damping and participation factors) a 1980 record. NaN rows
+ * are left out, trailing NaN components are trimmed and an inner NaN is
+ * written as 0. With @p Binary the file is the little-endian binary layout
+ * (512-word blocks), else ASCII. Cells with no Abaqus element, side regions and
+ * other arrays are dropped with a warning. The Python twin writes the same
+ * bytes.
+ *
+ * @throws WriteError on a label that is not positive and unique, a cell or
+ *         region naming a point the mesh does not have, a value outside what a
+ *         `D22.15` item holds, a layout that does not match its array, or a
+ *         file that cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh,
+                                         bool Binary = false);
+
+/**
+ * @brief A results file written step by step: the model with the first step,
+ *        then an increment per step.
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and cell blocks (a `WriteError` otherwise). The time of a step is the
+ * argument, not its `meshio:time`. One step is `write_abaqus_fil`'s bytes. The
+ * Python twin, `meshioplusplus.abaqus_fil.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API AbaqusFilSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit AbaqusFilSeriesWriter(const std::string& rPath, bool Binary = false);
+    ~AbaqusFilSeriesWriter();
+
+    AbaqusFilSeriesWriter(const AbaqusFilSeriesWriter&) = delete;
+    AbaqusFilSeriesWriter& operator=(const AbaqusFilSeriesWriter&) = delete;
+    AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept;
+    AbaqusFilSeriesWriter& operator=(AbaqusFilSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/abaqus_fil.hpp =====
@@ -15086,6 +15488,94 @@ MESHIOPLUSPLUS_API Mesh read_avsucd(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/avsucd.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/cad_json.hpp =====
+/**
+ * @file formats/cad_json.hpp
+ * @brief Kratos CAD JSON (`*.cad.json`): the NURBS boundary representation
+ * Kratos Multiphysics' IGA reads (`CadJsonInput`, `CadIoModeler`) and writes
+ * (`CadJsonOutput`) -- trimmed NURBS faces, their boundary loops of trimming
+ * curves, edges with 3-D curves and the coupling topology between faces, in
+ * the JSON schema of Teschemacher et al. (AMSES 2018). The reader also takes
+ * the `Surfaces`/`Lines` dialect of Kratos's `ImportNurbsSbmModeler`.
+ *
+ * ### The mesh
+ *
+ * Every knot span of every face becomes one Lagrange quadrilateral of the
+ * face's higher degree (`quad`, `quad9`, else `VTK_LAGRANGE_QUADRILATERAL`),
+ * its nodes the exact surface at the cell's lattice; `mSubdivisions` splits
+ * each span further (by default only on a trimmed face, so its trim shows). A trimmed face keeps the cells whose parametric centre
+ * lies inside its boundary loops (even-odd over all of its loops, sampled at
+ * `mTrimSamples` points per knot span), so the trimmed edge of the mesh is
+ * staircase-accurate to a cell while the trimming curves stay exact in the
+ * side channel. Each edge with a 3-D curve becomes Lagrange line cells. Cell
+ * data `cad:kind`, `cad:index`, `cad:id`, `cad:span` and `cad:trimmed` link
+ * every cell back (see `BrepInfo`). Points are shared within a face or edge,
+ * not between them.
+ *
+ * ### The side channel
+ *
+ * The overloads taking a `BrepInfo` return the faces, loops, edges and
+ * vertices exactly, and `write_cad_json` with a non-empty `BrepInfo` writes
+ * them back, in the layout of Kratos's own `PrettyPrintJsonString`; a file
+ * meshio++ writes reads back to the same `BrepInfo` and rewrites to the same
+ * bytes. Without one (the registry, a plain write) the writer turns every
+ * `quad` cell into an untrimmed bilinear face and every `line` cell into an
+ * edge, and drops other cells with a warning.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How a B-rep is sampled into a mesh.
+struct CadJsonReadOptions {
+    /// Cells per knot span and direction, 1 to 64; 0 (automatic) keeps one per
+    /// span except on a clipped face, refined to about 16 cells per direction.
+    std::int32_t mSubdivisions = 0;
+    /// Points per knot span a trimming curve is sampled at for the clip, 2 to 4096.
+    std::int32_t mTrimSamples = 16;
+    /// Whether edges with a 3-D curve become line cells.
+    bool mEdges = true;
+    /// Whether trimmed faces are clipped by their loops (false keeps every span).
+    bool mTrim = true;
+};
+
+/// Read a CAD JSON file as its sampled mesh.
+MESHIOPLUSPLUS_API Mesh read_cad_json(const std::string& rPath);
+
+/// Read a CAD JSON file as its sampled mesh and its B-rep.
+/// @throws ReadError on a malformed file or an inconsistent NURBS.
+MESHIOPLUSPLUS_API Mesh read_cad_json(const std::string& rPath, BrepInfo& rInfo,
+                                      const CadJsonReadOptions& rOptions = {});
+
+/// Read only the B-rep of a CAD JSON file (no sampling).
+MESHIOPLUSPLUS_API BrepInfo read_cad_json_info(const std::string& rPath);
+
+/**
+ * @brief Sample a B-rep into a mesh, as `read_cad_json` does.
+ * @throws std::invalid_argument on an option out of range or an inconsistent
+ * `BrepInfo` (an index out of range, a control net that does not match its
+ * knots).
+ */
+MESHIOPLUSPLUS_API Mesh sample_brep(const BrepInfo& rInfo, const CadJsonReadOptions& rOptions = {});
+
+/// Write a mesh as CAD JSON: `quad` cells as bilinear faces, `line` cells as edges.
+MESHIOPLUSPLUS_API void write_cad_json(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief Write CAD JSON from a B-rep; an empty @p rInfo writes @p rMesh as the
+ * one-argument overload does.
+ * @throws WriteError on an inconsistent `BrepInfo` or an unwritable path.
+ */
+MESHIOPLUSPLUS_API void write_cad_json(const std::string& rPath, const Mesh& rMesh,
+                                       const BrepInfo& rInfo);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/cad_json.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/cgns.hpp =====
 /**
  * @file cgns.hpp
@@ -17454,6 +17944,38 @@ MESHIOPLUSPLUS_API Mesh read_hmf(const std::string& rPath);
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/include/meshioplusplus/formats/hmf.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/iges.hpp =====
+/**
+ * @file formats/iges.hpp
+ * @brief IGES (`.igs`, `.iges`) reader, through the optional OpenCASCADE
+ * backend: the twin of `read_step` (formats/step.hpp) for IGES files.
+ *
+ * Read-only. The file's shape is triangulated by `BRepMesh` at
+ * `CadReadOptions::mDeflection` into one `triangle` block with the `cad:*`
+ * cell data of `BrepInfo`; the overload taking a `BrepInfo` also returns the
+ * shape as NURBS faces, trimming loops and edges, which `write_cad_json`
+ * writes as Kratos CAD JSON. Without `-DMESHIOPLUSPLUS_WITH_OCCT=ON` both
+ * throw `Unsupported` naming the flag. See doc/formats/iges.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Read an IGES file as its triangulation.
+/// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
+///         OpenCASCADE cannot read or transfer.
+MESHIOPLUSPLUS_API Mesh read_iges(const std::string& rPath);
+
+/// Read an IGES file as its triangulation and its B-rep.
+MESHIOPLUSPLUS_API Mesh read_iges(const std::string& rPath, BrepInfo& rInfo,
+                                  const CadReadOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/iges.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/ip.hpp =====
 /**
  * @file ip.hpp
@@ -17648,11 +18170,16 @@ MESHIOPLUSPLUS_API Mesh read_lsdyna(const std::string& rPath);
  * `binout:<database>:<variable>` (`binout:elout/beam:axial`), with its
  * `binout:<database>:time` and, from its metadata, `binout:<database>:ids`.
  *
+ * The writer (`write_lsdyna_binout`, `LsdynaBinoutSeriesWriter`) is the
+ * reader's inverse: one little-endian LSDA file with 8-byte lengths and
+ * offsets, reals stored as `float32` and integers as `int32`.
+ *
  * See doc/formats/lsdyna_binout.md.
  */
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17693,6 +18220,67 @@ MESHIOPLUSPLUS_API bool is_binout_filename(const std::string& rPath);
  *        symbol-table offset command.
  */
 MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
+
+/**
+ * @brief Write a mesh as a one-output binout.
+ *
+ * `nodout` is the points (`x_coordinate`, `y_coordinate`, `z_coordinate`),
+ * their ids (`lsdyna:nid`, else 1 to n), the vectors `displacement`,
+ * `rotation`, `velocity`, `rotational_velocity`, `acceleration` and
+ * `rotational_acceleration` (`n x 3`), every other one-dimensional per-point
+ * array (for 2 or more points) under its own name, and the
+ * `binout:nodout:<variable>` field data. Every other database is
+ * `binout:<database>:<variable>` field data (`<database>` may nest with `/`,
+ * `binout:elout/beam:axial`), with `binout:<database>:time` its output's time
+ * (else the step's) and `binout:<database>:ids` its metadata ids. Reals are
+ * stored as `float32` and integers as `int32`; the output's time is
+ * `meshio:time` (0 when absent). Cells, regions and other arrays are dropped
+ * with a warning. The Python twin writes the same bytes.
+ *
+ * @throws WriteError on an id outside the 32-bit range, a variable or
+ *         database name a binout cannot hold, a variable repeated, a mesh with
+ *         no point and no `binout:*` field data, or a file that cannot be
+ *         opened
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A binout written step by step: `nodout`'s ids once and an output
+ *        folder per step, and any other database's output whenever its own
+ *        `binout:<database>:time` changes (so a database written less often
+ *        than `nodout` keeps its own cadence).
+ *
+ * The file is written by `Finalize`. Every step must have the first step's
+ * points and ids and, for each database, its first output's variables (a
+ * database may be absent from a step and appear later); a step that does not
+ * is a `WriteError`. The time of a step is the argument, not its
+ * `meshio:time`. One step is `write_lsdyna_binout`'s bytes. The Python twin,
+ * `meshioplusplus.lsdyna_binout.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API LsdynaBinoutSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit LsdynaBinoutSeriesWriter(const std::string& rPath);
+    ~LsdynaBinoutSeriesWriter();
+
+    LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter& operator=(const LsdynaBinoutSeriesWriter&) = delete;
+    LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept;
+    LsdynaBinoutSeriesWriter& operator=(LsdynaBinoutSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError as above, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/lsdyna_binout.hpp =====
@@ -18287,6 +18875,39 @@ MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, const ReadOptions& r
 MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo,
                                   const ReadOptions& rOptions = {});
 
+/**
+ * @brief The Kratos CAD JSON geometry that goes with an MDPA deck, or "".
+ *
+ * Kratos keeps IGA geometry (trimmed NURBS faces) in a `*.cad.json` file its
+ * `CadIoModeler` reads, not in the deck. The sidecar is `<stem>.cad.json`
+ * beside the deck, else the `geometry_file_name` of the `CadIoModeler` in a
+ * `ProjectParameters.json` beside it (with `.cad.json` appended when the name
+ * lacks it, as Kratos appends it), relative to the deck's directory; "" when
+ * neither names an existing file.
+ */
+MESHIOPLUSPLUS_API std::string mdpa_cad_json_path(const std::string& rPath);
+
+/**
+ * @brief Read an MDPA deck and the Kratos CAD JSON geometry beside it.
+ *
+ * The deck exactly as `read_mdpa(path, info, options)` reads it, plus the
+ * B-rep of @p rCadJsonPath (or, when it is empty, of `mdpa_cad_json_path`,
+ * none being no error) in @p rBrep. The geometry is not sampled into the mesh.
+ * @throws ReadError as the MDPA and CAD JSON readers do, and when an explicit
+ *         @p rCadJsonPath does not exist
+ */
+MESHIOPLUSPLUS_API Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, BrepInfo& rBrep,
+                                  const ReadOptions& rOptions = {},
+                                  const std::string& rCadJsonPath = {});
+
+/**
+ * @brief Write an MDPA deck and, when @p rBrep holds a B-rep, its CAD JSON
+ * geometry to @p rCadJsonPath (`<stem>.cad.json` beside the deck when empty).
+ */
+MESHIOPLUSPLUS_API void write_mdpa(const std::string& rPath, const Mesh& rMesh,
+                                   const MdpaInfo& rInfo, const BrepInfo& rBrep,
+                                   const std::string& rCadJsonPath = {});
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mdpa.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/med.hpp =====
@@ -18695,15 +19316,20 @@ MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
  *    degrees of freedom are numbered the way MFEM numbers them -- vertices, then
  *    edges and faces in order of first appearance, then element interiors -- and
  *    the points are those degrees of freedom, in that order.
- *  - Higher orders (and Bernstein or serendipity spaces) keep only the vertices,
- *    with a warning. `L2_T1_<d>D_P1` nodes (periodic meshes) give each element
- *    its own points.
+ *  - Higher orders give VTK Lagrange cells (`H1` and the legacy `Cubic`, since
+ *    v16.11.0); Bernstein and serendipity spaces are evaluated at the Lagrange
+ *    nodes. `L2_T1_<d>D_P1` nodes (periodic meshes) give each element its own
+ *    points.
  *  - Every geometry, the prism included, is in meshio++'s node order (MFEM's own
  *    VTK export reverses prisms for classic VTK's winding; meshio++ does not).
  *
- * Non-conforming (`MFEM NC mesh`, v1.1 `vertex_parents`), NURBS and INLINE
- * meshes are refused. A parallel rank file is read as its local part. See
- * doc/formats/mfem.md.
+ * A non-conforming mesh (`MFEM NC mesh`) is read as its leaf elements, and a
+ * NURBS mesh (`MFEM NURBS mesh` v1.0/v1.1) as its knot-span elements, each a
+ * Lagrange cell of the highest knot-vector order through the rational patch
+ * geometry; the overloads that take a `NurbsInfo` (since v16.40.0) also return
+ * the patches themselves, and write them back. INLINE meshes and NURBS meshes
+ * with non-conforming patches are refused. A parallel rank file is read with
+ * its siblings. See doc/formats/mfem.md.
  */
 
 // System includes
@@ -18769,6 +19395,30 @@ MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
                                   const ReadOptions& rOptions);
 
 /**
+ * @brief `read_mfem(rPath, rGridFunctions, rOptions)`, and the NURBS patches of a
+ * NURBS mesh in @p rInfo (since v16.40.0).
+ *
+ * For an `MFEM NURBS mesh`, @p rInfo receives what the sampling into Lagrange
+ * cells drops: per patch its degrees, knot vectors (oriented along the patch's
+ * own directions), control net and weights, and the control values of each
+ * NURBS grid function read with it (`mFieldNames` are their data names); the
+ * file's patch topology; and the patch and knot span of each element cell
+ * (the first block) and the boundary patch of each boundary cell. Any other
+ * mesh leaves @p rInfo empty. @p rInfo is replaced on success and unchanged if
+ * the read fails.
+ *
+ * @param rPath filesystem path of the mesh
+ * @param rGridFunctions the `.gf` files, each with the data name it gets
+ * @param rOptions `mPiece`/`mPieceSet` select one rank of a parallel mesh
+ * @param rInfo receives the NURBS side channel
+ * @return the mesh with the grid functions as data
+ * @throws ReadError as the other overloads
+ */
+MESHIOPLUSPLUS_API Mesh read_mfem(const std::string& rPath,
+                                  const std::vector<MfemGridFunction>& rGridFunctions,
+                                  const ReadOptions& rOptions, NurbsInfo& rInfo);
+
+/**
  * @brief Write `rMesh` as an MFEM `.mesh` file.
  *
  * The cells of the highest dimension are the elements and those one dimension
@@ -18791,6 +19441,30 @@ MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh);
  * order, cell data as `L2` order 0 (element cells only).
  */
 MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions);
+
+/**
+ * @brief Write the NURBS patches of @p rInfo as an `MFEM NURBS mesh v1.0`
+ * (since v16.40.0); an empty @p rInfo writes as `write_mfem(rPath, rMesh,
+ * GridFunctions)`.
+ *
+ * The file is MFEM's global form (`knotvectors`, `weights` and a `NURBS<p>`
+ * nodes space with Cartesian control points), so `read_mfem` of it gives back
+ * @p rMesh and @p rInfo exactly; the patches, their attributes and the
+ * boundary come from @p rInfo. @p rMesh must still be the sampling of the
+ * patches -- its points, its element cells and the point data of the NURBS
+ * fields equal what reading the file would give, within 1e-9 of their
+ * magnitude -- so a mesh moved or edited after the read is refused rather than
+ * written with stale patches. With `GridFunctions`, each field of @p rInfo
+ * whose point data the mesh still has is written as a NURBS grid function
+ * `<stem>.<name>.gf`, element cell data as `L2` order 0; other point data,
+ * field data and regions other than the attributes are dropped with a warning.
+ * Spacing formulas of a v1.1 file are not kept (its knots are).
+ *
+ * @throws WriteError for an inconsistent @p rInfo, or a mesh that no longer
+ *         matches it ("the mesh no longer matches its NURBS side channel")
+ */
+MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
+                                   const NurbsInfo& rInfo);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mfem.hpp =====
@@ -19169,10 +19843,16 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_h5_metadata(const std::string& rPat
  * Complex, random and SORT2 tables, other element types and other tables are
  * skipped with a warning naming them.
  *
+ * The writer (`write_nastran_op2`, `NastranOp2SeriesWriter`) is the reader's
+ * inverse for the core of the format: 32-bit little-endian words, the MSC
+ * dialect, SORT1 real tables. See `write_nastran_op2`.
+ *
  * See doc/formats/nastran_op2.md.
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -19200,6 +19880,75 @@ MESHIOPLUSPLUS_API std::vector<double> nastran_op2_time_values(const std::string
  */
 MESHIOPLUSPLUS_API MeshMetadata read_nastran_op2_metadata(const std::string& rPath,
                                                           const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a mesh as a one-step OP2 result file.
+ *
+ * The model is the points (`GEOM1` GRIDs, numbered from 1), the cells (`GEOM2`
+ * element cards: `triangle` CTRIA3, `quad` CQUAD4, `tetra` CTETRA, `pyramid`
+ * CPYRAM, `wedge` CPENTA, `hexahedron` CHEXA, their quadratic forms, a `line`
+ * as CROD, CTUBE (property `PTUBE_<pid>`) or, with no property, CONROD, and a
+ * `vertex` as CONM2), with `nastran:eid` and `nastran:pid` when the mesh has
+ * them (else numbered from 1, and one property id per family), one `EPT`
+ * property card per property id and a unit `MAT1`. The results are the point
+ * data `DISPLACEMENT`, `EIGENVECTOR`, `VELOCITY`, `ACCELERATION`, `SPC_FORCE`,
+ * `MPC_FORCE` and `APPLIED_LOAD` (each `(n, 3)` with a `_ROT` twin) and
+ * `TEMPERATURE`, and the centre `STRESS:<M>`/`STRAIN:<M>` cell data of the
+ * linear shells (33, 74), solids (39, 67, 68, 255; the corners from
+ * `<name>@corner`, else the centre value) and rods (1, 3, 10), under the
+ * reader's member names. A member the mesh lacks, or a NaN in a written row, is
+ * written as 0; a row with every member NaN, or a point with every component
+ * NaN, is left out. The step is `nastran:subcase`, `nastran:analysis` and
+ * `nastran:mode` of the field data (default 1, 1 or 6 by the time, 1) and
+ * `meshio:time` (0 when absent). Other arrays are dropped with a warning. The
+ * Python twin writes the same bytes.
+ *
+ * @throws WriteError on a non-positive or repeated element id, a property id
+ *         shared by shells, solids and rods, an array of the wrong size, or a
+ *         file that cannot be opened
+ */
+MESHIOPLUSPLUS_API void write_nastran_op2(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief An OP2 file written step by step: the model from the first step, then
+ *        a block per step in each result table.
+ *
+ * The tables hold every step, so the steps are kept and the file is written by
+ * `Finalize`. Every step must have the first step's points count, cell blocks
+ * and result arrays (a `WriteError` otherwise), and a subcase, analysis and
+ * mode or time of its own. The time of a step is the argument, not its
+ * `meshio:time`. One step is `write_nastran_op2`'s bytes. The Python twin,
+ * `meshioplusplus.nastran_op2.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API NastranOp2SeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit NastranOp2SeriesWriter(const std::string& rPath);
+    ~NastranOp2SeriesWriter();
+
+    NastranOp2SeriesWriter(const NastranOp2SeriesWriter&) = delete;
+    NastranOp2SeriesWriter& operator=(const NastranOp2SeriesWriter&) = delete;
+    NastranOp2SeriesWriter(NastranOp2SeriesWriter&&) noexcept;
+    NastranOp2SeriesWriter& operator=(NastranOp2SeriesWriter&&) noexcept;
+
+    /**
+     * @brief Add one step.
+     * @throws WriteError when the step's points, cells or result arrays differ
+     *         from the first step's, its subcase, analysis and mode or time
+     *         repeat an earlier step's, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/nastran_op2.hpp =====
@@ -20565,10 +21314,20 @@ private:
 /**
  * @file formats/step.hpp
  * @brief STEP (ISO 10303-21, AP214) writer: a closed surface as a faceted
- * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work.
+ * B-rep solid a CAD tool opens -- the CAD hand-off of the skin-to-CAD work;
+ * and, through the optional OpenCASCADE backend, the STEP reader.
  *
- * The writer is write-only: reading STEP means a CAD kernel (roadmap §6.2.2; see doc/spikes.md),
- * which the core deliberately does not carry.
+ * ### Reading
+ *
+ * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT exception, bring your
+ * own) and throws `Unsupported` naming the flag without it. The file's shape
+ * is triangulated by `BRepMesh` at `CadReadOptions::mDeflection` into one
+ * `triangle` block with the `cad:*` cell data of `BrepInfo`; the overload
+ * taking a `BrepInfo` also returns the shape as NURBS -- every face's surface,
+ * its trimming loops and the edges' curves and topology -- which
+ * `write_cad_json` writes as Kratos CAD JSON. See doc/formats/step.md.
+ *
+ * ### Writing
  *
  * Each surface facet becomes an `ADVANCED_FACE` on a `PLANE`, bounded by an
  * `EDGE_LOOP` of `ORIENTED_EDGE`s over `EDGE_CURVE`s on `LINE`s; an edge two
@@ -20611,6 +21370,15 @@ namespace meshioplusplus {
  *         a degenerate facet, a non-finite coordinate, or no facets at all.
  */
 MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
+
+/// Read a STEP file as its triangulation (see "Reading" above).
+/// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
+///         OpenCASCADE cannot read or transfer.
+MESHIOPLUSPLUS_API Mesh read_step(const std::string& rPath);
+
+/// Read a STEP file as its triangulation and its B-rep.
+MESHIOPLUSPLUS_API Mesh read_step(const std::string& rPath, BrepInfo& rInfo,
+                                  const CadReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/step.hpp =====
@@ -26160,6 +26928,210 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/fit_primitives.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/fit_cad.hpp =====
+/**
+ * @file operations/fit_cad.hpp
+ * @brief Turn the fitted patches of a closed triangle skin into a CAD solid --
+ * plane, sphere, cylinder, cone and torus faces trimmed by the patch
+ * boundaries, sewn, checked and optionally written as STEP -- through the
+ * optional OpenCASCADE backend.
+ *
+ * The last step of the skin-to-CAD chain `segment` -> `fit_primitives` ->
+ * `fit_cad`. The input is the closed, consistently wound skin those two
+ * annotated: `segment:patch` per cell and the `fit:patch_*` field data. When
+ * either is missing, both run first with their default options (a curvature
+ * test or a tolerance of your own means running them yourself).
+ *
+ * ### How the solid is built
+ *
+ *  - **Patches.** A patch whose fit was accepted, and whose type is in
+ *    `mTypes`, becomes one analytic face on its fitted surface. A patch no
+ *    primitive explains becomes, with `mFreeform`, a B-spline face (roadmap
+ *    6.3.2, below). Every other surface cell (a patch neither explains, a
+ *    type left out, a cell with no patch) becomes planar faces, one per
+ *    facet, as the faceted `step` writer writes them.
+ *  - **Freeform faces.** The patch is flattened over its best-fit plane, or,
+ *    when that folds it, unrolled around the axis its normals are most
+ *    perpendicular to (a cylinder of the circle its points fit). A patch both
+ *    fold is, with `mFreeformSplit`, split into pieces one of them does
+ *    parametrise -- halved at the area-weighted median of `n . e`, `e` the
+ *    direction its normals spread along most, up to four times -- and each
+ *    piece becomes its own freeform face under a new patch label, numbered
+ *    after the largest existing one; a piece under 16 triangles, or still
+ *    folding, is left to facets. Its offset from that plane or cylinder is
+ *    resampled on a grid (inside the patch by interpolation over its facets,
+ *    outside it from the nearest boundary point), approximated by a C2
+ *    B-spline of degree `mFreeformDegree` (`GeomAPI_PointsToBSplineSurface`)
+ *    and kept once every patch vertex lies within the tolerance of it, the
+ *    grid doubling up to `mFreeformMaxControl` points per direction. The
+ *    face is then trimmed, sewn and checked like an analytic one.
+ *  - **Edges.** Where two patches meet, the mesh edges between them form
+ *    chains from one junction (a point three or more patches meet at) to the
+ *    next; a closed chain is split in two. A chain between two analytic faces
+ *    is, when `mExactEdges` is set, the branch of the two surfaces'
+ *    intersection that lies within the tolerance of the chain, and otherwise
+ *    a B-spline through the chain, smoothed and moved onto both surfaces,
+ *    kept only within the tolerance of both. A chain beside a facet keeps the
+ *    mesh's straight edges. Junctions between analytic faces
+ *    only are moved onto those surfaces.
+ *  - **Solid.** Each face gets parameter-space curves continuous around its
+ *    loops (a boundary along a cylinder's seam or a torus's equator would
+ *    otherwise fall apart); OpenCASCADE adds the seams, repairs and sews the
+ *    faces and closes each shell into one solid per edge-connected piece of
+ *    the skin. A patch with no boundary (a whole sphere or torus) is its
+ *    surface's natural face.
+ *  - **Checks, and demotion.** A face that the B-rep check rejects, or that
+ *    lies further than the tolerance from the skin (or leaves part of its
+ *    patch further than that from the solid), is not kept: its patch is
+ *    demoted to facets and the solid is rebuilt, for at most
+ *    `mMaxDemotionRounds` rounds, after which every patch is faceted. So a
+ *    feature the fitter cannot explain comes back faceted, never silently
+ *    wrong.
+ *
+ * ### Output
+ *
+ * The solid re-meshed by OpenCASCADE at `mMeshDeflection`, as one `triangle`
+ * block (points shared between faces are welded), with cell data
+ * `fit_cad:face` (Int64, the B-rep face), `fit_cad:type` (Int64, the face's
+ * type: 0 a facet, 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, as
+ * `fit:type`, and 6 a freeform B-spline) and `fit_cad:patch` (Int64, the
+ * `segment:patch` label it was built from, -1 for a facet of a cell with no
+ * patch), the report below, and the solid as NURBS in `mBrep` (face `i` of
+ * `fit_cad:face` is its face `i`, id `i + 1`), which `write_cad_json` writes
+ * as Kratos CAD JSON.
+ * With a non-empty path, the solid is also written as AP214 STEP in
+ * millimetres, with the header timestamp pinned so the bytes are
+ * reproducible.
+ *
+ * Built only with `-DMESHIOPLUSPLUS_WITH_OCCT=ON` (OpenCASCADE 7.6 or later,
+ * LGPL-2.1 with the OCCT exception, linked dynamically); elsewhere `fit_cad`
+ * throws `Unsupported` naming that flag, and `fit_cad_has_occt` is false.
+ * The work is serial, so the output does not depend on the thread count.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int64) of the re-meshed solid: the B-rep face each triangle lies on.
+inline constexpr const char* kFitCadFaceName = "fit_cad:face";
+/// Cell data (Int64): the type of that face; 0 a facet, else a `FitPrimitiveType`.
+inline constexpr const char* kFitCadTypeName = "fit_cad:type";
+/// Cell data (Int64): the `segment:patch` label the face was built from, or -1.
+inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
+/// `fit_cad:type` of a freeform B-spline face.
+inline constexpr std::int64_t kFitCadBsplineType = 6;
+/// `fit_cad:type` of a constant-radius rolling-ball fillet face.
+inline constexpr std::int64_t kFitCadFilletType = 7;
+/// `fit_cad:type` of a straight-flank thread face (a ruled helicoid).
+inline constexpr std::int64_t kFitCadHelicalType = 8;
+
+/// What `fit_cad` builds and how strictly it checks it.
+struct FitCadOptions {
+    /// The largest distance, as a length, a face may lie from the skin. At most
+    /// 0 takes three times the largest `fit:patch_tolerance` of an accepted
+    /// patch, or `1e-3` of the bounding-box diagonal when no patch was accepted.
+    double mTolerance = 0.0;
+    /// Whether an edge between two analytic faces is first tried as the exact
+    /// intersection of their surfaces (true) or always approximated.
+    bool mExactEdges = true;
+    /// Which accepted types become analytic faces, as `1 << FitPrimitiveType`
+    /// bits; must name nothing but those five. 0 facets everything.
+    std::uint32_t mTypes = kFitAllTypes;
+    /// The chordal deflection of the re-meshed solid; at most 0 takes a quarter
+    /// of the tolerance.
+    double mMeshDeflection = 0.0;
+    /// How many times a failed face may be demoted and the solid rebuilt
+    /// before every patch is faceted; at least 0.
+    std::int64_t mMaxDemotionRounds = 8;
+    /// Whether a patch no primitive explains is tried as a B-spline face.
+    bool mFreeform = true;
+    /// The freeform B-spline's highest degree per direction, 3 to 8.
+    std::int32_t mFreeformDegree = 3;
+    /// The most grid points per direction a freeform fit may sample, 4 to 1024.
+    std::int64_t mFreeformMaxControl = 64;
+    /// Whether a freeform patch that neither its best-fit plane nor an unrolled
+    /// cylinder parametrises (it folds over both) is split into pieces that one
+    /// does, each fitted as its own B-spline face under a new patch label.
+    bool mFreeformSplit = true;
+    /// Whether a patch no primitive explains, running between two analytic
+    /// faces, is tried as a constant-radius rolling-ball fillet.
+    bool mFillets = true;
+    /// Whether a patch no primitive explains, beside a cylinder or cone, is
+    /// tried as a straight-flank thread about its axis.
+    bool mThreads = true;
+};
+
+/// The re-meshed solid and what was built.
+struct FitCadResult {
+    /// The solid re-meshed, with the `fit_cad:*` cell data.
+    Mesh mMesh;
+    /// Whether the solid passed OpenCASCADE's B-rep check.
+    bool mValid = false;
+    /// The tolerance applied.
+    double mTolerance = 0.0;
+    /// The solid's volume.
+    double mVolume = 0.0;
+    /// The volume the skin encloses.
+    double mSkinVolume = 0.0;
+    /// `mVolume / mSkinVolume`.
+    double mVolumeRatio = 0.0;
+    /// The symmetric Hausdorff distance between the skin and the re-meshed solid.
+    double mMaxDeviation = 0.0;
+    /// B-rep faces in all, and by type.
+    std::int64_t mNumFaces = 0;
+    std::int64_t mNumPlane = 0;
+    std::int64_t mNumSphere = 0;
+    std::int64_t mNumCylinder = 0;
+    std::int64_t mNumCone = 0;
+    std::int64_t mNumTorus = 0;
+    /// Planar facet faces.
+    std::int64_t mNumFacetedFaces = 0;
+    /// Patches in the skin.
+    std::int64_t mNumPatches = 0;
+    /// Accepted patches demoted to facets by the checks: the features dropped.
+    std::int64_t mNumDemoted = 0;
+    /// Edges between analytic faces built as exact intersections, and as B-splines.
+    std::int64_t mNumExactEdges = 0;
+    std::int64_t mNumApproxEdges = 0;
+    /// Solids written (one per edge-connected piece of the skin).
+    std::int64_t mNumSolids = 0;
+    /// Freeform B-spline faces.
+    std::int64_t mNumBspline = 0;
+    /// Pieces that freeform patches folding over every flattening were split into.
+    std::int64_t mNumSplitPatches = 0;
+    /// Rolling-ball fillet faces.
+    std::int64_t mNumFillet = 0;
+    /// Thread flank faces.
+    std::int64_t mNumHelical = 0;
+    /// The solid as NURBS faces, loops and edges.
+    BrepInfo mBrep;
+};
+
+/**
+ * @brief Build a CAD solid from the fitted patches of a closed skin.
+ *
+ * @param rMesh a closed, consistently wound surface mesh, normally the output
+ *        of `fit_primitives`; lines and vertices are ignored.
+ * @param rStepPath where to write the solid as STEP; empty writes nothing.
+ * @param rOptions see `FitCadOptions`.
+ * @throws Unsupported in a build without OpenCASCADE.
+ * @throws std::invalid_argument on an option out of range, a volume block, or
+ *         a surface that is not closed and consistently wound.
+ * @throws WriteError when the STEP file cannot be written.
+ */
+MESHIOPLUSPLUS_API FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath = {},
+                                        const FitCadOptions& rOptions = {});
+
+/// Whether this build carries the OpenCASCADE backend `fit_cad` needs.
+MESHIOPLUSPLUS_API bool fit_cad_has_occt() noexcept;
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/fit_cad.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/gradient.hpp =====
 /**
  * @file operations/gradient.hpp
@@ -31581,6 +32553,122 @@ MESHIOPLUSPLUS_API TensorInvariant tensor_invariant_from_name(const std::string&
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/tensor_invariants.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/tessellate.hpp =====
+/**
+ * @file operations/tessellate.hpp
+ * @brief Isoparametric tessellation of curved (quadratic) cells onto a
+ * reference lattice, with a recorded map from every output point and cell back
+ * to the source mesh -- the C++ twin of `meshioplusplus.tessellate`.
+ *
+ * Every cell of a curved type -- `triangle6`, `quad8`, `quad9`, `tetra10` or
+ * `hexahedron27` -- is sampled on a reference lattice and mapped through its
+ * own quadratic shape functions; every other cell (linear types,
+ * `hexahedron20`, `wedge15`/`18`, `pyramid13`/`14`, the VTK Lagrange family,
+ * polygon and polyhedron blocks) passes through unchanged.
+ *
+ *  - **Lattice.** `quad8`/`quad9`/`hexahedron27` take `max(levels, 1)`
+ *    divisions per axis; `triangle6`/`tetra10` take `levels` recursive
+ *    same-type splits (`2^levels` divisions per edge), the tetrahedron through
+ *    `refine`'s fixed interior diagonal.
+ *  - **Output cells.** Curved surface cells become one `triangle` block (a
+ *    sub-quad splits along the diagonal from its first-created corner to the
+ *    opposite one); curved volume cells become one `tetra` block (a
+ *    sub-hexahedron becomes 12 tetrahedra around its centroid). The blocks
+ *    are the pass-through blocks in input order, then `triangle`, then `tetra`.
+ *  - **Point identity.** A lattice point is keyed by the entity it lies on --
+ *    an original corner, an edge (its two corner ids and the quantised
+ *    fraction), a face (its canonical corner cycle and quantised coordinates)
+ *    or the cell's interior -- so two cells sharing an edge or a face share its
+ *    points. Output points are sorted by that key: the kept source points
+ *    first, ascending, then edge, face and interior points. A source point no
+ *    cell uses is dropped.
+ *  - **Data.** `tessellate:source_point` (Int64 point data: the source point,
+ *    or -1), `tessellate:source_cell` (Int64 cell data: the global block-major
+ *    source cell) and `tessellate:sub_index` (Int64 cell data: the child index).
+ *    With `mFields`, every point data array is interpolated (Float64) and every
+ *    cell data row is copied to its children; field data is copied. With
+ *    `mRecordStencil`, `tessellate:stencil` and `tessellate:weights` (`(P, 27)`)
+ *    are added too.
+ *  - **Regions.** Point regions are carried; cell regions keep their
+ *    pass-through cells; side regions are dropped. Every drop is warned about.
+ *
+ * The output matches the numpy twin: the same points in the same order, the
+ * same connectivity, stencils and data layout, with coordinates and
+ * interpolated values equal within rounding.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Int64 point data: the source point a tessellated point was kept from, or -1.
+inline constexpr const char* kTessellateSourcePointName = "tessellate:source_point";
+/// Int64 cell data: the global (block-major) source cell of each output cell.
+inline constexpr const char* kTessellateSourceCellName = "tessellate:source_cell";
+/// Int64 cell data: a cell's index among its source cell's children.
+inline constexpr const char* kTessellateSubIndexName = "tessellate:sub_index";
+/// Int64 `(P, 27)` point data (opt-in): each point's stencil into the source points.
+inline constexpr const char* kTessellateStencilName = "tessellate:stencil";
+/// Float64 `(P, 27)` point data (opt-in): the matching interpolation weights.
+inline constexpr const char* kTessellateWeightsName = "tessellate:weights";
+/// The stencil width: `hexahedron27`'s 27 nodes.
+inline constexpr std::size_t kTessellateStencilWidth = 27;
+
+/// How `tessellate` subdivides.
+struct TessellateOptions {
+    /// Divisions per axis (tensor cells) or recursive splits (simplices); >= 0.
+    std::int64_t mLevels = 2;
+    /// False passes every cell through unchanged.
+    bool mCurved = true;
+    /// Interpolate point data and copy cell data onto the output.
+    bool mFields = true;
+    /// Also store the stencil and weights as point data.
+    bool mRecordStencil = false;
+};
+
+/// The tessellated mesh, its stencils and its bookkeeping.
+struct TessellateResult {
+    /// The tessellated mesh, with the `tessellate:*` arrays.
+    Mesh mMesh;
+    /// `(P, 27)` row-major: each output point's stencil into the source points,
+    /// padded with -1.
+    std::vector<std::int64_t> mStencil;
+    /// `(P, 27)` row-major: the matching weights, padded with 0.
+    std::vector<double> mWeights;
+    std::int64_t mNumSourcePoints = 0;
+    std::int64_t mNumSourceCells = 0;
+    /// Source cells of a curved type that were tessellated.
+    std::int64_t mNumCurvedSourceCells = 0;
+    /// Source cells passed through unchanged.
+    std::int64_t mNumPassThroughSourceCells = 0;
+    std::int64_t mNumPoints = 0;
+    std::int64_t mNumCells = 0;
+    /// Over every `tetra` block of the output: triangular facets used once.
+    std::int64_t mNumBoundaryFacets = 0;
+    /// Facets used twice.
+    std::int64_t mNumInteriorFacets = 0;
+    /// Facets used three or more times: zero for a conforming tessellation.
+    std::int64_t mNumFacetsWithBadCount = 0;
+};
+
+/**
+ * @brief Tessellate a mesh's curved cells.
+ *
+ * @param rMesh Any mesh.
+ * @param rOptions See `TessellateOptions`.
+ * @return The tessellated mesh and its bookkeeping.
+ * @throws std::invalid_argument for negative levels, or a point data array
+ *         whose row count is not the number of points.
+ */
+MESHIOPLUSPLUS_API TessellateResult tessellate(const Mesh& rMesh,
+                                               const TessellateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/tessellate.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 /**
  * @file undo_green.hpp
@@ -32657,8 +33745,8 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
  * `vtk_to_meshio_type`), the one node-order quirk that differs between the
  * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
  * linear wedge), and `is_special_cell`, which flags the cell types whose
- * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_*
- * family) and therefore need the offsets-based reconstruction in
+ * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_* and
+ * VTK_BEZIER_* families) and therefore need the offsets-based reconstruction in
  * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
  */
 
@@ -32826,7 +33914,9 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @brief Whether a meshio cell type has a variable node count per cell in a
  * VTK/VTU connectivity+offsets representation.
  *
- * True for `"polygon"` and every `VTK_LAGRANGE_*` type. These cannot be
+ * True for `"polygon"` and every `VTK_LAGRANGE_*` and `VTK_BEZIER_*` type
+ * (since v16.40.0: a Bézier cell lists its control points in the Lagrange
+ * cell's node order, so its size varies the same way). These cannot be
  * described by a single fixed nodes-per-cell count, so
  * `detail::reconstruct_cells` (vtk_cells.hpp) reconstructs them from the
  * end-offsets array (grouping same-size runs) instead of slicing a uniform
@@ -32835,7 +33925,8 @@ inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
  * @return `true` if `meshio_type` needs offsets-based reconstruction.
  */
 inline bool is_special_cell(const std::string& rMeshioType) {
-    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0;
+    return rMeshioType == "polygon" || rMeshioType.rfind("VTK_LAGRANGE_", 0) == 0 ||
+           rMeshioType.rfind("VTK_BEZIER_", 0) == 0;
 }
 
 }  // namespace meshioplusplus
@@ -32843,6 +33934,62 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
+// ===== begin src/cpp/src/detail/closed_facets.hpp =====
+/**
+ * @file detail/closed_facets.hpp
+ * @brief The surface cells of a mesh as planar facets of a closed,
+ * consistently wound shell -- what the faceted `step` writer and `fit_cad`
+ * both build a solid from.
+ *
+ * A **core-private** header (the `surface_rings.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * The rings come from `surface_rings`. A polygon whose corners lie within
+ * `1e-9` of its extent of their Newell plane is kept whole; any other is
+ * fanned into triangles from its first corner. Every facet must have a
+ * direction (non-zero area), and the facets must close: no open, non-manifold
+ * or inconsistently wound edge (`crease_edges`).
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Planar facets in CSR form, with their source cells, points and normals.
+struct ClosedFacets {
+    std::vector<std::int64_t> mStart{0};  ///< offsets into `mNodes`, one more than facets
+    std::vector<std::int64_t> mNodes;     ///< the facets' point ids, concatenated
+    /// The global (block-major) cell id of each facet; a fanned cell repeats it.
+    std::vector<std::int64_t> mCell;
+    std::vector<double> mXyz;      ///< the mesh's points, three per point
+    std::vector<double> mNormals;  ///< the unit normal of each facet, three per facet
+    /// Cells that are not surface facets (lines, vertices), skipped.
+    std::size_t mNumSkipped = 0;
+
+    std::size_t NumFacets() const { return mCell.size(); }
+};
+
+/**
+ * @brief Collect the surface cells of @p rSurface as the facets of a closed shell.
+ * @param rPrefix prepended to every error message.
+ * @return the facets; empty (with `mNumSkipped` set) when there is no surface
+ *         cell, which the caller reports.
+ * @throws std::invalid_argument on a volume block, a non-finite coordinate, a
+ *         degenerate facet, or a surface that is not closed and consistently
+ *         wound.
+ */
+ClosedFacets closed_facets(const Mesh& rSurface, const std::string& rPrefix);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/closed_facets.hpp =====
 // ===== begin src/cpp/src/detail/crease_edges.hpp =====
 /**
  * @file detail/crease_edges.hpp
@@ -33977,6 +35124,316 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
+// ===== begin src/cpp/src/detail/patch_flatten.hpp =====
+/**
+ * @file patch_flatten.hpp
+ * @brief Flattening a triangulated surface patch over its best-fit plane or an
+ * unrolled cylinder, the fold test that says whether that flattening is a
+ * parametrisation, and splitting a patch no flattening parametrises into
+ * pieces that one does -- `fit_cad`'s freeform faces (roadmap 6.3.2), kept free
+ * of OpenCASCADE so it is testable in every build.
+ *
+ * Not installed: a core-private helper of `operations/fit_cad.cpp`.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+using PatchVec = std::array<double, 3>;
+using PatchTri = std::array<std::size_t, 3>;
+
+/// A patch flattened: per vertex its `(s, t)` parameters and its offset `h`
+/// from the plane or cylinder it is flattened over, with the map back.
+struct PatchFlat {
+    bool mCylinder = false;
+    PatchVec mOrigin{}, mE1{}, mE2{}, mAxis{};  // plane: origin, in-plane axes, normal
+    double mRadius = 0.0;
+    double mTheta0 = 0.0;
+    std::vector<double> mS, mT, mH;
+
+    /// The point at parameters `(S, T)` and offset `H`.
+    PatchVec At(double S, double T, double H) const;
+};
+
+/**
+ * @brief Flatten over the best-fit plane (`Kind` 0) or unroll around the axis
+ * the normals are most perpendicular to (`Kind` 1), the cylinder cut in the
+ * widest gap between the points' angles.
+ * @param rPts the patch's points.
+ * @param rNormals its triangles' unit normals.
+ * @param rAreas its triangles' areas.
+ * @return false when that flattening is degenerate.
+ */
+bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
+                   const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+                   PatchFlat& rOut);
+
+/// Whether a flattening folds: triangles of both orientations (beyond
+/// `1e-9` of the largest), or no area at all.
+bool patch_flat_folds(const PatchFlat& rFlat, const std::vector<PatchTri>& rTris);
+
+/// Unit normals and areas of the triangles.
+void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                   std::vector<PatchVec>& rNormals, std::vector<double>& rAreas);
+
+/// Whether the plane or the cylinder flattens the patch without folding.
+bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
+
+/// How `patch_split_until_flat` splits.
+struct PatchSplitOptions {
+    /// Halvings before a piece is given up on: at most `2^depth` pieces per patch.
+    int mMaxDepth = 4;
+    /// A piece with fewer triangles stays facets.
+    std::size_t mMinTriangles = 16;
+};
+
+/**
+ * @brief Split a patch no flattening parametrises into pieces one does.
+ *
+ * The triangles are halved at the area-weighted median of `n . e`, `e` the
+ * direction their normals spread along most (the principal axis of the
+ * area-weighted normal covariance): a cut along an iso-line of the normal, a
+ * smooth curve on a smooth surface. Each half is split into its edge-connected
+ * components, and each component that does not flatten is halved again, up to
+ * `mMaxDepth` times. Deterministic: ties go by triangle index, and pieces are
+ * numbered in the order of their lowest triangle.
+ *
+ * @return per triangle, its piece (from 0), or -1 for one left as facets
+ *         (a piece under `mMinTriangles`, or still folding at the depth cap).
+ */
+std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
+                                                 const std::vector<PatchTri>& rTris,
+                                                 const PatchSplitOptions& rOptions,
+                                                 std::size_t& rNumPieces);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/patch_flatten.hpp =====
+// ===== begin src/cpp/src/detail/feature_fit.hpp =====
+/**
+ * @file feature_fit.hpp
+ * @brief The OpenCASCADE-free half of `fit_cad`'s fillet and thread features
+ * (roadmap 6.3.1): the radius of a constant-radius rolling-ball fillet between
+ * two fitted primitives, and a straight-flank thread surface (a ruled helicoid)
+ * fitted to a patch.
+ *
+ * Not installed: a core-private helper of `operations/fit_cad.cpp`.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The distance from a point to a fitted primitive.
+ * @param Type 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus.
+ * @param pParams the ten `fit:patch_params` entries (see `fit_primitives.hpp`).
+ * @return the unsigned distance, or +inf for an unknown type.
+ */
+double primitive_distance(int Type, const double* pParams, const PatchVec& rP);
+
+/// A rolling-ball fillet's radius, fitted to a patch between two primitives.
+struct FilletFit {
+    bool mOk = false;
+    /// The ball radius.
+    double mRadius = 0.0;
+    /// +1 when the ball centres lie inside the solid (a convex, rounded edge:
+    /// centre = point - radius * outward normal), -1 outside (a concave fillet).
+    int mSide = 0;
+    /// RMS over the interior vertices of (distance from the ball centre to
+    /// each primitive - radius).
+    double mRms = 0.0;
+    /// The ball centres of the interior vertices: points of the fillet's spine.
+    std::vector<PatchVec> mCentres;
+};
+
+/**
+ * @brief Fit the radius of a constant-radius rolling-ball fillet.
+ *
+ * Every interior vertex of the patch (one no boundary edge touches), moved by
+ * `r` against or along its outward normal, should be a ball centre: `r` from
+ * both primitives. The radius minimises the mean squared misfit of both
+ * distances, over a log-spaced scan of `[RMin, RMax]` refined by golden
+ * section, for each side; the better side wins.
+ *
+ * @param rPts the patch's points.
+ * @param rTris its triangles, wound outwards (their normals point out of the solid).
+ * @return the fit, `mOk` false when the patch has fewer than four interior
+ *         vertices or the range is empty.
+ */
+FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                     int Type1, const double* pParams1, int Type2, const double* pParams2,
+                     double RMin, double RMax);
+
+/**
+ * @brief A straight-flank thread surface: the ruled helicoid
+ * `P(rho, theta) = O + rho (cos theta E1 + sin theta E2) + (C + K theta + T rho) A`,
+ * `K = pitch / (2 pi)`, `T` the flank's slope (the tangent of its angle to the
+ * radial plane).
+ */
+struct HelicoidFit {
+    bool mOk = false;
+    PatchVec mOrigin{}, mAxis{}, mE1{}, mE2{};
+    double mK = 0.0;  // axial advance per radian: pitch / (2 pi), signed by the hand
+    double mT = 0.0;  // axial slope per unit radius
+    double mC = 0.0;  // axial offset
+    /// The patch's extent in radius and in the unwrapped angle.
+    double mRhoMin = 0.0, mRhoMax = 0.0, mThetaMin = 0.0, mThetaMax = 0.0;
+    /// RMS and largest orthogonal distance of the vertices to the surface.
+    double mRms = 0.0, mMax = 0.0;
+    /// The surface point at `(Rho, Theta)`.
+    PatchVec At(double Rho, double Theta) const;
+    /// The pitch: the axial advance per turn.
+    double Pitch() const;
+};
+
+/**
+ * @brief Fit a ruled helicoid about a known axis to a patch.
+ *
+ * The angle of every vertex about the axis is unwrapped continuously over the
+ * patch's edges (breadth-first from its lowest vertex), which makes the model
+ * linear in `(C, K, T)`: one least-squares solve.
+ *
+ * @param rOrigin a point on the axis; @param rAxis its direction.
+ * @return the fit; `mOk` false when the patch touches the axis, cannot be
+ *         unwrapped consistently, spans less than half a turn, or the solve is
+ *         singular (a patch with no advance or no radial extent).
+ */
+HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                         const PatchVec& rOrigin, const PatchVec& rAxis);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/feature_fit.hpp =====
+// ===== begin src/cpp/src/detail/json_value.hpp =====
+/**
+ * @file detail/json_value.hpp
+ * @brief A small JSON document model, parser and writer for the readers and
+ * writers of JSON formats (Kratos CAD JSON today).
+ *
+ * The core's other JSON user, the pipeline parser, links the vendored
+ * nlohmann/json behind `MESHIOPLUSPLUS_WITH_JSON`; a format reader cannot
+ * depend on an optional submodule (the single header, WASM and every build
+ * must read the file), so this one is dependency-free:
+ *
+ *  - **Parsing** is strict RFC 8259 plus line and block comments, which
+ *    Kratos's own `Parameters` accept. Nesting is bounded, numbers go through
+ *    `detail::parse_double` (locale-independent), `\u` escapes (surrogate
+ *    pairs included) become UTF-8, and every malformed input throws
+ *    `ReadError` naming the format and the byte offset.
+ *  - **Objects keep their member order** (a vector of pairs, not a map), so a
+ *    rewrite keeps the file's layout; a duplicate key keeps both, and `Find`
+ *    returns the first.
+ *  - **Writing** is the layout nlohmann's `dump(4)` (and so Kratos's
+ *    `PrettyPrintJsonString`) produces, or compact. A number that was an
+ *    integer lexeme, or is integral and within 2^53, is written as an integer;
+ *    any other as the shortest of `%.15g`, `%.16g` and `%.17g` that reads back
+ *    exactly. The Python twin (`meshioplusplus/_json_text.py`) writes the
+ *    same bytes.
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// An object member, defined below JsonValue (which it holds by value).
+struct JsonMember;
+
+/// One JSON value; a plain aggregate, its members public.
+struct JsonValue {
+    enum class Kind : std::uint8_t { Null, Bool, Number, String, Array, Object };
+
+    Kind mKind = Kind::Null;
+    bool mBool = false;
+    /// The value of a number.
+    double mNumber = 0.0;
+    /// Whether the number was written as an integer that fits an int64.
+    bool mIsInteger = false;
+    /// Its value then.
+    std::int64_t mInteger = 0;
+    /// A string's UTF-8 bytes.
+    std::string mString;
+    /// An array's items.
+    std::vector<JsonValue> mItems;
+    /// An object's members, in file order.
+    std::vector<JsonMember> mMembers;
+
+    bool IsNull() const noexcept { return mKind == Kind::Null; }
+    bool IsBool() const noexcept { return mKind == Kind::Bool; }
+    bool IsNumber() const noexcept { return mKind == Kind::Number; }
+    bool IsString() const noexcept { return mKind == Kind::String; }
+    bool IsArray() const noexcept { return mKind == Kind::Array; }
+    bool IsObject() const noexcept { return mKind == Kind::Object; }
+
+    /// The first member named @p Key of an object, or null.
+    const JsonValue* Find(std::string_view Key) const noexcept;
+
+    static JsonValue Null();
+    static JsonValue Boolean(bool Value);
+    static JsonValue Number(double Value);
+    static JsonValue Integer(std::int64_t Value);
+    static JsonValue String(std::string Value);
+    static JsonValue Array();
+    static JsonValue Object();
+
+    /// Append to an array.
+    JsonValue& Push(JsonValue Value);
+    /// Append a member to an object (no check for an existing key).
+    JsonValue& Add(std::string Key, JsonValue Value);
+};
+
+/// One member of an object: its key and value. A named struct, not a
+/// `std::pair`: clang with libstdc++ cannot complete a vector of pairs holding
+/// the type being defined.
+struct JsonMember {
+    std::string mKey;
+    JsonValue mValue;
+
+    JsonMember(std::string Key, JsonValue Value)
+        : mKey(std::move(Key)), mValue(std::move(Value)) {}
+};
+
+/// Whether two values are equal: same kind, numbers by value, objects member
+/// by member in order.
+bool json_equal(const JsonValue& rA, const JsonValue& rB) noexcept;
+
+/**
+ * @brief Parse a whole JSON text.
+ * @param Text the bytes (a UTF-8 BOM is skipped).
+ * @param pFormat the format name for error messages.
+ * @throws ReadError on malformed input, nesting deeper than 256, or trailing
+ * content.
+ */
+JsonValue parse_json(std::string_view Text, const char* pFormat);
+
+/// The text of @p rValue, `dump(4)`-style when @p Indent > 0, else compact.
+std::string write_json(const JsonValue& rValue, int Indent = 4);
+
+/// Append @p Value's JSON spelling (see the file comment) to @p rOut.
+void append_json_number(std::string& rOut, double Value);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/json_value.hpp =====
 // ===== begin src/cpp/src/detail/keyword_card_view.hpp =====
 #include <cstdint>
 #include <string>
@@ -34102,6 +35559,219 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/lsq_fit.hpp =====
+// ===== begin src/cpp/src/detail/nurbs_eval.hpp =====
+/**
+ * @file detail/nurbs_eval.hpp
+ * @brief Point evaluation of B-spline and NURBS curves and tensor-product
+ * surfaces at arbitrary parameters (The NURBS Book, algorithms A2.1, A2.2,
+ * A3.1/A4.1 and A3.5/A4.3).
+ *
+ * Knot vectors are in the full form, `n + p + 1` knots for `n` control
+ * points. Control nets list direction 0 fastest (Kratos's and MFEM's order),
+ * each point `Dim` doubles. A null weight pointer evaluates the polynomial
+ * B-spline, with no division; otherwise the rational map. The arithmetic is
+ * the order the Python twin (`meshioplusplus/_nurbs_eval.py`) follows, so
+ * the two give the same bits.
+ *
+ * Core-private (not installed). The MFEM reader keeps its own kernel, which
+ * works on MFEM's compressed knot spans.
+ */
+
+// System includes
+#include <cstddef>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// The knot span index `i` (`p <= i <= n - 1`) with `U[i] <= u < U[i+1]`;
+/// the last span for `u >= U[n]`, the first for `u <= U[p]`.
+inline std::size_t nurbs_find_span(int P, const std::vector<double>& rKnots, std::size_t N,
+                                   double U) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t n = N - 1;
+    if (U >= rKnots[n + 1]) {
+        std::size_t s = n;
+        while (s > p && rKnots[s] == rKnots[s + 1])
+            --s;
+        return s;
+    }
+    if (U <= rKnots[p]) {
+        std::size_t s = p;
+        while (s < n && rKnots[s] == rKnots[s + 1])
+            ++s;
+        return s;
+    }
+    std::size_t low = p, high = n + 1, mid = (low + high) / 2;
+    while (U < rKnots[mid] || U >= rKnots[mid + 1]) {
+        if (U < rKnots[mid])
+            high = mid;
+        else
+            low = mid;
+        mid = (low + high) / 2;
+    }
+    return mid;
+}
+
+/// The `p + 1` nonzero basis functions of span `Span` at `U` into `pN`.
+inline void nurbs_basis(std::size_t Span, double U, int P, const std::vector<double>& rKnots,
+                        double* pN) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> left(p + 1), right(p + 1);
+    pN[0] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            const double temp = pN[r] / (right[r + 1] + left[j - r]);
+            pN[r] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        pN[j] = saved;
+    }
+}
+
+/// The spans of nonzero length as `(knot index, knot index + 1)` pairs:
+/// `i` from `p` to `n - 1` with `U[i] < U[i+1]`.
+inline std::vector<std::size_t> nurbs_spans(int P, const std::vector<double>& rKnots,
+                                            std::size_t N) {
+    std::vector<std::size_t> spans;
+    for (std::size_t i = static_cast<std::size_t>(P); i + 1 <= N; ++i)
+        if (rKnots[i] < rKnots[i + 1])
+            spans.push_back(i);
+    return spans;
+}
+
+/// A curve point at `U` in span `Span` (from `nurbs_find_span` or a cell's
+/// own span): `pOut[0 .. Dim)`.
+inline void nurbs_curve_point_in_span(int P, const std::vector<double>& rKnots,
+                                      const double* pCps, const double* pW, std::size_t Dim,
+                                      std::size_t Span, double U, double* pOut) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> nb(p + 1);
+    nurbs_basis(Span, U, P, rKnots, nb.data());
+    for (std::size_t d = 0; d < Dim; ++d)
+        pOut[d] = 0.0;
+    double w = 0.0;
+    for (std::size_t k = 0; k <= p; ++k) {
+        const std::size_t i = Span - p + k;
+        const double c = pW ? nb[k] * pW[i] : nb[k];
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] += c * pCps[i * Dim + d];
+        w += c;
+    }
+    if (pW)
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] /= w;
+}
+
+/// A surface point at `(U, V)` in spans `(SpanU, SpanV)`.
+inline void nurbs_surface_point_in_span(int P, int Q, const std::vector<double>& rKnotsU,
+                                        const std::vector<double>& rKnotsV, const double* pCps,
+                                        const double* pW, std::size_t Nu, std::size_t Dim,
+                                        std::size_t SpanU, std::size_t SpanV, double U, double V,
+                                        double* pOut) {
+    const auto p = static_cast<std::size_t>(P);
+    const auto q = static_cast<std::size_t>(Q);
+    std::vector<double> nu(p + 1), nv(q + 1), temp(Dim + 1);
+    nurbs_basis(SpanU, U, P, rKnotsU, nu.data());
+    nurbs_basis(SpanV, V, Q, rKnotsV, nv.data());
+    for (std::size_t d = 0; d < Dim; ++d)
+        pOut[d] = 0.0;
+    double w = 0.0;
+    for (std::size_t l = 0; l <= q; ++l) {
+        for (std::size_t d = 0; d <= Dim; ++d)
+            temp[d] = 0.0;
+        const std::size_t j = SpanV - q + l;
+        for (std::size_t k = 0; k <= p; ++k) {
+            const std::size_t i = SpanU - p + k;
+            const std::size_t idx = j * Nu + i;
+            const double c = pW ? nu[k] * pW[idx] : nu[k];
+            for (std::size_t d = 0; d < Dim; ++d)
+                temp[d] += c * pCps[idx * Dim + d];
+            temp[Dim] += c;
+        }
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] += nv[l] * temp[d];
+        w += nv[l] * temp[Dim];
+    }
+    if (pW)
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] /= w;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/nurbs_eval.hpp =====
+// ===== begin src/cpp/src/detail/occt_brep.hpp =====
+/**
+ * @file detail/occt_brep.hpp
+ * @brief An OpenCASCADE shape as meshio++ sees it: its faces, loops and edges
+ * as a `BrepInfo` (NURBS throughout) and its triangulation as a `Mesh`. The
+ * STEP and IGES readers and `fit_cad` share it.
+ *
+ * The shape is first converted with `BRepBuilderAPI_NurbsConvert`, which turns
+ * every surface into a `Geom_BSplineSurface` and every parameter curve into a
+ * `Geom2d_BSplineCurve` *consistently*: converting a face's surface alone
+ * reparametrises a cylinder or a sphere and leaves its trimming curves in the
+ * old parameters. Faces get ids `1 .. F` and edges `F + 1 .. F + E` (Kratos
+ * gives every geometry one id space), control points ids from 1, so the
+ * `BrepInfo` writes as CAD JSON Kratos loads.
+ *
+ * Core-private (not installed); compiled only with `MESHIOPLUSPLUS_HAS_OCCT`.
+ */
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
+// System includes
+#include <string>
+
+// External includes (OpenCASCADE)
+#include <TopoDS_Shape.hxx>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The shape a STEP (or, with @p Iges, an IGES) file transfers to.
+/// @throws ReadError when OpenCASCADE cannot read or transfer it.
+TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
+
+/// The shape with every surface and curve as a NURBS.
+TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape);
+
+/// The faces, loops and edges of a NURBS-converted shape.
+BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);
+
+/**
+ * @brief The shape triangulated by `BRepMesh_IncrementalMesh`: one `triangle`
+ * block, points shared between faces welded where they coincide exactly, and
+ * the `cad:*` cell data of `BrepInfo` (`cad:span` from each triangle's centre
+ * in the face's parameters, -1 where the triangulation has none).
+ * @param Deflection the chordal deflection (a length); at most 0 takes 1e-3 of
+ *        the bounding-box diagonal.
+ * @param Angular the angular deflection in radians.
+ */
+Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
+                     double Angular);
+
+/// Detach OpenCASCADE's message printers (it prints to stdout) while alive.
+class OcctQuiet {
+public:
+    OcctQuiet();
+    OcctQuiet(const OcctQuiet&) = delete;
+    OcctQuiet& operator=(const OcctQuiet&) = delete;
+    ~OcctQuiet();
+
+private:
+    struct Impl;
+    Impl* mpImpl;
+};
+
+}  // namespace meshioplusplus::detail
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT
+// ===== end src/cpp/src/detail/occt_brep.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -35487,6 +37157,105 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/typed_view.hpp =====
+// ===== begin src/cpp/src/detail/vtk_hex_order.hpp =====
+/**
+ * @file detail/vtk_hex_order.hpp
+ * @brief The edge order of VTK's higher-order hexahedra across file versions.
+ *
+ * A **core-private** header (the `typed_view.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * VTK 9.1 swapped the nodes of edges 10 and 11 of `VTK_LAGRANGE_HEXAHEDRON`
+ * and `VTK_BEZIER_HEXAHEDRON` (both edges run along the third direction), and
+ * marks files in the new order by version: VTK XML 2.2 and later, legacy 5.1.
+ * Its readers convert an older file on read and its legacy writer converts on
+ * writing 4.2. meshio++ holds the current order (`lagrange::vtk_lattice`), so a
+ * reader converts a file older than those versions, and a writer of an older
+ * version converts on the way out. The swap is its own inverse.
+ */
+
+// System includes
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Whether a VTK cell type id is a higher-order hexahedron (72 Lagrange, 79 Bezier).
+inline bool vtk_hex_order_applies(std::int64_t VtkType) {
+    return VtkType == 72 || VtkType == 79;
+}
+
+/**
+ * @brief Swap the nodes of edges 10 and 11 of one higher-order hexahedron.
+ * @param pNodes the cell's @p NumNodes nodes, swapped in place
+ * @param NumNodes the cell's node count
+ * @param pDegrees its degrees per direction (VTK's `HigherOrderDegrees`), or
+ *        `nullptr` for an isotropic cell (its degree follows from the count)
+ * @return false when the degrees do not account for the node count (nothing done)
+ */
+inline bool vtk_hex_swap_edges(std::int64_t* pNodes, std::size_t NumNodes,
+                               const std::int64_t* pDegrees) {
+    std::int64_t p[3];
+    if (pDegrees) {
+        std::copy(pDegrees, pDegrees + 3, p);
+    } else {
+        const auto q =
+            static_cast<std::int64_t>(std::llround(std::cbrt(static_cast<double>(NumNodes))));
+        p[0] = p[1] = p[2] = q - 1;
+    }
+    if (p[0] < 1 || p[1] < 1 || p[2] < 1 ||
+        (p[0] + 1) * (p[1] + 1) * (p[2] + 1) != static_cast<std::int64_t>(NumNodes))
+        return false;
+    const std::int64_t m = p[2] - 1;  // nodes on each edge along the third direction
+    const std::int64_t s = 8 + 4 * (p[0] - 1) + 4 * (p[1] - 1) + 2 * m;
+    std::swap_ranges(pNodes + s, pNodes + s + m, pNodes + s + m);
+    return true;
+}
+
+/**
+ * @brief Swap edges 10 and 11 of every higher-order hexahedron of a VTK cell
+ * stream (`rTypes` VTK ids, `rOffsets` the end offsets into @p pConn).
+ *
+ * @p pDegrees is the `HigherOrderDegrees` cell array (one row of three per
+ * cell), or `nullptr`; a cell whose degrees cannot be told is left alone, with
+ * one warning naming @p pWhat.
+ */
+inline void vtk_hex_swap_stream(std::int64_t* pConn, const std::vector<std::int64_t>& rOffsets,
+                                const std::vector<std::int64_t>& rTypes, const NDArray* pDegrees,
+                                const char* pWhat) {
+    const bool degrees = pDegrees && pDegrees->Size() == 3 * rTypes.size() && !rTypes.empty();
+    bool warned = false;
+    for (std::size_t c = 0; c < rTypes.size() && c < rOffsets.size(); ++c) {
+        if (!vtk_hex_order_applies(rTypes[c]))
+            continue;
+        const std::int64_t start = c == 0 ? 0 : rOffsets[c - 1];
+        const std::int64_t n = rOffsets[c] - start;
+        std::int64_t deg[3];
+        if (degrees)
+            for (std::size_t k = 0; k < 3; ++k)
+                deg[k] = read_int(*pDegrees, 3 * c + k);
+        if (n > 0 &&
+            !vtk_hex_swap_edges(pConn + start, static_cast<std::size_t>(n),
+                                degrees ? deg : nullptr) &&
+            !warned) {
+            log::warn(
+                "{}: a higher-order hexahedron of {} nodes in a file older than VTK 9.1 has no "
+                "degrees that explain its size; its edge order is left as written",
+                pWhat, n);
+            warned = true;
+        }
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/vtk_hex_order.hpp =====
 // ===== begin src/cpp/src/detail/vtk_xml_pieces.hpp =====
 #include <array>
 #include <cstdint>
@@ -53492,6 +55261,110 @@ const std::vector<CellQuadFace>& cell_refine_quad_faces(CellType Type) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cell_subdivision.cpp =====
+// ===== begin src/cpp/src/detail/closed_facets.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+ClosedFacets closed_facets(const Mesh& rSurface, const std::string& rPrefix) {
+    ClosedFacets out;
+    std::size_t total = 0;
+    for (const auto cb : rSurface.CellRange())
+        total += cb.NumCells();
+    const SurfaceRings in = surface_rings(rSurface, std::vector<std::uint8_t>(total, 1), rPrefix);
+    out.mNumSkipped = total - in.NumFaces();
+    if (in.NumFaces() == 0)
+        return out;
+
+    out.mXyz = surface_xyz(rSurface);
+    const std::vector<double>& xyz = out.mXyz;
+    for (double v : xyz)
+        if (!std::isfinite(v))
+            throw std::invalid_argument(rPrefix + "a coordinate is not finite");
+
+    // Fan every non-planar facet into triangles from its first corner.
+    std::vector<std::int64_t>& start = out.mStart;
+    std::vector<std::int64_t>& nodes = out.mNodes;
+    for (std::size_t f = 0; f < in.NumFaces(); ++f) {
+        const std::int64_t* ring = in.mNodes.data() + in.mStart[f];
+        const std::size_t size = static_cast<std::size_t>(in.mStart[f + 1] - in.mStart[f]);
+        bool planar = true;
+        if (size > 3) {
+            double n[3];
+            ring_unit_normal(xyz.data(), ring, size, n);
+            const double* p0 = &xyz[static_cast<std::size_t>(ring[0]) * 3];
+            double dev = 0.0, extent = 0.0;
+            for (std::size_t k = 1; k < size; ++k) {
+                const double* p = &xyz[static_cast<std::size_t>(ring[k]) * 3];
+                const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
+                const double h = std::fabs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]);
+                const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                dev = h > dev ? h : dev;
+                extent = l > extent ? l : extent;
+            }
+            planar = !(dev > 1e-9 * extent);
+        }
+        if (planar) {
+            nodes.insert(nodes.end(), ring, ring + size);
+            start.push_back(static_cast<std::int64_t>(nodes.size()));
+            out.mCell.push_back(in.mCell[f]);
+        } else {
+            for (std::size_t k = 1; k + 1 < size; ++k) {
+                nodes.insert(nodes.end(), {ring[0], ring[k], ring[k + 1]});
+                start.push_back(static_cast<std::int64_t>(nodes.size()));
+                out.mCell.push_back(in.mCell[f]);
+            }
+        }
+    }
+    const std::size_t nf = out.NumFacets();
+    std::vector<double>& normals = out.mNormals;
+    normals.assign(nf * 3, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        ring_unit_normal(xyz.data(), nodes.data() + start[f],
+                         static_cast<std::size_t>(start[f + 1] - start[f]), &normals[f * 3]);
+        if (normals[f * 3] == 0.0 && normals[f * 3 + 1] == 0.0 && normals[f * 3 + 2] == 0.0)
+            throw std::invalid_argument(rPrefix + "facet " + std::to_string(f) +
+                                        " is degenerate (zero area)");
+    }
+
+    // A solid's shell is closed and consistently wound.
+    const std::vector<CreaseEdge> bad = crease_edges(start, nodes, normals, 180.0);
+    std::size_t open = 0, nonmanifold = 0, inconsistent = 0;
+    std::string first;
+    std::size_t listed = 0;
+    for (const CreaseEdge& e : bad) {
+        const bool b = e.IsBoundary(), m = e.IsNonManifold(), i = e.mInconsistent;
+        if (!b && !m && !i)
+            continue;
+        open += b ? 1 : 0;
+        nonmanifold += m ? 1 : 0;
+        inconsistent += i ? 1 : 0;
+        if (listed < 5) {
+            first +=
+                (listed ? ", (" : "(") + std::to_string(e.mLo) + ", " + std::to_string(e.mHi) + ")";
+            ++listed;
+        }
+    }
+    if (open + nonmanifold + inconsistent > 0)
+        throw std::invalid_argument(
+            rPrefix + "the surface is not a closed, consistently wound solid: " +
+            std::to_string(open) + " open, " + std::to_string(nonmanifold) + " non-manifold and " +
+            std::to_string(inconsistent) + " inconsistently wound edge(s), first " + first +
+            " (point ids); run repair first");
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/closed_facets.cpp =====
 // ===== begin src/cpp/src/detail/colormap.cpp =====
 #include <stdexcept>
 
@@ -55960,6 +57833,307 @@ bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellT
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/facet_index.cpp =====
+// ===== begin src/cpp/src/detail/feature_fit.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <queue>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kFfPi = 3.14159265358979323846;
+
+double ff_dot(const PatchVec& rA, const PatchVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+PatchVec ff_sub(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+PatchVec ff_axpy(const PatchVec& rA, double S, const PatchVec& rB) {
+    return {rA[0] + S * rB[0], rA[1] + S * rB[1], rA[2] + S * rB[2]};
+}
+
+double ff_norm(const PatchVec& rA) {
+    return std::sqrt(ff_dot(rA, rA));
+}
+
+// The vertex's height along and distance from the axis through pP[0..2]
+// along the unit pP[3..5].
+void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
+    const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
+    const PatchVec a{pP[3], pP[4], pP[5]};
+    rH = ff_dot(d, a);
+    rRho = ff_norm(ff_axpy(d, -rH, a));
+}
+
+// Outward unit vertex normals (area-weighted) and which vertices no
+// boundary edge touches.
+void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                       std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior) {
+    rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
+    std::map<std::pair<std::size_t, std::size_t>, int> uses;
+    for (const PatchTri& t : rTris) {
+        const PatchVec e1 = ff_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = ff_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                         e1[0] * e2[1] - e1[1] * e2[0]};
+        for (std::size_t v : t)
+            rNormals[v] = ff_axpy(rNormals[v], 1.0, n);
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            ++uses[{std::min(a, b), std::max(a, b)}];
+        }
+    }
+    for (PatchVec& n : rNormals) {
+        const double len = ff_norm(n);
+        if (len > 0.0)
+            n = {n[0] / len, n[1] / len, n[2] / len};
+    }
+    rInterior.assign(rPts.size(), 0);
+    for (const PatchTri& t : rTris)
+        for (std::size_t v : t)
+            rInterior[v] = 1;
+    for (const auto& kv : uses)
+        if (kv.second == 1)
+            rInterior[kv.first.first] = rInterior[kv.first.second] = 0;
+}
+
+}  // namespace
+
+double primitive_distance(int Type, const double* pP, const PatchVec& rX) {
+    switch (Type) {
+        case 1: {
+            const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
+            return std::fabs(d[0] * pP[3] + d[1] * pP[4] + d[2] * pP[5]);
+        }
+        case 2: {
+            const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
+            return std::fabs(ff_norm(d) - pP[6]);
+        }
+        case 3: {
+            double h = 0.0, rho = 0.0;
+            ff_axial(pP, rX, h, rho);
+            return std::fabs(rho - pP[6]);
+        }
+        case 4: {
+            double h = 0.0, rho = 0.0;
+            ff_axial(pP, rX, h, rho);
+            const double phi = pP[8] * kFfPi / 180.0;
+            if (h * std::cos(phi) + rho * std::sin(phi) < 0.0)
+                return std::sqrt(h * h + rho * rho);  // behind the apex
+            return std::fabs(rho * std::cos(phi) - h * std::sin(phi));
+        }
+        case 5: {
+            double h = 0.0, rho = 0.0;
+            ff_axial(pP, rX, h, rho);
+            return std::fabs(std::hypot(rho - pP[6], h) - pP[7]);
+        }
+        default:
+            return std::numeric_limits<double>::infinity();
+    }
+}
+
+FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                     int Type1, const double* pParams1, int Type2, const double* pParams2,
+                     double RMin, double RMax) {
+    FilletFit out;
+    if (!(RMin > 0.0) || !(RMax > RMin))
+        return out;
+    std::vector<PatchVec> normals;
+    std::vector<std::uint8_t> interior;
+    ff_vertex_normals(rPts, rTris, normals, interior);
+    std::vector<std::size_t> verts;
+    for (std::size_t v = 0; v < rPts.size(); ++v)
+        if (interior[v] && ff_norm(normals[v]) > 0.5)
+            verts.push_back(v);
+    if (verts.size() < 4)
+        return out;
+    auto misfit = [&](int Side, double R) {
+        double s = 0.0;
+        for (std::size_t v : verts) {
+            const PatchVec c = ff_axpy(rPts[v], -Side * R, normals[v]);
+            const double d1 = primitive_distance(Type1, pParams1, c) - R;
+            const double d2 = primitive_distance(Type2, pParams2, c) - R;
+            s += d1 * d1 + d2 * d2;
+        }
+        return s / static_cast<double>(2 * verts.size());
+    };
+    constexpr int kScan = 48;
+    const double lr0 = std::log(RMin), lr1 = std::log(RMax);
+    double best = std::numeric_limits<double>::infinity();
+    for (int side : {1, -1}) {
+        int arg = 0;
+        double low = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < kScan; ++i) {
+            const double f = misfit(side, std::exp(lr0 + (lr1 - lr0) * i / (kScan - 1)));
+            if (f < low) {
+                low = f;
+                arg = i;
+            }
+        }
+        // Golden section between the best sample's neighbours.
+        double a = lr0 + (lr1 - lr0) * std::max(arg - 1, 0) / (kScan - 1);
+        double b = lr0 + (lr1 - lr0) * std::min(arg + 1, kScan - 1) / (kScan - 1);
+        const double g = 0.5 * (std::sqrt(5.0) - 1.0);
+        double x1 = b - g * (b - a), x2 = a + g * (b - a);
+        double f1 = misfit(side, std::exp(x1)), f2 = misfit(side, std::exp(x2));
+        for (int it = 0; it < 80; ++it) {
+            if (f1 <= f2) {
+                b = x2;
+                x2 = x1;
+                f2 = f1;
+                x1 = b - g * (b - a);
+                f1 = misfit(side, std::exp(x1));
+            } else {
+                a = x1;
+                x1 = x2;
+                f1 = f2;
+                x2 = a + g * (b - a);
+                f2 = misfit(side, std::exp(x2));
+            }
+        }
+        const double r = std::exp(0.5 * (a + b));
+        const double f = misfit(side, r);
+        if (f < best) {
+            best = f;
+            out.mRadius = r;
+            out.mSide = side;
+        }
+    }
+    out.mRms = std::sqrt(best);
+    out.mOk = std::isfinite(out.mRms);
+    for (std::size_t v : verts)
+        out.mCentres.push_back(ff_axpy(rPts[v], -out.mSide * out.mRadius, normals[v]));
+    return out;
+}
+
+PatchVec HelicoidFit::At(double Rho, double Theta) const {
+    PatchVec p = ff_axpy(mOrigin, Rho * std::cos(Theta), mE1);
+    p = ff_axpy(p, Rho * std::sin(Theta), mE2);
+    return ff_axpy(p, mC + mK * Theta + mT * Rho, mAxis);
+}
+
+double HelicoidFit::Pitch() const {
+    return 2.0 * kFfPi * mK;
+}
+
+HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                         const PatchVec& rOrigin, const PatchVec& rAxis) {
+    HelicoidFit out;
+    const std::size_t n = rPts.size();
+    const double alen = ff_norm(rAxis);
+    if (n < 4 || rTris.empty() || !(alen > 0.0))
+        return out;
+    out.mOrigin = rOrigin;
+    out.mAxis = {rAxis[0] / alen, rAxis[1] / alen, rAxis[2] / alen};
+    lsq_frame(out.mAxis.data(), out.mE1.data(), out.mE2.data());
+    std::vector<double> z(n), rho(n), phi(n);
+    double rho_max = 0.0;
+    for (std::size_t v = 0; v < n; ++v) {
+        const PatchVec d = ff_sub(rPts[v], rOrigin);
+        z[v] = ff_dot(d, out.mAxis);
+        const PatchVec radial = ff_axpy(d, -z[v], out.mAxis);
+        rho[v] = ff_norm(radial);
+        phi[v] = std::atan2(ff_dot(radial, out.mE2), ff_dot(radial, out.mE1));
+        rho_max = std::max(rho_max, rho[v]);
+    }
+    for (double r : rho)
+        if (!(r > 1e-9 * rho_max))
+            return out;  // the patch touches the axis
+    // Unwrap the angle over the patch's edges.
+    std::vector<std::vector<std::size_t>> adj(n);
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            adj[t[static_cast<std::size_t>(k)]].push_back(t[static_cast<std::size_t>((k + 1) % 3)]);
+            adj[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(t[static_cast<std::size_t>(k)]);
+        }
+    for (auto& a : adj)
+        std::sort(a.begin(), a.end());
+    std::vector<double> theta(n, 0.0);
+    std::vector<std::uint8_t> seen(n, 0);
+    std::queue<std::size_t> todo;
+    std::size_t start = 0;
+    while (start < n && adj[start].empty())
+        ++start;
+    if (start == n)
+        return out;
+    theta[start] = phi[start];
+    seen[start] = 1;
+    todo.push(start);
+    while (!todo.empty()) {
+        const std::size_t u = todo.front();
+        todo.pop();
+        for (std::size_t v : adj[u]) {
+            double step = phi[v] - phi[u];
+            step -= 2.0 * kFfPi * std::round(step / (2.0 * kFfPi));
+            if (!seen[v]) {
+                seen[v] = 1;
+                theta[v] = theta[u] + step;
+                todo.push(v);
+            } else if (std::fabs(theta[v] - theta[u] - step) > 1e-6) {
+                return out;  // the angle does not unwrap: the patch winds round the axis
+            }
+        }
+    }
+    for (std::size_t v = 0; v < n; ++v)
+        if (!seen[v] && !adj[v].empty())
+            return out;  // more than one piece
+    // z = C + K theta + T rho, by least squares.
+    std::vector<double> a(9, 0.0), b(3, 0.0);
+    for (std::size_t v = 0; v < n; ++v) {
+        if (adj[v].empty())
+            continue;
+        const double row[3] = {1.0, theta[v], rho[v]};
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j)
+                a[static_cast<std::size_t>(i * 3 + j)] += row[i] * row[j];
+            b[static_cast<std::size_t>(i)] += row[i] * z[v];
+        }
+    }
+    if (!lsq_solve(a, b, 3))
+        return out;
+    out.mC = b[0];
+    out.mK = b[1];
+    out.mT = b[2];
+    out.mThetaMin = out.mRhoMin = std::numeric_limits<double>::infinity();
+    out.mThetaMax = out.mRhoMax = -std::numeric_limits<double>::infinity();
+    double sum = 0.0;
+    std::size_t used = 0;
+    for (std::size_t v = 0; v < n; ++v) {
+        if (adj[v].empty())
+            continue;
+        const double e = z[v] - (out.mC + out.mK * theta[v] + out.mT * rho[v]);
+        const double grad =
+            std::sqrt(1.0 + out.mT * out.mT + (out.mK / rho[v]) * (out.mK / rho[v]));
+        const double d = std::fabs(e) / grad;
+        sum += d * d;
+        out.mMax = std::max(out.mMax, d);
+        ++used;
+        out.mThetaMin = std::min(out.mThetaMin, theta[v]);
+        out.mThetaMax = std::max(out.mThetaMax, theta[v]);
+        out.mRhoMin = std::min(out.mRhoMin, rho[v]);
+        out.mRhoMax = std::max(out.mRhoMax, rho[v]);
+    }
+    out.mRms = std::sqrt(sum / static_cast<double>(used));
+    // Half a turn at least: less of a helicoid is as well a cone or a plane.
+    out.mOk = out.mThetaMax - out.mThetaMin >= kFfPi && std::isfinite(out.mRms) &&
+              out.mRhoMax > out.mRhoMin;
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/feature_fit.cpp =====
 // ===== begin src/cpp/src/detail/fortran_records.cpp =====
 #include <cstdint>
 #include <cstring>
@@ -56887,17 +59061,54 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 }
 #endif
 
-// libhdf5 reads an unfiltered chunk straight from its stored bytes, but sizes the
-// read by the chunk's elements: a record shorter than the chunk makes the read copy
-// past the stored bytes (a heap-buffer-overflow inside HDF5 1.10, found by the
-// fuzzer). Each allocated chunk of an unfiltered dataset is checked before a read.
-// A filtered chunk is decoded into a buffer of the full size and is not affected.
+// libhdf5 1.10 copies a chunk's elements out of the bytes the chunk delivers without
+// checking that there are enough of them: a heap-buffer-overflow inside HDF5 1.10,
+// found by the fuzzer. A chunk delivers its stored record when its filters were
+// skipped, and its inflated output when deflate was applied (a shuffle keeps the
+// size). So each allocated chunk that a read reaches is verified before the read: a
+// chunk stored as its elements must hold the whole chunk, and a deflated one must
+// inflate to exactly the whole chunk. A read of rows [Row0, Row1) reaches only the
+// chunks that hold them; a whole-dataset read passes [0, max). Only shuffle and
+// deflate, in that order, can be verified here, plus a trailing fletcher32 checksum,
+// which libhdf5 checks on the read and whose 4 bytes are left out of the sizes below.
+// Any other pipeline, such as deflate followed by shuffle (which MSC Nastran writes),
+// is read unverified, so the over-read stays possible for it.
 // Listing the chunks needs HDF5 1.10.5; older libraries are not checked.
-void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
+void h5_check_chunks(hid_t dset, const std::string& rName, hsize_t Row0, hsize_t Row1) {
 #if H5_VERSION_GE(1, 10, 5)
     Hid dcpl(H5Dget_create_plist(dset), H5Pclose);
-    if (H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 0)
+    if (H5Pget_layout(dcpl) != H5D_CHUNKED)
         return;
+    const int nfilters = H5Pget_nfilters(dcpl);
+    if (nfilters < 0)
+        throw ReadError("HDF5: could not list the filters of dataset '" + rName + "'");
+    std::vector<H5Z_filter_t> ids(static_cast<std::size_t>(nfilters));
+    for (int f = 0; f < nfilters; ++f) {
+        unsigned flags = 0;
+        unsigned config = 0;
+        std::size_t nelmts = 0;
+        ids[static_cast<std::size_t>(f)] = H5Pget_filter2(dcpl, static_cast<unsigned>(f), &flags,
+                                                          &nelmts, nullptr, 0, nullptr, &config);
+    }
+    // A checksum must come last: libhdf5 verifies it and strips its 4 bytes.
+    const bool checksum = nfilters > 0 && ids.back() == H5Z_FILTER_FLETCHER32;
+    const int inner = checksum ? nfilters - 1 : nfilters;
+    bool deflate = false;
+    for (int f = 0; f < inner; ++f) {
+        const bool last = f == inner - 1;
+        const H5Z_filter_t id = ids[static_cast<std::size_t>(f)];
+        if (id == H5Z_FILTER_SHUFFLE && f == 0)
+            continue;
+        if (id == H5Z_FILTER_DEFLATE && last) {
+            deflate = true;
+            continue;
+        }
+        return;  // not a pipeline this check can verify: the dataset is read unverified
+    }
+#ifndef MESHIOPLUSPLUS_HAS_ZLIB
+    if (deflate)
+        return;  // this build cannot inflate a chunk to verify it: read it unverified
+#endif
     Hid space(H5Dget_space(dset), H5Sclose);
     const int rank = H5Sget_simple_extent_ndims(space);
     if (rank <= 0)
@@ -56917,7 +59128,12 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
     hsize_t nchunks = 0;
     if (H5Dget_num_chunks(dset, space, &nchunks) < 0)
         throw ReadError("HDF5: could not list the chunks of dataset '" + rName + "'");
+    // Mask bits index the whole pipeline: a set bit means that filter was skipped.
+    const unsigned deflate_bit = deflate ? 1u << static_cast<unsigned>(inner - 1) : 0u;
+    const unsigned checksum_bit = checksum ? 1u << static_cast<unsigned>(nfilters - 1) : 0u;
     std::vector<hsize_t> offset(static_cast<std::size_t>(rank));
+    std::vector<std::uint8_t> stored;
+    std::vector<std::uint8_t> inflated;
     for (hsize_t i = 0; i < nchunks; ++i) {
         unsigned mask = 0;
         haddr_t addr = 0;
@@ -56925,10 +59141,52 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
         if (H5Dget_chunk_info(dset, space, i, offset.data(), &mask, &addr, &size) < 0)
             throw ReadError("HDF5: could not read chunk " + std::to_string(i) + " of dataset '" +
                             rName + "'");
-        if (size != expected)
+        // Only the chunks that hold rows [Row0, Row1) are read, so only they are checked.
+        if (offset[0] >= Row1 || offset[0] + chunk[0] <= Row0)
+            continue;
+        // libhdf5 strips the checksum, the 4 bytes at the end of the record, when it was applied.
+        const bool checksummed = checksum && !(mask & checksum_bit);
+        if (checksummed && size < 4)
             throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
-                            "' is stored in " + std::to_string(size) + " bytes, not " +
-                            std::to_string(expected));
+                            "' is shorter than its checksum");
+        const hsize_t payload = checksummed ? size - 4 : size;
+        if (!deflate || (mask & deflate_bit)) {
+            if (payload != expected)
+                throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
+                                "' is stored in " + std::to_string(payload) + " bytes, not " +
+                                std::to_string(expected));
+            continue;
+        }
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        // A zlib stream expands at most 1032 to 1, which bounds the buffer below.
+        if (payload > std::numeric_limits<hsize_t>::max() / 1032 ||
+            expected > payload * 1032 + 1024)
+            throw ReadError("HDF5: a compressed chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "' cannot inflate to " + std::to_string(expected) + " bytes");
+        stored.resize(static_cast<std::size_t>(size));
+        inflated.resize(static_cast<std::size_t>(expected));
+        unsigned read_mask = 0;
+#if H5_VERSION_GE(2, 0, 0)
+        std::size_t got = stored.size();
+        const herr_t rc =
+            H5Dread_chunk2(dset, H5P_DEFAULT, offset.data(), &read_mask, stored.data(), &got);
+        if (rc < 0 || got != stored.size())
+#else
+        const herr_t rc =
+            H5Dread_chunk(dset, H5P_DEFAULT, offset.data(), &read_mask, stored.data());
+        if (rc < 0)
+#endif
+            throw ReadError("HDF5: could not read compressed chunk " + std::to_string(i) +
+                            " of dataset '" + rName + "'");
+        uLongf n = static_cast<uLongf>(inflated.size());
+        const int zrc = uncompress(inflated.data(), &n, stored.data(), static_cast<uLong>(payload));
+        if (zrc != Z_OK || static_cast<std::size_t>(n) != inflated.size())
+            throw ReadError("HDF5: a compressed chunk " + std::to_string(i) + " of dataset '" +
+                            rName + "' does not inflate to " + std::to_string(expected) + " bytes");
+#else
+        throw ReadError("HDF5: dataset '" + rName +
+                        "' is compressed, and this build has no zlib to verify it");
+#endif
     }
 #else
     (void)dset;
@@ -56938,11 +59196,24 @@ void h5_check_unfiltered_chunks(hid_t dset, const std::string& rName) {
 
 }  // namespace
 
+void verify_chunks(hid_t dset, const std::string& rName) {
+    h5_check_chunks(dset, rName, 0, std::numeric_limits<hsize_t>::max());
+}
+
+void verify_chunk_rows(hid_t dset, const std::string& rName, std::size_t Row0, std::size_t Count) {
+    if (Count == 0)
+        return;
+    const hsize_t max = std::numeric_limits<hsize_t>::max();
+    const hsize_t row0 = static_cast<hsize_t>(Row0);
+    const hsize_t count = static_cast<hsize_t>(Count);
+    h5_check_chunks(dset, rName, row0, count > max - row0 ? max : row0 + count);
+}
+
 NDArray read_dataset(hid_t loc, const std::string& rName) {
     Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
     if (!d.Valid())
         throw ReadError("HDF5: missing dataset '" + rName + "'");
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunks(d, rName);
     Hid space(H5Dget_space(d), H5Sclose);
     int ndim = H5Sget_simple_extent_ndims(space);
     std::vector<hsize_t> hdims(ndim > 0 ? ndim : 0);
@@ -57185,7 +59456,7 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
 
     std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
     std::vector<hsize_t> count(dims);
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunk_rows(d, rName, Row0, Count);
     start[0] = Row0;
     count[0] = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, start.data(), nullptr, count.data(), nullptr) <
@@ -57476,7 +59747,7 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
     Hid mem_type(H5Tcreate(H5T_COMPOUND, H5Tget_size(elem)), H5Tclose);
     if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, elem) < 0)
         throw ReadError("HDF5: could not build a memory type for '" + rName + "/" + rMember + "'");
-    h5_check_unfiltered_chunks(d, rName);
+    verify_chunk_rows(d, rName, Row0, Count);
     const hsize_t start = Row0;
     const hsize_t count = Count;
     if (H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr) < 0)
@@ -57492,6 +59763,599 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/json_value.cpp =====
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+constexpr int kJsonMaxDepth = 256;
+
+// The offset of the first byte of @p rText that is not well-formed UTF-8
+// (overlong forms, surrogates and code points past U+10FFFF included, as
+// Python's strict decoder rejects them), or npos.
+std::size_t json_invalid_utf8_at(std::string_view Text) noexcept {
+    const auto* p = reinterpret_cast<const unsigned char*>(Text.data());
+    const std::size_t n = Text.size();
+    for (std::size_t i = 0; i < n;) {
+        const unsigned char c = p[i];
+        if (c < 0x80) {
+            ++i;
+            continue;
+        }
+        std::size_t len = 0;
+        unsigned char lo = 0x80, hi = 0xBF;  // the second byte's range
+        if (c >= 0xC2 && c <= 0xDF) {
+            len = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            len = 3;
+            if (c == 0xE0)
+                lo = 0xA0;  // no overlong forms
+            else if (c == 0xED)
+                hi = 0x9F;  // no surrogates
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            len = 4;
+            if (c == 0xF0)
+                lo = 0x90;
+            else if (c == 0xF4)
+                hi = 0x8F;  // nothing past U+10FFFF
+        } else {
+            return i;
+        }
+        if (i + len > n || p[i + 1] < lo || p[i + 1] > hi)
+            return i;
+        for (std::size_t k = 2; k < len; ++k)
+            if (p[i + k] < 0x80 || p[i + k] > 0xBF)
+                return i;
+        i += len;
+    }
+    return std::string_view::npos;
+}
+
+class JsonParser {
+public:
+    JsonParser(std::string_view Text, const char* pFormat) : mText(Text), mpFormat(pFormat) {
+        if (mText.size() >= 3 && static_cast<unsigned char>(mText[0]) == 0xEF &&
+            static_cast<unsigned char>(mText[1]) == 0xBB &&
+            static_cast<unsigned char>(mText[2]) == 0xBF)
+            mPos = 3;
+        // JSON text is UTF-8 (RFC 8259), and a string read from it reaches
+        // callers (Python among them) that must be able to decode it.
+        const std::size_t bad = json_invalid_utf8_at(mText);
+        if (bad != std::string_view::npos) {
+            mPos = bad;
+            Fail("the text is not valid UTF-8");
+        }
+    }
+
+    JsonValue ParseDocument() {
+        SkipSpace();
+        JsonValue v = ParseValue(0);
+        SkipSpace();
+        if (mPos != mText.size())
+            Fail("unexpected content after the document");
+        return v;
+    }
+
+private:
+    [[noreturn]] void Fail(const std::string& rWhat) const {
+        throw ReadError(std::string("meshio++: ") + mpFormat + ": malformed JSON at byte " +
+                        std::to_string(mPos) + ": " + rWhat);
+    }
+
+    bool AtEnd() const noexcept { return mPos >= mText.size(); }
+    char Peek() const noexcept { return AtEnd() ? '\0' : mText[mPos]; }
+
+    void SkipSpace() {
+        while (!AtEnd()) {
+            const char c = mText[mPos];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++mPos;
+            } else if (c == '/' && mPos + 1 < mText.size() && mText[mPos + 1] == '/') {
+                while (!AtEnd() && mText[mPos] != '\n')
+                    ++mPos;
+            } else if (c == '/' && mPos + 1 < mText.size() && mText[mPos + 1] == '*') {
+                const std::size_t close = mText.find("*/", mPos + 2);
+                if (close == std::string_view::npos)
+                    Fail("unterminated comment");
+                mPos = close + 2;
+            } else {
+                break;
+            }
+        }
+    }
+
+    void Expect(std::string_view Word) {
+        if (mText.substr(mPos, Word.size()) != Word)
+            Fail("expected '" + std::string(Word) + "'");
+        mPos += Word.size();
+    }
+
+    JsonValue ParseValue(int Depth) {
+        if (Depth > kJsonMaxDepth)
+            Fail("nesting deeper than " + std::to_string(kJsonMaxDepth));
+        switch (Peek()) {
+            case '{':
+                return ParseObject(Depth);
+            case '[':
+                return ParseArray(Depth);
+            case '"':
+                return JsonValue::String(ParseString());
+            case 't':
+                Expect("true");
+                return JsonValue::Boolean(true);
+            case 'f':
+                Expect("false");
+                return JsonValue::Boolean(false);
+            case 'n':
+                Expect("null");
+                return JsonValue::Null();
+            default:
+                if (Peek() == '-' || (Peek() >= '0' && Peek() <= '9'))
+                    return ParseNumber();
+                Fail(AtEnd() ? "unexpected end of input" : "unexpected character");
+        }
+    }
+
+    JsonValue ParseObject(int Depth) {
+        ++mPos;
+        JsonValue v = JsonValue::Object();
+        SkipSpace();
+        if (Peek() == '}') {
+            ++mPos;
+            return v;
+        }
+        for (;;) {
+            SkipSpace();
+            if (Peek() != '"')
+                Fail("expected a member name");
+            std::string key = ParseString();
+            SkipSpace();
+            if (Peek() != ':')
+                Fail("expected ':'");
+            ++mPos;
+            SkipSpace();
+            JsonValue item = ParseValue(Depth + 1);
+            v.mMembers.emplace_back(std::move(key), std::move(item));
+            SkipSpace();
+            if (Peek() == ',') {
+                ++mPos;
+                continue;
+            }
+            if (Peek() == '}') {
+                ++mPos;
+                return v;
+            }
+            Fail("expected ',' or '}'");
+        }
+    }
+
+    JsonValue ParseArray(int Depth) {
+        ++mPos;
+        JsonValue v = JsonValue::Array();
+        SkipSpace();
+        if (Peek() == ']') {
+            ++mPos;
+            return v;
+        }
+        for (;;) {
+            SkipSpace();
+            v.mItems.push_back(ParseValue(Depth + 1));
+            SkipSpace();
+            if (Peek() == ',') {
+                ++mPos;
+                continue;
+            }
+            if (Peek() == ']') {
+                ++mPos;
+                return v;
+            }
+            Fail("expected ',' or ']'");
+        }
+    }
+
+    unsigned ParseHex4() {
+        if (mPos + 4 > mText.size())
+            Fail("truncated \\u escape");
+        unsigned code = 0;
+        for (int i = 0; i < 4; ++i) {
+            const char c = mText[mPos++];
+            code <<= 4;
+            if (c >= '0' && c <= '9')
+                code |= static_cast<unsigned>(c - '0');
+            else if (c >= 'a' && c <= 'f')
+                code |= static_cast<unsigned>(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F')
+                code |= static_cast<unsigned>(c - 'A' + 10);
+            else
+                Fail("bad \\u escape");
+        }
+        return code;
+    }
+
+    static void AppendUtf8(std::string& rOut, unsigned Code) {
+        if (Code < 0x80) {
+            rOut += static_cast<char>(Code);
+        } else if (Code < 0x800) {
+            rOut += static_cast<char>(0xC0 | (Code >> 6));
+            rOut += static_cast<char>(0x80 | (Code & 0x3F));
+        } else if (Code < 0x10000) {
+            rOut += static_cast<char>(0xE0 | (Code >> 12));
+            rOut += static_cast<char>(0x80 | ((Code >> 6) & 0x3F));
+            rOut += static_cast<char>(0x80 | (Code & 0x3F));
+        } else {
+            rOut += static_cast<char>(0xF0 | (Code >> 18));
+            rOut += static_cast<char>(0x80 | ((Code >> 12) & 0x3F));
+            rOut += static_cast<char>(0x80 | ((Code >> 6) & 0x3F));
+            rOut += static_cast<char>(0x80 | (Code & 0x3F));
+        }
+    }
+
+    std::string ParseString() {
+        ++mPos;  // the opening quote
+        std::string out;
+        for (;;) {
+            if (AtEnd())
+                Fail("unterminated string");
+            const char c = mText[mPos++];
+            if (c == '"')
+                return out;
+            if (static_cast<unsigned char>(c) < 0x20)
+                Fail("control character in a string");
+            if (c != '\\') {
+                out += c;
+                continue;
+            }
+            if (AtEnd())
+                Fail("unterminated escape");
+            const char e = mText[mPos++];
+            switch (e) {
+                case '"':
+                case '\\':
+                case '/':
+                    out += e;
+                    break;
+                case 'b':
+                    out += '\b';
+                    break;
+                case 'f':
+                    out += '\f';
+                    break;
+                case 'n':
+                    out += '\n';
+                    break;
+                case 'r':
+                    out += '\r';
+                    break;
+                case 't':
+                    out += '\t';
+                    break;
+                case 'u': {
+                    unsigned code = ParseHex4();
+                    if (code >= 0xD800 && code <= 0xDBFF) {
+                        if (mPos + 2 > mText.size() || mText[mPos] != '\\' || mText[mPos + 1] != 'u')
+                            Fail("unpaired surrogate");
+                        mPos += 2;
+                        const unsigned low = ParseHex4();
+                        if (low < 0xDC00 || low > 0xDFFF)
+                            Fail("unpaired surrogate");
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                        Fail("unpaired surrogate");
+                    }
+                    AppendUtf8(out, code);
+                    break;
+                }
+                default:
+                    Fail("bad escape");
+            }
+        }
+    }
+
+    JsonValue ParseNumber() {
+        const std::size_t start = mPos;
+        auto digit = [this]() { return !AtEnd() && mText[mPos] >= '0' && mText[mPos] <= '9'; };
+        bool integral = true;
+        if (Peek() == '-')
+            ++mPos;
+        if (Peek() == '0') {
+            ++mPos;
+        } else if (digit()) {
+            while (digit())
+                ++mPos;
+        } else {
+            Fail("bad number");
+        }
+        if (Peek() == '.') {
+            integral = false;
+            ++mPos;
+            if (!digit())
+                Fail("bad number");
+            while (digit())
+                ++mPos;
+        }
+        if (Peek() == 'e' || Peek() == 'E') {
+            integral = false;
+            ++mPos;
+            if (Peek() == '+' || Peek() == '-')
+                ++mPos;
+            if (!digit())
+                Fail("bad number");
+            while (digit())
+                ++mPos;
+        }
+        const std::string lexeme(mText.substr(start, mPos - start));
+        JsonValue v;
+        v.mKind = JsonValue::Kind::Number;
+        v.mNumber = parse_double(lexeme);
+        if (integral) {
+            // Exact int64 when it fits; otherwise the double alone.
+            const bool negative = lexeme[0] == '-';
+            std::uint64_t magnitude = 0;
+            bool fits = true;
+            for (std::size_t i = negative ? 1 : 0; i < lexeme.size(); ++i) {
+                const auto d = static_cast<std::uint64_t>(lexeme[i] - '0');
+                if (magnitude > (std::numeric_limits<std::uint64_t>::max() - d) / 10) {
+                    fits = false;
+                    break;
+                }
+                magnitude = magnitude * 10 + d;
+            }
+            const std::uint64_t limit =
+                negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1
+                         : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+            if (fits && magnitude <= limit && !(negative && magnitude == 0)) {
+                v.mIsInteger = true;
+                v.mInteger = negative ? static_cast<std::int64_t>(0 - magnitude)
+                                      : static_cast<std::int64_t>(magnitude);
+            }
+        }
+        return v;
+    }
+
+    std::string_view mText;
+    const char* mpFormat;
+    std::size_t mPos = 0;
+};
+
+void json_append_string(std::string& rOut, const std::string& rText) {
+    static const char kHex[] = "0123456789abcdef";
+    rOut += '"';
+    for (const char ch : rText) {
+        const auto c = static_cast<unsigned char>(ch);
+        switch (c) {
+            case '"':
+                rOut += "\\\"";
+                break;
+            case '\\':
+                rOut += "\\\\";
+                break;
+            case '\b':
+                rOut += "\\b";
+                break;
+            case '\f':
+                rOut += "\\f";
+                break;
+            case '\n':
+                rOut += "\\n";
+                break;
+            case '\r':
+                rOut += "\\r";
+                break;
+            case '\t':
+                rOut += "\\t";
+                break;
+            default:
+                if (c < 0x20) {
+                    rOut += "\\u00";
+                    rOut += kHex[c >> 4];
+                    rOut += kHex[c & 0xF];
+                } else {
+                    rOut += ch;
+                }
+        }
+    }
+    rOut += '"';
+}
+
+void json_write(std::string& rOut, const JsonValue& rV, int Indent, int Level) {
+    auto newline = [&](int L) {
+        if (Indent <= 0)
+            return;
+        rOut += '\n';
+        rOut.append(static_cast<std::size_t>(Indent) * static_cast<std::size_t>(L), ' ');
+    };
+    switch (rV.mKind) {
+        case JsonValue::Kind::Null:
+            rOut += "null";
+            return;
+        case JsonValue::Kind::Bool:
+            rOut += rV.mBool ? "true" : "false";
+            return;
+        case JsonValue::Kind::Number:
+            if (rV.mIsInteger)
+                rOut += std::to_string(rV.mInteger);
+            else
+                append_json_number(rOut, rV.mNumber);
+            return;
+        case JsonValue::Kind::String:
+            json_append_string(rOut, rV.mString);
+            return;
+        case JsonValue::Kind::Array:
+            if (rV.mItems.empty()) {
+                rOut += "[]";
+                return;
+            }
+            rOut += '[';
+            for (std::size_t i = 0; i < rV.mItems.size(); ++i) {
+                if (i)
+                    rOut += ',';
+                newline(Level + 1);
+                json_write(rOut, rV.mItems[i], Indent, Level + 1);
+            }
+            newline(Level);
+            rOut += ']';
+            return;
+        case JsonValue::Kind::Object:
+            if (rV.mMembers.empty()) {
+                rOut += "{}";
+                return;
+            }
+            rOut += '{';
+            for (std::size_t i = 0; i < rV.mMembers.size(); ++i) {
+                if (i)
+                    rOut += ',';
+                newline(Level + 1);
+                json_append_string(rOut, rV.mMembers[i].mKey);
+                rOut += Indent > 0 ? ": " : ":";
+                json_write(rOut, rV.mMembers[i].mValue, Indent, Level + 1);
+            }
+            newline(Level);
+            rOut += '}';
+            return;
+    }
+}
+
+}  // namespace
+
+const JsonValue* JsonValue::Find(std::string_view Key) const noexcept {
+    for (const auto& m : mMembers)
+        if (m.mKey == Key)
+            return &m.mValue;
+    return nullptr;
+}
+
+JsonValue JsonValue::Null() {
+    return {};
+}
+
+JsonValue JsonValue::Boolean(bool Value) {
+    JsonValue v;
+    v.mKind = Kind::Bool;
+    v.mBool = Value;
+    return v;
+}
+
+JsonValue JsonValue::Number(double Value) {
+    JsonValue v;
+    v.mKind = Kind::Number;
+    v.mNumber = Value;
+    return v;
+}
+
+JsonValue JsonValue::Integer(std::int64_t Value) {
+    JsonValue v;
+    v.mKind = Kind::Number;
+    v.mNumber = static_cast<double>(Value);
+    v.mIsInteger = true;
+    v.mInteger = Value;
+    return v;
+}
+
+JsonValue JsonValue::String(std::string Value) {
+    JsonValue v;
+    v.mKind = Kind::String;
+    v.mString = std::move(Value);
+    return v;
+}
+
+JsonValue JsonValue::Array() {
+    JsonValue v;
+    v.mKind = Kind::Array;
+    return v;
+}
+
+JsonValue JsonValue::Object() {
+    JsonValue v;
+    v.mKind = Kind::Object;
+    return v;
+}
+
+JsonValue& JsonValue::Push(JsonValue Value) {
+    mItems.push_back(std::move(Value));
+    return mItems.back();
+}
+
+JsonValue& JsonValue::Add(std::string Key, JsonValue Value) {
+    mMembers.emplace_back(std::move(Key), std::move(Value));
+    return mMembers.back().mValue;
+}
+
+bool json_equal(const JsonValue& rA, const JsonValue& rB) noexcept {
+    if (rA.mKind != rB.mKind)
+        return false;
+    switch (rA.mKind) {
+        case JsonValue::Kind::Null:
+            return true;
+        case JsonValue::Kind::Bool:
+            return rA.mBool == rB.mBool;
+        case JsonValue::Kind::Number:
+            if (rA.mIsInteger && rB.mIsInteger)
+                return rA.mInteger == rB.mInteger;
+            return rA.mNumber == rB.mNumber;
+        case JsonValue::Kind::String:
+            return rA.mString == rB.mString;
+        case JsonValue::Kind::Array:
+            if (rA.mItems.size() != rB.mItems.size())
+                return false;
+            for (std::size_t i = 0; i < rA.mItems.size(); ++i)
+                if (!json_equal(rA.mItems[i], rB.mItems[i]))
+                    return false;
+            return true;
+        case JsonValue::Kind::Object:
+            if (rA.mMembers.size() != rB.mMembers.size())
+                return false;
+            for (std::size_t i = 0; i < rA.mMembers.size(); ++i)
+                if (rA.mMembers[i].mKey != rB.mMembers[i].mKey ||
+                    !json_equal(rA.mMembers[i].mValue, rB.mMembers[i].mValue))
+                    return false;
+            return true;
+    }
+    return false;
+}
+
+JsonValue parse_json(std::string_view Text, const char* pFormat) {
+    return JsonParser(Text, pFormat).ParseDocument();
+}
+
+std::string write_json(const JsonValue& rValue, int Indent) {
+    std::string out;
+    json_write(out, rValue, Indent, 0);
+    return out;
+}
+
+void append_json_number(std::string& rOut, double Value) {
+    if (!std::isfinite(Value)) {
+        rOut += "null";  // JSON has no spelling for them (nlohmann's choice too)
+        return;
+    }
+    if (Value == std::floor(Value) && std::fabs(Value) < 9007199254740992.0 &&
+        !(Value == 0.0 && std::signbit(Value))) {
+        rOut += std::to_string(static_cast<std::int64_t>(Value));
+        return;
+    }
+    char buf[40];
+    for (const char* fmt : {"%.15g", "%.16g", "%.17g"}) {
+        snprintf_c(buf, sizeof(buf), fmt, Value);
+        if (parse_double(std::string(buf)) == Value)
+            break;
+    }
+    rOut += buf;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/json_value.cpp =====
 // ===== begin src/cpp/src/detail/keyword_card.cpp =====
 #include <cctype>
 #include <cerrno>
@@ -59725,6 +62589,817 @@ std::vector<std::pair<std::string_view, std::string_view>> node_order_keys() {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/node_order.cpp =====
+// ===== begin src/cpp/src/detail/occt_brep.cpp =====
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// External includes (OpenCASCADE)
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
+#include <Geom2dConvert.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <GeomConvert.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <IGESControl_Reader.hxx>
+#include <Poly_Triangulation.hxx>
+#include <STEPControl_Reader.hxx>
+#include <Standard_Failure.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Wire.hxx>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+template <class T>
+using ObHandle = opencascade::handle<T>;
+
+std::vector<double> ob_knots(const TColStd_Array1OfReal& rSeq) {
+    std::vector<double> out;
+    out.reserve(static_cast<std::size_t>(rSeq.Length()));
+    for (int i = rSeq.Lower(); i <= rSeq.Upper(); ++i)
+        out.push_back(rSeq.Value(i));
+    return out;
+}
+
+NDArray ob_ids(std::int64_t& rNext, std::size_t N) {
+    NDArray ids(DType::Int64, {N});
+    for (std::size_t i = 0; i < N; ++i)
+        ids.As<std::int64_t>()[i] = rNext++;
+    return ids;
+}
+
+// A 3-D or 2-D B-spline curve as a BrepCurve (2-D points as (u, v, 0)).
+template <class TCurve>
+BrepCurve ob_curve(const ObHandle<TCurve>& rC, double First, double Last) {
+    BrepCurve out;
+    out.mDegree = rC->Degree();
+    out.mRational = rC->IsRational() == Standard_True;
+    out.mKnots = ob_knots(rC->KnotSequence());
+    const auto n = static_cast<std::size_t>(rC->NbPoles());
+    out.mControlPoints = NDArray(DType::Float64, {n, 3});
+    out.mWeights = NDArray(DType::Float64, {n});
+    double* xyz = out.mControlPoints.As<double>();
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto p = rC->Pole(static_cast<int>(i) + 1);
+        xyz[i * 3] = p.X();
+        xyz[i * 3 + 1] = p.Y();
+        if constexpr (std::is_same_v<TCurve, Geom_BSplineCurve>)
+            xyz[i * 3 + 2] = p.Z();
+        else
+            xyz[i * 3 + 2] = 0.0;
+        out.mWeights.As<double>()[i] = rC->Weight(static_cast<int>(i) + 1);
+    }
+    out.mActiveRange = {First, Last};
+    return out;
+}
+
+// The face's surface as a non-periodic B-spline in the world frame.
+ObHandle<Geom_BSplineSurface> ob_surface(const TopoDS_Face& rFace) {
+    TopLoc_Location loc;
+    ObHandle<Geom_Surface> s = BRep_Tool::Surface(rFace, loc);
+    if (s.IsNull())
+        return {};
+    ObHandle<Geom_BSplineSurface> bs = ObHandle<Geom_BSplineSurface>::DownCast(s);
+    if (bs.IsNull()) {
+        // NurbsConvert leaves nothing else; a surface it could not convert is
+        // approximated over the face's bounds.
+        double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+        BRepTools::UVBounds(rFace, u0, u1, v0, v1);
+        bs = GeomConvert::SurfaceToBSplineSurface(
+            new Geom_RectangularTrimmedSurface(s, u0, u1, v0, v1));
+        if (bs.IsNull())
+            return {};
+    } else {
+        bs = ObHandle<Geom_BSplineSurface>::DownCast(bs->Copy());
+    }
+    if (bs->IsUPeriodic())
+        bs->SetUNotPeriodic();
+    if (bs->IsVPeriodic())
+        bs->SetVNotPeriodic();
+    if (!loc.IsIdentity())
+        bs->Transform(loc.Transformation());
+    return bs;
+}
+
+ObHandle<Geom2d_BSplineCurve> ob_pcurve(const TopoDS_Edge& rEdge, const TopoDS_Face& rFace,
+                                        double& rFirst, double& rLast) {
+    ObHandle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(rEdge, rFace, rFirst, rLast);
+    if (c.IsNull())
+        return {};
+    ObHandle<Geom2d_BSplineCurve> bc = ObHandle<Geom2d_BSplineCurve>::DownCast(c);
+    if (bc.IsNull()) {
+        bc = Geom2dConvert::CurveToBSplineCurve(new Geom2d_TrimmedCurve(c, rFirst, rLast));
+        if (bc.IsNull())
+            return {};
+        rFirst = bc->FirstParameter();
+        rLast = bc->LastParameter();
+    } else {
+        bc = ObHandle<Geom2d_BSplineCurve>::DownCast(bc->Copy());
+    }
+    if (bc->IsPeriodic())
+        bc->SetNotPeriodic();
+    return bc;
+}
+
+ObHandle<Geom_BSplineCurve> ob_edge_curve(const TopoDS_Edge& rEdge, double& rFirst,
+                                          double& rLast) {
+    if (BRep_Tool::Degenerated(rEdge))
+        return {};
+    TopLoc_Location loc;
+    ObHandle<Geom_Curve> c = BRep_Tool::Curve(rEdge, loc, rFirst, rLast);
+    if (c.IsNull())
+        return {};
+    ObHandle<Geom_BSplineCurve> bc = ObHandle<Geom_BSplineCurve>::DownCast(c);
+    if (bc.IsNull()) {
+        bc = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(c, rFirst, rLast));
+        if (bc.IsNull())
+            return {};
+        rFirst = bc->FirstParameter();
+        rLast = bc->LastParameter();
+    } else {
+        bc = ObHandle<Geom_BSplineCurve>::DownCast(bc->Copy());
+    }
+    if (bc->IsPeriodic())
+        bc->SetNotPeriodic();
+    if (!loc.IsIdentity())
+        bc->Transform(loc.Transformation());
+    return bc;
+}
+
+// The ordinal, among the spans of nonzero length, of the span holding U.
+std::int64_t ob_span_ordinal(int P, const std::vector<double>& rKnots, double U) {
+    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
+    const std::size_t span = nurbs_find_span(P, rKnots, n, U);
+    const std::vector<std::size_t> spans = nurbs_spans(P, rKnots, n);
+    return static_cast<std::int64_t>(std::lower_bound(spans.begin(), spans.end(), span) -
+                                     spans.begin());
+}
+
+}  // namespace
+
+struct OcctQuiet::Impl {
+    ObHandle<Message_Messenger> mMessenger;
+    Message_SequenceOfPrinters mSaved;
+};
+
+OcctQuiet::OcctQuiet() : mpImpl(new Impl) {
+    mpImpl->mMessenger = Message::DefaultMessenger();
+    if (!mpImpl->mMessenger.IsNull()) {
+        mpImpl->mSaved = mpImpl->mMessenger->Printers();
+        mpImpl->mMessenger->ChangePrinters().Clear();
+    }
+}
+
+OcctQuiet::~OcctQuiet() {
+    if (!mpImpl->mMessenger.IsNull())
+        mpImpl->mMessenger->ChangePrinters() = mpImpl->mSaved;
+    delete mpImpl;
+}
+
+TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat) {
+    const std::string prefix = std::string("meshio++: ") + pFormat + ": ";
+    try {
+        TopoDS_Shape shape;
+        if (Iges) {
+            IGESControl_Reader reader;
+            if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
+                throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
+            reader.TransferRoots();
+            shape = reader.OneShape();
+        } else {
+            STEPControl_Reader reader;
+            if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
+                throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
+            reader.TransferRoots();
+            shape = reader.OneShape();
+        }
+        if (shape.IsNull())
+            throw ReadError(prefix + "'" + rPath + "' holds no shape OpenCASCADE can transfer");
+        return shape;
+    } catch (const Standard_Failure& rErr) {
+        throw ReadError(prefix + "OpenCASCADE failed reading '" + rPath +
+                        "': " + rErr.GetMessageString());
+    }
+}
+
+TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape) {
+    BRepBuilderAPI_NurbsConvert convert(rShape, Standard_True);
+    return convert.IsDone() ? convert.Shape() : rShape;
+}
+
+BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
+    BrepInfo info;
+    info.mExtra = "{\"version_number\":1}";
+    TopTools_IndexedMapOfShape faces, edges;
+    TopExp::MapShapes(rNurbs, TopAbs_FACE, faces);
+    TopExp::MapShapes(rNurbs, TopAbs_EDGE, edges);
+    const auto nf = static_cast<std::int64_t>(faces.Extent());
+    const auto ne = static_cast<std::int64_t>(edges.Extent());
+    std::vector<std::vector<BrepRef> > edge_refs(static_cast<std::size_t>(ne));
+    std::int64_t next_id = 1;
+    Brep brep;
+    brep.mId = nf + ne + 1;
+    for (int fi = 1; fi <= faces.Extent(); ++fi) {
+        const TopoDS_Face face = TopoDS::Face(faces(fi));
+        const ObHandle<Geom_BSplineSurface> bs = ob_surface(face);
+        if (bs.IsNull())
+            continue;
+        NurbsPatch patch;
+        patch.mDegrees = {bs->UDegree(), bs->VDegree()};
+        patch.mKnots = {ob_knots(bs->UKnotSequence()), ob_knots(bs->VKnotSequence())};
+        const auto nu = static_cast<std::size_t>(bs->NbUPoles());
+        const auto nv = static_cast<std::size_t>(bs->NbVPoles());
+        patch.mControlPoints = NDArray(DType::Float64, {nu * nv, 3});
+        patch.mWeights = NDArray(DType::Float64, {nu * nv});
+        for (std::size_t j = 0; j < nv; ++j)
+            for (std::size_t i = 0; i < nu; ++i) {
+                const gp_Pnt p = bs->Pole(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
+                const std::size_t k = j * nu + i;
+                patch.mControlPoints.As<double>()[k * 3] = p.X();
+                patch.mControlPoints.As<double>()[k * 3 + 1] = p.Y();
+                patch.mControlPoints.As<double>()[k * 3 + 2] = p.Z();
+                patch.mWeights.As<double>()[k] =
+                    bs->Weight(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
+            }
+        BrepFace f;
+        f.mId = fi;
+        f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
+        f.mSwappedNormal = face.Orientation() == TopAbs_REVERSED;
+        f.mRational = bs->IsURational() || bs->IsVRational();
+        f.mControlPointIds = ob_ids(next_id, nu * nv);
+        // Loops in the surface's own orientation: the outer one first.
+        const TopoDS_Face fwd = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
+        const TopoDS_Wire outer = BRepTools::OuterWire(fwd);
+        std::vector<TopoDS_Wire> wires;
+        if (!outer.IsNull())
+            wires.push_back(outer);
+        for (TopExp_Explorer ex(fwd, TopAbs_WIRE); ex.More(); ex.Next())
+            if (!ex.Current().IsSame(outer))
+                wires.push_back(TopoDS::Wire(ex.Current()));
+        std::int64_t trim_index = 0;
+        for (const TopoDS_Wire& w : wires) {
+            BrepLoop loop;
+            loop.mType = w.IsSame(outer) ? "outer" : "inner";
+            for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
+                const TopoDS_Edge& e = we.Current();
+                double a = 0.0, b = 0.0;
+                const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b);
+                if (pc.IsNull())
+                    continue;
+                BrepTrim t;
+                t.mTrimIndex = trim_index++;
+                t.mDirection = e.Orientation() != TopAbs_REVERSED;
+                t.mCurve = ob_curve(pc, a, b);
+                const int ei = edges.FindIndex(e);
+                if (ei > 0) {
+                    BrepRef r;
+                    r.mId = f.mId;
+                    r.mTrimIndex = t.mTrimIndex;
+                    // Edge and trim share their parameter in OpenCASCADE.
+                    r.mRelativeDirection = 1;
+                    edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
+                }
+                loop.mTrims.push_back(std::move(t));
+            }
+            if (!loop.mTrims.empty())
+                f.mLoops.push_back(std::move(loop));
+        }
+        f.mTrimmed = !f.mLoops.empty();
+        info.mPatches.push_back(std::move(patch));
+        brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
+        info.mFaces.push_back(std::move(f));
+    }
+    for (int ei = 1; ei <= edges.Extent(); ++ei) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges(ei));
+        BrepEdge e;
+        e.mId = nf + ei;
+        double a = 0.0, b = 0.0;
+        const ObHandle<Geom_BSplineCurve> c = ob_edge_curve(edge, a, b);
+        if (!c.IsNull()) {
+            e.mHasCurve = true;
+            e.mCurve = ob_curve(c, a, b);
+            e.mCurve.mIds = ob_ids(next_id, e.mCurve.mWeights.Size());
+        }
+        e.mTopology = std::move(edge_refs[static_cast<std::size_t>(ei - 1)]);
+        brep.mEdges.push_back(static_cast<std::int64_t>(info.mEdges.size()));
+        info.mEdges.push_back(std::move(e));
+    }
+    info.mBreps.push_back(std::move(brep));
+    return info;
+}
+
+Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
+                     double Angular) {
+    double deflection = Deflection;
+    if (!(deflection > 0.0)) {
+        Bnd_Box box;
+        BRepBndLib::Add(rNurbs, box);
+        double x0 = 0.0, y0 = 0.0, z0 = 0.0, x1 = 0.0, y1 = 0.0, z1 = 0.0;
+        if (!box.IsVoid())
+            box.Get(x0, y0, z0, x1, y1, z1);
+        const double diag = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0) +
+                                      (z1 - z0) * (z1 - z0));
+        deflection = diag > 0.0 ? 1e-3 * diag : 1e-3;
+    }
+    BRepMesh_IncrementalMesh mesher(rNurbs, deflection, Standard_False, Angular, Standard_False);
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(rNurbs, TopAbs_FACE, faces);
+    // Faces by id: occt_brep_info numbers them by the same map.
+    std::unordered_map<std::int64_t, std::size_t> face_of_id;
+    for (std::size_t i = 0; i < rInfo.mFaces.size(); ++i)
+        face_of_id.emplace(rInfo.mFaces[i].mId, i);
+
+    struct Key {
+        std::array<std::uint64_t, 3> mBits;
+        bool operator==(const Key& rO) const { return mBits == rO.mBits; }
+    };
+    struct KeyHash {
+        std::size_t operator()(const Key& rK) const {
+            std::uint64_t h = 1469598103934665603ull;
+            for (std::uint64_t b : rK.mBits)
+                h = (h ^ b) * 1099511628211ull;
+            return static_cast<std::size_t>(h);
+        }
+    };
+    std::unordered_map<Key, std::int64_t, KeyHash> id;
+    std::vector<double> xyz;
+    std::vector<std::int64_t> tris, index, ids, span;
+    for (int fi = 1; fi <= faces.Extent(); ++fi) {
+        const TopoDS_Face face = TopoDS::Face(faces(fi));
+        TopLoc_Location loc;
+        const ObHandle<Poly_Triangulation> tri = BRep_Tool::Triangulation(face, loc);
+        if (tri.IsNull())
+            continue;
+        auto fit = face_of_id.find(fi);
+        const BrepFace* pFace = fit == face_of_id.end() ? nullptr : &rInfo.mFaces[fit->second];
+        const NurbsPatch* pPatch =
+            pFace ? &rInfo.mPatches[static_cast<std::size_t>(pFace->mPatch)] : nullptr;
+        const gp_Trsf trsf = loc.Transformation();
+        std::vector<std::int64_t> local(static_cast<std::size_t>(tri->NbNodes()) + 1, -1);
+        for (int i = 1; i <= tri->NbNodes(); ++i) {
+            const gp_Pnt p = tri->Node(i).Transformed(trsf);
+            const double c[3] = {p.X() + 0.0, p.Y() + 0.0, p.Z() + 0.0};
+            Key k;
+            for (int j = 0; j < 3; ++j)
+                std::memcpy(&k.mBits[static_cast<std::size_t>(j)], &c[j], sizeof(double));
+            auto ins = id.emplace(k, static_cast<std::int64_t>(xyz.size() / 3));
+            if (ins.second)
+                xyz.insert(xyz.end(), c, c + 3);
+            local[static_cast<std::size_t>(i)] = ins.first->second;
+        }
+        const bool reversed = face.Orientation() == TopAbs_REVERSED;
+        for (int t = 1; t <= tri->NbTriangles(); ++t) {
+            int a = 0, b = 0, c = 0;
+            tri->Triangle(t).Get(a, b, c);
+            if (reversed)
+                std::swap(b, c);
+            const std::int64_t ia = local[static_cast<std::size_t>(a)];
+            const std::int64_t ib = local[static_cast<std::size_t>(b)];
+            const std::int64_t ic = local[static_cast<std::size_t>(c)];
+            if (ia == ib || ib == ic || ia == ic)
+                continue;
+            tris.insert(tris.end(), {ia, ib, ic});
+            index.push_back(pFace ? static_cast<std::int64_t>(fit->second) : -1);
+            ids.push_back(pFace ? pFace->mId : -1);
+            std::int64_t su = -1, sv = -1;
+            if (pPatch && tri->HasUVNodes()) {
+                const gp_Pnt2d uv0 = tri->UVNode(a), uv1 = tri->UVNode(b), uv2 = tri->UVNode(c);
+                const double u = (uv0.X() + uv1.X() + uv2.X()) / 3.0;
+                const double v = (uv0.Y() + uv1.Y() + uv2.Y()) / 3.0;
+                su = ob_span_ordinal(pPatch->mDegrees[0], pPatch->mKnots[0], u);
+                sv = ob_span_ordinal(pPatch->mDegrees[1], pPatch->mKnots[1], v);
+            }
+            span.insert(span.end(), {su, sv});
+        }
+    }
+    Mesh mesh;
+    const std::size_t np = xyz.size() / 3, nt = tris.size() / 3;
+    NDArray pts(DType::Float64, {np, 3});
+    std::copy(xyz.begin(), xyz.end(), pts.As<double>());
+    mesh.AssignPoints(std::move(pts));
+    if (nt == 0)
+        return mesh;
+    NDArray conn(DType::Int64, {nt, 3});
+    std::copy(tris.begin(), tris.end(), conn.As<std::int64_t>());
+    mesh.AddCellBlock("triangle", std::move(conn));
+    auto column = [nt](const std::vector<std::int64_t>& rV, std::size_t Width) {
+        NDArray a(DType::Int64, Width == 1 ? std::vector<std::size_t>{nt}
+                                           : std::vector<std::size_t>{nt, Width});
+        std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(a));
+        return blocks;
+    };
+    mesh.AddCellData("cad:id", column(ids, 1));
+    mesh.AddCellData("cad:index", column(index, 1));
+    mesh.AddCellData("cad:kind", column(std::vector<std::int64_t>(nt, 0), 1));
+    mesh.AddCellData("cad:span", column(span, 2));
+    mesh.AddCellData("cad:trimmed", column(std::vector<std::int64_t>(nt, 0), 1));
+    return mesh;
+}
+
+}  // namespace meshioplusplus::detail
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT
+// ===== end src/cpp/src/detail/occt_brep.cpp =====
+// ===== begin src/cpp/src/detail/patch_flatten.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <numeric>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kPfPi = 3.14159265358979323846;
+
+double pf_dot(const PatchVec& rA, const PatchVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+PatchVec pf_cross(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+
+double pf_norm(const PatchVec& rA) {
+    return std::sqrt(pf_dot(rA, rA));
+}
+
+PatchVec pf_sub(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+PatchVec pf_add(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] + rB[0], rA[1] + rB[1], rA[2] + rB[2]};
+}
+
+PatchVec pf_scale(const PatchVec& rA, double S) {
+    return {rA[0] * S, rA[1] * S, rA[2] * S};
+}
+
+void pf_normalize(PatchVec& rA) {
+    const double d = pf_norm(rA);
+    rA = {rA[0] / d, rA[1] / d, rA[2] / d};
+}
+
+// Two unit vectors completing @p rA to a right-handed frame.
+void pf_frame(const PatchVec& rA, PatchVec& rE1, PatchVec& rE2) {
+    const PatchVec seed =
+        std::fabs(rA[0]) < 0.9 ? PatchVec{1.0, 0.0, 0.0} : PatchVec{0.0, 1.0, 0.0};
+    rE1 = pf_sub(seed, pf_scale(rA, pf_dot(seed, rA)));
+    pf_normalize(rE1);
+    rE2 = pf_cross(rA, rE1);
+}
+
+// Local points and triangles of a subset of a patch's triangles.
+void pf_local(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+              const std::vector<std::size_t>& rSubset, std::vector<PatchVec>& rLocalPts,
+              std::vector<PatchTri>& rLocalTris) {
+    std::map<std::size_t, std::size_t> local;
+    for (std::size_t t : rSubset)
+        for (std::size_t v : rTris[t])
+            local.emplace(v, 0);
+    rLocalPts.clear();
+    for (auto& kv : local) {
+        kv.second = rLocalPts.size();
+        rLocalPts.push_back(rPts[kv.first]);
+    }
+    rLocalTris.clear();
+    for (std::size_t t : rSubset)
+        rLocalTris.push_back({local.at(rTris[t][0]), local.at(rTris[t][1]), local.at(rTris[t][2])});
+}
+
+// The edge-connected components of a subset (each ascending), in the order of
+// their lowest triangle.
+std::vector<std::vector<std::size_t>> pf_components(const std::vector<PatchTri>& rTris,
+                                                    const std::vector<std::size_t>& rSubset) {
+    std::vector<std::size_t> parent(rSubset.size());
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    auto find = [&](std::size_t X) {
+        while (parent[X] != X) {
+            parent[X] = parent[parent[X]];
+            X = parent[X];
+        }
+        return X;
+    };
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> first;
+    for (std::size_t i = 0; i < rSubset.size(); ++i) {
+        const PatchTri& t = rTris[rSubset[i]];
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            auto ins = first.emplace(std::make_pair(std::min(a, b), std::max(a, b)), i);
+            if (!ins.second) {
+                const std::size_t ra = find(i), rb = find(ins.first->second);
+                if (ra != rb)
+                    parent[std::max(ra, rb)] = std::min(ra, rb);
+            }
+        }
+    }
+    std::map<std::size_t, std::vector<std::size_t>> by_root;
+    for (std::size_t i = 0; i < rSubset.size(); ++i)
+        by_root[find(i)].push_back(rSubset[i]);
+    std::vector<std::vector<std::size_t>> out;
+    for (auto& kv : by_root)
+        out.push_back(std::move(kv.second));
+    std::sort(out.begin(), out.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    return out;
+}
+
+void pf_split(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+              const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+              const std::vector<std::size_t>& rSubset, int Depth, const PatchSplitOptions& rOptions,
+              std::vector<std::vector<std::size_t>>& rPieces) {
+    if (rSubset.size() < rOptions.mMinTriangles)
+        return;
+    std::vector<PatchVec> lp;
+    std::vector<PatchTri> lt;
+    pf_local(rPts, rTris, rSubset, lp, lt);
+    if (patch_flattenable(lp, lt)) {
+        rPieces.push_back(rSubset);
+        return;
+    }
+    if (Depth >= rOptions.mMaxDepth)
+        return;
+    // The direction the normals spread along most.
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    double total = 0.0;
+    for (std::size_t t : rSubset) {
+        const PatchVec& n = rNormals[t];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] +=
+                    rAreas[t] * n[static_cast<std::size_t>(i)] * n[static_cast<std::size_t>(j)];
+        total += rAreas[t];
+    }
+    lsq_sym3_eigen(m, w, v);
+    const PatchVec e{v[6], v[7], v[8]};
+    std::vector<std::pair<double, std::size_t>> keyed;
+    keyed.reserve(rSubset.size());
+    for (std::size_t t : rSubset)
+        keyed.emplace_back(pf_dot(rNormals[t], e), t);
+    std::sort(keyed.begin(), keyed.end());
+    // The area-weighted median; both halves keep at least one triangle.
+    std::size_t k = 0;
+    double acc = 0.0;
+    while (k + 1 < keyed.size() && acc + rAreas[keyed[k].second] <= 0.5 * total) {
+        acc += rAreas[keyed[k].second];
+        ++k;
+    }
+    k = std::max<std::size_t>(k, 1);
+    std::vector<std::size_t> lo, hi;
+    for (std::size_t i = 0; i < keyed.size(); ++i)
+        (i < k ? lo : hi).push_back(keyed[i].second);
+    for (std::vector<std::size_t>* half : {&lo, &hi}) {
+        std::sort(half->begin(), half->end());
+        for (const auto& comp : pf_components(rTris, *half))
+            pf_split(rPts, rTris, rNormals, rAreas, comp, Depth + 1, rOptions, rPieces);
+    }
+}
+
+}  // namespace
+
+PatchVec PatchFlat::At(double S, double T, double H) const {
+    if (!mCylinder)
+        return pf_add(pf_add(pf_add(mOrigin, pf_scale(mE1, S)), pf_scale(mE2, T)),
+                      pf_scale(mAxis, H));
+    const double th = mTheta0 + S / mRadius;
+    return pf_add(
+        pf_add(mOrigin, pf_scale(mAxis, T)),
+        pf_scale(pf_add(pf_scale(mE1, std::cos(th)), pf_scale(mE2, std::sin(th))), mRadius + H));
+}
+
+bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
+                   const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+                   PatchFlat& rOut) {
+    const std::size_t n = rPts.size();
+    rOut = PatchFlat{};
+    if (n == 0)
+        return false;
+    PatchVec c{0.0, 0.0, 0.0};
+    for (const PatchVec& p : rPts)
+        c = pf_add(c, p);
+    c = {c[0] / static_cast<double>(n), c[1] / static_cast<double>(n),
+         c[2] / static_cast<double>(n)};
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    if (Kind == 0) {
+        for (const PatchVec& p : rPts) {
+            const PatchVec d = pf_sub(p, c);
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    m[i * 3 + j] += d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
+        }
+        lsq_sym3_eigen(m, w, v);
+        rOut.mOrigin = c;
+        rOut.mAxis = {v[0], v[1], v[2]};  // the smallest spread: the normal
+        rOut.mE1 = {v[6], v[7], v[8]};
+        rOut.mE2 = pf_cross(rOut.mAxis, rOut.mE1);
+        for (const PatchVec& p : rPts) {
+            const PatchVec d = pf_sub(p, c);
+            rOut.mS.push_back(pf_dot(d, rOut.mE1));
+            rOut.mT.push_back(pf_dot(d, rOut.mE2));
+            rOut.mH.push_back(pf_dot(d, rOut.mAxis));
+        }
+        return true;
+    }
+    for (std::size_t f = 0; f < rNormals.size(); ++f)
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += rAreas[f] * rNormals[f][static_cast<std::size_t>(i)] *
+                                rNormals[f][static_cast<std::size_t>(j)];
+    lsq_sym3_eigen(m, w, v);
+    PatchVec axis{v[0], v[1], v[2]};
+    if (pf_norm(axis) < 0.5)
+        return false;
+    pf_normalize(axis);
+    PatchVec e1, e2;
+    pf_frame(axis, e1, e2);
+    // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
+    double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
+    for (const PatchVec& p : rPts) {
+        const PatchVec d = pf_sub(p, c);
+        const double x = pf_dot(d, e1), y = pf_dot(d, e2), r[3] = {x, y, 1.0};
+        const double rhs = -(x * x + y * y);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j)
+                a[i * 3 + j] += r[i] * r[j];
+            b[i] += r[i] * rhs;
+        }
+    }
+    // Solve the 3x3 normal equations by Cramer's rule.
+    auto det3 = [](const double* q) {
+        return q[0] * (q[4] * q[8] - q[5] * q[7]) - q[1] * (q[3] * q[8] - q[5] * q[6]) +
+               q[2] * (q[3] * q[7] - q[4] * q[6]);
+    };
+    const double d0 = det3(a);
+    if (!(std::fabs(d0) > 0.0))
+        return false;
+    double sol[3];
+    for (int k = 0; k < 3; ++k) {
+        double q[9];
+        std::copy(a, a + 9, q);
+        for (int i = 0; i < 3; ++i)
+            q[i * 3 + k] = b[i];
+        sol[k] = det3(q) / d0;
+    }
+    const double cx = -sol[0] / 2.0, cy = -sol[1] / 2.0;
+    const double r2 = cx * cx + cy * cy - sol[2];
+    if (!(r2 > 0.0) || !std::isfinite(r2))
+        return false;
+    const double radius = std::sqrt(r2);
+    const PatchVec origin = pf_add(pf_add(c, pf_scale(e1, cx)), pf_scale(e2, cy));
+    std::vector<double> theta(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const PatchVec d = pf_sub(rPts[i], origin);
+        theta[i] = std::atan2(pf_dot(d, e2), pf_dot(d, e1));
+    }
+    // Cut the circle in the widest gap between the points' angles.
+    std::vector<double> sorted = theta;
+    std::sort(sorted.begin(), sorted.end());
+    double gap = sorted.front() + 2.0 * kPfPi - sorted.back(), cut = sorted.back();
+    for (std::size_t i = 1; i < sorted.size(); ++i)
+        if (sorted[i] - sorted[i - 1] > gap) {
+            gap = sorted[i] - sorted[i - 1];
+            cut = sorted[i - 1];
+        }
+    if (!(gap > 1e-6))
+        return false;
+    rOut.mCylinder = true;
+    rOut.mOrigin = origin;
+    rOut.mAxis = axis;
+    rOut.mE1 = e1;
+    rOut.mE2 = e2;
+    rOut.mRadius = radius;
+    rOut.mTheta0 = cut + gap / 2.0;  // the parameter starts just past the gap's middle
+    for (std::size_t i = 0; i < n; ++i) {
+        double th = theta[i] - rOut.mTheta0;
+        th -= 2.0 * kPfPi * std::floor(th / (2.0 * kPfPi));
+        const PatchVec d = pf_sub(rPts[i], origin);
+        rOut.mS.push_back(radius * th);
+        rOut.mT.push_back(pf_dot(d, axis));
+        const PatchVec radial = pf_sub(d, pf_scale(axis, pf_dot(d, axis)));
+        rOut.mH.push_back(pf_norm(radial) - radius);
+    }
+    return true;
+}
+
+bool patch_flat_folds(const PatchFlat& rFlat, const std::vector<PatchTri>& rTris) {
+    const std::size_t nt = rTris.size();
+    double max_area = 0.0, pos = 0.0, neg = 0.0;
+    std::vector<double> signed_area(nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const PatchTri& tr = rTris[t];
+        const double ax = rFlat.mS[tr[1]] - rFlat.mS[tr[0]], ay = rFlat.mT[tr[1]] - rFlat.mT[tr[0]];
+        const double bx = rFlat.mS[tr[2]] - rFlat.mS[tr[0]], by = rFlat.mT[tr[2]] - rFlat.mT[tr[0]];
+        signed_area[t] = 0.5 * (ax * by - ay * bx);
+        max_area = std::max(max_area, std::fabs(signed_area[t]));
+        (signed_area[t] > 0.0 ? pos : neg) += std::fabs(signed_area[t]);
+    }
+    const double sign = pos >= neg ? 1.0 : -1.0;
+    bool folds = !(max_area > 0.0);
+    for (double sa : signed_area)
+        folds = folds || sa * sign < -1e-9 * max_area;
+    return folds;
+}
+
+void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                   std::vector<PatchVec>& rNormals, std::vector<double>& rAreas) {
+    const std::size_t nt = rTris.size();
+    rNormals.assign(nt, PatchVec{0.0, 0.0, 0.0});
+    rAreas.assign(nt, 0.0);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const PatchVec e1 = pf_sub(rPts[rTris[t][1]], rPts[rTris[t][0]]);
+        const PatchVec e2 = pf_sub(rPts[rTris[t][2]], rPts[rTris[t][0]]);
+        PatchVec nrm = pf_cross(e1, e2);
+        rAreas[t] = 0.5 * pf_norm(nrm);
+        if (pf_norm(nrm) > 0.0)
+            pf_normalize(nrm);
+        rNormals[t] = nrm;
+    }
+}
+
+bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    if (rPts.size() < 4 || rTris.size() < 2)
+        return false;
+    std::vector<PatchVec> normals;
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    for (int kind = 0; kind < 2; ++kind) {
+        PatchFlat flat;
+        if (patch_flatten(kind, rPts, normals, areas, flat) && !patch_flat_folds(flat, rTris))
+            return true;
+    }
+    return false;
+}
+
+std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
+                                                 const std::vector<PatchTri>& rTris,
+                                                 const PatchSplitOptions& rOptions,
+                                                 std::size_t& rNumPieces) {
+    std::vector<PatchVec> normals;
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    std::vector<std::size_t> all(rTris.size());
+    std::iota(all.begin(), all.end(), std::size_t{0});
+    std::vector<std::vector<std::size_t>> pieces;
+    for (const auto& comp : pf_components(rTris, all))
+        pf_split(rPts, rTris, normals, areas, comp, 0, rOptions, pieces);
+    std::sort(pieces.begin(), pieces.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    std::vector<std::int64_t> out(rTris.size(), -1);
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+        for (std::size_t t : pieces[p])
+            out[t] = static_cast<std::int64_t>(p);
+    rNumPieces = pieces.size();
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/patch_flatten.cpp =====
 // ===== begin src/cpp/src/detail/png_write.cpp =====
 #include <algorithm>
 #include <array>
@@ -68396,6 +72071,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 #include <algorithm>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -68404,10 +72080,12 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -69523,6 +73201,912 @@ MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOption
     meta.mFormat = "abaqus_fil";
     meta.mTimeValues = abaqus_fil_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: the reader's inverse for the model, the nodal and element results, in the
+// ASCII layout or the binary one (512-word blocks, little-endian). The twin of
+// abaqus_fil/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+[[noreturn]] void filw_fail(const std::string& rMessage) {
+    throw WriteError("Abaqus .fil: " + rMessage);
+}
+
+/// One item of a record: an integer word, a real word or an 8-character text.
+struct FilwItem {
+    char mTag = 'I';
+    std::int64_t mInt = 0;
+    double mReal = 0.0;
+    std::string mText;
+};
+using FilwRecord = std::vector<FilwItem>;
+
+FilwItem filw_i(std::int64_t V) {
+    FilwItem it;
+    it.mTag = 'I';
+    it.mInt = V;
+    return it;
+}
+
+FilwItem filw_d(double V) {
+    if (V != V || std::isinf(V))
+        filw_fail("a value is not finite");
+    if (V != 0.0 && !(std::fabs(V) >= 1e-99 && std::fabs(V) < 1e100))
+        filw_fail("a value is outside the range a D22.15 item holds");
+    FilwItem it;
+    it.mTag = 'D';
+    it.mReal = V;
+    return it;
+}
+
+/// The text as the file holds it: ASCII, a `?` for every other byte.
+std::string filw_ascii(const std::string& rText) {
+    std::string out = rText;
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) >= 0x80)
+            c = '?';
+    return out;
+}
+
+FilwItem filw_a(const std::string& rText) {
+    std::string t = filw_ascii(rText);
+    t.resize(8, ' ');
+    FilwItem it;
+    it.mTag = 'A';
+    it.mText = t;
+    return it;
+}
+
+void filw_text_items(FilwRecord& rOut, const std::string& rText, std::size_t Words = 10) {
+    std::string t = filw_ascii(rText);
+    t.resize(8 * Words, ' ');
+    for (std::size_t k = 0; k < Words; ++k)
+        rOut.push_back(filw_a(t.substr(8 * k, 8)));
+}
+
+FilwRecord filw_rec(std::int64_t Key) {
+    return FilwRecord{filw_i(Key)};
+}
+
+std::string filw_ascii_bytes(const std::vector<FilwRecord>& rRecords) {
+    std::string text, line;
+    const auto put = [&](const std::string& rPiece) {
+        line += rPiece;
+        while (line.size() >= 80) {
+            text += line.substr(0, 80);
+            text += '\n';
+            line.erase(0, 80);
+        }
+    };
+    for (const FilwRecord& r : rRecords) {
+        put("*");
+        std::vector<FilwItem> items;
+        items.push_back(filw_i(static_cast<std::int64_t>(r.size()) + 1));
+        items.insert(items.end(), r.begin(), r.end());
+        for (const FilwItem& it : items) {
+            if (it.mTag == 'I') {
+                const std::string digits = std::to_string(it.mInt);
+                std::string count = std::to_string(digits.size());
+                if (count.size() < 2)
+                    count.insert(0, 2 - count.size(), ' ');
+                put("I" + count + digits);
+            } else if (it.mTag == 'D') {
+                char buf[64];
+                detail::snprintf_c(buf, sizeof(buf), "% .15E", it.mReal);
+                std::string v = buf;
+                std::replace(v.begin(), v.end(), 'E', 'D');
+                put("D" + v);
+            } else {
+                put("A" + it.mText);
+            }
+        }
+        if (r[0].mInt == 2001) {
+            line.resize(80, ' ');
+            text += line + "\n" + std::string(80, ' ') + "\n";
+            line.clear();
+        }
+    }
+    if (!line.empty())
+        text += line + "\n";
+    return text;
+}
+
+void filw_put_le(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = 0; i < N; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords) {
+    constexpr std::size_t kBlock = 512;
+    std::vector<std::string> words;
+    for (const FilwRecord& r : rRecords) {
+        std::vector<std::string> rec_words;
+        std::string w;
+        filw_put_le(w, static_cast<std::uint64_t>(r.size() + 1), 8);
+        rec_words.push_back(w);
+        for (const FilwItem& it : r) {
+            std::string x;
+            if (it.mTag == 'I') {
+                filw_put_le(x, static_cast<std::uint64_t>(it.mInt), 8);
+            } else if (it.mTag == 'D') {
+                filw_put_le(x, std::bit_cast<std::uint64_t>(it.mReal), 8);
+            } else {
+                x = it.mText;
+            }
+            rec_words.push_back(x);
+        }
+        if (r[0].mInt == 2001) {
+            // The last record of an increment pads to the end of its block.
+            const std::size_t pad = (kBlock - (words.size() + rec_words.size()) % kBlock) % kBlock;
+            std::string len;
+            filw_put_le(len, rec_words.size() + pad, 8);
+            rec_words[0] = len;
+            for (std::size_t k = 0; k < pad; ++k)
+                rec_words.push_back(std::string(8, '\0'));
+        }
+        words.insert(words.end(), rec_words.begin(), rec_words.end());
+    }
+    const std::size_t tail = (kBlock - words.size() % kBlock) % kBlock;
+    for (std::size_t k = 0; k < tail; ++k)
+        words.push_back(std::string(8, '\0'));
+    std::string marker;
+    filw_put_le(marker, 8 * kBlock, 4);
+    std::string out;
+    for (std::size_t b = 0; b < words.size(); b += kBlock) {
+        out += marker;
+        for (std::size_t k = b; k < b + kBlock; ++k)
+            out += words[k];
+        out += marker;
+    }
+    return out;
+}
+
+const std::map<std::string, std::string>& filw_types() {
+    static const std::map<std::string, std::string> types = {
+        {"line", "T3D2"},     {"line3", "T3D3"},       {"triangle", "S3"},
+        {"quad", "S4R"},      {"triangle6", "STRI65"}, {"quad8", "S8R"},
+        {"quad9", "S9R5"},    {"tetra", "C3D4"},       {"tetra10", "C3D10"},
+        {"pyramid", "C3D5"},  {"pyramid13", "C3D13"},  {"wedge", "C3D6"},
+        {"wedge15", "C3D15"}, {"hexahedron", "C3D8R"}, {"hexahedron20", "C3D20R"},
+    };
+    return types;
+}
+
+bool filw_is_shell(const std::string& rType) {
+    return rType == "triangle" || rType == "quad" || rType == "triangle6" || rType == "quad8" ||
+           rType == "quad9";
+}
+
+/// The Abaqus key of a result name: the reader's names inverted (`key_<n>` is `<n>`).
+std::optional<std::int64_t> filw_key_of(const std::string& rName, bool Nodal) {
+    static const std::unordered_map<std::string, std::int64_t> nodal = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1; k < 1000; ++k)
+            if (const char* n = fil_nodal_name(k))
+                m.emplace(n, k);
+        return m;
+    }();
+    static const std::unordered_map<std::string, std::int64_t> element = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1; k < 1000; ++k)
+            if (const char* n = fil_element_name(k))
+                m.emplace(n, k);
+        m["RATIO"] = 79;
+        m["ERV"] = 79;
+        return m;
+    }();
+    const auto& table = Nodal ? nodal : element;
+    const auto it = table.find(rName);
+    if (it != table.end())
+        return it->second;
+    if (rName.size() > 4 && rName.compare(0, 4, "key_") == 0 && rName.size() < 12 &&
+        std::all_of(rName.begin() + 4, rName.end(), [](char C) { return C >= '0' && C <= '9'; }))
+        return std::stoll(rName.substr(4));
+    return std::nullopt;
+}
+
+std::vector<std::int64_t> filw_labels(const std::vector<std::int64_t>* pGiven, std::size_t Count,
+                                      const char* pWhat) {
+    std::vector<std::int64_t> labels;
+    if (pGiven == nullptr) {
+        for (std::size_t i = 0; i < Count; ++i)
+            labels.push_back(static_cast<std::int64_t>(i + 1));
+        return labels;
+    }
+    labels = *pGiven;
+    if (labels.size() != Count)
+        filw_fail(std::string("'abaqus:id' must hold one label per ") + pWhat);
+    for (const std::int64_t v : labels)
+        if (v <= 0)
+            filw_fail(std::string(pWhat) + " labels must be positive");
+    std::vector<std::int64_t> sorted = labels;
+    std::sort(sorted.begin(), sorted.end());
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        filw_fail(std::string(pWhat) + " labels are not unique");
+    return labels;
+}
+
+using FilwSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
+
+FilwSignature filw_signature(const Mesh& rMesh) {
+    FilwSignature sig;
+    sig.emplace_back("points", rMesh.NumPoints(), 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
+    }
+    return sig;
+}
+
+/// The mesh as the file holds it: records, labels and the written cells.
+class FilwModel {
+public:
+    explicit FilwModel(const Mesh& rMesh) {
+        mSignature = filw_signature(rMesh);
+        const std::size_t n = rMesh.NumPoints();
+        const std::size_t pdim = rMesh.PointDim();
+        mDim = pdim == 2 ? 2 : 3;
+        std::vector<std::int64_t> node_ids;
+        const bool have_ids = rMesh.HasPointData("abaqus:id");
+        if (have_ids) {
+            const detail::Int64View v(rMesh.PointData("abaqus:id"));
+            node_ids.assign(v.Data(), v.Data() + rMesh.PointData("abaqus:id").Size());
+        }
+        mNodeLabels = filw_labels(have_ids ? &node_ids : nullptr, n, "node");
+        std::vector<double> points(n * mDim, 0.0);
+        {
+            const detail::DoubleView pts(rMesh.Points());
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < mDim && k < pdim; ++k)
+                    points[i * mDim + k] = pts.Data()[i * pdim + k];
+        }
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            total += rMesh.Cells(b).NumCells();
+        std::vector<std::int64_t> cell_ids;
+        const bool have_cell_ids = rMesh.HasCellData("abaqus:id");
+        if (have_cell_ids)
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& a = rMesh.CellData("abaqus:id", b);
+                const detail::Int64View v(a);
+                cell_ids.insert(cell_ids.end(), v.Data(), v.Data() + a.Size());
+            }
+        mCellLabels = filw_labels(have_cell_ids ? &cell_ids : nullptr, total, "element");
+        std::size_t g = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const auto it = filw_types().find(cb.Type());
+            for (std::size_t r = 0; r < cb.NumCells(); ++r, ++g) {
+                if (it == filw_types().end())
+                    ++mSkipped[cb.Type()];
+                else
+                    mCells.push_back({g, it->second, b, r});
+            }
+        }
+        for (const Cell& c : mCells)
+            mWritten.insert(c.mGlobal);
+        BuildRecords(rMesh, points);
+    }
+
+    struct Cell {
+        std::size_t mGlobal;
+        std::string mName;
+        std::size_t mBlock, mRow;
+    };
+    const FilwSignature& Signature() const { return mSignature; }
+    const std::vector<FilwRecord>& Records() const { return mRecords; }
+    const std::vector<std::int64_t>& NodeLabels() const { return mNodeLabels; }
+    const std::vector<std::int64_t>& CellLabels() const { return mCellLabels; }
+    const std::vector<Cell>& Cells() const { return mCells; }
+    const std::map<std::string, std::size_t>& Skipped() const { return mSkipped; }
+    std::set<std::string> mDropped;
+
+private:
+    void BuildRecords(const Mesh& rMesh, const std::vector<double>& rPoints) {
+        FilwRecord head = filw_rec(1921);
+        for (int k = 0; k < 4; ++k)
+            head.push_back(k == 0 ? filw_a("meshio++") : filw_a(""));
+        head.push_back(filw_i(static_cast<std::int64_t>(mCells.size())));
+        head.push_back(filw_i(static_cast<std::int64_t>(mNodeLabels.size())));
+        head.push_back(filw_d(1.0));
+        mRecords.push_back(std::move(head));
+        FilwRecord title = filw_rec(1922);
+        filw_text_items(title, "meshio++ results file");
+        mRecords.push_back(std::move(title));
+        // the active degrees of freedom (1, 2 and, in 3-D, 3); 35 words
+        FilwRecord dof = filw_rec(1902);
+        const std::int64_t dofs[3] = {1, 2, mDim == 3 ? 3 : 0};
+        for (const std::int64_t d : dofs)
+            dof.push_back(filw_i(d));
+        for (int k = 0; k < 32; ++k)
+            dof.push_back(filw_i(0));
+        mRecords.push_back(std::move(dof));
+        constexpr std::size_t kChunk = 10;
+        for (const Cell& c : mCells) {
+            const auto cb = rMesh.Cells(c.mBlock);
+            const detail::Int64View conn(cb.Conn());
+            const std::size_t k = cb.NodesPerCell();
+            std::vector<std::int64_t> labels;
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::int64_t p = conn.Data()[c.mRow * k + j];
+                if (p < 0 || static_cast<std::size_t>(p) >= mNodeLabels.size())
+                    filw_fail("a cell refers to a point the mesh does not have");
+                labels.push_back(mNodeLabels[static_cast<std::size_t>(p)]);
+            }
+            FilwRecord r = filw_rec(1900);
+            r.push_back(filw_i(mCellLabels[c.mGlobal]));
+            r.push_back(filw_a(c.mName));
+            for (std::size_t j = 0; j < std::min(kChunk, labels.size()); ++j)
+                r.push_back(filw_i(labels[j]));
+            mRecords.push_back(std::move(r));
+            for (std::size_t j = kChunk; j < labels.size(); j += kChunk) {
+                FilwRecord more = filw_rec(1990);
+                for (std::size_t m = j; m < std::min(j + kChunk, labels.size()); ++m)
+                    more.push_back(filw_i(labels[m]));
+                mRecords.push_back(std::move(more));
+            }
+        }
+        for (std::size_t i = 0; i < mNodeLabels.size(); ++i) {
+            FilwRecord r = filw_rec(1901);
+            r.push_back(filw_i(mNodeLabels[i]));
+            for (std::size_t k = 0; k < mDim; ++k)
+                r.push_back(filw_d(rPoints[i * mDim + k]));
+            mRecords.push_back(std::move(r));
+        }
+        Sets(rMesh);
+    }
+
+    void Sets(const Mesh& rMesh) {
+        struct Ref {
+            std::string mKind, mName;
+            std::size_t mIndex;
+        };
+        std::vector<Ref> order;
+        std::set<std::int64_t> used_digits;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const std::string& name = rMesh.Region(i).mName;
+            order.push_back({region_kind_name(rMesh.Region(i).mKind), name, i});
+            if (!name.empty() && name.size() < 18 &&
+                std::all_of(name.begin(), name.end(), [](char C) { return C >= '0' && C <= '9'; }))
+                used_digits.insert(std::stoll(name));
+        }
+        std::stable_sort(order.begin(), order.end(), [](const Ref& A, const Ref& B) {
+            return std::tie(A.mKind, A.mName) < std::tie(B.mKind, B.mName);
+        });
+        std::vector<FilwRecord> refs;
+        std::int64_t label = 0;
+        constexpr std::size_t kChunk = 10;
+        for (const Ref& ref : order) {
+            const auto& region = rMesh.Region(ref.mIndex);
+            if (region.mKind == RegionKind::Side) {
+                mDropped.insert("region '" + region.mName + "' (side)");
+                continue;
+            }
+            std::string name = filw_ascii(region.mName);
+            if (name.size() > 80)
+                filw_fail("region name '" + name.substr(0, 20) +
+                          "...' is longer than 80 characters");
+            if (name.size() > 8) {
+                ++label;
+                while (used_digits.count(label) != 0)
+                    ++label;
+                FilwRecord r = filw_rec(1940);
+                r.push_back(filw_i(label));
+                filw_text_items(r, name);
+                refs.push_back(std::move(r));
+                name = std::to_string(label);
+            }
+            const detail::Int64View entries(region.mEntries);
+            std::vector<std::int64_t> values;
+            const bool point = region.mKind == RegionKind::Point;
+            for (std::size_t k = 0; k < region.mEntries.Size(); ++k) {
+                const std::int64_t e = entries.Data()[k];
+                if (point) {
+                    if (e < 0 || static_cast<std::size_t>(e) >= mNodeLabels.size())
+                        filw_fail("region '" + region.mName +
+                                  "' names a point the mesh does not have");
+                    values.push_back(mNodeLabels[static_cast<std::size_t>(e)]);
+                } else if (e >= 0 && mWritten.count(static_cast<std::size_t>(e)) != 0) {
+                    values.push_back(mCellLabels[static_cast<std::size_t>(e)]);
+                }
+            }
+            FilwRecord r = filw_rec(point ? 1931 : 1933);
+            r.push_back(filw_a(name));
+            for (std::size_t k = 0; k < std::min<std::size_t>(5, values.size()); ++k)
+                r.push_back(filw_i(values[k]));
+            mRecords.push_back(std::move(r));
+            for (std::size_t k = 5; k < values.size(); k += kChunk) {
+                FilwRecord more = filw_rec(point ? 1932 : 1934);
+                for (std::size_t m = k; m < std::min(k + kChunk, values.size()); ++m)
+                    more.push_back(filw_i(values[m]));
+                mRecords.push_back(std::move(more));
+            }
+        }
+        mRecords.insert(mRecords.end(), refs.begin(), refs.end());
+    }
+
+    FilwSignature mSignature;
+    std::size_t mDim = 3;
+    std::vector<std::int64_t> mNodeLabels, mCellLabels;
+    std::vector<Cell> mCells;
+    std::set<std::size_t> mWritten;
+    std::map<std::string, std::size_t> mSkipped;
+    std::vector<FilwRecord> mRecords;
+};
+
+/// A record's values: trailing NaN dropped, an inner NaN written as 0.
+std::vector<double> filw_trim(const double* pValues, std::size_t N) {
+    std::vector<double> v(pValues, pValues + N);
+    while (!v.empty() && v.back() != v.back())
+        v.pop_back();
+    for (double& x : v)
+        if (x != x)
+            x = 0.0;
+    return v;
+}
+
+struct FilwName {
+    std::string mBase;
+    std::optional<std::int64_t> mSection;
+    std::optional<std::string> mRebar;
+    std::string mCollision;
+    bool mValid = true;
+};
+
+/// `(base, section point, rebar, collision suffix)` of a cell array name.
+FilwName filw_split_name(const std::string& rName) {
+    FilwName out;
+    const std::size_t at = rName.find('@');
+    out.mBase = rName.substr(0, at);
+    if (at == std::string::npos)
+        return out;
+    std::size_t start = at;
+    while (start < rName.size()) {
+        const std::size_t next = rName.find('@', start + 1);
+        const std::string part =
+            rName.substr(start + 1, (next == std::string::npos ? rName.size() : next) - start - 1);
+        start = next == std::string::npos ? rName.size() : next;
+        if (part.empty())
+            continue;
+        if (part.compare(0, 2, "sp") == 0 && part.size() > 2 &&
+            std::all_of(part.begin() + 2, part.end(),
+                        [](char C) { return C >= '0' && C <= '9'; }) &&
+            part.size() < 12)
+            out.mSection = std::stoll(part.substr(2));
+        else if (part.compare(0, 6, "rebar:") == 0)
+            out.mRebar = part.substr(6);
+        else if (part == "ip" || part == "el")
+            out.mCollision = part;
+        else {
+            out.mBase = rName;
+            out.mSection.reset();
+            out.mRebar.reset();
+            out.mCollision.clear();
+            return out;
+        }
+    }
+    return out;
+}
+
+void filw_ndi_nshr(std::size_t Count, std::int64_t& rNdi, std::int64_t& rNshr) {
+    rNdi = Count == 6 ? 3 : Count == 4 ? 3 : Count == 3 ? 2 : 0;
+    rNshr = Count == 6 ? 3 : Count == 4 ? 1 : Count == 3 ? 1 : 0;
+}
+
+bool filw_ends_with(const std::string& rS, const std::string& rSuffix) {
+    return rS.size() >= rSuffix.size() &&
+           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+}
+
+std::optional<double> filw_scalar(const Mesh& rMesh, const std::string& rName) {
+    if (!rMesh.HasFieldData(rName))
+        return std::nullopt;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return std::nullopt;
+    return detail::DoubleView(a).Data()[0];
+}
+
+std::optional<std::int64_t> filw_int_scalar(const Mesh& rMesh, const std::string& rName) {
+    if (!rMesh.HasFieldData(rName))
+        return std::nullopt;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return std::nullopt;
+    return detail::Int64View(a).Data()[0];
+}
+
+/// One increment: a 2000 record, the step's results and a 2001 record.
+struct FilwIncrement {
+    std::vector<FilwRecord> mRecords;
+    std::set<std::string> mDropped;
+
+    FilwIncrement(const FilwModel& rModel, const Mesh& rMesh, double Time, std::size_t Index) {
+        const double step_time = filw_scalar(rMesh, "abaqus:step_time").value_or(Time);
+        const std::int64_t procedure = filw_int_scalar(rMesh, "abaqus:procedure").value_or(1);
+        const std::int64_t step = filw_int_scalar(rMesh, "abaqus:step").value_or(1);
+        const std::int64_t increment = filw_int_scalar(rMesh, "abaqus:increment")
+                                           .value_or(static_cast<std::int64_t>(Index + 1));
+        FilwRecord head = filw_rec(2000);
+        head.push_back(filw_d(Time));
+        head.push_back(filw_d(step_time));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_i(procedure));
+        head.push_back(filw_i(step));
+        head.push_back(filw_i(increment));
+        head.push_back(filw_i(0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(0.0));
+        head.push_back(filw_d(1.0));
+        filw_text_items(head, "");
+        mRecords.push_back(std::move(head));
+        Mode(rMesh);
+        const std::vector<FilwRecord> element = Element(rModel, rMesh);
+        const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
+        if (!element.empty()) {
+            FilwRecord request = filw_rec(1911);
+            request.push_back(filw_i(0));
+            request.push_back(filw_a(""));
+            request.push_back(filw_a(""));
+            mRecords.push_back(std::move(request));
+            mRecords.insert(mRecords.end(), element.begin(), element.end());
+        }
+        if (!nodal.empty()) {
+            FilwRecord request = filw_rec(1911);
+            request.push_back(filw_i(1));
+            request.push_back(filw_a(""));
+            mRecords.push_back(std::move(request));
+            mRecords.insert(mRecords.end(), nodal.begin(), nodal.end());
+        }
+        mRecords.push_back(filw_rec(2001));
+        static const std::set<std::string> known = {
+            kSequenceTimeKey,           "abaqus:step",
+            "abaqus:increment",         "abaqus:step_time",
+            "abaqus:procedure",         "abaqus:mode",
+            "abaqus:eigenvalue",        "abaqus:generalized_mass",
+            "abaqus:composite_damping", "abaqus:participation_factor",
+            "abaqus:effective_mass"};
+        for (const std::string& name : rMesh.FieldDataNames())
+            if (known.count(name) == 0 && name.compare(0, 14, "abaqus:layout:") != 0)
+                mDropped.insert(name);
+    }
+
+private:
+    void Mode(const Mesh& rMesh) {
+        const auto mode = filw_int_scalar(rMesh, "abaqus:mode");
+        if (!mode)
+            return;
+        std::vector<double> factors, masses;
+        if (rMesh.HasFieldData("abaqus:participation_factor")) {
+            const NDArray& a = rMesh.FieldData("abaqus:participation_factor");
+            const detail::DoubleView v(a);
+            factors.assign(v.Data(), v.Data() + a.Size());
+        }
+        if (rMesh.HasFieldData("abaqus:effective_mass")) {
+            const NDArray& a = rMesh.FieldData("abaqus:effective_mass");
+            const detail::DoubleView v(a);
+            masses.assign(v.Data(), v.Data() + a.Size());
+        }
+        if (factors.size() != masses.size())
+            filw_fail("'abaqus:participation_factor' and 'abaqus:effective_mass' differ");
+        FilwRecord r = filw_rec(1980);
+        r.push_back(filw_i(*mode));
+        for (const char* name :
+             {"abaqus:eigenvalue", "abaqus:generalized_mass", "abaqus:composite_damping"})
+            r.push_back(filw_d(filw_scalar(rMesh, name).value_or(0.0)));
+        for (std::size_t k = 0; k < factors.size(); ++k) {
+            r.push_back(filw_d(factors[k]));
+            r.push_back(filw_d(masses[k]));
+        }
+        mRecords.push_back(std::move(r));
+    }
+
+    std::vector<FilwRecord> Nodal(const FilwModel& rModel, const Mesh& rMesh) {
+        std::vector<FilwRecord> out;
+        const std::size_t n = rModel.NodeLabels().size();
+        for (const std::string& name : rMesh.PointDataNames()) {
+            if (name == "abaqus:id" || filw_ends_with(name, "@avg"))
+                continue;
+            const auto key = filw_key_of(name, true);
+            if (!key) {
+                if (!filw_key_of(name, false))
+                    mDropped.insert(name);
+                continue;
+            }
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n) {
+                mDropped.insert(name);
+                continue;
+            }
+            const detail::DoubleView v(a);
+            const std::size_t cols = a.Size() / n;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord r = filw_rec(*key);
+                r.push_back(filw_i(rModel.NodeLabels()[i]));
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                out.push_back(std::move(r));
+            }
+        }
+        return out;
+    }
+
+    std::vector<FilwRecord> Element(const FilwModel& rModel, const Mesh& rMesh) {
+        std::map<std::size_t, std::size_t> index;  // global cell -> position
+        for (std::size_t k = 0; k < rModel.Cells().size(); ++k)
+            index[rModel.Cells()[k].mGlobal] = k;
+        using SlotKey = std::tuple<std::size_t, int, std::int64_t, std::int64_t, std::string>;
+        std::map<SlotKey, std::vector<std::pair<std::int64_t, std::vector<double>>>> slots;
+        std::vector<std::size_t> offsets{0};
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            offsets.push_back(offsets.back() + rMesh.Cells(b).NumCells());
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (name == "abaqus:id")
+                continue;
+            const FilwName parsed = filw_split_name(name);
+            const auto key = filw_key_of(parsed.mBase, false);
+            if (!key) {
+                mDropped.insert(name);
+                continue;
+            }
+            std::vector<std::int64_t> layout;
+            if (rMesh.HasFieldData("abaqus:layout:" + name)) {
+                const NDArray& l = rMesh.FieldData("abaqus:layout:" + name);
+                const detail::Int64View v(l);
+                layout.assign(v.Data(), v.Data() + l.Size());
+                if (layout.size() != 2 || layout[0] < 1 || layout[1] < 1)
+                    filw_fail("'abaqus:layout:" + name + "' must be (points, components)");
+            }
+            int location = 1;
+            if (parsed.mRebar)
+                location = 3;
+            else if (!layout.empty())
+                location = (parsed.mBase == "NFORC" || parsed.mCollision == "el") ? 2 : 0;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const auto cb = rMesh.Cells(b);
+                const std::size_t n = cb.NumCells();
+                const NDArray& a = rMesh.CellData(name, b);
+                if (n == 0 || a.Shape().empty() || a.Shape()[0] != n)
+                    continue;
+                const std::size_t cols = a.Size() / n;
+                const detail::DoubleView v(a);
+                const std::int64_t sec =
+                    parsed.mSection ? *parsed.mSection : (filw_is_shell(cb.Type()) ? 1 : 0);
+                if (!layout.empty() && cols != static_cast<std::size_t>(layout[0]) *
+                                                   static_cast<std::size_t>(layout[1]))
+                    filw_fail("'" + name + "' does not match its 'abaqus:layout:" + name + "'");
+                const detail::Int64View conn(cb.Conn());
+                for (std::size_t r = 0; r < n; ++r) {
+                    const auto at = index.find(offsets[b] + r);
+                    if (at == index.end())
+                        continue;
+                    const double* row = v.Data() + r * cols;
+                    if (layout.empty()) {
+                        const std::vector<double> values = filw_trim(row, cols);
+                        if (!values.empty())
+                            slots[{at->second, location, sec, 0, ""}].emplace_back(*key, values);
+                        continue;
+                    }
+                    for (std::int64_t p = 0; p < layout[0]; ++p) {
+                        const std::vector<double> values =
+                            filw_trim(row + p * layout[1], static_cast<std::size_t>(layout[1]));
+                        if (values.empty())
+                            continue;
+                        std::int64_t point = p + 1;
+                        if (location == 2) {
+                            if (static_cast<std::size_t>(p) >= cb.NodesPerCell())
+                                continue;
+                            point = rModel.NodeLabels()[static_cast<std::size_t>(
+                                conn.Data()[r * cb.NodesPerCell() + static_cast<std::size_t>(p)])];
+                        }
+                        slots[{at->second, location, sec, point, parsed.mRebar.value_or("")}]
+                            .emplace_back(*key, values);
+                    }
+                }
+            }
+        }
+        std::vector<FilwRecord> out;
+        for (const auto& [slot, items] : slots) {
+            const auto& [position, location, sec, point, rebar] = slot;
+            const std::size_t g = rModel.Cells()[position].mGlobal;
+            std::int64_t ndi = 0, nshr = 0;
+            for (const auto& item : items) {
+                const std::size_t c = item.second.size();
+                if (c == 3 || c == 4 || c == 6) {
+                    filw_ndi_nshr(c, ndi, nshr);
+                    break;
+                }
+            }
+            FilwRecord h = filw_rec(1);
+            h.push_back(filw_i(rModel.CellLabels()[g]));
+            h.push_back(filw_i(point));
+            h.push_back(filw_i(sec));
+            h.push_back(filw_i(location));
+            h.push_back(filw_a(rebar));
+            h.push_back(filw_i(ndi));
+            h.push_back(filw_i(nshr));
+            h.push_back(filw_i(0));
+            h.push_back(filw_i(0));
+            out.push_back(std::move(h));
+            for (const auto& [key, values] : items) {
+                FilwRecord r = filw_rec(key);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                out.push_back(std::move(r));
+            }
+        }
+        Averaged(rModel, rMesh, out);
+        return out;
+    }
+
+    /// Point data named like an element result: averaged at the nodes (location 4).
+    void Averaged(const FilwModel& rModel, const Mesh& rMesh, std::vector<FilwRecord>& rOut) {
+        const std::size_t n = rModel.NodeLabels().size();
+        for (const std::string& name : rMesh.PointDataNames()) {
+            std::string base = name;
+            while (filw_ends_with(base, "@avg"))
+                base.erase(base.size() - 4);
+            if (base == "abaqus:id")
+                continue;
+            if (base == name && filw_key_of(base, true))
+                continue;  // a nodal result
+            const auto key = filw_key_of(base, false);
+            if (!key)
+                continue;
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n)
+                continue;
+            const detail::DoubleView v(a);
+            const std::size_t cols = a.Size() / n;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord h = filw_rec(1);
+                h.push_back(filw_i(rModel.NodeLabels()[i]));
+                for (int k = 0; k < 2; ++k)
+                    h.push_back(filw_i(0));
+                h.push_back(filw_i(4));
+                h.push_back(filw_a(""));
+                for (int k = 0; k < 4; ++k)
+                    h.push_back(filw_i(0));
+                rOut.push_back(std::move(h));
+                FilwRecord r = filw_rec(*key);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                rOut.push_back(std::move(r));
+            }
+        }
+    }
+};
+
+}  // namespace
+
+namespace {
+
+std::string filw_encode(bool Binary, const std::vector<FilwRecord>& rRecords) {
+    return Binary ? filw_binary_bytes(rRecords) : filw_ascii_bytes(rRecords);
+}
+
+bool filw_has_results(const Mesh& rMesh) {
+    if (rMesh.HasFieldData(kSequenceTimeKey))
+        return true;
+    for (const std::string& n : rMesh.PointDataNames())
+        if (n != "abaqus:id")
+            return true;
+    for (const std::string& n : rMesh.CellDataNames())
+        if (n != "abaqus:id")
+            return true;
+    return false;
+}
+
+double filw_time_of(const Mesh& rMesh) {
+    return filw_scalar(rMesh, kSequenceTimeKey).value_or(0.0);
+}
+
+void filw_warn_dropped(const FilwModel& rModel, const std::vector<FilwIncrement>& rIncrements) {
+    std::set<std::string> names = rModel.mDropped;
+    for (const FilwIncrement& inc : rIncrements)
+        names.insert(inc.mDropped.begin(), inc.mDropped.end());
+    if (!names.empty()) {
+        std::string list;
+        for (const std::string& n : names)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Abaqus .fil: arrays and sets without a place in the file are not written: {}",
+                  list);
+    }
+    if (!rModel.Skipped().empty()) {
+        std::string list;
+        for (const auto& [type, count] : rModel.Skipped())
+            list += (list.empty() ? "" : ", ") + type;
+        log::warn("Abaqus .fil: cell blocks with no Abaqus element type are not written: {}", list);
+    }
+}
+
+void filw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        filw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh, bool Binary) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const FilwModel model(rMesh);
+    std::vector<FilwIncrement> increments;
+    if (filw_has_results(rMesh))
+        increments.emplace_back(model, rMesh, filw_time_of(rMesh), 0);
+    filw_warn_dropped(model, increments);
+    std::vector<FilwRecord> records = model.Records();
+    for (const FilwIncrement& inc : increments)
+        records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
+    filw_save(rPath, filw_encode(Binary, records));
+}
+
+struct AbaqusFilSeriesWriter::Impl {
+    std::string mPath;
+    bool mBinary = false;
+    std::optional<FilwModel> mModel;
+    std::vector<FilwIncrement> mIncrements;
+    bool mDone = false;
+};
+
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(const std::string& rPath, bool Binary)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mBinary = Binary;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+AbaqusFilSeriesWriter::~AbaqusFilSeriesWriter() = default;
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept = default;
+AbaqusFilSeriesWriter& AbaqusFilSeriesWriter::operator=(AbaqusFilSeriesWriter&&) noexcept = default;
+
+void AbaqusFilSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        filw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    const std::size_t index = s.mIncrements.size();
+    if (!s.mModel) {
+        s.mModel.emplace(rMesh);
+    } else if (s.mModel->Signature() != filw_signature(rMesh)) {
+        filw_fail("series: step " + std::to_string(index) +
+                  "'s points or cells differ from the first step's; a results file holds one "
+                  "model -- write one file per step with '{step}'");
+    }
+    s.mIncrements.emplace_back(*s.mModel, rMesh, Time, index);
+}
+
+std::size_t AbaqusFilSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mIncrements.size() : 0;
+}
+
+void AbaqusFilSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mIncrements.empty())
+        filw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    filw_warn_dropped(*mpImpl->mModel, mpImpl->mIncrements);
+    std::vector<FilwRecord> records = mpImpl->mModel->Records();
+    for (const FilwIncrement& inc : mpImpl->mIncrements)
+        records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
+    filw_save(mpImpl->mPath, filw_encode(mpImpl->mBinary, records));
 }
 
 }  // namespace meshioplusplus
@@ -73515,6 +78099,1427 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/avsucd.cpp =====
+// ===== begin src/cpp/src/formats/cad_json.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+using detail::JsonValue;
+
+constexpr const char* kCjFormat = "cad_json";
+constexpr int kCjMaxDegree = 32;
+constexpr double kCjCorner = 0.999999;
+// Automatic subdivision: a clipped face gets about this many cells per direction.
+constexpr std::size_t kCjAutoCells = 16;
+
+// ---------------------------------------------------------------------------
+// Reading: JSON -> BrepInfo
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void cj_fail(const std::string& rWhat) {
+    throw ReadError(std::string("meshio++: cad_json: ") + rWhat);
+}
+
+double cj_number(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsNumber() || !std::isfinite(rV.mNumber))
+        cj_fail(rWhat + " is not a finite number");
+    return rV.mNumber;
+}
+
+std::int64_t cj_integer(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsNumber())
+        cj_fail(rWhat + " is not a number");
+    if (rV.mIsInteger)
+        return rV.mInteger;
+    const double x = rV.mNumber;
+    if (!std::isfinite(x) || x != std::floor(x) || std::fabs(x) > 9007199254740992.0)
+        cj_fail(rWhat + " is not an integer");
+    return static_cast<std::int64_t>(x);
+}
+
+bool cj_bool(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsBool())
+        cj_fail(rWhat + " is not a boolean");
+    return rV.mBool;
+}
+
+const JsonValue& cj_array(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsArray())
+        cj_fail(rWhat + " is not an array");
+    return rV;
+}
+
+const JsonValue& cj_object(const JsonValue& rV, const std::string& rWhat) {
+    if (!rV.IsObject())
+        cj_fail(rWhat + " is not an object");
+    return rV;
+}
+
+// The members of @p rObj outside @p rKnown, as compact object text ("" for none).
+std::string cj_extra(const JsonValue& rObj, std::initializer_list<std::string_view> Known) {
+    JsonValue extra = JsonValue::Object();
+    for (const auto& m : rObj.mMembers) {
+        bool known = false;
+        for (std::string_view k : Known)
+            if (m.mKey == k) {
+                known = true;
+                break;
+            }
+        if (!known)
+            extra.mMembers.push_back(m);
+    }
+    return extra.mMembers.empty() ? std::string() : detail::write_json(extra, 0);
+}
+
+// `brep_id` / `brep_name`.
+void cj_identity(const JsonValue& rObj, const std::string& rWhat, std::int64_t& rId,
+                 std::string& rName) {
+    rId = -1;
+    rName.clear();
+    if (const JsonValue* id = rObj.Find("brep_id")) {
+        rId = cj_integer(*id, rWhat + " brep_id");
+        if (rId < 0)
+            cj_fail(rWhat + " brep_id is negative");
+    }
+    if (const JsonValue* name = rObj.Find("brep_name")) {
+        if (!name->IsString())
+            cj_fail(rWhat + " brep_name is not a string");
+        rName = name->mString;
+    }
+}
+
+std::vector<double> cj_vector(const JsonValue& rV, const std::string& rWhat) {
+    cj_array(rV, rWhat);
+    std::vector<double> out;
+    out.reserve(rV.mItems.size());
+    for (std::size_t i = 0; i < rV.mItems.size(); ++i)
+        out.push_back(cj_number(rV.mItems[i], rWhat + "[" + std::to_string(i) + "]"));
+    return out;
+}
+
+void cj_check_knots(const std::vector<double>& rKnots, const std::string& rWhat) {
+    for (std::size_t i = 1; i < rKnots.size(); ++i)
+        if (rKnots[i] < rKnots[i - 1])
+            cj_fail(rWhat + " decreases at entry " + std::to_string(i));
+}
+
+// `[[id, [x, y, z, w]], ...]` or `[[x, y, z, w], ...]`.
+void cj_control_points(const JsonValue& rV, const std::string& rWhat, NDArray& rXyz,
+                       NDArray& rWeights, NDArray& rIds) {
+    cj_array(rV, rWhat);
+    const std::size_t n = rV.mItems.size();
+    rXyz = NDArray(DType::Float64, {n, 3});
+    rWeights = NDArray(DType::Float64, {n});
+    int form = -1;  // 1 with ids, 0 without
+    std::vector<std::int64_t> ids;
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::string what = rWhat + "[" + std::to_string(i) + "]";
+        const JsonValue& cp = cj_array(rV.mItems[i], what);
+        const JsonValue* coords = nullptr;
+        int this_form;
+        if (cp.mItems.size() == 2 && cp.mItems[1].IsArray()) {
+            this_form = 1;
+            ids.push_back(cj_integer(cp.mItems[0], what + " id"));
+            coords = &cp.mItems[1];
+        } else {
+            this_form = 0;
+            coords = &cp;
+            if (cp.mItems.size() == 1 && cp.mItems[0].IsArray())
+                coords = &cp.mItems[0];
+        }
+        if (form >= 0 && this_form != form)
+            cj_fail(rWhat + " mixes control points with and without ids");
+        form = this_form;
+        if (coords->mItems.size() != 4)
+            cj_fail(what + " needs [x, y, z, weight]");
+        for (std::size_t d = 0; d < 3; ++d)
+            rXyz.As<double>()[i * 3 + d] = cj_number(coords->mItems[d], what);
+        rWeights.As<double>()[i] = cj_number(coords->mItems[3], what + " weight");
+    }
+    rIds = NDArray(DType::Int64, {ids.size()});
+    std::copy(ids.begin(), ids.end(), rIds.As<std::int64_t>());
+}
+
+// A full knot vector from one in Kratos's reduced (n + p - 1) or the full form.
+void cj_fit_knots(std::vector<double>& rKnots, bool Reduced) {
+    if (!Reduced)
+        return;
+    std::vector<double> full;
+    full.reserve(rKnots.size() + 2);
+    full.push_back(rKnots.front());
+    full.insert(full.end(), rKnots.begin(), rKnots.end());
+    full.push_back(rKnots.back());
+    rKnots = std::move(full);
+}
+
+std::int32_t cj_degree(const JsonValue& rV, const std::string& rWhat) {
+    const std::int64_t p = cj_integer(rV, rWhat);
+    if (p < 1 || p > kCjMaxDegree)
+        cj_fail(rWhat + " " + std::to_string(p) + " is outside 1.." + std::to_string(kCjMaxDegree));
+    return static_cast<std::int32_t>(p);
+}
+
+void cj_check_weights(const NDArray& rW, bool Rational, const std::string& rWhat) {
+    if (!Rational)
+        return;
+    for (std::size_t i = 0; i < rW.Size(); ++i)
+        if (!(rW.As<double>()[i] > 0.0))
+            cj_fail(rWhat + " has a weight that is not positive");
+}
+
+BrepCurve cj_curve(const JsonValue& rObj, const std::string& rWhat) {
+    cj_object(rObj, rWhat);
+    BrepCurve c;
+    if (const JsonValue* r = rObj.Find("is_rational"))
+        c.mRational = cj_bool(*r, rWhat + " is_rational");
+    const JsonValue* deg = rObj.Find("degree");
+    const JsonValue* knots = rObj.Find("knot_vector");
+    const JsonValue* cps = rObj.Find("control_points");
+    if (!deg || !knots || !cps)
+        cj_fail(rWhat + " needs degree, knot_vector and control_points");
+    c.mDegree = cj_degree(*deg, rWhat + " degree");
+    c.mKnots = cj_vector(*knots, rWhat + " knot_vector");
+    cj_control_points(*cps, rWhat + " control_points", c.mControlPoints, c.mWeights, c.mIds);
+    const std::size_t n = c.mWeights.Size();
+    const std::size_t p = static_cast<std::size_t>(c.mDegree);
+    if (n < p + 1)
+        cj_fail(rWhat + " has fewer than degree + 1 control points");
+    const std::size_t k = c.mKnots.size();
+    if (k + 1 == n + p)
+        c.mReducedKnots = true;
+    else if (k != n + p + 1)
+        cj_fail(rWhat + " has " + std::to_string(k) + " knots for " + std::to_string(n) +
+                " control points of degree " + std::to_string(p));
+    cj_check_knots(c.mKnots, rWhat + " knot_vector");
+    cj_fit_knots(c.mKnots, c.mReducedKnots);
+    cj_check_weights(c.mWeights, c.mRational, rWhat);
+    if (const JsonValue* range = rObj.Find("active_range")) {
+        c.mActiveRange = cj_vector(*range, rWhat + " active_range");
+        if (c.mActiveRange.size() != 2)
+            cj_fail(rWhat + " active_range needs two values");
+    }
+    c.mExtra = cj_extra(rObj, {"is_rational", "degree", "knot_vector", "active_range",
+                               "control_points"});
+    return c;
+}
+
+BrepTrim cj_trim(const JsonValue& rObj, const std::string& rWhat) {
+    cj_object(rObj, rWhat);
+    BrepTrim t;
+    if (const JsonValue* idx = rObj.Find("trim_index")) {
+        t.mTrimIndex = cj_integer(*idx, rWhat + " trim_index");
+        if (t.mTrimIndex < 0)
+            cj_fail(rWhat + " trim_index is negative");
+    }
+    if (const JsonValue* dir = rObj.Find("curve_direction"))
+        t.mDirection = cj_bool(*dir, rWhat + " curve_direction");
+    const JsonValue* curve = rObj.Find("parameter_curve");
+    if (!curve)
+        cj_fail(rWhat + " has no parameter_curve");
+    t.mCurve = cj_curve(*curve, rWhat + " parameter_curve");
+    t.mExtra = cj_extra(rObj, {"trim_index", "curve_direction", "parameter_curve"});
+    return t;
+}
+
+BrepRef cj_ref(const JsonValue& rObj, const std::string& rWhat) {
+    cj_object(rObj, rWhat);
+    BrepRef r;
+    cj_identity(rObj, rWhat, r.mId, r.mName);
+    if (const JsonValue* idx = rObj.Find("trim_index")) {
+        r.mTrimIndex = cj_integer(*idx, rWhat + " trim_index");
+        if (r.mTrimIndex < 0)
+            cj_fail(rWhat + " trim_index is negative");
+    }
+    if (const JsonValue* dir = rObj.Find("relative_direction"))
+        r.mRelativeDirection = cj_bool(*dir, rWhat + " relative_direction") ? 1 : 0;
+    if (const JsonValue* lc = rObj.Find("local_coordinates"))
+        r.mLocalCoordinates = cj_vector(*lc, rWhat + " local_coordinates");
+    r.mExtra = cj_extra(rObj, {"brep_id", "brep_name", "trim_index", "relative_direction",
+                               "local_coordinates"});
+    return r;
+}
+
+std::vector<BrepRef> cj_topology(const JsonValue& rObj, const std::string& rWhat) {
+    std::vector<BrepRef> out;
+    if (const JsonValue* topo = rObj.Find("topology")) {
+        cj_array(*topo, rWhat + " topology");
+        for (std::size_t i = 0; i < topo->mItems.size(); ++i)
+            out.push_back(cj_ref(topo->mItems[i], rWhat + " topology[" + std::to_string(i) + "]"));
+    }
+    return out;
+}
+
+void cj_face(const JsonValue& rObj, const std::string& rWhat, BrepInfo& rInfo) {
+    cj_object(rObj, rWhat);
+    BrepFace f;
+    cj_identity(rObj, rWhat, f.mId, f.mName);
+    if (const JsonValue* sw = rObj.Find("swapped_surface_normal"))
+        f.mSwappedNormal = cj_bool(*sw, rWhat + " swapped_surface_normal");
+    const JsonValue* surface = rObj.Find("surface");
+    if (!surface)
+        cj_fail(rWhat + " has no surface");
+    const std::string sw = rWhat + " surface";
+    cj_object(*surface, sw);
+    if (const JsonValue* t = surface->Find("is_trimmed"))
+        f.mTrimmed = cj_bool(*t, sw + " is_trimmed");
+    if (const JsonValue* r = surface->Find("is_rational"))
+        f.mRational = cj_bool(*r, sw + " is_rational");
+    const JsonValue* degs = surface->Find("degrees");
+    const JsonValue* knots = surface->Find("knot_vectors");
+    const JsonValue* cps = surface->Find("control_points");
+    if (!degs || !knots || !cps)
+        cj_fail(sw + " needs degrees, knot_vectors and control_points");
+    cj_array(*degs, sw + " degrees");
+    cj_array(*knots, sw + " knot_vectors");
+    if (degs->mItems.size() != 2 || knots->mItems.size() != 2)
+        cj_fail(sw + " needs two degrees and two knot vectors");
+    NurbsPatch patch;
+    for (std::size_t d = 0; d < 2; ++d) {
+        patch.mDegrees.push_back(cj_degree(degs->mItems[d], sw + " degree"));
+        patch.mKnots.push_back(cj_vector(knots->mItems[d], sw + " knot vector"));
+        cj_check_knots(patch.mKnots.back(), sw + " knot vector");
+    }
+    cj_control_points(*cps, sw + " control_points", patch.mControlPoints, patch.mWeights,
+                      f.mControlPointIds);
+    const std::size_t n = patch.mWeights.Size();
+    const std::size_t p = static_cast<std::size_t>(patch.mDegrees[0]);
+    const std::size_t q = static_cast<std::size_t>(patch.mDegrees[1]);
+    const std::size_t ku = patch.mKnots[0].size(), kv = patch.mKnots[1].size();
+    // Kratos's own test (NurbsSurfaceGeometry::CheckAndFitKnotVectors): the
+    // reduced form first, then the full one.
+    if (ku + 1 > p && kv + 1 > q && (ku + 1 - p) * (kv + 1 - q) == n)
+        f.mReducedKnots = true;
+    else if (!(ku > p + 1 && kv > q + 1 && (ku - p - 1) * (kv - q - 1) == n))
+        cj_fail(sw + ": " + std::to_string(n) + " control points do not match knot vectors of " +
+                std::to_string(ku) + " and " + std::to_string(kv) + " knots at degrees " +
+                std::to_string(p) + ", " + std::to_string(q));
+    for (auto& k : patch.mKnots)
+        cj_fit_knots(k, f.mReducedKnots);
+    if (patch.mKnots[0].size() - p - 1 < p + 1 || patch.mKnots[1].size() - q - 1 < q + 1)
+        cj_fail(sw + " has fewer than degree + 1 control points in a direction");
+    cj_check_weights(patch.mWeights, f.mRational, sw);
+    f.mSurfaceExtra = cj_extra(*surface, {"is_trimmed", "is_rational", "degrees",
+                                          "knot_vectors", "control_points"});
+    if (const JsonValue* loops = rObj.Find("boundary_loops")) {
+        cj_array(*loops, rWhat + " boundary_loops");
+        for (std::size_t l = 0; l < loops->mItems.size(); ++l) {
+            const std::string lw = rWhat + " boundary_loops[" + std::to_string(l) + "]";
+            const JsonValue& lo = cj_object(loops->mItems[l], lw);
+            BrepLoop loop;
+            if (const JsonValue* t = lo.Find("loop_type")) {
+                if (!t->IsString())
+                    cj_fail(lw + " loop_type is not a string");
+                loop.mType = t->mString;
+            } else {
+                cj_fail(lw + " has no loop_type");
+            }
+            const JsonValue* trims = lo.Find("trimming_curves");
+            if (!trims)
+                cj_fail(lw + " has no trimming_curves");
+            cj_array(*trims, lw + " trimming_curves");
+            for (std::size_t t = 0; t < trims->mItems.size(); ++t)
+                loop.mTrims.push_back(
+                    cj_trim(trims->mItems[t], lw + " trimming_curves[" + std::to_string(t) + "]"));
+            loop.mExtra = cj_extra(lo, {"loop_type", "trimming_curves"});
+            f.mLoops.push_back(std::move(loop));
+        }
+    }
+    if (const JsonValue* emb = rObj.Find("embedded_edges")) {
+        cj_array(*emb, rWhat + " embedded_edges");
+        for (std::size_t t = 0; t < emb->mItems.size(); ++t)
+            f.mEmbeddedEdges.push_back(
+                cj_trim(emb->mItems[t], rWhat + " embedded_edges[" + std::to_string(t) + "]"));
+    }
+    f.mExtra = cj_extra(rObj, {"brep_id", "brep_name", "swapped_surface_normal", "surface",
+                               "boundary_loops", "embedded_edges"});
+    f.mPatch = static_cast<std::int64_t>(rInfo.mPatches.size());
+    rInfo.mPatches.push_back(std::move(patch));
+    rInfo.mFaces.push_back(std::move(f));
+}
+
+void cj_read_breps(const JsonValue& rRoot, BrepInfo& rInfo) {
+    const JsonValue& breps = cj_array(*rRoot.Find("breps"), "breps");
+    for (std::size_t b = 0; b < breps.mItems.size(); ++b) {
+        const std::string bw = "breps[" + std::to_string(b) + "]";
+        const JsonValue& bo = cj_object(breps.mItems[b], bw);
+        Brep brep;
+        cj_identity(bo, bw, brep.mId, brep.mName);
+        if (const JsonValue* faces = bo.Find("faces")) {
+            cj_array(*faces, bw + " faces");
+            for (std::size_t i = 0; i < faces->mItems.size(); ++i) {
+                brep.mFaces.push_back(static_cast<std::int64_t>(rInfo.mFaces.size()));
+                cj_face(faces->mItems[i], bw + " faces[" + std::to_string(i) + "]", rInfo);
+            }
+        }
+        if (const JsonValue* edges = bo.Find("edges")) {
+            cj_array(*edges, bw + " edges");
+            for (std::size_t i = 0; i < edges->mItems.size(); ++i) {
+                const std::string ew = bw + " edges[" + std::to_string(i) + "]";
+                const JsonValue& eo = cj_object(edges->mItems[i], ew);
+                BrepEdge e;
+                cj_identity(eo, ew, e.mId, e.mName);
+                if (const JsonValue* c = eo.Find("3d_curve")) {
+                    e.mHasCurve = true;
+                    e.mCurve = cj_curve(*c, ew + " 3d_curve");
+                }
+                e.mTopology = cj_topology(eo, ew);
+                e.mExtra = cj_extra(eo, {"brep_id", "brep_name", "3d_curve", "topology"});
+                brep.mEdges.push_back(static_cast<std::int64_t>(rInfo.mEdges.size()));
+                rInfo.mEdges.push_back(std::move(e));
+            }
+        }
+        if (const JsonValue* verts = bo.Find("vertices")) {
+            cj_array(*verts, bw + " vertices");
+            for (std::size_t i = 0; i < verts->mItems.size(); ++i) {
+                const std::string vw = bw + " vertices[" + std::to_string(i) + "]";
+                const JsonValue& vo = cj_object(verts->mItems[i], vw);
+                BrepVertex v;
+                cj_identity(vo, vw, v.mId, v.mName);
+                v.mTopology = cj_topology(vo, vw);
+                v.mExtra = cj_extra(vo, {"brep_id", "brep_name", "topology"});
+                brep.mVertices.push_back(static_cast<std::int64_t>(rInfo.mVertices.size()));
+                rInfo.mVertices.push_back(std::move(v));
+            }
+        }
+        brep.mExtra = cj_extra(bo, {"brep_id", "brep_name", "faces", "edges", "vertices"});
+        rInfo.mBreps.push_back(std::move(brep));
+    }
+    rInfo.mExtra = cj_extra(rRoot, {"breps"});
+}
+
+// `CPCoordinates` [[x, y, z]...] and `Weights` of the import dialect.
+void cj_import_net(const JsonValue& rObj, const std::string& rWhat, NDArray& rXyz,
+                   NDArray& rWeights) {
+    const JsonValue* coords = rObj.Find("CPCoordinates");
+    if (!coords)
+        cj_fail(rWhat + " has no CPCoordinates");
+    cj_array(*coords, rWhat + " CPCoordinates");
+    const std::size_t n = coords->mItems.size();
+    rXyz = NDArray(DType::Float64, {n, 3});
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::vector<double> xyz = cj_vector(coords->mItems[i], rWhat + " CPCoordinates");
+        if (xyz.size() < 2 || xyz.size() > 3)
+            cj_fail(rWhat + " CPCoordinates need two or three values");
+        for (std::size_t d = 0; d < 3; ++d)
+            rXyz.As<double>()[i * 3 + d] = d < xyz.size() ? xyz[d] : 0.0;
+    }
+    rWeights = NDArray(DType::Float64, {n});
+    const JsonValue* w = rObj.Find("Weights");
+    if (!w) {
+        for (std::size_t i = 0; i < n; ++i)
+            rWeights.As<double>()[i] = 1.0;
+        return;
+    }
+    const std::vector<double> ws = cj_vector(*w, rWhat + " Weights");
+    if (ws.size() != n)
+        cj_fail(rWhat + " has " + std::to_string(ws.size()) + " weights for " + std::to_string(n) +
+                " control points");
+    std::copy(ws.begin(), ws.end(), rWeights.As<double>());
+}
+
+bool cj_import_rational(const NDArray& rW) {
+    bool all_one = true, all_zero = true;
+    for (std::size_t i = 0; i < rW.Size(); ++i) {
+        all_one = all_one && rW.As<double>()[i] == 1.0;
+        all_zero = all_zero && rW.As<double>()[i] == 0.0;
+    }
+    return !all_one && !all_zero;
+}
+
+void cj_read_import(const JsonValue& rRoot, BrepInfo& rInfo) {
+    Brep brep;
+    if (const JsonValue* surfaces = rRoot.Find("Surfaces")) {
+        cj_array(*surfaces, "Surfaces");
+        for (std::size_t i = 0; i < surfaces->mItems.size(); ++i) {
+            const std::string sw = "Surfaces[" + std::to_string(i) + "]";
+            const JsonValue& so = cj_object(surfaces->mItems[i], sw);
+            BrepFace f;
+            NurbsPatch patch;
+            if (const JsonValue* id = so.Find("id"))
+                f.mId = cj_integer(*id, sw + " id");
+            const JsonValue* pu = so.Find("pDegreeU");
+            const JsonValue* pv = so.Find("pDegreeV");
+            const JsonValue* kvs = so.Find("knotVectors");
+            if (!pu || !pv || !kvs)
+                cj_fail(sw + " needs pDegreeU, pDegreeV and knotVectors");
+            patch.mDegrees = {cj_degree(*pu, sw + " pDegreeU"), cj_degree(*pv, sw + " pDegreeV")};
+            cj_object(*kvs, sw + " knotVectors");
+            const JsonValue* xi = kvs->Find("Xi");
+            const JsonValue* eta = kvs->Find("Eta");
+            if (!xi || !eta)
+                cj_fail(sw + " knotVectors needs Xi and Eta");
+            patch.mKnots = {cj_vector(*xi, sw + " Xi"), cj_vector(*eta, sw + " Eta")};
+            for (const auto& k : patch.mKnots)
+                cj_check_knots(k, sw + " knot vector");
+            cj_import_net(so, sw, patch.mControlPoints, patch.mWeights);
+            const std::size_t n = patch.mWeights.Size();
+            const std::size_t p = static_cast<std::size_t>(patch.mDegrees[0]);
+            const std::size_t q = static_cast<std::size_t>(patch.mDegrees[1]);
+            const std::size_t ku = patch.mKnots[0].size(), kv = patch.mKnots[1].size();
+            if (ku + 1 > p && kv + 1 > q && (ku + 1 - p) * (kv + 1 - q) == n)
+                f.mReducedKnots = true;
+            else if (!(ku > p + 1 && kv > q + 1 && (ku - p - 1) * (kv - q - 1) == n))
+                cj_fail(sw + ": the control points do not match the knot vectors");
+            for (auto& k : patch.mKnots)
+                cj_fit_knots(k, f.mReducedKnots);
+            if (patch.mKnots[0].size() - p - 1 < p + 1 || patch.mKnots[1].size() - q - 1 < q + 1)
+                cj_fail(sw + " has fewer than degree + 1 control points in a direction");
+            // ImportNurbsSbmModeler reads no surface weights; all zero or all
+            // one is a polynomial surface.
+            f.mRational = cj_import_rational(patch.mWeights);
+            cj_check_weights(patch.mWeights, f.mRational, sw);
+            f.mExtra = cj_extra(so, {"id", "pDegreeU", "pDegreeV", "knotVectors",
+                                     "CPCoordinates", "Weights"});
+            f.mPatch = static_cast<std::int64_t>(rInfo.mPatches.size());
+            rInfo.mPatches.push_back(std::move(patch));
+            brep.mFaces.push_back(static_cast<std::int64_t>(rInfo.mFaces.size()));
+            rInfo.mFaces.push_back(std::move(f));
+        }
+    }
+    if (const JsonValue* lines = rRoot.Find("Lines")) {
+        cj_array(*lines, "Lines");
+        for (std::size_t i = 0; i < lines->mItems.size(); ++i) {
+            const std::string lw = "Lines[" + std::to_string(i) + "]";
+            const JsonValue& lo = cj_object(lines->mItems[i], lw);
+            BrepEdge e;
+            e.mHasCurve = true;
+            if (const JsonValue* id = lo.Find("id"))
+                e.mId = cj_integer(*id, lw + " id");
+            const JsonValue* deg = lo.Find("pDegree");
+            const JsonValue* kv = lo.Find("knotVector");
+            if (!deg || !kv)
+                cj_fail(lw + " needs pDegree and knotVector");
+            BrepCurve& c = e.mCurve;
+            c.mDegree = cj_degree(*deg, lw + " pDegree");
+            c.mKnots = cj_vector(*kv, lw + " knotVector");
+            cj_check_knots(c.mKnots, lw + " knotVector");
+            cj_import_net(lo, lw, c.mControlPoints, c.mWeights);
+            const std::size_t n = c.mWeights.Size();
+            const std::size_t p = static_cast<std::size_t>(c.mDegree);
+            if (n < p + 1)
+                cj_fail(lw + " has fewer than degree + 1 control points");
+            if (c.mKnots.size() + 1 == n + p)
+                c.mReducedKnots = true;
+            else if (c.mKnots.size() != n + p + 1)
+                cj_fail(lw + ": the control points do not match the knot vector");
+            cj_fit_knots(c.mKnots, c.mReducedKnots);
+            // ImportNurbsSbmModeler builds every line as a rational curve.
+            c.mRational = true;
+            cj_check_weights(c.mWeights, true, lw);
+            e.mExtra = cj_extra(lo, {"id", "pDegree", "knotVector", "CPCoordinates", "Weights"});
+            brep.mEdges.push_back(static_cast<std::int64_t>(rInfo.mEdges.size()));
+            rInfo.mEdges.push_back(std::move(e));
+        }
+    }
+    rInfo.mBreps.push_back(std::move(brep));
+    rInfo.mExtra = cj_extra(rRoot, {"Surfaces", "Lines"});
+}
+
+BrepInfo cj_parse(const std::string& rPath) {
+    const std::size_t bytes = detail::file_bytes(rPath);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("meshio++: cad_json: cannot open " + rPath);
+    std::string text(bytes, '\0');
+    in.read(text.data(), static_cast<std::streamsize>(bytes));
+    text.resize(static_cast<std::size_t>(in.gcount()));
+    const JsonValue root = detail::parse_json(text, kCjFormat);
+    if (!root.IsObject())
+        cj_fail("the document is not an object");
+    BrepInfo info;
+    if (root.Find("breps"))
+        cj_read_breps(root, info);
+    else if (root.Find("Surfaces") || root.Find("Lines"))
+        cj_read_import(root, info);
+    else
+        cj_fail("neither a \"breps\" list (CadJsonInput) nor \"Surfaces\"/\"Lines\" "
+                "(ImportNurbsSbmModeler)");
+    return info;
+}
+
+// ---------------------------------------------------------------------------
+// Sampling: BrepInfo -> Mesh
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void cj_bad(const std::string& rWhat) {
+    throw std::invalid_argument("meshio++: sample_brep: " + rWhat);
+}
+
+std::string cj_quad_type(int Order) {
+    return Order <= 1 ? "quad" : Order == 2 ? "quad9" : "VTK_LAGRANGE_QUADRILATERAL";
+}
+
+std::string cj_line_type(int Order) {
+    return Order <= 1 ? "line" : Order == 2 ? "line3" : "VTK_LAGRANGE_CURVE";
+}
+
+// The cell boundaries along one direction: every nonzero span split in S.
+struct CjAxis {
+    std::vector<double> mLo, mHi;     // per cell
+    std::vector<std::size_t> mSpan;   // knot index of each cell's span
+    std::vector<std::int64_t> mSpanNo;  // the span's ordinal among nonzero spans
+};
+
+CjAxis cj_axis(int P, const std::vector<double>& rKnots, std::size_t N, int S,
+               const std::vector<double>* pRange) {
+    CjAxis a;
+    const std::vector<std::size_t> spans = detail::nurbs_spans(P, rKnots, N);
+    for (std::size_t s = 0; s < spans.size(); ++s) {
+        double k0 = rKnots[spans[s]], k1 = rKnots[spans[s] + 1];
+        if (pRange && pRange->size() == 2) {
+            const double r0 = std::min((*pRange)[0], (*pRange)[1]);
+            const double r1 = std::max((*pRange)[0], (*pRange)[1]);
+            k0 = std::max(k0, r0);
+            k1 = std::min(k1, r1);
+            if (!(k0 < k1))
+                continue;
+        }
+        for (int j = 0; j < S; ++j) {
+            const double lo = k0 + (k1 - k0) * (static_cast<double>(j) / S);
+            const double hi = j + 1 == S ? k1 : k0 + (k1 - k0) * (static_cast<double>(j + 1) / S);
+            a.mLo.push_back(lo);
+            a.mHi.push_back(hi);
+            a.mSpan.push_back(spans[s]);
+            a.mSpanNo.push_back(static_cast<std::int64_t>(s));
+        }
+    }
+    return a;
+}
+
+// The lattice coordinates of one axis: cell c's node i at index c * K + i.
+std::vector<double> cj_lattice(const CjAxis& rA, int K) {
+    const std::size_t n = rA.mLo.size();
+    std::vector<double> g(n * static_cast<std::size_t>(K) + 1, 0.0);
+    for (std::size_t c = 0; c < n; ++c)
+        for (int i = 0; i < K; ++i)
+            g[c * static_cast<std::size_t>(K) + static_cast<std::size_t>(i)] =
+                rA.mLo[c] + (rA.mHi[c] - rA.mLo[c]) * (static_cast<double>(i) / K);
+    if (n)
+        g[n * static_cast<std::size_t>(K)] = rA.mHi[n - 1];
+    return g;
+}
+
+void cj_check_curve(const BrepCurve& rC, const std::string& rWhat) {
+    const std::size_t n = rC.mWeights.Size();
+    if (rC.mDegree < 1 || rC.mDegree > kCjMaxDegree)
+        cj_bad(rWhat + " degree is out of range");
+    if (rC.mControlPoints.Dtype() != DType::Float64 || rC.mControlPoints.Shape().size() != 2 ||
+        rC.mControlPoints.Shape()[0] != n || rC.mControlPoints.Shape()[1] != 3 ||
+        rC.mWeights.Dtype() != DType::Float64)
+        cj_bad(rWhat + " control points are not Float64 (n, 3) beside n weights");
+    if (n < static_cast<std::size_t>(rC.mDegree) + 1 ||
+        rC.mKnots.size() != n + static_cast<std::size_t>(rC.mDegree) + 1)
+        cj_bad(rWhat + " knot vector does not match its control points");
+    for (std::size_t i = 1; i < rC.mKnots.size(); ++i)
+        if (!(rC.mKnots[i] >= rC.mKnots[i - 1]))
+            cj_bad(rWhat + " knot vector decreases");
+    if (rC.mIds.Size() != 0 && (rC.mIds.Size() != n || rC.mIds.Dtype() != DType::Int64))
+        cj_bad(rWhat + " ids do not match its control points");
+}
+
+void cj_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
+    if (rP.mDegrees.size() != 2 || rP.mKnots.size() != 2)
+        cj_bad(rWhat + " is not a surface patch (two degrees, two knot vectors)");
+    std::size_t n = 1;
+    for (std::size_t d = 0; d < 2; ++d) {
+        if (rP.mDegrees[d] < 1 || rP.mDegrees[d] > kCjMaxDegree)
+            cj_bad(rWhat + " degree is out of range");
+        const auto p = static_cast<std::size_t>(rP.mDegrees[d]);
+        if (rP.mKnots[d].size() < 2 * p + 2)
+            cj_bad(rWhat + " knot vector is too short");
+        for (std::size_t i = 1; i < rP.mKnots[d].size(); ++i)
+            if (!(rP.mKnots[d][i] >= rP.mKnots[d][i - 1]))
+                cj_bad(rWhat + " knot vector decreases");
+        n *= rP.mKnots[d].size() - p - 1;
+    }
+    if (rP.mControlPoints.Dtype() != DType::Float64 || rP.mControlPoints.Shape().size() != 2 ||
+        rP.mControlPoints.Shape()[0] != n || rP.mControlPoints.Shape()[1] != 3 ||
+        rP.mWeights.Dtype() != DType::Float64 || rP.mWeights.Size() != n)
+        cj_bad(rWhat + " control net does not match its knot vectors");
+}
+
+// A loop as a closed polygon in (u, v): every trim sampled at Samples points
+// per knot span of its active range, in loop order.
+std::vector<std::array<double, 2>> cj_loop_polygon(const BrepLoop& rLoop, int Samples) {
+    std::vector<std::array<double, 2>> poly;
+    for (const BrepTrim& t : rLoop.mTrims) {
+        const BrepCurve& c = t.mCurve;
+        const std::size_t n = c.mWeights.Size();
+        const CjAxis axis = cj_axis(c.mDegree, c.mKnots, n, 1, &c.mActiveRange);
+        std::vector<std::array<double, 2>> pts;
+        const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
+        for (std::size_t s = 0; s < axis.mLo.size(); ++s)
+            for (int j = 0; j < Samples; ++j) {
+                const double u =
+                    axis.mLo[s] + (axis.mHi[s] - axis.mLo[s]) * (static_cast<double>(j) / Samples);
+                double xyz[3];
+                detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(),
+                                                  w, 3, axis.mSpan[s], u, xyz);
+                pts.push_back({xyz[0], xyz[1]});
+            }
+        if (!axis.mLo.empty()) {
+            const std::size_t s = axis.mLo.size() - 1;
+            double xyz[3];
+            detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(), w,
+                                              3, axis.mSpan[s], axis.mHi[s], xyz);
+            pts.push_back({xyz[0], xyz[1]});
+        }
+        if (!t.mDirection)
+            std::reverse(pts.begin(), pts.end());
+        poly.insert(poly.end(), pts.begin(), pts.end());
+    }
+    return poly;
+}
+
+// Even-odd point-in-polygon over every loop of a face.
+bool cj_inside(const std::vector<std::vector<std::array<double, 2>>>& rLoops, double U,
+               double V) {
+    bool inside = false;
+    for (const auto& poly : rLoops) {
+        const std::size_t n = poly.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            const auto& a = poly[i];
+            const auto& b = poly[j];
+            if ((a[1] > V) != (b[1] > V) && U < (b[0] - a[0]) * (V - a[1]) / (b[1] - a[1]) + a[0])
+                inside = !inside;
+        }
+    }
+    return inside;
+}
+
+struct CjBlock {
+    std::string mType;
+    std::vector<std::int64_t> mConn;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mKind, mIndex, mId, mSpan, mTrimmed;
+};
+
+CjBlock& cj_block(std::vector<CjBlock>& rBlocks, const std::string& rType, std::size_t Nodes) {
+    for (auto& b : rBlocks)
+        if (b.mType == rType)
+            return b;
+    rBlocks.push_back(CjBlock{});
+    rBlocks.back().mType = rType;
+    rBlocks.back().mNodes = Nodes;
+    return rBlocks.back();
+}
+
+// What one face or edge contributes before its points are evaluated: the
+// lattice points it uses (as lattice indices) and its cells.
+struct CjPending {
+    bool mFace = true;
+    std::size_t mEntity = 0;
+    std::vector<double> mU, mV;              // lattice coordinates
+    std::vector<std::size_t> mSpanU, mSpanV;  // span per lattice line
+    std::size_t mNu = 0;                      // lattice width
+    std::vector<std::size_t> mPoints;         // lattice index of each new point
+};
+
+void cj_check_options(const CadJsonReadOptions& rOpt) {
+    if (rOpt.mSubdivisions < 0 || rOpt.mSubdivisions > 64)
+        cj_bad("subdivisions must be 0 (automatic) to 64");
+    if (rOpt.mTrimSamples < 2 || rOpt.mTrimSamples > 4096)
+        cj_bad("trim_samples must be 2 to 4096");
+}
+
+Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
+    cj_check_options(rOpt);
+    // Automatic (0): knot-span cells, except that a clipped face is refined
+    // to about kCjAutoCells cells per direction so its trim shows.
+    const int S = std::max(rOpt.mSubdivisions, 1);
+    auto auto_split = [&](int P, const std::vector<double>& rKnots, std::size_t N, bool Clip) {
+        if (rOpt.mSubdivisions > 0)
+            return rOpt.mSubdivisions;
+        if (!Clip)
+            return 1;
+        const std::size_t spans = std::max<std::size_t>(detail::nurbs_spans(P, rKnots, N).size(), 1);
+        return static_cast<int>(std::min<std::size_t>((kCjAutoCells + spans - 1) / spans, 64));
+    };
+    for (std::size_t i = 0; i < rInfo.mPatches.size(); ++i)
+        cj_check_patch(rInfo.mPatches[i], "patch " + std::to_string(i));
+    std::vector<CjBlock> blocks;
+    std::vector<CjPending> pending;
+    std::size_t num_points = 0;
+
+    for (std::size_t fi = 0; fi < rInfo.mFaces.size(); ++fi) {
+        const BrepFace& face = rInfo.mFaces[fi];
+        const std::string fw = "face " + std::to_string(fi);
+        if (face.mPatch < 0 || static_cast<std::size_t>(face.mPatch) >= rInfo.mPatches.size())
+            cj_bad(fw + " names no patch");
+        const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(face.mPatch)];
+        const int p = patch.mDegrees[0], q = patch.mDegrees[1];
+        const std::size_t nu = patch.mKnots[0].size() - static_cast<std::size_t>(p) - 1;
+        const std::size_t nv = patch.mKnots[1].size() - static_cast<std::size_t>(q) - 1;
+        for (const BrepLoop& loop : face.mLoops)
+            for (const BrepTrim& t : loop.mTrims)
+                cj_check_curve(t.mCurve, fw + " trimming curve");
+        const int k = std::max(p, q);
+        const bool clip = rOpt.mTrim && face.mTrimmed && !face.mLoops.empty();
+        const CjAxis au = cj_axis(p, patch.mKnots[0], nu, auto_split(p, patch.mKnots[0], nu, clip),
+                                  nullptr);
+        const CjAxis av = cj_axis(q, patch.mKnots[1], nv, auto_split(q, patch.mKnots[1], nv, clip),
+                                  nullptr);
+        CjPending pd;
+        pd.mFace = true;
+        pd.mEntity = fi;
+        pd.mU = cj_lattice(au, k);
+        pd.mV = cj_lattice(av, k);
+        pd.mNu = pd.mU.size();
+        for (std::size_t i = 0; i < pd.mU.size(); ++i)
+            pd.mSpanU.push_back(au.mSpan.empty() ? 0 : au.mSpan[std::min(i / k, au.mSpan.size() - 1)]);
+        for (std::size_t i = 0; i < pd.mV.size(); ++i)
+            pd.mSpanV.push_back(av.mSpan.empty() ? 0 : av.mSpan[std::min(i / k, av.mSpan.size() - 1)]);
+        std::vector<std::vector<std::array<double, 2>>> loops;
+        if (clip)
+            for (const BrepLoop& loop : face.mLoops) {
+                auto poly = cj_loop_polygon(loop, rOpt.mTrimSamples);
+                if (poly.size() >= 3)
+                    loops.push_back(std::move(poly));
+            }
+        const auto lattice = lagrange::vtk_lattice(lagrange::Shape::Quad, k);
+        std::vector<std::int64_t> local(au.mLo.empty() || av.mLo.empty() ? 0 : pd.mU.size() * pd.mV.size(), -1);
+        CjBlock& blk = cj_block(blocks, cj_quad_type(k), lattice.size());
+        for (std::size_t jv = 0; jv < av.mLo.size(); ++jv)
+            for (std::size_t iu = 0; iu < au.mLo.size(); ++iu) {
+                std::int64_t trimmed = 0;
+                if (clip) {
+                    const double u0 = au.mLo[iu], u1 = au.mHi[iu];
+                    const double v0 = av.mLo[jv], v1 = av.mHi[jv];
+                    const double uc = (u0 + u1) * 0.5, vc = (v0 + v1) * 0.5;
+                    if (!cj_inside(loops, uc, vc))
+                        continue;
+                    // The corners pulled a hair towards the centre, so a cell
+                    // whose side lies on a loop is not counted as crossed.
+                    const double a0 = uc + (u0 - uc) * kCjCorner, a1 = uc + (u1 - uc) * kCjCorner;
+                    const double b0 = vc + (v0 - vc) * kCjCorner, b1 = vc + (v1 - vc) * kCjCorner;
+                    if (!cj_inside(loops, a0, b0) || !cj_inside(loops, a1, b0) ||
+                        !cj_inside(loops, a1, b1) || !cj_inside(loops, a0, b1))
+                        trimmed = 1;
+                }
+                for (const auto& ijk : lattice) {
+                    const std::size_t gi = iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
+                    const std::size_t gj = jv * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[1]);
+                    const std::size_t g = gj * pd.mNu + gi;
+                    if (local[g] < 0) {
+                        local[g] = static_cast<std::int64_t>(num_points + pd.mPoints.size());
+                        pd.mPoints.push_back(g);
+                    }
+                    blk.mConn.push_back(local[g]);
+                }
+                blk.mKind.push_back(0);
+                blk.mIndex.push_back(static_cast<std::int64_t>(fi));
+                blk.mId.push_back(face.mId);
+                blk.mSpan.push_back(au.mSpanNo[iu]);
+                blk.mSpan.push_back(av.mSpanNo[jv]);
+                blk.mTrimmed.push_back(trimmed);
+            }
+        num_points += pd.mPoints.size();
+        pending.push_back(std::move(pd));
+    }
+
+    if (rOpt.mEdges)
+        for (std::size_t ei = 0; ei < rInfo.mEdges.size(); ++ei) {
+            const BrepEdge& edge = rInfo.mEdges[ei];
+            if (!edge.mHasCurve)
+                continue;
+            const BrepCurve& c = edge.mCurve;
+            cj_check_curve(c, "edge " + std::to_string(ei) + " 3d_curve");
+            const int k = c.mDegree;
+            const CjAxis axis = cj_axis(k, c.mKnots, c.mWeights.Size(), S, &c.mActiveRange);
+            CjPending pd;
+            pd.mFace = false;
+            pd.mEntity = ei;
+            pd.mU = cj_lattice(axis, k);
+            pd.mNu = pd.mU.size();
+            for (std::size_t i = 0; i < pd.mU.size(); ++i)
+                pd.mSpanU.push_back(axis.mSpan.empty() ? 0
+                                                       : axis.mSpan[std::min(i / k, axis.mSpan.size() - 1)]);
+            const auto lattice = lagrange::vtk_lattice(lagrange::Shape::Line, k);
+            std::vector<std::int64_t> local(pd.mU.size(), -1);
+            CjBlock& blk = cj_block(blocks, cj_line_type(k), lattice.size());
+            for (std::size_t iu = 0; iu < axis.mLo.size(); ++iu) {
+                for (const auto& ijk : lattice) {
+                    const std::size_t g = iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
+                    if (local[g] < 0) {
+                        local[g] = static_cast<std::int64_t>(num_points + pd.mPoints.size());
+                        pd.mPoints.push_back(g);
+                    }
+                    blk.mConn.push_back(local[g]);
+                }
+                blk.mKind.push_back(1);
+                blk.mIndex.push_back(static_cast<std::int64_t>(ei));
+                blk.mId.push_back(edge.mId);
+                blk.mSpan.push_back(axis.mSpanNo[iu]);
+                blk.mSpan.push_back(-1);
+                blk.mTrimmed.push_back(0);
+            }
+            num_points += pd.mPoints.size();
+            pending.push_back(std::move(pd));
+        }
+
+    NDArray points(DType::Float64, {num_points, 3});
+    double* xyz = points.As<double>();
+    std::size_t offset = 0;
+    for (const CjPending& pd : pending) {
+        double* out = xyz + offset * 3;
+        if (pd.mFace) {
+            const BrepFace& face = rInfo.mFaces[pd.mEntity];
+            const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(face.mPatch)];
+            const std::size_t nu = patch.mKnots[0].size() - static_cast<std::size_t>(patch.mDegrees[0]) - 1;
+            const double* cps = patch.mControlPoints.As<double>();
+            const double* w = face.mRational ? patch.mWeights.As<double>() : nullptr;
+            parallel_for(pd.mPoints.size(), [&](std::size_t i) {
+                const std::size_t g = pd.mPoints[i];
+                const std::size_t gi = g % pd.mNu, gj = g / pd.mNu;
+                detail::nurbs_surface_point_in_span(patch.mDegrees[0], patch.mDegrees[1],
+                                                    patch.mKnots[0], patch.mKnots[1], cps, w, nu, 3,
+                                                    pd.mSpanU[gi], pd.mSpanV[gj], pd.mU[gi],
+                                                    pd.mV[gj], out + i * 3);
+            });
+        } else {
+            const BrepCurve& c = rInfo.mEdges[pd.mEntity].mCurve;
+            const double* cps = c.mControlPoints.As<double>();
+            const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
+            parallel_for(pd.mPoints.size(), [&](std::size_t i) {
+                const std::size_t g = pd.mPoints[i];
+                detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, cps, w, 3, pd.mSpanU[g],
+                                                  pd.mU[g], out + i * 3);
+            });
+        }
+        offset += pd.mPoints.size();
+    }
+
+    Mesh mesh;
+    mesh.AssignPoints(std::move(points));
+    std::vector<NDArray> kind, index, id, span, trimmed;
+    // A face trimmed away or an edge outside its range leaves no cells: keep
+    // only the blocks that have some.
+    blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                                [](const CjBlock& rB) { return rB.mKind.empty(); }),
+                 blocks.end());
+    for (CjBlock& b : blocks) {
+        const std::size_t n = b.mKind.size();
+        NDArray conn(DType::Int64, {n, b.mNodes});
+        std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
+        mesh.AddCellBlock(b.mType, std::move(conn));
+        auto column = [n](const std::vector<std::int64_t>& rV, std::size_t Width) {
+            NDArray a(DType::Int64, Width == 1 ? std::vector<std::size_t>{n}
+                                               : std::vector<std::size_t>{n, Width});
+            std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+            return a;
+        };
+        kind.push_back(column(b.mKind, 1));
+        index.push_back(column(b.mIndex, 1));
+        id.push_back(column(b.mId, 1));
+        span.push_back(column(b.mSpan, 2));
+        trimmed.push_back(column(b.mTrimmed, 1));
+    }
+    if (!blocks.empty()) {
+        mesh.AddCellData("cad:id", std::move(id));
+        mesh.AddCellData("cad:index", std::move(index));
+        mesh.AddCellData("cad:kind", std::move(kind));
+        mesh.AddCellData("cad:span", std::move(span));
+        mesh.AddCellData("cad:trimmed", std::move(trimmed));
+    }
+    return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// Writing: BrepInfo -> JSON
+// ---------------------------------------------------------------------------
+
+[[noreturn]] void cj_wfail(const std::string& rWhat) {
+    throw WriteError("meshio++: cad_json: " + rWhat);
+}
+
+// Append the members of compact object text @p rExtra to @p rObj.
+void cj_add_extra(JsonValue& rObj, const std::string& rExtra, const std::string& rWhat) {
+    if (rExtra.empty())
+        return;
+    JsonValue extra;
+    try {
+        extra = detail::parse_json(rExtra, kCjFormat);
+    } catch (const ReadError&) {
+        cj_wfail(rWhat + " extra is not JSON object text");
+    }
+    if (!extra.IsObject())
+        cj_wfail(rWhat + " extra is not JSON object text");
+    for (auto& m : extra.mMembers)
+        rObj.mMembers.push_back(std::move(m));
+}
+
+void cj_add_identity(JsonValue& rObj, std::int64_t Id, const std::string& rName) {
+    if (Id >= 0)
+        rObj.Add("brep_id", JsonValue::Integer(Id));
+    if (!rName.empty())
+        rObj.Add("brep_name", JsonValue::String(rName));
+}
+
+JsonValue cj_numbers(const std::vector<double>& rV) {
+    JsonValue a = JsonValue::Array();
+    for (double x : rV)
+        a.Push(JsonValue::Number(x));
+    return a;
+}
+
+std::vector<double> cj_written_knots(const std::vector<double>& rKnots, bool Reduced) {
+    if (!Reduced || rKnots.size() < 2)
+        return rKnots;
+    return std::vector<double>(rKnots.begin() + 1, rKnots.end() - 1);
+}
+
+JsonValue cj_net(const NDArray& rXyz, const NDArray& rW, const NDArray& rIds,
+                 const std::string& rWhat) {
+    const std::size_t n = rW.Size();
+    if (rXyz.Dtype() != DType::Float64 || rXyz.Shape().size() != 2 || rXyz.Shape()[0] != n ||
+        rXyz.Shape()[1] != 3 || rW.Dtype() != DType::Float64)
+        cj_wfail(rWhat + " control points are not Float64 (n, 3) beside n weights");
+    if (rIds.Size() != 0 && (rIds.Size() != n || rIds.Dtype() != DType::Int64))
+        cj_wfail(rWhat + " ids do not match its control points");
+    JsonValue a = JsonValue::Array();
+    for (std::size_t i = 0; i < n; ++i) {
+        JsonValue c = JsonValue::Array();
+        for (std::size_t d = 0; d < 3; ++d)
+            c.Push(JsonValue::Number(rXyz.As<double>()[i * 3 + d]));
+        c.Push(JsonValue::Number(rW.As<double>()[i]));
+        if (rIds.Size()) {
+            JsonValue e = JsonValue::Array();
+            e.Push(JsonValue::Integer(rIds.As<std::int64_t>()[i]));
+            e.Push(std::move(c));
+            a.Push(std::move(e));
+        } else {
+            JsonValue e = JsonValue::Array();
+            e.Push(std::move(c));
+            a.Push(std::move(e));
+        }
+    }
+    return a;
+}
+
+JsonValue cj_curve_json(const BrepCurve& rC, const std::string& rWhat) {
+    try {
+        cj_check_curve(rC, rWhat);
+    } catch (const std::invalid_argument& e) {
+        cj_wfail(e.what());
+    }
+    JsonValue o = JsonValue::Object();
+    o.Add("is_rational", JsonValue::Boolean(rC.mRational));
+    o.Add("degree", JsonValue::Integer(rC.mDegree));
+    o.Add("knot_vector", cj_numbers(cj_written_knots(rC.mKnots, rC.mReducedKnots)));
+    if (!rC.mActiveRange.empty()) {
+        if (rC.mActiveRange.size() != 2)
+            cj_wfail(rWhat + " active range needs two values");
+        o.Add("active_range", cj_numbers(rC.mActiveRange));
+    }
+    o.Add("control_points", cj_net(rC.mControlPoints, rC.mWeights, rC.mIds, rWhat));
+    cj_add_extra(o, rC.mExtra, rWhat);
+    return o;
+}
+
+JsonValue cj_trim_json(const BrepTrim& rT, const std::string& rWhat) {
+    JsonValue o = JsonValue::Object();
+    if (rT.mTrimIndex >= 0)
+        o.Add("trim_index", JsonValue::Integer(rT.mTrimIndex));
+    o.Add("curve_direction", JsonValue::Boolean(rT.mDirection));
+    o.Add("parameter_curve", cj_curve_json(rT.mCurve, rWhat + " parameter curve"));
+    cj_add_extra(o, rT.mExtra, rWhat);
+    return o;
+}
+
+JsonValue cj_topology_json(const std::vector<BrepRef>& rRefs, const std::string& rWhat) {
+    JsonValue a = JsonValue::Array();
+    for (const BrepRef& r : rRefs) {
+        JsonValue o = JsonValue::Object();
+        cj_add_identity(o, r.mId, r.mName);
+        if (r.mTrimIndex >= 0)
+            o.Add("trim_index", JsonValue::Integer(r.mTrimIndex));
+        if (r.mRelativeDirection >= 0)
+            o.Add("relative_direction", JsonValue::Boolean(r.mRelativeDirection != 0));
+        if (!r.mLocalCoordinates.empty())
+            o.Add("local_coordinates", cj_numbers(r.mLocalCoordinates));
+        cj_add_extra(o, r.mExtra, rWhat);
+        a.Push(std::move(o));
+    }
+    return a;
+}
+
+JsonValue cj_face_json(const BrepInfo& rInfo, const BrepFace& rF, const std::string& rWhat) {
+    if (rF.mPatch < 0 || static_cast<std::size_t>(rF.mPatch) >= rInfo.mPatches.size())
+        cj_wfail(rWhat + " names no patch");
+    const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(rF.mPatch)];
+    try {
+        cj_check_patch(patch, rWhat + " patch");
+    } catch (const std::invalid_argument& e) {
+        cj_wfail(e.what());
+    }
+    JsonValue o = JsonValue::Object();
+    cj_add_identity(o, rF.mId, rF.mName);
+    o.Add("swapped_surface_normal", JsonValue::Boolean(rF.mSwappedNormal));
+    JsonValue s = JsonValue::Object();
+    s.Add("is_trimmed", JsonValue::Boolean(rF.mTrimmed));
+    s.Add("is_rational", JsonValue::Boolean(rF.mRational));
+    JsonValue degs = JsonValue::Array();
+    degs.Push(JsonValue::Integer(patch.mDegrees[0]));
+    degs.Push(JsonValue::Integer(patch.mDegrees[1]));
+    s.Add("degrees", std::move(degs));
+    JsonValue kvs = JsonValue::Array();
+    kvs.Push(cj_numbers(cj_written_knots(patch.mKnots[0], rF.mReducedKnots)));
+    kvs.Push(cj_numbers(cj_written_knots(patch.mKnots[1], rF.mReducedKnots)));
+    s.Add("knot_vectors", std::move(kvs));
+    s.Add("control_points",
+          cj_net(patch.mControlPoints, patch.mWeights, rF.mControlPointIds, rWhat + " surface"));
+    cj_add_extra(s, rF.mSurfaceExtra, rWhat + " surface");
+    o.Add("surface", std::move(s));
+    JsonValue loops = JsonValue::Array();
+    for (std::size_t l = 0; l < rF.mLoops.size(); ++l) {
+        const BrepLoop& loop = rF.mLoops[l];
+        JsonValue lo = JsonValue::Object();
+        lo.Add("loop_type", JsonValue::String(loop.mType));
+        JsonValue trims = JsonValue::Array();
+        for (const BrepTrim& t : loop.mTrims)
+            trims.Push(cj_trim_json(t, rWhat + " loop " + std::to_string(l)));
+        lo.Add("trimming_curves", std::move(trims));
+        cj_add_extra(lo, loop.mExtra, rWhat + " loop");
+        loops.Push(std::move(lo));
+    }
+    o.Add("boundary_loops", std::move(loops));
+    JsonValue emb = JsonValue::Array();
+    for (const BrepTrim& t : rF.mEmbeddedEdges)
+        emb.Push(cj_trim_json(t, rWhat + " embedded edge"));
+    o.Add("embedded_edges", std::move(emb));
+    cj_add_extra(o, rF.mExtra, rWhat);
+    return o;
+}
+
+std::string cj_render(const BrepInfo& rInfo) {
+    // Kratos makes model-part nodes of surface and 3-D curve control points,
+    // which need ids; trimming curves' are points and may go without.
+    std::size_t bare = 0;
+    for (const auto& f : rInfo.mFaces)
+        bare += f.mControlPointIds.Size() == 0 ? 1 : 0;
+    for (const auto& e : rInfo.mEdges)
+        bare += e.mHasCurve && e.mCurve.mIds.Size() == 0 ? 1 : 0;
+    if (bare)
+        log::warn("cad_json: {} surface or 3-D curve control nets have no ids; Kratos's "
+                  "CadJsonInput needs [id, [x, y, z, w]] for them",
+                  bare);
+    JsonValue root = JsonValue::Object();
+    cj_add_extra(root, rInfo.mExtra, "the file");
+    std::vector<Brep> breps = rInfo.mBreps;
+    if (breps.empty()) {
+        // A B-rep built in memory with no grouping: one entry holding all.
+        Brep all;
+        std::int64_t next = 0;
+        for (const auto& f : rInfo.mFaces)
+            next = std::max(next, f.mId);
+        for (const auto& e : rInfo.mEdges)
+            next = std::max(next, e.mId);
+        for (const auto& v : rInfo.mVertices)
+            next = std::max(next, v.mId);
+        all.mId = next + 1;
+        for (std::size_t i = 0; i < rInfo.mFaces.size(); ++i)
+            all.mFaces.push_back(static_cast<std::int64_t>(i));
+        for (std::size_t i = 0; i < rInfo.mEdges.size(); ++i)
+            all.mEdges.push_back(static_cast<std::int64_t>(i));
+        for (std::size_t i = 0; i < rInfo.mVertices.size(); ++i)
+            all.mVertices.push_back(static_cast<std::int64_t>(i));
+        breps.push_back(std::move(all));
+    }
+    JsonValue list = JsonValue::Array();
+    for (std::size_t b = 0; b < breps.size(); ++b) {
+        const Brep& brep = breps[b];
+        const std::string bw = "brep " + std::to_string(b);
+        JsonValue bo = JsonValue::Object();
+        cj_add_identity(bo, brep.mId, brep.mName);
+        JsonValue faces = JsonValue::Array();
+        for (std::int64_t fi : brep.mFaces) {
+            if (fi < 0 || static_cast<std::size_t>(fi) >= rInfo.mFaces.size())
+                cj_wfail(bw + " names face " + std::to_string(fi) + ", which does not exist");
+            faces.Push(cj_face_json(rInfo, rInfo.mFaces[static_cast<std::size_t>(fi)],
+                                    "face " + std::to_string(fi)));
+        }
+        bo.Add("faces", std::move(faces));
+        JsonValue edges = JsonValue::Array();
+        for (std::int64_t ei : brep.mEdges) {
+            if (ei < 0 || static_cast<std::size_t>(ei) >= rInfo.mEdges.size())
+                cj_wfail(bw + " names edge " + std::to_string(ei) + ", which does not exist");
+            const BrepEdge& e = rInfo.mEdges[static_cast<std::size_t>(ei)];
+            const std::string ew = "edge " + std::to_string(ei);
+            JsonValue eo = JsonValue::Object();
+            cj_add_identity(eo, e.mId, e.mName);
+            if (e.mHasCurve)
+                eo.Add("3d_curve", cj_curve_json(e.mCurve, ew + " 3d_curve"));
+            eo.Add("topology", cj_topology_json(e.mTopology, ew));
+            cj_add_extra(eo, e.mExtra, ew);
+            edges.Push(std::move(eo));
+        }
+        bo.Add("edges", std::move(edges));
+        JsonValue verts = JsonValue::Array();
+        for (std::int64_t vi : brep.mVertices) {
+            if (vi < 0 || static_cast<std::size_t>(vi) >= rInfo.mVertices.size())
+                cj_wfail(bw + " names vertex " + std::to_string(vi) + ", which does not exist");
+            const BrepVertex& v = rInfo.mVertices[static_cast<std::size_t>(vi)];
+            const std::string vw = "vertex " + std::to_string(vi);
+            JsonValue vo = JsonValue::Object();
+            cj_add_identity(vo, v.mId, v.mName);
+            vo.Add("topology", cj_topology_json(v.mTopology, vw));
+            cj_add_extra(vo, v.mExtra, vw);
+            verts.Push(std::move(vo));
+        }
+        bo.Add("vertices", std::move(verts));
+        cj_add_extra(bo, brep.mExtra, bw);
+        list.Push(std::move(bo));
+    }
+    root.Add("breps", std::move(list));
+    return detail::write_json(root, 4) + "\n";
+}
+
+// A plain mesh as a B-rep: quads as bilinear faces, lines as edges.
+BrepInfo cj_from_mesh(const Mesh& rMesh) {
+    BrepInfo info;
+    info.mExtra = "{\"version_number\":1}";
+    const NDArray& pts = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t npts = rMesh.NumPoints();
+    auto coord = [&](std::int64_t P, std::size_t D) -> double {
+        if (D >= dim)
+            return 0.0;
+        const std::size_t i = static_cast<std::size_t>(P) * dim + D;
+        switch (pts.Dtype()) {
+            case DType::Float32:
+                return static_cast<double>(pts.As<float>()[i]);
+            case DType::Float64:
+                return pts.As<double>()[i];
+            default:
+                cj_wfail("points are not floating point");
+        }
+    };
+    std::int64_t next_id = 1;
+    std::size_t dropped = 0;
+    Brep brep;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type = cb.Type();
+        const bool quad = type == "quad", line = type == "line";
+        if (!(quad || line) || cb.IsRagged()) {
+            dropped += cb.NumCells();
+            continue;
+        }
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            std::vector<std::int64_t> nodes(k);
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::int64_t v = conn.Dtype() == DType::Int32
+                                           ? conn.As<std::int32_t>()[c * k + j]
+                                           : conn.As<std::int64_t>()[c * k + j];
+                if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                    cj_wfail("a cell names point " + std::to_string(v) + ", which does not exist");
+                nodes[j] = v;
+            }
+            // The net runs u fastest: corners 0, 1, 3, 2 of the quad.
+            const std::vector<std::int64_t> order =
+                quad ? std::vector<std::int64_t>{nodes[0], nodes[1], nodes[3], nodes[2]} : nodes;
+            NDArray xyz(DType::Float64, {order.size(), 3});
+            NDArray w(DType::Float64, {order.size()});
+            NDArray ids(DType::Int64, {order.size()});
+            for (std::size_t j = 0; j < order.size(); ++j) {
+                for (std::size_t d = 0; d < 3; ++d)
+                    xyz.As<double>()[j * 3 + d] = coord(order[j], d);
+                w.As<double>()[j] = 1.0;
+                ids.As<std::int64_t>()[j] = order[j] + 1;
+            }
+            if (quad) {
+                NurbsPatch patch;
+                patch.mDegrees = {1, 1};
+                patch.mKnots = {{0.0, 0.0, 1.0, 1.0}, {0.0, 0.0, 1.0, 1.0}};
+                patch.mControlPoints = std::move(xyz);
+                patch.mWeights = std::move(w);
+                BrepFace f;
+                f.mId = next_id++;
+                f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
+                f.mControlPointIds = std::move(ids);
+                info.mPatches.push_back(std::move(patch));
+                brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
+                info.mFaces.push_back(std::move(f));
+            } else {
+                BrepEdge e;
+                e.mId = next_id++;
+                e.mHasCurve = true;
+                e.mCurve.mDegree = 1;
+                e.mCurve.mKnots = {0.0, 0.0, 1.0, 1.0};
+                e.mCurve.mControlPoints = std::move(xyz);
+                e.mCurve.mWeights = std::move(w);
+                e.mCurve.mIds = std::move(ids);
+                brep.mEdges.push_back(static_cast<std::int64_t>(info.mEdges.size()));
+                info.mEdges.push_back(std::move(e));
+            }
+        }
+    }
+    if (dropped)
+        log::warn("cad_json: {} cells that are neither quad nor line were not written", dropped);
+    if (info.mFaces.empty() && info.mEdges.empty())
+        cj_wfail("the mesh has no quad or line cells to write as faces or edges");
+    brep.mId = next_id;
+    info.mBreps.push_back(std::move(brep));
+    return info;
+}
+
+void cj_write_text(const std::string& rPath, const std::string& rText) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("meshio++: cad_json: cannot open " + rPath + " for writing");
+    out.write(rText.data(), static_cast<std::streamsize>(rText.size()));
+    if (!out)
+        throw WriteError("meshio++: cad_json: failed writing " + rPath);
+}
+
+}  // namespace
+
+Mesh read_cad_json(const std::string& rPath) {
+    BrepInfo info;
+    return read_cad_json(rPath, info);
+}
+
+Mesh read_cad_json(const std::string& rPath, BrepInfo& rInfo, const CadJsonReadOptions& rOptions) {
+    cj_check_options(rOptions);
+    BrepInfo info = cj_parse(rPath);
+    Mesh mesh;
+    try {
+        mesh = cj_sample(info, rOptions);
+    } catch (const std::invalid_argument& e) {
+        // The parse checks what sampling needs; this is a file it let through.
+        throw ReadError(std::string("meshio++: cad_json: ") + e.what());
+    }
+    rInfo = std::move(info);
+    return mesh;
+}
+
+BrepInfo read_cad_json_info(const std::string& rPath) {
+    return cj_parse(rPath);
+}
+
+Mesh sample_brep(const BrepInfo& rInfo, const CadJsonReadOptions& rOptions) {
+    return cj_sample(rInfo, rOptions);
+}
+
+void write_cad_json(const std::string& rPath, const Mesh& rMesh) {
+    cj_write_text(rPath, cj_render(cj_from_mesh(rMesh)));
+}
+
+void write_cad_json(const std::string& rPath, const Mesh& rMesh, const BrepInfo& rInfo) {
+    if (rInfo.mFaces.empty() && rInfo.mEdges.empty() && rInfo.mVertices.empty()) {
+        write_cad_json(rPath, rMesh);
+        return;
+    }
+    cj_write_text(rPath, cj_render(rInfo));
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/cad_json.cpp =====
+// ===== begin src/cpp/src/formats/cad_read.cpp =====
+#include <cmath>
+#include <stdexcept>
+#include <string>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+// Project includes (private, not installed)
+#endif
+
+namespace meshioplusplus {
+
+namespace {
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
+                    const CadReadOptions& rOptions) {
+    const char* fmt = Iges ? "iges" : "step";
+    if (!std::isfinite(rOptions.mDeflection) || !(rOptions.mAngularDeflection > 0.0) ||
+        !std::isfinite(rOptions.mAngularDeflection))
+        throw std::invalid_argument(std::string("meshio++: ") + fmt +
+                                    ": the deflection must be finite and the angular "
+                                    "deflection positive");
+    detail::LibraryLock lock;
+    detail::OcctQuiet quiet;
+    const TopoDS_Shape shape =
+        detail::occt_nurbs_shape(detail::occt_read_cad_file(rPath, Iges, fmt));
+    BrepInfo info = detail::occt_brep_info(shape);
+    Mesh mesh = detail::occt_tessellate(shape, info, rOptions.mDeflection,
+                                        rOptions.mAngularDeflection);
+    rInfo = std::move(info);
+    return mesh;
+}
+#else
+[[noreturn]] void cad_read_unsupported(const char* pFormat) {
+    throw Unsupported(std::string("meshio++: ") + pFormat +
+                      ": reading needs the OpenCASCADE backend; rebuild with "
+                      "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)");
+}
+#endif
+
+}  // namespace
+
+bool cad_read_has_occt() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return true;
+#else
+    return false;
+#endif
+}
+
+Mesh read_step(const std::string& rPath) {
+    BrepInfo info;
+    return read_step(rPath, info);
+}
+
+Mesh read_step(const std::string& rPath, BrepInfo& rInfo, const CadReadOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return cad_read_shape(rPath, false, rInfo, rOptions);
+#else
+    (void)rPath;
+    (void)rInfo;
+    (void)rOptions;
+    cad_read_unsupported("step");
+#endif
+}
+
+Mesh read_iges(const std::string& rPath) {
+    BrepInfo info;
+    return read_iges(rPath, info);
+}
+
+Mesh read_iges(const std::string& rPath, BrepInfo& rInfo, const CadReadOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return cad_read_shape(rPath, true, rInfo, rOptions);
+#else
+    (void)rPath;
+    (void)rInfo;
+    (void)rOptions;
+    cad_read_unsupported("iges");
+#endif
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/cad_read.cpp =====
 // ===== begin src/cpp/src/formats/cgns.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
@@ -92116,8 +98121,11 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     std::vector<std::size_t> shape = rA.Shape();
     shape[0] = r1 - r0;
     NDArray out(rA.Dtype(), shape);
-    if (r1 > r0)
-        std::memcpy(out.Data(), rA.Data() + r0 * nc * isz, (r1 - r0) * nc * isz);
+    // A zero-width array has null buffers: copy only a non-empty range, since
+    // memcpy with a null pointer is undefined even for zero bytes (UBSan's nonnull).
+    const std::size_t bytes = r1 > r0 ? (r1 - r0) * nc * isz : 0;
+    if (bytes > 0)
+        std::memcpy(out.Data(), rA.Data() + r0 * nc * isz, bytes);
     return out;
 }
 
@@ -97930,6 +103938,7 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/lsdyna_binout.cpp =====
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -97941,6 +103950,8 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
 #include <array>
 #include <limits>
 #include <optional>
+#include <set>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -97957,6 +103968,12 @@ constexpr std::int64_t kLbCd = 2, kLbVariable = 4, kLbBegin = 5, kLbOffset = 7, 
 
 [[noreturn]] void lb_fail(const std::string& rMessage) {
     throw ReadError("LS-DYNA binout: " + rMessage);
+}
+
+// Whether the N bytes at Pos lie inside a file of Size bytes. Pos and N come from the file,
+// so the sum is never formed: it wraps for values near 2^64 and would pass the check.
+bool lb_within(std::uint64_t Pos, std::uint64_t N, std::uint64_t Size) {
+    return Pos <= Size && N <= Size - Pos;
 }
 
 // One LSDA file: its field sizes, byte order and bytes.
@@ -97979,7 +103996,7 @@ struct LbFile {
     }
 
     std::uint64_t UInt(std::size_t Pos, std::size_t N) const {
-        if (Pos + N > mSource.Size())
+        if (!lb_within(Pos, N, mSource.Size()))
             lb_fail("a record runs past the end of the file");
         const auto* p = reinterpret_cast<const unsigned char*>(mSource.Data() + Pos);
         std::uint64_t v = 0;
@@ -98122,13 +104139,19 @@ private:
     std::string Raw(const LbVar& rVar) const {
         const LbFile& f = *rVar.mpFile;
         static const std::size_t kSize[] = {0, 1, 2, 4, 8, 1, 2, 4, 8, 4, 8, 1};
-        const std::size_t head = f.mLength + f.mCommand + f.mType;
-        const auto name_len = static_cast<std::size_t>(f.UInt(rVar.mOffset + head, 1));
-        const std::size_t pos = rVar.mOffset + head + 1 + name_len;
-        const std::size_t size = kSize[std::clamp<std::int64_t>(rVar.mType, 0, 11)] * rVar.mLength;
-        if (pos + size > f.mSource.Size())
+        const std::uint64_t file = f.mSource.Size();
+        // Checked before the offset is summed below, which would wrap for a value near 2^64.
+        if (rVar.mOffset > file)
             lb_fail("a variable's data runs past the end of the file");
-        return std::string(f.mSource.Data() + pos, size);
+        const std::uint64_t head = f.mLength + f.mCommand + f.mType;
+        const auto name_len =
+            static_cast<std::size_t>(f.UInt(static_cast<std::size_t>(rVar.mOffset + head), 1));
+        const std::uint64_t pos = rVar.mOffset + head + 1 + name_len;
+        const std::uint64_t width = kSize[std::clamp<std::int64_t>(rVar.mType, 0, 11)];
+        if (pos > file || (width != 0 && rVar.mLength > (file - pos) / width))
+            lb_fail("a variable's data runs past the end of the file");
+        const std::size_t size = static_cast<std::size_t>(width * rVar.mLength);
+        return std::string(f.mSource.Data() + static_cast<std::size_t>(pos), size);
     }
 
     void ReadSymbols(const LbFile& rF) {
@@ -98139,11 +104162,19 @@ private:
         pos += lc;
         LbDir* cwd = &mRoot;
         std::vector<std::string> cwd_path;
+        // The tables read so far: a table whose next-table offset names an earlier one (or
+        // itself) would otherwise be read again, forever.
+        std::unordered_set<std::uint64_t> tables;
         for (;;) {
             const std::uint64_t offset = rF.UInt(pos, rF.mOffset);
             if (offset == 0)
                 return;
-            pos = offset;
+            // Checked before `pos` is used in sums below, which would wrap near 2^64.
+            if (offset > rF.mSource.Size())
+                lb_fail("a symbol table runs past the end of the file");
+            if (!tables.insert(offset).second)
+                lb_fail("the symbol tables loop back to the table at " + std::to_string(offset));
+            pos = static_cast<std::size_t>(offset);
             if (rF.UInt(pos + rF.mLength, rF.mCommand) != static_cast<std::uint64_t>(kLbBegin))
                 return;
             pos += lc;
@@ -98152,26 +104183,28 @@ private:
                 const std::uint64_t cmd = rF.UInt(pos + rF.mLength, rF.mCommand);
                 if (length < lc)
                     lb_fail("a symbol table record is shorter than its header");
-                const std::size_t body = length - lc;
+                const std::uint64_t body = length - lc;
                 pos += lc;
                 if (cmd == static_cast<std::uint64_t>(kLbCd)) {
-                    if (pos + body > rF.mSource.Size())
+                    if (!lb_within(pos, body, rF.mSource.Size()))
                         lb_fail("a record runs past the end of the file");
-                    Cd(cwd, cwd_path, std::string(rF.mSource.Data() + pos, body));
-                    pos += body;
+                    Cd(cwd, cwd_path,
+                       std::string(rF.mSource.Data() + pos, static_cast<std::size_t>(body)));
+                    pos += static_cast<std::size_t>(body);
                 } else if (cmd == static_cast<std::uint64_t>(kLbVariable)) {
                     const std::size_t tail = rF.mType + rF.mOffset + rF.mLength;
-                    if (body < tail || pos + body > rF.mSource.Size())
+                    if (body < tail || !lb_within(pos, body, rF.mSource.Size()))
                         lb_fail("a variable record is malformed");
-                    const std::string name(rF.mSource.Data() + pos, body - tail);
-                    const std::size_t p = pos + body - tail;
+                    const std::size_t name_len = static_cast<std::size_t>(body) - tail;
+                    const std::string name(rF.mSource.Data() + pos, name_len);
+                    const std::size_t p = pos + name_len;
                     LbVar v;
                     v.mType = static_cast<std::int64_t>(rF.UInt(p, rF.mType));
                     v.mOffset = rF.UInt(p + rF.mType, rF.mOffset);
                     v.mLength = rF.UInt(p + rF.mType + rF.mOffset, rF.mLength);
                     v.mpFile = &rF;
                     cwd->mVars[name] = v;
-                    pos += body;
+                    pos += static_cast<std::size_t>(body);
                 } else {  // the end of this table: the next table's offset follows
                     break;
                 }
@@ -98524,6 +104557,525 @@ MeshMetadata read_lsdyna_binout_metadata(const std::string& rPath, const ReadOpt
     meta.mFormat = "lsdyna_binout";
     meta.mTimeValues = lsdyna_binout_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: one little-endian LSDA file with 8-byte lengths and offsets. The twin of
+// lsdyna_binout/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::int32_t kLbwCd = 2, kLbwData = 3, kLbwVariable = 4, kLbwBegin = 5, kLbwEnd = 6,
+                       kLbwOffset = 7;
+constexpr std::uint8_t kLbwInt32 = 3, kLbwFloat32 = 9;
+
+[[noreturn]] void lbw_fail(const std::string& rMessage) {
+    throw WriteError("LS-DYNA binout: " + rMessage);
+}
+
+/// A double as the file's single precision, rounded like numpy's cast (an overflow is an
+/// infinity).
+float lbw_float(double V) {
+    if (V != V)
+        return std::numeric_limits<float>::quiet_NaN();
+    if (std::fabs(V) >= 3.4028235677973366e38)
+        return V < 0 ? -std::numeric_limits<float>::infinity()
+                     : std::numeric_limits<float>::infinity();
+    return static_cast<float>(V);
+}
+
+void lbw_put(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = 0; i < N; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+/// One variable's values: floats or integers, never both.
+struct LbwArray {
+    std::string mName;
+    bool mFloat = false;
+    std::vector<double> mReals;
+    std::vector<std::int64_t> mInts;
+};
+
+LbwArray lbw_array(const std::string& rName, const NDArray& rData) {
+    LbwArray a;
+    a.mName = rName;
+    a.mFloat = detail::is_float_dtype(rData.Dtype());
+    if (a.mFloat) {
+        const detail::DoubleView v(rData);
+        a.mReals.assign(v.Data(), v.Data() + rData.Size());
+    } else {
+        const detail::Int64View v(rData);
+        a.mInts.assign(v.Data(), v.Data() + rData.Size());
+    }
+    return a;
+}
+
+LbwArray lbw_column(const std::string& rName, const double* pValues, std::size_t N,
+                    std::size_t Stride) {
+    LbwArray a;
+    a.mName = rName;
+    a.mFloat = true;
+    a.mReals.resize(N);
+    for (std::size_t i = 0; i < N; ++i)
+        a.mReals[i] = pValues[i * Stride];
+    return a;
+}
+
+void lbw_check_name(const std::string& rName, const char* pWhat) {
+    bool ascii = true;
+    for (const char c : rName)
+        ascii = ascii && static_cast<unsigned char>(c) < 0x80;
+    if (rName.empty() || rName.size() > 255 || rName.find('/') != std::string::npos || !ascii)
+        lbw_fail(std::string(pWhat) + " '" + rName + "' is not a name a binout can hold");
+}
+
+/// DATA records as they are added, and the entries of the symbol table.
+class LbwLsda {
+public:
+    LbwLsda() {
+        mData.assign(reinterpret_cast<const char*>(kHeader), 8);
+        lbw_put(mData, 17, 8);
+        lbw_put(mData, static_cast<std::uint64_t>(kLbwOffset), 1);
+        lbw_put(mData, 0, 8);
+    }
+
+    void Var(const std::string& rDir, const LbwArray& rArray) {
+        const std::string what = "'" + rDir + "/" + rArray.mName + "'";
+        std::string raw;
+        std::size_t count;
+        std::uint8_t code;
+        if (rArray.mFloat) {
+            code = kLbwFloat32;
+            count = rArray.mReals.size();
+            for (const double v : rArray.mReals) {
+                const float f = lbw_float(v);
+                std::uint32_t bits;
+                std::memcpy(&bits, &f, 4);
+                lbw_put(raw, bits, 4);
+            }
+        } else {
+            code = kLbwInt32;
+            count = rArray.mInts.size();
+            for (const std::int64_t v : rArray.mInts) {
+                if (v < -2147483648LL || v > 2147483647LL)
+                    lbw_fail(what + " holds an integer outside the 32-bit range");
+                lbw_put(raw, static_cast<std::uint32_t>(static_cast<std::int32_t>(v)), 4);
+            }
+        }
+        const std::size_t offset = mData.size();
+        lbw_put(mData, 8 + 1 + 1 + 1 + rArray.mName.size() + raw.size(), 8);
+        lbw_put(mData, kLbwData, 1);
+        lbw_put(mData, code, 1);
+        lbw_put(mData, rArray.mName.size(), 1);
+        mData += rArray.mName;
+        mData += raw;
+        mEntries.push_back({rDir, rArray.mName, code, offset, count});
+    }
+
+    std::string Finish() const {
+        std::string out = mData;
+        const std::uint64_t table = out.size();
+        for (std::size_t i = 0; i < 8; ++i)
+            out[17 + i] = static_cast<char>((table >> (8 * i)) & 0xffu);
+        lbw_put(out, 9, 8);
+        lbw_put(out, kLbwBegin, 1);
+        std::string cwd;
+        for (const Entry& e : mEntries) {
+            if (e.mDir != cwd) {
+                lbw_put(out, 9 + e.mDir.size(), 8);
+                lbw_put(out, kLbwCd, 1);
+                out += e.mDir;
+                cwd = e.mDir;
+            }
+            lbw_put(out, 9 + e.mName.size() + 1 + 8 + 8, 8);
+            lbw_put(out, kLbwVariable, 1);
+            out += e.mName;
+            lbw_put(out, e.mCode, 1);
+            lbw_put(out, e.mOffset, 8);
+            lbw_put(out, e.mCount, 8);
+        }
+        lbw_put(out, 17, 8);
+        lbw_put(out, kLbwEnd, 1);
+        lbw_put(out, 0, 8);
+        return out;
+    }
+
+private:
+    struct Entry {
+        std::string mDir, mName;
+        std::uint8_t mCode;
+        std::size_t mOffset, mCount;
+    };
+    static constexpr unsigned char kHeader[8] = {8, 8, 8, 1, 1, 1, 0, 0};
+    std::string mData;
+    std::vector<Entry> mEntries;
+};
+
+/// One database's variables of one step.
+struct LbwOutput {
+    double mTime = 0.0;
+    std::vector<LbwArray> mVars;
+    std::optional<std::vector<std::int64_t>> mIds;
+
+    std::vector<std::pair<std::string, bool>> Layout() const {
+        std::vector<std::pair<std::string, bool>> out;
+        for (const LbwArray& a : mVars)
+            out.emplace_back(a.mName, a.mFloat);
+        return out;
+    }
+};
+
+using LbwSignature = std::size_t;
+
+const std::pair<const char*, std::array<const char*, 3>> kLbwVectors[] = {
+    {"displacement", {"x_displacement", "y_displacement", "z_displacement"}},
+    {"rotation", {"rx_displacement", "ry_displacement", "rz_displacement"}},
+    {"velocity", {"x_velocity", "y_velocity", "z_velocity"}},
+    {"rotational_velocity", {"rx_velocity", "ry_velocity", "rz_velocity"}},
+    {"acceleration", {"x_acceleration", "y_acceleration", "z_acceleration"}},
+    {"rotational_acceleration", {"rx_acceleration", "ry_acceleration", "rz_acceleration"}},
+};
+const char* const kLbwCoordinates[3] = {"x_coordinate", "y_coordinate", "z_coordinate"};
+
+bool lbw_is_step_name(const std::string& rName) {
+    return rName.size() > 1 && rName[0] == 'd' &&
+           std::all_of(rName.begin() + 1, rName.end(), [](char C) { return C >= '0' && C <= '9'; });
+}
+
+std::vector<std::string> lbw_split(const std::string& rText, char Sep) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t at = rText.find(Sep, start);
+        parts.push_back(rText.substr(start, at == std::string::npos ? at : at - start));
+        if (at == std::string::npos)
+            return parts;
+        start = at + 1;
+    }
+}
+
+/// One step of the mesh, as the file holds it.
+class LbwStep {
+public:
+    LbwStep(const Mesh& rMesh, double Time) : mTime(static_cast<double>(lbw_float(Time))) {
+        mNpoints = rMesh.NumPoints();
+        std::map<std::string, std::map<std::string, std::pair<std::string, const NDArray*>>> fields;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            if (name == kSequenceTimeKey)
+                continue;
+            const std::vector<std::string> parts = lbw_split(name, ':');
+            if (parts[0] != "binout" || parts.size() < 3) {
+                mDropped.insert(name);
+                continue;
+            }
+            std::string database = parts[1];
+            for (std::size_t i = 2; i + 1 < parts.size(); ++i)
+                database += ":" + parts[i];
+            fields[database][parts.back()] = {name, &rMesh.FieldData(name)};
+        }
+        std::set<std::string> used;
+        if (mNpoints > 0)
+            mNodout = Nodout(rMesh, used, fields["nodout"]);
+        for (const auto& [database, items] : fields)
+            Database(database, items);
+        for (const std::string& name : rMesh.PointDataNames())
+            if (used.count(name) == 0)
+                mDropped.insert(name);
+        for (const std::string& name : rMesh.CellDataNames())
+            mDropped.insert(name);
+    }
+
+    double mTime = 0.0;
+    std::size_t mNpoints = 0;
+    std::optional<LbwOutput> mNodout;
+    std::map<std::string, LbwOutput> mDatabases;
+    std::set<std::string> mDropped;
+
+private:
+    LbwOutput Nodout(const Mesh& rMesh, std::set<std::string>& rUsed,
+                     const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
+        const std::size_t n = mNpoints;
+        const std::size_t dim = rMesh.PointDim();
+        const detail::DoubleView pts(rMesh.Points());
+        std::vector<double> points(n * 3, 0.0);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < 3 && k < dim; ++k)
+                points[3 * i + k] = pts.Data()[i * dim + k];
+        LbwOutput out;
+        out.mTime = mTime;
+        for (std::size_t k = 0; k < 3; ++k)
+            out.mVars.push_back(lbw_column(kLbwCoordinates[k], points.data() + k, n, 3));
+        for (const auto& [name, parts] : kLbwVectors) {
+            if (!rMesh.HasPointData(name))
+                continue;
+            rUsed.insert(name);
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() != 3 * n) {
+                mDropped.insert(name);
+                continue;
+            }
+            const detail::DoubleView v(a);
+            for (std::size_t k = 0; k < 3; ++k)
+                out.mVars.push_back(lbw_column(parts[k], v.Data() + k, n, 3));
+        }
+        std::vector<std::int64_t> ids(n);
+        rUsed.insert("lsdyna:nid");
+        if (rMesh.HasPointData("lsdyna:nid")) {
+            const NDArray& a = rMesh.PointData("lsdyna:nid");
+            if (a.Size() != n || detail::is_float_dtype(a.Dtype()))
+                lbw_fail("'lsdyna:nid' must hold one integer per point");
+            const detail::Int64View v(a);
+            ids.assign(v.Data(), v.Data() + n);
+        } else {
+            for (std::size_t i = 0; i < n; ++i)
+                ids[i] = static_cast<std::int64_t>(i + 1);
+        }
+        const auto has_variable = [&](const std::string& rName) {
+            return std::any_of(out.mVars.begin(), out.mVars.end(),
+                               [&](const LbwArray& A) { return A.mName == rName; });
+        };
+        for (const std::string& name : rMesh.PointDataNames()) {
+            const NDArray& a = rMesh.PointData(name);
+            if (rUsed.count(name) != 0)
+                continue;
+            bool vector_name = false;
+            for (const auto& [vname, parts] : kLbwVectors)
+                vector_name = vector_name || name == vname;
+            if (vector_name)
+                continue;
+            if (a.Size() != n || a.Shape().size() != 1 || n < 2)
+                continue;
+            lbw_check_name(name, "point data");
+            if (name == "time" || has_variable(name))
+                lbw_fail("point data '" + name + "' is a variable of nodout of its own");
+            rUsed.insert(name);
+            out.mVars.push_back(lbw_array(name, a));
+        }
+        for (const auto& [variable, item] : rItems) {
+            lbw_check_name(variable, "variable");
+            if (variable == "time" || variable == "ids") {
+                mDropped.insert(item.first);
+                continue;
+            }
+            if (has_variable(variable))
+                lbw_fail("'" + item.first + "' repeats a variable of nodout");
+            out.mVars.push_back(lbw_array(variable, *item.second));
+        }
+        out.mIds = std::move(ids);
+        return out;
+    }
+
+    void Database(const std::string& rDatabase,
+                  const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
+        if (rDatabase == "nodout") {
+            if (!mNodout)  // no points: nodout is not a database of its own
+                for (const auto& [variable, item] : rItems)
+                    mDropped.insert(item.first);
+            return;
+        }
+        for (const std::string& part : lbw_split(rDatabase, '/')) {
+            lbw_check_name(part, "database");
+            if (lbw_is_step_name(part) || part == "metadata")
+                lbw_fail("'" + rDatabase + "' is not a name a database can have");
+        }
+        LbwOutput out;
+        out.mTime = mTime;
+        for (const auto& [variable, item] : rItems) {
+            lbw_check_name(variable, "variable");
+            const NDArray& a = *item.second;
+            if (variable == "time") {
+                if (a.Size() > 0)
+                    out.mTime = static_cast<double>(lbw_float(detail::DoubleView(a).Data()[0]));
+                continue;
+            }
+            if (variable == "ids") {
+                if (detail::is_float_dtype(a.Dtype())) {
+                    mDropped.insert(item.first);
+                } else {
+                    const detail::Int64View v(a);
+                    out.mIds = std::vector<std::int64_t>(v.Data(), v.Data() + a.Size());
+                }
+                continue;
+            }
+            out.mVars.push_back(lbw_array(variable, a));
+        }
+        mDatabases[rDatabase] = std::move(out);
+    }
+};
+
+/// The whole file: every step added so far.
+class LbwArchive {
+public:
+    void Add(const LbwStep& rStep) {
+        const std::size_t index = mSteps;
+        if (mSteps == 0) {
+            mNpoints = rStep.mNpoints;
+            if (rStep.mNodout)
+                mNodoutLayout = rStep.mNodout->Layout();
+        } else if (rStep.mNpoints != mNpoints) {
+            lbw_fail("series: step " + std::to_string(index) + " has " +
+                     std::to_string(rStep.mNpoints) + " points, the first " +
+                     std::to_string(mNpoints) +
+                     "; a binout holds one set of nodes -- write one file per step with "
+                     "'{step}'");
+        }
+        if (rStep.mNodout)
+            Nodout(*rStep.mNodout, index);
+        for (const auto& [database, out] : rStep.mDatabases)
+            Output(database, out, index);
+        ++mSteps;
+    }
+
+    std::size_t Steps() const { return mSteps; }
+
+    std::string Finish() const {
+        if (mCounts.empty())
+            lbw_fail("the mesh holds no database: no points and no binout:* field data");
+        return mLsda.Finish();
+    }
+
+private:
+    void Nodout(const LbwOutput& rOut, std::size_t Index) {
+        if (mSteps == 0) {
+            mIds = *rOut.mIds;
+            LbwArray ids;
+            ids.mName = "ids";
+            ids.mInts = mIds;
+            mLsda.Var("/nodout/metadata", ids);
+        } else if (rOut.Layout() != mNodoutLayout || *rOut.mIds != mIds) {
+            lbw_fail("series: step " + std::to_string(Index) +
+                     "'s nodes or variables differ from the first step's; a binout holds one "
+                     "set of them");
+        }
+        Folder("nodout", rOut);
+    }
+
+    void Output(const std::string& rDatabase, const LbwOutput& rOut, std::size_t Index) {
+        const auto layout = rOut.Layout();
+        const auto it = mDbLayout.find(rDatabase);
+        if (it == mDbLayout.end()) {
+            mDbLayout[rDatabase] = layout;
+            if (rOut.mIds) {
+                LbwArray ids;
+                ids.mName = "ids";
+                ids.mInts = *rOut.mIds;
+                mLsda.Var("/" + rDatabase + "/metadata", ids);
+            }
+        } else if (layout != it->second) {
+            lbw_fail("series: step " + std::to_string(Index) + "'s variables of '" + rDatabase +
+                     "' differ from its first output's");
+        }
+        // An output is new when its time moved: the reader carries the latest.
+        const auto last = mLast.find(rDatabase);
+        if (last != mLast.end() && last->second == rOut.mTime)
+            return;
+        Folder(rDatabase, rOut);
+    }
+
+    void Folder(const std::string& rDatabase, const LbwOutput& rOut) {
+        const std::size_t count = ++mCounts[rDatabase];
+        mLast[rDatabase] = rOut.mTime;
+        std::string number = std::to_string(count);
+        number.insert(0, number.size() < 6 ? 6 - number.size() : 0, '0');
+        const std::string dir = "/" + rDatabase + "/d" + number;
+        LbwArray time;
+        time.mName = "time";
+        time.mFloat = true;
+        time.mReals = {rOut.mTime};
+        mLsda.Var(dir, time);
+        for (const LbwArray& a : rOut.mVars)
+            mLsda.Var(dir, a);
+    }
+
+    LbwLsda mLsda;
+    std::vector<std::pair<std::string, bool>> mNodoutLayout;
+    std::map<std::string, std::vector<std::pair<std::string, bool>>> mDbLayout;
+    std::map<std::string, std::size_t> mCounts;
+    std::map<std::string, double> mLast;
+    std::vector<std::int64_t> mIds;
+    std::size_t mNpoints = 0;
+    std::size_t mSteps = 0;
+};
+
+void lbw_warn_dropped(const LbwStep& rStep) {
+    if (rStep.mDropped.empty())
+        return;
+    std::string list;
+    for (const std::string& n : rStep.mDropped)
+        list += (list.empty() ? "" : ", ") + n;
+    log::warn("LS-DYNA binout: arrays without a place in the file are not written: {}", list);
+}
+
+double lbw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+void lbw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        lbw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const LbwStep step(rMesh, lbw_time_of(rMesh));
+    lbw_warn_dropped(step);
+    LbwArchive archive;
+    archive.Add(step);
+    lbw_save(rPath, archive.Finish());
+}
+
+struct LsdynaBinoutSeriesWriter::Impl {
+    std::string mPath;
+    LbwArchive mArchive;
+    bool mDone = false;
+};
+
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+LsdynaBinoutSeriesWriter::~LsdynaBinoutSeriesWriter() = default;
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept = default;
+LsdynaBinoutSeriesWriter& LsdynaBinoutSeriesWriter::operator=(LsdynaBinoutSeriesWriter&&) noexcept =
+    default;
+
+void LsdynaBinoutSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        lbw_fail("series: the writer was moved from");
+    const LbwStep step(rMesh, Time);
+    if (mpImpl->mArchive.Steps() == 0)
+        lbw_warn_dropped(step);
+    mpImpl->mArchive.Add(step);
+}
+
+std::size_t LsdynaBinoutSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mArchive.Steps() : 0;
+}
+
+void LsdynaBinoutSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mArchive.Steps() == 0)
+        lbw_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    lbw_save(mpImpl->mPath, mpImpl->mArchive.Finish());
 }
 
 }  // namespace meshioplusplus
@@ -102122,8 +108674,10 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <ostream>
@@ -102132,6 +108686,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -104030,6 +110585,87 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
     // ---- Raw blocks, verbatim ---------------------------------------------
     for (const MdpaRawBlock& r_raw : rInfo.mRawBlocks)
         os << r_raw.mHeader << "\n" << r_raw.mBody << r_raw.mEnd << "\n\n";
+}
+
+
+namespace {
+
+// `<deck stem>.cad.json` beside the deck.
+std::filesystem::path mdpa_sidecar_default(const std::string& rPath) {
+    std::filesystem::path p(rPath);
+    std::string stem = p.filename().string();
+    if (stem.size() > 5 && stem.compare(stem.size() - 5, 5, ".mdpa") == 0)
+        stem.resize(stem.size() - 5);
+    return p.parent_path() / (stem + ".cad.json");
+}
+
+}  // namespace
+
+std::string mdpa_cad_json_path(const std::string& rPath) {
+    std::error_code ec;
+    const std::filesystem::path own = mdpa_sidecar_default(rPath);
+    if (std::filesystem::is_regular_file(own, ec))
+        return own.string();
+    const std::filesystem::path dir = std::filesystem::path(rPath).parent_path();
+    const std::filesystem::path params = dir / "ProjectParameters.json";
+    if (!std::filesystem::is_regular_file(params, ec))
+        return {};
+    auto in = detail::make_classic_ifstream(params, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    detail::JsonValue root;
+    try {
+        root = detail::parse_json(text, "ProjectParameters.json");
+    } catch (const ReadError&) {
+        return {};  // not ours to judge; there is simply no sidecar named
+    }
+    const detail::JsonValue* modelers = root.IsObject() ? root.Find("modelers") : nullptr;
+    if (!modelers || !modelers->IsArray())
+        return {};
+    for (const detail::JsonValue& m : modelers->mItems) {
+        const detail::JsonValue* name = m.IsObject() ? m.Find("modeler_name") : nullptr;
+        if (!name || !name->IsString() || name->mString != "CadIoModeler")
+            continue;
+        const detail::JsonValue* parameters = m.Find("Parameters");
+        const detail::JsonValue* file =
+            parameters && parameters->IsObject() ? parameters->Find("geometry_file_name") : nullptr;
+        if (!file || !file->IsString() || file->mString.empty())
+            continue;
+        std::string f = file->mString;
+        if (f.size() < 9 || f.compare(f.size() - 9, 9, ".cad.json") != 0)
+            f += ".cad.json";
+        const std::filesystem::path candidate = dir / f;
+        if (std::filesystem::is_regular_file(candidate, ec))
+            return candidate.string();
+    }
+    return {};
+}
+
+Mesh read_mdpa(const std::string& rPath, MdpaInfo& rInfo, BrepInfo& rBrep,
+               const ReadOptions& rOptions, const std::string& rCadJsonPath) {
+    Mesh mesh = read_mdpa(rPath, rInfo, rOptions);
+    rBrep = BrepInfo{};
+    std::string sidecar = rCadJsonPath;
+    if (sidecar.empty()) {
+        sidecar = mdpa_cad_json_path(rPath);
+    } else {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(sidecar, ec))
+            throw ReadError("meshio++: mdpa: the CAD JSON geometry '" + sidecar +
+                            "' does not exist");
+    }
+    if (!sidecar.empty())
+        rBrep = read_cad_json_info(sidecar);
+    return mesh;
+}
+
+void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo,
+                const BrepInfo& rBrep, const std::string& rCadJsonPath) {
+    write_mdpa(rPath, rMesh, rInfo);
+    if (rBrep.mFaces.empty() && rBrep.mEdges.empty() && rBrep.mVertices.empty())
+        return;
+    const std::string sidecar =
+        rCadJsonPath.empty() ? mdpa_sidecar_default(rPath).string() : rCadJsonPath;
+    write_cad_json(sidecar, rMesh, rBrep);
 }
 
 }  // namespace meshioplusplus
@@ -107842,7 +114478,7 @@ struct MfNurbs {
     MfPatchMap BdrPatchMap(std::size_t B, std::vector<int>& rOkv,
                            std::vector<const MfKnotVector*>& rKvs) const;
     std::vector<MfNurbsElement> Elements() const;
-    std::vector<MfElement> Boundary() const;
+    std::vector<MfElement> Boundary(std::vector<std::int64_t>* pPatchOf = nullptr) const;
     void ControlPoints(std::vector<double>& rWeights, std::vector<double>& rXyz,
                        int& rSpaceDim) const;
     void Evaluate(const std::vector<double>& rWeights, const std::vector<double>& rTable,
@@ -108157,12 +114793,15 @@ std::vector<MfNurbsElement> MfNurbs::Elements() const {
     return out;
 }
 
-std::vector<MfElement> MfNurbs::Boundary() const {
+// The boundary elements; `pPatchOf` gets each one's boundary patch.
+std::vector<MfElement> MfNurbs::Boundary(std::vector<std::int64_t>* pPatchOf) const {
     std::vector<MfElement> out;
     const int geom = mf_nurbs_bdr_geom(mDim);
     std::vector<int> okv;
     std::vector<const MfKnotVector*> kvs;
     for (std::size_t b = 0; b < mBPatches.size(); ++b) {
+        if (pPatchOf)
+            pPatchOf->resize(out.size(), static_cast<std::int64_t>(b) - 1);
         const MfPatchMap m = BdrPatchMap(b, okv, kvs);
         MfElement el;
         el.mAttribute = mBPatches[b].mAttribute;
@@ -108191,6 +114830,8 @@ std::vector<MfElement> MfNurbs::Boundary() const {
             }
         }
     }
+    if (pPatchOf)
+        pPatchOf->resize(out.size(), static_cast<std::int64_t>(mBPatches.size()) - 1);
     return out;
 }
 
@@ -109584,12 +116225,99 @@ Mesh mf_read_high_order(const MfFile& rF, const std::vector<MfGridData>& rGfs, b
     return mf_read_parts({part}, rF.mNumVertices, Order, false, rPath);
 }
 
+// The rows of `rTable` (`Cols` per control point, MFEM's global numbering) over
+// patch P's own control lattice, direction 0 fastest: what the `patches` form
+// would list.
+NDArray mf_nurbs_gather(const MfNurbs& rN, std::size_t P, const std::vector<double>& rTable,
+                        std::size_t Cols) {
+    const auto& kvs = rN.mCompr[P];
+    std::int64_t n[3] = {1, 1, 1};
+    for (std::size_t d = 0; d < kvs.size(); ++d)
+        n[d] = static_cast<std::int64_t>(kvs[d].mNumCp);
+    const MfPatchMap m = rN.PatchMap(P, true);
+    NDArray out(DType::Float64, {static_cast<std::size_t>(n[0] * n[1] * n[2]), Cols});
+    double* dst = out.As<double>();
+    for (std::int64_t k = 0; k < n[2]; ++k)
+        for (std::int64_t j = 0; j < n[1]; ++j)
+            for (std::int64_t i = 0; i < n[0]; ++i, dst += Cols) {
+                const std::int64_t idx[3] = {i, j, k};
+                const auto g = static_cast<std::size_t>(m.At(idx, rN.mDim));
+                std::copy(rTable.begin() + static_cast<std::ptrdiff_t>(g * Cols),
+                          rTable.begin() + static_cast<std::ptrdiff_t>((g + 1) * Cols), dst);
+            }
+    return out;
+}
+
+// An Int64 `(Rows, Cols)` array from MFEM rows of vertices.
+NDArray mf_nurbs_rows(const std::vector<MfElement>& rRows, std::size_t Cols) {
+    NDArray out(DType::Int64, {rRows.size(), Cols});
+    for (std::size_t r = 0; r < rRows.size(); ++r)
+        for (std::size_t c = 0; c < Cols; ++c)
+            out.As<std::int64_t>()[r * Cols + c] = rRows[r].mVertices[c];
+    return out;
+}
+
+// The side channel of a sampled NURBS mesh: per patch its degrees, knot
+// vectors, control net, weights and field control values; the patch topology;
+// each element cell's patch and knot span, each boundary cell's patch.
+NurbsInfo mf_nurbs_info(const MfNurbs& rN, const std::vector<double>& rWeights,
+                        const std::vector<double>& rXyz, std::size_t SpaceDim,
+                        const std::vector<std::string>& rNames,
+                        const std::vector<std::vector<double>>& rTables,
+                        const std::vector<std::size_t>& rComponents,
+                        const std::vector<MfNurbsElement>& rElements,
+                        const std::vector<std::int64_t>& rBdrPatch) {
+    NurbsInfo info;
+    for (std::size_t p = 0; p < rN.mPatches.size(); ++p) {
+        NurbsPatch patch;
+        for (const MfKnotVector& kv : rN.mCompr[p]) {
+            patch.mDegrees.push_back(kv.mOrder);
+            patch.mKnots.push_back(kv.mKnots);
+        }
+        patch.mControlPoints = mf_nurbs_gather(rN, p, rXyz, SpaceDim);
+        NDArray w = mf_nurbs_gather(rN, p, rWeights, 1);
+        w.Reshape({w.Size()});
+        patch.mWeights = std::move(w);
+        for (std::size_t k = 0; k < rTables.size(); ++k)
+            patch.mFields.push_back(mf_nurbs_gather(rN, p, rTables[k], rComponents[k]));
+        info.mPatches.push_back(std::move(patch));
+    }
+    info.mFieldNames = rNames;
+    const auto d = static_cast<std::size_t>(rN.mDim);
+    NurbsTopology& t = info.mTopology;
+    t.mDimension = rN.mDim;
+    t.mNumVertices = static_cast<std::int64_t>(rN.mNumTopoVertices);
+    t.mPatchVertices = mf_nurbs_rows(rN.mPatches, std::size_t{1} << d);
+    t.mBoundaryVertices = mf_nurbs_rows(rN.mBPatches, std::size_t{1} << (d - 1));
+    t.mPatchAttributes = NDArray(DType::Int64, {rN.mPatches.size()});
+    for (std::size_t p = 0; p < rN.mPatches.size(); ++p)
+        t.mPatchAttributes.As<std::int64_t>()[p] = rN.mPatches[p].mAttribute;
+    t.mBoundaryAttributes = NDArray(DType::Int64, {rN.mBPatches.size()});
+    for (std::size_t b = 0; b < rN.mBPatches.size(); ++b)
+        t.mBoundaryAttributes.As<std::int64_t>()[b] = rN.mBPatches[b].mAttribute;
+    t.mEdges = NDArray(DType::Int64, {rN.mEdgeRows.size(), 3});
+    for (std::size_t e = 0; e < rN.mEdgeRows.size(); ++e)
+        for (std::size_t c = 0; c < 3; ++c)
+            t.mEdges.As<std::int64_t>()[e * 3 + c] = rN.mEdgeRows[e][c];
+    info.mCellPatch = NDArray(DType::Int64, {rElements.size()});
+    info.mCellSpan = NDArray(DType::Int64, {rElements.size(), 3});
+    for (std::size_t e = 0; e < rElements.size(); ++e) {
+        info.mCellPatch.As<std::int64_t>()[e] = static_cast<std::int64_t>(rElements[e].mPatch);
+        for (std::size_t c = 0; c < 3; ++c)
+            info.mCellSpan.As<std::int64_t>()[e * 3 + c] = rElements[e].mSpan[c];
+    }
+    info.mBoundaryCellPatch = NDArray(DType::Int64, {rBdrPatch.size()});
+    std::copy(rBdrPatch.begin(), rBdrPatch.end(), info.mBoundaryCellPatch.As<std::int64_t>());
+    return info;
+}
+
 // A NURBS mesh as its knot-span elements: VTK Lagrange cells (or linear and
 // quadratic ones) of the highest knot-vector order, their nodes the rational
 // patch geometry at the cell's lattice; NURBS grid functions on the mesh's own
-// space the same way, element-wise ones as cell data.
-Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
-                   const std::string& rPath) {
+// space the same way, element-wise ones as cell data. `rGfs` are parsed and
+// already sorted into those two kinds; `pInfo`, when given, gets the patches.
+Mesh mf_sample_nurbs(const MfNurbs& rN, const std::vector<MfGridData>& rGfs,
+                     const std::string& rPath, NurbsInfo* pInfo) {
     const std::vector<MfNurbsElement> elements = rN.Elements();
     std::vector<double> weights, xyz;
     int sdim = 0;
@@ -109598,20 +116326,72 @@ Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGrid
     for (const auto& row : rN.mCompr)
         for (const MfKnotVector& kv : row)
             order = std::max(order, kv.mOrder);
-    std::vector<MfGridData> gfs;
     std::vector<std::vector<double>> tables;  // NURBS grid functions, dof-major
+    std::vector<std::string> names;
     std::vector<std::size_t> components = {static_cast<std::size_t>(sdim)};
+    const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
+    for (const MfGridData& g : rGfs) {
+        if (g.mSpace.mKind != MfSpace::Nurbs)
+            continue;
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        std::vector<double> t(ndofs * vdim);
+        for (std::size_t d = 0; d < ndofs; ++d)
+            for (std::size_t c = 0; c < vdim; ++c)
+                t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
+        tables.push_back(std::move(t));
+        names.push_back(g.mName);
+        components.push_back(vdim);
+    }
+    MfFile f;
+    f.mDim = rN.mDim;
+    f.mSpaceDim = sdim;
+    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
+    for (const MfNurbsElement& el : elements)
+        f.mElements.push_back(el.mElement);
+    std::vector<std::int64_t> bdr_patch;
+    f.mBoundary = rN.Boundary(&bdr_patch);
+
+    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
+    std::vector<std::array<double, 3>> refs;
+    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
+        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
+                        static_cast<double>(ijk[2]) / order});
+    std::vector<const std::vector<double>*> nurbs_tables;  // the coordinates, then each field
+    nurbs_tables.push_back(&xyz);
+    for (const auto& t : tables)
+        nurbs_tables.push_back(&t);
+
+    MfPart part;
+    part.mpF = &f;
+    for (const MfGridData& g : rGfs)
+        part.mGfs.push_back(&g);
+    part.mGlobal.resize(f.mNumVertices);
+    for (std::size_t v = 0; v < f.mNumVertices; ++v)
+        part.mGlobal[v] = static_cast<std::int64_t>(v);
+    part.mEvalComponents = components;
+    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
+        rOut.resize(nurbs_tables.size());
+        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
+            rN.Evaluate(weights, *nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
+    };
+    Mesh mesh = mf_read_parts({part}, f.mNumVertices, order, false, rPath);
+    if (pInfo)
+        *pInfo = mf_nurbs_info(rN, weights, xyz, static_cast<std::size_t>(sdim), names, tables,
+                               std::vector<std::size_t>(components.begin() + 1, components.end()),
+                               elements, bdr_patch);
+    return mesh;
+}
+
+// The grid functions a NURBS mesh reads with it: NURBS ones on its own space
+// and element-wise ones; any other is skipped with a warning.
+Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGridFunctions,
+                   const std::string& rPath, NurbsInfo* pInfo) {
+    std::vector<MfGridData> gfs;
     const auto ndofs = static_cast<std::size_t>(rN.NumDofs());
     for (const MfemGridFunction& gf : rGridFunctions) {
         MfGridData g = mf_parse_gf(gf);
         const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
         if (g.mSpace.mKind == MfSpace::Nurbs && g.mValues.size() == ndofs * vdim) {
-            std::vector<double> t(ndofs * vdim);
-            for (std::size_t d = 0; d < ndofs; ++d)
-                for (std::size_t c = 0; c < vdim; ++c)
-                    t[d * vdim + c] = mf_value(g.mValues, g.mSpace, ndofs, d, c);
-            tables.push_back(std::move(t));
-            components.push_back(vdim);
             gfs.push_back(std::move(g));
         } else if ((g.mSpace.mKind == MfSpace::L2 || g.mSpace.mKind == MfSpace::L2T1) &&
                    g.mSpace.mOrder == 0) {
@@ -109623,38 +116403,7 @@ Mesh mf_read_nurbs(const MfNurbs& rN, const std::vector<MfemGridFunction>& rGrid
                 gf.mPath, g.mSpace.mCollection);
         }
     }
-    MfFile f;
-    f.mDim = rN.mDim;
-    f.mSpaceDim = sdim;
-    f.mNumVertices = static_cast<std::size_t>(rN.NumVertices());
-    for (const MfNurbsElement& el : elements)
-        f.mElements.push_back(el.mElement);
-    f.mBoundary = rN.Boundary();
-
-    const lagrange::Shape shape = mf_shape(mf_nurbs_geom(rN.mDim));
-    std::vector<std::array<double, 3>> refs;
-    for (const auto& ijk : lagrange::vtk_lattice(shape, order))
-        refs.push_back({static_cast<double>(ijk[0]) / order, static_cast<double>(ijk[1]) / order,
-                        static_cast<double>(ijk[2]) / order});
-    std::vector<std::vector<double>> nurbs_tables;  // the coordinates, then each field
-    nurbs_tables.push_back(std::move(xyz));
-    for (auto& t : tables)
-        nurbs_tables.push_back(std::move(t));
-
-    MfPart part;
-    part.mpF = &f;
-    for (const MfGridData& g : gfs)
-        part.mGfs.push_back(&g);
-    part.mGlobal.resize(f.mNumVertices);
-    for (std::size_t v = 0; v < f.mNumVertices; ++v)
-        part.mGlobal[v] = static_cast<std::int64_t>(v);
-    part.mEvalComponents = components;
-    part.mEval = [&](std::size_t E, std::vector<std::vector<double>>& rOut) {
-        rOut.resize(nurbs_tables.size());
-        for (std::size_t k = 0; k < nurbs_tables.size(); ++k)
-            rN.Evaluate(weights, nurbs_tables[k], components[k], elements[E], refs, rOut[k]);
-    };
-    return mf_read_parts({part}, f.mNumVertices, order, false, rPath);
+    return mf_sample_nurbs(rN, gfs, rPath, pInfo);
 }
 
 // `<prefix>.NNNNNN`: the rank a parallel-mesh file name carries, or -1.
@@ -109953,23 +116702,13 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
     return mf_read_parts(parts, static_cast<std::size_t>(nglobal), order, true, rPath);
 }
 
-}  // namespace
-
-Mesh read_mfem(const std::string& rPath) {
-    return read_mfem(rPath, {});
-}
-
-Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
-    return read_mfem(rPath, rGridFunctions, ReadOptions{});
-}
-
-Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
-               const ReadOptions& rOptions) {
+Mesh mf_read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+                  const ReadOptions& rOptions, NurbsInfo* pInfo) {
     MfFile f = mf_parse(rPath);
     if (f.mpNurbs) {
         if (rOptions.mPieceSet && rOptions.mPiece != 0)
             throw ReadError("MFEM mesh: " + rPath + " is not parallel; its only piece is 0");
-        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath);
+        return mf_read_nurbs(*f.mpNurbs, rGridFunctions, rPath, pInfo);
     }
     if (f.mParallel || mf_rank_siblings(rPath))
         return mf_read_parallel(rPath, std::move(f), rGridFunctions, rOptions);
@@ -110353,6 +117092,29 @@ Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rG
     return mesh;
 }
 
+}  // namespace
+
+Mesh read_mfem(const std::string& rPath) {
+    return read_mfem(rPath, {});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions) {
+    return read_mfem(rPath, rGridFunctions, ReadOptions{});
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions) {
+    return mf_read_mfem(rPath, rGridFunctions, rOptions, nullptr);
+}
+
+Mesh read_mfem(const std::string& rPath, const std::vector<MfemGridFunction>& rGridFunctions,
+               const ReadOptions& rOptions, NurbsInfo& rInfo) {
+    NurbsInfo info;
+    Mesh mesh = mf_read_mfem(rPath, rGridFunctions, rOptions, &info);
+    rInfo = std::move(info);
+    return mesh;
+}
+
 // ===========================================================================
 // Writer
 // ===========================================================================
@@ -110443,6 +117205,384 @@ bool mf_generated_name(const std::string& rName, const char* pPrefix, std::int64
         return false;
     return MfLexer::ParseInt(rName.substr(prefix.size()), rId) && rId > 0 &&
            rName.substr(prefix.size()) == std::to_string(rId);
+}
+
+// --- NURBS (the NurbsInfo side channel) ---------------------------------------
+
+constexpr const char* kMfNurbsMismatch = "the mesh no longer matches its NURBS side channel";
+
+[[noreturn]] void mf_nurbs_bad(const std::string& rWhy) {
+    throw WriteError("MFEM NURBS writer: " + rWhy);
+}
+
+std::string mf_shape_text(const NDArray& rA) {
+    std::string out = "(";
+    for (std::size_t i = 0; i < rA.Shape().size(); ++i)
+        out += (i ? ", " : "") + std::to_string(rA.Shape()[i]);
+    return out + (rA.Shape().size() == 1 ? ",)" : ")");
+}
+
+// The shapes and values a side channel must have before anything is built
+// from it (the twin of `_check_nurbs_info`).
+void mf_check_nurbs_info(const NurbsInfo& rInfo) {
+    if (rInfo.mPatches.empty())
+        mf_nurbs_bad("the side channel has no patches");
+    const NurbsTopology& t = rInfo.mTopology;
+    const int dim = t.mDimension;
+    if (dim < 1 || dim > 3)
+        mf_nurbs_bad("the side channel has no patch topology");
+    const std::size_t nnames = rInfo.mFieldNames.size();
+    std::size_t sdim = 0;
+    std::vector<std::size_t> vdims(nnames, 0);
+    for (std::size_t p = 0; p < rInfo.mPatches.size(); ++p) {
+        const NurbsPatch& patch = rInfo.mPatches[p];
+        const std::string at = "patch " + std::to_string(p);
+        if (patch.mDegrees.size() != static_cast<std::size_t>(dim) ||
+            patch.mKnots.size() != static_cast<std::size_t>(dim))
+            mf_nurbs_bad(at + " has " + std::to_string(patch.mDegrees.size()) + " degrees and " +
+                         std::to_string(patch.mKnots.size()) + " knot vectors in a " +
+                         std::to_string(dim) + "-D mesh");
+        std::size_t ncp = 1;
+        for (std::size_t d = 0; d < static_cast<std::size_t>(dim); ++d) {
+            const std::vector<double>& k = patch.mKnots[d];
+            const std::int64_t deg = patch.mDegrees[d];
+            const std::int64_t n = static_cast<std::int64_t>(k.size()) - deg - 1;
+            if (deg < 0 || n < deg + 1)
+                mf_nurbs_bad(at + ", direction " + std::to_string(d) + ": " +
+                             std::to_string(k.size()) + " knots for degree " + std::to_string(deg));
+            for (std::size_t i = 0; i < k.size(); ++i)
+                if (!std::isfinite(k[i]) || (i && k[i] < k[i - 1]))
+                    mf_nurbs_bad(at + ", direction " + std::to_string(d) + ": knots out of order");
+            ncp *= static_cast<std::size_t>(n);
+        }
+        const NDArray& cps = patch.mControlPoints;
+        if (cps.Shape().size() != 2 || cps.Shape()[0] != ncp || cps.Shape()[1] < 1 ||
+            cps.Shape()[1] > 3)
+            mf_nurbs_bad(at + ": control points of shape " + mf_shape_text(cps) + ", not (" +
+                         std::to_string(ncp) + ", 1..3)");
+        if (!sdim)
+            sdim = cps.Shape()[1];
+        if (cps.Shape()[1] != sdim)
+            mf_nurbs_bad("patches of different space dimensions");
+        const NDArray& w = patch.mWeights;
+        bool weights_ok = w.Size() == ncp;
+        if (weights_ok) {
+            const detail::DoubleView wv(w);
+            for (std::size_t i = 0; i < ncp; ++i)
+                weights_ok = weights_ok && std::isfinite(wv[i]) && wv[i] != 0.0;
+        }
+        if (!weights_ok)
+            mf_nurbs_bad(at + ": " + std::to_string(w.Size()) + " weights for " +
+                         std::to_string(ncp) + " control points, or a zero or non-finite one");
+        if (patch.mFields.size() != nnames)
+            mf_nurbs_bad(at + " has " + std::to_string(patch.mFields.size()) + " fields for " +
+                         std::to_string(nnames) + " names");
+        for (std::size_t k = 0; k < nnames; ++k) {
+            const NDArray& a = patch.mFields[k];
+            if (a.Shape().size() != 2 || a.Shape()[0] != ncp)
+                mf_nurbs_bad(at + ": field '" + rInfo.mFieldNames[k] + "' of shape " +
+                             mf_shape_text(a) + ", not (" + std::to_string(ncp) + ", components)");
+            if (!vdims[k])
+                vdims[k] = a.Shape()[1];
+            if (a.Shape()[1] != vdims[k])
+                mf_nurbs_bad("field '" + rInfo.mFieldNames[k] +
+                             "' has different components on different patches");
+        }
+    }
+    const std::size_t np = rInfo.mPatches.size();
+    const std::size_t pcols = std::size_t{1} << dim, bcols = std::size_t{1} << (dim - 1);
+    const NDArray& pv = t.mPatchVertices;
+    if (pv.Shape().size() != 2 || pv.Shape()[0] != np || pv.Shape()[1] != pcols ||
+        t.mPatchAttributes.Size() != np)
+        mf_nurbs_bad("the topology has patch rows of shape " + mf_shape_text(pv) + " for " +
+                     std::to_string(np) + " patches");
+    const NDArray& bv = t.mBoundaryVertices;
+    if (bv.Size() && (bv.Shape().size() != 2 || bv.Shape()[1] != bcols ||
+                      t.mBoundaryAttributes.Size() != bv.Shape()[0]))
+        mf_nurbs_bad("the topology has boundary rows of shape " + mf_shape_text(bv));
+    const std::int64_t nv = t.mNumVertices;
+    const auto in_range = [nv](const NDArray& rA, std::size_t First, std::size_t Stride) {
+        const detail::Int64View a(rA);
+        for (std::size_t i = First; i < rA.Size(); i += Stride)
+            if (a[i] < 0 || a[i] >= nv)
+                return false;
+        return true;
+    };
+    if (!in_range(pv, 0, 1) || !in_range(bv, 0, 1) || !in_range(t.mEdges, 1, 3) ||
+        !in_range(t.mEdges, 2, 3))
+        mf_nurbs_bad("a topology vertex out of range (" + std::to_string(nv) + " vertices)");
+    if (t.mEdges.Size() % 3)
+        mf_nurbs_bad("the topology's edges are not (knot vector, vertex, vertex) rows");
+    const detail::Int64View edges(t.mEdges);
+    for (std::size_t i = 0; i < t.mEdges.Size(); i += 3)
+        if (edges[i] < 0)
+            mf_nurbs_bad("a negative knot vector index in the edges");
+}
+
+MfKnotVector mf_nurbs_knot(std::int32_t Degree, const std::vector<double>& rKnots) {
+    MfKnotVector k;
+    k.mOrder = Degree;
+    k.mKnots = rKnots;
+    k.Finish();
+    return k;
+}
+
+std::string mf_nurbs_collection(const MfNurbs& rN) {
+    std::set<int> orders;
+    for (const MfKnotVector& kv : rN.mKvs)
+        orders.insert(kv.mOrder);
+    return orders.size() == 1 ? "NURBS" + std::to_string(*orders.begin()) : "NURBS";
+}
+
+// The global-form NURBS mesh a side channel describes (the twin of
+// `Nurbs.from_info`): its topology, one knot vector per edge class (taken from
+// a patch that runs along it where one does, so the knots are exact), and the
+// control points, weights and fields scattered into MFEM's numbering; the
+// fields go to `rFields` (dof-major, `rCols` components each).
+MfNurbs mf_nurbs_from_info(const NurbsInfo& rInfo, std::vector<std::vector<double>>& rFields,
+                           std::vector<std::size_t>& rCols) {
+    const NurbsTopology& t = rInfo.mTopology;
+    MfNurbs n;
+    n.mPath = "the NURBS side channel";
+    n.mDim = t.mDimension;
+    const auto rows = [](const NDArray& rVerts, const NDArray& rAttrs, int Geom) {
+        std::vector<MfElement> out;
+        const std::size_t nr = rAttrs.Size();
+        const std::size_t cols = nr ? rVerts.Size() / nr : 0;
+        const detail::Int64View v(rVerts);
+        const detail::Int64View a(rAttrs);
+        for (std::size_t r = 0; r < nr; ++r)
+            out.push_back(MfElement{
+                a[r], Geom,
+                std::vector<std::int64_t>(v.Data() + r * cols, v.Data() + (r + 1) * cols), 0});
+        return out;
+    };
+    n.mPatches = rows(t.mPatchVertices, t.mPatchAttributes, mf_nurbs_geom(n.mDim));
+    n.mBPatches = rows(t.mBoundaryVertices, t.mBoundaryAttributes, mf_nurbs_bdr_geom(n.mDim));
+    const detail::Int64View edges(t.mEdges);
+    for (std::size_t i = 0; i + 2 < t.mEdges.Size(); i += 3)
+        n.mEdgeRows.push_back({edges[i], edges[i + 1], edges[i + 2]});
+    n.mNumTopoVertices = static_cast<std::size_t>(t.mNumVertices);
+    n.mPatchForm = true;
+    std::vector<std::vector<MfKnotVector>> kvs;
+    for (const NurbsPatch& patch : rInfo.mPatches) {
+        MfNurbsPatchData pd;
+        for (std::size_t d = 0; d < patch.mDegrees.size(); ++d)
+            pd.mKvs.push_back(mf_nurbs_knot(patch.mDegrees[d], patch.mKnots[d]));
+        kvs.push_back(pd.mKvs);
+        n.mPatchData.push_back(std::move(pd));
+    }
+    const auto as_write_error = [](const ReadError& rE) -> WriteError {
+        std::string what = rE.what();
+        const std::string prefix = "MFEM NURBS mesh: ";
+        if (what.rfind(prefix, 0) == 0)
+            what = what.substr(prefix.size());
+        return WriteError("MFEM NURBS writer: " + what);
+    };
+    try {
+        n.Topology();
+        // The knot table: per edge class, a patch that runs along it if any.
+        std::vector<MfKnotVector> table = n.mKvs;
+        for (std::size_t k = 0; k < table.size(); ++k) {
+            bool found = false;
+            for (std::size_t p = 0; p < n.mPatches.size() && !found; ++p) {
+                const std::vector<int> kvdir = n.KvDir(p);
+                const std::vector<std::size_t> dirs = n.DirEdges(p);
+                for (std::size_t d = 0; d < dirs.size() && !found; ++d)
+                    if (static_cast<std::size_t>(mf_unsign(n.mEdgeToUkv[dirs[d]])) == k &&
+                        kvdir[d] == 1) {
+                        table[k] = kvs[p][d];
+                        found = true;
+                    }
+            }
+        }
+        n.mKvs = std::move(table);
+        n.mPatchForm = false;
+        n.mPatchData.clear();
+        n.KnotVectors();
+        n.Offsets();
+    } catch (const ReadError& rE) {
+        throw as_write_error(rE);
+    }
+    for (std::size_t p = 0; p < kvs.size(); ++p)
+        for (std::size_t d = 0; d < kvs[p].size(); ++d) {
+            const MfKnotVector& have = kvs[p][d];
+            const MfKnotVector& want = n.mCompr[p][d];
+            double scale = 1.0, diff = 0.0;
+            for (double k : want.mKnots)
+                scale = std::max(scale, std::abs(k));
+            bool same = have.mOrder == want.mOrder && have.mKnots.size() == want.mKnots.size();
+            for (std::size_t i = 0; same && i < have.mKnots.size(); ++i)
+                diff = std::max(diff, std::abs(have.mKnots[i] - want.mKnots[i]));
+            if (!same || diff > 1e-12 * scale)
+                mf_nurbs_bad("patch " + std::to_string(p) + " disagrees in direction " +
+                             std::to_string(d) + " with the knot vector its edge shares");
+        }
+
+    // Scatter every patch's rows into MFEM's numbering; a control point two
+    // patches share must agree.
+    const auto ndofs = static_cast<std::size_t>(n.NumDofs());
+    const std::size_t sdim = rInfo.mPatches[0].mControlPoints.Shape()[1];
+    const std::size_t nfields = rInfo.mFieldNames.size();
+    rCols.assign(nfields, 0);
+    for (std::size_t k = 0; k < nfields; ++k)
+        rCols[k] = rInfo.mPatches[0].mFields[k].Shape()[1];
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<std::vector<double>> tables;
+    tables.emplace_back(ndofs * (sdim + 1), nan);
+    for (std::size_t k = 0; k < nfields; ++k)
+        tables.emplace_back(ndofs * rCols[k], nan);
+    std::vector<std::size_t> cols = {sdim + 1};
+    cols.insert(cols.end(), rCols.begin(), rCols.end());
+    for (std::size_t p = 0; p < rInfo.mPatches.size(); ++p) {
+        const NurbsPatch& patch = rInfo.mPatches[p];
+        const detail::DoubleView xyz(patch.mControlPoints);
+        const detail::DoubleView w(patch.mWeights);
+        std::vector<std::optional<detail::DoubleView>> fv(nfields);
+        for (std::size_t k = 0; k < nfields; ++k)
+            fv[k].emplace(patch.mFields[k]);
+        const MfPatchMap m = n.PatchMap(p, true);
+        std::int64_t cnt[3] = {1, 1, 1};
+        for (std::size_t d = 0; d < n.mCompr[p].size(); ++d)
+            cnt[d] = static_cast<std::int64_t>(n.mCompr[p][d].mNumCp);
+        std::size_t r = 0;
+        std::vector<double> row;
+        for (std::int64_t kk = 0; kk < cnt[2]; ++kk)
+            for (std::int64_t j = 0; j < cnt[1]; ++j)
+                for (std::int64_t i = 0; i < cnt[0]; ++i, ++r) {
+                    const std::int64_t idx[3] = {i, j, kk};
+                    const auto g = static_cast<std::size_t>(m.At(idx, n.mDim));
+                    for (std::size_t q = 0; q < tables.size(); ++q) {
+                        row.assign(cols[q], 0.0);
+                        if (q == 0) {
+                            for (std::size_t c = 0; c < sdim; ++c)
+                                row[c] = xyz[r * sdim + c];
+                            row[sdim] = w[r];
+                        } else {
+                            for (std::size_t c = 0; c < cols[q]; ++c)
+                                row[c] = (*fv[q - 1])[r * cols[q] + c];
+                        }
+                        double* dst = tables[q].data() + g * cols[q];
+                        if (std::isnan(dst[0])) {
+                            std::copy(row.begin(), row.end(), dst);
+                            continue;
+                        }
+                        for (std::size_t c = 0; c < cols[q]; ++c)
+                            if (std::abs(dst[c] - row[c]) > 1e-12 * std::max(1.0, std::abs(row[c])))
+                                mf_nurbs_bad("patch " + std::to_string(p) +
+                                             " disagrees with a neighbour on a control point "
+                                             "they share");
+                    }
+                }
+    }
+    n.mWeights.resize(ndofs);
+    n.mNodes.resize(ndofs * sdim);
+    for (std::size_t g = 0; g < ndofs; ++g) {
+        for (std::size_t c = 0; c < sdim; ++c)
+            n.mNodes[g * sdim + c] = tables[0][g * (sdim + 1) + c];
+        n.mWeights[g] = tables[0][g * (sdim + 1) + sdim];
+    }
+    n.mHasNodes = true;
+    n.mSpace = MfSpace{};
+    n.mSpace.mKind = MfSpace::Nurbs;
+    n.mSpace.mCollection = mf_nurbs_collection(n);
+    n.mSpace.mVDim = static_cast<int>(sdim);
+    n.mSpace.mOrdering = 1;
+    rFields.assign(tables.begin() + 1, tables.end());
+    return n;
+}
+
+// The global form of `rN` as MFEM writes it (`NURBSExtension::Print` and the
+// NURBS nodes), the twin of `_nurbs_text`.
+std::string mf_nurbs_text(const MfNurbs& rN) {
+    std::string out = "MFEM NURBS mesh v1.0\n";
+    out += detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    out += "\ndimension\n" + std::to_string(rN.mDim) + "\n\nelements\n" +
+           std::to_string(rN.mPatches.size()) + "\n";
+    const auto append_rows = [&](const std::vector<MfElement>& rRows) {
+        for (const MfElement& el : rRows) {
+            out += std::to_string(el.mAttribute) + " " + std::to_string(el.mGeom);
+            for (std::int64_t v : el.mVertices)
+                out += " " + std::to_string(v);
+            out += '\n';
+        }
+    };
+    append_rows(rN.mPatches);
+    out += "\nboundary\n" + std::to_string(rN.mBPatches.size()) + "\n";
+    append_rows(rN.mBPatches);
+    out += "\nedges\n" + std::to_string(rN.mEdgeRows.size()) + "\n";
+    for (const auto& e : rN.mEdgeRows)
+        out +=
+            std::to_string(e[0]) + " " + std::to_string(e[1]) + " " + std::to_string(e[2]) + "\n";
+    out += "\nvertices\n" + std::to_string(rN.mNumTopoVertices) + "\n\nknotvectors\n" +
+           std::to_string(rN.mKvs.size()) + "\n";
+    for (const MfKnotVector& kv : rN.mKvs) {
+        out += std::to_string(kv.mOrder) + " " + std::to_string(kv.mNumCp);
+        for (double k : kv.mKnots) {
+            out += ' ';
+            mf_append_real(out, k);
+        }
+        out += '\n';
+    }
+    out += "\nweights\n";
+    for (double w : rN.mWeights) {
+        mf_append_real(out, w);
+        out += '\n';
+    }
+    const auto sdim = static_cast<std::size_t>(rN.mSpace.mVDim);
+    out += "\nFiniteElementSpace\nFiniteElementCollection: " + rN.mSpace.mCollection +
+           "\nVDim: " + std::to_string(sdim) + "\nOrdering: 1\n\n";
+    for (std::size_t g = 0; g * sdim < rN.mNodes.size(); ++g) {
+        for (std::size_t c = 0; c < sdim; ++c) {
+            if (c)
+                out += ' ';
+            mf_append_real(out, rN.mNodes[g * sdim + c]);
+        }
+        out += '\n';
+    }
+    return out;
+}
+
+// Throws unless `rMesh` is what reading the side channel's NURBS mesh gives:
+// the points, the element cells and the fields still present.
+void mf_nurbs_match(const Mesh& rMesh, const Mesh& rExpected,
+                    const std::vector<std::string>& rNames) {
+    const auto mismatch = [](const std::string& rWhat) {
+        throw WriteError(std::string("MFEM NURBS writer: ") + kMfNurbsMismatch + " (" + rWhat +
+                         "); write with nurbs=False to write the sampled cells");
+    };
+    const auto close = [](const NDArray& rA, const NDArray& rB) {
+        if (rA.Size() != rB.Size())
+            return false;
+        const detail::DoubleView a(rA);
+        const detail::DoubleView b(rB);
+        double scale = 1.0, diff = 0.0;
+        for (std::size_t i = 0; i < rB.Size(); ++i) {
+            scale = std::max(scale, std::abs(b[i]));
+            diff = std::max(diff, std::abs(a[i] - b[i]));
+        }
+        return diff <= 1e-9 * scale;
+    };
+    if (rMesh.PointDim() != rExpected.PointDim() || !close(rMesh.Points(), rExpected.Points()))
+        mismatch("its points differ");
+    bool cells = rMesh.NumCellBlocks() >= 1 && rExpected.NumCellBlocks() >= 1;
+    if (cells) {
+        const auto a = rMesh.Cells(0);
+        const auto b = rExpected.Cells(0);
+        cells = a.Type() == b.Type() && !a.IsRagged() && a.NumCells() == b.NumCells() &&
+                a.NodesPerCell() == b.NodesPerCell() && a.Conn().Size() == b.Conn().Size();
+        if (cells) {
+            const detail::Int64View ca(a.Conn());
+            const detail::Int64View cb(b.Conn());
+            for (std::size_t i = 0; cells && i < a.Conn().Size(); ++i)
+                cells = ca[i] == cb[i];
+        }
+    }
+    if (!cells)
+        mismatch("its element cells differ");
+    for (const std::string& name : rNames)
+        if (rMesh.HasPointData(name) && !close(rMesh.PointData(name), rExpected.PointData(name)))
+            mismatch("its point data '" + name + "' differs");
 }
 
 }  // namespace
@@ -111067,6 +118207,117 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
         }
         auto g = open_gf(name);
         g << text;
+    }
+}
+
+void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
+                const NurbsInfo& rInfo) {
+    if (rInfo.mPatches.empty()) {
+        write_mfem(rPath, rMesh, GridFunctions);
+        return;
+    }
+    mf_check_nurbs_info(rInfo);
+    std::vector<std::vector<double>> fields;
+    std::vector<std::size_t> cols;
+    const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
+    std::vector<MfGridData> gfs;
+    for (std::size_t k = 0; k < fields.size(); ++k) {
+        MfGridData g;
+        g.mName = rInfo.mFieldNames[k];
+        g.mSpace.mKind = MfSpace::Nurbs;
+        g.mSpace.mCollection = n.mSpace.mCollection;
+        g.mSpace.mVDim = static_cast<int>(cols[k]);
+        g.mSpace.mOrdering = 1;
+        g.mValues = fields[k];
+        gfs.push_back(std::move(g));
+    }
+    const Mesh expected = mf_sample_nurbs(n, gfs, "the NURBS side channel", nullptr);
+    mf_nurbs_match(rMesh, expected, rInfo.mFieldNames);
+
+    std::vector<std::string> cell_names;
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "mfem:attribute")
+            cell_names.push_back(name);
+    if (!GridFunctions && (rMesh.NumPointData() || !cell_names.empty() || rMesh.NumFieldData())) {
+        log::warn("MFEM mesh writer: data arrays are dropped (write grid functions to keep them)");
+        detail::provenance_note("data-dropped", "an MFEM mesh holds no data arrays");
+    } else if (GridFunctions && rMesh.NumFieldData()) {
+        log::warn("MFEM mesh writer: field data has no grid function; dropped");
+        detail::provenance_note("data-dropped", "field data has no MFEM grid function");
+    }
+    const auto is_field = [&](const std::string& rName) {
+        return std::find(rInfo.mFieldNames.begin(), rInfo.mFieldNames.end(), rName) !=
+               rInfo.mFieldNames.end();
+    };
+    if (GridFunctions)
+        for (const std::string& name : rMesh.PointDataNames())
+            if (!is_field(name)) {
+                log::warn(
+                    "MFEM NURBS writer: point data '{}' is not a field of the NURBS side "
+                    "channel; dropped",
+                    name);
+                detail::provenance_note("data-dropped",
+                                        "point data '" + name + "' has no NURBS grid function");
+            }
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const std::string& name = rMesh.Region(r).mName;
+        std::int64_t id = 0;
+        if (mf_generated_name(name, "attribute_", id) || mf_generated_name(name, "boundary_", id))
+            continue;
+        log::warn("MFEM NURBS writer: region '{}' has no place in a NURBS mesh; dropped", name);
+        detail::provenance_note("regions-dropped", "region '" + name + "' (NURBS mesh)");
+    }
+
+    {
+        auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+        if (!f)
+            throw WriteError("Could not open file for writing: " + rPath);
+        f << mf_nurbs_text(n);
+        if (!f)
+            throw WriteError("MFEM mesh writer: failed writing " + rPath);
+    }
+    if (!GridFunctions)
+        return;
+    namespace fs = std::filesystem;
+    const fs::path mesh_path(rPath);
+    const std::string stem = (mesh_path.parent_path() / mesh_path.stem()).string();
+    const auto write_gf = [&](const std::string& rName, const std::string& rText) {
+        const std::string path = stem + "." + mf_sanitise(rName) + ".gf";
+        auto g = detail::make_classic_ofstream(path, std::ios::binary);
+        if (!g)
+            throw WriteError("Could not open file for writing: " + path);
+        g << rText;
+    };
+    for (const MfGridData& g : gfs) {
+        if (!rMesh.HasPointData(g.mName))
+            continue;
+        const auto vdim = static_cast<std::size_t>(g.mSpace.mVDim);
+        std::string text = "FiniteElementSpace\nFiniteElementCollection: " + g.mSpace.mCollection +
+                           "\nVDim: " + std::to_string(vdim) + "\nOrdering: 1\n\n";
+        for (std::size_t i = 0; i < g.mValues.size(); ++i) {
+            if (i % vdim)
+                text += ' ';
+            mf_append_real(text, g.mValues[i]);
+            if (i % vdim == vdim - 1)
+                text += '\n';
+        }
+        write_gf(g.mName, text);
+    }
+    for (const std::string& name : cell_names) {
+        const NDArray& a = rMesh.CellData(name, 0);
+        const std::size_t cols_k = a.Shape().size() > 1 ? detail::cols(a) : 1;
+        std::string text = "FiniteElementSpace\nFiniteElementCollection: L2_" +
+                           std::to_string(n.mDim) + "D_P0\nVDim: " + std::to_string(cols_k) +
+                           "\nOrdering: 1\n\n";
+        const detail::DoubleView v(a);
+        for (std::size_t i = 0; i < a.Size(); ++i) {
+            if (i % cols_k)
+                text += ' ';
+            mf_append_real(text, v[i]);
+            if (i % cols_k == cols_k - 1)
+                text += '\n';
+        }
+        write_gf(name, text);
     }
 }
 
@@ -113328,6 +120579,8 @@ std::vector<std::string> nh5_string_member(hid_t file, const std::string& rPath,
                                            const std::string& rMember, std::size_t Row0,
                                            std::size_t Count) {
     h5::Hid d(H5Dopen2(file, rPath.c_str(), H5P_DEFAULT), H5Dclose);
+    // This read is a raw H5Dread, so the chunks it reaches are verified here, as hdf5_util does.
+    h5::verify_chunk_rows(d, rPath, Row0, Count);
     h5::Hid ftype(H5Dget_type(d), H5Tclose);
     const int index = H5Tget_member_index(ftype, rMember.c_str());
     if (index < 0)
@@ -114153,8 +121406,11 @@ MeshMetadata read_nastran_h5_metadata(const std::string& rPath, const ReadOption
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <unordered_map>
@@ -116162,6 +123418,949 @@ MeshMetadata read_nastran_op2_metadata(const std::string& rPath, const ReadOptio
     meta.mFormat = "nastran_op2";
     meta.mTimeValues = nastran_op2_time_values(rPath);
     return meta;
+}
+
+// ---------------------------------------------------------------------------------------
+// The writer: 32-bit little-endian MSC OP2, SORT1 real. The twin of
+// nastran_op2/_write.py, which writes the same bytes.
+// ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr detail::FortranRecordLayout kOp2wLayout{4, false};
+constexpr std::int32_t kOp2wDevice = 1;
+constexpr const char* kOp2wVersion = "XXXXXXXX";
+constexpr const char* kOp2wTapeId = "NASTRAN FORT TAPE ID CODE - ";
+
+[[noreturn]] void op2w_fail(const std::string& rMessage) {
+    throw WriteError(kOp2Who + ": " + rMessage);
+}
+
+/// A double as the file's single precision, rounded like numpy's cast (an
+/// overflow is an infinity).
+float op2w_float(double V) {
+    if (V != V)
+        return std::numeric_limits<float>::quiet_NaN();
+    if (std::fabs(V) >= 3.4028235677973366e38)
+        return V < 0 ? -std::numeric_limits<float>::infinity()
+                     : std::numeric_limits<float>::infinity();
+    return static_cast<float>(V);
+}
+
+void op2w_i32(std::string& rBuf, std::int64_t V) {
+    detail::fortran_put_int32(rBuf, static_cast<std::int32_t>(V), false);
+}
+
+void op2w_f32(std::string& rBuf, double V) {
+    detail::fortran_put_float32(rBuf, op2w_float(V), false);
+}
+
+/// A row of @p Size words, filled by index.
+struct Op2wRowBuf {
+    explicit Op2wRowBuf(std::size_t Size) : mWords(Size, 0u) {}
+    void I(std::size_t At, std::int64_t V) { mWords[At] = static_cast<std::uint32_t>(V); }
+    void F(std::size_t At, double V) { mWords[At] = std::bit_cast<std::uint32_t>(op2w_float(V)); }
+    void Append(std::string& rOut) const {
+        for (const std::uint32_t w : mWords)
+            op2w_i32(rOut, static_cast<std::int32_t>(w));
+    }
+    std::vector<std::uint32_t> mWords;
+};
+
+void op2w_marker(std::string& rOut, std::int32_t V) {
+    std::string payload;
+    detail::fortran_put_int32(payload, V, false);
+    detail::fortran_append_record(rOut, payload.data(), payload.size(), kOp2wLayout);
+}
+
+void op2w_record(std::string& rOut, const std::string& rPayload) {
+    op2w_marker(rOut, static_cast<std::int32_t>(rPayload.size() / 4));
+    detail::fortran_append_record(rOut, rPayload.data(), rPayload.size(), kOp2wLayout);
+}
+
+std::string op2w_text(const std::string& rText) {
+    std::string t = rText.substr(0, 8);
+    t.resize(8, ' ');
+    return t;
+}
+
+std::string op2w_key(std::int32_t K1, std::int32_t K2, std::int32_t K3) {
+    std::string key;
+    op2w_i32(key, K1);
+    op2w_i32(key, K2);
+    op2w_i32(key, K3);
+    return key;
+}
+
+/// A named table: its name, the 7-word header, then every record behind a marker
+/// triple, and the closing triple and 0.
+std::string op2w_table(const std::string& rName, const std::vector<std::string>& rRecords) {
+    std::string out;
+    op2w_record(out, op2w_text(rName));
+    op2w_marker(out, -1);
+    std::string head;
+    op2w_i32(head, 101);
+    for (int i = 0; i < 6; ++i)
+        op2w_i32(head, 0);
+    op2w_record(out, head);
+    std::int32_t k = -2;
+    const auto triple = [&] {
+        op2w_marker(out, k);
+        op2w_marker(out, 1);
+        op2w_marker(out, 0);
+    };
+    triple();
+    op2w_record(out, op2w_text(rName));
+    for (const std::string& r : rRecords) {
+        --k;
+        triple();
+        op2w_record(out, r);
+    }
+    --k;
+    triple();
+    op2w_marker(out, 0);
+    return out;
+}
+
+std::string op2w_file_header() {
+    std::string out;
+    op2w_marker(out, 3);
+    std::string date;
+    op2w_i32(date, 1);
+    op2w_i32(date, 1);
+    op2w_i32(date, 0);
+    detail::fortran_append_record(out, date.data(), date.size(), kOp2wLayout);
+    op2w_marker(out, 7);
+    const std::string tape = kOp2wTapeId;
+    detail::fortran_append_record(out, tape.data(), tape.size(), kOp2wLayout);
+    op2w_record(out, op2w_text(kOp2wVersion));
+    op2w_marker(out, -1);
+    op2w_marker(out, 0);
+    return out;
+}
+
+// -- the element cards ---------------------------------------------------------------
+
+enum Op2wProp { kOp2wNoProp = -1, kOp2wProd = 0, kOp2wPshell, kOp2wPsolid, kOp2wPtube };
+enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
+
+constexpr int kOp2wHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                 10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
+constexpr int kOp2wPenta15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
+
+struct Op2wCard {
+    const char* mName;
+    std::int32_t mK1, mK2, mK3;
+    std::size_t mSize;    // record words
+    std::size_t mLinear;  // nodes of the linear card
+    std::size_t mFirst;   // first node word
+    const int* mPerm;     // to Nastran's order for the quadratic cell
+    Op2wProp mProp;
+    std::size_t mCorners;  // corner nodes with results (solids)
+};
+
+// In card-name order: the order of the GEOM2 records.
+constexpr Op2wCard kOp2wCards[] = {
+    {"CHEXA", 7308, 73, 253, 22, 8, 2, kOp2wHexa20, kOp2wPsolid, 8},
+    {"CONM2", 1501, 15, 64, 13, 1, 1, nullptr, kOp2wNoProp, 0},
+    {"CONROD", 1601, 16, 47, 8, 2, 1, nullptr, kOp2wNoProp, 0},
+    {"CPENTA", 4108, 41, 280, 17, 6, 2, kOp2wPenta15, kOp2wPsolid, 6},
+    {"CPYRAM", 17200, 172, 1000, 16, 5, 2, nullptr, kOp2wPsolid, 5},
+    {"CQUAD", 9108, 91, 507, 11, 4, 2, nullptr, kOp2wPshell, 0},
+    {"CQUAD4", 2958, 51, 177, 14, 4, 2, nullptr, kOp2wPshell, 0},
+    {"CQUAD8", 4701, 47, 326, 17, 4, 2, nullptr, kOp2wPshell, 0},
+    {"CROD", 3001, 30, 48, 4, 2, 2, nullptr, kOp2wProd, 0},
+    {"CTETRA", 5508, 55, 217, 12, 4, 2, nullptr, kOp2wPsolid, 4},
+    {"CTRIA3", 5959, 59, 282, 13, 3, 2, nullptr, kOp2wPshell, 0},
+    {"CTRIA6", 4801, 48, 327, 14, 3, 2, nullptr, kOp2wPshell, 0},
+    {"CTUBE", 3701, 37, 49, 4, 2, 2, nullptr, kOp2wPtube, 0},
+};
+constexpr std::size_t kOp2wNumCards = sizeof(kOp2wCards) / sizeof(kOp2wCards[0]);
+
+std::size_t op2w_card_index(std::string_view Name) {
+    for (std::size_t i = 0; i < kOp2wNumCards; ++i)
+        if (Name == kOp2wCards[i].mName)
+            return i;
+    return kOp2wNumCards;
+}
+
+/// Result families in file order: element type, card, kind.
+struct Op2wFamily {
+    std::int32_t mEtype;
+    const char* mCard;
+    Op2wKind mKind;
+};
+constexpr Op2wFamily kOp2wFamilies[] = {
+    {1, "CROD", kOp2wRod},      {3, "CTUBE", kOp2wRod},     {10, "CONROD", kOp2wRod},
+    {33, "CQUAD4", kOp2wPlate}, {39, "CTETRA", kOp2wSolid}, {67, "CHEXA", kOp2wSolid},
+    {68, "CPENTA", kOp2wSolid}, {74, "CTRIA3", kOp2wPlate}, {255, "CPYRAM", kOp2wSolid},
+};
+
+struct Op2wTypeSpec {
+    const char* mType;
+    const char* mCard;  // null: a line takes CROD, CTUBE or CONROD by its property
+    std::size_t mNodes;
+    std::int64_t mPid;  // the property id of a block with no 'nastran:pid'
+};
+constexpr Op2wTypeSpec kOp2wTypes[] = {
+    {"vertex", "CONM2", 1, -1},    {"line", nullptr, 2, 3},        {"triangle", "CTRIA3", 3, 1},
+    {"triangle6", "CTRIA6", 6, 1}, {"quad", "CQUAD4", 4, 1},       {"quad8", "CQUAD8", 8, 1},
+    {"quad9", "CQUAD", 9, 1},      {"tetra", "CTETRA", 4, 2},      {"tetra10", "CTETRA", 10, 2},
+    {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
+    {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
+};
+
+const Op2wTypeSpec* op2w_type_spec(const std::string& rType) {
+    for (const Op2wTypeSpec& t : kOp2wTypes)
+        if (rType == t.mType)
+            return &t;
+    return nullptr;
+}
+
+/// The mesh block (and cells) behind one element row.
+struct Op2wBlock {
+    std::size_t mIndex = 0;  // the mesh's block
+    std::size_t mCount = 0;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
+    std::vector<std::int64_t> mEids;
+    std::vector<std::int64_t> mPids;
+    std::vector<std::size_t> mCards;  // card index per cell
+};
+
+struct Op2wRow {
+    std::int64_t mEid;
+    std::size_t mBlock;  // into Op2wModel::mBlocks
+    std::size_t mRow;
+};
+
+/// What every step of a series shares: the points' count and the cell blocks'
+/// types and shapes.
+using Op2wSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
+
+Op2wSignature op2w_signature(const Mesh& rMesh) {
+    Op2wSignature sig;
+    sig.emplace_back("points", rMesh.NumPoints(), 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
+    }
+    return sig;
+}
+
+/// The digits of "<PTYPE>_<digits>" when the prefix is @p rPtype, else -1.
+std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype) {
+    if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
+        rName[rPtype.size()] != '_')
+        return -1;
+    std::int64_t pid = 0;
+    for (std::size_t i = rPtype.size() + 1; i < rName.size(); ++i) {
+        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
+            return -1;
+        pid = pid * 10 + (rName[i] - '0');
+    }
+    return pid;
+}
+
+class Op2wModel {
+public:
+    explicit Op2wModel(const Mesh& rMesh) {
+        mSignature = op2w_signature(rMesh);
+        mNpoints = rMesh.NumPoints();
+        {
+            const NDArray& pts = rMesh.Points();
+            const std::size_t dim = rMesh.PointDim();
+            const detail::DoubleView view(pts);
+            mPoints.assign(mNpoints * 3, 0.0);
+            for (std::size_t i = 0; i < mNpoints; ++i)
+                for (std::size_t k = 0; k < 3 && k < dim; ++k)
+                    mPoints[3 * i + k] = view.Data()[i * dim + k];
+        }
+        std::set<std::int64_t> ptube;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const std::int64_t pid = op2w_ptype_pid(rMesh.Region(i).mName, "PTUBE");
+            if (pid >= 0)
+                ptube.insert(pid);
+        }
+        const bool have_eid = rMesh.HasCellData("nastran:eid");
+        const bool have_pid = rMesh.HasCellData("nastran:pid");
+        std::int64_t sequential = 1;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const Op2wTypeSpec* spec = op2w_type_spec(cb.Type());
+            if (spec == nullptr) {
+                if (cb.NumCells() > 0)
+                    mSkipped.insert(cb.Type());
+                continue;
+            }
+            Op2wBlock blk;
+            blk.mIndex = b;
+            blk.mCount = cb.NumCells();
+            blk.mNodes = cb.NodesPerCell();
+            if (blk.mCount > 0 && blk.mNodes != spec->mNodes)
+                op2w_fail("a '" + cb.Type() + "' block needs " + std::to_string(spec->mNodes) +
+                          " nodes per cell");
+            const detail::Int64View conn(cb.Conn());
+            blk.mConn.assign(conn.Data(), conn.Data() + blk.mCount * blk.mNodes);
+            for (const std::int64_t node : blk.mConn)
+                if (node < 0 || static_cast<std::size_t>(node) >= mNpoints)
+                    op2w_fail("a '" + cb.Type() +
+                              "' cell refers to a point the mesh does not have");
+            blk.mEids.resize(blk.mCount);
+            blk.mPids.resize(blk.mCount);
+            if (have_eid) {
+                const NDArray& a = rMesh.CellData("nastran:eid", b);
+                if (a.Size() != blk.mCount)
+                    op2w_fail("'nastran:eid' must have one value per cell");
+                const detail::Int64View view(a);
+                blk.mEids.assign(view.Data(), view.Data() + blk.mCount);
+            } else {
+                for (std::size_t i = 0; i < blk.mCount; ++i)
+                    blk.mEids[i] = sequential + static_cast<std::int64_t>(i);
+            }
+            sequential += static_cast<std::int64_t>(blk.mCount);
+            if (have_pid) {
+                const NDArray& a = rMesh.CellData("nastran:pid", b);
+                if (a.Size() != blk.mCount)
+                    op2w_fail("'nastran:pid' must have one value per cell");
+                const detail::Int64View view(a);
+                blk.mPids.assign(view.Data(), view.Data() + blk.mCount);
+            } else {
+                blk.mPids.assign(blk.mCount, spec->mPid);
+            }
+            blk.mCards.resize(blk.mCount);
+            for (std::size_t i = 0; i < blk.mCount; ++i) {
+                if (spec->mCard != nullptr) {
+                    blk.mCards[i] = op2w_card_index(spec->mCard);
+                } else {
+                    const std::int64_t pid = blk.mPids[i];
+                    blk.mCards[i] = op2w_card_index(pid <= 0                ? "CONROD"
+                                                    : ptube.count(pid) != 0 ? "CTUBE"
+                                                                            : "CROD");
+                }
+            }
+            mBlocks.push_back(std::move(blk));
+        }
+        std::vector<std::int64_t> every;
+        for (const Op2wBlock& blk : mBlocks) {
+            for (const std::int64_t e : blk.mEids)
+                if (e <= 0)
+                    op2w_fail("element ids must be positive");
+            every.insert(every.end(), blk.mEids.begin(), blk.mEids.end());
+        }
+        std::sort(every.begin(), every.end());
+        if (std::adjacent_find(every.begin(), every.end()) != every.end())
+            op2w_fail("element ids are not unique");
+        // Cards in name order, each one's rows by element id.
+        mRows.resize(kOp2wNumCards);
+        for (std::size_t bi = 0; bi < mBlocks.size(); ++bi)
+            for (std::size_t r = 0; r < mBlocks[bi].mCount; ++r)
+                mRows[mBlocks[bi].mCards[r]].push_back({mBlocks[bi].mEids[r], bi, r});
+        for (auto& rows : mRows)
+            std::stable_sort(rows.begin(), rows.end(), [](const Op2wRow& rA, const Op2wRow& rB) {
+                return rA.mEid < rB.mEid;
+            });
+        // Property ids by family.
+        for (const Op2wBlock& blk : mBlocks)
+            for (std::size_t r = 0; r < blk.mCount; ++r) {
+                const Op2wProp prop = kOp2wCards[blk.mCards[r]].mProp;
+                if (prop != kOp2wNoProp)
+                    mProps[prop].insert(blk.mPids[r]);
+            }
+        static const char* const names[] = {"PROD", "PSHELL", "PSOLID", "PTUBE"};
+        std::map<std::int64_t, int> used;
+        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube})
+            for (const std::int64_t p : mProps[prop]) {
+                const auto it = used.find(p);
+                if (it != used.end())
+                    op2w_fail("property id " + std::to_string(p) + " is used by " +
+                              names[it->second] + " and " + names[prop] +
+                              " elements: shells, solids and rods need ids of their own");
+                used[p] = prop;
+            }
+        for (const auto& [pid, prop] : used)
+            if (pid <= 0)
+                op2w_fail("property ids must be positive");
+    }
+
+    const Op2wSignature& Signature() const { return mSignature; }
+    std::size_t NumPoints() const { return mNpoints; }
+    const std::vector<Op2wBlock>& Blocks() const { return mBlocks; }
+    const std::vector<Op2wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
+    const std::set<std::string>& Skipped() const { return mSkipped; }
+    bool HasProperties() const {
+        for (const auto& s : mProps)
+            if (!s.empty())
+                return true;
+        return false;
+    }
+
+    std::string Geom1() const {
+        std::string rows;
+        for (std::size_t i = 0; i < mNpoints; ++i) {
+            Op2wRowBuf w(8);
+            w.I(0, static_cast<std::int64_t>(i + 1));
+            for (std::size_t k = 0; k < 3; ++k)
+                w.F(2 + k, mPoints[3 * i + k]);
+            w.Append(rows);
+        }
+        return op2w_table("GEOM1", {op2w_key(4501, 45, 1) + rows, op2w_key(65535, 65535, 65535)});
+    }
+
+    std::string Geom2() const {
+        std::vector<std::string> records;
+        for (std::size_t c = 0; c < kOp2wNumCards; ++c) {
+            if (mRows[c].empty())
+                continue;
+            const Op2wCard& card = kOp2wCards[c];
+            std::string rows;
+            for (const Op2wRow& row : mRows[c]) {
+                const Op2wBlock& blk = mBlocks[row.mBlock];
+                Op2wRowBuf w(card.mSize);
+                w.I(0, row.mEid);
+                std::vector<std::int64_t> nodes(blk.mNodes);
+                const std::int64_t* conn = blk.mConn.data() + row.mRow * blk.mNodes;
+                for (std::size_t k = 0; k < blk.mNodes; ++k) {
+                    const std::size_t at =
+                        (blk.mNodes > card.mLinear && card.mPerm != nullptr) ? card.mPerm[k] : k;
+                    nodes[at] = conn[k] + 1;
+                }
+                if (std::string_view(card.mName) == "CONM2") {
+                    w.I(1, nodes[0]);
+                } else if (std::string_view(card.mName) == "CONROD") {
+                    w.I(1, nodes[0]);
+                    w.I(2, nodes[1]);
+                    w.I(3, 1);    // MID
+                    w.F(4, 1.0);  // A
+                } else {
+                    w.I(1, blk.mPids[row.mRow]);
+                    for (std::size_t k = 0; k < nodes.size(); ++k)
+                        w.I(2 + k, nodes[k]);
+                }
+                w.Append(rows);
+            }
+            records.push_back(op2w_key(card.mK1, card.mK2, card.mK3) + rows);
+        }
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("GEOM2", records);
+    }
+
+    std::string Ept() const {
+        struct Prop {
+            Op2wProp mProp;
+            std::int32_t mK1, mK2, mK3;
+            std::size_t mSize;
+        };
+        static const Prop props[] = {{kOp2wProd, 902, 9, 29, 6},
+                                     {kOp2wPshell, 2302, 23, 283, 11},
+                                     {kOp2wPsolid, 2402, 24, 281, 7},
+                                     {kOp2wPtube, 1602, 16, 30, 5}};
+        std::vector<std::string> records;
+        for (const Prop& p : props) {
+            if (mProps[p.mProp].empty())
+                continue;
+            std::string rows;
+            for (const std::int64_t pid : mProps[p.mProp]) {
+                Op2wRowBuf w(p.mSize);
+                w.I(0, pid);
+                w.I(1, 1);  // MID
+                if (p.mProp == kOp2wPsolid)
+                    w.I(6, 0x43454D53);  // FCTN 'SMEC'
+                else
+                    w.F(2, 1.0);  // T, A, OD
+                w.Append(rows);
+            }
+            records.push_back(op2w_key(p.mK1, p.mK2, p.mK3) + rows);
+        }
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("EPT", records);
+    }
+
+    /// The one material the properties name: a unit-modulus MAT1.
+    static std::string Mpt() {
+        Op2wRowBuf w(12);
+        w.I(0, 1);
+        w.F(1, 1.0);
+        w.F(2, 0.0);
+        w.F(3, 0.3);
+        std::string rows;
+        w.Append(rows);
+        return op2w_table("MPT", {op2w_key(103, 1, 77) + rows, op2w_key(65535, 65535, 65535)});
+    }
+
+private:
+    Op2wSignature mSignature;
+    std::size_t mNpoints = 0;
+    std::vector<double> mPoints;
+    std::vector<Op2wBlock> mBlocks;
+    std::vector<std::vector<Op2wRow>> mRows;
+    std::set<std::int64_t> mProps[4];
+    std::set<std::string> mSkipped;
+};
+
+// -- steps -----------------------------------------------------------------------------
+
+std::int64_t op2w_scalar_int(const Mesh& rMesh, const std::string& rName, std::int64_t Default) {
+    if (!rMesh.HasFieldData(rName))
+        return Default;
+    const NDArray& a = rMesh.FieldData(rName);
+    if (a.Size() == 0)
+        return Default;
+    return detail::Int64View(a).Data()[0];
+}
+
+double op2w_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+/// The step words every result header carries.
+struct Op2wHeader {
+    Op2wHeader(const Mesh& rMesh, double Time) {
+        mTime = static_cast<double>(op2w_float(Time));
+        mSubcase = op2w_scalar_int(rMesh, "nastran:subcase", 1);
+        mAnalysis = op2w_scalar_int(rMesh, "nastran:analysis", mTime == 0.0 ? 1 : 6);
+        mMode = op2w_scalar_int(rMesh, "nastran:mode", 1);
+        if (mSubcase <= 0 || mAnalysis <= 0 || mAnalysis > 99)
+            op2w_fail("'nastran:subcase' and 'nastran:analysis' must be positive codes");
+        mW5 = 1;
+        mW6 = 0.0;
+        if (mAnalysis == 5 || mAnalysis == 6 || mAnalysis == 10 || mAnalysis == 12) {
+            mW5 = std::bit_cast<std::int32_t>(op2w_float(mTime));
+        } else if (mAnalysis == 2 || mAnalysis == 8 || mAnalysis == 9) {
+            mW5 = mMode;
+            mW6 = mTime;
+        }
+    }
+
+    std::tuple<std::int64_t, std::int64_t, std::int64_t> Key() const {
+        return {mSubcase, mAnalysis, mW5};
+    }
+
+    std::string Words(std::int32_t TCode, std::int32_t EType, std::size_t NumWide,
+                      std::int32_t SCode = 0, std::int32_t Thermal = 0) const {
+        Op2wRowBuf w(146);
+        for (std::size_t i = 50; i < 146; ++i)
+            w.mWords[i] = 0x20202020u;  // the title, subtitle and label: blanks
+        w.I(0, mAnalysis * 10 + kOp2wDevice);
+        w.I(1, TCode);
+        w.I(2, EType);
+        w.I(3, mSubcase);
+        w.mWords[4] = static_cast<std::uint32_t>(mW5);
+        w.F(5, mW6);
+        w.I(8, 1);
+        w.I(9, static_cast<std::int64_t>(NumWide));
+        w.I(10, SCode);
+        w.I(22, Thermal);
+        std::string out;
+        w.Append(out);
+        return out;
+    }
+
+    double mTime = 0.0;
+    std::int64_t mSubcase = 1, mAnalysis = 1, mMode = 1, mW5 = 1;
+    double mW6 = 0.0;
+};
+
+/// One step's records per result table, and the (table, table code, element
+/// type) of every block.
+struct Op2wStep {
+    std::map<std::string, std::vector<std::string>> mTables;
+    std::vector<std::tuple<std::string, std::int32_t, std::int32_t>> mLayout;
+    std::tuple<std::int64_t, std::int64_t, std::int64_t> mKey;
+};
+
+struct Op2wNodal {
+    const char* mName;
+    const char* mTable;
+    std::int32_t mTCode;
+    bool mThermal;
+};
+constexpr Op2wNodal kOp2wNodal[] = {
+    {"DISPLACEMENT", "OUGV1", 1, false}, {"EIGENVECTOR", "OUGV1", 7, false},
+    {"VELOCITY", "OUGV1", 10, false},    {"ACCELERATION", "OUGV1", 11, false},
+    {"TEMPERATURE", "OUGV1", 1, true},   {"SPC_FORCE", "OQG1", 3, false},
+    {"MPC_FORCE", "OQMG1", 3, false},    {"APPLIED_LOAD", "OPG1", 2, false},
+};
+constexpr const char* kOp2wTables[] = {"OUGV1", "OQG1", "OQMG1", "OPG1", "OES1X1", "OSTR1X"};
+
+const char* const kOp2wRodMembers[] = {"A", "MSA", "T", "MST"};
+const char* const kOp2wTubeMembers[] = {"AS", "MSA", "TS", "MST"};
+const char* const kOp2wPlateMembers[] = {"FD1",    "X1",     "Y1",     "TXY1", "ANGLE1", "MAJOR1",
+                                         "MINOR1", "VM1",    "FD2",    "X2",   "Y2",     "TXY2",
+                                         "ANGLE2", "MAJOR2", "MINOR2", "VM2"};
+
+/// The word of a solid's 21-word node block that holds a member.
+std::size_t op2w_solid_word(const std::string& rMember) {
+    static const std::pair<const char*, std::size_t> words[] = {
+        {"X", 1},        {"TXY", 2},       {"PRINCIPAL_A", 3},
+        {"PRESSURE", 7}, {"VON_MISES", 8}, {"OCT_SHEAR", 8},
+        {"Y", 9},        {"TYZ", 10},      {"PRINCIPAL_B", 11},
+        {"Z", 15},       {"TZX", 16},      {"PRINCIPAL_C", 17}};
+    for (const auto& [name, word] : words)
+        if (rMember == name)
+            return word;
+    return 0;
+}
+
+/// A cell-data array of the cells of a card, in the card's row order: one value per
+/// row (the first column of a wider array), or @p Width per row for a per-corner
+/// array. Empty when no block has it.
+std::vector<double> op2w_gather(const Mesh& rMesh, const Op2wModel& rModel,
+                                const std::string& rName, const std::vector<Op2wRow>& rRows,
+                                std::size_t Width) {
+    if (!rMesh.HasCellData(rName))
+        return {};
+    const std::size_t stride = Width == 0 ? 1 : Width;
+    std::vector<double> out(rRows.size() * stride, std::numeric_limits<double>::quiet_NaN());
+    std::vector<std::unique_ptr<detail::DoubleView>> views(rModel.Blocks().size());
+    std::vector<std::size_t> columns(rModel.Blocks().size(), 0);
+    for (std::size_t bi = 0; bi < rModel.Blocks().size(); ++bi) {
+        const Op2wBlock& blk = rModel.Blocks()[bi];
+        if (blk.mCount == 0)
+            continue;
+        const NDArray& a = rMesh.CellData(rName, blk.mIndex);
+        const auto& shape = a.Shape();
+        if (Width == 0) {
+            if (a.Size() < blk.mCount || a.Size() % blk.mCount != 0)
+                op2w_fail("'" + rName + "' must have one value per cell");
+            columns[bi] = a.Size() / blk.mCount;
+        } else {
+            if (shape.size() != 2 || shape[0] != blk.mCount)
+                continue;
+            columns[bi] = shape[1];
+        }
+        views[bi] = std::make_unique<detail::DoubleView>(a);
+    }
+    for (std::size_t r = 0; r < rRows.size(); ++r) {
+        const std::size_t bi = rRows[r].mBlock;
+        if (!views[bi])
+            continue;
+        const double* row = views[bi]->Data() + rRows[r].mRow * columns[bi];
+        for (std::size_t k = 0; k < (Width == 0 ? 1 : std::min(Width, columns[bi])); ++k)
+            out[r * stride + k] = row[k];
+    }
+    return out;
+}
+
+void op2w_element_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
+                         const std::string& rGroup, const char* pTable, Op2wStep& rStep,
+                         std::set<std::string>& rTaken) {
+    const std::string prefix = rGroup + ":";
+    for (const Op2wFamily& family : kOp2wFamilies) {
+        const std::size_t card = op2w_card_index(family.mCard);
+        const std::vector<Op2wRow>& rows = rModel.Rows(card);
+        if (rows.empty())
+            continue;
+        std::vector<std::string> members;
+        switch (family.mKind) {
+            case kOp2wRod:
+                if (std::string_view(family.mCard) == "CTUBE")
+                    members.assign(std::begin(kOp2wTubeMembers), std::end(kOp2wTubeMembers));
+                else
+                    members.assign(std::begin(kOp2wRodMembers), std::end(kOp2wRodMembers));
+                break;
+            case kOp2wPlate: {
+                bool shear = false;
+                for (const char* k : {"1", "2"})
+                    shear = shear || (rMesh.HasCellData(prefix + "MAX_SHEAR" + k) &&
+                                      !rMesh.HasCellData(prefix + "VON_MISES" + k));
+                for (const char* m : kOp2wPlateMembers) {
+                    std::string name = m;
+                    if (name.compare(0, 2, "VM") == 0)
+                        name = std::string(shear ? "MAX_SHEAR" : "VON_MISES") + name.substr(2);
+                    members.push_back(name);
+                }
+                break;
+            }
+            case kOp2wSolid: {
+                const bool octa = rMesh.HasCellData(prefix + "OCT_SHEAR") &&
+                                  !rMesh.HasCellData(prefix + "VON_MISES");
+                members = {"X",
+                           "Y",
+                           "Z",
+                           "TXY",
+                           "TYZ",
+                           "TZX",
+                           "PRINCIPAL_A",
+                           "PRINCIPAL_B",
+                           "PRINCIPAL_C",
+                           "PRESSURE",
+                           octa ? "OCT_SHEAR" : "VON_MISES"};
+                break;
+            }
+        }
+        const std::size_t count = rows.size();
+        std::map<std::string, std::vector<double>> columns;
+        for (const std::string& m : members) {
+            std::vector<double> column = op2w_gather(rMesh, rModel, prefix + m, rows, 0);
+            if (!column.empty()) {
+                rTaken.insert(prefix + m);
+                columns[m] = std::move(column);
+            }
+        }
+        std::map<std::string, std::vector<double>> corners;
+        const std::size_t ncorner = kOp2wCards[card].mCorners;
+        if (family.mKind == kOp2wSolid) {
+            for (const std::string& m : members) {
+                std::vector<double> matrix =
+                    op2w_gather(rMesh, rModel, prefix + m + "@corner", rows, ncorner);
+                if (!matrix.empty()) {
+                    rTaken.insert(prefix + m + "@corner");
+                    corners[m] = std::move(matrix);
+                }
+            }
+        }
+        std::vector<std::size_t> keep;
+        for (std::size_t r = 0; r < count; ++r) {
+            bool shown = false;
+            for (const auto& [name, column] : columns)
+                shown = shown || !std::isnan(column[r]);
+            if (shown)
+                keep.push_back(r);
+        }
+        if (keep.empty())
+            continue;
+        const auto value = [&](const std::string& rMember, std::size_t Row) {
+            const auto it = columns.find(rMember);
+            if (it == columns.end() || std::isnan(it->second[Row]))
+                return 0.0;
+            return it->second[Row];
+        };
+        const std::int32_t bit0 =
+            (members.back() == "OCT_SHEAR" || members.back() == "MAX_SHEAR2") ? 0 : 1;
+        const std::int32_t s_code = (rGroup == "STRAIN" ? 10 : 0) | bit0;
+        const std::size_t wide =
+            family.mKind == kOp2wSolid ? 4 + 21 * (1 + ncorner) : 1 + members.size();
+        std::string data;
+        for (const std::size_t r : keep) {
+            Op2wRowBuf w(wide);
+            w.I(0, rows[r].mEid * 10 + kOp2wDevice);
+            if (family.mKind != kOp2wSolid) {
+                for (std::size_t j = 0; j < members.size(); ++j)
+                    w.F(1 + j, value(members[j], r));
+            } else {
+                const Op2wBlock& blk = rModel.Blocks()[rows[r].mBlock];
+                const std::int64_t* conn = blk.mConn.data() + rows[r].mRow * blk.mNodes;
+                w.mWords[2] = 0x44495247u;  // 'GRID'
+                w.I(3, static_cast<std::int64_t>(ncorner));
+                for (std::size_t k = 0; k < 1 + ncorner; ++k) {
+                    const std::size_t base = 4 + 21 * k;
+                    w.mWords[base] =
+                        k == 0 ? 0x2F4E4543u : static_cast<std::uint32_t>(conn[k - 1] + 1);
+                    for (const std::string& m : members) {
+                        double v = value(m, r);
+                        if (k > 0) {
+                            const auto it = corners.find(m);
+                            if (it != corners.end() && !std::isnan(it->second[r * ncorner + k - 1]))
+                                v = it->second[r * ncorner + k - 1];
+                        }
+                        w.F(base + op2w_solid_word(m), v);
+                    }
+                }
+            }
+            w.Append(data);
+        }
+        rStep.mLayout.emplace_back(pTable, 5, family.mEtype);
+        auto& records = rStep.mTables[pTable];
+        records.push_back(rHeader.Words(5, family.mEtype, wide, s_code));
+        records.push_back(std::move(data));
+    }
+}
+
+Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Time,
+                          std::set<std::string>& rTaken) {
+    const Op2wHeader header(rMesh, Time);
+    Op2wStep step;
+    step.mKey = header.Key();
+    const std::size_t npts = rModel.NumPoints();
+    for (const Op2wNodal& nodal : kOp2wNodal) {
+        if (!rMesh.HasPointData(nodal.mName))
+            continue;
+        rTaken.insert(nodal.mName);
+        const NDArray& base_array = rMesh.PointData(nodal.mName);
+        const std::size_t ncomp = nodal.mThermal ? 1 : 3;
+        if (base_array.Size() != npts * ncomp)
+            op2w_fail(std::string("'") + nodal.mName + "' must have " + std::to_string(ncomp) +
+                      " component(s) per point");
+        const detail::DoubleView base(base_array);
+        std::optional<detail::DoubleView> rot;
+        if (!nodal.mThermal) {
+            const std::string rot_name = std::string(nodal.mName) + "_ROT";
+            if (rMesh.HasPointData(rot_name)) {
+                rTaken.insert(rot_name);
+                const NDArray& rot_array = rMesh.PointData(rot_name);
+                if (rot_array.Size() != npts * 3)
+                    op2w_fail("'" + rot_name + "' must have 3 components per point");
+                rot.emplace(rot_array);
+            }
+        }
+        std::string data;
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < npts; ++i) {
+            bool all_nan = true;
+            for (std::size_t k = 0; k < ncomp; ++k)
+                all_nan = all_nan && std::isnan(base.Data()[i * ncomp + k]);
+            if (all_nan)
+                continue;
+            ++kept;
+            Op2wRowBuf w(8);
+            w.I(0, static_cast<std::int64_t>((i + 1) * 10 + kOp2wDevice));
+            w.I(1, 1);
+            for (std::size_t k = 0; k < ncomp; ++k)
+                w.F(2 + k, base.Data()[i * ncomp + k]);
+            if (rot)
+                for (std::size_t k = 0; k < 3; ++k)
+                    w.F(5 + k, rot->Data()[i * 3 + k]);
+            w.Append(data);
+        }
+        if (kept == 0)
+            continue;
+        step.mLayout.emplace_back(nodal.mTable, nodal.mTCode, 0);
+        auto& records = step.mTables[nodal.mTable];
+        records.push_back(header.Words(nodal.mTCode, 0, 8, 0, nodal.mThermal ? 1 : 0));
+        records.push_back(std::move(data));
+    }
+    op2w_element_tables(rMesh, rModel, header, "STRESS", "OES1X1", step, rTaken);
+    op2w_element_tables(rMesh, rModel, header, "STRAIN", "OSTR1X", step, rTaken);
+    return step;
+}
+
+void op2w_warn_dropped(const Mesh& rMesh, const Op2wModel& rModel,
+                       const std::set<std::string>& rTaken) {
+    std::set<std::string> names;
+    for (const std::string& n : rMesh.PointDataNames())
+        if (rTaken.count(n) == 0 && n != "nastran:cp" && n != "nastran:cd")
+            names.insert(n);
+    for (const std::string& n : rMesh.CellDataNames())
+        if (rTaken.count(n) == 0 && n != "nastran:eid" && n != "nastran:pid")
+            names.insert(n);
+    for (const std::string& n : rMesh.FieldDataNames())
+        if (n != kSequenceTimeKey && n.rfind("nastran:", 0) != 0)
+            names.insert(n);
+    if (!names.empty()) {
+        std::string list;
+        for (const std::string& n : names)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Nastran OP2: arrays without a place in the file are not written: {}", list);
+    }
+    if (!rModel.Skipped().empty()) {
+        std::string list;
+        for (const std::string& n : rModel.Skipped())
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Nastran OP2: cell blocks with no element card are not written: {}", list);
+    }
+}
+
+/// The whole file: header, model tables, then every result table with all steps'
+/// blocks, step by step.
+std::string op2w_assemble(const Op2wModel& rModel, const std::vector<Op2wStep>& rSteps) {
+    std::string out = op2w_file_header();
+    out += rModel.Geom1();
+    out += rModel.Geom2();
+    out += rModel.Ept();
+    if (rModel.HasProperties())
+        out += Op2wModel::Mpt();
+    for (const char* table : kOp2wTables) {
+        std::vector<std::string> records;
+        for (const Op2wStep& step : rSteps) {
+            const auto it = step.mTables.find(table);
+            if (it != step.mTables.end())
+                records.insert(records.end(), it->second.begin(), it->second.end());
+        }
+        if (!records.empty())
+            out += op2w_table(table, records);
+    }
+    op2w_marker(out, 0);  // the end of the file
+    return out;
+}
+
+void op2w_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        op2w_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_nastran_op2(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const Op2wModel model(rMesh);
+    std::set<std::string> taken;
+    const Op2wStep step = op2w_step_tables(rMesh, model, op2w_time_of(rMesh), taken);
+    op2w_warn_dropped(rMesh, model, taken);
+    op2w_save(rPath, op2w_assemble(model, {step}));
+}
+
+struct NastranOp2SeriesWriter::Impl {
+    std::string mPath;
+    std::optional<Op2wModel> mModel;
+    std::vector<Op2wStep> mSteps;
+    bool mDone = false;
+};
+
+NastranOp2SeriesWriter::NastranOp2SeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    // Fail now, not when the last step is written, if the path cannot be written.
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+NastranOp2SeriesWriter::~NastranOp2SeriesWriter() = default;
+NastranOp2SeriesWriter::NastranOp2SeriesWriter(NastranOp2SeriesWriter&&) noexcept = default;
+NastranOp2SeriesWriter& NastranOp2SeriesWriter::operator=(NastranOp2SeriesWriter&&) noexcept =
+    default;
+
+void NastranOp2SeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        op2w_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    const std::size_t index = s.mSteps.size();
+    if (!s.mModel) {
+        s.mModel.emplace(rMesh);
+    } else if (s.mModel->Signature() != op2w_signature(rMesh)) {
+        op2w_fail("series: step " + std::to_string(index) +
+                  "'s points or cells differ from the first step's; an OP2 file holds one "
+                  "model -- write one file per step with '{step}'");
+    }
+    std::set<std::string> taken;
+    Op2wStep step = op2w_step_tables(rMesh, *s.mModel, Time, taken);
+    if (s.mSteps.empty()) {
+        op2w_warn_dropped(rMesh, *s.mModel, taken);
+    } else if (step.mLayout != s.mSteps.front().mLayout) {
+        op2w_fail("series: step " + std::to_string(index) +
+                  "'s result arrays differ from the first step's; a result table holds one "
+                  "block per step");
+    }
+    // A step with no result table is no step of the file: its key is free.
+    if (!step.mLayout.empty())
+        for (const Op2wStep& earlier : s.mSteps)
+            if (earlier.mKey == step.mKey)
+                op2w_fail("series: step " + std::to_string(index) +
+                          " has the subcase, analysis and load set, mode or time of an earlier "
+                          "step; give it a 'nastran:subcase' or a different time");
+    s.mSteps.push_back(std::move(step));
+}
+
+std::size_t NastranOp2SeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps.size() : 0;
+}
+
+void NastranOp2SeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    if (mpImpl->mSteps.empty())
+        op2w_fail("series: no step was written to " + mpImpl->mPath);
+    mpImpl->mDone = true;
+    op2w_save(mpImpl->mPath, op2w_assemble(*mpImpl->mModel, mpImpl->mSteps));
 }
 
 }  // namespace meshioplusplus
@@ -127264,6 +135463,7 @@ void RadiossThSeriesWriter::Finalize() {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -127338,98 +135538,24 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
     if (volume)
         skin = extract_skin(rMesh, /*linearize=*/true);
     const Mesh& surface = volume ? skin : rMesh;
-    std::size_t total = 0;
-    for (const auto cb : surface.CellRange())
-        total += cb.NumCells();
-    detail::SurfaceRings in;
+    detail::ClosedFacets shell;
     try {
-        in = detail::surface_rings(surface, std::vector<std::uint8_t>(total, 1), kStepPrefix);
+        shell = detail::closed_facets(surface, kStepPrefix);
     } catch (const std::invalid_argument& rErr) {
         throw WriteError(rErr.what());
     }
-    if (in.NumFaces() < total) {
+    if (shell.mNumSkipped > 0) {
         log::warn("step: {} cell(s) that are not surface facets (lines, vertices) are dropped",
-                  total - in.NumFaces());
+                  shell.mNumSkipped);
         detail::provenance_note("cells-dropped", "cells that are not surface facets");
     }
-    if (in.NumFaces() == 0)
+    if (shell.NumFacets() == 0)
         throw WriteError(std::string(kStepPrefix) + "no surface facets to write");
-
-    const std::vector<double> xyz = detail::surface_xyz(surface);
-    for (double v : xyz)
-        if (!std::isfinite(v))
-            throw WriteError(std::string(kStepPrefix) + "a coordinate is not finite");
-
-    // Fan every non-planar facet into triangles from its first corner.
-    std::vector<std::int64_t> start{0}, nodes;
-    for (std::size_t f = 0; f < in.NumFaces(); ++f) {
-        const std::int64_t* ring = in.mNodes.data() + in.mStart[f];
-        const std::size_t size = static_cast<std::size_t>(in.mStart[f + 1] - in.mStart[f]);
-        bool planar = true;
-        if (size > 3) {
-            double n[3];
-            detail::ring_unit_normal(xyz.data(), ring, size, n);
-            const double* p0 = &xyz[static_cast<std::size_t>(ring[0]) * 3];
-            double dev = 0.0, extent = 0.0;
-            for (std::size_t k = 1; k < size; ++k) {
-                const double* p = &xyz[static_cast<std::size_t>(ring[k]) * 3];
-                const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
-                const double h = std::fabs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]);
-                const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                dev = h > dev ? h : dev;
-                extent = l > extent ? l : extent;
-            }
-            planar = !(dev > 1e-9 * extent);
-        }
-        if (planar) {
-            nodes.insert(nodes.end(), ring, ring + size);
-            start.push_back(static_cast<std::int64_t>(nodes.size()));
-        } else {
-            for (std::size_t k = 1; k + 1 < size; ++k) {
-                nodes.insert(nodes.end(), {ring[0], ring[k], ring[k + 1]});
-                start.push_back(static_cast<std::int64_t>(nodes.size()));
-            }
-        }
-    }
-    const std::size_t nf = start.size() - 1;
-    std::vector<double> normals(nf * 3);
-    for (std::size_t f = 0; f < nf; ++f) {
-        detail::ring_unit_normal(xyz.data(), nodes.data() + start[f],
-                                 static_cast<std::size_t>(start[f + 1] - start[f]),
-                                 &normals[f * 3]);
-        if (normals[f * 3] == 0.0 && normals[f * 3 + 1] == 0.0 && normals[f * 3 + 2] == 0.0)
-            throw WriteError(std::string(kStepPrefix) + "facet " + std::to_string(f) +
-                             " is degenerate (zero area)");
-    }
-
-    // A solid's shell is closed and consistently wound.
-    {
-        const std::vector<detail::CreaseEdge> bad =
-            detail::crease_edges(start, nodes, normals, 180.0);
-        std::size_t open = 0, nonmanifold = 0, inconsistent = 0;
-        std::string first;
-        std::size_t listed = 0;
-        for (const detail::CreaseEdge& e : bad) {
-            const bool b = e.IsBoundary(), m = e.IsNonManifold(), i = e.mInconsistent;
-            if (!b && !m && !i)
-                continue;
-            open += b ? 1 : 0;
-            nonmanifold += m ? 1 : 0;
-            inconsistent += i ? 1 : 0;
-            if (listed < 5) {
-                first += (listed ? ", (" : "(") + std::to_string(e.mLo) + ", " +
-                         std::to_string(e.mHi) + ")";
-                ++listed;
-            }
-        }
-        if (open + nonmanifold + inconsistent > 0)
-            throw WriteError(
-                std::string(kStepPrefix) +
-                "the surface is not a closed, consistently wound solid: " + std::to_string(open) +
-                " open, " + std::to_string(nonmanifold) + " non-manifold and " +
-                std::to_string(inconsistent) + " inconsistently wound edge(s), first " + first +
-                " (point ids); run repair first");
-    }
+    const std::vector<double>& xyz = shell.mXyz;
+    const std::vector<std::int64_t>& start = shell.mStart;
+    const std::vector<std::int64_t>& nodes = shell.mNodes;
+    const std::vector<double>& normals = shell.mNormals;
+    const std::size_t nf = shell.NumFacets();
 
     // The edges, and the edge-connected pieces (one solid each).
     std::vector<std::pair<std::int64_t, std::int64_t>> edges;
@@ -136368,6 +144494,7 @@ MeshMetadata read_vti_metadata(const std::string& rPath, const ReadOptions&) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vti.cpp =====
 // ===== begin src/cpp/src/formats/vtk.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -136631,14 +144758,59 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             }
         }
     } else {
-        // Version 4.2: interleaved [count, nodes...] per cell, as int32.
+        // Version 4.2: interleaved [count, nodes...] per cell, as int32. VTK
+        // reads the higher-order hexahedra of a file older than 5.1 with edges
+        // 10 and 11 swapped (detail/vtk_hex_order.hpp), so they are written so.
+        std::vector<NDArray> old_order(rMesh.NumCellBlocks());
+        {
+            std::size_t bi = 0;
+            bool warned = false;
+            for (const auto cb : rMesh.CellRange()) {
+                const auto vt = meshio_to_vtk_type().find(std::string(cb.Type()));
+                if (vt != meshio_to_vtk_type().end() && detail::vtk_hex_order_applies(vt->second) &&
+                    !cb.IsRagged() && cb.NumCells()) {
+                    const std::size_t k = cols(cb.Conn());
+                    NDArray swapped(DType::Int64, {cb.NumCells(), k});
+                    const detail::Int64View src(cb.Conn());
+                    std::copy(src.Data(), src.Data() + cb.Conn().Size(),
+                              swapped.As<std::int64_t>());
+                    const bool degrees =
+                        rMesh.HasCellData("HigherOrderDegrees") &&
+                        rMesh.CellDataNumBlocks("HigherOrderDegrees") == rMesh.NumCellBlocks() &&
+                        rMesh.CellData("HigherOrderDegrees", bi).Size() == 3 * cb.NumCells();
+                    for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                        std::int64_t deg[3];
+                        if (degrees)
+                            for (std::size_t q = 0; q < 3; ++q)
+                                deg[q] = detail::read_int(rMesh.CellData("HigherOrderDegrees", bi),
+                                                          3 * r + q);
+                        if (!detail::vtk_hex_swap_edges(swapped.As<std::int64_t>() + r * k, k,
+                                                        degrees ? deg : nullptr) &&
+                            !warned) {
+                            log::warn(
+                                "VTK 4.2 writer: a {} of {} nodes has no degrees that explain "
+                                "its size; VTK will read its edges 10 and 11 swapped (write "
+                                "5.1)",
+                                std::string(cb.Type()), k);
+                            warned = true;
+                        }
+                    }
+                    old_order[bi] = std::move(swapped);
+                }
+                ++bi;
+            }
+        }
+        const auto conn_of = [&](std::size_t Block, const NDArray& rConn) -> const NDArray& {
+            return old_order[Block].Size() ? old_order[Block] : rConn;
+        };
         os << "CELLS " << total_cells << ' ' << (total_idx + total_cells) << '\n';
         if (binary) {
             // Fused: each cell -> [k, v0..v(k-1)] big-endian int32, one pass.
             std::vector<unsigned char> cbuf((total_idx + total_cells) * 4);
             std::size_t p = 0;  // element index into cbuf
+            std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
-                const NDArray& conn = cb.Conn();
+                const NDArray& conn = conn_of(bi++, cb.Conn());
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
                 const std::size_t stride = k + 1;
@@ -136664,8 +144836,9 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                      static_cast<std::streamsize>(cbuf.size()));
             os << '\n';
         } else {
+            std::size_t bi = 0;
             for (const auto cb : rMesh.CellRange()) {
-                const detail::Int64View conn(cb.Conn());
+                const detail::Int64View conn(conn_of(bi++, cb.Conn()));
                 const std::size_t k = cols(cb.Conn());
                 std::vector<int> order = meshio_to_vtk_order(cb.Type());
                 // Each cell is its count, then its ids: k + 1 lines.
@@ -137269,6 +145442,14 @@ Mesh read_vtk(const std::string& rPath) try {
     if (!moved) {
         detail::check_vtk_cell_arrays(conn_owned ? conn_nd.Size() : conn.size(), offsets, types,
                                       cell_data_raw);
+        // A file older than 5.1 lists the edges 10 and 11 of higher-order
+        // hexahedra the other way round (detail/vtk_hex_order.hpp).
+        if (!is_v5 && !conn_owned) {
+            const auto degrees = cell_data_raw.find("HigherOrderDegrees");
+            detail::vtk_hex_swap_stream(conn.data(), offsets, types,
+                                        degrees == cell_data_raw.end() ? nullptr : &degrees->second,
+                                        "VTK");
+        }
         detail::reconstruct_cells(conn_ptr, offsets, types, cell_data_raw, mesh);
     }
     return mesh;
@@ -140389,9 +148570,16 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         });
     };
 
+    // VTK XML 2.2 (VTK 9.1) is the first version whose higher-order hexahedra
+    // list edges 10 and 11 in the order meshio++ holds; an older one tells VTK to
+    // swap them (detail/vtk_hex_order.hpp), so a mesh with such cells says 2.2.
+    bool hex_order = false;
+    for (const auto cb : rMesh.CellRange())
+        hex_order = hex_order || cb.Type() == "VTK_LAGRANGE_HEXAHEDRON" ||
+                    cb.Type() == "VTK_BEZIER_HEXAHEDRON";
     os << "<?xml version=\"1.0\"?>\n";
-    os << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
-          "byte_order=\"LittleEndian\"";
+    os << "<VTKFile type=\"UnstructuredGrid\" version=\"" << (hex_order ? "2.2" : "0.1")
+       << "\" byte_order=\"LittleEndian\"";
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     if (hsz == 8)
@@ -140674,8 +148862,13 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         }
     }
 
+    // A `RationalWeights` point array and a `HigherOrderDegrees` cell array are
+    // marked as such (since v16.40.0), which is how VTK finds the weights and
+    // degrees of Bezier cells; a mesh without them writes the same bytes.
     if (rMesh.NumPointData() != 0) {
-        os << "<PointData>\n";
+        os << (rMesh.HasPointData("RationalWeights")
+                   ? "<PointData RationalWeights=\"RationalWeights\">\n"
+                   : "<PointData>\n");
         for (const auto& name : rMesh.PointDataNames()) {
             NDArray scratch;
             const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
@@ -140691,7 +148884,9 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     }
 
     if (rMesh.NumCellData() != 0) {
-        os << "<CellData>\n";
+        os << (rMesh.HasCellData("HigherOrderDegrees")
+                   ? "<CellData HigherOrderDegrees=\"HigherOrderDegrees\">\n"
+                   : "<CellData>\n");
         for (const auto& name : rMesh.CellDataNames()) {
             const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
             if (nblocks == 0)
@@ -140900,6 +149095,8 @@ std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::Vt
             rSrc.Take(out.data(), out.size());
         return out;
     }
+    // Refuse an absent codec before any block is read, as vtu_decode_blocks does.
+    detail::vtk_codec_require_read(Codec);
     const std::uint64_t num_blocks = next();
     const std::uint64_t max_block = next();
     const std::uint64_t last_block = next();
@@ -141093,7 +149290,8 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
             throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
         }
     }
-    vtk_codec_require_read(ctx.mCodec);
+    // Checked where a compressed block is decoded, not here: VTK records the
+    // compressor on ASCII files too, and those hold no compressed data.
     const std::string header = root.attribute("header_type").as_string("UInt32");
     if (header != "UInt32" && header != "UInt64")
         throw ReadError("Unknown " + format + " header type '" + header + "'");
@@ -141199,15 +149397,60 @@ NDArray vtu_concat_rows(std::vector<NDArray>& rParts) {
     return out;
 }
 
+/** @brief Whether a `<VTKFile>` predates VTK XML 2.2, whose higher-order
+ * hexahedra swap edges 10 and 11 (no version attribute means 0.1). */
+bool vtu_read_old_hex_order(pugi::xml_node Root) {
+    const std::string v = Root.attribute("version").as_string("0.1");
+    const std::size_t dot = v.find('.');
+    const long major = std::strtol(v.c_str(), nullptr, 10);
+    const long minor = dot == std::string::npos ? 0 : std::strtol(v.c_str() + dot + 1, nullptr, 10);
+    return major < 2 || (major == 2 && minor < 2);
+}
+
+/** @brief The attribute VTK puts on a `<PointData>` (`RationalWeights`) or
+ * `<CellData>` (`HigherOrderDegrees`) section to name the array that holds the
+ * rational weights or the per-cell degrees of its Bezier cells. */
+const char* vtu_read_marker(const std::string& rSection) {
+    return rSection == "PointData" ? "RationalWeights" : "HigherOrderDegrees";
+}
+
+/** @brief The name the array @p Da of section @p Section is read under (since
+ * v16.40.0): the marked array under the marker's own name, so the weights and
+ * degrees reach every surface under one name; an unmarked array that already
+ * has that name gives way (`""`, skipped with a warning when @p Warn). */
+std::string vtu_read_marked_name(pugi::xml_node Section, pugi::xml_node Da, bool Warn) {
+    const char* marker = vtu_read_marker(Section.name());
+    const std::string marked = Section.attribute(marker).as_string();
+    const std::string name = Da.attribute("Name").as_string();
+    if (marked.empty() || marked == marker)
+        return name;
+    if (name == marked)
+        return marker;
+    if (name == marker) {
+        if (Warn)
+            log::warn(
+                "VTU: the {} array '{}' is read as '{}'; the unmarked array of that name is "
+                "skipped",
+                Section.name(), marked, marker);
+        return "";
+    }
+    return name;
+}
+
 /** @brief `<DataArray>` `Name` attributes under @p rSection present in every
- * piece (a multi-piece read drops the others), sorted. */
+ * piece (a multi-piece read drops the others), sorted, under the names a read
+ * gives them (`vtu_read_marked_name`). */
 std::vector<std::string> vtu_array_names(const std::vector<pugi::xml_node>& rPieces,
                                          const char* pSection) {
     std::vector<std::string> names;
     for (std::size_t k = 0; k < rPieces.size(); ++k) {
         std::vector<std::string> here;
-        for (pugi::xml_node da : rPieces[k].child(pSection).children("DataArray"))
-            here.emplace_back(da.attribute("Name").as_string());
+        const pugi::xml_node section = rPieces[k].child(pSection);
+        for (pugi::xml_node da : section.children("DataArray")) {
+            std::string name = vtu_read_marked_name(section, da, false);
+            if (!name.empty())
+                here.push_back(std::move(name));
+        }
         // The uniform mesh API hands back sorted names; match it so a summary
         // and a real read report data arrays in the same order.
         std::sort(here.begin(), here.end());
@@ -141346,7 +149589,9 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
                 auto& rTarget = tag == "PointData" ? point_data : cell_data;
                 for (pugi::xml_node da : child.children("DataArray")) {
                     int nc = 0;
-                    std::string name = da.attribute("Name").as_string();
+                    const std::string name = vtu_read_marked_name(child, da, k == 0);
+                    if (name.empty())
+                        continue;
                     // The Name attribute is available before the body is
                     // touched, so an unwanted array costs nothing but the
                     // attribute read -- no base64 decode, no inflate, no
@@ -141443,6 +149688,14 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         vtu_read_field_data(rPiece, ctx, rOpts, want_data, field_arrays);
 
     detail::check_vtk_cell_arrays(conn.size(), offsets, types, cell_data_raw);
+    // A file older than VTK XML 2.2 lists the edges 10 and 11 of higher-order
+    // hexahedra the other way round (detail/vtk_hex_order.hpp).
+    if (vtu_read_old_hex_order(h.mGrid.parent())) {
+        const auto degrees = cell_data_raw.find("HigherOrderDegrees");
+        detail::vtk_hex_swap_stream(conn.data(), offsets, types,
+                                    degrees == cell_data_raw.end() ? nullptr : &degrees->second,
+                                    "VTU");
+    }
     std::vector<std::int64_t> file_to_global;
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh,
@@ -155510,6 +163763,2285 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/feature_edges.cpp =====
+// ===== begin src/cpp/src/operations/fit_cad.cpp =====
+#include <string>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <map>
+#include <numeric>
+#include <stdexcept>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+// External includes (OpenCASCADE)
+#include <APIHeaderSection_MakeHeader.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepCheck_ListOfStatus.hxx>
+#include <BRepCheck_Result.hxx>
+#include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <GProp_GProps.hxx>
+#include <Geom2dAPI_Interpolate.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <TColStd_HArray1OfReal.hxx>
+#include <TColgp_HArray1OfPnt2d.hxx>
+#include <TopoDS_Iterator.hxx>
+#include <gp_Pnt2d.hxx>
+#include <GeomAPI_IntSS.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <Approx_ParametrizationType.hxx>
+#include <GeomAPI_PointsToBSplineSurface.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <GeomFill_Pipe.hxx>
+#include <Geom_OffsetSurface.hxx>
+#include <TColgp_Array2OfPnt.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomLProp_SLProps.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_ConicalSurface.hxx>
+#include <Geom_Curve.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom_Plane.hxx>
+#include <Geom_SphericalSurface.hxx>
+#include <Geom_Surface.hxx>
+#include <Geom_ToroidalSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <Interface_Static.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Poly_Triangulation.hxx>
+#include <Precision.hxx>
+#include <STEPControl_Writer.hxx>
+#include <StepBasic_Product.hxx>
+#include <StepData_StepModel.hxx>
+#include <ShapeFix_Face.hxx>
+#include <ShapeFix_Solid.hxx>
+#include <Standard_Failure.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <TopoDS_Wire.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Torus.hxx>
+#endif
+
+namespace meshioplusplus {
+
+bool fit_cad_has_occt() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return true;
+#else
+    return false;
+#endif
+}
+
+#ifndef MESHIOPLUSPLUS_HAS_OCCT
+
+FitCadResult fit_cad(const Mesh&, const std::string&, const FitCadOptions&) {
+    throw Unsupported(
+        "fit_cad: this build has no OpenCASCADE backend; rebuild with "
+        "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)");
+}
+
+#else
+
+namespace {
+
+constexpr const char* kFcPrefix = "fit_cad: ";
+constexpr std::size_t kFcParams = 10;
+constexpr double kFcPi = 3.14159265358979323846;
+
+template <class T>
+using FcHandle = opencascade::handle<T>;
+
+// The OpenCASCADE messenger prints transfer statistics to stdout; a library
+// must not, so its printers are detached for the duration of the call.
+class FcQuietMessenger {
+public:
+    FcQuietMessenger() : mMessenger(Message::DefaultMessenger()) {
+        if (!mMessenger.IsNull()) {
+            mSaved = mMessenger->Printers();
+            mMessenger->ChangePrinters().Clear();
+        }
+    }
+    FcQuietMessenger(const FcQuietMessenger&) = delete;
+    FcQuietMessenger& operator=(const FcQuietMessenger&) = delete;
+    ~FcQuietMessenger() {
+        if (!mMessenger.IsNull())
+            mMessenger->ChangePrinters() = mSaved;
+    }
+
+private:
+    FcHandle<Message_Messenger> mMessenger;
+    Message_SequenceOfPrinters mSaved;
+};
+
+gp_Pnt fc_point(const std::vector<double>& rXyz, std::int64_t V) {
+    const std::size_t i = static_cast<std::size_t>(V) * 3;
+    return gp_Pnt(rXyz[i], rXyz[i + 1], rXyz[i + 2]);
+}
+
+std::uint64_t fc_edge_key(std::int64_t U, std::int64_t V) {
+    const std::uint64_t lo = static_cast<std::uint64_t>(std::min(U, V));
+    const std::uint64_t hi = static_cast<std::uint64_t>(std::max(U, V));
+    return (hi << 32) ^ lo ^ (hi >> 32);
+}
+
+struct FcEdgeKeyHash {
+    std::size_t operator()(const std::pair<std::int64_t, std::int64_t>& rKey) const {
+        return static_cast<std::size_t>(fc_edge_key(rKey.first, rKey.second) *
+                                        0x9E3779B97F4A7C15ull);
+    }
+};
+
+// One fitted patch row of the `fit:patch_*` table.
+struct FcPatch {
+    std::int64_t mLabel = -1;
+    std::int32_t mType = 0;
+    std::array<double, kFcParams> mParams{};
+    double mTolerance = 0.0;
+    bool mAccepted = false;  // a type in the mask with finite parameters
+};
+
+// The nearest point of @p rS to @p rP; false when the projection fails.
+// One projector per surface for the length of a fit_cad call: building one
+// samples the surface, which on a B-spline costs far more than a projection,
+// and the edge builder projects the same few surfaces tens of thousands of
+// times. Keyed by handle, so a surface lives as long as its entry; cleared by
+// `FcProjectorScope` when fit_cad returns.
+struct FcProjector {
+    FcHandle<Geom_Surface> mSurface;
+    std::unique_ptr<GeomAPI_ProjectPointOnSurf> mProj;
+};
+thread_local std::vector<FcProjector> tFcProjectors;
+
+struct FcProjectorScope {
+    FcProjectorScope() { tFcProjectors.clear(); }
+    ~FcProjectorScope() { tFcProjectors.clear(); }
+};
+
+GeomAPI_ProjectPointOnSurf& fc_projector(const FcHandle<Geom_Surface>& rS) {
+    for (FcProjector& p : tFcProjectors)
+        if (p.mSurface == rS)
+            return *p.mProj;
+    double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+    rS->Bounds(u0, u1, v0, v1);
+    auto proj = std::make_unique<GeomAPI_ProjectPointOnSurf>();
+    proj->Init(rS, u0, u1, v0, v1);
+    tFcProjectors.push_back({rS, std::move(proj)});
+    return *tFcProjectors.back().mProj;
+}
+
+bool fc_project(const FcHandle<Geom_Surface>& rS, const gp_Pnt& rP, gp_Pnt& rOut,
+                double* pU = nullptr, double* pV = nullptr) {
+    GeomAPI_ProjectPointOnSurf& proj = fc_projector(rS);
+    proj.Perform(rP);
+    if (!proj.IsDone() || proj.NbPoints() == 0)
+        return false;
+    rOut = proj.NearestPoint();
+    if (pU && pV)
+        proj.LowerDistanceParameters(*pU, *pV);
+    return true;
+}
+
+// Move @p rP onto every surface of @p rSurfaces at once, by averaged
+// alternating projection; returns the largest remaining distance to any of
+// them, or +inf when a projection fails. With @p Close, it also stops once
+// the point lies within that distance of every surface: between tangent
+// surfaces the averaging creeps, and a fillet's or a thread's edge needs no
+// more than a small fraction of the tolerance.
+double fc_onto_all(const std::vector<FcHandle<Geom_Surface> >& rSurfaces, gp_Pnt& rP,
+                   double Scale, double Close = 0.0) {
+    const double inf = std::numeric_limits<double>::infinity();
+    if (rSurfaces.empty())
+        return 0.0;
+    for (int it = 0; it < 200; ++it) {
+        gp_XYZ sum(0.0, 0.0, 0.0);
+        double far = 0.0;
+        for (const auto& s : rSurfaces) {
+            gp_Pnt q;
+            if (!fc_project(s, rP, q))
+                return inf;
+            sum += q.XYZ();
+            far = std::max(far, q.Distance(rP));
+        }
+        if (Close > 0.0 && far <= Close)
+            break;
+        const gp_Pnt next(sum / static_cast<double>(rSurfaces.size()));
+        const double moved = next.Distance(rP);
+        rP = next;
+        if (moved <= 1e-13 * Scale)
+            break;
+    }
+    double worst = 0.0;
+    for (const auto& s : rSurfaces) {
+        gp_Pnt q;
+        if (!fc_project(s, rP, q))
+            return inf;
+        worst = std::max(worst, q.Distance(rP));
+    }
+    return worst;
+}
+
+// The fitted surface of a patch, or a null handle when the parameters do not
+// make one (a cone whose patch lies behind its apex, a degenerate torus).
+FcHandle<Geom_Surface> fc_surface(const FcPatch& rPatch, const std::vector<gp_Pnt>& rPts) {
+    const double* p = rPatch.mParams.data();
+    const gp_Pnt o(p[0], p[1], p[2]);
+    const gp_Vec a(p[3], p[4], p[5]);
+    if (rPatch.mType != 2 && a.Magnitude() < 1e-12)
+        return {};
+    switch (rPatch.mType) {
+        case 1:
+            return new Geom_Plane(gp_Pln(o, gp_Dir(a)));
+        case 2: {
+            // The pole axis is the one, of 64 spread over the sphere, whose
+            // poles stay furthest from the patch: a patch smaller than a
+            // hemisphere then has loops that close in parameter space and need
+            // no seam, and no pole sits in a hole the face does not cover.
+            if (!(p[6] > 0.0))
+                return {};
+            gp_Dir best(0.0, 0.0, 1.0);
+            double best_score = -1.0;
+            constexpr int kAxes = 64;
+            for (int k = 0; k < kAxes; ++k) {
+                const double z = 1.0 - (k + 0.5) / kAxes;  // a hemisphere suffices: +-axis
+                const double rr = std::sqrt(std::max(0.0, 1.0 - z * z));
+                const double phi = k * 2.399963229728653;  // the golden angle
+                const gp_Vec ax(rr * std::cos(phi), rr * std::sin(phi), z);
+                double worst = 0.0;
+                for (const gp_Pnt& q : rPts) {
+                    const gp_Vec d(o, q);
+                    const double len = d.Magnitude();
+                    if (len > 0.0)
+                        worst = std::max(worst, std::fabs(d.Dot(ax)) / len);
+                }
+                if (1.0 - worst > best_score) {
+                    best_score = 1.0 - worst;
+                    best = gp_Dir(ax);
+                }
+            }
+            return new Geom_SphericalSurface(gp_Sphere(gp_Ax3(o, best), p[6]));
+        }
+        case 3:
+            if (!(p[6] > 0.0))
+                return {};
+            return new Geom_CylindricalSurface(gp_Cylinder(gp_Ax3(o, gp_Dir(a)), p[6]));
+        case 4: {
+            // OpenCASCADE's cone is a reference circle and a half-angle: take the
+            // circle at the patch's mean height above the apex.
+            const double ang = p[8] * kFcPi / 180.0;
+            if (!(ang > 0.0 && ang < kFcPi / 2) || rPts.empty())
+                return {};
+            const gp_Dir ax(a);
+            double h = 0.0;
+            for (const gp_Pnt& q : rPts)
+                h += gp_Vec(o, q).Dot(gp_Vec(ax));
+            h /= static_cast<double>(rPts.size());
+            if (!(h > 0.0))
+                return {};
+            const gp_Pnt at = o.Translated(gp_Vec(ax) * h);
+            return new Geom_ConicalSurface(gp_Cone(gp_Ax3(at, ax), ang, h * std::tan(ang)));
+        }
+        case 5:
+            if (!(p[6] > 0.0 && p[7] > 0.0 && p[7] < p[6]))
+                return {};
+            return new Geom_ToroidalSurface(gp_Torus(gp_Ax3(o, gp_Dir(a)), p[6], p[7]));
+        default:
+            return {};
+    }
+}
+
+// The surface's own unit normal at the projection of @p rP, or a zero vector.
+gp_Vec fc_normal_at(const FcHandle<Geom_Surface>& rS, const gp_Pnt& rP) {
+    gp_Pnt q;
+    double u = 0.0, v = 0.0;
+    if (!fc_project(rS, rP, q, &u, &v))
+        return gp_Vec(0.0, 0.0, 0.0);
+    GeomLProp_SLProps props(rS, u, v, 1, Precision::Confusion());
+    if (!props.IsNormalDefined())
+        return gp_Vec(0.0, 0.0, 0.0);
+    return gp_Vec(props.Normal());
+}
+
+// Give every edge of @p rWires a parameter-space curve on @p rFace that is
+// continuous around each loop and across loops, in one period window. Left to
+// itself, ShapeFix projects each edge into the surface's own [0, 2 pi) window,
+// so a loop running along a seam (a cylinder's boundary through its u = 0
+// line, a fillet's tangent circle on a torus's v = 0 equator) comes out in
+// pieces a period apart, and the missing-seam repair then drops a whole wire.
+void fc_set_pcurves(const TopoDS_Face& rFace, const std::vector<TopoDS_Wire>& rWires,
+                    const FcHandle<Geom_Surface>& rS, double Tol) {
+    const double uper = rS->IsUPeriodic() ? rS->UPeriod() : 0.0;
+    const double vper = rS->IsVPeriodic() ? rS->VPeriod() : 0.0;
+    auto near = [](double X, double Ref, double Per) {
+        return Per > 0.0 ? X + Per * std::round((Ref - X) / Per) : X;
+    };
+    constexpr int kSamples = 33;
+    BRep_Builder builder;
+    bool have_prev = false;
+    double pu = 0.0, pv = 0.0;
+    for (const TopoDS_Wire& w : rWires)
+        for (TopoDS_Iterator it(w); it.More(); it.Next()) {
+            const TopoDS_Edge e = TopoDS::Edge(it.Value());
+            double a = 0.0, b = 0.0;
+            const FcHandle<Geom_Curve> c = BRep_Tool::Curve(e, a, b);
+            if (c.IsNull())
+                throw Standard_Failure("an edge has no 3-D curve");
+            const bool rev = e.Orientation() == TopAbs_REVERSED;
+            std::vector<gp_Pnt2d> uv(kSamples);
+            for (int k = 0; k < kSamples; ++k) {
+                const int j = rev ? kSamples - 1 - k : k;  // walk in loop order
+                const double t = a + (b - a) * j / (kSamples - 1);
+                GeomAPI_ProjectPointOnSurf proj(c->Value(t), rS);
+                if (!proj.IsDone() || proj.NbPoints() == 0)
+                    throw Standard_Failure("an edge does not project onto its face");
+                double u = 0.0, v = 0.0;
+                proj.LowerDistanceParameters(u, v);
+                if (have_prev) {
+                    u = near(u, pu, uper);
+                    v = near(v, pv, vper);
+                }
+                pu = u;
+                pv = v;
+                have_prev = true;
+                uv[static_cast<std::size_t>(j)] = gp_Pnt2d(u, v);
+            }
+            FcHandle<TColgp_HArray1OfPnt2d> pts = new TColgp_HArray1OfPnt2d(1, kSamples);
+            FcHandle<TColStd_HArray1OfReal> par = new TColStd_HArray1OfReal(1, kSamples);
+            for (int k = 0; k < kSamples; ++k) {
+                pts->SetValue(k + 1, uv[static_cast<std::size_t>(k)]);
+                par->SetValue(k + 1, a + (b - a) * k / (kSamples - 1));
+            }
+            Geom2dAPI_Interpolate interp(pts, par, Standard_False, 1e-12);
+            interp.Perform();
+            if (!interp.IsDone())
+                throw Standard_Failure("no parameter-space curve through an edge");
+            builder.UpdateEdge(e, interp.Curve(), rFace,
+                               std::max(BRep_Tool::Tolerance(e), 1e-3 * Tol));
+        }
+}
+
+// The B-rep check's complaints about @p rShape and its sub-shapes, for the
+// debug log; empty when it is valid.
+std::string fc_check_report(const TopoDS_Shape& rShape) {
+    BRepCheck_Analyzer check(rShape);
+    if (check.IsValid())
+        return {};
+    std::string out;
+    for (TopAbs_ShapeEnum kind : {TopAbs_FACE, TopAbs_WIRE, TopAbs_EDGE, TopAbs_VERTEX})
+        for (TopExp_Explorer ex(rShape, kind); ex.More(); ex.Next()) {
+            const FcHandle<BRepCheck_Result> res = check.Result(ex.Current());
+            if (res.IsNull())
+                continue;
+            for (BRepCheck_ListIteratorOfListOfStatus it(res->Status()); it.More(); it.Next())
+                if (it.Value() != BRepCheck_NoError)
+                    out += " " + std::to_string(static_cast<int>(kind)) + ":" +
+                           std::to_string(static_cast<int>(it.Value()));
+        }
+    return out;
+}
+
+// The skin, its facets and patch labels: everything a build round reads.
+struct FcSkin {
+    detail::ClosedFacets mFacets;
+    std::vector<std::int64_t> mRow;  // per facet: its patch row, or -1
+    std::vector<FcPatch> mPatches;
+    std::vector<std::size_t> mPiece;  // per facet: its edge-connected piece
+    std::size_t mNumPieces = 0;
+    double mScale = 1.0;  // bounding-box diagonal
+    // Per undirected edge, the facets on either side: the one walking it lo->hi first.
+    std::unordered_map<std::pair<std::int64_t, std::int64_t>, std::array<std::int64_t, 2>,
+                       FcEdgeKeyHash>
+        mEdgeFacets;
+};
+
+// What one build round produced.
+struct FcBuild {
+    TopoDS_Shape mShape;
+    std::vector<std::int64_t> mFaceGroup;  // per final face (explorer order): its group
+    std::vector<TopoDS_Face> mFaces;       // final faces, explorer order
+    std::vector<std::uint8_t> mBadRow;     // per patch row: demote it
+    std::int64_t mNumExact = 0;
+    std::int64_t mNumApprox = 0;
+    bool mValid = false;
+};
+
+// A chain of patch-boundary mesh edges between two vertices that become B-rep
+// vertices, with the two groups on either side.
+struct FcChain {
+    std::vector<std::int64_t> mVerts;
+    std::int64_t mGroupFwd = -1;  // the group whose facets walk mVerts forwards
+    std::int64_t mGroupBwd = -1;
+    TopoDS_Edge mEdge;
+    bool mFromStart = true;  // the edge's first vertex is mVerts.front()
+    bool mOk = false;
+};
+
+// Build the solid for one choice of analytic patches. Every failure is
+// recorded against the patch rows it touches in `mBadRow`, never thrown.
+FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >& rSurface,
+                 const std::vector<std::uint8_t>& rAnalytic, double Tol, bool ExactEdges) {
+    const detail::ClosedFacets& fc = rSkin.mFacets;
+    const std::vector<double>& xyz = fc.mXyz;
+    const std::size_t nf = fc.NumFacets();
+    const std::int64_t np = static_cast<std::int64_t>(rSkin.mPatches.size());
+    const std::size_t npts = xyz.size() / 3;
+    FcBuild out;
+    out.mBadRow.assign(rSkin.mPatches.size(), 0);
+
+    auto group_of = [&](std::size_t F) -> std::int64_t {
+        const std::int64_t r = rSkin.mRow[F];
+        return r >= 0 && rAnalytic[static_cast<std::size_t>(r)] ? r
+                                                                : np + static_cast<std::int64_t>(F);
+    };
+    auto is_analytic = [&](std::int64_t G) { return G >= 0 && G < np; };
+    auto mark_bad = [&](std::int64_t G, const char* pWhy) {
+        if (!is_analytic(G))
+            return;
+        if (!out.mBadRow[static_cast<std::size_t>(G)])
+            log::debug("fit_cad: demoting patch {}: {}",
+                       rSkin.mPatches[static_cast<std::size_t>(G)].mLabel, pWhy);
+        out.mBadRow[static_cast<std::size_t>(G)] = 1;
+    };
+
+    // The groups around every point, and whether a facet group is among them.
+    std::vector<std::pair<std::int64_t, std::int64_t> > vg;
+    vg.reserve(fc.mNodes.size());
+    for (std::size_t f = 0; f < nf; ++f)
+        for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+            vg.emplace_back(fc.mNodes[static_cast<std::size_t>(k)], group_of(f));
+    std::sort(vg.begin(), vg.end());
+    vg.erase(std::unique(vg.begin(), vg.end()), vg.end());
+    std::vector<std::int64_t> vg_start(npts + 1, 0);
+    for (const auto& p : vg)
+        ++vg_start[static_cast<std::size_t>(p.first) + 1];
+    for (std::size_t v = 0; v < npts; ++v)
+        vg_start[v + 1] += vg_start[v];
+    std::vector<std::uint8_t> touches_facet(npts, 0);
+    for (const auto& p : vg)
+        if (!is_analytic(p.second))
+            touches_facet[static_cast<std::size_t>(p.first)] = 1;
+
+    // Boundary edges between groups, deterministic: ascending (lo, hi).
+    std::vector<std::pair<std::int64_t, std::int64_t> > bedges;
+    for (const auto& kv : rSkin.mEdgeFacets) {
+        const std::int64_t ga = group_of(static_cast<std::size_t>(kv.second[0]));
+        const std::int64_t gb = group_of(static_cast<std::size_t>(kv.second[1]));
+        if (ga != gb)
+            bedges.push_back(kv.first);
+    }
+    std::sort(bedges.begin(), bedges.end());
+    std::vector<std::vector<std::int64_t> > nbr(npts);
+    for (const auto& e : bedges) {
+        nbr[static_cast<std::size_t>(e.first)].push_back(e.second);
+        nbr[static_cast<std::size_t>(e.second)].push_back(e.first);
+    }
+    for (auto& n : nbr)
+        std::sort(n.begin(), n.end());
+    auto junction = [&](std::int64_t V) {
+        const std::size_t v = static_cast<std::size_t>(V);
+        return touches_facet[v] || vg_start[v + 1] - vg_start[v] >= 3 || nbr[v].size() != 2;
+    };
+    std::unordered_map<std::pair<std::int64_t, std::int64_t>, std::uint8_t, FcEdgeKeyHash> seen;
+    seen.reserve(bedges.size());
+    for (const auto& e : bedges)
+        seen.emplace(e, 0);
+    auto take = [&](std::int64_t U, std::int64_t V) -> bool {
+        auto it = seen.find({std::min(U, V), std::max(U, V)});
+        if (it == seen.end() || it->second)
+            return false;
+        it->second = 1;
+        return true;
+    };
+
+    // Chains: from every junction along unvisited boundary edges, then the
+    // closed loops no junction lies on. A chain that closes is split in two.
+    std::vector<FcChain> chains;
+    auto add_chain = [&](std::vector<std::int64_t> Verts) {
+        if (Verts.front() == Verts.back()) {
+            const std::size_t mid = Verts.size() / 2;
+            FcChain a, b;
+            a.mVerts.assign(Verts.begin(), Verts.begin() + static_cast<std::ptrdiff_t>(mid) + 1);
+            b.mVerts.assign(Verts.begin() + static_cast<std::ptrdiff_t>(mid), Verts.end());
+            chains.push_back(std::move(a));
+            chains.push_back(std::move(b));
+        } else {
+            FcChain c;
+            c.mVerts = std::move(Verts);
+            chains.push_back(std::move(c));
+        }
+    };
+    auto walk = [&](std::int64_t Start, std::int64_t First, bool StopAtStart) {
+        std::vector<std::int64_t> verts{Start, First};
+        std::int64_t prev = Start, cur = First;
+        while (!(StopAtStart ? cur == Start : junction(cur))) {
+            std::int64_t next = -1;
+            for (std::int64_t n : nbr[static_cast<std::size_t>(cur)])
+                if (n != prev && take(cur, n)) {
+                    next = n;
+                    break;
+                }
+            if (next < 0) {
+                // Back to the start of a loop through its last edge.
+                if (StopAtStart && take(cur, Start)) {
+                    verts.push_back(Start);
+                }
+                break;
+            }
+            verts.push_back(next);
+            prev = cur;
+            cur = next;
+        }
+        return verts;
+    };
+    for (std::int64_t v = 0; v < static_cast<std::int64_t>(npts); ++v) {
+        if (nbr[static_cast<std::size_t>(v)].empty() || !junction(v))
+            continue;
+        for (std::int64_t n : nbr[static_cast<std::size_t>(v)])
+            if (take(v, n))
+                add_chain(walk(v, n, false));
+    }
+    for (const auto& e : bedges) {
+        if (!take(e.first, e.second))
+            continue;
+        add_chain(walk(e.first, e.second, true));
+    }
+
+    // The groups either side of each chain, from the facets of its first edge.
+    for (FcChain& c : chains) {
+        const std::int64_t u = c.mVerts[0], w = c.mVerts[1];
+        const auto& two = rSkin.mEdgeFacets.at({std::min(u, w), std::max(u, w)});
+        const std::size_t fwd = static_cast<std::size_t>(u < w ? two[0] : two[1]);
+        const std::size_t bwd = static_cast<std::size_t>(u < w ? two[1] : two[0]);
+        c.mGroupFwd = group_of(fwd);
+        c.mGroupBwd = group_of(bwd);
+    }
+
+    // B-rep vertices at the chain ends. A point among analytic faces only is
+    // moved onto their surfaces; a point beside a facet keeps the mesh position.
+    BRep_Builder builder;
+    std::unordered_map<std::int64_t, TopoDS_Vertex> vertex;
+    auto groups_at = [&](std::int64_t V) {
+        std::vector<std::int64_t> g;
+        const std::size_t v = static_cast<std::size_t>(V);
+        for (std::int64_t k = vg_start[v]; k < vg_start[v + 1]; ++k)
+            g.push_back(vg[static_cast<std::size_t>(k)].second);
+        return g;
+    };
+    for (const FcChain& c : chains)
+        for (std::int64_t v : {c.mVerts.front(), c.mVerts.back()}) {
+            if (vertex.count(v))
+                continue;
+            gp_Pnt p = fc_point(xyz, v);
+            double vtol = Precision::Confusion();
+            if (!touches_facet[static_cast<std::size_t>(v)]) {
+                std::vector<FcHandle<Geom_Surface> > surfs;
+                for (std::int64_t g : groups_at(v))
+                    surfs.push_back(rSurface[static_cast<std::size_t>(g)]);
+                gp_Pnt q = p;
+                const double d = fc_onto_all(surfs, q, rSkin.mScale);
+                if (d <= Tol && q.Distance(p) <= Tol) {
+                    p = q;
+                    vtol = std::max(vtol, 1.5 * d);
+                } else {
+                    double worst = 0.0;
+                    for (const auto& s : surfs) {
+                        gp_Pnt r;
+                        if (fc_project(s, p, r))
+                            worst = std::max(worst, r.Distance(p));
+                    }
+                    vtol = std::max(vtol, 1.5 * worst);
+                }
+            }
+            TopoDS_Vertex tv;
+            builder.MakeVertex(tv, p, vtol);
+            vertex.emplace(v, tv);
+        }
+
+    // A vertex sits on a curve when its tolerance covers the gap.
+    auto fit_vertex = [&](const TopoDS_Vertex& rV, const gp_Pnt& rOn) {
+        const double d = BRep_Tool::Pnt(rV).Distance(rOn);
+        if (d > BRep_Tool::Tolerance(rV))
+            builder.UpdateVertex(rV, 1.01 * d);
+    };
+
+    // Edges.
+    for (FcChain& c : chains) {
+        const TopoDS_Vertex& va = vertex.at(c.mVerts.front());
+        const TopoDS_Vertex& vb = vertex.at(c.mVerts.back());
+        try {
+            if (!is_analytic(c.mGroupFwd) || !is_analytic(c.mGroupBwd)) {
+                if (c.mVerts.size() != 2)
+                    throw Standard_Failure("a facet chain spans several mesh edges");
+                BRepBuilderAPI_MakeEdge me(va, vb);
+                if (!me.IsDone())
+                    throw Standard_Failure("degenerate facet edge");
+                c.mEdge = me.Edge();
+                c.mOk = true;
+                continue;
+            }
+            const auto& s1 = rSurface[static_cast<std::size_t>(c.mGroupFwd)];
+            const auto& s2 = rSurface[static_cast<std::size_t>(c.mGroupBwd)];
+            std::vector<gp_Pnt> pts;
+            for (std::int64_t v : c.mVerts)
+                pts.push_back(fc_point(xyz, v));
+            const gp_Pnt pa = BRep_Tool::Pnt(va), pb = BRep_Tool::Pnt(vb);
+
+            // A fillet meets its walls tangentially and a thread flank is a
+            // long B-spline: intersecting either is slow and unstable, so their
+            // edges go straight to the approximation.
+            auto swept = [&](std::int64_t G) {
+                const std::int32_t t = rSkin.mPatches[static_cast<std::size_t>(G)].mType;
+                return t == kFitCadFilletType || t == kFitCadHelicalType;
+            };
+            if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd)) {
+                GeomAPI_IntSS inter(s1, s2, Precision::Confusion());
+                FcHandle<Geom_Curve> best;
+                double best_dev = std::numeric_limits<double>::infinity();
+                if (inter.IsDone())
+                    for (int i = 1; i <= inter.NbLines(); ++i) {
+                        FcHandle<Geom_Curve> cv = inter.Line(i);
+                        // A trimmed circle or ellipse: its periodic basis, so
+                        // either arc of a closed boundary can be cut from it.
+                        while (cv->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+                            cv = FcHandle<Geom_TrimmedCurve>::DownCast(cv)->BasisCurve();
+                        double dev = 0.0;
+                        for (const gp_Pnt& q : pts) {
+                            GeomAPI_ProjectPointOnCurve pc(q, cv);
+                            dev = std::max(dev, pc.NbPoints() > 0
+                                                    ? pc.LowerDistance()
+                                                    : std::numeric_limits<double>::infinity());
+                            if (dev > best_dev)
+                                break;
+                        }
+                        if (dev < best_dev) {
+                            best_dev = dev;
+                            best = cv;
+                        }
+                    }
+                if (!best.IsNull() && best_dev <= Tol) {
+                    // A point inside the chain picks which arc of a closed
+                    // curve it is; a single mesh edge has only its midpoint.
+                    const gp_Pnt mid =
+                        pts.size() > 2 ? pts[pts.size() / 2] : gp_Pnt((pa.XYZ() + pb.XYZ()) / 2.0);
+                    GeomAPI_ProjectPointOnCurve ea(pa, best), eb(pb, best), em(mid, best);
+                    if (ea.NbPoints() > 0 && eb.NbPoints() > 0 && em.NbPoints() > 0) {
+                        double ua = ea.LowerDistanceParameter(), ub = eb.LowerDistanceParameter();
+                        double um = em.LowerDistanceParameter();
+                        bool ok = false, from_start = true;
+                        double lo = 0.0, hi = 0.0;
+                        if (best->IsPeriodic()) {
+                            const double t = best->Period();
+                            auto wrap = [t](double X) { return X - t * std::floor(X / t); };
+                            const double span = wrap(ub - ua), mid = wrap(um - ua);
+                            if (span > Precision::PConfusion()) {
+                                if (mid < span) {
+                                    lo = ua;
+                                    hi = ua + span;
+                                } else {
+                                    lo = ub;
+                                    hi = ub + wrap(ua - ub);
+                                    from_start = false;
+                                }
+                                ok = hi - lo > Precision::PConfusion();
+                            }
+                        } else if (ua < um && um < ub) {
+                            lo = ua;
+                            hi = ub;
+                            ok = true;
+                        } else if (ub < um && um < ua) {
+                            lo = ub;
+                            hi = ua;
+                            from_start = false;
+                            ok = true;
+                        }
+                        if (ok) {
+                            const TopoDS_Vertex& v0 = from_start ? va : vb;
+                            const TopoDS_Vertex& v1 = from_start ? vb : va;
+                            fit_vertex(v0, best->Value(lo));
+                            fit_vertex(v1, best->Value(hi));
+                            BRepBuilderAPI_MakeEdge me(best, v0, v1, lo, hi);
+                            if (me.IsDone()) {
+                                c.mEdge = me.Edge();
+                                c.mFromStart = from_start;
+                                c.mOk = true;
+                                ++out.mNumExact;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Approximate. A chain along a tangent junction (a fillet meeting a
+            // wall) zigzags between two rows of mesh points, and the two
+            // surfaces meet too shallowly for projection to settle it: smooth
+            // the chain first (the binomial filter cancels an alternating
+            // zigzag), move it onto both surfaces, fit a low-degree B-spline
+            // and keep it only if it stays within the tolerance of both.
+            const std::vector<FcHandle<Geom_Surface> > both{s1, s2};
+            std::vector<gp_Pnt> q = pts;
+            q.front() = pa;
+            q.back() = pb;
+            for (int pass = 0; pass < 2 && q.size() > 2; ++pass) {
+                std::vector<gp_Pnt> r = q;
+                for (std::size_t i = 1; i + 1 < q.size(); ++i)
+                    r[i] = gp_Pnt((q[i - 1].XYZ() + 2.0 * q[i].XYZ() + q[i + 1].XYZ()) / 4.0);
+                q.swap(r);
+            }
+            for (std::size_t i = 1; i + 1 < q.size(); ++i) {
+                gp_Pnt on = q[i];
+                const double d =
+                    fc_onto_all(both, on, rSkin.mScale,
+                                swept(c.mGroupFwd) || swept(c.mGroupBwd) ? 0.1 * Tol : 0.0);
+                if (d <= Tol && on.Distance(pts[i]) <= Tol)
+                    q[i] = on;
+            }
+            if (q.size() == 2) {
+                BRepBuilderAPI_MakeEdge me(va, vb);
+                if (!me.IsDone())
+                    throw Standard_Failure("degenerate edge");
+                c.mEdge = me.Edge();
+            } else {
+                TColgp_Array1OfPnt arr(1, static_cast<int>(q.size()));
+                for (std::size_t i = 0; i < q.size(); ++i)
+                    arr.SetValue(static_cast<int>(i) + 1, q[i]);
+                const int n = static_cast<int>(q.size());
+                const int deg_max = std::min(5, n - 1);
+                const int deg_min = std::min(3, deg_max);
+                const GeomAbs_Shape cont = deg_min >= 3   ? GeomAbs_C2
+                                           : deg_min == 2 ? GeomAbs_C1
+                                                          : GeomAbs_C0;
+                GeomAPI_PointsToBSpline fit(arr, deg_min, deg_max, cont, 0.25 * Tol);
+                if (!fit.IsDone())
+                    throw Standard_Failure("no B-spline through the chain");
+                const FcHandle<Geom_Curve> cv(fit.Curve());
+                const double f0 = cv->FirstParameter(), f1 = cv->LastParameter();
+                for (int k = 0; k <= 64; ++k) {
+                    const gp_Pnt at = cv->Value(f0 + (f1 - f0) * k / 64.0);
+                    for (const auto& srf : both) {
+                        gp_Pnt on;
+                        if (!fc_project(srf, at, on) || on.Distance(at) > Tol)
+                            throw Standard_Failure("the chain's B-spline leaves a surface");
+                    }
+                }
+                fit_vertex(va, cv->Value(f0));
+                fit_vertex(vb, cv->Value(f1));
+                BRepBuilderAPI_MakeEdge me(cv, va, vb, f0, f1);
+                if (!me.IsDone())
+                    throw Standard_Failure("no edge on the chain's B-spline");
+                c.mEdge = me.Edge();
+            }
+            c.mFromStart = true;
+            c.mOk = true;
+            ++out.mNumApprox;
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: no edge on a chain of {} point(s): {}", c.mVerts.size(),
+                       rErr.GetMessageString());
+            mark_bad(c.mGroupFwd, "an edge on its boundary failed");
+            mark_bad(c.mGroupBwd, "an edge on its boundary failed");
+        }
+    }
+
+    // Around vertex V, after the boundary edge X -> V of group G (walked that
+    // way by a facet of G): the vertex W of G's next boundary edge V -> W,
+    // found by turning through G's facets around V. -1 when the fan breaks.
+    auto ring_next = [&](std::size_t F, std::int64_t V) -> std::int64_t {
+        const std::int64_t b = fc.mStart[F], n = fc.mStart[F + 1] - b;
+        for (std::int64_t k = 0; k < n; ++k)
+            if (fc.mNodes[static_cast<std::size_t>(b + k)] == V)
+                return fc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
+        return -1;
+    };
+    auto walker = [&](std::int64_t U, std::int64_t V) -> std::int64_t {  // the facet walking U -> V
+        auto it = rSkin.mEdgeFacets.find({std::min(U, V), std::max(U, V)});
+        if (it == rSkin.mEdgeFacets.end())
+            return -1;
+        return U < V ? it->second[0] : it->second[1];
+    };
+    auto fan_next = [&](std::int64_t G, std::int64_t X, std::int64_t V) -> std::int64_t {
+        std::int64_t f = walker(X, V);
+        for (std::size_t guard = 0; f >= 0 && guard <= nf; ++guard) {
+            const std::int64_t w = ring_next(static_cast<std::size_t>(f), V);
+            if (w < 0)
+                return -1;
+            const std::int64_t across = walker(w, V);
+            if (across < 0 || group_of(static_cast<std::size_t>(across)) != G)
+                return w;
+            f = across;
+        }
+        return -1;
+    };
+
+    // Wires and faces: each group's oriented chains, linked into loops.
+    std::map<std::int64_t, std::vector<std::pair<std::size_t, bool> > >
+        uses;  // group -> (chain, fwd)
+    for (std::size_t i = 0; i < chains.size(); ++i) {
+        uses[chains[i].mGroupFwd].emplace_back(i, true);
+        uses[chains[i].mGroupBwd].emplace_back(i, false);
+    }
+    std::vector<std::pair<TopoDS_Face, std::int64_t> > faces;  // with their group
+    for (const auto& kv : uses) {
+        const std::int64_t g = kv.first;
+        bool broken = false;
+        for (const auto& u : kv.second)
+            broken = broken || !chains[u.first].mOk;
+        if (broken) {
+            mark_bad(g, "an edge on its boundary failed");
+            continue;
+        }
+        // start vertex -> unused oriented chains
+        std::map<std::int64_t, std::vector<std::size_t> > from;
+        auto head = [&](std::size_t K) {
+            const auto& u = kv.second[K];
+            const FcChain& c = chains[u.first];
+            return u.second ? c.mVerts.front() : c.mVerts.back();
+        };
+        auto tail = [&](std::size_t K) {
+            const auto& u = kv.second[K];
+            const FcChain& c = chains[u.first];
+            return u.second ? c.mVerts.back() : c.mVerts.front();
+        };
+        auto second = [&](std::size_t K) {
+            const auto& u = kv.second[K];
+            const FcChain& c = chains[u.first];
+            return u.second ? c.mVerts[1] : c.mVerts[c.mVerts.size() - 2];
+        };
+        auto before_tail = [&](std::size_t K) {
+            const auto& u = kv.second[K];
+            const FcChain& c = chains[u.first];
+            return u.second ? c.mVerts[c.mVerts.size() - 2] : c.mVerts[1];
+        };
+        for (std::size_t k = 0; k < kv.second.size(); ++k)
+            from[head(k)].push_back(k);
+        std::vector<std::uint8_t> used(kv.second.size(), 0);
+        std::vector<TopoDS_Wire> wires;
+        for (std::size_t k0 = 0; k0 < kv.second.size() && !broken; ++k0) {
+            if (used[k0])
+                continue;
+            TopoDS_Wire w;
+            builder.MakeWire(w);
+            std::size_t k = k0;
+            const std::int64_t first = head(k0);
+            for (;;) {
+                used[k] = 1;
+                const auto& u = kv.second[k];
+                const FcChain& c = chains[u.first];
+                // Walked forwards along the mesh chain exactly when the edge's
+                // orientation agrees with the walk.
+                const bool along = u.second == c.mFromStart;
+                builder.Add(w, along ? c.mEdge : TopoDS::Edge(c.mEdge.Reversed()));
+                const std::int64_t end = tail(k);
+                // The next chain leaves `end` along the next boundary edge of
+                // this group around the facet fan, so a loop that touches
+                // itself at a vertex (a pinch) stays two loops, never a figure
+                // of eight.
+                const std::int64_t w = fan_next(g, before_tail(k), end);
+                std::size_t next = kv.second.size();
+                for (std::size_t cand : from[end])
+                    if (second(cand) == w) {
+                        next = cand;
+                        break;
+                    }
+                if (next == k0)
+                    break;
+                if (next == kv.second.size() || used[next] || end == first) {
+                    broken = true;
+                    break;
+                }
+                k = next;
+            }
+            w.Closed(Standard_True);
+            wires.push_back(w);
+        }
+        if (broken) {
+            mark_bad(g, "its boundary does not close into loops");
+            continue;
+        }
+        try {
+            if (is_analytic(g)) {
+                TopoDS_Face f;
+                const FcHandle<Geom_Surface>& surf = rSurface[static_cast<std::size_t>(g)];
+                builder.MakeFace(f, surf, Precision::Confusion());
+                for (const TopoDS_Wire& w : wires)
+                    builder.Add(f, w);
+                // Planes need no parameter-space curves; a sphere's loop around
+                // its pole is left to the missing-seam repair, which closes it
+                // with a degenerated edge.
+                const std::int32_t type = rSkin.mPatches[static_cast<std::size_t>(g)].mType;
+                if (type >= 2)
+                    fc_set_pcurves(f, wires, surf, Tol);
+                ShapeFix_Face fix(f);
+                fix.SetPrecision(Precision::Confusion());
+                fix.SetMaxTolerance(Tol);
+                fix.FixAddNaturalBoundMode() = 0;
+                fix.FixMissingSeamMode() = 1;
+                fix.FixOrientationMode() = 1;
+                fix.Perform();
+                faces.emplace_back(fix.Face(), g);
+            } else {
+                const std::size_t facet = static_cast<std::size_t>(g - np);
+                const gp_Pnt p0 =
+                    fc_point(xyz, fc.mNodes[static_cast<std::size_t>(fc.mStart[facet])]);
+                const gp_Dir n(fc.mNormals[facet * 3], fc.mNormals[facet * 3 + 1],
+                               fc.mNormals[facet * 3 + 2]);
+                BRepBuilderAPI_MakeFace mf(gp_Pln(p0, n), wires.front(), Standard_True);
+                if (!mf.IsDone())
+                    throw Standard_Failure("no planar facet face");
+                faces.emplace_back(mf.Face(), g);
+            }
+        } catch (const Standard_Failure&) {
+            mark_bad(g, "OpenCASCADE could not make its face");
+        }
+    }
+    // A patch with no boundary at all (a whole sphere or torus) is its
+    // surface's natural face.
+    {
+        std::vector<std::uint8_t> bounded(rSkin.mPatches.size(), 0), present(bounded.size(), 0);
+        for (const FcChain& c : chains)
+            for (std::int64_t g : {c.mGroupFwd, c.mGroupBwd})
+                if (is_analytic(g))
+                    bounded[static_cast<std::size_t>(g)] = 1;
+        for (std::size_t f = 0; f < nf; ++f)
+            if (is_analytic(group_of(f)))
+                present[static_cast<std::size_t>(group_of(f))] = 1;
+        for (std::int64_t g = 0; g < np; ++g) {
+            const std::size_t r = static_cast<std::size_t>(g);
+            if (!present[r] || bounded[r])
+                continue;
+            const std::int32_t type = rSkin.mPatches[r].mType;
+            if (type != 2 && type != 5) {
+                mark_bad(g, "it has no boundary, and its surface is not closed");
+                continue;
+            }
+            BRepBuilderAPI_MakeFace mf(rSurface[r], Precision::Confusion());
+            if (!mf.IsDone()) {
+                mark_bad(g, "OpenCASCADE could not make its face");
+                continue;
+            }
+            faces.emplace_back(mf.Face(), g);
+        }
+    }
+    for (std::uint8_t b : out.mBadRow)
+        if (b)
+            return out;
+
+    // Sew the faces (their edges are shared already; sewing closes what the
+    // face repair re-made) and close each shell into a solid.
+    BRepBuilderAPI_Sewing sew(Tol);
+    for (const auto& f : faces)
+        sew.Add(f.first);
+    sew.Perform();
+    const TopoDS_Shape sewed = sew.SewedShape();
+    std::unordered_map<const void*, std::int64_t> group_of_face;
+    for (const auto& f : faces) {
+        const TopoDS_Shape m = sew.IsModified(f.first) ? sew.Modified(f.first) : f.first;
+        for (TopExp_Explorer ex(m, TopAbs_FACE); ex.More(); ex.Next())
+            group_of_face[ex.Current().TShape().get()] = f.second;
+    }
+    auto face_group = [&](const TopoDS_Shape& rFace) -> std::int64_t {
+        auto it = group_of_face.find(rFace.TShape().get());
+        return it == group_of_face.end() ? -1 : it->second;
+    };
+    log::debug("fit_cad: sewing {} face(s): {} free, {} multiple, {} degenerated edge(s)",
+               faces.size(), sew.NbFreeEdges(), sew.NbMultipleEdges(), sew.NbDegeneratedShapes());
+    if (sew.NbFreeEdges() > 0 || sew.NbMultipleEdges() > 0) {
+        TopTools_IndexedDataMapOfShapeListOfShape anc;
+        TopExp::MapShapesAndAncestors(sewed, TopAbs_EDGE, TopAbs_FACE, anc);
+        bool any = false;
+        auto blame = [&](const TopoDS_Shape& rEdge) {
+            const int i = anc.FindIndex(rEdge);
+            if (i == 0)
+                return;
+            for (TopTools_ListOfShape::Iterator it(anc.FindFromIndex(i)); it.More(); it.Next()) {
+                const std::int64_t g = face_group(it.Value());
+                if (is_analytic(g)) {
+                    mark_bad(g, "sewing left a free or multiple edge on it");
+                    any = true;
+                }
+            }
+        };
+        for (int i = 1; i <= sew.NbFreeEdges(); ++i)
+            blame(sew.FreeEdge(i));
+        for (int i = 1; i <= sew.NbMultipleEdges(); ++i)
+            blame(sew.MultipleEdge(i));
+        if (!any)
+            for (std::int64_t r = 0; r < np; ++r)
+                if (rAnalytic[static_cast<std::size_t>(r)])
+                    mark_bad(r, "sewing left free edges among facets");
+        for (std::uint8_t b : out.mBadRow)
+            if (b)
+                return out;
+    }
+
+    std::vector<TopoDS_Solid> solids;
+    // Sewing hands back a lone face (a whole sphere or torus) as it is: give
+    // it a shell of its own.
+    std::vector<TopoDS_Shell> loose;
+    for (TopExp_Explorer ex(sewed, TopAbs_FACE, TopAbs_SHELL); ex.More(); ex.Next()) {
+        TopoDS_Shell sh;
+        builder.MakeShell(sh);
+        builder.Add(sh, ex.Current());
+        sh.Closed(BRep_Tool::IsClosed(sh));
+        loose.push_back(sh);
+    }
+    for (const TopoDS_Shell& sh : loose) {
+        ShapeFix_Solid sfs;
+        const TopoDS_Solid s = sfs.SolidFromShell(sh);
+        if (!s.IsNull())
+            solids.push_back(s);
+    }
+    for (TopExp_Explorer ex(sewed, TopAbs_SHELL); ex.More(); ex.Next()) {
+        ShapeFix_Solid sfs;
+        const TopoDS_Solid s = sfs.SolidFromShell(TopoDS::Shell(ex.Current()));
+        if (!s.IsNull())
+            solids.push_back(s);
+    }
+    if (solids.size() == 1) {
+        out.mShape = solids.front();
+    } else {
+        TopoDS_Compound cmp;
+        builder.MakeCompound(cmp);
+        for (const TopoDS_Solid& s : solids)
+            builder.Add(cmp, s);
+        out.mShape = cmp;
+    }
+
+    // Per face, the group: by the face's own shape, else by the nearest facet.
+    for (TopExp_Explorer ex(out.mShape, TopAbs_FACE); ex.More(); ex.Next()) {
+        out.mFaces.push_back(TopoDS::Face(ex.Current()));
+        out.mFaceGroup.push_back(face_group(ex.Current()));
+    }
+
+    BRepCheck_Analyzer check(out.mShape);
+    out.mValid = check.IsValid() && !solids.empty();
+    if (!out.mValid) {
+        bool any = false;
+        for (std::size_t i = 0; i < out.mFaces.size(); ++i)
+            if (is_analytic(out.mFaceGroup[i]) && !BRepCheck_Analyzer(out.mFaces[i]).IsValid()) {
+                log::debug("fit_cad: face {} fails the B-rep check (shape kind:status){}", i,
+                           fc_check_report(out.mFaces[i]));
+                mark_bad(out.mFaceGroup[i], "its face fails the B-rep check");
+                any = true;
+            }
+        if (!any)
+            for (std::int64_t r = 0; r < np; ++r)
+                if (rAnalytic[static_cast<std::size_t>(r)])
+                    mark_bad(r, "the solid fails the B-rep check");
+    }
+    return out;
+}
+
+// The triangles of every face of a meshed shape, welded where faces share
+// points exactly.
+struct FcTriangulation {
+    std::vector<double> mXyz;
+    std::vector<std::int64_t> mTri;   // three per triangle
+    std::vector<std::int64_t> mFace;  // per triangle: the face index
+    bool mComplete = true;            // every face carried a triangulation
+};
+
+FcTriangulation fc_triangulate(const std::vector<TopoDS_Face>& rFaces) {
+    FcTriangulation out;
+    struct Key {
+        std::array<std::uint64_t, 3> mBits;
+        bool operator==(const Key& rO) const { return mBits == rO.mBits; }
+    };
+    struct KeyHash {
+        std::size_t operator()(const Key& rK) const {
+            std::uint64_t h = 1469598103934665603ull;
+            for (std::uint64_t b : rK.mBits)
+                h = (h ^ b) * 1099511628211ull;
+            return static_cast<std::size_t>(h);
+        }
+    };
+    std::unordered_map<Key, std::int64_t, KeyHash> id;
+    for (std::size_t fi = 0; fi < rFaces.size(); ++fi) {
+        const TopoDS_Face& face = rFaces[fi];
+        TopLoc_Location loc;
+        const FcHandle<Poly_Triangulation> tri = BRep_Tool::Triangulation(face, loc);
+        if (tri.IsNull()) {
+            out.mComplete = false;
+            continue;
+        }
+        const gp_Trsf trsf = loc.Transformation();
+        std::vector<std::int64_t> local(static_cast<std::size_t>(tri->NbNodes()) + 1, -1);
+        for (int i = 1; i <= tri->NbNodes(); ++i) {
+            const gp_Pnt p = tri->Node(i).Transformed(trsf);
+            Key k;
+            const double c[3] = {p.X() + 0.0, p.Y() + 0.0, p.Z() + 0.0};
+            for (int j = 0; j < 3; ++j)
+                std::memcpy(&k.mBits[static_cast<std::size_t>(j)], &c[j], sizeof(double));
+            auto ins = id.emplace(k, static_cast<std::int64_t>(out.mXyz.size() / 3));
+            if (ins.second)
+                out.mXyz.insert(out.mXyz.end(), c, c + 3);
+            local[static_cast<std::size_t>(i)] = ins.first->second;
+        }
+        const bool reversed = face.Orientation() == TopAbs_REVERSED;
+        for (int t = 1; t <= tri->NbTriangles(); ++t) {
+            int a = 0, b = 0, c = 0;
+            tri->Triangle(t).Get(a, b, c);
+            if (reversed)
+                std::swap(b, c);
+            const std::int64_t ia = local[static_cast<std::size_t>(a)];
+            const std::int64_t ib = local[static_cast<std::size_t>(b)];
+            const std::int64_t ic = local[static_cast<std::size_t>(c)];
+            if (ia == ib || ib == ic || ia == ic)
+                continue;
+            out.mTri.insert(out.mTri.end(), {ia, ib, ic});
+            out.mFace.push_back(static_cast<std::int64_t>(fi));
+        }
+    }
+    return out;
+}
+
+Mesh fc_triangle_mesh(const std::vector<double>& rXyz, const std::vector<std::int64_t>& rTri) {
+    Mesh m;
+    const std::size_t np = rXyz.size() / 3, nt = rTri.size() / 3;
+    NDArray pts = NDArray::Uninit(DType::Float64, {np, 3});
+    std::copy(rXyz.begin(), rXyz.end(), pts.As<double>());
+    NDArray conn = NDArray::Uninit(DType::Int64, {nt, 3});
+    std::copy(rTri.begin(), rTri.end(), conn.As<std::int64_t>());
+    m.AssignPoints(std::move(pts));
+    m.AddCellBlock("triangle", std::move(conn));
+    return m;
+}
+
+std::vector<double> fc_unsigned_distances(const Mesh& rTo, const std::vector<double>& rXyz) {
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rTo, "");
+    SurfaceDistanceOptions opt;
+    opt.mSign = SdfSign::Unsigned;
+    opt.mWatertightCheck = SdfWatertightCheck::Off;
+    const detail::DistanceQuery q = detail::build_distance_query(soup, opt);
+    std::vector<detail::Vec3> pts(rXyz.size() / 3);
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        pts[i] = {rXyz[i * 3], rXyz[i * 3 + 1], rXyz[i * 3 + 2]};
+    const std::vector<detail::DistanceHit> hits = detail::query_distances(q, pts, opt);
+    std::vector<double> d(hits.size());
+    for (std::size_t i = 0; i < hits.size(); ++i)
+        d[i] = std::fabs(hits[i].mSignedDistance);
+    return d;
+}
+
+void fc_write_step(const TopoDS_Shape& rShape, const std::string& rPath) {
+    const std::string base = rPath.substr(rPath.find_last_of("/\\") + 1);
+    STEPControl_Writer writer;
+    Interface_Static::SetCVal("write.step.schema", "AP214IS");
+    Interface_Static::SetCVal("write.step.unit", "MM");
+    if (writer.Transfer(rShape, STEPControl_AsIs) != IFSelect_RetDone)
+        throw WriteError(std::string(kFcPrefix) +
+                         "OpenCASCADE could not transfer the solid to STEP");
+    // The product is otherwise named "Open CASCADE STEP translator <version>
+    // <counter>", which makes the bytes depend on how many files this process
+    // wrote before.
+    const FcHandle<StepData_StepModel> model = writer.Model();
+    for (int i = 1; i <= model->NbEntities(); ++i) {
+        const FcHandle<StepBasic_Product> product =
+            FcHandle<StepBasic_Product>::DownCast(model->Value(i));
+        if (product.IsNull())
+            continue;
+        product->SetId(new TCollection_HAsciiString("meshio++ fit_cad"));
+        product->SetName(new TCollection_HAsciiString("meshio++ fit_cad"));
+    }
+    APIHeaderSection_MakeHeader header(model);
+    header.SetName(new TCollection_HAsciiString(base.c_str()));
+    header.SetTimeStamp(new TCollection_HAsciiString("1970-01-01T00:00:00"));
+    header.SetOriginatingSystem(new TCollection_HAsciiString("meshio++"));
+    header.SetAuthorisation(new TCollection_HAsciiString(""));
+    header.SetAuthorValue(1, new TCollection_HAsciiString(""));
+    header.SetOrganizationValue(1, new TCollection_HAsciiString(""));
+    if (writer.Write(rPath.c_str()) != IFSelect_RetDone)
+        throw WriteError(std::string(kFcPrefix) + "cannot write '" + rPath + "'");
+}
+
+gp_Pnt fc_pnt(const detail::PatchVec& rV) { return gp_Pnt(rV[0], rV[1], rV[2]); }
+
+// A B-spline face surface for a patch no primitive explains, or a null handle.
+// @p rTris: the patch's triangles as local vertex indices; @p rPts: its points.
+FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
+                                   const std::vector<std::array<std::size_t, 3> >& rTris,
+                                   double Tol, int Degree, std::int64_t MaxControl) {
+    const std::size_t nt = rTris.size();
+    if (rPts.size() < 4 || nt < 2)
+        return {};
+    std::vector<detail::PatchVec> pts(rPts.size());
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        pts[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
+    std::vector<detail::PatchVec> normals;
+    std::vector<double> areas;
+    detail::patch_normals(pts, rTris, normals, areas);
+    // Boundary edges: those one triangle has.
+    std::map<std::pair<std::size_t, std::size_t>, int> edge_count;
+    for (const auto& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            ++edge_count[{std::min(a, b), std::max(a, b)}];
+        }
+    std::vector<std::pair<std::size_t, std::size_t> > boundary;
+    for (const auto& kv : edge_count)
+        if (kv.second == 1)
+            boundary.push_back(kv.first);
+
+    for (int kind = 0; kind < 2; ++kind) {
+        detail::PatchFlat flat;
+        if (!detail::patch_flatten(kind, pts, normals, areas, flat))
+            continue;
+        // A fold (triangles of both orientations) means this flattening is not
+        // a parametrisation of the patch.
+        if (detail::patch_flat_folds(flat, rTris)) {
+            log::debug("fit_cad: a freeform patch folds over its {}", kind ? "cylinder" : "plane");
+            continue;
+        }
+        double s0 = flat.mS[0], s1 = s0, t0 = flat.mT[0], t1 = t0;
+        for (std::size_t i = 0; i < rPts.size(); ++i) {
+            s0 = std::min(s0, flat.mS[i]);
+            s1 = std::max(s1, flat.mS[i]);
+            t0 = std::min(t0, flat.mT[i]);
+            t1 = std::max(t1, flat.mT[i]);
+        }
+        if (!(s1 > s0) || !(t1 > t0))
+            continue;
+        // Bins over the triangles in (s, t), for locating grid points.
+        const std::size_t nb = std::max<std::size_t>(
+            1, static_cast<std::size_t>(std::sqrt(static_cast<double>(nt))));
+        std::vector<std::vector<std::size_t> > bins(nb * nb);
+        auto bin = [&](double S, double T, std::size_t& rI, std::size_t& rJ) {
+            rI = std::min(nb - 1, static_cast<std::size_t>(std::max(0.0, (S - s0) / (s1 - s0) * nb)));
+            rJ = std::min(nb - 1, static_cast<std::size_t>(std::max(0.0, (T - t0) / (t1 - t0) * nb)));
+        };
+        for (std::size_t t = 0; t < nt; ++t) {
+            double ls = flat.mS[rTris[t][0]], hs = ls, lt = flat.mT[rTris[t][0]], ht = lt;
+            for (std::size_t k = 1; k < 3; ++k) {
+                ls = std::min(ls, flat.mS[rTris[t][k]]);
+                hs = std::max(hs, flat.mS[rTris[t][k]]);
+                lt = std::min(lt, flat.mT[rTris[t][k]]);
+                ht = std::max(ht, flat.mT[rTris[t][k]]);
+            }
+            std::size_t i0, j0, i1, j1;
+            bin(ls, lt, i0, j0);
+            bin(hs, ht, i1, j1);
+            for (std::size_t j = j0; j <= j1; ++j)
+                for (std::size_t i = i0; i <= i1; ++i)
+                    bins[j * nb + i].push_back(t);
+        }
+        // The offset at (S, T): interpolated inside the patch, else that of the
+        // nearest boundary point.
+        auto height = [&](double S, double T) {
+            std::size_t bi, bj;
+            bin(S, T, bi, bj);
+            for (std::size_t t : bins[bj * nb + bi]) {
+                const auto& tr = rTris[t];
+                const double x0 = flat.mS[tr[0]], y0 = flat.mT[tr[0]];
+                const double ax = flat.mS[tr[1]] - x0, ay = flat.mT[tr[1]] - y0;
+                const double bx = flat.mS[tr[2]] - x0, by = flat.mT[tr[2]] - y0;
+                const double det = ax * by - ay * bx;
+                if (det == 0.0)
+                    continue;
+                const double l1 = ((S - x0) * by - (T - y0) * bx) / det;
+                const double l2 = (ax * (T - y0) - ay * (S - x0)) / det;
+                const double l0 = 1.0 - l1 - l2;
+                const double eps = -1e-12;
+                if (l0 >= eps && l1 >= eps && l2 >= eps)
+                    return l0 * flat.mH[tr[0]] + l1 * flat.mH[tr[1]] + l2 * flat.mH[tr[2]];
+            }
+            double best = std::numeric_limits<double>::infinity(), h = 0.0;
+            for (const auto& e : boundary) {
+                const double x0 = flat.mS[e.first], y0 = flat.mT[e.first];
+                const double dx = flat.mS[e.second] - x0, dy = flat.mT[e.second] - y0;
+                const double len2 = dx * dx + dy * dy;
+                double u = len2 > 0.0 ? ((S - x0) * dx + (T - y0) * dy) / len2 : 0.0;
+                u = std::clamp(u, 0.0, 1.0);
+                const double qx = x0 + u * dx - S, qy = y0 + u * dy - T;
+                const double d2 = qx * qx + qy * qy;
+                if (d2 < best) {
+                    best = d2;
+                    h = (1.0 - u) * flat.mH[e.first] + u * flat.mH[e.second];
+                }
+            }
+            return h;
+        };
+        const double aspect = (t1 - t0) / (s1 - s0);
+        const std::int64_t g_min = std::max<std::int64_t>(Degree + 1, 4);
+        std::int64_t g = std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(std::sqrt(static_cast<double>(rPts.size()))), g_min,
+            MaxControl);
+        for (;; g = std::min(MaxControl, 2 * g)) {
+            const std::int64_t nu =
+                std::clamp<std::int64_t>(static_cast<std::int64_t>(std::lround(
+                                             static_cast<double>(g) / std::sqrt(aspect))),
+                                         g_min, MaxControl);
+            const std::int64_t nv =
+                std::clamp<std::int64_t>(static_cast<std::int64_t>(std::lround(
+                                             static_cast<double>(g) * std::sqrt(aspect))),
+                                         g_min, MaxControl);
+            TColgp_Array2OfPnt grid(1, static_cast<int>(nu), 1, static_cast<int>(nv));
+            for (std::int64_t j = 0; j < nv; ++j)
+                for (std::int64_t i = 0; i < nu; ++i) {
+                    const double S = s0 + (s1 - s0) * static_cast<double>(i) / static_cast<double>(nu - 1);
+                    const double T = t0 + (t1 - t0) * static_cast<double>(j) / static_cast<double>(nv - 1);
+                    grid.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
+                                  fc_pnt(flat.At(S, T, height(S, T))));
+                }
+            try {
+                // Iso-parametric: the grid's (i, j) are the surface's
+                // parameters, so (s, t) maps to (u, v) affinely and a point is
+                // checked by one evaluation instead of a projection.
+                GeomAPI_PointsToBSplineSurface fit(grid, Approx_IsoParametric, std::min(3, Degree),
+                                                   Degree, GeomAbs_C2, 0.1 * Tol);
+                if (fit.IsDone()) {
+                    FcHandle<Geom_Surface> surf(fit.Surface());
+                    double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+                    surf->Bounds(u0, u1, v0, v1);
+                    // Within half the tolerance at every vertex, and within it
+                    // at every facet centre (the surface point at the same
+                    // (s, t), no nearer than the closest one): the face is held
+                    // to the tolerance between vertices later, where a smooth
+                    // surface is a facet's chordal error away from it, so a fit
+                    // loose there would only be demoted. `worst` is the
+                    // excess over each point's allowance, in tolerances.
+                    double worst = 0.0;
+                    for (std::size_t k = 0; k < rPts.size() + nt && worst <= 1.0; ++k) {
+                        gp_Pnt p;
+                        double S = 0.0, T = 0.0;
+                        if (k < rPts.size()) {
+                            p = rPts[k];
+                            S = flat.mS[k];
+                            T = flat.mT[k];
+                        } else {
+                            const auto& tr = rTris[k - rPts.size()];
+                            S = (flat.mS[tr[0]] + flat.mS[tr[1]] + flat.mS[tr[2]]) / 3.0;
+                            T = (flat.mT[tr[0]] + flat.mT[tr[1]] + flat.mT[tr[2]]) / 3.0;
+                            p = gp_Pnt((rPts[tr[0]].XYZ() + rPts[tr[1]].XYZ() + rPts[tr[2]].XYZ()) /
+                                       3.0);
+                        }
+                        const double u = u0 + (S - s0) / (s1 - s0) * (u1 - u0);
+                        const double v = v0 + (T - t0) / (t1 - t0) * (v1 - v0);
+                        const double allowance = k < rPts.size() ? 0.5 * Tol : Tol;
+                        worst = std::max(worst, surf->Value(u, v).Distance(p) / allowance);
+                    }
+                    if (worst <= 1.0)
+                        return surf;
+                    log::debug("fit_cad: a {}x{} freeform grid leaves the patch {} of its "
+                               "allowance away",
+                               nu, nv, worst);
+                }
+            } catch (const Standard_Failure&) {
+            }
+            if (g >= MaxControl)
+                break;
+        }
+    }
+    return {};
+}
+
+// Whether @p rS lies within half the tolerance of every vertex of a patch and
+// within the tolerance of every facet centre, by projection: the test a
+// fillet or thread face passes before it replaces a freeform fit.
+bool fc_surface_fits(const FcHandle<Geom_Surface>& rS, const std::vector<gp_Pnt>& rPts,
+                     const std::vector<std::array<std::size_t, 3> >& rTris, double Tol) {
+    auto within = [&](const gp_Pnt& rP, double Allowance) {
+        GeomAPI_ProjectPointOnSurf proj(rP, rS);
+        return proj.IsDone() && proj.NbPoints() > 0 && proj.LowerDistance() <= Allowance;
+    };
+    for (const gp_Pnt& p : rPts)
+        if (!within(p, 0.5 * Tol))
+            return false;
+    for (const auto& t : rTris)
+        if (!within(gp_Pnt((rPts[t[0]].XYZ() + rPts[t[1]].XYZ() + rPts[t[2]].XYZ()) / 3.0), Tol))
+            return false;
+    return true;
+}
+
+// @p rS moved by @p Offset along its normal, as the equivalent elementary
+// surface when there is one (a plane, or a cylinder of another radius), so
+// two offsets of primitives intersect exactly.
+FcHandle<Geom_Surface> fc_offset(const FcHandle<Geom_Surface>& rS, double Offset) {
+    FcHandle<Geom_OffsetSurface> off = new Geom_OffsetSurface(rS, Offset);
+    FcHandle<Geom_Surface> plain = off->Surface();
+    return plain.IsNull() ? FcHandle<Geom_Surface>(off) : plain;
+}
+
+// The rolling-ball fillet of radius `rFit.mRadius` between @p rS1 and @p rS2,
+// whose ball centres `rFit.mCentres` the patch says it rolls through: the pipe
+// of that radius around the spine where the two surfaces, each offset by the
+// radius towards the centres, meet. Null when no spine branch runs through
+// the centres.
+FcHandle<Geom_Surface> fc_fillet_surface(const FcHandle<Geom_Surface>& rS1,
+                                         const FcHandle<Geom_Surface>& rS2,
+                                         const detail::FilletFit& rFit, double Tol) {
+    const double r = rFit.mRadius;
+    if (rFit.mCentres.empty())
+        return {};
+    // The side of each surface the centres lie on, by majority.
+    auto side = [&](const FcHandle<Geom_Surface>& rS) {
+        int votes = 0;
+        const std::size_t step = std::max<std::size_t>(1, rFit.mCentres.size() / 16);
+        for (std::size_t i = 0; i < rFit.mCentres.size(); i += step) {
+            const auto& c = rFit.mCentres[i];
+            const gp_Pnt pc(c[0], c[1], c[2]);
+            gp_Pnt foot;
+            if (!fc_project(rS, pc, foot))
+                continue;
+            const gp_Vec n = fc_normal_at(rS, foot);
+            votes += gp_Vec(foot, pc).Dot(n) >= 0.0 ? 1 : -1;
+        }
+        return votes >= 0 ? 1.0 : -1.0;
+    };
+    const FcHandle<Geom_Surface> o1 = fc_offset(rS1, side(rS1) * r);
+    const FcHandle<Geom_Surface> o2 = fc_offset(rS2, side(rS2) * r);
+    GeomAPI_IntSS inter(o1, o2, 1e-6 * Tol);
+    if (!inter.IsDone() || inter.NbLines() == 0)
+        return {};
+    // The branch the centres lie closest to.
+    FcHandle<Geom_Curve> spine;
+    double best = std::numeric_limits<double>::infinity();
+    std::vector<double> params;
+    for (int i = 1; i <= inter.NbLines(); ++i) {
+        const FcHandle<Geom_Curve> line = inter.Line(i);
+        double sum = 0.0;
+        std::vector<double> at;
+        bool ok = true;
+        for (const auto& c : rFit.mCentres) {
+            GeomAPI_ProjectPointOnCurve proj(gp_Pnt(c[0], c[1], c[2]), line);
+            if (proj.NbPoints() == 0) {
+                ok = false;
+                break;
+            }
+            sum += proj.LowerDistance();
+            at.push_back(proj.LowerDistanceParameter());
+        }
+        const double mean = ok ? sum / static_cast<double>(rFit.mCentres.size()) : best;
+        if (ok && mean < best) {
+            best = mean;
+            spine = line;
+            params = std::move(at);
+        }
+    }
+    if (spine.IsNull() || !(best <= Tol))
+        return {};
+    // The intersection comes back trimmed (an arc of an ellipse that only
+    // nearly closes, between fitted surfaces) or as a closed B-spline: take the
+    // periodic curve underneath, so a ring of a fillet is seen as one.
+    FcHandle<Geom_Curve> periodic;
+    if (!spine->IsPeriodic() || !spine->IsClosed()) {
+        FcHandle<Geom_TrimmedCurve> tc = FcHandle<Geom_TrimmedCurve>::DownCast(spine);
+        if (!tc.IsNull() && tc->BasisCurve()->IsPeriodic()) {
+            periodic = tc->BasisCurve();
+        } else if (spine->IsClosed()) {
+            FcHandle<Geom_BSplineCurve> bc = FcHandle<Geom_BSplineCurve>::DownCast(spine->Copy());
+            if (!bc.IsNull()) {
+                bc->SetPeriodic();
+                periodic = bc;
+            }
+        }
+    }
+    if (!periodic.IsNull()) {
+        spine = periodic;
+        params.clear();
+        for (const auto& c : rFit.mCentres) {
+            GeomAPI_ProjectPointOnCurve proj(gp_Pnt(c[0], c[1], c[2]), spine);
+            if (proj.NbPoints() > 0)
+                params.push_back(proj.LowerDistanceParameter());
+        }
+        if (params.empty())
+            return {};
+    }
+    // Trim the spine to the centres, with a margin; a closed spine they go
+    // most of the way round is kept whole.
+    std::sort(params.begin(), params.end());
+    const double f = spine->FirstParameter(), l = spine->LastParameter();
+    bool whole = false;
+    double u0 = params.front(), u1 = params.back();
+    if (spine->IsPeriodic()) {
+        const double per = spine->Period();
+        double gap = params.front() + per - params.back(), gap_end = params.front();
+        for (std::size_t i = 1; i < params.size(); ++i)
+            if (params[i] - params[i - 1] > gap) {
+                gap = params[i] - params[i - 1];
+                gap_end = params[i];
+            }
+        if (gap < 0.25 * per) {
+            whole = true;
+        } else {
+            u0 = gap_end;
+            u1 = gap_end + per - gap;
+        }
+    }
+    if (!whole) {
+        const double margin = 0.1 * (u1 - u0) + 1e-9;
+        u0 -= margin;
+        u1 += margin;
+        if (!spine->IsPeriodic()) {
+            u0 = std::max(u0, f);
+            u1 = std::min(u1, l);
+        }
+        if (!(u1 > u0))
+            return {};
+        spine = new Geom_TrimmedCurve(spine, u0, u1);
+    }
+    GeomFill_Pipe pipe(spine, r);
+    pipe.Perform(0.1 * Tol, Standard_False);
+    if (!pipe.IsDone())
+        return {};
+    FcHandle<Geom_Surface> out = pipe.Surface();
+    // Around a whole closed spine the pipe comes back closed along it but not
+    // periodic, which would cut a ring-shaped fillet's loops at the seam.
+    FcHandle<Geom_BSplineSurface> bs = FcHandle<Geom_BSplineSurface>::DownCast(out);
+    if (whole && !bs.IsNull() && bs->IsVClosed() && !bs->IsVPeriodic())
+        bs->SetVPeriodic();
+    if (whole && !bs.IsNull() && bs->IsUClosed() && !bs->IsUPeriodic())
+        bs->SetUPeriodic();
+    return out;
+}
+
+// The ruled helicoid of a thread flank, as a B-spline through a grid over the
+// patch's radial and angular extent, slightly widened so the face trims inside it.
+FcHandle<Geom_Surface> fc_helicoid_surface(const detail::HelicoidFit& rH, double Tol) {
+    const double span = rH.mThetaMax - rH.mThetaMin;
+    const double drho = 0.05 * (rH.mRhoMax - rH.mRhoMin), dth = 0.02 * span;
+    const double rho0 = rH.mRhoMin - drho, rho1 = rH.mRhoMax + drho;
+    const double th0 = rH.mThetaMin - dth, th1 = rH.mThetaMax + dth;
+    const int nrho = 4;
+    const int nth = std::clamp(static_cast<int>(std::ceil((th1 - th0) / (2.0 * kFcPi) * 48.0)) + 1,
+                               8, 2048);
+    TColgp_Array2OfPnt grid(1, nrho, 1, nth);
+    for (int j = 0; j < nth; ++j)
+        for (int i = 0; i < nrho; ++i) {
+            const double rho = rho0 + (rho1 - rho0) * i / (nrho - 1);
+            const double th = th0 + (th1 - th0) * j / (nth - 1);
+            const detail::PatchVec p = rH.At(rho, th);
+            grid.SetValue(i + 1, j + 1, gp_Pnt(p[0], p[1], p[2]));
+        }
+    GeomAPI_PointsToBSplineSurface fit(grid, Approx_IsoParametric, 1, 3, GeomAbs_C2, 0.1 * Tol);
+    if (!fit.IsDone())
+        return {};
+    return FcHandle<Geom_Surface>(fit.Surface());
+}
+
+}  // namespace
+
+FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                     const FitCadOptions& rOptions) {
+    const FcProjectorScope projectors;
+    if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kFcPrefix) + "tolerance must be finite");
+    if (std::isnan(rOptions.mMeshDeflection) || std::isinf(rOptions.mMeshDeflection))
+        throw std::invalid_argument(std::string(kFcPrefix) + "mesh_deflection must be finite");
+    if ((rOptions.mTypes & ~kFitAllTypes) != 0)
+        throw std::invalid_argument(std::string(kFcPrefix) +
+                                    "types may name only plane, sphere, cylinder, cone and torus");
+    if (rOptions.mMaxDemotionRounds < 0)
+        throw std::invalid_argument(std::string(kFcPrefix) + "max_demotion_rounds must be >= 0");
+    if (rOptions.mFreeformDegree < 3 || rOptions.mFreeformDegree > 8)
+        throw std::invalid_argument(std::string(kFcPrefix) + "freeform_degree must be 3 to 8");
+    if (rOptions.mFreeformMaxControl < 4 || rOptions.mFreeformMaxControl > 1024)
+        throw std::invalid_argument(std::string(kFcPrefix) +
+                                    "freeform_max_control must be 4 to 1024");
+
+    detail::LibraryLock lock;
+    FcQuietMessenger quiet;
+
+    // The annotated skin: segment and fit first when the labels are missing.
+    const Mesh* pWork = &rMesh;
+    Mesh owned;
+    if (!rMesh.HasCellData("segment:patch")) {
+        log::info("fit_cad: no segment:patch labels; running segment and fit_primitives");
+        owned = fit_primitives(segment(rMesh).mMesh).mMesh;
+        pWork = &owned;
+    } else if (!rMesh.HasFieldData("fit:patch_id")) {
+        log::info("fit_cad: no fit:patch_* table; running fit_primitives");
+        owned = fit_primitives(rMesh).mMesh;
+        pWork = &owned;
+    }
+    const Mesh& work = *pWork;
+
+    FcSkin skin;
+    skin.mFacets = detail::closed_facets(work, kFcPrefix);
+    detail::ClosedFacets& fc = skin.mFacets;
+    const std::size_t nf = fc.NumFacets();
+    if (nf == 0)
+        throw std::invalid_argument(std::string(kFcPrefix) + "no surface facets");
+    if (fc.mNumSkipped > 0)
+        log::warn("fit_cad: {} cell(s) that are not surface facets (lines, vertices) are ignored",
+                  fc.mNumSkipped);
+
+    // The fit table.
+    for (const char* name :
+         {"fit:patch_id", "fit:patch_type", "fit:patch_params", "fit:patch_tolerance"})
+        if (!work.HasFieldData(name))
+            throw std::invalid_argument(std::string(kFcPrefix) + "no field data named '" + name +
+                                        "' (run fit_primitives first)");
+    const NDArray& ids = work.FieldData("fit:patch_id");
+    const NDArray& types = work.FieldData("fit:patch_type");
+    const NDArray& params = work.FieldData("fit:patch_params");
+    const NDArray& tols = work.FieldData("fit:patch_tolerance");
+    // `m` grows when freeform patches are split; `num_input_patches` stays.
+    std::size_t m = ids.Size();
+    const std::size_t num_input_patches = m;
+    if (types.Size() != m || tols.Size() != m || params.Size() != m * kFcParams)
+        throw std::invalid_argument(std::string(kFcPrefix) +
+                                    "the fit:patch_* arrays disagree on the number of patches");
+    std::unordered_map<std::int64_t, std::int64_t> row_of;
+    skin.mPatches.resize(m);
+    for (std::size_t r = 0; r < m; ++r) {
+        FcPatch& p = skin.mPatches[r];
+        p.mLabel = detail::read_int(ids, r);
+        p.mType = static_cast<std::int32_t>(detail::read_int(types, r));
+        bool finite = true;
+        for (std::size_t k = 0; k < kFcParams; ++k) {
+            p.mParams[k] = detail::read_double(params, r * kFcParams + k);
+            finite = finite && std::isfinite(p.mParams[k]);
+        }
+        p.mTolerance = detail::read_double(tols, r);
+        p.mAccepted = p.mType >= 1 && p.mType <= 5 && finite &&
+                      (rOptions.mTypes & (1u << static_cast<unsigned>(p.mType))) != 0;
+        row_of.emplace(p.mLabel, static_cast<std::int64_t>(r));
+    }
+
+    // Each facet's patch row.
+    const std::vector<std::int64_t> bases = detail::block_bases(work);
+    std::vector<std::int64_t> label(static_cast<std::size_t>(detail::total_cells(bases)), -1);
+    for (std::size_t b = 0; b < work.NumCellBlocks(); ++b) {
+        const NDArray& a = work.CellData("segment:patch", b);
+        const std::size_t nc = work.Cells(b).NumCells();
+        if (a.Size() != nc)
+            throw std::invalid_argument(std::string(kFcPrefix) +
+                                        "cell data 'segment:patch' must hold one label per cell");
+        for (std::size_t c = 0; c < nc; ++c)
+            label[static_cast<std::size_t>(bases[b]) + c] = detail::read_int(a, c);
+    }
+    skin.mRow.assign(nf, -1);
+    for (std::size_t f = 0; f < nf; ++f) {
+        auto it = row_of.find(label[static_cast<std::size_t>(fc.mCell[f])]);
+        if (it != row_of.end())
+            skin.mRow[f] = it->second;
+    }
+
+    // Edges and pieces.
+    std::vector<std::size_t> parent(nf);
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    auto find = [&](std::size_t X) {
+        while (parent[X] != X) {
+            parent[X] = parent[parent[X]];
+            X = parent[X];
+        }
+        return X;
+    };
+    skin.mEdgeFacets.reserve(fc.mNodes.size());
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = fc.mStart[f], s = fc.mStart[f + 1] - b;
+        for (std::int64_t k = 0; k < s; ++k) {
+            const std::int64_t u = fc.mNodes[static_cast<std::size_t>(b + k)];
+            const std::int64_t v = fc.mNodes[static_cast<std::size_t>(b + (k + 1) % s)];
+            auto ins = skin.mEdgeFacets.emplace(std::make_pair(std::min(u, v), std::max(u, v)),
+                                                std::array<std::int64_t, 2>{-1, -1});
+            ins.first->second[u < v ? 0 : 1] = static_cast<std::int64_t>(f);
+            const std::int64_t other = ins.first->second[u < v ? 1 : 0];
+            if (other >= 0) {
+                const std::size_t ra = find(f), rb = find(static_cast<std::size_t>(other));
+                if (ra != rb)
+                    parent[std::max(ra, rb)] = std::min(ra, rb);
+            }
+        }
+    }
+    skin.mPiece.assign(nf, 0);
+    std::vector<std::size_t> roots;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t r = find(f);
+        if (r == f)
+            roots.push_back(f);
+        skin.mPiece[f] = static_cast<std::size_t>(std::lower_bound(roots.begin(), roots.end(), r) -
+                                                  roots.begin());
+    }
+    skin.mNumPieces = roots.size();
+
+    // Scale, skin volume and the skin as triangles.
+    double lo[3] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[3] = {-lo[0], -lo[1], -lo[2]};
+    std::vector<std::int64_t> skin_tri;
+    std::vector<double> piece_volume(skin.mNumPieces, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = fc.mStart[f], s = fc.mStart[f + 1] - b;
+        for (std::int64_t k = 0; k < s; ++k) {
+            const std::size_t v =
+                static_cast<std::size_t>(fc.mNodes[static_cast<std::size_t>(b + k)]);
+            for (int j = 0; j < 3; ++j) {
+                lo[j] = std::min(lo[j], fc.mXyz[v * 3 + static_cast<std::size_t>(j)]);
+                hi[j] = std::max(hi[j], fc.mXyz[v * 3 + static_cast<std::size_t>(j)]);
+            }
+        }
+        const std::int64_t a0 = fc.mNodes[static_cast<std::size_t>(b)];
+        const gp_Pnt p0 = fc_point(fc.mXyz, a0);
+        for (std::int64_t k = 1; k + 1 < s; ++k) {
+            const std::int64_t a1 = fc.mNodes[static_cast<std::size_t>(b + k)];
+            const std::int64_t a2 = fc.mNodes[static_cast<std::size_t>(b + k + 1)];
+            skin_tri.insert(skin_tri.end(), {a0, a1, a2});
+            const gp_Pnt p1 = fc_point(fc.mXyz, a1), p2 = fc_point(fc.mXyz, a2);
+            piece_volume[skin.mPiece[f]] +=
+                gp_Vec(p0.XYZ()).Dot(gp_Vec(p1.XYZ()).Crossed(gp_Vec(p2.XYZ()))) / 6.0;
+        }
+    }
+    skin.mScale = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                            (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const Mesh skin_mesh = fc_triangle_mesh(fc.mXyz, skin_tri);
+
+    FitCadResult result;
+    double tol = rOptions.mTolerance;
+    if (!(tol > 0.0)) {
+        double largest = 0.0;
+        for (const FcPatch& p : skin.mPatches)
+            if (p.mAccepted && std::isfinite(p.mTolerance))
+                largest = std::max(largest, p.mTolerance);
+        tol = largest > 0.0 ? 3.0 * largest : 1e-3 * skin.mScale;
+    }
+    if (!(tol > 0.0))
+        throw std::invalid_argument(std::string(kFcPrefix) +
+                                    "the skin has no extent to take a tolerance from");
+    const double deflection =
+        rOptions.mMeshDeflection > 0.0 ? rOptions.mMeshDeflection : 0.25 * tol;
+    result.mTolerance = tol;
+
+    // The fitted surfaces, each oriented so its normal points out of the skin.
+    std::vector<std::vector<std::size_t> > facets_of(m);
+    for (std::size_t f = 0; f < nf; ++f)
+        if (skin.mRow[f] >= 0)
+            facets_of[static_cast<std::size_t>(skin.mRow[f])].push_back(f);
+    for (std::size_t r = 0; r < m; ++r)
+        log::debug("fit_cad: patch {}: fitted type {}, {} facet(s)", skin.mPatches[r].mLabel,
+                   skin.mPatches[r].mType, facets_of[r].size());
+    std::vector<FcHandle<Geom_Surface> > surface(m);
+    std::vector<std::uint8_t> analytic(m, 0);
+    for (std::size_t r = 0; r < m; ++r) {
+        if (!skin.mPatches[r].mAccepted || facets_of[r].empty())
+            continue;
+        std::vector<std::int64_t> verts;
+        for (std::size_t f : facets_of[r])
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                verts.push_back(fc.mNodes[static_cast<std::size_t>(k)]);
+        std::sort(verts.begin(), verts.end());
+        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+        std::vector<gp_Pnt> pts;
+        for (std::int64_t v : verts)
+            pts.push_back(fc_point(fc.mXyz, v));
+        try {
+            FcHandle<Geom_Surface> s = fc_surface(skin.mPatches[r], pts);
+            if (s.IsNull())
+                continue;
+            const std::size_t step = std::max<std::size_t>(1, facets_of[r].size() / 64);
+            double agree = 0.0;
+            for (std::size_t i = 0; i < facets_of[r].size(); i += step) {
+                const std::size_t f = facets_of[r][i];
+                gp_XYZ c(0.0, 0.0, 0.0);
+                for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                    c += fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]).XYZ();
+                c /= static_cast<double>(fc.mStart[f + 1] - fc.mStart[f]);
+                const gp_Vec n = fc_normal_at(s, gp_Pnt(c));
+                agree += n.X() * fc.mNormals[f * 3] + n.Y() * fc.mNormals[f * 3 + 1] +
+                         n.Z() * fc.mNormals[f * 3 + 2];
+            }
+            if (agree < 0.0)
+                s = s->UReversed();
+            surface[r] = s;
+            analytic[r] = 1;
+        } catch (const Standard_Failure&) {
+        }
+    }
+
+    // Fillets and threads (roadmap 6.3.1): a patch no primitive explains that
+    // runs between two analytic faces is tried as a constant-radius
+    // rolling-ball fillet, and one beside a cylinder or cone as a
+    // straight-flank thread about its axis, before the freeform fallback.
+    auto patch_mesh = [&](std::size_t R, std::vector<gp_Pnt>& rPts,
+                          std::vector<std::array<std::size_t, 3> >& rTris,
+                          std::vector<detail::PatchVec>& rFlat) {
+        std::unordered_map<std::int64_t, std::size_t> local;
+        rPts.clear();
+        rTris.clear();
+        auto vid = [&](std::int64_t V) {
+            auto ins = local.emplace(V, rPts.size());
+            if (ins.second)
+                rPts.push_back(fc_point(fc.mXyz, V));
+            return ins.first->second;
+        };
+        for (std::size_t f : facets_of[R]) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
+            for (std::int64_t k = 1; k + 1 < n; ++k)
+                rTris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
+                                 vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+        }
+        rFlat.resize(rPts.size());
+        for (std::size_t i = 0; i < rPts.size(); ++i)
+            rFlat[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
+    };
+    auto orient = [&](std::size_t R, FcHandle<Geom_Surface> S) {
+        const std::size_t step = std::max<std::size_t>(1, facets_of[R].size() / 64);
+        double agree = 0.0;
+        for (std::size_t i = 0; i < facets_of[R].size(); i += step) {
+            const std::size_t f = facets_of[R][i];
+            gp_XYZ c(0.0, 0.0, 0.0);
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                c += fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]).XYZ();
+            c /= static_cast<double>(fc.mStart[f + 1] - fc.mStart[f]);
+            const gp_Vec nrm = fc_normal_at(S, gp_Pnt(c));
+            agree += nrm.X() * fc.mNormals[f * 3] + nrm.Y() * fc.mNormals[f * 3 + 1] +
+                     nrm.Z() * fc.mNormals[f * 3 + 2];
+        }
+        return agree < 0.0 ? FcHandle<Geom_Surface>(S->UReversed()) : S;
+    };
+    auto is_primitive = [&](std::size_t R) {
+        const std::int32_t t = skin.mPatches[R].mType;
+        return analytic[R] && t >= 1 && t <= 5;
+    };
+    for (std::size_t r = 0; (rOptions.mFillets || rOptions.mThreads) && r < m; ++r) {
+        {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+                continue;
+        }
+        // The rows across the patch's boundary, by the length they share.
+        std::map<std::int64_t, double> shared;
+        double perimeter = 0.0;
+        for (std::size_t f : facets_of[r])
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k) {
+                const std::int64_t a = fc.mNodes[static_cast<std::size_t>(k)];
+                const std::int64_t b = fc.mNodes[static_cast<std::size_t>(
+                    k + 1 < fc.mStart[f + 1] ? k + 1 : fc.mStart[f])];
+                auto it = skin.mEdgeFacets.find({std::min(a, b), std::max(a, b)});
+                if (it == skin.mEdgeFacets.end())
+                    continue;
+                for (std::int64_t g : it->second) {
+                    if (g < 0 || static_cast<std::size_t>(g) == f)
+                        continue;
+                    const std::int64_t q = skin.mRow[static_cast<std::size_t>(g)];
+                    if (q == static_cast<std::int64_t>(r))
+                        continue;
+                    const double len = fc_point(fc.mXyz, a).Distance(fc_point(fc.mXyz, b));
+                    perimeter += len;
+                    if (q >= 0)
+                        shared[q] += len;
+                }
+            }
+        std::vector<std::pair<double, std::int64_t> > by_length;
+        for (const auto& kv : shared)
+            by_length.emplace_back(-kv.second, kv.first);
+        std::sort(by_length.begin(), by_length.end());
+        std::vector<gp_Pnt> pts;
+        std::vector<std::array<std::size_t, 3> > tris;
+        std::vector<detail::PatchVec> flat;
+        patch_mesh(r, pts, tris, flat);
+        try {
+            if (rOptions.mFillets && by_length.size() >= 2) {
+                const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
+                const std::size_t q2 = static_cast<std::size_t>(by_length[1].second);
+                const double along = -(by_length[0].first + by_length[1].first);
+                if (is_primitive(q1) && is_primitive(q2) && along >= 0.6 * perimeter) {
+                    const detail::FilletFit ff = detail::fillet_fit(
+                        flat, tris, skin.mPatches[q1].mType, skin.mPatches[q1].mParams.data(),
+                        skin.mPatches[q2].mType, skin.mPatches[q2].mParams.data(), 0.5 * tol,
+                        skin.mScale);
+                    if (ff.mOk && ff.mRms <= tol) {
+                        FcHandle<Geom_Surface> fs =
+                            fc_fillet_surface(surface[q1], surface[q2], ff, tol);
+                        if (!fs.IsNull() && fc_surface_fits(fs, pts, tris, tol)) {
+                            surface[r] = orient(r, fs);
+                            analytic[r] = 1;
+                            skin.mPatches[r].mType = static_cast<std::int32_t>(kFitCadFilletType);
+                            skin.mPatches[r].mAccepted = true;
+                            log::debug("fit_cad: patch {} is a fillet of radius {}",
+                                       skin.mPatches[r].mLabel, ff.mRadius);
+                            continue;
+                        }
+                    }
+                    log::debug("fit_cad: patch {} is not a rolling-ball fillet (rms {})",
+                               skin.mPatches[r].mLabel, ff.mRms);
+                }
+            }
+            if (rOptions.mThreads) {
+                // The axis of the neighbouring cylinder or cone sharing the most boundary.
+                for (const auto& nb : by_length) {
+                    const std::size_t q = static_cast<std::size_t>(nb.second);
+                    const std::int32_t t = skin.mPatches[q].mType;
+                    if (!is_primitive(q) || (t != 3 && t != 4))
+                        continue;
+                    const double* pp = skin.mPatches[q].mParams.data();
+                    const detail::HelicoidFit hf =
+                        detail::helicoid_fit(flat, tris, {pp[0], pp[1], pp[2]}, {pp[3], pp[4], pp[5]});
+                    if (hf.mOk && hf.mMax <= 0.5 * tol) {
+                        FcHandle<Geom_Surface> hs = fc_helicoid_surface(hf, tol);
+                        if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol)) {
+                            surface[r] = orient(r, hs);
+                            analytic[r] = 1;
+                            skin.mPatches[r].mType = static_cast<std::int32_t>(kFitCadHelicalType);
+                            skin.mPatches[r].mAccepted = true;
+                            log::debug("fit_cad: patch {} is a thread flank of pitch {}",
+                                       skin.mPatches[r].mLabel, hf.Pitch());
+                        }
+                    } else {
+                        log::debug("fit_cad: patch {} is not a thread flank (max {})",
+                                   skin.mPatches[r].mLabel, hf.mMax);
+                    }
+                    break;
+                }
+            }
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: no fillet or thread face for patch {}: {}",
+                       skin.mPatches[r].mLabel, rErr.GetMessageString());
+        }
+    }
+
+    // Freeform faces (roadmap 6.3.2): a B-spline for each patch no primitive
+    // explains, oriented like the analytic ones. A patch that folds over both
+    // its flattenings is split, and the pieces, appended as new rows, are
+    // fitted in turn by this same loop.
+    std::int64_t num_freeform_tried = 0;
+    std::int64_t next_label = 0;
+    for (const FcPatch& p : skin.mPatches)
+        next_label = std::max(next_label, p.mLabel + 1);
+    std::vector<std::uint8_t> is_piece(m, 0);
+    for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
+        bool finite = true;
+        for (double x : skin.mPatches[r].mParams)
+            finite = finite && std::isfinite(x);
+        const std::int32_t type = skin.mPatches[r].mType;
+        if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+            continue;
+        ++num_freeform_tried;
+        std::unordered_map<std::int64_t, std::size_t> local;
+        std::vector<gp_Pnt> pts;
+        std::vector<std::array<std::size_t, 3> > tris;
+        std::vector<std::size_t> tri_facet;
+        auto vid = [&](std::int64_t V) {
+            auto ins = local.emplace(V, pts.size());
+            if (ins.second)
+                pts.push_back(fc_point(fc.mXyz, V));
+            return ins.first->second;
+        };
+        for (std::size_t f : facets_of[r]) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
+            for (std::int64_t k = 1; k + 1 < n; ++k) {
+                tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
+                                vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+                tri_facet.push_back(f);
+            }
+        }
+        try {
+            FcHandle<Geom_Surface> s =
+                fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
+            if (s.IsNull()) {
+                if (!rOptions.mFreeformSplit || is_piece[r])
+                    continue;
+                std::vector<detail::PatchVec> flat_pts(pts.size());
+                for (std::size_t i = 0; i < pts.size(); ++i)
+                    flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
+                if (detail::patch_flattenable(flat_pts, tris))
+                    continue;  // it flattens; the fit itself fell short
+                std::size_t num_pieces = 0;
+                const std::vector<std::int64_t> piece =
+                    detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
+                if (num_pieces == 0)
+                    continue;
+                // A facet goes with its first triangle's piece.
+                std::vector<std::vector<std::size_t> > piece_facets(num_pieces);
+                std::vector<std::size_t> kept;
+                for (std::size_t t = 0; t < tris.size(); ++t) {
+                    if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+                        continue;
+                    if (piece[t] >= 0)
+                        piece_facets[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+                    else
+                        kept.push_back(tri_facet[t]);
+                }
+                log::debug("fit_cad: patch {} folds over every flattening; split into {} "
+                           "piece(s), {} facet(s) left",
+                           skin.mPatches[r].mLabel, num_pieces, kept.size());
+                facets_of[r] = std::move(kept);
+                for (std::vector<std::size_t>& pf : piece_facets) {
+                    FcPatch np;
+                    np.mLabel = next_label++;
+                    np.mType = 0;
+                    np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                    np.mTolerance = skin.mPatches[r].mTolerance;
+                    const std::int64_t row = static_cast<std::int64_t>(skin.mPatches.size());
+                    for (std::size_t f : pf)
+                        skin.mRow[f] = row;
+                    skin.mPatches.push_back(np);
+                    facets_of.push_back(std::move(pf));
+                    surface.emplace_back();
+                    analytic.push_back(0);
+                    is_piece.push_back(1);
+                }
+                result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
+                continue;
+            }
+            const std::size_t step = std::max<std::size_t>(1, facets_of[r].size() / 64);
+            double agree = 0.0;
+            for (std::size_t i = 0; i < facets_of[r].size(); i += step) {
+                const std::size_t f = facets_of[r][i];
+                gp_XYZ c(0.0, 0.0, 0.0);
+                for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                    c += fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]).XYZ();
+                c /= static_cast<double>(fc.mStart[f + 1] - fc.mStart[f]);
+                const gp_Vec nrm = fc_normal_at(s, gp_Pnt(c));
+                agree += nrm.X() * fc.mNormals[f * 3] + nrm.Y() * fc.mNormals[f * 3 + 1] +
+                         nrm.Z() * fc.mNormals[f * 3 + 2];
+            }
+            if (agree < 0.0)
+                s = s->UReversed();
+            surface[r] = s;
+            analytic[r] = 1;
+            skin.mPatches[r].mType = static_cast<std::int32_t>(kFitCadBsplineType);
+            skin.mPatches[r].mAccepted = true;
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: no freeform face for patch {}: {}", skin.mPatches[r].mLabel,
+                       rErr.GetMessageString());
+        }
+    }
+    m = skin.mPatches.size();
+    if (num_freeform_tried > 0)
+        log::debug("fit_cad: {} patch(es) tried as freeform B-spline faces", num_freeform_tried);
+
+    // Build, check, demote and rebuild.
+    FcBuild build;
+    FcTriangulation tri;
+    for (std::int64_t round = 0;; ++round) {
+        bool any = false;
+        for (std::uint8_t a : analytic)
+            any = any || a;
+        try {
+            build = fc_build(skin, surface, analytic, tol, rOptions.mExactEdges);
+        } catch (const Standard_Failure& rErr) {
+            build = FcBuild{};
+            build.mBadRow.assign(m, 0);
+            for (std::size_t r = 0; r < m; ++r)
+                build.mBadRow[r] = analytic[r];
+            log::debug("fit_cad: OpenCASCADE failed building the solid: {}",
+                       rErr.GetMessageString());
+        }
+        bool bad = false;
+        for (std::uint8_t b : build.mBadRow)
+            bad = bad || b;
+        if (!bad && !build.mShape.IsNull()) {
+            BRepMesh_IncrementalMesh mesher(build.mShape, deflection, Standard_False, 0.5,
+                                            Standard_False);
+            tri = fc_triangulate(build.mFaces);
+            if (any) {
+                // Faces against the skin, and the skin against the solid.
+                if (!tri.mComplete) {
+                    for (std::size_t i = 0; i < build.mFaces.size(); ++i) {
+                        TopLoc_Location loc;
+                        const std::int64_t g = build.mFaceGroup[i];
+                        if (BRep_Tool::Triangulation(build.mFaces[i], loc).IsNull() && g >= 0 &&
+                            g < static_cast<std::int64_t>(m))
+                            build.mBadRow[static_cast<std::size_t>(g)] = 1;
+                    }
+                }
+                const std::vector<double> to_skin = fc_unsigned_distances(skin_mesh, tri.mXyz);
+                for (std::size_t t = 0; t < tri.mFace.size(); ++t) {
+                    const std::int64_t g = build.mFaceGroup[static_cast<std::size_t>(tri.mFace[t])];
+                    if (g < 0 || g >= static_cast<std::int64_t>(m))
+                        continue;
+                    for (int k = 0; k < 3; ++k) {
+                        const double d = to_skin[static_cast<std::size_t>(
+                            tri.mTri[t * 3 + static_cast<std::size_t>(k)])];
+                        if (d > tol && !build.mBadRow[static_cast<std::size_t>(g)]) {
+                            log::debug("fit_cad: demoting patch {}: its face lies {} from the skin",
+                                       skin.mPatches[static_cast<std::size_t>(g)].mLabel, d);
+                            build.mBadRow[static_cast<std::size_t>(g)] = 1;
+                        }
+                    }
+                }
+                if (!tri.mTri.empty()) {
+                    const Mesh solid = fc_triangle_mesh(tri.mXyz, tri.mTri);
+                    const std::vector<double> to_solid = fc_unsigned_distances(solid, fc.mXyz);
+                    for (std::size_t f = 0; f < nf; ++f) {
+                        const std::int64_t r = skin.mRow[f];
+                        if (r < 0 || !analytic[static_cast<std::size_t>(r)])
+                            continue;
+                        for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k) {
+                            const double d = to_solid[static_cast<std::size_t>(
+                                fc.mNodes[static_cast<std::size_t>(k)])];
+                            if (d > tol && !build.mBadRow[static_cast<std::size_t>(r)]) {
+                                log::debug("fit_cad: demoting patch {}: the skin lies {} from it",
+                                           skin.mPatches[static_cast<std::size_t>(r)].mLabel, d);
+                                build.mBadRow[static_cast<std::size_t>(r)] = 1;
+                            }
+                        }
+                    }
+                }
+                for (std::uint8_t b : build.mBadRow)
+                    bad = bad || b;
+            }
+        }
+        if (!bad || !any)
+            break;
+        if (round >= rOptions.mMaxDemotionRounds) {
+            std::fill(analytic.begin(), analytic.end(), std::uint8_t{0});
+        } else {
+            for (std::size_t r = 0; r < m; ++r)
+                if (build.mBadRow[r])
+                    analytic[r] = 0;
+        }
+    }
+    if (build.mShape.IsNull())
+        throw std::runtime_error(std::string(kFcPrefix) +
+                                 "OpenCASCADE could not build even the faceted solid");
+
+    // The report.
+    result.mValid = build.mValid;
+    result.mNumPatches = static_cast<std::int64_t>(num_input_patches);
+    result.mNumExactEdges = build.mNumExact;
+    result.mNumApproxEdges = build.mNumApprox;
+    for (std::size_t r = 0; r < m; ++r)
+        if (skin.mPatches[r].mAccepted && !facets_of[r].empty() && !analytic[r])
+            ++result.mNumDemoted;
+    for (TopExp_Explorer ex(build.mShape, TopAbs_SOLID); ex.More(); ex.Next())
+        ++result.mNumSolids;
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(build.mShape, props);
+    result.mVolume = props.Mass();
+    for (double v : piece_volume)
+        result.mSkinVolume += std::fabs(v);
+    result.mVolumeRatio = result.mSkinVolume > 0.0 ? result.mVolume / result.mSkinVolume
+                                                   : std::numeric_limits<double>::quiet_NaN();
+    result.mNumFaces = static_cast<std::int64_t>(build.mFaces.size());
+    std::vector<std::int64_t> face_type(build.mFaces.size(), 0),
+        face_patch(build.mFaces.size(), -1);
+    const std::int64_t mi = static_cast<std::int64_t>(m);
+    for (std::size_t i = 0; i < build.mFaces.size(); ++i) {
+        const std::int64_t g = build.mFaceGroup[i];
+        if (g >= 0 && g < mi) {
+            const FcPatch& p = skin.mPatches[static_cast<std::size_t>(g)];
+            face_type[i] = p.mType;
+            face_patch[i] = p.mLabel;
+        } else if (g >= mi) {
+            const std::int64_t r = skin.mRow[static_cast<std::size_t>(g - mi)];
+            face_patch[i] = r >= 0 ? skin.mPatches[static_cast<std::size_t>(r)].mLabel : -1;
+        }
+        switch (face_type[i]) {
+            case 1:
+                ++result.mNumPlane;
+                break;
+            case 2:
+                ++result.mNumSphere;
+                break;
+            case 3:
+                ++result.mNumCylinder;
+                break;
+            case 4:
+                ++result.mNumCone;
+                break;
+            case 5:
+                ++result.mNumTorus;
+                break;
+            case kFitCadBsplineType:
+                ++result.mNumBspline;
+                break;
+            case kFitCadFilletType:
+                ++result.mNumFillet;
+                break;
+            case kFitCadHelicalType:
+                ++result.mNumHelical;
+                break;
+            default:
+                ++result.mNumFacetedFaces;
+                break;
+        }
+    }
+
+    // The re-meshed solid.
+    result.mMesh = fc_triangle_mesh(tri.mXyz, tri.mTri);
+    const std::size_t nt = tri.mFace.size();
+    NDArray cface = NDArray::Uninit(DType::Int64, {nt});
+    NDArray ctype = NDArray::Uninit(DType::Int64, {nt});
+    NDArray cpatch = NDArray::Uninit(DType::Int64, {nt});
+    for (std::size_t t = 0; t < nt; ++t) {
+        const std::size_t i = static_cast<std::size_t>(tri.mFace[t]);
+        cface.As<std::int64_t>()[t] = static_cast<std::int64_t>(i);
+        ctype.As<std::int64_t>()[t] = face_type[i];
+        cpatch.As<std::int64_t>()[t] = face_patch[i];
+    }
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(cface));
+    result.mMesh.AddCellData(kFitCadFaceName, std::move(blocks));
+    blocks.clear();
+    blocks.push_back(std::move(ctype));
+    result.mMesh.AddCellData(kFitCadTypeName, std::move(blocks));
+    blocks.clear();
+    blocks.push_back(std::move(cpatch));
+    result.mMesh.AddCellData(kFitCadPatchName, std::move(blocks));
+    if (nt > 0)
+        result.mMaxDeviation = hausdorff_distance(skin_mesh, result.mMesh).mDistance;
+    else
+        result.mMaxDeviation = std::numeric_limits<double>::infinity();
+
+    if (!result.mValid)
+        log::warn("fit_cad: the solid does not pass OpenCASCADE's B-rep check");
+    if (result.mNumDemoted > 0)
+        log::info("fit_cad: {} fitted patch(es) demoted to facets", result.mNumDemoted);
+    // The solid as NURBS, its faces in the order fit_cad:face numbers them.
+    try {
+        result.mBrep = detail::occt_brep_info(detail::occt_nurbs_shape(build.mShape));
+    } catch (const Standard_Failure& rErr) {
+        log::warn("fit_cad: the solid could not be converted to NURBS: {}",
+                  rErr.GetMessageString());
+    }
+    if (!rStepPath.empty())
+        fc_write_step(build.mShape, rStepPath);
+    return result;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/fit_cad.cpp =====
 // ===== begin src/cpp/src/operations/fit_primitives.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -163004,6 +173536,24 @@ std::vector<std::string> pipe_svec(const PipelineStep& rStep, const char* pKey) 
         pipe_err(rStep, std::string("parameter '") + pKey + "' must be an array of strings"));
 }
 
+/// The `1 << FitPrimitiveType` mask of a `Types` list of primitive names.
+std::uint32_t pipe_fit_types(const PipelineStep& rStep) {
+    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+    std::uint32_t mask = 0;
+    for (const std::string& t : pipe_svec(rStep, "Types")) {
+        bool found = false;
+        for (int k = 0; k < 5; ++k)
+            if (t == kNames[k]) {
+                mask |= 1u << (k + 1);
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(
+                pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
+    }
+    return mask;
+}
+
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
@@ -163075,6 +173625,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Prefix"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
+        {"FitCad",
+         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
+          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
+          "Threads"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -163123,6 +173677,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
+        {"Tessellate", {"Levels", "Curved", "Fields", "RecordStencil"}},
         {"Agglomerate",
          {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
@@ -163748,22 +174303,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mRelative = pipe_flag(rStep, "Relative", true);
         opts.mMinInlierFraction = pipe_number(rStep, "MinInlierFraction", 0.9);
         opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
-        const std::vector<std::string> types = pipe_svec(rStep, "Types");
-        if (!types.empty()) {
-            static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
-            opts.mTypes = 0;
-            for (const std::string& t : types) {
-                bool found = false;
-                for (int k = 0; k < 5; ++k)
-                    if (t == kNames[k]) {
-                        opts.mTypes |= 1u << (k + 1);
-                        found = true;
-                    }
-                if (!found)
-                    throw std::invalid_argument(
-                        pipe_err(rStep, "unknown primitive type '" + t + "' in 'Types'"));
-            }
-        }
+        if (!pipe_svec(rStep, "Types").empty())
+            opts.mTypes = pipe_fit_types(rStep);
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},
@@ -163774,6 +174315,38 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumTorus", static_cast<double>(fr.mNumTorus)},
                         {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
         return std::move(fr.mMesh);
+    }
+    if (op == "FitCad") {
+        // The fitted skin becomes a CAD solid, written to `Path` when given; the
+        // mesh continues as the solid re-meshed.
+        FitCadOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mExactEdges = pipe_flag(rStep, "ExactEdges", true);
+        opts.mMeshDeflection = pipe_number(rStep, "MeshDeflection", 0.0);
+        opts.mMaxDemotionRounds =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxDemotionRounds", 8.0));
+        if (pipe_find(rStep, "Types"))
+            opts.mTypes = pipe_fit_types(rStep);
+        opts.mFreeform = pipe_flag(rStep, "Freeform", true);
+        opts.mFreeformDegree = static_cast<std::int32_t>(pipe_number(rStep, "FreeformDegree", 3.0));
+        opts.mFreeformMaxControl =
+            static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControl", 64.0));
+        opts.mFreeformSplit = pipe_flag(rStep, "FreeformSplit", true);
+        opts.mFillets = pipe_flag(rStep, "Fillets", true);
+        opts.mThreads = pipe_flag(rStep, "Threads", true);
+        FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Valid", cr.mValid ? 1.0 : 0.0},
+                        {"VolumeRatio", cr.mVolumeRatio},
+                        {"MaxDeviation", cr.mMaxDeviation},
+                        {"NumFaces", static_cast<double>(cr.mNumFaces)},
+                        {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
+                        {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
+                        {"NumFillet", static_cast<double>(cr.mNumFillet)},
+                        {"NumHelical", static_cast<double>(cr.mNumHelical)},
+                        {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
+        return std::move(cr.mMesh);
     }
     if (op == "Snapshot") {
         // A side output, not a transform: the mesh passes through untouched and
@@ -164189,6 +174762,22 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = subdivide(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
+    }
+    if (op == "Tessellate") {
+        TessellateOptions opts;
+        opts.mLevels = static_cast<std::int64_t>(pipe_number(rStep, "Levels", 2.0));
+        opts.mCurved = pipe_flag(rStep, "Curved", true);
+        opts.mFields = pipe_flag(rStep, "Fields", true);
+        opts.mRecordStencil = pipe_flag(rStep, "RecordStencil", false);
+        TessellateResult tr = tessellate(mesh, opts);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumCurvedSourceCells", static_cast<double>(tr.mNumCurvedSourceCells)},
+             {"NumPassThroughSourceCells", static_cast<double>(tr.mNumPassThroughSourceCells)},
+             {"NumPoints", static_cast<double>(tr.mNumPoints)},
+             {"NumCells", static_cast<double>(tr.mNumCells)},
+             {"NumFacetsWithBadCount", static_cast<double>(tr.mNumFacetsWithBadCount)}});
+        return std::move(tr.mMesh);
     }
     if (op == "Agglomerate") {
         AgglomerateOptions opts;
@@ -170245,10 +180834,13 @@ std::size_t rnd_corner_count(const std::string& rType, CellType Type) {
         case CellType::Vertex:
             return 1;
         case CellType::VtkLagrangeCurve:
+        case CellType::VtkBezierCurve:
             return 2;
         case CellType::VtkLagrangeTriangle:
+        case CellType::VtkBezierTriangle:
             return 3;
         case CellType::VtkLagrangeQuadrilateral:
+        case CellType::VtkBezierQuadrilateral:
             return 4;
         default:
             break;
@@ -175793,13 +186385,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
-        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th") {
+        rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
+        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th' and 'exodus' can); "
+           "'frd', 'radioss_th', 'nastran_op2', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -176088,13 +186681,16 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
             "select");
-    const char* who = rFormat == "exodus"       ? "Exodus"
-                      : rFormat == "vtkhdf"     ? "VTKHDF"
-                      : rFormat == "pvd"        ? "PVD"
-                      : rFormat == "femap"      ? "Femap"
-                      : rFormat == "frd"        ? "CalculiX FRD"
-                      : rFormat == "radioss_th" ? "Radioss time-history"
-                                                : "XDMF";
+    const char* who = rFormat == "exodus"          ? "Exodus"
+                      : rFormat == "vtkhdf"        ? "VTKHDF"
+                      : rFormat == "pvd"           ? "PVD"
+                      : rFormat == "femap"         ? "Femap"
+                      : rFormat == "frd"           ? "CalculiX FRD"
+                      : rFormat == "radioss_th"    ? "Radioss time-history"
+                      : rFormat == "nastran_op2"   ? "Nastran OP2"
+                      : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
+                      : rFormat == "abaqus_fil"    ? "Abaqus results"
+                                                   : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -176111,6 +186707,14 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (rFormat == "radioss_th" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient Radioss time-history writer has no ASCII/binary "
+            "variant to select");
+    if (rFormat == "nastran_op2" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
             "variant to select");
     if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
@@ -176207,6 +186811,47 @@ private:
     RadiossThSeriesWriter mWriter;
 };
 
+/// An OP2 file holds the model once and a block per step in each result table: the writer
+/// keeps the steps and writes the file when it is finalized, so `WritePointsCells` has
+/// nothing to do.
+class SeqNastranOp2Sink final : public SeqSeriesSink {
+public:
+    explicit SeqNastranOp2Sink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    NastranOp2SeriesWriter mWriter;
+};
+
+/// An Abaqus results file holds the model once and an increment per step: the writer keeps
+/// the steps and writes the file when it is finalized (`Encoding` binary writes the binary
+/// layout), so `WritePointsCells` has nothing to do.
+class SeqAbaqusFilSink final : public SeqSeriesSink {
+public:
+    SeqAbaqusFilSink(const std::string& rPath, bool Binary) : mWriter(rPath, Binary) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    AbaqusFilSeriesWriter mWriter;
+};
+
+/// A binout keeps every output's records and writes the file when it is finalized, so
+/// `WritePointsCells` has nothing to do.
+class SeqLsdynaBinoutSink final : public SeqSeriesSink {
+public:
+    explicit SeqLsdynaBinoutSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    LsdynaBinoutSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -176249,6 +186894,13 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "radioss_th")
         return std::make_unique<SeqRadiossThSink>(rPath);
+    if (rFormat == "nastran_op2")
+        return std::make_unique<SeqNastranOp2Sink>(rPath);
+    if (rFormat == "lsdyna_binout")
+        return std::make_unique<SeqLsdynaBinoutSink>(rPath);
+    if (rFormat == "abaqus_fil")
+        return std::make_unique<SeqAbaqusFilSink>(rPath,
+                                                  rOptions.mEncoding == WriteEncoding::Binary);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);
@@ -178827,6 +189479,13 @@ std::string sniff_format(const std::string& rPath) {
         sniff_starts_with(stripped, "MFEM NURBS mesh") ||
         sniff_starts_with(stripped, "MFEM INLINE mesh"))
         return "mfem";
+    // Kratos CAD JSON: an object with a "breps" list (CadJsonInput), or the
+    // "Surfaces"/"Lines" lists of control points ImportNurbsSbmModeler reads.
+    if (sniff_starts_with(stripped, "{") &&
+        (sniff_contains(head, "\"breps\"") ||
+         ((sniff_contains(head, "\"Surfaces\"") || sniff_contains(head, "\"Lines\"")) &&
+          sniff_contains(head, "\"CPCoordinates\""))))
+        return "cad_json";
     if (sniff_starts_with(stripped, "libMesh-"))
         return "libmesh";
     if (sniff_is_abaqus_fil_ascii(stripped))
@@ -181186,6 +191845,1054 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/tensor_invariants.cpp =====
+// ===== begin src/cpp/src/operations/tessellate.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr std::size_t kTsWidth = kTessellateStencilWidth;
+
+// --- the five curved types ----------------------------------------------------
+
+enum class TsBase { Triangle, Quad, Tetra, Hexahedron };
+
+struct TsType {
+    TsBase mBase = TsBase::Triangle;
+    CellType mBaseType = CellType::Triangle;
+    int mNumCorners = 0;
+    int mNumNodes = 0;
+    int mDim = 0;
+    bool mFaces = false;  // quad9 / hexahedron27: face-centre nodes
+    bool mBody = false;   // hexahedron27: a body-centre node
+    bool mQuad8 = false;  // the serendipity basis
+};
+
+bool ts_curved_type(std::string_view Name, TsType& rOut) {
+    if (Name == "triangle6") {
+        rOut = {TsBase::Triangle, CellType::Triangle, 3, 6, 2, false, false, false};
+    } else if (Name == "quad8") {
+        rOut = {TsBase::Quad, CellType::Quad, 4, 8, 2, false, false, true};
+    } else if (Name == "quad9") {
+        rOut = {TsBase::Quad, CellType::Quad, 4, 9, 2, true, false, false};
+    } else if (Name == "tetra10") {
+        rOut = {TsBase::Tetra, CellType::Tetra, 4, 10, 3, false, false, false};
+    } else if (Name == "hexahedron27") {
+        rOut = {TsBase::Hexahedron, CellType::Hexahedron, 8, 27, 3, true, true, false};
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ts_is_simplex(TsBase Base) {
+    return Base == TsBase::Triangle || Base == TsBase::Tetra;
+}
+
+// The reference elements of `_REFERENCE_CORNERS`: the unit simplex, and
+// [-1, 1]^d for the tensor bases.
+std::vector<std::array<double, 3>> ts_reference_corners(TsBase Base) {
+    switch (Base) {
+        case TsBase::Triangle:
+            return {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}};
+        case TsBase::Quad:
+            return {{-1.0, -1.0, 0.0}, {1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, {-1.0, 1.0, 0.0}};
+        case TsBase::Tetra:
+            return {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+        case TsBase::Hexahedron:
+        default:
+            return {{-1.0, -1.0, -1.0}, {1.0, -1.0, -1.0}, {1.0, 1.0, -1.0}, {-1.0, 1.0, -1.0},
+                    {-1.0, -1.0, 1.0},  {1.0, -1.0, 1.0},  {1.0, 1.0, 1.0},  {-1.0, 1.0, 1.0}};
+    }
+}
+
+// The quad faces of a hexahedron in cyclic corner order; a face's lattice
+// points are keyed by walking its corners around this cycle.
+constexpr std::array<std::array<int, 4>, 6> kTsHexFaces = {{
+    {0, 1, 2, 3},
+    {4, 5, 6, 7},
+    {0, 1, 5, 4},
+    {1, 2, 6, 5},
+    {2, 3, 7, 6},
+    {3, 0, 4, 7},
+}};
+
+// --- one curved type's reference lattice ------------------------------------
+
+struct TsLattice {
+    TsType mType;
+    int mDim = 0;
+    std::int64_t mN = 1;           // the key quantum: divisions per edge
+    std::vector<double> mXi;       // (M, dim)
+    std::vector<int> mCells;       // (K, corners)
+    std::vector<double> mCornerW;  // (M, corners)
+    std::vector<double> mNodeW;    // (M, nodes)
+    std::size_t NumPoints() const { return mXi.size() / static_cast<std::size_t>(mDim); }
+};
+
+// Node parametric coordinates: corners, edge midpoints (in the mid-node slot
+// order of `cell_refine_edges`), face centres (`cell_refine_quad_faces`) and
+// the body centre.
+std::vector<std::array<double, 3>> ts_node_coords(const TsType& rType) {
+    const auto corners = ts_reference_corners(rType.mBase);
+    std::vector<std::array<double, 3>> out(corners.begin(), corners.end());
+    for (const auto& e : detail::cell_refine_edges(rType.mBaseType)) {
+        std::array<double, 3> m{};
+        for (int a = 0; a < 3; ++a)
+            m[a] = 0.5 * (corners[e[0]][a] + corners[e[1]][a]);
+        out.push_back(m);
+    }
+    if (rType.mFaces) {
+        for (const auto& f : detail::cell_refine_quad_faces(rType.mBaseType)) {
+            std::array<double, 3> m{};
+            for (int a = 0; a < 3; ++a)
+                m[a] = (((corners[f[0]][a] + corners[f[1]][a]) + corners[f[2]][a]) +
+                        corners[f[3]][a]) /
+                       4.0;
+            out.push_back(m);
+        }
+    }
+    if (rType.mBody) {
+        std::array<double, 3> m{};
+        for (int a = 0; a < 3; ++a) {
+            double s = 0.0;
+            for (const auto& c : corners)
+                s += c[a];
+            m[a] = s / static_cast<double>(corners.size());
+        }
+        out.push_back(m);
+    }
+    if (static_cast<int>(out.size()) != rType.mNumNodes)
+        throw std::logic_error("tessellate: node table does not match the cell type");
+    return out;
+}
+
+double ts_lagrange1d(double T, double XiVal) {
+    if (XiVal < -0.5)
+        return 0.5 * T * (T - 1.0);
+    if (XiVal > 0.5)
+        return 0.5 * T * (T + 1.0);
+    return 1.0 - T * T;
+}
+
+// Corner weights at one reference point: barycentric for a simplex, the
+// multilinear tensor weight otherwise.
+void ts_corner_weights(const TsType& rType, const double* pXi, double* pOut) {
+    const int dim = rType.mDim;
+    if (ts_is_simplex(rType.mBase)) {
+        double sum = 0.0;
+        for (int a = 0; a < dim; ++a)
+            sum += pXi[a];
+        pOut[0] = 1.0 - sum;
+        for (int a = 0; a < dim; ++a)
+            pOut[a + 1] = pXi[a];
+        return;
+    }
+    const auto corners = ts_reference_corners(rType.mBase);
+    for (int c = 0; c < rType.mNumCorners; ++c) {
+        double w = 1.0;
+        for (int a = 0; a < dim; ++a)
+            w *= corners[c][a] > 0 ? (1.0 + pXi[a]) * 0.5 : (1.0 - pXi[a]) * 0.5;
+        pOut[c] = w;
+    }
+}
+
+// Quadratic shape functions at one reference point.
+void ts_shape_functions(const TsType& rType, const std::vector<std::array<double, 3>>& rNodes,
+                        const double* pXi, double* pOut) {
+    const int dim = rType.mDim;
+    if (rType.mQuad8) {
+        const double x = pXi[0], y = pXi[1];
+        for (int k = 0; k < 8; ++k) {
+            const double xk = rNodes[k][0], yk = rNodes[k][1];
+            if (std::fabs(xk) < 0.5)
+                pOut[k] = 0.5 * (1.0 - x * x) * (1.0 + y * yk);
+            else if (std::fabs(yk) < 0.5)
+                pOut[k] = 0.5 * (1.0 + x * xk) * (1.0 - y * y);
+            else
+                pOut[k] = 0.25 * (1.0 + x * xk) * (1.0 + y * yk) * (x * xk + y * yk - 1.0);
+        }
+        return;
+    }
+    if (!ts_is_simplex(rType.mBase)) {
+        for (int k = 0; k < rType.mNumNodes; ++k) {
+            double w = 1.0;
+            for (int a = 0; a < dim; ++a)
+                w *= ts_lagrange1d(pXi[a], rNodes[k][a]);
+            pOut[k] = w;
+        }
+        return;
+    }
+    std::array<double, 4> lam{};
+    ts_corner_weights(rType, pXi, lam.data());
+    const int nc = rType.mNumCorners;
+    for (int i = 0; i < nc; ++i)
+        pOut[i] = lam[i] * (2.0 * lam[i] - 1.0);
+    const auto& edges = detail::cell_refine_edges(rType.mBaseType);
+    for (std::size_t k = 0; k < edges.size(); ++k)
+        pOut[nc + static_cast<int>(k)] = 4.0 * lam[edges[k][0]] * lam[edges[k][1]];
+}
+
+// A simplex base's `levels` recursive same-type splits, with points numbered in
+// the order they are first created and deduplicated by their exact dyadic
+// coordinates.
+void ts_recursive_lattice(const TsType& rType, std::int64_t Levels, TsLattice& rOut) {
+    const int dim = rType.mDim;
+    const double scale = std::ldexp(1.0, static_cast<int>(std::max<std::int64_t>(Levels, 0)));
+    std::vector<std::array<double, 3>> points;
+    std::unordered_map<std::uint64_t, int> index_of;
+    // Coordinates are integers in [0, 2^levels] once scaled; levels is capped
+    // well below 21, so three of them pack into one 64-bit key.
+    auto get_index = [&](const std::array<double, 3>& rP) {
+        std::uint64_t key = 0;
+        for (int a = 0; a < dim; ++a)
+            key = (key << 21) | static_cast<std::uint64_t>(std::nearbyint(rP[a] * scale));
+        auto it = index_of.find(key);
+        if (it != index_of.end())
+            return it->second;
+        const int idx = static_cast<int>(points.size());
+        index_of.emplace(key, idx);
+        points.push_back(rP);
+        return idx;
+    };
+    auto mid = [](const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
+        return std::array<double, 3>{0.5 * (rA[0] + rB[0]), 0.5 * (rA[1] + rB[1]),
+                                     0.5 * (rA[2] + rB[2])};
+    };
+    const auto corners = ts_reference_corners(rType.mBase);
+    const int nc = rType.mNumCorners;
+    std::vector<int> cells;
+    for (int i = 0; i < nc; ++i)
+        cells.push_back(get_index(corners[i]));
+    for (std::int64_t level = 0; level < Levels; ++level) {
+        std::vector<int> next;
+        for (std::size_t c = 0; c < cells.size(); c += nc) {
+            std::vector<std::array<double, 3>> cp(nc);
+            for (int i = 0; i < nc; ++i)
+                cp[i] = points[cells[c + i]];
+            std::vector<std::array<std::array<double, 3>, 4>> children;
+            if (rType.mBase == TsBase::Triangle) {
+                const auto m01 = mid(cp[0], cp[1]), m12 = mid(cp[1], cp[2]),
+                           m20 = mid(cp[2], cp[0]);
+                children = {{cp[0], m01, m20, {}},
+                            {cp[1], m12, m01, {}},
+                            {cp[2], m20, m12, {}},
+                            {m01, m12, m20, {}}};
+            } else {
+                const auto m01 = mid(cp[0], cp[1]), m12 = mid(cp[1], cp[2]);
+                const auto m02 = mid(cp[0], cp[2]), m03 = mid(cp[0], cp[3]);
+                const auto m13 = mid(cp[1], cp[3]), m23 = mid(cp[2], cp[3]);
+                children = {{cp[0], m01, m02, m03}, {cp[1], m01, m12, m13}, {cp[2], m02, m12, m23},
+                            {cp[3], m03, m13, m23}, {m01, m23, m02, m03},   {m01, m23, m03, m13},
+                            {m01, m23, m13, m12},   {m01, m23, m12, m02}};
+            }
+            for (const auto& child : children)
+                for (int i = 0; i < nc; ++i)
+                    next.push_back(get_index(child[i]));
+        }
+        cells = std::move(next);
+    }
+    rOut.mXi.resize(points.size() * dim);
+    for (std::size_t p = 0; p < points.size(); ++p)
+        for (int a = 0; a < dim; ++a)
+            rOut.mXi[p * dim + a] = points[p][a];
+    rOut.mCells = std::move(cells);
+}
+
+// A tensor base's (n + 1)-per-axis grid, numbered and connected exactly as the
+// numpy twin's meshgrid ravel and index lambdas do.
+void ts_tensor_lattice(const TsType& rType, std::int64_t Levels, TsLattice& rOut) {
+    const std::int64_t n = std::max<std::int64_t>(Levels, 1);
+    const std::size_t np1 = static_cast<std::size_t>(n + 1);
+    std::vector<double> t(np1);
+    const double step = 2.0 / static_cast<double>(n);
+    for (std::size_t i = 0; i < np1; ++i)
+        t[i] = static_cast<double>(i) * step + -1.0;
+    t[np1 - 1] = 1.0;
+    std::vector<double>& xi = rOut.mXi;
+    std::vector<int>& cells = rOut.mCells;
+    if (rType.mBase == TsBase::Quad) {
+        for (std::size_t i = 0; i < np1; ++i)
+            for (std::size_t j = 0; j < np1; ++j) {
+                xi.push_back(t[i]);
+                xi.push_back(t[j]);
+            }
+        auto idx = [np1](std::size_t i, std::size_t j) { return static_cast<int>(i + np1 * j); };
+        for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i)
+            for (std::size_t j = 0; j < static_cast<std::size_t>(n); ++j)
+                for (int v : {idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)})
+                    cells.push_back(v);
+        return;
+    }
+    for (std::size_t i = 0; i < np1; ++i)
+        for (std::size_t j = 0; j < np1; ++j)
+            for (std::size_t k = 0; k < np1; ++k) {
+                xi.push_back(t[i]);
+                xi.push_back(t[j]);
+                xi.push_back(t[k]);
+            }
+    auto idx3 = [np1](std::size_t i, std::size_t j, std::size_t k) {
+        return static_cast<int>(i + np1 * (j + np1 * k));
+    };
+    const std::size_t nn = static_cast<std::size_t>(n);
+    for (std::size_t i = 0; i < nn; ++i)
+        for (std::size_t j = 0; j < nn; ++j)
+            for (std::size_t k = 0; k < nn; ++k)
+                for (int v : {idx3(i, j, k), idx3(i + 1, j, k), idx3(i + 1, j + 1, k),
+                              idx3(i, j + 1, k), idx3(i, j, k + 1), idx3(i + 1, j, k + 1),
+                              idx3(i + 1, j + 1, k + 1), idx3(i, j + 1, k + 1)})
+                    cells.push_back(v);
+}
+
+TsLattice ts_build_lattice(const TsType& rType, std::int64_t Levels) {
+    TsLattice lat;
+    lat.mType = rType;
+    lat.mDim = rType.mDim;
+    if (ts_is_simplex(rType.mBase)) {
+        ts_recursive_lattice(rType, Levels, lat);
+        lat.mN = std::int64_t{1} << std::max<std::int64_t>(Levels, 0);
+    } else {
+        ts_tensor_lattice(rType, Levels, lat);
+        lat.mN = std::max<std::int64_t>(Levels, 1);
+    }
+    const auto nodes = ts_node_coords(rType);
+    const std::size_t m = lat.NumPoints();
+    lat.mCornerW.resize(m * rType.mNumCorners);
+    lat.mNodeW.resize(m * rType.mNumNodes);
+    for (std::size_t p = 0; p < m; ++p) {
+        const double* xi = lat.mXi.data() + p * lat.mDim;
+        ts_corner_weights(rType, xi, lat.mCornerW.data() + p * rType.mNumCorners);
+        ts_shape_functions(rType, nodes, xi, lat.mNodeW.data() + p * rType.mNumNodes);
+    }
+    return lat;
+}
+
+// --- point keys ---------------------------------------------------------------
+
+// A point's identity: a short tuple of integers, compared lexicographically
+// with a proper prefix first -- Python's tuple order, which the output point
+// table is sorted by.
+struct TsKey {
+    std::array<std::int64_t, 8> mV{};
+    std::uint8_t mLen = 0;
+    void Push(std::int64_t V) { mV[mLen++] = V; }
+    bool operator==(const TsKey& rO) const {
+        return mLen == rO.mLen && std::equal(mV.begin(), mV.begin() + mLen, rO.mV.begin());
+    }
+    bool operator<(const TsKey& rO) const {
+        return std::lexicographical_compare(mV.begin(), mV.begin() + mLen, rO.mV.begin(),
+                                            rO.mV.begin() + rO.mLen);
+    }
+};
+
+struct TsKeyHash {
+    std::size_t operator()(const TsKey& rK) const {
+        std::uint64_t h = 1469598103934665603ULL ^ rK.mLen;
+        for (std::uint8_t i = 0; i < rK.mLen; ++i) {
+            h ^= static_cast<std::uint64_t>(rK.mV[i]) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            h *= 1099511628211ULL;
+        }
+        return static_cast<std::size_t>(h);
+    }
+};
+
+std::int64_t ts_quantize(double V) {
+    return static_cast<std::int64_t>(std::nearbyint(V));
+}
+
+// The shared point table, in creation order.
+struct TsPoints {
+    int mDim = 3;
+    std::unordered_map<TsKey, std::int64_t, TsKeyHash> mIndex;
+    std::vector<TsKey> mKeys;
+    std::vector<double> mXyz;            // (P, dim)
+    std::vector<std::int64_t> mStencil;  // (P, 27)
+    std::vector<double> mWeights;        // (P, 27)
+
+    // Returns the point's index, creating it (by calling `rMake`, which writes
+    // its coordinates, stencil and weights) the first time the key is seen.
+    template <class TMake>
+    std::int64_t Resolve(const TsKey& rKey, TMake&& rMake) {
+        auto it = mIndex.find(rKey);
+        if (it != mIndex.end())
+            return it->second;
+        const std::int64_t idx = static_cast<std::int64_t>(mKeys.size());
+        mIndex.emplace(rKey, idx);
+        mKeys.push_back(rKey);
+        mXyz.resize(mXyz.size() + mDim, 0.0);
+        mStencil.resize(mStencil.size() + kTsWidth, -1);
+        mWeights.resize(mWeights.size() + kTsWidth, 0.0);
+        const std::size_t u = static_cast<std::size_t>(idx);
+        rMake(mXyz.data() + u * mDim, mStencil.data() + u * kTsWidth,
+              mWeights.data() + u * kTsWidth);
+        return idx;
+    }
+};
+
+// One curved cell's nodes, read from the source mesh.
+struct TsCell {
+    const std::int64_t* pNodes = nullptr;  // every node id, corners first
+    std::vector<double> mXyz;              // (nodes, dim), Float64
+    std::int64_t mGlobal = 0;              // global block-major cell index
+};
+
+// Write a stencil (nodes whose weight exceeds 1e-12) and the weighted
+// position for a combination `pW` of the cell's nodes.
+void ts_fill_point(const TsLattice& rLat, const TsCell& rCell, const double* pW, int Dim,
+                   double* pXyz, std::int64_t* pStencil, double* pWeights) {
+    const int nn = rLat.mType.mNumNodes;
+    for (int a = 0; a < Dim; ++a) {
+        double s = 0.0;
+        for (int k = 0; k < nn; ++k)
+            s += pW[k] * rCell.mXyz[static_cast<std::size_t>(k) * Dim + a];
+        pXyz[a] = s;
+    }
+    std::size_t w = 0;
+    for (int k = 0; k < nn && w < kTsWidth; ++k) {
+        if (std::fabs(pW[k]) > 1e-12) {
+            pStencil[w] = rCell.pNodes[k];
+            pWeights[w] = pW[k];
+            ++w;
+        }
+    }
+}
+
+// The canonical traversal of a corner cycle: start at the smallest id and walk
+// toward its smaller neighbour.
+void ts_canonical_cycle(const std::int64_t* pIds, int N, std::int64_t* pOut) {
+    int start = 0;
+    for (int i = 1; i < N; ++i)
+        if (pIds[i] < pIds[start])
+            start = i;
+    const std::int64_t nxt = pIds[(start + 1) % N];
+    const std::int64_t prv = pIds[(start - 1 + N) % N];
+    const int step = nxt < prv ? 1 : -1;
+    for (int k = 0; k < N; ++k)
+        pOut[k] = pIds[((start + step * k) % N + N) % N];
+}
+
+// The key of reference lattice point `Local` of one cell.
+TsKey ts_point_key(const TsLattice& rLat, std::size_t Local, const TsCell& rCell) {
+    const TsType& type = rLat.mType;
+    const int nc = type.mNumCorners;
+    const double* cw = rLat.mCornerW.data() + Local * nc;
+    std::array<int, 8> nz{};
+    int nnz = 0;
+    for (int c = 0; c < nc; ++c)
+        if (std::fabs(cw[c]) > 1e-9)
+            nz[nnz++] = c;
+    const double n = static_cast<double>(rLat.mN);
+    const std::int64_t* gid = rCell.pNodes;
+    TsKey key;
+    if (nnz == 1) {
+        key.Push(0);
+        key.Push(gid[nz[0]]);
+    } else if (nnz == 2) {
+        std::int64_t ga = gid[nz[0]], gb = gid[nz[1]];
+        double wb = cw[nz[1]];
+        if (ga > gb) {
+            std::swap(ga, gb);
+            wb = cw[nz[0]];
+        }
+        key.Push(1);
+        key.Push(ga);
+        key.Push(gb);
+        key.Push(ts_quantize(wb * n));
+    } else if ((type.mBase == TsBase::Hexahedron && nnz == 4) ||
+               (type.mBase == TsBase::Tetra && nnz == 3)) {
+        // A face point. A hexahedron's face corners are taken in their cyclic
+        // order around the face, not in ascending local order (which, for four
+        // of the six faces, is not a cycle at all).
+        std::array<int, 4> order{};
+        if (nnz == 4) {
+            for (const auto& f : kTsHexFaces) {
+                std::array<int, 4> sorted = f;
+                std::sort(sorted.begin(), sorted.end());
+                if (std::equal(sorted.begin(), sorted.end(), nz.begin())) {
+                    order = f;
+                    break;
+                }
+            }
+        } else {
+            for (int i = 0; i < 3; ++i)
+                order[i] = nz[i];
+        }
+        std::array<std::int64_t, 4> ids{}, canon{};
+        for (int i = 0; i < nnz; ++i)
+            ids[i] = gid[order[i]];
+        ts_canonical_cycle(ids.data(), nnz, canon.data());
+        auto w_of = [&](std::int64_t g) {
+            // The weight of the corner whose global id is `g` (the last such
+            // corner, as the numpy twin's dict keeps).
+            double w = 0.0;
+            for (int i = 0; i < nnz; ++i)
+                if (gid[order[i]] == g)
+                    w = cw[order[i]];
+            return w;
+        };
+        double u, v;
+        if (nnz == 3) {
+            u = w_of(canon[1]);
+            v = w_of(canon[2]);
+        } else {
+            u = w_of(canon[1]) + w_of(canon[2]);
+            v = w_of(canon[2]) + w_of(canon[3]);
+        }
+        key.Push(2);
+        key.Push(nnz);
+        for (int i = 0; i < nnz; ++i)
+            key.Push(canon[i]);
+        key.Push(ts_quantize(u * n));
+        key.Push(ts_quantize(v * n));
+    } else {
+        key.Push(3);
+        key.Push(0);
+        key.Push(rCell.mGlobal);
+        const double* xi = rLat.mXi.data() + Local * rLat.mDim;
+        for (int a = 0; a < rLat.mDim; ++a)
+            key.Push(ts_quantize(xi[a] * n));
+    }
+    return key;
+}
+
+// Split a quad (point indices in creation order) along the diagonal from its
+// smallest index to the corner two steps away.
+void ts_quad_split(const std::array<std::int64_t, 4>& rIds, std::vector<std::int64_t>& rOut,
+                   std::int64_t Apex) {
+    int p = 0;
+    for (int i = 1; i < 4; ++i)
+        if (rIds[i] < rIds[p])
+            p = i;
+    const std::int64_t a = rIds[p], b = rIds[(p + 1) % 4], c = rIds[(p + 2) % 4],
+                       d = rIds[(p + 3) % 4];
+    for (std::int64_t v : {a, b, c})
+        rOut.push_back(v);
+    if (Apex >= 0)
+        rOut.push_back(Apex);
+    for (std::int64_t v : {a, c, d})
+        rOut.push_back(v);
+    if (Apex >= 0)
+        rOut.push_back(Apex);
+}
+
+// Tessellate one curved cell; append its children to `rOut` (3 or 4 ids each).
+void ts_tessellate_cell(const TsLattice& rLat, const TsCell& rCell, TsPoints& rPoints,
+                        std::vector<std::int64_t>& rOut, std::int64_t& rNumChildren) {
+    const int dim = rPoints.mDim;
+    const int nn = rLat.mType.mNumNodes;
+    const std::size_t m = rLat.NumPoints();
+    std::vector<std::int64_t> resolved(m);
+    for (std::size_t i = 0; i < m; ++i) {
+        const TsKey key = ts_point_key(rLat, i, rCell);
+        resolved[i] = rPoints.Resolve(key, [&](double* pXyz, std::int64_t* pS, double* pW) {
+            ts_fill_point(rLat, rCell, rLat.mNodeW.data() + i * nn, dim, pXyz, pS, pW);
+        });
+    }
+    const int nc = rLat.mType.mNumCorners;
+    const std::size_t ncells = rLat.mCells.size() / static_cast<std::size_t>(nc);
+    const TsBase base = rLat.mType.mBase;
+    rNumChildren = 0;
+    if (ts_is_simplex(base)) {
+        for (std::size_t c = 0; c < ncells; ++c)
+            for (int i = 0; i < nc; ++i)
+                rOut.push_back(resolved[rLat.mCells[c * nc + i]]);
+        rNumChildren = static_cast<std::int64_t>(ncells);
+        return;
+    }
+    if (base == TsBase::Quad) {
+        for (std::size_t c = 0; c < ncells; ++c) {
+            std::array<std::int64_t, 4> ids{};
+            for (int i = 0; i < 4; ++i)
+                ids[i] = resolved[rLat.mCells[c * 4 + i]];
+            ts_quad_split(ids, rOut, -1);
+        }
+        rNumChildren = static_cast<std::int64_t>(2 * ncells);
+        return;
+    }
+    // Hexahedron: 12 tetrahedra per sub-hexahedron around a centroid apex.
+    std::vector<double> apex_w(nn);
+    for (std::size_t c = 0; c < ncells; ++c) {
+        const int* local = rLat.mCells.data() + c * 8;
+        TsKey apex_key;
+        apex_key.Push(3);
+        apex_key.Push(1);
+        apex_key.Push(rCell.mGlobal);
+        apex_key.Push(static_cast<std::int64_t>(c));
+        for (int a = 0; a < 3; ++a) {
+            double s = 0.0;
+            for (int i = 0; i < 8; ++i)
+                s += rLat.mXi[static_cast<std::size_t>(local[i]) * 3 + a];
+            apex_key.Push(ts_quantize(s / 8.0 * static_cast<double>(rLat.mN)));
+        }
+        for (int k = 0; k < nn; ++k) {
+            double s = 0.0;
+            for (int i = 0; i < 8; ++i)
+                s += rLat.mNodeW[static_cast<std::size_t>(local[i]) * nn + k];
+            apex_w[k] = s / 8.0;
+        }
+        const std::int64_t apex =
+            rPoints.Resolve(apex_key, [&](double* pXyz, std::int64_t* pS, double* pW) {
+                ts_fill_point(rLat, rCell, apex_w.data(), dim, pXyz, pS, pW);
+            });
+        for (const auto& f : kTsHexFaces) {
+            std::array<std::int64_t, 4> ids{};
+            for (int i = 0; i < 4; ++i)
+                ids[i] = resolved[local[f[i]]];
+            ts_quad_split(ids, rOut, apex);
+        }
+    }
+    rNumChildren = static_cast<std::int64_t>(12 * ncells);
+}
+
+// --- a pass-through block, staged with source point ids ----------------------
+
+struct TsBlock {
+    std::string mType;
+    std::size_t mNodesPerCell = 0;
+    std::vector<std::int64_t> mConn;  // rectangular, or the ragged CSR flat list
+    std::vector<std::int64_t> mRowOffsets;
+    std::vector<std::int64_t> mFaceOffsets;
+    bool mIsRagged = false;
+    bool mIsPolyhedron = false;
+    std::vector<std::int64_t> mSourceCell;
+    std::vector<std::int64_t> mSubIndex;
+};
+
+// Stage a pass-through block, creating its points (in the numpy twin's order:
+// row by row) and storing their creation indices.
+TsBlock ts_stage_passthrough(const Mesh::CellView& rBlock, const detail::DoubleView& rPoints,
+                             TsPoints& rTable, std::int64_t Base) {
+    TsBlock out;
+    out.mType = std::string(rBlock.Type());
+    const int dim = rTable.mDim;
+    auto kept = [&](std::int64_t gid) {
+        TsKey key;
+        key.Push(0);
+        key.Push(gid);
+        return rTable.Resolve(key, [&](double* pXyz, std::int64_t* pS, double* pW) {
+            for (int a = 0; a < dim; ++a)
+                pXyz[a] = rPoints[static_cast<std::size_t>(gid) * dim + a];
+            pS[0] = gid;
+            pW[0] = 1.0;
+        });
+    };
+    const std::size_t nc = rBlock.NumCells();
+    if (rBlock.IsPolyhedron()) {
+        out.mIsRagged = out.mIsPolyhedron = true;
+        out.mRowOffsets.push_back(0);
+        out.mFaceOffsets.push_back(0);
+        for (std::size_t c = 0; c < nc; ++c) {
+            for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
+                const auto face = rBlock.Face(c, f);
+                for (std::size_t i = 0; i < face.second; ++i)
+                    out.mConn.push_back(kept(face.first[i]));
+                out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mConn.size()));
+            }
+            out.mFaceOffsets.push_back(static_cast<std::int64_t>(out.mRowOffsets.size() - 1));
+        }
+    } else if (rBlock.IsRagged()) {
+        out.mIsRagged = true;
+        out.mRowOffsets.push_back(0);
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::int64_t* row = rBlock.Row(c);
+            for (std::size_t i = 0; i < rBlock.RowSize(c); ++i)
+                out.mConn.push_back(kept(row[i]));
+            out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mConn.size()));
+        }
+    } else {
+        const detail::Int64View conn(rBlock.Conn());
+        const std::size_t npc = rBlock.NodesPerCell();
+        out.mNodesPerCell = npc;
+        out.mConn.reserve(nc * npc);
+        for (std::size_t i = 0; i < nc * npc; ++i)
+            out.mConn.push_back(kept(conn[i]));
+    }
+    out.mSourceCell.resize(nc);
+    for (std::size_t c = 0; c < nc; ++c)
+        out.mSourceCell[c] = Base + static_cast<std::int64_t>(c);
+    out.mSubIndex.assign(nc, 0);
+    return out;
+}
+
+void ts_emit_block(Mesh& rOut, TsBlock& rBlock, const std::vector<std::int64_t>& rRemap) {
+    for (std::int64_t& id : rBlock.mConn)
+        id = rRemap[static_cast<std::size_t>(id)];
+    if (rBlock.mIsPolyhedron) {
+        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mConn),
+                                std::move(rBlock.mRowOffsets), std::move(rBlock.mFaceOffsets));
+    } else if (rBlock.mIsRagged) {
+        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mConn), std::move(rBlock.mRowOffsets));
+    } else {
+        const std::size_t npc = rBlock.mNodesPerCell;
+        const std::size_t ncells = npc == 0 ? rBlock.mSourceCell.size() : rBlock.mConn.size() / npc;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        if (!rBlock.mConn.empty())
+            std::memcpy(conn.Data(), rBlock.mConn.data(),
+                        rBlock.mConn.size() * sizeof(std::int64_t));
+        rOut.AddCellBlock(rBlock.mType, std::move(conn));
+    }
+}
+
+NDArray ts_int64_array(const std::vector<std::int64_t>& rValues) {
+    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
+    if (!rValues.empty())
+        std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
+    return out;
+}
+
+bool ts_reserved_name(const std::string& rName) {
+    return rName.rfind("tessellate:", 0) == 0;
+}
+
+// Facet-use counts over every tetra block of the output.
+void ts_watertight(const Mesh& rOut, TessellateResult& rRes) {
+    std::vector<std::array<std::int64_t, 3>> facets;
+    for (const auto cb : rOut.CellRange()) {
+        if (cb.IsRagged() || std::string_view(cb.Type()) != "tetra")
+            continue;
+        const detail::Int64View conn(cb.Conn());
+        static constexpr int kFaces[4][3] = {{0, 1, 2}, {0, 1, 3}, {1, 2, 3}, {0, 2, 3}};
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            for (const auto& f : kFaces) {
+                std::array<std::int64_t, 3> key{conn[c * 4 + f[0]], conn[c * 4 + f[1]],
+                                                conn[c * 4 + f[2]]};
+                std::sort(key.begin(), key.end());
+                facets.push_back(key);
+            }
+    }
+    std::sort(facets.begin(), facets.end());
+    for (std::size_t i = 0; i < facets.size();) {
+        std::size_t j = i;
+        while (j < facets.size() && facets[j] == facets[i])
+            ++j;
+        const std::size_t count = j - i;
+        if (count == 1)
+            ++rRes.mNumBoundaryFacets;
+        else if (count == 2)
+            ++rRes.mNumInteriorFacets;
+        else
+            ++rRes.mNumFacetsWithBadCount;
+        i = j;
+    }
+}
+
+}  // namespace
+
+TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions) {
+    if (rOptions.mLevels < 0)
+        throw std::invalid_argument("tessellate: levels must be >= 0, got " +
+                                    std::to_string(rOptions.mLevels));
+    // A simplex lattice has 2^levels divisions per edge and a tetrahedron
+    // 8^levels children: 2^20 per edge is far past any useful tessellation and
+    // keeps the lattice keys inside 21 bits.
+    if (rOptions.mLevels > 20)
+        throw std::invalid_argument("tessellate: levels must be <= 20, got " +
+                                    std::to_string(rOptions.mLevels));
+
+    const std::size_t num_points = rMesh.NumPoints();
+    const int dim = num_points ? static_cast<int>(rMesh.PointDim()) : 3;
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    for (const std::string& name : rMesh.PointDataNames()) {
+        if (rOptions.mFields && !ts_reserved_name(name) &&
+            detail::rows(rMesh.PointData(name)) != num_points)
+            throw std::invalid_argument("tessellate: point data '" + name + "' has " +
+                                        std::to_string(detail::rows(rMesh.PointData(name))) +
+                                        " rows, expected " + std::to_string(num_points));
+    }
+
+    std::vector<std::int64_t> bases(nblocks + 1, 0);
+    for (std::size_t b = 0; b < nblocks; ++b)
+        bases[b + 1] = bases[b] + static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+
+    const NDArray& points_arr = rMesh.Points();
+    const detail::DoubleView points(points_arr);
+
+    TsPoints table;
+    table.mDim = dim;
+    std::unordered_map<std::string, TsLattice> lattices;
+
+    // Block slots in output order: pass-through blocks keep their input order;
+    // curved children go to the trailing triangle and tetra blocks.
+    std::vector<TsBlock> passthrough;
+    std::vector<std::int64_t> tri_conn, tet_conn;
+    std::vector<std::int64_t> tri_src, tri_sub, tet_src, tet_sub;
+
+    TessellateResult res;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        TsType type;
+        const bool curved = rOptions.mCurved && !cb.IsRagged() &&
+                            ts_curved_type(std::string_view(cb.Type()), type) &&
+                            cb.NodesPerCell() == static_cast<std::size_t>(type.mNumNodes);
+        if (!curved) {
+            res.mNumPassThroughSourceCells += static_cast<std::int64_t>(cb.NumCells());
+            passthrough.push_back(ts_stage_passthrough(cb, points, table, bases[b]));
+            continue;
+        }
+        res.mNumCurvedSourceCells += static_cast<std::int64_t>(cb.NumCells());
+        auto it = lattices.find(std::string(cb.Type()));
+        if (it == lattices.end())
+            it = lattices.emplace(std::string(cb.Type()), ts_build_lattice(type, rOptions.mLevels))
+                     .first;
+        const TsLattice& lat = it->second;
+        const detail::Int64View conn(cb.Conn());
+        const int nn = type.mNumNodes;
+        const bool to_tet = type.mDim == 3;
+        std::vector<std::int64_t>& dest = to_tet ? tet_conn : tri_conn;
+        std::vector<std::int64_t>& dest_src = to_tet ? tet_src : tri_src;
+        std::vector<std::int64_t>& dest_sub = to_tet ? tet_sub : tri_sub;
+        TsCell cell;
+        cell.mXyz.resize(static_cast<std::size_t>(nn) * dim);
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            cell.pNodes = conn.Data() + c * nn;
+            cell.mGlobal = bases[b] + static_cast<std::int64_t>(c);
+            for (int k = 0; k < nn; ++k) {
+                const std::int64_t g = cell.pNodes[k];
+                if (g < 0 || static_cast<std::size_t>(g) >= num_points)
+                    throw std::invalid_argument("tessellate: cell node " + std::to_string(g) +
+                                                " is outside the point table");
+                for (int a = 0; a < dim; ++a)
+                    cell.mXyz[static_cast<std::size_t>(k) * dim + a] =
+                        points[static_cast<std::size_t>(g) * dim + a];
+            }
+            std::int64_t nchildren = 0;
+            ts_tessellate_cell(lat, cell, table, dest, nchildren);
+            for (std::int64_t k = 0; k < nchildren; ++k) {
+                dest_src.push_back(cell.mGlobal);
+                dest_sub.push_back(k);
+            }
+        }
+    }
+
+    // The output point table, sorted by key.
+    const std::size_t np = table.mKeys.size();
+    std::vector<std::int64_t> order(np);
+    for (std::size_t i = 0; i < np; ++i)
+        order[i] = static_cast<std::int64_t>(i);
+    std::sort(order.begin(), order.end(), [&](std::int64_t a, std::int64_t b) {
+        return table.mKeys[static_cast<std::size_t>(a)] < table.mKeys[static_cast<std::size_t>(b)];
+    });
+    std::vector<std::int64_t> remap(np, -1);
+    for (std::size_t i = 0; i < np; ++i)
+        remap[static_cast<std::size_t>(order[i])] = static_cast<std::int64_t>(i);
+
+    Mesh out;
+    std::vector<std::int64_t> source_point(np, -1);
+    {
+        NDArray pts = NDArray::Uninit(DType::Float64, {np, static_cast<std::size_t>(dim)});
+        double* dst = pts.As<double>();
+        res.mStencil.assign(np * kTsWidth, -1);
+        res.mWeights.assign(np * kTsWidth, 0.0);
+        for (std::size_t i = 0; i < np; ++i) {
+            const std::size_t old = static_cast<std::size_t>(order[i]);
+            std::memcpy(dst + i * dim, table.mXyz.data() + old * dim, sizeof(double) * dim);
+            std::memcpy(res.mStencil.data() + i * kTsWidth, table.mStencil.data() + old * kTsWidth,
+                        sizeof(std::int64_t) * kTsWidth);
+            std::memcpy(res.mWeights.data() + i * kTsWidth, table.mWeights.data() + old * kTsWidth,
+                        sizeof(double) * kTsWidth);
+            if (table.mKeys[old].mV[0] == 0)
+                source_point[i] = table.mKeys[old].mV[1];
+        }
+        out.AssignPoints(std::move(pts));
+    }
+
+    // Cells: pass-through blocks, then the triangles, then the tetrahedra.
+    std::vector<std::vector<std::int64_t>> block_src, block_sub;
+    for (TsBlock& blk : passthrough) {
+        block_src.push_back(blk.mSourceCell);
+        block_sub.push_back(blk.mSubIndex);
+        ts_emit_block(out, blk, remap);
+    }
+    auto emit_simplices = [&](const char* pType, std::size_t Arity,
+                              std::vector<std::int64_t>& rConn, std::vector<std::int64_t>& rSrc,
+                              std::vector<std::int64_t>& rSub) {
+        if (rSrc.empty())
+            return;
+        NDArray conn = NDArray::Uninit(DType::Int64, {rSrc.size(), Arity});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rConn.size(); ++i)
+            dst[i] = remap[static_cast<std::size_t>(rConn[i])];
+        out.AddCellBlock(pType, std::move(conn));
+        block_src.push_back(std::move(rSrc));
+        block_sub.push_back(std::move(rSub));
+    };
+    emit_simplices("triangle", 3, tri_conn, tri_src, tri_sub);
+    emit_simplices("tetra", 4, tet_conn, tet_src, tet_sub);
+
+    // Point data.
+    out.AddPointData(kTessellateSourcePointName, ts_int64_array(source_point));
+    if (rOptions.mFields) {
+        for (const std::string& name : rMesh.PointDataNames()) {
+            if (ts_reserved_name(name))
+                continue;
+            const NDArray& a = rMesh.PointData(name);
+            std::vector<std::size_t> shape = a.Shape();
+            if (shape.empty())
+                shape.push_back(num_points);
+            const std::size_t width = num_points == 0 ? 1 : a.Size() / num_points;
+            shape[0] = np;
+            NDArray g = NDArray::Uninit(DType::Float64, std::move(shape));
+            double* dst = g.As<double>();
+            const detail::DoubleView src(a);
+            parallel_for(np, [&](std::size_t p) {
+                const std::int64_t* st = res.mStencil.data() + p * kTsWidth;
+                const double* w = res.mWeights.data() + p * kTsWidth;
+                for (std::size_t c = 0; c < width; ++c) {
+                    double s = 0.0;
+                    for (std::size_t k = 0; k < kTsWidth; ++k)
+                        if (w[k] != 0.0)
+                            s += src[static_cast<std::size_t>(st[k]) * width + c] * w[k];
+                    dst[p * width + c] = s;
+                }
+            });
+            out.AddPointData(name, std::move(g));
+        }
+    }
+    if (rOptions.mRecordStencil) {
+        NDArray st = NDArray::Uninit(DType::Int64, {np, kTsWidth});
+        NDArray wt = NDArray::Uninit(DType::Float64, {np, kTsWidth});
+        if (np) {
+            std::memcpy(st.Data(), res.mStencil.data(), res.mStencil.size() * sizeof(std::int64_t));
+            std::memcpy(wt.Data(), res.mWeights.data(), res.mWeights.size() * sizeof(double));
+        }
+        out.AddPointData(kTessellateStencilName, std::move(st));
+        out.AddPointData(kTessellateWeightsName, std::move(wt));
+    }
+
+    // Cell data.
+    {
+        std::vector<NDArray> src_blocks, sub_blocks;
+        for (std::size_t b = 0; b < block_src.size(); ++b) {
+            src_blocks.push_back(ts_int64_array(block_src[b]));
+            sub_blocks.push_back(ts_int64_array(block_sub[b]));
+        }
+        if (!src_blocks.empty()) {
+            out.AddCellData(kTessellateSourceCellName, std::move(src_blocks));
+            out.AddCellData(kTessellateSubIndexName, std::move(sub_blocks));
+        }
+    }
+    if (rOptions.mFields && !block_src.empty()) {
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (ts_reserved_name(name))
+                continue;
+            // Rows are copied byte for byte, so every block must share one dtype
+            // and one row shape (the numpy twin, which can upcast, takes the rest).
+            bool complete = nblocks > 0 && rMesh.CellDataNumBlocks(name) == nblocks;
+            const NDArray* first = complete ? &rMesh.CellData(name, 0) : nullptr;
+            for (std::size_t b = 0; complete && b < nblocks; ++b) {
+                const NDArray& a = rMesh.CellData(name, b);
+                std::vector<std::size_t> tail = a.Shape(), tail0 = first->Shape();
+                complete = !tail.empty() && !tail0.empty() &&
+                           detail::rows(a) == rMesh.Cells(b).NumCells() &&
+                           a.Dtype() == first->Dtype() &&
+                           std::equal(tail.begin() + 1, tail.end(), tail0.begin() + 1, tail0.end());
+            }
+            if (!complete) {
+                log::warn(
+                    "tessellate: dropping cell data '{}': its blocks do not share one dtype "
+                    "and row shape with one row per cell",
+                    name);
+                continue;
+            }
+            std::size_t row_bytes = dtype_size(first->Dtype());
+            for (std::size_t k = 1; k < first->Shape().size(); ++k)
+                row_bytes *= first->Shape()[k];
+            std::vector<NDArray> blocks;
+            for (std::size_t ob = 0; ob < block_src.size(); ++ob) {
+                const std::vector<std::int64_t>& srcs = block_src[ob];
+                std::vector<std::size_t> shape = first->Shape();
+                shape[0] = srcs.size();
+                NDArray dst = NDArray::Uninit(first->Dtype(), std::move(shape));
+                std::byte* d = dst.Data();
+                for (std::size_t i = 0; i < srcs.size(); ++i) {
+                    const std::int64_t g = srcs[i];
+                    const std::size_t b = static_cast<std::size_t>(
+                        std::upper_bound(bases.begin(), bases.end(), g) - bases.begin() - 1);
+                    const NDArray& a = rMesh.CellData(name, b);
+                    std::memcpy(d + i * row_bytes,
+                                a.Data() + static_cast<std::size_t>(g - bases[b]) * row_bytes,
+                                row_bytes);
+                }
+                blocks.push_back(std::move(dst));
+            }
+            out.AddCellData(name, std::move(blocks));
+        }
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    // Regions: point regions follow the kept points; cell regions keep their
+    // pass-through cells; side regions are dropped.
+    if (rMesh.NumRegions()) {
+        std::vector<std::int64_t> point_map(num_points, -1);
+        for (std::size_t i = 0; i < np; ++i)
+            if (source_point[i] >= 0)
+                point_map[static_cast<std::size_t>(source_point[i])] = static_cast<std::int64_t>(i);
+        // A source cell maps to an output cell only when it passed through.
+        std::vector<std::int64_t> cell_map(static_cast<std::size_t>(bases[nblocks]), -1);
+        std::int64_t out_cell = 0;
+        for (const TsBlock& blk : passthrough)
+            for (std::int64_t g : blk.mSourceCell)
+                cell_map[static_cast<std::size_t>(g)] = out_cell++;
+        std::vector<std::string> dropped;
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+            const Region& reg = rMesh.Region(r);
+            if (reg.mKind == RegionKind::Side) {
+                dropped.push_back(reg.mName + " (side)");
+                continue;
+            }
+            const detail::Int64View ent(reg.mEntries);
+            const std::vector<std::int64_t>& map =
+                reg.mKind == RegionKind::Point ? point_map : cell_map;
+            std::vector<std::int64_t> kept;
+            for (std::size_t i = 0; i < reg.NumEntries(); ++i) {
+                const std::int64_t e = ent[i];
+                if (e >= 0 && static_cast<std::size_t>(e) < map.size() &&
+                    map[static_cast<std::size_t>(e)] >= 0)
+                    kept.push_back(map[static_cast<std::size_t>(e)]);
+            }
+            if (reg.mKind == RegionKind::Cell && kept.size() != reg.NumEntries())
+                dropped.push_back(reg.mName + " (cell, entries on a tessellated cell)");
+            out.AddRegion(meshioplusplus::Region(reg.mName, reg.mKind, reg.mDim, reg.mTag,
+                                                 ts_int64_array(kept)));
+        }
+        if (!dropped.empty()) {
+            std::string list;
+            for (const std::string& d : dropped)
+                list += (list.empty() ? "" : ", ") + d;
+            log::warn("tessellate: dropped region entries: {}", list);
+        }
+    }
+
+    res.mNumSourcePoints = static_cast<std::int64_t>(num_points);
+    res.mNumSourceCells = bases[nblocks];
+    res.mNumPoints = static_cast<std::int64_t>(np);
+    std::int64_t ncells = 0;
+    for (const auto& s : block_src)
+        ncells += static_cast<std::int64_t>(s.size());
+    res.mNumCells = ncells;
+    ts_watertight(out, res);
+    res.mMesh = std::move(out);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/tessellate.cpp =====
 // ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>
@@ -181440,6 +193147,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -181447,42 +193156,69 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
 
 constexpr const char* kUgPrefix = "meshio++: undo_green: ";
 
-// Read a required Int64 scalar cell_data array (one value per cell, covering
-// every block) into a flat global-cell-order vector. Throws by name on any
-// mismatch -- undo_green's fine-mesh preconditions are hard requirements,
-// unlike detail::refine_read_hierarchy's warn-and-fall-back contract.
-std::vector<std::int64_t> ug_read_required(const Mesh& rMesh,
-                                           const std::vector<std::int64_t>& rBases,
-                                           const char* pName) {
-    if (!rMesh.HasCellData(pName))
-        throw std::invalid_argument(
-            std::string(kUgPrefix) + "the fine mesh has no '" + pName +
-            "' cell_data; run refine(..., record_hierarchy=True, record_levels=True) first");
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    if (rMesh.CellDataNumBlocks(pName) != nblocks)
-        throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName +
-                                    "' does not cover every cell block");
-    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(rBases)));
-    std::size_t bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
-        const std::size_t ncells = cb.NumCells();
-        const NDArray& a = rMesh.CellData(pName, bi);
-        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
-            throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName + "' block " +
-                                        std::to_string(bi) + " is not one scalar value per cell");
-        for (std::size_t c = 0; c < ncells; ++c)
-            out[base + c] = detail::read_int(a, c);
-        ++bi;
+// A required scalar cell_data array (one value per cell, covering every
+// block), read in place: one view per block, zero-copy for the Int64 arrays
+// refine() writes (a converted copy of that block otherwise), indexed by global
+// cell. The flat copies this replaces were 2 GB at 83M fine cells (roadmap
+// 6.1.1). Throws by name on any mismatch -- undo_green's fine-mesh
+// preconditions are hard requirements, unlike detail::refine_read_hierarchy's
+// warn-and-fall-back contract.
+class UgColumn {
+public:
+    UgColumn(const Mesh& rMesh, const std::vector<std::int64_t>& rBases, const char* pName)
+        : mrBases(rBases) {
+        if (!rMesh.HasCellData(pName))
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "the fine mesh has no '" + pName +
+                "' cell_data; run refine(..., record_hierarchy=True, record_levels=True) first");
+        const std::size_t nblocks = rMesh.NumCellBlocks();
+        if (rMesh.CellDataNumBlocks(pName) != nblocks)
+            throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName +
+                                        "' does not cover every cell block");
+        mViews = std::vector<std::optional<detail::Int64View>>(nblocks);
+        mBlocks.assign(nblocks, nullptr);
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t ncells = cb.NumCells();
+            const NDArray& a = rMesh.CellData(pName, bi);
+            if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
+                throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName + "' block " +
+                                            std::to_string(bi) +
+                                            " is not one scalar value per cell");
+            mViews[bi].emplace(a);
+            mBlocks[bi] = mViews[bi]->Data();
+            ++bi;
+        }
     }
-    return out;
-}
+    UgColumn(const UgColumn&) = delete;
+    UgColumn& operator=(const UgColumn&) = delete;
+
+    /// Block @p bi's values, row-indexed.
+    const std::int64_t* Block(std::size_t bi) const { return mBlocks[bi]; }
+
+    /// The value of global cell @p g.
+    std::int64_t At(std::size_t g) const {
+        if (mBlocks.size() == 1)
+            return mBlocks[0][g];
+        const auto it =
+            std::upper_bound(mrBases.begin() + 1, mrBases.end(), static_cast<std::int64_t>(g));
+        const auto bi = static_cast<std::size_t>(it - mrBases.begin() - 1);
+        return mBlocks[bi][g - static_cast<std::size_t>(mrBases[bi])];
+    }
+
+private:
+    const std::vector<std::int64_t>& mrBases;
+    std::vector<std::optional<detail::Int64View>> mViews;
+    std::vector<const std::int64_t*> mBlocks;
+};
 
 // Same shape check, but returns empty rather than throwing when `pName` is
 // absent or malformed -- used for the coarse mesh's OPTIONAL refine:level,
@@ -181535,42 +193271,55 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     const auto total_fine = static_cast<std::size_t>(detail::total_cells(fine_bases));
 
     // What the classification leaves for the output: every global fine cell's
-    // role and green group, and per group its coarse row and size. Everything
-    // else it reads (the three refine:* columns, the id lookup, the sibling
-    // order) lives in the scope below and is released before the output is
-    // built -- at 80M fine cells that scratch was 3.5 GB (roadmap §6.1).
+    // role and green group, and per group its coarse row. Everything else it
+    // reads (the id lookup, the sibling order) lives in the scope below and is
+    // released before the output is built; the three refine:* columns are read
+    // in place. A group id is read only for a substituted or suppressed cell,
+    // so 32 bits each is enough: a green group has at least two cells.
     std::vector<UgRole> role(total_fine, UgRole::Keep);
-    std::vector<std::int64_t> group_id_of(total_fine, -1);
+    std::vector<std::uint32_t> group_id_of(total_fine, 0);
     std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
-    std::vector<std::int64_t> group_size;        // indexed by green group id
-    std::int64_t next_group_id = 0;
+    std::int64_t num_removed = 0;
     {
-        const std::vector<std::int64_t> fine_id =
-            ug_read_required(rFine, fine_bases, kRefineCellIdName);
-        const std::vector<std::int64_t> fine_parent =
-            ug_read_required(rFine, fine_bases, kRefineParentIdName);
-        const std::vector<std::int64_t> fine_level =
-            ug_read_required(rFine, fine_bases, kRefineLevelName);
+        const UgColumn fine_id(rFine, fine_bases, kRefineCellIdName);
+        const UgColumn fine_parent(rFine, fine_bases, kRefineParentIdName);
+        const UgColumn fine_level(rFine, fine_bases, kRefineLevelName);
 
         // --- resolve the coarse mesh's id space: its own recorded ids if valid,
         // else the implicit global-block-major ids -- refine_attach_hierarchy's
-        // own "start fresh" fallback. --------------------------------------------
+        // own "start fresh" fallback, where an id is its row and needs no table.
+        const auto total_coarse = detail::total_cells(coarse_bases);
         std::vector<std::int64_t> coarse_ids;
         std::int64_t coarse_id_base = 0;
-        const detail::RefineHierarchyState state =
-            detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
-        if (state != detail::RefineHierarchyState::Valid) {
-            const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
-            coarse_ids.resize(total_coarse);
-            for (std::size_t i = 0; i < total_coarse; ++i)
-                coarse_ids[i] = static_cast<std::int64_t>(i);
-        }
+        const bool coarse_ids_recorded =
+            detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base) ==
+            detail::RefineHierarchyState::Valid;
         // (id, row) pairs sorted -- a total order -- searched by binary search.
-        std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row(coarse_ids.size());
-        parallel_for(coarse_ids.size(), [&](std::size_t i) {
-            id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
-        });
-        parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
+        std::vector<std::pair<std::int64_t, std::int64_t>> id_to_coarse_row;
+        if (coarse_ids_recorded) {
+            id_to_coarse_row.resize(coarse_ids.size());
+            parallel_for(coarse_ids.size(), [&](std::size_t i) {
+                id_to_coarse_row[i] = {coarse_ids[i], static_cast<std::int64_t>(i)};
+            });
+            parallel_sort(id_to_coarse_row.begin(), id_to_coarse_row.end());
+        }
+        coarse_ids = std::vector<std::int64_t>();
+        // The coarse row of an id, or -1. With recorded ids, the last row with
+        // this id, as the former map's overwrite kept it.
+        const auto coarse_row_of = [&](std::int64_t id) -> std::int64_t {
+            if (!coarse_ids_recorded)
+                return (id >= 0 && id < total_coarse) ? id : -1;
+            auto it = std::upper_bound(
+                id_to_coarse_row.begin(), id_to_coarse_row.end(), id,
+                [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
+                    return v < rE.first;
+                });
+            if (it != id_to_coarse_row.begin())
+                --it;
+            if (it == id_to_coarse_row.end() || it->first != id)
+                return -1;
+            return it->second;
+        };
 
         const std::vector<std::int64_t> coarse_level =
             ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
@@ -181586,17 +193335,33 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
         // refine() writes its cells parent-major, so parent_id usually arrives
         // non-decreasing: the sorted pairs are then (parent_id[g], g) for g in
         // order, and the sort (and its N pairs) is skipped.
-        const bool parents_sorted = std::is_sorted(fine_parent.begin(), fine_parent.end());
+        bool parents_sorted = true;
+        {
+            const std::int64_t* p_prev = nullptr;
+            for (std::size_t bi = 0; parents_sorted && bi + 1 < fine_bases.size(); ++bi) {
+                const auto n = static_cast<std::size_t>(fine_bases[bi + 1] - fine_bases[bi]);
+                if (n == 0)
+                    continue;
+                const std::int64_t* p = fine_parent.Block(bi);
+                parents_sorted = (p_prev == nullptr || *p_prev <= p[0]) && std::is_sorted(p, p + n);
+                p_prev = p + n - 1;
+            }
+        }
         std::vector<std::pair<std::int64_t, std::int64_t>> by_parent;
         if (!parents_sorted) {
             by_parent.resize(total_fine);
-            parallel_for(total_fine, [&](std::size_t g) {
-                by_parent[g] = {fine_parent[g], static_cast<std::int64_t>(g)};
-            });
+            for (std::size_t bi = 0; bi + 1 < fine_bases.size(); ++bi) {
+                const auto base = static_cast<std::size_t>(fine_bases[bi]);
+                const auto n = static_cast<std::size_t>(fine_bases[bi + 1]) - base;
+                const std::int64_t* p = fine_parent.Block(bi);
+                parallel_for(n, [&](std::size_t r) {
+                    by_parent[base + r] = {p[r], static_cast<std::int64_t>(base + r)};
+                });
+            }
             parallel_sort(by_parent.begin(), by_parent.end());
         }
         const auto parent_at = [&](std::size_t k) {
-            return parents_sorted ? fine_parent[k] : by_parent[k].first;
+            return parents_sorted ? fine_parent.At(k) : by_parent[k].first;
         };
         const auto cell_at = [&](std::size_t k) {
             return parents_sorted ? static_cast<std::int64_t>(k) : by_parent[k].second;
@@ -181613,7 +193378,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 
             if (members.size() == 1) {
                 const std::int64_t g = members.front();
-                if (fine_id[static_cast<std::size_t>(g)] != parent_id)
+                if (fine_id.At(static_cast<std::size_t>(g)) != parent_id)
                     throw std::invalid_argument(
                         std::string(kUgPrefix) +
                         "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
@@ -181622,25 +193387,17 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                 continue;  // untouched: role stays Keep
             }
 
-            // The last row with this id, as the former map's overwrite kept it.
-            auto it = std::upper_bound(
-                id_to_coarse_row.begin(), id_to_coarse_row.end(), parent_id,
-                [](std::int64_t v, const std::pair<std::int64_t, std::int64_t>& rE) {
-                    return v < rE.first;
-                });
-            if (it != id_to_coarse_row.begin())
-                --it;
-            if (it == id_to_coarse_row.end() || it->first != parent_id)
+            const std::int64_t coarse_row = coarse_row_of(parent_id);
+            if (coarse_row < 0)
                 throw std::invalid_argument(
                     std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
                     " does not resolve in the coarse mesh's id space -- these two meshes are not "
                     "the coarse/fine pair of one refine() call");
-            const std::int64_t coarse_row = it->second;
             const std::int64_t clevel = coarse_level_at(coarse_row);
 
-            const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
+            const std::int64_t flevel = fine_level.At(static_cast<std::size_t>(members.front()));
             for (std::int64_t g : members)
-                if (fine_level[static_cast<std::size_t>(g)] != flevel)
+                if (fine_level.At(static_cast<std::size_t>(g)) != flevel)
                     throw std::invalid_argument(
                         std::string(kUgPrefix) +
                         "malformed hierarchy: the sibling group under refine:parent_id " +
@@ -181665,17 +193422,18 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                     ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
 
             // green: substitute the whole group with one row from the coarse mesh
-            const std::int64_t gid = next_group_id++;
+            if (group_coarse_row.size() >= std::numeric_limits<std::uint32_t>::max())
+                throw Unsupported(std::string(kUgPrefix) + "more than " +
+                                  std::to_string(std::numeric_limits<std::uint32_t>::max()) +
+                                  " green groups");
+            const auto gid = static_cast<std::uint32_t>(group_coarse_row.size());
             group_coarse_row.push_back(coarse_row);
-            group_size.push_back(static_cast<std::int64_t>(members.size()));
+            num_removed += static_cast<std::int64_t>(members.size()) - 1;
             role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
-            group_id_of[static_cast<std::size_t>(members.front())] = gid;
-            for (std::size_t k = 1; k < members.size(); ++k) {
-                role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
-                    UgRole::Suppressed;
-                group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
-                    gid;
-            }
+            for (std::size_t k = 1; k < members.size(); ++k)
+                role[static_cast<std::size_t>(members[k])] = UgRole::Suppressed;
+            for (std::int64_t g : members)
+                group_id_of[static_cast<std::size_t>(g)] = gid;
         }
     }  // the classification scratch is released here
 
@@ -181700,8 +193458,9 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 
     std::vector<NDArray> cell_maps(nblocks);
     std::vector<NDArray> out_conn(nblocks);
-    std::vector<std::int64_t> group_output_global(static_cast<std::size_t>(next_group_id), -1);
-    std::vector<std::size_t> group_fine_block(static_cast<std::size_t>(next_group_id), 0);
+    const std::size_t num_groups = group_coarse_row.size();
+    std::vector<std::int64_t> group_output_global(num_groups, -1);
+    std::vector<std::uint32_t> group_fine_block(num_groups, 0);
 
     {
         std::size_t bi = 0;
@@ -181717,8 +193476,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
             for (std::size_t r = 0; r < cb.NumCells(); ++r) {
                 const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
                 if (role[g] == UgRole::Suppressed) {
-                    const std::int64_t gid = group_id_of[g];
-                    cm[r] = group_output_global[static_cast<std::size_t>(gid)];
+                    cm[r] = group_output_global[group_id_of[g]];
                     continue;
                 }
                 if (role[g] == UgRole::Keep) {
@@ -181726,17 +193484,16 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                     for (std::size_t k = 0; k < npc; ++k)
                         dst[out_row * npc + k] = detail::read_int(src, r * npc + k);
                 } else {  // AnchorSubstitute
-                    const std::int64_t gid = group_id_of[g];
-                    const std::int64_t coarse_row = group_coarse_row[static_cast<std::size_t>(gid)];
+                    const std::uint32_t gid = group_id_of[g];
+                    const std::int64_t coarse_row = group_coarse_row[gid];
                     const auto blk_row = detail::global_to_block_row(coarse_bases, coarse_row);
                     const auto ccb = rCoarse.Cells(blk_row.first);
                     const NDArray& csrc = ccb.Conn();
                     for (std::size_t k = 0; k < npc; ++k)
                         dst[out_row * npc + k] = detail::read_int(
                             csrc, static_cast<std::size_t>(blk_row.second) * npc + k);
-                    group_output_global[static_cast<std::size_t>(gid)] =
-                        out_block_base + static_cast<std::int64_t>(out_row);
-                    group_fine_block[static_cast<std::size_t>(gid)] = bi;
+                    group_output_global[gid] = out_block_base + static_cast<std::int64_t>(out_row);
+                    group_fine_block[gid] = static_cast<std::uint32_t>(bi);
                 }
                 cm[r] = out_block_base + static_cast<std::int64_t>(out_row);
                 ++out_row;
@@ -181785,13 +193542,12 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
         // Pre-check every green group's substitution source before touching
         // anything, so a bad array is dropped whole rather than half-built.
         bool ok = true;
-        if (next_group_id > 0) {
+        if (num_groups > 0) {
             if (!rCoarse.HasCellData(name) ||
                 rCoarse.CellDataNumBlocks(name) != rCoarse.NumCellBlocks()) {
                 ok = false;
             } else {
-                for (std::int64_t gid = 0; ok && gid < next_group_id; ++gid) {
-                    const auto ug = static_cast<std::size_t>(gid);
+                for (std::size_t ug = 0; ok && ug < num_groups; ++ug) {
                     const auto blk_row =
                         detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
                     const NDArray& fsrc = rFine.CellData(name, group_fine_block[ug]);
@@ -181833,8 +193589,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
                 if (role[g] == UgRole::Keep) {
                     std::memcpy(p_dst + out_row * row_bytes, p_fsrc + r * row_bytes, row_bytes);
                 } else {  // AnchorSubstitute
-                    const std::int64_t gid = group_id_of[g];
-                    const auto ug = static_cast<std::size_t>(gid);
+                    const std::uint32_t ug = group_id_of[g];
                     const auto blk_row =
                         detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
                     const NDArray& csrc = rCoarse.CellData(name, blk_row.first);
@@ -181853,11 +193608,8 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     UndoGreenResult res;
     res.mMesh = std::move(out);
     res.mCellMaps = std::move(cell_maps);
-    res.mNumGroupsUndone = next_group_id;
-    std::int64_t removed = 0;
-    for (std::int64_t sz : group_size)
-        removed += sz - 1;
-    res.mNumCellsRemoved = removed;
+    res.mNumGroupsUndone = static_cast<std::int64_t>(num_groups);
+    res.mNumCellsRemoved = num_removed;
 
     detail::RegionRemap rmap;
     rmap.mCellMapKind = detail::CellMapKind::Direct;
@@ -182489,7 +194241,13 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // cannot write GiD at all, yet read the ascii flavour fine. For the
         // same reason gid must NOT appear in registry_compiled_out(): there is
         // no missing dependency to name.
+        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
+        {"cad_json", [](const std::string& p) { return meshioplusplus::read_cad_json(p); }},
         {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
+        // IGES and STEP read through the optional OpenCASCADE backend
+        // (roadmap 6.2.1); registered either way, so a build without it
+        // throws Unsupported naming the flag instead of "unknown format".
+        {"iges", [](const std::string& p) { return meshioplusplus::read_iges(p); }},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
@@ -182516,6 +194274,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"permas", meshioplusplus::read_permas},
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
+        {"step", [](const std::string& p) { return meshioplusplus::read_step(p); }},
         {"su2", meshioplusplus::read_su2},
         // 2-D drawings, read only as the structure meshio++ writes; both take a
         // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
@@ -182611,6 +194370,11 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
         // No extension (`<run>T01`): by name or explicit format only.
         {"radioss_th", meshioplusplus::write_radioss_th},
+        {"nastran_op2", meshioplusplus::write_nastran_op2},
+        // No extension (`binout`): by name or explicit format only.
+        {"lsdyna_binout", meshioplusplus::write_lsdyna_binout},
+        {"abaqus_fil",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
         {"elmer",
@@ -182643,6 +194407,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // gmsh:physical from Cell regions when the mesh has none of its own.
         // Was reachable only from Python (gmsh22_write) until this entry; the
         // flat bindings (WASM/C API/Fortran) had no way to select it at all.
+        {"cad_json",
+         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
         {"gmsh22", [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
@@ -182673,7 +194439,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
-        // STEP is write-only: reading it needs a CAD kernel (roadmap §6.2.2).
+        // STEP is read through the optional OpenCASCADE backend (roadmap
+        // §6.2.1) and written as a faceted solid without it.
         {"step", meshioplusplus::write_step},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
@@ -182896,10 +194663,14 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         // throws naming the missing build flags, which is strictly better
         // than ".post.msh" silently resolving to another format.
         {".post.msh", "gid"},
+        // Kratos CAD JSON; a bare ".json" stays unclaimed (sniffed by content).
+        {".cad.json", "cad_json"},
         {".post.res", "gid"},
         {".post.bin", "gid"},
         {".post.h5", "gid"},
         {".ply", "ply"},
+        {".igs", "iges"},
+        {".iges", "iges"},
         {".step", "step"},
         {".stl", "stl"},
         {".stp", "step"},
@@ -183405,10 +195176,10 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "frd" || rFormat == "gmsh" ||
-           rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
-           rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
-           rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "abaqus_fil" || rFormat == "ansys" || rFormat == "flac3d" ||
+           rFormat == "frd" || rFormat == "gmsh" || rFormat == "openfoam" || rFormat == "pcd" ||
+           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
+           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -183497,7 +195268,10 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     const std::string& r_ff =
         rOptions.mFloatFormat.empty() ? std::string(".16e") : rOptions.mFloatFormat;
 
-    if (fmt == "ansys") {
+    if (fmt == "abaqus_fil") {
+        // ASCII is `*FILE FORMAT, ASCII`; binary is the 512-word block layout, little-endian.
+        write_abaqus_fil(rPath, rMesh, binary);
+    } else if (fmt == "ansys") {
         write_ansys(rPath, rMesh, binary);
     } else if (fmt == "flac3d") {
         write_flac3d(rPath, rMesh, r_ff, binary);

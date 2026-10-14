@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 16.38.0
+  VERSION 16.42.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -267,6 +267,46 @@ elseif(TARGET adios2::cxx11)
   set(_mio_adios2_pc_lib adios2_cxx11)
 endif()
 
+# OpenCASCADE Technology (LGPL-2.1 with the OCCT exception), the CAD kernel of
+# the fit_cad operation (analytic faces trimmed, sewn into a solid, checked and
+# written as STEP). OFF by default and bring-your-own through OCCT's own CMake
+# config (OpenCASCADE_DIR) -- never vendored, never auto-downloaded, linked
+# dynamically, and absent from the wheels, the WASM build and the release CLI
+# binaries; fit_cad throws Unsupported naming this flag where it is absent.
+# 7.6 is the floor (Ubuntu 24.04's packages); 7.8 renamed the STEP toolkits
+# into TKDESTEP, so the target list is picked by what exists.
+option(MESHIOPLUSPLUS_WITH_OCCT "Build the OpenCASCADE-backed fit_cad operation and STEP/IGES reading" OFF)
+if(MESHIOPLUSPLUS_WITH_OCCT AND NOT EMSCRIPTEN)
+  find_package(OpenCASCADE CONFIG QUIET)
+  if(OpenCASCADE_FOUND AND OpenCASCADE_VERSION VERSION_LESS 7.6)
+    message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} is older than 7.6 - ignored")
+    set(OpenCASCADE_FOUND FALSE)
+  endif()
+endif()
+set(_mio_occt_libs "")
+if(MESHIOPLUSPLUS_WITH_OCCT AND OpenCASCADE_FOUND)
+  set(_mio_occt_libs TKernel TKMath TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo TKTopAlgo
+                     TKShHealing TKBO TKMesh TKPrim)
+  if(TARGET TKDESTEP)
+    list(APPEND _mio_occt_libs TKDESTEP TKXSBase)
+  else()
+    list(APPEND _mio_occt_libs TKSTEP TKSTEPBase TKSTEPAttr TKSTEP209 TKXSBase)
+  endif()
+  # IGES reading (roadmap 6.2.1); 7.8 renamed TKIGES into TKDEIGES as well.
+  if(TARGET TKDEIGES)
+    list(APPEND _mio_occt_libs TKDEIGES)
+  else()
+    list(APPEND _mio_occt_libs TKIGES)
+  endif()
+  foreach(_t IN LISTS _mio_occt_libs)
+    if(NOT TARGET ${_t})
+      message(STATUS "meshio++: OpenCASCADE toolkit ${_t} not found - backend disabled")
+      set(_mio_occt_libs "")
+      break()
+    endif()
+  endforeach()
+endif()
+
 # TecIO (v16.13.0): Tecplot's own library, the only reader of `.szplt` (SZL)
 # files (the `szplt` format). OFF by default and bring-your-own: meshio++ never
 # redistributes vendor libraries. TecIO has no CMake config; point TECIO_ROOT at
@@ -511,6 +551,7 @@ set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CO
 set(_mio_core_defs "")
 set(_mio_core_incs "")
 set(_mio_core_priv_incs "")
+set(_mio_core_sys_incs "")
 set(_mio_core_libs "")
 set(_mio_core_copts "")
 set(_mio_core_lopts "")
@@ -715,6 +756,20 @@ if(MESHIOPLUSPLUS_WITH_KAHIP AND KAHIP_FOUND)
 elseif(MESHIOPLUSPLUS_WITH_KAHIP)
   message(STATUS "meshio++: KaHIP requested but not found (set KAHIP_ROOT) - "
                  "partition method 'kahip' will raise")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
+  message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} enabled (fit_cad, STEP/IGES reading)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_OCCT)
+  # Only fit_cad.cpp, detail/occt_brep.cpp and the STEP/IGES readers include
+  # OCCT headers, and some packagings (Debian's)
+  # export toolkit targets without include directories: add them privately,
+  # as system headers so their deprecation warnings stay theirs.
+  list(APPEND _mio_core_sys_incs ${OpenCASCADE_INCLUDE_DIR})
+  list(APPEND _mio_core_libs ${_mio_occt_libs})
+elseif(MESHIOPLUSPLUS_WITH_OCCT)
+  message(STATUS "meshio++: OpenCASCADE requested but not found (set OpenCASCADE_DIR) - "
+                 "fit_cad and STEP/IGES reading will raise")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)
@@ -1021,6 +1076,9 @@ function(meshioplusplus_configure_core_target backend)
     if(_mio_core_priv_incs)
       target_include_directories(${_t} PRIVATE ${_mio_core_priv_incs})
     endif()
+    if(_mio_core_sys_incs)
+      target_include_directories(${_t} SYSTEM PRIVATE ${_mio_core_sys_incs})
+    endif()
     if(_mio_core_libs)
       target_link_libraries(${_t} PUBLIC ${_mio_core_libs})
     endif()
@@ -1176,7 +1234,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO)
+foreach(_f ZLIB ZSTD LZ4 BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()
@@ -1238,6 +1296,11 @@ if(_mio_has_ADIOS2)
 endif()
 if(_mio_has_TECIO)
   string(APPEND MIO_PC_LIBS_PRIVATE " -ltecio")
+endif()
+if(_mio_has_OCCT)
+  foreach(_t IN LISTS _mio_occt_libs)
+    string(APPEND MIO_PC_LIBS_PRIVATE " -l${_t}")
+  endforeach()
 endif()
 
 if(MESHIOPLUSPLUS_BUILD_PYTHON)

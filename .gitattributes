@@ -186,6 +186,9 @@ tests/python/meshes/radioss_th/column/columnA00* binary
 # MSC Marc decks and a formatted post file written by tools/gen_marc_fixtures.py:
 # small text kept out of LFS, like the other generated deck fixtures.
 tests/python/meshes/marc/** -filter -diff -merge text
+# cad_json fixtures are compared byte for byte with the writers' LF output, so a Windows
+# checkout (autocrlf) must keep their endings: -text, as the ansys .cdb decks above.
+tests/python/meshes/cad_json/*.json -filter -diff -merge -text
 
 # DOLFINx VTX (ADIOS2 .bp directories) and Tecplot SZL fixtures: small binary
 # files, committed directly (see their READMEs).

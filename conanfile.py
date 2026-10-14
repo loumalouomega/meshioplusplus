@@ -34,7 +34,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "16.35.0"
+    version = "16.42.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -56,6 +56,7 @@ class MeshioplusplusConan(ConanFile):
         "with_cgnslib": [True, False],
         "with_adios2": [True, False],
         "with_tecio": [True, False],
+        "with_occt": [True, False],
         "with_gidpost": [True, False],
         "with_eigen": [True, False],
         "with_json": [True, False],
@@ -88,6 +89,11 @@ class MeshioplusplusConan(ConanFile):
         # flip the CMake flag (ADIOS2_DIR / TECIO_ROOT). Off by default.
         "with_adios2": False,
         "with_tecio": False,
+        # OpenCASCADE (fit_cad) is LGPL-2.1 and bring-your-own like KaHIP: the
+        # option only flips the CMake flag and the consumer supplies
+        # OpenCASCADE_DIR (ConanCenter's opencascade recipe is not required, so
+        # the package never pulls an LGPL dependency unasked). Off by default.
+        "with_occt": False,
         # Unlike with_eigen/with_json (submodules, off by default), gidpost is
         # a vendored hardcopy that IS in exports_sources, so this defaults True
         # like with_hdf5/with_netcdf/with_zlib -- consistent with the CMake
@@ -180,6 +186,7 @@ class MeshioplusplusConan(ConanFile):
             self.options.with_adios2
         )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_TECIO"] = bool(self.options.with_tecio)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_OCCT"] = bool(self.options.with_occt)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_GIDPOST"] = bool(
             self.options.with_gidpost
         )

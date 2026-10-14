@@ -185,7 +185,7 @@ export interface Mesh {
   /**
    * Format-specific side-channel metadata a generic `Mesh` cannot represent,
    * attached by `readMeshSelective(path, {info: true})`. Present only for
-   * formats with one (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus); absent
+   * formats with one (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus/mfem); absent
    * otherwise, even when `info: true` was requested. Its own `format` field
    * is what `writeMesh` checks before reusing it on a write with no explicit
    * `options.info`. See doc/wasm.md's "Side channel (info)" section.
@@ -201,7 +201,9 @@ export type MeshInfo =
   | AnsysInfo
   | UnvInfo
   | GmshInfo
-  | ExodusInfo;
+  | ExodusInfo
+  | MfemInfo
+  | CadJsonInfo;
 
 /** OpenFOAM's side channel: `readMeshSelective`'s cell_tags/patch-type map, reshaped per patch. */
 export interface OpenFoamInfo {
@@ -303,6 +305,128 @@ export interface GmshInfo {
   /** Entity tags are raw ids; nodePairs is flattened (N,2), 0-based point rows.
    * Ordering/duplicates survive I/O; mesh operations do not remap these rows. */
   periodic?: { entity: number[]; affine: number[]; nodePairs: BigInt64Array | number[] }[];
+}
+
+/** One NURBS curve of a B-rep: a trimming curve in a face's (u, v), or an edge's 3-D curve. */
+export interface BrepCurve {
+  degree: number;
+  /** The full knot vector (`n + degree + 1` knots). */
+  knots: number[];
+  /** Whether the file wrote Kratos's reduced form (without the outer knots). */
+  reducedKnots: boolean;
+  rational: boolean;
+  /** (points, 3) control points; a trimming curve's are (u, v, 0). */
+  controlPoints: Float64Array;
+  weights: Float64Array;
+  /** The control points' ids (Kratos node ids), empty when the file gives none. */
+  ids: BigInt64Array | number[];
+  /** `[t0, t1]`, or empty. */
+  activeRange: number[];
+  /** Members not modelled, as compact JSON object text. */
+  extra: string;
+}
+
+/** A trimming curve of a loop, or an embedded edge of a face. */
+export interface BrepTrim {
+  /** -1 when the file gives none. */
+  trimIndex: number;
+  direction: boolean;
+  curve: BrepCurve;
+  extra: string;
+}
+
+/** A topology entry: the face (and trim) an edge or vertex lies on. */
+export interface BrepRef {
+  /** -1 when the entity is named instead. */
+  id: number;
+  name: string;
+  /** -1 when absent. */
+  trimIndex: number;
+  /** 1 true, 0 false, -1 absent. */
+  relativeDirection: number;
+  localCoordinates: number[];
+  extra: string;
+}
+
+/**
+ * Kratos CAD JSON's side channel: the NURBS boundary representation (C++
+ * `BrepInfo`) the mesh was sampled from -- trimmed faces, their loops, edges
+ * and vertices, as Kratos's `CadJsonInput` reads them. Every index is 0-based;
+ * ids are -1 where an entity is named by `name` instead. `writeMesh` writes it
+ * back as CAD JSON.
+ */
+export interface CadJsonInfo {
+  format: 'cad_json';
+  /** The face surfaces: two degrees, two full knot vectors, (points, 3) control net (u fastest). */
+  patches: { degrees: number[]; knots: number[][]; controlPoints: Float64Array; weights: Float64Array }[];
+  breps: { id: number; name: string; faces: number[]; edges: number[]; vertices: number[]; extra: string }[];
+  faces: {
+    id: number;
+    name: string;
+    /** Index into `patches`. */
+    patch: number;
+    swappedNormal: boolean;
+    trimmed: boolean;
+    rational: boolean;
+    reducedKnots: boolean;
+    controlPointIds: BigInt64Array | number[];
+    loops: { type: string; trims: BrepTrim[]; extra: string }[];
+    embeddedEdges: BrepTrim[];
+    surfaceExtra: string;
+    extra: string;
+  }[];
+  edges: { id: number; name: string; curve: BrepCurve | null; topology: BrepRef[]; extra: string }[];
+  vertices: { id: number; name: string; topology: BrepRef[]; extra: string }[];
+  /** The file's other top-level members (Kratos: tolerances, version_number). */
+  extra: string;
+}
+
+/**
+ * MFEM's side channel (v16.40.0): the NURBS patches an `MFEM NURBS mesh` was
+ * sampled from (C++ `NurbsInfo`). Arrays are flat, their widths given beside
+ * them; every index is 0-based. `writeMesh` writes the patches back as an
+ * `MFEM NURBS mesh` while the mesh still is their sampling (it refuses a mesh
+ * moved or edited since). A mesh that is not NURBS has no patches.
+ */
+export interface MfemInfo {
+  format: 'mfem';
+  patches: {
+    /** Degree per parametric direction. */
+    degrees: number[];
+    /** One knot vector per parametric direction. */
+    knots: number[][];
+    /** Components of each control point. */
+    spaceDim: number;
+    /** (points, spaceDim) Cartesian control points, direction 0 fastest. */
+    controlPoints: Float64Array;
+    /** One weight per control point. */
+    weights: Float64Array;
+    /** Per field (see `fieldNames`): (points, fieldComponents[k]) control values. */
+    fields: Float64Array[];
+  }[];
+  /** The point-data name of each field the patches carry. */
+  fieldNames: string[];
+  /** Components of each field. */
+  fieldComponents: number[];
+  /** The file's patch topology, or null when the source states none. */
+  topology: {
+    dimension: number;
+    numVertices: number;
+    /** (patches, 2^dimension) corner vertices. */
+    patchVertices: BigInt64Array | number[];
+    patchAttributes: BigInt64Array | number[];
+    /** (boundary patches, 2^(dimension-1)) corner vertices. */
+    boundaryVertices: BigInt64Array | number[];
+    boundaryAttributes: BigInt64Array | number[];
+    /** (edges, 3): knot vector, vertex, vertex. */
+    edges: BigInt64Array | number[];
+  } | null;
+  /** The patch of each element cell (the first block). */
+  cellPatch: BigInt64Array | number[];
+  /** (element cells, 3): each one's knot span per direction. */
+  cellSpan: BigInt64Array | number[];
+  /** The boundary patch of each boundary cell. */
+  boundaryCellPatch: BigInt64Array | number[];
 }
 
 /** Exodus's side channel: info/QA records. Read-only -- there is no Info-bearing Exodus writer. */
@@ -2378,6 +2502,43 @@ export interface MeshioPlusPlusModule {
     numCone: number;
     numTorus: number;
     numUnfitted: number;
+  };
+
+  /**
+   * Isoparametric tessellation of curved (quadratic) cells: every
+   * `triangle6`, `quad8`, `quad9`, `tetra10` and `hexahedron27` cell is sampled
+   * on a reference lattice and mapped through its own shape functions, curved
+   * surface cells becoming one `triangle` block and curved volume cells one
+   * `tetra` block; every other cell passes through unchanged. `levels` is
+   * divisions per axis for `quad8`/`quad9`/`hexahedron27` and recursive splits
+   * (`2^levels` divisions per edge) for `triangle6`/`tetra10`; `curved = false`
+   * passes every cell through. The output carries `tessellate:source_point`
+   * (point data, -1 for a new point), `tessellate:source_cell` and
+   * `tessellate:sub_index` (cell data); `fields` interpolates point data and
+   * copies cell data onto the children, and `recordStencil` adds
+   * `tessellate:stencil`/`tessellate:weights` (`(P, 27)` point data). Facet
+   * counts are over the output `tetra` block: `numFacetsWithBadCount` is 0
+   * for a conforming tessellation. See doc/tessellation.md.
+   * @throws {Error} on `levels` outside 0..20 or not an integer, or a point
+   *   data array whose row count is not the number of points.
+   */
+  tessellate(
+    mesh: Mesh,
+    levels?: number,
+    curved?: boolean,
+    fields?: boolean,
+    recordStencil?: boolean,
+  ): {
+    mesh: Mesh;
+    numSourcePoints: number;
+    numSourceCells: number;
+    numCurvedSourceCells: number;
+    numPassThroughSourceCells: number;
+    numPoints: number;
+    numCells: number;
+    numBoundaryFacets: number;
+    numInteriorFacets: number;
+    numFacetsWithBadCount: number;
   };
 
   /**

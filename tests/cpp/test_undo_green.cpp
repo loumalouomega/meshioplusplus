@@ -21,10 +21,12 @@
 // approximation, which is what the whole design turns on.
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // External includes
@@ -32,6 +34,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -300,4 +303,116 @@ TEST(UndoGreen, UniformRefinementHasNoGreenGroupsAndUndoIsANoOp) {
     EXPECT_EQ(undone.mNumGroupsUndone, 0);
     EXPECT_EQ(undone.mNumCellsRemoved, 0);
     EXPECT_EQ(undone.mMesh.Cells(0).NumCells(), fine.mMesh.Cells(0).NumCells());
+}
+
+// --------------------------------------------------------------------------
+// Column layouts: the refine:* columns are read in place, per block
+// --------------------------------------------------------------------------
+
+namespace {
+
+// `rFine` (one block) with its rows taken in `rOrder`, split into two blocks
+// at row `Split` (none when Split is 0) and its three refine:* id columns
+// stored as `Dt`.
+Mesh ug_relayout(const Mesh& rFine, const std::vector<std::size_t>& rOrder, std::size_t Split,
+                 meshioplusplus::DType Dt) {
+    namespace d = meshioplusplus::detail;
+    const auto cb = rFine.Cells(0);
+    const std::size_t npc = cb.NodesPerCell();
+    std::vector<std::pair<std::size_t, std::size_t>> pieces;
+    if (Split == 0)
+        pieces = {{0, rOrder.size()}};
+    else
+        pieces = {{0, Split}, {Split, rOrder.size()}};
+
+    Mesh out;
+    out.AssignPoints(d::data_owned_copy(rFine.Points()));
+    for (const auto& [a, b] : pieces) {
+        NDArray conn = NDArray::Uninit(meshioplusplus::DType::Int64, {b - a, npc});
+        for (std::size_t r = a; r < b; ++r)
+            for (std::size_t k = 0; k < npc; ++k)
+                conn.As<std::int64_t>()[(r - a) * npc + k] =
+                    d::read_int(cb.Conn(), rOrder[r] * npc + k);
+        out.AddCellBlock(std::string(cb.Type()), std::move(conn));
+    }
+    for (const std::string& name : rFine.CellDataNames()) {
+        const NDArray& src = rFine.CellData(name, 0);
+        const bool id_column =
+            name == "refine:cell_id" || name == "refine:parent_id" || name == "refine:level";
+        std::vector<NDArray> blocks;
+        for (const auto& [a, b] : pieces) {
+            std::vector<std::size_t> shape = src.Shape();
+            shape[0] = b - a;
+            const std::size_t width = src.Size() / std::max<std::size_t>(1, d::rows(src));
+            NDArray dst = NDArray::Uninit(id_column ? Dt : src.Dtype(), shape);
+            for (std::size_t r = a; r < b; ++r)
+                for (std::size_t k = 0; k < width; ++k)
+                    d::write_double(dst, (r - a) * width + k,
+                                    d::read_double(src, rOrder[r] * width + k));
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+    return out;
+}
+
+// Every output row, block after block, as a sorted list (order-free compare).
+std::vector<std::vector<std::int64_t>> ug_sorted_rows(const Mesh& rMesh) {
+    std::vector<std::vector<std::int64_t>> rows;
+    for (const auto cb : rMesh.CellRange())
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            std::vector<std::int64_t> row(cb.NodesPerCell());
+            for (std::size_t k = 0; k < row.size(); ++k)
+                row[k] = meshioplusplus::detail::read_int(cb.Conn(), r * row.size() + k);
+            rows.push_back(std::move(row));
+        }
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+}  // namespace
+
+TEST(UndoGreen, EveryColumnLayoutGivesTheSameCells) {
+    using meshioplusplus::DType;
+    const Mesh coarse = tri_grid(3);
+    const RefineResult fine = refine(coarse, cells_opt({8}));
+    const UndoGreenResult ref = undo_green(coarse, fine.mMesh);
+    ASSERT_GT(ref.mNumGroupsUndone, 0);
+    const std::size_t n = fine.mMesh.Cells(0).NumCells();
+    std::vector<std::size_t> identity(n), reversed(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        identity[i] = i;
+        reversed[i] = n - 1 - i;
+    }
+
+    struct Layout {
+        const char* mName;
+        const std::vector<std::size_t>* pOrder;
+        std::size_t mSplit;
+        DType mDtype;
+    };
+    const Layout layouts[] = {
+        {"int32", &identity, 0, DType::Int32},
+        {"float64", &identity, 0, DType::Float64},
+        {"two blocks", &identity, 7, DType::Int64},
+        {"two blocks, int32", &identity, 7, DType::Int32},
+        {"unsorted parents", &reversed, 0, DType::Int64},
+        {"unsorted parents, two blocks", &reversed, 5, DType::Int64},
+    };
+    for (const Layout& l : layouts) {
+        const Mesh moved = ug_relayout(fine.mMesh, *l.pOrder, l.mSplit, l.mDtype);
+        const UndoGreenResult got = undo_green(coarse, moved);
+        EXPECT_EQ(got.mNumGroupsUndone, ref.mNumGroupsUndone) << l.mName;
+        EXPECT_EQ(got.mNumCellsRemoved, ref.mNumCellsRemoved) << l.mName;
+        EXPECT_EQ(ug_sorted_rows(got.mMesh), ug_sorted_rows(ref.mMesh)) << l.mName;
+        if (l.pOrder == &identity) {
+            // Same order too: the cell maps, concatenated, are the reference's.
+            std::vector<std::int64_t> want(ref.mCellMaps[0].As<std::int64_t>(),
+                                           ref.mCellMaps[0].As<std::int64_t>() + n);
+            std::vector<std::int64_t> have;
+            for (const NDArray& m : got.mCellMaps)
+                have.insert(have.end(), m.As<std::int64_t>(), m.As<std::int64_t>() + m.Size());
+            EXPECT_EQ(have, want) << l.mName;
+        }
+    }
 }

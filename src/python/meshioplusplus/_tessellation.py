@@ -12,10 +12,12 @@ provenance; this module keeps the curvature (through the cell's own
 isoparametric shape functions) and records exactly which original point or
 cell every tessellated point/cell descends from.
 
-Everything here is pure numpy over existing machinery (``_convert_cells``'s
-tables, ``_data_average``'s cell measures, ``_regions.block_bases``) -- no
-C++, ABI, WASM or binding change, matching every other module in this
-section (``_point_budget.py``, ``_proximity.py``, ``_guard.py``).
+:func:`tessellate` runs the C++ core (``operations/tessellate.hpp``), which
+every binding and both CLIs share; the numpy body below (``_tessellate_py``)
+is its twin and the fallback for what the core cannot take (a ``cell_data``
+array whose blocks differ in dtype or row shape, or carry ``None``). The two
+produce the same points in the same order, the same connectivity and
+stencils, and coordinates and interpolated values equal within rounding.
 
 Scope: five curved types
 -------------------------
@@ -125,7 +127,9 @@ touches it:
   regardless of which cell, or which direction, listed the face), so two
   cells describing the same physical face always compute the same
   ``(c0, c1, c2, c3)`` -- proved, not merely tested, by the fact that
-  "neighbour in a cycle" is a symmetric relation. ``u'``/``v'`` are then
+  "neighbour in a cycle" is a symmetric relation. A hexahedron face's corners
+  enter in their cyclic order around the face (``_HEX_FACES``), since its
+  ascending local order is not a cycle for four of the six faces. ``u'``/``v'`` are then
   ``w(c1)`` and ``w(c2)`` (triangular face) or ``w(c1) + w(c2)`` and
   ``w(c2) + w(c3)`` (quad face), where ``w(g)`` is *this cell's own* local
   weight for the corner whose global id is ``g`` -- reindexing the SAME
@@ -156,11 +160,14 @@ faces, the identical "smallest id, diagonal two steps away" split into 2
 triangles, each combined with the apex into one tetrahedron. This is the
 one place a genuine cross-cell consistency requirement exists (two
 hexahedra can share a whole quad *face*), and it is why the diagonal rule is
-keyed by **global** ids rather than a cell's own local numbering (which a
-merely fixed local diagonal -- the ``convert_cells(simplexify)`` precedent
--- does not generally guarantee agrees between two independently-numbered
-neighbours): see the sabotage test in ``tests/python/test_tessellation.py``
-for the two-hexahedra fixture this specifically targets.
+keyed by the points' **creation indices** -- the order the whole
+tessellation first creates them in, which two neighbours share because a
+shared point is created once -- rather than a cell's own local numbering
+(which a merely fixed local diagonal -- the ``convert_cells(simplexify)``
+precedent -- does not generally guarantee agrees between two
+independently-numbered neighbours): see the sabotage test in
+``tests/python/test_tessellation.py`` for the two-hexahedra fixture this
+specifically targets.
 
 Fields
 ------
@@ -193,6 +200,7 @@ import numpy as np
 
 from ._convert_cells import _ELEVATE, _LINEAR_BASE, _NUM_CORNERS
 from ._data_average import _cell_measures
+from ._fallback import core_op_declined
 from ._interop import _emit
 from ._mesh import Mesh
 from ._refine_templates import QUAD_FACES
@@ -556,6 +564,25 @@ def _quad_diagonal_split(gids):
     p = int(np.argmin(gids))
     a, b, c, d = (gids[(p + k) % 4] for k in range(4))
     return [(a, b, c), (a, c, d)]
+
+
+#: A hexahedron's quad faces, each in cyclic corner order; the same table the
+#: sub-hexahedron split walks.
+_HEX_FACES = (
+    (0, 1, 2, 3),
+    (4, 5, 6, 7),
+    (0, 1, 5, 4),
+    (1, 2, 6, 5),
+    (2, 3, 7, 6),
+    (3, 0, 4, 7),
+)
+_HEX_FACE_OF = {tuple(sorted(f)): f for f in _HEX_FACES}
+
+
+def _hex_face_cycle(nz):
+    """A hexahedron face's four local corners (ascending) -> the same corners
+    in cyclic order around the face."""
+    return _HEX_FACE_OF[tuple(int(i) for i in nz)]
 
 
 def _canonical_cycle(gids):
@@ -936,6 +963,11 @@ def _resolve_point(
             ga, gb, wb = gb, ga, wa
         key = (1, ga, gb, int(round(wb * n)))
     elif kind == "face":
+        if len(nz) == 4:
+            # A hexahedron face: walk its corners around the face. Ascending
+            # local order is not a cycle for four of the six faces, and keying
+            # by it let two cells numbering a shared face differently disagree.
+            nz = _hex_face_cycle(nz)
         gids = [int(base_gids[i]) for i in nz]
         wmap = {int(base_gids[i]): float(corner_w[i]) for i in nz}
         canon = _canonical_cycle(gids)
@@ -1005,14 +1037,7 @@ def _tessellate_curved_cell(
         return out_cells, 3
 
     # hexahedron: 12 tetrahedra per sub-hex via a fresh interior apex point.
-    faces = [
-        (0, 1, 2, 3),
-        (4, 5, 6, 7),
-        (0, 1, 5, 4),
-        (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
-    ]
+    faces = _HEX_FACES
     for cell_i, cell in enumerate(lattice.cells):
         local_ids = list(cell)
         out_ids = [resolved[i] for i in local_ids]
@@ -1152,39 +1177,8 @@ def _remap_regions_for_tessellate(mesh, point_dict, remap, out_cell_source):
     return out_regions
 
 
-def tessellate(
-    mesh,
-    *,
-    levels: int = 2,
-    curved: bool = True,
-    fields: bool = True,
-    record_stencil: bool = False,
-) -> Tessellation:
-    """Isoparametric tessellation of a mesh's curved cells.
-
-    Every cell whose type is in :data:`CURVED_TYPES` is subdivided onto a
-    ``levels``-division-per-axis reference lattice mapped through its own
-    isoparametric shape functions; every other cell (including linear types
-    and the non-curved higher-order family -- ``hexahedron20``,
-    ``wedge15``/``18``, ``pyramid13``/``14``, VTK-Lagrange, ragged and
-    polyhedron blocks) passes through **unchanged**. ``curved=False``
-    disables curved handling entirely, making the whole mesh a no-op.
-
-    ``fields=True`` (default) interpolates every input ``point_data`` array
-    onto the output via :meth:`Tessellation.gather`'s own formula, and
-    broadcasts every ``cell_data`` row onto its cell's children.
-    ``record_stencil=True`` additionally attaches ``tessellate:stencil``/
-    ``tessellate:weights`` as real ``point_data`` (off by default: a
-    ``(P, 27)`` array is expensive to persist), so a caller can later
-    reconstruct a full :class:`Tessellation` (including :meth:`gather`)
-    from a written-and-reread file via :meth:`Tessellation.from_mesh`.
-
-    See the module docstring for the isoparametric bases, the lattice
-    construction, and the watertightness key scheme.
-    """
-    levels = int(levels)
-    if levels < 0:
-        raise ValueError(f"meshio++: tessellate: levels must be >= 0, got {levels}")
+def _tessellate_py(mesh, levels, curved, fields, record_stencil):
+    """The numpy twin of the core's ``tessellate`` (see :func:`tessellate`)."""
     npoints = len(mesh.points)
     dim = mesh.points.shape[1] if npoints else 3
     bases = block_bases(mesh.cells)
@@ -1326,6 +1320,8 @@ def tessellate(
     if fields:
         safe_stencil = np.where(stencil_arr < 0, 0, stencil_arr)
         for name, value in mesh.point_data.items():
+            if name.startswith(_RESERVED_PREFIX):
+                continue
             value = np.asarray(value)
             flat = value.reshape(value.shape[0], -1)
             contribution = flat[safe_stencil] * weight_arr[..., None]
@@ -1335,6 +1331,8 @@ def tessellate(
             )
             point_data[name] = gathered
         for name, blocks in mesh.cell_data.items():
+            if name.startswith(_RESERVED_PREFIX):
+                continue
             new_blocks = []
             for src_ids in out_cell_source:
                 rows = [_cell_data_row(blocks, bases, int(g)) for g in src_ids]
@@ -1383,5 +1381,124 @@ def tessellate(
         all_sub_index,
         stencil_arr,
         weight_arr,
+        schema,
+    )
+
+
+_RESERVED_PREFIX = "tessellate:"
+
+
+def _core_takes(mesh) -> bool:
+    """Whether the core can carry this mesh's ``cell_data``: it copies rows
+    byte for byte, so every block of an array must exist and share one dtype
+    and row shape (the numpy twin, which can upcast, takes the rest)."""
+    for name, blocks in mesh.cell_data.items():
+        if name.startswith(_RESERVED_PREFIX):
+            continue
+        if len(blocks) != len(mesh.cells) or any(b is None for b in blocks):
+            return False
+        arrays = [np.asarray(b) for b in blocks]
+        if any(a.ndim == 0 for a in arrays):
+            return False
+        if len({(a.dtype.str, a.shape[1:]) for a in arrays}) > 1:
+            return False
+    return True
+
+
+def tessellate(
+    mesh,
+    *,
+    levels: int = 2,
+    curved: bool = True,
+    fields: bool = True,
+    record_stencil: bool = False,
+) -> Tessellation:
+    """Isoparametric tessellation of a mesh's curved cells.
+
+    Every cell whose type is in :data:`CURVED_TYPES` is subdivided onto a
+    ``levels``-division-per-axis reference lattice mapped through its own
+    isoparametric shape functions; every other cell (including linear types
+    and the non-curved higher-order family -- ``hexahedron20``,
+    ``wedge15``/``18``, ``pyramid13``/``14``, VTK-Lagrange, ragged and
+    polyhedron blocks) passes through **unchanged**. ``curved=False``
+    disables curved handling entirely, making the whole mesh a no-op.
+
+    ``fields=True`` (default) interpolates every input ``point_data`` array
+    onto the output via :meth:`Tessellation.gather`'s own formula, and
+    broadcasts every ``cell_data`` row onto its cell's children.
+    ``record_stencil=True`` additionally attaches ``tessellate:stencil``/
+    ``tessellate:weights`` as real ``point_data`` (off by default: a
+    ``(P, 27)`` array is expensive to persist), so a caller can later
+    reconstruct a full :class:`Tessellation` (including :meth:`gather`)
+    from a written-and-reread file via :meth:`Tessellation.from_mesh`.
+
+    See the module docstring for the isoparametric bases, the lattice
+    construction, and the watertightness key scheme.
+    """
+    levels = int(levels)
+    if levels < 0:
+        raise ValueError(f"meshio++: tessellate: levels must be >= 0, got {levels}")
+    if levels > 20:
+        raise ValueError(f"meshio++: tessellate: levels must be <= 20, got {levels}")
+    curved, fields, record_stencil = bool(curved), bool(fields), bool(record_stencil)
+    npoints = len(mesh.points)
+    if fields:
+        for name, value in mesh.point_data.items():
+            if not name.startswith(_RESERVED_PREFIX) and len(value) != npoints:
+                raise ValueError(
+                    f"meshio++: tessellate: point data {name!r} has {len(value)} "
+                    f"rows, expected {npoints}"
+                )
+    if _core_takes(mesh):
+        res = None
+        try:
+            from . import _core
+
+            res = _core.tessellate(mesh, levels, curved, fields, record_stencil)
+        except Exception as exc:
+            if not core_op_declined(exc, "tessellate"):
+                raise
+        if res is not None:
+            return _from_core(res, levels, curved)
+    return _tessellate_py(mesh, levels, curved, fields, record_stencil)
+
+
+def _from_core(res, levels, curved) -> Tessellation:
+    out = res["mesh"]
+    source_point = np.asarray(out.point_data[SOURCE_POINT_NAME], dtype=np.int64)
+    if out.cells:
+        source_cell = np.concatenate(
+            [np.asarray(b, dtype=np.int64) for b in out.cell_data[SOURCE_CELL_NAME]]
+        )
+        sub_index = np.concatenate(
+            [np.asarray(b, dtype=np.int64) for b in out.cell_data[SUB_INDEX_NAME]]
+        )
+    else:
+        source_cell = np.empty(0, dtype=np.int64)
+        sub_index = np.empty(0, dtype=np.int64)
+    schema = {
+        "version": TESSELLATION_VERSION,
+        "levels": levels,
+        "curved": curved,
+        "num_source_points": int(res["num_source_points"]),
+        "num_source_cells": int(res["num_source_cells"]),
+        "num_curved_source_cells": int(res["num_curved_source_cells"]),
+        "num_pass_through_source_cells": int(res["num_pass_through_source_cells"]),
+        "num_points": int(res["num_points"]),
+        "num_cells": int(res["num_cells"]),
+        "stencil_width": _MAX_STENCIL,
+        "watertight": {
+            "num_boundary_facets": int(res["num_boundary_facets"]),
+            "num_interior_facets": int(res["num_interior_facets"]),
+            "num_facets_with_bad_count": int(res["num_facets_with_bad_count"]),
+        },
+    }
+    return Tessellation(
+        out,
+        source_point,
+        source_cell,
+        sub_index,
+        np.asarray(res["stencil"], dtype=np.int64),
+        np.asarray(res["weights"], dtype=np.float64),
         schema,
     )

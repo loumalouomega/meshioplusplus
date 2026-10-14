@@ -199,6 +199,79 @@ end
     end
 end
 
+@testset "Kratos CAD JSON B-rep side channel" begin
+    mktempdir() do dir
+        path = joinpath(dir, "plate.cad.json")
+        Base.write(path, """{"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "surface": {
+            "is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 1], [0, 1]],
+            "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+            "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+              {"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,
+               "knot_vector": [0, 0, 1, 1], "active_range": [0, 1],
+               "control_points": [[[0, 0, 0, 1]], [[1, 0, 0, 1]]]}}]}]}],
+            "edges": [{"brep_id": 3, "topology": [{"brep_id": 2, "trim_index": 0}]}]}]}""")
+        mesh, info = read_with_info(path)
+        @test format_name(info) == "cad_json"
+        b = brep_info(info)
+        @test length(b.faces) == 1
+        f = b.faces[1]
+        @test f.id == 2 && f.patch == 1 && f.trimmed && f.reduced_knots
+        @test f.control_point_ids == [1, 2, 3, 4]
+        @test b.patches[1].knots[1] == [0.0, 0.0, 1.0, 1.0]
+        @test size(b.patches[1].control_points) == (3, 4)
+        @test f.loops[1].type == "outer"
+        @test f.loops[1].trims[1].trim_index == 0
+        @test size(f.loops[1].trims[1].curve.control_points) == (3, 2)
+        @test b.edges[1].curve === nothing
+        @test b.edges[1].topology[1].relative_direction == -1
+        @test b.breps[1].edges == [1]
+        output = joinpath(dir, "output.cad.json")
+        write_with_info(mesh, info, output)
+        back, back_info = read_with_info(output)
+        @test brep_info(back_info).patches == b.patches
+        close(back); close(back_info)
+        @test_throws MeshioError nurbs_info(info)
+        close(mesh); close(info)
+    end
+end
+
+@testset "MFEM NURBS side channel" begin
+    mktempdir() do dir
+        path = joinpath(dir, "annulus.mesh")
+        w = "0.70710678118654757"
+        Base.write(path, join(["MFEM NURBS mesh v1.0", "dimension", "2", "elements", "1",
+                               "5 3 0 1 2 3", "boundary", "0", "edges", "4", "0 0 1", "0 3 2",
+                               "1 0 3", "1 1 2", "vertices", "4", "knotvectors", "2",
+                               "2 3 0 0 0 1 1 1", "1 2 0 0 1 1", "weights", "1", "1", "1", "1",
+                               w, w, "FiniteElementSpace", "FiniteElementCollection: NURBS2",
+                               "VDim: 2", "Ordering: 1", "1 0", "0 1", "0 2", "2 0", "1 1",
+                               "2 2"], "\n") * "\n")
+        mesh, info = read_with_info(path; format="mfem")
+        @test format_name(info) == "mfem"
+        copied = nurbs_info(info)
+        @test length(copied.patches) == 1
+        p = copied.patches[1]
+        @test p.degrees == Int32[2, 1]
+        @test p.knots[2] == [0.0, 0.0, 1.0, 1.0]
+        @test size(p.control_points) == (2, 6)
+        @test p.control_points[:, 2] == [1.0, 1.0]
+        @test p.weights[2] == sqrt(0.5)
+        @test isempty(copied.field_names)
+        @test copied.topology.num_vertices == 4
+        @test copied.topology.patch_vertices[:, 1] == [1, 2, 3, 4]
+        @test copied.topology.edges[:, 1] == [0, 1, 2]
+        @test copied.cell_patch == [1]
+        output = joinpath(dir, "output.mesh")
+        write_with_info(mesh, info, output; format="mfem")
+        @test startswith(Base.read(output, String), "MFEM NURBS mesh v1.0")
+        back, back_info = read_with_info(output; format="mfem")
+        @test nurbs_info(back_info).patches == copied.patches
+        close(back); close(back_info)
+        @test_throws MeshioError gmsh_info(info)
+        close(mesh); close(info)
+    end
+end
+
 @testset "column-major shape identity" begin
     m = fixture()
     p = points(m)
@@ -536,6 +609,34 @@ end
     @test num_cells(c.mesh) == 2             # a tetra is already a simplex
     @test all(>=(0), c.point_map)
     close(c.mesh)
+    close(m)
+end
+
+@testset "operations: tessellate (curved cells)" begin
+    # One straight-sided tetra10: two levels give 35 points and 64 tetras.
+    m = Mesh()
+    set_points!(m, [0.0 1.0 0.0 0.0 0.5 0.5 0.0 0.0 0.5 0.0;
+                    0.0 0.0 1.0 0.0 0.0 0.5 0.5 0.0 0.0 0.5;
+                    0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.5 0.5 0.5])
+    add_cell_block!(m, "tetra10", reshape(collect(1:10), 10, 1))
+    t = tessellate(m)
+    @test t.num_curved_source_cells == 1
+    @test t.num_points == 35
+    @test num_points(t.mesh) == 35
+    @test t.num_cells == 64
+    @test t.num_boundary_facets == 64
+    @test t.num_interior_facets == 96
+    @test t.num_facets_with_bad_count == 0
+    @test point_data(t.mesh, "tessellate:source_point")[1:5] == [0, 1, 2, 3, -1]
+    close(t.mesh)
+    s = tessellate(m; levels=1, record_stencil=true)
+    @test s.num_cells == 8
+    @test size(point_data(s.mesh, "tessellate:weights")) == (27, 10)
+    close(s.mesh)
+    p = tessellate(m; curved=false)
+    @test p.num_pass_through_source_cells == 1
+    close(p.mesh)
+    @test_throws MeshioError tessellate(m; levels=-1)
     close(m)
 end
 
@@ -1419,6 +1520,27 @@ end
     close(seg.mesh)
     @test_throws MeshioError segment(cube; feature_angle=200)
     @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+    if has_occt()
+        cad = fit_cad(cube)
+        @test cad.valid
+        @test cad.num_plane == 6
+        @test cad.num_split_patches == 0
+        @test cad.num_fillet == 0
+        @test cad.num_helical == 0
+        close(cad.mesh)
+        bare = fit_cad(cube; freeform_split=false, fillets=false, threads=false)
+        @test bare.num_plane == 6
+        close(bare.mesh)
+    else
+        err = try
+            fit_cad(cube)
+            nothing
+        catch e
+            e
+        end
+        @test err isa MeshioError
+        @test occursin("MESHIOPLUSPLUS_WITH_OCCT", sprint(showerror, err))
+    end
 
     other = Mesh()
     set_points!(other, pts)

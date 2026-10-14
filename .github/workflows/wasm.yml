@@ -109,6 +109,10 @@ jobs:
     environment:
       name: npm
       url: https://www.npmjs.com/package/@meshioplusplus/wasm
+    permissions:
+      # id-token signs the OIDC exchange behind npm trusted publishing; the
+      # NPM_TOKEN fallback below covers the transition period only.
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -117,11 +121,65 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          # Node 24 ships npm 11, which supports OIDC trusted publishing (the
+          # explicit upgrade below guards against a lagging bundled npm). No
+          # registry-url here: it would write an _authToken placeholder that
+          # shadows the OIDC exchange. The build job stays on Node 20, which
+          # exercises the loader's pre-21 navigator fallback.
+          node-version: "24"
+
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        run: npm install -g npm@latest
 
       - name: Publish to npm
         working-directory: src/wasm
-        run: npm publish --access public
+        run: |
+          set -euo pipefail
+          PKG="$(node -p "require('./package.json').name")"
+          VER="$(node -p "require('./package.json').version")"
+          echo "node $(node --version) / npm $(npm --version); package $PKG@$VER"
+
+          # A retried job must not fail just because an earlier attempt already
+          # published (concurrency cancels and flake retries are routine).
+          if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+            echo "$PKG@$VER is already on the registry; nothing to publish"
+            exit 0
+          fi
+
+          # Primary path: npm trusted publishing (OIDC). No token, so nothing
+          # to expire; needs the one-time trusted-publisher entry for this
+          # repo, workflow file and environment on npmjs.com (see doc/wasm.md).
+          for i in 1 2 3; do
+            if npm publish --access public; then
+              echo "published $PKG@$VER via OIDC trusted publishing"
+              exit 0
+            fi
+            echo "OIDC publish attempt $i/3 failed; retrying in 15 s"
+            sleep 15
+          done
+
+          # Fallback: the classic NPM_TOKEN while it still exists. The registry
+          # masks a rejected scoped PUT as 404, so validate the token first for
+          # a clear error instead of the cryptic "not in this registry".
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::npm publish failed and NPM_TOKEN is unset. Configure trusted publishing on npmjs.com (see doc/wasm.md), then re-run this job."
+            exit 1
+          fi
+          TOKEN_NPMRC="$RUNNER_TEMP/npmrc-token"
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > "$TOKEN_NPMRC"
+          if ! NPM_CONFIG_USERCONFIG="$TOKEN_NPMRC" npm whoami --registry https://registry.npmjs.org/; then
+            echo "::error::npm publish failed and NPM_TOKEN is rejected by the registry (expired or revoked?). Configure trusted publishing on npmjs.com (see doc/wasm.md) or replace the NPM_TOKEN secret with a fresh token, then re-run this job."
+            exit 1
+          fi
+          for i in 1 2 3; do
+            if NPM_CONFIG_USERCONFIG="$TOKEN_NPMRC" npm publish --access public; then
+              echo "published $PKG@$VER with NPM_TOKEN"
+              exit 0
+            fi
+            echo "token publish attempt $i/3 failed; retrying in 15 s"
+            sleep 15
+          done
+          echo "::error::npm publish failed with both OIDC and NPM_TOKEN. See doc/wasm.md, then re-run this job."
+          exit 1
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

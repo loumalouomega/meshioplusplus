@@ -26,6 +26,7 @@ WITH_GIDPOST="ON"
 WITH_POLYSCOPE="OFF"
 WITH_BZIP2="OFF"
 WITH_ADIOS2="OFF"
+WITH_OCCT="OFF"
 WITH_TECIO="OFF"
 TECIO_ROOT_DIR=""
 TESTS="OFF"
@@ -57,6 +58,8 @@ Usage: $0 [options]
   --with-bzip2                    native bzip2 (libMesh .bz2 meshes; default: off)
   --with-adios2                   ADIOS2-backed DOLFINx VTX .bp reader (default: off;
                                   set ADIOS2_DIR or CMAKE_PREFIX_PATH if not found)
+  --with-occt                     OpenCASCADE-backed fit_cad (default: off; LGPL-2.1,
+                                  set OpenCASCADE_DIR or CMAKE_PREFIX_PATH if not found)
   --with-tecio <dir>              TecIO-backed Tecplot .szplt reader (default: off;
                                   <dir> holds TECIO.h and libtecio)
   --with-polyscope                native viewer for the CLI's view/screenshot
@@ -96,6 +99,7 @@ while [ $# -gt 0 ]; do
         --with-zlib) WITH_ZLIB="ON"; shift ;;
         --with-bzip2) WITH_BZIP2="ON"; shift ;;
         --with-adios2) WITH_ADIOS2="ON"; shift ;;
+        --with-occt) WITH_OCCT="ON"; shift ;;
         --with-tecio) WITH_TECIO="ON"; TECIO_ROOT_DIR="$2"; shift 2 ;;
         --with-polyscope) WITH_POLYSCOPE="ON"; shift ;;
         --without-polyscope) WITH_POLYSCOPE="OFF"; shift ;;
@@ -169,6 +173,7 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_POLYSCOPE="$WITH_POLYSCOPE" \
     -DMESHIOPLUSPLUS_WITH_BZIP2="$WITH_BZIP2" \
     -DMESHIOPLUSPLUS_WITH_ADIOS2="$WITH_ADIOS2" \
+    -DMESHIOPLUSPLUS_WITH_OCCT="$WITH_OCCT" \
     -DMESHIOPLUSPLUS_WITH_TECIO="$WITH_TECIO" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
@@ -206,7 +211,7 @@ echo "  mesh:      $MESH_BACKEND (Python extension: $BUILD_PYTHON)"
 echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
 echo "  gidpost:   $WITH_GIDPOST  (GiD postprocess writer)"
 echo "  Polyscope: $WITH_POLYSCOPE  (CLI viewer)"
-echo "  bzip2:     $WITH_BZIP2   ADIOS2: $WITH_ADIOS2   TecIO: $WITH_TECIO${TECIO_ROOT_DIR:+ ($TECIO_ROOT_DIR)}"
+echo "  bzip2:     $WITH_BZIP2   ADIOS2: $WITH_ADIOS2   TecIO: $WITH_TECIO${TECIO_ROOT_DIR:+ ($TECIO_ROOT_DIR)}   OCCT: $WITH_OCCT"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"
 echo "  C++ API:   $INSTALL_CPP${CPP_BACKENDS:+  (backends: $CPP_BACKENDS)}"

@@ -10,9 +10,11 @@ from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
-from .._mesh import Mesh
+from .._mesh import CellBlock, Mesh
 from .._vtk_common import (
+    HEX_ORDER_TYPES,
     Info,
+    hex_swap_edges,
     meshio_to_vtk_order,
     meshio_to_vtk_type,
     vtk_to_meshio_order,
@@ -643,7 +645,7 @@ def write(filename, mesh, binary=True):
 
         # write points and cells
         _write_points(f, points, binary)
-        _write_cells(f, mesh.cells, binary)
+        _write_cells(f, mesh.cells, binary, mesh.cell_data.get("HigherOrderDegrees"))
 
         # write point data
         if mesh.point_data:
@@ -679,7 +681,38 @@ def _write_points(f, points, binary):
     f.write(b"\n")
 
 
-def _write_cells(f, cells, binary):
+def _old_hex_order(cells, degrees):
+    """The blocks with their higher-order hexahedra in the order VTK reads
+    from a 4.2 file: edges 10 and 11 swapped (``hex_swap_edges``)."""
+    out, warned = [], False
+    for k, c in enumerate(cells):
+        if meshio_to_vtk_type.get(c.type) not in HEX_ORDER_TYPES:
+            out.append(c)
+            continue
+        data = np.array(c.data, dtype=np.int64)
+        deg = None
+        if degrees is not None and len(degrees) == len(cells):
+            deg = np.asarray(degrees[k]).reshape(-1)
+            deg = deg.reshape(-1, 3) if deg.size == 3 * len(data) else None
+        for r in range(len(data)):
+            if (
+                not hex_swap_edges(data[r], None if deg is None else deg[r])
+                and not warned
+            ):
+                warn(
+                    f"VTK 4.2 writer: a {c.type} of {data.shape[1]} nodes has no degrees "
+                    "that explain its size; VTK will read its edges 10 and 11 swapped "
+                    "(write 5.1)"
+                )
+                warned = True
+        out.append(CellBlock(c.type, data))
+    return out
+
+
+def _write_cells(f, cells, binary, degrees=None):
+    # VTK reads the higher-order hexahedra of a file older than 5.1 with edges
+    # 10 and 11 swapped, so they are written so.
+    cells = _old_hex_order(cells, degrees)
     total_num_cells = sum(len(c.data) for c in cells)
     total_num_idx = sum(c.data.size for c in cells)
     # For each cell, the number of nodes is stored
