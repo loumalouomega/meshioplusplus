@@ -151,8 +151,8 @@ TEST(Iga, DegreeElevationKeepsTheArcExactAndRaisesContinuity) {
     const NurbsPatch p = arc();
     const NurbsPatch q = meshioplusplus::iga_elevate_degree(p, 0, 2);
     EXPECT_EQ(q.mDegrees[0], 4);
-    EXPECT_EQ(q.mKnots[0].size(), 10u + 4u);  // 7 control points + degree + 1
-    EXPECT_EQ(q.mControlPoints.Shape()[0], 7u - 2u);
+    EXPECT_EQ(q.mKnots[0], (std::vector<double>{0, 0, 0, 0, 0, 1, 1, 1, 1, 1}));
+    EXPECT_EQ(q.mControlPoints.Shape()[0], 5u);  // a quartic Bezier segment
     const NDArray u = grid(p, 31);
     EXPECT_LT(max_diff(meshioplusplus::iga_evaluate(one_patch(p), 0, u).mPoints,
                        meshioplusplus::iga_evaluate(one_patch(q), 0, u).mPoints),

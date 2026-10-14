@@ -1716,6 +1716,155 @@ TEST(CApi, NurbsSideChannel) {
     std::remove(output.c_str());
 }
 
+TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
+    const std::string w = "0.70710678118654757";
+    const auto path = mt::temp_path(".mesh");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
+               "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
+               "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
+            << w << "\n" << w
+            << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+               "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
+    }
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(path.c_str(), "mfem", nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    mio_mesh_free(mesh);
+
+    mio_iga_opts opts;
+    mio_iga_opts_init(&opts);
+    EXPECT_EQ(opts.subdivisions[1], 1);
+    EXPECT_EQ(opts.trim_samples, 16);
+    EXPECT_EQ(opts.reserved[0], 0);
+    for (int d = 0; d < 3; ++d) {
+        opts.subdivisions[d] = 3;
+        opts.elevate[d] = 1;
+    }
+    mio_format_info* refined = nullptr;
+    mio_mesh* fine = mio_iga_refine(info, &opts, &refined);
+    ASSERT_NE(fine, nullptr) << mio_last_error();
+    ASSERT_NE(refined, nullptr);
+    char fmt[16];
+    EXPECT_EQ(mio_format_info_format(refined, fmt, sizeof fmt), 4);
+    EXPECT_STREQ(fmt, "mfem");
+    const void* data = nullptr;
+    mio_dtype dtype;
+    int32_t ndim;
+    int64_t shape[MIO_MAX_NDIM]{};
+    ASSERT_EQ(mio_nurbs_info_array(refined, MIO_NURBS_PATCHES, 0, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(static_cast<const int32_t*>(data)[0], 3);  // degrees 2 and 1 raised by 1
+    EXPECT_EQ(static_cast<const int32_t*>(data)[1], 2);
+    // The refined model writes back as an MFEM NURBS mesh through the returned mesh.
+    const auto output = mt::temp_path(".mesh");
+    ASSERT_EQ(mio_write_with_info(output.c_str(), fine, "mfem", refined), MIO_OK) << mio_last_error();
+    mio_mesh_free(fine);
+
+    // Evaluate the same point on the original and the refined patch.
+    const double uv[4] = {0.3, 0.7, 0.9, 0.2};
+    mio_iga_evaluation* a = mio_iga_evaluate(info, 0, uv, 2, 1, 16);
+    mio_iga_evaluation* b = mio_iga_evaluate(refined, 0, uv, 2, 1, 16);
+    ASSERT_NE(a, nullptr) << mio_last_error();
+    ASSERT_NE(b, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_iga_evaluation_num_fields(a), 0);
+    const void* pa = nullptr;
+    const void* pb = nullptr;
+    ASSERT_EQ(mio_iga_evaluation_array(a, MIO_IGA_POINTS, 0, &pa, &dtype, &ndim, shape), MIO_OK);
+    EXPECT_EQ(dtype, MIO_FLOAT64);
+    EXPECT_EQ(shape[0], 2);
+    EXPECT_EQ(shape[1], 2);
+    ASSERT_EQ(mio_iga_evaluation_array(b, MIO_IGA_POINTS, 0, &pb, nullptr, nullptr, nullptr), MIO_OK);
+    for (int i = 0; i < 4; ++i)
+        EXPECT_NEAR(static_cast<const double*>(pa)[i], static_cast<const double*>(pb)[i], 1e-13);
+    ASSERT_EQ(mio_iga_evaluation_array(a, MIO_IGA_DERIVATIVES, 0, &pa, &dtype, &ndim, shape), MIO_OK);
+    EXPECT_EQ(ndim, 3);
+    EXPECT_EQ(shape[1], 2);
+    // a planar patch has no 3-D normals, no trimming, no fields
+    EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_NORMALS, 0, &pa, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_INSIDE, 0, &pa, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_FIELD, 0, &pa, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_iga_evaluation_free(a);
+    mio_iga_evaluation_free(b);
+
+    // Errors: out-of-range parameters and patch, a refinement of unequal directions.
+    const double bad[2] = {2.0, 0.5};
+    EXPECT_EQ(mio_iga_evaluate(info, 0, bad, 1, 0, 16), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("knot range"), std::string::npos);
+    EXPECT_EQ(mio_iga_evaluate(info, 3, uv, 1, 0, 16), nullptr);
+    opts.subdivisions[0] = 2;
+    EXPECT_EQ(mio_iga_refine(info, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_iga_refine(nullptr, nullptr, nullptr), nullptr);
+    mio_iga_evaluation_free(nullptr);
+    EXPECT_EQ(mio_iga_evaluation_num_fields(nullptr), -1);
+
+    // The sampling alone: one cell per span, the map in the new handle.
+    mio_iga_opts_init(&opts);
+    mio_format_info* mapped = nullptr;
+    mio_mesh* cells = mio_iga_sample(info, &opts, &mapped);
+    ASSERT_NE(cells, nullptr) << mio_last_error();
+    ASSERT_NE(mapped, nullptr);
+    EXPECT_EQ(mio_nurbs_info_count(mapped, MIO_NURBS_PATCHES), 1);
+    mio_mesh_free(cells);
+    mio_format_info_free(mapped);
+    mio_format_info_free(refined);
+    mio_format_info_free(info);
+    std::remove(path.c_str());
+    std::remove(output.c_str());
+}
+
+TEST(CApi, IgaOnABrepKeepsItsTrimsAndReportsInside) {
+    // The same square face as BrepSideChannel with an outer loop of four trims.
+    const auto path = mt::temp_path(".cad.json");
+    std::ofstream(path, std::ios::binary) << R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,
+        "surface": {"is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 2], [0, 2]],
+          "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+        "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+          {"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,
+           "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 0, 0, 1]], [[1.5, 0, 0, 1]]]}},
+          {"trim_index": 1, "curve_direction": true, "parameter_curve": {"degree": 1,
+           "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[1.5, 0, 0, 1]], [[0, 1.5, 0, 1]]]}},
+          {"trim_index": 2, "curve_direction": true, "parameter_curve": {"degree": 1,
+           "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 1.5, 0, 1]], [[0, 0, 0, 1]]]}}]}]}],
+        "edges": []}]})";
+    mio_format_info* info = nullptr;
+    mio_mesh* mesh = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    mio_mesh_free(mesh);
+    mio_iga_opts opts;
+    mio_iga_opts_init(&opts);
+    opts.subdivisions[0] = 2;
+    opts.subdivisions[1] = 3;
+    opts.elevate[1] = 1;
+    mio_format_info* refined = nullptr;
+    mio_mesh* cells = mio_iga_refine(info, &opts, &refined);
+    ASSERT_NE(cells, nullptr) << mio_last_error();
+    ASSERT_NE(refined, nullptr);
+    mio_mesh_free(cells);
+    // (0.2, 0.2) lies inside the triangle, (1.8, 1.8) beyond its hypotenuse.
+    const double uv[4] = {0.2, 0.2, 1.8, 1.8};
+    mio_iga_evaluation* ev = mio_iga_evaluate(refined, 0, uv, 2, 1, 16);
+    ASSERT_NE(ev, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dtype;
+    int32_t ndim;
+    int64_t shape[MIO_MAX_NDIM]{};
+    ASSERT_EQ(mio_iga_evaluation_array(ev, MIO_IGA_INSIDE, 0, &data, &dtype, &ndim, shape), MIO_OK);
+    EXPECT_EQ(dtype, MIO_UINT8);
+    EXPECT_EQ(static_cast<const uint8_t*>(data)[0], 1);
+    EXPECT_EQ(static_cast<const uint8_t*>(data)[1], 0);
+    ASSERT_EQ(mio_iga_evaluation_array(ev, MIO_IGA_NORMALS, 0, &data, &dtype, &ndim, shape), MIO_OK);
+    EXPECT_NEAR(std::abs(static_cast<const double*>(data)[2]), 1.0, 1e-13);
+    mio_iga_evaluation_free(ev);
+    mio_format_info_free(refined);
+    mio_format_info_free(info);
+    std::remove(path.c_str());
+}
+
 // ---------------------------------------------------------------------------
 // Selective reads (mio_read_ex) and the opaque file summary (mio_read_metadata)
 // ---------------------------------------------------------------------------

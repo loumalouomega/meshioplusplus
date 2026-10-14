@@ -4661,6 +4661,118 @@ MIO_API int mio_has_occt(void);
 MIO_API mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path,
                               const mio_fit_cad_opts* opts, mio_fit_cad_report* report);
 
+/* ---------------------------------------------------------------------
+ * Isogeometric layer (v16.43.0): evaluate, refine and sample the NURBS model
+ * a reader kept in a mio_format_info handle -- an "mfem" NURBS mesh's patches
+ * or the trimmed faces of a "cad_json", "step" or "iges" B-rep -- without going
+ * through its sampling. See doc/iga.md.
+ * --------------------------------------------------------------------- */
+
+/**
+ * Options for mio_iga_refine and mio_iga_sample. Same ABI rules as above;
+ * always initialize through mio_iga_opts_init(): the subdivisions default to 1
+ * and trim_samples to 16, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_iga_opts {
+    /** mio_iga_refine: parts every nonzero knot span is split into, per
+     *  direction (1 = none; 1 to 64). An "mfem" model refines every direction alike. */
+    int32_t subdivisions[3];
+    /** mio_iga_refine: degrees to add per direction, applied before the knots are inserted. */
+    int32_t elevate[3];
+    /** The sampling: cells per knot span and direction; 0 is automatic (one per
+     *  span, about 16 per direction on a trimmed face, the MFEM reader's own
+     *  sampling for an "mfem" model). 0 to 64. */
+    int32_t sample_subdivisions;
+    /** B-rep: points per knot span a trimming curve is sampled at; 2 to 4096. */
+    int32_t trim_samples;
+    /** B-rep: nonzero samples the edges that have a 3-D curve as line cells. */
+    int32_t edges;
+    /** B-rep: nonzero keeps only the cells inside the trimming loops. */
+    int32_t trim;
+    int32_t reserved32[2]; /**< must be zero */
+    int64_t reserved[6];   /**< must be zero; room for additive growth */
+} mio_iga_opts;
+
+/** Initialize IGA options: no refinement, automatic sampling, 16 trim samples, edges and trimming on. */
+MIO_API void mio_iga_opts_init(mio_iga_opts* opts);
+
+/**
+ * Refine every patch (every face surface of a B-rep) exactly: degree elevation by
+ * `opts->elevate`, then knot insertion splitting each nonzero span in
+ * `opts->subdivisions` parts. The geometry, fields and trimming loops do not
+ * change. The refined model is sampled (see `sample_subdivisions`).
+ *
+ * @param info    an "mfem" (NURBS mesh), "cad_json", "step" or "iges" handle from
+ *                mio_read_with_info(); anything else fails with MIO_ERR_INVALID_ARG.
+ * @param opts    options; NULL means every mio_iga_opts_init() default.
+ * @param refined optional out: a new handle holding the refined model, of the
+ *                same format, for mio_write_with_info() with the returned mesh
+ *                (free with mio_format_info_free).
+ * @return the sampled mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_iga_refine(const mio_format_info* info, const mio_iga_opts* opts,
+                                 mio_format_info** refined);
+
+/**
+ * Sample a NURBS model into Lagrange cells (`opts->sample_subdivisions`,
+ * `trim_samples`, `edges`, `trim`): for a NURBS mesh one block of the highest
+ * degree's line, quad or hexahedron family cells with the NURBS fields as point
+ * data and Int64 cell data "iga:patch" and "iga:span"; for a B-rep the cells
+ * read_cad_json() makes.
+ *
+ * @param mapped optional out: a new handle holding the model with the sampling's
+ *               cell-to-patch maps filled (free with mio_format_info_free).
+ */
+MIO_API mio_mesh* mio_iga_sample(const mio_format_info* info, const mio_iga_opts* opts,
+                                 mio_format_info** mapped);
+
+/** What mio_iga_evaluation_array reads. */
+typedef enum mio_iga_array {
+    /** Float64 (N, space dimension). */
+    MIO_IGA_POINTS = 0,
+    /** Float64 (N, parametric dimension, space dimension): d x / d u_k; with derivatives = 1. */
+    MIO_IGA_DERIVATIVES = 1,
+    /** Float64 (N, 3): the unit normals of a surface in 3-D; with derivatives = 1. */
+    MIO_IGA_NORMALS = 2,
+    /** UInt8 (N): 1 where a B-rep face's trimming loops contain the point. */
+    MIO_IGA_INSIDE = 3,
+    /** Float64 (N, components): NURBS field `index` of a patch. */
+    MIO_IGA_FIELD = 4
+} mio_iga_array;
+
+/** Opaque result of mio_iga_evaluate. Destroy with mio_iga_evaluation_free(). */
+typedef struct mio_iga_evaluation mio_iga_evaluation;
+
+/**
+ * Evaluate patch `patch` of an "mfem" model, or face `patch` of a B-rep, at
+ * `num_points` parametric coordinates: `params` holds `num_points * d` doubles
+ * (d the parametric dimension: mio_nurbs_info_int(MIO_NURBS_PATCHES, patch,
+ * field 0), 2 for a face), point after point, each inside the knot range.
+ *
+ * @param derivatives 0, or 1 for the first derivatives and the surface normals.
+ * @param trim_samples B-rep: points per knot span a trimming curve is sampled at.
+ * @return the result (free with mio_iga_evaluation_free), or NULL on failure.
+ */
+MIO_API mio_iga_evaluation* mio_iga_evaluate(const mio_format_info* info, int64_t patch,
+                                             const double* params, int64_t num_points,
+                                             int32_t derivatives, int32_t trim_samples);
+
+/** The number of NURBS fields the evaluation carries, or -1 on an invalid handle. */
+MIO_API int64_t mio_iga_evaluation_num_fields(const mio_iga_evaluation* evaluation);
+
+/**
+ * Borrow an array of the evaluation until it is freed. Any out pointer may be
+ * NULL; `shape` must hold MIO_MAX_NDIM entries. An array the evaluation does not
+ * hold (derivatives not requested, no trimming for MIO_IGA_INSIDE, a surface not
+ * in 3-D for the normals) fails with MIO_ERR_INVALID_ARG.
+ */
+MIO_API mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation, int32_t which,
+                                            int64_t index, const void** data, mio_dtype* dtype,
+                                            int32_t* ndim, int64_t* shape);
+
+/** Destroy an evaluation. NULL is a no-op. */
+MIO_API void mio_iga_evaluation_free(mio_iga_evaluation* evaluation);
+
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero
  * struct IS the default here, but initialize through mio_hausdorff_opts_init().
