@@ -5043,6 +5043,63 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('tessellate: curved tetra10 + quad9, pass-through line', () => {
+    // A straight-sided tetra10 (points 0-9), a slightly bowed quad9
+    // (points 10-18) and a pass-through line. levels 2 is 2^2 = 4 divisions per
+    // tetra edge (64 tets, 35 lattice points, 4 * 16 boundary facets) and 2 per
+    // quad axis (8 triangles, 9 points); the counts match the numpy twin.
+    const tc = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const tetEdges = [[0, 1], [1, 2], [0, 2], [0, 3], [1, 3], [2, 3]];
+    const curvedMesh = {
+        points: new Float64Array([
+            ...tc.flat(),
+            ...tetEdges.flatMap(([a, b]) => tc[a].map((x, k) => (x + tc[b][k]) / 2)),
+            2, 0, 0, 3, 0, 0, 3, 1, 0, 2, 1, 0,
+            2.5, -0.2, 0, 3, 0.5, 0, 2.5, 1, 0, 2, 0.5, 0, 2.5, 0.5, 0,
+        ]),
+        dim: 3,
+        cells: [
+            { type: 'line', data: new Int32Array([0, 1]), nodesPerCell: 2 },
+            { type: 'tetra10', data: Int32Array.from({ length: 10 }, (_, i) => i), nodesPerCell: 10 },
+            { type: 'quad9', data: Int32Array.from({ length: 9 }, (_, i) => 10 + i), nodesPerCell: 9 },
+        ],
+        point_data: { t: Float64Array.from({ length: 19 }, (_, i) => i) },
+        cell_data: {},
+        field_data: {},
+    };
+    const ts = m.tessellate(curvedMesh);
+    assert.equal(ts.numSourcePoints, 19);
+    assert.equal(ts.numSourceCells, 3);
+    assert.equal(ts.numCurvedSourceCells, 2);
+    assert.equal(ts.numPassThroughSourceCells, 1);
+    assert.equal(ts.numPoints, 44);
+    assert.equal(ts.numCells, 73);
+    assert.equal(ts.numBoundaryFacets, 64);
+    assert.equal(ts.numInteriorFacets, 96);
+    assert.equal(ts.numFacetsWithBadCount, 0);
+    assert.deepEqual(ts.mesh.cells.map((c) => c.type), ['line', 'triangle', 'tetra']);
+    assert.equal(ts.mesh.points.length, 44 * 3);
+    const tsSource = Array.from(ts.mesh.point_data['tessellate:source_point'], Number);
+    assert.equal(tsSource.length, 44);
+    assert.deepEqual(tsSource.slice(0, 9), [0, 1, 2, 3, 10, 11, 12, 13, -1]);
+    assert.equal(tsSource.filter((s) => s >= 0).length, 8);
+    assert.ok(ts.mesh.cell_data['tessellate:source_cell']);
+    assert.ok(ts.mesh.cell_data['tessellate:sub_index']);
+    assert.deepEqual(Array.from(ts.mesh.point_data.t.slice(0, 8)), [0, 1, 2, 3, 10, 11, 12, 13]);
+    assert.equal(ts.mesh.point_data['tessellate:stencil'], undefined);
+    const tsStencil = m.tessellate(curvedMesh, 2, true, false, true);
+    assert.equal(tsStencil.mesh.point_data['tessellate:stencil'].length, 44 * 27);
+    assert.equal(tsStencil.mesh.point_data['tessellate:weights'].length, 44 * 27);
+    assert.equal(tsStencil.mesh.point_data_components['tessellate:stencil'], 27);
+    assert.equal(tsStencil.mesh.point_data.t, undefined);
+    const tsFlat = m.tessellate(curvedMesh, 2, false);
+    assert.equal(tsFlat.numCurvedSourceCells, 0);
+    assert.equal(tsFlat.numPassThroughSourceCells, 3);
+    assert.deepEqual(tsFlat.mesh.cells.map((c) => c.type), ['line', 'tetra10', 'quad9']);
+    assert.throws(() => m.tessellate(curvedMesh, -1), /levels/);
+    assert.throws(() => m.tessellate(curvedMesh, 1.5), /levels/);
+});
+
 step('findInterface, contactPairs and splitInterface', () => {
     const parts = {
         points: new Float64Array([

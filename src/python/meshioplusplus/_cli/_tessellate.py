@@ -3,6 +3,7 @@ refinement lattice, writing the ``tessellate:*`` provenance arrays."""
 
 from .._helpers import _writer_map, read, reader_map, write
 from .._tessellation import tessellate
+from ._json import emit_json
 
 
 def add_args(parser):
@@ -48,6 +49,11 @@ def add_args(parser):
         "round trip)",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the report (counts and watertightness) as JSON",
+    )
+    parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
     )
 
@@ -61,8 +67,16 @@ def tessellate_cmd(args):
         fields=not args.no_fields,
         record_stencil=args.record_stencil,
     )
-    if not args.quiet:
-        print(f"tessellated {len(mesh.points)} points to {len(tess.mesh.points)}")
+    write(args.outfile, tess.mesh, file_format=args.output_format)
+    if args.json:
+        # Tessellation.schema without its Python-side ``version``; the native
+        # CLI prints the same keys.
+        emit_json({k: v for k, v in tess.schema.items() if k != "version"})
+    elif not args.quiet:
+        print(
+            f"tessellated {tess.schema['num_source_points']} points to "
+            f"{tess.schema['num_points']}"
+        )
         print(f"  curved source cells:  {tess.schema['num_curved_source_cells']}")
         print(f"  pass-through cells:   {tess.schema['num_pass_through_source_cells']}")
         print(f"  output cells:         {tess.schema['num_cells']}")
@@ -75,5 +89,4 @@ def tessellate_cmd(args):
                 else f"NO ({w['num_facets_with_bad_count']} bad facet(s))"
             )
         )
-    write(args.outfile, tess.mesh, file_format=args.output_format)
     return 0

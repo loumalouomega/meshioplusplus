@@ -126,6 +126,7 @@
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
@@ -400,7 +401,8 @@ void print_usage(std::ostream& os) {
           "  segment                 Split a surface into smooth patches (regions)\n"
           "  fit-primitives          Fit a plane/sphere/cylinder/cone/torus to each patch\n"
           "  to-cad                  Fitted patches as a STEP solid with analytic and\n"
-          "                            freeform B-spline faces (--cad-json: as Kratos CAD JSON too)\n"
+          "                            freeform B-spline, fillet and thread faces (--cad-json: as\n"
+          "                            Kratos CAD JSON too)\n"
           "                            (needs a build with -DMESHIOPLUSPLUS_WITH_OCCT=ON)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
@@ -437,6 +439,8 @@ void print_usage(std::ostream& os) {
           "                            --difference OUT=A,B --rename OLD=NEW\n"
           "                            --retag NAME=TAG[:DIM] --delete NAME\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
+          "  tessellate              Subdivide curved (quadratic) cells onto a reference\n"
+          "                            lattice through their own shape functions\n"
           "  subdivide               Polyhedrally refine: one polyhedral child per 3D\n"
           "                            cell face, connected to a new interior point\n"
           "  agglomerate             Polyhedrally coarsen: merge groups of cells into\n"
@@ -1882,6 +1886,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"no-freeform", {}, false},
                                   {"freeform-degree", {}, true},
                                   {"freeform-max-control", {}, true},
+                                  {"no-freeform-split", {}, false},
+                                  {"no-fillets", {}, false},
+                                  {"no-threads", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -1922,6 +1929,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         options.mFreeformDegree = static_cast<std::int32_t>(std::stoi(opt_value(p, "freeform-degree")));
     if (has_opt(p, "freeform-max-control"))
         options.mFreeformMaxControl = std::stoll(opt_value(p, "freeform-max-control"));
+    options.mFreeformSplit = !has_flag(p, "no-freeform-split");
+    options.mFillets = !has_flag(p, "no-fillets");
+    options.mThreads = !has_flag(p, "no-threads");
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
     if (has_opt(p, "mesh-out"))
         write_mesh_cli(opt_value(p, "mesh-out"), r.mMesh, "");
@@ -1949,6 +1959,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_approx_edges", r.mNumApproxEdges);
         json.Field("num_solids", r.mNumSolids);
         json.Field("num_bspline", r.mNumBspline);
+        json.Field("num_split_patches", r.mNumSplitPatches);
+        json.Field("num_fillet", r.mNumFillet);
+        json.Field("num_helical", r.mNumHelical);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
@@ -1958,7 +1971,12 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
         std::cout << "  cone:      " << r.mNumCone << "\n";
         std::cout << "  torus:     " << r.mNumTorus << "\n";
-        std::cout << "  bspline:   " << r.mNumBspline << "\n";
+        std::cout << "  bspline:   " << r.mNumBspline;
+        if (r.mNumSplitPatches > 0)
+            std::cout << " (" << r.mNumSplitPatches << " split piece(s))";
+        std::cout << "\n";
+        std::cout << "  fillet:    " << r.mNumFillet << "\n";
+        std::cout << "  helical:   " << r.mNumHelical << "\n";
         std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
         std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation
@@ -3239,6 +3257,65 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
 
     auto result = meshioplusplus::convert_cells(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_tessellate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"levels", {}, true},
+                                  {"no-curved", {}, false},
+                                  {"no-fields", {}, false},
+                                  {"record-stencil", {}, false},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("tessellate requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::TessellateOptions options;
+    if (has_opt(p, "levels"))
+        options.mLevels = std::stoll(opt_value(p, "levels"));
+    options.mCurved = !has_flag(p, "no-curved");
+    options.mFields = !has_flag(p, "no-fields");
+    options.mRecordStencil = has_flag(p, "record-stencil");
+
+    meshioplusplus::TessellateResult r = meshioplusplus::tessellate(mesh, options);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        // The same keys as the Python CLI's report (`Tessellation.schema`
+        // without its `version`).
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("levels", options.mLevels);
+        json.Field("curved", options.mCurved);
+        json.Field("num_source_points", r.mNumSourcePoints);
+        json.Field("num_source_cells", r.mNumSourceCells);
+        json.Field("num_curved_source_cells", r.mNumCurvedSourceCells);
+        json.Field("num_pass_through_source_cells", r.mNumPassThroughSourceCells);
+        json.Field("num_points", r.mNumPoints);
+        json.Field("num_cells", r.mNumCells);
+        json.Field("stencil_width", meshioplusplus::kTessellateStencilWidth);
+        json.Key("watertight");
+        json.BeginObject();
+        json.Field("num_boundary_facets", r.mNumBoundaryFacets);
+        json.Field("num_interior_facets", r.mNumInteriorFacets);
+        json.Field("num_facets_with_bad_count", r.mNumFacetsWithBadCount);
+        json.EndObject();
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "tessellated " << r.mNumSourcePoints << " points to " << r.mNumPoints << "\n";
+        std::cout << "  curved source cells:  " << r.mNumCurvedSourceCells << "\n";
+        std::cout << "  pass-through cells:   " << r.mNumPassThroughSourceCells << "\n";
+        std::cout << "  output cells:         " << r.mNumCells << "\n";
+        std::cout << "  watertight: ";
+        if (r.mNumFacetsWithBadCount == 0)
+            std::cout << "yes\n";
+        else
+            std::cout << "NO (" << r.mNumFacetsWithBadCount << " bad facet(s))\n";
+    }
     return 0;
 }
 
@@ -5608,6 +5685,8 @@ int main(int argc, char** argv) {
             return cmd_regions(rest);
         if (cmd == "convert-cells")
             return cmd_convert_cells(rest);
+        if (cmd == "tessellate")
+            return cmd_tessellate(rest);
         if (cmd == "subdivide")
             return cmd_subdivide(rest);
         if (cmd == "agglomerate")

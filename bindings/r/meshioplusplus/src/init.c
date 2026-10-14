@@ -83,7 +83,8 @@ extern SEXP R_mio_compute_normals(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_feature_edges(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_segment(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_fit_primitives(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_fit_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_fit_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                          SEXP);
 extern SEXP R_mio_has_occt(void);
 extern SEXP R_mio_render(SEXP, SEXP);
 extern SEXP R_mio_render_text(SEXP, SEXP, SEXP);
@@ -123,6 +124,7 @@ extern SEXP R_mio_subdivide(SEXP, SEXP);
 extern SEXP R_mio_agglomerate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_blend_steps(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_tessellate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -269,7 +271,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_feature_edges, 7),
                                               CALLDEF(R_mio_segment, 7),
                                               CALLDEF(R_mio_fit_primitives, 7),
-                                              CALLDEF(R_mio_fit_cad, 10),
+                                              CALLDEF(R_mio_fit_cad, 13),
                                               CALLDEF(R_mio_has_occt, 0),
                                               CALLDEF(R_mio_render, 2),
                                               CALLDEF(R_mio_render_text, 3),
@@ -307,6 +309,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_agglomerate, 5),
                                               CALLDEF(R_mio_blend_steps, 4),
                                               CALLDEF(R_mio_refine, 11),
+                                              CALLDEF(R_mio_tessellate, 5),
                                               CALLDEF(R_mio_decimate, 9),
                                               CALLDEF(R_mio_partition, 9),
                                               CALLDEF(R_mio_partition_labels, 8),

@@ -98,6 +98,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
@@ -3028,6 +3029,49 @@ mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t b
 
 void mio_refine_result_free(mio_refine_result* result) {
     delete result;
+}
+
+static_assert(sizeof(mio_tessellate_opts) == 72,
+              "mio_tessellate_opts grew outside its reserved tail");
+static_assert(sizeof(mio_tessellate_report) == 112,
+              "mio_tessellate_report grew outside its reserved tail");
+
+void mio_tessellate_opts_init(mio_tessellate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_tessellate_opts{};
+    opts->levels = 2;
+    opts->curved = 1;
+    opts->fields = 1;
+}
+
+mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
+                         mio_tessellate_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::TessellateOptions options;
+        if (opts) {
+            options.mLevels = opts->levels;
+            options.mCurved = opts->curved != 0;
+            options.mFields = opts->fields != 0;
+            options.mRecordStencil = opts->record_stencil != 0;
+        }
+        meshioplusplus::TessellateResult r = meshioplusplus::tessellate(mesh->mMesh, options);
+        if (report) {
+            *report = mio_tessellate_report{};
+            report->num_source_points = r.mNumSourcePoints;
+            report->num_source_cells = r.mNumSourceCells;
+            report->num_curved_source_cells = r.mNumCurvedSourceCells;
+            report->num_pass_through_source_cells = r.mNumPassThroughSourceCells;
+            report->num_points = r.mNumPoints;
+            report->num_cells = r.mNumCells;
+            report->num_boundary_facets = r.mNumBoundaryFacets;
+            report->num_interior_facets = r.mNumInteriorFacets;
+            report->num_facets_with_bad_count = r.mNumFacetsWithBadCount;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
 }
 
 namespace {
@@ -6187,6 +6231,9 @@ void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     opts->freeform = 1;
     opts->freeform_degree = 3;
     opts->freeform_max_control = 64;
+    opts->freeform_split = 1;
+    opts->fillets = 1;
+    opts->threads = 1;
 }
 
 int mio_has_occt(void) {
@@ -6205,12 +6252,15 @@ mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit
             options.mMaxDemotionRounds = opts->max_demotion_rounds;
             options.mExactEdges = opts->exact_edges != 0;
             options.mTypes = opts->types;
-            // A struct zero-filled before these fields existed keeps freeform
-            // off and the defaults for the rest.
+            // A struct zero-filled before these fields existed keeps freeform,
+            // splitting, fillets and threads off and the defaults for the rest.
             options.mFreeform = opts->freeform != 0;
             options.mFreeformDegree = opts->freeform_degree ? opts->freeform_degree : 3;
             options.mFreeformMaxControl =
                 opts->freeform_max_control ? opts->freeform_max_control : 64;
+            options.mFreeformSplit = opts->freeform_split != 0;
+            options.mFillets = opts->fillets != 0;
+            options.mThreads = opts->threads != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -6235,6 +6285,9 @@ mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit
             report->num_solids = r.mNumSolids;
             report->valid = r.mValid ? 1 : 0;
             report->num_bspline = r.mNumBspline;
+            report->num_split_patches = r.mNumSplitPatches;
+            report->num_fillet = r.mNumFillet;
+            report->num_helical = r.mNumHelical;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

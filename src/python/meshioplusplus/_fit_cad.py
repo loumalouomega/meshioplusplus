@@ -39,6 +39,9 @@ _REPORT_INTS = (
     "num_approx_edges",
     "num_solids",
     "num_bspline",
+    "num_split_patches",
+    "num_fillet",
+    "num_helical",
 )
 
 
@@ -79,15 +82,23 @@ def fit_cad(
     freeform: bool = True,
     freeform_degree: int = 3,
     freeform_max_control: int = 64,
+    freeform_split: bool = True,
+    fillets: bool = True,
+    threads: bool = True,
     return_report: bool = False,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
     Every patch :func:`fit_primitives` accepted becomes one plane, sphere,
-    cylinder, cone or torus face trimmed by the patch boundary; a patch no
-    primitive explains becomes, with ``freeform``, a B-spline face fitted over
-    the patch flattened onto its best-fit plane or unrolled around a cylinder
-    (one both fold stays faceted); the rest of the skin becomes planar facets. The faces are sewn into a solid that
+    cylinder, cone or torus face trimmed by the patch boundary. A patch no
+    primitive explains is tried, with ``fillets``, as a constant-radius
+    rolling-ball fillet when it runs between two analytic faces, and, with
+    ``threads``, as a straight-flank thread (a ruled helicoid) beside a
+    cylinder or cone; failing those it becomes, with ``freeform``, a B-spline
+    face fitted over the patch flattened onto its best-fit plane or unrolled
+    around a cylinder, and one both fold is, with ``freeform_split``, split
+    into pieces that flatten, each its own face under a new patch label. The
+    rest of the skin becomes planar facets. The faces are sewn into a solid that
     OpenCASCADE checks, and a face that fails the check or strays further than
     ``tolerance`` from the skin is demoted to facets, so a feature the fitter
     cannot explain comes back faceted, never silently wrong.
@@ -114,16 +125,21 @@ def fit_cad(
     :param freeform_degree: that B-spline's highest degree, 3 to 8.
     :param freeform_max_control: the most grid points per direction its fit
         samples, 4 to 1024.
+    :param freeform_split: split a freeform patch that folds over both its
+        flattenings into pieces that do not.
+    :param fillets: try a patch between two analytic faces as a rolling-ball fillet.
+    :param threads: try a patch beside a cylinder or cone as a thread flank.
     :param return_report: also return the report.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
-        ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, else as
-        ``fit:type``) and ``fit_cad:patch``, and the solid as NURBS faces,
+        ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet, 8 a
+        thread flank, else as ``fit:type``) and ``fit_cad:patch``, and the solid as NURBS faces,
         loops and edges in ``mesh.info["brep"]`` (face ``i`` of
         ``fit_cad:face`` has id ``i + 1``), so writing it as ``.cad.json`` gives
         Kratos CAD JSON. With ``return_report``, ``(mesh, report)``, the report
         holding ``valid``, the tolerance, the solid's and the skin's volume and
         their ratio, the Hausdorff ``max_deviation``, the faces by type
-        (``num_bspline`` the freeform ones), the demoted patches and the exact
+        (``num_bspline`` the freeform ones, ``num_fillet``, ``num_helical``),
+        ``num_split_patches``, the demoted patches and the exact
         and approximated edges.
     :raises NotImplementedError: when the core was built without OpenCASCADE.
     """
@@ -137,6 +153,9 @@ def fit_cad(
         "freeform": bool(freeform),
         "freeform_degree": int(freeform_degree),
         "freeform_max_control": int(freeform_max_control),
+        "freeform_split": bool(freeform_split),
+        "fillets": bool(fillets),
+        "threads": bool(threads),
     }
     if tolerance is not None and not (
         opts["tolerance"] > 0.0 and math.isfinite(opts["tolerance"])
@@ -176,6 +195,9 @@ def fit_cad(
         opts["freeform"],
         opts["freeform_degree"],
         opts["freeform_max_control"],
+        opts["freeform_split"],
+        opts["fillets"],
+        opts["threads"],
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}

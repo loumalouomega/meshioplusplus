@@ -612,6 +612,34 @@ end
     close(m)
 end
 
+@testset "operations: tessellate (curved cells)" begin
+    # One straight-sided tetra10: two levels give 35 points and 64 tetras.
+    m = Mesh()
+    set_points!(m, [0.0 1.0 0.0 0.0 0.5 0.5 0.0 0.0 0.5 0.0;
+                    0.0 0.0 1.0 0.0 0.0 0.5 0.5 0.0 0.0 0.5;
+                    0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.5 0.5 0.5])
+    add_cell_block!(m, "tetra10", reshape(collect(1:10), 10, 1))
+    t = tessellate(m)
+    @test t.num_curved_source_cells == 1
+    @test t.num_points == 35
+    @test num_points(t.mesh) == 35
+    @test t.num_cells == 64
+    @test t.num_boundary_facets == 64
+    @test t.num_interior_facets == 96
+    @test t.num_facets_with_bad_count == 0
+    @test point_data(t.mesh, "tessellate:source_point")[1:5] == [0, 1, 2, 3, -1]
+    close(t.mesh)
+    s = tessellate(m; levels=1, record_stencil=true)
+    @test s.num_cells == 8
+    @test size(point_data(s.mesh, "tessellate:weights")) == (27, 10)
+    close(s.mesh)
+    p = tessellate(m; curved=false)
+    @test p.num_pass_through_source_cells == 1
+    close(p.mesh)
+    @test_throws MeshioError tessellate(m; levels=-1)
+    close(m)
+end
+
 @testset "operations: subdivide (polyhedral refinement)" begin
     m = fixture()
     s = subdivide(m; record_parent_ids=true)
@@ -1496,7 +1524,13 @@ end
         cad = fit_cad(cube)
         @test cad.valid
         @test cad.num_plane == 6
+        @test cad.num_split_patches == 0
+        @test cad.num_fillet == 0
+        @test cad.num_helical == 0
         close(cad.mesh)
+        bare = fit_cad(cube; freeform_split=false, fillets=false, threads=false)
+        @test bare.num_plane == 6
+        close(bare.mesh)
     else
         err = try
             fit_cad(cube)

@@ -2009,13 +2009,16 @@ def tool_fit_cad(
     freeform_degree=3,
     freeform_max_control=64,
     cad_json_output_path=None,
+    freeform_split=True,
+    fillets=True,
+    threads=True,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
-    faces (and freeform B-spline ones for what no primitive explains), written
-    to output_path as STEP (needs a core built with OpenCASCADE), and to
-    cad_json_output_path as Kratos CAD JSON. A skin without segment:patch /
-    fit:patch_* is segmented (curvature_tolerance, min_patch_cells) and fitted
-    (fit_tolerance) first."""
+    faces (and, for what no primitive explains, rolling-ball fillet, thread
+    flank and freeform B-spline ones), written to output_path as STEP (needs a
+    core built with OpenCASCADE), and to cad_json_output_path as Kratos CAD
+    JSON. A skin without segment:patch / fit:patch_* is segmented
+    (curvature_tolerance, min_patch_cells) and fitted (fit_tolerance) first."""
     from .._fit_cad import has_occt
 
     if not has_occt():
@@ -2047,6 +2050,9 @@ def tool_fit_cad(
         freeform=freeform,
         freeform_degree=freeform_degree,
         freeform_max_control=freeform_max_control,
+        freeform_split=freeform_split,
+        fillets=fillets,
+        threads=threads,
         return_report=True,
     )
     _cache_invalidate(step_path)
@@ -2573,6 +2579,8 @@ def tool_tessellate(
         _store(tess.mesh, output_path, output_format),
         tess.mesh,
         levels=int(levels),
+        num_source_points=tess.schema["num_source_points"],
+        num_source_cells=tess.schema["num_source_cells"],
         num_curved_source_cells=tess.schema["num_curved_source_cells"],
         num_pass_through_source_cells=tess.schema["num_pass_through_source_cells"],
         watertight=tess.schema["watertight"],

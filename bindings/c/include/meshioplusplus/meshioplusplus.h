@@ -2045,6 +2045,71 @@ MIO_API mio_status mio_refine_result_cell_map(const mio_refine_result* result, i
 MIO_API void mio_refine_result_free(mio_refine_result* result);
 
 /**
+ * Options for mio_tessellate. Same ABI rules as mio_refine_opts; always
+ * initialize through mio_tessellate_opts_init(): levels defaults to 2 and
+ * curved/fields to 1, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_tessellate_opts {
+    /** Divisions per axis (quad8/quad9/hexahedron27) or recursive splits
+     *  (triangle6/tetra10, 2^levels divisions per edge); >= 0. */
+    int64_t levels;
+    /** Nonzero tessellates the curved cells; zero passes every cell through. */
+    int32_t curved;
+    /** Nonzero interpolates point data and copies cell data onto the output. */
+    int32_t fields;
+    /** Nonzero also stores "tessellate:stencil" / "tessellate:weights". */
+    int32_t record_stencil;
+    int32_t reserved0;   /**< must be zero; padding */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_tessellate_opts;
+
+/** Initialize tessellate options: levels 2, curved and fields on, no stencil. */
+MIO_API void mio_tessellate_opts_init(mio_tessellate_opts* opts);
+
+/** What mio_tessellate did. */
+typedef struct mio_tessellate_report {
+    int64_t num_source_points;
+    int64_t num_source_cells;
+    /** Source cells of a curved type that were tessellated. */
+    int64_t num_curved_source_cells;
+    /** Source cells passed through unchanged. */
+    int64_t num_pass_through_source_cells;
+    int64_t num_points;
+    int64_t num_cells;
+    /** Over every output tetra block: triangular facets used once. */
+    int64_t num_boundary_facets;
+    /** Facets used twice. */
+    int64_t num_interior_facets;
+    /** Facets used three or more times: zero for a conforming tessellation. */
+    int64_t num_facets_with_bad_count;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_tessellate_report;
+
+/**
+ * Tessellate a mesh's curved (quadratic) cells isoparametrically: every
+ * triangle6, quad8, quad9, tetra10 or hexahedron27 cell is sampled on a
+ * reference lattice and mapped through its own shape functions; every other
+ * cell passes through unchanged. Curved surface cells become one triangle
+ * block and curved volume cells one tetra block, after the pass-through blocks
+ * in input order. Shared edges and faces share their points, so the output is
+ * conforming. The output carries Int64 point data "tessellate:source_point"
+ * (the source point, or -1) and Int64 cell data "tessellate:source_cell" (the
+ * global block-major source cell) and "tessellate:sub_index" (the child
+ * index); with record_stencil it also carries "tessellate:stencil" (Int64) and
+ * "tessellate:weights" (Float64), both (num_points, 27) point data. With
+ * fields, point data is interpolated (Float64) and cell data copied to the
+ * children. See doc/tessellation.md.
+ *
+ * @param mesh   any mesh.
+ * @param opts   options; NULL means every mio_tessellate_opts_init() default.
+ * @param report optional out: the counts.
+ * @return the tessellated mesh (free with mio_mesh_free), or NULL on failure
+ *         (negative levels, or point data with the wrong row count).
+ */
+MIO_API mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
+                                 mio_tessellate_report* report);
+
+/**
  * Decimate a SURFACE mesh by greedy quadric-error-metric (Garland-Heckbert)
  * edge collapse — the resolution-reducing inverse of mio_refine. The output is
  * all-triangle (quad/polygon blocks are triangulated first) with the block
@@ -4518,11 +4583,26 @@ typedef struct mio_fit_cad_opts {
     /** The most grid points per direction a freeform fit samples, 4 to 1024;
      *  0 takes 64. */
     int64_t freeform_max_control;
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    /** Nonzero: a freeform patch that folds over both its best-fit plane and
+     *  an unrolled cylinder is split into pieces fitted as their own B-spline
+     *  faces (on after mio_fit_cad_opts_init; a zero-filled struct keeps it
+     *  off, as before the field existed). */
+    int32_t freeform_split;
+    /** Nonzero: a patch no primitive explains, between two analytic faces, is
+     *  tried as a rolling-ball fillet face ("fit_cad:type" 7). On after
+     *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
+    int32_t fillets;
+    /** Nonzero: a patch no primitive explains, beside a cylinder or cone, is
+     *  tried as a straight-flank thread face ("fit_cad:type" 8). On after
+     *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
+    int32_t threads;
+    int32_t reserved1;   /**< must be zero */
+    int64_t reserved[2]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts;
 
 /** Initialize fit_cad options: automatic tolerance and deflection, 8 rounds,
- *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64. */
+ *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64,
+ *  freeform splitting, fillet faces and thread faces. */
 MIO_API void mio_fit_cad_opts_init(mio_fit_cad_opts* opts);
 
 /** What mio_fit_cad built. */
@@ -4544,10 +4624,13 @@ typedef struct mio_fit_cad_report {
     int64_t num_exact_edges;
     int64_t num_approx_edges;
     int64_t num_solids;
-    int32_t valid;       /**< nonzero when the solid passed OpenCASCADE's B-rep check */
-    int32_t reserved0;   /**< zero */
-    int64_t num_bspline; /**< freeform B-spline faces */
-    int64_t reserved[5]; /**< zero; room for additive growth */
+    int32_t valid;             /**< nonzero when the solid passed OpenCASCADE's B-rep check */
+    int32_t reserved0;         /**< zero */
+    int64_t num_bspline;       /**< freeform B-spline faces ("fit_cad:type" 6) */
+    int64_t num_split_patches; /**< pieces folding freeform patches were split into */
+    int64_t num_fillet;        /**< rolling-ball fillet faces ("fit_cad:type" 7) */
+    int64_t num_helical;       /**< thread flank faces ("fit_cad:type" 8) */
+    int64_t reserved[2];       /**< zero; room for additive growth */
 } mio_fit_cad_report;
 
 /** Nonzero when this library was built with the OpenCASCADE backend
@@ -4556,8 +4639,10 @@ MIO_API int mio_has_occt(void);
 
 /**
  * Build a CAD solid from the fitted patches of a closed skin: each accepted
- * patch becomes a plane, sphere, cylinder, cone or torus face, the rest planar
- * facets, sewn and checked by OpenCASCADE; a face that fails the check or
+ * patch becomes a plane, sphere, cylinder, cone or torus face ("fit_cad:type"
+ * 1 to 5, as mio_fit_type), a patch no primitive explains a rolling-ball
+ * fillet (7), thread flank (8) or freeform B-spline (6) face where one fits,
+ * the rest planar facets (0), sewn and checked by OpenCASCADE; a face that fails the check or
  * strays beyond the tolerance is demoted to facets. Without "segment:patch" or
  * the "fit:patch_*" table, segment and fit_primitives run first with their
  * defaults. See doc/fit_cad.md.

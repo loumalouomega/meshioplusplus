@@ -1361,6 +1361,61 @@ def test_segment_fit_and_step(tmp_path):
     assert "step" in _tools.tool_formats()["writable"]
 
 
+def _two_tetra10():
+    tets = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]], dtype=float),
+        [("tetra", np.array([[0, 1, 2, 3], [0, 2, 1, 4]]))],
+    )
+    mesh = meshioplusplus.convert_cells(tets, mode="elevate")
+    mesh.point_data["u"] = mesh.points[:, 0]
+    return mesh
+
+
+def test_tessellate_reports_counts_and_watertightness(tmp_path):
+    src = str(tmp_path / "curved.vtu")
+    meshioplusplus.write(src, _two_tetra10())
+    out = _dump(_tools.tool_tessellate(src, str(tmp_path / "flat.vtu"), levels=1))
+    # one 2^1 split per edge: 8 children per tetra10, sharing the middle face
+    assert out["levels"] == 1
+    assert out["num_source_points"] == 14 and out["num_source_cells"] == 2
+    assert out["num_curved_source_cells"] == 2
+    assert out["num_pass_through_source_cells"] == 0
+    assert out["num_cells"] == 16 and out["cell_blocks"] == [
+        {"type": "tetra", "num_cells": 16}
+    ]
+    assert out["watertight"] == {
+        "num_boundary_facets": 24,
+        "num_interior_facets": 20,
+        "num_facets_with_bad_count": 0,
+    }
+    assert "tessellate:source_point" in out["point_data"] and "u" in out["point_data"]
+    assert "tessellate:source_cell" in out["cell_data"]
+    flat = meshioplusplus.read(out["output_path"])
+    assert len(flat.points) == out["num_points"]
+    # curved=False passes every cell through; record_stencil adds the stencil
+    off = _dump(
+        _tools.call_tool(
+            "tessellate",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "same.vtu"),
+                "curved": False,
+                "fields": False,
+                "record_stencil": True,
+            },
+        )
+    )
+    assert off["num_curved_source_cells"] == 0
+    assert off["num_pass_through_source_cells"] == 2
+    assert off["cell_blocks"] == [{"type": "tetra10", "num_cells": 2}]
+    assert "tessellate:stencil" in off["point_data"] and "u" not in off["point_data"]
+    bad = _tools.call_tool(
+        "tessellate",
+        {"input_path": src, "output_path": str(tmp_path / "x.vtu"), "levels": -1},
+    )
+    assert bad["error_type"] == "ValueError" and "levels" in bad["error"]
+
+
 def test_fit_cad_tool_reports_the_capability(tmp_path):
     from meshioplusplus._fit_cad import has_occt
 
@@ -1383,6 +1438,8 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
         return
     assert out["valid"] is True
     assert out["num_plane"] == 6
+    assert out["num_split_patches"] == 0
+    assert out["num_fillet"] == 0 and out["num_helical"] == 0
     assert out["step_path"].endswith("cube.step")
     assert "fit_cad:face" in out["cell_data"]
     assert os.path.exists(tmp_path / "solid.vtu")
@@ -1425,10 +1482,14 @@ def test_fit_cad_tool_writes_kratos_cad_json(tmp_path):
                 "output_path": str(tmp_path / "cube.step"),
                 "cad_json_output_path": str(tmp_path / "cube.cad.json"),
                 "freeform": False,
+                "freeform_split": False,
+                "fillets": False,
+                "threads": False,
             },
         )
     )
     assert out["num_bspline"] == 0
+    assert out["num_fillet"] == 0 and out["num_helical"] == 0
     assert out["cad_json_path"].endswith("cube.cad.json")
     assert out["brep"]["faces"] == 6 and out["brep"]["edges"] == 12
     assert (
@@ -2863,9 +2924,10 @@ def test_server_mirrors_the_train_start_and_predict_file_parameters():
         if isinstance(node, ast.FunctionDef) and node.name in (
             "train_start",
             "predict_file",
+            "fit_cad",
         ):
             mirrored[node.name] = [a.arg for a in node.args.args]
-    for name in ("train_start", "predict_file"):
+    for name in ("train_start", "predict_file", "fit_cad"):
         pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
         assert mirrored[name] == pure, name
 

@@ -15,7 +15,14 @@ import meshioplusplus as mio
 from meshioplusplus import _fit_cad
 from meshioplusplus._cli._main import main as cli_main
 
-from .analytic_surfaces import box_skin, torus, turned_part
+from .analytic_surfaces import (
+    box_skin,
+    inclined_boss,
+    threaded_rod,
+    torus,
+    turned_part,
+    wavy_capped,
+)
 
 HAS_OCCT = _fit_cad.has_occt()
 needs_occt = pytest.mark.skipif(
@@ -151,6 +158,51 @@ def test_freeform_off_or_a_coarse_skin_stays_faceted():
         _fitted(_bumped_box(16)), tolerance=2e-3, return_report=True
     )
     assert report["num_bspline"] == 0 and report["num_demoted"] == 0
+
+
+@needs_occt
+def test_a_curled_patch_is_split_into_freeform_faces():
+    """The wavy wall folds over its plane and, closed around the axis, over
+    its unrolled cylinder too: it is split into pieces that each unroll
+    (roadmap 6.3.2), each a B-spline face under a new patch label."""
+    fit = _fitted(wavy_capped())
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_split_patches"] >= 2
+    assert report["num_bspline"] == report["num_split_patches"]
+    assert report["num_faceted_faces"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    largest = max(int(np.max(b)) for b in fit.cell_data["segment:patch"])
+    labels = set(out.cell_data["fit_cad:patch"][0].tolist())
+    assert max(labels) == largest + report["num_split_patches"]
+    _out, report = mio.fit_cad(fit, freeform_split=False, return_report=True)
+    assert report["num_split_patches"] == 0 and report["num_bspline"] == 0
+
+
+@needs_occt
+def test_a_rolling_ball_fillet_is_its_own_face():
+    """The foot of a leaning boss rounded with a constant radius: a canal
+    surface along an ellipse, no primitive (roadmap 6.3.1)."""
+    fit = _fitted(inclined_boss(), curvature_tolerance=3.0)
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_fillet"] == 1 and report["num_faceted_faces"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    assert 7 in out.cell_data["fit_cad:type"][0].tolist()
+    _out, report = mio.fit_cad(fit, fillets=False, return_report=True)
+    assert report["num_fillet"] == 0
+
+
+@needs_occt
+def test_thread_flanks_are_helical_faces():
+    """A trapezoidal thread: both flanks are ruled helicoids about the axis
+    of the root and crest cylinders (roadmap 6.3.1)."""
+    fit = _fitted(threaded_rod(turns=3))
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_helical"] == 2 and report["num_cylinder"] == 2
+    assert report["max_deviation"] <= report["tolerance"]
+    assert 8 in out.cell_data["fit_cad:type"][0].tolist()
 
 
 def test_freeform_options_are_checked_before_the_core():

@@ -58,6 +58,7 @@
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -363,6 +364,30 @@ std::uint64_t og_convert_cells() {
     return d.Value();
 }
 
+// Curved tetra10 cells carrying a field (interpolated, with the stencil
+// recorded) and hexahedron20 cells, which pass through.
+std::uint64_t og_tessellate() {
+    mio::ConvertCellsOptions co;
+    co.mMode = mio::ConvertCellsMode::Elevate;
+    MeshDigest d;
+    const auto run = [&](const Mesh& rM, std::int64_t levels) {
+        mio::TessellateOptions o;
+        o.mLevels = levels;
+        o.mRecordStencil = true;
+        const auto r = mio::tessellate(rM, o);
+        d.Of(r.mMesh);
+        d.Bytes(r.mStencil.data(), r.mStencil.size() * sizeof(std::int64_t));
+        d.Bytes(r.mWeights.data(), r.mWeights.size() * sizeof(double));
+        for (const std::int64_t n :
+             {r.mNumCurvedSourceCells, r.mNumPassThroughSourceCells, r.mNumBoundaryFacets,
+              r.mNumInteriorFacets, r.mNumFacetsWithBadCount})
+            d.U64(static_cast<std::uint64_t>(n));
+    };
+    run(mio::convert_cells(og_with_field(3), co).mMesh, 2);
+    run(mio::convert_cells(ft_hex_grid(2, 0.1, false), co).mMesh, 1);
+    return d.Value();
+}
+
 std::uint64_t og_interpolate() {
     const Mesh src = og_with_field(5);
     Mesh tgt;
@@ -538,6 +563,7 @@ const OgCase kOgCases[] = {
     {"isosurface", og_isosurface, 0x43e8aaa22e1a29f8ull},
     {"slice", og_slice, 0x125f56f49a888578ull},
     {"convert_cells", og_convert_cells, 0x2128f4d74274f7ddull},
+    {"tessellate", og_tessellate, 0xe8f9a3d7c9e61089ull},
     {"interpolate", og_interpolate, 0x7a243a2a64708882ull},
     {"repair", og_repair, 0x9d08b9e5c5d7c69ull},
     {"diff", og_diff, 0x5c8d33b762693b9full},

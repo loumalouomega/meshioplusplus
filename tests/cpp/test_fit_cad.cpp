@@ -16,6 +16,7 @@
 //
 // fit_cad: analytic CAD faces through the optional OpenCASCADE backend.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -206,6 +207,85 @@ TEST(FitCad, UnexplainedPatchBecomesAFreeformFace) {
     for (std::size_t i = 0; i < types.Size(); ++i)
         any_bspline_type = any_bspline_type || types.As<std::int64_t>()[i] == kFitCadBsplineType;
     EXPECT_TRUE(any_bspline_type);
+}
+
+TEST(FitCad, CurledPatchSplitsIntoFreeformFaces) {
+    // The wavy wall folds over its plane and, closed around the axis, over its
+    // unrolled cylinder too: it is split into pieces that each unroll, and
+    // each becomes a B-spline face (roadmap 6.3.2).
+    const Mesh skin = fitted(analytic::wavy_capped());
+    const FitCadResult r = fit_cad(skin);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_GE(r.mNumSplitPatches, 2);
+    EXPECT_EQ(r.mNumBspline, r.mNumSplitPatches);
+    EXPECT_EQ(r.mNumPlane, 2);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    // The pieces carry new patch labels, after the largest existing one.
+    std::int64_t max_in = -1, max_out = -1;
+    for (std::size_t b = 0; b < skin.NumCellBlocks(); ++b) {
+        const NDArray& a = skin.CellData(kSegmentPatchName, b);
+        for (std::size_t i = 0; i < a.Size(); ++i)
+            max_in = std::max(max_in, a.As<std::int64_t>()[i]);
+    }
+    const NDArray& out = r.mMesh.CellData(kFitCadPatchName, 0);
+    for (std::size_t i = 0; i < out.Size(); ++i)
+        max_out = std::max(max_out, out.As<std::int64_t>()[i]);
+    EXPECT_EQ(max_out, max_in + r.mNumSplitPatches);
+}
+
+TEST(FitCad, CurledPatchStaysFacetedWithoutSplitting) {
+    FitCadOptions o;
+    o.mFreeformSplit = false;
+    const FitCadResult r = fit_cad(fitted(analytic::wavy_capped()), "", o);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumSplitPatches, 0);
+    EXPECT_EQ(r.mNumBspline, 0);
+    EXPECT_GT(r.mNumFacetedFaces, 0);
+}
+
+TEST(FitCad, InclinedBossFilletIsARollingBallFace) {
+    // The foot of a leaning boss rounded with a constant radius: a canal
+    // surface along an ellipse, no primitive (roadmap 6.3.1).
+    const FitCadResult r = fit_cad(fitted(analytic::inclined_boss(), 3.0));
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumFillet, 1);
+    EXPECT_GE(r.mNumCylinder, 1);  // the boss wall (the short rim may fit a sphere)
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    bool any_fillet_type = false;
+    const NDArray& types = r.mMesh.CellData(kFitCadTypeName, 0);
+    for (std::size_t i = 0; i < types.Size(); ++i)
+        any_fillet_type = any_fillet_type || types.As<std::int64_t>()[i] == kFitCadFilletType;
+    EXPECT_TRUE(any_fillet_type);
+}
+
+TEST(FitCad, FilletsOffLeaveTheFilletToTheFreeformFit) {
+    FitCadOptions o;
+    o.mFillets = false;
+    const FitCadResult r = fit_cad(fitted(analytic::inclined_boss(), 3.0), "", o);
+    EXPECT_EQ(r.mNumFillet, 0);
+    EXPECT_TRUE(r.mValid);
+}
+
+TEST(FitCad, ThreadFlanksAreHelicalFaces) {
+    // A trapezoidal thread: root and crest are cylinder strips, both flanks
+    // ruled helicoids about the same axis (roadmap 6.3.1).
+    const FitCadResult r = fit_cad(fitted(analytic::threaded_rod()));
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumHelical, 2);
+    EXPECT_EQ(r.mNumCylinder, 2);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+}
+
+TEST(FitCad, ThreadsOffLeaveTheFlanksToTheFreeformFit) {
+    FitCadOptions o;
+    o.mThreads = false;
+    const FitCadResult r = fit_cad(fitted(analytic::threaded_rod()), "", o);
+    EXPECT_EQ(r.mNumHelical, 0);
 }
 
 TEST(FitCad, TypesMaskFacetsTheRest) {

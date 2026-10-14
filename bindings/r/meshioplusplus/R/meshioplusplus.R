@@ -1312,7 +1312,9 @@ mio_has_occt <- function() {
 #'
 #' Builds a CAD solid from the fitted patches of a closed skin through the
 #' OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
-#' cone or torus face, the rest planar facets, and a face that fails the B-rep
+#' cone or torus face, a patch no primitive explains a rolling-ball fillet,
+#' thread flank or freeform B-spline face where one fits (`fit_cad:type` 7, 8
+#' and 6), the rest planar facets, and a face that fails the B-rep
 #' check or strays beyond `tolerance` is demoted to facets. Without
 #' `segment:patch` or the `fit:patch_*` table, segment and fit_primitives run
 #' first with their defaults. Fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in
@@ -1333,18 +1335,27 @@ mio_has_occt <- function() {
 #' @param freeform_degree That B-spline's highest degree, 3 to 8.
 #' @param freeform_max_control The most grid points per direction its fit
 #'   samples, 4 to 1024.
+#' @param freeform_split Whether a freeform patch that folds over both its
+#'   best-fit plane and an unrolled cylinder is split into pieces fitted as
+#'   their own B-spline faces.
+#' @param fillets Whether a patch between two analytic faces is tried as a
+#'   rolling-ball fillet.
+#' @param threads Whether a patch beside a cylinder or cone is tried as a
+#'   thread flank.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
 #'   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
 #'   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
-#'   `num_exact_edges`, `num_approx_edges`, `num_solids` and `num_bspline`.
+#'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
+#'   `num_split_patches`, `num_fillet` and `num_helical`.
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
                         mesh_deflection = 0, max_demotion_rounds = 8,
                         freeform = TRUE, freeform_degree = 3,
-                        freeform_max_control = 64) {
+                        freeform_max_control = 64, freeform_split = TRUE,
+                        fillets = TRUE, threads = TRUE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1355,7 +1366,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     R_mio_fit_cad, mesh, as.character(step_path), as.numeric(tolerance),
     isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
     as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
-    as.numeric(freeform_max_control)
+    as.numeric(freeform_max_control), isTRUE(freeform_split), isTRUE(fillets),
+    isTRUE(threads)
   )
 }
 
@@ -1944,6 +1956,38 @@ mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
     R_mio_refine, mesh, as.integer(levels), isTRUE(record_parent_ids),
     cells, region, where_array, where_op, as.numeric(where_value),
     closure, isTRUE(record_levels), isTRUE(record_hierarchy)
+  )
+}
+
+#' Tessellate the curved cells of a mesh
+#'
+#' Isoparametric tessellation: every `triangle6`, `quad8`, `quad9`, `tetra10`
+#' or `hexahedron27` cell is sampled on a reference lattice and mapped through
+#' its own quadratic shape functions; curved surface cells become one
+#' `triangle` block and curved volume cells one `tetra` block, after the
+#' pass-through blocks. Every other cell passes through unchanged. Cells that
+#' share an edge or a face share its points, so the output is conforming. See
+#' `doc/tessellation.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param levels Divisions per axis for `quad8`/`quad9`/`hexahedron27`, or
+#'   recursive splits for `triangle6`/`tetra10` (`2^levels` per edge); >= 0.
+#' @param curved `FALSE` passes every cell through unchanged.
+#' @param fields Interpolate point data and copy cell data onto the output.
+#' @param record_stencil Also store the `(num_points, 27)` point data
+#'   `tessellate:stencil` and `tessellate:weights`.
+#' @return A list of `mesh` (with point data `tessellate:source_point`, the
+#'   0-based source point or -1, and cell data `tessellate:source_cell` and
+#'   `tessellate:sub_index`), `num_source_points`, `num_source_cells`,
+#'   `num_curved_source_cells`, `num_pass_through_source_cells`, `num_points`,
+#'   `num_cells`, `num_boundary_facets`, `num_interior_facets` and
+#'   `num_facets_with_bad_count` (zero for a conforming tessellation).
+#' @export
+mio_tessellate <- function(mesh, levels = 2, curved = TRUE, fields = TRUE,
+                           record_stencil = FALSE) {
+  .Call(
+    R_mio_tessellate, mesh, as.numeric(levels), isTRUE(curved), isTRUE(fields),
+    isTRUE(record_stencil)
   )
 }
 

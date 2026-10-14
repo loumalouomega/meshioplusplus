@@ -2505,6 +2505,43 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Isoparametric tessellation of curved (quadratic) cells: every
+   * `triangle6`, `quad8`, `quad9`, `tetra10` and `hexahedron27` cell is sampled
+   * on a reference lattice and mapped through its own shape functions, curved
+   * surface cells becoming one `triangle` block and curved volume cells one
+   * `tetra` block; every other cell passes through unchanged. `levels` is
+   * divisions per axis for `quad8`/`quad9`/`hexahedron27` and recursive splits
+   * (`2^levels` divisions per edge) for `triangle6`/`tetra10`; `curved = false`
+   * passes every cell through. The output carries `tessellate:source_point`
+   * (point data, -1 for a new point), `tessellate:source_cell` and
+   * `tessellate:sub_index` (cell data); `fields` interpolates point data and
+   * copies cell data onto the children, and `recordStencil` adds
+   * `tessellate:stencil`/`tessellate:weights` (`(P, 27)` point data). Facet
+   * counts are over the output `tetra` block: `numFacetsWithBadCount` is 0
+   * for a conforming tessellation. See doc/tessellation.md.
+   * @throws {Error} on `levels` outside 0..20 or not an integer, or a point
+   *   data array whose row count is not the number of points.
+   */
+  tessellate(
+    mesh: Mesh,
+    levels?: number,
+    curved?: boolean,
+    fields?: boolean,
+    recordStencil?: boolean,
+  ): {
+    mesh: Mesh;
+    numSourcePoints: number;
+    numSourceCells: number;
+    numCurvedSourceCells: number;
+    numPassThroughSourceCells: number;
+    numPoints: number;
+    numCells: number;
+    numBoundaryFacets: number;
+    numInteriorFacets: number;
+    numFacetsWithBadCount: number;
+  };
+
+  /**
    * The (sampled) Hausdorff distance between the surfaces of two meshes; a
    * volume mesh contributes its skin. `faceSamples = s > 0` also samples the
    * centroids of the `s*s` sub-triangles of every triangle (vertices alone

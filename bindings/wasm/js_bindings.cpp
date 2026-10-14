@@ -116,6 +116,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -4491,6 +4492,41 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
     });
 }
 
+/**
+ * @brief Isoparametric tessellation of curved (quadratic) cells. See
+ * operations/tessellate.hpp.
+ */
+val tessellate_js(const val& rMeshObj, double levels, bool curved, bool fields,
+                  bool recordStencil) {
+    return with_js_errors([&]() -> val {
+        // A non-integer count would truncate silently, and a NaN, infinite or
+        // huge one is undefined behaviour in the cast below; the core range
+        // check (0..20) handles the rest.
+        if (!std::isfinite(levels) || levels != std::floor(levels) ||
+            std::fabs(levels) > 9007199254740992.0)
+            throw std::invalid_argument("meshio++: tessellate: levels must be an integer");
+        meshioplusplus::TessellateOptions options;
+        options.mLevels = static_cast<std::int64_t>(levels);
+        options.mCurved = curved;
+        options.mFields = fields;
+        options.mRecordStencil = recordStencil;
+        meshioplusplus::TessellateResult r =
+            meshioplusplus::tessellate(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSourcePoints", static_cast<double>(r.mNumSourcePoints));
+        out.set("numSourceCells", static_cast<double>(r.mNumSourceCells));
+        out.set("numCurvedSourceCells", static_cast<double>(r.mNumCurvedSourceCells));
+        out.set("numPassThroughSourceCells", static_cast<double>(r.mNumPassThroughSourceCells));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numCells", static_cast<double>(r.mNumCells));
+        out.set("numBoundaryFacets", static_cast<double>(r.mNumBoundaryFacets));
+        out.set("numInteriorFacets", static_cast<double>(r.mNumInteriorFacets));
+        out.set("numFacetsWithBadCount", static_cast<double>(r.mNumFacetsWithBadCount));
+        return out;
+    });
+}
+
 // ---------------------------------------------------------------------
 // Software rendering (v16.33.0, field rendering v16.34.0): a deterministic
 // rasterizer that needs no WebGL (a server-side preview, a Node script). The
@@ -6481,6 +6517,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("featureEdges", &feature_edges_js);
     emscripten::function("segment", &segment_js);
     emscripten::function("fitPrimitives", &fit_primitives_js);
+    emscripten::function("tessellate", &tessellate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);
