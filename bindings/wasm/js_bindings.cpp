@@ -115,6 +115,7 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -4492,6 +4493,159 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
     });
 }
 
+// ---------------------------------------------------------------------
+// The isogeometric layer (v16.43.0): `igaRefine`, `igaSample` and
+// `igaEvaluate` act on the side-channel object `readMeshSelective(path,
+// {info: true}).info` of an MFEM NURBS mesh (`format: 'mfem'`) or a B-rep
+// (`format: 'cad_json'`). See operations/iga.hpp and doc/iga.md.
+// ---------------------------------------------------------------------
+
+std::int32_t iga_js_int(const val& rOptions, const char* pKey, std::int32_t Default) {
+    if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty(pKey))
+        return Default;
+    const double v = rOptions[pKey].as<double>();
+    if (!std::isfinite(v) || v != std::floor(v) || std::fabs(v) > 1e9)
+        throw std::invalid_argument(std::string("meshio++: iga: '") + pKey +
+                                    "' must be an integer");
+    return static_cast<std::int32_t>(v);
+}
+
+bool iga_js_bool(const val& rOptions, const char* pKey, bool Default) {
+    if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty(pKey))
+        return Default;
+    return rOptions[pKey].as<bool>();
+}
+
+// `{subdivisions, elevate}`: a number or an array of up to three numbers each.
+std::array<std::int32_t, 3> iga_js_triple(const val& rOptions, const char* pKey,
+                                          std::int32_t Default) {
+    std::array<std::int32_t, 3> out{Default, Default, Default};
+    if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty(pKey))
+        return out;
+    const val v = rOptions[pKey];
+    if (v.typeOf().as<std::string>() == "number") {
+        out.fill(iga_js_int(rOptions, pKey, Default));
+        return out;
+    }
+    const auto n = v["length"].as<std::size_t>();
+    if (n < 1 || n > 3)
+        throw std::invalid_argument(std::string("meshio++: iga: '") + pKey +
+                                    "' must be a number or one to three numbers");
+    for (std::size_t d = 0; d < 3; ++d)
+        out[d] = static_cast<std::int32_t>(v[static_cast<unsigned>(std::min(d, n - 1))].as<double>());
+    return out;
+}
+
+meshioplusplus::IgaSampleOptions iga_js_sample_options(const val& rOptions) {
+    meshioplusplus::IgaSampleOptions so;
+    so.mSubdivisions = iga_js_int(rOptions, "sampleSubdivisions", 0);
+    so.mTrimSamples = iga_js_int(rOptions, "trimSamples", 16);
+    so.mEdges = iga_js_bool(rOptions, "edges", true);
+    so.mTrim = iga_js_bool(rOptions, "trim", true);
+    return so;
+}
+
+std::string iga_js_format(const val& rInfo) {
+    if (rInfo.isUndefined() || rInfo.isNull() || !rInfo.hasOwnProperty("format"))
+        throw std::invalid_argument("meshio++: iga: the info object has no 'format'");
+    const std::string f = rInfo["format"].as<std::string>();
+    if (f != "mfem" && f != "cad_json")
+        throw std::invalid_argument("meshio++: iga: a '" + f +
+                                    "' side channel is not a NURBS model (mfem or cad_json)");
+    return f;
+}
+
+val iga_refine_js(const val& rInfo, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const std::string fmt = iga_js_format(rInfo);
+        meshioplusplus::IgaRefineOptions ro;
+        ro.mSubdivisions = iga_js_triple(rOptions, "subdivisions", 1);
+        ro.mElevate = iga_js_triple(rOptions, "elevate", 0);
+        const meshioplusplus::IgaSampleOptions so = iga_js_sample_options(rOptions);
+        val out = val::object();
+        if (fmt == "mfem") {
+            const meshioplusplus::NurbsInfo refined =
+                meshioplusplus::iga_refine(val_to_nurbs_info(rInfo), ro);
+            meshioplusplus::NurbsInfo mapped;
+            out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(refined, so, &mapped)));
+            out.set("info", nurbs_info_to_val(mapped));
+        } else {
+            const meshioplusplus::BrepInfo refined =
+                meshioplusplus::iga_refine(val_to_brep_info(rInfo), ro);
+            out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(refined, so)));
+            out.set("info", brep_info_to_val(refined));
+        }
+        return out;
+    });
+}
+
+val iga_sample_js(const val& rInfo, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const std::string fmt = iga_js_format(rInfo);
+        const meshioplusplus::IgaSampleOptions so = iga_js_sample_options(rOptions);
+        val out = val::object();
+        if (fmt == "mfem") {
+            meshioplusplus::NurbsInfo mapped;
+            out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(val_to_nurbs_info(rInfo), so,
+                                                                   &mapped)));
+            out.set("info", nurbs_info_to_val(mapped));
+        } else {
+            const meshioplusplus::BrepInfo brep = val_to_brep_info(rInfo);
+            out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(brep, so)));
+            out.set("info", brep_info_to_val(brep));
+        }
+        return out;
+    });
+}
+
+val iga_evaluate_js(const val& rInfo, double patch, const val& rParams, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const std::string fmt = iga_js_format(rInfo);
+        if (!std::isfinite(patch) || patch != std::floor(patch) || patch < 0)
+            throw std::invalid_argument("meshio++: iga: patch must be a non-negative integer");
+        const std::int32_t derivatives = iga_js_int(rOptions, "derivatives", 0);
+        const std::int32_t trim_samples = iga_js_int(rOptions, "trimSamples", 16);
+        const auto index = static_cast<std::size_t>(patch);
+        // `params`: a flat array/typed array, `d` numbers per point.
+        const std::size_t dim =
+            fmt == "mfem" ? 0 : 2;  // an mfem patch's own dimension is read below
+        meshioplusplus::NurbsInfo nurbs;
+        meshioplusplus::BrepInfo brep;
+        std::size_t d = dim;
+        if (fmt == "mfem") {
+            nurbs = val_to_nurbs_info(rInfo);
+            if (index >= nurbs.mPatches.size())
+                throw std::invalid_argument("meshio++: iga: patch out of range");
+            d = nurbs.mPatches[index].mDegrees.size();
+        } else {
+            brep = val_to_brep_info(rInfo);
+        }
+        const NDArray params = nurbs_js_doubles(rParams, d, "params");
+        meshioplusplus::IgaEvaluation e =
+            fmt == "mfem"
+                ? meshioplusplus::iga_evaluate(nurbs, index, params, derivatives)
+                : meshioplusplus::iga_evaluate(brep, index, params, derivatives, trim_samples);
+        val out = val::object();
+        out.set("spaceDim", static_cast<double>(cols_of(e.mPoints)));
+        out.set("points", ndarray_to_typed_array(e.mPoints));
+        val fields = val::array();
+        val comps = val::array();
+        for (const NDArray& f : e.mFields) {
+            fields.call<void>("push", ndarray_to_typed_array(f));
+            comps.call<void>("push", static_cast<double>(cols_of(f)));
+        }
+        out.set("fields", fields);
+        out.set("fieldComponents", comps);
+        if (e.mDerivatives.Size())
+            out.set("derivatives", ndarray_to_typed_array(e.mDerivatives));
+        if (e.mNormals.Size())
+            out.set("normals", ndarray_to_typed_array(e.mNormals));
+        if (fmt == "cad_json")
+            out.set("inside", ndarray_to_typed_array(e.mInside));
+        return out;
+    });
+}
+
 /**
  * @brief Isoparametric tessellation of curved (quadratic) cells. See
  * operations/tessellate.hpp.
@@ -6518,6 +6672,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("segment", &segment_js);
     emscripten::function("fitPrimitives", &fit_primitives_js);
     emscripten::function("tessellate", &tessellate_js);
+    emscripten::function("igaRefine", &iga_refine_js);
+    emscripten::function("igaSample", &iga_sample_js);
+    emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);

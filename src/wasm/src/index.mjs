@@ -256,6 +256,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
  *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
+ *   igaRefine: (info: object, options?: {subdivisions?: number | number[], elevate?: number | number[], sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
+ *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
+ *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1, trimSamples?: number}) => object,
  *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
  *   tessellate: (mesh: Mesh, levels?: number, curved?: boolean, fields?: boolean, recordStencil?: boolean) => {mesh: Mesh, numSourcePoints: number, numSourceCells: number, numCurvedSourceCells: number, numPassThroughSourceCells: number, numPoints: number, numCells: number, numBoundaryFacets: number, numInteriorFacets: number, numFacetsWithBadCount: number},
  *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
@@ -859,6 +862,10 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.fitPrimitives(mesh, patchData, tolerance, relative, minInlierFraction,
                 Array.isArray(types) ? types : [types], maxIterations),
+        igaRefine: (info, options = {}) => Module.igaRefine(info, options),
+        igaSample: (info, options = {}) => Module.igaSample(info, options),
+        igaEvaluate: (info, patch, params, options = {}) =>
+            Module.igaEvaluate(info, patch, params, options),
         tessellate: (mesh, levels = 2, curved = true, fields = true, recordStencil = false) =>
             Module.tessellate(mesh, levels, curved, fields, recordStencil),
         render: (mesh, options = {}) => Module.render(mesh, options),

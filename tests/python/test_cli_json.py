@@ -184,6 +184,10 @@ def files(tmp_path_factory):
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
     mio.write(paths["parts"], parts)
+    # NURBS models the repository already holds, for the iga verbs
+    meshes = os.path.join(ROOT, "tests", "python", "meshes")
+    paths["nurbs"] = os.path.join(meshes, "mfem", "nurbs", "pipe-nurbs.mesh")
+    paths["plate"] = os.path.join(meshes, "cad_json", "plate_with_hole.cad.json")
     paths["dir"] = str(d)
     return paths
 
@@ -202,6 +206,34 @@ CASES = [
         lambda f: ["check", f["grid"], "-r", "aspect_ratio <= 0.5 @ 10%", "--json"],
     ),
     ("stats", lambda f: ["stats", f["grid"], "--json"]),
+    (
+        "iga_evaluate_nurbs",
+        lambda f: [
+            "iga-evaluate",
+            f["nurbs"],
+            "-p",
+            "0.3,0.7,0.4",
+            "-p",
+            "1,0.5,1.5",
+            "--patch",
+            "1",
+            "--derivatives",
+            "1",
+        ],
+    ),
+    (
+        "iga_evaluate_face",
+        lambda f: [
+            "iga-evaluate",
+            f["plate"],
+            "-p",
+            "0.5,0.5",
+            "-p",
+            "2,2",
+            "--derivatives",
+            "1",
+        ],
+    ),
     ("diff_same", lambda f: ["diff", f["grid"], f["grid"], "--json"]),
     ("diff_moved", lambda f: ["diff", f["grid"], f["moved"], "--json"]),
     ("regions", lambda f: ["regions", f["tagged"], "--json"]),
@@ -276,6 +308,45 @@ WRITING = [
             out + ".vtu",
             "--patch-data",
             "",
+            "--json",
+        ],
+    ),
+    (
+        "iga_refine_nurbs",
+        lambda f, out: [
+            "iga-refine",
+            f["nurbs"],
+            out + ".mesh",
+            "-o",
+            "mfem",
+            "-s",
+            "2",
+            "-e",
+            "1",
+            "--json",
+        ],
+    ),
+    (
+        "iga_refine_face",
+        lambda f, out: [
+            "iga-refine",
+            f["plate"],
+            out + ".cad.json",
+            "-s",
+            "2,3",
+            "-e",
+            "0,1",
+            "--json",
+        ],
+    ),
+    (
+        "iga_sample_face",
+        lambda f, out: [
+            "iga-sample",
+            f["plate"],
+            out + ".vtu",
+            "-s",
+            "4",
             "--json",
         ],
     ),

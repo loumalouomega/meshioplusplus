@@ -197,5 +197,17 @@ def evaluate_cmd(args):
         model=args.model,
         trim_samples=args.trim_samples,
     )
-    emit_json(res)
+    # The native CLI's shape: arrays flattened row-major, widths beside them.
+    out = {
+        "num_points": len(params),
+        "space_dim": res["points"].shape[1],
+        "points": res["points"].ravel(),
+        "fields": [
+            {"components": f.shape[1], "values": f.ravel()} for f in res["fields"]
+        ],
+    }
+    for key in ("derivatives", "normals", "inside"):
+        if key in res:
+            out[key] = res[key].ravel()
+    emit_json(out)
     return 0
