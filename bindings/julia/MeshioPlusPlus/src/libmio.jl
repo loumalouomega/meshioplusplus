@@ -507,6 +507,19 @@ struct _CFitPrimitivesReport
     reserved::NTuple{5,Int64}
 end
 
+"""Mirror of C `mio_iga_opts`. ABI; build through [`iga_refine`](@ref) and
+[`iga_sample`](@ref)."""
+struct _CIgaOpts
+    subdivisions::NTuple{3,Int32}
+    elevate::NTuple{3,Int32}
+    sample_subdivisions::Int32
+    trim_samples::Int32
+    edges::Int32
+    trim::Int32
+    reserved32::NTuple{2,Int32}
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_fit_cad_opts`. ABI; build through [`fit_cad`](@ref)."""
 struct _CFitCadOpts
     tolerance::Cdouble
@@ -951,6 +964,8 @@ function _check_abi_layout()
     sizeof(_CFitPrimitivesReport) == 96 ||
         error("meshio++: mio_fit_primitives_report layout mismatch " *
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
+    sizeof(_CIgaOpts) == 96 ||
+        error("meshio++: mio_iga_opts layout mismatch ($(sizeof(_CIgaOpts)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

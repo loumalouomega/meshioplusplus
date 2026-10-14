@@ -2320,6 +2320,60 @@ mio_gmsh_info <- function(info) .Call(R_mio_gmsh_info, info)
 #' @export
 mio_nurbs_info <- function(info) .Call(R_mio_nurbs_info, info)
 
+#' Refine, sample and evaluate a NURBS model
+#'
+#' The isogeometric layer (v16.43.0): act on the NURBS model a reader kept in a
+#' format-info handle (an MFEM NURBS mesh, Kratos CAD JSON, STEP or IGES, from
+#' [mio_read_with_info()]) without going through its sampling.
+#'
+#' `mio_iga_refine()` refines every patch (every face surface of a B-rep)
+#' exactly: degree elevation by `elevate`, then knot insertion splitting every
+#' nonzero knot span in `subdivisions` parts (an integer, or one per parametric
+#' direction; an MFEM model refines every direction alike). The geometry, the
+#' fields and a trimmed face's trimming loops do not change. It returns
+#' `list(mesh = , info = )`: the refined model sampled, and the refined model
+#' for [mio_write_with_info()]. `mio_iga_sample()` samples the model into
+#' Lagrange cells (`sample_subdivisions` per knot span and direction, 0
+#' automatic) and returns `list(mesh = , info = )` with the sampling's
+#' cell-to-patch maps. `mio_iga_evaluate()` evaluates patch `patch` (1-based;
+#' the face of a B-rep) at the columns of the `(d, N)` matrix `params`.
+#' @param info A format-info handle holding a NURBS model.
+#' @param subdivisions,elevate One integer, or one per parametric direction.
+#' @param sample_subdivisions Cells per knot span of the sampling; 0 is automatic.
+#' @param trim_samples B-rep: points per knot span a trimming curve is sampled at.
+#' @param edges,trim B-rep: sample the edge curves; keep only the cells inside
+#'   the trimming loops.
+#' @param patch Patch (B-rep: face) to evaluate, 1-based.
+#' @param params A `(d, N)` matrix of parametric coordinates, one column per point.
+#' @param derivatives 0, or 1 for the first derivatives and the surface normals.
+#' @return `mio_iga_refine()` and `mio_iga_sample()`: `list(mesh = , info = )`.
+#'   `mio_iga_evaluate()`: a list with `points` (`(space_dimension, N)`),
+#'   `fields` (one `(components, N)` matrix per NURBS field), `derivatives`
+#'   (`(space_dimension, d, N)`) and `normals` (`(3, N)`), both `NULL` unless
+#'   `derivatives = 1` (and a surface in 3-D for the normals), and `inside`
+#'   (a logical vector for a B-rep face, else `NULL`).
+#' @export
+mio_iga_refine <- function(info, subdivisions = 1L, elevate = 0L, sample_subdivisions = 0L,
+                           trim_samples = 16L, edges = TRUE, trim = TRUE) {
+  .Call(R_mio_iga_refine, info, as.integer(subdivisions), as.integer(elevate),
+        as.integer(sample_subdivisions), as.integer(trim_samples), isTRUE(edges), isTRUE(trim))
+}
+
+#' @rdname mio_iga_refine
+#' @export
+mio_iga_sample <- function(info, sample_subdivisions = 0L, trim_samples = 16L, edges = TRUE,
+                           trim = TRUE) {
+  .Call(R_mio_iga_sample, info, as.integer(sample_subdivisions), as.integer(trim_samples),
+        isTRUE(edges), isTRUE(trim))
+}
+
+#' @rdname mio_iga_refine
+#' @export
+mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples = 16L) {
+  .Call(R_mio_iga_evaluate, info, as.integer(patch), params, as.integer(derivatives),
+        as.integer(trim_samples))
+}
+
 #' Copy a B-rep side channel
 #'
 #' The trimmed NURBS faces, loops, edges and vertices of a Kratos CAD JSON

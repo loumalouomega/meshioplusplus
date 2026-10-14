@@ -267,6 +267,22 @@ end
         back, back_info = read_with_info(output; format="mfem")
         @test nurbs_info(back_info).patches == copied.patches
         close(back); close(back_info)
+        # the isogeometric layer: refine, write back, evaluate
+        fine, refined = iga_refine(info; subdivisions=3, elevate=1)
+        @test format_name(refined) == "mfem"
+        @test nurbs_info(refined).patches[1].degrees == Int32[3, 2]
+        write_with_info(fine, refined, joinpath(dir, "refined.mesh"); format="mfem")
+        uv = [0.3 0.9; 0.7 0.2]
+        a = iga_evaluate(info, 1, uv; derivatives=1)
+        b = iga_evaluate(refined, 1, uv)
+        @test size(a.points) == (2, 2)
+        @test maximum(abs.(a.points .- b.points)) < 1e-13
+        @test size(a.derivatives) == (2, 2, 2)
+        @test a.normals === nothing && a.inside === nothing && isempty(a.fields)
+        @test_throws MeshioError iga_evaluate(info, 1, reshape([2.0, 0.5], 2, 1))
+        sampled, mapped = iga_sample(info)
+        @test format_name(mapped) == "mfem"
+        close(sampled); close(mapped); close(fine); close(refined)
         @test_throws MeshioError gmsh_info(info)
         close(mesh); close(info)
     end
