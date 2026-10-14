@@ -1067,7 +1067,6 @@ def roadmap_map():
         (
             "§6 long run (spike first)",
             [
-                ("undo_green XL probe", "S"),
                 ("read-only CAD ingestion", "L"),
                 ("analytic CAD faces (OCC)", "L"),
             ],
