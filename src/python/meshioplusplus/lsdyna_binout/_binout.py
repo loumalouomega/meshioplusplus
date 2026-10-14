@@ -99,7 +99,8 @@ class _File:
         size, self.lsize, self.osize, self.csize, self.tsize, order = d[:6]
         self.order = "<" if order == 1 else ">"
         self.start = size
-        self.icode = {1: "B", 2: "H", 4: "I", 8: "Q"}  # unsigned, as the C++ reader reads them
+        # Unsigned: an offset of 2^63 or more must not read as a negative position.
+        self.icode = {1: "B", 2: "H", 4: "I", 8: "Q"}
 
     def uint(self, pos, n):
         if pos + n > len(self.data):
