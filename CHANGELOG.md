@@ -8,6 +8,12 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v17.0.0 (2026-10-14)
+
+**Major version bump with no functional changes; no ABI change (ABI 29 holds).**
+
+- **Changed**: the release version only. No library, binding, CLI, or documentation behaviour changes since v16.44.0; the four `BASELINE_HASHES` move with the version string (version-string-only drift, verified by substituting the old version back) and the single header is regenerated.
+
 ## v16.44.0 (2026-10-14)
 
 **Fillets of varying radius, blends beside freeform faces and helical threads of any profile in `fit_cad` (roadmap 6.3.1), which closes the roadmap's long-run section. ABI 29: `FitCadResult` grows.**
