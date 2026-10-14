@@ -402,9 +402,7 @@ def _refine_patch(patch, rational, subdivisions, elevate, what):
         _check_weights(patch, what)
     # Nothing to do: the patch itself, not its homogeneous round trip (which
     # can move a rational control point by an ulp).
-    identity = all(
-        elevate[d] == 0 and subdivisions[d] == 1 for d in range(sh["dim"])
-    )
+    identity = all(elevate[d] == 0 and subdivisions[d] == 1 for d in range(sh["dim"]))
     if identity and (rational or not _is_rational(patch)):
         return {
             "degrees": np.array(sh["degrees"], dtype=np.int32),
@@ -505,7 +503,9 @@ def _eval_batch(net, spans, u, nder):
                     for k in range(dim):
                         bk = np.ones(n)
                         for d in range(dim):
-                            bk = bk * (ders[d][1][:, j[d]] if d == k else ders[d][0][:, j[d]])
+                            bk = bk * (
+                                ders[d][1][:, j[d]] if d == k else ders[d][0][:, j[d]]
+                            )
                         ck = w * bk
                         dacc[k] = dacc[k] + ck[:, None] * v
                         dwsum[k] = dwsum[k] + ck
@@ -675,7 +675,9 @@ def _sample_nurbs(model, subdivisions):
         sh = shapes[pi]
         axis = []
         for d in range(dim):
-            axis.append(_axis(sh["degrees"][d], sh["knots"][d], sh["counts"][d], s, None))
+            axis.append(
+                _axis(sh["degrees"][d], sh["knots"][d], sh["counts"][d], s, None)
+            )
         ncell = [len(a[0]) for a in axis] + [1] * (3 - dim)
         g = [_lattice_axis(a[0], a[1], k) for a in axis]
         width = [len(x) for x in g] + [1] * (3 - dim)
@@ -709,7 +711,11 @@ def _sample_nurbs(model, subdivisions):
                     )
         if new_points:
             idx = np.array(new_points, dtype=np.int64)
-            at = [idx % width[0], (idx // width[0]) % width[1], idx // (width[0] * width[1])]
+            at = [
+                idx % width[0],
+                (idx // width[0]) % width[1],
+                idx // (width[0] * width[1]),
+            ]
             u = np.empty((len(idx), dim))
             sp = np.empty((len(idx), dim), dtype=np.int64)
             for d in range(dim):
@@ -881,7 +887,13 @@ def iga_refine(
             out = _core.iga_refine_nurbs(data, sub, ele, sample_subdivisions)
         else:
             out = _core.iga_refine_brep(
-                data, sub, ele, sample_subdivisions, int(trim_samples), bool(edges), bool(trim)
+                data,
+                sub,
+                ele,
+                sample_subdivisions,
+                int(trim_samples),
+                bool(edges),
+                bool(trim),
             )
     except Exception as exc:
         if not core_op_declined(exc, "iga_refine"):
@@ -894,7 +906,9 @@ def iga_refine(
         sampled, mapped = _sample_nurbs(refined, sample_subdivisions)
         return _with_info(sampled, mesh, "nurbs", mapped)
     refined = _refine_brep(data, sub, ele)
-    return _sample_brep_py(refined, mesh, sample_subdivisions, trim_samples, edges, trim)
+    return _sample_brep_py(
+        refined, mesh, sample_subdivisions, trim_samples, edges, trim
+    )
 
 
 def _sample_brep_py(brep, source, subdivisions, trim_samples, edges, trim):
@@ -1007,7 +1021,9 @@ def iga_evaluate(
         if kind == "nurbs":
             res = _core.iga_evaluate_nurbs(data, patch, params, derivatives)
         else:
-            res = _core.iga_evaluate_brep(data, patch, params, derivatives, trim_samples)
+            res = _core.iga_evaluate_brep(
+                data, patch, params, derivatives, trim_samples
+            )
     except Exception as exc:
         if not core_op_declined(exc, "iga_evaluate"):
             raise
@@ -1017,7 +1033,9 @@ def iga_evaluate(
             if not 0 <= patch < len(data["patches"]):
                 _fail(f"patch {patch} is outside the model's {len(data['patches'])}")
             p = data["patches"][patch]
-            res = _evaluate_patch(p, _is_rational(p), params, derivatives, f"patch {patch}")
+            res = _evaluate_patch(
+                p, _is_rational(p), params, derivatives, f"patch {patch}"
+            )
         else:
             res = _evaluate_brep_py(data, patch, params, derivatives, trim_samples)
     if "inside" in res:

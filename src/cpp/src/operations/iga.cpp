@@ -79,8 +79,8 @@ IgaShape iga_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
         sh.mNumPoints *= sh.mCounts[d];
     }
     const NDArray& cps = rP.mControlPoints;
-    if (cps.Dtype() != DType::Float64 || cps.Shape().size() != 2 || cps.Shape()[0] != sh.mNumPoints ||
-        cps.Shape()[1] < 1 || cps.Shape()[1] > 3)
+    if (cps.Dtype() != DType::Float64 || cps.Shape().size() != 2 ||
+        cps.Shape()[0] != sh.mNumPoints || cps.Shape()[1] < 1 || cps.Shape()[1] > 3)
         iga_fail(rWhat + " control points are not Float64 (" + std::to_string(sh.mNumPoints) +
                  ", 1..3) for its knot vectors");
     sh.mSdim = cps.Shape()[1];
@@ -411,7 +411,8 @@ BrepInfo iga_refine(const BrepInfo& rInfo, const IgaRefineOptions& rOptions) {
         int& fl = flag[static_cast<std::size_t>(face.mPatch)];
         const int want = face.mRational ? 1 : 0;
         if (fl >= 0 && fl != want)
-            iga_fail("patch " + std::to_string(face.mPatch) + " is shared by faces that disagree on rational");
+            iga_fail("patch " + std::to_string(face.mPatch) +
+                     " is shared by faces that disagree on rational");
         fl = want;
     }
     for (std::size_t i = 0; i < rInfo.mPatches.size(); ++i) {
@@ -529,8 +530,9 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
         for (std::size_t d = 0; d < dim; ++d)
             k = std::max(k, p.mDegrees[d]);
     }
-    const lagrange::Shape shape =
-        dim == 1 ? lagrange::Shape::Line : dim == 2 ? lagrange::Shape::Quad : lagrange::Shape::Hexahedron;
+    const lagrange::Shape shape = dim == 1   ? lagrange::Shape::Line
+                                  : dim == 2 ? lagrange::Shape::Quad
+                                             : lagrange::Shape::Hexahedron;
     const auto lattice = lagrange::vtk_lattice(shape, k);
     const std::vector<std::size_t>& comps = tables.front().mShape.mFieldComps;
     const std::size_t nv = tables.front().mNet.mColumns;
@@ -557,18 +559,22 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
             pd.mWidth[d] = pd.mG[d].size();
             const auto& sp = axis[d].mSpan;
             for (std::size_t i = 0; i < pd.mG[d].size(); ++i)
-                pd.mSpan[d].push_back(sp.empty() ? 0 : sp[std::min(i / static_cast<std::size_t>(k), sp.size() - 1)]);
+                pd.mSpan[d].push_back(
+                    sp.empty() ? 0 : sp[std::min(i / static_cast<std::size_t>(k), sp.size() - 1)]);
         }
         std::vector<std::int64_t> local(pd.mWidth[0] * pd.mWidth[1] * pd.mWidth[2], -1);
         for (std::size_t iw = 0; iw < ncell[2]; ++iw)
             for (std::size_t jv = 0; jv < ncell[1]; ++jv)
                 for (std::size_t iu = 0; iu < ncell[0]; ++iu) {
                     for (const auto& ijk : lattice) {
-                        const std::size_t gi = iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
-                        const std::size_t gj =
-                            dim > 1 ? jv * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[1]) : 0;
-                        const std::size_t gl =
-                            dim > 2 ? iw * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[2]) : 0;
+                        const std::size_t gi =
+                            iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
+                        const std::size_t gj = dim > 1 ? jv * static_cast<std::size_t>(k) +
+                                                             static_cast<std::size_t>(ijk[1])
+                                                       : 0;
+                        const std::size_t gl = dim > 2 ? iw * static_cast<std::size_t>(k) +
+                                                             static_cast<std::size_t>(ijk[2])
+                                                       : 0;
                         const std::size_t g = gi + pd.mWidth[0] * (gj + pd.mWidth[1] * gl);
                         if (local[g] < 0) {
                             local[g] = static_cast<std::int64_t>(num_points + pd.mPoints.size());

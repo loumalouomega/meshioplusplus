@@ -12169,7 +12169,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 42
+#define MESHIOPLUSPLUS_VERSION_MINOR 43
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12179,7 +12179,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.42.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.43.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -19465,6 +19465,20 @@ MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, 
  */
 MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
                                    const NurbsInfo& rInfo);
+
+/**
+ * @brief The mesh a NURBS side channel samples to: exactly what `read_mfem`
+ * returns for the NURBS mesh `write_mfem` writes from @p rInfo -- the knot-span
+ * elements as Lagrange cells of the highest degree, the boundary cells, the
+ * fields as point data -- so a side channel refined or edited with
+ * `iga_refine` (operations/iga.hpp) can be written back with it.
+ *
+ * @param rInfo a side channel with a patch topology (`mTopology`)
+ * @param pMapped when not null, receives @p rInfo as `read_mfem` would return
+ *        it: the same patches, with the cell-to-patch maps of the sampling
+ * @throws WriteError for an inconsistent @p rInfo
+ */
+MESHIOPLUSPLUS_API Mesh sample_mfem_nurbs(const NurbsInfo& rInfo, NurbsInfo* pMapped = nullptr);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mfem.hpp =====
@@ -27581,6 +27595,171 @@ MESHIOPLUSPLUS_API HessianResult hessian(const Mesh& rMesh, const HessianOptions
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/hessian.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/iga.hpp =====
+/**
+ * @file operations/iga.hpp
+ * @brief The isogeometric layer: evaluate, refine and sample the NURBS
+ * models a reader keeps beside its sampled mesh -- `NurbsInfo` (MFEM NURBS
+ * meshes) and `BrepInfo` (Kratos CAD JSON, STEP, IGES, `fit_cad`) -- without
+ * going through the sampling.
+ *
+ * - **Evaluation** (`iga_evaluate`): the points, first derivatives and unit
+ *   normals of a patch (or a trimmed face) at parametric coordinates, rational
+ *   in 1, 2 or 3 parametric dimensions; a `NurbsInfo` patch also evaluates
+ *   its NURBS fields, a `BrepInfo` face reports whether each point lies
+ *   inside its trimming loops.
+ * - **Refinement** (`iga_refine`): exact knot insertion (h) and degree
+ *   elevation (p) of every patch, k-refinement being the two in that order
+ *   (elevate, then insert, which keeps the highest continuity). The geometry
+ *   and the parametrisation do not change, so a trimmed face's trimming
+ *   curves stay exact; a `NurbsInfo`'s fields refine with the geometry. The
+ *   patch-level kernels (`iga_insert_knots`, `iga_elevate_degree`) take one
+ *   direction at a time.
+ * - **Sampling** (`iga_sample`): the model as Lagrange cells again.
+ *
+ * Every direction beyond a patch's parametric dimension is ignored. A control
+ * net is rational when any of its weights is not exactly 1; a face whose
+ * `mRational` is false is a polynomial B-spline whatever its weights are, and
+ * refines to a patch of unit weights. The Python twin (`meshioplusplus._iga`)
+ * repeats the arithmetic, so both engines give the same bits.
+ * See doc/iga.md.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int64) a sampled `NurbsInfo` carries: each cell's patch.
+inline constexpr const char* kIgaPatchName = "iga:patch";
+/// Cell data (Int64, 3 columns): each cell's knot span per direction, counted
+/// over the spans of nonzero length (0 for an unused direction).
+inline constexpr const char* kIgaSpanName = "iga:span";
+
+/// How `iga_refine` refines every patch of a model.
+struct IgaRefineOptions {
+    /// Equal parts every nonzero knot span is split into, per direction (1: none).
+    std::array<std::int32_t, 3> mSubdivisions{1, 1, 1};
+    /// Degree elevation per direction (0: none), applied before the knots are inserted.
+    std::array<std::int32_t, 3> mElevate{0, 0, 0};
+};
+
+/// How `iga_sample` turns a model into cells.
+struct IgaSampleOptions {
+    /// Cells per knot span and direction; 0 is automatic (one per span; on a
+    /// trimmed face about 16 per direction so its trim shows; for a `NurbsInfo`
+    /// with a patch topology, the MFEM reader's own sampling).
+    std::int32_t mSubdivisions = 0;
+    /// `BrepInfo` only: points per knot span a trimming curve is sampled at, 2 to 4096.
+    std::int32_t mTrimSamples = 16;
+    /// `BrepInfo` only: keep only the cells inside the trimming loops.
+    bool mTrim = true;
+    /// `BrepInfo` only: sample the edges that have a 3-D curve as line cells.
+    bool mEdges = true;
+};
+
+/// What `iga_evaluate` returns; the arrays a request does not ask for are empty.
+struct MESHIOPLUSPLUS_API IgaEvaluation {
+    /// Float64 `(N, space dimension)`.
+    NDArray mPoints{DType::Float64, {0, 0}};
+    /// Float64 `(N, parametric dimension, space dimension)`: `d x / d u_k`.
+    NDArray mDerivatives{DType::Float64, {0}};
+    /// Float64 `(N, 3)`: the unit normal `d1 x d2 / |d1 x d2|` of a surface in
+    /// 3-D (zeros where the tangents are parallel).
+    NDArray mNormals{DType::Float64, {0}};
+    /// One Float64 `(N, components)` per `NurbsInfo::mFieldNames` entry.
+    std::vector<NDArray> mFields;
+    /// UInt8 `(N)`: 1 where a face's trimming loops contain the point (a face
+    /// that is not trimmed contains every point).
+    NDArray mInside{DType::UInt8, {0}};
+};
+
+/**
+ * @brief Insert knots into direction @p Direction of one patch, exactly.
+ * @param rKnots The knots, ascending, strictly inside the parameter range
+ * (repeating a knot raises its multiplicity); fields refine with the net.
+ * @param Rational Evaluate the weights (false: a polynomial B-spline whose
+ * weights are written back as 1).
+ * @throws std::invalid_argument for a bad direction or a knot out of range.
+ */
+MESHIOPLUSPLUS_API NurbsPatch iga_insert_knots(const NurbsPatch& rPatch, std::int32_t Direction,
+                                               const std::vector<double>& rKnots,
+                                               bool Rational = true);
+
+/**
+ * @brief Raise the degree of direction @p Direction of one patch by @p Times,
+ * exactly, keeping every knot's continuity.
+ * @throws std::invalid_argument for a bad direction, `Times < 0` or a degree above 32.
+ */
+MESHIOPLUSPLUS_API NurbsPatch iga_elevate_degree(const NurbsPatch& rPatch, std::int32_t Direction,
+                                                 std::int32_t Times, bool Rational = true);
+
+/**
+ * @brief Refine every patch of @p rInfo: degree elevation, then knot insertion.
+ *
+ * The patch topology and field names are kept; the cell-to-patch map and the
+ * boundary cell map are cleared (the sampling they described is gone; sample
+ * again with `iga_sample`).
+ */
+MESHIOPLUSPLUS_API NurbsInfo iga_refine(const NurbsInfo& rInfo, const IgaRefineOptions& rOptions);
+
+/**
+ * @brief Refine every face surface of @p rInfo.
+ *
+ * Trimming curves, edges and vertices are untouched (the parametrisation is);
+ * a face's control-point ids are cleared.
+ * @throws std::invalid_argument when a patch is shared by faces that disagree
+ * on `mRational`.
+ */
+MESHIOPLUSPLUS_API BrepInfo iga_refine(const BrepInfo& rInfo, const IgaRefineOptions& rOptions);
+
+/**
+ * @brief Evaluate patch @p Patch of @p rInfo, and its fields, at the parameters
+ * @p rParams (Float64 `(N, parametric dimension)`).
+ * @param Derivatives 0 or 1: with 1, also the first derivatives and, for a
+ * surface in 3-D, the unit normals.
+ * @throws std::invalid_argument for a bad patch, parameters or a parameter
+ * outside the patch's knot range (by more than rounding).
+ */
+MESHIOPLUSPLUS_API IgaEvaluation iga_evaluate(const NurbsInfo& rInfo, std::size_t Patch,
+                                              const NDArray& rParams, std::int32_t Derivatives = 0);
+
+/**
+ * @brief Evaluate face @p Face of @p rInfo, with `mInside` from its trimming
+ * loops (each trim sampled at @p TrimSamples points per knot span).
+ */
+MESHIOPLUSPLUS_API IgaEvaluation iga_evaluate(const BrepInfo& rInfo, std::size_t Face,
+                                              const NDArray& rParams, std::int32_t Derivatives = 0,
+                                              std::int32_t TrimSamples = 16);
+
+/**
+ * @brief Sample every patch of @p rInfo into Lagrange cells of the highest
+ * degree (`line`/`line3`/`VTK_LAGRANGE_CURVE`, the quad family or the
+ * hexahedron family by parametric dimension), their nodes the exact
+ * (rational) geometry at the cell's lattice, the NURBS fields evaluated as
+ * point data, `iga:patch` and `iga:span` as cell data.
+ *
+ * Points are shared within a patch, not between patches. A model with its
+ * MFEM patch topology (`mTopology`) and `mSubdivisions == 0` samples as
+ * `sample_mfem_nurbs` does instead -- exactly the mesh `read_mfem` gives, with
+ * its points shared across patches and its boundary cells -- so a refined
+ * model writes back through `write_mfem`.
+ * @param pMapped When not null, receives @p rInfo with `mCellPatch` and
+ * `mCellSpan` filled from the cells and `mBoundaryCellPatch` cleared.
+ */
+MESHIOPLUSPLUS_API Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions = {},
+                                   NurbsInfo* pMapped = nullptr);
+
+/// Sample a B-rep as `sample_brep` does (`mSubdivisions`, `mTrimSamples`, `mTrim`, `mEdges`).
+MESHIOPLUSPLUS_API Mesh iga_sample(const BrepInfo& rInfo, const IgaSampleOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/iga.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/region_ops.hpp =====
 /**
  * @file operations/region_ops.hpp
@@ -33934,6 +34113,305 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
+// ===== begin src/cpp/src/detail/nurbs_eval.hpp =====
+/**
+ * @file detail/nurbs_eval.hpp
+ * @brief Point evaluation of B-spline and NURBS curves and tensor-product
+ * surfaces at arbitrary parameters (The NURBS Book, algorithms A2.1, A2.2,
+ * A3.1/A4.1 and A3.5/A4.3).
+ *
+ * Knot vectors are in the full form, `n + p + 1` knots for `n` control
+ * points. Control nets list direction 0 fastest (Kratos's and MFEM's order),
+ * each point `Dim` doubles. A null weight pointer evaluates the polynomial
+ * B-spline, with no division; otherwise the rational map. The arithmetic is
+ * the order the Python twin (`meshioplusplus/_nurbs_eval.py`) follows, so
+ * the two give the same bits.
+ *
+ * Core-private (not installed). The MFEM reader keeps its own kernel, which
+ * works on MFEM's compressed knot spans.
+ */
+
+// System includes
+#include <cstddef>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// The knot span index `i` (`p <= i <= n - 1`) with `U[i] <= u < U[i+1]`;
+/// the last span for `u >= U[n]`, the first for `u <= U[p]`.
+inline std::size_t nurbs_find_span(int P, const std::vector<double>& rKnots, std::size_t N,
+                                   double U) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t n = N - 1;
+    if (U >= rKnots[n + 1]) {
+        std::size_t s = n;
+        while (s > p && rKnots[s] == rKnots[s + 1])
+            --s;
+        return s;
+    }
+    if (U <= rKnots[p]) {
+        std::size_t s = p;
+        while (s < n && rKnots[s] == rKnots[s + 1])
+            ++s;
+        return s;
+    }
+    std::size_t low = p, high = n + 1, mid = (low + high) / 2;
+    while (U < rKnots[mid] || U >= rKnots[mid + 1]) {
+        if (U < rKnots[mid])
+            high = mid;
+        else
+            low = mid;
+        mid = (low + high) / 2;
+    }
+    return mid;
+}
+
+/// The `p + 1` nonzero basis functions of span `Span` at `U` into `pN`.
+inline void nurbs_basis(std::size_t Span, double U, int P, const std::vector<double>& rKnots,
+                        double* pN) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> left(p + 1), right(p + 1);
+    pN[0] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            const double temp = pN[r] / (right[r + 1] + left[j - r]);
+            pN[r] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        pN[j] = saved;
+    }
+}
+
+/// The spans of nonzero length as `(knot index, knot index + 1)` pairs:
+/// `i` from `p` to `n - 1` with `U[i] < U[i+1]`.
+inline std::vector<std::size_t> nurbs_spans(int P, const std::vector<double>& rKnots,
+                                            std::size_t N) {
+    std::vector<std::size_t> spans;
+    for (std::size_t i = static_cast<std::size_t>(P); i + 1 <= N; ++i)
+        if (rKnots[i] < rKnots[i + 1])
+            spans.push_back(i);
+    return spans;
+}
+
+/// A curve point at `U` in span `Span` (from `nurbs_find_span` or a cell's
+/// own span): `pOut[0 .. Dim)`.
+inline void nurbs_curve_point_in_span(int P, const std::vector<double>& rKnots,
+                                      const double* pCps, const double* pW, std::size_t Dim,
+                                      std::size_t Span, double U, double* pOut) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> nb(p + 1);
+    nurbs_basis(Span, U, P, rKnots, nb.data());
+    for (std::size_t d = 0; d < Dim; ++d)
+        pOut[d] = 0.0;
+    double w = 0.0;
+    for (std::size_t k = 0; k <= p; ++k) {
+        const std::size_t i = Span - p + k;
+        const double c = pW ? nb[k] * pW[i] : nb[k];
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] += c * pCps[i * Dim + d];
+        w += c;
+    }
+    if (pW)
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] /= w;
+}
+
+/// A surface point at `(U, V)` in spans `(SpanU, SpanV)`.
+inline void nurbs_surface_point_in_span(int P, int Q, const std::vector<double>& rKnotsU,
+                                        const std::vector<double>& rKnotsV, const double* pCps,
+                                        const double* pW, std::size_t Nu, std::size_t Dim,
+                                        std::size_t SpanU, std::size_t SpanV, double U, double V,
+                                        double* pOut) {
+    const auto p = static_cast<std::size_t>(P);
+    const auto q = static_cast<std::size_t>(Q);
+    std::vector<double> nu(p + 1), nv(q + 1), temp(Dim + 1);
+    nurbs_basis(SpanU, U, P, rKnotsU, nu.data());
+    nurbs_basis(SpanV, V, Q, rKnotsV, nv.data());
+    for (std::size_t d = 0; d < Dim; ++d)
+        pOut[d] = 0.0;
+    double w = 0.0;
+    for (std::size_t l = 0; l <= q; ++l) {
+        for (std::size_t d = 0; d <= Dim; ++d)
+            temp[d] = 0.0;
+        const std::size_t j = SpanV - q + l;
+        for (std::size_t k = 0; k <= p; ++k) {
+            const std::size_t i = SpanU - p + k;
+            const std::size_t idx = j * Nu + i;
+            const double c = pW ? nu[k] * pW[idx] : nu[k];
+            for (std::size_t d = 0; d < Dim; ++d)
+                temp[d] += c * pCps[idx * Dim + d];
+            temp[Dim] += c;
+        }
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] += nv[l] * temp[d];
+        w += nv[l] * temp[Dim];
+    }
+    if (pW)
+        for (std::size_t d = 0; d < Dim; ++d)
+            pOut[d] /= w;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/nurbs_eval.hpp =====
+// ===== begin src/cpp/src/detail/brep_trim.hpp =====
+/**
+ * @file detail/brep_trim.hpp
+ * @brief The parametric helpers a trimmed B-rep face is sampled and evaluated
+ * with, shared by the CAD JSON sampler (`formats/cad_json.cpp`) and the IGA
+ * layer (`operations/iga.cpp`): the cells of one knot-vector direction, their
+ * lattice, a trimming loop as a polygon in `(u, v)`, and the even-odd
+ * inside test over all loops of a face.
+ *
+ * The Python twins are `_axis`, `_lattice`, `_loop_polygon` and `_inside` in
+ * `meshioplusplus/cad_json/_cad_json.py`, which repeat these bit for bit.
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+/// The largest degree a B-rep curve or surface may have.
+inline constexpr int kBrepMaxDegree = 32;
+
+/// Check a curve's degree, control points, weights, knots and ids; the error
+/// text is `pPrefix + rWhat + " ..."`.
+inline void brep_check_curve(const BrepCurve& rC, const std::string& rWhat, const char* pPrefix) {
+    const auto bad = [&](const char* pText) {
+        throw std::invalid_argument(std::string(pPrefix) + rWhat + pText);
+    };
+    const std::size_t n = rC.mWeights.Size();
+    if (rC.mDegree < 1 || rC.mDegree > kBrepMaxDegree)
+        bad(" degree is out of range");
+    if (rC.mControlPoints.Dtype() != DType::Float64 || rC.mControlPoints.Shape().size() != 2 ||
+        rC.mControlPoints.Shape()[0] != n || rC.mControlPoints.Shape()[1] != 3 ||
+        rC.mWeights.Dtype() != DType::Float64)
+        bad(" control points are not Float64 (n, 3) beside n weights");
+    if (n < static_cast<std::size_t>(rC.mDegree) + 1 ||
+        rC.mKnots.size() != n + static_cast<std::size_t>(rC.mDegree) + 1)
+        bad(" knot vector does not match its control points");
+    for (std::size_t i = 1; i < rC.mKnots.size(); ++i)
+        if (!(rC.mKnots[i] >= rC.mKnots[i - 1]))
+            bad(" knot vector decreases");
+    if (rC.mIds.Size() != 0 && (rC.mIds.Size() != n || rC.mIds.Dtype() != DType::Int64))
+        bad(" ids do not match its control points");
+}
+
+/// The cell boundaries along one direction: every nonzero span split in `S`.
+struct BrepAxis {
+    std::vector<double> mLo, mHi;       // per cell
+    std::vector<std::size_t> mSpan;     // knot index of each cell's span
+    std::vector<std::int64_t> mSpanNo;  // the span's ordinal among nonzero spans
+};
+
+/// The cells of one direction (`N` control points), clipped to `pRange` when it
+/// holds two values.
+inline BrepAxis brep_axis(int P, const std::vector<double>& rKnots, std::size_t N, int S,
+                          const std::vector<double>* pRange) {
+    BrepAxis a;
+    const std::vector<std::size_t> spans = nurbs_spans(P, rKnots, N);
+    for (std::size_t s = 0; s < spans.size(); ++s) {
+        double k0 = rKnots[spans[s]], k1 = rKnots[spans[s] + 1];
+        if (pRange && pRange->size() == 2) {
+            const double r0 = std::min((*pRange)[0], (*pRange)[1]);
+            const double r1 = std::max((*pRange)[0], (*pRange)[1]);
+            k0 = std::max(k0, r0);
+            k1 = std::min(k1, r1);
+            if (!(k0 < k1))
+                continue;
+        }
+        for (int j = 0; j < S; ++j) {
+            const double lo = k0 + (k1 - k0) * (static_cast<double>(j) / S);
+            const double hi = j + 1 == S ? k1 : k0 + (k1 - k0) * (static_cast<double>(j + 1) / S);
+            a.mLo.push_back(lo);
+            a.mHi.push_back(hi);
+            a.mSpan.push_back(spans[s]);
+            a.mSpanNo.push_back(static_cast<std::int64_t>(s));
+        }
+    }
+    return a;
+}
+
+/// The lattice coordinates of one axis: cell c's node i at index `c * K + i`.
+inline std::vector<double> brep_lattice(const BrepAxis& rA, int K) {
+    const std::size_t n = rA.mLo.size();
+    std::vector<double> g(n * static_cast<std::size_t>(K) + 1, 0.0);
+    for (std::size_t c = 0; c < n; ++c)
+        for (int i = 0; i < K; ++i)
+            g[c * static_cast<std::size_t>(K) + static_cast<std::size_t>(i)] =
+                rA.mLo[c] + (rA.mHi[c] - rA.mLo[c]) * (static_cast<double>(i) / K);
+    if (n)
+        g[n * static_cast<std::size_t>(K)] = rA.mHi[n - 1];
+    return g;
+}
+
+/// A loop as a closed polygon in `(u, v)`: every trim sampled at `Samples`
+/// points per knot span of its active range, in loop order.
+inline std::vector<std::array<double, 2>> brep_loop_polygon(const BrepLoop& rLoop, int Samples) {
+    std::vector<std::array<double, 2>> poly;
+    for (const BrepTrim& t : rLoop.mTrims) {
+        const BrepCurve& c = t.mCurve;
+        const std::size_t n = c.mWeights.Size();
+        const BrepAxis axis = brep_axis(c.mDegree, c.mKnots, n, 1, &c.mActiveRange);
+        std::vector<std::array<double, 2>> pts;
+        const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
+        for (std::size_t s = 0; s < axis.mLo.size(); ++s)
+            for (int j = 0; j < Samples; ++j) {
+                const double u =
+                    axis.mLo[s] + (axis.mHi[s] - axis.mLo[s]) * (static_cast<double>(j) / Samples);
+                double xyz[3];
+                nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(), w, 3,
+                                          axis.mSpan[s], u, xyz);
+                pts.push_back({xyz[0], xyz[1]});
+            }
+        if (!axis.mLo.empty()) {
+            const std::size_t s = axis.mLo.size() - 1;
+            double xyz[3];
+            nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(), w, 3,
+                                      axis.mSpan[s], axis.mHi[s], xyz);
+            pts.push_back({xyz[0], xyz[1]});
+        }
+        if (!t.mDirection)
+            std::reverse(pts.begin(), pts.end());
+        poly.insert(poly.end(), pts.begin(), pts.end());
+    }
+    return poly;
+}
+
+/// Even-odd point-in-polygon over every loop of a face.
+inline bool brep_inside(const std::vector<std::vector<std::array<double, 2>>>& rLoops, double U,
+                        double V) {
+    bool inside = false;
+    for (const auto& poly : rLoops) {
+        const std::size_t n = poly.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            const auto& a = poly[i];
+            const auto& b = poly[j];
+            if ((a[1] > V) != (b[1] > V) && U < (b[0] - a[0]) * (V - a[1]) / (b[1] - a[1]) + a[0])
+                inside = !inside;
+        }
+    }
+    return inside;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/brep_trim.hpp =====
 // ===== begin src/cpp/src/detail/closed_facets.hpp =====
 /**
  * @file detail/closed_facets.hpp
@@ -35318,6 +35796,480 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/feature_fit.hpp =====
+// ===== begin src/cpp/src/detail/iga_kernels.hpp =====
+/**
+ * @file detail/iga_kernels.hpp
+ * @brief The isogeometric kernels behind `operations/iga.hpp`: exact knot
+ * insertion and degree elevation of a tensor-product NURBS net, and its
+ * evaluation with first derivatives (The NURBS Book, algorithms A2.3, A5.4
+ * and A5.9).
+ *
+ * A net is held *homogeneous*: every control point is a row of `C` doubles
+ * `(w x, w f..., w)`, so the geometry, the weights and every NURBS field
+ * refine with one kernel and one rounding. A non-rational net drops the
+ * weight column and the weights stay exactly 1. Control nets list direction 0
+ * fastest. The arithmetic is the order the Python twin
+ * (`meshioplusplus/_iga.py`) follows, so the two give the same bits; the
+ * kernels are scalar per column, which is what lets the twin vectorise over
+ * lines and columns without changing a bit (`-ffp-contract=off`).
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+/// A tensor-product control net in homogeneous form.
+struct IgaNet {
+    std::size_t mDim = 0;
+    std::array<int, 3> mDegrees{0, 0, 0};
+    std::array<std::vector<double>, 3> mKnots;
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    /// Columns per control point.
+    std::size_t mColumns = 0;
+    /// `prod(mCounts)` rows of `mColumns` values, direction 0 fastest.
+    std::vector<double> mValues;
+
+    std::size_t NumPoints() const { return mCounts[0] * mCounts[1] * mCounts[2]; }
+};
+
+inline std::int64_t iga_binomial(int N, int K) {
+    if (K < 0 || K > N)
+        return 0;
+    std::int64_t r = 1;
+    for (int i = 1; i <= K; ++i)
+        r = r * (N - K + i) / i;
+    return r;
+}
+
+/// The knots of one direction that split every nonzero span in `S` equal
+/// parts (the interior ones only), ascending.
+inline std::vector<double> iga_split_knots(int P, const std::vector<double>& rKnots, int S) {
+    std::vector<double> x;
+    if (S <= 1)
+        return x;
+    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
+    for (const std::size_t i : nurbs_spans(P, rKnots, n)) {
+        const double k0 = rKnots[i], k1 = rKnots[i + 1];
+        for (int j = 1; j < S; ++j)
+            x.push_back(k0 + (k1 - k0) * (static_cast<double>(j) / S));
+    }
+    return x;
+}
+
+/// A5.4: refine the knot vector of one curve of `C`-column control rows with
+/// the ascending knots `rX` (at least one).
+inline void iga_refine_line(int P, const std::vector<double>& rU, const double* pPw,
+                            std::size_t Count, std::size_t C, const std::vector<double>& rX,
+                            std::vector<double>& rUbar, std::vector<double>& rQw) {
+    using I = std::ptrdiff_t;
+    const I p = P, n = static_cast<I>(Count) - 1, m = n + p + 1;
+    const I r = static_cast<I>(rX.size()) - 1;
+    const I a = static_cast<I>(nurbs_find_span(P, rU, Count, rX[0]));
+    const I b = static_cast<I>(nurbs_find_span(P, rU, Count, rX[static_cast<std::size_t>(r)])) + 1;
+    rUbar.assign(static_cast<std::size_t>(m + r + 2), 0.0);
+    rQw.assign((Count + static_cast<std::size_t>(r) + 1) * C, 0.0);
+    const auto row = [C](std::vector<double>& rV, I Index) {
+        return rV.data() + static_cast<std::size_t>(Index) * C;
+    };
+    for (I j = 0; j <= a - p; ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, j)[c] = pPw[static_cast<std::size_t>(j) * C + c];
+    for (I j = b - 1; j <= n; ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, j + r + 1)[c] = pPw[static_cast<std::size_t>(j) * C + c];
+    for (I j = 0; j <= a; ++j)
+        rUbar[static_cast<std::size_t>(j)] = rU[static_cast<std::size_t>(j)];
+    for (I j = b + p; j <= m; ++j)
+        rUbar[static_cast<std::size_t>(j + r + 1)] = rU[static_cast<std::size_t>(j)];
+    I i = b + p - 1, k = b + p + r;
+    for (I j = r; j >= 0; --j) {
+        const double xj = rX[static_cast<std::size_t>(j)];
+        while (xj <= rU[static_cast<std::size_t>(i)] && i > a) {
+            for (std::size_t c = 0; c < C; ++c)
+                row(rQw, k - p - 1)[c] = pPw[static_cast<std::size_t>(i - p - 1) * C + c];
+            rUbar[static_cast<std::size_t>(k)] = rU[static_cast<std::size_t>(i)];
+            --k;
+            --i;
+        }
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, k - p - 1)[c] = row(rQw, k - p)[c];
+        for (I l = 1; l <= p; ++l) {
+            const I ind = k - p + l;
+            double alfa = rUbar[static_cast<std::size_t>(k + l)] - xj;
+            if (std::fabs(alfa) == 0.0) {
+                for (std::size_t c = 0; c < C; ++c)
+                    row(rQw, ind - 1)[c] = row(rQw, ind)[c];
+            } else {
+                alfa = alfa / (rUbar[static_cast<std::size_t>(k + l)] -
+                               rU[static_cast<std::size_t>(i - p + l)]);
+                for (std::size_t c = 0; c < C; ++c)
+                    row(rQw, ind - 1)[c] =
+                        alfa * row(rQw, ind - 1)[c] + (1.0 - alfa) * row(rQw, ind)[c];
+            }
+        }
+        rUbar[static_cast<std::size_t>(k)] = xj;
+        --k;
+    }
+}
+
+/// A5.9: raise the degree of one curve of `C`-column control rows by `T`
+/// (at least one), keeping every knot's continuity.
+inline void iga_elevate_line(int P, const std::vector<double>& rU, const double* pPw,
+                             std::size_t Count, std::size_t C, int T, std::vector<double>& rUh,
+                             std::vector<double>& rQw) {
+    using I = std::ptrdiff_t;
+    const I p = P, t = T, ph = p + t, ph2 = ph / 2;
+    const I n = static_cast<I>(Count) - 1, m = n + p + 1;
+    // The distinct interior knots bound the segments: the output holds at most
+    // (Count + t * (segments + 1)) rows and that many + ph + 1 knots.
+    I distinct = 0;
+    for (I i = p + 1; i <= n; ++i)
+        if (rU[static_cast<std::size_t>(i)] != rU[static_cast<std::size_t>(i - 1)])
+            ++distinct;
+    const I max_rows = n + 1 + t * (distinct + 1);
+    rQw.assign(static_cast<std::size_t>(max_rows) * C, 0.0);
+    rUh.assign(static_cast<std::size_t>(max_rows + ph + 1), 0.0);
+    std::vector<std::vector<double>> bezalfs(
+        static_cast<std::size_t>(ph + 1),
+        std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
+    bezalfs[0][0] = 1.0;
+    bezalfs[static_cast<std::size_t>(ph)][static_cast<std::size_t>(p)] = 1.0;
+    for (I i = 1; i <= ph2; ++i) {
+        const double inv =
+            1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
+        const I mpi = std::min(p, i);
+        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
+            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                inv * static_cast<double>(iga_binomial(static_cast<int>(p), static_cast<int>(j))) *
+                static_cast<double>(iga_binomial(static_cast<int>(t), static_cast<int>(i - j)));
+    }
+    for (I i = ph2 + 1; i <= ph - 1; ++i) {
+        const I mpi = std::min(p, i);
+        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
+            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                bezalfs[static_cast<std::size_t>(ph - i)][static_cast<std::size_t>(p - j)];
+    }
+    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C),
+        ebpts(static_cast<std::size_t>(ph + 1) * C),
+        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C),
+        alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
+    const auto brow = [C](std::vector<double>& rV, I Index) {
+        return rV.data() + static_cast<std::size_t>(Index) * C;
+    };
+    const auto U = [&rU](I Index) { return rU[static_cast<std::size_t>(Index)]; };
+    const auto Uh = [&rUh](I Index) -> double& { return rUh[static_cast<std::size_t>(Index)]; };
+    I mh = ph, kind = ph + 1, r = -1, a = p, b = p + 1, cind = 1;
+    double ua = U(0);
+    for (std::size_t c = 0; c < C; ++c)
+        brow(rQw, 0)[c] = pPw[c];
+    for (I i = 0; i <= ph; ++i)
+        Uh(i) = ua;
+    for (I i = 0; i <= p; ++i)
+        for (std::size_t c = 0; c < C; ++c)
+            brow(bpts, i)[c] = pPw[static_cast<std::size_t>(i) * C + c];
+    while (b < m) {
+        I i = b;
+        while (b < m && U(b) == U(b + 1))
+            ++b;
+        const I mul = b - i + 1;
+        mh = mh + mul + t;
+        const double ub = U(b);
+        const I oldr = r;
+        r = p - mul;
+        const I lbz = oldr > 0 ? (oldr + 2) / 2 : 1;
+        const I rbz = r > 0 ? ph - (r + 1) / 2 : ph;
+        if (r > 0) {
+            const double numer = ub - ua;
+            for (I k = p; k > mul; --k)
+                alfs[static_cast<std::size_t>(k - mul - 1)] = numer / (U(a + k) - ua);
+            for (I j = 1; j <= r; ++j) {
+                const I save = r - j, s = mul + j;
+                for (I k = p; k >= s; --k) {
+                    const double al = alfs[static_cast<std::size_t>(k - s)];
+                    for (std::size_t c = 0; c < C; ++c)
+                        brow(bpts, k)[c] =
+                            al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
+                }
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(nextbpts, save)[c] = brow(bpts, p)[c];
+            }
+        }
+        for (I k = lbz; k <= ph; ++k) {
+            for (std::size_t c = 0; c < C; ++c)
+                brow(ebpts, k)[c] = 0.0;
+            const I mpi = std::min(p, k);
+            for (I j = std::max<I>(0, k - t); j <= mpi; ++j) {
+                const double bz = bezalfs[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(ebpts, k)[c] = brow(ebpts, k)[c] + bz * brow(bpts, j)[c];
+            }
+        }
+        if (oldr > 1) {
+            I first = kind - 2, last = kind;
+            const double den = ub - ua;
+            const double bet = (ub - Uh(kind - 1)) / den;
+            for (I tr = 1; tr < oldr; ++tr) {
+                I ii = first, j = last, kj = j - kind + 1;
+                while (j - ii > tr) {
+                    if (ii < cind) {
+                        const double alf = (ub - Uh(ii)) / (ua - Uh(ii));
+                        for (std::size_t c = 0; c < C; ++c)
+                            brow(rQw, ii)[c] =
+                                alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
+                    }
+                    if (j >= lbz) {
+                        if (j - tr <= kind - ph + oldr) {
+                            const double gam = (ub - Uh(j - tr)) / den;
+                            for (std::size_t c = 0; c < C; ++c)
+                                brow(ebpts, kj)[c] =
+                                    gam * brow(ebpts, kj)[c] + (1.0 - gam) * brow(ebpts, kj + 1)[c];
+                        } else {
+                            for (std::size_t c = 0; c < C; ++c)
+                                brow(ebpts, kj)[c] =
+                                    bet * brow(ebpts, kj)[c] + (1.0 - bet) * brow(ebpts, kj + 1)[c];
+                        }
+                    }
+                    ++ii;
+                    --j;
+                    --kj;
+                }
+                --first;
+                ++last;
+            }
+        }
+        if (a != p)
+            for (I k = 0; k < ph - oldr; ++k) {
+                Uh(kind) = ua;
+                ++kind;
+            }
+        for (I j = lbz; j <= rbz; ++j) {
+            for (std::size_t c = 0; c < C; ++c)
+                brow(rQw, cind)[c] = brow(ebpts, j)[c];
+            ++cind;
+        }
+        if (b < m) {
+            for (I j = 0; j < r; ++j)
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(bpts, j)[c] = brow(nextbpts, j)[c];
+            for (I j = r; j <= p; ++j)
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(bpts, j)[c] = pPw[static_cast<std::size_t>(b - p + j) * C + c];
+            a = b;
+            ++b;
+            ua = ub;
+        } else {
+            for (I k = 0; k <= ph; ++k)
+                Uh(kind + k) = ub;
+        }
+    }
+    const I nh = mh - ph - 1;
+    rQw.resize(static_cast<std::size_t>(nh + 1) * C);
+    rUh.resize(static_cast<std::size_t>(nh + ph + 2));
+}
+
+/// Apply a line operation `Op(line values, count, out knots, out values)` along
+/// direction `Dir` of every line of the net.
+template <class Op>
+inline void iga_apply_direction(IgaNet& rNet, std::size_t Dir, std::size_t NewCount, Op&& rOp) {
+    const std::size_t C = rNet.mColumns;
+    std::size_t inner = 1, outer = 1;
+    for (std::size_t e = 0; e < Dir; ++e)
+        inner *= rNet.mCounts[e];
+    for (std::size_t e = Dir + 1; e < 3; ++e)
+        outer *= rNet.mCounts[e];
+    const std::size_t n = rNet.mCounts[Dir];
+    std::vector<double> out(inner * NewCount * outer * C);
+    std::vector<double> line(n * C);
+    for (std::size_t o = 0; o < outer; ++o)
+        for (std::size_t in = 0; in < inner; ++in) {
+            for (std::size_t k = 0; k < n; ++k)
+                for (std::size_t c = 0; c < C; ++c)
+                    line[k * C + c] = rNet.mValues[(in + inner * (k + n * o)) * C + c];
+            const std::vector<double>& res = rOp(line);
+            for (std::size_t k = 0; k < NewCount; ++k)
+                for (std::size_t c = 0; c < C; ++c)
+                    out[(in + inner * (k + NewCount * o)) * C + c] = res[k * C + c];
+        }
+    rNet.mValues = std::move(out);
+    rNet.mCounts[Dir] = NewCount;
+}
+
+/// Insert `rX` (ascending) into direction `Dir`'s knot vector.
+inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<double>& rX) {
+    if (rX.empty())
+        return;
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    const double lo = rNet.mKnots[Dir][static_cast<std::size_t>(p)], hi = rNet.mKnots[Dir][n];
+    for (std::size_t i = 0; i < rX.size(); ++i)
+        if (!(rX[i] > lo && rX[i] < hi) || (i && rX[i] < rX[i - 1]))
+            throw std::invalid_argument(
+                "meshio++: iga: knots to insert must be ascending and inside the parameter range");
+    std::vector<double> ubar, res;
+    iga_apply_direction(rNet, Dir, n + rX.size(),
+                        [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+                            iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX,
+                                            ubar, res);
+                            return res;
+                        });
+    rNet.mKnots[Dir] = ubar;
+}
+
+/// Raise direction `Dir`'s degree by `T`.
+inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
+    if (T <= 0)
+        return;
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    std::vector<double> uh, res;
+    std::vector<double> uh_first;
+    std::size_t new_count = 0;
+    // The new count and knot vector depend on the knots only: take them from
+    // a first, zero line.
+    {
+        std::vector<double> zero(n * rNet.mColumns, 0.0);
+        iga_elevate_line(p, rNet.mKnots[Dir], zero.data(), n, rNet.mColumns, T, uh_first, res);
+        new_count = res.size() / rNet.mColumns;
+    }
+    iga_apply_direction(
+        rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+            iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
+            return res;
+        });
+    rNet.mKnots[Dir] = uh_first;
+    rNet.mDegrees[Dir] = p + T;
+}
+
+/// A2.3 for first derivatives: `pDers` is `(NDer + 1)` rows of `P + 1`
+/// values, row 0 the basis functions, row 1 their derivatives.
+inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
+                           const std::vector<double>& rKnots, double* pDers) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
+    ndu[at(0, 0)] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            ndu[at(j, r)] = right[r + 1] + left[j - r];
+            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
+            ndu[at(r, j)] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[at(j, j)] = saved;
+    }
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[j] = ndu[at(j, p)];
+    if (NDer < 1)
+        return;
+    // The first derivatives (A2.3 with k = 1: its inner loop is empty, and the
+    // work table's entry (0, 0) is exactly 1).
+    const double factor = static_cast<double>(P);
+    for (std::size_t r = 0; r <= p; ++r) {
+        double d = 0.0;
+        if (r >= 1)
+            d = (1.0 / ndu[at(p, r - 1)]) * ndu[at(r - 1, p - 1)];
+        if (r + 1 <= p)
+            d += (-1.0 / ndu[at(p, r)]) * ndu[at(r, p - 1)];
+        pDers[(p + 1) + r] = d;
+    }
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[(p + 1) + j] *= factor;
+}
+
+/// A tensor-product net to evaluate: `NV` columns per control point, weights
+/// optional (null: polynomial).
+struct IgaEvalNet {
+    std::size_t mDim = 0;
+    std::array<int, 3> mDegrees{0, 0, 0};
+    std::array<const std::vector<double>*, 3> mKnots{nullptr, nullptr, nullptr};
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    const double* mValues = nullptr;
+    std::size_t mColumns = 0;
+    const double* mWeights = nullptr;
+};
+
+/// The `NV` values at the parameters `pU[0 .. dim)` in knot spans `pSpan`, and
+/// with `NDer == 1` their derivatives along each direction (`pDer`, row-major
+/// `(dim, NV)`).
+inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
+                           int NDer, double* pOut, double* pDer) {
+    const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
+    std::array<std::vector<double>, 3> ders;
+    for (std::size_t d = 0; d < dim; ++d) {
+        ders[d].assign(
+            static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
+            0.0);
+        iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
+    }
+    std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
+    double wsum = 0.0;
+    std::array<double, 3> dwsum{0.0, 0.0, 0.0};
+    std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
+        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
+    }
+    for (std::size_t j2 = 0; j2 < np1[2]; ++j2)
+        for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
+            for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
+                const std::array<std::size_t, 3> j{j0, j1, j2};
+                const std::size_t idx =
+                    (base[0] + j0) +
+                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
+                const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
+                const double* v = rNet.mValues + idx * NV;
+                double b = 1.0;
+                for (std::size_t d = 0; d < dim; ++d)
+                    b *= ders[d][j[d]];
+                const double cc = w * b;
+                for (std::size_t c = 0; c < NV; ++c)
+                    acc[c] += cc * v[c];
+                wsum += cc;
+                if (NDer >= 1)
+                    for (std::size_t k = 0; k < dim; ++k) {
+                        double bk = 1.0;
+                        for (std::size_t d = 0; d < dim; ++d)
+                            bk *= d == k ? ders[d][np1[d] + j[d]] : ders[d][j[d]];
+                        const double ck = w * bk;
+                        for (std::size_t c = 0; c < NV; ++c)
+                            dacc[k * NV + c] += ck * v[c];
+                        dwsum[k] += ck;
+                    }
+            }
+    if (rNet.mWeights) {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c] / wsum;
+        if (NDer >= 1)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < NV; ++c)
+                    pDer[k * NV + c] = (dacc[k * NV + c] - dwsum[k] * pOut[c]) / wsum;
+    } else {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c];
+        if (NDer >= 1)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < NV; ++c)
+                    pDer[k * NV + c] = dacc[k * NV + c];
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/iga_kernels.hpp =====
 // ===== begin src/cpp/src/detail/json_value.hpp =====
 /**
  * @file detail/json_value.hpp
@@ -35559,150 +36511,6 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/lsq_fit.hpp =====
-// ===== begin src/cpp/src/detail/nurbs_eval.hpp =====
-/**
- * @file detail/nurbs_eval.hpp
- * @brief Point evaluation of B-spline and NURBS curves and tensor-product
- * surfaces at arbitrary parameters (The NURBS Book, algorithms A2.1, A2.2,
- * A3.1/A4.1 and A3.5/A4.3).
- *
- * Knot vectors are in the full form, `n + p + 1` knots for `n` control
- * points. Control nets list direction 0 fastest (Kratos's and MFEM's order),
- * each point `Dim` doubles. A null weight pointer evaluates the polynomial
- * B-spline, with no division; otherwise the rational map. The arithmetic is
- * the order the Python twin (`meshioplusplus/_nurbs_eval.py`) follows, so
- * the two give the same bits.
- *
- * Core-private (not installed). The MFEM reader keeps its own kernel, which
- * works on MFEM's compressed knot spans.
- */
-
-// System includes
-#include <cstddef>
-#include <utility>
-#include <vector>
-
-namespace meshioplusplus::detail {
-
-/// The knot span index `i` (`p <= i <= n - 1`) with `U[i] <= u < U[i+1]`;
-/// the last span for `u >= U[n]`, the first for `u <= U[p]`.
-inline std::size_t nurbs_find_span(int P, const std::vector<double>& rKnots, std::size_t N,
-                                   double U) {
-    const auto p = static_cast<std::size_t>(P);
-    const std::size_t n = N - 1;
-    if (U >= rKnots[n + 1]) {
-        std::size_t s = n;
-        while (s > p && rKnots[s] == rKnots[s + 1])
-            --s;
-        return s;
-    }
-    if (U <= rKnots[p]) {
-        std::size_t s = p;
-        while (s < n && rKnots[s] == rKnots[s + 1])
-            ++s;
-        return s;
-    }
-    std::size_t low = p, high = n + 1, mid = (low + high) / 2;
-    while (U < rKnots[mid] || U >= rKnots[mid + 1]) {
-        if (U < rKnots[mid])
-            high = mid;
-        else
-            low = mid;
-        mid = (low + high) / 2;
-    }
-    return mid;
-}
-
-/// The `p + 1` nonzero basis functions of span `Span` at `U` into `pN`.
-inline void nurbs_basis(std::size_t Span, double U, int P, const std::vector<double>& rKnots,
-                        double* pN) {
-    const auto p = static_cast<std::size_t>(P);
-    std::vector<double> left(p + 1), right(p + 1);
-    pN[0] = 1.0;
-    for (std::size_t j = 1; j <= p; ++j) {
-        left[j] = U - rKnots[Span + 1 - j];
-        right[j] = rKnots[Span + j] - U;
-        double saved = 0.0;
-        for (std::size_t r = 0; r < j; ++r) {
-            const double temp = pN[r] / (right[r + 1] + left[j - r]);
-            pN[r] = saved + right[r + 1] * temp;
-            saved = left[j - r] * temp;
-        }
-        pN[j] = saved;
-    }
-}
-
-/// The spans of nonzero length as `(knot index, knot index + 1)` pairs:
-/// `i` from `p` to `n - 1` with `U[i] < U[i+1]`.
-inline std::vector<std::size_t> nurbs_spans(int P, const std::vector<double>& rKnots,
-                                            std::size_t N) {
-    std::vector<std::size_t> spans;
-    for (std::size_t i = static_cast<std::size_t>(P); i + 1 <= N; ++i)
-        if (rKnots[i] < rKnots[i + 1])
-            spans.push_back(i);
-    return spans;
-}
-
-/// A curve point at `U` in span `Span` (from `nurbs_find_span` or a cell's
-/// own span): `pOut[0 .. Dim)`.
-inline void nurbs_curve_point_in_span(int P, const std::vector<double>& rKnots,
-                                      const double* pCps, const double* pW, std::size_t Dim,
-                                      std::size_t Span, double U, double* pOut) {
-    const auto p = static_cast<std::size_t>(P);
-    std::vector<double> nb(p + 1);
-    nurbs_basis(Span, U, P, rKnots, nb.data());
-    for (std::size_t d = 0; d < Dim; ++d)
-        pOut[d] = 0.0;
-    double w = 0.0;
-    for (std::size_t k = 0; k <= p; ++k) {
-        const std::size_t i = Span - p + k;
-        const double c = pW ? nb[k] * pW[i] : nb[k];
-        for (std::size_t d = 0; d < Dim; ++d)
-            pOut[d] += c * pCps[i * Dim + d];
-        w += c;
-    }
-    if (pW)
-        for (std::size_t d = 0; d < Dim; ++d)
-            pOut[d] /= w;
-}
-
-/// A surface point at `(U, V)` in spans `(SpanU, SpanV)`.
-inline void nurbs_surface_point_in_span(int P, int Q, const std::vector<double>& rKnotsU,
-                                        const std::vector<double>& rKnotsV, const double* pCps,
-                                        const double* pW, std::size_t Nu, std::size_t Dim,
-                                        std::size_t SpanU, std::size_t SpanV, double U, double V,
-                                        double* pOut) {
-    const auto p = static_cast<std::size_t>(P);
-    const auto q = static_cast<std::size_t>(Q);
-    std::vector<double> nu(p + 1), nv(q + 1), temp(Dim + 1);
-    nurbs_basis(SpanU, U, P, rKnotsU, nu.data());
-    nurbs_basis(SpanV, V, Q, rKnotsV, nv.data());
-    for (std::size_t d = 0; d < Dim; ++d)
-        pOut[d] = 0.0;
-    double w = 0.0;
-    for (std::size_t l = 0; l <= q; ++l) {
-        for (std::size_t d = 0; d <= Dim; ++d)
-            temp[d] = 0.0;
-        const std::size_t j = SpanV - q + l;
-        for (std::size_t k = 0; k <= p; ++k) {
-            const std::size_t i = SpanU - p + k;
-            const std::size_t idx = j * Nu + i;
-            const double c = pW ? nu[k] * pW[idx] : nu[k];
-            for (std::size_t d = 0; d < Dim; ++d)
-                temp[d] += c * pCps[idx * Dim + d];
-            temp[Dim] += c;
-        }
-        for (std::size_t d = 0; d < Dim; ++d)
-            pOut[d] += nv[l] * temp[d];
-        w += nv[l] * temp[Dim];
-    }
-    if (pW)
-        for (std::size_t d = 0; d < Dim; ++d)
-            pOut[d] /= w;
-}
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/nurbs_eval.hpp =====
 // ===== begin src/cpp/src/detail/occt_brep.hpp =====
 /**
  * @file detail/occt_brep.hpp
@@ -78671,68 +79479,8 @@ std::string cj_line_type(int Order) {
     return Order <= 1 ? "line" : Order == 2 ? "line3" : "VTK_LAGRANGE_CURVE";
 }
 
-// The cell boundaries along one direction: every nonzero span split in S.
-struct CjAxis {
-    std::vector<double> mLo, mHi;     // per cell
-    std::vector<std::size_t> mSpan;   // knot index of each cell's span
-    std::vector<std::int64_t> mSpanNo;  // the span's ordinal among nonzero spans
-};
-
-CjAxis cj_axis(int P, const std::vector<double>& rKnots, std::size_t N, int S,
-               const std::vector<double>* pRange) {
-    CjAxis a;
-    const std::vector<std::size_t> spans = detail::nurbs_spans(P, rKnots, N);
-    for (std::size_t s = 0; s < spans.size(); ++s) {
-        double k0 = rKnots[spans[s]], k1 = rKnots[spans[s] + 1];
-        if (pRange && pRange->size() == 2) {
-            const double r0 = std::min((*pRange)[0], (*pRange)[1]);
-            const double r1 = std::max((*pRange)[0], (*pRange)[1]);
-            k0 = std::max(k0, r0);
-            k1 = std::min(k1, r1);
-            if (!(k0 < k1))
-                continue;
-        }
-        for (int j = 0; j < S; ++j) {
-            const double lo = k0 + (k1 - k0) * (static_cast<double>(j) / S);
-            const double hi = j + 1 == S ? k1 : k0 + (k1 - k0) * (static_cast<double>(j + 1) / S);
-            a.mLo.push_back(lo);
-            a.mHi.push_back(hi);
-            a.mSpan.push_back(spans[s]);
-            a.mSpanNo.push_back(static_cast<std::int64_t>(s));
-        }
-    }
-    return a;
-}
-
-// The lattice coordinates of one axis: cell c's node i at index c * K + i.
-std::vector<double> cj_lattice(const CjAxis& rA, int K) {
-    const std::size_t n = rA.mLo.size();
-    std::vector<double> g(n * static_cast<std::size_t>(K) + 1, 0.0);
-    for (std::size_t c = 0; c < n; ++c)
-        for (int i = 0; i < K; ++i)
-            g[c * static_cast<std::size_t>(K) + static_cast<std::size_t>(i)] =
-                rA.mLo[c] + (rA.mHi[c] - rA.mLo[c]) * (static_cast<double>(i) / K);
-    if (n)
-        g[n * static_cast<std::size_t>(K)] = rA.mHi[n - 1];
-    return g;
-}
-
 void cj_check_curve(const BrepCurve& rC, const std::string& rWhat) {
-    const std::size_t n = rC.mWeights.Size();
-    if (rC.mDegree < 1 || rC.mDegree > kCjMaxDegree)
-        cj_bad(rWhat + " degree is out of range");
-    if (rC.mControlPoints.Dtype() != DType::Float64 || rC.mControlPoints.Shape().size() != 2 ||
-        rC.mControlPoints.Shape()[0] != n || rC.mControlPoints.Shape()[1] != 3 ||
-        rC.mWeights.Dtype() != DType::Float64)
-        cj_bad(rWhat + " control points are not Float64 (n, 3) beside n weights");
-    if (n < static_cast<std::size_t>(rC.mDegree) + 1 ||
-        rC.mKnots.size() != n + static_cast<std::size_t>(rC.mDegree) + 1)
-        cj_bad(rWhat + " knot vector does not match its control points");
-    for (std::size_t i = 1; i < rC.mKnots.size(); ++i)
-        if (!(rC.mKnots[i] >= rC.mKnots[i - 1]))
-            cj_bad(rWhat + " knot vector decreases");
-    if (rC.mIds.Size() != 0 && (rC.mIds.Size() != n || rC.mIds.Dtype() != DType::Int64))
-        cj_bad(rWhat + " ids do not match its control points");
+    detail::brep_check_curve(rC, rWhat, "meshio++: sample_brep: ");
 }
 
 void cj_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
@@ -78756,55 +79504,6 @@ void cj_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
         cj_bad(rWhat + " control net does not match its knot vectors");
 }
 
-// A loop as a closed polygon in (u, v): every trim sampled at Samples points
-// per knot span of its active range, in loop order.
-std::vector<std::array<double, 2>> cj_loop_polygon(const BrepLoop& rLoop, int Samples) {
-    std::vector<std::array<double, 2>> poly;
-    for (const BrepTrim& t : rLoop.mTrims) {
-        const BrepCurve& c = t.mCurve;
-        const std::size_t n = c.mWeights.Size();
-        const CjAxis axis = cj_axis(c.mDegree, c.mKnots, n, 1, &c.mActiveRange);
-        std::vector<std::array<double, 2>> pts;
-        const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
-        for (std::size_t s = 0; s < axis.mLo.size(); ++s)
-            for (int j = 0; j < Samples; ++j) {
-                const double u =
-                    axis.mLo[s] + (axis.mHi[s] - axis.mLo[s]) * (static_cast<double>(j) / Samples);
-                double xyz[3];
-                detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(),
-                                                  w, 3, axis.mSpan[s], u, xyz);
-                pts.push_back({xyz[0], xyz[1]});
-            }
-        if (!axis.mLo.empty()) {
-            const std::size_t s = axis.mLo.size() - 1;
-            double xyz[3];
-            detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(), w,
-                                              3, axis.mSpan[s], axis.mHi[s], xyz);
-            pts.push_back({xyz[0], xyz[1]});
-        }
-        if (!t.mDirection)
-            std::reverse(pts.begin(), pts.end());
-        poly.insert(poly.end(), pts.begin(), pts.end());
-    }
-    return poly;
-}
-
-// Even-odd point-in-polygon over every loop of a face.
-bool cj_inside(const std::vector<std::vector<std::array<double, 2>>>& rLoops, double U,
-               double V) {
-    bool inside = false;
-    for (const auto& poly : rLoops) {
-        const std::size_t n = poly.size();
-        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
-            const auto& a = poly[i];
-            const auto& b = poly[j];
-            if ((a[1] > V) != (b[1] > V) && U < (b[0] - a[0]) * (V - a[1]) / (b[1] - a[1]) + a[0])
-                inside = !inside;
-        }
-    }
-    return inside;
-}
-
 struct CjBlock {
     std::string mType;
     std::vector<std::int64_t> mConn;
@@ -78813,8 +79512,10 @@ struct CjBlock {
 };
 
 CjBlock& cj_block(std::vector<CjBlock>& rBlocks, const std::string& rType, std::size_t Nodes) {
+    // Keyed by node count too: faces of degrees 3 and 4 are both
+    // VTK_LAGRANGE_QUADRILATERAL, with 16 and 25 nodes.
     for (auto& b : rBlocks)
-        if (b.mType == rType)
+        if (b.mType == rType && b.mNodes == Nodes)
             return b;
     rBlocks.push_back(CjBlock{});
     rBlocks.back().mType = rType;
@@ -78873,15 +79574,15 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
                 cj_check_curve(t.mCurve, fw + " trimming curve");
         const int k = std::max(p, q);
         const bool clip = rOpt.mTrim && face.mTrimmed && !face.mLoops.empty();
-        const CjAxis au = cj_axis(p, patch.mKnots[0], nu, auto_split(p, patch.mKnots[0], nu, clip),
+        const detail::BrepAxis au = detail::brep_axis(p, patch.mKnots[0], nu, auto_split(p, patch.mKnots[0], nu, clip),
                                   nullptr);
-        const CjAxis av = cj_axis(q, patch.mKnots[1], nv, auto_split(q, patch.mKnots[1], nv, clip),
+        const detail::BrepAxis av = detail::brep_axis(q, patch.mKnots[1], nv, auto_split(q, patch.mKnots[1], nv, clip),
                                   nullptr);
         CjPending pd;
         pd.mFace = true;
         pd.mEntity = fi;
-        pd.mU = cj_lattice(au, k);
-        pd.mV = cj_lattice(av, k);
+        pd.mU = detail::brep_lattice(au, k);
+        pd.mV = detail::brep_lattice(av, k);
         pd.mNu = pd.mU.size();
         for (std::size_t i = 0; i < pd.mU.size(); ++i)
             pd.mSpanU.push_back(au.mSpan.empty() ? 0 : au.mSpan[std::min(i / k, au.mSpan.size() - 1)]);
@@ -78890,7 +79591,7 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
         std::vector<std::vector<std::array<double, 2>>> loops;
         if (clip)
             for (const BrepLoop& loop : face.mLoops) {
-                auto poly = cj_loop_polygon(loop, rOpt.mTrimSamples);
+                auto poly = detail::brep_loop_polygon(loop, rOpt.mTrimSamples);
                 if (poly.size() >= 3)
                     loops.push_back(std::move(poly));
             }
@@ -78904,14 +79605,14 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
                     const double u0 = au.mLo[iu], u1 = au.mHi[iu];
                     const double v0 = av.mLo[jv], v1 = av.mHi[jv];
                     const double uc = (u0 + u1) * 0.5, vc = (v0 + v1) * 0.5;
-                    if (!cj_inside(loops, uc, vc))
+                    if (!detail::brep_inside(loops, uc, vc))
                         continue;
                     // The corners pulled a hair towards the centre, so a cell
                     // whose side lies on a loop is not counted as crossed.
                     const double a0 = uc + (u0 - uc) * kCjCorner, a1 = uc + (u1 - uc) * kCjCorner;
                     const double b0 = vc + (v0 - vc) * kCjCorner, b1 = vc + (v1 - vc) * kCjCorner;
-                    if (!cj_inside(loops, a0, b0) || !cj_inside(loops, a1, b0) ||
-                        !cj_inside(loops, a1, b1) || !cj_inside(loops, a0, b1))
+                    if (!detail::brep_inside(loops, a0, b0) || !detail::brep_inside(loops, a1, b0) ||
+                        !detail::brep_inside(loops, a1, b1) || !detail::brep_inside(loops, a0, b1))
                         trimmed = 1;
                 }
                 for (const auto& ijk : lattice) {
@@ -78943,11 +79644,11 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
             const BrepCurve& c = edge.mCurve;
             cj_check_curve(c, "edge " + std::to_string(ei) + " 3d_curve");
             const int k = c.mDegree;
-            const CjAxis axis = cj_axis(k, c.mKnots, c.mWeights.Size(), S, &c.mActiveRange);
+            const detail::BrepAxis axis = detail::brep_axis(k, c.mKnots, c.mWeights.Size(), S, &c.mActiveRange);
             CjPending pd;
             pd.mFace = false;
             pd.mEntity = ei;
-            pd.mU = cj_lattice(axis, k);
+            pd.mU = detail::brep_lattice(axis, k);
             pd.mNu = pd.mU.size();
             for (std::size_t i = 0; i < pd.mU.size(); ++i)
                 pd.mSpanU.push_back(axis.mSpan.empty() ? 0
@@ -117543,6 +118244,24 @@ std::string mf_nurbs_text(const MfNurbs& rN) {
     return out;
 }
 
+// The NURBS grid functions a side channel's fields are, on the mesh's own space.
+std::vector<MfGridData> mf_nurbs_grid_data(const NurbsInfo& rInfo, const MfNurbs& rN,
+                                           const std::vector<std::vector<double>>& rFields,
+                                           const std::vector<std::size_t>& rCols) {
+    std::vector<MfGridData> gfs;
+    for (std::size_t k = 0; k < rFields.size(); ++k) {
+        MfGridData g;
+        g.mName = rInfo.mFieldNames[k];
+        g.mSpace.mKind = MfSpace::Nurbs;
+        g.mSpace.mCollection = rN.mSpace.mCollection;
+        g.mSpace.mVDim = static_cast<int>(rCols[k]);
+        g.mSpace.mOrdering = 1;
+        g.mValues = rFields[k];
+        gfs.push_back(std::move(g));
+    }
+    return gfs;
+}
+
 // Throws unless `rMesh` is what reading the side channel's NURBS mesh gives:
 // the points, the element cells and the fields still present.
 void mf_nurbs_match(const Mesh& rMesh, const Mesh& rExpected,
@@ -118210,6 +118929,15 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     }
 }
 
+Mesh sample_mfem_nurbs(const NurbsInfo& rInfo, NurbsInfo* pMapped) {
+    mf_check_nurbs_info(rInfo);
+    std::vector<std::vector<double>> fields;
+    std::vector<std::size_t> cols;
+    const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
+    const std::vector<MfGridData> gfs = mf_nurbs_grid_data(rInfo, n, fields, cols);
+    return mf_sample_nurbs(n, gfs, "the NURBS side channel", pMapped);
+}
+
 void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
                 const NurbsInfo& rInfo) {
     if (rInfo.mPatches.empty()) {
@@ -118220,17 +118948,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
     std::vector<std::vector<double>> fields;
     std::vector<std::size_t> cols;
     const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
-    std::vector<MfGridData> gfs;
-    for (std::size_t k = 0; k < fields.size(); ++k) {
-        MfGridData g;
-        g.mName = rInfo.mFieldNames[k];
-        g.mSpace.mKind = MfSpace::Nurbs;
-        g.mSpace.mCollection = n.mSpace.mCollection;
-        g.mSpace.mVDim = static_cast<int>(cols[k]);
-        g.mSpace.mOrdering = 1;
-        g.mValues = fields[k];
-        gfs.push_back(std::move(g));
-    }
+    const std::vector<MfGridData> gfs = mf_nurbs_grid_data(rInfo, n, fields, cols);
     const Mesh expected = mf_sample_nurbs(n, gfs, "the NURBS side channel", nullptr);
     mf_nurbs_match(rMesh, expected, rInfo.mFieldNames);
 
@@ -167848,6 +168566,644 @@ HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/hessian.cpp =====
+// ===== begin src/cpp/src/operations/iga.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kIgaPrefix = "meshio++: iga: ";
+constexpr int kIgaMaxSubdivisions = 64;
+
+[[noreturn]] void iga_fail(const std::string& rWhat) {
+    throw std::invalid_argument(kIgaPrefix + rWhat);
+}
+
+// What a patch's arrays say it is.
+struct IgaShape {
+    std::size_t mDim = 0;
+    std::size_t mSdim = 0;
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    std::size_t mNumPoints = 0;
+    std::vector<std::size_t> mFieldComps;
+};
+
+IgaShape iga_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
+    IgaShape sh;
+    sh.mDim = rP.mDegrees.size();
+    if (sh.mDim < 1 || sh.mDim > 3 || rP.mKnots.size() != sh.mDim)
+        iga_fail(rWhat + " needs 1 to 3 degrees and as many knot vectors");
+    sh.mNumPoints = 1;
+    for (std::size_t d = 0; d < sh.mDim; ++d) {
+        const int p = rP.mDegrees[d];
+        if (p < 1 || p > detail::kBrepMaxDegree)
+            iga_fail(rWhat + " degree " + std::to_string(p) + " is outside 1.." +
+                     std::to_string(detail::kBrepMaxDegree));
+        const std::vector<double>& k = rP.mKnots[d];
+        if (k.size() < 2 * static_cast<std::size_t>(p) + 2)
+            iga_fail(rWhat + " knot vector is too short");
+        for (std::size_t i = 0; i < k.size(); ++i)
+            if (!std::isfinite(k[i]) || (i && k[i] < k[i - 1]))
+                iga_fail(rWhat + " knot vector is not finite and non-decreasing");
+        sh.mCounts[d] = k.size() - static_cast<std::size_t>(p) - 1;
+        sh.mNumPoints *= sh.mCounts[d];
+    }
+    const NDArray& cps = rP.mControlPoints;
+    if (cps.Dtype() != DType::Float64 || cps.Shape().size() != 2 ||
+        cps.Shape()[0] != sh.mNumPoints || cps.Shape()[1] < 1 || cps.Shape()[1] > 3)
+        iga_fail(rWhat + " control points are not Float64 (" + std::to_string(sh.mNumPoints) +
+                 ", 1..3) for its knot vectors");
+    sh.mSdim = cps.Shape()[1];
+    if (rP.mWeights.Dtype() != DType::Float64 || rP.mWeights.Size() != sh.mNumPoints)
+        iga_fail(rWhat + " has " + std::to_string(rP.mWeights.Size()) + " weights for " +
+                 std::to_string(sh.mNumPoints) + " control points");
+    for (const NDArray& f : rP.mFields) {
+        if (f.Dtype() != DType::Float64 || f.Shape().size() != 2 || f.Shape()[0] != sh.mNumPoints ||
+            f.Shape()[1] < 1)
+            iga_fail(rWhat + " has a field that is not Float64 (" + std::to_string(sh.mNumPoints) +
+                     ", components)");
+        sh.mFieldComps.push_back(f.Shape()[1]);
+    }
+    return sh;
+}
+
+bool iga_is_rational(const NurbsPatch& rP) {
+    const double* w = rP.mWeights.As<double>();
+    for (std::size_t i = 0; i < rP.mWeights.Size(); ++i)
+        if (w[i] != 1.0)
+            return true;
+    return false;
+}
+
+void iga_check_weights(const NurbsPatch& rP, const std::string& rWhat) {
+    const double* w = rP.mWeights.As<double>();
+    for (std::size_t i = 0; i < rP.mWeights.Size(); ++i)
+        if (!std::isfinite(w[i]) || w[i] == 0.0)
+            iga_fail(rWhat + " has a zero or non-finite weight");
+}
+
+// The homogeneous net: (w x, w fields..., w), or (x, fields...) when polynomial.
+detail::IgaNet iga_make_net(const NurbsPatch& rP, const IgaShape& rSh, bool Rational) {
+    detail::IgaNet net;
+    net.mDim = rSh.mDim;
+    for (std::size_t d = 0; d < rSh.mDim; ++d) {
+        net.mDegrees[d] = rP.mDegrees[d];
+        net.mKnots[d] = rP.mKnots[d];
+        net.mCounts[d] = rSh.mCounts[d];
+    }
+    std::size_t comps = rSh.mSdim;
+    for (const std::size_t c : rSh.mFieldComps)
+        comps += c;
+    net.mColumns = comps + (Rational ? 1 : 0);
+    net.mValues.resize(rSh.mNumPoints * net.mColumns);
+    const double* w = rP.mWeights.As<double>();
+    for (std::size_t i = 0; i < rSh.mNumPoints; ++i) {
+        double* row = net.mValues.data() + i * net.mColumns;
+        std::size_t c = 0;
+        const double wi = Rational ? w[i] : 1.0;
+        const double* x = rP.mControlPoints.As<double>() + i * rSh.mSdim;
+        for (std::size_t d = 0; d < rSh.mSdim; ++d)
+            row[c++] = Rational ? wi * x[d] : x[d];
+        for (std::size_t f = 0; f < rSh.mFieldComps.size(); ++f) {
+            const double* v = rP.mFields[f].As<double>() + i * rSh.mFieldComps[f];
+            for (std::size_t d = 0; d < rSh.mFieldComps[f]; ++d)
+                row[c++] = Rational ? wi * v[d] : v[d];
+        }
+        if (Rational)
+            row[c] = wi;
+    }
+    return net;
+}
+
+NurbsPatch iga_patch_from_net(const detail::IgaNet& rNet, const IgaShape& rSh, bool Rational) {
+    NurbsPatch out;
+    const std::size_t n = rNet.NumPoints();
+    for (std::size_t d = 0; d < rSh.mDim; ++d) {
+        out.mDegrees.push_back(rNet.mDegrees[d]);
+        out.mKnots.push_back(rNet.mKnots[d]);
+    }
+    out.mControlPoints = NDArray(DType::Float64, {n, rSh.mSdim});
+    out.mWeights = NDArray(DType::Float64, {n});
+    for (const std::size_t c : rSh.mFieldComps)
+        out.mFields.emplace_back(DType::Float64, std::vector<std::size_t>{n, c});
+    double* px = out.mControlPoints.As<double>();
+    double* pw = out.mWeights.As<double>();
+    for (std::size_t i = 0; i < n; ++i) {
+        const double* row = rNet.mValues.data() + i * rNet.mColumns;
+        const double w = Rational ? row[rNet.mColumns - 1] : 1.0;
+        std::size_t c = 0;
+        for (std::size_t d = 0; d < rSh.mSdim; ++d, ++c)
+            px[i * rSh.mSdim + d] = Rational ? row[c] / w : row[c];
+        for (std::size_t f = 0; f < rSh.mFieldComps.size(); ++f) {
+            double* pv = out.mFields[f].As<double>() + i * rSh.mFieldComps[f];
+            for (std::size_t d = 0; d < rSh.mFieldComps[f]; ++d, ++c)
+                pv[d] = Rational ? row[c] / w : row[c];
+        }
+        pw[i] = w;
+    }
+    return out;
+}
+
+void iga_check_direction(const IgaShape& rSh, std::int32_t Direction) {
+    if (Direction < 0 || static_cast<std::size_t>(Direction) >= rSh.mDim)
+        iga_fail("direction " + std::to_string(Direction) + " is outside the patch's " +
+                 std::to_string(rSh.mDim) + " parametric directions");
+}
+
+NurbsPatch iga_refine_patch(const NurbsPatch& rP, bool Rational, const IgaRefineOptions& rOpt,
+                            const std::string& rWhat) {
+    const IgaShape sh = iga_check_patch(rP, rWhat);
+    if (Rational)
+        iga_check_weights(rP, rWhat);
+    // Nothing to do: the patch itself, not its homogeneous round trip (which
+    // can move a rational control point by an ulp).
+    bool identity = true;
+    for (std::size_t d = 0; d < sh.mDim; ++d)
+        identity = identity && rOpt.mElevate[d] == 0 && rOpt.mSubdivisions[d] == 1;
+    if (identity && (Rational || !iga_is_rational(rP)))
+        return rP;
+    detail::IgaNet net = iga_make_net(rP, sh, Rational);
+    for (std::size_t d = 0; d < sh.mDim; ++d) {
+        if (rOpt.mElevate[d] < 0)
+            iga_fail("cannot elevate a degree by " + std::to_string(rOpt.mElevate[d]));
+        if (net.mDegrees[d] + rOpt.mElevate[d] > detail::kBrepMaxDegree)
+            iga_fail(rWhat + ": the degree would pass " + std::to_string(detail::kBrepMaxDegree));
+        detail::iga_net_elevate(net, d, rOpt.mElevate[d]);
+    }
+    for (std::size_t d = 0; d < sh.mDim; ++d) {
+        if (rOpt.mSubdivisions[d] < 1 || rOpt.mSubdivisions[d] > kIgaMaxSubdivisions)
+            iga_fail("subdivisions must be 1 to " + std::to_string(kIgaMaxSubdivisions));
+        detail::iga_net_insert(
+            net, d, detail::iga_split_knots(net.mDegrees[d], net.mKnots[d], rOpt.mSubdivisions[d]));
+    }
+    return iga_patch_from_net(net, sh, Rational);
+}
+
+// The values at lattice nodes: the geometry, then the fields, in one table.
+struct IgaTable {
+    detail::IgaEvalNet mNet;
+    std::vector<double> mValues;
+    IgaShape mShape;
+    bool mRational = false;
+};
+
+IgaTable iga_make_table(const NurbsPatch& rP, const std::string& rWhat, bool Rational) {
+    IgaTable t;
+    t.mShape = iga_check_patch(rP, rWhat);
+    t.mRational = Rational;
+    if (Rational)
+        iga_check_weights(rP, rWhat);
+    const IgaShape& sh = t.mShape;
+    std::size_t nv = sh.mSdim;
+    for (const std::size_t c : sh.mFieldComps)
+        nv += c;
+    t.mValues.resize(sh.mNumPoints * nv);
+    for (std::size_t i = 0; i < sh.mNumPoints; ++i) {
+        double* row = t.mValues.data() + i * nv;
+        std::size_t c = 0;
+        const double* x = rP.mControlPoints.As<double>() + i * sh.mSdim;
+        for (std::size_t d = 0; d < sh.mSdim; ++d)
+            row[c++] = x[d];
+        for (std::size_t f = 0; f < sh.mFieldComps.size(); ++f) {
+            const double* v = rP.mFields[f].As<double>() + i * sh.mFieldComps[f];
+            for (std::size_t d = 0; d < sh.mFieldComps[f]; ++d)
+                row[c++] = v[d];
+        }
+    }
+    t.mNet.mDim = sh.mDim;
+    for (std::size_t d = 0; d < sh.mDim; ++d) {
+        t.mNet.mDegrees[d] = rP.mDegrees[d];
+        t.mNet.mKnots[d] = &rP.mKnots[d];
+        t.mNet.mCounts[d] = sh.mCounts[d];
+    }
+    t.mNet.mValues = t.mValues.data();
+    t.mNet.mColumns = nv;
+    t.mNet.mWeights = Rational ? rP.mWeights.As<double>() : nullptr;
+    return t;
+}
+
+IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDArray& rParams,
+                                 std::int32_t Derivatives, const std::string& rWhat) {
+    if (Derivatives < 0 || Derivatives > 1)
+        iga_fail("derivatives must be 0 or 1");
+    const IgaTable t = iga_make_table(rP, rWhat, Rational);
+    const IgaShape& sh = t.mShape;
+    if (rParams.Dtype() != DType::Float64 ||
+        !(rParams.Shape().size() == 2 && rParams.Shape()[1] == sh.mDim) &&
+            !(sh.mDim == 1 && rParams.Shape().size() == 1))
+        iga_fail("parameters are not Float64 (N, " + std::to_string(sh.mDim) + ")");
+    const std::size_t n = rParams.Shape()[0];
+    const std::size_t dim = sh.mDim, sdim = sh.mSdim, nv = t.mNet.mColumns;
+    std::array<double, 3> lo{0, 0, 0}, hi{0, 0, 0}, tol{0, 0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        lo[d] = rP.mKnots[d][static_cast<std::size_t>(rP.mDegrees[d])];
+        hi[d] = rP.mKnots[d][sh.mCounts[d]];
+        tol[d] = 1e-12 * (hi[d] - lo[d]);
+    }
+    const double* params = rParams.As<double>();
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t d = 0; d < dim; ++d) {
+            const double u = params[i * dim + d];
+            if (!(u >= lo[d] - tol[d] && u <= hi[d] + tol[d]))
+                iga_fail("parameter " + std::to_string(i) + ", direction " + std::to_string(d) +
+                         " is outside the knot range [" + std::to_string(lo[d]) + ", " +
+                         std::to_string(hi[d]) + "]");
+        }
+    IgaEvaluation out;
+    out.mPoints = NDArray(DType::Float64, {n, sdim});
+    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0);
+    parallel_for(n, [&](std::size_t i) {
+        std::array<std::size_t, 3> span{0, 0, 0};
+        std::array<double, 3> u{0, 0, 0};
+        for (std::size_t d = 0; d < dim; ++d) {
+            u[d] = std::min(std::max(params[i * dim + d], lo[d]), hi[d]);
+            span[d] = detail::nurbs_find_span(rP.mDegrees[d], rP.mKnots[d], sh.mCounts[d], u[d]);
+        }
+        detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives, values.data() + i * nv,
+                               Derivatives ? ders.data() + i * dim * nv : nullptr);
+    });
+    double* px = out.mPoints.As<double>();
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t d = 0; d < sdim; ++d)
+            px[i * sdim + d] = values[i * nv + d];
+    std::size_t col = sdim;
+    for (const std::size_t comps : sh.mFieldComps) {
+        NDArray f(DType::Float64, {n, comps});
+        double* pf = f.As<double>();
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t d = 0; d < comps; ++d)
+                pf[i * comps + d] = values[i * nv + col + d];
+        out.mFields.push_back(std::move(f));
+        col += comps;
+    }
+    if (Derivatives) {
+        out.mDerivatives = NDArray(DType::Float64, {n, dim, sdim});
+        double* pd = out.mDerivatives.As<double>();
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t d = 0; d < sdim; ++d)
+                    pd[(i * dim + k) * sdim + d] = ders[(i * dim + k) * nv + d];
+        if (dim == 2 && sdim == 3) {
+            out.mNormals = NDArray(DType::Float64, {n, std::size_t{3}});
+            double* pn = out.mNormals.As<double>();
+            for (std::size_t i = 0; i < n; ++i) {
+                const double* a = pd + (i * 2) * 3;
+                const double* b = pd + (i * 2 + 1) * 3;
+                const double cx = a[1] * b[2] - a[2] * b[1];
+                const double cy = a[2] * b[0] - a[0] * b[2];
+                const double cz = a[0] * b[1] - a[1] * b[0];
+                const double len = std::sqrt(cx * cx + cy * cy + cz * cz);
+                if (len > 0.0) {
+                    pn[i * 3] = cx / len;
+                    pn[i * 3 + 1] = cy / len;
+                    pn[i * 3 + 2] = cz / len;
+                } else {
+                    pn[i * 3] = pn[i * 3 + 1] = pn[i * 3 + 2] = 0.0;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+std::string iga_quad_family(std::size_t Dim, int Order) {
+    if (Dim == 1)
+        return Order <= 1 ? "line" : Order == 2 ? "line3" : "VTK_LAGRANGE_CURVE";
+    if (Dim == 2)
+        return Order <= 1 ? "quad" : Order == 2 ? "quad9" : "VTK_LAGRANGE_QUADRILATERAL";
+    return Order <= 1 ? "hexahedron" : Order == 2 ? "hexahedron27" : "VTK_LAGRANGE_HEXAHEDRON";
+}
+
+}  // namespace
+
+NurbsPatch iga_insert_knots(const NurbsPatch& rPatch, std::int32_t Direction,
+                            const std::vector<double>& rKnots, bool Rational) {
+    const IgaShape sh = iga_check_patch(rPatch, "patch");
+    iga_check_direction(sh, Direction);
+    if (Rational)
+        iga_check_weights(rPatch, "patch");
+    detail::IgaNet net = iga_make_net(rPatch, sh, Rational);
+    detail::iga_net_insert(net, static_cast<std::size_t>(Direction), rKnots);
+    return iga_patch_from_net(net, sh, Rational);
+}
+
+NurbsPatch iga_elevate_degree(const NurbsPatch& rPatch, std::int32_t Direction, std::int32_t Times,
+                              bool Rational) {
+    const IgaShape sh = iga_check_patch(rPatch, "patch");
+    iga_check_direction(sh, Direction);
+    if (Times < 0)
+        iga_fail("cannot elevate a degree by " + std::to_string(Times));
+    if (rPatch.mDegrees[static_cast<std::size_t>(Direction)] + Times > detail::kBrepMaxDegree)
+        iga_fail("the degree would pass " + std::to_string(detail::kBrepMaxDegree));
+    if (Rational)
+        iga_check_weights(rPatch, "patch");
+    detail::IgaNet net = iga_make_net(rPatch, sh, Rational);
+    detail::iga_net_elevate(net, static_cast<std::size_t>(Direction), Times);
+    return iga_patch_from_net(net, sh, Rational);
+}
+
+NurbsInfo iga_refine(const NurbsInfo& rInfo, const IgaRefineOptions& rOptions) {
+    if (rInfo.mPatches.empty())
+        iga_fail("the model has no patches");
+    if (rInfo.mTopology.mDimension != 0) {
+        // The patches' directions follow their own edges, so a per-direction
+        // refinement would not agree on the knot vector two patches share.
+        const auto dim = static_cast<std::size_t>(rInfo.mTopology.mDimension);
+        for (std::size_t d = 1; d < std::min<std::size_t>(dim, 3); ++d)
+            if (rOptions.mSubdivisions[d] != rOptions.mSubdivisions[0] ||
+                rOptions.mElevate[d] != rOptions.mElevate[0])
+                iga_fail(
+                    "a model with a patch topology refines every direction alike (its patches "
+                    "share knot vectors along differently oriented directions)");
+    }
+    NurbsInfo out;
+    out.mFieldNames = rInfo.mFieldNames;
+    out.mTopology = rInfo.mTopology;
+    for (std::size_t i = 0; i < rInfo.mPatches.size(); ++i) {
+        const NurbsPatch& p = rInfo.mPatches[i];
+        const std::string what = "patch " + std::to_string(i);
+        iga_check_patch(p, what);
+        out.mPatches.push_back(iga_refine_patch(p, iga_is_rational(p), rOptions, what));
+    }
+    out.mCellPatch = NDArray(DType::Int64, {0});
+    out.mCellSpan = NDArray(DType::Int64, {0, 3});
+    out.mBoundaryCellPatch = NDArray(DType::Int64, {0});
+    return out;
+}
+
+BrepInfo iga_refine(const BrepInfo& rInfo, const IgaRefineOptions& rOptions) {
+    BrepInfo out = rInfo;
+    std::vector<int> flag(rInfo.mPatches.size(), -1);  // -1 unreferenced, 0/1 face flag
+    for (std::size_t f = 0; f < rInfo.mFaces.size(); ++f) {
+        const BrepFace& face = rInfo.mFaces[f];
+        if (face.mPatch < 0 || static_cast<std::size_t>(face.mPatch) >= rInfo.mPatches.size())
+            iga_fail("face " + std::to_string(f) + " names no patch");
+        int& fl = flag[static_cast<std::size_t>(face.mPatch)];
+        const int want = face.mRational ? 1 : 0;
+        if (fl >= 0 && fl != want)
+            iga_fail("patch " + std::to_string(face.mPatch) +
+                     " is shared by faces that disagree on rational");
+        fl = want;
+    }
+    for (std::size_t i = 0; i < rInfo.mPatches.size(); ++i) {
+        const NurbsPatch& p = rInfo.mPatches[i];
+        const std::string what = "patch " + std::to_string(i);
+        const IgaShape sh = iga_check_patch(p, what);
+        if (sh.mDim != 2)
+            iga_fail(what + " is not a surface patch");
+        const bool rational = flag[i] < 0 ? iga_is_rational(p) : flag[i] == 1;
+        out.mPatches[i] = iga_refine_patch(p, rational, rOptions, what);
+    }
+    for (BrepFace& face : out.mFaces)
+        face.mControlPointIds = NDArray(DType::Int64, {0});
+    return out;
+}
+
+IgaEvaluation iga_evaluate(const NurbsInfo& rInfo, std::size_t Patch, const NDArray& rParams,
+                           std::int32_t Derivatives) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is outside the model's " +
+                 std::to_string(rInfo.mPatches.size()));
+    const NurbsPatch& p = rInfo.mPatches[Patch];
+    return iga_evaluate_patch(p, iga_is_rational(p), rParams, Derivatives,
+                              "patch " + std::to_string(Patch));
+}
+
+IgaEvaluation iga_evaluate(const BrepInfo& rInfo, std::size_t Face, const NDArray& rParams,
+                           std::int32_t Derivatives, std::int32_t TrimSamples) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is outside the model's " +
+                 std::to_string(rInfo.mFaces.size()));
+    if (TrimSamples < 2 || TrimSamples > 4096)
+        iga_fail("trim_samples must be 2 to 4096");
+    const BrepFace& face = rInfo.mFaces[Face];
+    const std::string what = "face " + std::to_string(Face);
+    if (face.mPatch < 0 || static_cast<std::size_t>(face.mPatch) >= rInfo.mPatches.size())
+        iga_fail(what + " names no patch");
+    const NurbsPatch& patch = rInfo.mPatches[static_cast<std::size_t>(face.mPatch)];
+    if (patch.mDegrees.size() != 2)
+        iga_fail(what + " is not a surface patch");
+    for (const BrepLoop& loop : face.mLoops)
+        for (const BrepTrim& t : loop.mTrims)
+            detail::brep_check_curve(t.mCurve, what + " trimming curve", kIgaPrefix);
+    IgaEvaluation out = iga_evaluate_patch(patch, face.mRational, rParams, Derivatives, what);
+    const std::size_t n = rParams.Shape()[0];
+    out.mInside = NDArray(DType::UInt8, {n});
+    std::uint8_t* inside = out.mInside.As<std::uint8_t>();
+    const bool clip = face.mTrimmed && !face.mLoops.empty();
+    std::vector<std::vector<std::array<double, 2>>> loops;
+    if (clip)
+        for (const BrepLoop& loop : face.mLoops) {
+            auto poly = detail::brep_loop_polygon(loop, TrimSamples);
+            if (poly.size() >= 3)
+                loops.push_back(std::move(poly));
+        }
+    const double* params = rParams.As<double>();
+    for (std::size_t i = 0; i < n; ++i)
+        inside[i] = !clip || detail::brep_inside(loops, params[i * 2], params[i * 2 + 1]) ? 1 : 0;
+    return out;
+}
+
+Mesh iga_sample(const BrepInfo& rInfo, const IgaSampleOptions& rOptions) {
+    CadJsonReadOptions opt;
+    opt.mSubdivisions = rOptions.mSubdivisions;
+    opt.mTrimSamples = rOptions.mTrimSamples;
+    opt.mTrim = rOptions.mTrim;
+    opt.mEdges = rOptions.mEdges;
+    return sample_brep(rInfo, opt);
+}
+
+Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsInfo* pMapped) {
+    if (rOptions.mSubdivisions < 0 || rOptions.mSubdivisions > kIgaMaxSubdivisions)
+        iga_fail("subdivisions must be 0 (automatic) to " + std::to_string(kIgaMaxSubdivisions));
+    if (rInfo.mPatches.empty())
+        iga_fail("the model has no patches");
+    if (rOptions.mSubdivisions == 0 && rInfo.mTopology.mDimension != 0) {
+        // A model with its MFEM patch topology samples as `read_mfem` does.
+        try {
+            // The model stays as it is (the sampler regathers its control
+            // points from MFEM's numbering, which can move a shared one by an
+            // ulp); only the cell maps are the sampling's.
+            NurbsInfo derived;
+            Mesh mesh = sample_mfem_nurbs(rInfo, pMapped ? &derived : nullptr);
+            if (pMapped) {
+                *pMapped = rInfo;
+                pMapped->mCellPatch = std::move(derived.mCellPatch);
+                pMapped->mCellSpan = std::move(derived.mCellSpan);
+                pMapped->mBoundaryCellPatch = std::move(derived.mBoundaryCellPatch);
+            }
+            return mesh;
+        } catch (const WriteError& rE) {
+            iga_fail(std::string("the patch topology is inconsistent: ") + rE.what());
+        }
+    }
+    const int S = std::max(rOptions.mSubdivisions, 1);
+    std::vector<IgaTable> tables;
+    int k = 1;
+    std::size_t dim = 0, sdim = 0;
+    for (std::size_t i = 0; i < rInfo.mPatches.size(); ++i) {
+        const NurbsPatch& p = rInfo.mPatches[i];
+        const std::string what = "patch " + std::to_string(i);
+        tables.push_back(iga_make_table(p, what, iga_is_rational(p)));
+        const IgaShape& sh = tables.back().mShape;
+        if (i == 0) {
+            dim = sh.mDim;
+            sdim = sh.mSdim;
+        }
+        if (sh.mDim != dim || sh.mSdim != sdim)
+            iga_fail(what + " differs in parametric or space dimension from patch 0");
+        if (p.mFields.size() != rInfo.mFieldNames.size())
+            iga_fail(what + " has " + std::to_string(p.mFields.size()) + " fields for " +
+                     std::to_string(rInfo.mFieldNames.size()) + " names");
+        if (sh.mFieldComps != tables.front().mShape.mFieldComps)
+            iga_fail(what + " has fields of different components than patch 0");
+        for (std::size_t d = 0; d < dim; ++d)
+            k = std::max(k, p.mDegrees[d]);
+    }
+    const lagrange::Shape shape = dim == 1   ? lagrange::Shape::Line
+                                  : dim == 2 ? lagrange::Shape::Quad
+                                             : lagrange::Shape::Hexahedron;
+    const auto lattice = lagrange::vtk_lattice(shape, k);
+    const std::vector<std::size_t>& comps = tables.front().mShape.mFieldComps;
+    const std::size_t nv = tables.front().mNet.mColumns;
+
+    struct Pending {
+        std::array<std::vector<double>, 3> mG;
+        std::array<std::vector<std::size_t>, 3> mSpan;
+        std::array<std::size_t, 3> mWidth{1, 1, 1};
+        std::vector<std::size_t> mPoints;
+    };
+    std::vector<Pending> pending(rInfo.mPatches.size());
+    std::vector<std::int64_t> conn, cell_patch, cell_span;
+    std::size_t num_points = 0, num_cells = 0;
+    for (std::size_t pi = 0; pi < rInfo.mPatches.size(); ++pi) {
+        const NurbsPatch& p = rInfo.mPatches[pi];
+        const IgaShape& sh = tables[pi].mShape;
+        Pending& pd = pending[pi];
+        std::array<detail::BrepAxis, 3> axis;
+        std::array<std::size_t, 3> ncell{1, 1, 1};
+        for (std::size_t d = 0; d < dim; ++d) {
+            axis[d] = detail::brep_axis(p.mDegrees[d], p.mKnots[d], sh.mCounts[d], S, nullptr);
+            ncell[d] = axis[d].mLo.size();
+            pd.mG[d] = detail::brep_lattice(axis[d], k);
+            pd.mWidth[d] = pd.mG[d].size();
+            const auto& sp = axis[d].mSpan;
+            for (std::size_t i = 0; i < pd.mG[d].size(); ++i)
+                pd.mSpan[d].push_back(
+                    sp.empty() ? 0 : sp[std::min(i / static_cast<std::size_t>(k), sp.size() - 1)]);
+        }
+        std::vector<std::int64_t> local(pd.mWidth[0] * pd.mWidth[1] * pd.mWidth[2], -1);
+        for (std::size_t iw = 0; iw < ncell[2]; ++iw)
+            for (std::size_t jv = 0; jv < ncell[1]; ++jv)
+                for (std::size_t iu = 0; iu < ncell[0]; ++iu) {
+                    for (const auto& ijk : lattice) {
+                        const std::size_t gi =
+                            iu * static_cast<std::size_t>(k) + static_cast<std::size_t>(ijk[0]);
+                        const std::size_t gj = dim > 1 ? jv * static_cast<std::size_t>(k) +
+                                                             static_cast<std::size_t>(ijk[1])
+                                                       : 0;
+                        const std::size_t gl = dim > 2 ? iw * static_cast<std::size_t>(k) +
+                                                             static_cast<std::size_t>(ijk[2])
+                                                       : 0;
+                        const std::size_t g = gi + pd.mWidth[0] * (gj + pd.mWidth[1] * gl);
+                        if (local[g] < 0) {
+                            local[g] = static_cast<std::int64_t>(num_points + pd.mPoints.size());
+                            pd.mPoints.push_back(g);
+                        }
+                        conn.push_back(local[g]);
+                    }
+                    cell_patch.push_back(static_cast<std::int64_t>(pi));
+                    cell_span.push_back(axis[0].mSpanNo[iu]);
+                    cell_span.push_back(dim > 1 ? axis[1].mSpanNo[jv] : 0);
+                    cell_span.push_back(dim > 2 ? axis[2].mSpanNo[iw] : 0);
+                    ++num_cells;
+                }
+        num_points += pd.mPoints.size();
+    }
+
+    const std::size_t cols = sdim == 2 ? 2 : 3;
+    NDArray points(DType::Float64, {num_points, cols});
+    std::vector<NDArray> fields;
+    for (const std::size_t c : comps)
+        fields.emplace_back(DType::Float64, c == 1 ? std::vector<std::size_t>{num_points}
+                                                   : std::vector<std::size_t>{num_points, c});
+    std::size_t offset = 0;
+    for (std::size_t pi = 0; pi < rInfo.mPatches.size(); ++pi) {
+        const Pending& pd = pending[pi];
+        const IgaTable& t = tables[pi];
+        double* px = points.As<double>();
+        parallel_for(pd.mPoints.size(), [&](std::size_t i) {
+            const std::size_t g = pd.mPoints[i];
+            const std::size_t gi = g % pd.mWidth[0], gj = (g / pd.mWidth[0]) % pd.mWidth[1],
+                              gl = g / (pd.mWidth[0] * pd.mWidth[1]);
+            const std::array<std::size_t, 3> at{gi, gj, gl};
+            std::array<std::size_t, 3> span{0, 0, 0};
+            std::array<double, 3> u{0, 0, 0};
+            for (std::size_t d = 0; d < dim; ++d) {
+                span[d] = pd.mSpan[d][at[d]];
+                u[d] = pd.mG[d][at[d]];
+            }
+            std::vector<double> row(nv);
+            detail::iga_eval_point(t.mNet, span.data(), u.data(), 0, row.data(), nullptr);
+            double* out = px + (offset + i) * cols;
+            for (std::size_t d = 0; d < cols; ++d)
+                out[d] = d < sdim ? row[d] : 0.0;
+            std::size_t c0 = sdim;
+            for (std::size_t f = 0; f < comps.size(); ++f) {
+                double* pf = fields[f].As<double>() + (offset + i) * comps[f];
+                for (std::size_t d = 0; d < comps[f]; ++d)
+                    pf[d] = row[c0 + d];
+                c0 += comps[f];
+            }
+        });
+        offset += pd.mPoints.size();
+    }
+
+    Mesh mesh;
+    mesh.AssignPoints(std::move(points));
+    if (num_cells) {
+        NDArray cc(DType::Int64, {num_cells, lattice.size()});
+        std::copy(conn.begin(), conn.end(), cc.As<std::int64_t>());
+        mesh.AddCellBlock(iga_quad_family(dim, k), std::move(cc));
+        NDArray cp(DType::Int64, {num_cells}), cs(DType::Int64, {num_cells, std::size_t{3}});
+        std::copy(cell_patch.begin(), cell_patch.end(), cp.As<std::int64_t>());
+        std::copy(cell_span.begin(), cell_span.end(), cs.As<std::int64_t>());
+        if (pMapped) {
+            *pMapped = rInfo;
+            pMapped->mCellPatch = cp;
+            pMapped->mCellSpan = cs;
+            pMapped->mBoundaryCellPatch = NDArray(DType::Int64, {0});
+        }
+        std::vector<NDArray> a, b;
+        a.push_back(std::move(cp));
+        b.push_back(std::move(cs));
+        mesh.AddCellData(kIgaPatchName, std::move(a));
+        mesh.AddCellData(kIgaSpanName, std::move(b));
+    } else if (pMapped) {
+        *pMapped = rInfo;
+        pMapped->mCellPatch = NDArray(DType::Int64, {0});
+        pMapped->mCellSpan = NDArray(DType::Int64, {0, 3});
+        pMapped->mBoundaryCellPatch = NDArray(DType::Int64, {0});
+    }
+    for (std::size_t f = 0; f < fields.size(); ++f)
+        mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
+    return mesh;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/iga.cpp =====
 // ===== begin src/cpp/src/operations/interfaces.cpp =====
 #include <algorithm>
 #include <array>

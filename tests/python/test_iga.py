@@ -46,11 +46,17 @@ VARIANTS = [
     dict(elevate=1),
     dict(subdivisions=(2, 3, 2), elevate=(2, 1, 1)),
 ]
-NURBS_VARIANTS = [dict(subdivisions=2), dict(elevate=1), dict(subdivisions=3, elevate=2)]
+NURBS_VARIANTS = [
+    dict(subdivisions=2),
+    dict(elevate=1),
+    dict(subdivisions=3, elevate=2),
+]
 
 
 def _nurbs(name):
-    return mp.mfem.read(NURBS_DIR / f"{name}.mesh", {"u": str(NURBS_DIR / f"{name}.u.gf")})
+    return mp.mfem.read(
+        NURBS_DIR / f"{name}.mesh", {"u": str(NURBS_DIR / f"{name}.u.gf")}
+    )
 
 
 def _cad(name):
@@ -102,7 +108,9 @@ def _engines(kind):
         def core(model, sub, ele):
             if kind == "nurbs":
                 return _core.iga_refine_nurbs(model, sub, ele, 0).info["nurbs"]
-            return _core.iga_refine_brep(model, sub, ele, 0, 16, True, True).info["brep"]
+            return _core.iga_refine_brep(model, sub, ele, 0, 16, True, True).info[
+                "brep"
+            ]
 
         out.append(("core", core))
     return out
@@ -165,7 +173,12 @@ def test_brep_refinement_keeps_faces_and_trims(name, variant):
 
 # The numpy MFEM sampler is slow on the big volumes: compare whole meshes on the
 # small fixtures, the refined models and every evaluation on all of them.
-SMALL = ["square-disc-nurbs-patch", "nurbs-segments2d-patches", "beam-quad-nurbs-sf", "cube-nurbs"]
+SMALL = [
+    "square-disc-nurbs-patch",
+    "nurbs-segments2d-patches",
+    "beam-quad-nurbs-sf",
+    "cube-nurbs",
+]
 
 
 @needs_core
@@ -186,7 +199,9 @@ def test_nurbs_engines_are_bit_identical(name, variant):
         np.testing.assert_array_equal(cp["degrees"], rp["degrees"])
         for kc, kr in zip(cp["knots"], rp["knots"]):
             np.testing.assert_allclose(kc, kr, rtol=0, atol=1e-15)
-        np.testing.assert_allclose(cp["control_points"], rp["control_points"], rtol=0, atol=1e-14)
+        np.testing.assert_allclose(
+            cp["control_points"], rp["control_points"], rtol=0, atol=1e-14
+        )
         np.testing.assert_allclose(cp["weights"], rp["weights"], rtol=0, atol=1e-14)
         for fc, fr in zip(cp["fields"], rp["fields"]):
             np.testing.assert_allclose(fc, fr, rtol=0, atol=1e-14)
@@ -275,7 +290,9 @@ def test_circle_stays_exact_under_every_refinement():
     }
     u = np.linspace(0.0, 1.0, 37)
     for sub, ele in [(1, 0), (5, 0), (1, 3), (4, 2)]:
-        out = _iga.iga_refine({"patches": [arc]}, subdivisions=sub, elevate=ele, sample_subdivisions=1)
+        out = _iga.iga_refine(
+            {"patches": [arc]}, subdivisions=sub, elevate=ele, sample_subdivisions=1
+        )
         r = np.hypot(*_iga.iga_evaluate(out, u[:, None])["points"].T)
         np.testing.assert_allclose(r, 1.0, atol=1e-14, rtol=0)
         # the sampled nodes are on the circle too
@@ -305,11 +322,22 @@ def test_sphere_octant_normals_point_outwards():
     model = {"patches": [patch]}
     for sub, ele in [(1, 0), (3, 1)]:
         out = _iga.iga_refine(model, subdivisions=sub, elevate=ele)
-        grid = np.stack(np.meshgrid(np.linspace(0, 1, 9), np.linspace(0, 1, 9)), -1).reshape(-1, 2)
+        grid = np.stack(
+            np.meshgrid(np.linspace(0, 1, 9), np.linspace(0, 1, 9)), -1
+        ).reshape(-1, 2)
         res = _iga.iga_evaluate(out, grid, derivatives=1)
-        np.testing.assert_allclose(np.linalg.norm(res["points"], axis=1), 1.0, atol=1e-13)
-        mask = np.linalg.norm(np.cross(res["derivatives"][:, 0], res["derivatives"][:, 1]), axis=1) > 1e-9
-        np.testing.assert_allclose(np.linalg.norm(res["normals"][mask], axis=1), 1.0, atol=1e-13)
+        np.testing.assert_allclose(
+            np.linalg.norm(res["points"], axis=1), 1.0, atol=1e-13
+        )
+        mask = (
+            np.linalg.norm(
+                np.cross(res["derivatives"][:, 0], res["derivatives"][:, 1]), axis=1
+            )
+            > 1e-9
+        )
+        np.testing.assert_allclose(
+            np.linalg.norm(res["normals"][mask], axis=1), 1.0, atol=1e-13
+        )
         dots = np.abs(np.einsum("ij,ij->i", res["normals"][mask], res["points"][mask]))
         np.testing.assert_allclose(dots, 1.0, atol=1e-12)
 
@@ -319,7 +347,9 @@ def test_sphere_octant_normals_point_outwards():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["square-disc-nurbs-patch", "pipe-nurbs", "nurbs-segments2d-patches"])
+@pytest.mark.parametrize(
+    "name", ["square-disc-nurbs-patch", "pipe-nurbs", "nurbs-segments2d-patches"]
+)
 def test_derivatives_match_central_differences(name):
     info = _nurbs(name).info["nurbs"]
     for pi, p in enumerate(info["patches"][:2]):
@@ -334,7 +364,9 @@ def test_derivatives_match_central_differences(name):
             e[d] = h * (hi[d] - lo[d])
             fwd = _iga.iga_evaluate(info, u + e, patch=pi)["points"]
             bwd = _iga.iga_evaluate(info, u - e, patch=pi)["points"]
-            np.testing.assert_allclose(got[:, d], (fwd - bwd) / (2 * e[d]), rtol=1e-6, atol=1e-6)
+            np.testing.assert_allclose(
+                got[:, d], (fwd - bwd) / (2 * e[d]), rtol=1e-6, atol=1e-6
+            )
 
 
 def test_cylindrical_roof_is_exact_and_normals_are_unit():
@@ -407,9 +439,11 @@ def test_generic_sampling_types_maps_and_fields(name):
     info = out.info["nurbs"]
     dim = info["topology"]["dimension"]
     top = max(int(d) for p in info["patches"] for d in p["degrees"])
-    family = {1: ("line", "line3"), 2: ("quad", "quad9"), 3: ("hexahedron", "hexahedron27")}[
-        dim
-    ]
+    family = {
+        1: ("line", "line3"),
+        2: ("quad", "quad9"),
+        3: ("hexahedron", "hexahedron27"),
+    }[dim]
     lagrange = "VTK_LAGRANGE_" + {1: "CURVE", 2: "QUADRILATERAL", 3: "HEXAHEDRON"}[dim]
     want = family[0] if top <= 1 else family[1] if top == 2 else lagrange
     assert [c.type for c in out.cells] == [want]
@@ -555,7 +589,9 @@ def test_bad_arguments_are_value_errors(call, match):
 
 def test_a_mesh_without_a_model_is_refused():
     with pytest.raises(ValueError, match="no NURBS model"):
-        _iga.iga_refine(mp.Mesh(np.zeros((3, 3)), [("triangle", np.array([[0, 1, 2]]))]))
+        _iga.iga_refine(
+            mp.Mesh(np.zeros((3, 3)), [("triangle", np.array([[0, 1, 2]]))])
+        )
 
 
 def test_both_models_must_be_named():
@@ -613,5 +649,7 @@ def test_mixed_degree_faces_do_not_share_a_block():
     # be written into one block, whatever their node counts)
     mesh = _cad("two_patch_beam.cad.json")
     out = _iga.iga_refine(mesh, elevate=1)
-    nodes = sorted(c.data.shape[1] for c in out.cells if c.type == "VTK_LAGRANGE_QUADRILATERAL")
+    nodes = sorted(
+        c.data.shape[1] for c in out.cells if c.type == "VTK_LAGRANGE_QUADRILATERAL"
+    )
     assert nodes == [16, 25]

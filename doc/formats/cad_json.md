@@ -42,6 +42,8 @@ The mesh is a sampling of the faces, so the usual operations, writers and viewer
 
 `mesh.info["brep"]` (C++ `BrepInfo`, `brep.hpp`) holds the patches (`degrees`, full `knots`, the control net u-fastest, `weights`), the brep groups, the faces with their loops and trims, the edges, the vertices and the file's own extra members; see the module docstring of `meshioplusplus.cad_json._cad_json` for the dict layout. `mp.cad_json.sample(brep, ...)` samples it again, as the reader does.
 
+`mp.iga_evaluate`, `mp.iga_refine` and `mp.iga_sample` act on this model directly (v16.43.0, [isogeometric layer](../iga.md)): a face is evaluated with derivatives and the trimming test, refined by knot insertion and degree elevation with its trimming loops untouched, and sampled again.
+
 ## What is written
 
 - **With a side channel** (a mesh read from CAD JSON, STEP or IGES, or the result of [`fit_cad`](/fit_cad)), the B-rep is written exactly, in the layout of Kratos's own `PrettyPrintJsonString`. The keys Kratos reads are always written (`is_rational`, `swapped_surface_normal`, `boundary_loops` …), so a hand-written file gains its defaults on the first rewrite; a file meshio++ wrote reads back to the same side channel and rewrites to the same bytes. Kratos makes model-part nodes of surface and 3-D curve control points, which need ids: the writers warn when a net has none.

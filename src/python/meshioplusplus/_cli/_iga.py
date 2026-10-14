@@ -5,7 +5,9 @@ from ._json import emit_json
 
 def _add_io(parser, what):
     parser.add_argument(
-        "infile", type=str, help="NURBS model to be read from (MFEM NURBS, CAD JSON, STEP, IGES)"
+        "infile",
+        type=str,
+        help="NURBS model to be read from (MFEM NURBS, CAD JSON, STEP, IGES)",
     )
     if what:
         parser.add_argument("outfile", type=str, help=what)

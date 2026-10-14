@@ -93,9 +93,9 @@ NurbsPatch annulus() {
 
 // A trilinear hexahedron with its corners pushed about, polynomial.
 NurbsPatch hexahedron() {
-    return make_patch({1, 1, 1}, {{0, 0, 1, 1}, {0, 0, 1, 1}, {0, 0, 1, 1}}, 3,
-                      {0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 1.1, 0, 0, 0, 1, 1, 0, 1.3, 0, 1, 1,
-                       1.1, 1.2, 1.4});
+    return make_patch(
+        {1, 1, 1}, {{0, 0, 1, 1}, {0, 0, 1, 1}, {0, 0, 1, 1}}, 3,
+        {0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 1.1, 0, 0, 0, 1, 1, 0, 1.3, 0, 1, 1, 1.1, 1.2, 1.4});
 }
 
 NDArray grid(const NurbsPatch& rP, std::size_t PerDirection) {
@@ -111,8 +111,10 @@ NDArray grid(const NurbsPatch& rP, std::size_t PerDirection) {
             const std::size_t k = rest % PerDirection;
             rest /= PerDirection;
             const double lo = rP.mKnots[d][static_cast<std::size_t>(rP.mDegrees[d])];
-            const double hi = rP.mKnots[d][rP.mKnots[d].size() - static_cast<std::size_t>(rP.mDegrees[d]) - 1];
-            pu[i * dim + d] = lo + (hi - lo) * static_cast<double>(k) / static_cast<double>(PerDirection - 1);
+            const double hi =
+                rP.mKnots[d][rP.mKnots[d].size() - static_cast<std::size_t>(rP.mDegrees[d]) - 1];
+            pu[i * dim + d] =
+                lo + (hi - lo) * static_cast<double>(k) / static_cast<double>(PerDirection - 1);
         }
     }
     return u;
@@ -143,8 +145,8 @@ TEST(Iga, KnotInsertionKeepsTheArcExact) {
     const auto b = meshioplusplus::iga_evaluate(one_patch(q), 0, u);
     EXPECT_LT(max_diff(a.mPoints, b.mPoints), 1e-14);
     for (std::size_t i = 0; i < b.mPoints.Shape()[0]; ++i)
-        EXPECT_NEAR(std::hypot(b.mPoints.As<double>()[i * 2], b.mPoints.As<double>()[i * 2 + 1]), 1.0,
-                    1e-14);
+        EXPECT_NEAR(std::hypot(b.mPoints.As<double>()[i * 2], b.mPoints.As<double>()[i * 2 + 1]),
+                    1.0, 1e-14);
 }
 
 TEST(Iga, DegreeElevationKeepsTheArcExactAndRaisesContinuity) {
@@ -163,8 +165,7 @@ TEST(Iga, ElevationOfAMultiSpanCurveKeepsEveryKnotsContinuity) {
     // C1 at 1: quadratic, one interior knot of multiplicity 1
     const NurbsPatch p = make_patch({2}, {{0, 0, 0, 1, 2, 2, 2}}, 2, {0, 0, 1, 2, 2, 0, 3, 2});
     const NurbsPatch q = meshioplusplus::iga_elevate_degree(p, 0, 2);
-    EXPECT_EQ(q.mKnots[0],
-              (std::vector<double>{0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2}));
+    EXPECT_EQ(q.mKnots[0], (std::vector<double>{0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2}));
     const NDArray u = grid(p, 51);
     EXPECT_LT(max_diff(meshioplusplus::iga_evaluate(one_patch(p), 0, u).mPoints,
                        meshioplusplus::iga_evaluate(one_patch(q), 0, u).mPoints),
@@ -224,7 +225,9 @@ TEST(Iga, DerivativesMatchCentralDifferencesInAVolume) {
         for (std::size_t i = 0; i < n; ++i) {
             const double span = fwd.As<double>()[i * 3 + d] - bwd.As<double>()[i * 3 + d];
             for (std::size_t c = 0; c < 3; ++c) {
-                const double fd = (pf.mPoints.As<double>()[i * 3 + c] - pb.mPoints.As<double>()[i * 3 + c]) / span;
+                const double fd =
+                    (pf.mPoints.As<double>()[i * 3 + c] - pb.mPoints.As<double>()[i * 3 + c]) /
+                    span;
                 EXPECT_NEAR(b.mDerivatives.As<double>()[(i * 3 + d) * 3 + c], fd, 1e-6);
             }
         }
@@ -310,7 +313,8 @@ TEST(Iga, ErrorsAreInvalidArguments) {
     NurbsInfo bad = in;
     bad.mPatches[0].mWeights.As<double>()[1] = 0.0;
     EXPECT_THROW(meshioplusplus::iga_refine(bad, IgaRefineOptions{}), std::invalid_argument);
-    EXPECT_THROW(meshioplusplus::iga_refine(NurbsInfo{}, IgaRefineOptions{}), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_refine(NurbsInfo{}, IgaRefineOptions{}),
+                 std::invalid_argument);
 }
 
 // --- MFEM's patch topology ---------------------------------------------------
@@ -319,25 +323,27 @@ TEST(Iga, ErrorsAreInvalidArguments) {
 std::string annulus_mesh() {
     const std::string w = "0.70710678118654757";
     const std::string path = mt::temp_path(".mesh");
-    std::ofstream(path) << "MFEM NURBS mesh v1.0\n"
-                           "dimension\n2\n"
-                           "elements\n1\n5 3 0 1 2 3\n"
-                           "boundary\n0\n"
-                           "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\n"
-                           "vertices\n4\n"
-                           "knotvectors\n2\n2 3 0 0 0 1 1 1\n1 2 0 0 1 1\n"
-                           "weights\n1\n1\n1\n1\n"
-                        << w << "\n"
-                        << w
-                        << "\n"
-                           "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
-                           "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
+    std::ofstream(path)
+        << "MFEM NURBS mesh v1.0\n"
+           "dimension\n2\n"
+           "elements\n1\n5 3 0 1 2 3\n"
+           "boundary\n0\n"
+           "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\n"
+           "vertices\n4\n"
+           "knotvectors\n2\n2 3 0 0 0 1 1 1\n1 2 0 0 1 1\n"
+           "weights\n1\n1\n1\n1\n"
+        << w << "\n"
+        << w
+        << "\n"
+           "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+           "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
     return path;
 }
 
 TEST(Iga, ADefaultSampleOfAReadModelIsTheReadersMesh) {
     NurbsInfo info;
-    const Mesh read = meshioplusplus::read_mfem(annulus_mesh(), {}, meshioplusplus::ReadOptions{}, info);
+    const Mesh read =
+        meshioplusplus::read_mfem(annulus_mesh(), {}, meshioplusplus::ReadOptions{}, info);
     ASSERT_EQ(info.mPatches.size(), 1u);
     NurbsInfo mapped;
     const Mesh sampled = meshioplusplus::iga_sample(info, {}, &mapped);
@@ -465,7 +471,8 @@ TEST(Iga, FacesSharingAPatchMustAgreeOnRational) {
     in.mFaces.push_back(in.mFaces[0]);
     in.mFaces[1].mRational = true;
     EXPECT_THROW(meshioplusplus::iga_refine(in, IgaRefineOptions{}), std::invalid_argument);
-    EXPECT_THROW(meshioplusplus::iga_evaluate(in, 5, grid(in.mPatches[0], 3)), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_evaluate(in, 5, grid(in.mPatches[0], 3)),
+                 std::invalid_argument);
 }
 
 }  // namespace

@@ -18,3 +18,5 @@ mp.write("part.cad.json", mesh)                    # the NURBS faces as Kratos C
 ```
 
 `IGESControl_Reader` transfers the file's shape, which is then handled exactly as a STEP file's is: converted to NURBS throughout, triangulated by `BRepMesh` into one `triangle` block with the `cad:*` cell data, and kept as faces, trimming loops and edges in `mesh.info["brep"]` (C++ `BrepInfo`); see [STEP: reading](/formats/step#reading) for the details and the options. Without the backend, reading raises `NotImplementedError` (C++ `Unsupported`) naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; there is no Python twin of a CAD kernel. Writing IGES is not planned: [STEP](/formats/step) is the exchange format meshio++ writes (see [conformance](../conformance.md#iges)).
+
+As for STEP, the NURBS B-rep in `mesh.info["brep"]` can be refined, evaluated and sampled exactly with the [isogeometric layer](../iga.md).

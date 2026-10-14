@@ -1390,9 +1390,7 @@ def test_iga_tools_refine_sample_and_evaluate(tmp_path):
     assert out["brep"]["faces"] == 1 and out["brep"]["trimmed_faces"] == 1
     out = _dump(_tools.tool_iga_sample(plate, str(tmp_path / "s.vtu"), subdivisions=4))
     assert out["num_cells"] > 0
-    ev = _dump(
-        _tools.tool_iga_evaluate(plate, [[0.5, 0.5], [2.0, 2.0]], derivatives=1)
-    )
+    ev = _dump(_tools.tool_iga_evaluate(plate, [[0.5, 0.5], [2.0, 2.0]], derivatives=1))
     assert ev["inside"] == [True, False]
     assert ev["num_points"] == 2 and len(ev["normals"]) == 2
     ev = _dump(_tools.tool_iga_evaluate(nurbs, [[0.3, 0.7, 0.4]], patch=1))

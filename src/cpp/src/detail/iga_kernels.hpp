@@ -161,12 +161,14 @@ inline void iga_elevate_line(int P, const std::vector<double>& rU, const double*
     const I max_rows = n + 1 + t * (distinct + 1);
     rQw.assign(static_cast<std::size_t>(max_rows) * C, 0.0);
     rUh.assign(static_cast<std::size_t>(max_rows + ph + 1), 0.0);
-    std::vector<std::vector<double>> bezalfs(static_cast<std::size_t>(ph + 1),
-                                             std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
+    std::vector<std::vector<double>> bezalfs(
+        static_cast<std::size_t>(ph + 1),
+        std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
     bezalfs[0][0] = 1.0;
     bezalfs[static_cast<std::size_t>(ph)][static_cast<std::size_t>(p)] = 1.0;
     for (I i = 1; i <= ph2; ++i) {
-        const double inv = 1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
+        const double inv =
+            1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
         const I mpi = std::min(p, i);
         for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
             bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
@@ -179,8 +181,10 @@ inline void iga_elevate_line(int P, const std::vector<double>& rU, const double*
             bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
                 bezalfs[static_cast<std::size_t>(ph - i)][static_cast<std::size_t>(p - j)];
     }
-    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C), ebpts(static_cast<std::size_t>(ph + 1) * C),
-        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C), alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
+    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C),
+        ebpts(static_cast<std::size_t>(ph + 1) * C),
+        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C),
+        alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
     const auto brow = [C](std::vector<double>& rV, I Index) {
         return rV.data() + static_cast<std::size_t>(Index) * C;
     };
@@ -215,7 +219,8 @@ inline void iga_elevate_line(int P, const std::vector<double>& rU, const double*
                 for (I k = p; k >= s; --k) {
                     const double al = alfs[static_cast<std::size_t>(k - s)];
                     for (std::size_t c = 0; c < C; ++c)
-                        brow(bpts, k)[c] = al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
+                        brow(bpts, k)[c] =
+                            al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
                 }
                 for (std::size_t c = 0; c < C; ++c)
                     brow(nextbpts, save)[c] = brow(bpts, p)[c];
@@ -241,7 +246,8 @@ inline void iga_elevate_line(int P, const std::vector<double>& rU, const double*
                     if (ii < cind) {
                         const double alf = (ub - Uh(ii)) / (ua - Uh(ii));
                         for (std::size_t c = 0; c < C; ++c)
-                            brow(rQw, ii)[c] = alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
+                            brow(rQw, ii)[c] =
+                                alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
                     }
                     if (j >= lbz) {
                         if (j - tr <= kind - ph + oldr) {
@@ -332,10 +338,12 @@ inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<doub
             throw std::invalid_argument(
                 "meshio++: iga: knots to insert must be ascending and inside the parameter range");
     std::vector<double> ubar, res;
-    iga_apply_direction(rNet, Dir, n + rX.size(), [&](const std::vector<double>& rLine) -> const std::vector<double>& {
-        iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX, ubar, res);
-        return res;
-    });
+    iga_apply_direction(rNet, Dir, n + rX.size(),
+                        [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+                            iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX,
+                                            ubar, res);
+                            return res;
+                        });
     rNet.mKnots[Dir] = ubar;
 }
 
@@ -355,10 +363,11 @@ inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
         iga_elevate_line(p, rNet.mKnots[Dir], zero.data(), n, rNet.mColumns, T, uh_first, res);
         new_count = res.size() / rNet.mColumns;
     }
-    iga_apply_direction(rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
-        iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
-        return res;
-    });
+    iga_apply_direction(
+        rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+            iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
+            return res;
+        });
     rNet.mKnots[Dir] = uh_first;
     rNet.mDegrees[Dir] = p + T;
 }
@@ -422,7 +431,9 @@ inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, con
     const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
     std::array<std::vector<double>, 3> ders;
     for (std::size_t d = 0; d < dim; ++d) {
-        ders[d].assign(static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1), 0.0);
+        ders[d].assign(
+            static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
+            0.0);
         iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
     }
     std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
@@ -438,7 +449,8 @@ inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, con
             for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
                 const std::array<std::size_t, 3> j{j0, j1, j2};
                 const std::size_t idx =
-                    (base[0] + j0) + rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
+                    (base[0] + j0) +
+                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
                 const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
                 const double* v = rNet.mValues + idx * NV;
                 double b = 1.0;

@@ -399,6 +399,19 @@ meshioplusplus.write("part.step", skin)                     # faceted solid
 solid = meshioplusplus.fit_cad(fit, "part_cad.step")         # analytic faces (OpenCASCADE)
 ```
 
+#### Isogeometric layer: evaluate, refine, sample NURBS models
+
+The NURBS model a reader keeps beside its mesh (`mesh.info["nurbs"]` for MFEM NURBS meshes, `mesh.info["brep"]` for Kratos CAD JSON, STEP and IGES) can be acted on directly, on every surface (Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP): **`iga_refine`** inserts knots and elevates degrees exactly, with the geometry, the NURBS fields and a trimmed face's trimming loops unchanged; **`iga_evaluate`** returns points, first derivatives, normals and the trimming test at parametric coordinates; **`iga_sample`** samples a model into Lagrange cells again. A refined MFEM model writes back as an `MFEM NURBS mesh`. See [isogeometric layer](doc/iga.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+mesh = meshioplusplus.read("pipe-nurbs.mesh", file_format="mfem")
+fine = meshioplusplus.iga_refine(mesh, subdivisions=2, elevate=1)   # exact: same geometry
+meshioplusplus.write("fine.mesh", fine, file_format="mfem")         # patches intact
+ev = meshioplusplus.iga_evaluate(fine, [[0.3, 0.7, 0.4]], derivatives=1)
+```
+
 #### Interfaces and contact
 
 `meshioplusplus.region_adjacency(mesh, regions=None)` extracts conforming facets shared by Cell regions (or by cell blocks when fewer than two Cell regions exist). `find_interface` matches two parts by shared node ids or geometric proximity, `contact_pairs` projects a Point region onto master facets, and `split_interface` duplicates point fans along a Side region with optional cohesive elements. The API and tolerances are documented in [`doc/region_adjacency.md`](doc/region_adjacency.md).
@@ -1193,7 +1206,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.42.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.43.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

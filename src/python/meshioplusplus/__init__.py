@@ -127,7 +127,6 @@ if TYPE_CHECKING:
     from ._feature_edges import feature_edges
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
-    from ._iga import iga_evaluate, iga_refine, iga_sample
     from ._gpu import (
         from_cupy,
         has_cuda_device,
@@ -156,6 +155,7 @@ if TYPE_CHECKING:
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
+    from ._iga import iga_evaluate, iga_refine, iga_sample
     from ._interfaces import (
         contact_pairs,
         find_interface,
