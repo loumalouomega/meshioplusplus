@@ -111,6 +111,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -380,6 +381,11 @@ MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes; ABI 28
 // added mFreeformSplit, mFillets and mThreads (roadmap 6.3.1, 6.3.2): 48 -> 56.
 MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 56, 8);
+// The isogeometric layer (roadmap 6.2.2, operations/iga.hpp): the options are passed by
+// const-ref through the exported `iga_refine()` and `iga_sample()`, pinned from
+// the release that introduces them. IgaEvaluation embeds NDArrays and is not pinned.
+MIO_ABI_LAYOUT(meshioplusplus::IgaRefineOptions, 24, 4);
+MIO_ABI_LAYOUT(meshioplusplus::IgaSampleOptions, 12, 4);
 
 // The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
 // TextOptions and SnapshotOptions are passed by const-ref through the exported

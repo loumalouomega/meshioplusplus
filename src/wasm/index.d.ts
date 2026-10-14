@@ -355,6 +355,18 @@ export interface BrepRef {
  * ids are -1 where an entity is named by `name` instead. `writeMesh` writes it
  * back as CAD JSON.
  */
+/** Sampling options of `igaRefine` / `igaSample`. */
+export interface IgaOptions {
+  /** Cells per knot span and direction of the sampling; 0 is automatic. */
+  sampleSubdivisions?: number;
+  /** B-rep: points per knot span a trimming curve is sampled at (2..4096). */
+  trimSamples?: number;
+  /** B-rep: sample the edges that have a 3-D curve. */
+  edges?: boolean;
+  /** B-rep: keep only the cells inside the trimming loops. */
+  trim?: boolean;
+}
+
 export interface CadJsonInfo {
   format: 'cad_json';
   /** The face surfaces: two degrees, two full knot vectors, (points, 3) control net (u fastest). */
@@ -2502,6 +2514,54 @@ export interface MeshioPlusPlusModule {
     numCone: number;
     numTorus: number;
     numUnfitted: number;
+  };
+
+  /**
+   * Refine every patch (every face surface of a B-rep) of a NURBS model
+   * exactly: degree elevation by `elevate`, then knot insertion splitting each
+   * knot span in `subdivisions` parts (a number, or one per direction; an
+   * `mfem` model refines every direction alike). `info` is the side channel
+   * of `readMeshSelective(path, {info: true})` for an MFEM NURBS mesh or a
+   * CAD JSON file. Returns the refined model sampled (`sampleSubdivisions`
+   * cells per span, 0 automatic) and the refined model, which `writeMesh`
+   * writes back with the mesh. The geometry, the fields and a trimmed face's
+   * trimming loops do not change. See doc/iga.md.
+   * @throws {Error} on a bad option, a non-NURBS info or an inconsistent model.
+   */
+  igaRefine(
+    info: MfemInfo | CadJsonInfo,
+    options?: IgaOptions & {
+      subdivisions?: number | number[];
+      elevate?: number | number[];
+    },
+  ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
+
+  /** Sample a NURBS model into Lagrange cells; see `igaRefine`. */
+  igaSample(
+    info: MfemInfo | CadJsonInfo,
+    options?: IgaOptions,
+  ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
+
+  /**
+   * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat
+   * array with the parametric dimension's worth of numbers per point.
+   * `derivatives: 1` adds the first derivatives (`(N, d, spaceDim)`) and the
+   * unit normals of a surface in 3-D; a B-rep face also reports `inside`
+   * (1 where its trimming loops contain the point).
+   */
+  igaEvaluate(
+    info: MfemInfo | CadJsonInfo,
+    patch: number,
+    params: ArrayLike<number>,
+    options?: { derivatives?: 0 | 1; trimSamples?: number },
+  ): {
+    spaceDim: number;
+    points: Float64Array;
+    fields: Float64Array[];
+    fieldComponents: number[];
+    derivatives?: Float64Array;
+    normals?: Float64Array;
+    inside?: Uint8Array;
   };
 
   /**

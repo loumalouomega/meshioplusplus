@@ -53,6 +53,7 @@ module meshioplusplus
     public :: mio_xdmf_series
     public :: mio_exodus_series
     public :: mio_format_info
+    public :: mio_iga_evaluation
     public :: mio_gltf_options
     public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
     public :: MIO_MDPA_MODEL_PART_DATA, MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES
@@ -310,6 +311,19 @@ module meshioplusplus
         integer(c_int64_t) :: num_fillet = 0
         integer(c_int64_t) :: num_helical = 0
         integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
+    !> `trim_samples` to 16: an all-zero struct is not the default).
+    type, bind(c) :: mio_iga_opts_t
+        integer(c_int32_t) :: subdivisions(3) = 1
+        integer(c_int32_t) :: elevate(3) = 0
+        integer(c_int32_t) :: sample_subdivisions = 0
+        integer(c_int32_t) :: trim_samples = 16
+        integer(c_int32_t) :: edges = 1
+        integer(c_int32_t) :: trim = 1
+        integer(c_int32_t) :: reserved32(2) = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -634,6 +648,10 @@ module meshioplusplus
                                              MIO_BREP_LOOPS = 4, MIO_BREP_TRIMS = 5, &
                                              MIO_BREP_EDGES = 6, MIO_BREP_VERTICES = 7, &
                                              MIO_BREP_REFS = 8
+    !> What `mio_iga_evaluation` holds (the C enum mio_iga_array).
+    integer(c_int32_t), parameter, public :: MIO_IGA_POINTS = 0, MIO_IGA_DERIVATIVES = 1, &
+                                             MIO_IGA_NORMALS = 2, MIO_IGA_INSIDE = 3, &
+                                             MIO_IGA_FIELD = 4
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -1434,7 +1452,30 @@ module meshioplusplus
         procedure :: mdpa_data_key => format_info_mdpa_data_key
         procedure :: mdpa_data_text => format_info_mdpa_data_text
         procedure :: mdpa_data_values => format_info_mdpa_data_values
+        procedure :: iga_refine => format_info_iga_refine
+        procedure :: iga_sample => format_info_iga_sample
+        procedure :: iga_evaluate => format_info_iga_evaluate
     end type mio_format_info
+
+    !> The result of `info%iga_evaluate`: points (and, with `derivatives`, their
+    !> first derivatives and the surface normals) of a NURBS patch or B-rep face
+    !> at parametric coordinates, with its NURBS fields and a trimmed face's
+    !> inside mask. Freed explicitly. Arrays are laid out column-major, so the
+    !> points are `(space dimension, N)`, the derivatives `(space dimension,
+    !> parametric dimension, N)`, the normals `(3, N)`, a field `(components, N)`.
+    type :: mio_iga_evaluation
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: free => iga_evaluation_free
+        procedure :: is_valid => iga_evaluation_is_valid
+        procedure :: num_fields => iga_evaluation_num_fields
+        procedure :: points => iga_evaluation_points
+        procedure :: derivatives => iga_evaluation_derivatives
+        procedure :: normals => iga_evaluation_normals
+        procedure :: inside => iga_evaluation_inside
+        procedure :: field => iga_evaluation_field
+    end type mio_iga_evaluation
 
     ! ------------------------------------------------------------------
     ! Raw bind(c) interfaces to libmeshioplusplus (private; the OO layer
@@ -3775,6 +3816,62 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(inout) :: buf
             integer(c_int64_t) :: n
         end function
+
+        subroutine c_mio_iga_opts_init(opts) bind(c, name="mio_iga_opts_init")
+            import :: mio_iga_opts_t
+            type(mio_iga_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_iga_refine(info, opts, refined) bind(c, name="mio_iga_refine") result(h)
+            import :: c_ptr, mio_iga_opts_t
+            type(c_ptr), value :: info
+            type(mio_iga_opts_t), intent(in) :: opts
+            type(c_ptr), intent(out) :: refined
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_sample(info, opts, mapped) bind(c, name="mio_iga_sample") result(h)
+            import :: c_ptr, mio_iga_opts_t
+            type(c_ptr), value :: info
+            type(mio_iga_opts_t), intent(in) :: opts
+            type(c_ptr), intent(out) :: mapped
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_evaluate(info, patch, params, num_points, derivatives, trim_samples) &
+                bind(c, name="mio_iga_evaluate") result(h)
+            import :: c_ptr, c_double, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int64_t), value :: patch, num_points
+            real(c_double), intent(in) :: params(*)
+            integer(c_int32_t), value :: derivatives, trim_samples
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_evaluation_num_fields(ev) &
+                bind(c, name="mio_iga_evaluation_num_fields") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: ev
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_iga_evaluation_array(ev, which, index, data, dtype, ndim, shape) &
+                bind(c, name="mio_iga_evaluation_array") result(st)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: ev
+            integer(c_int32_t), value :: which
+            integer(c_int64_t), value :: index
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int32_t), intent(out) :: ndim
+            integer(c_int64_t), intent(out) :: shape(*)
+            integer(c_int) :: st
+        end function
+
+        subroutine c_mio_iga_evaluation_free(ev) bind(c, name="mio_iga_evaluation_free")
+            import :: c_ptr
+            type(c_ptr), value :: ev
+        end subroutine
 
         function c_mio_brep_info_count(info, section) &
                 bind(c, name="mio_brep_info_count") result(n)
@@ -10107,6 +10204,255 @@ contains
         call handle_status(st, what, stat, errmsg)
         ok = st == 0_c_int
     end subroutine
+
+    ! ------------------------------------------------------------------
+    ! Isogeometric layer (v16.43.0; see doc/iga.md)
+    ! ------------------------------------------------------------------
+
+    !> The options an `info%iga_*` call takes, from its optional arguments:
+    !> `subdivisions` and `elevate` are one value (every direction) or one per
+    !> direction.
+    subroutine iga_opts_from(opts, subdivisions, elevate, sample_subdivisions, trim_samples, &
+                             edges, trim)
+        type(mio_iga_opts_t), intent(out) :: opts
+        integer, intent(in), optional :: subdivisions(:), elevate(:)
+        integer, intent(in), optional :: sample_subdivisions, trim_samples
+        logical, intent(in), optional :: edges, trim
+        integer :: d
+        call c_mio_iga_opts_init(opts)
+        if (present(subdivisions)) then
+            do d = 1, 3
+                opts%subdivisions(d) = int(subdivisions(min(d, size(subdivisions))), c_int32_t)
+            end do
+        end if
+        if (present(elevate)) then
+            do d = 1, 3
+                opts%elevate(d) = int(elevate(min(d, size(elevate))), c_int32_t)
+            end do
+        end if
+        if (present(sample_subdivisions)) opts%sample_subdivisions = int(sample_subdivisions, c_int32_t)
+        if (present(trim_samples)) opts%trim_samples = int(trim_samples, c_int32_t)
+        if (present(edges)) opts%edges = merge(1_c_int32_t, 0_c_int32_t, edges)
+        if (present(trim)) opts%trim = merge(1_c_int32_t, 0_c_int32_t, trim)
+    end subroutine
+
+    !> Refine every patch (every face surface of a B-rep) of this NURBS model
+    !> exactly: degree elevation by `elevate`, then knot insertion splitting each
+    !> knot span in `subdivisions` parts (an integer, or one per direction; an
+    !> 'mfem' model refines every direction alike). The geometry, fields and
+    !> trimming loops do not change. Returns the refined model sampled
+    !> (`sample_subdivisions` cells per span, 0 automatic) and, in `refined`,
+    !> the refined model for `m%write_with_info`. `info` must come from
+    !> `m%read_with_info` of an 'mfem' NURBS mesh, 'cad_json', 'step' or 'iges'.
+    function format_info_iga_refine(self, subdivisions, elevate, sample_subdivisions, &
+                                    trim_samples, edges, trim, refined, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in), optional :: subdivisions(:), elevate(:)
+        integer, intent(in), optional :: sample_subdivisions, trim_samples
+        logical, intent(in), optional :: edges, trim
+        class(mio_format_info), intent(inout), optional :: refined
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_iga_opts_t) :: opts
+        type(c_ptr) :: res, ih
+        call iga_opts_from(opts, subdivisions, elevate, sample_subdivisions, trim_samples, &
+                           edges, trim)
+        res = c_mio_iga_refine(self%handle, opts, ih)
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_refine', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(refined)) then
+            call format_info_free(refined)
+            refined%handle = ih
+        else
+            call c_mio_format_info_free(ih)
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Sample this NURBS model into Lagrange cells: `sample_subdivisions` cells
+    !> per knot span and direction (0 automatic). `mapped` receives the model
+    !> with the sampling's cell-to-patch maps.
+    function format_info_iga_sample(self, sample_subdivisions, trim_samples, edges, trim, &
+                                    mapped, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in), optional :: sample_subdivisions, trim_samples
+        logical, intent(in), optional :: edges, trim
+        class(mio_format_info), intent(inout), optional :: mapped
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_iga_opts_t) :: opts
+        type(c_ptr) :: res, ih
+        call iga_opts_from(opts, sample_subdivisions=sample_subdivisions, &
+                           trim_samples=trim_samples, edges=edges, trim=trim)
+        res = c_mio_iga_sample(self%handle, opts, ih)
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_sample', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(mapped)) then
+            call format_info_free(mapped)
+            mapped%handle = ih
+        else
+            call c_mio_format_info_free(ih)
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Evaluate patch `patch` (1-based; the face of a B-rep) at the parametric
+    !> coordinates `params(d, N)` (one column per point, `d` the parametric
+    !> dimension), each inside the patch's knot range. `derivatives` 0 or 1.
+    function format_info_iga_evaluate(self, patch, params, derivatives, trim_samples, stat, &
+                                      errmsg) result(ev)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        real(real64), intent(in) :: params(:, :)
+        integer, intent(in), optional :: derivatives, trim_samples
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_iga_evaluation) :: ev
+        type(c_ptr) :: res
+        integer(c_int32_t) :: der, ts
+        real(c_double), allocatable :: flat(:)
+        der = 0; if (present(derivatives)) der = int(derivatives, c_int32_t)
+        ts = 16; if (present(trim_samples)) ts = int(trim_samples, c_int32_t)
+        flat = reshape(real(params, c_double), [size(params)])
+        res = c_mio_iga_evaluate(self%handle, int(patch - 1, c_int64_t), flat, &
+                                 int(size(params, 2), c_int64_t), der, ts)
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_evaluate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        ev%handle = res
+        call clear_status(stat, errmsg)
+    end function
+
+    subroutine iga_evaluation_free(self)
+        class(mio_iga_evaluation), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_iga_evaluation_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    logical function iga_evaluation_is_valid(self)
+        class(mio_iga_evaluation), intent(in) :: self
+        iga_evaluation_is_valid = c_associated(self%handle)
+    end function
+
+    !> The number of NURBS fields the evaluation carries.
+    integer function iga_evaluation_num_fields(self)
+        class(mio_iga_evaluation), intent(in) :: self
+        iga_evaluation_num_fields = int(c_mio_iga_evaluation_num_fields(self%handle))
+    end function
+
+    subroutine iga_array(self, which, index, what, p, shp, ok, stat, errmsg)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer(c_int32_t), intent(in) :: which
+        integer, intent(in) :: index
+        character(*), intent(in) :: what
+        type(c_ptr), intent(out) :: p
+        integer(c_int64_t), intent(out) :: shp(MIO_MAX_NDIM)
+        logical, intent(out) :: ok
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int) :: dt, st
+        integer(c_int32_t) :: nd
+        shp = 0
+        st = c_mio_iga_evaluation_array(self%handle, which, int(index, c_int64_t), p, dt, nd, shp)
+        call handle_status(st, what, stat, errmsg)
+        ok = st == 0_c_int
+    end subroutine
+
+    !> The points, `(space dimension, N)`.
+    function iga_evaluation_points(self, stat, errmsg) result(xyz)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: xyz(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (xyz(0, 0))
+        call iga_array(self, MIO_IGA_POINTS, 0, 'iga_points', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        xyz = real(vals, real64)
+    end function
+
+    !> The first derivatives, `(space dimension, parametric dimension, N)`
+    !> (`derivatives = 1` only).
+    function iga_evaluation_derivatives(self, stat, errmsg) result(d)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: d(:, :, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :, :)
+        allocate (d(0, 0, 0))
+        call iga_array(self, MIO_IGA_DERIVATIVES, 0, 'iga_derivatives', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(3), shp(2), shp(1)])
+        d = real(vals, real64)
+    end function
+
+    !> The unit normals of a surface in 3-D, `(3, N)` (`derivatives = 1` only).
+    function iga_evaluation_normals(self, stat, errmsg) result(nrm)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: nrm(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (nrm(0, 0))
+        call iga_array(self, MIO_IGA_NORMALS, 0, 'iga_normals', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        nrm = real(vals, real64)
+    end function
+
+    !> Whether each point of a B-rep face lies inside its trimming loops.
+    function iga_evaluation_inside(self, stat, errmsg) result(inside)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, allocatable :: inside(:)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        integer(c_int8_t), pointer :: vals(:)
+        allocate (inside(0))
+        call iga_array(self, MIO_IGA_INSIDE, 0, 'iga_inside', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(1)])
+        inside = vals /= 0_c_int8_t
+    end function
+
+    !> NURBS field `k` (1-based) at the points, `(components, N)`.
+    function iga_evaluation_field(self, k, stat, errmsg) result(values)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(in) :: k
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: values(:, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :)
+        allocate (values(0, 0))
+        call iga_array(self, MIO_IGA_FIELD, k - 1, 'iga_field', p, shp, ok, stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(2), shp(1)])
+        values = real(vals, real64)
+    end function
 
     !> A patch's degree per parametric direction (patch index 1-based).
     function format_info_nurbs_degrees(self, patch, stat, errmsg) result(degrees)

@@ -456,6 +456,121 @@ SEXP R_mio_nurbs_info(SEXP x) {
     return out;
 }
 
+/* The isogeometric layer (v16.43.0): refine, sample and evaluate the NURBS
+ * model in a handle without going through its sampling. */
+static void iga_int3(SEXP x, const char *what, int32_t out[3]) {
+    SEXP v = PROTECT(Rf_coerceVector(x, INTSXP));
+    const R_xlen_t n = Rf_xlength(v);
+    if (n < 1 || n > 3) Rf_error("'%s' must be one integer or one per direction (at most 3)", what);
+    for (int d = 0; d < 3; ++d) {
+        const int e = INTEGER(v)[d < n ? d : n - 1];
+        if (e == NA_INTEGER) Rf_error("'%s' must not contain NA", what);
+        out[d] = (int32_t)e;
+    }
+    UNPROTECT(1);
+}
+
+static mio_iga_opts iga_opts(SEXP subdivisions, SEXP elevate, SEXP sample_subdivisions,
+                             SEXP trim_samples, SEXP edges, SEXP trim) {
+    mio_iga_opts opts;
+    mio_iga_opts_init(&opts);
+    iga_int3(subdivisions, "subdivisions", opts.subdivisions);
+    iga_int3(elevate, "elevate", opts.elevate);
+    opts.sample_subdivisions = (int32_t)mio_r_int(sample_subdivisions, "sample_subdivisions");
+    opts.trim_samples = (int32_t)mio_r_int(trim_samples, "trim_samples");
+    opts.edges = mio_r_bool(edges, "edges") ? 1 : 0;
+    opts.trim = mio_r_bool(trim, "trim") ? 1 : 0;
+    return opts;
+}
+
+static SEXP iga_mesh_and_info(mio_mesh *mesh, mio_format_info *info, const char *what) {
+    if (mesh == NULL) mio_r_fail(what);
+    SEXP values[2];
+    values[0] = PROTECT(mio_r_wrap_mesh(mesh));
+    values[1] = info != NULL ? wrap_info(info) : R_NilValue;
+    PROTECT(values[1]);
+    const char *names[2] = {"mesh", "info"};
+    SEXP out = mio_r_named_list(2, names, values);
+    UNPROTECT(2);
+    return out;
+}
+
+SEXP R_mio_iga_refine(SEXP x, SEXP subdivisions, SEXP elevate, SEXP sample_subdivisions,
+                      SEXP trim_samples, SEXP edges, SEXP trim) {
+    const mio_format_info *info = info_of(x, 0);
+    const mio_iga_opts opts =
+        iga_opts(subdivisions, elevate, sample_subdivisions, trim_samples, edges, trim);
+    mio_format_info *refined = NULL;
+    mio_mesh *mesh = mio_iga_refine(info, &opts, &refined);
+    return iga_mesh_and_info(mesh, refined, "iga_refine");
+}
+
+SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP edges,
+                      SEXP trim) {
+    const mio_format_info *info = info_of(x, 0);
+    SEXP one = PROTECT(Rf_ScalarInteger(1));
+    SEXP zero = PROTECT(Rf_ScalarInteger(0));
+    const mio_iga_opts opts = iga_opts(one, zero, sample_subdivisions, trim_samples, edges, trim);
+    UNPROTECT(2);
+    mio_format_info *mapped = NULL;
+    mio_mesh *mesh = mio_iga_sample(info, &opts, &mapped);
+    return iga_mesh_and_info(mesh, mapped, "iga_sample");
+}
+
+/* One array of an evaluation as an R array with its dimensions reversed (the
+ * C layout (N, d, sdim) is R's (sdim, d, N)); R_NilValue when it is absent. */
+static SEXP iga_array(const mio_iga_evaluation *ev, int32_t which, int64_t index, int as_logical) {
+    const void *data = NULL;
+    mio_dtype dtype = MIO_FLOAT64;
+    int32_t ndim = 0;
+    int64_t shape[MIO_MAX_NDIM] = {0};
+    if (mio_iga_evaluation_array(ev, which, index, &data, &dtype, &ndim, shape) != MIO_OK)
+        return R_NilValue;
+    R_xlen_t n = 1;
+    for (int32_t k = 0; k < ndim; ++k) n *= (R_xlen_t)shape[k];
+    SEXP flat = PROTECT(mio_r_copy_as_real(data, dtype, n));
+    SEXP out = flat;
+    if (as_logical) {
+        out = PROTECT(Rf_coerceVector(flat, LGLSXP));
+        UNPROTECT(2);
+        return out;
+    }
+    if (ndim >= 2) {
+        SEXP dims = PROTECT(Rf_allocVector(INTSXP, ndim));
+        for (int32_t k = 0; k < ndim; ++k) INTEGER(dims)[k] = (int)shape[ndim - 1 - k];
+        Rf_setAttrib(flat, R_DimSymbol, dims);
+        UNPROTECT(1);
+    }
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_iga_evaluate(SEXP x, SEXP patch, SEXP params, SEXP derivatives, SEXP trim_samples) {
+    const mio_format_info *info = info_of(x, 0);
+    if (!Rf_isMatrix(params)) Rf_error("'params' must be a (d, N) matrix, one column per point");
+    SEXP p = PROTECT(Rf_coerceVector(params, REALSXP));
+    const int64_t n = (int64_t)Rf_ncols(params);
+    mio_iga_evaluation *ev =
+        mio_iga_evaluate(info, (int64_t)mio_r_int(patch, "patch") - 1, REAL(p), n,
+                         (int32_t)mio_r_int(derivatives, "derivatives"),
+                         (int32_t)mio_r_int(trim_samples, "trim_samples"));
+    UNPROTECT(1);
+    if (ev == NULL) mio_r_fail("iga_evaluate");
+    const int64_t nf = mio_iga_evaluation_num_fields(ev);
+    SEXP v[5];
+    v[0] = PROTECT(iga_array(ev, MIO_IGA_POINTS, 0, 0));
+    v[1] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nf));
+    for (int64_t k = 0; k < nf; ++k) SET_VECTOR_ELT(v[1], k, iga_array(ev, MIO_IGA_FIELD, k, 0));
+    v[2] = PROTECT(iga_array(ev, MIO_IGA_DERIVATIVES, 0, 0));
+    v[3] = PROTECT(iga_array(ev, MIO_IGA_NORMALS, 0, 0));
+    v[4] = PROTECT(iga_array(ev, MIO_IGA_INSIDE, 0, 1));
+    mio_iga_evaluation_free(ev);
+    const char *names[5] = {"points", "fields", "derivatives", "normals", "inside"};
+    SEXP out = mio_r_named_list(5, names, v);
+    UNPROTECT(5);
+    return out;
+}
+
 /* The B-rep side channel of a Kratos CAD JSON (or OpenCASCADE STEP/IGES)
  * handle, copied: patches, faces with their loops and trims, edges and
  * vertices with their topology, the brep groups and the file's other members.

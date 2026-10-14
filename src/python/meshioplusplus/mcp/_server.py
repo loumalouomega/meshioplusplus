@@ -1487,6 +1487,117 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def iga_refine(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        subdivisions: Union[int, List[int]] = 1,
+        elevate: Union[int, List[int]] = 0,
+        sample_subdivisions: int = 0,
+        model: str = "auto",
+        trim_samples: int = 16,
+        edges: bool = True,
+        trim: bool = True,
+    ) -> dict:
+        """Refine every patch of a NURBS model exactly -- the isogeometric
+        counterpart of refine, acting on the control net and knot vectors, not
+        on a sampling. Works on an MFEM NURBS mesh, Kratos CAD JSON, STEP or
+        IGES (the model a reader keeps beside its cells).
+
+        elevate raises the degree by that many (an int, or one per parametric
+        direction), then subdivisions splits every nonzero knot span into that
+        many equal parts by knot insertion (an int or one per direction):
+        k-refinement, the highest continuity. The geometry, the
+        parametrisation, the NURBS fields and a trimmed face's trimming loops
+        do not change. An MFEM NURBS mesh must refine every direction alike
+        (its patches share knot vectors along differently oriented directions).
+        The refined model is written: an MFEM NURBS mesh or CAD JSON keeps its
+        patches, any other output format gets the sampled cells
+        (sample_subdivisions per knot span, 0 automatic). model picks "nurbs"
+        or "brep" when the input carries both; trim_samples, edges and trim
+        shape the B-rep sampling as in iga_sample."""
+        return _guard(
+            _tools.tool_iga_refine,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            subdivisions=subdivisions,
+            elevate=elevate,
+            sample_subdivisions=sample_subdivisions,
+            model=model,
+            trim_samples=trim_samples,
+            edges=edges,
+            trim=trim,
+        )
+
+    @server.tool()
+    def iga_sample(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        subdivisions: int = 0,
+        model: str = "auto",
+        trim_samples: int = 16,
+        edges: bool = True,
+        trim: bool = True,
+    ) -> dict:
+        """Sample a NURBS model (MFEM NURBS mesh, Kratos CAD JSON, STEP, IGES)
+        into Lagrange cells: the exact rational geometry at the lattice of
+        each knot-span cell, subdivisions cells per span and direction (0 is
+        automatic: one per span, about 16 per direction on a trimmed face; an
+        MFEM model with its patch topology samples as the MFEM reader does).
+        A NURBS mesh gets one block of the highest degree's quad/hexahedron/
+        line cells, the NURBS fields as point data and iga:patch / iga:span
+        cell data; a B-rep is sampled as read_cad_json does (trim_samples per
+        knot span for the clip, edges for the 3-D edge curves, trim=false to
+        keep every cell)."""
+        return _guard(
+            _tools.tool_iga_sample,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            subdivisions=subdivisions,
+            model=model,
+            trim_samples=trim_samples,
+            edges=edges,
+            trim=trim,
+        )
+
+    @server.tool()
+    def iga_evaluate(
+        input_path: str,
+        params: List[List[float]],
+        input_format: Optional[str] = None,
+        patch: int = 0,
+        derivatives: int = 0,
+        model: str = "auto",
+        trim_samples: int = 16,
+    ) -> dict:
+        """Evaluate a patch of a NURBS model (MFEM NURBS mesh) or a face of a
+        B-rep (Kratos CAD JSON, STEP, IGES) at parametric coordinates.
+
+        params is a list of [u], [u, v] or [u, v, w] points, each inside the
+        patch's knot range (at most 10000 per call). The answer carries the
+        points (N x space dimension) and the NURBS fields; derivatives=1 adds
+        the first derivatives (N x d x space dimension) and, for a surface in
+        3-D, the unit normals; a B-rep face also reports inside: whether each
+        point lies within its trimming loops (trim_samples per knot span)."""
+        return _guard(
+            _tools.tool_iga_evaluate,
+            input_path=input_path,
+            params=params,
+            input_format=input_format,
+            patch=patch,
+            derivatives=derivatives,
+            model=model,
+            trim_samples=trim_samples,
+        )
+
+    @server.tool()
     def fit_primitives(
         input_path: str,
         output_path: str,

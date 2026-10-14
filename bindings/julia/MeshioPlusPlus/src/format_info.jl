@@ -397,3 +397,99 @@ function mdpa_info(info::FormatInfo)
                     for i in 0:n(MIO_MDPA_RAW_BLOCKS)-1],
     )
 end
+
+# --- the isogeometric layer (v16.43.0; doc/iga.md) -----------------------------
+
+function _iga_opts(; subdivisions=1, elevate=0, sample_subdivisions=0, trim_samples=16,
+                   edges=true, trim=true)
+    three(v) = v isa Integer ? ntuple(_ -> Int32(v), 3) :
+               ntuple(d -> Int32(v[min(d, length(v))]), 3)
+    _CIgaOpts(three(subdivisions), three(elevate), Int32(sample_subdivisions),
+              Int32(trim_samples), Int32(edges), Int32(trim), (Int32(0), Int32(0)),
+              ntuple(_ -> Int64(0), 6))
+end
+
+"""
+    iga_refine(info; subdivisions=1, elevate=0, sample_subdivisions=0,
+               trim_samples=16, edges=true, trim=true) -> (Mesh, FormatInfo)
+
+Refine every patch (every face surface of a B-rep) of a NURBS model exactly:
+degree elevation by `elevate`, then knot insertion splitting each knot span in
+`subdivisions` parts (an integer, or one per direction; an `"mfem"` model refines
+every direction alike). The geometry, fields and trimming loops do not change.
+`info` comes from [`read_with_info`](@ref) of an MFEM NURBS mesh, Kratos CAD JSON,
+STEP or IGES. Returns the refined model sampled (`sample_subdivisions` cells per
+knot span, 0 automatic) and the refined model, for [`write_with_info`](@ref). See
+`doc/iga.md`.
+"""
+function iga_refine(info::FormatInfo; kwargs...)
+    opts = _iga_opts(; kwargs...)
+    refined = Ref{Ptr{Cvoid}}(C_NULL)
+    ptr = ccall(_sym(:mio_iga_refine), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CIgaOpts}, Ptr{Ptr{Cvoid}}), _handle(info), Ref(opts), refined)
+    mesh = Mesh(_check_ptr(ptr))
+    mesh, FormatInfo(refined[])
+end
+
+"""
+    iga_sample(info; sample_subdivisions=0, trim_samples=16, edges=true, trim=true)
+        -> (Mesh, FormatInfo)
+
+Sample a NURBS model into Lagrange cells: `sample_subdivisions` cells per knot
+span and direction (0 automatic; the MFEM reader's own sampling for an `"mfem"`
+model). The second value is the model with the sampling's cell-to-patch maps.
+"""
+function iga_sample(info::FormatInfo; kwargs...)
+    opts = _iga_opts(; kwargs...)
+    mapped = Ref{Ptr{Cvoid}}(C_NULL)
+    ptr = ccall(_sym(:mio_iga_sample), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CIgaOpts}, Ptr{Ptr{Cvoid}}), _handle(info), Ref(opts), mapped)
+    mesh = Mesh(_check_ptr(ptr))
+    mesh, FormatInfo(mapped[])
+end
+
+const MIO_IGA_POINTS = Int32(0)
+const MIO_IGA_DERIVATIVES = Int32(1)
+const MIO_IGA_NORMALS = Int32(2)
+const MIO_IGA_INSIDE = Int32(3)
+const MIO_IGA_FIELD = Int32(4)
+
+"""
+    iga_evaluate(info, patch, params; derivatives=0, trim_samples=16)
+        -> (; points, fields, derivatives, normals, inside)
+
+Evaluate patch `patch` (1-based; the face of a B-rep) of a NURBS model at the
+parametric coordinates in `params`, a `(d, N)` matrix with one column per point
+(`d` the parametric dimension), each inside the patch's knot range. `points` is
+`(space dimension, N)`, `fields` one `(components, N)` matrix per NURBS field.
+With `derivatives=1`, `derivatives` is `(space dimension, d, N)` and `normals`
+`(3, N)` (surfaces in 3-D); for a B-rep face `inside` is a `Vector{Bool}` of the
+trimming test. Absent parts are `nothing`.
+"""
+function iga_evaluate(info::FormatInfo, patch::Integer, params::AbstractMatrix{<:Real};
+                      derivatives::Integer=0, trim_samples::Integer=16)
+    flat = Vector{Float64}(vec(params))
+    ev = ccall(_sym(:mio_iga_evaluate), Ptr{Cvoid},
+               (Ptr{Cvoid}, Int64, Ptr{Float64}, Int64, Int32, Int32),
+               _handle(info), Int64(patch - 1), flat, Int64(size(params, 2)),
+               Int32(derivatives), Int32(trim_samples))
+    _check_ptr(ev)
+    try
+        arr(which, index=0) = _mdpa_copy((d, t, nd, s) -> ccall(
+            _sym(:mio_iga_evaluation_array), Cint,
+            (Ptr{Cvoid}, Int32, Int64, Ptr{Ptr{Cvoid}}, Ptr{Cint}, Ptr{Int32}, Ptr{Int64}),
+            ev, which, Int64(index), d, t, nd, s))
+        opt(which) = try
+            arr(which)
+        catch e
+            e isa MeshioError ? nothing : rethrow()
+        end
+        nf = Int(ccall(_sym(:mio_iga_evaluation_num_fields), Int64, (Ptr{Cvoid},), ev))
+        inside = opt(MIO_IGA_INSIDE)
+        (points=arr(MIO_IGA_POINTS), fields=[arr(MIO_IGA_FIELD, k) for k in 0:nf-1],
+         derivatives=opt(MIO_IGA_DERIVATIVES), normals=opt(MIO_IGA_NORMALS),
+         inside=inside === nothing ? nothing : Vector{Bool}(inside .!= 0))
+    finally
+        ccall(_sym(:mio_iga_evaluation_free), Cvoid, (Ptr{Cvoid},), ev)
+    end
+end

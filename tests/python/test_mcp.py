@@ -1361,6 +1361,46 @@ def test_segment_fit_and_step(tmp_path):
     assert "step" in _tools.tool_formats()["writable"]
 
 
+def test_iga_tools_refine_sample_and_evaluate(tmp_path):
+    nurbs = str(
+        pathlib.Path(__file__).parent / "meshes" / "mfem" / "nurbs" / "pipe-nurbs.mesh"
+    )
+    plate = str(
+        pathlib.Path(__file__).parent
+        / "meshes"
+        / "cad_json"
+        / "plate_with_hole.cad.json"
+    )
+    out = _dump(
+        _tools.tool_iga_refine(
+            nurbs,
+            str(tmp_path / "fine.mesh"),
+            output_format="mfem",
+            subdivisions=2,
+            elevate=1,
+        )
+    )
+    assert out["nurbs"]["patches"] == 4 and out["nurbs"]["degrees"] == [3]
+    assert (tmp_path / "fine.mesh").read_text().startswith("MFEM NURBS mesh v1.0")
+    out = _dump(
+        _tools.tool_iga_refine(
+            plate, str(tmp_path / "fine.cad.json"), subdivisions=[2, 3], elevate=[0, 1]
+        )
+    )
+    assert out["brep"]["faces"] == 1 and out["brep"]["trimmed_faces"] == 1
+    out = _dump(_tools.tool_iga_sample(plate, str(tmp_path / "s.vtu"), subdivisions=4))
+    assert out["num_cells"] > 0
+    ev = _dump(_tools.tool_iga_evaluate(plate, [[0.5, 0.5], [2.0, 2.0]], derivatives=1))
+    assert ev["inside"] == [True, False]
+    assert ev["num_points"] == 2 and len(ev["normals"]) == 2
+    ev = _dump(_tools.tool_iga_evaluate(nurbs, [[0.3, 0.7, 0.4]], patch=1))
+    assert len(ev["points"][0]) == 3
+    with pytest.raises(ValueError, match="knot range"):
+        _tools.tool_iga_evaluate(plate, [[9.0, 9.0]])
+    with pytest.raises(ValueError, match="at most"):
+        _tools.tool_iga_evaluate(plate, [[0.5, 0.5]] * 10001)
+
+
 def _two_tetra10():
     tets = meshioplusplus.Mesh(
         np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]], dtype=float),

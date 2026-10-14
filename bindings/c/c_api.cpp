@@ -119,6 +119,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -317,6 +318,12 @@ struct mio_format_info {
                  meshioplusplus::NurbsInfo, meshioplusplus::BrepInfo>
         mInfo;
     std::unique_ptr<CapiBrepIndex> mBrepIndex;
+};
+
+// What mio_iga_evaluate returns: the evaluation and whether it came from a B-rep face.
+struct mio_iga_evaluation {
+    meshioplusplus::IgaEvaluation mEval;
+    bool mFace = false;
 };
 
 namespace {
@@ -6084,6 +6091,7 @@ static_assert(sizeof(mio_fit_primitives_opts) == 88,
 static_assert(sizeof(mio_fit_primitives_report) == 96,
               "mio_fit_primitives_report grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_opts) == 80, "mio_fit_cad_opts grew outside its reserved tail");
+static_assert(sizeof(mio_iga_opts) == 96, "mio_iga_opts grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report) == 192,
               "mio_fit_cad_report grew outside its reserved tail");
 static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
@@ -6234,6 +6242,199 @@ void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     opts->freeform_split = 1;
     opts->fillets = 1;
     opts->threads = 1;
+}
+
+void mio_iga_opts_init(mio_iga_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_iga_opts{};
+    for (int d = 0; d < 3; ++d)
+        opts->subdivisions[d] = 1;
+    opts->trim_samples = 16;
+    opts->edges = 1;
+    opts->trim = 1;
+}
+
+}  // extern "C"
+
+namespace {
+
+meshioplusplus::IgaRefineOptions capi_iga_refine_options(const mio_iga_opts* pOpts) {
+    mio_iga_opts o;
+    mio_iga_opts_init(&o);
+    if (pOpts)
+        o = *pOpts;
+    meshioplusplus::IgaRefineOptions r;
+    for (std::size_t d = 0; d < 3; ++d) {
+        r.mSubdivisions[d] = o.subdivisions[d];
+        r.mElevate[d] = o.elevate[d];
+    }
+    return r;
+}
+
+meshioplusplus::IgaSampleOptions capi_iga_sample_options(const mio_iga_opts* pOpts) {
+    mio_iga_opts o;
+    mio_iga_opts_init(&o);
+    if (pOpts)
+        o = *pOpts;
+    meshioplusplus::IgaSampleOptions s;
+    s.mSubdivisions = o.sample_subdivisions;
+    s.mTrimSamples = o.trim_samples;
+    s.mEdges = o.edges != 0;
+    s.mTrim = o.trim != 0;
+    return s;
+}
+
+// A new handle of `rFormat` holding `rInfo`.
+template <class Info>
+mio_format_info* capi_iga_handle(const std::string& rFormat, Info&& rInfo) {
+    auto handle = std::make_unique<mio_format_info>();
+    handle->mFormat = rFormat;
+    handle->mInfo = std::forward<Info>(rInfo);
+    if (std::holds_alternative<meshioplusplus::BrepInfo>(handle->mInfo))
+        capi_index_brep(*handle);
+    return handle.release();
+}
+
+const char* const kCapiIgaNotNurbs = "meshio++: iga: the side channel is not a NURBS model";
+
+}  // namespace
+
+extern "C" {
+
+mio_mesh* mio_iga_refine(const mio_format_info* info, const mio_iga_opts* opts,
+                         mio_format_info** refined) {
+    if (refined)
+        *refined = nullptr;
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const meshioplusplus::IgaRefineOptions ro = capi_iga_refine_options(opts);
+        const meshioplusplus::IgaSampleOptions so = capi_iga_sample_options(opts);
+        if (const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo)) {
+            const meshioplusplus::NurbsInfo r = meshioplusplus::iga_refine(*p_nurbs, ro);
+            meshioplusplus::NurbsInfo mapped;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::iga_sample(r, so, &mapped)});
+            if (refined)
+                *refined = capi_iga_handle(info->mFormat, std::move(mapped));
+            return mesh.release();
+        }
+        if (const auto* p_brep = std::get_if<meshioplusplus::BrepInfo>(&info->mInfo)) {
+            meshioplusplus::BrepInfo r = meshioplusplus::iga_refine(*p_brep, ro);
+            auto mesh = std::make_unique<mio_mesh>(mio_mesh{meshioplusplus::iga_sample(r, so)});
+            if (refined)
+                *refined = capi_iga_handle(info->mFormat, std::move(r));
+            return mesh.release();
+        }
+        throw std::invalid_argument(kCapiIgaNotNurbs);
+    });
+}
+
+mio_mesh* mio_iga_sample(const mio_format_info* info, const mio_iga_opts* opts,
+                         mio_format_info** mapped) {
+    if (mapped)
+        *mapped = nullptr;
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const meshioplusplus::IgaSampleOptions so = capi_iga_sample_options(opts);
+        if (const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo)) {
+            meshioplusplus::NurbsInfo with_map;
+            auto mesh = std::make_unique<mio_mesh>(
+                mio_mesh{meshioplusplus::iga_sample(*p_nurbs, so, &with_map)});
+            if (mapped)
+                *mapped = capi_iga_handle(info->mFormat, std::move(with_map));
+            return mesh.release();
+        }
+        if (const auto* p_brep = std::get_if<meshioplusplus::BrepInfo>(&info->mInfo)) {
+            auto mesh = std::make_unique<mio_mesh>(mio_mesh{meshioplusplus::iga_sample(*p_brep, so)});
+            if (mapped)
+                *mapped = capi_iga_handle(info->mFormat, meshioplusplus::BrepInfo(*p_brep));
+            return mesh.release();
+        }
+        throw std::invalid_argument(kCapiIgaNotNurbs);
+    });
+}
+
+mio_iga_evaluation* mio_iga_evaluate(const mio_format_info* info, int64_t patch,
+                                     const double* params, int64_t num_points, int32_t derivatives,
+                                     int32_t trim_samples) {
+    return guarded_ptr(static_cast<mio_iga_evaluation*>(nullptr), [&]() -> mio_iga_evaluation* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        if (!params && num_points > 0)
+            throw std::invalid_argument("meshio++: params is NULL");
+        if (patch < 0 || num_points < 0)
+            throw std::invalid_argument("meshio++: negative patch or point count");
+        const auto index = static_cast<std::size_t>(patch);
+        const auto n = static_cast<std::size_t>(num_points);
+        const auto make_params = [&](std::size_t Dim) {
+            meshioplusplus::NDArray a(meshioplusplus::DType::Float64, {n, Dim});
+            if (n)
+                std::copy(params, params + n * Dim, a.As<double>());
+            return a;
+        };
+        auto out = std::make_unique<mio_iga_evaluation>();
+        if (const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo)) {
+            if (index >= p_nurbs->mPatches.size())
+                throw std::invalid_argument("meshio++: iga: patch out of range");
+            out->mEval = meshioplusplus::iga_evaluate(
+                *p_nurbs, index, make_params(p_nurbs->mPatches[index].mDegrees.size()), derivatives);
+            return out.release();
+        }
+        if (const auto* p_brep = std::get_if<meshioplusplus::BrepInfo>(&info->mInfo)) {
+            out->mFace = true;
+            out->mEval =
+                meshioplusplus::iga_evaluate(*p_brep, index, make_params(2), derivatives, trim_samples);
+            return out.release();
+        }
+        throw std::invalid_argument(kCapiIgaNotNurbs);
+    });
+}
+
+int64_t mio_iga_evaluation_num_fields(const mio_iga_evaluation* evaluation) {
+    if (!evaluation)
+        return -1;
+    return static_cast<int64_t>(evaluation->mEval.mFields.size());
+}
+
+mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation, int32_t which,
+                                    int64_t index, const void** data, mio_dtype* dtype,
+                                    int32_t* ndim, int64_t* shape) {
+    return guarded([&]() -> mio_status {
+        if (!evaluation)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: evaluation handle is NULL");
+        const meshioplusplus::IgaEvaluation& e = evaluation->mEval;
+        const meshioplusplus::NDArray* a = nullptr;
+        switch (which) {
+            case MIO_IGA_POINTS:
+                a = &e.mPoints;
+                break;
+            case MIO_IGA_DERIVATIVES:
+                a = e.mDerivatives.Size() ? &e.mDerivatives : nullptr;
+                break;
+            case MIO_IGA_NORMALS:
+                a = e.mNormals.Size() ? &e.mNormals : nullptr;
+                break;
+            case MIO_IGA_INSIDE:
+                a = evaluation->mFace ? &e.mInside : nullptr;
+                break;
+            case MIO_IGA_FIELD:
+                if (index >= 0 && static_cast<std::size_t>(index) < e.mFields.size())
+                    a = &e.mFields[static_cast<std::size_t>(index)];
+                break;
+            default:
+                break;
+        }
+        if (!a)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: iga: the evaluation holds no such array");
+        return array_out(*a, data, dtype, ndim, shape);
+    });
+}
+
+void mio_iga_evaluation_free(mio_iga_evaluation* evaluation) {
+    delete evaluation;
 }
 
 int mio_has_occt(void) {

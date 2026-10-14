@@ -3238,6 +3238,29 @@ step('info: an MFEM NURBS mesh keeps and writes back its patches', () => {
     assert.deepEqual(Array.from(back.info.patches[0].weights), Array.from(p.weights));
 });
 
+step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and written back', () => {
+    const mesh = m.readMeshSelective('/annulus.mesh', { format: 'mfem', info: true });
+    const fine = m.igaRefine(mesh.info, { subdivisions: 3, elevate: 1 });
+    assert.equal(fine.info.format, 'mfem');
+    assert.deepEqual(Array.from(fine.info.patches[0].degrees), [3, 2]);
+    m.writeMesh('/annulus_fine.mesh', fine.mesh, 'mfem', { info: fine.info });
+    assert.ok(new TextDecoder().decode(m.FS.readFile('/annulus_fine.mesh')).startsWith('MFEM NURBS mesh v1.0'));
+    const uv = [0.3, 0.7, 0.9, 0.2];
+    const a = m.igaEvaluate(mesh.info, 0, uv, { derivatives: 1 });
+    const b = m.igaEvaluate(fine.info, 0, uv);
+    assert.equal(a.spaceDim, 2);
+    for (let i = 0; i < 4; i++) assert.ok(Math.abs(a.points[i] - b.points[i]) < 1e-13);
+    assert.equal(a.derivatives.length, 2 * 2 * 2);
+    assert.equal(a.normals, undefined);
+    assert.equal(a.inside, undefined);
+    assert.throws(() => m.igaEvaluate(mesh.info, 0, [2.0, 0.5]), /knot range/);
+    assert.throws(() => m.igaRefine(mesh.info, { subdivisions: [2, 3] }), /every direction alike/);
+    assert.throws(() => m.igaRefine({ format: 'gmsh' }), /not a NURBS model/);
+    const s = m.igaSample(mesh.info);
+    assert.equal(s.info.format, 'mfem');
+    assert.equal(s.mesh.cells[0].type, 'quad9');
+});
+
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
     m.FS.writeFile('/side.mdpa', [
         'Begin ModelPartData', '    SOLVER_TYPE static', 'End ModelPartData',

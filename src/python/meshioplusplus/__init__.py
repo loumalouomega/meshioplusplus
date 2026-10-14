@@ -155,6 +155,7 @@ if TYPE_CHECKING:
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
+    from ._iga import iga_evaluate, iga_refine, iga_sample
     from ._interfaces import (
         contact_pairs,
         find_interface,
@@ -274,6 +275,9 @@ _LAZY_ATTRS = {
     "feature_edges": "_feature_edges",
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
+    "iga_evaluate": "_iga",
+    "iga_refine": "_iga",
+    "iga_sample": "_iga",
     "segment": "_segment",
     "from_cupy": "_gpu",
     "has_cuda_device": "_gpu",
@@ -493,6 +497,9 @@ __all__ = [
     "feature_edges",
     "fit_cad",
     "fit_primitives",
+    "iga_evaluate",
+    "iga_refine",
+    "iga_sample",
     "segment",
     "hausdorff_distance",
     "match_periodic_nodes",

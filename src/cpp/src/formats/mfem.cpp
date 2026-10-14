@@ -4484,6 +4484,24 @@ std::string mf_nurbs_text(const MfNurbs& rN) {
     return out;
 }
 
+// The NURBS grid functions a side channel's fields are, on the mesh's own space.
+std::vector<MfGridData> mf_nurbs_grid_data(const NurbsInfo& rInfo, const MfNurbs& rN,
+                                           const std::vector<std::vector<double>>& rFields,
+                                           const std::vector<std::size_t>& rCols) {
+    std::vector<MfGridData> gfs;
+    for (std::size_t k = 0; k < rFields.size(); ++k) {
+        MfGridData g;
+        g.mName = rInfo.mFieldNames[k];
+        g.mSpace.mKind = MfSpace::Nurbs;
+        g.mSpace.mCollection = rN.mSpace.mCollection;
+        g.mSpace.mVDim = static_cast<int>(rCols[k]);
+        g.mSpace.mOrdering = 1;
+        g.mValues = rFields[k];
+        gfs.push_back(std::move(g));
+    }
+    return gfs;
+}
+
 // Throws unless `rMesh` is what reading the side channel's NURBS mesh gives:
 // the points, the element cells and the fields still present.
 void mf_nurbs_match(const Mesh& rMesh, const Mesh& rExpected,
@@ -5151,6 +5169,15 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     }
 }
 
+Mesh sample_mfem_nurbs(const NurbsInfo& rInfo, NurbsInfo* pMapped) {
+    mf_check_nurbs_info(rInfo);
+    std::vector<std::vector<double>> fields;
+    std::vector<std::size_t> cols;
+    const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
+    const std::vector<MfGridData> gfs = mf_nurbs_grid_data(rInfo, n, fields, cols);
+    return mf_sample_nurbs(n, gfs, "the NURBS side channel", pMapped);
+}
+
 void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
                 const NurbsInfo& rInfo) {
     if (rInfo.mPatches.empty()) {
@@ -5161,17 +5188,7 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
     std::vector<std::vector<double>> fields;
     std::vector<std::size_t> cols;
     const MfNurbs n = mf_nurbs_from_info(rInfo, fields, cols);
-    std::vector<MfGridData> gfs;
-    for (std::size_t k = 0; k < fields.size(); ++k) {
-        MfGridData g;
-        g.mName = rInfo.mFieldNames[k];
-        g.mSpace.mKind = MfSpace::Nurbs;
-        g.mSpace.mCollection = n.mSpace.mCollection;
-        g.mSpace.mVDim = static_cast<int>(cols[k]);
-        g.mSpace.mOrdering = 1;
-        g.mValues = fields[k];
-        gfs.push_back(std::move(g));
-    }
+    const std::vector<MfGridData> gfs = mf_nurbs_grid_data(rInfo, n, fields, cols);
     const Mesh expected = mf_sample_nurbs(n, gfs, "the NURBS side channel", nullptr);
     mf_nurbs_match(rMesh, expected, rInfo.mFieldNames);
 

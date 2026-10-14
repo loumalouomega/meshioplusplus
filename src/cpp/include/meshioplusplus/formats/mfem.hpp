@@ -189,4 +189,18 @@ MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, 
 MESHIOPLUSPLUS_API void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions,
                                    const NurbsInfo& rInfo);
 
+/**
+ * @brief The mesh a NURBS side channel samples to: exactly what `read_mfem`
+ * returns for the NURBS mesh `write_mfem` writes from @p rInfo -- the knot-span
+ * elements as Lagrange cells of the highest degree, the boundary cells, the
+ * fields as point data -- so a side channel refined or edited with
+ * `iga_refine` (operations/iga.hpp) can be written back with it.
+ *
+ * @param rInfo a side channel with a patch topology (`mTopology`)
+ * @param pMapped when not null, receives @p rInfo as `read_mfem` would return
+ *        it: the same patches, with the cell-to-patch maps of the sampling
+ * @throws WriteError for an inconsistent @p rInfo
+ */
+MESHIOPLUSPLUS_API Mesh sample_mfem_nurbs(const NurbsInfo& rInfo, NurbsInfo* pMapped = nullptr);
+
 }  // namespace meshioplusplus

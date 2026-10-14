@@ -42,6 +42,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/brep_trim.hpp"
 #include "../detail/json_value.hpp"
 #include "../detail/nurbs_eval.hpp"
 #include "lagrange_common.hpp"
@@ -598,68 +599,8 @@ std::string cj_line_type(int Order) {
     return Order <= 1 ? "line" : Order == 2 ? "line3" : "VTK_LAGRANGE_CURVE";
 }
 
-// The cell boundaries along one direction: every nonzero span split in S.
-struct CjAxis {
-    std::vector<double> mLo, mHi;     // per cell
-    std::vector<std::size_t> mSpan;   // knot index of each cell's span
-    std::vector<std::int64_t> mSpanNo;  // the span's ordinal among nonzero spans
-};
-
-CjAxis cj_axis(int P, const std::vector<double>& rKnots, std::size_t N, int S,
-               const std::vector<double>* pRange) {
-    CjAxis a;
-    const std::vector<std::size_t> spans = detail::nurbs_spans(P, rKnots, N);
-    for (std::size_t s = 0; s < spans.size(); ++s) {
-        double k0 = rKnots[spans[s]], k1 = rKnots[spans[s] + 1];
-        if (pRange && pRange->size() == 2) {
-            const double r0 = std::min((*pRange)[0], (*pRange)[1]);
-            const double r1 = std::max((*pRange)[0], (*pRange)[1]);
-            k0 = std::max(k0, r0);
-            k1 = std::min(k1, r1);
-            if (!(k0 < k1))
-                continue;
-        }
-        for (int j = 0; j < S; ++j) {
-            const double lo = k0 + (k1 - k0) * (static_cast<double>(j) / S);
-            const double hi = j + 1 == S ? k1 : k0 + (k1 - k0) * (static_cast<double>(j + 1) / S);
-            a.mLo.push_back(lo);
-            a.mHi.push_back(hi);
-            a.mSpan.push_back(spans[s]);
-            a.mSpanNo.push_back(static_cast<std::int64_t>(s));
-        }
-    }
-    return a;
-}
-
-// The lattice coordinates of one axis: cell c's node i at index c * K + i.
-std::vector<double> cj_lattice(const CjAxis& rA, int K) {
-    const std::size_t n = rA.mLo.size();
-    std::vector<double> g(n * static_cast<std::size_t>(K) + 1, 0.0);
-    for (std::size_t c = 0; c < n; ++c)
-        for (int i = 0; i < K; ++i)
-            g[c * static_cast<std::size_t>(K) + static_cast<std::size_t>(i)] =
-                rA.mLo[c] + (rA.mHi[c] - rA.mLo[c]) * (static_cast<double>(i) / K);
-    if (n)
-        g[n * static_cast<std::size_t>(K)] = rA.mHi[n - 1];
-    return g;
-}
-
 void cj_check_curve(const BrepCurve& rC, const std::string& rWhat) {
-    const std::size_t n = rC.mWeights.Size();
-    if (rC.mDegree < 1 || rC.mDegree > kCjMaxDegree)
-        cj_bad(rWhat + " degree is out of range");
-    if (rC.mControlPoints.Dtype() != DType::Float64 || rC.mControlPoints.Shape().size() != 2 ||
-        rC.mControlPoints.Shape()[0] != n || rC.mControlPoints.Shape()[1] != 3 ||
-        rC.mWeights.Dtype() != DType::Float64)
-        cj_bad(rWhat + " control points are not Float64 (n, 3) beside n weights");
-    if (n < static_cast<std::size_t>(rC.mDegree) + 1 ||
-        rC.mKnots.size() != n + static_cast<std::size_t>(rC.mDegree) + 1)
-        cj_bad(rWhat + " knot vector does not match its control points");
-    for (std::size_t i = 1; i < rC.mKnots.size(); ++i)
-        if (!(rC.mKnots[i] >= rC.mKnots[i - 1]))
-            cj_bad(rWhat + " knot vector decreases");
-    if (rC.mIds.Size() != 0 && (rC.mIds.Size() != n || rC.mIds.Dtype() != DType::Int64))
-        cj_bad(rWhat + " ids do not match its control points");
+    detail::brep_check_curve(rC, rWhat, "meshio++: sample_brep: ");
 }
 
 void cj_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
@@ -683,55 +624,6 @@ void cj_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
         cj_bad(rWhat + " control net does not match its knot vectors");
 }
 
-// A loop as a closed polygon in (u, v): every trim sampled at Samples points
-// per knot span of its active range, in loop order.
-std::vector<std::array<double, 2>> cj_loop_polygon(const BrepLoop& rLoop, int Samples) {
-    std::vector<std::array<double, 2>> poly;
-    for (const BrepTrim& t : rLoop.mTrims) {
-        const BrepCurve& c = t.mCurve;
-        const std::size_t n = c.mWeights.Size();
-        const CjAxis axis = cj_axis(c.mDegree, c.mKnots, n, 1, &c.mActiveRange);
-        std::vector<std::array<double, 2>> pts;
-        const double* w = c.mRational ? c.mWeights.As<double>() : nullptr;
-        for (std::size_t s = 0; s < axis.mLo.size(); ++s)
-            for (int j = 0; j < Samples; ++j) {
-                const double u =
-                    axis.mLo[s] + (axis.mHi[s] - axis.mLo[s]) * (static_cast<double>(j) / Samples);
-                double xyz[3];
-                detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(),
-                                                  w, 3, axis.mSpan[s], u, xyz);
-                pts.push_back({xyz[0], xyz[1]});
-            }
-        if (!axis.mLo.empty()) {
-            const std::size_t s = axis.mLo.size() - 1;
-            double xyz[3];
-            detail::nurbs_curve_point_in_span(c.mDegree, c.mKnots, c.mControlPoints.As<double>(), w,
-                                              3, axis.mSpan[s], axis.mHi[s], xyz);
-            pts.push_back({xyz[0], xyz[1]});
-        }
-        if (!t.mDirection)
-            std::reverse(pts.begin(), pts.end());
-        poly.insert(poly.end(), pts.begin(), pts.end());
-    }
-    return poly;
-}
-
-// Even-odd point-in-polygon over every loop of a face.
-bool cj_inside(const std::vector<std::vector<std::array<double, 2>>>& rLoops, double U,
-               double V) {
-    bool inside = false;
-    for (const auto& poly : rLoops) {
-        const std::size_t n = poly.size();
-        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
-            const auto& a = poly[i];
-            const auto& b = poly[j];
-            if ((a[1] > V) != (b[1] > V) && U < (b[0] - a[0]) * (V - a[1]) / (b[1] - a[1]) + a[0])
-                inside = !inside;
-        }
-    }
-    return inside;
-}
-
 struct CjBlock {
     std::string mType;
     std::vector<std::int64_t> mConn;
@@ -740,8 +632,10 @@ struct CjBlock {
 };
 
 CjBlock& cj_block(std::vector<CjBlock>& rBlocks, const std::string& rType, std::size_t Nodes) {
+    // Keyed by node count too: faces of degrees 3 and 4 are both
+    // VTK_LAGRANGE_QUADRILATERAL, with 16 and 25 nodes.
     for (auto& b : rBlocks)
-        if (b.mType == rType)
+        if (b.mType == rType && b.mNodes == Nodes)
             return b;
     rBlocks.push_back(CjBlock{});
     rBlocks.back().mType = rType;
@@ -800,15 +694,15 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
                 cj_check_curve(t.mCurve, fw + " trimming curve");
         const int k = std::max(p, q);
         const bool clip = rOpt.mTrim && face.mTrimmed && !face.mLoops.empty();
-        const CjAxis au = cj_axis(p, patch.mKnots[0], nu, auto_split(p, patch.mKnots[0], nu, clip),
+        const detail::BrepAxis au = detail::brep_axis(p, patch.mKnots[0], nu, auto_split(p, patch.mKnots[0], nu, clip),
                                   nullptr);
-        const CjAxis av = cj_axis(q, patch.mKnots[1], nv, auto_split(q, patch.mKnots[1], nv, clip),
+        const detail::BrepAxis av = detail::brep_axis(q, patch.mKnots[1], nv, auto_split(q, patch.mKnots[1], nv, clip),
                                   nullptr);
         CjPending pd;
         pd.mFace = true;
         pd.mEntity = fi;
-        pd.mU = cj_lattice(au, k);
-        pd.mV = cj_lattice(av, k);
+        pd.mU = detail::brep_lattice(au, k);
+        pd.mV = detail::brep_lattice(av, k);
         pd.mNu = pd.mU.size();
         for (std::size_t i = 0; i < pd.mU.size(); ++i)
             pd.mSpanU.push_back(au.mSpan.empty() ? 0 : au.mSpan[std::min(i / k, au.mSpan.size() - 1)]);
@@ -817,7 +711,7 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
         std::vector<std::vector<std::array<double, 2>>> loops;
         if (clip)
             for (const BrepLoop& loop : face.mLoops) {
-                auto poly = cj_loop_polygon(loop, rOpt.mTrimSamples);
+                auto poly = detail::brep_loop_polygon(loop, rOpt.mTrimSamples);
                 if (poly.size() >= 3)
                     loops.push_back(std::move(poly));
             }
@@ -831,14 +725,14 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
                     const double u0 = au.mLo[iu], u1 = au.mHi[iu];
                     const double v0 = av.mLo[jv], v1 = av.mHi[jv];
                     const double uc = (u0 + u1) * 0.5, vc = (v0 + v1) * 0.5;
-                    if (!cj_inside(loops, uc, vc))
+                    if (!detail::brep_inside(loops, uc, vc))
                         continue;
                     // The corners pulled a hair towards the centre, so a cell
                     // whose side lies on a loop is not counted as crossed.
                     const double a0 = uc + (u0 - uc) * kCjCorner, a1 = uc + (u1 - uc) * kCjCorner;
                     const double b0 = vc + (v0 - vc) * kCjCorner, b1 = vc + (v1 - vc) * kCjCorner;
-                    if (!cj_inside(loops, a0, b0) || !cj_inside(loops, a1, b0) ||
-                        !cj_inside(loops, a1, b1) || !cj_inside(loops, a0, b1))
+                    if (!detail::brep_inside(loops, a0, b0) || !detail::brep_inside(loops, a1, b0) ||
+                        !detail::brep_inside(loops, a1, b1) || !detail::brep_inside(loops, a0, b1))
                         trimmed = 1;
                 }
                 for (const auto& ijk : lattice) {
@@ -870,11 +764,11 @@ Mesh cj_sample(const BrepInfo& rInfo, const CadJsonReadOptions& rOpt) {
             const BrepCurve& c = edge.mCurve;
             cj_check_curve(c, "edge " + std::to_string(ei) + " 3d_curve");
             const int k = c.mDegree;
-            const CjAxis axis = cj_axis(k, c.mKnots, c.mWeights.Size(), S, &c.mActiveRange);
+            const detail::BrepAxis axis = detail::brep_axis(k, c.mKnots, c.mWeights.Size(), S, &c.mActiveRange);
             CjPending pd;
             pd.mFace = false;
             pd.mEntity = ei;
-            pd.mU = cj_lattice(axis, k);
+            pd.mU = detail::brep_lattice(axis, k);
             pd.mNu = pd.mU.size();
             for (std::size_t i = 0; i < pd.mU.size(); ++i)
                 pd.mSpanU.push_back(axis.mSpan.empty() ? 0

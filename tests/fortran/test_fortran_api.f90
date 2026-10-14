@@ -192,6 +192,46 @@ program test_fortran_api
             call check(all(back_info%nurbs_control_points(1) == xyz), 'nurbs round trip')
             call back%free()
             call back_info%free()
+            ! ---- the isogeometric layer: refine, write back, evaluate
+            block
+                type(mio_mesh) :: fine
+                type(mio_format_info) :: refined
+                type(mio_iga_evaluation) :: ev_a, ev_b
+                real(real64) :: uv(2, 2)
+                real(real64), allocatable :: pa(:, :), pb(:, :), da(:, :, :), nrm(:, :)
+                fine = info%iga_refine(subdivisions=[3], elevate=[1], refined=refined, &
+                                       stat=ierr, errmsg=msg)
+                call check(ierr == 0, 'iga_refine succeeds')
+                if (ierr == 0) then
+                    call check(refined%format() == 'mfem', 'iga_refine keeps the format')
+                    call check(all(refined%nurbs_degrees(1) == [3, 2]), 'iga_refine raised degrees')
+                    call fine%write_with_info(output_path, refined, 'mfem', stat=ierr)
+                    call check(ierr == 0, 'refined model writes back')
+                    uv = reshape([0.3_real64, 0.7_real64, 0.9_real64, 0.2_real64], [2, 2])
+                    ev_a = info%iga_evaluate(1, uv, derivatives=1, stat=ierr)
+                    ev_b = refined%iga_evaluate(1, uv, stat=ierr)
+                    call check(ierr == 0, 'iga_evaluate succeeds')
+                    pa = ev_a%points()
+                    pb = ev_b%points()
+                    call check(all(shape(pa) == [2, 2]), 'iga points shape')
+                    call check(maxval(abs(pa - pb)) < 1.0e-13_real64, 'refinement keeps the geometry')
+                    da = ev_a%derivatives()
+                    call check(all(shape(da) == [2, 2, 2]), 'iga derivatives shape')
+                    nrm = ev_a%normals(stat=ierr)
+                    call check(ierr /= 0, 'a planar patch has no 3-D normals')
+                    call check(ev_a%num_fields() == 0, 'iga carries no fields here')
+                    call ev_a%free()
+                    call ev_b%free()
+                end if
+                call fine%free()
+                call refined%free()
+                fine = info%iga_sample(stat=ierr)
+                call check(ierr == 0, 'iga_sample succeeds')
+                call fine%free()
+                ev_a = info%iga_evaluate(1, reshape([2.0_real64, 0.5_real64], [2, 1]), stat=ierr)
+                call check(ierr /= 0, 'an out-of-range parameter fails')
+                call ev_a%free()
+            end block
             open (newunit=unit, file=output_path, status='old')
             close (unit, status='delete')
         end if

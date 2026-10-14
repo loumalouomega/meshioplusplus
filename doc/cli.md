@@ -110,6 +110,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `resample` | `method`, `num_steps` and the target `times` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
+| `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
+| `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
 | `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them), `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
 | `region-adjacency` | `facets` and `measure` |
@@ -1064,6 +1066,62 @@ meshioplusplus fit-primitives [options] INFILE OUTFILE
 
 ```sh
 meshioplusplus fit-primitives part_patches.vtu part_fits.vtu --tolerance 2e-3 --json
+```
+
+---
+
+## meshioplusplus iga-refine
+
+Refine every patch of a NURBS model exactly (degree elevation, then knot insertion) and write the refined model sampled; an MFEM NURBS mesh (`-o mfem`) or CAD JSON output keeps the refined patches (see [isogeometric layer](/iga)). The input is an MFEM NURBS mesh, CAD JSON, STEP or IGES.
+
+```text
+meshioplusplus iga-refine [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format`, `-o/--output-format` | Explicit formats (an MFEM mesh needs `-o mfem`; `.mesh` alone means Medit) |
+| `-s/--subdivisions N[,M[,L]]` | Parts every knot span is split into, per direction (default `1`; an MFEM model refines every direction alike) |
+| `-e/--elevate N[,M[,L]]` | Degrees to add, per direction, before the knots are inserted (default `0`) |
+| `--sample-subdivisions N` | Cells per knot span of the sampling (default `0`, automatic) |
+| `--trim-samples N`, `--no-edges`, `--no-trim` | B-rep sampling: trim curve samples per span (default `16`), skip the edge curves, keep cells outside the trimming loops |
+| `--json`, `-q/--quiet` | Machine-readable summary, or no summary |
+
+```sh
+meshioplusplus iga-refine pipe.mesh fine.mesh -o mfem --subdivisions 2 --elevate 1
+meshioplusplus iga-refine plate.cad.json fine.cad.json -s 2,3 -e 0,1
+```
+
+---
+
+## meshioplusplus iga-sample
+
+Sample a NURBS model into Lagrange cells (see [isogeometric layer](/iga#sampling)). Takes `iga-refine`'s input, format, sampling and summary options, with `-s/--subdivisions N` the cells per knot span and direction (default `0`, automatic).
+
+```sh
+meshioplusplus iga-sample plate.cad.json plate.vtu -s 8
+```
+
+---
+
+## meshioplusplus iga-evaluate
+
+Evaluate a patch (a B-rep's face) at parametric coordinates and print the result as JSON (see [isogeometric layer](/iga)).
+
+```text
+meshioplusplus iga-evaluate [options] INFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format` | Explicit input format |
+| `-p/--param u[,v[,w]]` | A parametric point, one number per direction of the patch; repeat for more points |
+| `--patch N` | The patch (face), 0-based (default `0`) |
+| `--derivatives 0\|1` | `1` adds the first derivatives and the surface normals |
+| `--trim-samples N` | B-rep: points per knot span a trimming curve is sampled at (default `16`) |
+
+```sh
+meshioplusplus iga-evaluate plate.cad.json -p 0.5,0.5 -p 2,2 --derivatives 1
 ```
 
 ---

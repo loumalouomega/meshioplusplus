@@ -70,3 +70,5 @@ Checked with OpenCASCADE 8.0.1 (the `cadquery-ocp` 8.0.1.1 wheels): `STEPControl
 - Reading without the OpenCASCADE backend (see above), and a reader's vertices (STEP's `VERTEX_POINT`s are carried as edge ends only).
 - Analytic faces — this writer is faceted by design. [`fit_cad`](/fit_cad) writes the fitted cylinders, cones, spheres and tori, and B-spline faces for what no primitive explains, as CAD faces through the optional OpenCASCADE backend.
 - Colours, layers, assemblies, and AP242 product manufacturing information.
+
+The NURBS B-rep a STEP file reads into `mesh.info["brep"]` can be refined, evaluated and sampled exactly with the [isogeometric layer](../iga.md) (`iga_refine`, `iga_evaluate`, `iga_sample`); STEP files themselves are not written from a refined B-rep, but `mp.write("refined.cad.json", refined)` is.
