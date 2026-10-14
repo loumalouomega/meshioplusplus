@@ -193,6 +193,10 @@ def test_a_rolling_ball_fillet_is_its_own_face():
     assert report["num_variable_fillet"] == 0 and report["num_blend"] == 0
     assert report["max_deviation"] <= report["tolerance"]
     assert 7 in out.cell_data["fit_cad:type"][0].tolist()
+    # Every face reaches the NURBS side channel, trimmed (OpenCASCADE 7.9's
+    # conversion throws on this solid; the faces are then approximated).
+    faces = out.info["brep"]["faces"]
+    assert len(faces) == report["num_faces"] and all(f["trimmed"] for f in faces)
     _out, report = mio.fit_cad(fit, fillets=False, return_report=True)
     assert report["num_fillet"] == 0
 
@@ -241,6 +245,8 @@ def test_thread_flanks_are_helical_faces():
     assert report["num_rounded_thread"] == 0
     assert report["max_deviation"] <= report["tolerance"]
     assert 8 in out.cell_data["fit_cad:type"][0].tolist()
+    faces = out.info["brep"]["faces"]
+    assert len(faces) == report["num_faces"] and all(f["trimmed"] for f in faces)
 
 
 @needs_occt

@@ -91,7 +91,7 @@ The STEP file is AP214 in millimetres. Its header timestamp is pinned and its pr
 
 ## The solid as NURBS
 
-`solid.info["brep"]` (C++ `FitCadResult::mBrep`, a `BrepInfo`) holds the solid with every face converted to NURBS (`BRepBuilderAPI_NurbsConvert`): the surfaces, their trimming loops and the edges with the faces they bound, as a [STEP read](/formats/step#reading) gives them. Writing it as [Kratos CAD JSON](/formats/cad_json) (`mp.write("part.cad.json", solid)`, `to-cad --cad-json`) makes a scanned part Kratos IGA geometry.
+`solid.info["brep"]` (C++ `FitCadResult::mBrep`, a `BrepInfo`) holds the solid with every face converted to NURBS (`BRepBuilderAPI_NurbsConvert`): the surfaces, their trimming loops and the edges with the faces they bound, as a [STEP read](/formats/step#reading) gives them. Every face of the solid is there, trimmed, and every trimming curve lies in its surface's parameter range. When the exact conversion does not deliver that (OpenCASCADE 7.9 throws on a trimmed cylinder or one wound several turns round, leaves a face that already was a B-spline without a surface, and can stop a converted surface short of its trims), the solid is kept as it is and each surface and edge that is not a B-spline is approximated by one in its own parameters, within `1e-6` of the bounding-box diagonal, so the trimming curves stay valid; planes and lines stay exact. Writing it as [Kratos CAD JSON](/formats/cad_json) (`mp.write("part.cad.json", solid)`, `to-cad --cad-json`) makes a scanned part Kratos IGA geometry.
 
 ## Getting OpenCASCADE
 

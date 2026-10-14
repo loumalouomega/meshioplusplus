@@ -1802,8 +1802,12 @@ FcHandle<Geom_Surface> fc_rolling_ball_surface(const detail::RollingBallFit& rFi
                           cc.Translated(a * (rho * std::cos(phi)) + b * (rho * std::sin(phi))));
         }
     }
+    // Interpolated rather than approximated: the grid points lie on the ball
+    // family exactly, and a knot at every row and column keeps OpenCASCADE's
+    // mesher (7.6 meshes a long, thin approximated surface with few spans far
+    // coarser than the deflection asked of it) dense enough across the arcs.
     GeomAPI_PointsToBSplineSurface fit;
-    fit.Init(grid, Approx_IsoParametric, 3, 5, GeomAbs_C2, 0.1 * Tol, closed);
+    fit.Interpolate(grid, Approx_IsoParametric, closed);
     if (!fit.IsDone())
         return {};
     return FcHandle<Geom_Surface>(fit.Surface());
@@ -2501,8 +2505,12 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         const double d = to_skin[static_cast<std::size_t>(
                             tri.mTri[t * 3 + static_cast<std::size_t>(k)])];
                         if (d > tol && !build.mBadRow[static_cast<std::size_t>(g)]) {
-                            log::debug("fit_cad: demoting patch {}: its face lies {} from the skin",
-                                       skin.mPatches[static_cast<std::size_t>(g)].mLabel, d);
+                            const std::size_t v = tri.mTri[t * 3 + static_cast<std::size_t>(k)];
+                            log::debug(
+                                "fit_cad: demoting patch {}: its face lies {} from the "
+                                "skin, at ({}, {}, {})",
+                                skin.mPatches[static_cast<std::size_t>(g)].mLabel, d,
+                                tri.mXyz[v * 3], tri.mXyz[v * 3 + 1], tri.mXyz[v * 3 + 2]);
                             build.mBadRow[static_cast<std::size_t>(g)] = 1;
                         }
                     }
@@ -2518,8 +2526,13 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                             const double d = to_solid[static_cast<std::size_t>(
                                 fc.mNodes[static_cast<std::size_t>(k)])];
                             if (d > tol && !build.mBadRow[static_cast<std::size_t>(r)]) {
-                                log::debug("fit_cad: demoting patch {}: the skin lies {} from it",
-                                           skin.mPatches[static_cast<std::size_t>(r)].mLabel, d);
+                                const gp_Pnt at =
+                                    fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]);
+                                log::debug(
+                                    "fit_cad: demoting patch {}: the skin lies {} from it, "
+                                    "at ({}, {}, {})",
+                                    skin.mPatches[static_cast<std::size_t>(r)].mLabel, d, at.X(),
+                                    at.Y(), at.Z());
                                 build.mBadRow[static_cast<std::size_t>(r)] = 1;
                             }
                         }
@@ -2642,7 +2655,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::info("fit_cad: {} fitted patch(es) demoted to facets", result.mNumDemoted);
     // The solid as NURBS, its faces in the order fit_cad:face numbers them.
     try {
-        result.mBrep = detail::occt_brep_info(detail::occt_nurbs_shape(build.mShape));
+        result.mBrep = detail::occt_nurbs(build.mShape).mInfo;
     } catch (const Standard_Failure& rErr) {
         log::warn("fit_cad: the solid could not be converted to NURBS: {}",
                   rErr.GetMessageString());

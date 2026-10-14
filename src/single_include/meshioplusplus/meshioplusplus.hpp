@@ -36681,7 +36681,11 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
  * every surface into a `Geom_BSplineSurface` and every parameter curve into a
  * `Geom2d_BSplineCurve` *consistently*: converting a face's surface alone
  * reparametrises a cylinder or a sphere and leaves its trimming curves in the
- * old parameters. Faces get ids `1 .. F` and edges `F + 1 .. F + E` (Kratos
+ * old parameters. OpenCASCADE 7.9 throws converting some trimmed and multi-turn
+ * elementary faces, and leaves a face whose surface already is a B-spline with
+ * none; then the shape is kept as it is and every surface and curve that is
+ * not a B-spline is approximated by one *in its own parameters*, so the
+ * trimming curves stay valid. Faces get ids `1 .. F` and edges `F + 1 .. F + E` (Kratos
  * gives every geometry one id space), control points ids from 1, so the
  * `BrepInfo` writes as CAD JSON Kratos loads.
  *
@@ -36704,8 +36708,22 @@ namespace meshioplusplus::detail {
 /// @throws ReadError when OpenCASCADE cannot read or transfer it.
 TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
 
-/// The shape with every surface and curve as a NURBS.
-TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape);
+/// A shape and its faces, loops and edges as NURBS.
+struct OcctNurbs {
+    /// The converted shape, or the shape itself when the conversion failed.
+    TopoDS_Shape mShape;
+    BrepInfo mInfo;
+    /// The conversion succeeded on every face: the NURBS are exact.
+    bool mExact = false;
+};
+
+/**
+ * @brief The shape as NURBS: converted exactly by `BRepBuilderAPI_NurbsConvert`
+ * when that leaves every face a B-spline surface, otherwise approximated face by
+ * face and edge by edge in the shape's own parameters, within 1e-6 of its
+ * bounding-box diagonal.
+ */
+OcctNurbs occt_nurbs(const TopoDS_Shape& rShape);
 
 /// The faces, loops and edges of a NURBS-converted shape.
 BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);
@@ -64482,12 +64500,18 @@ std::vector<std::pair<std::string_view, std::string_view>> node_order_keys() {
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <Geom2dAPI_PointsToBSpline.hxx>
 #include <Geom2dConvert.hxx>
 #include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <GeomConvert.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom_Line.hxx>
+#include <Geom_Plane.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Message.hxx>
@@ -64497,7 +64521,11 @@ std::vector<std::pair<std::string_view, std::string_view>> node_order_keys() {
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <Standard_Failure.hxx>
+#include <TColStd_Array1OfInteger.hxx>
 #include <TColStd_Array1OfReal.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <TColgp_Array1OfPnt2d.hxx>
+#include <TColgp_Array2OfPnt.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
@@ -64558,41 +64586,233 @@ BrepCurve ob_curve(const ObHandle<TCurve>& rC, double First, double Last) {
     return out;
 }
 
-// The face's surface as a non-periodic B-spline in the world frame.
-ObHandle<Geom_BSplineSurface> ob_surface(const TopoDS_Face& rFace) {
+// A B-spline through samples of At over [A, B] (3-D or 2-D), its degree at
+// most 8, in At's own parameter: the fit comes back over [0, 1], and the
+// samples being uniform, its knots move onto [A, B]. Sampled more densely
+// until it stays within Tol of At halfway between them.
+template <class TPoint, class TCurve, class TApprox, class TPoints, class F>
+ObHandle<TCurve> ob_approx_curve(F&& rAt, double A, double B, double Tol) {
+    for (int n = 9; n <= 1025; n = 2 * n - 1) {
+        TPoints pts(1, n);
+        TColStd_Array1OfReal params(1, n);
+        for (int i = 0; i < n; ++i) {
+            const double t = A + (B - A) * i / (n - 1);
+            params.SetValue(i + 1, t);
+            pts.SetValue(i + 1, rAt(t));
+        }
+        TApprox fit(pts, params, 3, 8, GeomAbs_C2, 0.1 * Tol);
+        if (!fit.IsDone())
+            continue;
+        ObHandle<TCurve> c = fit.Curve();
+        TColStd_Array1OfReal knots(1, c->NbKnots());
+        c->Knots(knots);
+        const double k0 = knots(1), k1 = knots(knots.Upper());
+        for (int k = 1; k <= knots.Upper(); ++k)
+            knots(k) = A + (B - A) * (knots(k) - k0) / (k1 - k0);
+        c->SetKnots(knots);
+        double worst = 0.0;
+        for (int i = 0; i + 1 < n; ++i) {
+            const double t = A + (B - A) * (i + 0.5) / (n - 1);
+            worst = std::max(worst, c->Value(t).Distance(rAt(t)));
+        }
+        if (worst <= Tol)
+            return c;
+    }
+    return {};
+}
+
+// A non-rational B-spline over [U0, U1] x [V0, V1] in the surface's own
+// parameters, within Tol of it: a grid fitted iso-parametrically, its knots
+// then moved onto those ranges (the grid is uniform in both), sampled more
+// densely until the cell centres stay within Tol.
+ObHandle<Geom_BSplineSurface> ob_approx_surface(const ObHandle<Geom_Surface>& rS, double U0,
+                                                double U1, double V0, double V1, double Tol) {
+    for (int n = 9; n <= 129; n = 2 * n - 1) {
+        TColgp_Array2OfPnt grid(1, n, 1, n);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                grid.SetValue(
+                    i + 1, j + 1,
+                    rS->Value(U0 + (U1 - U0) * i / (n - 1), V0 + (V1 - V0) * j / (n - 1)));
+        GeomAPI_PointsToBSplineSurface fit;
+        fit.Init(grid, Approx_IsoParametric, 3, 8, GeomAbs_C2, 0.1 * Tol);
+        if (!fit.IsDone())
+            continue;
+        ObHandle<Geom_BSplineSurface> bs = fit.Surface();
+        auto remap = [](TColStd_Array1OfReal& rKnots, double Lo, double Hi) {
+            const double a = rKnots(rKnots.Lower()), b = rKnots(rKnots.Upper());
+            for (int k = rKnots.Lower(); k <= rKnots.Upper(); ++k)
+                rKnots(k) = Lo + (Hi - Lo) * (rKnots(k) - a) / (b - a);
+        };
+        TColStd_Array1OfReal uk(1, bs->NbUKnots()), vk(1, bs->NbVKnots());
+        bs->UKnots(uk);
+        bs->VKnots(vk);
+        remap(uk, U0, U1);
+        remap(vk, V0, V1);
+        bs->SetUKnots(uk);
+        bs->SetVKnots(vk);
+        double worst = 0.0;
+        for (int i = 0; i + 1 < n; ++i)
+            for (int j = 0; j + 1 < n; ++j) {
+                const double u = U0 + (U1 - U0) * (i + 0.5) / (n - 1);
+                const double v = V0 + (V1 - V0) * (j + 0.5) / (n - 1);
+                worst = std::max(worst, bs->Value(u, v).Distance(rS->Value(u, v)));
+            }
+        if (worst <= Tol)
+            return bs;
+    }
+    return {};
+}
+
+// Making a periodic B-spline non-periodic keeps the period its knots start
+// at. When the face's trims (or the edge's range) lie outside it, a whole
+// period away, the period is first moved to start where they do: a knot
+// inserted there, the origin moved onto it and the knots shifted by whole
+// periods, which leaves the geometry as it is.
+int ob_knot_at(const TColStd_Array1OfReal& rKnots, double U, double Tol) {
+    for (int k = rKnots.Lower(); k <= rKnots.Upper(); ++k)
+        if (std::fabs(rKnots(k) - U) <= Tol)
+            return k;
+    return 0;
+}
+
+void ob_surface_origin(Geom_BSplineSurface& rS, bool U, double Lo, double Hi) {
+    const double period = U ? rS.UPeriod() : rS.VPeriod();
+    const double tol = 1e-9 * period;
+    TColStd_Array1OfReal k(1, U ? rS.NbUKnots() : rS.NbVKnots());
+    U ? rS.UKnots(k) : rS.VKnots(k);
+    if (Lo >= k(1) - tol && Hi <= k(1) + period + tol)
+        return;  // already inside
+    const double at = Lo - period * std::floor((Lo - k(1)) / period);
+    if (ob_knot_at(k, at, tol) == 0) {
+        if (U)
+            rS.InsertUKnot(at, 1, tol, Standard_False);
+        else
+            rS.InsertVKnot(at, 1, tol, Standard_False);
+    }
+    TColStd_Array1OfReal grown(1, U ? rS.NbUKnots() : rS.NbVKnots());
+    U ? rS.UKnots(grown) : rS.VKnots(grown);
+    const int index = ob_knot_at(grown, at, tol);
+    if (index > 1) {
+        if (U)
+            rS.SetUOrigin(index);
+        else
+            rS.SetVOrigin(index);
+    }
+    TColStd_Array1OfReal moved(1, U ? rS.NbUKnots() : rS.NbVKnots());
+    U ? rS.UKnots(moved) : rS.VKnots(moved);
+    const double shift = Lo - moved(1);
+    for (int i = moved.Lower(); i <= moved.Upper(); ++i)
+        moved(i) += shift;
+    if (U)
+        rS.SetUKnots(moved);
+    else
+        rS.SetVKnots(moved);
+}
+
+template <class TCurve>
+void ob_curve_origin(TCurve& rC, double Lo, double Hi) {
+    const double period = rC.Period();
+    const double tol = 1e-9 * period;
+    TColStd_Array1OfReal k(1, rC.NbKnots());
+    rC.Knots(k);
+    if (Lo >= k(1) - tol && Hi <= k(1) + period + tol)
+        return;
+    const double at = Lo - period * std::floor((Lo - k(1)) / period);
+    if (ob_knot_at(k, at, tol) == 0)
+        rC.InsertKnot(at, 1, tol);
+    TColStd_Array1OfReal grown(1, rC.NbKnots());
+    rC.Knots(grown);
+    const int index = ob_knot_at(grown, at, tol);
+    if (index > 1)
+        rC.SetOrigin(index);
+    TColStd_Array1OfReal moved(1, rC.NbKnots());
+    rC.Knots(moved);
+    const double shift = Lo - moved(1);
+    for (int i = moved.Lower(); i <= moved.Upper(); ++i)
+        moved(i) += shift;
+    rC.SetKnots(moved);
+}
+
+// The face's surface as a non-periodic B-spline in the world frame. A surface
+// that is not one (NurbsConvert leaves nothing else) is, with ApproxTol > 0,
+// approximated in its own parameters, so the face's trimming curves stay
+// valid; without, converted over the face's bounds.
+ObHandle<Geom_BSplineSurface> ob_surface(const TopoDS_Face& rFace, double ApproxTol = 0.0) {
     TopLoc_Location loc;
     ObHandle<Geom_Surface> s = BRep_Tool::Surface(rFace, loc);
     if (s.IsNull())
         return {};
+    if (ApproxTol > 0.0)
+        for (ObHandle<Geom_RectangularTrimmedSurface> t =
+                 ObHandle<Geom_RectangularTrimmedSurface>::DownCast(s);
+             !t.IsNull(); t = ObHandle<Geom_RectangularTrimmedSurface>::DownCast(s))
+            s = t->BasisSurface();
     ObHandle<Geom_BSplineSurface> bs = ObHandle<Geom_BSplineSurface>::DownCast(s);
     if (bs.IsNull()) {
-        // NurbsConvert leaves nothing else; a surface it could not convert is
-        // approximated over the face's bounds.
         double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
         BRepTools::UVBounds(rFace, u0, u1, v0, v1);
-        bs = GeomConvert::SurfaceToBSplineSurface(
-            new Geom_RectangularTrimmedSurface(s, u0, u1, v0, v1));
+        if (ApproxTol > 0.0 && ObHandle<Geom_Plane>::DownCast(s).IsNull()) {
+            // A margin, so the trimming curves lie inside the parameter range.
+            const double du = 0.01 * (u1 - u0), dv = 0.01 * (v1 - v0);
+            bs = ob_approx_surface(s, u0 - du, u1 + du, v0 - dv, v1 + dv, ApproxTol);
+        } else {
+            // A plane converts in its own parameters.
+            bs = GeomConvert::SurfaceToBSplineSurface(
+                new Geom_RectangularTrimmedSurface(s, u0, u1, v0, v1));
+        }
         if (bs.IsNull())
             return {};
     } else {
         bs = ObHandle<Geom_BSplineSurface>::DownCast(bs->Copy());
     }
-    if (bs->IsUPeriodic())
-        bs->SetUNotPeriodic();
-    if (bs->IsVPeriodic())
-        bs->SetVNotPeriodic();
+    if (bs->IsUPeriodic() || bs->IsVPeriodic()) {
+        double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+        BRepTools::UVBounds(rFace, u0, u1, v0, v1);
+        if (bs->IsUPeriodic()) {
+            ob_surface_origin(*bs, true, u0, u1);
+            bs->SetUNotPeriodic();
+        }
+        if (bs->IsVPeriodic()) {
+            ob_surface_origin(*bs, false, v0, v1);
+            bs->SetVNotPeriodic();
+        }
+    }
     if (!loc.IsIdentity())
         bs->Transform(loc.Transformation());
     return bs;
 }
 
 ObHandle<Geom2d_BSplineCurve> ob_pcurve(const TopoDS_Edge& rEdge, const TopoDS_Face& rFace,
-                                        double& rFirst, double& rLast) {
+                                        double& rFirst, double& rLast, double ApproxTol = 0.0) {
     ObHandle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(rEdge, rFace, rFirst, rLast);
     if (c.IsNull())
         return {};
     ObHandle<Geom2d_BSplineCurve> bc = ObHandle<Geom2d_BSplineCurve>::DownCast(c);
-    if (bc.IsNull()) {
+    if (bc.IsNull() && ApproxTol > 0.0) {
+        // In the curve's own parameter: a line exactly, anything else within
+        // a tiny fraction of its extent in the face's parameters.
+        const double a = rFirst, b = rLast;
+        if (!ObHandle<Geom2d_Line>::DownCast(c).IsNull()) {
+            TColgp_Array1OfPnt2d poles(1, 2);
+            poles.SetValue(1, c->Value(a));
+            poles.SetValue(2, c->Value(b));
+            TColStd_Array1OfReal knots(1, 2);
+            knots.SetValue(1, a);
+            knots.SetValue(2, b);
+            TColStd_Array1OfInteger mults(1, 2);
+            mults.Init(2);
+            bc = new Geom2d_BSplineCurve(poles, knots, mults, 1);
+        } else {
+            const double extent = c->Value(a).Distance(c->Value(0.5 * (a + b))) +
+                                  c->Value(0.5 * (a + b)).Distance(c->Value(b));
+            bc = ob_approx_curve<gp_Pnt2d, Geom2d_BSplineCurve, Geom2dAPI_PointsToBSpline,
+                                 TColgp_Array1OfPnt2d>([&](double T) { return c->Value(T); }, a, b,
+                                                       std::max(1e-9, 1e-7 * extent));
+        }
+        if (bc.IsNull())
+            return {};
+    } else if (bc.IsNull()) {
         bc = Geom2dConvert::CurveToBSplineCurve(new Geom2d_TrimmedCurve(c, rFirst, rLast));
         if (bc.IsNull())
             return {};
@@ -64601,13 +64821,15 @@ ObHandle<Geom2d_BSplineCurve> ob_pcurve(const TopoDS_Edge& rEdge, const TopoDS_F
     } else {
         bc = ObHandle<Geom2d_BSplineCurve>::DownCast(bc->Copy());
     }
-    if (bc->IsPeriodic())
+    if (bc->IsPeriodic()) {
+        ob_curve_origin(*bc, rFirst, rLast);
         bc->SetNotPeriodic();
+    }
     return bc;
 }
 
-ObHandle<Geom_BSplineCurve> ob_edge_curve(const TopoDS_Edge& rEdge, double& rFirst,
-                                          double& rLast) {
+ObHandle<Geom_BSplineCurve> ob_edge_curve(const TopoDS_Edge& rEdge, double& rFirst, double& rLast,
+                                          double ApproxTol = 0.0) {
     if (BRep_Tool::Degenerated(rEdge))
         return {};
     TopLoc_Location loc;
@@ -64615,7 +64837,27 @@ ObHandle<Geom_BSplineCurve> ob_edge_curve(const TopoDS_Edge& rEdge, double& rFir
     if (c.IsNull())
         return {};
     ObHandle<Geom_BSplineCurve> bc = ObHandle<Geom_BSplineCurve>::DownCast(c);
-    if (bc.IsNull()) {
+    if (bc.IsNull() && ApproxTol > 0.0) {
+        // In the edge's own parameter, as its trims are: a line exactly.
+        const double a = rFirst, b = rLast;
+        if (!ObHandle<Geom_Line>::DownCast(c).IsNull()) {
+            TColgp_Array1OfPnt poles(1, 2);
+            poles.SetValue(1, c->Value(a));
+            poles.SetValue(2, c->Value(b));
+            TColStd_Array1OfReal knots(1, 2);
+            knots.SetValue(1, a);
+            knots.SetValue(2, b);
+            TColStd_Array1OfInteger mults(1, 2);
+            mults.Init(2);
+            bc = new Geom_BSplineCurve(poles, knots, mults, 1);
+        } else {
+            bc = ob_approx_curve<gp_Pnt, Geom_BSplineCurve, GeomAPI_PointsToBSpline,
+                                 TColgp_Array1OfPnt>([&](double T) { return c->Value(T); }, a, b,
+                                                     ApproxTol);
+        }
+        if (bc.IsNull())
+            return {};
+    } else if (bc.IsNull()) {
         bc = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(c, rFirst, rLast));
         if (bc.IsNull())
             return {};
@@ -64624,8 +64866,10 @@ ObHandle<Geom_BSplineCurve> ob_edge_curve(const TopoDS_Edge& rEdge, double& rFir
     } else {
         bc = ObHandle<Geom_BSplineCurve>::DownCast(bc->Copy());
     }
-    if (bc->IsPeriodic())
+    if (bc->IsPeriodic()) {
+        ob_curve_origin(*bc, rFirst, rLast);
         bc->SetNotPeriodic();
+    }
     if (!loc.IsIdentity())
         bc->Transform(loc.Transformation());
     return bc;
@@ -64687,12 +64931,83 @@ TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char*
     }
 }
 
-TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape) {
-    BRepBuilderAPI_NurbsConvert convert(rShape, Standard_True);
-    return convert.IsDone() ? convert.Shape() : rShape;
+namespace {
+
+BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol);
+
+// Whether the parameter curves of the face's edges stay in its surface's
+// parameter range, along each direction that is not periodic.
+bool ob_trims_inside(const TopoDS_Face& rFace, const Geom_BSplineSurface& rS) {
+    double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+    rS.Bounds(u0, u1, v0, v1);
+    const double tu = 1e-7 * (u1 - u0), tv = 1e-7 * (v1 - v0);
+    for (TopExp_Explorer ex(rFace, TopAbs_EDGE); ex.More(); ex.Next()) {
+        double a = 0.0, b = 0.0;
+        const ObHandle<Geom2d_Curve> c =
+            BRep_Tool::CurveOnSurface(TopoDS::Edge(ex.Current()), rFace, a, b);
+        if (c.IsNull())
+            return false;
+        for (int i = 0; i <= 8; ++i) {
+            const gp_Pnt2d p = c->Value(a + (b - a) * i / 8.0);
+            if ((!rS.IsUPeriodic() && (p.X() < u0 - tu || p.X() > u1 + tu)) ||
+                (!rS.IsVPeriodic() && (p.Y() < v0 - tv || p.Y() > v1 + tv)))
+                return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+OcctNurbs occt_nurbs(const TopoDS_Shape& rShape) {
+    OcctNurbs out;
+    try {
+        BRepBuilderAPI_NurbsConvert convert(rShape, Standard_True);
+        if (convert.IsDone()) {
+            // Complete only when every face keeps a surface, a B-spline, whose
+            // parameter range holds the face's trims (along a direction that
+            // is not periodic: a periodic one is moved onto them).
+            int before = 0, kept = 0;
+            for (TopExp_Explorer ex(rShape, TopAbs_FACE); ex.More(); ex.Next())
+                ++before;
+            for (TopExp_Explorer ex(convert.Shape(), TopAbs_FACE); ex.More(); ex.Next()) {
+                const TopoDS_Face face = TopoDS::Face(ex.Current());
+                TopLoc_Location loc;
+                const ObHandle<Geom_BSplineSurface> bs =
+                    ObHandle<Geom_BSplineSurface>::DownCast(BRep_Tool::Surface(face, loc));
+                if (!bs.IsNull() && ob_trims_inside(face, *bs))
+                    ++kept;
+            }
+            if (kept == before) {
+                out.mShape = convert.Shape();
+                out.mInfo = ob_brep_info(out.mShape, 0.0);
+                out.mExact = true;
+                return out;
+            }
+            log::debug(
+                "occt: NURBS conversion left {} of {} face(s) without a B-spline; "
+                "approximating instead",
+                before - kept, before);
+        }
+    } catch (const Standard_Failure& rErr) {
+        log::debug("occt: NURBS conversion failed ({}); approximating instead",
+                   rErr.GetMessageString());
+    }
+    Bnd_Box box;
+    BRepBndLib::Add(rShape, box);
+    const double diagonal = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
+    out.mShape = rShape;
+    out.mInfo = ob_brep_info(rShape, 1e-6 * diagonal);
+    return out;
 }
 
 BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
+    return ob_brep_info(rNurbs, 0.0);
+}
+
+namespace {
+
+BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
     BrepInfo info;
     info.mExtra = "{\"version_number\":1}";
     TopTools_IndexedMapOfShape faces, edges;
@@ -64706,7 +65021,7 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
     brep.mId = nf + ne + 1;
     for (int fi = 1; fi <= faces.Extent(); ++fi) {
         const TopoDS_Face face = TopoDS::Face(faces(fi));
-        const ObHandle<Geom_BSplineSurface> bs = ob_surface(face);
+        const ObHandle<Geom_BSplineSurface> bs = ob_surface(face, ApproxTol);
         if (bs.IsNull())
             continue;
         NurbsPatch patch;
@@ -64748,7 +65063,7 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
             for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
                 const TopoDS_Edge& e = we.Current();
                 double a = 0.0, b = 0.0;
-                const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b);
+                const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b, ApproxTol);
                 if (pc.IsNull())
                     continue;
                 BrepTrim t;
@@ -64779,7 +65094,7 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
         BrepEdge e;
         e.mId = nf + ei;
         double a = 0.0, b = 0.0;
-        const ObHandle<Geom_BSplineCurve> c = ob_edge_curve(edge, a, b);
+        const ObHandle<Geom_BSplineCurve> c = ob_edge_curve(edge, a, b, ApproxTol);
         if (!c.IsNull()) {
             e.mHasCurve = true;
             e.mCurve = ob_curve(c, a, b);
@@ -64792,6 +65107,8 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs) {
     info.mBreps.push_back(std::move(brep));
     return info;
 }
+
+}  // namespace
 
 Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
                      double Angular) {
@@ -81222,12 +81539,10 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
                                     "deflection positive");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
-    const TopoDS_Shape shape =
-        detail::occt_nurbs_shape(detail::occt_read_cad_file(rPath, Iges, fmt));
-    BrepInfo info = detail::occt_brep_info(shape);
-    Mesh mesh = detail::occt_tessellate(shape, info, rOptions.mDeflection,
+    detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+    Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
                                         rOptions.mAngularDeflection);
-    rInfo = std::move(info);
+    rInfo = std::move(nurbs.mInfo);
     return mesh;
 }
 #else
@@ -167311,8 +167626,12 @@ FcHandle<Geom_Surface> fc_rolling_ball_surface(const detail::RollingBallFit& rFi
                           cc.Translated(a * (rho * std::cos(phi)) + b * (rho * std::sin(phi))));
         }
     }
+    // Interpolated rather than approximated: the grid points lie on the ball
+    // family exactly, and a knot at every row and column keeps OpenCASCADE's
+    // mesher (7.6 meshes a long, thin approximated surface with few spans far
+    // coarser than the deflection asked of it) dense enough across the arcs.
     GeomAPI_PointsToBSplineSurface fit;
-    fit.Init(grid, Approx_IsoParametric, 3, 5, GeomAbs_C2, 0.1 * Tol, closed);
+    fit.Interpolate(grid, Approx_IsoParametric, closed);
     if (!fit.IsDone())
         return {};
     return FcHandle<Geom_Surface>(fit.Surface());
@@ -168010,8 +168329,12 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         const double d = to_skin[static_cast<std::size_t>(
                             tri.mTri[t * 3 + static_cast<std::size_t>(k)])];
                         if (d > tol && !build.mBadRow[static_cast<std::size_t>(g)]) {
-                            log::debug("fit_cad: demoting patch {}: its face lies {} from the skin",
-                                       skin.mPatches[static_cast<std::size_t>(g)].mLabel, d);
+                            const std::size_t v = tri.mTri[t * 3 + static_cast<std::size_t>(k)];
+                            log::debug(
+                                "fit_cad: demoting patch {}: its face lies {} from the "
+                                "skin, at ({}, {}, {})",
+                                skin.mPatches[static_cast<std::size_t>(g)].mLabel, d,
+                                tri.mXyz[v * 3], tri.mXyz[v * 3 + 1], tri.mXyz[v * 3 + 2]);
                             build.mBadRow[static_cast<std::size_t>(g)] = 1;
                         }
                     }
@@ -168027,8 +168350,13 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                             const double d = to_solid[static_cast<std::size_t>(
                                 fc.mNodes[static_cast<std::size_t>(k)])];
                             if (d > tol && !build.mBadRow[static_cast<std::size_t>(r)]) {
-                                log::debug("fit_cad: demoting patch {}: the skin lies {} from it",
-                                           skin.mPatches[static_cast<std::size_t>(r)].mLabel, d);
+                                const gp_Pnt at =
+                                    fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]);
+                                log::debug(
+                                    "fit_cad: demoting patch {}: the skin lies {} from it, "
+                                    "at ({}, {}, {})",
+                                    skin.mPatches[static_cast<std::size_t>(r)].mLabel, d, at.X(),
+                                    at.Y(), at.Z());
                                 build.mBadRow[static_cast<std::size_t>(r)] = 1;
                             }
                         }
@@ -168151,7 +168479,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::info("fit_cad: {} fitted patch(es) demoted to facets", result.mNumDemoted);
     // The solid as NURBS, its faces in the order fit_cad:face numbers them.
     try {
-        result.mBrep = detail::occt_brep_info(detail::occt_nurbs_shape(build.mShape));
+        result.mBrep = detail::occt_nurbs(build.mShape).mInfo;
     } catch (const Standard_Failure& rErr) {
         log::warn("fit_cad: the solid could not be converted to NURBS: {}",
                   rErr.GetMessageString());
