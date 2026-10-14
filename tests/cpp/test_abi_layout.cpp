@@ -365,8 +365,9 @@ MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TessellateOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
-// ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes.
-MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 48, 8);
+// ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes; ABI 28
+// added mFreeformSplit, mFillets and mThreads (roadmap 6.3.1, 6.3.2): 48 -> 56.
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 56, 8);
 
 // The v16.33.0 software rasterizer (operations/render.hpp). RenderOptions,
 // TextOptions and SnapshotOptions are passed by const-ref through the exported

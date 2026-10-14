@@ -1312,7 +1312,9 @@ mio_has_occt <- function() {
 #'
 #' Builds a CAD solid from the fitted patches of a closed skin through the
 #' OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
-#' cone or torus face, the rest planar facets, and a face that fails the B-rep
+#' cone or torus face, a patch no primitive explains a rolling-ball fillet,
+#' thread flank or freeform B-spline face where one fits (`fit_cad:type` 7, 8
+#' and 6), the rest planar facets, and a face that fails the B-rep
 #' check or strays beyond `tolerance` is demoted to facets. Without
 #' `segment:patch` or the `fit:patch_*` table, segment and fit_primitives run
 #' first with their defaults. Fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in
@@ -1333,18 +1335,27 @@ mio_has_occt <- function() {
 #' @param freeform_degree That B-spline's highest degree, 3 to 8.
 #' @param freeform_max_control The most grid points per direction its fit
 #'   samples, 4 to 1024.
+#' @param freeform_split Whether a freeform patch that folds over both its
+#'   best-fit plane and an unrolled cylinder is split into pieces fitted as
+#'   their own B-spline faces.
+#' @param fillets Whether a patch between two analytic faces is tried as a
+#'   rolling-ball fillet.
+#' @param threads Whether a patch beside a cylinder or cone is tried as a
+#'   thread flank.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
 #'   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
 #'   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
-#'   `num_exact_edges`, `num_approx_edges`, `num_solids` and `num_bspline`.
+#'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
+#'   `num_split_patches`, `num_fillet` and `num_helical`.
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
                         mesh_deflection = 0, max_demotion_rounds = 8,
                         freeform = TRUE, freeform_degree = 3,
-                        freeform_max_control = 64) {
+                        freeform_max_control = 64, freeform_split = TRUE,
+                        fillets = TRUE, threads = TRUE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1355,7 +1366,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     R_mio_fit_cad, mesh, as.character(step_path), as.numeric(tolerance),
     isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
     as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
-    as.numeric(freeform_max_control)
+    as.numeric(freeform_max_control), isTRUE(freeform_split), isTRUE(fillets),
+    isTRUE(threads)
   )
 }
 

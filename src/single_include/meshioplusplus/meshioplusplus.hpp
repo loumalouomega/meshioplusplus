@@ -122,7 +122,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 27
+#define MESHIOPLUSPLUS_ABI_VERSION 28
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -26741,8 +26741,13 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  *    facet, as the faceted `step` writer writes them.
  *  - **Freeform faces.** The patch is flattened over its best-fit plane, or,
  *    when that folds it, unrolled around the axis its normals are most
- *    perpendicular to (a cylinder of the circle its points fit); a patch
- *    both fold is left to facets. Its offset from that plane or cylinder is
+ *    perpendicular to (a cylinder of the circle its points fit). A patch both
+ *    fold is, with `mFreeformSplit`, split into pieces one of them does
+ *    parametrise -- halved at the area-weighted median of `n . e`, `e` the
+ *    direction its normals spread along most, up to four times -- and each
+ *    piece becomes its own freeform face under a new patch label, numbered
+ *    after the largest existing one; a piece under 16 triangles, or still
+ *    folding, is left to facets. Its offset from that plane or cylinder is
  *    resampled on a grid (inside the patch by interpolation over its facets,
  *    outside it from the nearest boundary point), approximated by a C2
  *    B-spline of degree `mFreeformDegree` (`GeomAPI_PointsToBSplineSurface`)
@@ -26809,6 +26814,10 @@ inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
 /// `fit_cad:type` of a freeform B-spline face.
 inline constexpr std::int64_t kFitCadBsplineType = 6;
+/// `fit_cad:type` of a constant-radius rolling-ball fillet face.
+inline constexpr std::int64_t kFitCadFilletType = 7;
+/// `fit_cad:type` of a straight-flank thread face (a ruled helicoid).
+inline constexpr std::int64_t kFitCadHelicalType = 8;
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -26834,6 +26843,16 @@ struct FitCadOptions {
     std::int32_t mFreeformDegree = 3;
     /// The most grid points per direction a freeform fit may sample, 4 to 1024.
     std::int64_t mFreeformMaxControl = 64;
+    /// Whether a freeform patch that neither its best-fit plane nor an unrolled
+    /// cylinder parametrises (it folds over both) is split into pieces that one
+    /// does, each fitted as its own B-spline face under a new patch label.
+    bool mFreeformSplit = true;
+    /// Whether a patch no primitive explains, running between two analytic
+    /// faces, is tried as a constant-radius rolling-ball fillet.
+    bool mFillets = true;
+    /// Whether a patch no primitive explains, beside a cylinder or cone, is
+    /// tried as a straight-flank thread about its axis.
+    bool mThreads = true;
 };
 
 /// The re-meshed solid and what was built.
@@ -26872,6 +26891,12 @@ struct FitCadResult {
     std::int64_t mNumSolids = 0;
     /// Freeform B-spline faces.
     std::int64_t mNumBspline = 0;
+    /// Pieces that freeform patches folding over every flattening were split into.
+    std::int64_t mNumSplitPatches = 0;
+    /// Rolling-ball fillet faces.
+    std::int64_t mNumFillet = 0;
+    /// Thread flank faces.
+    std::int64_t mNumHelical = 0;
     /// The solid as NURBS faces, loops and edges.
     BrepInfo mBrep;
 };
@@ -34888,6 +34913,200 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
+// ===== begin src/cpp/src/detail/patch_flatten.hpp =====
+/**
+ * @file patch_flatten.hpp
+ * @brief Flattening a triangulated surface patch over its best-fit plane or an
+ * unrolled cylinder, the fold test that says whether that flattening is a
+ * parametrisation, and splitting a patch no flattening parametrises into
+ * pieces that one does -- `fit_cad`'s freeform faces (roadmap 6.3.2), kept free
+ * of OpenCASCADE so it is testable in every build.
+ *
+ * Not installed: a core-private helper of `operations/fit_cad.cpp`.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+using PatchVec = std::array<double, 3>;
+using PatchTri = std::array<std::size_t, 3>;
+
+/// A patch flattened: per vertex its `(s, t)` parameters and its offset `h`
+/// from the plane or cylinder it is flattened over, with the map back.
+struct PatchFlat {
+    bool mCylinder = false;
+    PatchVec mOrigin{}, mE1{}, mE2{}, mAxis{};  // plane: origin, in-plane axes, normal
+    double mRadius = 0.0;
+    double mTheta0 = 0.0;
+    std::vector<double> mS, mT, mH;
+
+    /// The point at parameters `(S, T)` and offset `H`.
+    PatchVec At(double S, double T, double H) const;
+};
+
+/**
+ * @brief Flatten over the best-fit plane (`Kind` 0) or unroll around the axis
+ * the normals are most perpendicular to (`Kind` 1), the cylinder cut in the
+ * widest gap between the points' angles.
+ * @param rPts the patch's points.
+ * @param rNormals its triangles' unit normals.
+ * @param rAreas its triangles' areas.
+ * @return false when that flattening is degenerate.
+ */
+bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
+                   const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+                   PatchFlat& rOut);
+
+/// Whether a flattening folds: triangles of both orientations (beyond
+/// `1e-9` of the largest), or no area at all.
+bool patch_flat_folds(const PatchFlat& rFlat, const std::vector<PatchTri>& rTris);
+
+/// Unit normals and areas of the triangles.
+void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                   std::vector<PatchVec>& rNormals, std::vector<double>& rAreas);
+
+/// Whether the plane or the cylinder flattens the patch without folding.
+bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
+
+/// How `patch_split_until_flat` splits.
+struct PatchSplitOptions {
+    /// Halvings before a piece is given up on: at most `2^depth` pieces per patch.
+    int mMaxDepth = 4;
+    /// A piece with fewer triangles stays facets.
+    std::size_t mMinTriangles = 16;
+};
+
+/**
+ * @brief Split a patch no flattening parametrises into pieces one does.
+ *
+ * The triangles are halved at the area-weighted median of `n . e`, `e` the
+ * direction their normals spread along most (the principal axis of the
+ * area-weighted normal covariance): a cut along an iso-line of the normal, a
+ * smooth curve on a smooth surface. Each half is split into its edge-connected
+ * components, and each component that does not flatten is halved again, up to
+ * `mMaxDepth` times. Deterministic: ties go by triangle index, and pieces are
+ * numbered in the order of their lowest triangle.
+ *
+ * @return per triangle, its piece (from 0), or -1 for one left as facets
+ *         (a piece under `mMinTriangles`, or still folding at the depth cap).
+ */
+std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
+                                                 const std::vector<PatchTri>& rTris,
+                                                 const PatchSplitOptions& rOptions,
+                                                 std::size_t& rNumPieces);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/patch_flatten.hpp =====
+// ===== begin src/cpp/src/detail/feature_fit.hpp =====
+/**
+ * @file feature_fit.hpp
+ * @brief The OpenCASCADE-free half of `fit_cad`'s fillet and thread features
+ * (roadmap 6.3.1): the radius of a constant-radius rolling-ball fillet between
+ * two fitted primitives, and a straight-flank thread surface (a ruled helicoid)
+ * fitted to a patch.
+ *
+ * Not installed: a core-private helper of `operations/fit_cad.cpp`.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The distance from a point to a fitted primitive.
+ * @param Type 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus.
+ * @param pParams the ten `fit:patch_params` entries (see `fit_primitives.hpp`).
+ * @return the unsigned distance, or +inf for an unknown type.
+ */
+double primitive_distance(int Type, const double* pParams, const PatchVec& rP);
+
+/// A rolling-ball fillet's radius, fitted to a patch between two primitives.
+struct FilletFit {
+    bool mOk = false;
+    /// The ball radius.
+    double mRadius = 0.0;
+    /// +1 when the ball centres lie inside the solid (a convex, rounded edge:
+    /// centre = point - radius * outward normal), -1 outside (a concave fillet).
+    int mSide = 0;
+    /// RMS over the interior vertices of (distance from the ball centre to
+    /// each primitive - radius).
+    double mRms = 0.0;
+    /// The ball centres of the interior vertices: points of the fillet's spine.
+    std::vector<PatchVec> mCentres;
+};
+
+/**
+ * @brief Fit the radius of a constant-radius rolling-ball fillet.
+ *
+ * Every interior vertex of the patch (one no boundary edge touches), moved by
+ * `r` against or along its outward normal, should be a ball centre: `r` from
+ * both primitives. The radius minimises the mean squared misfit of both
+ * distances, over a log-spaced scan of `[RMin, RMax]` refined by golden
+ * section, for each side; the better side wins.
+ *
+ * @param rPts the patch's points.
+ * @param rTris its triangles, wound outwards (their normals point out of the solid).
+ * @return the fit, `mOk` false when the patch has fewer than four interior
+ *         vertices or the range is empty.
+ */
+FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                     int Type1, const double* pParams1, int Type2, const double* pParams2,
+                     double RMin, double RMax);
+
+/**
+ * @brief A straight-flank thread surface: the ruled helicoid
+ * `P(rho, theta) = O + rho (cos theta E1 + sin theta E2) + (C + K theta + T rho) A`,
+ * `K = pitch / (2 pi)`, `T` the flank's slope (the tangent of its angle to the
+ * radial plane).
+ */
+struct HelicoidFit {
+    bool mOk = false;
+    PatchVec mOrigin{}, mAxis{}, mE1{}, mE2{};
+    double mK = 0.0;  // axial advance per radian: pitch / (2 pi), signed by the hand
+    double mT = 0.0;  // axial slope per unit radius
+    double mC = 0.0;  // axial offset
+    /// The patch's extent in radius and in the unwrapped angle.
+    double mRhoMin = 0.0, mRhoMax = 0.0, mThetaMin = 0.0, mThetaMax = 0.0;
+    /// RMS and largest orthogonal distance of the vertices to the surface.
+    double mRms = 0.0, mMax = 0.0;
+    /// The surface point at `(Rho, Theta)`.
+    PatchVec At(double Rho, double Theta) const;
+    /// The pitch: the axial advance per turn.
+    double Pitch() const;
+};
+
+/**
+ * @brief Fit a ruled helicoid about a known axis to a patch.
+ *
+ * The angle of every vertex about the axis is unwrapped continuously over the
+ * patch's edges (breadth-first from its lowest vertex), which makes the model
+ * linear in `(C, K, T)`: one least-squares solve.
+ *
+ * @param rOrigin a point on the axis; @param rAxis its direction.
+ * @return the fit; `mOk` false when the patch touches the axis, cannot be
+ *         unwrapped consistently, spans less than half a turn, or the solve is
+ *         singular (a patch with no advance or no radial extent).
+ */
+HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                         const PatchVec& rOrigin, const PatchVec& rAxis);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/feature_fit.hpp =====
 // ===== begin src/cpp/src/detail/json_value.hpp =====
 /**
  * @file detail/json_value.hpp
@@ -57403,6 +57622,307 @@ bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellT
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/facet_index.cpp =====
+// ===== begin src/cpp/src/detail/feature_fit.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <queue>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kFfPi = 3.14159265358979323846;
+
+double ff_dot(const PatchVec& rA, const PatchVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+PatchVec ff_sub(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+PatchVec ff_axpy(const PatchVec& rA, double S, const PatchVec& rB) {
+    return {rA[0] + S * rB[0], rA[1] + S * rB[1], rA[2] + S * rB[2]};
+}
+
+double ff_norm(const PatchVec& rA) {
+    return std::sqrt(ff_dot(rA, rA));
+}
+
+// The vertex's height along and distance from the axis through pP[0..2]
+// along the unit pP[3..5].
+void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
+    const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
+    const PatchVec a{pP[3], pP[4], pP[5]};
+    rH = ff_dot(d, a);
+    rRho = ff_norm(ff_axpy(d, -rH, a));
+}
+
+// Outward unit vertex normals (area-weighted) and which vertices no
+// boundary edge touches.
+void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                       std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior) {
+    rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
+    std::map<std::pair<std::size_t, std::size_t>, int> uses;
+    for (const PatchTri& t : rTris) {
+        const PatchVec e1 = ff_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = ff_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                         e1[0] * e2[1] - e1[1] * e2[0]};
+        for (std::size_t v : t)
+            rNormals[v] = ff_axpy(rNormals[v], 1.0, n);
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            ++uses[{std::min(a, b), std::max(a, b)}];
+        }
+    }
+    for (PatchVec& n : rNormals) {
+        const double len = ff_norm(n);
+        if (len > 0.0)
+            n = {n[0] / len, n[1] / len, n[2] / len};
+    }
+    rInterior.assign(rPts.size(), 0);
+    for (const PatchTri& t : rTris)
+        for (std::size_t v : t)
+            rInterior[v] = 1;
+    for (const auto& kv : uses)
+        if (kv.second == 1)
+            rInterior[kv.first.first] = rInterior[kv.first.second] = 0;
+}
+
+}  // namespace
+
+double primitive_distance(int Type, const double* pP, const PatchVec& rX) {
+    switch (Type) {
+        case 1: {
+            const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
+            return std::fabs(d[0] * pP[3] + d[1] * pP[4] + d[2] * pP[5]);
+        }
+        case 2: {
+            const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
+            return std::fabs(ff_norm(d) - pP[6]);
+        }
+        case 3: {
+            double h = 0.0, rho = 0.0;
+            ff_axial(pP, rX, h, rho);
+            return std::fabs(rho - pP[6]);
+        }
+        case 4: {
+            double h = 0.0, rho = 0.0;
+            ff_axial(pP, rX, h, rho);
+            const double phi = pP[8] * kFfPi / 180.0;
+            if (h * std::cos(phi) + rho * std::sin(phi) < 0.0)
+                return std::sqrt(h * h + rho * rho);  // behind the apex
+            return std::fabs(rho * std::cos(phi) - h * std::sin(phi));
+        }
+        case 5: {
+            double h = 0.0, rho = 0.0;
+            ff_axial(pP, rX, h, rho);
+            return std::fabs(std::hypot(rho - pP[6], h) - pP[7]);
+        }
+        default:
+            return std::numeric_limits<double>::infinity();
+    }
+}
+
+FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                     int Type1, const double* pParams1, int Type2, const double* pParams2,
+                     double RMin, double RMax) {
+    FilletFit out;
+    if (!(RMin > 0.0) || !(RMax > RMin))
+        return out;
+    std::vector<PatchVec> normals;
+    std::vector<std::uint8_t> interior;
+    ff_vertex_normals(rPts, rTris, normals, interior);
+    std::vector<std::size_t> verts;
+    for (std::size_t v = 0; v < rPts.size(); ++v)
+        if (interior[v] && ff_norm(normals[v]) > 0.5)
+            verts.push_back(v);
+    if (verts.size() < 4)
+        return out;
+    auto misfit = [&](int Side, double R) {
+        double s = 0.0;
+        for (std::size_t v : verts) {
+            const PatchVec c = ff_axpy(rPts[v], -Side * R, normals[v]);
+            const double d1 = primitive_distance(Type1, pParams1, c) - R;
+            const double d2 = primitive_distance(Type2, pParams2, c) - R;
+            s += d1 * d1 + d2 * d2;
+        }
+        return s / static_cast<double>(2 * verts.size());
+    };
+    constexpr int kScan = 48;
+    const double lr0 = std::log(RMin), lr1 = std::log(RMax);
+    double best = std::numeric_limits<double>::infinity();
+    for (int side : {1, -1}) {
+        int arg = 0;
+        double low = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < kScan; ++i) {
+            const double f = misfit(side, std::exp(lr0 + (lr1 - lr0) * i / (kScan - 1)));
+            if (f < low) {
+                low = f;
+                arg = i;
+            }
+        }
+        // Golden section between the best sample's neighbours.
+        double a = lr0 + (lr1 - lr0) * std::max(arg - 1, 0) / (kScan - 1);
+        double b = lr0 + (lr1 - lr0) * std::min(arg + 1, kScan - 1) / (kScan - 1);
+        const double g = 0.5 * (std::sqrt(5.0) - 1.0);
+        double x1 = b - g * (b - a), x2 = a + g * (b - a);
+        double f1 = misfit(side, std::exp(x1)), f2 = misfit(side, std::exp(x2));
+        for (int it = 0; it < 80; ++it) {
+            if (f1 <= f2) {
+                b = x2;
+                x2 = x1;
+                f2 = f1;
+                x1 = b - g * (b - a);
+                f1 = misfit(side, std::exp(x1));
+            } else {
+                a = x1;
+                x1 = x2;
+                f1 = f2;
+                x2 = a + g * (b - a);
+                f2 = misfit(side, std::exp(x2));
+            }
+        }
+        const double r = std::exp(0.5 * (a + b));
+        const double f = misfit(side, r);
+        if (f < best) {
+            best = f;
+            out.mRadius = r;
+            out.mSide = side;
+        }
+    }
+    out.mRms = std::sqrt(best);
+    out.mOk = std::isfinite(out.mRms);
+    for (std::size_t v : verts)
+        out.mCentres.push_back(ff_axpy(rPts[v], -out.mSide * out.mRadius, normals[v]));
+    return out;
+}
+
+PatchVec HelicoidFit::At(double Rho, double Theta) const {
+    PatchVec p = ff_axpy(mOrigin, Rho * std::cos(Theta), mE1);
+    p = ff_axpy(p, Rho * std::sin(Theta), mE2);
+    return ff_axpy(p, mC + mK * Theta + mT * Rho, mAxis);
+}
+
+double HelicoidFit::Pitch() const {
+    return 2.0 * kFfPi * mK;
+}
+
+HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                         const PatchVec& rOrigin, const PatchVec& rAxis) {
+    HelicoidFit out;
+    const std::size_t n = rPts.size();
+    const double alen = ff_norm(rAxis);
+    if (n < 4 || rTris.empty() || !(alen > 0.0))
+        return out;
+    out.mOrigin = rOrigin;
+    out.mAxis = {rAxis[0] / alen, rAxis[1] / alen, rAxis[2] / alen};
+    lsq_frame(out.mAxis.data(), out.mE1.data(), out.mE2.data());
+    std::vector<double> z(n), rho(n), phi(n);
+    double rho_max = 0.0;
+    for (std::size_t v = 0; v < n; ++v) {
+        const PatchVec d = ff_sub(rPts[v], rOrigin);
+        z[v] = ff_dot(d, out.mAxis);
+        const PatchVec radial = ff_axpy(d, -z[v], out.mAxis);
+        rho[v] = ff_norm(radial);
+        phi[v] = std::atan2(ff_dot(radial, out.mE2), ff_dot(radial, out.mE1));
+        rho_max = std::max(rho_max, rho[v]);
+    }
+    for (double r : rho)
+        if (!(r > 1e-9 * rho_max))
+            return out;  // the patch touches the axis
+    // Unwrap the angle over the patch's edges.
+    std::vector<std::vector<std::size_t>> adj(n);
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            adj[t[static_cast<std::size_t>(k)]].push_back(t[static_cast<std::size_t>((k + 1) % 3)]);
+            adj[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(t[static_cast<std::size_t>(k)]);
+        }
+    for (auto& a : adj)
+        std::sort(a.begin(), a.end());
+    std::vector<double> theta(n, 0.0);
+    std::vector<std::uint8_t> seen(n, 0);
+    std::queue<std::size_t> todo;
+    std::size_t start = 0;
+    while (start < n && adj[start].empty())
+        ++start;
+    if (start == n)
+        return out;
+    theta[start] = phi[start];
+    seen[start] = 1;
+    todo.push(start);
+    while (!todo.empty()) {
+        const std::size_t u = todo.front();
+        todo.pop();
+        for (std::size_t v : adj[u]) {
+            double step = phi[v] - phi[u];
+            step -= 2.0 * kFfPi * std::round(step / (2.0 * kFfPi));
+            if (!seen[v]) {
+                seen[v] = 1;
+                theta[v] = theta[u] + step;
+                todo.push(v);
+            } else if (std::fabs(theta[v] - theta[u] - step) > 1e-6) {
+                return out;  // the angle does not unwrap: the patch winds round the axis
+            }
+        }
+    }
+    for (std::size_t v = 0; v < n; ++v)
+        if (!seen[v] && !adj[v].empty())
+            return out;  // more than one piece
+    // z = C + K theta + T rho, by least squares.
+    std::vector<double> a(9, 0.0), b(3, 0.0);
+    for (std::size_t v = 0; v < n; ++v) {
+        if (adj[v].empty())
+            continue;
+        const double row[3] = {1.0, theta[v], rho[v]};
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j)
+                a[static_cast<std::size_t>(i * 3 + j)] += row[i] * row[j];
+            b[static_cast<std::size_t>(i)] += row[i] * z[v];
+        }
+    }
+    if (!lsq_solve(a, b, 3))
+        return out;
+    out.mC = b[0];
+    out.mK = b[1];
+    out.mT = b[2];
+    out.mThetaMin = out.mRhoMin = std::numeric_limits<double>::infinity();
+    out.mThetaMax = out.mRhoMax = -std::numeric_limits<double>::infinity();
+    double sum = 0.0;
+    std::size_t used = 0;
+    for (std::size_t v = 0; v < n; ++v) {
+        if (adj[v].empty())
+            continue;
+        const double e = z[v] - (out.mC + out.mK * theta[v] + out.mT * rho[v]);
+        const double grad =
+            std::sqrt(1.0 + out.mT * out.mT + (out.mK / rho[v]) * (out.mK / rho[v]));
+        const double d = std::fabs(e) / grad;
+        sum += d * d;
+        out.mMax = std::max(out.mMax, d);
+        ++used;
+        out.mThetaMin = std::min(out.mThetaMin, theta[v]);
+        out.mThetaMax = std::max(out.mThetaMax, theta[v]);
+        out.mRhoMin = std::min(out.mRhoMin, rho[v]);
+        out.mRhoMax = std::max(out.mRhoMax, rho[v]);
+    }
+    out.mRms = std::sqrt(sum / static_cast<double>(used));
+    // Half a turn at least: less of a helicoid is as well a cone or a plane.
+    out.mOk = out.mThetaMax - out.mThetaMin >= kFfPi && std::isfinite(out.mRms) &&
+              out.mRhoMax > out.mRhoMin;
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/feature_fit.cpp =====
 // ===== begin src/cpp/src/detail/fortran_records.cpp =====
 #include <cstdint>
 #include <cstring>
@@ -62307,6 +62827,368 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 // ===== end src/cpp/src/detail/occt_brep.cpp =====
+// ===== begin src/cpp/src/detail/patch_flatten.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <numeric>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kPfPi = 3.14159265358979323846;
+
+double pf_dot(const PatchVec& rA, const PatchVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+PatchVec pf_cross(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+
+double pf_norm(const PatchVec& rA) {
+    return std::sqrt(pf_dot(rA, rA));
+}
+
+PatchVec pf_sub(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+PatchVec pf_add(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] + rB[0], rA[1] + rB[1], rA[2] + rB[2]};
+}
+
+PatchVec pf_scale(const PatchVec& rA, double S) {
+    return {rA[0] * S, rA[1] * S, rA[2] * S};
+}
+
+void pf_normalize(PatchVec& rA) {
+    const double d = pf_norm(rA);
+    rA = {rA[0] / d, rA[1] / d, rA[2] / d};
+}
+
+// Two unit vectors completing @p rA to a right-handed frame.
+void pf_frame(const PatchVec& rA, PatchVec& rE1, PatchVec& rE2) {
+    const PatchVec seed =
+        std::fabs(rA[0]) < 0.9 ? PatchVec{1.0, 0.0, 0.0} : PatchVec{0.0, 1.0, 0.0};
+    rE1 = pf_sub(seed, pf_scale(rA, pf_dot(seed, rA)));
+    pf_normalize(rE1);
+    rE2 = pf_cross(rA, rE1);
+}
+
+// Local points and triangles of a subset of a patch's triangles.
+void pf_local(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+              const std::vector<std::size_t>& rSubset, std::vector<PatchVec>& rLocalPts,
+              std::vector<PatchTri>& rLocalTris) {
+    std::map<std::size_t, std::size_t> local;
+    for (std::size_t t : rSubset)
+        for (std::size_t v : rTris[t])
+            local.emplace(v, 0);
+    rLocalPts.clear();
+    for (auto& kv : local) {
+        kv.second = rLocalPts.size();
+        rLocalPts.push_back(rPts[kv.first]);
+    }
+    rLocalTris.clear();
+    for (std::size_t t : rSubset)
+        rLocalTris.push_back({local.at(rTris[t][0]), local.at(rTris[t][1]), local.at(rTris[t][2])});
+}
+
+// The edge-connected components of a subset (each ascending), in the order of
+// their lowest triangle.
+std::vector<std::vector<std::size_t>> pf_components(const std::vector<PatchTri>& rTris,
+                                                    const std::vector<std::size_t>& rSubset) {
+    std::vector<std::size_t> parent(rSubset.size());
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    auto find = [&](std::size_t X) {
+        while (parent[X] != X) {
+            parent[X] = parent[parent[X]];
+            X = parent[X];
+        }
+        return X;
+    };
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> first;
+    for (std::size_t i = 0; i < rSubset.size(); ++i) {
+        const PatchTri& t = rTris[rSubset[i]];
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            auto ins = first.emplace(std::make_pair(std::min(a, b), std::max(a, b)), i);
+            if (!ins.second) {
+                const std::size_t ra = find(i), rb = find(ins.first->second);
+                if (ra != rb)
+                    parent[std::max(ra, rb)] = std::min(ra, rb);
+            }
+        }
+    }
+    std::map<std::size_t, std::vector<std::size_t>> by_root;
+    for (std::size_t i = 0; i < rSubset.size(); ++i)
+        by_root[find(i)].push_back(rSubset[i]);
+    std::vector<std::vector<std::size_t>> out;
+    for (auto& kv : by_root)
+        out.push_back(std::move(kv.second));
+    std::sort(out.begin(), out.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    return out;
+}
+
+void pf_split(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+              const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+              const std::vector<std::size_t>& rSubset, int Depth, const PatchSplitOptions& rOptions,
+              std::vector<std::vector<std::size_t>>& rPieces) {
+    if (rSubset.size() < rOptions.mMinTriangles)
+        return;
+    std::vector<PatchVec> lp;
+    std::vector<PatchTri> lt;
+    pf_local(rPts, rTris, rSubset, lp, lt);
+    if (patch_flattenable(lp, lt)) {
+        rPieces.push_back(rSubset);
+        return;
+    }
+    if (Depth >= rOptions.mMaxDepth)
+        return;
+    // The direction the normals spread along most.
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    double total = 0.0;
+    for (std::size_t t : rSubset) {
+        const PatchVec& n = rNormals[t];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] +=
+                    rAreas[t] * n[static_cast<std::size_t>(i)] * n[static_cast<std::size_t>(j)];
+        total += rAreas[t];
+    }
+    lsq_sym3_eigen(m, w, v);
+    const PatchVec e{v[6], v[7], v[8]};
+    std::vector<std::pair<double, std::size_t>> keyed;
+    keyed.reserve(rSubset.size());
+    for (std::size_t t : rSubset)
+        keyed.emplace_back(pf_dot(rNormals[t], e), t);
+    std::sort(keyed.begin(), keyed.end());
+    // The area-weighted median; both halves keep at least one triangle.
+    std::size_t k = 0;
+    double acc = 0.0;
+    while (k + 1 < keyed.size() && acc + rAreas[keyed[k].second] <= 0.5 * total) {
+        acc += rAreas[keyed[k].second];
+        ++k;
+    }
+    k = std::max<std::size_t>(k, 1);
+    std::vector<std::size_t> lo, hi;
+    for (std::size_t i = 0; i < keyed.size(); ++i)
+        (i < k ? lo : hi).push_back(keyed[i].second);
+    for (std::vector<std::size_t>* half : {&lo, &hi}) {
+        std::sort(half->begin(), half->end());
+        for (const auto& comp : pf_components(rTris, *half))
+            pf_split(rPts, rTris, rNormals, rAreas, comp, Depth + 1, rOptions, rPieces);
+    }
+}
+
+}  // namespace
+
+PatchVec PatchFlat::At(double S, double T, double H) const {
+    if (!mCylinder)
+        return pf_add(pf_add(pf_add(mOrigin, pf_scale(mE1, S)), pf_scale(mE2, T)),
+                      pf_scale(mAxis, H));
+    const double th = mTheta0 + S / mRadius;
+    return pf_add(
+        pf_add(mOrigin, pf_scale(mAxis, T)),
+        pf_scale(pf_add(pf_scale(mE1, std::cos(th)), pf_scale(mE2, std::sin(th))), mRadius + H));
+}
+
+bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
+                   const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+                   PatchFlat& rOut) {
+    const std::size_t n = rPts.size();
+    rOut = PatchFlat{};
+    if (n == 0)
+        return false;
+    PatchVec c{0.0, 0.0, 0.0};
+    for (const PatchVec& p : rPts)
+        c = pf_add(c, p);
+    c = {c[0] / static_cast<double>(n), c[1] / static_cast<double>(n),
+         c[2] / static_cast<double>(n)};
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    if (Kind == 0) {
+        for (const PatchVec& p : rPts) {
+            const PatchVec d = pf_sub(p, c);
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    m[i * 3 + j] += d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
+        }
+        lsq_sym3_eigen(m, w, v);
+        rOut.mOrigin = c;
+        rOut.mAxis = {v[0], v[1], v[2]};  // the smallest spread: the normal
+        rOut.mE1 = {v[6], v[7], v[8]};
+        rOut.mE2 = pf_cross(rOut.mAxis, rOut.mE1);
+        for (const PatchVec& p : rPts) {
+            const PatchVec d = pf_sub(p, c);
+            rOut.mS.push_back(pf_dot(d, rOut.mE1));
+            rOut.mT.push_back(pf_dot(d, rOut.mE2));
+            rOut.mH.push_back(pf_dot(d, rOut.mAxis));
+        }
+        return true;
+    }
+    for (std::size_t f = 0; f < rNormals.size(); ++f)
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += rAreas[f] * rNormals[f][static_cast<std::size_t>(i)] *
+                                rNormals[f][static_cast<std::size_t>(j)];
+    lsq_sym3_eigen(m, w, v);
+    PatchVec axis{v[0], v[1], v[2]};
+    if (pf_norm(axis) < 0.5)
+        return false;
+    pf_normalize(axis);
+    PatchVec e1, e2;
+    pf_frame(axis, e1, e2);
+    // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
+    double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
+    for (const PatchVec& p : rPts) {
+        const PatchVec d = pf_sub(p, c);
+        const double x = pf_dot(d, e1), y = pf_dot(d, e2), r[3] = {x, y, 1.0};
+        const double rhs = -(x * x + y * y);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j)
+                a[i * 3 + j] += r[i] * r[j];
+            b[i] += r[i] * rhs;
+        }
+    }
+    // Solve the 3x3 normal equations by Cramer's rule.
+    auto det3 = [](const double* q) {
+        return q[0] * (q[4] * q[8] - q[5] * q[7]) - q[1] * (q[3] * q[8] - q[5] * q[6]) +
+               q[2] * (q[3] * q[7] - q[4] * q[6]);
+    };
+    const double d0 = det3(a);
+    if (!(std::fabs(d0) > 0.0))
+        return false;
+    double sol[3];
+    for (int k = 0; k < 3; ++k) {
+        double q[9];
+        std::copy(a, a + 9, q);
+        for (int i = 0; i < 3; ++i)
+            q[i * 3 + k] = b[i];
+        sol[k] = det3(q) / d0;
+    }
+    const double cx = -sol[0] / 2.0, cy = -sol[1] / 2.0;
+    const double r2 = cx * cx + cy * cy - sol[2];
+    if (!(r2 > 0.0) || !std::isfinite(r2))
+        return false;
+    const double radius = std::sqrt(r2);
+    const PatchVec origin = pf_add(pf_add(c, pf_scale(e1, cx)), pf_scale(e2, cy));
+    std::vector<double> theta(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const PatchVec d = pf_sub(rPts[i], origin);
+        theta[i] = std::atan2(pf_dot(d, e2), pf_dot(d, e1));
+    }
+    // Cut the circle in the widest gap between the points' angles.
+    std::vector<double> sorted = theta;
+    std::sort(sorted.begin(), sorted.end());
+    double gap = sorted.front() + 2.0 * kPfPi - sorted.back(), cut = sorted.back();
+    for (std::size_t i = 1; i < sorted.size(); ++i)
+        if (sorted[i] - sorted[i - 1] > gap) {
+            gap = sorted[i] - sorted[i - 1];
+            cut = sorted[i - 1];
+        }
+    if (!(gap > 1e-6))
+        return false;
+    rOut.mCylinder = true;
+    rOut.mOrigin = origin;
+    rOut.mAxis = axis;
+    rOut.mE1 = e1;
+    rOut.mE2 = e2;
+    rOut.mRadius = radius;
+    rOut.mTheta0 = cut + gap / 2.0;  // the parameter starts just past the gap's middle
+    for (std::size_t i = 0; i < n; ++i) {
+        double th = theta[i] - rOut.mTheta0;
+        th -= 2.0 * kPfPi * std::floor(th / (2.0 * kPfPi));
+        const PatchVec d = pf_sub(rPts[i], origin);
+        rOut.mS.push_back(radius * th);
+        rOut.mT.push_back(pf_dot(d, axis));
+        const PatchVec radial = pf_sub(d, pf_scale(axis, pf_dot(d, axis)));
+        rOut.mH.push_back(pf_norm(radial) - radius);
+    }
+    return true;
+}
+
+bool patch_flat_folds(const PatchFlat& rFlat, const std::vector<PatchTri>& rTris) {
+    const std::size_t nt = rTris.size();
+    double max_area = 0.0, pos = 0.0, neg = 0.0;
+    std::vector<double> signed_area(nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const PatchTri& tr = rTris[t];
+        const double ax = rFlat.mS[tr[1]] - rFlat.mS[tr[0]], ay = rFlat.mT[tr[1]] - rFlat.mT[tr[0]];
+        const double bx = rFlat.mS[tr[2]] - rFlat.mS[tr[0]], by = rFlat.mT[tr[2]] - rFlat.mT[tr[0]];
+        signed_area[t] = 0.5 * (ax * by - ay * bx);
+        max_area = std::max(max_area, std::fabs(signed_area[t]));
+        (signed_area[t] > 0.0 ? pos : neg) += std::fabs(signed_area[t]);
+    }
+    const double sign = pos >= neg ? 1.0 : -1.0;
+    bool folds = !(max_area > 0.0);
+    for (double sa : signed_area)
+        folds = folds || sa * sign < -1e-9 * max_area;
+    return folds;
+}
+
+void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                   std::vector<PatchVec>& rNormals, std::vector<double>& rAreas) {
+    const std::size_t nt = rTris.size();
+    rNormals.assign(nt, PatchVec{0.0, 0.0, 0.0});
+    rAreas.assign(nt, 0.0);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const PatchVec e1 = pf_sub(rPts[rTris[t][1]], rPts[rTris[t][0]]);
+        const PatchVec e2 = pf_sub(rPts[rTris[t][2]], rPts[rTris[t][0]]);
+        PatchVec nrm = pf_cross(e1, e2);
+        rAreas[t] = 0.5 * pf_norm(nrm);
+        if (pf_norm(nrm) > 0.0)
+            pf_normalize(nrm);
+        rNormals[t] = nrm;
+    }
+}
+
+bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    if (rPts.size() < 4 || rTris.size() < 2)
+        return false;
+    std::vector<PatchVec> normals;
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    for (int kind = 0; kind < 2; ++kind) {
+        PatchFlat flat;
+        if (patch_flatten(kind, rPts, normals, areas, flat) && !patch_flat_folds(flat, rTris))
+            return true;
+    }
+    return false;
+}
+
+std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
+                                                 const std::vector<PatchTri>& rTris,
+                                                 const PatchSplitOptions& rOptions,
+                                                 std::size_t& rNumPieces) {
+    std::vector<PatchVec> normals;
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    std::vector<std::size_t> all(rTris.size());
+    std::iota(all.begin(), all.end(), std::size_t{0});
+    std::vector<std::vector<std::size_t>> pieces;
+    for (const auto& comp : pf_components(rTris, all))
+        pf_split(rPts, rTris, normals, areas, comp, 0, rOptions, pieces);
+    std::sort(pieces.begin(), pieces.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    std::vector<std::int64_t> out(rTris.size(), -1);
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+        for (std::size_t t : pieces[p])
+            out[t] = static_cast<std::int64_t>(p);
+    rNumPieces = pieces.size();
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/patch_flatten.cpp =====
 // ===== begin src/cpp/src/detail/png_write.cpp =====
 #include <algorithm>
 #include <array>
@@ -160285,6 +161167,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <map>
 #include <numeric>
 #include <stdexcept>
@@ -160320,6 +161203,8 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <Approx_ParametrizationType.hxx>
 #include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <GeomFill_Pipe.hxx>
+#include <Geom_OffsetSurface.hxx>
 #include <TColgp_Array2OfPnt.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -160448,9 +161333,38 @@ struct FcPatch {
 };
 
 // The nearest point of @p rS to @p rP; false when the projection fails.
+// One projector per surface for the length of a fit_cad call: building one
+// samples the surface, which on a B-spline costs far more than a projection,
+// and the edge builder projects the same few surfaces tens of thousands of
+// times. Keyed by handle, so a surface lives as long as its entry; cleared by
+// `FcProjectorScope` when fit_cad returns.
+struct FcProjector {
+    FcHandle<Geom_Surface> mSurface;
+    std::unique_ptr<GeomAPI_ProjectPointOnSurf> mProj;
+};
+thread_local std::vector<FcProjector> tFcProjectors;
+
+struct FcProjectorScope {
+    FcProjectorScope() { tFcProjectors.clear(); }
+    ~FcProjectorScope() { tFcProjectors.clear(); }
+};
+
+GeomAPI_ProjectPointOnSurf& fc_projector(const FcHandle<Geom_Surface>& rS) {
+    for (FcProjector& p : tFcProjectors)
+        if (p.mSurface == rS)
+            return *p.mProj;
+    double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+    rS->Bounds(u0, u1, v0, v1);
+    auto proj = std::make_unique<GeomAPI_ProjectPointOnSurf>();
+    proj->Init(rS, u0, u1, v0, v1);
+    tFcProjectors.push_back({rS, std::move(proj)});
+    return *tFcProjectors.back().mProj;
+}
+
 bool fc_project(const FcHandle<Geom_Surface>& rS, const gp_Pnt& rP, gp_Pnt& rOut,
                 double* pU = nullptr, double* pV = nullptr) {
-    GeomAPI_ProjectPointOnSurf proj(rP, rS);
+    GeomAPI_ProjectPointOnSurf& proj = fc_projector(rS);
+    proj.Perform(rP);
     if (!proj.IsDone() || proj.NbPoints() == 0)
         return false;
     rOut = proj.NearestPoint();
@@ -160461,20 +161375,27 @@ bool fc_project(const FcHandle<Geom_Surface>& rS, const gp_Pnt& rP, gp_Pnt& rOut
 
 // Move @p rP onto every surface of @p rSurfaces at once, by averaged
 // alternating projection; returns the largest remaining distance to any of
-// them, or +inf when a projection fails.
+// them, or +inf when a projection fails. With @p Close, it also stops once
+// the point lies within that distance of every surface: between tangent
+// surfaces the averaging creeps, and a fillet's or a thread's edge needs no
+// more than a small fraction of the tolerance.
 double fc_onto_all(const std::vector<FcHandle<Geom_Surface> >& rSurfaces, gp_Pnt& rP,
-                   double Scale) {
+                   double Scale, double Close = 0.0) {
     const double inf = std::numeric_limits<double>::infinity();
     if (rSurfaces.empty())
         return 0.0;
     for (int it = 0; it < 200; ++it) {
         gp_XYZ sum(0.0, 0.0, 0.0);
+        double far = 0.0;
         for (const auto& s : rSurfaces) {
             gp_Pnt q;
             if (!fc_project(s, rP, q))
                 return inf;
             sum += q.XYZ();
+            far = std::max(far, q.Distance(rP));
         }
+        if (Close > 0.0 && far <= Close)
+            break;
         const gp_Pnt next(sum / static_cast<double>(rSurfaces.size()));
         const double moved = next.Distance(rP);
         rP = next;
@@ -160896,7 +161817,14 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
                 pts.push_back(fc_point(xyz, v));
             const gp_Pnt pa = BRep_Tool::Pnt(va), pb = BRep_Tool::Pnt(vb);
 
-            if (ExactEdges) {
+            // A fillet meets its walls tangentially and a thread flank is a
+            // long B-spline: intersecting either is slow and unstable, so their
+            // edges go straight to the approximation.
+            auto swept = [&](std::int64_t G) {
+                const std::int32_t t = rSkin.mPatches[static_cast<std::size_t>(G)].mType;
+                return t == kFitCadFilletType || t == kFitCadHelicalType;
+            };
+            if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd)) {
                 GeomAPI_IntSS inter(s1, s2, Precision::Confusion());
                 FcHandle<Geom_Curve> best;
                 double best_dev = std::numeric_limits<double>::infinity();
@@ -160993,7 +161921,9 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             }
             for (std::size_t i = 1; i + 1 < q.size(); ++i) {
                 gp_Pnt on = q[i];
-                const double d = fc_onto_all(both, on, rSkin.mScale);
+                const double d =
+                    fc_onto_all(both, on, rSkin.mScale,
+                                swept(c.mGroupFwd) || swept(c.mGroupBwd) ? 0.1 * Tol : 0.0);
                 if (d <= Tol && on.Distance(pts[i]) <= Tol)
                     q[i] = on;
             }
@@ -161454,144 +162384,7 @@ void fc_write_step(const TopoDS_Shape& rShape, const std::string& rPath) {
         throw WriteError(std::string(kFcPrefix) + "cannot write '" + rPath + "'");
 }
 
-// A freeform patch flattened: per vertex its (s, t) parameters and its offset
-// h from the plane or cylinder it is flattened over, with the map back.
-struct FcFlat {
-    bool mCylinder = false;
-    gp_XYZ mOrigin, mE1, mE2, mAxis;  // plane: origin, in-plane axes, normal
-    double mRadius = 0.0, mTheta0 = 0.0;
-    std::vector<double> mS, mT, mH;
-
-    gp_Pnt At(double S, double T, double H) const {
-        if (!mCylinder)
-            return gp_Pnt(mOrigin + mE1 * S + mE2 * T + mAxis * H);
-        const double th = mTheta0 + S / mRadius;
-        return gp_Pnt(mOrigin + mAxis * T +
-                      (mE1 * std::cos(th) + mE2 * std::sin(th)) * (mRadius + H));
-    }
-};
-
-// Two unit vectors completing @p rA to a right-handed frame.
-void fc_frame(const gp_XYZ& rA, gp_XYZ& rE1, gp_XYZ& rE2) {
-    const gp_XYZ seed = std::fabs(rA.X()) < 0.9 ? gp_XYZ(1.0, 0.0, 0.0) : gp_XYZ(0.0, 1.0, 0.0);
-    rE1 = seed - rA * seed.Dot(rA);
-    rE1.Normalize();
-    rE2 = rA.Crossed(rE1);
-}
-
-// Flatten over the best-fit plane (Kind 0) or unroll around the axis the
-// normals are most perpendicular to (Kind 1); false when that is degenerate.
-bool fc_flatten(int Kind, const std::vector<gp_Pnt>& rPts, const std::vector<gp_XYZ>& rNormals,
-                const std::vector<double>& rAreas, FcFlat& rOut) {
-    const std::size_t n = rPts.size();
-    gp_XYZ c(0.0, 0.0, 0.0);
-    for (const gp_Pnt& p : rPts)
-        c += p.XYZ();
-    c /= static_cast<double>(n);
-    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
-    rOut = FcFlat{};
-    if (Kind == 0) {
-        for (const gp_Pnt& p : rPts) {
-            const gp_XYZ d = p.XYZ() - c;
-            const double x[3] = {d.X(), d.Y(), d.Z()};
-            for (int i = 0; i < 3; ++i)
-                for (int j = 0; j < 3; ++j)
-                    m[i * 3 + j] += x[i] * x[j];
-        }
-        detail::lsq_sym3_eigen(m, w, v);
-        rOut.mOrigin = c;
-        rOut.mAxis = gp_XYZ(v[0], v[1], v[2]);  // the smallest spread: the normal
-        rOut.mE1 = gp_XYZ(v[6], v[7], v[8]);
-        rOut.mE2 = rOut.mAxis.Crossed(rOut.mE1);
-        for (const gp_Pnt& p : rPts) {
-            const gp_XYZ d = p.XYZ() - c;
-            rOut.mS.push_back(d.Dot(rOut.mE1));
-            rOut.mT.push_back(d.Dot(rOut.mE2));
-            rOut.mH.push_back(d.Dot(rOut.mAxis));
-        }
-        return true;
-    }
-    for (std::size_t f = 0; f < rNormals.size(); ++f) {
-        const double x[3] = {rNormals[f].X(), rNormals[f].Y(), rNormals[f].Z()};
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                m[i * 3 + j] += rAreas[f] * x[i] * x[j];
-    }
-    detail::lsq_sym3_eigen(m, w, v);
-    gp_XYZ axis(v[0], v[1], v[2]);
-    if (axis.Modulus() < 0.5)
-        return false;
-    axis.Normalize();
-    gp_XYZ e1, e2;
-    fc_frame(axis, e1, e2);
-    // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
-    double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
-    for (const gp_Pnt& p : rPts) {
-        const gp_XYZ d = p.XYZ() - c;
-        const double x = d.Dot(e1), y = d.Dot(e2), r[3] = {x, y, 1.0};
-        const double rhs = -(x * x + y * y);
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j)
-                a[i * 3 + j] += r[i] * r[j];
-            b[i] += r[i] * rhs;
-        }
-    }
-    // Solve the 3x3 normal equations by Cramer's rule.
-    auto det3 = [](const double* q) {
-        return q[0] * (q[4] * q[8] - q[5] * q[7]) - q[1] * (q[3] * q[8] - q[5] * q[6]) +
-               q[2] * (q[3] * q[7] - q[4] * q[6]);
-    };
-    const double d0 = det3(a);
-    if (!(std::fabs(d0) > 0.0))
-        return false;
-    double sol[3];
-    for (int k = 0; k < 3; ++k) {
-        double q[9];
-        std::copy(a, a + 9, q);
-        for (int i = 0; i < 3; ++i)
-            q[i * 3 + k] = b[i];
-        sol[k] = det3(q) / d0;
-    }
-    const double cx = -sol[0] / 2.0, cy = -sol[1] / 2.0;
-    const double r2 = cx * cx + cy * cy - sol[2];
-    if (!(r2 > 0.0) || !std::isfinite(r2))
-        return false;
-    const double radius = std::sqrt(r2);
-    const gp_XYZ origin = c + e1 * cx + e2 * cy;
-    std::vector<double> theta(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        const gp_XYZ d = rPts[i].XYZ() - origin;
-        theta[i] = std::atan2(d.Dot(e2), d.Dot(e1));
-    }
-    // Cut the circle in the widest gap between the points' angles.
-    std::vector<double> sorted = theta;
-    std::sort(sorted.begin(), sorted.end());
-    double gap = sorted.front() + 2.0 * kFcPi - sorted.back(), cut = sorted.back();
-    for (std::size_t i = 1; i < sorted.size(); ++i)
-        if (sorted[i] - sorted[i - 1] > gap) {
-            gap = sorted[i] - sorted[i - 1];
-            cut = sorted[i - 1];
-        }
-    if (!(gap > 1e-6))
-        return false;
-    rOut.mCylinder = true;
-    rOut.mOrigin = origin;
-    rOut.mAxis = axis;
-    rOut.mE1 = e1;
-    rOut.mE2 = e2;
-    rOut.mRadius = radius;
-    rOut.mTheta0 = cut + gap / 2.0;  // the parameter starts just past the gap's middle
-    for (std::size_t i = 0; i < n; ++i) {
-        double th = theta[i] - rOut.mTheta0;
-        th -= 2.0 * kFcPi * std::floor(th / (2.0 * kFcPi));
-        const gp_XYZ d = rPts[i].XYZ() - origin;
-        rOut.mS.push_back(radius * th);
-        rOut.mT.push_back(d.Dot(axis));
-        const gp_XYZ radial = d - axis * d.Dot(axis);
-        rOut.mH.push_back(radial.Modulus() - radius);
-    }
-    return true;
-}
+gp_Pnt fc_pnt(const detail::PatchVec& rV) { return gp_Pnt(rV[0], rV[1], rV[2]); }
 
 // A B-spline face surface for a patch no primitive explains, or a null handle.
 // @p rTris: the patch's triangles as local vertex indices; @p rPts: its points.
@@ -161601,17 +162394,12 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
     const std::size_t nt = rTris.size();
     if (rPts.size() < 4 || nt < 2)
         return {};
-    std::vector<gp_XYZ> normals(nt);
-    std::vector<double> areas(nt);
-    for (std::size_t t = 0; t < nt; ++t) {
-        const gp_XYZ e1 = rPts[rTris[t][1]].XYZ() - rPts[rTris[t][0]].XYZ();
-        const gp_XYZ e2 = rPts[rTris[t][2]].XYZ() - rPts[rTris[t][0]].XYZ();
-        gp_XYZ nrm = e1.Crossed(e2);
-        areas[t] = 0.5 * nrm.Modulus();
-        if (nrm.Modulus() > 0.0)
-            nrm.Normalize();
-        normals[t] = nrm;
-    }
+    std::vector<detail::PatchVec> pts(rPts.size());
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        pts[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
+    std::vector<detail::PatchVec> normals;
+    std::vector<double> areas;
+    detail::patch_normals(pts, rTris, normals, areas);
     // Boundary edges: those one triangle has.
     std::map<std::pair<std::size_t, std::size_t>, int> edge_count;
     for (const auto& t : rTris)
@@ -161626,26 +162414,12 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
             boundary.push_back(kv.first);
 
     for (int kind = 0; kind < 2; ++kind) {
-        FcFlat flat;
-        if (!fc_flatten(kind, rPts, normals, areas, flat))
+        detail::PatchFlat flat;
+        if (!detail::patch_flatten(kind, pts, normals, areas, flat))
             continue;
         // A fold (triangles of both orientations) means this flattening is not
         // a parametrisation of the patch.
-        double max_area = 0.0, pos = 0.0, neg = 0.0;
-        std::vector<double> signed_area(nt);
-        for (std::size_t t = 0; t < nt; ++t) {
-            const auto& tr = rTris[t];
-            const double ax = flat.mS[tr[1]] - flat.mS[tr[0]], ay = flat.mT[tr[1]] - flat.mT[tr[0]];
-            const double bx = flat.mS[tr[2]] - flat.mS[tr[0]], by = flat.mT[tr[2]] - flat.mT[tr[0]];
-            signed_area[t] = 0.5 * (ax * by - ay * bx);
-            max_area = std::max(max_area, std::fabs(signed_area[t]));
-            (signed_area[t] > 0.0 ? pos : neg) += std::fabs(signed_area[t]);
-        }
-        const double sign = pos >= neg ? 1.0 : -1.0;
-        bool folds = !(max_area > 0.0);
-        for (double sa : signed_area)
-            folds = folds || sa * sign < -1e-9 * max_area;
-        if (folds) {
+        if (detail::patch_flat_folds(flat, rTris)) {
             log::debug("fit_cad: a freeform patch folds over its {}", kind ? "cylinder" : "plane");
             continue;
         }
@@ -161737,7 +162511,7 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
                     const double S = s0 + (s1 - s0) * static_cast<double>(i) / static_cast<double>(nu - 1);
                     const double T = t0 + (t1 - t0) * static_cast<double>(j) / static_cast<double>(nv - 1);
                     grid.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
-                                  flat.At(S, T, height(S, T)));
+                                  fc_pnt(flat.At(S, T, height(S, T))));
                 }
             try {
                 // Iso-parametric: the grid's (i, j) are the surface's
@@ -161791,10 +162565,195 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
     return {};
 }
 
+// Whether @p rS lies within half the tolerance of every vertex of a patch and
+// within the tolerance of every facet centre, by projection: the test a
+// fillet or thread face passes before it replaces a freeform fit.
+bool fc_surface_fits(const FcHandle<Geom_Surface>& rS, const std::vector<gp_Pnt>& rPts,
+                     const std::vector<std::array<std::size_t, 3> >& rTris, double Tol) {
+    auto within = [&](const gp_Pnt& rP, double Allowance) {
+        GeomAPI_ProjectPointOnSurf proj(rP, rS);
+        return proj.IsDone() && proj.NbPoints() > 0 && proj.LowerDistance() <= Allowance;
+    };
+    for (const gp_Pnt& p : rPts)
+        if (!within(p, 0.5 * Tol))
+            return false;
+    for (const auto& t : rTris)
+        if (!within(gp_Pnt((rPts[t[0]].XYZ() + rPts[t[1]].XYZ() + rPts[t[2]].XYZ()) / 3.0), Tol))
+            return false;
+    return true;
+}
+
+// @p rS moved by @p Offset along its normal, as the equivalent elementary
+// surface when there is one (a plane, or a cylinder of another radius), so
+// two offsets of primitives intersect exactly.
+FcHandle<Geom_Surface> fc_offset(const FcHandle<Geom_Surface>& rS, double Offset) {
+    FcHandle<Geom_OffsetSurface> off = new Geom_OffsetSurface(rS, Offset);
+    FcHandle<Geom_Surface> plain = off->Surface();
+    return plain.IsNull() ? FcHandle<Geom_Surface>(off) : plain;
+}
+
+// The rolling-ball fillet of radius `rFit.mRadius` between @p rS1 and @p rS2,
+// whose ball centres `rFit.mCentres` the patch says it rolls through: the pipe
+// of that radius around the spine where the two surfaces, each offset by the
+// radius towards the centres, meet. Null when no spine branch runs through
+// the centres.
+FcHandle<Geom_Surface> fc_fillet_surface(const FcHandle<Geom_Surface>& rS1,
+                                         const FcHandle<Geom_Surface>& rS2,
+                                         const detail::FilletFit& rFit, double Tol) {
+    const double r = rFit.mRadius;
+    if (rFit.mCentres.empty())
+        return {};
+    // The side of each surface the centres lie on, by majority.
+    auto side = [&](const FcHandle<Geom_Surface>& rS) {
+        int votes = 0;
+        const std::size_t step = std::max<std::size_t>(1, rFit.mCentres.size() / 16);
+        for (std::size_t i = 0; i < rFit.mCentres.size(); i += step) {
+            const auto& c = rFit.mCentres[i];
+            const gp_Pnt pc(c[0], c[1], c[2]);
+            gp_Pnt foot;
+            if (!fc_project(rS, pc, foot))
+                continue;
+            const gp_Vec n = fc_normal_at(rS, foot);
+            votes += gp_Vec(foot, pc).Dot(n) >= 0.0 ? 1 : -1;
+        }
+        return votes >= 0 ? 1.0 : -1.0;
+    };
+    const FcHandle<Geom_Surface> o1 = fc_offset(rS1, side(rS1) * r);
+    const FcHandle<Geom_Surface> o2 = fc_offset(rS2, side(rS2) * r);
+    GeomAPI_IntSS inter(o1, o2, 1e-6 * Tol);
+    if (!inter.IsDone() || inter.NbLines() == 0)
+        return {};
+    // The branch the centres lie closest to.
+    FcHandle<Geom_Curve> spine;
+    double best = std::numeric_limits<double>::infinity();
+    std::vector<double> params;
+    for (int i = 1; i <= inter.NbLines(); ++i) {
+        const FcHandle<Geom_Curve> line = inter.Line(i);
+        double sum = 0.0;
+        std::vector<double> at;
+        bool ok = true;
+        for (const auto& c : rFit.mCentres) {
+            GeomAPI_ProjectPointOnCurve proj(gp_Pnt(c[0], c[1], c[2]), line);
+            if (proj.NbPoints() == 0) {
+                ok = false;
+                break;
+            }
+            sum += proj.LowerDistance();
+            at.push_back(proj.LowerDistanceParameter());
+        }
+        const double mean = ok ? sum / static_cast<double>(rFit.mCentres.size()) : best;
+        if (ok && mean < best) {
+            best = mean;
+            spine = line;
+            params = std::move(at);
+        }
+    }
+    if (spine.IsNull() || !(best <= Tol))
+        return {};
+    // The intersection comes back trimmed (an arc of an ellipse that only
+    // nearly closes, between fitted surfaces) or as a closed B-spline: take the
+    // periodic curve underneath, so a ring of a fillet is seen as one.
+    FcHandle<Geom_Curve> periodic;
+    if (!spine->IsPeriodic() || !spine->IsClosed()) {
+        FcHandle<Geom_TrimmedCurve> tc = FcHandle<Geom_TrimmedCurve>::DownCast(spine);
+        if (!tc.IsNull() && tc->BasisCurve()->IsPeriodic()) {
+            periodic = tc->BasisCurve();
+        } else if (spine->IsClosed()) {
+            FcHandle<Geom_BSplineCurve> bc = FcHandle<Geom_BSplineCurve>::DownCast(spine->Copy());
+            if (!bc.IsNull()) {
+                bc->SetPeriodic();
+                periodic = bc;
+            }
+        }
+    }
+    if (!periodic.IsNull()) {
+        spine = periodic;
+        params.clear();
+        for (const auto& c : rFit.mCentres) {
+            GeomAPI_ProjectPointOnCurve proj(gp_Pnt(c[0], c[1], c[2]), spine);
+            if (proj.NbPoints() > 0)
+                params.push_back(proj.LowerDistanceParameter());
+        }
+        if (params.empty())
+            return {};
+    }
+    // Trim the spine to the centres, with a margin; a closed spine they go
+    // most of the way round is kept whole.
+    std::sort(params.begin(), params.end());
+    const double f = spine->FirstParameter(), l = spine->LastParameter();
+    bool whole = false;
+    double u0 = params.front(), u1 = params.back();
+    if (spine->IsPeriodic()) {
+        const double per = spine->Period();
+        double gap = params.front() + per - params.back(), gap_end = params.front();
+        for (std::size_t i = 1; i < params.size(); ++i)
+            if (params[i] - params[i - 1] > gap) {
+                gap = params[i] - params[i - 1];
+                gap_end = params[i];
+            }
+        if (gap < 0.25 * per) {
+            whole = true;
+        } else {
+            u0 = gap_end;
+            u1 = gap_end + per - gap;
+        }
+    }
+    if (!whole) {
+        const double margin = 0.1 * (u1 - u0) + 1e-9;
+        u0 -= margin;
+        u1 += margin;
+        if (!spine->IsPeriodic()) {
+            u0 = std::max(u0, f);
+            u1 = std::min(u1, l);
+        }
+        if (!(u1 > u0))
+            return {};
+        spine = new Geom_TrimmedCurve(spine, u0, u1);
+    }
+    GeomFill_Pipe pipe(spine, r);
+    pipe.Perform(0.1 * Tol, Standard_False);
+    if (!pipe.IsDone())
+        return {};
+    FcHandle<Geom_Surface> out = pipe.Surface();
+    // Around a whole closed spine the pipe comes back closed along it but not
+    // periodic, which would cut a ring-shaped fillet's loops at the seam.
+    FcHandle<Geom_BSplineSurface> bs = FcHandle<Geom_BSplineSurface>::DownCast(out);
+    if (whole && !bs.IsNull() && bs->IsVClosed() && !bs->IsVPeriodic())
+        bs->SetVPeriodic();
+    if (whole && !bs.IsNull() && bs->IsUClosed() && !bs->IsUPeriodic())
+        bs->SetUPeriodic();
+    return out;
+}
+
+// The ruled helicoid of a thread flank, as a B-spline through a grid over the
+// patch's radial and angular extent, slightly widened so the face trims inside it.
+FcHandle<Geom_Surface> fc_helicoid_surface(const detail::HelicoidFit& rH, double Tol) {
+    const double span = rH.mThetaMax - rH.mThetaMin;
+    const double drho = 0.05 * (rH.mRhoMax - rH.mRhoMin), dth = 0.02 * span;
+    const double rho0 = rH.mRhoMin - drho, rho1 = rH.mRhoMax + drho;
+    const double th0 = rH.mThetaMin - dth, th1 = rH.mThetaMax + dth;
+    const int nrho = 4;
+    const int nth = std::clamp(static_cast<int>(std::ceil((th1 - th0) / (2.0 * kFcPi) * 48.0)) + 1,
+                               8, 2048);
+    TColgp_Array2OfPnt grid(1, nrho, 1, nth);
+    for (int j = 0; j < nth; ++j)
+        for (int i = 0; i < nrho; ++i) {
+            const double rho = rho0 + (rho1 - rho0) * i / (nrho - 1);
+            const double th = th0 + (th1 - th0) * j / (nth - 1);
+            const detail::PatchVec p = rH.At(rho, th);
+            grid.SetValue(i + 1, j + 1, gp_Pnt(p[0], p[1], p[2]));
+        }
+    GeomAPI_PointsToBSplineSurface fit(grid, Approx_IsoParametric, 1, 3, GeomAbs_C2, 0.1 * Tol);
+    if (!fit.IsDone())
+        return {};
+    return FcHandle<Geom_Surface>(fit.Surface());
+}
+
 }  // namespace
 
 FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                      const FitCadOptions& rOptions) {
+    const FcProjectorScope projectors;
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFcPrefix) + "tolerance must be finite");
     if (std::isnan(rOptions.mMeshDeflection) || std::isinf(rOptions.mMeshDeflection))
@@ -161847,7 +162806,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     const NDArray& types = work.FieldData("fit:patch_type");
     const NDArray& params = work.FieldData("fit:patch_params");
     const NDArray& tols = work.FieldData("fit:patch_tolerance");
-    const std::size_t m = ids.Size();
+    // `m` grows when freeform patches are split; `num_input_patches` stays.
+    std::size_t m = ids.Size();
+    const std::size_t num_input_patches = m;
     if (types.Size() != m || tols.Size() != m || params.Size() != m * kFcParams)
         throw std::invalid_argument(std::string(kFcPrefix) +
                                     "the fit:patch_* arrays disagree on the number of patches");
@@ -161978,6 +162939,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     for (std::size_t f = 0; f < nf; ++f)
         if (skin.mRow[f] >= 0)
             facets_of[static_cast<std::size_t>(skin.mRow[f])].push_back(f);
+    for (std::size_t r = 0; r < m; ++r)
+        log::debug("fit_cad: patch {}: fitted type {}, {} facet(s)", skin.mPatches[r].mLabel,
+                   skin.mPatches[r].mType, facets_of[r].size());
     std::vector<FcHandle<Geom_Surface> > surface(m);
     std::vector<std::uint8_t> analytic(m, 0);
     for (std::size_t r = 0; r < m; ++r) {
@@ -162016,20 +162980,173 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         }
     }
 
+    // Fillets and threads (roadmap 6.3.1): a patch no primitive explains that
+    // runs between two analytic faces is tried as a constant-radius
+    // rolling-ball fillet, and one beside a cylinder or cone as a
+    // straight-flank thread about its axis, before the freeform fallback.
+    auto patch_mesh = [&](std::size_t R, std::vector<gp_Pnt>& rPts,
+                          std::vector<std::array<std::size_t, 3> >& rTris,
+                          std::vector<detail::PatchVec>& rFlat) {
+        std::unordered_map<std::int64_t, std::size_t> local;
+        rPts.clear();
+        rTris.clear();
+        auto vid = [&](std::int64_t V) {
+            auto ins = local.emplace(V, rPts.size());
+            if (ins.second)
+                rPts.push_back(fc_point(fc.mXyz, V));
+            return ins.first->second;
+        };
+        for (std::size_t f : facets_of[R]) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
+            for (std::int64_t k = 1; k + 1 < n; ++k)
+                rTris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
+                                 vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+        }
+        rFlat.resize(rPts.size());
+        for (std::size_t i = 0; i < rPts.size(); ++i)
+            rFlat[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
+    };
+    auto orient = [&](std::size_t R, FcHandle<Geom_Surface> S) {
+        const std::size_t step = std::max<std::size_t>(1, facets_of[R].size() / 64);
+        double agree = 0.0;
+        for (std::size_t i = 0; i < facets_of[R].size(); i += step) {
+            const std::size_t f = facets_of[R][i];
+            gp_XYZ c(0.0, 0.0, 0.0);
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                c += fc_point(fc.mXyz, fc.mNodes[static_cast<std::size_t>(k)]).XYZ();
+            c /= static_cast<double>(fc.mStart[f + 1] - fc.mStart[f]);
+            const gp_Vec nrm = fc_normal_at(S, gp_Pnt(c));
+            agree += nrm.X() * fc.mNormals[f * 3] + nrm.Y() * fc.mNormals[f * 3 + 1] +
+                     nrm.Z() * fc.mNormals[f * 3 + 2];
+        }
+        return agree < 0.0 ? FcHandle<Geom_Surface>(S->UReversed()) : S;
+    };
+    auto is_primitive = [&](std::size_t R) {
+        const std::int32_t t = skin.mPatches[R].mType;
+        return analytic[R] && t >= 1 && t <= 5;
+    };
+    for (std::size_t r = 0; (rOptions.mFillets || rOptions.mThreads) && r < m; ++r) {
+        {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+                continue;
+        }
+        // The rows across the patch's boundary, by the length they share.
+        std::map<std::int64_t, double> shared;
+        double perimeter = 0.0;
+        for (std::size_t f : facets_of[r])
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k) {
+                const std::int64_t a = fc.mNodes[static_cast<std::size_t>(k)];
+                const std::int64_t b = fc.mNodes[static_cast<std::size_t>(
+                    k + 1 < fc.mStart[f + 1] ? k + 1 : fc.mStart[f])];
+                auto it = skin.mEdgeFacets.find({std::min(a, b), std::max(a, b)});
+                if (it == skin.mEdgeFacets.end())
+                    continue;
+                for (std::int64_t g : it->second) {
+                    if (g < 0 || static_cast<std::size_t>(g) == f)
+                        continue;
+                    const std::int64_t q = skin.mRow[static_cast<std::size_t>(g)];
+                    if (q == static_cast<std::int64_t>(r))
+                        continue;
+                    const double len = fc_point(fc.mXyz, a).Distance(fc_point(fc.mXyz, b));
+                    perimeter += len;
+                    if (q >= 0)
+                        shared[q] += len;
+                }
+            }
+        std::vector<std::pair<double, std::int64_t> > by_length;
+        for (const auto& kv : shared)
+            by_length.emplace_back(-kv.second, kv.first);
+        std::sort(by_length.begin(), by_length.end());
+        std::vector<gp_Pnt> pts;
+        std::vector<std::array<std::size_t, 3> > tris;
+        std::vector<detail::PatchVec> flat;
+        patch_mesh(r, pts, tris, flat);
+        try {
+            if (rOptions.mFillets && by_length.size() >= 2) {
+                const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
+                const std::size_t q2 = static_cast<std::size_t>(by_length[1].second);
+                const double along = -(by_length[0].first + by_length[1].first);
+                if (is_primitive(q1) && is_primitive(q2) && along >= 0.6 * perimeter) {
+                    const detail::FilletFit ff = detail::fillet_fit(
+                        flat, tris, skin.mPatches[q1].mType, skin.mPatches[q1].mParams.data(),
+                        skin.mPatches[q2].mType, skin.mPatches[q2].mParams.data(), 0.5 * tol,
+                        skin.mScale);
+                    if (ff.mOk && ff.mRms <= tol) {
+                        FcHandle<Geom_Surface> fs =
+                            fc_fillet_surface(surface[q1], surface[q2], ff, tol);
+                        if (!fs.IsNull() && fc_surface_fits(fs, pts, tris, tol)) {
+                            surface[r] = orient(r, fs);
+                            analytic[r] = 1;
+                            skin.mPatches[r].mType = static_cast<std::int32_t>(kFitCadFilletType);
+                            skin.mPatches[r].mAccepted = true;
+                            log::debug("fit_cad: patch {} is a fillet of radius {}",
+                                       skin.mPatches[r].mLabel, ff.mRadius);
+                            continue;
+                        }
+                    }
+                    log::debug("fit_cad: patch {} is not a rolling-ball fillet (rms {})",
+                               skin.mPatches[r].mLabel, ff.mRms);
+                }
+            }
+            if (rOptions.mThreads) {
+                // The axis of the neighbouring cylinder or cone sharing the most boundary.
+                for (const auto& nb : by_length) {
+                    const std::size_t q = static_cast<std::size_t>(nb.second);
+                    const std::int32_t t = skin.mPatches[q].mType;
+                    if (!is_primitive(q) || (t != 3 && t != 4))
+                        continue;
+                    const double* pp = skin.mPatches[q].mParams.data();
+                    const detail::HelicoidFit hf =
+                        detail::helicoid_fit(flat, tris, {pp[0], pp[1], pp[2]}, {pp[3], pp[4], pp[5]});
+                    if (hf.mOk && hf.mMax <= 0.5 * tol) {
+                        FcHandle<Geom_Surface> hs = fc_helicoid_surface(hf, tol);
+                        if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol)) {
+                            surface[r] = orient(r, hs);
+                            analytic[r] = 1;
+                            skin.mPatches[r].mType = static_cast<std::int32_t>(kFitCadHelicalType);
+                            skin.mPatches[r].mAccepted = true;
+                            log::debug("fit_cad: patch {} is a thread flank of pitch {}",
+                                       skin.mPatches[r].mLabel, hf.Pitch());
+                        }
+                    } else {
+                        log::debug("fit_cad: patch {} is not a thread flank (max {})",
+                                   skin.mPatches[r].mLabel, hf.mMax);
+                    }
+                    break;
+                }
+            }
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: no fillet or thread face for patch {}: {}",
+                       skin.mPatches[r].mLabel, rErr.GetMessageString());
+        }
+    }
+
     // Freeform faces (roadmap 6.3.2): a B-spline for each patch no primitive
-    // explains, oriented like the analytic ones.
+    // explains, oriented like the analytic ones. A patch that folds over both
+    // its flattenings is split, and the pieces, appended as new rows, are
+    // fitted in turn by this same loop.
     std::int64_t num_freeform_tried = 0;
-    for (std::size_t r = 0; rOptions.mFreeform && r < m; ++r) {
-        FcPatch& p = skin.mPatches[r];
+    std::int64_t next_label = 0;
+    for (const FcPatch& p : skin.mPatches)
+        next_label = std::max(next_label, p.mLabel + 1);
+    std::vector<std::uint8_t> is_piece(m, 0);
+    for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
         bool finite = true;
-        for (double x : p.mParams)
+        for (double x : skin.mPatches[r].mParams)
             finite = finite && std::isfinite(x);
-        if (facets_of[r].empty() || analytic[r] || (p.mType >= 1 && p.mType <= 5 && finite))
+        const std::int32_t type = skin.mPatches[r].mType;
+        if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
             continue;
         ++num_freeform_tried;
         std::unordered_map<std::int64_t, std::size_t> local;
         std::vector<gp_Pnt> pts;
         std::vector<std::array<std::size_t, 3> > tris;
+        std::vector<std::size_t> tri_facet;
         auto vid = [&](std::int64_t V) {
             auto ins = local.emplace(V, pts.size());
             if (ins.second)
@@ -162039,15 +163156,61 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         for (std::size_t f : facets_of[r]) {
             const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
             const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
-            for (std::int64_t k = 1; k + 1 < n; ++k)
+            for (std::int64_t k = 1; k + 1 < n; ++k) {
                 tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
                                 vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+                tri_facet.push_back(f);
+            }
         }
         try {
             FcHandle<Geom_Surface> s =
                 fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
-            if (s.IsNull())
+            if (s.IsNull()) {
+                if (!rOptions.mFreeformSplit || is_piece[r])
+                    continue;
+                std::vector<detail::PatchVec> flat_pts(pts.size());
+                for (std::size_t i = 0; i < pts.size(); ++i)
+                    flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
+                if (detail::patch_flattenable(flat_pts, tris))
+                    continue;  // it flattens; the fit itself fell short
+                std::size_t num_pieces = 0;
+                const std::vector<std::int64_t> piece =
+                    detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
+                if (num_pieces == 0)
+                    continue;
+                // A facet goes with its first triangle's piece.
+                std::vector<std::vector<std::size_t> > piece_facets(num_pieces);
+                std::vector<std::size_t> kept;
+                for (std::size_t t = 0; t < tris.size(); ++t) {
+                    if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+                        continue;
+                    if (piece[t] >= 0)
+                        piece_facets[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+                    else
+                        kept.push_back(tri_facet[t]);
+                }
+                log::debug("fit_cad: patch {} folds over every flattening; split into {} "
+                           "piece(s), {} facet(s) left",
+                           skin.mPatches[r].mLabel, num_pieces, kept.size());
+                facets_of[r] = std::move(kept);
+                for (std::vector<std::size_t>& pf : piece_facets) {
+                    FcPatch np;
+                    np.mLabel = next_label++;
+                    np.mType = 0;
+                    np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                    np.mTolerance = skin.mPatches[r].mTolerance;
+                    const std::int64_t row = static_cast<std::int64_t>(skin.mPatches.size());
+                    for (std::size_t f : pf)
+                        skin.mRow[f] = row;
+                    skin.mPatches.push_back(np);
+                    facets_of.push_back(std::move(pf));
+                    surface.emplace_back();
+                    analytic.push_back(0);
+                    is_piece.push_back(1);
+                }
+                result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
                 continue;
+            }
             const std::size_t step = std::max<std::size_t>(1, facets_of[r].size() / 64);
             double agree = 0.0;
             for (std::size_t i = 0; i < facets_of[r].size(); i += step) {
@@ -162064,13 +163227,14 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 s = s->UReversed();
             surface[r] = s;
             analytic[r] = 1;
-            p.mType = static_cast<std::int32_t>(kFitCadBsplineType);
-            p.mAccepted = true;
+            skin.mPatches[r].mType = static_cast<std::int32_t>(kFitCadBsplineType);
+            skin.mPatches[r].mAccepted = true;
         } catch (const Standard_Failure& rErr) {
-            log::debug("fit_cad: no freeform face for patch {}: {}", p.mLabel,
+            log::debug("fit_cad: no freeform face for patch {}: {}", skin.mPatches[r].mLabel,
                        rErr.GetMessageString());
         }
     }
+    m = skin.mPatches.size();
     if (num_freeform_tried > 0)
         log::debug("fit_cad: {} patch(es) tried as freeform B-spline faces", num_freeform_tried);
 
@@ -162162,7 +163326,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 
     // The report.
     result.mValid = build.mValid;
-    result.mNumPatches = static_cast<std::int64_t>(m);
+    result.mNumPatches = static_cast<std::int64_t>(num_input_patches);
     result.mNumExactEdges = build.mNumExact;
     result.mNumApproxEdges = build.mNumApprox;
     for (std::size_t r = 0; r < m; ++r)
@@ -162209,6 +163373,12 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 break;
             case kFitCadBsplineType:
                 ++result.mNumBspline;
+                break;
+            case kFitCadFilletType:
+                ++result.mNumFillet;
+                break;
+            case kFitCadHelicalType:
+                ++result.mNumHelical;
                 break;
             default:
                 ++result.mNumFacetedFaces;
@@ -169847,7 +171017,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
-          "Freeform", "FreeformDegree", "FreeformMaxControl"}},
+          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
+          "Threads"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -170550,6 +171721,9 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mFreeformDegree = static_cast<std::int32_t>(pipe_number(rStep, "FreeformDegree", 3.0));
         opts.mFreeformMaxControl =
             static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControl", 64.0));
+        opts.mFreeformSplit = pipe_flag(rStep, "FreeformSplit", true);
+        opts.mFillets = pipe_flag(rStep, "Fillets", true);
+        opts.mThreads = pipe_flag(rStep, "Threads", true);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         pipe_push_step(rReport, rStep,
                        {{"Valid", cr.mValid ? 1.0 : 0.0},
@@ -170558,6 +171732,9 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumFaces", static_cast<double>(cr.mNumFaces)},
                         {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
                         {"NumBspline", static_cast<double>(cr.mNumBspline)},
+                        {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
+                        {"NumFillet", static_cast<double>(cr.mNumFillet)},
+                        {"NumHelical", static_cast<double>(cr.mNumHelical)},
                         {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
         return std::move(cr.mMesh);
     }

@@ -1438,6 +1438,8 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
         return
     assert out["valid"] is True
     assert out["num_plane"] == 6
+    assert out["num_split_patches"] == 0
+    assert out["num_fillet"] == 0 and out["num_helical"] == 0
     assert out["step_path"].endswith("cube.step")
     assert "fit_cad:face" in out["cell_data"]
     assert os.path.exists(tmp_path / "solid.vtu")
@@ -1480,10 +1482,14 @@ def test_fit_cad_tool_writes_kratos_cad_json(tmp_path):
                 "output_path": str(tmp_path / "cube.step"),
                 "cad_json_output_path": str(tmp_path / "cube.cad.json"),
                 "freeform": False,
+                "freeform_split": False,
+                "fillets": False,
+                "threads": False,
             },
         )
     )
     assert out["num_bspline"] == 0
+    assert out["num_fillet"] == 0 and out["num_helical"] == 0
     assert out["cad_json_path"].endswith("cube.cad.json")
     assert out["brep"]["faces"] == 6 and out["brep"]["edges"] == 12
     assert (
@@ -2918,9 +2924,10 @@ def test_server_mirrors_the_train_start_and_predict_file_parameters():
         if isinstance(node, ast.FunctionDef) and node.name in (
             "train_start",
             "predict_file",
+            "fit_cad",
         ):
             mirrored[node.name] = [a.arg for a in node.args.args]
-    for name in ("train_start", "predict_file"):
+    for name in ("train_start", "predict_file", "fit_cad"):
         pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
         assert mirrored[name] == pure, name
 

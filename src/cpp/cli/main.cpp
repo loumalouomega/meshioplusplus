@@ -401,7 +401,8 @@ void print_usage(std::ostream& os) {
           "  segment                 Split a surface into smooth patches (regions)\n"
           "  fit-primitives          Fit a plane/sphere/cylinder/cone/torus to each patch\n"
           "  to-cad                  Fitted patches as a STEP solid with analytic and\n"
-          "                            freeform B-spline faces (--cad-json: as Kratos CAD JSON too)\n"
+          "                            freeform B-spline, fillet and thread faces (--cad-json: as\n"
+          "                            Kratos CAD JSON too)\n"
           "                            (needs a build with -DMESHIOPLUSPLUS_WITH_OCCT=ON)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
@@ -1885,6 +1886,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"no-freeform", {}, false},
                                   {"freeform-degree", {}, true},
                                   {"freeform-max-control", {}, true},
+                                  {"no-freeform-split", {}, false},
+                                  {"no-fillets", {}, false},
+                                  {"no-threads", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -1925,6 +1929,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         options.mFreeformDegree = static_cast<std::int32_t>(std::stoi(opt_value(p, "freeform-degree")));
     if (has_opt(p, "freeform-max-control"))
         options.mFreeformMaxControl = std::stoll(opt_value(p, "freeform-max-control"));
+    options.mFreeformSplit = !has_flag(p, "no-freeform-split");
+    options.mFillets = !has_flag(p, "no-fillets");
+    options.mThreads = !has_flag(p, "no-threads");
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
     if (has_opt(p, "mesh-out"))
         write_mesh_cli(opt_value(p, "mesh-out"), r.mMesh, "");
@@ -1952,6 +1959,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_approx_edges", r.mNumApproxEdges);
         json.Field("num_solids", r.mNumSolids);
         json.Field("num_bspline", r.mNumBspline);
+        json.Field("num_split_patches", r.mNumSplitPatches);
+        json.Field("num_fillet", r.mNumFillet);
+        json.Field("num_helical", r.mNumHelical);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
@@ -1961,7 +1971,12 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
         std::cout << "  cone:      " << r.mNumCone << "\n";
         std::cout << "  torus:     " << r.mNumTorus << "\n";
-        std::cout << "  bspline:   " << r.mNumBspline << "\n";
+        std::cout << "  bspline:   " << r.mNumBspline;
+        if (r.mNumSplitPatches > 0)
+            std::cout << " (" << r.mNumSplitPatches << " split piece(s))";
+        std::cout << "\n";
+        std::cout << "  fillet:    " << r.mNumFillet << "\n";
+        std::cout << "  helical:   " << r.mNumHelical << "\n";
         std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
         std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation

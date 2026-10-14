@@ -6231,6 +6231,9 @@ void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     opts->freeform = 1;
     opts->freeform_degree = 3;
     opts->freeform_max_control = 64;
+    opts->freeform_split = 1;
+    opts->fillets = 1;
+    opts->threads = 1;
 }
 
 int mio_has_occt(void) {
@@ -6249,12 +6252,15 @@ mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit
             options.mMaxDemotionRounds = opts->max_demotion_rounds;
             options.mExactEdges = opts->exact_edges != 0;
             options.mTypes = opts->types;
-            // A struct zero-filled before these fields existed keeps freeform
-            // off and the defaults for the rest.
+            // A struct zero-filled before these fields existed keeps freeform,
+            // splitting, fillets and threads off and the defaults for the rest.
             options.mFreeform = opts->freeform != 0;
             options.mFreeformDegree = opts->freeform_degree ? opts->freeform_degree : 3;
             options.mFreeformMaxControl =
                 opts->freeform_max_control ? opts->freeform_max_control : 64;
+            options.mFreeformSplit = opts->freeform_split != 0;
+            options.mFillets = opts->fillets != 0;
+            options.mThreads = opts->threads != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -6279,6 +6285,9 @@ mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit
             report->num_solids = r.mNumSolids;
             report->valid = r.mValid ? 1 : 0;
             report->num_bspline = r.mNumBspline;
+            report->num_split_patches = r.mNumSplitPatches;
+            report->num_fillet = r.mNumFillet;
+            report->num_helical = r.mNumHelical;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

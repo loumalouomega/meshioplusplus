@@ -39,8 +39,13 @@
  *    facet, as the faceted `step` writer writes them.
  *  - **Freeform faces.** The patch is flattened over its best-fit plane, or,
  *    when that folds it, unrolled around the axis its normals are most
- *    perpendicular to (a cylinder of the circle its points fit); a patch
- *    both fold is left to facets. Its offset from that plane or cylinder is
+ *    perpendicular to (a cylinder of the circle its points fit). A patch both
+ *    fold is, with `mFreeformSplit`, split into pieces one of them does
+ *    parametrise -- halved at the area-weighted median of `n . e`, `e` the
+ *    direction its normals spread along most, up to four times -- and each
+ *    piece becomes its own freeform face under a new patch label, numbered
+ *    after the largest existing one; a piece under 16 triangles, or still
+ *    folding, is left to facets. Its offset from that plane or cylinder is
  *    resampled on a grid (inside the patch by interpolation over its facets,
  *    outside it from the nearest boundary point), approximated by a C2
  *    B-spline of degree `mFreeformDegree` (`GeomAPI_PointsToBSplineSurface`)
@@ -111,6 +116,10 @@ inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
 /// `fit_cad:type` of a freeform B-spline face.
 inline constexpr std::int64_t kFitCadBsplineType = 6;
+/// `fit_cad:type` of a constant-radius rolling-ball fillet face.
+inline constexpr std::int64_t kFitCadFilletType = 7;
+/// `fit_cad:type` of a straight-flank thread face (a ruled helicoid).
+inline constexpr std::int64_t kFitCadHelicalType = 8;
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -136,6 +145,16 @@ struct FitCadOptions {
     std::int32_t mFreeformDegree = 3;
     /// The most grid points per direction a freeform fit may sample, 4 to 1024.
     std::int64_t mFreeformMaxControl = 64;
+    /// Whether a freeform patch that neither its best-fit plane nor an unrolled
+    /// cylinder parametrises (it folds over both) is split into pieces that one
+    /// does, each fitted as its own B-spline face under a new patch label.
+    bool mFreeformSplit = true;
+    /// Whether a patch no primitive explains, running between two analytic
+    /// faces, is tried as a constant-radius rolling-ball fillet.
+    bool mFillets = true;
+    /// Whether a patch no primitive explains, beside a cylinder or cone, is
+    /// tried as a straight-flank thread about its axis.
+    bool mThreads = true;
 };
 
 /// The re-meshed solid and what was built.
@@ -174,6 +193,12 @@ struct FitCadResult {
     std::int64_t mNumSolids = 0;
     /// Freeform B-spline faces.
     std::int64_t mNumBspline = 0;
+    /// Pieces that freeform patches folding over every flattening were split into.
+    std::int64_t mNumSplitPatches = 0;
+    /// Rolling-ball fillet faces.
+    std::int64_t mNumFillet = 0;
+    /// Thread flank faces.
+    std::int64_t mNumHelical = 0;
     /// The solid as NURBS faces, loops and edges.
     BrepInfo mBrep;
 };

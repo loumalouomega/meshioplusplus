@@ -4777,6 +4777,11 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
     EXPECT_EQ(opts.max_demotion_rounds, 8);
     EXPECT_EQ(opts.exact_edges, 1);
     EXPECT_EQ(opts.types, MIO_FIT_ALL_TYPES);
+    EXPECT_EQ(opts.freeform, 1);
+    EXPECT_EQ(opts.freeform_split, 1);
+    EXPECT_EQ(opts.fillets, 1);
+    EXPECT_EQ(opts.threads, 1);
+    EXPECT_EQ(opts.reserved1, 0);
     mio_fit_cad_report report;
     mio_mesh* solid = mio_fit_cad(m, nullptr, &opts, &report);
     if (mio_has_occt()) {
@@ -4786,7 +4791,19 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
         EXPECT_EQ(report.num_faces, 6);
         EXPECT_EQ(report.num_exact_edges, 12);  // each a single mesh edge
         EXPECT_NEAR(report.volume_ratio, 1.0, 1e-9);
+        EXPECT_EQ(report.num_bspline, 0);
+        EXPECT_EQ(report.num_split_patches, 0);
+        EXPECT_EQ(report.num_fillet, 0);
+        EXPECT_EQ(report.num_helical, 0);
         EXPECT_EQ(mio_mesh_num_cell_blocks(solid), 1);
+        mio_mesh_free(solid);
+        // Fillets, threads and splitting off still build the six planes.
+        opts.freeform_split = 0;
+        opts.fillets = 0;
+        opts.threads = 0;
+        solid = mio_fit_cad(m, nullptr, &opts, &report);
+        ASSERT_NE(solid, nullptr) << mio_last_error();
+        EXPECT_EQ(report.num_plane, 6);
         mio_mesh_free(solid);
         opts.max_demotion_rounds = -1;
         EXPECT_EQ(mio_fit_cad(m, nullptr, &opts, nullptr), nullptr);

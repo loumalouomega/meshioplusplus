@@ -3541,7 +3541,8 @@ PYBIND11_MODULE(_core, m) {
         "fit_cad",
         [](py::object pymesh, const std::string& path, double tolerance, bool exact_edges,
            std::uint32_t types, double mesh_deflection, std::int64_t max_demotion_rounds,
-           bool freeform, std::int32_t freeform_degree, std::int64_t freeform_max_control) {
+           bool freeform, std::int32_t freeform_degree, std::int64_t freeform_max_control,
+           bool freeform_split, bool fillets, bool threads) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3554,6 +3555,9 @@ PYBIND11_MODULE(_core, m) {
             options.mFreeform = freeform;
             options.mFreeformDegree = freeform_degree;
             options.mFreeformMaxControl = freeform_max_control;
+            options.mFreeformSplit = freeform_split;
+            options.mFillets = fillets;
+            options.mThreads = threads;
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -3577,6 +3581,9 @@ PYBIND11_MODULE(_core, m) {
             out["num_approx_edges"] = r.mNumApproxEdges;
             out["num_solids"] = r.mNumSolids;
             out["num_bspline"] = r.mNumBspline;
+            out["num_split_patches"] = r.mNumSplitPatches;
+            out["num_fillet"] = r.mNumFillet;
+            out["num_helical"] = r.mNumHelical;
             out["brep"] = core_brep_to_py(std::move(r.mBrep));
             return out;
         },
@@ -3584,7 +3591,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("exact_edges") = true, py::arg("types") = meshioplusplus::kFitAllTypes,
         py::arg("mesh_deflection") = 0.0, py::arg("max_demotion_rounds") = 8,
         py::arg("freeform") = true, py::arg("freeform_degree") = 3,
-        py::arg("freeform_max_control") = 64);
+        py::arg("freeform_max_control") = 64, py::arg("freeform_split") = true,
+        py::arg("fillets") = true, py::arg("threads") = true);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

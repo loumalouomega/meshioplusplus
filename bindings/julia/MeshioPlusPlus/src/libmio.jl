@@ -517,7 +517,11 @@ struct _CFitCadOpts
     freeform::Int32
     freeform_degree::Int32
     freeform_max_control::Int64
-    reserved::NTuple{4,Int64}
+    freeform_split::Int32
+    fillets::Int32
+    threads::Int32
+    reserved1::Int32
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report`."""
@@ -542,7 +546,10 @@ struct _CFitCadReport
     valid::Int32
     reserved0::Int32
     num_bspline::Int64
-    reserved::NTuple{5,Int64}
+    num_split_patches::Int64
+    num_fillet::Int64
+    num_helical::Int64
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),

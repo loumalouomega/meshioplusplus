@@ -277,7 +277,11 @@ module meshioplusplus
         integer(c_int32_t) :: freeform = 1
         integer(c_int32_t) :: freeform_degree = 3
         integer(c_int64_t) :: freeform_max_control = 64
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int32_t) :: freeform_split = 1
+        integer(c_int32_t) :: fillets = 1
+        integer(c_int32_t) :: threads = 1
+        integer(c_int32_t) :: reserved1 = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report`.
@@ -302,7 +306,10 @@ module meshioplusplus
         integer(c_int32_t) :: valid = 0
         integer(c_int32_t) :: reserved0 = 0
         integer(c_int64_t) :: num_bspline = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        integer(c_int64_t) :: num_split_patches = 0
+        integer(c_int64_t) :: num_fillet = 0
+        integer(c_int64_t) :: num_helical = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -5720,14 +5727,19 @@ contains
     !> beyond `tolerance` is demoted to facets. Writes AP214 STEP to
     !> `step_path` when given; returns the solid re-meshed as triangles with
     !> cell data `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`. A patch no
-    !> primitive explains becomes, with `freeform` (default on), a B-spline face
-    !> of degree up to `freeform_degree` on at most `freeform_max_control` grid
-    !> points per direction. See doc/fit_cad.md.
+    !> primitive explains becomes, with `fillets` (default on), a rolling-ball
+    !> fillet face between two analytic faces, with `threads` (default on), a
+    !> thread flank face beside a cylinder or cone, and otherwise, with
+    !> `freeform` (default on), a B-spline face of degree up to
+    !> `freeform_degree` on at most `freeform_max_control` grid points per
+    !> direction; with `freeform_split` (default on), a freeform patch that
+    !> folds over both flattenings is split into pieces. See doc/fit_cad.md.
     function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
                           mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
                           max_deviation, num_faces, num_faceted_faces, num_demoted, &
                           stat, errmsg, freeform, freeform_degree, freeform_max_control, &
-                          num_bspline) result(out)
+                          num_bspline, freeform_split, fillets, threads, &
+                          num_split_patches, num_fillet, num_helical) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -5743,6 +5755,8 @@ contains
         integer, intent(in), optional :: freeform_degree
         integer(int64), intent(in), optional :: freeform_max_control
         integer(int64), intent(out), optional :: num_bspline
+        logical, intent(in), optional :: freeform_split, fillets, threads
+        integer(int64), intent(out), optional :: num_split_patches, num_fillet, num_helical
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -5765,6 +5779,10 @@ contains
         if (present(freeform_degree)) opts%freeform_degree = int(freeform_degree, c_int32_t)
         if (present(freeform_max_control)) &
             opts%freeform_max_control = int(freeform_max_control, c_int64_t)
+        if (present(freeform_split)) &
+            opts%freeform_split = merge(1_c_int32_t, 0_c_int32_t, freeform_split)
+        if (present(fillets)) opts%fillets = merge(1_c_int32_t, 0_c_int32_t, fillets)
+        if (present(threads)) opts%threads = merge(1_c_int32_t, 0_c_int32_t, threads)
         res = c_mio_fit_cad(self%handle, path_ptr, opts, report)
         if (.not. c_associated(res)) then
             call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
@@ -5778,6 +5796,9 @@ contains
         if (present(num_faceted_faces)) num_faceted_faces = int(report%num_faceted_faces, int64)
         if (present(num_demoted)) num_demoted = int(report%num_demoted, int64)
         if (present(num_bspline)) num_bspline = int(report%num_bspline, int64)
+        if (present(num_split_patches)) num_split_patches = int(report%num_split_patches, int64)
+        if (present(num_fillet)) num_fillet = int(report%num_fillet, int64)
+        if (present(num_helical)) num_helical = int(report%num_helical, int64)
         call clear_status(stat, errmsg)
     end function
 

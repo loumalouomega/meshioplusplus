@@ -516,7 +516,8 @@ SEXP R_mio_has_occt(void) {
 
 SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, SEXP types,
                    SEXP mesh_deflection, SEXP max_demotion_rounds, SEXP freeform,
-                   SEXP freeform_degree, SEXP freeform_max_control) {
+                   SEXP freeform_degree, SEXP freeform_max_control, SEXP freeform_split,
+                   SEXP fillets, SEXP threads) {
     mio_fit_cad_opts opts;
     mio_fit_cad_report report;
     mio_mesh *out;
@@ -530,6 +531,9 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     opts.freeform = mio_r_bool(freeform, "freeform") ? 1 : 0;
     opts.freeform_degree = (int32_t)mio_r_int(freeform_degree, "freeform_degree");
     opts.freeform_max_control = (int64_t)mio_r_int(freeform_max_control, "freeform_max_control");
+    opts.freeform_split = mio_r_bool(freeform_split, "freeform_split") ? 1 : 0;
+    opts.fillets = mio_r_bool(fillets, "fillets") ? 1 : 0;
+    opts.threads = mio_r_bool(threads, "threads") ? 1 : 0;
 
     out = mio_fit_cad(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &report);
     if (out == NULL) mio_r_fail("fit_cad");
@@ -553,17 +557,22 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP napprox = PROTECT(Rf_ScalarReal((double)report.num_approx_edges));
     SEXP nsolid = PROTECT(Rf_ScalarReal((double)report.num_solids));
     SEXP nbspline = PROTECT(Rf_ScalarReal((double)report.num_bspline));
+    SEXP nsplit = PROTECT(Rf_ScalarReal((double)report.num_split_patches));
+    SEXP nfillet = PROTECT(Rf_ScalarReal((double)report.num_fillet));
+    SEXP nhelical = PROTECT(Rf_ScalarReal((double)report.num_helical));
     const char *names[] = {"mesh",          "valid",         "tolerance",
                            "volume",        "skin_volume",   "volume_ratio",
                            "max_deviation", "num_faces",     "num_plane",
                            "num_sphere",    "num_cylinder",  "num_cone",
                            "num_torus",     "num_faceted_faces", "num_patches",
                            "num_demoted",   "num_exact_edges", "num_approx_edges",
-                           "num_solids",    "num_bspline"};
-    SEXP values[] = {mo,    valid, tol,    vol,    svol,  ratio,  dev,     nfaces,  nplane, nsphere,
-                     ncyl,  ncone, ntorus, nfacet, npatch, ndem, nexact, napprox, nsolid, nbspline};
-    SEXP res = PROTECT(mio_r_named_list(20, names, values));
-    UNPROTECT(21);
+                           "num_solids",    "num_bspline",   "num_split_patches",
+                           "num_fillet",    "num_helical"};
+    SEXP values[] = {mo,     valid,  tol,     vol,     svol,     ratio,   dev,     nfaces,
+                     nplane, nsphere, ncyl,   ncone,   ntorus,   nfacet,  npatch,  ndem,
+                     nexact, napprox, nsolid, nbspline, nsplit,  nfillet, nhelical};
+    SEXP res = PROTECT(mio_r_named_list(23, names, values));
+    UNPROTECT(24);
     return res;
 }
 

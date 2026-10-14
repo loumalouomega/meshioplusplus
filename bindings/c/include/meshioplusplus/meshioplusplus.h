@@ -4583,11 +4583,26 @@ typedef struct mio_fit_cad_opts {
     /** The most grid points per direction a freeform fit samples, 4 to 1024;
      *  0 takes 64. */
     int64_t freeform_max_control;
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    /** Nonzero: a freeform patch that folds over both its best-fit plane and
+     *  an unrolled cylinder is split into pieces fitted as their own B-spline
+     *  faces (on after mio_fit_cad_opts_init; a zero-filled struct keeps it
+     *  off, as before the field existed). */
+    int32_t freeform_split;
+    /** Nonzero: a patch no primitive explains, between two analytic faces, is
+     *  tried as a rolling-ball fillet face ("fit_cad:type" 7). On after
+     *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
+    int32_t fillets;
+    /** Nonzero: a patch no primitive explains, beside a cylinder or cone, is
+     *  tried as a straight-flank thread face ("fit_cad:type" 8). On after
+     *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
+    int32_t threads;
+    int32_t reserved1;   /**< must be zero */
+    int64_t reserved[2]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts;
 
 /** Initialize fit_cad options: automatic tolerance and deflection, 8 rounds,
- *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64. */
+ *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64,
+ *  freeform splitting, fillet faces and thread faces. */
 MIO_API void mio_fit_cad_opts_init(mio_fit_cad_opts* opts);
 
 /** What mio_fit_cad built. */
@@ -4609,10 +4624,13 @@ typedef struct mio_fit_cad_report {
     int64_t num_exact_edges;
     int64_t num_approx_edges;
     int64_t num_solids;
-    int32_t valid;       /**< nonzero when the solid passed OpenCASCADE's B-rep check */
-    int32_t reserved0;   /**< zero */
-    int64_t num_bspline; /**< freeform B-spline faces */
-    int64_t reserved[5]; /**< zero; room for additive growth */
+    int32_t valid;             /**< nonzero when the solid passed OpenCASCADE's B-rep check */
+    int32_t reserved0;         /**< zero */
+    int64_t num_bspline;       /**< freeform B-spline faces ("fit_cad:type" 6) */
+    int64_t num_split_patches; /**< pieces folding freeform patches were split into */
+    int64_t num_fillet;        /**< rolling-ball fillet faces ("fit_cad:type" 7) */
+    int64_t num_helical;       /**< thread flank faces ("fit_cad:type" 8) */
+    int64_t reserved[2];       /**< zero; room for additive growth */
 } mio_fit_cad_report;
 
 /** Nonzero when this library was built with the OpenCASCADE backend
@@ -4621,8 +4639,10 @@ MIO_API int mio_has_occt(void);
 
 /**
  * Build a CAD solid from the fitted patches of a closed skin: each accepted
- * patch becomes a plane, sphere, cylinder, cone or torus face, the rest planar
- * facets, sewn and checked by OpenCASCADE; a face that fails the check or
+ * patch becomes a plane, sphere, cylinder, cone or torus face ("fit_cad:type"
+ * 1 to 5, as mio_fit_type), a patch no primitive explains a rolling-ball
+ * fillet (7), thread flank (8) or freeform B-spline (6) face where one fits,
+ * the rest planar facets (0), sewn and checked by OpenCASCADE; a face that fails the check or
  * strays beyond the tolerance is demoted to facets. Without "segment:patch" or
  * the "fit:patch_*" table, segment and fit_primitives run first with their
  * defaults. See doc/fit_cad.md.

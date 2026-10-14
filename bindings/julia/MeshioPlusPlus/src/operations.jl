@@ -1990,17 +1990,22 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
     fit_cad(m; step_path="", tolerance=0.0, exact_edges=true,
             types=("plane", "sphere", "cylinder", "cone", "torus"),
             mesh_deflection=0.0, max_demotion_rounds=8, freeform=true,
-            freeform_degree=3, freeform_max_control=64)
+            freeform_degree=3, freeform_max_control=64, freeform_split=true,
+            fillets=true, threads=true)
         -> (; mesh, valid, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
-             num_exact_edges, num_approx_edges, num_solids, num_bspline)
+             num_exact_edges, num_approx_edges, num_solids, num_bspline,
+             num_split_patches, num_fillet, num_helical)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
-explains a freeform B-spline face (with `freeform`), the rest planar facets,
-and a face that fails the B-rep check or strays beyond `tolerance` is demoted
-to facets. `step_path` also writes the solid as STEP; the mesh is the
+explains a rolling-ball fillet between two analytic faces (with `fillets`,
+`fit_cad:type` 7), a thread flank beside a cylinder or cone (with `threads`,
+type 8) or a freeform B-spline face (with `freeform`, type 6; with
+`freeform_split`, a patch folding over every flattening is split into pieces
+first), the rest planar facets, and a face that fails the B-rep check or
+strays beyond `tolerance` is demoted to facets. `step_path` also writes the solid as STEP; the mesh is the
 solid re-meshed with cell data `fit_cad:face`, `fit_cad:type` and
 `fit_cad:patch`. A tolerance or deflection of 0 is automatic. Throws a
 `MeshioError` naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in a build without
@@ -2011,7 +2016,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  types=("plane", "sphere", "cylinder", "cone", "torus"),
                  mesh_deflection::Real=0.0, max_demotion_rounds::Integer=8,
                  freeform::Bool=true, freeform_degree::Integer=3,
-                 freeform_max_control::Integer=64)
+                 freeform_max_control::Integer=64, freeform_split::Bool=true,
+                 fillets::Bool=true, threads::Bool=true)
     mask = UInt32(0)
     for t in types
         k = findfirst(==(String(t)), _FIT_TYPES)
@@ -2022,7 +2028,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
                         Int64(max_demotion_rounds), Int32(exact_edges), mask,
                         Int32(freeform), Int32(freeform_degree), Int64(freeform_max_control),
-                        ntuple(_ -> Int64(0), 4))
+                        Int32(freeform_split), Int32(fillets), Int32(threads), Int32(0),
+                        ntuple(_ -> Int64(0), 2))
     ptr = ccall(_sym(:mio_fit_cad), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ptr{_CFitCadReport}),
                 _handle(m), String(step_path), Ref(opts), report)
@@ -2036,7 +2043,9 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      num_torus=Int(rep.num_torus), num_faceted_faces=Int(rep.num_faceted_faces),
      num_patches=Int(rep.num_patches), num_demoted=Int(rep.num_demoted),
      num_exact_edges=Int(rep.num_exact_edges), num_approx_edges=Int(rep.num_approx_edges),
-     num_solids=Int(rep.num_solids), num_bspline=Int(rep.num_bspline))
+     num_solids=Int(rep.num_solids), num_bspline=Int(rep.num_bspline),
+     num_split_patches=Int(rep.num_split_patches), num_fillet=Int(rep.num_fillet),
+     num_helical=Int(rep.num_helical))
 end
 
 """

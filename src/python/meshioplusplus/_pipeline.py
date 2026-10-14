@@ -188,6 +188,9 @@ _OP_TABLE = {
         "Freeform",
         "FreeformDegree",
         "FreeformMaxControl",
+        "FreeformSplit",
+        "Fillets",
+        "Threads",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
     "RegionAdjacency": ("Regions",),
@@ -1042,6 +1045,9 @@ def _apply_step(mesh, step, steps, warnings):
             freeform=_flag(step, "Freeform", True),
             freeform_degree=int(_number(step, "FreeformDegree", 3.0)),
             freeform_max_control=int(_number(step, "FreeformMaxControl", 64.0)),
+            freeform_split=_flag(step, "FreeformSplit", True),
+            fillets=_flag(step, "Fillets", True),
+            threads=_flag(step, "Threads", True),
             return_report=True,
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
@@ -1050,6 +1056,9 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumFaces"] = report["num_faces"]
         entry["NumFacetedFaces"] = report["num_faceted_faces"]
         entry["NumBspline"] = report["num_bspline"]
+        entry["NumSplitPatches"] = report["num_split_patches"]
+        entry["NumFillet"] = report["num_fillet"]
+        entry["NumHelical"] = report["num_helical"]
         entry["NumDemoted"] = report["num_demoted"]
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and

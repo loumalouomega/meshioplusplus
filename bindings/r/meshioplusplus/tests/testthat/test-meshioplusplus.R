@@ -1381,6 +1381,12 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
     on.exit(mio_release(cad$mesh), add = TRUE)
     expect_true(cad$valid)
     expect_equal(cad$num_plane, 6)
+    expect_equal(cad$num_split_patches, 0)
+    expect_equal(cad$num_fillet, 0)
+    expect_equal(cad$num_helical, 0)
+    bare <- mio_fit_cad(m, freeform_split = FALSE, fillets = FALSE, threads = FALSE)
+    on.exit(mio_release(bare$mesh), add = TRUE)
+    expect_equal(bare$num_plane, 6)
   } else {
     expect_error(mio_fit_cad(m), "MESHIOPLUSPLUS_WITH_OCCT")
   }

@@ -2061,6 +2061,7 @@ contains
     subroutine check_analysis_editing()
         type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted, solid
         integer(int64) :: nfeat, nbound, nfixed, npatch, nplane, nfaces
+        integer(int64) :: nsplit, nfillet, nhelical
         logical :: cad_valid
         character(:), allocatable :: msg
         integer(int64), allocatable :: s_ids(:), m_ids(:)
@@ -2115,6 +2116,14 @@ contains
             call check(ierr == 0, 'fit_cad succeeded')
             call check(cad_valid, 'the cube solid is valid')
             call check(nfaces == 6_int64, 'the cube solid has 6 faces')
+            call solid%free()
+            solid = sq%fit_cad(freeform_split=.false., fillets=.false., threads=.false., &
+                               num_faces=nfaces, num_split_patches=nsplit, &
+                               num_fillet=nfillet, num_helical=nhelical, stat=ierr)
+            call check(ierr == 0, 'fit_cad without fillets and threads succeeded')
+            call check(nfaces == 6_int64, 'still 6 plane faces')
+            call check(nsplit == 0_int64 .and. nfillet == 0_int64 .and. nhelical == 0_int64, &
+                       'a cube has no split, fillet or thread faces')
             call solid%free()
         else
             call check(ierr /= 0, 'fit_cad fails without OpenCASCADE')
