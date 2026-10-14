@@ -3347,16 +3347,21 @@ def _register_gated(server: FastMCP) -> None:
         Each accepted fit becomes a plane, sphere, cylinder, cone or torus face
         (types narrows which); a patch no primitive explains becomes, with
         fillets, a rolling-ball fillet face when it runs between two analytic
-        faces, with threads, a thread flank face beside a cylinder or cone,
-        and otherwise, with freeform, a B-spline face (degree up to
+        faces (of one radius or a radius varying along it), with threads, a
+        helical thread face (about a neighbouring cylinder's or cone's axis or
+        the screw the patch fits, straight flank or rounded profile), and
+        otherwise, with freeform, a B-spline face (degree up to
         freeform_degree, fitted on at most freeform_max_control grid points
         per direction; with freeform_split, a patch folding over every
-        flattening is split into pieces first), the rest planar facets;
+        flattening is split into pieces first; with fillets, a patch between
+        two fitted faces, one of them freeform, then becomes a rolling-ball
+        blend), the rest planar facets;
         OpenCASCADE sews and checks the solid, and a face that fails or lies
         further than tolerance from the skin is demoted to facets. The report
         gives valid, the volume ratio against the skin, max_deviation
         (Hausdorff), faces by type (num_bspline the freeform ones, num_fillet,
-        num_helical), num_split_patches, num_demoted and exact/approximated
+        num_helical; of those num_variable_fillet, num_blend and
+        num_rounded_thread), num_split_patches, num_demoted and exact/approximated
         edges; mesh_output_path also writes the
         re-meshed solid and cad_json_output_path the solid as Kratos CAD JSON
         (NURBS faces, trimming loops, edges). Needs a core built with OpenCASCADE

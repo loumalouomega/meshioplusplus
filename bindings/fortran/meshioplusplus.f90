@@ -305,12 +305,13 @@ module meshioplusplus
         integer(c_int64_t) :: num_approx_edges = 0
         integer(c_int64_t) :: num_solids = 0
         integer(c_int32_t) :: valid = 0
-        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int32_t) :: num_rounded_thread = 0
         integer(c_int64_t) :: num_bspline = 0
         integer(c_int64_t) :: num_split_patches = 0
         integer(c_int64_t) :: num_fillet = 0
         integer(c_int64_t) :: num_helical = 0
-        integer(c_int64_t) :: reserved(2) = 0
+        integer(c_int64_t) :: num_variable_fillet = 0
+        integer(c_int64_t) :: num_blend = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -5825,18 +5826,23 @@ contains
     !> `step_path` when given; returns the solid re-meshed as triangles with
     !> cell data `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`. A patch no
     !> primitive explains becomes, with `fillets` (default on), a rolling-ball
-    !> fillet face between two analytic faces, with `threads` (default on), a
-    !> thread flank face beside a cylinder or cone, and otherwise, with
-    !> `freeform` (default on), a B-spline face of degree up to
+    !> fillet face between two analytic faces (of one radius, or a radius
+    !> varying along it: `num_variable_fillet`), with `threads` (default on), a
+    !> helical thread face about a neighbouring cylinder's or cone's axis or
+    !> the screw it fits (a profile not straight: `num_rounded_thread`), and
+    !> otherwise, with `freeform` (default on), a B-spline face of degree up to
     !> `freeform_degree` on at most `freeform_max_control` grid points per
     !> direction; with `freeform_split` (default on), a freeform patch that
-    !> folds over both flattenings is split into pieces. See doc/fit_cad.md.
+    !> folds over both flattenings is split into pieces. With `fillets`, a
+    !> patch between two fitted faces, one of them freeform, then becomes a
+    !> rolling-ball blend (`num_blend`). See doc/fit_cad.md.
     function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
                           mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
                           max_deviation, num_faces, num_faceted_faces, num_demoted, &
                           stat, errmsg, freeform, freeform_degree, freeform_max_control, &
                           num_bspline, freeform_split, fillets, threads, &
-                          num_split_patches, num_fillet, num_helical) result(out)
+                          num_split_patches, num_fillet, num_helical, &
+                          num_variable_fillet, num_blend, num_rounded_thread) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -5854,6 +5860,7 @@ contains
         integer(int64), intent(out), optional :: num_bspline
         logical, intent(in), optional :: freeform_split, fillets, threads
         integer(int64), intent(out), optional :: num_split_patches, num_fillet, num_helical
+        integer(int64), intent(out), optional :: num_variable_fillet, num_blend, num_rounded_thread
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -5896,6 +5903,10 @@ contains
         if (present(num_split_patches)) num_split_patches = int(report%num_split_patches, int64)
         if (present(num_fillet)) num_fillet = int(report%num_fillet, int64)
         if (present(num_helical)) num_helical = int(report%num_helical, int64)
+        if (present(num_variable_fillet)) &
+            num_variable_fillet = int(report%num_variable_fillet, int64)
+        if (present(num_blend)) num_blend = int(report%num_blend, int64)
+        if (present(num_rounded_thread)) num_rounded_thread = int(report%num_rounded_thread, int64)
         call clear_status(stat, errmsg)
     end function
 

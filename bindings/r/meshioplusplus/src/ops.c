@@ -560,6 +560,9 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP nsplit = PROTECT(Rf_ScalarReal((double)report.num_split_patches));
     SEXP nfillet = PROTECT(Rf_ScalarReal((double)report.num_fillet));
     SEXP nhelical = PROTECT(Rf_ScalarReal((double)report.num_helical));
+    SEXP nvariable = PROTECT(Rf_ScalarReal((double)report.num_variable_fillet));
+    SEXP nblend = PROTECT(Rf_ScalarReal((double)report.num_blend));
+    SEXP nrounded = PROTECT(Rf_ScalarReal((double)report.num_rounded_thread));
     const char *names[] = {"mesh",          "valid",         "tolerance",
                            "volume",        "skin_volume",   "volume_ratio",
                            "max_deviation", "num_faces",     "num_plane",
@@ -567,12 +570,14 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "num_torus",     "num_faceted_faces", "num_patches",
                            "num_demoted",   "num_exact_edges", "num_approx_edges",
                            "num_solids",    "num_bspline",   "num_split_patches",
-                           "num_fillet",    "num_helical"};
-    SEXP values[] = {mo,     valid,  tol,     vol,     svol,     ratio,   dev,     nfaces,
-                     nplane, nsphere, ncyl,   ncone,   ntorus,   nfacet,  npatch,  ndem,
-                     nexact, napprox, nsolid, nbspline, nsplit,  nfillet, nhelical};
-    SEXP res = PROTECT(mio_r_named_list(23, names, values));
-    UNPROTECT(24);
+                           "num_fillet",    "num_helical",   "num_variable_fillet",
+                           "num_blend",     "num_rounded_thread"};
+    SEXP values[] = {mo,      valid,   tol,      vol,      svol,    ratio,   dev,
+                     nfaces,  nplane,  nsphere,  ncyl,     ncone,   ntorus,  nfacet,
+                     npatch,  ndem,    nexact,   napprox,  nsolid,  nbspline, nsplit,
+                     nfillet, nhelical, nvariable, nblend, nrounded};
+    SEXP res = PROTECT(mio_r_named_list(26, names, values));
+    UNPROTECT(27);
     return res;
 }
 

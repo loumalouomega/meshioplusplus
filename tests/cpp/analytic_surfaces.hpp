@@ -21,6 +21,7 @@
 // point lies exactly on its surface (up to rounding).
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -339,39 +340,26 @@ inline meshioplusplus::Mesh inclined_boss(double Alpha = 20.0, double R = 0.6, d
     return b.Build();
 }
 
-// A rod with a trapezoidal thread about z: the surface r = f(z - K theta),
-// K = Pitch / (2 pi), f periodic in its argument -- root (radius R0), a
-// rising flank, crest (radius R1), a falling flank -- over Turns turns. The
-// flanks are ruled helicoids, the root and crest helical strips of
-// cylinders. Grid lines follow the helices through every kink, so every
-// facet lies on one of the four surfaces; each end is closed by a fan to a
-// point on the axis.
-inline meshioplusplus::Mesh threaded_rod(double Pitch = 0.5, double R0 = 0.8, double R1 = 1.0,
-                                         int Turns = 4, int N = 64) {
+// A rod about z whose surface is r = f(z - K theta), K = Pitch / (2 pi),
+// one period of f given as nodes (rW[i], rR[i]): grid lines follow the
+// helices through every node, and each end is closed by a fan to a point on
+// the axis Depth pitches inside the rod -- a shallow dish, so a cap never
+// meets the flank facing the same way at a dihedral the crease test would
+// cross -- wound against the loop's edges in the thread's own triangles
+// (part of each loop runs along the axis, where no direction test can tell).
+inline meshioplusplus::Mesh helical_rod(const std::vector<double>& rW,
+                                        const std::vector<double>& rR, double Pitch, int Turns,
+                                        int N, double Depth = 1.0) {
     const double k = Pitch / (2.0 * kPi);
-    // One period of the profile, as (axial offset, radius) nodes: root,
-    // rising flank, crest, falling flank.
-    const double seg[4] = {0.26 * Pitch, 0.24 * Pitch, 0.26 * Pitch, 0.24 * Pitch};
-    const int sub[4] = {2, 3, 2, 3};
-    std::vector<double> w, r;
-    double at = 0.0;
-    for (int s = 0; s < 4; ++s) {
-        for (int i = 0; i < sub[s]; ++i) {
-            const double t = static_cast<double>(i) / sub[s];
-            w.push_back(at + seg[s] * t);
-            r.push_back(s == 0 ? R0 : s == 1 ? R0 + (R1 - R0) * t : s == 2 ? R1 : R1 - (R1 - R0) * t);
-        }
-        at += seg[s];
-    }
-    const int per = static_cast<int>(w.size());  // samples per period
-    const int rows = per * Turns;                // grid rows j = 0..rows
+    const int per = static_cast<int>(rW.size());  // samples per period
+    const int rows = per * Turns;                 // grid rows j = 0..rows
     SkinBuilder b;
     std::vector<std::vector<std::int64_t>> id(static_cast<std::size_t>(N));
     for (int i = 0; i < N; ++i) {
         const double th = 2.0 * kPi * i / N;
         for (int j = 0; j <= rows; ++j) {
-            const double wj = w[static_cast<std::size_t>(j % per)] + Pitch * (j / per);
-            const double rj = r[static_cast<std::size_t>(j % per)];
+            const double wj = rW[static_cast<std::size_t>(j % per)] + Pitch * (j / per);
+            const double rj = rR[static_cast<std::size_t>(j % per)];
             id[static_cast<std::size_t>(i)].push_back(
                 b.Add(rj * std::cos(th), rj * std::sin(th), wj + k * th));
         }
@@ -402,18 +390,13 @@ inline meshioplusplus::Mesh threaded_rod(double Pitch = 0.5, double R0 = 0.8, do
             out = {out[0] / rl, out[1] / rl, rd > ra + 1e-12 ? -1.0 : rd < ra - 1e-12 ? 1.0 : 0.0};
             b.Quad(a, bb, c, d, out);
         }
-    // The two ends: the boundary loops, each fanned to a point on the axis a
-    // pitch inside the rod -- a shallow dish, so a cap never meets the flank
-    // facing the same way at a dihedral the crease test would cross -- and
-    // wound against the loop's edges in the thread's own triangles (part of
-    // each loop runs along the axis, where no direction test can tell).
     auto fan = [&](const std::vector<std::int64_t>& rLoop, bool Reverse) {
         double lo = 1e300, hi = -1e300;
         for (std::int64_t v : rLoop) {
             lo = std::min(lo, b.mPts[static_cast<std::size_t>(v)][2]);
             hi = std::max(hi, b.mPts[static_cast<std::size_t>(v)][2]);
         }
-        const std::int64_t c = b.Add(0.0, 0.0, Reverse ? hi + Pitch : lo - Pitch);
+        const std::int64_t c = b.Add(0.0, 0.0, Reverse ? hi + Depth * Pitch : lo - Depth * Pitch);
         for (std::size_t i = 0; i < rLoop.size(); ++i) {
             const std::int64_t p = rLoop[i], q = rLoop[(i + 1) % rLoop.size()];
             if (Reverse)
@@ -434,6 +417,223 @@ inline meshioplusplus::Mesh threaded_rod(double Pitch = 0.5, double R0 = 0.8, do
     fan(low, true);
     fan(high, false);
     return b.Build();
+}
+
+// A rod with a trapezoidal thread about z: root (radius R0), a rising flank,
+// crest (radius R1), a falling flank, over Turns turns. The flanks are ruled
+// helicoids, the root and crest helical strips of cylinders.
+inline meshioplusplus::Mesh threaded_rod(double Pitch = 0.5, double R0 = 0.8, double R1 = 1.0,
+                                         int Turns = 4, int N = 64) {
+    const double seg[4] = {0.26 * Pitch, 0.24 * Pitch, 0.26 * Pitch, 0.24 * Pitch};
+    const int sub[4] = {2, 3, 2, 3};
+    std::vector<double> w, r;
+    double at = 0.0;
+    for (int s = 0; s < 4; ++s) {
+        for (int i = 0; i < sub[s]; ++i) {
+            const double t = static_cast<double>(i) / sub[s];
+            w.push_back(at + seg[s] * t);
+            r.push_back(s == 0   ? R0
+                        : s == 1 ? R0 + (R1 - R0) * t
+                        : s == 2 ? R1
+                                 : R1 - (R1 - R0) * t);
+        }
+        at += seg[s];
+    }
+    return helical_rod(w, r, Pitch, Turns, N);
+}
+
+// A rod with threaded_rod's thread but no cylinder anywhere: the root and
+// the crest are circular arcs of radius Rr across the trapezoid's flats, the
+// crest bulging out and the root in, meeting the straight flanks at a crease
+// (tests/python/analytic_surfaces.py's rounded_thread_rod).
+inline meshioplusplus::Mesh rounded_thread_rod(double Pitch = 0.5, double R0 = 0.8, double R1 = 1.0,
+                                               double Rr = 0.2, int Turns = 4, int N = 64) {
+    const double seg[4] = {0.26 * Pitch, 0.24 * Pitch, 0.26 * Pitch, 0.24 * Pitch};
+    const int sub[4] = {4, 3, 4, 3};
+    const double half = 0.13 * Pitch, d = std::sqrt(Rr * Rr - half * half);
+    std::vector<double> w, r;
+    double at = 0.0;
+    for (int s = 0; s < 4; ++s) {
+        for (int i = 0; i < sub[s]; ++i) {
+            const double t = static_cast<double>(i) / sub[s];
+            const double x = seg[s] * t - half;  // from the flat's middle
+            w.push_back(at + seg[s] * t);
+            r.push_back(s == 0   ? R0 + d - std::sqrt(Rr * Rr - x * x)
+                        : s == 1 ? R0 + (R1 - R0) * t
+                        : s == 2 ? R1 - d + std::sqrt(Rr * Rr - x * x)
+                                 : R1 - (R1 - R0) * t);
+        }
+        at += seg[s];
+    }
+    return helical_rod(w, r, Pitch, Turns, N);
+}
+
+namespace detail_fixture {
+
+using V3 = std::array<double, 3>;
+inline V3 v_add(const V3& rA, const V3& rB) {
+    return {rA[0] + rB[0], rA[1] + rB[1], rA[2] + rB[2]};
+}
+inline V3 v_sub(const V3& rA, const V3& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+inline V3 v_mul(double S, const V3& rA) {
+    return {S * rA[0], S * rA[1], S * rA[2]};
+}
+inline double v_dot(const V3& rA, const V3& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+inline V3 v_cross(const V3& rA, const V3& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+inline V3 v_unit(const V3& rA) {
+    return v_mul(1.0 / std::sqrt(v_dot(rA, rA)), rA);
+}
+
+// Rows of cross-section loops (the same count per row, in order) as quads,
+// the ends closed by fans to each end loop's centroid; a loop point with an
+// empty outward direction faces away from its row's centre.
+inline meshioplusplus::Mesh loft_closed(
+    const std::vector<std::vector<std::pair<V3, std::vector<double>>>>& rLoops,
+    const std::vector<V3>& rCentres) {
+    SkinBuilder b;
+    std::vector<std::vector<std::int64_t>> id(rLoops.size());
+    for (std::size_t i = 0; i < rLoops.size(); ++i)
+        for (const auto& pv : rLoops[i])
+            id[i].push_back(b.Add(pv.first[0], pv.first[1], pv.first[2]));
+    const std::size_t count = rLoops[0].size();
+    for (std::size_t i = 0; i + 1 < rLoops.size(); ++i)
+        for (std::size_t j = 0; j < count; ++j) {
+            const std::size_t jn = (j + 1) % count;
+            std::vector<double> out = rLoops[i][j].second;
+            if (out.empty()) {
+                const V3 d = v_sub(rLoops[i][j].first, rCentres[i]);
+                out = {d[0], d[1], d[2]};
+            }
+            b.Quad(id[i][j], id[i + 1][j], id[i + 1][jn], id[i][jn], out);
+        }
+    for (std::size_t e = 0; e < 2; ++e) {
+        const std::size_t i = e == 0 ? 0 : rLoops.size() - 1;
+        V3 mid{0.0, 0.0, 0.0};
+        for (const auto& pv : rLoops[i])
+            mid = v_add(mid, pv.first);
+        mid = v_mul(1.0 / static_cast<double>(count), mid);
+        const std::int64_t c = b.Add(mid[0], mid[1], mid[2]);
+        for (std::size_t j = 0; j < count; ++j)
+            b.Tri(c, id[i][j], id[i][(j + 1) % count], {e == 0 ? -1.0 : 1.0, 0.0, 0.0});
+    }
+    return b.Build();
+}
+
+}  // namespace detail_fixture
+
+// The block [0, Length] x [0, Width] x [0, Height] whose edge at y = Width,
+// z = Height is rounded by a rolling ball of radius r(x) = Rm + Ra cos(pi x /
+// Length), varying along it. Each row of the fillet is the exact
+// characteristic circle of the ball family, from its foot on the side to its
+// foot on the top; r' vanishes at both ends, so the end caps are planes.
+inline meshioplusplus::Mesh variable_fillet_block(double Length = 2.0, double Width = 1.0,
+                                                  double Height = 1.0, double Rm = 0.25,
+                                                  double Ra = 0.05, int N = 48, int K = 16,
+                                                  int M = 6) {
+    using namespace detail_fixture;
+    const double W = Width, H = Height, L = Length;
+    std::vector<std::vector<std::pair<V3, std::vector<double>>>> loops;
+    std::vector<V3> centres;
+    for (int i = 0; i <= N; ++i) {
+        const double x = L * i / N;
+        const double r = Rm + Ra * std::cos(kPi * x / L);
+        const double dr = -Ra * kPi / L * std::sin(kPi * x / L);
+        const V3 c{x, W - r, H - r};
+        const V3 cd{1.0, -dr, -dr};
+        const double cdl = std::sqrt(v_dot(cd, cd));
+        const V3 t = v_mul(1.0 / cdl, cd);
+        const double delta = -r * dr / cdl;
+        const V3 cc = v_add(c, v_mul(delta, t));
+        const double rho = std::sqrt(r * r - delta * delta);
+        const V3 f_side{x, W, H - r}, f_top{x, W - r, H};
+        const V3 a = v_mul(1.0 / rho, v_sub(f_side, cc));
+        const V3 b2 = v_sub(f_top, cc);
+        const V3 bv = v_unit(v_sub(b2, v_mul(v_dot(b2, a), a)));
+        const double om = std::atan2(v_dot(b2, bv), v_dot(b2, a));
+        std::vector<std::pair<V3, std::vector<double>>> loop;
+        for (int j = 0; j < M; ++j)  // the bottom, y from 0 to W
+            loop.push_back({{x, W * j / M, 0.0}, {0.0, 0.0, -1.0}});
+        for (int j = 0; j < M; ++j)  // the side, z from 0 to H - r
+            loop.push_back({{x, W, (H - r) * j / M}, {0.0, 1.0, 0.0}});
+        for (int j = 0; j < K; ++j)  // the fillet, side foot to top foot
+            loop.push_back({v_add(cc, v_mul(rho, v_add(v_mul(std::cos(om * j / K), a),
+                                                       v_mul(std::sin(om * j / K), bv)))),
+                            {}});
+        for (int j = 0; j < M; ++j)  // the top, y from W - r to 0
+            loop.push_back({{x, (W - r) * (1.0 - static_cast<double>(j) / M), H}, {0.0, 0.0, 1.0}});
+        for (int j = 0; j < M; ++j)  // the back, z from H to 0
+            loop.push_back({{x, 0.0, H * (1.0 - static_cast<double>(j) / M)}, {0.0, -1.0, 0.0}});
+        loops.push_back(std::move(loop));
+        centres.push_back(c);
+    }
+    return loft_closed(loops, centres);
+}
+
+// A bar along x whose top and front faces are both freeform, meeting at an
+// edge rounded by a ball of radius R rolling along the spine (x, 0, Wave cos(4
+// pi x / L)): the top waves with the spine, and the front leans in and out by
+// up to Twist degrees, so the angle between the two faces changes along the
+// edge. Both faces are ruled surfaces through the ball's feet, their rulings
+// normal to its radius there, so tangent to every ball by construction; the
+// back, the bottom and the ends are planes.
+inline meshioplusplus::Mesh wavy_bar(double Length = 3.0, double Wave = 0.06, double Twist = 3.0,
+                                     double R = 0.2, double Back = 1.0, double Depth = 1.0,
+                                     int N = 96, int K = 8, int M = 8) {
+    using namespace detail_fixture;
+    const double L = Length;
+    std::vector<std::vector<std::pair<V3, std::vector<double>>>> loops;
+    std::vector<V3> centres;
+    for (int i = 0; i <= N; ++i) {
+        const double x = L * i / N;
+        const V3 c{x, 0.0, Wave * std::cos(4.0 * kPi * x / L)};
+        const V3 t = v_unit({1.0, 0.0, -Wave * 4.0 * kPi / L * std::sin(4.0 * kPi * x / L)});
+        const V3 side{0.0, 1.0, 0.0};
+        const V3 up = v_cross(t, side);
+        const double psi = Twist * kPi / 180.0 * std::sin(2.0 * kPi * x / L);
+        const V3 m1 = up;
+        const V3 m2 = v_add(v_mul(std::cos(psi), side), v_mul(std::sin(psi), up));
+        const V3 q1 = v_add(c, v_mul(R, m1)), q2 = v_add(c, v_mul(R, m2));
+        // The rulings, away from the edge, normal to the ball's radius at the
+        // foot and tilted along the spine so they keep their x.
+        V3 w1 = v_cross(m1, t);
+        w1 = w1[1] < 0.0 ? w1 : v_mul(-1.0, w1);
+        w1 = v_sub(w1, v_mul(w1[0] / t[0], t));
+        V3 w2 = v_cross(m2, t);
+        w2 = w2[2] < 0.0 ? w2 : v_mul(-1.0, w2);
+        w2 = v_sub(w2, v_mul(w2[0] / t[0], t));
+        const V3 top_far = v_add(q1, v_mul((q1[1] + Back) / -w1[1], w1));
+        const V3 front_low = v_add(q2, v_mul((q2[2] + Depth) / -w2[2], w2));
+        const V3 corner{top_far[0], -Back, -Depth};
+        const double om = std::acos(std::clamp(v_dot(m1, m2), -1.0, 1.0));
+        std::vector<std::pair<V3, std::vector<double>>> loop;
+        auto lerp = [](const V3& rA, const V3& rB, double F) {
+            return v_add(rA, v_mul(F, v_sub(rB, rA)));
+        };
+        for (int j = 0; j < M; ++j)  // the back, up to the top's far edge
+            loop.push_back({lerp(corner, top_far, static_cast<double>(j) / M), {0.0, -1.0, 0.0}});
+        for (int j = 0; j < M; ++j)  // the top, towards the edge
+            loop.push_back({lerp(top_far, q1, static_cast<double>(j) / M), {m1[0], m1[1], m1[2]}});
+        for (int j = 0; j < K; ++j) {  // the blend, top foot to front foot
+            const double f0 = std::sin((1.0 - static_cast<double>(j) / K) * om) / std::sin(om);
+            const double f1 = std::sin(static_cast<double>(j) / K * om) / std::sin(om);
+            loop.push_back({v_add(c, v_mul(R, v_add(v_mul(f0, m1), v_mul(f1, m2)))), {}});
+        }
+        for (int j = 0; j < M; ++j)  // the front, down to the bottom
+            loop.push_back(
+                {lerp(q2, front_low, static_cast<double>(j) / M), {m2[0], m2[1], m2[2]}});
+        for (int j = 0; j < M; ++j)  // the bottom, back to the corner
+            loop.push_back({lerp(front_low, corner, static_cast<double>(j) / M), {0.0, 0.0, -1.0}});
+        loops.push_back(std::move(loop));
+        centres.push_back(c);
+    }
+    return loft_closed(loops, centres);
 }
 
 // The turned part of tests/python/analytic_surfaces.py: a flat base, a

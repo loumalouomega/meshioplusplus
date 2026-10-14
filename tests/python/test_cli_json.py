@@ -533,7 +533,14 @@ def test_to_cad_json_agrees(tmp_path, flags):
     doc_py = _strict(text_py)
     assert code_py == 0
     assert doc_py["num_plane"] == 6
-    for key in ("num_split_patches", "num_fillet", "num_helical"):
+    for key in (
+        "num_split_patches",
+        "num_fillet",
+        "num_helical",
+        "num_variable_fillet",
+        "num_blend",
+        "num_rounded_thread",
+    ):
         assert doc_py[key] == 0
     if NATIVE is None:
         pytest.skip("no native CLI binary built; checked the Python output only")

@@ -42,6 +42,9 @@ _REPORT_INTS = (
     "num_split_patches",
     "num_fillet",
     "num_helical",
+    "num_variable_fillet",
+    "num_blend",
+    "num_rounded_thread",
 )
 
 
@@ -91,14 +94,18 @@ def fit_cad(
 
     Every patch :func:`fit_primitives` accepted becomes one plane, sphere,
     cylinder, cone or torus face trimmed by the patch boundary. A patch no
-    primitive explains is tried, with ``fillets``, as a constant-radius
-    rolling-ball fillet when it runs between two analytic faces, and, with
-    ``threads``, as a straight-flank thread (a ruled helicoid) beside a
-    cylinder or cone; failing those it becomes, with ``freeform``, a B-spline
-    face fitted over the patch flattened onto its best-fit plane or unrolled
-    around a cylinder, and one both fold is, with ``freeform_split``, split
-    into pieces that flatten, each its own face under a new patch label. The
-    rest of the skin becomes planar facets. The faces are sewn into a solid that
+    primitive explains is tried, with ``fillets``, as a rolling-ball fillet
+    when it runs between two analytic faces (of one radius, else of a radius
+    varying along it), and, with ``threads``, as a helical thread face: about
+    the axis of a cylinder or cone beside it, or of the screw the patch itself
+    fits, with a straight flank or any other profile (a rounded root or
+    crest). Failing those it becomes, with ``freeform``, a B-spline face
+    fitted over the patch flattened onto its best-fit plane or unrolled around
+    a cylinder, and one both fold is, with ``freeform_split``, split into
+    pieces that flatten, each its own face under a new patch label. A patch
+    between two fitted faces, one of them freeform, is then tried, with
+    ``fillets``, as a rolling-ball blend. The rest of the skin becomes planar
+    facets. The faces are sewn into a solid that
     OpenCASCADE checks, and a face that fails the check or strays further than
     ``tolerance`` from the skin is demoted to facets, so a feature the fitter
     cannot explain comes back faceted, never silently wrong.
@@ -127,20 +134,25 @@ def fit_cad(
         samples, 4 to 1024.
     :param freeform_split: split a freeform patch that folds over both its
         flattenings into pieces that do not.
-    :param fillets: try a patch between two analytic faces as a rolling-ball fillet.
-    :param threads: try a patch beside a cylinder or cone as a thread flank.
+    :param fillets: try a patch between two fitted faces as a rolling-ball
+        fillet or blend.
+    :param threads: try a patch as a helical thread face.
     :param return_report: also return the report.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
-        ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet, 8 a
-        thread flank, else as ``fit:type``) and ``fit_cad:patch``, and the solid as NURBS faces,
+        ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet or
+        blend, 8 a helical thread face, else as ``fit:type``) and
+        ``fit_cad:patch``, and the solid as NURBS faces,
         loops and edges in ``mesh.info["brep"]`` (face ``i`` of
         ``fit_cad:face`` has id ``i + 1``), so writing it as ``.cad.json`` gives
         Kratos CAD JSON. With ``return_report``, ``(mesh, report)``, the report
         holding ``valid``, the tolerance, the solid's and the skin's volume and
         their ratio, the Hausdorff ``max_deviation``, the faces by type
         (``num_bspline`` the freeform ones, ``num_fillet``, ``num_helical``),
-        ``num_split_patches``, the demoted patches and the exact
-        and approximated edges.
+        of those the fillets of varying radius (``num_variable_fillet``), the
+        blends beside a freeform face (``num_blend``) and the thread faces of
+        a profile that is not straight (``num_rounded_thread``),
+        ``num_split_patches``, the demoted patches and the exact and
+        approximated edges.
     :raises NotImplementedError: when the core was built without OpenCASCADE.
     """
     opts = {

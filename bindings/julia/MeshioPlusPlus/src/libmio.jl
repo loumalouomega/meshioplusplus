@@ -557,12 +557,13 @@ struct _CFitCadReport
     num_approx_edges::Int64
     num_solids::Int64
     valid::Int32
-    reserved0::Int32
+    num_rounded_thread::Int32
     num_bspline::Int64
     num_split_patches::Int64
     num_fillet::Int64
     num_helical::Int64
-    reserved::NTuple{2,Int64}
+    num_variable_fillet::Int64
+    num_blend::Int64
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),

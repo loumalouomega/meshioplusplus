@@ -251,6 +251,8 @@ TEST(FitCad, InclinedBossFilletIsARollingBallFace) {
     const FitCadResult r = fit_cad(fitted(analytic::inclined_boss(), 3.0));
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumFillet, 1);
+    EXPECT_EQ(r.mNumVariableFillet, 0);
+    EXPECT_EQ(r.mNumBlend, 0);
     EXPECT_GE(r.mNumCylinder, 1);  // the boss wall (the short rim may fit a sphere)
     EXPECT_EQ(r.mNumFacetedFaces, 0);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
@@ -276,6 +278,7 @@ TEST(FitCad, ThreadFlanksAreHelicalFaces) {
     const FitCadResult r = fit_cad(fitted(analytic::threaded_rod()));
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumHelical, 2);
+    EXPECT_EQ(r.mNumRoundedThread, 0);
     EXPECT_EQ(r.mNumCylinder, 2);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
@@ -286,6 +289,61 @@ TEST(FitCad, ThreadsOffLeaveTheFlanksToTheFreeformFit) {
     o.mThreads = false;
     const FitCadResult r = fit_cad(fitted(analytic::threaded_rod()), "", o);
     EXPECT_EQ(r.mNumHelical, 0);
+}
+
+TEST(FitCad, FilletOfVaryingRadiusIsOneFace) {
+    // A block's edge rounded by a ball whose radius goes from 0.3 to 0.2 along
+    // it: no one radius explains the patch, a radius law along it does
+    // (roadmap 6.3.1).
+    const Mesh fit = fitted(analytic::variable_fillet_block(), 3.0);
+    const FitCadResult r = fit_cad(fit);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumFillet, 1);
+    EXPECT_EQ(r.mNumVariableFillet, 1);
+    EXPECT_EQ(r.mNumBlend, 0);
+    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    FitCadOptions o;
+    o.mFillets = false;
+    const FitCadResult off = fit_cad(fit, "", o);
+    EXPECT_EQ(off.mNumFillet, 0);
+    EXPECT_EQ(off.mNumVariableFillet, 0);
+}
+
+TEST(FitCad, BlendBetweenTwoFreeformFacesIsOneFace) {
+    // A bar whose wavy top and leaning front are freeform B-spline faces, the
+    // edge between them rounded by a rolling ball: the blend is fitted after
+    // the freeform faces, against them (roadmap 6.3.1).
+    const Mesh fit = fitted(analytic::wavy_bar(), 3.0);
+    const FitCadResult r = fit_cad(fit);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumFillet, 1);
+    EXPECT_EQ(r.mNumBlend, 1);
+    EXPECT_EQ(r.mNumBspline, 2);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    FitCadOptions o;
+    o.mFillets = false;
+    const FitCadResult off = fit_cad(fit, "", o);
+    EXPECT_EQ(off.mNumFillet, 0);
+    EXPECT_EQ(off.mNumBlend, 0);
+}
+
+TEST(FitCad, RoundedThreadWithNoCylinderIsHelical) {
+    // Root and crest rounded into arcs and no cylinder anywhere: every face
+    // of the thread finds the screw from its own facets, the flanks straight
+    // and the root and crest rounded (roadmap 6.3.1).
+    const Mesh fit = fitted(analytic::rounded_thread_rod(0.5, 0.8, 1.0, 0.2, 3));
+    const FitCadResult r = fit_cad(fit);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumHelical, 4);
+    EXPECT_EQ(r.mNumRoundedThread, 2);
+    EXPECT_EQ(r.mNumCylinder, 0);
+    EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
 }
 
 TEST(FitCad, TypesMaskFacetsTheRest) {

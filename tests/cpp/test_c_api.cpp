@@ -4944,6 +4944,9 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
         EXPECT_EQ(report.num_split_patches, 0);
         EXPECT_EQ(report.num_fillet, 0);
         EXPECT_EQ(report.num_helical, 0);
+        EXPECT_EQ(report.num_variable_fillet, 0);
+        EXPECT_EQ(report.num_blend, 0);
+        EXPECT_EQ(report.num_rounded_thread, 0);
         EXPECT_EQ(mio_mesh_num_cell_blocks(solid), 1);
         mio_mesh_free(solid);
         // Fillets, threads and splitting off still build the six planes.

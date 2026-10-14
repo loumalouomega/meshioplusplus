@@ -50,11 +50,11 @@ samples, 4 to 1024.}
 best-fit plane and an unrolled cylinder is split into pieces fitted as
 their own B-spline faces.}
 
-\item{fillets}{Whether a patch between two analytic faces is tried as a
-rolling-ball fillet.}
+\item{fillets}{Whether a patch between two fitted faces is tried as a
+rolling-ball fillet (of one radius or one varying along it) or blend.}
 
-\item{threads}{Whether a patch beside a cylinder or cone is tried as a
-thread flank.}
+\item{threads}{Whether a patch is tried as a helical thread face, about a
+neighbouring cylinder's or cone's axis or the screw it fits.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -63,13 +63,14 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_faces`, `num_plane`, `num_sphere`, `num_cylinder`, `num_cone`,
   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
-  `num_split_patches`, `num_fillet` and `num_helical`.
+  `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
+  `num_blend` and `num_rounded_thread`.
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
-cone or torus face, a patch no primitive explains a rolling-ball fillet,
-thread flank or freeform B-spline face where one fits (`fit_cad:type` 7, 8
+cone or torus face, a patch no primitive explains a rolling-ball fillet or
+blend, helical thread face or freeform B-spline face where one fits (`fit_cad:type` 7, 8
 and 6), the rest planar facets, and a face that fails the B-rep
 check or strays beyond `tolerance` is demoted to facets. Without
 `segment:patch` or the `fit:patch_*` table, segment and fit_primitives run

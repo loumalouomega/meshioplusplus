@@ -3585,6 +3585,9 @@ PYBIND11_MODULE(_core, m) {
             out["num_split_patches"] = r.mNumSplitPatches;
             out["num_fillet"] = r.mNumFillet;
             out["num_helical"] = r.mNumHelical;
+            out["num_variable_fillet"] = r.mNumVariableFillet;
+            out["num_blend"] = r.mNumBlend;
+            out["num_rounded_thread"] = r.mNumRoundedThread;
             out["brep"] = core_brep_to_py(std::move(r.mBrep));
             return out;
         },

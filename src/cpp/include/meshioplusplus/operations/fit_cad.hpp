@@ -52,6 +52,13 @@
  *    and kept once every patch vertex lies within the tolerance of it, the
  *    grid doubling up to `mFreeformMaxControl` points per direction. The
  *    face is then trimmed, sewn and checked like an analytic one.
+ *  - **Fillets and threads** (roadmap 6.3.1). Before the freeform fit, a
+ *    patch between two analytic faces is tried as a rolling-ball fillet
+ *    (`mFillets`; a pipe of one radius, else a radius varying along it), and
+ *    a patch as a helical thread face (`mThreads`; about a neighbouring
+ *    cylinder's or cone's axis, else the screw the patch fits, with any
+ *    profile). After it, a freeform patch between two fitted faces, one of
+ *    them freeform, is tried as a rolling-ball blend.
  *  - **Edges.** Where two patches meet, the mesh edges between them form
  *    chains from one junction (a point three or more patches meet at) to the
  *    next; a closed chain is split in two. A chain between two analytic faces
@@ -81,7 +88,8 @@
  * block (points shared between faces are welded), with cell data
  * `fit_cad:face` (Int64, the B-rep face), `fit_cad:type` (Int64, the face's
  * type: 0 a facet, 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, as
- * `fit:type`, and 6 a freeform B-spline) and `fit_cad:patch` (Int64, the
+ * `fit:type`, 6 a freeform B-spline, 7 a rolling-ball fillet or blend, 8 a
+ * helical thread face) and `fit_cad:patch` (Int64, the
  * `segment:patch` label it was built from, -1 for a facet of a cell with no
  * patch), the report below, and the solid as NURBS in `mBrep` (face `i` of
  * `fit_cad:face` is its face `i`, id `i + 1`), which `write_cad_json` writes
@@ -116,9 +124,12 @@ inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
 /// `fit_cad:type` of a freeform B-spline face.
 inline constexpr std::int64_t kFitCadBsplineType = 6;
-/// `fit_cad:type` of a constant-radius rolling-ball fillet face.
+/// `fit_cad:type` of a rolling-ball fillet or blend face, of constant or
+/// varying radius, between analytic or freeform faces.
 inline constexpr std::int64_t kFitCadFilletType = 7;
-/// `fit_cad:type` of a straight-flank thread face (a ruled helicoid).
+/// `fit_cad:type` of a helical thread face: a straight flank (a ruled
+/// helicoid), or a profile of any shape (a rounded root or crest) swept by
+/// the thread's screw motion.
 inline constexpr std::int64_t kFitCadHelicalType = 8;
 
 /// What `fit_cad` builds and how strictly it checks it.
@@ -149,11 +160,13 @@ struct FitCadOptions {
     /// cylinder parametrises (it folds over both) is split into pieces that one
     /// does, each fitted as its own B-spline face under a new patch label.
     bool mFreeformSplit = true;
-    /// Whether a patch no primitive explains, running between two analytic
-    /// faces, is tried as a constant-radius rolling-ball fillet.
+    /// Whether a patch no primitive explains, running between two fitted
+    /// faces, is tried as a rolling-ball fillet: of constant or varying
+    /// radius between two analytic faces, and as a blend beside a freeform one.
     bool mFillets = true;
-    /// Whether a patch no primitive explains, beside a cylinder or cone, is
-    /// tried as a straight-flank thread about its axis.
+    /// Whether a patch no primitive explains is tried as a helical thread
+    /// face: about the axis of a cylinder or cone beside it, or of the screw
+    /// the patch itself fits, with a straight or a rounded profile.
     bool mThreads = true;
 };
 
@@ -197,8 +210,15 @@ struct FitCadResult {
     std::int64_t mNumSplitPatches = 0;
     /// Rolling-ball fillet faces.
     std::int64_t mNumFillet = 0;
-    /// Thread flank faces.
+    /// Thread faces (helical).
     std::int64_t mNumHelical = 0;
+    /// Of the fillet faces, those whose radius varies along them.
+    std::int64_t mNumVariableFillet = 0;
+    /// Of the fillet faces, the blends beside a freeform B-spline face.
+    std::int64_t mNumBlend = 0;
+    /// Of the thread faces, those whose profile is not a straight line (a
+    /// rounded root or crest).
+    std::int64_t mNumRoundedThread = 0;
     /// The solid as NURBS faces, loops and edges.
     BrepInfo mBrep;
 };
