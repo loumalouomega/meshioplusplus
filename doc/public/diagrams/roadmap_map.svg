@@ -77,13 +77,6 @@
 <rect x="24" y="630" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
 <text x="30" y="647" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">manager shows thumbnails</text>
 <text x="30" y="661" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
-<text x="269.33" y="370" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§6 long run (spike first)</text>
-<rect x="269.33" y="380" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="275.33" y="397" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">read-only CAD ingestion</text>
-<text x="275.33" y="411" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
-<rect x="269.33" y="430" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="275.33" y="447" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">analytic CAD faces (OCC)</text>
-<text x="275.33" y="461" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
 <rect x="24" y="696" width="12" height="12" rx="2" fill="#86b6ef" fill-opacity="0.36" stroke="#86b6ef" stroke-width="1"/>
 <text x="41" y="706" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" fill="#52514e">S: days</text>
 <rect x="102.12" y="696" width="12" height="12" rx="2" fill="#3987e5" fill-opacity="0.36" stroke="#3987e5" stroke-width="1"/>
