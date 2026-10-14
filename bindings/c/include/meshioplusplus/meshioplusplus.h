@@ -254,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 43
+#define MIO_VERSION_MINOR 44
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -4624,13 +4624,19 @@ typedef struct mio_fit_cad_report {
     int64_t num_exact_edges;
     int64_t num_approx_edges;
     int64_t num_solids;
-    int32_t valid;             /**< nonzero when the solid passed OpenCASCADE's B-rep check */
-    int32_t reserved0;         /**< zero */
+    int32_t valid; /**< nonzero when the solid passed OpenCASCADE's B-rep check */
+    /** Of the helical faces, those whose profile is not a straight line (a
+     *  rounded root or crest); was a zero reserved field before v16.44.0. */
+    int32_t num_rounded_thread;
     int64_t num_bspline;       /**< freeform B-spline faces ("fit_cad:type" 6) */
     int64_t num_split_patches; /**< pieces folding freeform patches were split into */
-    int64_t num_fillet;        /**< rolling-ball fillet faces ("fit_cad:type" 7) */
-    int64_t num_helical;       /**< thread flank faces ("fit_cad:type" 8) */
-    int64_t reserved[2];       /**< zero; room for additive growth */
+    int64_t num_fillet;        /**< rolling-ball fillet and blend faces ("fit_cad:type" 7) */
+    int64_t num_helical;       /**< helical thread faces ("fit_cad:type" 8) */
+    /** Of the fillet faces, those whose radius varies along them; this and
+     *  num_blend took the reserved tail in v16.44.0, which leaves this struct
+     *  no room to grow: a further field needs a new report struct. */
+    int64_t num_variable_fillet;
+    int64_t num_blend; /**< of the fillet faces, the blends beside a freeform face */
 } mio_fit_cad_report;
 
 /** Nonzero when this library was built with the OpenCASCADE backend

@@ -93,12 +93,13 @@ def add_args(parser):
     parser.add_argument(
         "--no-fillets",
         action="store_true",
-        help="do not try a patch between two analytic faces as a rolling-ball fillet",
+        help="do not try a patch between two fitted faces as a rolling-ball fillet "
+        "or blend",
     )
     parser.add_argument(
         "--no-threads",
         action="store_true",
-        help="do not try a patch beside a cylinder or cone as a thread flank",
+        help="do not try a patch as a helical thread face",
     )
     parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
@@ -159,8 +160,20 @@ def to_cad_cmd(args):
             f"  {'bspline:':10s} {report['num_bspline']}"
             + (f" ({split} split piece(s))" if split > 0 else "")
         )
-        print(f"  {'fillet:':10s} {report['num_fillet']}")
-        print(f"  {'helical:':10s} {report['num_helical']}")
+        variable, blend = report["num_variable_fillet"], report["num_blend"]
+        print(
+            f"  {'fillet:':10s} {report['num_fillet']}"
+            + (
+                f" ({variable} of varying radius, {blend} blend(s))"
+                if variable > 0 or blend > 0
+                else ""
+            )
+        )
+        rounded = report["num_rounded_thread"]
+        print(
+            f"  {'helical:':10s} {report['num_helical']}"
+            + (f" ({rounded} rounded)" if rounded > 0 else "")
+        )
         print(f"  {'facets:':10s} {report['num_faceted_faces']}")
         print(f"  {'demoted:':10s} {report['num_demoted']} patch(es)")
         print(

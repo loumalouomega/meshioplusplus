@@ -6489,6 +6489,10 @@ mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit
             report->num_split_patches = r.mNumSplitPatches;
             report->num_fillet = r.mNumFillet;
             report->num_helical = r.mNumHelical;
+            report->num_variable_fillet = r.mNumVariableFillet;
+            report->num_blend = r.mNumBlend;
+            report->num_rounded_thread =
+                static_cast<std::int32_t>(std::min<std::int64_t>(r.mNumRoundedThread, INT32_MAX));
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

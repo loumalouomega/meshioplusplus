@@ -1059,6 +1059,9 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumSplitPatches"] = report["num_split_patches"]
         entry["NumFillet"] = report["num_fillet"]
         entry["NumHelical"] = report["num_helical"]
+        entry["NumVariableFillet"] = report["num_variable_fillet"]
+        entry["NumBlend"] = report["num_blend"]
+        entry["NumRoundedThread"] = report["num_rounded_thread"]
         entry["NumDemoted"] = report["num_demoted"]
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and

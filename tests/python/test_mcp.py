@@ -1480,6 +1480,8 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
     assert out["num_plane"] == 6
     assert out["num_split_patches"] == 0
     assert out["num_fillet"] == 0 and out["num_helical"] == 0
+    assert out["num_variable_fillet"] == out["num_blend"] == 0
+    assert out["num_rounded_thread"] == 0
     assert out["step_path"].endswith("cube.step")
     assert "fit_cad:face" in out["cell_data"]
     assert os.path.exists(tmp_path / "solid.vtu")

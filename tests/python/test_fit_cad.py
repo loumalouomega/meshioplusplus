@@ -18,9 +18,12 @@ from meshioplusplus._cli._main import main as cli_main
 from .analytic_surfaces import (
     box_skin,
     inclined_boss,
+    rounded_thread_rod,
     threaded_rod,
     torus,
     turned_part,
+    variable_fillet_block,
+    wavy_bar,
     wavy_capped,
 )
 
@@ -187,10 +190,48 @@ def test_a_rolling_ball_fillet_is_its_own_face():
     out, report = mio.fit_cad(fit, return_report=True)
     assert report["valid"]
     assert report["num_fillet"] == 1 and report["num_faceted_faces"] == 0
+    assert report["num_variable_fillet"] == 0 and report["num_blend"] == 0
     assert report["max_deviation"] <= report["tolerance"]
     assert 7 in out.cell_data["fit_cad:type"][0].tolist()
+    # Every face reaches the NURBS side channel, trimmed (OpenCASCADE 7.9's
+    # conversion throws on this solid; the faces are then approximated).
+    faces = out.info["brep"]["faces"]
+    assert len(faces) == report["num_faces"] and all(f["trimmed"] for f in faces)
     _out, report = mio.fit_cad(fit, fillets=False, return_report=True)
     assert report["num_fillet"] == 0
+
+
+@needs_occt
+def test_a_fillet_of_varying_radius_is_its_own_face():
+    """A block's edge rounded by a ball whose radius goes from 0.3 to 0.2
+    along it: no one radius explains it, a radius law along the rail does
+    (roadmap 6.3.1)."""
+    fit = _fitted(variable_fillet_block(), curvature_tolerance=3.0)
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_fillet"] == report["num_variable_fillet"] == 1
+    assert report["num_plane"] == 6 and report["num_faceted_faces"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    assert report["volume_ratio"] == pytest.approx(1.0, abs=0.01)
+    assert set(out.cell_data["fit_cad:type"][0].tolist()) == {1, 7}
+    _out, report = mio.fit_cad(fit, fillets=False, return_report=True)
+    assert report["num_fillet"] == report["num_variable_fillet"] == 0
+
+
+@needs_occt
+def test_a_blend_between_two_freeform_faces_is_its_own_face():
+    """A bar whose wavy top and leaning front are both freeform B-spline
+    faces, its edge rounded by a rolling ball: the blend is fitted after the
+    freeform faces, against them (roadmap 6.3.1)."""
+    fit = _fitted(wavy_bar(), curvature_tolerance=3.0)
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_fillet"] == report["num_blend"] == 1
+    assert report["num_bspline"] == 2 and report["num_faceted_faces"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    assert {6, 7} <= set(out.cell_data["fit_cad:type"][0].tolist())
+    _out, report = mio.fit_cad(fit, fillets=False, return_report=True)
+    assert report["num_fillet"] == report["num_blend"] == 0
 
 
 @needs_occt
@@ -201,7 +242,25 @@ def test_thread_flanks_are_helical_faces():
     out, report = mio.fit_cad(fit, return_report=True)
     assert report["valid"]
     assert report["num_helical"] == 2 and report["num_cylinder"] == 2
+    assert report["num_rounded_thread"] == 0
     assert report["max_deviation"] <= report["tolerance"]
+    assert 8 in out.cell_data["fit_cad:type"][0].tolist()
+    faces = out.info["brep"]["faces"]
+    assert len(faces) == report["num_faces"] and all(f["trimmed"] for f in faces)
+
+
+@needs_occt
+def test_a_rounded_thread_with_no_cylinder_is_helical():
+    """Root and crest rounded into arcs and no cylinder anywhere: every face
+    of the thread finds the screw from its own facets, the flanks straight
+    and the root and crest rounded (roadmap 6.3.1)."""
+    fit = _fitted(rounded_thread_rod(turns=3))
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_helical"] == 4 and report["num_rounded_thread"] == 2
+    assert report["num_cylinder"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    assert report["volume_ratio"] == pytest.approx(1.0, abs=0.01)
     assert 8 in out.cell_data["fit_cad:type"][0].tolist()
 
 

@@ -1021,6 +1021,9 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
                         {"NumFillet", static_cast<double>(cr.mNumFillet)},
                         {"NumHelical", static_cast<double>(cr.mNumHelical)},
+                        {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
+                        {"NumBlend", static_cast<double>(cr.mNumBlend)},
+                        {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
                         {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
         return std::move(cr.mMesh);
     }

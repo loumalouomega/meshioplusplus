@@ -2220,6 +2220,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_split_patches", r.mNumSplitPatches);
         json.Field("num_fillet", r.mNumFillet);
         json.Field("num_helical", r.mNumHelical);
+        json.Field("num_variable_fillet", r.mNumVariableFillet);
+        json.Field("num_blend", r.mNumBlend);
+        json.Field("num_rounded_thread", r.mNumRoundedThread);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
@@ -2233,8 +2236,15 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (r.mNumSplitPatches > 0)
             std::cout << " (" << r.mNumSplitPatches << " split piece(s))";
         std::cout << "\n";
-        std::cout << "  fillet:    " << r.mNumFillet << "\n";
-        std::cout << "  helical:   " << r.mNumHelical << "\n";
+        std::cout << "  fillet:    " << r.mNumFillet;
+        if (r.mNumVariableFillet > 0 || r.mNumBlend > 0)
+            std::cout << " (" << r.mNumVariableFillet << " of varying radius, " << r.mNumBlend
+                      << " blend(s))";
+        std::cout << "\n";
+        std::cout << "  helical:   " << r.mNumHelical;
+        if (r.mNumRoundedThread > 0)
+            std::cout << " (" << r.mNumRoundedThread << " rounded)";
+        std::cout << "\n";
         std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
         std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation

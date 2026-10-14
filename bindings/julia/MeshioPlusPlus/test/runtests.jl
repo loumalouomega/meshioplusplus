@@ -1543,6 +1543,8 @@ end
         @test cad.num_split_patches == 0
         @test cad.num_fillet == 0
         @test cad.num_helical == 0
+        @test cad.num_variable_fillet == 0 && cad.num_blend == 0
+        @test cad.num_rounded_thread == 0
         close(cad.mesh)
         bare = fit_cad(cube; freeform_split=false, fillets=false, threads=false)
         @test bare.num_plane == 6

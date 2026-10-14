@@ -113,7 +113,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
-| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them), `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
+| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1128,7 +1128,7 @@ meshioplusplus iga-evaluate plate.cad.json -p 0.5,0.5 -p 2,2 --derivatives 1
 
 ## meshioplusplus to-cad
 
-Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet, thread flank and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
 
 ```text
 meshioplusplus to-cad [options] INFILE OUTFILE.step
@@ -1149,8 +1149,8 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--freeform-degree P` | Highest degree of a freeform face, 3–8 (default `3`) |
 | `--freeform-max-control N` | Largest freeform sample grid per direction, 4–1024 (default `64`) |
 | `--no-freeform-split` | Leave a freeform patch that folds over every flattening faceted instead of [splitting it into pieces](/fit_cad#splitting-curled-patches) |
-| `--no-fillets` | Do not try a patch between two analytic faces as a [rolling-ball fillet](/fit_cad#fillets-and-threads) |
-| `--no-threads` | Do not try a patch beside a cylinder or cone as a [thread flank](/fit_cad#fillets-and-threads) |
+| `--no-fillets` | Do not try a patch between two fitted faces as a [rolling-ball fillet or blend](/fit_cad#fillets-blends-and-threads) |
+| `--no-threads` | Do not try a patch as a [helical thread face](/fit_cad#fillets-blends-and-threads) |
 | `--mesh-out FILE` | Also write the re-meshed solid |
 | `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |

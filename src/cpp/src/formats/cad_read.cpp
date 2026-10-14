@@ -49,12 +49,10 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
                                     "deflection positive");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
-    const TopoDS_Shape shape =
-        detail::occt_nurbs_shape(detail::occt_read_cad_file(rPath, Iges, fmt));
-    BrepInfo info = detail::occt_brep_info(shape);
-    Mesh mesh = detail::occt_tessellate(shape, info, rOptions.mDeflection,
+    detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+    Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
                                         rOptions.mAngularDeflection);
-    rInfo = std::move(info);
+    rInfo = std::move(nurbs.mInfo);
     return mesh;
 }
 #else

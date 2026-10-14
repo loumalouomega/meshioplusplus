@@ -26,7 +26,11 @@
  * every surface into a `Geom_BSplineSurface` and every parameter curve into a
  * `Geom2d_BSplineCurve` *consistently*: converting a face's surface alone
  * reparametrises a cylinder or a sphere and leaves its trimming curves in the
- * old parameters. Faces get ids `1 .. F` and edges `F + 1 .. F + E` (Kratos
+ * old parameters. OpenCASCADE 7.9 throws converting some trimmed and multi-turn
+ * elementary faces, and leaves a face whose surface already is a B-spline with
+ * none; then the shape is kept as it is and every surface and curve that is
+ * not a B-spline is approximated by one *in its own parameters*, so the
+ * trimming curves stay valid. Faces get ids `1 .. F` and edges `F + 1 .. F + E` (Kratos
  * gives every geometry one id space), control points ids from 1, so the
  * `BrepInfo` writes as CAD JSON Kratos loads.
  *
@@ -51,8 +55,22 @@ namespace meshioplusplus::detail {
 /// @throws ReadError when OpenCASCADE cannot read or transfer it.
 TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
 
-/// The shape with every surface and curve as a NURBS.
-TopoDS_Shape occt_nurbs_shape(const TopoDS_Shape& rShape);
+/// A shape and its faces, loops and edges as NURBS.
+struct OcctNurbs {
+    /// The converted shape, or the shape itself when the conversion failed.
+    TopoDS_Shape mShape;
+    BrepInfo mInfo;
+    /// The conversion succeeded on every face: the NURBS are exact.
+    bool mExact = false;
+};
+
+/**
+ * @brief The shape as NURBS: converted exactly by `BRepBuilderAPI_NurbsConvert`
+ * when that leaves every face a B-spline surface, otherwise approximated face by
+ * face and edge by edge in the shape's own parameters, within 1e-6 of its
+ * bounding-box diagonal.
+ */
+OcctNurbs occt_nurbs(const TopoDS_Shape& rShape);
 
 /// The faces, loops and edges of a NURBS-converted shape.
 BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);

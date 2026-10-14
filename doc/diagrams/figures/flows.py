@@ -1064,14 +1064,6 @@ def roadmap_map():
             ],
             [],
         ),
-        (
-            "§6 long run (spike first)",
-            [
-                ("read-only CAD ingestion", "L"),
-                ("analytic CAD faces (OCC)", "L"),
-            ],
-            [],
-        ),
     ]
     per_row = 4
     col_w = 176
