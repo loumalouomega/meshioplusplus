@@ -82,6 +82,12 @@
         "lz4"
       ]
     },
+    "lzma": {
+      "description": "VTK XML lzma block compression (vtkLZMADataCompressor; ParaView-readable)",
+      "dependencies": [
+        "liblzma"
+      ]
+    },
     "kahip": {
       "description": "KaHIP partition backend (no vcpkg port exists: supply an install and set KAHIP_ROOT)"
     },

@@ -74,8 +74,12 @@ def test(mesh, data_type, tmp_path):
 def test_raw_appended_round_trip(mesh, compression, engine, tmp_path):
     # v16.21.0: every array in one raw <AppendedData> section. The Python
     # reference writes it too (lzma only there), and both engines read either.
-    if engine == "core" and compression == "lzma":
-        pytest.skip("lzma is Python-only")
+    if (
+        engine == "core"
+        and compression == "lzma"
+        and not getattr(meshioplusplus._core, "__has_lzma__", False)
+    ):
+        pytest.skip("this build has no lzma")
     writer = meshioplusplus.vtu.write if engine == "core" else _vtu.write
 
     def write(filename, m):

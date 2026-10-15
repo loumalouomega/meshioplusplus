@@ -1,4 +1,4 @@
-# Compression codecs (zlib, zstd, lz4)
+# Compression codecs (zlib, zstd, lz4, lzma)
 
 VTK XML formats (`.vtu`, `.vtp`) store binary `DataArray` payloads in fixed 32 KiB blocks, each independently compressed. meshio++ supports three codecs for those blocks.
 
@@ -11,7 +11,7 @@ VTK XML formats (`.vtu`, `.vtp`) store binary `DataArray` payloads in fixed 32 K
 | `zlib` | `vtkZLibDataCompressor` | **yes** — the default, universally supported |
 | `lz4` | `vtkLZ4DataCompressor` | **yes** — a real VTK compressor |
 | `zstd` | `vtkZSTDDataCompressor` | **no** — a meshio++ extension |
-| `lzma` | `vtkLZMADataCompressor` | read by the Python path only |
+| `lzma` | `vtkLZMADataCompressor` | **yes** — a real VTK compressor (xz streams); the core needs `MESHIOPLUSPLUS_WITH_LZMA=ON`, Python always has it |
 
 VTK ships `vtkZLibDataCompressor`, `vtkLZ4DataCompressor` and `vtkLZMADataCompressor` — there is **no ZSTD compressor in VTK or ParaView**. (Checked against VTK 9.6: `vtkLZ4DataCompressor` exists, `vtkZSTDDataCompressor` does not.) meshio++ writes `vtkZSTDDataCompressor` by analogy so that a future VTK addition would align, and so ParaView fails with a clean "unknown compressor" rather than silently misreading. If a file has to open in ParaView, use `zlib` or `lz4`.
 
@@ -20,17 +20,17 @@ lz4 uses LZ4's raw **block** format (not the frame format), matching `vtkLZ4Data
 ## Building with them
 
 ```bash
-cmake -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON ...
+cmake -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_LZMA=ON ...
 ```
 
 Both default **OFF**, unlike zlib/HDF5/netCDF: zlib stays the write default, so a build without them reads and writes exactly what it always did.
 
 ```python
 from meshioplusplus import _core
-_core.__has_zlib__, _core.__has_zstd__, _core.__has_lz4__
+_core.__has_zlib__, _core.__has_zstd__, _core.__has_lz4__, _core.__has_lzma__
 ```
 
-Package managers: Conan `with_zstd` / `with_lz4`, vcpkg features `zstd` / `lz4` — both off by default there too, so existing package IDs are unaffected.
+Package managers: Conan `with_zstd` / `with_lz4` / `with_lzma`, vcpkg features `zstd` / `lz4` / `lzma` — both off by default there too, so existing package IDs are unaffected.
 
 **WASM**: in the [full artifact](/wasm#lean-and-full-builds) only (v17.2.0), which links zstd 1.5.7 and lz4 1.10.0 cross-compiled by `build/build-wasm-deps.sh --full` (`hasZstd()`, `hasLz4()`); the lean one keeps zlib (`-sUSE_ZLIB=1`) as its one codec and throws naming the codec otherwise.
 

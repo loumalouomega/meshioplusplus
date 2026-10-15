@@ -49,11 +49,19 @@ def write(
     # zstd/lz4 reach the C++ writer when this build has them; otherwise the
     # Python reference path handles it (needing the `codecs` extra), so a
     # request never silently degrades to a different codec.
-    _CPP_CODECS = {None: "none", "zlib": "zlib", "lz4": "lz4", "zstd": "zstd"}
+    _CPP_CODECS = {
+        None: "none",
+        "zlib": "zlib",
+        "lz4": "lz4",
+        "zstd": "zstd",
+        "lzma": "lzma",
+    }
     cpp_compression_ok = compression in _CPP_CODECS
     if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
         cpp_compression_ok = False
     if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
+        cpp_compression_ok = False
+    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
         cpp_compression_ok = False
     if header_type is None and cpp_compression_ok and not is_buffer(filename, "w"):
         try:

@@ -6,7 +6,13 @@ from ._pvd import SeriesWriter
 from ._pvd import read as _py_read
 from ._pvd import write as _py_write
 
-_CPP_CODECS = {None: "none", "zlib": "zlib", "lz4": "lz4", "zstd": "zstd"}
+_CPP_CODECS = {
+    None: "none",
+    "zlib": "zlib",
+    "lz4": "lz4",
+    "zstd": "zstd",
+    "lzma": "lzma",
+}
 
 
 def read(
@@ -45,6 +51,8 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
         cpp_ok = False
     if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
+        cpp_ok = False
+    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
         cpp_ok = False
     if cpp_ok and not is_buffer(filename, "w"):
         try:

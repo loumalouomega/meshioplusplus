@@ -14445,7 +14445,7 @@ enum class VtkCodec {
     Zlib,  ///< vtkZLibDataCompressor -- the default, and the only one always available
     LZ4,   ///< vtkLZ4DataCompressor -- a real VTK compressor
     ZSTD,  ///< vtkZSTDDataCompressor -- a meshio++ extension; VTK has no ZSTD compressor
-    LZMA,  ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+    LZMA,  ///< vtkLZMADataCompressor -- a real VTK compressor; needs MESHIOPLUSPLUS_WITH_LZMA
     LZF    ///< PCD write-option selector only; not a VTK block compressor
 };
 
@@ -42036,8 +42036,10 @@ inline void vtk_preflight(const std::string& rPath, const char* pType, const cha
     if (vtk_preflight_attribute(start_tag, "type") != pType)
         return;
     const std::string compressor = vtk_preflight_attribute(start_tag, "compressor");
-    if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
-        throw ReadError(pLzmaMessage);
+    if (compressor == vtk_codec_compressor(VtkCodec::LZMA)) {
+        if (!vtk_codec_available(VtkCodec::LZMA))
+            throw ReadError(pLzmaMessage);
+    }
     if (compressor == vtk_codec_compressor(VtkCodec::LZ4))
         vtk_codec_require_read(VtkCodec::LZ4);
     else if (compressor == vtk_codec_compressor(VtkCodec::ZSTD))
@@ -72895,6 +72897,9 @@ MeshMetadata vtk_xml_pieces_metadata(const std::string& rPath, const char* pType
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
 #include <lz4.h>
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+#include <lzma.h>
+#endif
 
 // Project includes
 
@@ -73230,6 +73235,41 @@ std::vector<unsigned char> lz4_decompress(const unsigned char* pSrc, std::size_t
 }
 #endif  // MESHIOPLUSPLUS_HAS_LZ4
 
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+/**
+ * @brief Compresses one block as an .xz stream (preset 6, CRC64), which is what
+ * `vtkLZMADataCompressor` emits and Python's `lzma.compress` reads.
+ * @throws WriteError if liblzma reports an error.
+ */
+std::vector<unsigned char> lzma_compress_block(const unsigned char* pSrc, std::size_t n) {
+    std::vector<unsigned char> out(lzma_stream_buffer_bound(n));
+    std::size_t out_pos = 0;
+    const lzma_ret rc = lzma_easy_buffer_encode(6, LZMA_CHECK_CRC64, nullptr, pSrc, n, out.data(),
+                                                &out_pos, out.size());
+    if (rc != LZMA_OK)
+        throw WriteError("lzma compression failed (liblzma code " + std::to_string(rc) + ")");
+    out.resize(out_pos);
+    return out;
+}
+
+/**
+ * @brief Decompresses one .xz block into exactly the size its VTU header gives.
+ * @throws ReadError if the stream is corrupt, or does not fill @p expected.
+ */
+std::vector<unsigned char> lzma_decompress(const unsigned char* pSrc, std::size_t n,
+                                           std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    std::uint64_t memlimit = UINT64_MAX;
+    std::size_t in_pos = 0, out_pos = 0;
+    const lzma_ret rc = lzma_stream_buffer_decode(&memlimit, 0, nullptr, pSrc, &in_pos, n,
+                                                  out.data(), &out_pos, out.size());
+    if (rc != LZMA_OK)
+        throw ReadError("lzma decompression failed (liblzma code " + std::to_string(rc) + ")");
+    out.resize(out_pos);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_LZMA
+
 bool vtk_codec_available(VtkCodec codec) {
     switch (codec) {
         case VtkCodec::None:
@@ -73252,8 +73292,14 @@ bool vtk_codec_available(VtkCodec codec) {
 #else
             return false;
 #endif
+        case VtkCodec::LZMA:
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+            return true;
+#else
+            return false;
+#endif
         default:
-            return false;  // LZMA is recognized but never implemented here
+            return false;
     }
 }
 
@@ -73265,6 +73311,8 @@ std::string vtk_codec_build_option(VtkCodec codec) {
             return "MESHIOPLUSPLUS_WITH_LZ4=ON";
         case VtkCodec::ZSTD:
             return "MESHIOPLUSPLUS_WITH_ZSTD=ON";
+        case VtkCodec::LZMA:
+            return "MESHIOPLUSPLUS_WITH_LZMA=ON";
         default:
             return "";
     }
@@ -73272,8 +73320,6 @@ std::string vtk_codec_build_option(VtkCodec codec) {
 
 std::string vtk_codec_missing_message(VtkCodec codec, bool for_write) {
     const std::string what = for_write ? "compression" : "decompression";
-    if (codec == VtkCodec::LZMA)
-        return "VTK XML lzma " + what + " is not implemented by the C++ core";
     return "VTK XML " + std::string(vtk_codec_name(codec)) + " " + what +
            " requires a build with -D" + vtk_codec_build_option(codec);
 }
@@ -73303,6 +73349,10 @@ std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsign
         case VtkCodec::LZ4:
             return lz4_compress_block(pSrc, n);
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+        case VtkCodec::LZMA:
+            return lzma_compress_block(pSrc, n);
+#endif
         default:
             break;
     }
@@ -73330,6 +73380,10 @@ std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsi
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
         case VtkCodec::LZ4:
             return lz4_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+        case VtkCodec::LZMA:
+            return lzma_decompress(pSrc, n, expected);
 #endif
         default:
             break;
@@ -73760,6 +73814,13 @@ std::size_t vtub_decompress_into(VtkCodec codec, const unsigned char* pSrc, std:
             if (written < 0)
                 throw ReadError("lz4 decompression failed");
             return static_cast<std::size_t>(written);
+        }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+        case VtkCodec::LZMA: {
+            const std::vector<unsigned char> dec = lzma_decompress(pSrc, n, Expected);
+            std::copy(dec.begin(), dec.end(), pDst);
+            return dec.size();
         }
 #endif
         default:
@@ -153238,14 +153299,12 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
     const std::string compressor = root.attribute("compressor").as_string("");
     if (!compressor.empty()) {
         bool found = false;
-        for (const auto codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD})
+        for (const auto codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD, VtkCodec::LZMA})
             if (compressor == vtk_codec_compressor(codec)) {
                 ctx.mCodec = codec;
                 found = true;
             }
         if (!found) {
-            if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
-                throw ReadError("lzma-compressed " + format + " not supported by the C++ reader");
             throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
         }
     }

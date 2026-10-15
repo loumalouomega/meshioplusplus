@@ -84,15 +84,14 @@ TEST(Codecs, MissingCodecErrorNamesTheBuildOption) {
     EXPECT_NE(zstd_msg.find("MESHIOPLUSPLUS_WITH_ZSTD=ON"), std::string::npos) << zstd_msg;
     const std::string lz4_msg = detail::vtk_codec_missing_message(VtkCodec::LZ4, true);
     EXPECT_NE(lz4_msg.find("MESHIOPLUSPLUS_WITH_LZ4=ON"), std::string::npos) << lz4_msg;
-    // lzma is recognized but never implemented, so it must not advertise a flag.
     const std::string lzma_msg = detail::vtk_codec_missing_message(VtkCodec::LZMA, false);
-    EXPECT_NE(lzma_msg.find("not implemented"), std::string::npos) << lzma_msg;
+    EXPECT_NE(lzma_msg.find("MESHIOPLUSPLUS_WITH_LZMA=ON"), std::string::npos) << lzma_msg;
 }
 
 TEST(Codecs, UnavailableCodecThrowsRatherThanFailingToLink) {
     // A codec compiled out must surface as a catchable error -- that is what
     // routes callers to the Python fallback instead of breaking the build.
-    for (VtkCodec codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD}) {
+    for (VtkCodec codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD, VtkCodec::LZMA}) {
         if (detail::vtk_codec_available(codec))
             continue;
         EXPECT_THROW(detail::vtk_codec_require_read(codec), ReadError);
@@ -147,6 +146,14 @@ TEST(Codecs, ZstdRoundTrip) {
 #endif
 }
 
+TEST(Codecs, LzmaRoundTrip) {
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+    codec_expect_roundtrip(VtkCodec::LZMA, "vtkLZMADataCompressor");
+#else
+    GTEST_SKIP() << "build has no lzma";
+#endif
+}
+
 TEST(Codecs, Lz4RoundTrip) {
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
     codec_expect_roundtrip(VtkCodec::LZ4, "vtkLZ4DataCompressor");
@@ -191,7 +198,7 @@ TEST(Codecs, EveryCodecDecodesToTheSameBytes) {
         detail::vtu_decode_uncompressed(raw.c_str(), raw.size(), 4);
     ASSERT_EQ(expected.size(), payload.size());
 
-    for (VtkCodec codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD}) {
+    for (VtkCodec codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD, VtkCodec::LZMA}) {
         if (!detail::vtk_codec_available(codec))
             continue;
         const std::string encoded = detail::vtu_encode_binary(bytes, payload.size(), codec);

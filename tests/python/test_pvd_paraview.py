@@ -24,8 +24,7 @@ PVPYTHON = shutil.which("pvpython")
 needs_paraview = pytest.mark.skipif(PVPYTHON is None, reason="pvpython not found")
 
 # Runs inside ParaView. Reads each path and prints one JSON line of what it saw.
-_PROBE = textwrap.dedent(
-    """
+_PROBE = textwrap.dedent("""
     import json, sys
     from paraview.simple import OpenDataFile
     import paraview.servermanager as sm
@@ -55,8 +54,7 @@ _PROBE = textwrap.dedent(
             })
         out[path.rsplit("/", 1)[-1]] = {"times": times, "steps": steps}
     print("JSON:" + json.dumps(out))
-    """
-)
+    """)
 
 
 def _paraview(tmp_path, *paths):

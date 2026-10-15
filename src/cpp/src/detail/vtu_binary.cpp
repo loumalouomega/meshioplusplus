@@ -33,6 +33,9 @@
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
 #include <lz4.h>
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+#include <lzma.h>
+#endif
 
 // Project includes
 #include "meshioplusplus/detail/vtu_binary.hpp"
@@ -372,6 +375,41 @@ std::vector<unsigned char> lz4_decompress(const unsigned char* pSrc, std::size_t
 }
 #endif  // MESHIOPLUSPLUS_HAS_LZ4
 
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+/**
+ * @brief Compresses one block as an .xz stream (preset 6, CRC64), which is what
+ * `vtkLZMADataCompressor` emits and Python's `lzma.compress` reads.
+ * @throws WriteError if liblzma reports an error.
+ */
+std::vector<unsigned char> lzma_compress_block(const unsigned char* pSrc, std::size_t n) {
+    std::vector<unsigned char> out(lzma_stream_buffer_bound(n));
+    std::size_t out_pos = 0;
+    const lzma_ret rc = lzma_easy_buffer_encode(6, LZMA_CHECK_CRC64, nullptr, pSrc, n, out.data(),
+                                                &out_pos, out.size());
+    if (rc != LZMA_OK)
+        throw WriteError("lzma compression failed (liblzma code " + std::to_string(rc) + ")");
+    out.resize(out_pos);
+    return out;
+}
+
+/**
+ * @brief Decompresses one .xz block into exactly the size its VTU header gives.
+ * @throws ReadError if the stream is corrupt, or does not fill @p expected.
+ */
+std::vector<unsigned char> lzma_decompress(const unsigned char* pSrc, std::size_t n,
+                                           std::size_t expected) {
+    std::vector<unsigned char> out(expected);
+    std::uint64_t memlimit = UINT64_MAX;
+    std::size_t in_pos = 0, out_pos = 0;
+    const lzma_ret rc = lzma_stream_buffer_decode(&memlimit, 0, nullptr, pSrc, &in_pos, n,
+                                                  out.data(), &out_pos, out.size());
+    if (rc != LZMA_OK)
+        throw ReadError("lzma decompression failed (liblzma code " + std::to_string(rc) + ")");
+    out.resize(out_pos);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_LZMA
+
 bool vtk_codec_available(VtkCodec codec) {
     switch (codec) {
         case VtkCodec::None:
@@ -394,8 +432,14 @@ bool vtk_codec_available(VtkCodec codec) {
 #else
             return false;
 #endif
+        case VtkCodec::LZMA:
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+            return true;
+#else
+            return false;
+#endif
         default:
-            return false;  // LZMA is recognized but never implemented here
+            return false;
     }
 }
 
@@ -407,6 +451,8 @@ std::string vtk_codec_build_option(VtkCodec codec) {
             return "MESHIOPLUSPLUS_WITH_LZ4=ON";
         case VtkCodec::ZSTD:
             return "MESHIOPLUSPLUS_WITH_ZSTD=ON";
+        case VtkCodec::LZMA:
+            return "MESHIOPLUSPLUS_WITH_LZMA=ON";
         default:
             return "";
     }
@@ -414,8 +460,6 @@ std::string vtk_codec_build_option(VtkCodec codec) {
 
 std::string vtk_codec_missing_message(VtkCodec codec, bool for_write) {
     const std::string what = for_write ? "compression" : "decompression";
-    if (codec == VtkCodec::LZMA)
-        return "VTK XML lzma " + what + " is not implemented by the C++ core";
     return "VTK XML " + std::string(vtk_codec_name(codec)) + " " + what +
            " requires a build with -D" + vtk_codec_build_option(codec);
 }
@@ -445,6 +489,10 @@ std::vector<unsigned char> vtk_codec_compress_block(VtkCodec codec, const unsign
         case VtkCodec::LZ4:
             return lz4_compress_block(pSrc, n);
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+        case VtkCodec::LZMA:
+            return lzma_compress_block(pSrc, n);
+#endif
         default:
             break;
     }
@@ -472,6 +520,10 @@ std::vector<unsigned char> vtk_codec_decompress_block(VtkCodec codec, const unsi
 #ifdef MESHIOPLUSPLUS_HAS_LZ4
         case VtkCodec::LZ4:
             return lz4_decompress(pSrc, n, expected);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+        case VtkCodec::LZMA:
+            return lzma_decompress(pSrc, n, expected);
 #endif
         default:
             break;
@@ -902,6 +954,13 @@ std::size_t vtub_decompress_into(VtkCodec codec, const unsigned char* pSrc, std:
             if (written < 0)
                 throw ReadError("lz4 decompression failed");
             return static_cast<std::size_t>(written);
+        }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+        case VtkCodec::LZMA: {
+            const std::vector<unsigned char> dec = lzma_decompress(pSrc, n, Expected);
+            std::copy(dec.begin(), dec.end(), pDst);
+            return dec.size();
         }
 #endif
         default:

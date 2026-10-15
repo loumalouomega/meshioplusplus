@@ -6,7 +6,13 @@ from ._pvtu import read as _py_read
 from ._pvtu import write as _py_write
 from ._pvtu import write_pieces as _py_write_pieces
 
-_CPP_CODECS = {None: "none", "zlib": "zlib", "lz4": "lz4", "zstd": "zstd"}
+_CPP_CODECS = {
+    None: "none",
+    "zlib": "zlib",
+    "lz4": "lz4",
+    "zstd": "zstd",
+    "lzma": "lzma",
+}
 
 
 def _cpp_codec_ok(compression, header_type):
@@ -15,6 +21,8 @@ def _cpp_codec_ok(compression, header_type):
     if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
         return False
     if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
+        return False
+    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
         return False
     return True
 

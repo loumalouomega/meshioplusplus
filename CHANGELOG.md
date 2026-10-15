@@ -14,6 +14,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **Nastran**: the C++ reader sets `points_id` / `cells_id` like the Python reader (roadmap 3.4.10).
 - **Gmsh**: the Python writer derives `$PhysicalNames` and per-cell physical tags from `Cell` regions exactly as the C++ writer does (roadmap 3.4.4, 3.4.12).
 - **XDMF**: the C++ reader and writer cover the high-order `hexahedron64`..`hexahedron1331` types, per-type and in `Mixed` topologies (roadmap 3.4.9).
+- **lzma**: the C++ core reads and writes `vtkLZMADataCompressor` blocks in VTU/VTP/VTI/VTR/VTS/VTM and the parallel and `.pvd` writers behind the new `MESHIOPLUSPLUS_WITH_LZMA` option (liblzma; Conan `with_lzma`, vcpkg feature `lzma`), introspectable as `_core.__has_lzma__`. The Python structured readers now accept lzma too, so both engines take the same files (roadmap 3.4.7).
 
 ## v17.2.0 (2026-10-15)
 

@@ -1306,9 +1306,7 @@ Begin SubModelPart Fluid
     End SubModelPartConditions
 End SubModelPart
 
-""".split(
-    "\n"
-)
+""".split("\n")
 
 
 # Path to the new test file for comprehensive geometry reading

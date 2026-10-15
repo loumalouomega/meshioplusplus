@@ -56,6 +56,9 @@ std::string rp_message(F&& read) {
 }  // namespace
 
 TEST(ReadPreflight, VtkXmlRefusesLzmaFromTheStartTag) {
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+    GTEST_SKIP() << "this build reads lzma, so there is nothing to refuse";
+#endif
     // The start tag names lzma; the rest is not even well-formed XML, which a
     // full parse would report first.
     const std::string body =

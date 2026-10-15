@@ -793,7 +793,7 @@ meshioplusplus::detail::VtkCodec core_codec_from_name(const std::string& rName) 
     if (rName == "lzma")
         return VtkCodec::LZMA;
     throw meshioplusplus::WriteError("meshio++: unknown codec '" + rName +
-                                     "' (expected zlib, lz4, zstd or none)");
+                                     "' (expected zlib, lz4, zstd, lzma or none)");
 }
 
 /** @brief `MeshMetadata` -> the dict shape the Python layer exposes. */
@@ -1416,6 +1416,11 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_lz4__") = true;
 #else
     m.attr("__has_lz4__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+    m.attr("__has_lzma__") = true;
+#else
+    m.attr("__has_lzma__") = false;
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
     m.attr("__has_kahip__") = true;

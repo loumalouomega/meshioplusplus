@@ -347,14 +347,12 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
     const std::string compressor = root.attribute("compressor").as_string("");
     if (!compressor.empty()) {
         bool found = false;
-        for (const auto codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD})
+        for (const auto codec : {VtkCodec::Zlib, VtkCodec::LZ4, VtkCodec::ZSTD, VtkCodec::LZMA})
             if (compressor == vtk_codec_compressor(codec)) {
                 ctx.mCodec = codec;
                 found = true;
             }
         if (!found) {
-            if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
-                throw ReadError("lzma-compressed " + format + " not supported by the C++ reader");
             throw ReadError("Unknown " + format + " compressor '" + compressor + "'");
         }
     }
