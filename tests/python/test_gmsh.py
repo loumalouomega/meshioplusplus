@@ -715,18 +715,17 @@ def test_gmsh41_one_region_over_two_blocks_gets_two_entities(tmp_path):
     assert plate.dim == 2
 
 
-def test_gmsh41_python_twin_still_needs_dim_tags_for_a_mixed_mesh(tmp_path):
-    """The engine difference, pinned: only the C++ writer allocates entities for
-    a mixed mesh. The pure-Python 4.1 writer has no synthesis and refuses it
-    unless ``gmsh:dim_tags`` says which entity each node belongs to."""
+def test_gmsh41_python_twin_allocates_entities_for_a_mixed_mesh(tmp_path):
+    """The pure-Python 4.1 writer gives every block of a mixed mesh its own
+    entity, byte for byte as the C++ writer does (roadmap 3.4.12)."""
     from meshioplusplus.gmsh import _gmsh41
 
-    with pytest.raises(meshioplusplus.WriteError, match="gmsh:dim_tags"):
-        _gmsh41.write(
-            tmp_path / "py.msh",
-            copy.deepcopy(helpers.tri_quad_mesh),
-            binary=False,
-        )
+    mesh = copy.deepcopy(helpers.tri_quad_mesh)
+    py = tmp_path / "py.msh"
+    core = tmp_path / "core.msh"
+    _gmsh41.write(py, mesh, binary=False)
+    meshioplusplus.write(str(core), mesh, file_format="gmsh", binary=False)
+    assert py.read_bytes() == core.read_bytes()
 
 
 def test_gmsh41_mixed_mesh_loads_in_gmsh(tmp_path):
@@ -1175,3 +1174,33 @@ def test_indented_file_reads(engine):
     assert len(mesh.points) == 6
     assert [c.type for c in mesh.cells] == ["quad"]
     np.testing.assert_array_equal(mesh.cells[0].data, [[0, 1, 2, 3], [1, 4, 5, 2]])
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_gmsh41_python_writes_a_mixed_mesh_like_the_core(binary, tmp_path):
+    from meshioplusplus.gmsh import _gmsh41
+
+    points = np.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [2, 2, 2]], dtype=float
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [
+            ("tetra", np.array([[0, 1, 2, 4]])),
+            ("triangle", np.array([[0, 1, 2]])),
+            ("quad", np.array([[0, 1, 2, 3]])),
+            ("line", np.array([[0, 1]])),
+        ],
+    )
+    py = tmp_path / "py.msh"
+    core = tmp_path / "core.msh"
+    _gmsh41.write(str(py), mesh, binary=binary)
+    meshioplusplus.write(str(core), mesh, file_format="gmsh", binary=binary)
+    assert py.read_bytes() == core.read_bytes()
+    back = meshioplusplus.read(str(py))
+    assert [(b.type, len(b.data)) for b in back.cells] == [
+        ("tetra", 1),
+        ("triangle", 1),
+        ("quad", 1),
+        ("line", 1),
+    ]
