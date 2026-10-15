@@ -26,7 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
-#include <limits>
+#include <ios>
 #include <map>
 #include <set>
 #include <string>
@@ -41,16 +41,16 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/read_options.hpp"
 #include "../detail/json_value.hpp"
 
 namespace meshioplusplus {
 namespace {
 
 using detail::JsonValue;
-using Mat4 = std::array<double, 16>;  // column-major, as glTF writes `matrix`
+using GltfrMat4 = std::array<double, 16>;  // column-major, as glTF writes `matrix`
 
 constexpr std::uint64_t kGltfrMaxCount = 1ull << 27;
 constexpr std::uint64_t kGltfrMaxZeros = 1ull << 26;
@@ -466,14 +466,14 @@ GltfrAccessor gltfr_read_accessor(const GltfrFile& rFile, const GltfrBuffers& rB
 
 // ---- transforms ---------------------------------------------------------- //
 
-Mat4 gltfr_identity() {
-    Mat4 m{};
+GltfrMat4 gltfr_identity() {
+    GltfrMat4 m{};
     m[0] = m[5] = m[10] = m[15] = 1.0;
     return m;
 }
 
-Mat4 gltfr_multiply(const Mat4& rA, const Mat4& rB) {
-    Mat4 m{};
+GltfrMat4 gltfr_multiply(const GltfrMat4& rA, const GltfrMat4& rB) {
+    GltfrMat4 m{};
     for (int col = 0; col < 4; ++col)
         for (int row = 0; row < 4; ++row) {
             double s = 0.0;
@@ -485,10 +485,10 @@ Mat4 gltfr_multiply(const Mat4& rA, const Mat4& rB) {
     return m;
 }
 
-Mat4 gltfr_node_matrix(const JsonValue& rNode) {
+GltfrMat4 gltfr_node_matrix(const JsonValue& rNode) {
     if (const JsonValue* m = gltfr_get(rNode, "matrix")) {
         const std::vector<double> v = gltfr_numbers(*m, 16, "node.matrix");
-        Mat4 out;
+        GltfrMat4 out;
         std::copy(v.begin(), v.end(), out.begin());
         return out;
     }
@@ -510,7 +510,7 @@ Mat4 gltfr_node_matrix(const JsonValue& rNode) {
     if (!(norm > 0.0))
         gltfr_fail("a node rotation is the zero quaternion");
     const double x = q[0] / norm, y = q[1] / norm, z = q[2] / norm, w = q[3] / norm;
-    Mat4 m = gltfr_identity();
+    GltfrMat4 m = gltfr_identity();
     m[0] = (1 - 2 * (y * y + z * z)) * s[0];
     m[1] = (2 * (x * y + z * w)) * s[0];
     m[2] = (2 * (x * z - y * w)) * s[0];
@@ -577,7 +577,7 @@ bool gltfr_writer_root(const JsonValue& rNode, std::array<double, 3>& rOffset) {
 
 // ---- the mesh ------------------------------------------------------------ //
 
-enum GltfrKind { kTri = 0, kLine = 1, kVertex = 2 };
+enum GltfrKind { kGltfrTri = 0, kGltfrLine = 1, kGltfrVertex = 2 };
 
 struct GltfrField {
     std::size_t mNumComp = 0;
@@ -606,7 +606,7 @@ std::string gltfr_field_name(const std::string& rAttr, const GltfrAccessor& rAcc
 }
 
 void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const JsonValue& rPrim,
-                     const Mat4& rWorld, const std::array<double, 3>& rOffset,
+                     const GltfrMat4& rWorld, const std::array<double, 3>& rOffset,
                      const std::string& rRegion, GltfrState& rState) {
     if (const JsonValue* ext = gltfr_get(rPrim, "extensions"))
         if (ext->Find("KHR_draco_mesh_compression") != nullptr)
@@ -719,26 +719,26 @@ void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const
     switch (mode) {
         case 0:
             for (std::size_t i = 0; i < n; ++i)
-                add(kVertex, {index[i]});
+                add(kGltfrVertex, {index[i]});
             break;
         case 1:
             if (n % 2 != 0)
                 gltfr_fail("a LINES primitive has an odd number of indices");
             for (std::size_t i = 0; i + 1 < n; i += 2)
-                add(kLine, {index[i], index[i + 1]});
+                add(kGltfrLine, {index[i], index[i + 1]});
             break;
         case 2:
         case 3:
             for (std::size_t i = 0; i + 1 < n; ++i)
-                add(kLine, {index[i], index[i + 1]});
+                add(kGltfrLine, {index[i], index[i + 1]});
             if (mode == 2 && n > 2)
-                add(kLine, {index[n - 1], index[0]});
+                add(kGltfrLine, {index[n - 1], index[0]});
             break;
         case 4:
             if (n % 3 != 0)
                 gltfr_fail("a TRIANGLES primitive has a count that is not a multiple of 3");
             for (std::size_t i = 0; i + 2 < n; i += 3)
-                add(kTri, {index[i], index[i + 1], index[i + 2]});
+                add(kGltfrTri, {index[i], index[i + 1], index[i + 2]});
             break;
         case 5:
             for (std::size_t i = 0; i + 2 < n; ++i) {
@@ -746,9 +746,9 @@ void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const
                 if (a == b || b == c || a == c)
                     continue;  // degenerate joins
                 if (i % 2 == 0)
-                    add(kTri, {a, b, c});
+                    add(kGltfrTri, {a, b, c});
                 else
-                    add(kTri, {b, a, c});
+                    add(kGltfrTri, {b, a, c});
             }
             break;
         default:
@@ -756,7 +756,7 @@ void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const
                 const std::uint64_t a = index[0], b = index[i], c = index[i + 1];
                 if (a == b || b == c || a == c)
                     continue;
-                add(kTri, {a, b, c});
+                add(kGltfrTri, {a, b, c});
             }
             break;
     }
@@ -771,7 +771,7 @@ void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const
 }
 
 void gltfr_walk(const GltfrFile& rFile, const GltfrBuffers& rBuffers, std::size_t NodeIndex,
-                const Mat4& rParent, const std::array<double, 3>& rOffset,
+                const GltfrMat4& rParent, const std::array<double, 3>& rOffset,
                 std::vector<char>& rVisited, GltfrState& rState) {
     const auto& nodes = gltfr_list(rFile.mRoot, "nodes");
     if (NodeIndex >= nodes.size())
@@ -780,7 +780,7 @@ void gltfr_walk(const GltfrFile& rFile, const GltfrBuffers& rBuffers, std::size_
         gltfr_fail("the node graph is not a forest (a node is reached twice)");
     rVisited[NodeIndex] = 1;
     const JsonValue& node = gltfr_object(&nodes[NodeIndex], "nodes[" + std::to_string(NodeIndex) + "]");
-    const Mat4 world = gltfr_multiply(rParent, gltfr_node_matrix(node));
+    const GltfrMat4 world = gltfr_multiply(rParent, gltfr_node_matrix(node));
     if (const JsonValue* mesh = gltfr_get(node, "mesh")) {
         const auto& meshes = gltfr_list(rFile.mRoot, "meshes");
         const std::uint64_t mi = gltfr_uint(*mesh, "node.mesh");
@@ -866,7 +866,7 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
         const JsonValue& rootNode = gltfr_object(&nodes[root], "node");
         if (roots.size() == 1 && gltfr_writer_root(rootNode, offset)) {
             visited[root] = 1;
-            Mat4 shift = gltfr_identity();
+            GltfrMat4 shift = gltfr_identity();
             for (const JsonValue& c : gltfr_list(rootNode, "children"))
                 gltfr_walk(file, buffers, static_cast<std::size_t>(gltfr_uint(c, "node.children")),
                            shift, offset, visited, state);
