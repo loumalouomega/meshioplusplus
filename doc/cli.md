@@ -113,7 +113,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
-| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
+| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |

@@ -314,6 +314,16 @@ module meshioplusplus
         integer(c_int64_t) :: num_blend = 0
     end type
 
+    !> Interop mirror of C `mio_fit_cad_report_ex` (v17.2.0).
+    type, bind(c) :: mio_fit_cad_report_ex_t
+        integer(c_int64_t) :: num_vertex_blend = 0
+        integer(c_int64_t) :: num_chamfer = 0
+        integer(c_int64_t) :: num_conic_blend = 0
+        integer(c_int64_t) :: num_tapered_thread = 0
+        integer(c_int64_t) :: num_variable_pitch_thread = 0
+        integer(c_int64_t) :: reserved(11) = 0
+    end type
+
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
     !> `trim_samples` to 16: an all-zero struct is not the default).
     type, bind(c) :: mio_iga_opts_t
@@ -2205,6 +2215,16 @@ module meshioplusplus
             type(c_ptr), value :: h, path
             type(mio_fit_cad_opts_t), intent(in) :: opts
             type(mio_fit_cad_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_fit_cad_ex(h, path, opts, report, report_ex) &
+                bind(c, name="mio_fit_cad_ex") result(r)
+            import :: c_ptr, mio_fit_cad_opts_t, mio_fit_cad_report_t, mio_fit_cad_report_ex_t
+            type(c_ptr), value :: h, path
+            type(mio_fit_cad_opts_t), intent(in) :: opts
+            type(mio_fit_cad_report_t), intent(out) :: report
+            type(mio_fit_cad_report_ex_t), intent(out) :: report_ex
             type(c_ptr) :: r
         end function
 
@@ -5835,14 +5855,21 @@ contains
     !> direction; with `freeform_split` (default on), a freeform patch that
     !> folds over both flattenings is split into pieces. With `fillets`, a
     !> patch between two fitted faces, one of them freeform, then becomes a
-    !> rolling-ball blend (`num_blend`). See doc/fit_cad.md.
+    !> rolling-ball blend (`num_blend`). Since v17.2.0 a patch no rolling ball
+    !> or thread explains between two analytic faces becomes a chamfer
+    !> (`num_chamfer`) or a conic blend (`num_conic_blend`), a thread flank of
+    !> varying pitch or cut on a taper is recognised (`num_variable_pitch_thread`,
+    !> `num_tapered_thread`), and a corner where three or more blends meet
+    !> becomes a vertex blend (`num_vertex_blend`). See doc/fit_cad.md.
     function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
                           mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
                           max_deviation, num_faces, num_faceted_faces, num_demoted, &
                           stat, errmsg, freeform, freeform_degree, freeform_max_control, &
                           num_bspline, freeform_split, fillets, threads, &
                           num_split_patches, num_fillet, num_helical, &
-                          num_variable_fillet, num_blend, num_rounded_thread) result(out)
+                          num_variable_fillet, num_blend, num_rounded_thread, &
+                          num_vertex_blend, num_chamfer, num_conic_blend, &
+                          num_tapered_thread, num_variable_pitch_thread) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -5861,10 +5888,13 @@ contains
         logical, intent(in), optional :: freeform_split, fillets, threads
         integer(int64), intent(out), optional :: num_split_patches, num_fillet, num_helical
         integer(int64), intent(out), optional :: num_variable_fillet, num_blend, num_rounded_thread
+        integer(int64), intent(out), optional :: num_vertex_blend, num_chamfer, num_conic_blend
+        integer(int64), intent(out), optional :: num_tapered_thread, num_variable_pitch_thread
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
         type(mio_fit_cad_report_t) :: report
+        type(mio_fit_cad_report_ex_t) :: report_ex
         character(kind=c_char, len=STRBUF_LEN), target :: path_buf
 
         call c_mio_fit_cad_opts_init(opts)
@@ -5887,7 +5917,7 @@ contains
             opts%freeform_split = merge(1_c_int32_t, 0_c_int32_t, freeform_split)
         if (present(fillets)) opts%fillets = merge(1_c_int32_t, 0_c_int32_t, fillets)
         if (present(threads)) opts%threads = merge(1_c_int32_t, 0_c_int32_t, threads)
-        res = c_mio_fit_cad(self%handle, path_ptr, opts, report)
+        res = c_mio_fit_cad_ex(self%handle, path_ptr, opts, report, report_ex)
         if (.not. c_associated(res)) then
             call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
             return
@@ -5907,6 +5937,13 @@ contains
             num_variable_fillet = int(report%num_variable_fillet, int64)
         if (present(num_blend)) num_blend = int(report%num_blend, int64)
         if (present(num_rounded_thread)) num_rounded_thread = int(report%num_rounded_thread, int64)
+        if (present(num_vertex_blend)) num_vertex_blend = int(report_ex%num_vertex_blend, int64)
+        if (present(num_chamfer)) num_chamfer = int(report_ex%num_chamfer, int64)
+        if (present(num_conic_blend)) num_conic_blend = int(report_ex%num_conic_blend, int64)
+        if (present(num_tapered_thread)) &
+            num_tapered_thread = int(report_ex%num_tapered_thread, int64)
+        if (present(num_variable_pitch_thread)) &
+            num_variable_pitch_thread = int(report_ex%num_variable_pitch_thread, int64)
         call clear_status(stat, errmsg)
     end function
 

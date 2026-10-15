@@ -540,6 +540,11 @@ def test_to_cad_json_agrees(tmp_path, flags):
         "num_variable_fillet",
         "num_blend",
         "num_rounded_thread",
+        "num_vertex_blend",
+        "num_chamfer",
+        "num_conic_blend",
+        "num_tapered_thread",
+        "num_variable_pitch_thread",
     ):
         assert doc_py[key] == 0
     if NATIVE is None:

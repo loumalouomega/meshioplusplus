@@ -2102,6 +2102,7 @@ contains
         type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted, solid
         integer(int64) :: nfeat, nbound, nfixed, npatch, nplane, nfaces
         integer(int64) :: nsplit, nfillet, nhelical, nvarfillet, nblend, nrounded
+        integer(int64) :: nvertex, nchamfer, nconic, ntapered, nvarpitch
         logical :: cad_valid
         character(:), allocatable :: msg
         integer(int64), allocatable :: s_ids(:), m_ids(:)
@@ -2161,13 +2162,19 @@ contains
                                num_faces=nfaces, num_split_patches=nsplit, &
                                num_fillet=nfillet, num_helical=nhelical, &
                                num_variable_fillet=nvarfillet, num_blend=nblend, &
-                               num_rounded_thread=nrounded, stat=ierr)
+                               num_rounded_thread=nrounded, num_vertex_blend=nvertex, &
+                               num_chamfer=nchamfer, num_conic_blend=nconic, &
+                               num_tapered_thread=ntapered, &
+                               num_variable_pitch_thread=nvarpitch, stat=ierr)
             call check(ierr == 0, 'fit_cad without fillets and threads succeeded')
             call check(nfaces == 6_int64, 'still 6 plane faces')
             call check(nsplit == 0_int64 .and. nfillet == 0_int64 .and. nhelical == 0_int64, &
                        'a cube has no split, fillet or thread faces')
             call check(nvarfillet == 0_int64 .and. nblend == 0_int64 .and. nrounded == 0_int64, &
                        'a cube has no varying fillet, blend or rounded thread')
+            call check(nvertex == 0_int64 .and. nchamfer == 0_int64 .and. nconic == 0_int64 &
+                       .and. ntapered == 0_int64 .and. nvarpitch == 0_int64, &
+                       'a cube has no vertex blend, chamfer, conic blend or tapered thread')
             call solid%free()
         else
             call check(ierr /= 0, 'fit_cad fails without OpenCASCADE')

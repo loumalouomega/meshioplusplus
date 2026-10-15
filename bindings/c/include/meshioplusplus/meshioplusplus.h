@@ -254,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 17
-#define MIO_VERSION_MINOR 1
+#define MIO_VERSION_MINOR 2
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -4634,10 +4634,21 @@ typedef struct mio_fit_cad_report {
     int64_t num_helical;       /**< helical thread faces ("fit_cad:type" 8) */
     /** Of the fillet faces, those whose radius varies along them; this and
      *  num_blend took the reserved tail in v16.44.0, which leaves this struct
-     *  no room to grow: a further field needs a new report struct. */
+     *  no room to grow: later counts are in mio_fit_cad_report_ex. */
     int64_t num_variable_fillet;
     int64_t num_blend; /**< of the fillet faces, the blends beside a freeform face */
 } mio_fit_cad_report;
+
+/** What mio_fit_cad_ex built beyond mio_fit_cad_report (v17.2.0, roadmap
+ *  6.3): the counts mio_fit_cad_report has no room for. Zero what you pass. */
+typedef struct mio_fit_cad_report_ex {
+    int64_t num_vertex_blend; /**< vertex blends: corners where 3+ blends meet ("fit_cad:type" 9) */
+    int64_t num_chamfer;      /**< chamfers: straight cross-sections ("fit_cad:type" 10) */
+    int64_t num_conic_blend;  /**< of the fillet faces, the conic blends */
+    int64_t num_tapered_thread;        /**< of the helical faces, those cut on a taper */
+    int64_t num_variable_pitch_thread; /**< of the helical faces, those of varying pitch */
+    int64_t reserved[11];              /**< zero; room for additive growth */
+} mio_fit_cad_report_ex;
 
 /** Nonzero when this library was built with the OpenCASCADE backend
  *  (-DMESHIOPLUSPLUS_WITH_OCCT=ON) that mio_fit_cad needs. */
@@ -4647,8 +4658,10 @@ MIO_API int mio_has_occt(void);
  * Build a CAD solid from the fitted patches of a closed skin: each accepted
  * patch becomes a plane, sphere, cylinder, cone or torus face ("fit_cad:type"
  * 1 to 5, as mio_fit_type), a patch no primitive explains a rolling-ball
- * fillet (7), thread flank (8) or freeform B-spline (6) face where one fits,
- * the rest planar facets (0), sewn and checked by OpenCASCADE; a face that fails the check or
+ * fillet or conic blend (7), thread flank (8), chamfer (10) or freeform
+ * B-spline (6) face where one fits, a corner where three or more blends meet
+ * a vertex blend (9), the rest planar facets (0), sewn and checked by
+ * OpenCASCADE; a face that fails the check or
  * strays beyond the tolerance is demoted to facets. Without "segment:patch" or
  * the "fit:patch_*" table, segment and fit_primitives run first with their
  * defaults. See doc/fit_cad.md.
@@ -4666,6 +4679,17 @@ MIO_API int mio_has_occt(void);
  */
 MIO_API mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path,
                               const mio_fit_cad_opts* opts, mio_fit_cad_report* report);
+
+/**
+ * mio_fit_cad, also reporting what mio_fit_cad_report has no room for
+ * (v17.2.0): the vertex blends, chamfers, conic blends and tapered and
+ * variable-pitch threads. `report` and `report_ex` are both optional;
+ * mio_fit_cad(mesh, path, opts, report) is mio_fit_cad_ex(mesh, path, opts,
+ * report, NULL).
+ */
+MIO_API mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path,
+                                 const mio_fit_cad_opts* opts, mio_fit_cad_report* report,
+                                 mio_fit_cad_report_ex* report_ex);
 
 /* ---------------------------------------------------------------------
  * Isogeometric layer (v16.43.0): evaluate, refine and sample the NURBS model
