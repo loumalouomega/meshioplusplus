@@ -91,19 +91,137 @@ jobs:
         # sequential-build sanity block.
         run: node tests/wasm/smoke.mjs
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-lean-dist
+          path: src/wasm/dist/
+          if-no-files-found: error
+
+  # The full artifact (roadmap 6.2): the same core linked with OpenCASCADE,
+  # zstd, lz4 and bzip2, as meshioplusplus_wasm_full and its threaded flavour.
+  # Its libraries take long to build (OpenCASCADE most of an hour per
+  # threading flavour), so they are cached under their own key, apart from the
+  # lean prefix; a cold run needs the long timeout.
+  build-wasm-full:
+    name: Build + smoke-test the full artifact (Emscripten)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the Eigen submodule
+        uses: ./.github/actions/init-submodules
+        with:
+          paths: src/cpp/third_party/eigen
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "6.0.3"
+
+      - name: Cache the wasm HDF5/netCDF prefix
+        uses: actions/cache@v4
+        with:
+          path: build/wasm-deps/hdf5-*-netcdf-*
+          key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
+
+      - name: Cache the full artifact's libraries (OpenCASCADE, zstd, lz4)
+        uses: actions/cache@v4
+        with:
+          path: build/wasm-deps/full-*
+          key: wasm-full-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
+
+      - name: Build the wasm dependencies, lean and full
+        run: ./build/build-wasm-deps.sh --full
+
+      - name: Configure + build the full artifact (both flavours)
+        run: ./build/configure-wasm.sh --full-only --build
+
+      - name: Report artifact size
+        run: ls -l src/wasm/dist/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Smoke test (full, threaded and sequential)
+        # The same suite as the lean job's; the capability steps assert the
+        # larger set and the full-only steps (STEP, IGES, fitCad, the codecs)
+        # run.
+        run: |
+          MESHIOPLUSPLUS_WASM_VARIANT=full node tests/wasm/smoke.mjs
+          MESHIOPLUSPLUS_WASM_VARIANT=full-seq node tests/wasm/smoke.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-full-dist
+          path: src/wasm/dist/
+          if-no-files-found: error
+
+  # The npm package carries all four artifacts. A lean consumer's bundle must
+  # never contain the full one, which the loader imports by a computed
+  # specifier for that reason; the viewer, a Vite single-file bundle, is the
+  # check.
+  package:
+    name: Assemble the npm package
+    needs: [build-wasm, build-wasm-full]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-lean-dist
+          path: src/wasm/dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-full-dist
+          path: src/wasm/dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Every artifact the package lists is present
+        working-directory: src/wasm
+        run: |
+          node -e '
+            const fs = require("fs");
+            const files = require("./package.json").files.filter((f) => f.startsWith("dist/"));
+            const missing = files.filter((f) => !fs.existsSync(f));
+            if (missing.length) { console.error("missing:", missing); process.exit(1); }
+            console.log(files.length, "dist files present");
+          '
+          ls -l dist/
+
       - name: Package sanity check (npm pack --dry-run)
         working-directory: src/wasm
         run: npm pack --dry-run
 
+      - name: A lean bundle carries no full artifact (the viewer)
+        working-directory: src/viewer
+        run: |
+          npm ci
+          npm run build:web
+          # The loader names the full glue as a string; only the full glue
+          # itself references the full .wasm binary.
+          if grep -rlE "meshioplusplus_wasm_full(_mt)?\.wasm" dist-web; then
+            echo "::error::the viewer bundle pulled in the full artifact"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-package
-          path: src/wasm/
+          path: |
+            src/wasm/
+            !src/wasm/node_modules/
           if-no-files-found: error
 
   publish-npm:
     name: Publish to npm
-    needs: build-wasm
+    needs: package
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     environment:

@@ -12,6 +12,8 @@
 #   ./configure-wasm.sh --build
 #   ./configure-wasm.sh --without-zlib --build-type RelWithDebInfo --build
 #   ./configure-wasm.sh --without-hdf5 --without-netcdf --build   # small build
+#   ./configure-wasm.sh --full --build      # the lean pair and the full pair
+#   ./configure-wasm.sh --full-only --build # only meshioplusplus_wasm_full[_mt]
 #
 # Unlike configure.sh (the native Python-extension build), this script never
 # touches Python/pybind11 (-DMESHIOPLUSPLUS_BUILD_PYTHON=OFF) and always
@@ -33,6 +35,15 @@
 # CMAKE_PREFIX_PATH or HINTS is ignored). If the prefix is missing it is built
 # automatically, once; that takes several minutes, so pass --deps-prefix to
 # reuse one you already have, or --without-hdf5 for a fast, small build.
+#
+# --full adds a second pair of artifacts, meshioplusplus_wasm_full and
+# meshioplusplus_wasm_full_mt: the same core and JS API, linked with every
+# library the toolchain cross-compiles -- OpenCASCADE (STEP/IGES reading and
+# fitCad), zstd and lz4 (VTK XML block compression) and Emscripten's bzip2
+# port (libMesh .bz2). OpenCASCADE is LGPL-2.1 with its exception, so the full
+# pair is not plain MIT (doc/wasm.md#licence). Its libraries come from
+# build-wasm-deps.sh --full, one prefix per threading flavour, built
+# automatically when missing (OpenCASCADE takes the better part of an hour).
 
 set -eu
 
@@ -48,6 +59,9 @@ WITH_GIDPOST="ON"
 DEPS_PREFIX=""
 DO_BUILD="no"
 SEQ_ONLY="no"
+WITH_LEAN="yes"
+WITH_FULL="no"
+WITH_OCCT="ON"
 
 usage() {
     cat <<EOF
@@ -70,6 +84,12 @@ Usage: $0 [options]
   --seq-only                     build only the sequential variant (skip the
                                   threaded meshioplusplus_wasm_mt); default is
                                   to build both, since the npm package ships both
+  --full                         also build the full pair
+                                  (meshioplusplus_wasm_full[_mt]): OpenCASCADE,
+                                  zstd, lz4 and bzip2 linked in
+  --full-only                    build only the full pair
+  --without-occt                 leave OpenCASCADE out of the full pair (codecs
+                                  only; the artifact then stays MIT)
   --build                        run the build after configuring
   -h, --help                     this help
 EOF
@@ -90,6 +110,9 @@ while [ $# -gt 0 ]; do
         --without-gidpost) WITH_GIDPOST="OFF"; shift ;;
         --deps-prefix) DEPS_PREFIX="$2"; shift 2 ;;
         --seq-only) SEQ_ONLY="yes"; shift ;;
+        --full) WITH_FULL="yes"; shift ;;
+        --full-only) WITH_FULL="yes"; WITH_LEAN="no"; shift ;;
+        --without-occt) WITH_OCCT="OFF"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -159,8 +182,30 @@ fi
 # the threaded one where the page is cross-origin isolated and falls back to the
 # sequential one otherwise, so both must be present. --seq-only skips the
 # threaded one for a fast, small, header-free build.
-VARIANTS="seq mt"
-[ "$SEQ_ONLY" = "yes" ] && VARIANTS="seq"
+VARIANTS=""
+if [ "$WITH_LEAN" = "yes" ]; then
+    VARIANTS="seq"
+    [ "$SEQ_ONLY" = "yes" ] || VARIANTS="$VARIANTS mt"
+fi
+if [ "$WITH_FULL" = "yes" ]; then
+    VARIANTS="$VARIANTS full"
+    [ "$SEQ_ONLY" = "yes" ] || VARIANTS="$VARIANTS full-mt"
+fi
+
+# The full libraries' prefix for one threading flavour, built when missing.
+full_deps_prefix() {  # full_deps_prefix <seq|mt>
+    occt_arg=""
+    [ "$WITH_OCCT" = "ON" ] || occt_arg="--without-occt"
+    # shellcheck disable=SC2086
+    fprefix=$("$SCRIPT_DIR/build-wasm-deps.sh" $occt_arg --print-full-prefix "$1")
+    if [ ! -f "$fprefix/lib/libzstd.a" ] || [ ! -f "$fprefix/lib/liblz4.a" ] ||
+       { [ "$WITH_OCCT" = "ON" ] && [ ! -f "$fprefix/lib/libTKernel.a" ]; }; then
+        echo "== building the full artifact's libraries ($1; one-off, OpenCASCADE takes long) ==" >&2
+        # shellcheck disable=SC2086
+        "$SCRIPT_DIR/build-wasm-deps.sh" --full-only --threads "$1" $occt_arg >&2
+    fi
+    echo "$fprefix"
+}
 
 # configure_variant <seq|mt>: configure (and, with --build, build + copy) one
 # variant into its own tree. The two variants MUST be separate trees: -pthread
@@ -168,17 +213,39 @@ VARIANTS="seq mt"
 # shared core object library, so a single tree cannot hold both.
 configure_variant() {
     variant="$1"
-    if [ "$variant" = "mt" ]; then
-        build_dir="$SCRIPT_DIR/wasm-${BUILD_TYPE_LC}-mt"
-        backend_args="-DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP -DMESHIOPLUSPLUS_WASM_THREADS=ON"
-        out_base="meshioplusplus_wasm_mt"
-        zlib_cflags="-pthread"
-    else
-        build_dir="$SCRIPT_DIR/wasm-${BUILD_TYPE_LC}"
-        backend_args="-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ"
-        out_base="meshioplusplus_wasm"
-        zlib_cflags=""
-    fi
+    case "$variant" in
+        mt|full-mt)
+            suffix="-mt"
+            backend_args="-DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP -DMESHIOPLUSPLUS_WASM_THREADS=ON"
+            out_suffix="_mt"
+            zlib_cflags="-pthread"
+            flavour="mt" ;;
+        *)
+            suffix=""
+            backend_args="-DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ"
+            out_suffix=""
+            zlib_cflags=""
+            flavour="seq" ;;
+    esac
+    full_args=""
+    variant_root_arg="$FIND_ROOT_ARG"
+    case "$variant" in
+        full|full-mt)
+            build_dir="$SCRIPT_DIR/wasm-${BUILD_TYPE_LC}-full${suffix}"
+            out_base="meshioplusplus_wasm_full${out_suffix}"
+            fprefix=$(full_deps_prefix "$flavour")
+            full_args="-DMESHIOPLUSPLUS_WASM_FULL=ON -DMESHIOPLUSPLUS_WITH_OCCT=$WITH_OCCT"
+            full_args="$full_args -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON"
+            full_args="$full_args -DMESHIOPLUSPLUS_WITH_BZIP2=ON"
+            if [ -n "$DEPS_PREFIX" ]; then
+                variant_root_arg="-DCMAKE_FIND_ROOT_PATH=$DEPS_PREFIX;$fprefix"
+            else
+                variant_root_arg="-DCMAKE_FIND_ROOT_PATH=$fprefix"
+            fi ;;
+        *)
+            build_dir="$SCRIPT_DIR/wasm-${BUILD_TYPE_LC}${suffix}"
+            out_base="meshioplusplus_wasm${out_suffix}" ;;
+    esac
 
     echo "== meshio++ WASM configure ($variant) =="
     echo "  source:    $SOURCE_DIR"
@@ -190,6 +257,9 @@ configure_variant() {
     echo "  netcdf:    $WITH_NETCDF"
     echo "  cgnslib:   $WITH_CGNSLIB"
     echo "  gidpost:   $WITH_GIDPOST"
+    case "$variant" in
+        full*) echo "  full:      OCCT $WITH_OCCT, zstd, lz4, bzip2 ($fprefix)" ;;
+    esac
     [ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
     echo "  emcc:      $(command -v emcc)"
     echo
@@ -203,8 +273,9 @@ configure_variant() {
     emcmake cmake $GENERATOR \
         -S "$SOURCE_DIR" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-        $FIND_ROOT_ARG \
+        $variant_root_arg \
         $backend_args \
+        $full_args \
         -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
         -DMESHIOPLUSPLUS_BUILD_WASM=ON \
         -DMESHIOPLUSPLUS_MESH_BACKEND=NATIVE \
@@ -227,6 +298,10 @@ configure_variant() {
         # -pthread port variant, which is a distinct cache entry, so it is
         # warmed with EMCC_CFLAGS=-pthread.
         EMCC_CFLAGS="$zlib_cflags" embuilder build zlib
+        # The full pair links the bzip2 port too, with the same race.
+        case "$variant" in
+            full*) EMCC_CFLAGS="$zlib_cflags" embuilder build bzip2 ;;
+        esac
     fi
 
     echo

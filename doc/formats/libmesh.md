@@ -17,7 +17,7 @@ import meshioplusplus
 mesh = meshioplusplus.read("mesh.xdr")   # or meshioplusplus.libmesh.read(...)
 ```
 
-`read` takes no options. The encoding comes from the content, not the extension, and gzip or bzip2 compression is inflated whatever the file is called (libMesh itself compresses only ASCII files: its `.xdr.gz` and `.xdr.bz2` are plain XDR). Both engines (the C++ core and the pure-Python reference) read the same meshes; the core inflates gzip through zlib and, since v16.12.0, bzip2 through libbz2 when built with `-DMESHIOPLUSPLUS_WITH_BZIP2=ON` (`_core.__has_bzip2__`); a build without it leaves bzip2 to the Python reader, so its native CLI and C, Fortran, Julia, R and WASM bindings read gzip only.
+`read` takes no options. The encoding comes from the content, not the extension, and gzip or bzip2 compression is inflated whatever the file is called (libMesh itself compresses only ASCII files: its `.xdr.gz` and `.xdr.bz2` are plain XDR). Both engines (the C++ core and the pure-Python reference) read the same meshes; the core inflates gzip through zlib and, since v16.12.0, bzip2 through libbz2 when built with `-DMESHIOPLUSPLUS_WITH_BZIP2=ON` (`_core.__has_bzip2__`); a build without it leaves bzip2 to the Python reader, so its native CLI and C, Fortran, Julia, R and lean WASM bindings read gzip only; the [full WASM artifact](/wasm#lean-and-full-builds) (v17.2.0) reads and writes bzip2 through Emscripten's port.
 
 ## The stream
 

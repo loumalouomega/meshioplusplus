@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 17.1.0
+  VERSION 17.2.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -103,6 +103,26 @@ option(MESHIOPLUSPLUS_STATIC_RUNTIME
 option(MESHIOPLUSPLUS_WASM_THREADS
   "Emscripten only: build the threaded (pthreads/OpenMP) wasm variant" OFF)
 
+# The full WebAssembly artifact (roadmap 6.2): the same core and JS API as the
+# lean one, linked with every optional library the Emscripten toolchain
+# cross-compiles -- OpenCASCADE, zstd, lz4 and the bzip2 port -- and named
+# meshioplusplus_wasm_full[_mt]. Only under it are those libraries probed for
+# a wasm target, and only in the prefix build/build-wasm-deps.sh --full built
+# (on CMAKE_FIND_ROOT_PATH); the lean build never picks them up. KaHIP, ADIOS2
+# and TecIO stay out of both artifacts (doc/wasm.md#what-stays-out).
+option(MESHIOPLUSPLUS_WASM_FULL
+  "Emscripten only: build the full wasm artifact (OpenCASCADE, zstd, lz4, bzip2)" OFF)
+if(MESHIOPLUSPLUS_WASM_FULL AND NOT EMSCRIPTEN)
+  message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_WASM_FULL needs the Emscripten toolchain "
+                      "(build/configure-wasm.sh --full).")
+endif()
+# Whether the optional libraries that have no lean wasm build may be probed:
+# always natively, and under Emscripten only for the full artifact.
+set(_mio_probe_optional ON)
+if(EMSCRIPTEN AND NOT MESHIOPLUSPLUS_WASM_FULL)
+  set(_mio_probe_optional OFF)
+endif()
+
 # The pybind11 extension is the default consumer of meshioplusplus_core_obj,
 # but non-Python consumers (the GoogleTest suite, the Emscripten/WASM target
 # below) must be configurable without ever locating a Python interpreter or
@@ -180,12 +200,13 @@ endif()
 
 # Additional VTK XML block-compression codecs. Both default OFF: zlib is the
 # only codec a portable build can assume, and it stays the write default, so a
-# pure build reads and writes exactly what it always did. Never probed under
-# Emscripten -- there is no -sUSE_ZSTD/-sUSE_LZ4 port, and a host library must
-# not be picked up for a wasm target.
+# pure build reads and writes exactly what it always did. Under Emscripten they
+# are probed only for the full artifact (MESHIOPLUSPLUS_WASM_FULL), from the
+# static wasm32 builds build-wasm-deps.sh --full installs: there is no
+# -sUSE_ZSTD/-sUSE_LZ4 port, and a host library must never be picked up.
 option(MESHIOPLUSPLUS_WITH_ZSTD "Build the VTK XML zstd compression path" OFF)
 option(MESHIOPLUSPLUS_WITH_LZ4 "Build the VTK XML lz4 compression path" OFF)
-if(MESHIOPLUSPLUS_WITH_ZSTD AND NOT EMSCRIPTEN)
+if(MESHIOPLUSPLUS_WITH_ZSTD AND _mio_probe_optional)
   find_package(zstd QUIET)
   if(NOT zstd_FOUND)
     find_path(ZSTD_INCLUDE_DIR zstd.h)
@@ -194,12 +215,13 @@ if(MESHIOPLUSPLUS_WITH_ZSTD AND NOT EMSCRIPTEN)
 endif()
 # bzip2 (v16.12.0): libMesh's `.xda.bz2`/`.xdr.bz2`, read and written natively.
 # OFF by default like the codecs above; without it those files go through
-# Python's bz2. FindBZip2 is CMake's own module (BZip2::BZip2).
+# Python's bz2. FindBZip2 is CMake's own module (BZip2::BZip2). The full wasm
+# artifact uses Emscripten's own bzip2 port instead (-sUSE_BZIP2=1, below).
 option(MESHIOPLUSPLUS_WITH_BZIP2 "Build the native bzip2 path (libMesh .bz2 meshes)" OFF)
 if(MESHIOPLUSPLUS_WITH_BZIP2 AND NOT EMSCRIPTEN)
   find_package(BZip2 QUIET)
 endif()
-if(MESHIOPLUSPLUS_WITH_LZ4 AND NOT EMSCRIPTEN)
+if(MESHIOPLUSPLUS_WITH_LZ4 AND _mio_probe_optional)
   find_package(lz4 QUIET)
   if(NOT lz4_FOUND)
     find_path(LZ4_INCLUDE_DIR lz4.h)
@@ -271,12 +293,14 @@ endif()
 # the fit_cad operation (analytic faces trimmed, sewn into a solid, checked and
 # written as STEP). OFF by default and bring-your-own through OCCT's own CMake
 # config (OpenCASCADE_DIR) -- never vendored, never auto-downloaded, linked
-# dynamically, and absent from the wheels, the WASM build and the release CLI
-# binaries; fit_cad throws Unsupported naming this flag where it is absent.
+# dynamically natively, and absent from the wheels, the lean WASM build and the
+# release CLI binaries; fit_cad throws Unsupported naming this flag where it is
+# absent. The full WASM artifact links it statically, from the wasm32 build
+# build-wasm-deps.sh --full makes (roadmap 6.2.1).
 # 7.6 is the floor (Ubuntu 24.04's packages); 7.8 renamed the STEP toolkits
 # into TKDESTEP, so the target list is picked by what exists.
 option(MESHIOPLUSPLUS_WITH_OCCT "Build the OpenCASCADE-backed fit_cad operation and STEP/IGES reading" OFF)
-if(MESHIOPLUSPLUS_WITH_OCCT AND NOT EMSCRIPTEN)
+if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_probe_optional)
   find_package(OpenCASCADE CONFIG QUIET)
   if(OpenCASCADE_FOUND AND OpenCASCADE_VERSION VERSION_LESS 7.6)
     message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} is older than 7.6 - ignored")
@@ -285,8 +309,11 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND NOT EMSCRIPTEN)
 endif()
 set(_mio_occt_libs "")
 if(MESHIOPLUSPLUS_WITH_OCCT AND OpenCASCADE_FOUND)
+  # Every toolkit is named, dependencies included: a static install (the wasm32
+  # one of build/build-wasm-deps.sh --full) records none on its targets, and
+  # IGES reading needs TKBool's BRepFill.
   set(_mio_occt_libs TKernel TKMath TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo TKTopAlgo
-                     TKShHealing TKBO TKMesh TKPrim)
+                     TKShHealing TKBO TKBool TKMesh TKPrim)
   if(TARGET TKDESTEP)
     list(APPEND _mio_occt_libs TKDESTEP TKXSBase)
   else()
@@ -696,8 +723,13 @@ endif()
 if(MESHIOPLUSPLUS_WITH_ZSTD AND (zstd_FOUND OR ZSTD_LIBRARY))
   message(STATUS "meshio++: VTK XML zstd compression enabled")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ZSTD)
-  if(zstd_FOUND)
+  # A static-only install (the full wasm prefix) exports no shared target.
+  if(TARGET zstd::libzstd_shared)
     list(APPEND _mio_core_libs zstd::libzstd_shared)
+  elseif(TARGET zstd::libzstd_static)
+    list(APPEND _mio_core_libs zstd::libzstd_static)
+  elseif(TARGET zstd::libzstd)
+    list(APPEND _mio_core_libs zstd::libzstd)
   else()
     list(APPEND _mio_core_incs ${ZSTD_INCLUDE_DIR})
     list(APPEND _mio_core_libs ${ZSTD_LIBRARY})
@@ -709,8 +741,12 @@ endif()
 if(MESHIOPLUSPLUS_WITH_LZ4 AND (lz4_FOUND OR LZ4_LIBRARY))
   message(STATUS "meshio++: VTK XML lz4 compression enabled")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_LZ4)
-  if(lz4_FOUND)
+  if(TARGET LZ4::lz4_shared)
     list(APPEND _mio_core_libs LZ4::lz4_shared)
+  elseif(TARGET LZ4::lz4_static)
+    list(APPEND _mio_core_libs LZ4::lz4_static)
+  elseif(TARGET LZ4::lz4)
+    list(APPEND _mio_core_libs LZ4::lz4)
   else()
     list(APPEND _mio_core_incs ${LZ4_INCLUDE_DIR})
     list(APPEND _mio_core_libs ${LZ4_LIBRARY})
@@ -719,7 +755,12 @@ elseif(MESHIOPLUSPLUS_WITH_LZ4)
   message(STATUS "meshio++: lz4 requested but not found - lz4 files fall back to Python")
 endif()
 
-if(MESHIOPLUSPLUS_WITH_BZIP2 AND BZIP2_FOUND)
+if(MESHIOPLUSPLUS_WITH_BZIP2 AND EMSCRIPTEN AND MESHIOPLUSPLUS_WASM_FULL)
+  message(STATUS "meshio++: bzip2 enabled (libMesh .bz2 meshes, Emscripten -sUSE_BZIP2=1 port)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_BZIP2)
+  list(APPEND _mio_core_copts "-sUSE_BZIP2=1")
+  list(APPEND _mio_core_lopts "-sUSE_BZIP2=1")
+elseif(MESHIOPLUSPLUS_WITH_BZIP2 AND BZIP2_FOUND)
   message(STATUS "meshio++: bzip2 enabled (libMesh .bz2 meshes)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_BZIP2)
   list(APPEND _mio_core_libs BZip2::BZip2)
@@ -770,6 +811,19 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
 elseif(MESHIOPLUSPLUS_WITH_OCCT)
   message(STATUS "meshio++: OpenCASCADE requested but not found (set OpenCASCADE_DIR) - "
                  "fit_cad and STEP/IGES reading will raise")
+endif()
+
+# The full wasm artifact never drops a library it was asked for: a name in
+# its availableFormats()/has*() reporters that is not linked would be a lie.
+# configure-wasm.sh --without-occt leaves OpenCASCADE unrequested instead.
+if(MESHIOPLUSPLUS_WASM_FULL)
+  foreach(_mio_full_lib OCCT ZSTD LZ4 BZIP2)
+    if(MESHIOPLUSPLUS_WITH_${_mio_full_lib} AND NOT "MESHIOPLUSPLUS_HAS_${_mio_full_lib}" IN_LIST _mio_core_defs)
+      message(FATAL_ERROR
+              "meshio++: the full wasm artifact asks for ${_mio_full_lib} but its wasm32 build was "
+              "not found on CMAKE_FIND_ROOT_PATH (run build/build-wasm-deps.sh --full)")
+    endif()
+  endforeach()
 endif()
 
 if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)
@@ -1402,18 +1456,23 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
   # Written without spaces/quotes so it survives CMake -> Ninja -> em++ as one
   # argument. Consumed only when the page is cross-origin isolated; the JS
   # loader auto-falls-back to the sequential build otherwise.
+  set(_mio_wasm_name "meshioplusplus_wasm")
+  # The full artifact (MESHIOPLUSPLUS_WASM_FULL): meshioplusplus_wasm_full[_mt].
+  # The define lets buildFlavour() report which one a loader instantiated.
+  if(MESHIOPLUSPLUS_WASM_FULL)
+    string(APPEND _mio_wasm_name "_full")
+    target_compile_definitions(meshioplusplus_wasm PRIVATE MESHIOPLUSPLUS_WASM_FULL)
+  endif()
   if(MESHIOPLUSPLUS_WASM_THREADS)
     target_link_options(
       meshioplusplus_wasm PRIVATE
       "-pthread"
       "-sPTHREAD_POOL_SIZE=globalThis.navigator?navigator.hardwareConcurrency:8"
       "-sPTHREAD_POOL_SIZE_STRICT=0")
-    set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm_mt"
-                                                          SUFFIX ".mjs")
-  else()
-    set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "meshioplusplus_wasm"
-                                                          SUFFIX ".mjs")
+    string(APPEND _mio_wasm_name "_mt")
   endif()
+  set_target_properties(meshioplusplus_wasm PROPERTIES OUTPUT_NAME "${_mio_wasm_name}"
+                                                        SUFFIX ".mjs")
 endif()
 
 # --------------------------------------------------------------------------
