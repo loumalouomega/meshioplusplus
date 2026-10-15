@@ -1699,8 +1699,8 @@ export interface MeshioPlusPlusModule {
    * The format names this build can actually read and write, both sorted.
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
-   * "convert to" menu: the two lists genuinely differ (`openfoam` is
-   * read-only, `step` is write-only), and the set depends on how
+   * "convert to" menu: the two lists genuinely differ (`gmsh22` is
+   * write-only), and the set depends on how
    * the artifact was built -- an official build carries the HDF5/netCDF-backed
    * formats, one built with `--without-hdf5` does not.
    */

@@ -2485,10 +2485,11 @@ step('availableFormats reports what this build can read and write', () => {
     const { readers, writers } = m.availableFormats();
     assert.ok(Array.isArray(readers) && Array.isArray(writers));
     assert.ok(readers.includes('vtu') && writers.includes('vtu'));
-    // The two lists genuinely differ: step is write-only. A viewer that
-    // assumes one list would offer broken menu items. svg and tikz read back
-    // the drawings meshio++ writes, so they are in both.
-    assert.ok(writers.includes('step') && !readers.includes('step'));
+    // The two lists genuinely differ: gmsh22 is write-only (reading goes through
+    // gmsh, which detects the version). A viewer that assumes one list would
+    // offer broken menu items. svg, tikz and gltf read back the files meshio++
+    // writes, so they are in both.
+    assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
     assert.ok(readers.includes('gltf') && writers.includes('gltf'));
     assert.ok(readers.includes('svg') && writers.includes('svg'));
     assert.ok(readers.includes('tikz') && writers.includes('tikz'));
