@@ -159,7 +159,6 @@ What changed since parity last had a section. The reader/writer triage of Septem
 - **3.4.5 EnSight**: `VARIABLE` reading and writing are C++ only.
 - **3.4.6 PLY**: extra face properties are read only in Python.
 - **3.4.7 VTU/VTP**: lzma is Python only; an optional liblzma in the core, as the other [codecs](./codecs.md).
-- **3.4.8 libMesh**: bzip2 and compressed writing are listed as Python only, while the format table says the core compresses natively — verify first which is true.
 - **3.4.9 XDMF**: high-order hexahedra are Python only.
 - **3.4.10 Nastran**: `points_id`/`cells_id` are set only by the Python reader.
 - **3.4.11 Neuroglancer**: Python only; port it, or add it to the *Python-only layers* [non-goal](#non-goals-and-decisions-taken) with its reason.

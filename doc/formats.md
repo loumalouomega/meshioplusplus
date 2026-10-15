@@ -45,7 +45,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |
 | [`iges`](./formats/iges.md) | `.igs`, `.iges` | ✓ (OpenCASCADE) | — | OpenCASCADE | [read-only](./conformance.md#iges) |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#ip) |
-| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading needs zlib; bzip2 and compressed writing are Python-only | [8/8 cells · no data · regions CPS](./conformance.md#libmesh) |
+| [`libmesh`](./formats/libmesh.md) | `.xda`, `.xdr` (and `.gz`, `.bz2`) | ✓ | ✓ | native gzip reading and writing need zlib, bzip2 needs libbz2 (`MESHIOPLUSPLUS_WITH_BZIP2`); without them Python does it | [8/8 cells · no data · regions CPS](./conformance.md#libmesh) |
 | [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — | [8/8 cells · no data · regions CPS](./conformance.md#lsdyna) |
 | [`lsdyna_binout`](./formats/lsdyna_binout.md) | none: the file named `binout` (or `binout0000`...) | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#lsdyna-binout) |
 | [`lsdyna_d3plot`](./formats/lsdyna_d3plot.md) | none: the file named `d3plot` or `d3part` (and its `d3plot01`... family) | ✓ | — | — | [read-only](./conformance.md#lsdyna-d3plot) |
