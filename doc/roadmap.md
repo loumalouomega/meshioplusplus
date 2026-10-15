@@ -159,7 +159,6 @@ What changed since parity last had a section. The reader/writer triage of Septem
 - **3.4.5 EnSight**: `VARIABLE` reading and writing are C++ only.
 - **3.4.7 VTU/VTP**: lzma is Python only; an optional liblzma in the core, as the other [codecs](./codecs.md).
 - **3.4.9 XDMF**: high-order hexahedra are Python only.
-- **3.4.10 Nastran**: `points_id`/`cells_id` are set only by the Python reader.
 - **3.4.11 Neuroglancer**: Python only; port it, or add it to the *Python-only layers* [non-goal](#non-goals-and-decisions-taken) with its reason.
 - **3.4.12 Gmsh 4.1 mixed meshes, Python.** Done for mixed meshes without regions: `gmsh/_gmsh41.py` allocates one entity per block and writes the bytes the C++ writer does. What remains is the physical groups the C++ writer derives from `Cell` regions (`gmsh_resolve_region_tags`, `$PhysicalNames`) for a mesh with no `gmsh:dim_tags`: port it, or record the exemption. **S**
 - **3.4.13 Probe, per engine.** `test_the_native_registry_agrees` already checks that nothing reads without writing, or writes without reading, in either registry, against the recorded gaps (`READ_ONLY`, `WRITE_ONLY`). What it does not check is the second half: for every format, read and write in *both* the core and Python, against the exemptions this section records. Extend it once the items above name their exemptions.

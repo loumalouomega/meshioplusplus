@@ -28,6 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/nastran_model.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/read_guard.hpp"
@@ -5931,8 +5932,34 @@ PYBIND11_MODULE(_core, m) {
         });
     });
     m.def("nastran_read", guard_read("nastran", [](const std::string& path) {
-              return meshioplusplus_py::mesh_to_py(
-                  core_nogil([&] { return meshioplusplus::read_nastran(path); }));
+              // The GRID and element ids ride along as the `points_id` /
+              // `cells_id` attributes, as the Python reader sets them.
+              struct Deck {
+                  meshioplusplus::Mesh mMesh;
+                  std::vector<std::int64_t> mGridIds, mCellIds;
+              };
+              Deck deck = core_nogil([&] {
+                  Deck d;
+                  d.mMesh = meshioplusplus::detail::nastran_read_deck(path, d.mGridIds, d.mCellIds);
+                  return d;
+              });
+              std::vector<std::size_t> block_sizes;
+              for (const auto cb : deck.mMesh.CellRange())
+                  block_sizes.push_back(cb.NumCells());
+              py::object out = meshioplusplus_py::mesh_to_py(std::move(deck.mMesh));
+              out.attr("points_id") = py::array_t<std::int64_t>(
+                  static_cast<py::ssize_t>(deck.mGridIds.size()), deck.mGridIds.data());
+              py::list cells_id;
+              std::size_t at = 0;
+              for (std::size_t n : block_sizes) {
+                  if (at + n > deck.mCellIds.size())
+                      n = deck.mCellIds.size() > at ? deck.mCellIds.size() - at : 0;
+                  cells_id.append(py::array_t<std::int64_t>(static_cast<py::ssize_t>(n),
+                                                            deck.mCellIds.data() + at));
+                  at += n;
+              }
+              out.attr("cells_id") = cells_id;
+              return out;
           }));
 
     // SU2 writer / reader (.su2).
