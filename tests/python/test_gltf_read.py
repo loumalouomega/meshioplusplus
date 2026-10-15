@@ -14,12 +14,20 @@ import numpy as np
 import pytest
 
 import meshioplusplus as mio
-from meshioplusplus.gltf import _gltf_read
 from meshioplusplus import ReadError
-
+from meshioplusplus.gltf import _gltf_read
 
 CUBE_POINTS = np.array(
-    [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+    [
+        [0, 0, 0],
+        [1, 0, 0],
+        [1, 1, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+        [1, 0, 1],
+        [1, 1, 1],
+        [0, 1, 1],
+    ],
     dtype=float,
 )
 CUBE_QUADS = np.array(
@@ -90,7 +98,10 @@ def test_regions_fields_and_colour(tmp_path):
     mesh = mio.Mesh(
         pts,
         [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
-        point_data={"temperature": np.array([1.0, 2.0, 3.0, 4.0]), "v": np.arange(8.0).reshape(4, 2)},
+        point_data={
+            "temperature": np.array([1.0, 2.0, 3.0, 4.0]),
+            "v": np.arange(8.0).reshape(4, 2),
+        },
         regions=[mio.Region("left", "cell", [0]), mio.Region("right", "cell", [1])],
     )
     path = tmp_path / "f.glb"
@@ -121,7 +132,15 @@ def test_strips_fans_loops_strides_and_sparse(tmp_path):
             "scenes": [{"nodes": [0]}],
             "nodes": [{"name": "body", "mesh": 0}],
             "meshes": [
-                {"primitives": [{"attributes": {"POSITION": 0, "_S": 2}, "indices": 1, "mode": mode}]}
+                {
+                    "primitives": [
+                        {
+                            "attributes": {"POSITION": 0, "_S": 2},
+                            "indices": 1,
+                            "mode": mode,
+                        }
+                    ]
+                }
             ],
             "accessors": [
                 {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
@@ -146,7 +165,13 @@ def test_strips_fans_loops_strides_and_sparse(tmp_path):
             ],
         }
 
-    expected = {5: ("triangle", 2), 6: ("triangle", 2), 2: ("line", 4), 3: ("line", 3), 0: ("vertex", 4)}
+    expected = {
+        5: ("triangle", 2),
+        6: ("triangle", 2),
+        2: ("line", 4),
+        3: ("line", 3),
+        0: ("vertex", 4),
+    }
     for mode, (cell_type, count) in expected.items():
         path = gltf_file(tmp_path, binary, body(mode), f"m{mode}.gltf")
         mesh = both(path)
@@ -172,13 +197,21 @@ def test_node_hierarchy_and_normalized_quantized_positions(tmp_path):
             ],
             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
             "accessors": [
-                {"bufferView": 0, "componentType": 5120, "normalized": True, "count": 3, "type": "VEC3"}
+                {
+                    "bufferView": 0,
+                    "componentType": 5120,
+                    "normalized": True,
+                    "count": 3,
+                    "type": "VEC3",
+                }
             ],
             "bufferViews": [{"buffer": 0, "byteLength": 9}],
         },
     )
     mesh = both(path)
-    np.testing.assert_allclose(mesh.points, [[10, 0, 0], [12, 0, 0], [10, 2, 0]], atol=1e-12)
+    np.testing.assert_allclose(
+        mesh.points, [[10, 0, 0], [12, 0, 0], [10, 2, 0]], atol=1e-12
+    )
     assert not mesh.regions
 
 
@@ -210,7 +243,10 @@ def _with_prim(prim):
 @pytest.mark.parametrize(
     "prim, needle",
     [
-        ({"extensions": {"KHR_draco_mesh_compression": {}}}, "KHR_draco_mesh_compression"),
+        (
+            {"extensions": {"KHR_draco_mesh_compression": {}}},
+            "KHR_draco_mesh_compression",
+        ),
         ({"indices": 0}, "indices"),
         ({"mode": 9}, "mode"),
     ],
@@ -228,7 +264,14 @@ def test_container_and_file_errors(tmp_path):
     p.write_text("not json")
     with pytest.raises(ReadError):
         mio.gltf.read(str(p))
-    p.write_text(json.dumps({"asset": {"version": "2.0"}, "buffers": [{"byteLength": 4, "uri": "../x.bin"}]}))
+    p.write_text(
+        json.dumps(
+            {
+                "asset": {"version": "2.0"},
+                "buffers": [{"byteLength": 4, "uri": "../x.bin"}],
+            }
+        )
+    )
     with pytest.raises(ReadError):
         mio.gltf.read(str(p))
     with pytest.raises(ReadError):

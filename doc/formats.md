@@ -39,7 +39,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`frd`](./formats/frd.md) | `.frd` | ✓ | ✓ | — | [6/8 cells · data P](./conformance.md#frd) |
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#freefem) |
 | [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 | [8/8 cells · data PC](./conformance.md#gid) |
-| [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | ✓ | ✓ | — | CONF_PLACEHOLDER |
+| [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | ✓ | ✓ | — | [3/8 cells · data P · regions C](./conformance.md#gltf) |
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | [8/8 cells · data PCF · regions C](./conformance.md#gmsh) |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` | [8/8 cells · data PC](./conformance.md#hmf) |

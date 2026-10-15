@@ -112,9 +112,9 @@ def _numbers(value, count, what):
 
 
 def _load(filename):
-    directory = os.path.dirname(os.fspath(filename)) if not hasattr(
-        filename, "read"
-    ) else ""
+    directory = (
+        os.path.dirname(os.fspath(filename)) if not hasattr(filename, "read") else ""
+    )
     if hasattr(filename, "read"):
         data = filename.read()
     else:
@@ -180,13 +180,7 @@ def _uri_bytes(uri, directory):
         except (binascii.Error, ValueError) as exc:
             raise ReadError("gltf: a data: URI is not valid base64") from exc
     path = unquote(uri)
-    if (
-        not path
-        or path[0] in "/\\"
-        or "://" in path
-        or "\\" in path
-        or ":" in path
-    ):
+    if not path or path[0] in "/\\" or "://" in path or "\\" in path or ":" in path:
         _fail(f"the buffer URI '{uri}' is not a relative file path")
     if any(part == ".." for part in path.split("/")):
         _fail(f"the buffer URI '{uri}' leaves the file's directory")
@@ -552,7 +546,11 @@ def _primitive(ctx, prim, world, offset, region, state):
         kind, cells = 1, index.reshape(-1, 2)
     elif mode in (2, 3):
         kind = 1
-        cells = np.stack([index[:-1], index[1:]], axis=1) if n > 1 else np.zeros((0, 2), np.int64)
+        cells = (
+            np.stack([index[:-1], index[1:]], axis=1)
+            if n > 1
+            else np.zeros((0, 2), np.int64)
+        )
         if mode == 2 and n > 2:
             cells = np.vstack([cells, [[index[-1], index[0]]]])
     elif mode == 4:
