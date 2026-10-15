@@ -18,12 +18,12 @@
 
 /**
  * @file formats/gltf.hpp
- * @brief glTF 2.0 writer (`.glb` binary container, `.gltf` + `.bin` beside it).
+ * @brief glTF 2.0 reader and writer (`.glb` binary container, `.gltf` + `.bin` beside it).
  *
  * A web-native surface export: the browser viewer, three.js, Blender and every
  * dashboard that loads glTF can show a mesh with no meshio++ in the loop. The
- * writer is write-only -- reading glTF is out of scope -- and exports the
- * *surface* of whatever it is given:
+ * writer exports the *surface* of whatever it is given (see `read_gltf` below
+ * for the way back):
  *
  *  - the skin of volume blocks (`extract_skin`, linearised), with a 2-D cell
  *    that coincides with a skin facet winning over it, so a boundary patch such
@@ -80,6 +80,7 @@
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -140,5 +141,39 @@ struct GltfWriteOptions {
  */
 MESHIOPLUSPLUS_API void write_gltf(const std::string& rPath, const Mesh& rMesh,
                                    const GltfWriteOptions& rOptions = {});
+
+/// What `read_gltf` should do beyond the defaults.
+struct GltfReadOptions {
+    /// Merge vertices with identical world positions (the writer splits one per
+    /// smooth fan), across the whole file. The first vertex's attributes win.
+    bool mWeld = false;
+};
+
+/**
+ * @brief Read a glTF 2.0 file (`.glb`, or `.gltf` with external or `data:` buffers).
+ *
+ * A general reader, not one limited to meshio++'s own output:
+ *
+ *  - primitives: `POINTS` -> `vertex`, `LINES`/`LINE_STRIP`/`LINE_LOOP` ->
+ *    `line`, `TRIANGLES`/`TRIANGLE_STRIP`/`TRIANGLE_FAN` -> `triangle`, indexed
+ *    or not; blocks come back as `triangle`, `line`, `vertex` in that order;
+ *  - accessors: every component type, `normalized`, `byteStride`, sparse
+ *    accessors and `KHR_mesh_quantization` data;
+ *  - node transforms (TRS or `matrix`) are applied down the hierarchy into
+ *    world space (glTF's Y-up). A root node named `meshio++` carrying the
+ *    writer's up-axis rotation, scale and recentring translation is undone,
+ *    returning the source coordinates;
+ *  - a node name becomes a cell region (`unassigned` and `mesh`, the writer's
+ *    names for "no region", give none); `_NAME` attributes become `point_data`
+ *    under the accessor's `name`; `COLOR_0` becomes `gltf:color`; the `NORMAL`
+ *    of a `POINTS` primitive becomes `normals`.
+ *
+ * Draco and meshopt compression are refused by name. Morph targets, skins,
+ * animations, materials and textures are skipped with one warning.
+ *
+ * @throws ReadError on any malformed or unsupported input.
+ */
+MESHIOPLUSPLUS_API Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions = {},
+                                  const ReadOptions& rReadOptions = {});
 
 }  // namespace meshioplusplus

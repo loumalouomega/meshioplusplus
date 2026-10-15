@@ -525,7 +525,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         hasCgnslib: () => Module.hasCgnslib(),
         // What this build can actually read/write, both sorted. Prefer this
         // over a hardcoded table: a few formats are read-only (openfoam) or
-        // write-only (gltf), and the HDF5/netCDF-backed ones are present
+        // write-only (step), and the HDF5/netCDF-backed ones are present
         // only in a build that linked them (the official artifact does).
         availableFormats: () => Module.availableFormats(),
         // Mesh operations (see doc/*.md per operation): computations ON a mesh,

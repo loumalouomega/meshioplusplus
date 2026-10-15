@@ -6917,6 +6917,22 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
         py::arg("nan_color") = "gray", py::arg("colorbar") = false);
 
+    // glTF reader: a general glTF 2.0 / GLB reader; `weld` merges the vertices
+    // the writer split per smooth fan.
+    m.def("gltf_read",
+          guard_read("gltf",
+                     [](const std::string& path, bool points_only, py::object arrays, bool weld) {
+                         meshioplusplus::GltfReadOptions gopts;
+                         gopts.mWeld = weld;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&, opts = core_read_options(points_only, arrays, 0,
+                                                                     py::none(), false)] {
+                                 return meshioplusplus::read_gltf(path, gopts, opts);
+                             }));
+                     }),
+          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+          py::arg("weld") = false);
+
     // SVG / TikZ drawing readers: only the structure the writers above emit, as a
     // planar (z = 0) mesh. `strict=False` is ReadOptions::mLenient: read a
     // drawing that lacks the meshio++ marker.

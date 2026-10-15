@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -31,6 +32,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/region.hpp"
@@ -335,4 +337,174 @@ TEST(Gltf, TheSrgbTableIsTheInverseTransferFunction) {
     EXPECT_NEAR(value(128), 0.2158605f, 1e-7);
     for (int i = 1; i < 256; ++i)
         EXPECT_GT(value(i), value(i - 1));
+}
+
+// ---- the reader ---------------------------------------------------------- //
+
+namespace {
+
+void put_f32(std::string& rOut, float Value) {
+    std::uint32_t u;
+    std::memcpy(&u, &Value, sizeof(u));
+    for (int k = 0; k < 4; ++k)
+        rOut += static_cast<char>((u >> (8 * k)) & 0xFFu);
+}
+
+void put_u16(std::string& rOut, unsigned Value) {
+    rOut += static_cast<char>(Value & 0xFFu);
+    rOut += static_cast<char>((Value >> 8) & 0xFFu);
+}
+
+// A .gltf whose single buffer is a data: URI.
+std::string write_text_gltf(const std::string& rBin, const std::string& rBody) {
+    const std::string uri =
+        "data:application/octet-stream;base64," +
+        detail::b64encode(reinterpret_cast<const unsigned char*>(rBin.data()), rBin.size());
+    const std::string path = mt::temp_path(".gltf");
+    std::ofstream f(path, std::ios::binary);
+    f << "{\"asset\":{\"version\":\"2.0\"}," << rBody << ",\"buffers\":[{\"byteLength\":"
+      << rBin.size() << ",\"uri\":\"" << uri << "\"}]}";
+    return path;
+}
+
+}  // namespace
+
+TEST(GltfRead, RoundTripsTheWritersOutput) {
+    Mesh m = make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 1}}, "triangle",
+                       {{0, 1, 4}, {1, 2, 4}, {2, 3, 4}, {3, 0, 4}});
+    for (const char* suffix : {".glb", ".gltf"}) {
+        const std::string path = mt::temp_path(suffix);
+        write_gltf(path, m);
+        GltfReadOptions weld;
+        weld.mWeld = true;
+        const Mesh r = read_gltf(path, weld);
+        EXPECT_EQ(r.NumPoints(), 5u);
+        ASSERT_EQ(r.NumCellBlocks(), 1u);
+        EXPECT_EQ(r.Cells(0).Type(), "triangle");
+        EXPECT_EQ(r.Cells(0).NumCells(), 4u);
+        const double* p = r.Points().As<double>();
+        std::vector<double> got(p, p + 15);
+        std::sort(got.begin(), got.end());
+        const double expect[15] = {0, 0, 0, 0, 0, 0.5, 0.5, 0, 1, 1, 1, 0, 1, 0, 1};
+        std::vector<double> want(expect, expect + 15);
+        std::sort(want.begin(), want.end());
+        for (std::size_t i = 0; i < 15; ++i)
+            EXPECT_NEAR(got[i], want[i], 1e-6);
+        // Without welding the vertices stay split per smooth fan.
+        EXPECT_GE(read_gltf(path).NumPoints(), 5u);
+        std::remove(path.c_str());
+    }
+}
+
+TEST(GltfRead, StripsFansLoopsStridesAndSparseAccessors) {
+    // 4 vertices at stride 16 (3 floats + 4 pad bytes), then ushort indices, then sparse data.
+    std::string bin;
+    const float pts[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}};
+    for (const auto& p : pts) {
+        for (float v : p)
+            put_f32(bin, v);
+        put_f32(bin, 0.f);
+    }
+    const std::size_t idx_off = bin.size();
+    for (unsigned i : {0u, 1u, 2u, 3u})
+        put_u16(bin, i);
+    const std::size_t sp_idx = bin.size();
+    put_u16(bin, 3);
+    while (bin.size() % 4)
+        bin += '\0';
+    const std::size_t sp_val = bin.size();
+    put_f32(bin, 7.f);
+    auto body = [&](int mode) {
+        return std::string(
+                   "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"name\":\"body\",\"mesh\":0}],"
+                   "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"_S\":2},"
+                   "\"indices\":1,\"mode\":") +
+               std::to_string(mode) +
+               "}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":4,"
+               "\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5123,\"count\":4,"
+               "\"type\":\"SCALAR\"},{\"componentType\":5126,\"count\":4,\"type\":\"SCALAR\","
+               "\"name\":\"s\",\"sparse\":{\"count\":1,\"indices\":{\"bufferView\":2,"
+               "\"componentType\":5123},\"values\":{\"bufferView\":3}}}],\"bufferViews\":[{\"buffer\":0,"
+               "\"byteLength\":" +
+               std::to_string(idx_off) + ",\"byteStride\":16},{\"buffer\":0,\"byteOffset\":" +
+               std::to_string(idx_off) + ",\"byteLength\":8},{\"buffer\":0,\"byteOffset\":" +
+               std::to_string(sp_idx) + ",\"byteLength\":2},{\"buffer\":0,\"byteOffset\":" +
+               std::to_string(sp_val) + ",\"byteLength\":4}]";
+    };
+    struct Case {
+        int mode;
+        const char* type;
+        std::size_t cells;
+    };
+    for (const Case c : {Case{5, "triangle", 2}, Case{6, "triangle", 2}, Case{2, "line", 4},
+                         Case{3, "line", 3}, Case{0, "vertex", 4}}) {
+        const std::string path = write_text_gltf(bin, body(c.mode));
+        const Mesh r = read_gltf(path);
+        ASSERT_EQ(r.NumCellBlocks(), 1u) << c.mode;
+        EXPECT_EQ(r.Cells(0).Type(), c.type) << c.mode;
+        EXPECT_EQ(r.Cells(0).NumCells(), c.cells) << c.mode;
+        ASSERT_TRUE(r.HasPointData("s"));
+        const double* s = r.PointData("s").As<double>();
+        EXPECT_EQ(s[0], 0.0);
+        EXPECT_EQ(s[3], 7.0);
+        EXPECT_TRUE(r.HasRegion("body"));
+        std::remove(path.c_str());
+    }
+}
+
+TEST(GltfRead, AppliesNodeTransformsAndNormalizedQuantizedPositions) {
+    std::string bin;
+    for (int v : {0, 0, 0, 127, 0, 0, 0, 127, 0}) {
+        bin += static_cast<char>(v);
+    }
+    while (bin.size() % 4)
+        bin += '\0';
+    const std::string path = write_text_gltf(
+        bin,
+        "\"nodes\":[{\"children\":[1],\"translation\":[10,0,0]},{\"mesh\":0,\"scale\":[2,2,2]}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5120,\"normalized\":true,"
+        "\"count\":3,\"type\":\"VEC3\"}],\"bufferViews\":[{\"buffer\":0,\"byteLength\":9}]");
+    const Mesh r = read_gltf(path);
+    ASSERT_EQ(r.NumPoints(), 3u);
+    const double* p = r.Points().As<double>();
+    EXPECT_NEAR(p[3], 12.0, 1e-12);
+    EXPECT_NEAR(p[7], 2.0, 1e-12);
+    EXPECT_EQ(r.NumRegions(), 0u);
+    std::remove(path.c_str());
+}
+
+TEST(GltfRead, RefusesWhatItCannotReadByName) {
+    const std::string bin(12, '\0');
+    const std::string base =
+        "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}"
+        "%s}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":1,\"type\":\"VEC3\"}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteLength\":12}]";
+    auto make = [&](const char* extra) {
+        std::string b = base;
+        b.replace(b.find("%s"), 2, extra);
+        return write_text_gltf(bin, b);
+    };
+    const std::string draco = make(",\"extensions\":{\"KHR_draco_mesh_compression\":{}}");
+    try {
+        read_gltf(draco);
+        FAIL();
+    } catch (const ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("KHR_draco_mesh_compression"), std::string::npos);
+    }
+    // An index past the vertices, a short buffer, and a path escape.
+    EXPECT_THROW(read_gltf(make(",\"indices\":0")), ReadError);
+    EXPECT_THROW(read_gltf(make(",\"mode\":9")), ReadError);
+    const std::string bad = mt::temp_path(".gltf");
+    {
+        std::ofstream f(bad);
+        f << "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"byteLength\":4,\"uri\":\"../x.bin\"}]}";
+    }
+    EXPECT_THROW(read_gltf(bad), ReadError);
+    {
+        std::ofstream f(bad);
+        f << "not json";
+    }
+    EXPECT_THROW(read_gltf(bad), ReadError);
+    std::remove(bad.c_str());
 }

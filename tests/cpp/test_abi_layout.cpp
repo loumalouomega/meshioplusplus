@@ -414,6 +414,8 @@ MIO_ABI_LAYOUT(meshioplusplus::TextGrid, 32, 8);
 // GltfWriteOptions is passed by const-ref through the exported `write_gltf()`,
 // pinned from the release that introduces it (the "pin in advance" lesson).
 MIO_ABI_LAYOUT(meshioplusplus::GltfWriteOptions, 168, 8);
+// GltfReadOptions is passed by const-ref through the exported `read_gltf()`.
+MIO_ABI_LAYOUT(meshioplusplus::GltfReadOptions, 1, 1);
 
 // The v10.38.0 trio, pinned from the release that introduces them for the
 // same reason. RepairOptions: five bools, an int64 and a double (24/8).

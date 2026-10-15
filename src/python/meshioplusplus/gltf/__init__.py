@@ -6,6 +6,7 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._gltf import write as _py_write
 from ._gltf import write_buffer as _py_write_buffer
+from ._gltf_read import read as _py_read
 
 
 def write(
@@ -108,6 +109,30 @@ def write(
     return _py_write(filename, mesh, container=container, **kwargs)
 
 
-register_format("gltf", [".gltf", ".glb"], None, {"gltf": write})
+def read(filename, points_only=False, arrays=None, weld=False):
+    """Read a glTF 2.0 file (``.glb``, or ``.gltf`` with external or ``data:`` buffers).
 
-__all__ = ["write"]
+    A general reader (C++ core for real file paths, Python twin otherwise):
+    ``POINTS`` become ``vertex``, ``LINES``/``LINE_STRIP``/``LINE_LOOP`` ``line``
+    and ``TRIANGLES``/``TRIANGLE_STRIP``/``TRIANGLE_FAN`` ``triangle`` cells;
+    every accessor layout (component type, ``normalized``, ``byteStride``,
+    sparse, ``KHR_mesh_quantization``) is read; node transforms are applied
+    into world space, and the root node meshio++'s writer emits (up axis, scale,
+    recentring) is undone. A node name becomes a cell region, ``_NAME``
+    attributes become ``point_data``, ``COLOR_0`` becomes ``gltf:color``.
+    ``weld=True`` merges vertices with identical positions (the writer splits
+    one per smooth fan). Draco and meshopt compression are refused;
+    morph targets, skins, animations and textures are skipped with a warning.
+    """
+    if not is_buffer(filename, "r"):
+        try:
+            return _core.gltf_read(str(filename), points_only, arrays, bool(weld))
+        except Exception as exc:
+            if not core_declined(exc, "gltf", "read", filename):
+                raise
+    return _py_read(filename, points_only=points_only, arrays=arrays, weld=weld)
+
+
+register_format("gltf", [".gltf", ".glb"], read, {"gltf": write})
+
+__all__ = ["read", "write"]

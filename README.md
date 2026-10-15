@@ -72,7 +72,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
 > [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`; native periodic reads across language bindings via format metadata, periodic writes in 2.2/4.1),
-> [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) (output only; the surface with per-vertex normals, fields as `_NAME` attributes, `color_by` into `COLOR_0`) (`.glb`, `.gltf`),
+> [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) (read as a general glTF 2.0 reader; written as the surface with per-vertex normals, fields as `_NAME` attributes, `color_by` into `COLOR_0`) (`.glb`, `.gltf`),
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
