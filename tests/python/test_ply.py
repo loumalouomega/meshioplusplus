@@ -135,3 +135,42 @@ def test_ply_python_fallback_matches_skin(tmp_path):
     out = meshioplusplus.ply.read(filepath)
     assert len(out.points) == 8
     assert len(out.get_cells_type("quad")) == 6
+
+
+def _face_property_ply(binary):
+    """Two triangles, a quad and a triangle with a scalar and a float face property."""
+    import struct
+
+    verts = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0)]
+    faces = [([0, 1, 2], 7, 0.5), ([0, 2, 3], 8, 1.5), ([0, 1, 2, 3], 9, 2.5)]
+    faces.append(([1, 4, 2], 10, 3.5))
+    head = (
+        "ply\nformat {} 1.0\nelement vertex 5\n"
+        "property float x\nproperty float y\nproperty float z\n"
+        "element face 4\nproperty int label\n"
+        "property list uchar int vertex_indices\nproperty float w\nend_header\n"
+    ).format("binary_little_endian" if binary else "ascii")
+    if not binary:
+        body = "".join("{} {} {}\n".format(*v) for v in verts)
+        for idx, lab, w in faces:
+            body += "{} {} {} {}\n".format(lab, len(idx), " ".join(map(str, idx)), w)
+        return head + body
+    body = b"".join(struct.pack("<3f", *v) for v in verts)
+    for idx, lab, w in faces:
+        body += struct.pack("<iB", lab, len(idx))
+        body += struct.pack("<%di" % len(idx), *idx) + struct.pack("<f", w)
+    return head.encode() + body
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_ply_extra_face_properties_native(binary, tmp_path):
+    from meshioplusplus import _core
+
+    path = tmp_path / "faces.ply"
+    data = _face_property_ply(binary)
+    path.write_bytes(data if binary else data.encode())
+    mesh = _core.ply_read(str(path))
+    assert [c.type for c in mesh.cells] == ["triangle", "quad", "triangle"]
+    assert [len(c.data) for c in mesh.cells] == [2, 1, 1]
+    assert [a.tolist() for a in mesh.cell_data["label"]] == [[7, 8], [9], [10]]
+    assert [a.tolist() for a in mesh.cell_data["w"]] == [[0.5, 1.5], [2.5], [3.5]]
