@@ -87,19 +87,23 @@
 #include <emscripten/val.h>
 
 // Project includes
+#include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
@@ -114,6 +118,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -809,11 +814,30 @@ Mesh val_to_mesh(const val& rObj) {
     return mesh;
 }
 
+// Whether `rFormat` is a CAD format whose reader needs the OpenCASCADE kernel
+// this artifact lacks. The registry keeps `step`/`iges` readers in every build
+// (they throw Unsupported naming the CMake flag, which the native surfaces
+// want), so in WASM the lean artifact filters them out of its own reader set
+// and points at the full artifact instead.
+bool wasm_cad_reader_absent(const std::string& rFormat) {
+    return (rFormat == "step" || rFormat == "iges") && !meshioplusplus::cad_read_has_occt();
+}
+
 // " (this build has no HDF5 support)" for extensions like `.med` whose format
 // the registry knows but this build compiled out; "" otherwise.
 std::string compiled_out_hint(const std::string& rFormat) {
+    if (wasm_cad_reader_absent(rFormat))
+        return " (this artifact has no OpenCASCADE; the full one reads it: "
+               "loadMeshioPlusPlus({}, {full: true}))";
     const char* dep = meshioplusplus::registry_compiled_out(rFormat);
     return dep ? " (this build has no " + std::string(dep) + " support)" : "";
+}
+
+// Whether this artifact reads `rFormat`: the registry's reader set, without
+// the CAD readers a lean artifact cannot run.
+bool wasm_reads(const std::string& rFormat) {
+    return meshioplusplus::registry_readers().count(rFormat) != 0 &&
+           !wasm_cad_reader_absent(rFormat);
 }
 
 // ---------------------------------------------------------------------
@@ -839,6 +863,16 @@ bool format_supports_info(const std::string& rFormat) {
     return rFormat == "openfoam" || rFormat == "med" || rFormat == "mdpa" ||
            rFormat == "ansysinp" || rFormat == "unv" || rFormat == "gmsh" || rFormat == "exodus" ||
            rFormat == "mfem" || rFormat == "cad_json";
+}
+
+/// The format keys whose reader returns an `info` object: the above, and the
+/// CAD formats where OpenCASCADE is linked (the full artifact), whose B-rep
+/// comes back in CAD JSON's shape (`format: 'cad_json'`). Their info is
+/// read-only: the STEP writer writes faceted solids, and IGES has no writer.
+bool format_reads_info(const std::string& rFormat) {
+    if (rFormat == "step" || rFormat == "iges")
+        return meshioplusplus::cad_read_has_occt();
+    return format_supports_info(rFormat);
 }
 
 val string_vec_to_val(const std::vector<std::string>& rStrings) {
@@ -1754,7 +1788,7 @@ val exodus_info_to_val(const meshioplusplus::ExodusInfo& rInfo) {
  * and openfoam since v11.4.0 -- roadmap §1 tier B2's `timeStep`/`arrays`
  * time-directory fields, and unv since v15.6.0 -- the steps of its results);
  * ansysinp has no selective-read path with or without info.
- * @param rFormat must satisfy `format_supports_info`.
+ * @param rFormat must satisfy `format_reads_info`.
  * @param[out] rInfoOut the format's `info` object (`{format, ...}`).
  */
 Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
@@ -1801,6 +1835,15 @@ Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
         rInfoOut = brep_info_to_val(info);
         return mesh;
     }
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    if (rFormat == "step" || rFormat == "iges") {
+        meshioplusplus::BrepInfo info;
+        Mesh mesh = rFormat == "step" ? meshioplusplus::read_step(rPath, info)
+                                      : meshioplusplus::read_iges(rPath, info);
+        rInfoOut = brep_info_to_val(info);
+        return mesh;
+    }
+#endif
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     if (rFormat == "med") {
         meshioplusplus::MedInfo info;
@@ -1999,7 +2042,7 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         auto it = registry_readers().find(fmt);
-        if (it == registry_readers().end())
+        if (it == registry_readers().end() || !wasm_reads(fmt))
             throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
                                             fmt + "'" + compiled_out_hint(fmt));
         return mesh_to_val(it->second(rPath));
@@ -2113,7 +2156,10 @@ val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bo
         }
         if (!rArrays.isNull() && !rArrays.isUndefined())
             opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
-        if (info && format_supports_info(fmt)) {
+        if (!wasm_reads(fmt))
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
+                                            fmt + "'" + compiled_out_hint(fmt));
+        if (info && format_reads_info(fmt)) {
             val info_val;
             Mesh mesh = read_with_info(rPath, fmt, opts, info_val);
             val out = mesh_to_val(mesh);
@@ -2460,7 +2506,7 @@ val convert(const std::string& rInPath, const std::string& rInFormat, const std:
         std::string rfmt = resolve_format(rInPath, rInFormat);
         std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
-        if (rit == registry_readers().end())
+        if (rit == registry_readers().end() || !wasm_reads(rfmt))
             throw meshioplusplus::ReadError(
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
                 compiled_out_hint(rfmt));
@@ -2501,7 +2547,7 @@ void convert_surface(const std::string& rInPath, const std::string& rInFormat,
         std::string wfmt = resolve_write_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
         auto wit = registry_writers().find(wfmt);
-        if (rit == registry_readers().end())
+        if (rit == registry_readers().end() || !wasm_reads(rfmt))
             throw meshioplusplus::ReadError(
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
                 compiled_out_hint(rfmt));
@@ -2669,7 +2715,7 @@ Mesh display_surface(const std::string& rInPath, const std::string& rInFormat, c
                      bool keepProvenance, val& rSteps, val& rWarnings) {
     const std::string rfmt = resolve_format(rInPath, rInFormat);
     auto rit = registry_readers().find(rfmt);
-    if (rit == registry_readers().end())
+    if (rit == registry_readers().end() || !wasm_reads(rfmt))
         throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported input format '" +
                                         rfmt + "'" + compiled_out_hint(rfmt));
 
@@ -2937,7 +2983,7 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
         // An unknown input is reported before an unknown output, as it always
         // was; `display_surface` resolves the reader again when it reads.
         const std::string rfmt = resolve_format(rInPath, rInFormat);
-        if (registry_readers().find(rfmt) == registry_readers().end())
+        if (!wasm_reads(rfmt))
             throw meshioplusplus::ReadError(
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
                 compiled_out_hint(rfmt));
@@ -3517,20 +3563,63 @@ bool has_cgnslib_js() {
 }
 
 /**
+ * @brief Whether OpenCASCADE is linked in: STEP and IGES read, `fitCad` runs.
+ * True only in the full artifact (`meshioplusplus_wasm_full[_mt]`).
+ */
+bool has_occt_js() {
+    return meshioplusplus::cad_read_has_occt();
+}
+
+/// Whether the VTK XML zstd block codec is linked in (the full artifact).
+bool has_zstd_js() {
+    return meshioplusplus::detail::vtk_codec_available(meshioplusplus::detail::VtkCodec::ZSTD);
+}
+
+/// Whether the VTK XML lz4 block codec is linked in (the full artifact).
+bool has_lz4_js() {
+    return meshioplusplus::detail::vtk_codec_available(meshioplusplus::detail::VtkCodec::LZ4);
+}
+
+/// Whether bzip2 is linked in: libMesh `.xda.bz2`/`.xdr.bz2` (the full artifact).
+bool has_bzip2_js() {
+#ifdef MESHIOPLUSPLUS_HAS_BZIP2
+    return true;
+#else
+    return false;
+#endif
+}
+
+/**
+ * @brief Which artifact this is: "lean" (`meshioplusplus_wasm[_mt]`, MIT) or
+ * "full" (`meshioplusplus_wasm_full[_mt]`, with OpenCASCADE and the codecs).
+ * The loader checks it, so a `locateFile` that hands it the other artifact's
+ * binary fails at load rather than at the first CAD call.
+ */
+std::string build_flavour_js() {
+#ifdef MESHIOPLUSPLUS_WASM_FULL
+    return "full";
+#else
+    return "lean";
+#endif
+}
+
+/**
  * @brief The format names this build can actually read and write.
  *
  * `{readers: [...], writers: [...]}`, both sorted (the registry tables are
  * `std::map`). This is what a caller needs to build a file-picker filter or a
  * "convert to" menu without hardcoding a table that silently drifts from the
  * build -- the HDF5/netCDF-backed formats are absent from the wasm build, and
- * a few formats are read-only or write-only.
+ * a few formats are read-only or write-only. `step` and `iges` are readers only
+ * where OpenCASCADE is linked (the full artifact); `step` is a writer in both.
  */
 val available_formats_js() {
     val readers = val::array();
     val writers = val::array();
     unsigned i = 0;
     for (const auto& kv : registry_readers())
-        readers.set(i++, kv.first);
+        if (wasm_reads(kv.first))
+            readers.set(i++, kv.first);
     i = 0;
     for (const auto& kv : registry_writers())
         writers.set(i++, kv.first);
@@ -4489,6 +4578,123 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
         out.set("numCone", static_cast<double>(r.mNumCone));
         out.set("numTorus", static_cast<double>(r.mNumTorus));
         out.set("numUnfitted", static_cast<double>(r.mNumUnfitted));
+        return out;
+    });
+}
+
+/**
+ * @brief A CAD solid from the fitted patches of a closed skin: `fit_cad`. See
+ * operations/fit_cad.hpp and doc/fit_cad.md. Needs OpenCASCADE, so only the
+ * full artifact runs it; the lean one throws by name.
+ *
+ * @param rOptions `{stepPath, tolerance, exactEdges, types, meshDeflection,
+ *   maxDemotionRounds, freeform, freeformDegree, freeformMaxControl,
+ *   freeformSplit, fillets, threads}`, every key optional; `types` is an
+ *   array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`, `'torus'`.
+ * @return every `FitCadResult` counter in camelCase, `mesh` (the solid
+ *   re-meshed, with the `fit_cad:*` cell data) and `info` (its B-rep, in CAD
+ *   JSON's shape, for `writeMesh(path, mesh, 'cad_json', {info})`).
+ */
+val fit_cad_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (!meshioplusplus::fit_cad_has_occt())
+            throw meshioplusplus::Unsupported(
+                "meshio++: fitCad needs OpenCASCADE, which only the full artifact links: "
+                "loadMeshioPlusPlus({}, {full: true})");
+        meshioplusplus::FitCadOptions options;
+        std::string step_path;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the fitCad options",
+                                {"stepPath", "tolerance", "exactEdges", "types", "meshDeflection",
+                                 "maxDemotionRounds", "freeform", "freeformDegree",
+                                 "freeformMaxControl", "freeformSplit", "fillets", "threads"});
+            const auto has = [&](const char* pKey) {
+                return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
+            };
+            if (has("stepPath"))
+                step_path = rOptions["stepPath"].as<std::string>();
+            if (has("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (has("exactEdges"))
+                options.mExactEdges = rOptions["exactEdges"].as<bool>();
+            if (has("meshDeflection"))
+                options.mMeshDeflection = rOptions["meshDeflection"].as<double>();
+            if (has("maxDemotionRounds"))
+                options.mMaxDemotionRounds =
+                    static_cast<std::int64_t>(rOptions["maxDemotionRounds"].as<double>());
+            if (has("freeform"))
+                options.mFreeform = rOptions["freeform"].as<bool>();
+            if (has("freeformDegree"))
+                options.mFreeformDegree =
+                    static_cast<std::int32_t>(rOptions["freeformDegree"].as<double>());
+            if (has("freeformMaxControl"))
+                options.mFreeformMaxControl =
+                    static_cast<std::int64_t>(rOptions["freeformMaxControl"].as<double>());
+            if (has("freeformSplit"))
+                options.mFreeformSplit = rOptions["freeformSplit"].as<bool>();
+            if (has("fillets"))
+                options.mFillets = rOptions["fillets"].as<bool>();
+            if (has("threads"))
+                options.mThreads = rOptions["threads"].as<bool>();
+            if (has("types")) {
+                static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone",
+                                                     "torus"};
+                const val types = rOptions["types"];
+                options.mTypes = 0;
+                const unsigned n = types["length"].as<unsigned>();
+                for (unsigned i = 0; i < n; ++i) {
+                    const std::string name = types[i].as<std::string>();
+                    bool found = false;
+                    for (int t = 0; t < 5; ++t)
+                        if (name == kNames[t]) {
+                            options.mTypes |= 1u << (t + 1);
+                            found = true;
+                        }
+                    if (!found)
+                        throw std::invalid_argument("meshio++: fit_cad: unknown primitive type '" +
+                                                    name + "'");
+                }
+            }
+        }
+        const meshioplusplus::FitCadResult r =
+            meshioplusplus::fit_cad(val_to_mesh(rMeshObj), step_path, options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("valid", r.mValid);
+        out.set("tolerance", r.mTolerance);
+        out.set("volume", r.mVolume);
+        out.set("skinVolume", r.mSkinVolume);
+        out.set("volumeRatio", r.mVolumeRatio);
+        out.set("maxDeviation", r.mMaxDeviation);
+        const std::pair<const char*, std::int64_t> counters[] = {
+            {"numFaces", r.mNumFaces},
+            {"numPlane", r.mNumPlane},
+            {"numSphere", r.mNumSphere},
+            {"numCylinder", r.mNumCylinder},
+            {"numCone", r.mNumCone},
+            {"numTorus", r.mNumTorus},
+            {"numFacetedFaces", r.mNumFacetedFaces},
+            {"numPatches", r.mNumPatches},
+            {"numDemoted", r.mNumDemoted},
+            {"numExactEdges", r.mNumExactEdges},
+            {"numApproxEdges", r.mNumApproxEdges},
+            {"numSolids", r.mNumSolids},
+            {"numBspline", r.mNumBspline},
+            {"numSplitPatches", r.mNumSplitPatches},
+            {"numFillet", r.mNumFillet},
+            {"numHelical", r.mNumHelical},
+            {"numVariableFillet", r.mNumVariableFillet},
+            {"numBlend", r.mNumBlend},
+            {"numRoundedThread", r.mNumRoundedThread},
+            {"numVertexBlend", r.mNumVertexBlend},
+            {"numChamfer", r.mNumChamfer},
+            {"numConicBlend", r.mNumConicBlend},
+            {"numTaperedThread", r.mNumTaperedThread},
+            {"numVariablePitchThread", r.mNumVariablePitchThread},
+        };
+        for (const auto& [name, value] : counters)
+            out.set(name, static_cast<double>(value));
+        out.set("info", brep_info_to_val(r.mBrep));
         return out;
     });
 }
@@ -6636,6 +6842,11 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("meshBackend", &mesh_backend_js);
     emscripten::function("parallelBackend", &parallel_backend_js);
     emscripten::function("hasCgnslib", &has_cgnslib_js);
+    emscripten::function("hasOcct", &has_occt_js);
+    emscripten::function("hasZstd", &has_zstd_js);
+    emscripten::function("hasLz4", &has_lz4_js);
+    emscripten::function("hasBzip2", &has_bzip2_js);
+    emscripten::function("buildFlavour", &build_flavour_js);
     emscripten::function("availableFormats", &available_formats_js);
     emscripten::function("extractSurface", &extract_surface_js);
     emscripten::function("extractSkin", &extract_skin_js);
@@ -6671,6 +6882,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("featureEdges", &feature_edges_js);
     emscripten::function("segment", &segment_js);
     emscripten::function("fitPrimitives", &fit_primitives_js);
+    emscripten::function("fitCad", &fit_cad_js);
     emscripten::function("tessellate", &tessellate_js);
     emscripten::function("igaRefine", &iga_refine_js);
     emscripten::function("igaSample", &iga_sample_js);

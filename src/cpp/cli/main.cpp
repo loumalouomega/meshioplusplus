@@ -2223,6 +2223,11 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_variable_fillet", r.mNumVariableFillet);
         json.Field("num_blend", r.mNumBlend);
         json.Field("num_rounded_thread", r.mNumRoundedThread);
+        json.Field("num_vertex_blend", r.mNumVertexBlend);
+        json.Field("num_chamfer", r.mNumChamfer);
+        json.Field("num_conic_blend", r.mNumConicBlend);
+        json.Field("num_tapered_thread", r.mNumTaperedThread);
+        json.Field("num_variable_pitch_thread", r.mNumVariablePitchThread);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
@@ -2240,11 +2245,18 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (r.mNumVariableFillet > 0 || r.mNumBlend > 0)
             std::cout << " (" << r.mNumVariableFillet << " of varying radius, " << r.mNumBlend
                       << " blend(s))";
+        if (r.mNumConicBlend > 0)
+            std::cout << " (" << r.mNumConicBlend << " conic)";
         std::cout << "\n";
         std::cout << "  helical:   " << r.mNumHelical;
         if (r.mNumRoundedThread > 0)
             std::cout << " (" << r.mNumRoundedThread << " rounded)";
+        if (r.mNumTaperedThread > 0 || r.mNumVariablePitchThread > 0)
+            std::cout << " (" << r.mNumTaperedThread << " tapered, " << r.mNumVariablePitchThread
+                      << " of varying pitch)";
         std::cout << "\n";
+        std::cout << "  chamfer:   " << r.mNumChamfer << "\n";
+        std::cout << "  vertex:    " << r.mNumVertexBlend << " vertex blend(s)\n";
         std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
         std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation

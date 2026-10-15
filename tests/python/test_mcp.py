@@ -1482,6 +1482,14 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
     assert out["num_fillet"] == 0 and out["num_helical"] == 0
     assert out["num_variable_fillet"] == out["num_blend"] == 0
     assert out["num_rounded_thread"] == 0
+    for key in (
+        "num_vertex_blend",
+        "num_chamfer",
+        "num_conic_blend",
+        "num_tapered_thread",
+        "num_variable_pitch_thread",
+    ):
+        assert out[key] == 0
     assert out["step_path"].endswith("cube.step")
     assert "fit_cad:face" in out["cell_data"]
     assert os.path.exists(tmp_path / "solid.vtu")

@@ -367,6 +367,13 @@ export interface IgaOptions {
   trim?: boolean;
 }
 
+/**
+ * A B-rep in CAD JSON's shape: what a `cad_json` file holds, what `fitCad`
+ * returns as `info`, and -- in the full artifact -- what reading a `step` or
+ * `iges` file with `{info: true}` returns (still `format: 'cad_json'`, so
+ * `writeMesh(path, mesh, 'cad_json', {info})` and the `iga*` operations take
+ * it unchanged).
+ */
 export interface CadJsonInfo {
   format: 'cad_json';
   /** The face surfaces: two degrees, two full knot vectors, (points, 3) control net (u fastest). */
@@ -1696,13 +1703,36 @@ export interface MeshioPlusPlusModule {
   hasCgnslib(): boolean;
 
   /**
+   * Whether OpenCASCADE is linked in, so `step` and `iges` read and `fitCad`
+   * runs: true in the full artifact (`{full: true}`), false in the lean one.
+   */
+  hasOcct(): boolean;
+
+  /** Whether the VTK XML zstd block codec is linked in (the full artifact). */
+  hasZstd(): boolean;
+
+  /** Whether the VTK XML lz4 block codec is linked in (the full artifact). */
+  hasLz4(): boolean;
+
+  /** Whether bzip2 is linked in, for libMesh `.xda.bz2`/`.xdr.bz2` (the full artifact). */
+  hasBzip2(): boolean;
+
+  /**
+   * Which artifact loaded: `'lean'` (`meshioplusplus_wasm[_mt]`, MIT) or
+   * `'full'` (`meshioplusplus_wasm_full[_mt]`, with OpenCASCADE, zstd, lz4 and
+   * bzip2; mixed licence, see the package's THIRD_PARTY_NOTICES.md).
+   */
+  buildFlavour(): 'lean' | 'full';
+
+  /**
    * The format names this build can actually read and write, both sorted.
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
    * "convert to" menu: the two lists genuinely differ (`gmsh22` is
    * write-only), and the set depends on how
    * the artifact was built -- an official build carries the HDF5/netCDF-backed
-   * formats, one built with `--without-hdf5` does not.
+   * formats, one built with `--without-hdf5` does not, and `step` and `iges`
+   * are readers only in the full artifact.
    */
   availableFormats(): { readers: string[]; writers: string[] };
 
@@ -2517,6 +2547,18 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Build a CAD solid from the fitted patches of a closed skin (normally the
+   * output of `segment` then `fitPrimitives`): planes, spheres, cylinders,
+   * cones and tori, fillets and blends, threads and freeform B-spline faces,
+   * sewn and checked by OpenCASCADE, optionally written as STEP to
+   * `stepPath` on the virtual FS. Needs OpenCASCADE: the full artifact only.
+   * See doc/fit_cad.md.
+   * @throws {Error} in the lean artifact (naming `{full: true}`), on a bad
+   *   option, or on a skin that is not closed.
+   */
+  fitCad(mesh: Mesh, options?: FitCadOptions): FitCadResult;
+
+  /**
    * Refine every patch (every face surface of a B-rep) of a NURBS model
    * exactly: degree elevation by `elevate`, then knot insertion splitting each
    * knot span in `subdivisions` parts (a number, or one per direction; an
@@ -3197,15 +3239,103 @@ export interface MeshioPlusPlusModule {
  *   `locateFile`/`onAbort` wrapped for diagnostics (your own overrides still
  *   run first) -- see {@link MeshioPlusPlusLoadError}. `locateFile` receives
  *   the requested filename, so return the URL matching the loaded variant
- *   (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
+ *   (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`, and their
+ *   `_full` counterparts with `full`).
  * @param options.variant which native artifact to load: `'auto'` (default),
  *   `'mt'` (force threaded), or `'seq'` (force sequential).
+ * @param options.full load the full artifact (OpenCASCADE, zstd, lz4, bzip2;
+ *   mixed licence) rather than the lean, MIT one. Only the chosen artifact's
+ *   bytes are fetched.
+ * @param options.fullGlue where the full artifact's glue module lives, for a
+ *   bundled app that copied `dist/meshioplusplus_wasm_full*.{mjs,wasm}`
+ *   itself; the loader never names the full glue literally, so a bundler
+ *   does not pull it into a lean bundle.
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
 export function loadMeshioPlusPlus(
     moduleOverrides?: ModuleOverrides,
-    options?: { variant?: 'auto' | 'mt' | 'seq' },
+    options?: LoadOptions,
 ): Promise<MeshioPlusPlusModule>;
+
+/** The second argument of {@link loadMeshioPlusPlus}. */
+export interface LoadOptions {
+  variant?: 'auto' | 'mt' | 'seq';
+  full?: boolean;
+  fullGlue?: string | URL;
+}
+
+/** The options of {@link MeshioPlusPlusModule.fitCad}; every key is optional. */
+export interface FitCadOptions {
+  /** Write the solid as AP214 STEP here (virtual FS); omitted writes nothing. */
+  stepPath?: string;
+  /** The largest distance a face may lie from the skin; <= 0 is automatic. */
+  tolerance?: number;
+  /** Try the exact intersection of two analytic surfaces first (default true). */
+  exactEdges?: boolean;
+  /** The accepted primitive types that become analytic faces (default: all five). */
+  types?: Array<'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus'>;
+  /** The re-meshed solid's chordal deflection; <= 0 takes tolerance / 4. */
+  meshDeflection?: number;
+  /** Rounds of demoting failed faces before every patch is faceted (default 8). */
+  maxDemotionRounds?: number;
+  /** Try a freeform B-spline face where no primitive fits (default true). */
+  freeform?: boolean;
+  /** The freeform B-spline's highest degree, 3 to 8 (default 3). */
+  freeformDegree?: number;
+  /** The most grid points per direction a freeform fit samples (default 64). */
+  freeformMaxControl?: number;
+  /** Split a freeform patch that folds over every flattening (default true). */
+  freeformSplit?: boolean;
+  /** Try fillets, blends, chamfers and vertex blends (default true). */
+  fillets?: boolean;
+  /** Try thread faces, tapered and of varying pitch included (default true). */
+  threads?: boolean;
+}
+
+/** What {@link MeshioPlusPlusModule.fitCad} built. */
+export interface FitCadResult {
+  /** The solid re-meshed, with `fit_cad:face`, `fit_cad:type` and `fit_cad:patch` cell data. */
+  mesh: Mesh;
+  /** Whether the solid passed OpenCASCADE's B-rep check. */
+  valid: boolean;
+  tolerance: number;
+  volume: number;
+  skinVolume: number;
+  volumeRatio: number;
+  /** Symmetric Hausdorff distance, skin to re-meshed solid. */
+  maxDeviation: number;
+  numFaces: number;
+  numPlane: number;
+  numSphere: number;
+  numCylinder: number;
+  numCone: number;
+  numTorus: number;
+  numFacetedFaces: number;
+  numPatches: number;
+  numDemoted: number;
+  numExactEdges: number;
+  numApproxEdges: number;
+  numSolids: number;
+  numBspline: number;
+  numSplitPatches: number;
+  numFillet: number;
+  numHelical: number;
+  numVariableFillet: number;
+  numBlend: number;
+  numRoundedThread: number;
+  /** Vertex blends (setback corners), type 9. */
+  numVertexBlend: number;
+  /** Chamfers (straight-section blends), type 10. */
+  numChamfer: number;
+  /** Fillet faces whose section is a conic rather than a circle. */
+  numConicBlend: number;
+  /** Thread flanks on a tapered (conical) thread. */
+  numTaperedThread: number;
+  /** Thread flanks whose pitch varies along the axis. */
+  numVariablePitchThread: number;
+  /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */
+  info: CadJsonInfo;
+}
 
 /** Overrides forwarded to the underlying Emscripten module factory. */
 export interface ModuleOverrides {
@@ -3234,6 +3364,8 @@ export interface MeshioPlusPlusLoadError extends Error {
   name: 'MeshioPlusPlusLoadError';
   /** Which native artifact was being loaded. */
   variant: 'mt' | 'seq';
+  /** Whether it was the full artifact. */
+  full: boolean;
   /** The glue module specifier (e.g. '../dist/meshioplusplus_wasm_mt.mjs'). */
   glue: string;
   /** The filename Emscripten asked `locateFile` to resolve, if it got that far. */

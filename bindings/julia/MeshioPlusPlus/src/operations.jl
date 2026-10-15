@@ -1997,7 +1997,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
              num_exact_edges, num_approx_edges, num_solids, num_bspline,
              num_split_patches, num_fillet, num_helical, num_variable_fillet,
-             num_blend, num_rounded_thread)
+             num_blend, num_rounded_thread, num_vertex_blend, num_chamfer,
+             num_conic_blend, num_tapered_thread, num_variable_pitch_thread)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -2007,7 +2008,11 @@ face about a neighbouring cylinder's or cone's axis or the screw it fits
 itself, with a straight or rounded profile (with `threads`, type 8), or a
 freeform B-spline face (with `freeform`, type 6; with `freeform_split`, a patch
 folding over every flattening is split into pieces first), and a patch between
-two fitted faces, one of them freeform, then a rolling-ball blend (type 7); the
+two fitted faces, one of them freeform, then a rolling-ball blend (type 7).
+Since v17.2.0 a patch no rolling ball or thread explains between two analytic
+faces is a chamfer (type 10) or a conic blend (type 7), a thread of varying
+pitch or cut on a taper is recognised, and a corner where three or more blends
+meet is a vertex blend (type 9); the
 rest planar facets, and a face that fails the B-rep check or
 strays beyond `tolerance` is demoted to facets. `step_path` also writes the solid as STEP; the mesh is the
 solid re-meshed with cell data `fit_cad:face`, `fit_cad:type` and
@@ -2029,16 +2034,19 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
         mask |= UInt32(1) << k
     end
     report = Ref{_CFitCadReport}()
+    report_ex = Ref{_CFitCadReportEx}()
     opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
                         Int64(max_demotion_rounds), Int32(exact_edges), mask,
                         Int32(freeform), Int32(freeform_degree), Int64(freeform_max_control),
                         Int32(freeform_split), Int32(fillets), Int32(threads), Int32(0),
                         ntuple(_ -> Int64(0), 2))
-    ptr = ccall(_sym(:mio_fit_cad), Ptr{Cvoid},
-                (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ptr{_CFitCadReport}),
-                _handle(m), String(step_path), Ref(opts), report)
+    ptr = ccall(_sym(:mio_fit_cad_ex), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ptr{_CFitCadReport},
+                 Ptr{_CFitCadReportEx}),
+                _handle(m), String(step_path), Ref(opts), report, report_ex)
     r = _check_ptr(ptr)
     rep = report[]
+    ex = report_ex[]
     (mesh=Mesh(r), valid=rep.valid != 0, tolerance=rep.tolerance, volume=rep.volume,
      skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
      max_deviation=rep.max_deviation, num_faces=Int(rep.num_faces),
@@ -2050,7 +2058,10 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      num_solids=Int(rep.num_solids), num_bspline=Int(rep.num_bspline),
      num_split_patches=Int(rep.num_split_patches), num_fillet=Int(rep.num_fillet),
      num_helical=Int(rep.num_helical), num_variable_fillet=Int(rep.num_variable_fillet),
-     num_blend=Int(rep.num_blend), num_rounded_thread=Int(rep.num_rounded_thread))
+     num_blend=Int(rep.num_blend), num_rounded_thread=Int(rep.num_rounded_thread),
+     num_vertex_blend=Int(ex.num_vertex_blend), num_chamfer=Int(ex.num_chamfer),
+     num_conic_blend=Int(ex.num_conic_blend), num_tapered_thread=Int(ex.num_tapered_thread),
+     num_variable_pitch_thread=Int(ex.num_variable_pitch_thread))
 end
 
 """

@@ -4948,6 +4948,19 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
         EXPECT_EQ(report.num_rounded_thread, 0);
         EXPECT_EQ(mio_mesh_num_cell_blocks(solid), 1);
         mio_mesh_free(solid);
+        // The extended report (v17.2.0): a box has none of its features.
+        mio_fit_cad_report_ex ex;
+        std::memset(&ex, 0xff, sizeof ex);
+        solid = mio_fit_cad_ex(m, nullptr, &opts, nullptr, &ex);
+        ASSERT_NE(solid, nullptr) << mio_last_error();
+        EXPECT_EQ(ex.num_vertex_blend, 0);
+        EXPECT_EQ(ex.num_chamfer, 0);
+        EXPECT_EQ(ex.num_conic_blend, 0);
+        EXPECT_EQ(ex.num_tapered_thread, 0);
+        EXPECT_EQ(ex.num_variable_pitch_thread, 0);
+        for (int64_t r : ex.reserved)
+            EXPECT_EQ(r, 0);
+        mio_mesh_free(solid);
         // Fillets, threads and splitting off still build the six planes.
         opts.freeform_split = 0;
         opts.fillets = 0;
@@ -4964,6 +4977,7 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
                   std::string::npos);
     }
     EXPECT_EQ(mio_fit_cad(nullptr, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_fit_cad_ex(nullptr, nullptr, nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
 }
 

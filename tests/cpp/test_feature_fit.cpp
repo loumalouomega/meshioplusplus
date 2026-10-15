@@ -14,11 +14,15 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// The OpenCASCADE-free half of fit_cad's fillets and threads (roadmap 6.3.1).
+// The OpenCASCADE-free half of fit_cad's fillets and threads (roadmap 6.3.1),
+// and of its chamfers, conic blends, vertex blends and tapered and
+// variable-pitch threads (roadmap 6.3, v17.2.0).
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -369,4 +373,198 @@ TEST(FeatureFit, HelicalFitRefusesCylindersAndSurfacesOfRevolution) {
         },
         pts, tris);
     EXPECT_FALSE(helical_fit(pts, tris, nullptr, nullptr, 1e-3).mOk);
+}
+
+// ---------------------------------------------------------------------------
+// Tapered and variable-pitch threads, chamfers, conic blends and the boundary
+// of a vertex blend (roadmap 6.3, v17.2.0).
+// ---------------------------------------------------------------------------
+
+TEST(FeatureFit, HelicoidOfVaryingPitchIsOneMoreColumn) {
+    // A straight flank whose pitch grows from 0.25 by 0.05 per turn.
+    const double k = 0.25 / (2.0 * kPi), q = 0.05 / (8.0 * kPi * kPi);
+    const double t = std::tan(30.0 * kPi / 180.0);
+    std::vector<PatchVec> pts;
+    std::vector<PatchTri> tris;
+    grid(
+        4, 160,
+        [&](double U, double V) {
+            const double rho = 0.8 + 0.2 * U, th = 6.0 * kPi * V;
+            return PatchVec{rho * std::cos(th), rho * std::sin(th),
+                            0.1 + k * th + q * th * th + t * rho};
+        },
+        pts, tris);
+    // The constant pitch misses it by more than the variable one.
+    const HelicoidFit c = helicoid_fit(pts, tris, {0, 0, 0}, {0, 0, 1});
+    const HelicoidFit v = helicoid_fit(pts, tris, {0, 0, 0}, {0, 0, 1}, true);
+    ASSERT_TRUE(v.mOk);
+    EXPECT_GT(c.mMax, 1e-3);
+    EXPECT_LT(v.mMax, 1e-12);
+    EXPECT_NEAR(v.mT, t, 1e-9);
+    EXPECT_NEAR(v.PitchAt(v.mThetaMax) - v.PitchAt(v.mThetaMin), 0.05 * 3.0, 1e-9);
+    // The surface reproduces a vertex.
+    const PatchVec p = v.At(0.9, 2.0);
+    EXPECT_NEAR(p[2], 0.1 + k * 2.0 + q * 4.0 + t * 0.9, 1e-12);
+    // A constant pitch is also a varying one, of rate zero.
+    grid(
+        4, 96,
+        [&](double U, double V) {
+            const double rho = 0.8 + 0.2 * U, th = 4.0 * kPi * V;
+            return PatchVec{rho * std::cos(th), rho * std::sin(th), 0.1 + k * th + t * rho};
+        },
+        pts, tris);
+    const HelicoidFit z = helicoid_fit(pts, tris, {0, 0, 0}, {0, 0, 1}, true);
+    ASSERT_TRUE(z.mOk);
+    EXPECT_NEAR(z.mQ, 0.0, 1e-12);
+}
+
+namespace {
+
+// rounded_crest's thread cut on a taper: the profile moves out by Taper per
+// unit of advance, and the advance grows by PitchRate per turn.
+PatchVec tapered_crest(double U, double V, double Taper, double PitchRate) {
+    const double zeta = -0.07 + 0.14 * U, th = 4.0 * kPi * V;
+    const double g = 0.5 / (2.0 * kPi) * th + PitchRate * th * th / (8.0 * kPi * kPi);
+    const double rho = 0.9 + std::sqrt(0.01 - zeta * zeta) + Taper * g;
+    return {rho * std::cos(th), rho * std::sin(th), zeta + g};
+}
+
+}  // namespace
+
+TEST(FeatureFit, HelicalFitFindsATaperAndAGrowingPitch) {
+    std::vector<PatchVec> pts;
+    std::vector<PatchTri> tris;
+    const PatchVec o{0.0, 0.0, 0.0}, a{0.0, 0.0, 1.0};
+    for (const auto& [taper, rate] : {std::pair<double, double>{0.0625, 0.0}, {0.0, 0.05}}) {
+        grid(
+            12, 128, [&](double U, double V) { return tapered_crest(U, V, taper, rate); }, pts,
+            tris);
+        // The constant, straight screw cannot explain it; the general one can.
+        EXPECT_FALSE(helical_fit(pts, tris, &o, &a, 1e-3).mOk);
+        const HelicalFit h = helical_fit(pts, tris, &o, &a, 1e-3, true, taper);
+        ASSERT_TRUE(h.mOk) << taper << " " << rate;
+        EXPECT_FALSE(h.mStraight);
+        EXPECT_NEAR(h.mTaper, taper, 1e-3);
+        EXPECT_NEAR(h.PitchAt(h.mThetaMax) - h.PitchAt(h.mThetaMin), 2.0 * rate, 1e-3);
+        EXPECT_LT(h.mMax, 4e-4);
+        // The surface passes through the patch.
+        const PatchVec p = tapered_crest(0.5, 0.5, taper, rate);
+        double best = 1e9;
+        for (int i = 0; i <= 200; ++i) {
+            const PatchVec q = h.At(h.mS0 + (h.mS1 - h.mS0) * i / 200.0, 2.0 * kPi);
+            best = std::min(best, std::hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]));
+        }
+        EXPECT_LT(best, 2e-3);
+    }
+}
+
+namespace {
+
+// The edge of x <= 1, y <= 1 along z in [0, 2] cut from the foot (1, 0.7, z)
+// on x = 1 to the foot (0.8 - 0.1 z, 1, z) on y = 1: each section the
+// rational quadratic through the corner (1, 1, z) with weight W, a chamfer
+// whose width grows along the edge for W = 0.
+PatchVec section_edge(double U, double V, double W) {
+    const double z = 2.0 * V, d2 = 0.2 + 0.1 * z;
+    const PatchVec r1{1.0, 0.7, z}, r2{1.0 - d2, 1.0, z}, a{1.0, 1.0, z};
+    const double b0 = W > 0.0 ? (1.0 - U) * (1.0 - U) : 1.0 - U, b1 = 2.0 * W * U * (1.0 - U),
+                 b2 = W > 0.0 ? U * U : U, den = b0 + b1 + b2;
+    PatchVec p{};
+    for (int k = 0; k < 3; ++k)
+        p[k] = (b0 * r1[k] + b1 * a[k] + b2 * r2[k]) / den;
+    return p;
+}
+
+bool normal_x(const PatchVec&, PatchVec& rN) {
+    rN = {1.0, 0.0, 0.0};
+    return true;
+}
+
+bool normal_y(const PatchVec&, PatchVec& rN) {
+    rN = {0.0, 1.0, 0.0};
+    return true;
+}
+
+}  // namespace
+
+TEST(FeatureFit, ChamferOfVaryingWidthBetweenTwoPlanes) {
+    std::vector<PatchVec> pts;
+    std::vector<PatchTri> tris;
+    grid(10, 24, [](double U, double V) { return section_edge(U, V, 0.0); }, pts, tris);
+    for (bool swapped : {false, true}) {
+        const SectionBlendFit f =
+            swapped ? section_blend_fit(pts, tris, foot_y1, normal_y, foot_x1, normal_x, 1e-3)
+                    : section_blend_fit(pts, tris, foot_x1, normal_x, foot_y1, normal_y, 1e-3);
+        ASSERT_TRUE(f.mOk) << swapped;
+        EXPECT_TRUE(f.mChamfer);
+        EXPECT_LT(f.mMax, 1e-12);
+        // Every section, past the ends too, is the chord of the edge's section.
+        for (int i = -2; i <= 12; ++i) {
+            const double t = f.mLength * i / 10.0;
+            PatchVec p{};
+            ASSERT_TRUE(f.At(t, 0.5, p));
+            const double z = p[2], d2 = 0.2 + 0.1 * z;
+            EXPECT_NEAR(p[0], 1.0 - 0.5 * d2, 1e-9);
+            EXPECT_NEAR(p[1], 0.85, 1e-9);
+        }
+    }
+}
+
+TEST(FeatureFit, ConicBlendRecoversItsWeight) {
+    std::vector<PatchVec> pts;
+    std::vector<PatchTri> tris;
+    grid(12, 24, [](double U, double V) { return section_edge(U, V, 0.5); }, pts, tris);
+    const SectionBlendFit f =
+        section_blend_fit(pts, tris, foot_x1, normal_x, foot_y1, normal_y, 1e-3);
+    ASSERT_TRUE(f.mOk);
+    EXPECT_FALSE(f.mChamfer);
+    EXPECT_NEAR(f.mWeight.At(0.5 * f.mLength), 0.5, 1e-9);
+    EXPECT_LT(f.mMax, 1e-9);
+    // A section's apex is the corner of the edge.
+    PatchVec r1{}, r2{}, apex{};
+    ASSERT_TRUE(f.Section(0.25 * f.mLength, r1, r2, apex));
+    EXPECT_NEAR(apex[0], 1.0, 1e-9);
+    EXPECT_NEAR(apex[1], 1.0, 1e-9);
+}
+
+TEST(FeatureFit, NoSectionBlendOnAPatchNoSectionExplains) {
+    // A strip that bulges along the edge: its sections are no one conic.
+    std::vector<PatchVec> pts;
+    std::vector<PatchTri> tris;
+    grid(
+        10, 24,
+        [](double U, double V) {
+            PatchVec p = section_edge(U, V, 0.5);
+            const double bulge = 0.05 * std::sin(kPi * U) * std::sin(6.0 * kPi * V);
+            p[0] -= bulge;
+            p[1] -= bulge;
+            return p;
+        },
+        pts, tris);
+    EXPECT_FALSE(section_blend_fit(pts, tris, foot_x1, normal_x, foot_y1, normal_y, 1e-3).mOk);
+}
+
+TEST(FeatureFit, VertexBlendBoundaryNeedsOneLoopAndThreeRuns) {
+    // A hexagon fanned from its centre: six boundary edges.
+    std::vector<PatchTri> tris;
+    for (std::size_t i = 0; i < 6; ++i)
+        tris.push_back({0, 1 + i, 1 + (i + 1) % 6});
+    auto by_pair = [](std::size_t A, std::size_t B) -> std::int64_t {
+        // Edges 1-2, 2-3 face neighbour 7; 3-4, 4-5 face 8; 5-6, 6-1 face 9.
+        const std::size_t a = std::min(A, B) == 1 && std::max(A, B) == 6 ? 6 : std::min(A, B);
+        return 7 + static_cast<std::int64_t>((a - 1) / 2);
+    };
+    const VertexBlendBoundary vb = vertex_blend_boundary(tris, by_pair);
+    ASSERT_TRUE(vb.mOk);
+    EXPECT_EQ(vb.mLoop.size(), 6u);
+    EXPECT_EQ(vb.mNeighbours.size(), 3u);
+    // One neighbour all round, or a neighbour met twice, is no vertex blend.
+    EXPECT_FALSE(vertex_blend_boundary(tris, [](std::size_t, std::size_t) { return 7; }).mOk);
+    EXPECT_FALSE(vertex_blend_boundary(tris, [](std::size_t A, std::size_t B) -> std::int64_t {
+                     return 7 + static_cast<std::int64_t>((std::min(A, B) - 1) % 3);
+                 }).mOk);
+    // Nothing across an edge is no vertex blend either.
+    EXPECT_FALSE(vertex_blend_boundary(tris, [&](std::size_t A, std::size_t B) {
+                     return std::min(A, B) == 3 ? -1 : by_pair(A, B);
+                 }).mOk);
 }

@@ -11,7 +11,7 @@
 
 ## Reading
 
-Reading STEP means evaluating its curves and surfaces, which is a CAD kernel's job: the reader runs on the optional OpenCASCADE backend that [`fit_cad`](/fit_cad) introduced (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`, LGPL-2.1 with the OCCT exception, bring your own, absent from the wheels, the WASM build and the release CLI binaries; see the [OpenCASCADE decision](/spikes#the-opencascade-dependency)). Without it, reading raises `NotImplementedError` (C++ `Unsupported`) naming the flag, and the round trip on the [conformance page](/conformance#step) is checked only in a build with it. [IGES](/formats/iges) is read the same way.
+Reading STEP means evaluating its curves and surfaces, which is a CAD kernel's job: the reader runs on the optional OpenCASCADE backend that [`fit_cad`](/fit_cad) introduced (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`, LGPL-2.1 with the OCCT exception, bring your own, absent from the wheels, the lean WASM build and the release CLI binaries; see the [OpenCASCADE decision](/spikes#the-opencascade-dependency)). The [full WASM artifact](/wasm#lean-and-full-builds) (v17.2.0) links it, so STEP and IGES read in the browser and in Node there, `readMeshSelective(path, {info: true})` returning the B-rep as CAD JSON's shape. Without it, reading raises `NotImplementedError` (C++ `Unsupported`) naming the flag, and the round trip on the [conformance page](/conformance#step) is checked only in a build with it. [IGES](/formats/iges) is read the same way.
 
 ```python
 import meshioplusplus as mp

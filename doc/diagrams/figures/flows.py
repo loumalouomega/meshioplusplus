@@ -1067,9 +1067,7 @@ def roadmap_map():
         (
             "§6 full WASM build",
             [
-                ("full artifact (OCCT · codecs)", "M"),
-                ("MMG probe under Emscripten", "M"),
-                ("CAD tier (blends · threads)", "M"),
+                ("MMG under Emscripten (after §4.3)", "M"),
             ],
             [],
         ),

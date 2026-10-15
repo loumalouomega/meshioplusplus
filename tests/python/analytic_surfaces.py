@@ -258,11 +258,16 @@ def inclined_boss(alpha=20.0, r=0.6, rf=0.2, h=1.5, plate=1.6, t=0.4, n=96, k=8)
     return b.mesh()
 
 
-def _helical_rod(w, rad, pitch, turns, n, depth=1.0):
+def _helical_rod(w, rad, pitch, turns, n, depth=1.0, taper=0.0, pitch_rate=0.0):
     """A rod about z whose surface is ``r = f(z - K theta)``, ``K = pitch /
     (2 pi)``, one period of ``f`` given as nodes ``(w, rad)``; the grid
     follows the helices through every node, and each end is closed by a fan
-    to a point on the axis ``depth`` pitches inside the rod."""
+    to a point on the axis ``depth`` pitches inside the rod.
+
+    ``taper`` and ``pitch_rate`` generalise the screw: a node at the unwrapped
+    angle ``T`` sits at ``z = w + g(T)``, ``g(T) = K T + pitch_rate T^2 / (8
+    pi^2)`` (the pitch grows by ``pitch_rate`` per turn), and ``r = f + taper
+    (w + g(T))`` (``analytic::helical_rod``)."""
     k = pitch / (2.0 * np.pi)
     per = len(w)
     rows = per * turns
@@ -272,9 +277,15 @@ def _helical_rod(w, rad, pitch, turns, n, depth=1.0):
         th = 2.0 * np.pi * i / n
         col = []
         for j in range(rows + 1):
-            wj = w[j % per] + pitch * (j // per)
-            rj = rad[j % per]
-            col.append(b.add([rj * np.cos(th), rj * np.sin(th), wj + k * th]))
+            if taper == 0.0 and pitch_rate == 0.0:
+                wj = w[j % per] + pitch * (j // per)
+                rj = rad[j % per]
+                col.append(b.add([rj * np.cos(th), rj * np.sin(th), wj + k * th]))
+                continue
+            big = th + 2.0 * np.pi * (j // per)
+            g = k * big + pitch_rate * big * big / (8.0 * np.pi * np.pi)
+            rj = rad[j % per] + taper * (w[j % per] + g)
+            col.append(b.add([rj * np.cos(th), rj * np.sin(th), w[j % per] + g]))
         ids.append(col)
 
     def node(i, j):
@@ -353,6 +364,210 @@ def rounded_thread_rod(pitch=0.5, r0=0.8, r1=1.0, rr=0.2, turns=4, n=64):
                 rad.append(r1 - (r1 - r0) * tt)
         at += seg[s]
     return _helical_rod(w, rad, pitch, turns, n)
+
+
+def _trapezoid_profile(pitch, r0, r1, rounded=None, split_root=False):
+    """One period of ``threaded_rod``'s profile as ``(w, rad)``; ``rounded``
+    (the arc radius) rounds the root and crest as ``rounded_thread_rod``
+    does, and ``split_root`` runs the period from the middle of one root to
+    the middle of the next."""
+    if split_root:
+        seg = [0.13 * pitch, 0.24 * pitch, 0.26 * pitch, 0.24 * pitch, 0.13 * pitch]
+        sub = [1, 3, 2, 3, 1]
+        kinds = [0, 1, 2, 3, 0]
+    else:
+        seg = [0.26 * pitch, 0.24 * pitch, 0.26 * pitch, 0.24 * pitch]
+        sub = [4, 3, 4, 3] if rounded else [2, 3, 2, 3]
+        kinds = [0, 1, 2, 3]
+    half = 0.13 * pitch
+    d = np.sqrt(rounded * rounded - half * half) if rounded else 0.0
+    w, rad, at = [], [], 0.0
+    for s, kind in enumerate(kinds):
+        for i in range(sub[s]):
+            tt = i / sub[s]
+            w.append(at + seg[s] * tt)
+            x = seg[s] * tt - half
+            if kind == 0:
+                rad.append(
+                    r0 + d - np.sqrt(rounded * rounded - x * x) if rounded else r0
+                )
+            elif kind == 1:
+                rad.append(r0 + (r1 - r0) * tt)
+            elif kind == 2:
+                rad.append(
+                    r1 - d + np.sqrt(rounded * rounded - x * x) if rounded else r1
+                )
+            else:
+                rad.append(r1 - (r1 - r0) * tt)
+        at += seg[s]
+    return w, rad
+
+
+def tapered_thread_rod(pitch=0.5, r0=0.8, r1=1.0, taper=0.0625, turns=4, n=64):
+    """``threaded_rod``'s thread cut on a cone whose radius grows by ``taper``
+    per unit length: the root and crest are helical strips of cones, the
+    flanks ruled helicoids (``analytic::tapered_thread_rod``)."""
+    w, rad = _trapezoid_profile(pitch, r0, r1)
+    return _helical_rod(w, rad, pitch, turns, n, taper=taper)
+
+
+def tapered_rounded_thread_rod(
+    pitch=0.5, r0=0.8, r1=1.0, rr=0.2, taper=0.0625, turns=4, n=64
+):
+    """``rounded_thread_rod``'s thread cut on a cone, with no cylinder or cone
+    anywhere (``analytic::tapered_rounded_thread_rod``)."""
+    w, rad = _trapezoid_profile(pitch, r0, r1, rounded=rr)
+    return _helical_rod(w, rad, pitch, turns, n, taper=taper)
+
+
+def variable_pitch_thread_rod(
+    pitch=0.5, r0=0.8, r1=1.0, pitch_rate=0.05, turns=4, n=64
+):
+    """``threaded_rod``'s thread with a pitch growing by ``pitch_rate`` per
+    turn, each period running from the middle of one root to the middle of the
+    next so the root takes up the growing gap
+    (``analytic::variable_pitch_thread_rod``)."""
+    w, rad = _trapezoid_profile(pitch, r0, r1, split_root=True)
+    return _helical_rod(w, rad, pitch, turns, n, pitch_rate=pitch_rate)
+
+
+def section_blend_block(
+    weight=0.0,
+    length=2.0,
+    width=1.0,
+    height=1.0,
+    d1=0.3,
+    d2a=0.2,
+    d2b=0.4,
+    n=40,
+    k=12,
+    m=6,
+):
+    """The block ``[0, length] x [0, width] x [0, height]`` whose edge at
+    ``y = width``, ``z = height`` is cut by a blend from the top, ``d1`` in from
+    the edge, to the side, ``d2(x)`` down from it, growing linearly from
+    ``d2a`` to ``d2b``. Each cross-section is the rational quadratic from the
+    side foot through the corner to the top foot with weight ``weight``: 0 a
+    chamfer of varying width, more a conic blend tangent to both faces. The
+    triangles carry their faces as ``segment:patch`` (0 bottom, 1 side, 2
+    top, 3 back, 4 and 5 the ends, 6 the blend)
+    (``analytic::section_blend_block``)."""
+    W, H, L = width, height, length
+    b = _Skin()
+    loops = []
+    centres = []
+    for i in range(n + 1):
+        x = L * i / n
+        d2 = d2a + (d2b - d2a) * x / L
+        top, side, apex = (
+            np.array(v) for v in ([x, W - d1, H], [x, W, H - d2], [x, W, H])
+        )
+        loop = []
+        for j in range(m):  # the bottom, y from 0 to W
+            loop.append(([x, W * j / m, 0.0], [0.0, 0.0, -1.0]))
+        for j in range(m):  # the side, z from 0 to H - d2
+            loop.append(([x, W, (H - d2) * j / m], [0.0, 1.0, 0.0]))
+        for j in range(k):  # the blend, side foot to top foot
+            u = j / k  # evenly along a chamfer's chord, by the conic's parameter else
+            if weight > 0.0:
+                b0, b1, b2 = (1.0 - u) ** 2, 2.0 * weight * u * (1.0 - u), u * u
+            else:
+                b0, b1, b2 = 1.0 - u, 0.0, u
+            loop.append(((b0 * side + b1 * apex + b2 * top) / (b0 + b1 + b2), None))
+        for j in range(m):  # the top, y from W - d1 to 0
+            loop.append(([x, (W - d1) * (1.0 - j / m), H], [0.0, 0.0, 1.0]))
+        for j in range(m):  # the back, z from H to 0
+            loop.append(([x, 0.0, H * (1.0 - j / m)], [0.0, -1.0, 0.0]))
+        loops.append([(b.add(p), o) for p, o in loop])
+        centres.append(np.array([x, W - d1, H - d2]))
+    count = len(loops[0])
+    for i in range(n):
+        for j in range(count):
+            jn = (j + 1) % count
+            a0, out = loops[i][j]
+            if out is None:
+                out = np.asarray(b.pts[a0]) - centres[i]
+            b.quad(a0, loops[i + 1][j][0], loops[i + 1][jn][0], loops[i][jn][0], out)
+    for i, sign in ((0, -1.0), (n, 1.0)):
+        ring = [v for v, _ in loops[i]]
+        mid = b.add(np.mean([b.pts[v] for v in ring], axis=0))
+        for j in range(count):
+            b.tri(mid, ring[j], ring[(j + 1) % count], np.array([sign, 0.0, 0.0]))
+    mesh = b.mesh()
+    m = mesh.points[mesh.cells[0].data].mean(axis=1)
+    e = 1e-9
+    label = np.full(len(m), 6, dtype=np.int64)
+    for code, hit in reversed(
+        [
+            (0, np.abs(m[:, 2]) < e),
+            (1, np.abs(m[:, 1] - W) < e),
+            (2, np.abs(m[:, 2] - H) < e),
+            (3, np.abs(m[:, 1]) < e),
+            (4, np.abs(m[:, 0]) < e),
+            (5, np.abs(m[:, 0] - L) < e),
+        ]
+    ):
+        label[hit] = code
+    mesh.cell_data["segment:patch"] = [label]
+    return mesh
+
+
+def rounded_box(r=0.3, sx=1.0, sy=1.3, sz=0.8, nf=4, nb=6):
+    """The box ``[-sx, sx] x [-sy, sy] x [-sz, sz]`` with every edge and corner
+    rounded: the cube ``[-1, 1]^3`` rounded by a ball of radius ``r``, scaled.
+    Scaled unequally, its edge blends are conic blends and its corners
+    ellipsoid patches, each a vertex blend tangent to three edge blends; the
+    triangles carry the patches as ``segment:patch`` (``analytic::rounded_box``)."""
+    inner = 1.0 - r
+    g = [-(inner + r * np.tan(0.25 * np.pi * k / nb)) for k in range(nb, 0, -1)]
+    g += [-inner + 2.0 * inner * k / nf for k in range(nf + 1)]
+    g += [inner + r * np.tan(0.25 * np.pi * k / nb) for k in range(1, nb + 1)]
+    scale = np.array([sx, sy, sz])
+    b = _Skin()
+    ids = {}
+
+    def vertex(x):
+        key = tuple(int(round(v * 1e9)) for v in x)
+        if key not in ids:
+            x = np.asarray(x, dtype=float)
+            c = np.clip(x, -inner, inner)
+            d = x - c
+            ids[key] = b.add(scale * (c + r * d / np.linalg.norm(d)))
+        return ids[key]
+
+    def patch_of(c):
+        code = 0
+        for x in c:
+            code = code * 3 + (2 if x > inner else 0 if x < -inner else 1)
+        return code
+
+    label = []
+    n = len(g)
+    for a in range(3):
+        for sign in (-1.0, 1.0):
+            u, v = (a + 1) % 3, (a + 2) % 3
+
+            def at(i, j):
+                x = [0.0, 0.0, 0.0]
+                x[a], x[u], x[v] = sign, g[i], g[j]
+                return x
+
+            out = np.zeros(3)
+            out[a] = sign
+            for i in range(n - 1):
+                for j in range(n - 1):
+                    c = 0.5 * (np.asarray(at(i, j)) + np.asarray(at(i + 1, j + 1)))
+                    b.quad(
+                        vertex(at(i, j)),
+                        vertex(at(i + 1, j)),
+                        vertex(at(i + 1, j + 1)),
+                        vertex(at(i, j + 1)),
+                        out,
+                    )
+                    label += [patch_of(c)] * 2
+    mesh = b.mesh()
+    mesh.cell_data["segment:patch"] = [np.array(label, dtype=np.int64)]
+    return mesh
 
 
 def variable_fillet_block(

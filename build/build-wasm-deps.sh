@@ -7,6 +7,18 @@
 #   ./build-wasm-deps.sh                 # build both into the default prefix
 #   ./build-wasm-deps.sh --print-prefix  # just print that prefix and exit
 #   ./build-wasm-deps.sh --without-netcdf
+#   ./build-wasm-deps.sh --full          # also the full artifact's libraries
+#   ./build-wasm-deps.sh --full-only --threads seq
+#   ./build-wasm-deps.sh --print-full-prefix mt
+#
+# The full artifact (meshioplusplus_wasm_full, configure-wasm.sh --full) links
+# three more libraries: OpenCASCADE (STEP/IGES reading and fit_cad), zstd and
+# lz4 (VTK XML block compression). bzip2 is Emscripten's own port, like zlib,
+# and needs nothing here. They install into their own prefix, one per
+# threading flavour: OCCT's reference counts are std::atomic, and an object
+# compiled without -pthread has its atomics lowered to plain loads and stores
+# and is refused by the threaded (--shared-memory) link. The lean prefix and
+# its CI cache are untouched by --full.
 #
 # Requires the Emscripten SDK (emsdk) on PATH -- the same one used for the
 # meshio++ build itself, since a static archive is only guaranteed to link
@@ -45,6 +57,24 @@ CGNS_VERSION="4.5.2"
 HDF5_SHA256="e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b"
 NETCDF_SHA256="990f46d49525d6ab5dc4249f8684c6deeaf54de6fec63a187e9fb382cc0ffdff"
 CGNS_SHA256="95075e1fd0b51d97b1b96b73ebe03b1a551fbcc9cd2b2b6f487ccccedcff5964"
+# The commits the netCDF and CGNS tags peel to. GitHub serves a tag's archive
+# from codeload.github.com, which some proxies refuse; the fetch then falls
+# back to a shallow git clone of the tag, verified against this commit.
+NETCDF_COMMIT="3a6b1debf1557f07b606ce3653e44f0d711203be"
+CGNS_COMMIT="3a972d92559787a49c5f9a54974ea1946ecb9d21"
+
+# The full artifact's libraries. OCCT 7.6 is the floor the native backend
+# already sets (Ubuntu 24.04's packages); it publishes no source tarball, so
+# it is always a shallow clone of the tag, verified against its commit. zstd
+# and lz4 are their release tarballs, whose checksums match the .sha256 files
+# published beside them.
+OCCT_VERSION="7.6.3"
+OCCT_TAG="V7_6_3"
+OCCT_COMMIT="b079fb9877ef64d4a8158a60fa157f59b096debb"
+ZSTD_VERSION="1.5.7"
+ZSTD_SHA256="eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+LZ4_VERSION="1.10.0"
+LZ4_SHA256="537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
 
 WITH_HDF5="yes"
 WITH_NETCDF="yes"
@@ -53,6 +83,11 @@ PREFIX=""
 PRINT_PREFIX="no"
 FORCE="no"
 JOBS=""
+WITH_LEAN="yes"
+WITH_FULL="no"
+WITH_OCCT="yes"
+THREADS="both"
+PRINT_FULL_PREFIX=""
 
 usage() {
     cat <<EOF
@@ -62,11 +97,19 @@ Usage: $0 [options]
   --without-hdf5            skip HDF5 (implies --without-netcdf)
   --without-netcdf          skip netCDF
   --without-cgnslib         skip cgnslib (the CGNS MLL backend)
+  --full                    also build the full artifact's libraries (OCCT,
+                            zstd, lz4) into their own prefix(es)
+  --full-only               build only those (skip HDF5/netCDF/cgnslib)
+  --threads <seq|mt|both>   which flavours of the full libraries (default: both)
+  --without-occt            leave OpenCASCADE out of the full prefix
+  --print-full-prefix <seq|mt>
+                            print the full libraries' prefix and exit
   --force                   rebuild even if the prefix already looks complete
   --jobs <n>                parallel build jobs (default: all cores)
   -h, --help                this help
 
-Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION, cgnslib $CGNS_VERSION
+Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION, cgnslib $CGNS_VERSION,
+                 OCCT $OCCT_VERSION, zstd $ZSTD_VERSION, lz4 $LZ4_VERSION (full only)
 EOF
 }
 
@@ -77,6 +120,11 @@ while [ $# -gt 0 ]; do
         --without-hdf5) WITH_HDF5="no"; WITH_NETCDF="no"; WITH_CGNS="no"; shift ;;
         --without-cgnslib) WITH_CGNS="no"; shift ;;
         --without-netcdf) WITH_NETCDF="no"; shift ;;
+        --full) WITH_FULL="yes"; shift ;;
+        --full-only) WITH_FULL="yes"; WITH_LEAN="no"; shift ;;
+        --threads) THREADS="$2"; shift 2 ;;
+        --without-occt) WITH_OCCT="no"; shift ;;
+        --print-full-prefix) PRINT_FULL_PREFIX="$2"; shift 2 ;;
         --force) FORCE="yes"; shift ;;
         --jobs) JOBS="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
@@ -90,12 +138,36 @@ done
 DEPS_ROOT="$SCRIPT_DIR/wasm-deps"
 [ -n "$PREFIX" ] || PREFIX="$DEPS_ROOT/hdf5-$HDF5_VERSION-netcdf-$NETCDF_VERSION-cgns-$CGNS_VERSION"
 
+# The full libraries' prefix, per flavour. Its name carries every pinned
+# version for the same reason the lean one does; --without-occt gets its own.
+full_prefix() {  # full_prefix <seq|mt>
+    name="full"
+    [ "$WITH_OCCT" = "yes" ] && name="$name-occt-$OCCT_VERSION"
+    name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION"
+    [ "$1" = "mt" ] && name="$name-mt"
+    echo "$DEPS_ROOT/$name"
+}
+
 if [ "$PRINT_PREFIX" = "yes" ]; then
     echo "$PREFIX"
     exit 0
 fi
+case "$PRINT_FULL_PREFIX" in
+    "") ;;
+    seq|mt) full_prefix "$PRINT_FULL_PREFIX"; exit 0 ;;
+    *) echo "error: --print-full-prefix takes seq or mt" >&2; exit 1 ;;
+esac
+case "$THREADS" in
+    seq) FULL_FLAVOURS="seq" ;;
+    mt) FULL_FLAVOURS="mt" ;;
+    both) FULL_FLAVOURS="seq mt" ;;
+    *) echo "error: --threads takes seq, mt or both" >&2; exit 1 ;;
+esac
 
-if [ "$WITH_HDF5" = "no" ] && [ "$WITH_NETCDF" = "no" ]; then
+if [ "$WITH_LEAN" = "no" ]; then
+    WITH_HDF5="no"; WITH_NETCDF="no"; WITH_CGNS="no"
+fi
+if [ "$WITH_HDF5" = "no" ] && [ "$WITH_NETCDF" = "no" ] && [ "$WITH_FULL" = "no" ]; then
     echo "nothing to do (--without-hdf5 --without-netcdf)"
     exit 0
 fi
@@ -107,7 +179,7 @@ if ! command -v emcmake >/dev/null 2>&1; then
     exit 1
 fi
 
-for tool in curl tar patch cmake; do
+for tool in curl tar patch cmake git; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "error: '$tool' not found on PATH (needed to fetch, unpack, patch and build)." >&2
         exit 1
@@ -130,14 +202,18 @@ DL_DIR="$DEPS_ROOT/_dl"
 WORK_DIR="$DEPS_ROOT/_work"
 mkdir -p "$DL_DIR" "$WORK_DIR"
 
-fetch() {  # fetch <url> <file> <sha256>
+fetch() {  # fetch <url> <file> <sha256>; returns 1 when the download fails
     url="$1"; file="$DL_DIR/$2"; want="$3"
     if [ -f "$file" ] && [ "$(sha256_of "$file")" = "$want" ]; then
         echo "  cached: $2"
         return 0
     fi
     echo "  downloading: $2"
-    curl -fsSL -o "$file.part" "$url"
+    if ! curl -fsSL -o "$file.part" "$url"; then
+        rm -f "$file.part"
+        echo "  download failed: $url" >&2
+        return 1
+    fi
     got=$(sha256_of "$file.part")
     if [ "$got" != "$want" ]; then
         rm -f "$file.part"
@@ -147,6 +223,42 @@ fetch() {  # fetch <url> <file> <sha256>
         exit 1
     fi
     mv "$file.part" "$file"
+}
+
+# fetch_git <url> <tag> <commit> <dir>: a shallow clone of <tag> into
+# $DL_DIR/<dir>, refused unless it checks out exactly <commit>; a cached clone
+# at that commit is reused.
+fetch_git() {
+    url="$1"; tag="$2"; commit="$3"; dir="$DL_DIR/$4"
+    if [ -d "$dir/.git" ] && [ "$(git -C "$dir" rev-parse HEAD)" = "$commit" ]; then
+        echo "  cached: $4 ($tag)"
+        return 0
+    fi
+    echo "  cloning: $url $tag"
+    rm -rf "$dir"
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" "$url" "$dir"
+    got=$(git -C "$dir" rev-parse HEAD)
+    if [ "$got" != "$commit" ]; then
+        rm -rf "$dir"
+        echo "error: $url $tag is $got, expected $commit" >&2
+        exit 1
+    fi
+}
+
+# unpack_tag <archive-url> <file> <sha256> <git-url> <tag> <commit> <srcdir>:
+# the checksummed tag archive unpacked into $WORK_DIR, or, when the archive
+# cannot be downloaded, the commit-verified clone of the same tag copied there
+# (the two hold the same tree).
+unpack_tag() {
+    if fetch "$1" "$2" "$3"; then
+        tar -xzf "$DL_DIR/$2" -C "$WORK_DIR"
+    else
+        echo "  archive unavailable, falling back to git"
+        fetch_git "$4" "$5" "$6" "$7.git"
+        rm -rf "$WORK_DIR/$7"
+        mkdir -p "$WORK_DIR/$7"
+        (cd "$DL_DIR/$7.git" && git archive --format=tar HEAD) | tar -xf - -C "$WORK_DIR/$7"
+    fi
 }
 
 # Patches live in build/patches/<name>-*.patch and are applied in shell glob
@@ -168,6 +280,9 @@ echo "  prefix:   $PREFIX"
 echo "  hdf5:     $([ "$WITH_HDF5" = yes ] && echo "$HDF5_VERSION" || echo "(skipped)")"
 echo "  netcdf:   $([ "$WITH_NETCDF" = yes ] && echo "$NETCDF_VERSION" || echo "(skipped)")"
 echo "  cgnslib:  $([ "$WITH_CGNS" = yes ] && echo "$CGNS_VERSION" || echo "(skipped)")"
+if [ "$WITH_FULL" = "yes" ]; then
+    echo "  full:     zstd $ZSTD_VERSION, lz4 $LZ4_VERSION$([ "$WITH_OCCT" = yes ] && echo ", OCCT $OCCT_VERSION") ($FULL_FLAVOURS)"
+fi
 echo "  emcc:     $(command -v emcc)"
 echo "  sysroot:  $SYSROOT"
 echo "  jobs:     $JOBS"
@@ -203,7 +318,7 @@ if [ "$WITH_HDF5" = "yes" ]; then
     else
         echo "== fetching HDF5 $HDF5_VERSION =="
         fetch "https://github.com/HDFGroup/hdf5/releases/download/hdf5_$HDF5_VERSION/hdf5-$HDF5_VERSION.tar.gz" \
-              "hdf5-$HDF5_VERSION.tar.gz" "$HDF5_SHA256"
+              "hdf5-$HDF5_VERSION.tar.gz" "$HDF5_SHA256" || exit 1
         rm -rf "$WORK_DIR/hdf5-$HDF5_VERSION" "$WORK_DIR/build-hdf5"
         tar -xzf "$DL_DIR/hdf5-$HDF5_VERSION.tar.gz" -C "$WORK_DIR"
         apply_patches "hdf5-$HDF5_VERSION" "$WORK_DIR/hdf5-$HDF5_VERSION"
@@ -271,10 +386,11 @@ if [ "$WITH_NETCDF" = "yes" ]; then
         echo "== netCDF $NETCDF_VERSION already installed, skipping (use --force to rebuild) =="
     else
         echo "== fetching netcdf-c $NETCDF_VERSION =="
-        fetch "https://github.com/Unidata/netcdf-c/archive/refs/tags/v$NETCDF_VERSION.tar.gz" \
-              "netcdf-c-$NETCDF_VERSION.tar.gz" "$NETCDF_SHA256"
         rm -rf "$WORK_DIR/netcdf-c-$NETCDF_VERSION" "$WORK_DIR/build-netcdf"
-        tar -xzf "$DL_DIR/netcdf-c-$NETCDF_VERSION.tar.gz" -C "$WORK_DIR"
+        unpack_tag "https://github.com/Unidata/netcdf-c/archive/refs/tags/v$NETCDF_VERSION.tar.gz" \
+                   "netcdf-c-$NETCDF_VERSION.tar.gz" "$NETCDF_SHA256" \
+                   "https://github.com/Unidata/netcdf-c.git" "v$NETCDF_VERSION" "$NETCDF_COMMIT" \
+                   "netcdf-c-$NETCDF_VERSION"
         apply_patches "netcdf-c-$NETCDF_VERSION" "$WORK_DIR/netcdf-c-$NETCDF_VERSION"
 
         echo "== configuring netcdf-c =="
@@ -354,10 +470,11 @@ if [ "$WITH_CGNS" = "yes" ]; then
         echo "== cgnslib $CGNS_VERSION already installed, skipping (use --force to rebuild) =="
     else
         echo "== fetching cgnslib $CGNS_VERSION =="
-        fetch "https://github.com/CGNS/CGNS/archive/refs/tags/v$CGNS_VERSION.tar.gz" \
-              "cgns-$CGNS_VERSION.tar.gz" "$CGNS_SHA256"
         rm -rf "$WORK_DIR/CGNS-$CGNS_VERSION" "$WORK_DIR/build-cgns"
-        tar -xzf "$DL_DIR/cgns-$CGNS_VERSION.tar.gz" -C "$WORK_DIR"
+        unpack_tag "https://github.com/CGNS/CGNS/archive/refs/tags/v$CGNS_VERSION.tar.gz" \
+                   "cgns-$CGNS_VERSION.tar.gz" "$CGNS_SHA256" \
+                   "https://github.com/CGNS/CGNS.git" "v$CGNS_VERSION" "$CGNS_COMMIT" \
+                   "CGNS-$CGNS_VERSION"
         apply_patches "CGNS-$CGNS_VERSION" "$WORK_DIR/CGNS-$CGNS_VERSION"
 
         echo "== configuring cgnslib =="
@@ -451,6 +568,133 @@ for target_file in "$PREFIX/cmake/hdf5-targets.cmake" \
     rm -f "$target_file.bak"
 done
 
+# --------------------------------------------------------------------------
+# The full artifact's libraries: OpenCASCADE, zstd, lz4 (--full)
+#
+# One prefix per threading flavour (see the header). Each is built with
+# -fwasm-exceptions, the exception model the core compiles with: fit_cad and
+# the STEP/IGES readers catch Standard_Failure across the library boundary,
+# and wasm-ld refuses to mix exception models. The lean CFLAGS above (-Oz,
+# the zlib port) do not apply: none of these needs zlib, and OCCT is compute-
+# bound, so it keeps its Release optimisation.
+# --------------------------------------------------------------------------
+build_full_flavour() {  # build_full_flavour <seq|mt>
+    flavour="$1"
+    fprefix=$(full_prefix "$flavour")
+    pt=""
+    [ "$flavour" = "mt" ] && pt="-pthread"
+    echo "== full libraries ($flavour) into $fprefix =="
+
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/libzstd.a" ]; then
+        echo "== zstd $ZSTD_VERSION ($flavour) already installed, skipping =="
+    else
+        echo "== zstd $ZSTD_VERSION ($flavour) =="
+        fetch "https://github.com/facebook/zstd/releases/download/v$ZSTD_VERSION/zstd-$ZSTD_VERSION.tar.gz" \
+              "zstd-$ZSTD_VERSION.tar.gz" "$ZSTD_SHA256" || exit 1
+        rm -rf "$WORK_DIR/zstd-$ZSTD_VERSION" "$WORK_DIR/build-zstd-$flavour"
+        tar -xzf "$DL_DIR/zstd-$ZSTD_VERSION.tar.gz" -C "$WORK_DIR"
+        # The decoder and the one-shot encoder only: no programs, no worker
+        # threads (the core compresses block by block), no legacy formats.
+        CFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/zstd-$ZSTD_VERSION/build/cmake" \
+            -B "$WORK_DIR/build-zstd-$flavour" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$fprefix" \
+            -DZSTD_BUILD_PROGRAMS=OFF \
+            -DZSTD_BUILD_SHARED=OFF \
+            -DZSTD_BUILD_STATIC=ON \
+            -DZSTD_BUILD_TESTS=OFF \
+            -DZSTD_MULTITHREAD_SUPPORT=OFF \
+            -DZSTD_LEGACY_SUPPORT=OFF
+        cmake --build "$WORK_DIR/build-zstd-$flavour" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-zstd-$flavour"
+    fi
+
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/liblz4.a" ]; then
+        echo "== lz4 $LZ4_VERSION ($flavour) already installed, skipping =="
+    else
+        echo "== lz4 $LZ4_VERSION ($flavour) =="
+        fetch "https://github.com/lz4/lz4/releases/download/v$LZ4_VERSION/lz4-$LZ4_VERSION.tar.gz" \
+              "lz4-$LZ4_VERSION.tar.gz" "$LZ4_SHA256" || exit 1
+        rm -rf "$WORK_DIR/lz4-$LZ4_VERSION" "$WORK_DIR/build-lz4-$flavour"
+        tar -xzf "$DL_DIR/lz4-$LZ4_VERSION.tar.gz" -C "$WORK_DIR"
+        CFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/lz4-$LZ4_VERSION/build/cmake" \
+            -B "$WORK_DIR/build-lz4-$flavour" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$fprefix" \
+            -DLZ4_BUILD_CLI=OFF \
+            -DLZ4_BUILD_LEGACY_LZ4C=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON
+        cmake --build "$WORK_DIR/build-lz4-$flavour" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-lz4-$flavour"
+    fi
+
+    [ "$WITH_OCCT" = "yes" ] || return 0
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/libTKernel.a" ]; then
+        echo "== OpenCASCADE $OCCT_VERSION ($flavour) already installed, skipping =="
+        return 0
+    fi
+    echo "== OpenCASCADE $OCCT_VERSION ($flavour) =="
+    fetch_git "https://github.com/Open-Cascade-SAS/OCCT.git" "$OCCT_TAG" "$OCCT_COMMIT" \
+              "occt-$OCCT_VERSION.git"
+    rm -rf "$WORK_DIR/occt-$OCCT_VERSION" "$WORK_DIR/build-occt-$flavour"
+    mkdir -p "$WORK_DIR/occt-$OCCT_VERSION"
+    (cd "$DL_DIR/occt-$OCCT_VERSION.git" && git archive --format=tar HEAD) |
+        tar -xf - -C "$WORK_DIR/occt-$OCCT_VERSION"
+    apply_patches "OCCT-$OCCT_VERSION" "$WORK_DIR/occt-$OCCT_VERSION"
+    # OCCT defines OCC_CONVERT_SIGNALS on every non-MSVC build: OCC_CATCH_SIGNALS
+    # then setjmp()s so a signal handler can longjmp a SIGSEGV or SIGFPE into a
+    # C++ exception. WebAssembly raises no signals, and the setjmp/longjmp it
+    # lowers to (Wasm SjLj, a second exception tag) is code Binaryen 6.0.3's
+    # wasm-opt fails to parse at link ("popping from empty stack"). The
+    # flags' -U follows CMake's -D on every compile line, so OCC_CATCH_SIGNALS
+    # is empty and Standard_Failure is a plain C++ exception throughout.
+    #
+    # Only the toolkits the core links (CMakeLists.txt's _mio_occt_libs):
+    # every module is off and the STEP, IGES and mesher toolkits are named,
+    # which pulls in their dependency closure (modelling data and algorithms,
+    # shape healing, booleans, primitives) and nothing else -- no
+    # visualisation, OCAF, Draw, or third-party library.
+    CFLAGS="$pt" CXXFLAGS="$pt" emcmake cmake -S "$WORK_DIR/occt-$OCCT_VERSION" \
+        -B "$WORK_DIR/build-occt-$flavour" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DINSTALL_DIR="$fprefix" \
+        -DINSTALL_DIR_LAYOUT=Unix \
+        -DBUILD_LIBRARY_TYPE=Static \
+        -DBUILD_MODULE_FoundationClasses=OFF \
+        -DBUILD_MODULE_ModelingData=OFF \
+        -DBUILD_MODULE_ModelingAlgorithms=OFF \
+        -DBUILD_MODULE_Visualization=OFF \
+        -DBUILD_MODULE_ApplicationFramework=OFF \
+        -DBUILD_MODULE_DataExchange=OFF \
+        -DBUILD_MODULE_Draw=OFF \
+        -DBUILD_ADDITIONAL_TOOLKITS="TKSTEP TKIGES TKMesh" \
+        -DBUILD_DOC_Overview=OFF \
+        -DBUILD_RESOURCES=OFF \
+        -DUSE_FREETYPE=OFF -DUSE_FREEIMAGE=OFF -DUSE_OPENGL=OFF -DUSE_GLES2=OFF \
+        -DUSE_TK=OFF -DUSE_TCL=OFF -DUSE_TBB=OFF -DUSE_VTK=OFF -DUSE_RAPIDJSON=OFF \
+        -DUSE_DRACO=OFF -DUSE_FFMPEG=OFF -DUSE_OPENVR=OFF -DUSE_EIGEN=OFF \
+        -DCMAKE_CXX_FLAGS="-fwasm-exceptions -UOCC_CONVERT_SIGNALS $pt" \
+        -DCMAKE_C_FLAGS="-UOCC_CONVERT_SIGNALS $pt"
+    cmake --build "$WORK_DIR/build-occt-$flavour" -j "$JOBS"
+    cmake --install "$WORK_DIR/build-occt-$flavour"
+    # Nor do its consumers get it: the installed config would add the define
+    # to every directory that finds OpenCASCADE.
+    sed -i.bak '/OCC_CONVERT_SIGNALS/d' \
+        "$fprefix/lib/cmake/opencascade/OpenCASCADECompileDefinitionsAndFlags-release.cmake"
+    rm -f "$fprefix/lib/cmake/opencascade/OpenCASCADECompileDefinitionsAndFlags-release.cmake.bak"
+    rm -rf "$WORK_DIR/build-occt-$flavour"
+}
+
+if [ "$WITH_FULL" = "yes" ]; then
+    # The lean section's CFLAGS (-Oz, the zlib port) are not the full
+    # libraries' flags; each build above sets its own.
+    unset CFLAGS CXXFLAGS
+    for flavour in $FULL_FLAVOURS; do
+        build_full_flavour "$flavour"
+    done
+fi
+
 # The unpacked sources and CMake build trees are ~1 GB and re-derivable from
 # the (checksummed) tarballs in _dl, so they are not kept -- what matters, and
 # what CI caches, is the install prefix.
@@ -458,7 +702,13 @@ rm -rf "$WORK_DIR"
 
 echo
 echo "== done =="
-ls -l "$PREFIX/lib/"*.a 2>/dev/null || true
-echo
-echo "prefix: $PREFIX"
+if [ "$WITH_LEAN" = "yes" ]; then
+    ls -l "$PREFIX/lib/"*.a 2>/dev/null || true
+    echo "prefix: $PREFIX"
+fi
+if [ "$WITH_FULL" = "yes" ]; then
+    for flavour in $FULL_FLAVOURS; do
+        echo "full prefix ($flavour): $(full_prefix "$flavour")"
+    done
+fi
 echo "next:   $SCRIPT_DIR/configure-wasm.sh --build"

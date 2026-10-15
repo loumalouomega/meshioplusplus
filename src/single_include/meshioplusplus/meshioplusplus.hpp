@@ -122,7 +122,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 29
+#define MESHIOPLUSPLUS_ABI_VERSION 30
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -12169,7 +12169,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 17
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 1
+#define MESHIOPLUSPLUS_VERSION_MINOR 2
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12179,7 +12179,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "17.1.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "17.2.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -27020,6 +27020,21 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  *    cylinder's or cone's axis, else the screw the patch fits, with any
  *    profile). After it, a freeform patch between two fitted faces, one of
  *    them freeform, is tried as a rolling-ball blend.
+ *  - **Chamfers, conic blends, tapered and variable-pitch threads, vertex
+ *    blends** (roadmap 6.3, v17.2.0). A patch between two analytic faces that
+ *    no rolling ball or thread explains is tried as a blend whose
+ *    cross-section, in the plane normal to its rail on the first face, is a
+ *    straight chord (a chamfer, `fit_cad:type` 10) or a conic arc tangent to
+ *    both faces (a conic blend, type 7); a thread flank whose straight-flank
+ *    or profile fit fails is refitted with a pitch that varies linearly along
+ *    it and, for a profile, cut on a taper -- a flank beside a cone is
+ *    reported tapered. Last, a patch that is one closed loop around three or
+ *    more fitted neighbours (a corner where blends meet, a setback) is tried
+ *    as a vertex blend (type 9): a plate surface through its vertices,
+ *    tangent to every neighbour along the loop. These run only where the
+ *    earlier fits failed, so a skin they do not concern builds the same
+ *    solid as before. The first three ride on `mFillets` and `mThreads`, the
+ *    vertex blend on `mFillets`.
  *  - **Edges.** Where two patches meet, the mesh edges between them form
  *    chains from one junction (a point three or more patches meet at) to the
  *    next; a closed chain is split in two. A chain between two analytic faces
@@ -27049,8 +27064,9 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  * block (points shared between faces are welded), with cell data
  * `fit_cad:face` (Int64, the B-rep face), `fit_cad:type` (Int64, the face's
  * type: 0 a facet, 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, as
- * `fit:type`, 6 a freeform B-spline, 7 a rolling-ball fillet or blend, 8 a
- * helical thread face) and `fit_cad:patch` (Int64, the
+ * `fit:type`, 6 a freeform B-spline, 7 a rolling-ball fillet, blend or conic
+ * blend, 8 a helical thread face, 9 a vertex blend, 10 a chamfer) and
+ * `fit_cad:patch` (Int64, the
  * `segment:patch` label it was built from, -1 for a facet of a cell with no
  * patch), the report below, and the solid as NURBS in `mBrep` (face `i` of
  * `fit_cad:face` is its face `i`, id `i + 1`), which `write_cad_json` writes
@@ -27086,8 +27102,14 @@ inline constexpr std::int64_t kFitCadBsplineType = 6;
 inline constexpr std::int64_t kFitCadFilletType = 7;
 /// `fit_cad:type` of a helical thread face: a straight flank (a ruled
 /// helicoid), or a profile of any shape (a rounded root or crest) swept by
-/// the thread's screw motion.
+/// the thread's screw motion; tapered or of varying pitch since v17.2.0.
 inline constexpr std::int64_t kFitCadHelicalType = 8;
+/// `fit_cad:type` of a vertex blend: the corner patch where three or more
+/// blends meet, a plate surface tangent to its neighbours (v17.2.0).
+inline constexpr std::int64_t kFitCadVertexBlendType = 9;
+/// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
+/// constant or varying width, that is no plane or cone (v17.2.0).
+inline constexpr std::int64_t kFitCadChamferType = 10;
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -27119,11 +27141,14 @@ struct FitCadOptions {
     bool mFreeformSplit = true;
     /// Whether a patch no primitive explains, running between two fitted
     /// faces, is tried as a rolling-ball fillet: of constant or varying
-    /// radius between two analytic faces, and as a blend beside a freeform one.
+    /// radius between two analytic faces, and as a blend beside a freeform one;
+    /// then as a chamfer or a conic blend between two analytic faces, and a
+    /// corner patch among three or more fitted faces as a vertex blend.
     bool mFillets = true;
     /// Whether a patch no primitive explains is tried as a helical thread
     /// face: about the axis of a cylinder or cone beside it, or of the screw
-    /// the patch itself fits, with a straight or a rounded profile.
+    /// the patch itself fits, with a straight or a rounded profile, of
+    /// constant or varying pitch, and cut on a taper.
     bool mThreads = true;
 };
 
@@ -27176,6 +27201,17 @@ struct FitCadResult {
     /// Of the thread faces, those whose profile is not a straight line (a
     /// rounded root or crest).
     std::int64_t mNumRoundedThread = 0;
+    /// Vertex blends: corner patches where three or more blends meet (v17.2.0).
+    std::int64_t mNumVertexBlend = 0;
+    /// Chamfers: blends of straight cross-sections (v17.2.0).
+    std::int64_t mNumChamfer = 0;
+    /// Of the fillet faces, the conic blends: cross-sections that are conic
+    /// arcs other than the rolling ball's circle (v17.2.0).
+    std::int64_t mNumConicBlend = 0;
+    /// Of the thread faces, those cut on a taper (v17.2.0).
+    std::int64_t mNumTaperedThread = 0;
+    /// Of the thread faces, those whose pitch varies along them (v17.2.0).
+    std::int64_t mNumVariablePitchThread = 0;
     /// The solid as NURBS faces, loops and edges.
     BrepInfo mBrep;
 };
@@ -35755,7 +35791,11 @@ std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rP
  * two fitted primitives, and a straight-flank thread surface (a ruled helicoid)
  * fitted to a patch; and, for what those do not explain, a rolling-ball blend
  * of varying radius between any two surfaces and a helical surface of any
- * profile, with or without a known axis.
+ * profile, with or without a known axis. Since v17.2.0 (roadmap 6.3) also the
+ * threads whose pitch varies or that are cut on a taper, the blends whose
+ * cross-section is a straight line (a chamfer) or a conic other than the
+ * rolling ball's circle, and the boundary of a corner patch where three or
+ * more blends meet.
  *
  * Not installed: a core-private helper of `operations/fit_cad.cpp`.
  */
@@ -35817,7 +35857,10 @@ FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchT
  * @brief A straight-flank thread surface: the ruled helicoid
  * `P(rho, theta) = O + rho (cos theta E1 + sin theta E2) + (C + K theta + T rho) A`,
  * `K = pitch / (2 pi)`, `T` the flank's slope (the tangent of its angle to the
- * radial plane).
+ * radial plane). A thread of varying pitch adds `Q (theta - ThetaRef)^2` to
+ * the axial term: its pitch changes linearly along it. A straight flank cut
+ * on a taper of half-angle `alpha` is the same surface, `K` the apparent
+ * advance `(1 - T tan alpha)` times the true one.
  */
 struct HelicoidFit {
     bool mOk = false;
@@ -35825,14 +35868,19 @@ struct HelicoidFit {
     double mK = 0.0;  // axial advance per radian: pitch / (2 pi), signed by the hand
     double mT = 0.0;  // axial slope per unit radius
     double mC = 0.0;  // axial offset
+    /// The pitch's rate of change: the axial term's quadratic coefficient
+    /// about `mThetaRef` (0 for a constant pitch).
+    double mQ = 0.0, mThetaRef = 0.0;
     /// The patch's extent in radius and in the unwrapped angle.
     double mRhoMin = 0.0, mRhoMax = 0.0, mThetaMin = 0.0, mThetaMax = 0.0;
     /// RMS and largest orthogonal distance of the vertices to the surface.
     double mRms = 0.0, mMax = 0.0;
     /// The surface point at `(Rho, Theta)`.
     PatchVec At(double Rho, double Theta) const;
-    /// The pitch: the axial advance per turn.
+    /// The pitch: the axial advance per turn (at `mThetaRef`).
     double Pitch() const;
+    /// The local pitch at the unwrapped angle `Theta`.
+    double PitchAt(double Theta) const;
 };
 
 /**
@@ -35843,12 +35891,15 @@ struct HelicoidFit {
  * linear in `(C, K, T)`: one least-squares solve.
  *
  * @param rOrigin a point on the axis; @param rAxis its direction.
+ * @param VariablePitch also fit the pitch's rate of change (`mQ`, one more
+ *        column in the same linear solve); false keeps the constant-pitch fit.
  * @return the fit; `mOk` false when the patch touches the axis, cannot be
  *         unwrapped consistently, spans less than half a turn, or the solve is
  *         singular (a patch with no advance or no radial extent).
  */
 HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
-                         const PatchVec& rOrigin, const PatchVec& rAxis);
+                         const PatchVec& rOrigin, const PatchVec& rAxis,
+                         bool VariablePitch = false);
 
 /// The point of a surface nearest to a point; false when there is none.
 using ClosestPoint = std::function<bool(const PatchVec& rX, PatchVec& rFoot)>;
@@ -35947,11 +35998,20 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
  * through the axis, swept by the screw motion of advance `K` per radian,
  * `P(s, theta) = O + rho (cos theta E1 + sin theta E2) + (zeta + K theta) A`,
  * where the profile gives `zeta(rho)` or, with `mRhoOfZeta`, `rho(zeta)`.
+ *
+ * A tapered or variable-pitch thread (roadmap 6.3.3) generalises the advance
+ * to `g(theta) = K theta + Q (theta - ThetaRef)^2` and moves the profile out
+ * by `Taper g(theta)` as it advances, the thread cut on a cone whose radius
+ * grows by `Taper` per unit length along the axis:
+ * `P = O + (rho + Taper g) (cos theta E1 + sin theta E2) + (zeta + g) A`.
  */
 struct HelicalFit {
     bool mOk = false;
     PatchVec mOrigin{}, mAxis{}, mE1{}, mE2{};
     double mK = 0.0;
+    /// The taper (radial growth per unit advance) and the pitch's rate of
+    /// change about `mThetaRef`; both 0 for a straight, constant-pitch thread.
+    double mTaper = 0.0, mQ = 0.0, mThetaRef = 0.0;
     bool mRhoOfZeta = false;
     /// The profile, over the parameter `s` (`rho`, or `zeta`).
     FeatureLaw mProfile;
@@ -35963,6 +36023,10 @@ struct HelicalFit {
     bool mStraight = false;
     PatchVec At(double S, double Theta) const;
     double Pitch() const;
+    /// The local pitch at the unwrapped angle `Theta`.
+    double PitchAt(double Theta) const;
+    /// The advance `g(Theta)`.
+    double Advance(double Theta) const;
 };
 
 /**
@@ -35979,12 +36043,115 @@ struct HelicalFit {
  * as a Chebyshev series of the lowest degree within the tolerance.
  *
  * @param pOrigin, pAxis an axis to start from, or both null.
+ * @param General also refine a taper and a linearly varying pitch (roadmap
+ *        6.3.3) with the screw; false keeps a straight, constant-pitch screw.
+ * @param TaperSeed the taper to start from with `General` (the tangent of a
+ *        neighbouring cone's half-angle, along the axis it opens towards).
  * @return the fit; `mOk` false as `helicoid_fit` refuses a patch, when the
  *         screw is not determined, or when no profile of degree 8 or less
  *         explains the patch within half the tolerance.
  */
 HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
-                       const PatchVec* pOrigin, const PatchVec* pAxis, double Tol);
+                       const PatchVec* pOrigin, const PatchVec* pAxis, double Tol,
+                       bool General = false, double TaperSeed = 0.0);
+
+/// The unit normal of a surface at the point of it nearest to a point (either
+/// sign); false when there is none.
+using NormalAt = std::function<bool(const PatchVec& rX, PatchVec& rNormal)>;
+
+/**
+ * @brief A blend between two surfaces whose cross-section is not the rolling
+ * ball's circle (roadmap 6.3.2): a chamfer, whose sections are straight, or a
+ * conic blend, whose sections are conic arcs tangent to both surfaces -- the
+ * rational quadratic `(R1, A, R2; w)`, `A` the apex where the two tangent
+ * lines meet, `w` its weight along the rail (with equal legs, `w = sin(beta /
+ * 2)`, `beta` the angle at the apex, is the circle; smaller is flatter, larger
+ * fuller, and 0 the chord).
+ *
+ * Its rails are where the patch meets the two surfaces; a cross-section lies
+ * in the plane through a point of the first rail normal to the edge the two
+ * surfaces would meet along there (`n1 x n2`; the rail's own tangent where
+ * the surfaces are nearly parallel), ending where that plane meets the
+ * second rail -- the cross-section of a chamfer or blend of the edge.
+ */
+struct SectionBlendFit {
+    bool mOk = false;
+    /// Straight cross-sections: a chamfer (of constant or varying width).
+    bool mChamfer = false;
+    /// The rails, in order; a closed rail's first point is not repeated.
+    std::vector<PatchVec> mRail1, mRail2;
+    bool mClosed = false;
+    /// Arc length at each rail point, and each rail's whole length.
+    std::vector<double> mRail1T, mRail2T;
+    double mLength = 0.0, mLength2 = 0.0;
+    /// The conic's weight along the first rail (unused for a chamfer).
+    FeatureLaw mWeight;
+    /// The surfaces' normals, which place a section's apex.
+    NormalAt mNormal1, mNormal2;
+    /// RMS and largest distance of the patch's vertices to their sections.
+    double mRms = 0.0, mMax = 0.0;
+    /// The normal of the section plane at rail-1 parameter `T`.
+    PatchVec Normal(double T) const;
+    /// The rail-1 parameter whose section plane holds `rX`.
+    double ParameterOf(const PatchVec& rX) const;
+    /// The section at rail-1 parameter `T` (wrapped on a closed rail,
+    /// extended along the end tangents past an open one): its ends and, for a
+    /// conic, its apex. False when the plane misses the second rail or, for
+    /// a conic, the tangent lines do not meet ahead of both ends.
+    bool Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& rApex) const;
+    /// The section's point at `U` (0 on the first rail, 1 on the second; the
+    /// conic and the chamfer's line continue past both); false as `Section`.
+    bool At(double T, double U, PatchVec& rP) const;
+};
+
+/**
+ * @brief Fit a chamfer or a conic blend to a patch between two surfaces.
+ *
+ * The rails are the patch's boundary edges along each surface, chained:
+ * those @p rEdgeSide puts across it (1 or 2; anything else is neither), or
+ * without it those whose ends both lie within the tolerance of it, and
+ * nearer it than the other.
+ * Each interior vertex is placed in the section through its nearest point of
+ * the first rail: within 0.4 of the tolerance of every section's chord, the
+ * patch is a chamfer; otherwise each vertex's conic weight follows from its
+ * barycentric coordinates in the triangle `(R1, A, R2)`, `w = b1 / (2
+ * sqrt(b0 b2))`, and a law of the lowest degree whose conics pass within 0.4
+ * of the tolerance of every vertex is the blend.
+ *
+ * @return the fit; `mOk` false when either rail has fewer than three points,
+ *         fewer than six interior vertices fit their sections, or no weight
+ *         law explains the patch.
+ */
+SectionBlendFit section_blend_fit(
+    const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris, const ClosestPoint& rS1,
+    const NormalAt& rN1, const ClosestPoint& rS2, const NormalAt& rN2, double Tol,
+    const std::function<int(std::size_t, std::size_t)>& rEdgeSide = {});
+
+/**
+ * @brief The boundary of a corner patch where three or more blends meet (a
+ * vertex blend, roadmap 6.3.1): the patch's one closed boundary loop, split
+ * into runs by the neighbour across each boundary edge.
+ */
+struct VertexBlendBoundary {
+    bool mOk = false;
+    /// The loop's vertices in order, and the neighbour across the edge from
+    /// each to the next.
+    std::vector<std::size_t> mLoop;
+    std::vector<std::int64_t> mAcross;
+    /// The distinct neighbours, in the order the loop meets them.
+    std::vector<std::int64_t> mNeighbours;
+};
+
+/**
+ * @brief The boundary loop of a patch and who lies across it.
+ * @param rAcross the neighbour across a boundary edge `(a, b)` of local
+ *        vertices, or -1 when there is none.
+ * @return `mOk` false unless the boundary is one closed loop meeting at least
+ *         three neighbours, each along one contiguous run.
+ */
+VertexBlendBoundary vertex_blend_boundary(
+    const std::vector<PatchTri>& rTris,
+    const std::function<std::int64_t(std::size_t, std::size_t)>& rAcross);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -58854,7 +59021,10 @@ bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellT
 // ===== end src/cpp/src/detail/facet_index.cpp =====
 // ===== begin src/cpp/src/detail/feature_fit.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <map>
@@ -59040,15 +59210,22 @@ FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchT
 PatchVec HelicoidFit::At(double Rho, double Theta) const {
     PatchVec p = ff_axpy(mOrigin, Rho * std::cos(Theta), mE1);
     p = ff_axpy(p, Rho * std::sin(Theta), mE2);
-    return ff_axpy(p, mC + mK * Theta + mT * Rho, mAxis);
+    double z = mC + mK * Theta;
+    if (mQ != 0.0)
+        z += mQ * (Theta - mThetaRef) * (Theta - mThetaRef);
+    return ff_axpy(p, z + mT * Rho, mAxis);
 }
 
 double HelicoidFit::Pitch() const {
     return 2.0 * kFfPi * mK;
 }
 
+double HelicoidFit::PitchAt(double Theta) const {
+    return 2.0 * kFfPi * (mK + 2.0 * mQ * (Theta - mThetaRef));
+}
+
 HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
-                         const PatchVec& rOrigin, const PatchVec& rAxis) {
+                         const PatchVec& rOrigin, const PatchVec& rAxis, bool VariablePitch) {
     HelicoidFit out;
     const std::size_t n = rPts.size();
     const double alen = ff_norm(rAxis);
@@ -59108,23 +59285,38 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
     for (std::size_t v = 0; v < n; ++v)
         if (!seen[v] && !adj[v].empty())
             return out;  // more than one piece
-    // z = C + K theta + T rho, by least squares.
-    std::vector<double> a(9, 0.0), b(3, 0.0);
+    // z = C + K theta + T rho (+ Q (theta - ThetaRef)^2), by least squares.
+    if (VariablePitch) {
+        double sum = 0.0;
+        std::size_t count = 0;
+        for (std::size_t v = 0; v < n; ++v)
+            if (!adj[v].empty()) {
+                sum += theta[v];
+                ++count;
+            }
+        out.mThetaRef = sum / static_cast<double>(count);
+    }
+    const int cols = VariablePitch ? 4 : 3;
+    std::vector<double> a(static_cast<std::size_t>(cols * cols), 0.0),
+        b(static_cast<std::size_t>(cols), 0.0);
     for (std::size_t v = 0; v < n; ++v) {
         if (adj[v].empty())
             continue;
-        const double row[3] = {1.0, theta[v], rho[v]};
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j)
-                a[static_cast<std::size_t>(i * 3 + j)] += row[i] * row[j];
+        const double dt = theta[v] - out.mThetaRef;
+        const double row[4] = {1.0, theta[v], rho[v], dt * dt};
+        for (int i = 0; i < cols; ++i) {
+            for (int j = 0; j < cols; ++j)
+                a[static_cast<std::size_t>(i * cols + j)] += row[i] * row[j];
             b[static_cast<std::size_t>(i)] += row[i] * z[v];
         }
     }
-    if (!lsq_solve(a, b, 3))
+    if (!lsq_solve(a, b, static_cast<std::size_t>(cols)))
         return out;
     out.mC = b[0];
     out.mK = b[1];
     out.mT = b[2];
+    if (VariablePitch)
+        out.mQ = b[3];
     out.mThetaMin = out.mRhoMin = std::numeric_limits<double>::infinity();
     out.mThetaMax = out.mRhoMax = -std::numeric_limits<double>::infinity();
     double sum = 0.0;
@@ -59132,9 +59324,14 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
     for (std::size_t v = 0; v < n; ++v) {
         if (adj[v].empty())
             continue;
-        const double e = z[v] - (out.mC + out.mK * theta[v] + out.mT * rho[v]);
-        const double grad =
-            std::sqrt(1.0 + out.mT * out.mT + (out.mK / rho[v]) * (out.mK / rho[v]));
+        double e = z[v] - (out.mC + out.mK * theta[v] + out.mT * rho[v]);
+        double dz = out.mK;  // the axial term's derivative in theta
+        if (VariablePitch) {
+            const double dt = theta[v] - out.mThetaRef;
+            e -= out.mQ * dt * dt;
+            dz += 2.0 * out.mQ * dt;
+        }
+        const double grad = std::sqrt(1.0 + out.mT * out.mT + (dz / rho[v]) * (dz / rho[v]));
         const double d = std::fabs(e) / grad;
         sum += d * d;
         out.mMax = std::max(out.mMax, d);
@@ -59715,14 +59912,29 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
 
 PatchVec HelicalFit::At(double S, double Theta) const {
     const double v = mProfile.At(S);
-    const double rho = mRhoOfZeta ? v : S, zeta = mRhoOfZeta ? S : v;
+    double rho = mRhoOfZeta ? v : S, zeta = mRhoOfZeta ? S : v;
+    if (mTaper != 0.0 || mQ != 0.0) {
+        const double g = Advance(Theta);
+        rho += mTaper * g;
+        zeta += g;
+    } else {
+        zeta += mK * Theta;
+    }
     PatchVec p = ff_axpy(mOrigin, rho * std::cos(Theta), mE1);
     p = ff_axpy(p, rho * std::sin(Theta), mE2);
-    return ff_axpy(p, zeta + mK * Theta, mAxis);
+    return ff_axpy(p, zeta, mAxis);
 }
 
 double HelicalFit::Pitch() const {
     return 2.0 * kFfPi * mK;
+}
+
+double HelicalFit::PitchAt(double Theta) const {
+    return 2.0 * kFfPi * (mK + 2.0 * mQ * (Theta - mThetaRef));
+}
+
+double HelicalFit::Advance(double Theta) const {
+    return mK * Theta + mQ * (Theta - mThetaRef) * (Theta - mThetaRef);
 }
 
 namespace {
@@ -59813,7 +60025,8 @@ FfProfileFit ff_profile_fit(const std::vector<double>& rS, const std::vector<dou
 }  // namespace
 
 HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
-                       const PatchVec* pOrigin, const PatchVec* pAxis, double Tol) {
+                       const PatchVec* pOrigin, const PatchVec* pAxis, double Tol, bool General,
+                       double TaperSeed) {
     HelicalFit out;
     const std::size_t n = rPts.size();
     if (n < 8 || rTris.empty() || !(Tol > 0.0) || (pOrigin == nullptr) != (pAxis == nullptr))
@@ -59953,9 +60166,26 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     // The geometry of the vertices for a perturbed screw; the angles follow
     // the reference unwrapping to their nearest branch.
     const std::vector<std::size_t> sub = ff_spread(live, 400);
+    // The general screw's reference angle and angular span: the pitch's rate
+    // of change is taken about the patch's mean angle, and its LM step is
+    // scaled by the span so the parameters move on a comparable scale.
+    double theta_ref = 0.0, theta_span = 0.0;
+    if (General) {
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo, sum = 0.0;
+        for (std::size_t v : live) {
+            sum += theta0[v];
+            lo = std::min(lo, theta0[v]);
+            hi = std::max(hi, theta0[v]);
+        }
+        theta_ref = sum / static_cast<double>(live.size());
+        theta_span = hi - lo;
+        if (!(theta_span > 0.0))
+            return out;
+    }
     struct Screw {
         PatchVec mO, mA, mE1, mE2;
         double mK;
+        double mTaper = 0.0, mQ = 0.0;
     };
     auto screw_of = [&](const std::vector<double>& rP) {
         Screw s;
@@ -59964,6 +60194,10 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         s.mE1 = ff_unit(ff_axpy(e1, -ff_dot(e1, s.mA), s.mA));
         s.mE2 = ff_cross(s.mA, s.mE1);
         s.mK = rP[4];
+        if (rP.size() > 5) {
+            s.mTaper = rP[5];
+            s.mQ = rP[6];
+        }
         return s;
     };
     auto profile_points = [&](const Screw& rS, const std::vector<std::size_t>& rWhich,
@@ -59980,14 +60214,28 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
             const double rr = ff_norm(radial);
             const double ph = std::atan2(ff_dot(radial, rS.mE2), ff_dot(radial, rS.mE1));
             const double th = theta0[v] + ff_wrap(ph - theta0[v]);
-            const double zeta = zz - rS.mK * th;
-            rSv.push_back(RhoOfZeta ? zeta : rr);
-            rYv.push_back(RhoOfZeta ? rr : zeta);
+            double zeta, rho_u = rr;
+            if (General) {
+                // Unscrewed: the advance and the taper's outward move undone.
+                const double g = rS.mK * th + rS.mQ * (th - theta_ref) * (th - theta_ref);
+                zeta = zz - g;
+                rho_u = rr - rS.mTaper * g;
+            } else {
+                zeta = zz - rS.mK * th;
+            }
+            rSv.push_back(RhoOfZeta ? zeta : rho_u);
+            rYv.push_back(RhoOfZeta ? rho_u : zeta);
             if (pTheta)
                 pTheta->push_back(th);
         }
     };
     std::vector<double> params{0.0, 0.0, 0.0, 0.0, k};
+    if (General) {
+        // The taper starts where a neighbouring cone puts it, measured along
+        // the axis this fit settled on.
+        params.push_back(TaperSeed);
+        params.push_back(0.0);
+    }
     std::vector<double> sv, yv;
     // The profile's orientation for the refinement: the one a quartic
     // explains better at the start.
@@ -60016,7 +60264,12 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
             pOut[i] = (yy[i] - f.mLaw.At(ss[i])) / std::sqrt(1.0 + slope * slope);
         }
     };
-    lsq_levenberg_marquardt(params, {1.0, 1.0, scale, scale, scale}, sub.size(), residual, 60);
+    if (General)
+        lsq_levenberg_marquardt(
+            params, {1.0, 1.0, scale, scale, scale, 1.0, scale / (theta_span * theta_span)},
+            sub.size(), residual, 80);
+    else
+        lsq_levenberg_marquardt(params, {1.0, 1.0, scale, scale, scale}, sub.size(), residual, 60);
     const Screw fin = screw_of(params);
     // The profile of the lowest degree within the tolerance, over every vertex.
     std::vector<double> th;
@@ -60044,11 +60297,553 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     out.mE1 = fin.mE1;
     out.mE2 = fin.mE2;
     out.mK = fin.mK;
+    if (General) {
+        out.mTaper = fin.mTaper;
+        out.mQ = fin.mQ;
+        out.mThetaRef = theta_ref;
+    }
     out.mThetaMin = *std::min_element(th.begin(), th.end());
     out.mThetaMax = *std::max_element(th.begin(), th.end());
     // Half a turn at least: less of a helical surface is as well something else.
     out.mOk =
         out.mThetaMax - out.mThetaMin >= kFfPi && std::fabs(out.mK) * 2.0 * kFfPi > 1e-3 * scale;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Chamfers and conic blends, and the boundary of a vertex blend (roadmap 6.3).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A polyline's point at arc length T: wrapped on a closed line, continued
+// along the end segments past an open one.
+PatchVec ff_line_at(const std::vector<PatchVec>& rLine, const std::vector<double>& rAt, bool Closed,
+                    double Length, double T) {
+    const std::size_t n = rLine.size();
+    if (n == 0)
+        return {0.0, 0.0, 0.0};
+    if (n == 1)
+        return rLine[0];
+    if (Closed) {
+        T -= Length * std::floor(T / Length);
+    } else if (T <= 0.0) {
+        const double d = rAt[1] - rAt[0];
+        return d > 0.0 ? ff_axpy(rLine[0], T / d, ff_sub(rLine[1], rLine[0])) : rLine[0];
+    } else if (T >= Length) {
+        const double d = rAt[n - 1] - rAt[n - 2];
+        return d > 0.0 ? ff_axpy(rLine[n - 1], (T - Length) / d, ff_sub(rLine[n - 1], rLine[n - 2]))
+                       : rLine[n - 1];
+    }
+    const std::size_t i =
+        static_cast<std::size_t>(std::upper_bound(rAt.begin(), rAt.end(), T) - rAt.begin());
+    const std::size_t a = i == 0 ? 0 : std::min(i - 1, Closed ? n - 1 : n - 2);
+    const std::size_t b = (a + 1) % n;
+    const double t0 = rAt[a], t1 = a + 1 < n ? rAt[a + 1] : Length;
+    const double f = t1 > t0 ? (T - t0) / (t1 - t0) : 0.0;
+    return ff_axpy(rLine[a], f, ff_sub(rLine[b], rLine[a]));
+}
+
+// The polyline's unit tangent at T, a central difference over a few segments.
+PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<double>& rAt,
+                         bool Closed, double Length, double T) {
+    const std::size_t n = rLine.size();
+    if (n < 2 || !(Length > 0.0))
+        return {0.0, 0.0, 0.0};
+    const double h = std::max(1.5 * Length / static_cast<double>(n), 0.01 * Length);
+    double a = T - h, b = T + h;
+    if (!Closed) {
+        a = std::clamp(a, 0.0, Length);
+        b = std::clamp(b, 0.0, Length);
+        if (!(b > a)) {
+            a = T < 0.5 * Length ? 0.0 : Length - h;
+            b = a + h;
+        }
+    }
+    return ff_unit(ff_sub(ff_line_at(rLine, rAt, Closed, Length, b),
+                          ff_line_at(rLine, rAt, Closed, Length, a)));
+}
+
+// The arc length of a polyline's point nearest to rP.
+double ff_line_along(const std::vector<PatchVec>& rLine, const std::vector<double>& rAt,
+                     bool Closed, double Length, const PatchVec& rP) {
+    const std::size_t nseg = Closed ? rLine.size() : rLine.size() - 1;
+    double near = std::numeric_limits<double>::infinity(), at = 0.0;
+    for (std::size_t s = 0; s < nseg; ++s) {
+        const PatchVec& a = rLine[s];
+        const PatchVec& b = rLine[(s + 1) % rLine.size()];
+        const double f = ff_segment_fraction(rP, a, b);
+        const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
+        if (d < near) {
+            near = d;
+            const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Length;
+            at = rAt[s] + f * (t1 - rAt[s]);
+        }
+    }
+    return at;
+}
+
+// Where the plane through rO normal to rN cuts a polyline (an open one
+// continued along its end segments as far again as it is long), the cut
+// nearest rO; false when it misses.
+bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length,
+                  const PatchVec& rO, const PatchVec& rN, PatchVec& rCut) {
+    const std::size_t n = rLine.size();
+    if (n < 2)
+        return false;
+    std::vector<PatchVec> line = rLine;
+    if (!Closed) {
+        const PatchVec d0 = ff_unit(ff_sub(rLine[0], rLine[1]));
+        const PatchVec d1 = ff_unit(ff_sub(rLine[n - 1], rLine[n - 2]));
+        line.insert(line.begin(), ff_axpy(rLine[0], Length, d0));
+        line.push_back(ff_axpy(rLine[n - 1], Length, d1));
+    }
+    const std::size_t nseg = Closed ? line.size() : line.size() - 1;
+    double best = std::numeric_limits<double>::infinity();
+    bool found = false;
+    for (std::size_t s = 0; s < nseg; ++s) {
+        const PatchVec& a = line[s];
+        const PatchVec& b = line[(s + 1) % line.size()];
+        const double da = ff_dot(ff_sub(a, rO), rN), db = ff_dot(ff_sub(b, rO), rN);
+        if ((da > 0.0 && db > 0.0) || (da < 0.0 && db < 0.0) || da == db)
+            continue;
+        const PatchVec c = ff_axpy(a, da / (da - db), ff_sub(b, a));
+        const double d = ff_norm(ff_sub(c, rO));
+        if (d < best) {
+            best = d;
+            rCut = c;
+            found = true;
+        }
+    }
+    return found;
+}
+
+// The rational quadratic (rR1, rA, rR2; W) at U.
+PatchVec ff_conic_at(const PatchVec& rR1, const PatchVec& rA, const PatchVec& rR2, double W,
+                     double U) {
+    const double b0 = (1.0 - U) * (1.0 - U), b1 = 2.0 * W * U * (1.0 - U), b2 = U * U;
+    const double den = b0 + b1 + b2;
+    PatchVec p = ff_axpy(ff_axpy({0.0, 0.0, 0.0}, b0 / den, rR1), b1 / den, rA);
+    return ff_axpy(p, b2 / den, rR2);
+}
+
+// The distance from rP to the conic, its parameter searched over [-0.25,
+// 1.25] (the blend's section, and a little past both ends).
+double ff_conic_distance(const PatchVec& rR1, const PatchVec& rA, const PatchVec& rR2, double W,
+                         const PatchVec& rP) {
+    constexpr int kScan = 48;
+    auto dist = [&](double U) { return ff_norm(ff_sub(ff_conic_at(rR1, rA, rR2, W, U), rP)); };
+    int arg = 0;
+    double low = std::numeric_limits<double>::infinity();
+    for (int i = 0; i <= kScan; ++i) {
+        const double d = dist(-0.25 + 1.5 * i / kScan);
+        if (d < low) {
+            low = d;
+            arg = i;
+        }
+    }
+    double a = -0.25 + 1.5 * std::max(arg - 1, 0) / kScan;
+    double b = -0.25 + 1.5 * std::min(arg + 1, kScan) / kScan;
+    const double g = 0.5 * (std::sqrt(5.0) - 1.0);
+    double x1 = b - g * (b - a), x2 = a + g * (b - a);
+    double f1 = dist(x1), f2 = dist(x2);
+    for (int it = 0; it < 40; ++it) {
+        if (f1 <= f2) {
+            b = x2;
+            x2 = x1;
+            f2 = f1;
+            x1 = b - g * (b - a);
+            f1 = dist(x1);
+        } else {
+            a = x1;
+            x1 = x2;
+            f1 = f2;
+            x2 = a + g * (b - a);
+            f2 = dist(x2);
+        }
+    }
+    return std::min(low, dist(0.5 * (a + b)));
+}
+
+// The boundary edges rKeep selects, chained: the component of greatest
+// length, from one of its ends (or anywhere on a loop).
+bool ff_boundary_chain(const std::vector<PatchVec>& rPts,
+                       const std::map<std::pair<std::size_t, std::size_t>, int>& rUses,
+                       const std::function<bool(std::size_t, std::size_t)>& rKeep,
+                       std::vector<std::size_t>& rChain, bool& rClosed) {
+    const std::size_t n = rPts.size();
+    std::vector<std::vector<std::size_t>> adj(n);
+    for (const auto& kv : rUses)
+        if (kv.second == 1 && rKeep(kv.first.first, kv.first.second)) {
+            adj[kv.first.first].push_back(kv.first.second);
+            adj[kv.first.second].push_back(kv.first.first);
+        }
+    std::vector<std::int64_t> comp(n, -1);
+    std::vector<double> comp_len;
+    std::vector<std::size_t> comp_first;
+    for (std::size_t s = 0; s < n; ++s) {
+        if (adj[s].empty() || comp[s] >= 0)
+            continue;
+        const std::int64_t id = static_cast<std::int64_t>(comp_len.size());
+        comp_len.push_back(0.0);
+        comp_first.push_back(s);
+        std::vector<std::size_t> stack{s};
+        comp[s] = id;
+        while (!stack.empty()) {
+            const std::size_t u = stack.back();
+            stack.pop_back();
+            for (std::size_t w : adj[u]) {
+                if (u < w)
+                    comp_len.back() += ff_norm(ff_sub(rPts[w], rPts[u]));
+                if (comp[w] < 0) {
+                    comp[w] = id;
+                    stack.push_back(w);
+                }
+            }
+        }
+    }
+    if (comp_len.empty())
+        return false;
+    const std::size_t best = static_cast<std::size_t>(
+        std::max_element(comp_len.begin(), comp_len.end()) - comp_len.begin());
+    bool closed = true;
+    std::size_t start = comp_first[best];
+    for (std::size_t v = 0; v < n; ++v)
+        if (comp[v] == static_cast<std::int64_t>(best) && adj[v].size() != 2) {
+            closed = false;
+            if (adj[v].size() == 1) {
+                start = v;
+                break;
+            }
+        }
+    for (auto& a : adj)
+        std::sort(a.begin(), a.end());
+    std::vector<std::uint8_t> seen(n, 0);
+    rChain.assign(1, start);
+    seen[start] = 1;
+    for (;;) {
+        std::size_t next = n;
+        for (std::size_t w : adj[rChain.back()])
+            if (!seen[w]) {
+                next = w;
+                break;
+            }
+        if (next == n)
+            break;
+        seen[next] = 1;
+        rChain.push_back(next);
+    }
+    rClosed = closed && rChain.size() >= 4;
+    return rChain.size() >= 3;
+}
+
+}  // namespace
+
+PatchVec SectionBlendFit::Normal(double T) const {
+    const PatchVec r1 = ff_line_at(mRail1, mRail1T, mClosed, mLength, T);
+    PatchVec tan = ff_line_tangent(mRail1, mRail1T, mClosed, mLength, T);
+    // The edge the two surfaces would meet along, through the rail point:
+    // the direction both are level in, n1 x n2.
+    PatchVec n1{}, n2{};
+    if (mNormal1 && mNormal2 && mNormal1(r1, n1) && mNormal2(r1, n2)) {
+        PatchVec e = ff_cross(n1, n2);
+        if (ff_norm(e) > 0.1) {
+            e = ff_unit(e);
+            tan = ff_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
+        }
+    }
+    return tan;
+}
+
+double SectionBlendFit::ParameterOf(const PatchVec& rX) const {
+    // From the nearest rail point, the parameter whose section plane holds
+    // rX: a secant iteration on (rX - R1(T)) . N(T).
+    double t = ff_line_along(mRail1, mRail1T, mClosed, mLength, rX);
+    auto f = [&](double T) {
+        return ff_dot(ff_sub(rX, ff_line_at(mRail1, mRail1T, mClosed, mLength, T)), Normal(T));
+    };
+    const double h = 1e-3 * mLength;
+    double f0 = f(t);
+    for (int it = 0; it < 30 && std::fabs(f0) > 1e-13 * mLength; ++it) {
+        const double d = (f(t + h) - f0) / h;
+        if (!(std::fabs(d) > 0.0))
+            break;
+        const double step = std::clamp(-f0 / d, -0.1 * mLength, 0.1 * mLength);
+        t += step;
+        f0 = f(t);
+    }
+    return t;
+}
+
+bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& rApex) const {
+    if (mRail1.size() < 2 || mRail2.size() < 2)
+        return false;
+    rR1 = ff_line_at(mRail1, mRail1T, mClosed, mLength, T);
+    const PatchVec tan = Normal(T);
+    if (!(ff_norm(tan) > 0.0) || !ff_plane_cut(mRail2, mClosed, mLength2, rR1, tan, rR2))
+        return false;
+    const PatchVec chord = ff_sub(rR2, rR1);
+    if (!(ff_norm(chord) > 0.0))
+        return false;
+    if (mChamfer) {
+        rApex = ff_axpy(rR1, 0.5, chord);
+        return true;
+    }
+    // The tangent lines of the two surfaces in the section's plane, each
+    // heading towards the other end, and where they meet.
+    PatchVec n1{}, n2{};
+    if (!mNormal1 || !mNormal2 || !mNormal1(rR1, n1) || !mNormal2(rR2, n2))
+        return false;
+    PatchVec d1 = ff_unit(ff_cross(tan, n1)), d2 = ff_unit(ff_cross(tan, n2));
+    if (!(ff_norm(d1) > 0.0) || !(ff_norm(d2) > 0.0))
+        return false;
+    if (ff_dot(d1, chord) < 0.0)
+        d1 = {-d1[0], -d1[1], -d1[2]};
+    if (ff_dot(d2, chord) > 0.0)
+        d2 = {-d2[0], -d2[1], -d2[2]};
+    // rR1 + a d1 = rR2 + b d2, by least squares.
+    const double a11 = 1.0, a12 = -ff_dot(d1, d2), a22 = 1.0;
+    const double r1 = ff_dot(d1, chord), r2 = -ff_dot(d2, chord);
+    const double det = a11 * a22 - a12 * a12;
+    if (!(det > 1e-10))
+        return false;  // parallel tangents: no apex
+    const double a = (r1 * a22 - a12 * r2) / det, b = (a11 * r2 - a12 * r1) / det;
+    if (!(a > 0.0) || !(b > 0.0))
+        return false;
+    const PatchVec p1 = ff_axpy(rR1, a, d1), p2 = ff_axpy(rR2, b, d2);
+    rApex = {0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1]), 0.5 * (p1[2] + p2[2])};
+    return true;
+}
+
+bool SectionBlendFit::At(double T, double U, PatchVec& rP) const {
+    PatchVec r1{}, r2{}, apex{};
+    if (!Section(T, r1, r2, apex))
+        return false;
+    if (mChamfer) {
+        rP = ff_axpy(r1, U, ff_sub(r2, r1));
+        return true;
+    }
+    const double w = mWeight.At(T);
+    if (!(w > 0.0))
+        return false;
+    rP = ff_conic_at(r1, apex, r2, w, U);
+    return true;
+}
+
+SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
+                                  const std::vector<PatchTri>& rTris, const ClosestPoint& rS1,
+                                  const NormalAt& rN1, const ClosestPoint& rS2, const NormalAt& rN2,
+                                  double Tol,
+                                  const std::function<int(std::size_t, std::size_t)>& rEdgeSide) {
+    SectionBlendFit out;
+    if (!(Tol > 0.0) || rTris.empty())
+        return out;
+    std::vector<PatchVec> normals;
+    std::vector<std::uint8_t> interior;
+    ff_vertex_normals(rPts, rTris, normals, interior);
+    const double inf = std::numeric_limits<double>::infinity();
+    auto dist = [&](const ClosestPoint& rS, const PatchVec& rX, PatchVec* pFoot) {
+        PatchVec f{};
+        if (!rS(rX, f))
+            return inf;
+        if (pFoot)
+            *pFoot = f;
+        return ff_norm(ff_sub(rX, f));
+    };
+    // The rails: the boundary edges along each surface, chained -- those the
+    // caller says it lies across, else those whose ends both lie on it.
+    const auto uses = ff_edge_uses(rTris);
+    std::vector<std::uint8_t> on1(rPts.size(), 0), on2(rPts.size(), 0);
+    if (!rEdgeSide)
+        for (const auto& kv : uses)
+            if (kv.second == 1)
+                for (std::size_t v : {kv.first.first, kv.first.second}) {
+                    const double d1 = dist(rS1, rPts[v], nullptr), d2 = dist(rS2, rPts[v], nullptr);
+                    if (d1 <= Tol && d1 < d2)
+                        on1[v] = 1;
+                    else if (d2 <= Tol && d2 < d1)
+                        on2[v] = 1;
+                }
+    auto along_side = [&](int Side) {
+        return [&, Side](std::size_t A, std::size_t B) {
+            if (rEdgeSide)
+                return rEdgeSide(A, B) == Side;
+            const std::vector<std::uint8_t>& on = Side == 1 ? on1 : on2;
+            return on[A] != 0 && on[B] != 0;
+        };
+    };
+    std::vector<std::size_t> chain1, chain2;
+    bool closed1 = false, closed2 = false;
+    if (!ff_boundary_chain(rPts, uses, along_side(1), chain1, closed1) ||
+        !ff_boundary_chain(rPts, uses, along_side(2), chain2, closed2) || closed1 != closed2)
+        return out;
+    out.mClosed = closed1;
+    auto rail = [&](const std::vector<std::size_t>& rChain, const ClosestPoint& rS,
+                    std::vector<PatchVec>& rLine, std::vector<double>& rAt, double& rLen) {
+        rLen = 0.0;
+        for (std::size_t v : rChain) {
+            PatchVec f = rPts[v];
+            if (!std::isfinite(dist(rS, rPts[v], &f)))
+                return false;
+            if (!rLine.empty())
+                rLen += ff_norm(ff_sub(f, rLine.back()));
+            rLine.push_back(f);
+            rAt.push_back(rLen);
+        }
+        if (out.mClosed)
+            rLen += ff_norm(ff_sub(rLine.front(), rLine.back()));
+        return rLen > 0.0;
+    };
+    if (!rail(chain1, rS1, out.mRail1, out.mRail1T, out.mLength) ||
+        !rail(chain2, rS2, out.mRail2, out.mRail2T, out.mLength2))
+        return out;
+    out.mNormal1 = rN1;
+    out.mNormal2 = rN2;
+    // Every interior vertex in its section: the chord's distance, and the
+    // conic weight its barycentric coordinates give.
+    std::vector<std::size_t> verts;
+    for (std::size_t v = 0; v < rPts.size(); ++v)
+        if (interior[v] && ff_norm(normals[v]) > 0.5)
+            verts.push_back(v);
+    verts = ff_spread(verts, 256);
+    if (verts.size() < 6)
+        return out;
+    std::vector<double> at, chord_dist, weight_t, weight;
+    std::vector<std::array<PatchVec, 4>> sections;  // r1, r2, apex, vertex
+    SectionBlendFit probe = out;
+    probe.mChamfer = false;
+    for (std::size_t v : verts) {
+        const PatchVec& x = rPts[v];
+        const double t = out.ParameterOf(x);
+        PatchVec r1{}, r2{}, apex{};
+        out.mChamfer = true;
+        if (!out.Section(t, r1, r2, apex))
+            continue;
+        const double f = ff_segment_fraction(x, r1, r2);
+        at.push_back(t);
+        chord_dist.push_back(ff_norm(ff_sub(x, ff_axpy(r1, f, ff_sub(r2, r1)))));
+        if (!probe.Section(t, r1, r2, apex))
+            continue;
+        // Barycentric coordinates in (r1, apex, r2), in that triangle's plane.
+        const PatchVec e1 = ff_sub(apex, r1), e2 = ff_sub(r2, r1), q = ff_sub(x, r1);
+        const double g11 = ff_dot(e1, e1), g12 = ff_dot(e1, e2), g22 = ff_dot(e2, e2);
+        const double det = g11 * g22 - g12 * g12;
+        if (!(det > 0.0))
+            continue;
+        const double q1 = ff_dot(q, e1), q2 = ff_dot(q, e2);
+        const double b1 = (q1 * g22 - q2 * g12) / det, b2 = (q2 * g11 - q1 * g12) / det;
+        const double b0 = 1.0 - b1 - b2;
+        if (!(b0 > 0.0) || !(b2 > 0.0) || b1 < 0.0)
+            continue;
+        weight_t.push_back(t);
+        weight.push_back(b1 / (2.0 * std::sqrt(b0 * b2)));
+        sections.push_back({r1, r2, apex, x});
+    }
+    if (10 * at.size() < 9 * verts.size())
+        return out;
+    // A chamfer: every vertex on its section's chord.
+    double worst = 0.0, sum = 0.0;
+    for (double d : chord_dist) {
+        worst = std::max(worst, d);
+        sum += d * d;
+    }
+    if (worst <= 0.4 * Tol) {
+        out.mChamfer = true;
+        out.mRms = std::sqrt(sum / static_cast<double>(chord_dist.size()));
+        out.mMax = worst;
+        out.mOk = true;
+        return out;
+    }
+    // A conic: the weight law of the lowest degree whose conics pass near
+    // every vertex.
+    out.mChamfer = false;
+    if (10 * weight.size() < 9 * verts.size())
+        return out;
+    const int max_degree = out.mClosed ? 6 : 8;
+    for (int d = 0; d <= max_degree; ++d) {
+        FeatureLaw law;
+        if (!feature_law_fit(weight_t, weight, out.mClosed, 0.0, out.mLength, d, law))
+            break;
+        double w_lo = inf;
+        for (int i = 0; i <= 64; ++i)
+            w_lo = std::min(w_lo, law.At(out.mLength * i / 64.0));
+        if (!(w_lo > 0.0))
+            continue;
+        worst = 0.0;
+        sum = 0.0;
+        for (std::size_t i = 0; i < sections.size(); ++i) {
+            const auto& sec = sections[i];
+            const double e = ff_conic_distance(sec[0], sec[2], sec[1], law.At(weight_t[i]), sec[3]);
+            worst = std::max(worst, e);
+            sum += e * e;
+        }
+        if (worst <= 0.4 * Tol) {
+            out.mWeight = std::move(law);
+            out.mRms = std::sqrt(sum / static_cast<double>(sections.size()));
+            out.mMax = worst;
+            out.mOk = true;
+            return out;
+        }
+    }
+    return out;
+}
+
+VertexBlendBoundary vertex_blend_boundary(
+    const std::vector<PatchTri>& rTris,
+    const std::function<std::int64_t(std::size_t, std::size_t)>& rAcross) {
+    VertexBlendBoundary out;
+    // The directed boundary edges, as the triangles wind them: one loop when
+    // each boundary vertex starts exactly one.
+    std::map<std::pair<std::size_t, std::size_t>, int> uses = ff_edge_uses(rTris);
+    std::map<std::size_t, std::size_t> next;
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = t[static_cast<std::size_t>(k)];
+            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+                continue;
+            if (!next.emplace(a, b).second)
+                return out;  // two boundary edges leave one vertex: not a disc
+        }
+    if (next.size() < 3)
+        return out;
+    const std::size_t start = next.begin()->first;
+    std::size_t v = start;
+    do {
+        out.mLoop.push_back(v);
+        auto it = next.find(v);
+        if (it == next.end() || out.mLoop.size() > next.size())
+            return out;
+        out.mAcross.push_back(rAcross(v, it->second));
+        v = it->second;
+    } while (v != start);
+    if (out.mLoop.size() != next.size())
+        return out;  // more than one loop: a hole
+    // The runs: rotate so the loop starts where the neighbour changes.
+    const std::size_t n = out.mLoop.size();
+    std::size_t first = n;
+    for (std::size_t i = 0; i < n; ++i)
+        if (out.mAcross[i] != out.mAcross[(i + n - 1) % n]) {
+            first = i;
+            break;
+        }
+    if (first == n)
+        return out;  // one neighbour all round
+    std::rotate(out.mLoop.begin(), out.mLoop.begin() + static_cast<std::ptrdiff_t>(first),
+                out.mLoop.end());
+    std::rotate(out.mAcross.begin(), out.mAcross.begin() + static_cast<std::ptrdiff_t>(first),
+                out.mAcross.end());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (i > 0 && out.mAcross[i] == out.mAcross[i - 1])
+            continue;
+        if (out.mAcross[i] < 0)
+            return out;  // an edge with nothing across
+        if (std::find(out.mNeighbours.begin(), out.mNeighbours.end(), out.mAcross[i]) !=
+            out.mNeighbours.end())
+            return out;  // a neighbour met twice: its run is not contiguous
+        out.mNeighbours.push_back(out.mAcross[i]);
+    }
+    out.mOk = out.mNeighbours.size() >= 3;
     return out;
 }
 
@@ -166886,6 +167681,10 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomLProp_SLProps.hxx>
+#include <GeomPlate_BuildPlateSurface.hxx>
+#include <GeomPlate_MakeApprox.hxx>
+#include <GeomPlate_PointConstraint.hxx>
+#include <GeomPlate_Surface.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_Curve.hxx>
@@ -167499,7 +168298,8 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             // edges go straight to the approximation.
             auto swept = [&](std::int64_t G) {
                 const std::int32_t t = rSkin.mPatches[static_cast<std::size_t>(G)].mType;
-                return t == kFitCadFilletType || t == kFitCadHelicalType;
+                return t == kFitCadFilletType || t == kFitCadHelicalType ||
+                       t == kFitCadVertexBlendType || t == kFitCadChamferType;
             };
             if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd)) {
                 GeomAPI_IntSS inter(s1, s2, Precision::Confusion());
@@ -168462,6 +169262,89 @@ detail::ClosestPoint fc_closest(const FcHandle<Geom_Surface>& rS) {
     };
 }
 
+// The unit normal of @p rS at the point of it nearest a point, for the
+// OpenCASCADE-free fits of `detail/feature_fit`.
+detail::NormalAt fc_normal(const FcHandle<Geom_Surface>& rS) {
+    return [rS](const detail::PatchVec& rX, detail::PatchVec& rN) {
+        const gp_Vec n = fc_normal_at(rS, gp_Pnt(rX[0], rX[1], rX[2]));
+        const double len = n.Magnitude();
+        if (!(len > 0.0))
+            return false;
+        rN = {n.X() / len, n.Y() / len, n.Z() / len};
+        return true;
+    };
+}
+
+// A chamfer or conic blend (roadmap 6.3.2), as a B-spline interpolating its
+// cross-sections along the first rail -- straight chords, or the conic arcs
+// of its weight law -- each widened by 15% at both ends and the rail carried
+// a tenth of its length past the ends of an open one, so the face trims
+// inside its surface. A closed rail gives a surface periodic along it. Null
+// when a section misses.
+FcHandle<Geom_Surface> fc_section_blend_surface(const detail::SectionBlendFit& rFit) {
+    const double len = rFit.mLength;
+    const bool closed = rFit.mClosed;
+    const double t0 = closed ? 0.0 : -0.1 * len, t1 = closed ? len : 1.1 * len;
+    const int n = std::clamp(static_cast<int>(2 * rFit.mRail1.size()) + 1, 8, 256);
+    const int na = rFit.mChamfer ? 4 : 13;
+    TColgp_Array2OfPnt grid(1, n, 1, na);
+    for (int i = 0; i < n; ++i) {
+        const double t = closed ? len * i / n : t0 + (t1 - t0) * i / (n - 1);
+        for (int j = 0; j < na; ++j) {
+            detail::PatchVec p{};
+            if (!rFit.At(t, -0.15 + 1.3 * j / (na - 1), p))
+                return {};
+            grid.SetValue(i + 1, j + 1, gp_Pnt(p[0], p[1], p[2]));
+        }
+    }
+    GeomAPI_PointsToBSplineSurface fit;
+    fit.Interpolate(grid, Approx_IsoParametric, closed);
+    if (!fit.IsDone())
+        return {};
+    return FcHandle<Geom_Surface>(fit.Surface());
+}
+
+// A vertex blend (roadmap 6.3.1): a plate surface through the patch's
+// vertices that meets each neighbour tangentially along the boundary loop,
+// approximated by a B-spline (widened by a tenth, so the face trims inside
+// it). @p rLoop and @p rAcross are the loop's vertices and the neighbour
+// across the edge leaving each; @p rSurface the neighbours' surfaces. Null
+// when the plate cannot be built or a boundary point does not project.
+FcHandle<Geom_Surface> fc_vertex_blend_surface(const std::vector<gp_Pnt>& rPts,
+                                               const std::vector<std::size_t>& rLoop,
+                                               const std::vector<std::int64_t>& rAcross,
+                                               const std::vector<std::uint8_t>& rOnLoop,
+                                               const std::vector<FcHandle<Geom_Surface> >& rSurface,
+                                               double Tol) {
+    GeomPlate_BuildPlateSurface plate(3, 15, 2, 1e-5, 0.1 * Tol, 0.01, 0.1);
+    const std::size_t loop_step = std::max<std::size_t>(1, rLoop.size() / 96);
+    for (std::size_t i = 0; i < rLoop.size(); i += loop_step) {
+        const FcHandle<Geom_Surface>& s = rSurface[static_cast<std::size_t>(rAcross[i])];
+        GeomAPI_ProjectPointOnSurf proj(rPts[rLoop[i]], s);
+        if (!proj.IsDone() || proj.NbPoints() == 0)
+            return {};
+        double u = 0.0, v = 0.0;
+        proj.LowerDistanceParameters(u, v);
+        plate.Add(new GeomPlate_PointConstraint(u, v, s, 1, 0.1 * Tol, 0.01, 0.1));
+    }
+    std::vector<std::size_t> inner;
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        if (!rOnLoop[i])
+            inner.push_back(i);
+    const std::size_t inner_step = std::max<std::size_t>(1, inner.size() / 256);
+    for (std::size_t i = 0; i < inner.size(); i += inner_step)
+        plate.Add(new GeomPlate_PointConstraint(rPts[inner[i]], 0, 0.1 * Tol));
+    plate.Perform();
+    if (!plate.IsDone())
+        return {};
+    const FcHandle<GeomPlate_Surface> ps = plate.Surface();
+    GeomPlate_MakeApprox approx(ps, 0.1 * Tol, 16, 8, 10.0 * Tol, 0, GeomAbs_C1, 1.1);
+    const FcHandle<Geom_BSplineSurface> bs = approx.Surface();
+    if (bs.IsNull())
+        return {};
+    return FcHandle<Geom_Surface>(bs);
+}
+
 // A rolling-ball blend of the radius `rFit.mRadius` gives along its rail, as
 // a B-spline through its cross-sections. The balls touching both surfaces are
 // solved along the rail (one that does not solve, where a neighbour ends, is
@@ -168895,6 +169778,42 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         for (std::size_t i = 0; i < rPts.size(); ++i)
             rFlat[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
     };
+    // The global vertex of each local one of patch_mesh, in its first-seen order.
+    auto patch_globals = [&](std::size_t R) {
+        std::vector<std::int64_t> global;
+        std::unordered_map<std::int64_t, std::size_t> seen;
+        for (std::size_t f : facets_of[R])
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k) {
+                const std::int64_t g = fc.mNodes[static_cast<std::size_t>(k)];
+                if (seen.emplace(g, global.size()).second)
+                    global.push_back(g);
+            }
+        return global;
+    };
+    // Across the mesh edge (Ga, Gb) from patch R: the other row, or -1, and
+    // that facet and R's own (-1 where there is none).
+    auto row_across = [&](std::size_t R, std::int64_t Ga, std::int64_t Gb, std::int64_t* pMine,
+                          std::int64_t* pTheirs) -> std::int64_t {
+        auto it = skin.mEdgeFacets.find({std::min(Ga, Gb), std::max(Ga, Gb)});
+        std::int64_t mine = -1, theirs = -1, row = -1;
+        if (it != skin.mEdgeFacets.end())
+            for (std::int64_t g : it->second) {
+                if (g < 0)
+                    continue;
+                const std::int64_t q = skin.mRow[static_cast<std::size_t>(g)];
+                if (q == static_cast<std::int64_t>(R)) {
+                    mine = g;
+                } else if (q >= 0) {
+                    theirs = g;
+                    row = q;
+                }
+            }
+        if (pMine)
+            *pMine = mine;
+        if (pTheirs)
+            *pTheirs = theirs;
+        return row;
+    };
     auto orient = [&](std::size_t R, FcHandle<Geom_Surface> S) {
         const std::size_t step = std::max<std::size_t>(1, facets_of[R].size() / 64);
         double agree = 0.0;
@@ -168946,7 +169865,8 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         return by_length;
     };
     // What a fillet or thread face is, beyond its type, for the report.
-    constexpr std::uint8_t kFcVariable = 1, kFcBlend = 2, kFcRounded = 4;
+    constexpr std::uint8_t kFcVariable = 1, kFcBlend = 2, kFcRounded = 4, kFcConic = 8,
+                           kFcTapered = 16, kFcVariablePitch = 32;
     std::vector<std::uint8_t> feature(m, 0);
     auto accept = [&](std::size_t R, const FcHandle<Geom_Surface>& rS, std::int64_t Type,
                       std::uint8_t Feature) {
@@ -169021,6 +169941,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             if (rOptions.mThreads) {
                 // The axis of the neighbouring cylinder or cone sharing the most boundary.
                 const double* seed = nullptr;
+                std::int32_t seed_type = 0;
                 bool threaded = false;
                 for (const auto& nb : by_length) {
                     const std::size_t q = static_cast<std::size_t>(nb.second);
@@ -169029,12 +169950,15 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         continue;
                     const double* pp = skin.mPatches[q].mParams.data();
                     seed = pp;
+                    seed_type = t;
                     const detail::HelicoidFit hf =
                         detail::helicoid_fit(flat, tris, {pp[0], pp[1], pp[2]}, {pp[3], pp[4], pp[5]});
                     if (hf.mOk && hf.mMax <= 0.5 * tol) {
                         FcHandle<Geom_Surface> hs = fc_helicoid_surface(hf, tol);
                         if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol)) {
-                            accept(r, hs, kFitCadHelicalType, 0);
+                            // A straight flank beside a cone is cut on its taper:
+                            // the same ruled helicoid, of an apparent pitch.
+                            accept(r, hs, kFitCadHelicalType, t == 4 ? kFcTapered : 0);
                             threaded = true;
                             log::debug("fit_cad: patch {} is a thread flank of pitch {}",
                                        skin.mPatches[r].mLabel, hf.Pitch());
@@ -169065,6 +169989,104 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         } else {
                             log::debug("fit_cad: patch {}: the helical face strays from it",
                                        skin.mPatches[r].mLabel);
+                        }
+                    }
+                }
+                // Tapered and variable-pitch threads (roadmap 6.3.3), tried
+                // only where every constant screw failed: a straight flank
+                // whose pitch changes along it, then any profile on a screw
+                // whose pitch changes and that moves out along a taper.
+                if (!analytic[r] && seed != nullptr) {
+                    const detail::HelicoidFit hv = detail::helicoid_fit(
+                        flat, tris, {seed[0], seed[1], seed[2]}, {seed[3], seed[4], seed[5]}, true);
+                    if (hv.mOk && hv.mMax <= 0.5 * tol &&
+                        std::fabs(hv.PitchAt(hv.mThetaMax) - hv.PitchAt(hv.mThetaMin)) > tol) {
+                        FcHandle<Geom_Surface> hs = fc_helicoid_surface(hv, tol);
+                        if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol)) {
+                            accept(r, hs, kFitCadHelicalType,
+                                   static_cast<std::uint8_t>(kFcVariablePitch |
+                                                             (seed_type == 4 ? kFcTapered : 0)));
+                            log::debug("fit_cad: patch {} is a thread flank of pitch {} to {}",
+                                       skin.mPatches[r].mLabel, hv.PitchAt(hv.mThetaMin),
+                                       hv.PitchAt(hv.mThetaMax));
+                        }
+                    }
+                }
+                if (!analytic[r]) {
+                    // The taper starts at the neighbouring cone's, if any: its
+                    // axis points into the cone, where the radius grows.
+                    const double taper0 = seed_type == 4 ? std::tan(seed[8] * kFcPi / 180.0) : 0.0;
+                    detail::HelicalFit hg;
+                    if (seed != nullptr) {
+                        const detail::PatchVec o{seed[0], seed[1], seed[2]};
+                        const detail::PatchVec a{seed[3], seed[4], seed[5]};
+                        hg = detail::helical_fit(flat, tris, &o, &a, tol, true, taper0);
+                    } else {
+                        hg = detail::helical_fit(flat, tris, nullptr, nullptr, tol, true, 0.0);
+                    }
+                    if (hg.mOk) {
+                        const double g0 = hg.Advance(hg.mThetaMin), g1 = hg.Advance(hg.mThetaMax);
+                        const bool tapered = std::fabs(hg.mTaper * (g1 - g0)) > tol;
+                        const bool varying =
+                            std::fabs(hg.PitchAt(hg.mThetaMax) - hg.PitchAt(hg.mThetaMin)) > tol;
+                        FcHandle<Geom_Surface> hs;
+                        if (tapered || varying)
+                            hs = fc_helical_surface(hg, tol);
+                        if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol, false, true)) {
+                            accept(r, hs, kFitCadHelicalType,
+                                   static_cast<std::uint8_t>((hg.mStraight ? 0 : kFcRounded) |
+                                                             (tapered ? kFcTapered : 0) |
+                                                             (varying ? kFcVariablePitch : 0)));
+                            log::debug(
+                                "fit_cad: patch {} is a helical face of pitch {} to {}, "
+                                "taper {}{}",
+                                skin.mPatches[r].mLabel, hg.PitchAt(hg.mThetaMin),
+                                hg.PitchAt(hg.mThetaMax), hg.mTaper,
+                                hg.mStraight ? "" : ", rounded");
+                        }
+                    }
+                }
+            }
+            // Chamfers and conic blends (roadmap 6.3.2): a patch between two
+            // analytic faces that no rolling ball and no thread explains,
+            // its cross-sections straight or conic arcs tangent to both.
+            if (!analytic[r] && rOptions.mFillets && by_length.size() >= 2) {
+                const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
+                const std::size_t q2 = static_cast<std::size_t>(by_length[1].second);
+                const double along = -(by_length[0].first + by_length[1].first);
+                const std::vector<std::int64_t> global = patch_globals(r);
+                if (analytic[q1] && analytic[q2] && along >= 0.6 * perimeter &&
+                    global.size() == flat.size()) {
+                    // The rails are the boundary edges across from each neighbour.
+                    const auto side = [&](std::size_t A, std::size_t B) {
+                        const std::int64_t q =
+                            row_across(r, global[A], global[B], nullptr, nullptr);
+                        return q == static_cast<std::int64_t>(q1)   ? 1
+                               : q == static_cast<std::int64_t>(q2) ? 2
+                                                                    : 0;
+                    };
+                    const detail::SectionBlendFit sb = detail::section_blend_fit(
+                        flat, tris, fc_closest(surface[q1]), fc_normal(surface[q1]),
+                        fc_closest(surface[q2]), fc_normal(surface[q2]), tol, side);
+                    if (!sb.mOk)
+                        log::debug(
+                            "fit_cad: patch {} is no chamfer or conic blend (rails of {} "
+                            "and {} points)",
+                            skin.mPatches[r].mLabel, sb.mRail1.size(), sb.mRail2.size());
+                    if (sb.mOk) {
+                        FcHandle<Geom_Surface> fs = fc_section_blend_surface(sb);
+                        if (!fs.IsNull() &&
+                            fc_surface_fits(fs, pts, tris, tol, !sb.mChamfer, true)) {
+                            if (sb.mChamfer)
+                                accept(r, fs, kFitCadChamferType, 0);
+                            else
+                                accept(r, fs, kFitCadFilletType, kFcConic);
+                            log::debug("fit_cad: patch {} is a {}", skin.mPatches[r].mLabel,
+                                       sb.mChamfer ? "chamfer" : "conic blend");
+                        } else {
+                            log::debug("fit_cad: patch {}: the {} {}", skin.mPatches[r].mLabel,
+                                       sb.mChamfer ? "chamfer" : "conic blend",
+                                       fs.IsNull() ? "has no surface" : "strays from it");
                         }
                     }
                 }
@@ -169255,6 +170277,94 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         }
     }
 
+    // Vertex blends (roadmap 6.3.1): a patch no primitive explains (or only
+    // a freeform face does) whose boundary is one loop around three or more
+    // fitted faces, meeting each along one run without a crease -- the
+    // corner where blends meet, set back from each other -- tried as a plate
+    // surface tangent to every one of them. A neighbour at a crease (a cap,
+    // a wall the patch merely ends at) rules it out, so a freeform face
+    // between such faces is left as it was.
+    if (rOptions.mFillets) {
+        const double crease = std::cos(20.0 * kFcPi / 180.0);
+        for (std::size_t r = 0; r < m; ++r) {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            const bool freeform =
+                analytic[r] && type == static_cast<std::int32_t>(kFitCadBsplineType);
+            const bool unexplained = !analytic[r] && !(type >= 1 && type <= 5 && finite);
+            if (facets_of[r].empty() || (!freeform && !unexplained))
+                continue;
+            std::vector<gp_Pnt> pts;
+            std::vector<std::array<std::size_t, 3> > tris;
+            std::vector<detail::PatchVec> flat;
+            patch_mesh(r, pts, tris, flat);
+            const std::vector<std::int64_t> global = patch_globals(r);
+            if (global.size() != pts.size())
+                continue;
+            bool creased = false;
+            auto across = [&](std::size_t A, std::size_t B) -> std::int64_t {
+                std::int64_t mine = -1, theirs = -1;
+                const std::int64_t row = row_across(r, global[A], global[B], &mine, &theirs);
+                if (mine >= 0 && theirs >= 0) {
+                    const std::size_t a = static_cast<std::size_t>(mine) * 3;
+                    const std::size_t b = static_cast<std::size_t>(theirs) * 3;
+                    const double c = fc.mNormals[a] * fc.mNormals[b] +
+                                     fc.mNormals[a + 1] * fc.mNormals[b + 1] +
+                                     fc.mNormals[a + 2] * fc.mNormals[b + 2];
+                    creased = creased || c < crease;
+                }
+                return row;
+            };
+            const detail::VertexBlendBoundary vb = detail::vertex_blend_boundary(tris, across);
+            if (!vb.mOk || creased)
+                continue;
+            bool fitted_all = true;
+            for (std::int64_t q : vb.mNeighbours)
+                fitted_all = fitted_all && analytic[static_cast<std::size_t>(q)] &&
+                             !surface[static_cast<std::size_t>(q)].IsNull();
+            if (!fitted_all)
+                continue;
+            try {
+                std::vector<std::uint8_t> on_loop(pts.size(), 0);
+                for (std::size_t v : vb.mLoop)
+                    on_loop[v] = 1;
+                FcHandle<Geom_Surface> vs =
+                    fc_vertex_blend_surface(pts, vb.mLoop, vb.mAcross, on_loop, surface, tol);
+                if (vs.IsNull() || !fc_surface_fits(vs, pts, tris, tol, true, true)) {
+                    log::debug("fit_cad: patch {}: the vertex blend {}", skin.mPatches[r].mLabel,
+                               vs.IsNull() ? "has no plate" : "strays from it");
+                    continue;
+                }
+                // Tangent to every neighbour along the loop, within 3 degrees.
+                bool tangent = true;
+                const double tol_angle = std::cos(3.0 * kFcPi / 180.0);
+                for (std::size_t i = 0; i < vb.mLoop.size() && tangent; ++i) {
+                    const gp_Vec a = fc_normal_at(vs, pts[vb.mLoop[i]]);
+                    const gp_Vec b = fc_normal_at(surface[static_cast<std::size_t>(vb.mAcross[i])],
+                                                  pts[vb.mLoop[i]]);
+                    if (a.Magnitude() <= 0.0 || b.Magnitude() <= 0.0)
+                        continue;
+                    tangent = std::fabs(a.Dot(b)) >= tol_angle * a.Magnitude() * b.Magnitude();
+                }
+                if (!tangent) {
+                    log::debug(
+                        "fit_cad: patch {}: the vertex blend is not tangent to its "
+                        "neighbours",
+                        skin.mPatches[r].mLabel);
+                    continue;
+                }
+                accept(r, vs, kFitCadVertexBlendType, 0);
+                log::debug("fit_cad: patch {} is a vertex blend among {} faces",
+                           skin.mPatches[r].mLabel, vb.mNeighbours.size());
+            } catch (const Standard_Failure& rErr) {
+                log::debug("fit_cad: no vertex blend for patch {}: {}", skin.mPatches[r].mLabel,
+                           rErr.GetMessageString());
+            }
+        }
+    }
+
     // Build, check, demote and rebuild.
     FcBuild build;
     FcTriangulation tri;
@@ -169409,10 +170519,19 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 ++result.mNumFillet;
                 result.mNumVariableFillet += (feat & kFcVariable) ? 1 : 0;
                 result.mNumBlend += (feat & kFcBlend) ? 1 : 0;
+                result.mNumConicBlend += (feat & kFcConic) ? 1 : 0;
                 break;
             case kFitCadHelicalType:
                 ++result.mNumHelical;
                 result.mNumRoundedThread += (feat & kFcRounded) ? 1 : 0;
+                result.mNumTaperedThread += (feat & kFcTapered) ? 1 : 0;
+                result.mNumVariablePitchThread += (feat & kFcVariablePitch) ? 1 : 0;
+                break;
+            case kFitCadVertexBlendType:
+                ++result.mNumVertexBlend;
+                break;
+            case kFitCadChamferType:
+                ++result.mNumChamfer;
                 break;
             default:
                 ++result.mNumFacetedFaces;
@@ -178410,6 +179529,11 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                         {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
                         {"NumBlend", static_cast<double>(cr.mNumBlend)},
                         {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
+                        {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
+                        {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
+                        {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
+                        {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
+                        {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
                         {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
         return std::move(cr.mMesh);
     }

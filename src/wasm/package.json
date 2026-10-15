@@ -1,7 +1,7 @@
 {
   "name": "@meshioplusplus/wasm",
-  "version": "17.1.0",
-  "description": "meshio++ mesh I/O compiled to WebAssembly: read 76 and write 68 mesh formats (incl. MED, CGNS, Exodus) in the browser or Node.js",
+  "version": "17.2.0",
+  "description": "meshio++ mesh I/O compiled to WebAssembly: read 80 and write 75 mesh formats (incl. MED, CGNS, Exodus; STEP and IGES in the full build) in the browser or Node.js",
   "type": "module",
   "main": "./src/index.mjs",
   "module": "./src/index.mjs",
@@ -12,8 +12,13 @@
     "dist/meshioplusplus_wasm.wasm",
     "dist/meshioplusplus_wasm_mt.mjs",
     "dist/meshioplusplus_wasm_mt.wasm",
+    "dist/meshioplusplus_wasm_full.mjs",
+    "dist/meshioplusplus_wasm_full.wasm",
+    "dist/meshioplusplus_wasm_full_mt.mjs",
+    "dist/meshioplusplus_wasm_full_mt.wasm",
     "index.d.ts",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=18"
@@ -29,9 +34,12 @@
     "obj",
     "finite-elements",
     "fem",
+    "step",
+    "iges",
+    "cad",
     "scientific-computing"
   ],
-  "license": "MIT",
+  "license": "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)",
   "author": "Vicente Mataix Ferrandiz",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "repository": {

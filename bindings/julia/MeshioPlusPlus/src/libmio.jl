@@ -566,6 +566,16 @@ struct _CFitCadReport
     num_blend::Int64
 end
 
+"""Mirror of C `mio_fit_cad_report_ex` (v17.2.0)."""
+struct _CFitCadReportEx
+    num_vertex_blend::Int64
+    num_chamfer::Int64
+    num_conic_blend::Int64
+    num_tapered_thread::Int64
+    num_variable_pitch_thread::Int64
+    reserved::NTuple{11,Int64}
+end
+
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
 which initializes the defaults in C and sets only what the caller names."""
 struct _CRenderOpts
@@ -971,6 +981,8 @@ function _check_abi_layout()
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||
         error("meshio++: mio_fit_cad_report layout mismatch ($(sizeof(_CFitCadReport)) bytes)")
+    sizeof(_CFitCadReportEx) == 128 ||
+        error("meshio++: mio_fit_cad_report_ex layout mismatch ($(sizeof(_CFitCadReportEx)) bytes)")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

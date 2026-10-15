@@ -59,6 +59,10 @@ _JS_ONLY = {
     "withProvenance": "JS-only composition of provenanceBegin/provenanceEnd",
     "availableFormats": "bulk introspection; C exposes mio_format_readable/writable per-format",
     "hasCgnslib": "build-capability introspection helper",
+    "hasZstd": "build-capability introspection helper; the C API has no codec probe",
+    "hasLz4": "build-capability introspection helper; the C API has no codec probe",
+    "hasBzip2": "build-capability introspection helper; the C API has no codec probe",
+    "buildFlavour": "the artifact's lean or full flavour; the native library has no such split",
     "numNodesPerCell": "bulk map; C exposes mio_cell_type_num_nodes per cell type",
     "parallelBackend": "build-capability introspection helper",
     "topologicalDimension": "bulk map; C exposes mio_cell_type_dimension per cell type",
@@ -100,9 +104,6 @@ _C_WITHOUT_JS = {
     # already exposes the per-cell metrics as cell_data, and
     # `surfaceWatertightCheck` covers the surface-quality summary case.
     "quality_counts",
-    # The OpenCASCADE backend is LGPL-2.1 and bring-your-own, never in the
-    # WASM build (doc/fit_cad.md), so the operation has no JS counterpart.
-    "fit_cad",
 }
 
 

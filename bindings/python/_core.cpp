@@ -3588,6 +3588,11 @@ PYBIND11_MODULE(_core, m) {
             out["num_variable_fillet"] = r.mNumVariableFillet;
             out["num_blend"] = r.mNumBlend;
             out["num_rounded_thread"] = r.mNumRoundedThread;
+            out["num_vertex_blend"] = r.mNumVertexBlend;
+            out["num_chamfer"] = r.mNumChamfer;
+            out["num_conic_blend"] = r.mNumConicBlend;
+            out["num_tapered_thread"] = r.mNumTaperedThread;
+            out["num_variable_pitch_thread"] = r.mNumVariablePitchThread;
             out["brep"] = core_brep_to_py(std::move(r.mBrep));
             return out;
         },

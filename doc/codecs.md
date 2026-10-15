@@ -32,7 +32,7 @@ _core.__has_zlib__, _core.__has_zstd__, _core.__has_lz4__
 
 Package managers: Conan `with_zstd` / `with_lz4`, vcpkg features `zstd` / `lz4` — both off by default there too, so existing package IDs are unaffected.
 
-**WASM**: compiled out. There is no Emscripten port for either, and zlib (`-sUSE_ZLIB=1`) is unchanged.
+**WASM**: in the [full artifact](/wasm#lean-and-full-builds) only (v17.2.0), which links zstd 1.5.7 and lz4 1.10.0 cross-compiled by `build/build-wasm-deps.sh --full` (`hasZstd()`, `hasLz4()`); the lean one keeps zlib (`-sUSE_ZLIB=1`) as its one codec and throws naming the codec otherwise.
 
 ## Using them
 

@@ -387,7 +387,7 @@ pairs = meshioplusplus.match_periodic_nodes(mesh, "inlet", "outlet", translate=(
 
 #### Skin to CAD: segment, fit primitives, STEP, CAD faces
 
-The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The write-only **`step`** format hands a closed skin to CAD as an AP214 faceted solid (one planar face per facet, shared edges), validated against OpenCASCADE. With the optional OpenCASCADE backend (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`, LGPL-2.1, bring-your-own, never in the wheels), **`meshioplusplus.fit_cad(mesh, path)`** does the CAD half: each fitted patch becomes an analytic face trimmed by its boundary, a rolling-ball fillet (of one radius or a radius varying along it, also between freeform faces) or a helical thread face (straight or rounded, with or without a cylinder beside it) its own face, and any other patch no primitive explains a freeform B-spline face (split first into pieces a plane or an unrolled cylinder parametrises), sewn into a checked solid and written as STEP a CAD tool can edit (or as Kratos CAD JSON), with anything the kernel cannot build demoted to facets, never silently wrong (every surface but WASM; `to-cad` in both CLIs). See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit) and [fit CAD](https://loumalouomega.github.io/meshioplusplus/fit_cad).
+The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The write-only **`step`** format hands a closed skin to CAD as an AP214 faceted solid (one planar face per facet, shared edges), validated against OpenCASCADE. With the optional OpenCASCADE backend (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`, LGPL-2.1, bring-your-own, never in the wheels), **`meshioplusplus.fit_cad(mesh, path)`** does the CAD half: each fitted patch becomes an analytic face trimmed by its boundary, a rolling-ball fillet (of one radius or a radius varying along it, also between freeform faces) or a helical thread face (straight or rounded, with or without a cylinder beside it) its own face, and any other patch no primitive explains a freeform B-spline face (split first into pieces a plane or an unrolled cylinder parametrises), sewn into a checked solid and written as STEP a CAD tool can edit (or as Kratos CAD JSON), with anything the kernel cannot build demoted to facets, never silently wrong; since v17.2.0 a chamfer, a conic blend, a tapered or variable-pitch thread and a corner where blends meet (a vertex blend) get their own faces too (every surface, WASM through its full artifact; `to-cad` in both CLIs). See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit) and [fit CAD](https://loumalouomega.github.io/meshioplusplus/fit_cad).
 
 <!--pytest-codeblocks:skip-->
 
@@ -1181,7 +1181,7 @@ For JavaScript / browser use, the C++ core also ships as a WebAssembly npm packa
 npm install @meshioplusplus/wasm
 ```
 
-See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table.
+See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table. Beside that lean, MIT artifact the package carries a full one (v17.2.0), loaded with `loadMeshioPlusPlus({}, {full: true})`: it links OpenCASCADE (STEP and IGES reading, `fitCad`), zstd, lz4 and bzip2, and is LGPL-2.1 with the OCCT exception for its OpenCASCADE part ([lean and full builds](https://loumalouomega.github.io/meshioplusplus/wasm#lean-and-full-builds)).
 
 meshio++ is also on [Spack](https://spack.io), upstream in [`spack/spack-packages`](https://github.com/spack/spack-packages/pull/5624) — no checkout of this repo required:
 
@@ -1206,7 +1206,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 17.1.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 17.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -1399,7 +1399,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |
-| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | CMake (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) | `fit_cad`: analytic CAD faces sewn into a STEP solid; never in the wheels | LGPL-2.1 with the OCCT exception |
+| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | CMake (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) | `fit_cad`: analytic CAD faces sewn into a STEP solid; STEP/IGES reading; never in the wheels, linked statically into the full WASM artifact only | LGPL-2.1 with the OCCT exception |
 | [zstandard](https://github.com/indygreg/python-zstandard), [lz4](https://github.com/python-lz4/python-lz4) | `[codecs]` | the Python fallback for the optional VTK block codecs | BSD-3-Clause / BSD-2-Clause |
 
 #### Bundled and build-time

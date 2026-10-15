@@ -1,6 +1,6 @@
 # Fit CAD
 
-`fit_cad(mesh, path)` turns the fitted patches of a closed triangle skin into a CAD solid: every patch that [`fit_primitives`](/fit_primitives) accepted becomes a plane, sphere, cylinder, cone or torus face trimmed by the patch boundary, a rolling-ball fillet or blend (of one radius or a radius varying along it) or a helical thread face its own [feature face](#fillets-blends-and-threads), any other patch no primitive explains a [freeform B-spline face](#freeform-faces), the faces are sewn into a solid that OpenCASCADE checks, and the solid is written as STEP. It is the last step of [skin to CAD](/cad_fit), after [`segment`](/segment) and `fit_primitives`, and it needs the optional [OpenCASCADE backend](#getting-opencascade).
+`fit_cad(mesh, path)` turns the fitted patches of a closed triangle skin into a CAD solid: every patch that [`fit_primitives`](/fit_primitives) accepted becomes a plane, sphere, cylinder, cone or torus face trimmed by the patch boundary, a rolling-ball fillet or blend (of one radius or a radius varying along it) or a helical thread face its own [feature face](#fillets-blends-and-threads), a chamfer, a conic blend, a tapered or variable-pitch thread or a corner where blends meet its own [face too](#chamfers-conic-blends-vertex-blends-and-tapered-threads), any other patch no primitive explains a [freeform B-spline face](#freeform-faces), the faces are sewn into a solid that OpenCASCADE checks, and the solid is written as STEP. It is the last step of [skin to CAD](/cad_fit), after [`segment`](/segment) and `fit_primitives`, and it needs the optional [OpenCASCADE backend](#getting-opencascade).
 
 ```python
 import meshioplusplus as mp
@@ -20,7 +20,7 @@ Unlike the faceted [`step`](/formats/step) writer, whose solid is one flat face 
 
 ## How the solid is built
 
-- **Faces.** A patch whose fit was accepted, and whose type is in `types`, becomes one face on its fitted surface. A patch no primitive explains is tried, in order, as a [rolling-ball fillet](#fillets-blends-and-threads) between two analytic faces (`fillets`), as a [helical thread face](#fillets-blends-and-threads) (`threads`) and, with `freeform` (the default), as a [B-spline face](#freeform-faces); once the freeform faces exist, a patch between two fitted faces, one of them freeform, is tried as a [rolling-ball blend](#fillets-blends-and-threads) against them (`fillets`). Every other surface cell (a type left out, a freeform fit that failed, a cell with no patch) becomes planar facets, one per cell, as the faceted writer writes them.
+- **Faces.** A patch whose fit was accepted, and whose type is in `types`, becomes one face on its fitted surface. A patch no primitive explains is tried, in order, as a [rolling-ball fillet](#fillets-blends-and-threads) between two analytic faces (`fillets`), as a [helical thread face](#fillets-blends-and-threads) (`threads`; then [of varying pitch or on a taper](#chamfers-conic-blends-vertex-blends-and-tapered-threads)), as a [chamfer or conic blend](#chamfers-conic-blends-vertex-blends-and-tapered-threads) between two analytic faces (`fillets`) and, with `freeform` (the default), as a [B-spline face](#freeform-faces); once the freeform faces exist, a patch between two fitted faces, one of them freeform, is tried as a [rolling-ball blend](#fillets-blends-and-threads) against them, and a corner patch among three or more fitted faces as a [vertex blend](#chamfers-conic-blends-vertex-blends-and-tapered-threads) (`fillets`). Every other surface cell (a type left out, a freeform fit that failed, a cell with no patch) becomes planar facets, one per cell, as the faceted writer writes them.
 - **Edges.** Where two patches meet, the mesh edges between them form chains from one junction (a point where three or more patches meet) to the next; a closed chain is split in two. Between two analytic faces the edge is the branch of the two surfaces' exact intersection that lies within the tolerance of the chain, when `exact_edges` is set and one does (a plane meeting a cylinder gives a circle). Otherwise, notably where a fillet meets its wall tangentially and no intersection is stable, the edge is a B-spline through the chain, smoothed and moved onto both surfaces, kept only if it stays within the tolerance of both. Beside a facet, the edge is the mesh's own straight edge.
 - **Vertices.** A junction among analytic faces only is moved onto all of their surfaces; one beside a facet keeps the mesh position.
 - **Solid.** Each face gets parameter-space curves that are continuous around its loops (so a boundary running along a cylinder's seam or a torus's equator does not fall apart), OpenCASCADE adds the seams and repairs the faces, sews them and closes each shell into a solid, one per edge-connected piece of the skin. A patch with no boundary at all, a whole sphere or torus, is its surface's natural face.
@@ -63,6 +63,22 @@ Every patch must span at least half a turn to be a thread (less of a helical sur
 
 ![A rod whose thread has rounded roots and crests and no cylinder anywhere: four helical faces, found from the screw each patch fits](/images/fit_cad_rounded_thread.png)
 
+## Chamfers, conic blends, vertex blends and tapered threads
+
+Since v17.2.0 (roadmap 6.3) four more kinds of patch get their own faces. Each is tried only where every fit above has failed for that patch, so a skin they do not concern builds the same solid, to the byte, as before; their fits are in `detail/feature_fit` too.
+
+- **Chamfers** (`fillets`, type 10, `num_chamfer`) and **conic blends** (`fillets`, type 7, `num_conic_blend`). A patch between two analytic faces (the two neighbours sharing the most boundary, together at least 60% of it) that no rolling ball and no thread explains is tried as a blend of the edge between them with a cross-section other than the rolling ball's circle. Its rails are the patch's boundary edges across from each neighbour; its cross-sections lie in the planes normal to the edge the two surfaces would meet along (`n₁ × n₂`, through each point of the first rail), from the first rail to where that plane cuts the second. When every interior vertex lies within 0.4 of the tolerance of its section's chord, the patch is a **chamfer**, of constant or varying width (a chamfer between two planes of varying width is a twisted ruled surface, a constant one a plane, and a chamfer coaxial with a cylinder a cone: those two stay the primitives `fit_primitives` fits). Otherwise each section is taken as a rational quadratic from rail to rail through the apex where the two surfaces' tangent lines meet, the vertex's weight `w = b₁ / (2 √(b₀ b₂))` read off its barycentric coordinates in that triangle, and a weight law of the lowest degree (Chebyshev, Fourier round a closed rail) whose conics pass within 0.4 of the tolerance of every vertex makes it a **conic blend**: an elliptic, parabolic or hyperbolic section tangent to both faces, of legs that may differ and change along it. The face is a B-spline interpolating the sections, each widened by 15% and carried a tenth of the rail past an open end.
+- **Tapered and variable-pitch threads** (`threads`, type 8, `num_tapered_thread`, `num_variable_pitch_thread`). A straight flank beside a cone is the same ruled helicoid as a flank of a straight thread (with an apparent pitch), so it is built as before and reported tapered. A flank whose straight helicoid fails is refitted with one more column, `z = c + k θ + q (θ − θ₀)² + t ρ`, a pitch changing linearly along it, and kept when the pitch changes by more than the tolerance across the patch. A patch no constant screw explains is refitted as a helical surface of any profile on a generalised screw, its advance `g(θ) = k θ + q (θ − θ₀)²` and its profile moved out by `τ g(θ)` as it advances, a thread cut on a cone whose radius grows by `τ` per unit length: `τ` starts at a neighbouring cone's half-angle and is refined with the axis, the advance and `q` by the same Levenberg-Marquardt profile fit. A trapezoidal pipe thread then comes back as cones and two tapered flanks, a thread whose pitch grows as cylinders and two variable-pitch flanks, and a rounded one on a taper as four helical faces, the rounded root and crest tapered.
+- **Vertex blends** (`fillets`, type 9, `num_vertex_blend`). After the freeform and blend stages, a patch that is unexplained or freeform, whose boundary is one closed loop around three or more fitted faces (each met along one run) and creased nowhere (no facet across it turns more than 20°), is tried as the corner where blends meet: a plate surface (`GeomPlate_BuildPlateSurface`) through its vertices, tangent (G1) to each neighbour's surface along the loop, approximated by a B-spline. It is kept when it passes the freeform face's test and its normal stays within 3° of every neighbour's along the loop. This covers a setback corner, three blends of different radii or sections meeting at one vertex; a corner of three equal rolling balls is a sphere, which `fit_primitives` already fits.
+
+Segmentation is the condition: a conic blend is tangent to both its faces and its curvature varies across it, so no curvature tolerance of [`segment`](/segment) isolates it alone; label such a skin's patches yourself (`segment:patch`, from the CAD faces it was tessellated from, say), as the fixtures behind the tests do. A chamfer meets its faces at creases and segments by angle.
+
+![A block whose edge is cut by a chamfer of growing width: one chamfer face, a twisted ruled surface, between two planes](/images/fit_cad_chamfer.png)
+
+![A rounded box scaled unequally: twelve conic edge blends and eight vertex blends at its corners, between six planes](/images/fit_cad_vertex_blend.png)
+
+![A pipe thread: a trapezoidal thread cut on a cone, its root and crest cones and both flanks tapered helical faces](/images/fit_cad_tapered_thread.png)
+
 ## Checks and demotion
 
 A face is not kept when OpenCASCADE's B-rep check rejects it, when sewing leaves an edge of it free, when its boundary cannot be built, or when it strays: the solid is re-meshed and a face with a point further than `tolerance` from the skin, or a patch with a skin point further than that from the solid, fails. A failed patch is **demoted** to facets and the solid is rebuilt; after `max_demotion_rounds` rounds (default 8) every remaining patch is faceted, which is always a valid solid for a closed skin. So a feature the fitter cannot explain, or a face the kernel cannot trim, comes back faceted, never silently wrong, and `num_demoted` counts the features dropped. `MESHIOPLUSPLUS_LOG_LEVEL=debug` logs why each patch was demoted.
@@ -71,7 +87,7 @@ A face is not kept when OpenCASCADE's B-rep check rejects it, when sewing leaves
 
 ## Output and report
 
-The return value is the solid re-meshed by OpenCASCADE as one `triangle` block, with points welded where faces share them exactly, and Int64 cell data `fit_cad:face` (the B-rep face), `fit_cad:type` (0 a facet, else the `fit:type` value: 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus; 6 a freeform B-spline, 7 a rolling-ball fillet or blend, 8 a helical thread face) and `fit_cad:patch` (the `segment:patch` label, -1 for a cell with no patch). With `return_report=True` the report holds:
+The return value is the solid re-meshed by OpenCASCADE as one `triangle` block, with points welded where faces share them exactly, and Int64 cell data `fit_cad:face` (the B-rep face), `fit_cad:type` (0 a facet, else the `fit:type` value: 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus; 6 a freeform B-spline, 7 a rolling-ball fillet, blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a chamfer) and `fit_cad:patch` (the `segment:patch` label, -1 for a cell with no patch). With `return_report=True` the report holds:
 
 | Key | Meaning |
 | --- | --- |
@@ -82,6 +98,9 @@ The return value is the solid re-meshed by OpenCASCADE as one `triangle` block, 
 | `num_faces`, `num_plane` … `num_torus`, `num_bspline`, `num_fillet`, `num_helical`, `num_faceted_faces` | B-rep faces in all, by type (freeform B-splines, fillets and thread flanks included), and planar facets |
 | `num_variable_fillet`, `num_blend` | of the fillet faces, those whose radius varies along them, and the blends beside a freeform face |
 | `num_rounded_thread` | of the helical faces, those whose profile is not a straight line (a rounded root or crest) |
+| `num_vertex_blend`, `num_chamfer` | vertex blends and chamfers (v17.2.0) |
+| `num_conic_blend` | of the fillet faces, the conic blends (v17.2.0) |
+| `num_tapered_thread`, `num_variable_pitch_thread` | of the helical faces, those cut on a taper and those whose pitch varies (v17.2.0) |
 | `num_split_patches` | pieces that freeform patches folding over every flattening were split into |
 | `num_patches`, `num_demoted` | patches in the fit table, and accepted ones demoted to facets |
 | `num_exact_edges`, `num_approx_edges` | edges between analytic faces built as exact intersections and as B-splines |
@@ -95,7 +114,7 @@ The STEP file is AP214 in millimetres. Its header timestamp is pinned and its pr
 
 ## Getting OpenCASCADE
 
-[Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) is licensed under the GNU LGPL 2.1 with the additional exception in its `OCCT_LGPL_EXCEPTION.txt`. meshio++ stays MIT: the backend is **off by default and bring-your-own** (never vendored or downloaded), linked dynamically, and absent from the PyPI wheels, the WASM build and the release CLI binaries. A build that enables it links an LGPL library; distributing that build carries the LGPL's obligations for OpenCASCADE, not for meshio++. OpenCASCADE 7.6 or later is supported (7.6 is Ubuntu 24.04's package; the CI leg tests it).
+[Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) is licensed under the GNU LGPL 2.1 with the additional exception in its `OCCT_LGPL_EXCEPTION.txt`. meshio++ stays MIT: the backend is **off by default and bring-your-own** (never vendored or downloaded), linked dynamically, and absent from the PyPI wheels, the lean WASM build and the release CLI binaries; the [full WASM artifact](/wasm#lean-and-full-builds) links it statically, under a mixed licence it states. A build that enables it links an LGPL library; distributing that build carries the LGPL's obligations for OpenCASCADE, not for meshio++. OpenCASCADE 7.6 or later is supported (7.6 is Ubuntu 24.04's package; the CI leg tests it).
 
 ```bash
 sudo apt-get install libocct-foundation-dev libocct-modeling-data-dev \
@@ -131,7 +150,7 @@ meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cel
  "FreeformSplit": true, "Fillets": true, "Threads": true}
 ```
 
-The step writes the solid to `Path` when given, and the mesh continues as the re-meshed solid; it reports `Valid`, `VolumeRatio`, `MaxDeviation`, `NumFaces`, `NumBspline`, `NumFillet`, `NumHelical`, `NumVariableFillet`, `NumBlend`, `NumRoundedThread`, `NumSplitPatches`, `NumFacetedFaces` and `NumDemoted`. A `Tolerance` or `MeshDeflection` of 0 is automatic; an empty `Types` facets everything.
+The step writes the solid to `Path` when given, and the mesh continues as the re-meshed solid; it reports `Valid`, `VolumeRatio`, `MaxDeviation`, `NumFaces`, `NumBspline`, `NumFillet`, `NumHelical`, `NumVariableFillet`, `NumBlend`, `NumRoundedThread`, `NumVertexBlend`, `NumChamfer`, `NumConicBlend`, `NumTaperedThread`, `NumVariablePitchThread`, `NumSplitPatches`, `NumFacetedFaces` and `NumDemoted`. A `Tolerance` or `MeshDeflection` of 0 is automatic; an empty `Types` facets everything.
 
 ## Other languages
 
@@ -141,8 +160,9 @@ mio_fit_cad_opts_init(&opts);
 opts.types = (1u << MIO_FIT_PLANE) | (1u << MIO_FIT_CYLINDER);
 opts.freeform = 1;             /* the default; freeform_degree, freeform_max_control */
 mio_fit_cad_report report;
+mio_fit_cad_report_ex report_ex;  /* v17.2.0: num_vertex_blend, num_chamfer, ... */
 if (mio_has_occt()) {
-    mio_mesh* solid = mio_fit_cad(fitted, "part.step", &opts, &report);
+    mio_mesh* solid = mio_fit_cad_ex(fitted, "part.step", &opts, &report, &report_ex);
 }
 ```
 
@@ -158,11 +178,11 @@ has_occt() && (r = fit_cad(fit; step_path="part.step"); r.valid)
 if (mio_has_occt()) cad <- mio_fit_cad(fit, step_path = "part.step")
 ```
 
-The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_fillet`, `num_blend`, `num_rounded_thread` and `num_split_patches`, as do Fortran's, Julia's and R's results (`freeform`, `freeform_degree`, `freeform_max_control`, `freeform_split`, `fillets` and `threads` are their options; a zero-filled C struct keeps the last three off, `mio_fit_cad_opts_init` turns them on). The MCP server's `fit_cad` tool takes the same options plus `curvature_tolerance`, `min_patch_cells`, `fit_tolerance` and `cad_json_output_path`, and reports `occt_available`; without the backend it answers with the named error and `occt_available: false`. There is no WASM binding.
+The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_fillet`, `num_blend`, `num_rounded_thread` and `num_split_patches`, and `mio_fit_cad_ex`'s extended report (`mio_fit_cad_report_ex`, v17.2.0, as `mio_fit_cad_report` has no room left) `num_vertex_blend`, `num_chamfer`, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`; Fortran's, Julia's and R's results carry all of them (`freeform`, `freeform_degree`, `freeform_max_control`, `freeform_split`, `fillets` and `threads` are their options; a zero-filled C struct keeps the last three off, `mio_fit_cad_opts_init` turns them on). The MCP server's `fit_cad` tool takes the same options plus `curvature_tolerance`, `min_patch_cells`, `fit_tolerance` and `cad_json_output_path`, and reports `occt_available`; without the backend it answers with the named error and `occt_available: false`. In the browser, the [full WASM artifact](/wasm#lean-and-full-builds) links OpenCASCADE and runs `fitCad(mesh, {stepPath, ...})`, with the same options and report in camelCase and the solid's B-rep as `info`; the lean artifact throws by name.
 
 ## Not supported
 
-- **Vertex blends, chamfers and blends of a section other than a circle**: a fillet or blend is a rolling ball between exactly two faces; where three or more blends meet (a setback vertex), or the section is a flat chamfer or a conic, the patch comes back freeform or faceted. They are recorded as a [non-goal](/roadmap#non-goals-and-decisions-taken) until a consumer asks.
-- **Threads that are not screw-invariant**: a tapered (pipe) thread or one of varying pitch is no helical surface; it comes back freeform or faceted, as does a thread patch spanning less than half a turn.
+- **Blends of a section that is no conic**, a chamfer or conic blend beside a freeform face (only analytic neighbours are tried), and a corner patch whose loop meets a neighbour twice or at a crease: they come back freeform or faceted.
+- **Threads whose depth varies along them**, or whose pitch varies other than linearly, and a tapered or variable-pitch thread with no cylinder or cone beside it that is also too far from one screw for the axis to be found from the patch itself: freeform or faceted, as is a thread patch spanning less than half a turn.
 - **A whole thread as one patch**: a thread surface whose profile spans the full pitch (one patch over root, flanks and crest) has no single trimmed face to be; [`segment`](/segment) it at its creases or with a curvature test first.
 - **Fitting a STEP or IGES model**: those are [read](/formats/step#reading) as their own NURBS B-rep, not refitted.

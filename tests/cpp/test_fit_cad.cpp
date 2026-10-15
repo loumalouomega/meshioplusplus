@@ -396,6 +396,104 @@ TEST(FitCad, RoundedThreadWithNoCylinderIsHelical) {
     expect_brep_consistent(r);
 }
 
+// Roadmap 6.3 (v17.2.0): tapered and variable-pitch threads, chamfers, conic
+// blends and vertex blends.
+
+TEST(FitCad, TaperedThreadFlanksAreHelicalFaces) {
+    // threaded_rod cut on a cone: root and crest are cone strips, and the
+    // flanks beside them ruled helicoids reported tapered.
+    const FitCadResult r = fit_cad(fitted(analytic::tapered_thread_rod()));
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumHelical, 2);
+    EXPECT_EQ(r.mNumTaperedThread, 2);
+    EXPECT_EQ(r.mNumVariablePitchThread, 0);
+    EXPECT_EQ(r.mNumCone, 2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+}
+
+TEST(FitCad, ThreadOfVaryingPitchIsHelical) {
+    const FitCadResult r = fit_cad(fitted(analytic::variable_pitch_thread_rod()));
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumHelical, 2);
+    EXPECT_EQ(r.mNumVariablePitchThread, 2);
+    EXPECT_EQ(r.mNumTaperedThread, 0);
+    EXPECT_EQ(r.mNumCylinder, 2);
+    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    FitCadOptions o;
+    o.mThreads = false;
+    EXPECT_EQ(fit_cad(fitted(analytic::variable_pitch_thread_rod()), "", o).mNumHelical, 0);
+}
+
+TEST(FitCad, TaperedRoundedThreadFindsItsScrewAndTaper) {
+    // No cylinder or cone anywhere: the rounded root and crest find the
+    // screw, its taper and their profile themselves.
+    const FitCadResult r = fit_cad(fitted(analytic::tapered_rounded_thread_rod()));
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumHelical, 4);
+    EXPECT_EQ(r.mNumRoundedThread, 2);
+    EXPECT_EQ(r.mNumTaperedThread, 2);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+}
+
+TEST(FitCad, ChamferOfVaryingWidthIsOneFace) {
+    // A chamfer whose width grows along the edge is a twisted ruled surface,
+    // which no plane explains.
+    const Mesh skin = analytic::section_blend_block(0.0);
+    for (const Mesh& fit : {fitted(skin), fit_primitives(skin).mMesh}) {
+        const FitCadResult r = fit_cad(fit);
+        EXPECT_TRUE(r.mValid);
+        EXPECT_EQ(r.mNumChamfer, 1);
+        EXPECT_EQ(r.mNumPlane, 6);
+        EXPECT_EQ(r.mNumFacetedFaces, 0);
+        EXPECT_EQ(r.mNumFaces, 7);
+        EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-3);
+        EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+        expect_brep_consistent(r);
+    }
+    FitCadOptions o;
+    o.mFillets = false;
+    EXPECT_EQ(fit_cad(fitted(skin), "", o).mNumChamfer, 0);
+}
+
+TEST(FitCad, ConicBlendIsAFilletFace) {
+    // Elliptic cross-sections tangent to both faces, legs of unequal and
+    // varying length: neither a rolling ball nor a chamfer.
+    const FitCadResult r = fit_cad(fit_primitives(analytic::section_blend_block(0.5)).mMesh);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumFillet, 1);
+    EXPECT_EQ(r.mNumConicBlend, 1);
+    EXPECT_EQ(r.mNumChamfer, 0);
+    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    expect_brep_consistent(r);
+}
+
+TEST(FitCad, RoundedBoxCornersAreVertexBlends) {
+    // A rounded box scaled unequally: its edge blends are conic blends and
+    // each corner a vertex blend tangent to the three meeting there.
+    const FitCadResult r = fit_cad(fit_primitives(analytic::rounded_box()).mMesh);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mNumConicBlend, 12);
+    EXPECT_EQ(r.mNumVertexBlend, 8);
+    EXPECT_EQ(r.mNumFaces, 26);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    expect_brep_consistent(r);
+    // Unscaled, the blends are cylinders and the corners spheres.
+    const FitCadResult u = fit_cad(fit_primitives(analytic::rounded_box(0.3, 1.0, 1.0, 1.0)).mMesh);
+    EXPECT_EQ(u.mNumVertexBlend, 0);
+    EXPECT_EQ(u.mNumSphere, 8);
+    EXPECT_EQ(u.mNumCylinder, 12);
+    FitCadOptions o;
+    o.mFillets = false;
+    const FitCadResult off = fit_cad(fit_primitives(analytic::rounded_box()).mMesh, "", o);
+    EXPECT_EQ(off.mNumVertexBlend, 0);
+    EXPECT_EQ(off.mNumConicBlend, 0);
+}
+
 TEST(FitCad, TypesMaskFacetsTheRest) {
     FitCadOptions o;
     o.mTypes = 1u << static_cast<unsigned>(FitPrimitiveType::Plane);

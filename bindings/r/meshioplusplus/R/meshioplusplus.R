@@ -1339,9 +1339,12 @@ mio_has_occt <- function() {
 #'   best-fit plane and an unrolled cylinder is split into pieces fitted as
 #'   their own B-spline faces.
 #' @param fillets Whether a patch between two fitted faces is tried as a
-#'   rolling-ball fillet (of one radius or one varying along it) or blend.
+#'   rolling-ball fillet (of one radius or one varying along it) or blend, a
+#'   chamfer or a conic blend, and a corner among three or more blends as a
+#'   vertex blend.
 #' @param threads Whether a patch is tried as a helical thread face, about a
-#'   neighbouring cylinder's or cone's axis or the screw it fits.
+#'   neighbouring cylinder's or cone's axis or the screw it fits, of constant
+#'   or varying pitch and cut on a taper.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1349,7 +1352,8 @@ mio_has_occt <- function() {
 #'   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
 #'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
 #'   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
-#'   `num_blend` and `num_rounded_thread`.
+#'   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
+#'   `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`.
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),

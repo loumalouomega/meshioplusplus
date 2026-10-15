@@ -6094,6 +6094,8 @@ static_assert(sizeof(mio_fit_cad_opts) == 80, "mio_fit_cad_opts grew outside its
 static_assert(sizeof(mio_iga_opts) == 96, "mio_iga_opts grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report) == 192,
               "mio_fit_cad_report grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_report_ex) == 128,
+              "mio_fit_cad_report_ex grew outside its reserved tail");
 static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
               "MIO_FIT_ALL_TYPES must match kFitAllTypes");
 static_assert(MIO_FIT_TORUS == static_cast<int>(meshioplusplus::FitPrimitiveType::Torus),
@@ -6443,6 +6445,11 @@ int mio_has_occt(void) {
 
 mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
                       mio_fit_cad_report* report) {
+    return mio_fit_cad_ex(mesh, step_path, opts, report, nullptr);
+}
+
+mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                         mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!mesh)
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
@@ -6493,6 +6500,14 @@ mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit
             report->num_blend = r.mNumBlend;
             report->num_rounded_thread =
                 static_cast<std::int32_t>(std::min<std::int64_t>(r.mNumRoundedThread, INT32_MAX));
+        }
+        if (report_ex) {
+            *report_ex = mio_fit_cad_report_ex{};
+            report_ex->num_vertex_blend = r.mNumVertexBlend;
+            report_ex->num_chamfer = r.mNumChamfer;
+            report_ex->num_conic_blend = r.mNumConicBlend;
+            report_ex->num_tapered_thread = r.mNumTaperedThread;
+            report_ex->num_variable_pitch_thread = r.mNumVariablePitchThread;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

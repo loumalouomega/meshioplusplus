@@ -649,10 +649,11 @@ jobs:
           python -c "from meshioplusplus import _core; assert not _core.__has_kahip__"
           python -m pytest tests/python/test_partition.py -v
 
-  # The OpenCASCADE backend of fit_cad (roadmap 6.3.3). Its own job, like
+  # The OpenCASCADE backend of fit_cad (roadmap 6.3). Its own job, like
   # KaHIP's: OCCT is LGPL-2.1 and bring-your-own, so no default leg, wheel,
-  # WASM build or release CLI binary carries it, and those legs exercise the
-  # named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead. Ubuntu
+  # lean WASM build or release CLI binary carries it, and those legs exercise
+  # the named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead (the
+  # full WASM artifact links it, and wasm.yml tests that). Ubuntu
   # 24.04's packages are OCCT 7.6, the supported floor; they export toolkit
   # targets that link TBB, hence libtbb-dev.
   occt:

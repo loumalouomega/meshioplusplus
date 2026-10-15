@@ -16,10 +16,22 @@
 // Usage: node tests/wasm/smoke.mjs   (after `build/configure-wasm.sh --build`
 // has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
 // MESHIOPLUSPLUS_WASM_VARIANT=seq runs the same suite on a sequential-only build.
+//
+// The full artifact (roadmap 6.2; `configure-wasm.sh --full`) runs the same
+// suite with MESHIOPLUSPLUS_WASM_VARIANT=full (threaded) or full-seq: every
+// step holds there too, the capability steps assert the larger set, and the
+// full-only steps (STEP/IGES reading, fitCad, zstd/lz4/bzip2) run.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadMeshioPlusPlus } from '../../src/wasm/src/index.mjs';
+
+// 'mt' (default), 'seq', 'full' (the full artifact, threaded) or 'full-seq'.
+const requested = process.env.MESHIOPLUSPLUS_WASM_VARIANT ?? 'mt';
+const full = requested === 'full' || requested === 'full-seq';
+const variant = requested === 'full' ? 'mt' : requested === 'full-seq' ? 'seq' : requested;
+const distBase = full ? 'meshioplusplus_wasm_full' : 'meshioplusplus_wasm';
 
 let failed = false;
 function step(name, fn) {
@@ -55,13 +67,14 @@ await asyncStep(
             () =>
                 loadMeshioPlusPlus(
                     { locateFile: () => '/definitely/does/not/exist.wasm' },
-                    { variant: 'seq' },
+                    { variant: 'seq', full },
                 ),
             (err) => {
                 assert.equal(err.name, 'MeshioPlusPlusLoadError');
                 assert.equal(err.variant, 'seq');
+                assert.equal(err.full, full);
                 assert.match(err.resolvedUrl, /does\/not\/exist\.wasm/);
-                assert.match(err.message, /'seq' variant/);
+                assert.match(err.message, full ? /'full seq' variant/ : /'seq' variant/);
                 assert.match(err.message, /does\/not\/exist\.wasm/);
                 return true;
             },
@@ -80,13 +93,13 @@ await asyncStep(
     'locateFile resolving to the mt .wasm for the seq glue is caught, not silently mislabelled',
     async () => {
         const mtWasmPath = fileURLToPath(
-            new URL('../../src/wasm/dist/meshioplusplus_wasm_mt.wasm', import.meta.url),
+            new URL(`../../src/wasm/dist/${distBase}_mt.wasm`, import.meta.url),
         );
         await assert.rejects(
             () =>
                 loadMeshioPlusPlus(
                     { locateFile: (path) => (path.endsWith('.wasm') ? mtWasmPath : path) },
-                    { variant: 'seq' },
+                    { variant: 'seq', full },
                 ),
             (err) => {
                 assert.equal(err.name, 'MeshioPlusPlusLoadError');
@@ -97,14 +110,14 @@ await asyncStep(
     },
 );
 
-const variant = process.env.MESHIOPLUSPLUS_WASM_VARIANT ?? 'mt';
-const m = await loadMeshioPlusPlus({}, { variant });
-step(`${variant} build reports its expected parallel backend`, () => {
+const m = await loadMeshioPlusPlus({}, { variant, full });
+step(`${requested} build reports its expected parallel backend and flavour`, () => {
     // The whole point of the mt artifact: it must actually be the OpenMP build,
     // not a mislabelled sequential one. parallelBackend() is exposed by the
     // embind binding; a build configured with SEQ would report "seq" here.
     assert.equal(typeof m.parallelBackend, 'function');
     assert.equal(m.parallelBackend(), variant === 'mt' ? 'openmp' : 'seq');
+    assert.equal(m.buildFlavour(), full ? 'full' : 'lean');
 });
 
 step('VTK pieces and legacy structured grids read without Python', () => {
@@ -855,14 +868,34 @@ step('exodus reads here at all, and reports its time steps', () => {
     );
 });
 
-step('zstd/lz4 are compiled out of the WASM build', () => {
-    // Consistent with the HDF5/netCDF-backed formats: no Emscripten port
-    // exists, so zlib remains the only block codec here.
-    m.writeMesh('/codec.vtu', seltri);
-    const text = new TextDecoder().decode(m.FS.readFile('/codec.vtu'));
-    assert.ok(!text.includes('vtkZSTDDataCompressor'));
-    assert.ok(!text.includes('vtkLZ4DataCompressor'));
-});
+if (!full) {
+    step('zstd/lz4 are compiled out of the lean WASM build', () => {
+        // zlib (Emscripten's port) is the lean artifact's only block codec;
+        // the full one links zstd and lz4 (roadmap 6.2.2).
+        assert.equal(m.hasZstd(), false);
+        assert.equal(m.hasLz4(), false);
+        m.writeMesh('/codec.vtu', seltri);
+        const text = new TextDecoder().decode(m.FS.readFile('/codec.vtu'));
+        assert.ok(!text.includes('vtkZSTDDataCompressor'));
+        assert.ok(!text.includes('vtkLZ4DataCompressor'));
+        assert.throws(() => m.writeMesh('/codec-zstd.vtu', seltri, '', { encoding: 'binary', codec: 'zstd' }), /zstd/i);
+    });
+} else {
+    step('the full build writes and reads zstd and lz4 VTK XML blocks', () => {
+        // The roadmap 6.2.2 probe. zstd is a meshio++ extension VTK has no
+        // compressor for (doc/codecs.md), so the second reader of a zstd file
+        // is meshio++'s own native and Python ones, not vtk.js; lz4 is VTK's.
+        assert.equal(m.hasZstd(), true);
+        assert.equal(m.hasLz4(), true);
+        for (const [codec, tag] of [['zstd', 'vtkZSTDDataCompressor'], ['lz4', 'vtkLZ4DataCompressor']]) {
+            const path = `/codec-${codec}.vtu`;
+            m.writeMesh(path, seltri, '', { encoding: 'binary', codec });
+            const text = new TextDecoder().decode(m.FS.readFile(path));
+            assert.ok(text.includes(tag), `${codec}: no ${tag}`);
+            assert.equal(m.meshesEqual(m.readMesh(path), seltri, 0, 0, false), true, codec);
+        }
+    });
+}
 
 // The geometry operations below are reached through the package wrapper
 // (src/index.mjs), not `Module.*` directly. That is the whole point: an embind
@@ -2190,7 +2223,7 @@ step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     }
 });
 
-step('partition: kahip is compiled out of the WASM build and says so', () => {
+step('partition: kahip is compiled out of both WASM builds and says so', () => {
     assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
 });
 
@@ -2383,6 +2416,12 @@ step('every binding is reachable through the wrapper', () => {
         'numNodesPerCell',
         'topologicalDimension',
         'availableFormats',
+        'hasOcct',
+        'hasZstd',
+        'hasLz4',
+        'hasBzip2',
+        'buildFlavour',
+        'fitCad',
         'withProvenance',
         'provenanceBegin',
         'provenanceEnd',
@@ -2566,6 +2605,35 @@ step('availableFormats reports what this build can read and write', () => {
     // Emscripten build never links: compiled out, like KaHIP.
     for (const fmt of ['vtx', 'szplt'])
         assert.ok(!readers.includes(fmt) && !writers.includes(fmt), `unexpected format: ${fmt}`);
+    // STEP is written as a faceted solid by every build; STEP and IGES are
+    // read only where OpenCASCADE is linked, the full artifact (roadmap 6.2.1).
+    assert.ok(writers.includes('step') && !writers.includes('iges'));
+    for (const fmt of ['step', 'iges'])
+        assert.equal(readers.includes(fmt), full, `${fmt} reader in the ${full ? 'full' : 'lean'} build`);
+});
+
+step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', () => {
+    // One table per artifact: what each links, and what neither does. KaHIP
+    // (no port, and a partitioner in every bundle), ADIOS2 (vtx), TecIO
+    // (szplt, redistribution terms), the Kokkos backend and memory mapping
+    // stay out of both; the full artifact adds OpenCASCADE and the codecs.
+    const expected = full
+        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true }
+        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false };
+    for (const [name, value] of Object.entries(expected))
+        assert.equal(m[name](), value, name);
+    assert.equal(m.hasCgnslib(), true);
+    assert.ok(['seq', 'openmp'].includes(m.parallelBackend()));
+    const { readers, writers } = m.availableFormats();
+    for (const fmt of ['vtx', 'szplt'])
+        assert.ok(!readers.includes(fmt) && !writers.includes(fmt), fmt);
+    assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
+    if (!full) {
+        // The lean artifact names the full one rather than a CMake flag.
+        m.FS.writeFile('/lean.step', 'ISO-10303-21;\nEND-ISO-10303-21;\n');
+        assert.throws(() => m.readMesh('/lean.step'), /full: true/);
+        assert.throws(() => m.fitCad(cubeSurface), /full: true/);
+    }
 });
 
 step('.h5 is MSC Nastran HDF5: another HDF5 file under that name is refused, not misread', () => {
@@ -4916,12 +4984,117 @@ step('XDMF time series: misuse throws readable JS Errors, never a WASM abort', (
 });
 
 // ---------------------------------------------------------------------------
+// The full artifact only (roadmap 6.2): bzip2, STEP and IGES reading through
+// OpenCASCADE, and fitCad. The lean artifact refuses each by name (above).
+// ---------------------------------------------------------------------------
+
+// The capped cylinder of the native fit_cad tests (tests/cpp/
+// analytic_surfaces.hpp, closed_revolve + capped_cylinder): a profile of
+// (r, z) rings revolved N times, closed by two cap fans, wound outward.
+function closedRevolve(profile, zBottom, zTop, n = 32) {
+    const pts = [0, 0, zBottom];
+    for (const [r, z] of profile)
+        for (let k = 0; k < n; ++k) {
+            const a = (2 * Math.PI * k) / n;
+            pts.push(r * Math.cos(a), r * Math.sin(a), z);
+        }
+    const top = pts.length / 3;
+    pts.push(0, 0, zTop);
+    const ring = (i, k) => 1 + i * n + (k % n);
+    const last = profile.length - 1;
+    const tris = [];
+    for (let k = 0; k < n; ++k) tris.push(0, ring(0, k + 1), ring(0, k));
+    for (let k = 0; k < n; ++k) tris.push(top, ring(last, k), ring(last, k + 1));
+    for (let i = 0; i < last; ++i)
+        for (let k = 0; k < n; ++k)
+            tris.push(ring(i, k), ring(i, k + 1), ring(i + 1, k + 1),
+                ring(i, k), ring(i + 1, k + 1), ring(i + 1, k));
+    return {
+        points: new Float64Array(pts),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array(tris), nodesPerCell: 3 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+}
+
+function cappedCylinder(r = 1, h = 2, rings = 6, n = 32) {
+    const profile = [];
+    for (let i = 1; i <= 3; ++i) profile.push([(r * i) / 3, 0]);
+    for (let i = 1; i <= rings; ++i) profile.push([r, (h * i) / rings]);
+    for (let i = 2; i >= 1; --i) profile.push([(r * i) / 3, h]);
+    return closedRevolve(profile, 0, h, n);
+}
+
+if (full) {
+    step('the full build writes and reads bzip2 libMesh meshes natively', () => {
+        assert.equal(m.hasBzip2(), true);
+        m.writeMesh('/bz.xda.bz2', tet);
+        const bytes = m.FS.readFile('/bz.xda.bz2');
+        assert.equal(String.fromCharCode(bytes[0], bytes[1], bytes[2]), 'BZh');
+        const back = m.readMesh('/bz.xda.bz2');
+        assert.equal(back.cells[0].type, 'tetra');
+        assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
+    });
+
+    step('fitCad builds the analytic solid of a capped cylinder and writes STEP', () => {
+        const skin = cappedCylinder();
+        const fitted = m.fitPrimitives(m.segment(skin).mesh).mesh;
+        const r = m.fitCad(fitted, { stepPath: '/part.step' });
+        assert.equal(r.valid, true);
+        assert.equal(r.numCylinder, 1);
+        assert.equal(r.numPlane, 2);
+        assert.equal(r.numFacetedFaces, 0);
+        for (const k of ['numVertexBlend', 'numChamfer', 'numConicBlend', 'numTaperedThread', 'numVariablePitchThread'])
+            assert.equal(r[k], 0, k);
+        assert.ok(Math.abs(r.volume - 2 * Math.PI) < 0.02, `volume ${r.volume}`);
+        assert.ok(r.maxDeviation <= r.tolerance);
+        assert.equal(r.info.format, 'cad_json');
+        assert.equal(r.info.faces.length, 3);
+        assert.ok(r.mesh.cell_data['fit_cad:type']);
+        const text = new TextDecoder().decode(m.FS.readFile('/part.step'));
+        assert.ok(text.includes('CYLINDRICAL_SURFACE'));
+        assert.throws(() => m.fitCad(fitted, { bogus: 1 }), /bogus/);
+    });
+
+    step('the full build reads STEP as its triangulation plus its B-rep', () => {
+        const mesh = m.readMesh('/part.step');
+        assert.equal(mesh.cells[0].type, 'triangle');
+        const withInfo = m.readMeshSelective('/part.step', { info: true });
+        assert.equal(withInfo.info.format, 'cad_json');
+        assert.equal(withInfo.info.faces.length, 3);
+        // The B-rep writes back as CAD JSON and samples like any other.
+        m.writeMesh('/part.cad.json', withInfo, 'cad_json', { info: withInfo.info });
+        const again = m.readMeshSelective('/part.cad.json', { info: true });
+        assert.equal(again.info.faces.length, 3);
+        assert.ok(m.igaSample(withInfo.info).mesh.points.length > 0);
+        // The CAD readers' info is read-only: STEP writes faceted solids.
+        assert.throws(() => m.writeMesh('/x.step', mesh, 'step', { info: withInfo.info }), /info/);
+    });
+
+    step('the full build reads IGES', () => {
+        // A unit box written by OpenCASCADE 7.6 (tests/wasm/fixtures/box.igs).
+        const igs = readFileSync(new URL('./fixtures/box.igs', import.meta.url));
+        m.FS.writeFile('/box.igs', igs);
+        const mesh = m.readMesh('/box.igs');
+        assert.equal(mesh.cells[0].type, 'triangle');
+        // stats' volumes count 3-D cells only: the unit box's skin has area 6.
+        const s = m.stats(mesh);
+        assert.ok(Math.abs(s.totalArea - 6) < 1e-9, `area ${s.totalArea}`);
+        assert.deepEqual(s.extent, [1, 1, 1]);
+        const withInfo = m.readMeshSelective('/box.igs', { info: true });
+        assert.equal(withInfo.info.faces.length, 6);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // The sequential artifact. The suite above ran on the threaded build; this
 // block proves the *other* shipped artifact also loads and round-trips, and
 // that it really is the sequential one (not a second copy of the mt build).
 // Both must be present, since the loader auto-selects between them at runtime.
 // ---------------------------------------------------------------------------
-const mSeq = await loadMeshioPlusPlus({}, { variant: 'seq' });
+const mSeq = await loadMeshioPlusPlus({}, { variant: 'seq', full });
 
 step('hasCgnslib reports whether the CGNS MLL is linked into this artifact', () => {
     // Without a probe, a build that silently dropped cgnslib reads every file
@@ -4933,6 +5106,7 @@ step('hasCgnslib reports whether the CGNS MLL is linked into this artifact', () 
 
 step('sequential (seq) build loads and reports the seq parallel backend', () => {
     assert.equal(mSeq.parallelBackend(), 'seq');
+    assert.equal(mSeq.buildFlavour(), full ? 'full' : 'lean');
 });
 
 step('sequential build round-trips a mesh (VTU) and runs an operation', () => {

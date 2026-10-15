@@ -45,6 +45,11 @@ _REPORT_INTS = (
     "num_variable_fillet",
     "num_blend",
     "num_rounded_thread",
+    "num_vertex_blend",
+    "num_chamfer",
+    "num_conic_blend",
+    "num_tapered_thread",
+    "num_variable_pitch_thread",
 )
 
 
@@ -135,12 +140,15 @@ def fit_cad(
     :param freeform_split: split a freeform patch that folds over both its
         flattenings into pieces that do not.
     :param fillets: try a patch between two fitted faces as a rolling-ball
-        fillet or blend.
-    :param threads: try a patch as a helical thread face.
+        fillet or blend, then as a chamfer or a conic blend, and a corner among
+        three or more blends as a vertex blend.
+    :param threads: try a patch as a helical thread face, of constant or
+        varying pitch and cut on a taper.
     :param return_report: also return the report.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
-        ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet or
-        blend, 8 a helical thread face, else as ``fit:type``) and
+        ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
+        blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
+        chamfer, else as ``fit:type``) and
         ``fit_cad:patch``, and the solid as NURBS faces,
         loops and edges in ``mesh.info["brep"]`` (face ``i`` of
         ``fit_cad:face`` has id ``i + 1``), so writing it as ``.cad.json`` gives
@@ -150,7 +158,10 @@ def fit_cad(
         (``num_bspline`` the freeform ones, ``num_fillet``, ``num_helical``),
         of those the fillets of varying radius (``num_variable_fillet``), the
         blends beside a freeform face (``num_blend``) and the thread faces of
-        a profile that is not straight (``num_rounded_thread``),
+        a profile that is not straight (``num_rounded_thread``), the vertex
+        blends (``num_vertex_blend``), chamfers (``num_chamfer``), conic blends
+        (``num_conic_blend``) and tapered and variable-pitch thread faces
+        (``num_tapered_thread``, ``num_variable_pitch_thread``),
         ``num_split_patches``, the demoted patches and the exact and
         approximated edges.
     :raises NotImplementedError: when the core was built without OpenCASCADE.

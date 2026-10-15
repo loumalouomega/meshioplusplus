@@ -1062,6 +1062,11 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumVariableFillet"] = report["num_variable_fillet"]
         entry["NumBlend"] = report["num_blend"]
         entry["NumRoundedThread"] = report["num_rounded_thread"]
+        entry["NumVertexBlend"] = report["num_vertex_blend"]
+        entry["NumChamfer"] = report["num_chamfer"]
+        entry["NumConicBlend"] = report["num_conic_blend"]
+        entry["NumTaperedThread"] = report["num_tapered_thread"]
+        entry["NumVariablePitchThread"] = report["num_variable_pitch_thread"]
         entry["NumDemoted"] = report["num_demoted"]
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and

@@ -520,6 +520,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP fillets, SEXP threads) {
     mio_fit_cad_opts opts;
     mio_fit_cad_report report;
+    mio_fit_cad_report_ex report_ex;
     mio_mesh *out;
 
     mio_fit_cad_opts_init(&opts);
@@ -535,7 +536,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     opts.fillets = mio_r_bool(fillets, "fillets") ? 1 : 0;
     opts.threads = mio_r_bool(threads, "threads") ? 1 : 0;
 
-    out = mio_fit_cad(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &report);
+    out = mio_fit_cad_ex(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &report,
+                         &report_ex);
     if (out == NULL) mio_r_fail("fit_cad");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     SEXP valid = PROTECT(Rf_ScalarLogical(report.valid != 0));
@@ -563,6 +565,11 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP nvariable = PROTECT(Rf_ScalarReal((double)report.num_variable_fillet));
     SEXP nblend = PROTECT(Rf_ScalarReal((double)report.num_blend));
     SEXP nrounded = PROTECT(Rf_ScalarReal((double)report.num_rounded_thread));
+    SEXP nvertex = PROTECT(Rf_ScalarReal((double)report_ex.num_vertex_blend));
+    SEXP nchamfer = PROTECT(Rf_ScalarReal((double)report_ex.num_chamfer));
+    SEXP nconic = PROTECT(Rf_ScalarReal((double)report_ex.num_conic_blend));
+    SEXP ntapered = PROTECT(Rf_ScalarReal((double)report_ex.num_tapered_thread));
+    SEXP nvarpitch = PROTECT(Rf_ScalarReal((double)report_ex.num_variable_pitch_thread));
     const char *names[] = {"mesh",          "valid",         "tolerance",
                            "volume",        "skin_volume",   "volume_ratio",
                            "max_deviation", "num_faces",     "num_plane",
@@ -571,13 +578,16 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "num_demoted",   "num_exact_edges", "num_approx_edges",
                            "num_solids",    "num_bspline",   "num_split_patches",
                            "num_fillet",    "num_helical",   "num_variable_fillet",
-                           "num_blend",     "num_rounded_thread"};
+                           "num_blend",     "num_rounded_thread", "num_vertex_blend",
+                           "num_chamfer",   "num_conic_blend", "num_tapered_thread",
+                           "num_variable_pitch_thread"};
     SEXP values[] = {mo,      valid,   tol,      vol,      svol,    ratio,   dev,
                      nfaces,  nplane,  nsphere,  ncyl,     ncone,   ntorus,  nfacet,
                      npatch,  ndem,    nexact,   napprox,  nsolid,  nbspline, nsplit,
-                     nfillet, nhelical, nvariable, nblend, nrounded};
-    SEXP res = PROTECT(mio_r_named_list(26, names, values));
-    UNPROTECT(27);
+                     nfillet, nhelical, nvariable, nblend, nrounded, nvertex,
+                     nchamfer, nconic, ntapered, nvarpitch};
+    SEXP res = PROTECT(mio_r_named_list(31, names, values));
+    UNPROTECT(32);
     return res;
 }
 

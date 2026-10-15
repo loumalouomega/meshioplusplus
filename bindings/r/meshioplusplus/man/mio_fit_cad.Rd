@@ -51,10 +51,13 @@ best-fit plane and an unrolled cylinder is split into pieces fitted as
 their own B-spline faces.}
 
 \item{fillets}{Whether a patch between two fitted faces is tried as a
-rolling-ball fillet (of one radius or one varying along it) or blend.}
+rolling-ball fillet (of one radius or one varying along it) or blend, a
+chamfer or a conic blend, and a corner among three or more blends as a
+vertex blend.}
 
 \item{threads}{Whether a patch is tried as a helical thread face, about a
-neighbouring cylinder's or cone's axis or the screw it fits.}
+neighbouring cylinder's or cone's axis or the screw it fits, of constant
+or varying pitch and cut on a taper.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -64,7 +67,8 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_torus`, `num_faceted_faces`, `num_patches`, `num_demoted`,
   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
-  `num_blend` and `num_rounded_thread`.
+  `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
+  `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`.
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

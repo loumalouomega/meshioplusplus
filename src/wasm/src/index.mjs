@@ -29,6 +29,16 @@
 // context, else the sequential one. The dynamic import()s are literal so
 // bundlers (Vite) emit both chunks. Callers can force a build with the
 // `{ variant }` option.
+//
+// Beside that lean pair the package ships the FULL pair (roadmap 6.2),
+// meshioplusplus_wasm_full and meshioplusplus_wasm_full_mt: the same API, with
+// OpenCASCADE (STEP/IGES reading, fitCad), zstd, lz4 and bzip2 linked in, and
+// a mixed licence (OpenCASCADE is LGPL-2.1 with its exception; see
+// THIRD_PARTY_NOTICES.md). `{ full: true }` loads it, with the same variant
+// choice. Its import() is deliberately NOT literal: a bundler that saw it would
+// pull the full bytes into every lean consumer's bundle. Node and native
+// browser ESM resolve it next to this file; a bundled app copies the full
+// glue and .wasm itself and passes `fullGlue` (and `locateFile`).
 
 // The raw xdmfSeriesWriteDataArrays embind call still converts every value
 // with emscripten::convertJSArrayToNumberVector<double>, which throws on a
@@ -62,6 +72,17 @@ function resolveVariant(variant) {
 }
 
 /**
+ * The glue module of the full artifact for a variant, relative to this file.
+ * @param {'mt'|'seq'} chosen
+ * @returns {string}
+ */
+function fullGlueFor(chosen) {
+    return chosen === 'mt'
+        ? '../dist/meshioplusplus_wasm_full_mt.mjs'
+        : '../dist/meshioplusplus_wasm_full.mjs';
+}
+
+/**
  * Thrown by `loadMeshioPlusPlus()` when a WASM module fails to instantiate,
  * so a caller can tell a wrong `.wasm` URL from an environment that cannot
  * run Wasm threads from a plain network failure, instead of catching a bare
@@ -72,6 +93,7 @@ export class MeshioPlusPlusLoadError extends Error {
      * @param {string} message
      * @param {object} details
      * @param {'mt'|'seq'} details.variant - which artifact was being loaded.
+     * @param {boolean} [details.full] - whether it was the full artifact.
      * @param {string} details.glue - the glue module specifier (e.g.
      *   '../dist/meshioplusplus_wasm_mt.mjs').
      * @param {string} [details.requestedFile] - the filename Emscripten asked
@@ -79,10 +101,11 @@ export class MeshioPlusPlusLoadError extends Error {
      * @param {string} [details.resolvedUrl] - what `locateFile` returned for it.
      * @param {unknown} [details.cause] - the underlying error/abort reason.
      */
-    constructor(message, { variant, glue, requestedFile, resolvedUrl, cause }) {
+    constructor(message, { variant, full = false, glue, requestedFile, resolvedUrl, cause }) {
         super(message, cause === undefined ? undefined : { cause });
         this.name = 'MeshioPlusPlusLoadError';
         this.variant = variant;
+        this.full = full;
         this.glue = glue;
         this.requestedFile = requestedFile;
         this.resolvedUrl = resolvedUrl;
@@ -190,12 +213,19 @@ export class MeshioPlusPlusLoadError extends Error {
  *   `{ locateFile: (p) => new URL(p, import.meta.url) }` relocates the
  *   `.wasm` binary for a bundler/CDN setup; `locateFile` receives the
  *   requested filename, so return the URL matching the loaded variant
- *   (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`).
+ *   (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`, and `_wasm_full.wasm` or
+ *   `_wasm_full_mt.wasm` with `full`).
  * @param {object} [options]
  * @param {'auto'|'mt'|'seq'} [options.variant='auto'] - which native artifact to
  *   load. `auto` picks the threaded (`mt`) build under Node and in a
  *   cross-origin-isolated browser, else the sequential (`seq`) build; `mt`/`seq`
  *   force one (`mt` aborts if the environment cannot host Wasm threads).
+ * @param {boolean} [options.full=false] - load the full artifact (OpenCASCADE,
+ *   zstd, lz4, bzip2; mixed licence) instead of the lean, MIT one. The lean
+ *   bytes are never fetched then, nor the full ones without it.
+ * @param {string|URL} [options.fullGlue] - where the full artifact's glue module
+ *   lives, for a bundled app that copied it (default: `../dist/` beside this
+ *   file). Pair it with a `locateFile` that finds the matching `.wasm`.
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
@@ -218,6 +248,11 @@ export class MeshioPlusPlusLoadError extends Error {
  *   meshBackend: () => string,
  *   parallelBackend: () => string,
  *   hasCgnslib: () => boolean,
+ *   hasOcct: () => boolean,
+ *   hasZstd: () => boolean,
+ *   hasLz4: () => boolean,
+ *   hasBzip2: () => boolean,
+ *   buildFlavour: () => 'lean' | 'full',
  *   availableFormats: () => {readers: string[], writers: string[]},
  *   extractSurface: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
  *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
@@ -260,6 +295,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1, trimSamples?: number}) => object,
  *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
+ *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean}) => object,
  *   tessellate: (mesh: Mesh, levels?: number, curved?: boolean, fields?: boolean, recordStencil?: boolean) => {mesh: Mesh, numSourcePoints: number, numSourceCells: number, numCurvedSourceCells: number, numPassThroughSourceCells: number, numPoints: number, numCells: number, numBoundaryFacets: number, numInteriorFacets: number, numFacetsWithBadCount: number},
  *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
@@ -314,16 +350,43 @@ export class MeshioPlusPlusLoadError extends Error {
  * }>}
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
-export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto' } = {}) {
+export async function loadMeshioPlusPlus(
+    moduleOverrides = {},
+    { variant = 'auto', full = false, fullGlue } = {},
+) {
     const chosen = resolveVariant(variant);
-    const glue =
-        chosen === 'mt' ? '../dist/meshioplusplus_wasm_mt.mjs' : '../dist/meshioplusplus_wasm.mjs';
-    // Literal specifiers so bundlers emit both chunks; the sequential one is
-    // the fallback whenever threads are unavailable.
-    const { default: createRawModule } =
-        chosen === 'mt'
-            ? await import('../dist/meshioplusplus_wasm_mt.mjs')
-            : await import('../dist/meshioplusplus_wasm.mjs');
+    const flavour = full ? 'full' : 'lean';
+    const label = full ? `full ${chosen}` : chosen;
+    let glue;
+    let createRawModule;
+    if (full) {
+        glue = String(fullGlue ?? fullGlueFor(chosen));
+        // A computed specifier on purpose (see the header): bundlers leave it
+        // alone, so a lean bundle never carries the full artifact.
+        try {
+            ({ default: createRawModule } = await import(
+                /* @vite-ignore */ /* webpackIgnore: true */ fullGlue === undefined
+                    ? new URL(glue, import.meta.url).href
+                    : glue
+            ));
+        } catch (cause) {
+            throw new MeshioPlusPlusLoadError(
+                `meshio++ (wasm): cannot import the full artifact's glue (${glue}): ` +
+                    `${cause.message ?? cause}. A bundled app copies ` +
+                    "dist/meshioplusplus_wasm_full*.{mjs,wasm} and passes `fullGlue`.",
+                { variant: chosen, full, glue, cause },
+            );
+        }
+    } else {
+        glue =
+            chosen === 'mt' ? '../dist/meshioplusplus_wasm_mt.mjs' : '../dist/meshioplusplus_wasm.mjs';
+        // Literal specifiers so bundlers emit both chunks; the sequential one
+        // is the fallback whenever threads are unavailable.
+        ({ default: createRawModule } =
+            chosen === 'mt'
+                ? await import('../dist/meshioplusplus_wasm_mt.mjs')
+                : await import('../dist/meshioplusplus_wasm.mjs'));
+    }
 
     // Wrap locateFile/onAbort (rather than passing moduleOverrides through
     // untouched) so a failed instantiation can be reported with which file
@@ -355,10 +418,10 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         Module = await createRawModule(wrappedOverrides);
     } catch (cause) {
         throw new MeshioPlusPlusLoadError(
-            `meshio++ (wasm): failed to instantiate the '${chosen}' variant (${glue}): ` +
+            `meshio++ (wasm): failed to instantiate the '${label}' variant (${glue}): ` +
                 `${abortReason ?? cause.message ?? cause}. Emscripten requested ` +
                 `'${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
-            { variant: chosen, glue, requestedFile, resolvedUrl, cause },
+            { variant: chosen, full, glue, requestedFile, resolvedUrl, cause },
         );
     }
 
@@ -371,11 +434,25 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
     const actualBackend = Module.parallelBackend();
     if (actualBackend !== expectedBackend) {
         throw new MeshioPlusPlusLoadError(
-            `meshio++ (wasm): failed to instantiate the '${chosen}' variant (${glue}): ` +
+            `meshio++ (wasm): failed to instantiate the '${label}' variant (${glue}): ` +
                 `loaded, but reports parallel backend '${actualBackend}' (expected ` +
                 `'${expectedBackend}') -- locateFile likely returned the wrong .wasm binary. ` +
                 `Emscripten requested '${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
-            { variant: chosen, glue, requestedFile, resolvedUrl },
+            { variant: chosen, full, glue, requestedFile, resolvedUrl },
+        );
+    }
+    // The same tell for the lean/full split: the two share the whole export
+    // surface, so a lean .wasm behind the full glue (or the reverse) can link.
+    // A binary from before buildFlavour existed is a lean one.
+    const actualFlavour =
+        typeof Module.buildFlavour === 'function' ? Module.buildFlavour() : 'lean';
+    if (actualFlavour !== flavour) {
+        throw new MeshioPlusPlusLoadError(
+            `meshio++ (wasm): failed to instantiate the '${label}' variant (${glue}): ` +
+                `loaded, but reports the '${actualFlavour}' artifact (expected '${flavour}') -- ` +
+                `locateFile likely returned the wrong .wasm binary. Emscripten requested ` +
+                `'${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
+            { variant: chosen, full, glue, requestedFile, resolvedUrl },
         );
     }
 
@@ -523,6 +600,13 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // meshioplusplus_wasm_mt one -- which of the two this instance loaded.
         parallelBackend: () => Module.parallelBackend(),
         hasCgnslib: () => Module.hasCgnslib(),
+        // The full artifact's libraries (roadmap 6.2): all four are true there
+        // and false in the lean one. buildFlavour() names which loaded.
+        hasOcct: () => Module.hasOcct(),
+        hasZstd: () => Module.hasZstd(),
+        hasLz4: () => Module.hasLz4(),
+        hasBzip2: () => Module.hasBzip2(),
+        buildFlavour: () => Module.buildFlavour(),
         // What this build can actually read/write, both sorted. Prefer this
         // over a hardcoded table: a few formats are write-only (gmsh22), and the
         // HDF5/netCDF-backed ones are present only in a build that linked them
@@ -862,6 +946,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.fitPrimitives(mesh, patchData, tolerance, relative, minInlierFraction,
                 Array.isArray(types) ? types : [types], maxIterations),
+        // OpenCASCADE: the full artifact only; the lean one throws by name.
+        fitCad: (mesh, options = {}) => Module.fitCad(mesh, options),
         igaRefine: (info, options = {}) => Module.igaRefine(info, options),
         igaSample: (info, options = {}) => Module.igaSample(info, options),
         igaEvaluate: (info, patch, params, options = {}) =>

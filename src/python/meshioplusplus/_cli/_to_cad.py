@@ -161,6 +161,7 @@ def to_cad_cmd(args):
             + (f" ({split} split piece(s))" if split > 0 else "")
         )
         variable, blend = report["num_variable_fillet"], report["num_blend"]
+        conic = report["num_conic_blend"]
         print(
             f"  {'fillet:':10s} {report['num_fillet']}"
             + (
@@ -168,12 +169,22 @@ def to_cad_cmd(args):
                 if variable > 0 or blend > 0
                 else ""
             )
+            + (f" ({conic} conic)" if conic > 0 else "")
         )
         rounded = report["num_rounded_thread"]
+        tapered = report["num_tapered_thread"]
+        varying = report["num_variable_pitch_thread"]
         print(
             f"  {'helical:':10s} {report['num_helical']}"
             + (f" ({rounded} rounded)" if rounded > 0 else "")
+            + (
+                f" ({tapered} tapered, {varying} of varying pitch)"
+                if tapered > 0 or varying > 0
+                else ""
+            )
         )
+        print(f"  {'chamfer:':10s} {report['num_chamfer']}")
+        print(f"  {'vertex:':10s} {report['num_vertex_blend']} vertex blend(s)")
         print(f"  {'facets:':10s} {report['num_faceted_faces']}")
         print(f"  {'demoted:':10s} {report['num_demoted']} patch(es)")
         print(
