@@ -347,9 +347,16 @@ inline meshioplusplus::Mesh inclined_boss(double Alpha = 20.0, double R = 0.6, d
 // meets the flank facing the same way at a dihedral the crease test would
 // cross -- wound against the loop's edges in the thread's own triangles
 // (part of each loop runs along the axis, where no direction test can tell).
+//
+// Taper and PitchRate generalise the screw (roadmap 6.3.3): a node at the
+// unwrapped angle T (its column's angle plus a turn per period up) sits at
+// z = w + g(T), g(T) = K T + PitchRate T^2 / (8 pi^2) -- the pitch grows by
+// PitchRate per turn -- and r = f + Taper (w + g(T)), the profile cut on a
+// cone whose radius grows by Taper per unit length. Both 0 is the rod above.
 inline meshioplusplus::Mesh helical_rod(const std::vector<double>& rW,
                                         const std::vector<double>& rR, double Pitch, int Turns,
-                                        int N, double Depth = 1.0) {
+                                        int N, double Depth = 1.0, double Taper = 0.0,
+                                        double PitchRate = 0.0) {
     const double k = Pitch / (2.0 * kPi);
     const int per = static_cast<int>(rW.size());  // samples per period
     const int rows = per * Turns;                 // grid rows j = 0..rows
@@ -358,10 +365,19 @@ inline meshioplusplus::Mesh helical_rod(const std::vector<double>& rW,
     for (int i = 0; i < N; ++i) {
         const double th = 2.0 * kPi * i / N;
         for (int j = 0; j <= rows; ++j) {
-            const double wj = rW[static_cast<std::size_t>(j % per)] + Pitch * (j / per);
-            const double rj = rR[static_cast<std::size_t>(j % per)];
+            if (Taper == 0.0 && PitchRate == 0.0) {
+                const double wj = rW[static_cast<std::size_t>(j % per)] + Pitch * (j / per);
+                const double rj = rR[static_cast<std::size_t>(j % per)];
+                id[static_cast<std::size_t>(i)].push_back(
+                    b.Add(rj * std::cos(th), rj * std::sin(th), wj + k * th));
+                continue;
+            }
+            const double big = th + 2.0 * kPi * (j / per);
+            const double g = k * big + PitchRate * big * big / (8.0 * kPi * kPi);
+            const double w = rW[static_cast<std::size_t>(j % per)];
+            const double rj = rR[static_cast<std::size_t>(j % per)] + Taper * (w + g);
             id[static_cast<std::size_t>(i)].push_back(
-                b.Add(rj * std::cos(th), rj * std::sin(th), wj + k * th));
+                b.Add(rj * std::cos(th), rj * std::sin(th), w + g));
         }
     }
     // Node (i, j); column N is column 0 a period up.
@@ -466,6 +482,82 @@ inline meshioplusplus::Mesh rounded_thread_rod(double Pitch = 0.5, double R0 = 0
         at += seg[s];
     }
     return helical_rod(w, r, Pitch, Turns, N);
+}
+
+// threaded_rod's trapezoidal thread cut on a cone: its radius grows by Taper
+// per unit length (a pipe thread), so the root and the crest are helical
+// strips of cones and the flanks ruled helicoids (roadmap 6.3.3).
+inline meshioplusplus::Mesh tapered_thread_rod(double Pitch = 0.5, double R0 = 0.8, double R1 = 1.0,
+                                               double Taper = 0.0625, int Turns = 4, int N = 64) {
+    const double seg[4] = {0.26 * Pitch, 0.24 * Pitch, 0.26 * Pitch, 0.24 * Pitch};
+    const int sub[4] = {2, 3, 2, 3};
+    std::vector<double> w, r;
+    double at = 0.0;
+    for (int s = 0; s < 4; ++s) {
+        for (int i = 0; i < sub[s]; ++i) {
+            const double t = static_cast<double>(i) / sub[s];
+            w.push_back(at + seg[s] * t);
+            r.push_back(s == 0   ? R0
+                        : s == 1 ? R0 + (R1 - R0) * t
+                        : s == 2 ? R1
+                                 : R1 - (R1 - R0) * t);
+        }
+        at += seg[s];
+    }
+    return helical_rod(w, r, Pitch, Turns, N, 1.0, Taper);
+}
+
+// rounded_thread_rod's thread cut on a cone, as tapered_thread_rod's: no
+// cylinder or cone anywhere, so the screw, its taper and the profile are all
+// found from the flanks themselves.
+inline meshioplusplus::Mesh tapered_rounded_thread_rod(double Pitch = 0.5, double R0 = 0.8,
+                                                       double R1 = 1.0, double Rr = 0.2,
+                                                       double Taper = 0.0625, int Turns = 4,
+                                                       int N = 64) {
+    const double seg[4] = {0.26 * Pitch, 0.24 * Pitch, 0.26 * Pitch, 0.24 * Pitch};
+    const int sub[4] = {4, 3, 4, 3};
+    const double half = 0.13 * Pitch, d = std::sqrt(Rr * Rr - half * half);
+    std::vector<double> w, r;
+    double at = 0.0;
+    for (int s = 0; s < 4; ++s) {
+        for (int i = 0; i < sub[s]; ++i) {
+            const double t = static_cast<double>(i) / sub[s];
+            const double x = seg[s] * t - half;  // from the flat's middle
+            w.push_back(at + seg[s] * t);
+            r.push_back(s == 0   ? R0 + d - std::sqrt(Rr * Rr - x * x)
+                        : s == 1 ? R0 + (R1 - R0) * t
+                        : s == 2 ? R1 - d + std::sqrt(Rr * Rr - x * x)
+                                 : R1 - (R1 - R0) * t);
+        }
+        at += seg[s];
+    }
+    return helical_rod(w, r, Pitch, Turns, N, 1.0, Taper);
+}
+
+// threaded_rod's trapezoidal thread with a pitch growing by PitchRate per
+// turn (roadmap 6.3.3). A period runs from the middle of one root to the
+// middle of the next, so the root -- a helical strip of the cylinder R0 --
+// takes up the growing gap and the flanks stay ruled helicoids, whose
+// advance is quadratic in the angle.
+inline meshioplusplus::Mesh variable_pitch_thread_rod(double Pitch = 0.5, double R0 = 0.8,
+                                                      double R1 = 1.0, double PitchRate = 0.05,
+                                                      int Turns = 4, int N = 64) {
+    const double seg[5] = {0.13 * Pitch, 0.24 * Pitch, 0.26 * Pitch, 0.24 * Pitch, 0.13 * Pitch};
+    const int sub[5] = {1, 3, 2, 3, 1};
+    std::vector<double> w, r;
+    double at = 0.0;
+    for (int s = 0; s < 5; ++s) {
+        for (int i = 0; i < sub[s]; ++i) {
+            const double t = static_cast<double>(i) / sub[s];
+            w.push_back(at + seg[s] * t);
+            r.push_back(s == 0 || s == 4 ? R0
+                        : s == 1         ? R0 + (R1 - R0) * t
+                        : s == 2         ? R1
+                                         : R1 - (R1 - R0) * t);
+        }
+        at += seg[s];
+    }
+    return helical_rod(w, r, Pitch, Turns, N, 1.0, 0.0, PitchRate);
 }
 
 namespace detail_fixture {
@@ -574,6 +666,169 @@ inline meshioplusplus::Mesh variable_fillet_block(double Length = 2.0, double Wi
         centres.push_back(c);
     }
     return loft_closed(loops, centres);
+}
+
+// The block [0, Length] x [0, Width] x [0, Height] whose edge at y = Width,
+// z = Height is cut by a blend from the top, D1 in from the edge, to the
+// side, d2(x) down from it, d2 growing linearly from D2a to D2b along the
+// edge (roadmap 6.3.2). Each cross-section, in the plane x = const, is the
+// rational quadratic from the top foot through the corner (x, Width,
+// Height) to the side foot with weight Weight: 0 a chord -- a chamfer of
+// varying width, a hyperbolic paraboloid -- and more a conic arc tangent to
+// both faces, a circle only where the legs are equal and Weight is
+// sin(pi/4). The triangles carry their faces as `segment:patch` (0 bottom, 1
+// side, 2 top, 3 back, 4 and 5 the ends, 6 the blend): a conic blend is
+// tangent to both faces and its curvature varies across it, which no
+// segmentation by curvature isolates.
+inline meshioplusplus::Mesh section_blend_block(double Weight = 0.0, double Length = 2.0,
+                                                double Width = 1.0, double Height = 1.0,
+                                                double D1 = 0.3, double D2a = 0.2, double D2b = 0.4,
+                                                int N = 40, int K = 12, int M = 6) {
+    using namespace detail_fixture;
+    const double W = Width, H = Height, L = Length;
+    std::vector<std::vector<std::pair<V3, std::vector<double>>>> loops;
+    std::vector<V3> centres;
+    for (int i = 0; i <= N; ++i) {
+        const double x = L * i / N;
+        const double d2 = D2a + (D2b - D2a) * x / L;
+        const V3 top{x, W - D1, H}, side{x, W, H - d2}, apex{x, W, H};
+        const V3 c{x, W - D1, H - d2};  // inside the blend: its points face away
+        std::vector<std::pair<V3, std::vector<double>>> loop;
+        for (int j = 0; j < M; ++j)  // the bottom, y from 0 to W
+            loop.push_back({{x, W * j / M, 0.0}, {0.0, 0.0, -1.0}});
+        for (int j = 0; j < M; ++j)  // the side, z from 0 to H - d2
+            loop.push_back({{x, W, (H - d2) * j / M}, {0.0, 1.0, 0.0}});
+        for (int j = 0; j < K; ++j) {  // the blend, side foot to top foot
+            // Evenly along a chamfer's chord; by the conic's own parameter else.
+            const double u = static_cast<double>(j) / K;
+            const double b0 = Weight > 0.0 ? (1.0 - u) * (1.0 - u) : 1.0 - u,
+                         b1 = 2.0 * Weight * u * (1.0 - u), b2 = Weight > 0.0 ? u * u : u,
+                         den = b0 + b1 + b2;
+            loop.push_back(
+                {v_mul(1.0 / den, v_add(v_add(v_mul(b0, side), v_mul(b1, apex)), v_mul(b2, top))),
+                 {}});
+        }
+        for (int j = 0; j < M; ++j)  // the top, y from W - D1 to 0
+            loop.push_back(
+                {{x, (W - D1) * (1.0 - static_cast<double>(j) / M), H}, {0.0, 0.0, 1.0}});
+        for (int j = 0; j < M; ++j)  // the back, z from H to 0
+            loop.push_back({{x, 0.0, H * (1.0 - static_cast<double>(j) / M)}, {0.0, -1.0, 0.0}});
+        loops.push_back(std::move(loop));
+        centres.push_back(c);
+    }
+    meshioplusplus::Mesh mesh = loft_closed(loops, centres);
+    const double* p = mesh.Points().As<double>();
+    const std::int64_t* conn = mesh.Cells(0).Conn().As<std::int64_t>();
+    const std::size_t nc = mesh.Cells(0).NumCells();
+    meshioplusplus::NDArray lab =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {nc});
+    for (std::size_t t = 0; t < nc; ++t) {
+        double m[3] = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < 3; ++k)
+            for (std::size_t d = 0; d < 3; ++d)
+                m[d] += p[static_cast<std::size_t>(conn[t * 3 + k]) * 3 + d] / 3.0;
+        const double e = 1e-9;
+        lab.As<std::int64_t>()[t] = std::fabs(m[2]) < e       ? 0
+                                    : std::fabs(m[1] - W) < e ? 1
+                                    : std::fabs(m[2] - H) < e ? 2
+                                    : std::fabs(m[1]) < e     ? 3
+                                    : std::fabs(m[0]) < e     ? 4
+                                    : std::fabs(m[0] - L) < e ? 5
+                                                              : 6;
+    }
+    std::vector<meshioplusplus::NDArray> blocks;
+    blocks.push_back(std::move(lab));
+    mesh.AddCellData("segment:patch", std::move(blocks));
+    return mesh;
+}
+
+// The box [-Sx, Sx] x [-Sy, Sy] x [-Sz, Sz] with every edge and corner
+// rounded: the cube [-1, 1]^3 rounded by a ball of radius R (each point the
+// nearest point of the inner cube [R - 1, 1 - R]^3 plus R along the way out),
+// scaled by (Sx, Sy, Sz). Scaled unequally, its 12 edge blends are conic
+// blends (elliptic cross-sections tangent to both faces) and its 8 corners
+// ellipsoid patches, each a vertex blend tangent to its three edge blends
+// (roadmap 6.3.1); the faces stay planes. Every face of the cube is gridded
+// with lines on the blends' boundaries (Nf cells across a flat, Nb across
+// half a blend, evenly in angle), so no triangle straddles two patches, and
+// the triangles carry the patches as `segment:patch`: no segmentation by
+// curvature can isolate a tangent blend whose curvature varies across it.
+inline meshioplusplus::Mesh rounded_box(double R = 0.3, double Sx = 1.0, double Sy = 1.3,
+                                        double Sz = 0.8, int Nf = 4, int Nb = 6) {
+    const double inner = 1.0 - R;
+    std::vector<double> g;  // the grid's coordinates along one edge of a face
+    for (int k = Nb; k >= 1; --k)
+        g.push_back(-(inner + R * std::tan(0.25 * kPi * k / Nb)));
+    for (int k = 0; k <= Nf; ++k)
+        g.push_back(-inner + 2.0 * inner * k / Nf);
+    for (int k = 1; k <= Nb; ++k)
+        g.push_back(inner + R * std::tan(0.25 * kPi * k / Nb));
+    const double scale[3] = {Sx, Sy, Sz};
+    SkinBuilder b;
+    std::map<std::array<long long, 3>, std::int64_t> ids;
+    auto vertex = [&](const std::array<double, 3>& rX) {
+        const std::array<long long, 3> key{std::llround(rX[0] * 1e9), std::llround(rX[1] * 1e9),
+                                           std::llround(rX[2] * 1e9)};
+        auto it = ids.find(key);
+        if (it != ids.end())
+            return it->second;
+        double c[3], d[3], len = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            c[k] = std::clamp(rX[static_cast<std::size_t>(k)], -inner, inner);
+            d[k] = rX[static_cast<std::size_t>(k)] - c[k];
+            len += d[k] * d[k];
+        }
+        len = std::sqrt(len);
+        const std::int64_t id =
+            b.Add(scale[0] * (c[0] + R * d[0] / len), scale[1] * (c[1] + R * d[1] / len),
+                  scale[2] * (c[2] + R * d[2] / len));
+        ids.emplace(key, id);
+        return id;
+    };
+    // A triangle's patch: the signs of the inner cube's faces its centroid
+    // lies beyond (one: a face, two: an edge blend, three: a corner).
+    std::vector<std::int64_t> label;
+    auto patch_of = [&](const std::array<double, 3>& rC) {
+        std::int64_t code = 0;
+        for (int k = 0; k < 3; ++k) {
+            const double x = rC[static_cast<std::size_t>(k)];
+            code = code * 3 + (x > inner ? 2 : x < -inner ? 0 : 1);
+        }
+        return code;
+    };
+    const int n = static_cast<int>(g.size());
+    for (int a = 0; a < 3; ++a)
+        for (int sign : {-1, 1}) {
+            const int u = (a + 1) % 3, v = (a + 2) % 3;
+            auto at = [&](int I, int J) {
+                std::array<double, 3> x{};
+                x[static_cast<std::size_t>(a)] = sign;
+                x[static_cast<std::size_t>(u)] = g[static_cast<std::size_t>(I)];
+                x[static_cast<std::size_t>(v)] = g[static_cast<std::size_t>(J)];
+                return x;
+            };
+            std::vector<double> out(3, 0.0);
+            out[static_cast<std::size_t>(a)] = sign;
+            for (int i = 0; i + 1 < n; ++i)
+                for (int j = 0; j + 1 < n; ++j) {
+                    std::array<double, 3> c{};
+                    for (const auto& x : {at(i, j), at(i + 1, j + 1)})
+                        for (int k = 0; k < 3; ++k)
+                            c[static_cast<std::size_t>(k)] += 0.5 * x[static_cast<std::size_t>(k)];
+                    b.Quad(vertex(at(i, j)), vertex(at(i + 1, j)), vertex(at(i + 1, j + 1)),
+                           vertex(at(i, j + 1)), out);
+                    label.push_back(patch_of(c));
+                    label.push_back(patch_of(c));
+                }
+        }
+    meshioplusplus::Mesh mesh = b.Build();
+    meshioplusplus::NDArray lab =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {label.size()});
+    std::copy(label.begin(), label.end(), lab.As<std::int64_t>());
+    std::vector<meshioplusplus::NDArray> blocks;
+    blocks.push_back(std::move(lab));
+    mesh.AddCellData("segment:patch", std::move(blocks));
+    return mesh;
 }
 
 // A bar along x whose top and front faces are both freeform, meeting at an

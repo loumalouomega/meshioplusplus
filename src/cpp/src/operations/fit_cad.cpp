@@ -89,6 +89,10 @@
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomLProp_SLProps.hxx>
+#include <GeomPlate_BuildPlateSurface.hxx>
+#include <GeomPlate_MakeApprox.hxx>
+#include <GeomPlate_PointConstraint.hxx>
+#include <GeomPlate_Surface.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_Curve.hxx>
@@ -702,7 +706,8 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             // edges go straight to the approximation.
             auto swept = [&](std::int64_t G) {
                 const std::int32_t t = rSkin.mPatches[static_cast<std::size_t>(G)].mType;
-                return t == kFitCadFilletType || t == kFitCadHelicalType;
+                return t == kFitCadFilletType || t == kFitCadHelicalType ||
+                       t == kFitCadVertexBlendType || t == kFitCadChamferType;
             };
             if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd)) {
                 GeomAPI_IntSS inter(s1, s2, Precision::Confusion());
@@ -1665,6 +1670,89 @@ detail::ClosestPoint fc_closest(const FcHandle<Geom_Surface>& rS) {
     };
 }
 
+// The unit normal of @p rS at the point of it nearest a point, for the
+// OpenCASCADE-free fits of `detail/feature_fit`.
+detail::NormalAt fc_normal(const FcHandle<Geom_Surface>& rS) {
+    return [rS](const detail::PatchVec& rX, detail::PatchVec& rN) {
+        const gp_Vec n = fc_normal_at(rS, gp_Pnt(rX[0], rX[1], rX[2]));
+        const double len = n.Magnitude();
+        if (!(len > 0.0))
+            return false;
+        rN = {n.X() / len, n.Y() / len, n.Z() / len};
+        return true;
+    };
+}
+
+// A chamfer or conic blend (roadmap 6.3.2), as a B-spline interpolating its
+// cross-sections along the first rail -- straight chords, or the conic arcs
+// of its weight law -- each widened by 15% at both ends and the rail carried
+// a tenth of its length past the ends of an open one, so the face trims
+// inside its surface. A closed rail gives a surface periodic along it. Null
+// when a section misses.
+FcHandle<Geom_Surface> fc_section_blend_surface(const detail::SectionBlendFit& rFit) {
+    const double len = rFit.mLength;
+    const bool closed = rFit.mClosed;
+    const double t0 = closed ? 0.0 : -0.1 * len, t1 = closed ? len : 1.1 * len;
+    const int n = std::clamp(static_cast<int>(2 * rFit.mRail1.size()) + 1, 8, 256);
+    const int na = rFit.mChamfer ? 4 : 13;
+    TColgp_Array2OfPnt grid(1, n, 1, na);
+    for (int i = 0; i < n; ++i) {
+        const double t = closed ? len * i / n : t0 + (t1 - t0) * i / (n - 1);
+        for (int j = 0; j < na; ++j) {
+            detail::PatchVec p{};
+            if (!rFit.At(t, -0.15 + 1.3 * j / (na - 1), p))
+                return {};
+            grid.SetValue(i + 1, j + 1, gp_Pnt(p[0], p[1], p[2]));
+        }
+    }
+    GeomAPI_PointsToBSplineSurface fit;
+    fit.Interpolate(grid, Approx_IsoParametric, closed);
+    if (!fit.IsDone())
+        return {};
+    return FcHandle<Geom_Surface>(fit.Surface());
+}
+
+// A vertex blend (roadmap 6.3.1): a plate surface through the patch's
+// vertices that meets each neighbour tangentially along the boundary loop,
+// approximated by a B-spline (widened by a tenth, so the face trims inside
+// it). @p rLoop and @p rAcross are the loop's vertices and the neighbour
+// across the edge leaving each; @p rSurface the neighbours' surfaces. Null
+// when the plate cannot be built or a boundary point does not project.
+FcHandle<Geom_Surface> fc_vertex_blend_surface(const std::vector<gp_Pnt>& rPts,
+                                               const std::vector<std::size_t>& rLoop,
+                                               const std::vector<std::int64_t>& rAcross,
+                                               const std::vector<std::uint8_t>& rOnLoop,
+                                               const std::vector<FcHandle<Geom_Surface> >& rSurface,
+                                               double Tol) {
+    GeomPlate_BuildPlateSurface plate(3, 15, 2, 1e-5, 0.1 * Tol, 0.01, 0.1);
+    const std::size_t loop_step = std::max<std::size_t>(1, rLoop.size() / 96);
+    for (std::size_t i = 0; i < rLoop.size(); i += loop_step) {
+        const FcHandle<Geom_Surface>& s = rSurface[static_cast<std::size_t>(rAcross[i])];
+        GeomAPI_ProjectPointOnSurf proj(rPts[rLoop[i]], s);
+        if (!proj.IsDone() || proj.NbPoints() == 0)
+            return {};
+        double u = 0.0, v = 0.0;
+        proj.LowerDistanceParameters(u, v);
+        plate.Add(new GeomPlate_PointConstraint(u, v, s, 1, 0.1 * Tol, 0.01, 0.1));
+    }
+    std::vector<std::size_t> inner;
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        if (!rOnLoop[i])
+            inner.push_back(i);
+    const std::size_t inner_step = std::max<std::size_t>(1, inner.size() / 256);
+    for (std::size_t i = 0; i < inner.size(); i += inner_step)
+        plate.Add(new GeomPlate_PointConstraint(rPts[inner[i]], 0, 0.1 * Tol));
+    plate.Perform();
+    if (!plate.IsDone())
+        return {};
+    const FcHandle<GeomPlate_Surface> ps = plate.Surface();
+    GeomPlate_MakeApprox approx(ps, 0.1 * Tol, 16, 8, 10.0 * Tol, 0, GeomAbs_C1, 1.1);
+    const FcHandle<Geom_BSplineSurface> bs = approx.Surface();
+    if (bs.IsNull())
+        return {};
+    return FcHandle<Geom_Surface>(bs);
+}
+
 // A rolling-ball blend of the radius `rFit.mRadius` gives along its rail, as
 // a B-spline through its cross-sections. The balls touching both surfaces are
 // solved along the rail (one that does not solve, where a neighbour ends, is
@@ -2098,6 +2186,42 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         for (std::size_t i = 0; i < rPts.size(); ++i)
             rFlat[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
     };
+    // The global vertex of each local one of patch_mesh, in its first-seen order.
+    auto patch_globals = [&](std::size_t R) {
+        std::vector<std::int64_t> global;
+        std::unordered_map<std::int64_t, std::size_t> seen;
+        for (std::size_t f : facets_of[R])
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k) {
+                const std::int64_t g = fc.mNodes[static_cast<std::size_t>(k)];
+                if (seen.emplace(g, global.size()).second)
+                    global.push_back(g);
+            }
+        return global;
+    };
+    // Across the mesh edge (Ga, Gb) from patch R: the other row, or -1, and
+    // that facet and R's own (-1 where there is none).
+    auto row_across = [&](std::size_t R, std::int64_t Ga, std::int64_t Gb, std::int64_t* pMine,
+                          std::int64_t* pTheirs) -> std::int64_t {
+        auto it = skin.mEdgeFacets.find({std::min(Ga, Gb), std::max(Ga, Gb)});
+        std::int64_t mine = -1, theirs = -1, row = -1;
+        if (it != skin.mEdgeFacets.end())
+            for (std::int64_t g : it->second) {
+                if (g < 0)
+                    continue;
+                const std::int64_t q = skin.mRow[static_cast<std::size_t>(g)];
+                if (q == static_cast<std::int64_t>(R)) {
+                    mine = g;
+                } else if (q >= 0) {
+                    theirs = g;
+                    row = q;
+                }
+            }
+        if (pMine)
+            *pMine = mine;
+        if (pTheirs)
+            *pTheirs = theirs;
+        return row;
+    };
     auto orient = [&](std::size_t R, FcHandle<Geom_Surface> S) {
         const std::size_t step = std::max<std::size_t>(1, facets_of[R].size() / 64);
         double agree = 0.0;
@@ -2149,7 +2273,8 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         return by_length;
     };
     // What a fillet or thread face is, beyond its type, for the report.
-    constexpr std::uint8_t kFcVariable = 1, kFcBlend = 2, kFcRounded = 4;
+    constexpr std::uint8_t kFcVariable = 1, kFcBlend = 2, kFcRounded = 4, kFcConic = 8,
+                           kFcTapered = 16, kFcVariablePitch = 32;
     std::vector<std::uint8_t> feature(m, 0);
     auto accept = [&](std::size_t R, const FcHandle<Geom_Surface>& rS, std::int64_t Type,
                       std::uint8_t Feature) {
@@ -2224,6 +2349,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             if (rOptions.mThreads) {
                 // The axis of the neighbouring cylinder or cone sharing the most boundary.
                 const double* seed = nullptr;
+                std::int32_t seed_type = 0;
                 bool threaded = false;
                 for (const auto& nb : by_length) {
                     const std::size_t q = static_cast<std::size_t>(nb.second);
@@ -2232,12 +2358,15 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         continue;
                     const double* pp = skin.mPatches[q].mParams.data();
                     seed = pp;
+                    seed_type = t;
                     const detail::HelicoidFit hf =
                         detail::helicoid_fit(flat, tris, {pp[0], pp[1], pp[2]}, {pp[3], pp[4], pp[5]});
                     if (hf.mOk && hf.mMax <= 0.5 * tol) {
                         FcHandle<Geom_Surface> hs = fc_helicoid_surface(hf, tol);
                         if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol)) {
-                            accept(r, hs, kFitCadHelicalType, 0);
+                            // A straight flank beside a cone is cut on its taper:
+                            // the same ruled helicoid, of an apparent pitch.
+                            accept(r, hs, kFitCadHelicalType, t == 4 ? kFcTapered : 0);
                             threaded = true;
                             log::debug("fit_cad: patch {} is a thread flank of pitch {}",
                                        skin.mPatches[r].mLabel, hf.Pitch());
@@ -2268,6 +2397,104 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         } else {
                             log::debug("fit_cad: patch {}: the helical face strays from it",
                                        skin.mPatches[r].mLabel);
+                        }
+                    }
+                }
+                // Tapered and variable-pitch threads (roadmap 6.3.3), tried
+                // only where every constant screw failed: a straight flank
+                // whose pitch changes along it, then any profile on a screw
+                // whose pitch changes and that moves out along a taper.
+                if (!analytic[r] && seed != nullptr) {
+                    const detail::HelicoidFit hv = detail::helicoid_fit(
+                        flat, tris, {seed[0], seed[1], seed[2]}, {seed[3], seed[4], seed[5]}, true);
+                    if (hv.mOk && hv.mMax <= 0.5 * tol &&
+                        std::fabs(hv.PitchAt(hv.mThetaMax) - hv.PitchAt(hv.mThetaMin)) > tol) {
+                        FcHandle<Geom_Surface> hs = fc_helicoid_surface(hv, tol);
+                        if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol)) {
+                            accept(r, hs, kFitCadHelicalType,
+                                   static_cast<std::uint8_t>(kFcVariablePitch |
+                                                             (seed_type == 4 ? kFcTapered : 0)));
+                            log::debug("fit_cad: patch {} is a thread flank of pitch {} to {}",
+                                       skin.mPatches[r].mLabel, hv.PitchAt(hv.mThetaMin),
+                                       hv.PitchAt(hv.mThetaMax));
+                        }
+                    }
+                }
+                if (!analytic[r]) {
+                    // The taper starts at the neighbouring cone's, if any: its
+                    // axis points into the cone, where the radius grows.
+                    const double taper0 = seed_type == 4 ? std::tan(seed[8] * kFcPi / 180.0) : 0.0;
+                    detail::HelicalFit hg;
+                    if (seed != nullptr) {
+                        const detail::PatchVec o{seed[0], seed[1], seed[2]};
+                        const detail::PatchVec a{seed[3], seed[4], seed[5]};
+                        hg = detail::helical_fit(flat, tris, &o, &a, tol, true, taper0);
+                    } else {
+                        hg = detail::helical_fit(flat, tris, nullptr, nullptr, tol, true, 0.0);
+                    }
+                    if (hg.mOk) {
+                        const double g0 = hg.Advance(hg.mThetaMin), g1 = hg.Advance(hg.mThetaMax);
+                        const bool tapered = std::fabs(hg.mTaper * (g1 - g0)) > tol;
+                        const bool varying =
+                            std::fabs(hg.PitchAt(hg.mThetaMax) - hg.PitchAt(hg.mThetaMin)) > tol;
+                        FcHandle<Geom_Surface> hs;
+                        if (tapered || varying)
+                            hs = fc_helical_surface(hg, tol);
+                        if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol, false, true)) {
+                            accept(r, hs, kFitCadHelicalType,
+                                   static_cast<std::uint8_t>((hg.mStraight ? 0 : kFcRounded) |
+                                                             (tapered ? kFcTapered : 0) |
+                                                             (varying ? kFcVariablePitch : 0)));
+                            log::debug(
+                                "fit_cad: patch {} is a helical face of pitch {} to {}, "
+                                "taper {}{}",
+                                skin.mPatches[r].mLabel, hg.PitchAt(hg.mThetaMin),
+                                hg.PitchAt(hg.mThetaMax), hg.mTaper,
+                                hg.mStraight ? "" : ", rounded");
+                        }
+                    }
+                }
+            }
+            // Chamfers and conic blends (roadmap 6.3.2): a patch between two
+            // analytic faces that no rolling ball and no thread explains,
+            // its cross-sections straight or conic arcs tangent to both.
+            if (!analytic[r] && rOptions.mFillets && by_length.size() >= 2) {
+                const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
+                const std::size_t q2 = static_cast<std::size_t>(by_length[1].second);
+                const double along = -(by_length[0].first + by_length[1].first);
+                const std::vector<std::int64_t> global = patch_globals(r);
+                if (analytic[q1] && analytic[q2] && along >= 0.6 * perimeter &&
+                    global.size() == flat.size()) {
+                    // The rails are the boundary edges across from each neighbour.
+                    const auto side = [&](std::size_t A, std::size_t B) {
+                        const std::int64_t q =
+                            row_across(r, global[A], global[B], nullptr, nullptr);
+                        return q == static_cast<std::int64_t>(q1)   ? 1
+                               : q == static_cast<std::int64_t>(q2) ? 2
+                                                                    : 0;
+                    };
+                    const detail::SectionBlendFit sb = detail::section_blend_fit(
+                        flat, tris, fc_closest(surface[q1]), fc_normal(surface[q1]),
+                        fc_closest(surface[q2]), fc_normal(surface[q2]), tol, side);
+                    if (!sb.mOk)
+                        log::debug(
+                            "fit_cad: patch {} is no chamfer or conic blend (rails of {} "
+                            "and {} points)",
+                            skin.mPatches[r].mLabel, sb.mRail1.size(), sb.mRail2.size());
+                    if (sb.mOk) {
+                        FcHandle<Geom_Surface> fs = fc_section_blend_surface(sb);
+                        if (!fs.IsNull() &&
+                            fc_surface_fits(fs, pts, tris, tol, !sb.mChamfer, true)) {
+                            if (sb.mChamfer)
+                                accept(r, fs, kFitCadChamferType, 0);
+                            else
+                                accept(r, fs, kFitCadFilletType, kFcConic);
+                            log::debug("fit_cad: patch {} is a {}", skin.mPatches[r].mLabel,
+                                       sb.mChamfer ? "chamfer" : "conic blend");
+                        } else {
+                            log::debug("fit_cad: patch {}: the {} {}", skin.mPatches[r].mLabel,
+                                       sb.mChamfer ? "chamfer" : "conic blend",
+                                       fs.IsNull() ? "has no surface" : "strays from it");
                         }
                     }
                 }
@@ -2458,6 +2685,94 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         }
     }
 
+    // Vertex blends (roadmap 6.3.1): a patch no primitive explains (or only
+    // a freeform face does) whose boundary is one loop around three or more
+    // fitted faces, meeting each along one run without a crease -- the
+    // corner where blends meet, set back from each other -- tried as a plate
+    // surface tangent to every one of them. A neighbour at a crease (a cap,
+    // a wall the patch merely ends at) rules it out, so a freeform face
+    // between such faces is left as it was.
+    if (rOptions.mFillets) {
+        const double crease = std::cos(20.0 * kFcPi / 180.0);
+        for (std::size_t r = 0; r < m; ++r) {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            const bool freeform =
+                analytic[r] && type == static_cast<std::int32_t>(kFitCadBsplineType);
+            const bool unexplained = !analytic[r] && !(type >= 1 && type <= 5 && finite);
+            if (facets_of[r].empty() || (!freeform && !unexplained))
+                continue;
+            std::vector<gp_Pnt> pts;
+            std::vector<std::array<std::size_t, 3> > tris;
+            std::vector<detail::PatchVec> flat;
+            patch_mesh(r, pts, tris, flat);
+            const std::vector<std::int64_t> global = patch_globals(r);
+            if (global.size() != pts.size())
+                continue;
+            bool creased = false;
+            auto across = [&](std::size_t A, std::size_t B) -> std::int64_t {
+                std::int64_t mine = -1, theirs = -1;
+                const std::int64_t row = row_across(r, global[A], global[B], &mine, &theirs);
+                if (mine >= 0 && theirs >= 0) {
+                    const std::size_t a = static_cast<std::size_t>(mine) * 3;
+                    const std::size_t b = static_cast<std::size_t>(theirs) * 3;
+                    const double c = fc.mNormals[a] * fc.mNormals[b] +
+                                     fc.mNormals[a + 1] * fc.mNormals[b + 1] +
+                                     fc.mNormals[a + 2] * fc.mNormals[b + 2];
+                    creased = creased || c < crease;
+                }
+                return row;
+            };
+            const detail::VertexBlendBoundary vb = detail::vertex_blend_boundary(tris, across);
+            if (!vb.mOk || creased)
+                continue;
+            bool fitted_all = true;
+            for (std::int64_t q : vb.mNeighbours)
+                fitted_all = fitted_all && analytic[static_cast<std::size_t>(q)] &&
+                             !surface[static_cast<std::size_t>(q)].IsNull();
+            if (!fitted_all)
+                continue;
+            try {
+                std::vector<std::uint8_t> on_loop(pts.size(), 0);
+                for (std::size_t v : vb.mLoop)
+                    on_loop[v] = 1;
+                FcHandle<Geom_Surface> vs =
+                    fc_vertex_blend_surface(pts, vb.mLoop, vb.mAcross, on_loop, surface, tol);
+                if (vs.IsNull() || !fc_surface_fits(vs, pts, tris, tol, true, true)) {
+                    log::debug("fit_cad: patch {}: the vertex blend {}", skin.mPatches[r].mLabel,
+                               vs.IsNull() ? "has no plate" : "strays from it");
+                    continue;
+                }
+                // Tangent to every neighbour along the loop, within 3 degrees.
+                bool tangent = true;
+                const double tol_angle = std::cos(3.0 * kFcPi / 180.0);
+                for (std::size_t i = 0; i < vb.mLoop.size() && tangent; ++i) {
+                    const gp_Vec a = fc_normal_at(vs, pts[vb.mLoop[i]]);
+                    const gp_Vec b = fc_normal_at(surface[static_cast<std::size_t>(vb.mAcross[i])],
+                                                  pts[vb.mLoop[i]]);
+                    if (a.Magnitude() <= 0.0 || b.Magnitude() <= 0.0)
+                        continue;
+                    tangent = std::fabs(a.Dot(b)) >= tol_angle * a.Magnitude() * b.Magnitude();
+                }
+                if (!tangent) {
+                    log::debug(
+                        "fit_cad: patch {}: the vertex blend is not tangent to its "
+                        "neighbours",
+                        skin.mPatches[r].mLabel);
+                    continue;
+                }
+                accept(r, vs, kFitCadVertexBlendType, 0);
+                log::debug("fit_cad: patch {} is a vertex blend among {} faces",
+                           skin.mPatches[r].mLabel, vb.mNeighbours.size());
+            } catch (const Standard_Failure& rErr) {
+                log::debug("fit_cad: no vertex blend for patch {}: {}", skin.mPatches[r].mLabel,
+                           rErr.GetMessageString());
+            }
+        }
+    }
+
     // Build, check, demote and rebuild.
     FcBuild build;
     FcTriangulation tri;
@@ -2612,10 +2927,19 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 ++result.mNumFillet;
                 result.mNumVariableFillet += (feat & kFcVariable) ? 1 : 0;
                 result.mNumBlend += (feat & kFcBlend) ? 1 : 0;
+                result.mNumConicBlend += (feat & kFcConic) ? 1 : 0;
                 break;
             case kFitCadHelicalType:
                 ++result.mNumHelical;
                 result.mNumRoundedThread += (feat & kFcRounded) ? 1 : 0;
+                result.mNumTaperedThread += (feat & kFcTapered) ? 1 : 0;
+                result.mNumVariablePitchThread += (feat & kFcVariablePitch) ? 1 : 0;
+                break;
+            case kFitCadVertexBlendType:
+                ++result.mNumVertexBlend;
+                break;
+            case kFitCadChamferType:
+                ++result.mNumChamfer;
                 break;
             default:
                 ++result.mNumFacetedFaces;

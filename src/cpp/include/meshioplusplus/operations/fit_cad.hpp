@@ -59,6 +59,21 @@
  *    cylinder's or cone's axis, else the screw the patch fits, with any
  *    profile). After it, a freeform patch between two fitted faces, one of
  *    them freeform, is tried as a rolling-ball blend.
+ *  - **Chamfers, conic blends, tapered and variable-pitch threads, vertex
+ *    blends** (roadmap 6.3, v17.2.0). A patch between two analytic faces that
+ *    no rolling ball or thread explains is tried as a blend whose
+ *    cross-section, in the plane normal to its rail on the first face, is a
+ *    straight chord (a chamfer, `fit_cad:type` 10) or a conic arc tangent to
+ *    both faces (a conic blend, type 7); a thread flank whose straight-flank
+ *    or profile fit fails is refitted with a pitch that varies linearly along
+ *    it and, for a profile, cut on a taper -- a flank beside a cone is
+ *    reported tapered. Last, a patch that is one closed loop around three or
+ *    more fitted neighbours (a corner where blends meet, a setback) is tried
+ *    as a vertex blend (type 9): a plate surface through its vertices,
+ *    tangent to every neighbour along the loop. These run only where the
+ *    earlier fits failed, so a skin they do not concern builds the same
+ *    solid as before. The first three ride on `mFillets` and `mThreads`, the
+ *    vertex blend on `mFillets`.
  *  - **Edges.** Where two patches meet, the mesh edges between them form
  *    chains from one junction (a point three or more patches meet at) to the
  *    next; a closed chain is split in two. A chain between two analytic faces
@@ -88,8 +103,9 @@
  * block (points shared between faces are welded), with cell data
  * `fit_cad:face` (Int64, the B-rep face), `fit_cad:type` (Int64, the face's
  * type: 0 a facet, 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, as
- * `fit:type`, 6 a freeform B-spline, 7 a rolling-ball fillet or blend, 8 a
- * helical thread face) and `fit_cad:patch` (Int64, the
+ * `fit:type`, 6 a freeform B-spline, 7 a rolling-ball fillet, blend or conic
+ * blend, 8 a helical thread face, 9 a vertex blend, 10 a chamfer) and
+ * `fit_cad:patch` (Int64, the
  * `segment:patch` label it was built from, -1 for a facet of a cell with no
  * patch), the report below, and the solid as NURBS in `mBrep` (face `i` of
  * `fit_cad:face` is its face `i`, id `i + 1`), which `write_cad_json` writes
@@ -129,8 +145,14 @@ inline constexpr std::int64_t kFitCadBsplineType = 6;
 inline constexpr std::int64_t kFitCadFilletType = 7;
 /// `fit_cad:type` of a helical thread face: a straight flank (a ruled
 /// helicoid), or a profile of any shape (a rounded root or crest) swept by
-/// the thread's screw motion.
+/// the thread's screw motion; tapered or of varying pitch since v17.2.0.
 inline constexpr std::int64_t kFitCadHelicalType = 8;
+/// `fit_cad:type` of a vertex blend: the corner patch where three or more
+/// blends meet, a plate surface tangent to its neighbours (v17.2.0).
+inline constexpr std::int64_t kFitCadVertexBlendType = 9;
+/// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
+/// constant or varying width, that is no plane or cone (v17.2.0).
+inline constexpr std::int64_t kFitCadChamferType = 10;
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -162,11 +184,14 @@ struct FitCadOptions {
     bool mFreeformSplit = true;
     /// Whether a patch no primitive explains, running between two fitted
     /// faces, is tried as a rolling-ball fillet: of constant or varying
-    /// radius between two analytic faces, and as a blend beside a freeform one.
+    /// radius between two analytic faces, and as a blend beside a freeform one;
+    /// then as a chamfer or a conic blend between two analytic faces, and a
+    /// corner patch among three or more fitted faces as a vertex blend.
     bool mFillets = true;
     /// Whether a patch no primitive explains is tried as a helical thread
     /// face: about the axis of a cylinder or cone beside it, or of the screw
-    /// the patch itself fits, with a straight or a rounded profile.
+    /// the patch itself fits, with a straight or a rounded profile, of
+    /// constant or varying pitch, and cut on a taper.
     bool mThreads = true;
 };
 
@@ -219,6 +244,17 @@ struct FitCadResult {
     /// Of the thread faces, those whose profile is not a straight line (a
     /// rounded root or crest).
     std::int64_t mNumRoundedThread = 0;
+    /// Vertex blends: corner patches where three or more blends meet (v17.2.0).
+    std::int64_t mNumVertexBlend = 0;
+    /// Chamfers: blends of straight cross-sections (v17.2.0).
+    std::int64_t mNumChamfer = 0;
+    /// Of the fillet faces, the conic blends: cross-sections that are conic
+    /// arcs other than the rolling ball's circle (v17.2.0).
+    std::int64_t mNumConicBlend = 0;
+    /// Of the thread faces, those cut on a taper (v17.2.0).
+    std::int64_t mNumTaperedThread = 0;
+    /// Of the thread faces, those whose pitch varies along them (v17.2.0).
+    std::int64_t mNumVariablePitchThread = 0;
     /// The solid as NURBS faces, loops and edges.
     BrepInfo mBrep;
 };

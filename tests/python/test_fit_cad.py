@@ -18,11 +18,16 @@ from meshioplusplus._cli._main import main as cli_main
 from .analytic_surfaces import (
     box_skin,
     inclined_boss,
+    rounded_box,
     rounded_thread_rod,
+    section_blend_block,
+    tapered_rounded_thread_rod,
+    tapered_thread_rod,
     threaded_rod,
     torus,
     turned_part,
     variable_fillet_block,
+    variable_pitch_thread_rod,
     wavy_bar,
     wavy_capped,
 )
@@ -262,6 +267,84 @@ def test_a_rounded_thread_with_no_cylinder_is_helical():
     assert report["max_deviation"] <= report["tolerance"]
     assert report["volume_ratio"] == pytest.approx(1.0, abs=0.01)
     assert 8 in out.cell_data["fit_cad:type"][0].tolist()
+
+
+@needs_occt
+def test_tapered_thread_flanks_are_helical_faces():
+    """threaded_rod cut on a cone: root and crest are cone strips, the flanks
+    ruled helicoids reported tapered (roadmap 6.3.3)."""
+    out, report = mio.fit_cad(_fitted(tapered_thread_rod()), return_report=True)
+    assert report["valid"]
+    assert report["num_helical"] == report["num_tapered_thread"] == 2
+    assert report["num_cone"] == 2 and report["num_variable_pitch_thread"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+
+
+@needs_occt
+def test_a_thread_of_varying_pitch_is_helical():
+    """The pitch grows by 0.05 per turn: the straight flanks are refitted with
+    a pitch varying along them (roadmap 6.3.3)."""
+    fit = _fitted(variable_pitch_thread_rod())
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_helical"] == report["num_variable_pitch_thread"] == 2
+    assert report["num_cylinder"] == 2 and report["num_demoted"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    _out, report = mio.fit_cad(fit, threads=False, return_report=True)
+    assert report["num_helical"] == 0
+
+
+@needs_occt
+def test_a_tapered_rounded_thread_finds_its_screw_and_taper():
+    out, report = mio.fit_cad(_fitted(tapered_rounded_thread_rod()), return_report=True)
+    assert report["valid"]
+    assert report["num_helical"] == 4 and report["num_rounded_thread"] == 2
+    assert report["num_tapered_thread"] == 2
+    assert report["max_deviation"] <= report["tolerance"]
+
+
+@needs_occt
+def test_a_chamfer_of_varying_width_is_its_own_face():
+    """A chamfer whose width grows along the edge: a twisted ruled surface no
+    plane explains (roadmap 6.3.2)."""
+    skin = section_blend_block(0.0)
+    for fit in (_fitted(skin), mio.fit_primitives(skin, tolerance=1e-3)):
+        out, report = mio.fit_cad(fit, return_report=True)
+        assert report["valid"]
+        assert report["num_chamfer"] == 1 and report["num_plane"] == 6
+        assert report["num_faceted_faces"] == 0 and report["num_faces"] == 7
+        assert report["max_deviation"] <= report["tolerance"]
+        assert 10 in out.cell_data["fit_cad:type"][0].tolist()
+    _out, report = mio.fit_cad(_fitted(skin), fillets=False, return_report=True)
+    assert report["num_chamfer"] == 0
+
+
+@needs_occt
+def test_a_conic_blend_is_a_fillet_face():
+    """Elliptic sections tangent to both faces with legs of unequal, varying
+    length: neither a rolling ball nor a chamfer (roadmap 6.3.2)."""
+    fit = mio.fit_primitives(section_blend_block(0.5), tolerance=1e-3)
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_fillet"] == report["num_conic_blend"] == 1
+    assert report["num_chamfer"] == 0 and report["num_faceted_faces"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+
+
+@needs_occt
+def test_rounded_box_corners_are_vertex_blends():
+    """A rounded box scaled unequally: twelve conic edge blends, and at each
+    corner a vertex blend tangent to the three meeting there (roadmap 6.3.1)."""
+    fit = mio.fit_primitives(rounded_box(), tolerance=1e-3)
+    out, report = mio.fit_cad(fit, return_report=True)
+    assert report["valid"]
+    assert report["num_plane"] == 6 and report["num_conic_blend"] == 12
+    assert report["num_vertex_blend"] == 8 and report["num_faces"] == 26
+    assert report["num_faceted_faces"] == 0
+    assert report["max_deviation"] <= report["tolerance"]
+    assert {1, 7, 9} == set(out.cell_data["fit_cad:type"][0].tolist())
+    _out, report = mio.fit_cad(fit, fillets=False, return_report=True)
+    assert report["num_vertex_blend"] == report["num_conic_blend"] == 0
 
 
 def test_freeform_options_are_checked_before_the_core():
