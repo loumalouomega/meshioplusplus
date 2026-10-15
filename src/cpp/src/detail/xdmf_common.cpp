@@ -62,7 +62,15 @@ const char* meshio_to_xdmf(const std::string& rT) {
         {"hexahedron", "Hexahedron"},
         {"hexahedron20", "Hexahedron_20"},
         {"hexahedron24", "Hexahedron_24"},
-        {"hexahedron27", "Hexahedron_27"}};
+        {"hexahedron27", "Hexahedron_27"},
+        {"hexahedron64", "Hexahedron_64"},
+        {"hexahedron125", "Hexahedron_125"},
+        {"hexahedron216", "Hexahedron_216"},
+        {"hexahedron343", "Hexahedron_343"},
+        {"hexahedron512", "Hexahedron_512"},
+        {"hexahedron729", "Hexahedron_729"},
+        {"hexahedron1000", "Hexahedron_1000"},
+        {"hexahedron1331", "Hexahedron_1331"}};
     auto it = m.find(rT);
     if (it == m.end())
         throw WriteError("XDMF: unsupported cell type " + rT);
@@ -96,7 +104,23 @@ std::string xdmf_to_meshio(const std::string& rT) {
         {"Hexahedron_24", "hexahedron24"},
         {"Hex_24", "hexahedron24"},
         {"Hexahedron_27", "hexahedron27"},
-        {"Hex_27", "hexahedron27"}};
+        {"Hex_27", "hexahedron27"},
+        {"Hexahedron_64", "hexahedron64"},
+        {"Hex_64", "hexahedron64"},
+        {"Hexahedron_125", "hexahedron125"},
+        {"Hex_125", "hexahedron125"},
+        {"Hexahedron_216", "hexahedron216"},
+        {"Hex_216", "hexahedron216"},
+        {"Hexahedron_343", "hexahedron343"},
+        {"Hex_343", "hexahedron343"},
+        {"Hexahedron_512", "hexahedron512"},
+        {"Hex_512", "hexahedron512"},
+        {"Hexahedron_729", "hexahedron729"},
+        {"Hex_729", "hexahedron729"},
+        {"Hexahedron_1000", "hexahedron1000"},
+        {"Hex_100", "hexahedron1000"},
+        {"Hexahedron_1331", "hexahedron1331"},
+        {"Hex_1331", "hexahedron1331"}};
     auto it = m.find(rT);
     if (it == m.end())
         throw ReadError("XDMF: unsupported topology type " + rT);
@@ -198,7 +222,15 @@ int meshio_to_xdmf_index(const std::string& rT) {
         {"tetra", 0x6},         {"pyramid", 0x7},       {"wedge", 0x8},        {"hexahedron", 0x9},
         {"line3", 0x22},        {"quad9", 0x23},        {"triangle6", 0x24},   {"quad8", 0x25},
         {"tetra10", 0x26},      {"pyramid13", 0x27},    {"wedge15", 0x28},     {"wedge18", 0x29},
-        {"hexahedron20", 0x30}, {"hexahedron24", 0x31}, {"hexahedron27", 0x32}};
+        {"hexahedron20", 0x30}, {"hexahedron24", 0x31}, {"hexahedron27", 0x32},
+        {"hexahedron64", 0x33},
+        {"hexahedron125", 0x34},
+        {"hexahedron216", 0x35},
+        {"hexahedron343", 0x36},
+        {"hexahedron512", 0x37},
+        {"hexahedron729", 0x38},
+        {"hexahedron1000", 0x39},
+        {"hexahedron1331", 0x40}};
     auto it = m.find(rT);
     if (it == m.end())
         throw WriteError("XDMF: cannot mix cell type " + rT);

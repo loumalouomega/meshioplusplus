@@ -157,7 +157,6 @@ What changed since parity last had a section. The reader/writer triage of Septem
 - **3.4.3 CGNS**: face-based polyhedra (`NGON_n`/`NFACE_n`) have no Python path.
 - **3.4.5 EnSight**: `VARIABLE` reading and writing are C++ only.
 - **3.4.7 VTU/VTP**: lzma is Python only; an optional liblzma in the core, as the other [codecs](./codecs.md).
-- **3.4.9 XDMF**: high-order hexahedra are Python only.
 - **3.4.11 Neuroglancer**: Python only; port it, or add it to the *Python-only layers* [non-goal](#non-goals-and-decisions-taken) with its reason.
 - **3.4.13 Probe, per engine.** `test_the_native_registry_agrees` already checks that nothing reads without writing, or writes without reading, in either registry, against the recorded gaps (`READ_ONLY`, `WRITE_ONLY`). What it does not check is the second half: for every format, read and write in *both* the core and Python, against the exemptions this section records. Extend it once the items above name their exemptions.
 

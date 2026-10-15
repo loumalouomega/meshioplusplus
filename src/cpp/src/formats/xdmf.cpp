@@ -92,7 +92,15 @@ std::string xdmf_idx_to_meshio(int idx) {
         {0x6, "tetra"},         {0x7, "pyramid"},       {0x8, "wedge"},        {0x9, "hexahedron"},
         {0x22, "line3"},        {0x23, "quad9"},        {0x24, "triangle6"},   {0x25, "quad8"},
         {0x26, "tetra10"},      {0x27, "pyramid13"},    {0x28, "wedge15"},     {0x29, "wedge18"},
-        {0x30, "hexahedron20"}, {0x31, "hexahedron24"}, {0x32, "hexahedron27"}};
+        {0x30, "hexahedron20"}, {0x31, "hexahedron24"}, {0x32, "hexahedron27"},
+        {0x33, "hexahedron64"},
+        {0x34, "hexahedron125"},
+        {0x35, "hexahedron216"},
+        {0x36, "hexahedron343"},
+        {0x37, "hexahedron512"},
+        {0x38, "hexahedron729"},
+        {0x39, "hexahedron1000"},
+        {0x40, "hexahedron1331"}};
     auto it = m.find(idx);
     if (it == m.end())
         throw ReadError("XDMF: unknown mixed topology index");
@@ -103,7 +111,15 @@ int xdmf_idx_num_nodes(int idx) {
     static const std::unordered_map<int, int> m = {
         {1, 1},     {2, 2},     {4, 3},     {5, 4},     {6, 4},     {7, 5},    {8, 6},
         {9, 8},     {11, 6},    {0x22, 3},  {0x23, 9},  {0x24, 6},  {0x25, 8}, {0x26, 10},
-        {0x27, 13}, {0x28, 15}, {0x29, 18}, {0x30, 20}, {0x31, 24}, {0x32, 27}};
+        {0x27, 13}, {0x28, 15}, {0x29, 18}, {0x30, 20}, {0x31, 24}, {0x32, 27},
+        {0x33, 64},
+        {0x34, 125},
+        {0x35, 216},
+        {0x36, 343},
+        {0x37, 512},
+        {0x38, 729},
+        {0x39, 1000},
+        {0x40, 1331}};
     auto it = m.find(idx);
     if (it == m.end())
         throw ReadError("XDMF: unknown mixed topology index");

@@ -403,3 +403,19 @@ def test_binary_payload_shorter_than_its_dimensions_is_a_read_error(tmp_path, en
     )
     with pytest.raises(meshioplusplus.ReadError):
         _read_with_engine(engine, path)
+
+
+@pytest.mark.parametrize("n", [64, 125, 1000])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_native_high_order_hexahedra(n, mixed, tmp_path):
+    core = pytest.importorskip("meshioplusplus._core")
+    points = np.random.default_rng(n).random((n, 3))
+    cells = [(f"hexahedron{n}", np.arange(n)[None, :])]
+    if mixed:
+        cells = [("hexahedron", np.arange(8)[None, :])] + cells
+    mesh = meshioplusplus.Mesh(points, cells)
+    path = tmp_path / "high_order.xdmf"
+    core.xdmf_write(str(path), mesh, "XML")
+    back = core.xdmf_read(str(path))
+    assert [c.type for c in back.cells] == [c.type for c in mesh.cells]
+    np.testing.assert_array_equal(back.cells[-1].data, mesh.cells[-1].data)
