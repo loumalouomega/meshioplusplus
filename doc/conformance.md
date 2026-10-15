@@ -36,7 +36,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="frd">`frd`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="freefem">`freefem`</span> |  |  | ✓ |  | ✓ |  |  |  | exact | — | — | — | — |
 | <span id="gid">`gid`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | — |
-| <span id="gltf">`gltf`</span> |  |  |  |  |  |  |  |  | write-only | | | | |
+| <span id="gltf">`gltf`</span> | ✓ | ✓ | ✓ | → tri | → tri | → tri | → tri | → tri | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | cell |
 | <span id="gmsh">`gmsh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell |
 | <span id="gmsh22">`gmsh22`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell |
 | <span id="h5m">`h5m`</span> |  | ✓ | ✓ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | — | — | — |
@@ -106,7 +106,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
-- **`gltf`**: Written for viewers; no glTF reader exists yet (roadmap §3.1.1).
+- **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
 - **`lsdyna_binout`**: A binout holds `nodout`'s nodes, not elements: the points come back as a `vertex` cloud, single precision, and only `nodout`'s own vectors (`displacement`...) are `(n, 3)`; per-point scalars come back as float64 (an integer one is stored as `int32`, and the reader widens every per-point array to float64), and the canonical `fd` is not a `binout:` name.
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
@@ -140,7 +140,6 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 |---|---|---|
 | <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
-| <span id="gltf">`gltf`</span> | reader | Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader. |
 | <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
 | <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
 | <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |

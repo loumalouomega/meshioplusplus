@@ -1491,9 +1491,9 @@ step('computeCurvature satisfies Gauss-Bonnet on a closed surface', () => {
     assert.throws(() => m.computeCurvature(skin, true, true, 'nope'));
 });
 
-step('gltf is a write-only format that writes a valid GLB header', () => {
+step('gltf writes a valid GLB header and reads it back', () => {
     const skin = m.extractSurface(cube);
-    // The suffix picks the binary container; there is no reader.
+    // The suffix picks the binary container.
     m.writeMesh('/cube.glb', skin);
     const bytes = m.FS.readFile('/cube.glb');
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -1508,9 +1508,10 @@ step('gltf is a write-only format that writes a valid GLB header', () => {
     const formats = m.availableFormats ? m.availableFormats() : null;
     if (formats) {
         assert.ok(formats.writers.includes('gltf'));
-        assert.ok(!formats.readers.includes('gltf'));
+        assert.ok(formats.readers.includes('gltf'));
     }
-    assert.throws(() => m.readMesh('/cube.glb'));
+    const back = m.readMesh('/cube.glb');
+    assert.ok(back.cells.length >= 1 && back.cells[0].type === 'triangle');
 });
 
 step('computeNormals splits a closed surface at its creases', () => {
@@ -2484,10 +2485,12 @@ step('availableFormats reports what this build can read and write', () => {
     const { readers, writers } = m.availableFormats();
     assert.ok(Array.isArray(readers) && Array.isArray(writers));
     assert.ok(readers.includes('vtu') && writers.includes('vtu'));
-    // The two lists genuinely differ: gltf is write-only. A viewer that
-    // assumes one list would offer broken menu items. svg and tikz read back
-    // the drawings meshio++ writes, so they are in both.
-    assert.ok(writers.includes('gltf') && !readers.includes('gltf'));
+    // The two lists genuinely differ: gmsh22 is write-only (reading goes through
+    // gmsh, which detects the version). A viewer that assumes one list would
+    // offer broken menu items. svg, tikz and gltf read back the files meshio++
+    // writes, so they are in both.
+    assert.ok(writers.includes('gmsh22') && !readers.includes('gmsh22'));
+    assert.ok(readers.includes('gltf') && writers.includes('gltf'));
     assert.ok(readers.includes('svg') && writers.includes('svg'));
     assert.ok(readers.includes('tikz') && writers.includes('tikz'));
     // openfoam was read-only until v9.20.0 -- this step used to assert that.

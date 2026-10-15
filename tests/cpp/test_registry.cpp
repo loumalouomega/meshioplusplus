@@ -84,9 +84,10 @@ TEST(Registry, ElmerIsReadWriteByDirectoryNotExtension) {
     EXPECT_THROW(resolve_format("some/mesh_dir", ""), ReadError);
 }
 
-TEST(Registry, GltfIsWriteOnly) {
+TEST(Registry, GltfReadsAndWrites) {
     EXPECT_EQ(registry_writers().count("gltf"), 1u);
-    EXPECT_EQ(registry_readers().count("gltf"), 0u);
+    EXPECT_EQ(registry_readers().count("gltf"), 1u);
+    EXPECT_EQ(registry_readers_ex().count("gltf"), 1u);
     // The suffix decides the container, so an encoding request is refused by name.
     WriteOptions options;
     options.mEncoding = WriteEncoding::Binary;

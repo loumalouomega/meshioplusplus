@@ -8,6 +8,13 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **Added**: **`gltf` reads.** A general glTF 2.0 reader (roadmap §3.1.1), in the C++ core (`read_gltf`, `GltfReadOptions`) and the Python twin (`gltf/_gltf_read.py`): `.glb` and `.gltf` with external or `data:` buffers; `POINTS`/`LINES`/`LINE_STRIP`/`LINE_LOOP`/`TRIANGLES`/`TRIANGLE_STRIP`/`TRIANGLE_FAN` as `vertex`, `line` and `triangle` cells; every accessor component type, `normalized`, `byteStride`, sparse accessors and `KHR_mesh_quantization` data; node transforms applied into world space, with the writer's root node (up axis, scale, recentring) undone; node names as cell regions, `_NAME` attributes as `point_data`, `COLOR_0` as `gltf:color`, and `weld=True` to merge the vertices the writer splits per smooth fan. Draco and meshopt are refused by name; morph targets, skins, animations and textures are skipped with a warning. `gltf` now reads and writes through every surface (C, Fortran, Julia, R, WASM, both CLIs, MCP); the conformance row reads `→ tri`. See [glTF](doc/formats/gltf.md#reading).
+- **Changed**: `GltfReadOptions` and `read_gltf` are an additive change to `formats/gltf.hpp` (recorded in `doc/abi_reviews.md`).
+- **Fixed**: the pure-Python Gmsh 4.1 writer (`gmsh/_gmsh41.py`) no longer raises `WriteError` for a mixed mesh with no `gmsh:dim_tags`: it gives every block its own entity and, writing `$Entities` over the union of the node and cell-block entities, produces the C++ writer's bytes (roadmap §3.4.12, narrowed to the region-derived physical groups).
+- **Docs**: roadmap §3.1 closes; §3.4.8 is verified (libMesh's compression is native in the core, gzip with zlib and bzip2 with libbz2) and the format table's "Python-only" claim is corrected.
+
 ## v17.0.0 (2026-10-14)
 
 **Major version bump with no functional changes; no ABI change (ABI 29 holds).**

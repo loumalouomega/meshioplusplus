@@ -348,7 +348,8 @@ def _register_conversion(server: FastMCP) -> None:
         points up (auto is y for a flat mesh, else z), and that rotation, scale
         (source unit to metres) and the bounding-box centre recenter subtracts
         all live on the root node, not in the coordinates, so the transform is
-        exactly reversible. Write-only; a valid glTF-Validator pass with zero
+        exactly reversible, and glTF files read back (any glTF 2.0 or GLB
+        file is a valid input to every other tool). A valid glTF-Validator pass with zero
         errors and warnings is part of the test suite."""
         return _guard(
             _tools.tool_export_gltf,

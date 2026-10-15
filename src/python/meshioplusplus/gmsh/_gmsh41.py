@@ -303,13 +303,66 @@ def _read_periodic(f, is_ascii, data_size):
     return periodic
 
 
+def _block_entities(mesh):
+    """One entity per cell block, for a mixed mesh that brings no entity tags.
+
+    The twin of the C++ writer's block-only synthesis: a block's entity tag is
+    the smallest positive tag still free in its dimension, in block order, and a
+    point belongs to the highest-dimension block touching it (ties go to the
+    earlier block). Points no block touches keep ``(0, 0)``. Returns the
+    ``gmsh:dim_tags`` array and the per-block ``gmsh:geometrical`` list.
+    """
+    next_tag = {}
+    entity_tag = []
+    for block in mesh.cells:
+        next_tag[block.dim] = next_tag.get(block.dim, 0) + 1
+        entity_tag.append(next_tag[block.dim])
+    n = len(mesh.points)
+    point_dim = np.full(n, -1, dtype=np.int64)
+    point_tag = np.zeros(n, dtype=np.int64)
+    for block, tag in zip(mesh.cells, entity_tag):
+        data = block.data
+        if isinstance(data, np.ndarray) and data.size:
+            idx = np.unique(data.reshape(-1))
+        else:
+            idx = np.unique([p for row in data for p in row]) if len(data) else []
+        idx = np.asarray(idx, dtype=np.int64)
+        idx = idx[(idx >= 0) & (idx < n)]
+        higher = point_dim[idx] < block.dim
+        point_dim[idx[higher]] = block.dim
+        point_tag[idx[higher]] = tag
+    dim_tags = np.column_stack([np.maximum(point_dim, 0), point_tag])
+    geometrical = [
+        np.full(len(block), tag, dtype=np.int64)
+        for block, tag in zip(mesh.cells, entity_tag)
+    ]
+    return dim_tags, geometrical
+
+
 def write(filename, mesh, float_fmt=".16e", binary=True):
     """Writes msh files, cf.
     <http://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format>.
+
+    A mixed mesh (several cell blocks) with no ``gmsh:dim_tags`` and no
+    ``gmsh:geometrical`` gets one entity per block, as the C++ writer does.
     """
+    mesh_point_data = mesh.point_data
+    mesh_cell_data = mesh.cell_data
+    if (
+        "gmsh:dim_tags" not in mesh.point_data
+        and "gmsh:geometrical" not in mesh.cell_data
+        and len(mesh.cells) > 1
+        and len(mesh.points) > 0
+    ):
+        dim_tags, geometrical = _block_entities(mesh)
+        mesh_point_data = dict(mesh.point_data)
+        mesh_point_data["gmsh:dim_tags"] = dim_tags
+        mesh_cell_data = dict(mesh.cell_data)
+        mesh_cell_data["gmsh:geometrical"] = geometrical
+
     # Filter the point data: gmsh:dim_tags are tags, the rest is actual point data.
     point_data = {}
-    for key, d in mesh.point_data.items():
+    for key, d in mesh_point_data.items():
         if key not in ["gmsh:dim_tags"]:
             point_data[key] = d
 
@@ -317,7 +370,7 @@ def write(filename, mesh, float_fmt=".16e", binary=True):
     # actual cell data.
     tag_data = {}
     cell_data = {}
-    for key, d in mesh.cell_data.items():
+    for key, d in mesh_cell_data.items():
         if key in ["gmsh:physical", "gmsh:geometrical", "cell_tags"]:
             tag_data[key] = d
         else:
@@ -337,9 +390,9 @@ def write(filename, mesh, float_fmt=".16e", binary=True):
             _write_physical_names(fh, mesh.field_data)
 
         _write_entities(
-            fh, mesh.cells, tag_data, mesh.cell_sets, mesh.point_data, binary
+            fh, mesh.cells, tag_data, mesh.cell_sets, mesh_point_data, binary
         )
-        _write_nodes(fh, mesh.points, mesh.cells, mesh.point_data, float_fmt, binary)
+        _write_nodes(fh, mesh.points, mesh.cells, mesh_point_data, float_fmt, binary)
         _write_elements(fh, mesh.cells, tag_data, binary)
         if mesh.gmsh_periodic is not None:
             _write_periodic(fh, mesh.gmsh_periodic, float_fmt, binary)
@@ -393,23 +446,34 @@ def _write_entities(fh, cells, tag_data, cell_sets, point_data, binary):
     #      numPhysicalTags(size_t) physicalTag(int) ...
     #      numBoundngSurfaces(size_t) surfaceTag(int) ...
 
-    # Both nodes and cells have entities, but the cell entities are a subset of
-    # the nodes. The reason is (if the inner workings of Gmsh has been correctly
-    # understood) that node entities are assigned to all
-    # objects necessary to specify the geometry whereas only cells of Physical
-    # objcets (gmsh jargon) are present among the cell entities.
-    # The entities section must therefore be built on the node-entities, if
-    # these are available. If this is not the case, we leave this section blank.
-    # TODO: Should this give a warning?
+    # The entities section is built on the node entities (and the cell-block
+    # entities, below). If the node entities are not available, we leave this
+    # section blank.
     if "gmsh:dim_tags" not in point_data:
         return
 
     fh.write(b"$Entities\n")
 
-    # Array of entity tag (first row) and dimension (second row) per node.
-    # We need to combine the two, since entity tags are reset for each dimension.
-    # Uniquify, so that each row in node_dim_tags represent a unique entity
-    node_dim_tags = np.unique(point_data["gmsh:dim_tags"], axis=0)
+    # Array of dimension and entity tag per cell block.
+    cell_dim_tags = np.empty((len(cells), 2), dtype=int)
+    for ci, cell_block in enumerate(cells):
+        cell_dim_tags[ci] = [
+            cell_block.dim,
+            tag_data["gmsh:geometrical"][ci][0],
+        ]
+
+    # Array of dimension and entity tag per node. Entity tags are reset for each
+    # dimension, so the pair identifies an entity. The entity set is the union of
+    # the node entities and the cell-block entities: a curve whose only nodes
+    # sit on its end points owns none of its own, yet carries line elements (and
+    # so does every block of a mixed mesh whose nodes belong to a higher entity).
+    # Uniquify, so that each row in node_dim_tags represent a unique entity.
+    node_dim_tags = np.unique(
+        np.vstack(
+            [np.asarray(point_data["gmsh:dim_tags"]).reshape(-1, 2), cell_dim_tags]
+        ),
+        axis=0,
+    )
 
     # Write number of entities per dimension
     num_occ = np.bincount(node_dim_tags[:, 0], minlength=4)
@@ -420,15 +484,6 @@ def _write_entities(fh, cells, tag_data, cell_sets, point_data, binary):
         num_occ.astype(c_size_t).tofile(fh)
     else:
         fh.write(f"{num_occ[0]} {num_occ[1]} {num_occ[2]} {num_occ[3]}\n".encode())
-
-    # Array of dimension and entity tag per cell. Will be compared with the
-    # similar not array.
-    cell_dim_tags = np.empty((len(cells), 2), dtype=int)
-    for ci, cell_block in enumerate(cells):
-        cell_dim_tags[ci] = [
-            cell_block.dim,
-            tag_data["gmsh:geometrical"][ci][0],
-        ]
 
     # We will only deal with bounding entities if this information is available
     has_bounding_elements = "gmsh:bounding_entities" in cell_sets
@@ -477,7 +532,7 @@ def _write_entities(fh, cells, tag_data, cell_sets, point_data, binary):
 
         # If there is a corresponding cell block, write physical tags (if any)
         # and bounding entities (if any)
-        if matching_cell_block.size > 0:
+        if matching_cell_block.size > 0 and "gmsh:physical" in tag_data:
             # entity has a physical tag, write this
             # ASSUMPTION: There is a single physical tag for this
             physical_tag = tag_data["gmsh:physical"][matching_cell_block[0]][0]

@@ -232,6 +232,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"su2", meshioplusplus::read_su2},
         // 2-D drawings, read only as the structure meshio++ writes; both take a
         // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
+        {"gltf", [](const std::string& path) { return meshioplusplus::read_gltf(path); }},
         {"svg", [](const std::string& path) { return meshioplusplus::read_svg(path); }},
         {"tikz", [](const std::string& path) { return meshioplusplus::read_tikz(path); }},
         // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
@@ -400,8 +401,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
         // writes); the flat bindings emit them with the fixed default styling
         // (per-call overrides are out of scope for v1, per registry.hpp).
-        // glTF is write-only; .glb/.gltf are told apart by the writer, so the
-        // flat bindings write the container the suffix names with the defaults.
+        // .glb/.gltf are told apart by the writer, so the flat bindings write the
+        // container the suffix names with the defaults.
         {"gltf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); }},
         {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
         {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
@@ -841,6 +842,9 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
         // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
         // meshio++ marker) and the narrowing options (the fill array).
+        {"gltf", [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_gltf(path, GltfReadOptions{}, opts);
+         }},
         {"svg", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
         {"tikz", [](const std::string& path,

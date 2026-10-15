@@ -711,8 +711,24 @@ SPEC: dict[str, dict] = {
         "element exists. Only `frd:group` and `frd:material` come back as cell data.",
     },
     "gltf": {
-        "error": "write-only",
-        "note": "Written for viewers; no glTF reader exists yet (roadmap §3.1.1).",
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "as triangle",
+            "tetra": "as triangle",
+            "hexahedron": "as triangle",
+            "wedge": "as triangle",
+            "pyramid": "as triangle",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "A surface export: volume and 2-D cells come back as their triangulated "
+        "skin, positions are `float32`, and `weld=True` merges the vertices split per "
+        "smooth fan.",
     },
     "gmsh": {
         "cells": {
@@ -1683,12 +1699,10 @@ READ_ONLY = {
     ),
 }
 
-# The mirror: formats that write without reading. `svg` and `tikz` left it when
-# their readers landed (they are 2-D drawings, read back as planar); `step` is
+# The mirror: formats that write without reading. `svg`, `tikz` and `gltf` left it
+# when their readers landed (`svg`/`tikz` are 2-D drawings, read back as planar); `step` is
 # an exemption, like `ansys_rst_cyclic` above, not a gap.
-WRITE_ONLY = {
-    "gltf": "Tracked gap, roadmap §3.1.1: no reader yet. A general glTF 2.0 reader.",
-}
+WRITE_ONLY = {}
 
 
 def read_only_drift(readable, writable, declared=None):

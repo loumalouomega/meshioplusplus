@@ -1,17 +1,17 @@
 # glTF (`.glb`, `.gltf`)
 
-[glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) output — a **write-only**, web-native skin export: the browser viewer, three.js, Blender, model viewers and dashboards load it directly, with no meshio++ in the loop. The **surface** of the mesh is exported; `.glb` writes the single-file binary container and `.gltf` writes JSON with a `.bin` sidecar beside it (the debuggable alternative).
+[glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) output and input — a web-native skin export, with a general reader for the way back: the browser viewer, three.js, Blender, model viewers and dashboards load it directly, with no meshio++ in the loop. The **surface** of the mesh is exported; `.glb` writes the single-file binary container and `.gltf` writes JSON with a `.bin` sidecar beside it (the debuggable alternative).
 
 | | |
 |---|---|
 | **Format name** | `gltf` |
 | **Extensions** | `.glb`, `.gltf` |
-| **Read / Write** | — / ✓ |
+| **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 
 ## Reading & writing
 
-There is no reader — `register_format` is called with `read=None`, and reading glTF is out of scope. Full write signature:
+Reading is described under [Reading](#reading). Full write signature:
 
 ```python
 import meshioplusplus
@@ -45,6 +45,19 @@ meshioplusplus.gltf.write(
 - **`by_region`** — one node per cell region (default) or a single node named `mesh`.
 
 `meshioplusplus convert in.vtu out.glb` writes the defaults. The colour flags of `convert` (`--color-by`, `--component`, `--cmap`, `--vmin`, `--vmax`, `--nan-color`) apply to glTF output too, plus `--split-angle` and `--up-axis`; `--colorbar` is svg/tikz only. The MCP server exposes every option as `export_gltf`. Flat bindings retain the default `mio_write`/`writeMesh` path and also expose every `GltfWriteOptions` field through `mio_gltf_opts_init` + `mio_write_gltf` (C), `m%write_gltf(..., options=...)` (Fortran), `write_gltf` (Julia), `mio_write_gltf` (R) and `writeGltf` (WASM). Components are 0-based in C/WASM and 1-based in Fortran/Julia/R; unset selects magnitude. Unset range endpoints select the native automatic range.
+
+## Reading
+
+`meshioplusplus.read("model.glb")` is a general glTF 2.0 reader, not one limited to meshio++'s own output (C++ core and a Python twin, `gltf/_gltf_read.py`). Signature: `meshioplusplus.gltf.read(filename, points_only=False, arrays=None, weld=False)`.
+
+- **Containers**: `.glb` (the JSON chunk and the BIN chunk) and `.gltf` with external buffers (a relative path, percent-decoded, never leaving the file's directory) or `data:` base64 URIs.
+- **Primitives**: `POINTS` become `vertex` cells, `LINES`, `LINE_STRIP` and `LINE_LOOP` `line` cells, `TRIANGLES`, `TRIANGLE_STRIP` and `TRIANGLE_FAN` `triangle` cells, indexed or not (degenerate strip and fan joins are dropped). Blocks come back in the order `triangle`, `line`, `vertex`; every primitive keeps its own vertices unless `weld=True`.
+- **Accessors**: every `componentType`, `normalized`, `byteStride`, sparse accessors, and `KHR_mesh_quantization` data (integer, normalized positions with the scale on the node).
+- **Transforms**: node TRS or `matrix`, applied down the hierarchy into world space (glTF's Y-up). The root node `meshio++` as this writer emits it (up-axis rotation, uniform scale, recentring translation) is undone, so a file written from Z-up data reads back Z-up, within `float32` precision. A node reached twice is an error.
+- **Structure**: a node name becomes a cell region (`unassigned` and `mesh`, the writer's names for "no region", give none); the `_NAME` attributes become `point_data` under the accessor's `name` (or the attribute name without its underscore); `COLOR_0` becomes `gltf:color`; the `NORMAL` of a `POINTS` primitive becomes `normals` (the normals of triangles are derived, so they are not kept). A field present on only some primitives is `NaN` elsewhere.
+- **`weld=True`** merges vertices with identical world positions across the file, undoing the per-fan split of the writer's normals; the first vertex's attributes win.
+- **Refused**: Draco (`KHR_draco_mesh_compression`) and meshopt (`EXT_meshopt_compression`) by name. **Skipped with one warning**: morph targets, skins, animations and textures (materials are ignored silently). Malformed input — a bad index, an accessor past its buffer view, a truncated GLB, invalid JSON — is a `ReadError`.
+- Volume cells came out of the writer as their skin, so the round trip is `→ tri` in the [conformance](../conformance.md#gltf) matrix.
 
 ## What is exported
 
@@ -106,4 +119,4 @@ The output passes the Khronos [glTF-Validator](https://github.com/KhronosGroup/g
 
 ## Not supported
 
-Reading glTF; Draco or meshopt compression; textures and UVs; transient results as morph targets (a plausible follow-up); `EXT_structural_metadata`, the principled carrier of typed fields, if a consumer asks; point and side regions.
+Draco or meshopt compression (the reader refuses them by name); textures and UVs; transient results as morph targets (a plausible follow-up); `EXT_structural_metadata`, the principled carrier of typed fields, if a consumer asks; point and side regions.

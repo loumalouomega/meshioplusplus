@@ -191,9 +191,9 @@ def test_gltf_container_writes_a_sidecar(tmp_path):
     read_glb(forced)
 
 
-def test_the_format_is_write_only():
+def test_the_format_reads_and_writes():
     formats = mio.formats()
-    assert "gltf" in formats["writable"] and "gltf" not in formats["readable"]
+    assert "gltf" in formats["writable"] and "gltf" in formats["readable"]
     assert formats["extensions"][".glb"] == ["gltf"]
     assert formats["extensions"][".gltf"] == ["gltf"]
     with pytest.raises(Exception):
