@@ -23,7 +23,9 @@ def run_git_command(args: List[str]) -> str:
 
 
 def get_local_branches() -> Set[str]:
-    output = run_git_command(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+    output = run_git_command(
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads"]
+    )
     return {line.strip() for line in output.splitlines() if line.strip()}
 
 
