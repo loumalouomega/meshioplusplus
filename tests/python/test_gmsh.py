@@ -1031,8 +1031,8 @@ def test_malformed_time_value_raises_read_error_not_value_error(tmp_path):
 def test_untagged_region_gets_an_allocated_tag_on_write(tmp_path):
     """Roadmap §1 tier B3 (v11.5.0): a Cell region with no gmsh tag of its
     own (as Abaqus/MED/MDPA produce) gets a freshly allocated one instead of
-    being dropped from $PhysicalNames/gmsh:physical. C++-core only -- the
-    pure-Python fallback writer keeps its existing field_data-only behaviour.
+    being dropped from $PhysicalNames/gmsh:physical. Both engines
+    do this (roadmap 3.4.4).
     """
     mesh = meshioplusplus.Mesh(
         [
@@ -1204,3 +1204,38 @@ def test_gmsh41_python_writes_a_mixed_mesh_like_the_core(binary, tmp_path):
         ("quad", 1),
         ("line", 1),
     ]
+
+
+@pytest.mark.parametrize("version", ["2.2", "4.1"])
+def test_python_writer_derives_physical_groups_from_regions(tmp_path, version):
+    """Roadmap 3.4.4: the Python writer allocates (dim, tag) pairs for Cell
+    regions exactly as the C++ writer does, so the two files read back alike."""
+    from meshioplusplus.gmsh.main import write as py_write
+
+    mesh = meshioplusplus.Mesh(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0]],
+        [
+            ("triangle", [[0, 1, 2], [0, 2, 3]]),
+            ("line", [[1, 4], [4, 2]]),
+        ],
+        regions=[
+            meshioplusplus.Region("plate", "cell", [0, 1]),
+            meshioplusplus.Region("edge", "cell", [2, 3]),
+            meshioplusplus.Region("tagged", "cell", [3], dim=1, tag=9),
+        ],
+    )
+    native = tmp_path / "native.msh"
+    twin = tmp_path / "twin.msh"
+    from meshioplusplus.gmsh import write as hybrid_write
+
+    hybrid_write(native, mesh, fmt_version=version)
+    py_write(twin, mesh, fmt_version=version)
+    a, b = meshioplusplus.read(native), meshioplusplus.read(twin)
+    key = lambda m: sorted(  # noqa: E731
+        (r.name, r.dim, r.tag, list(r.entries)) for r in m.regions if r.kind == "cell"
+    )
+    assert key(a) == key(b)
+    assert {n for n, *_ in key(b)} >= {"plate", "edge"}
+    assert {k: list(v) for k, v in a.field_data.items()} == {
+        k: list(v) for k, v in b.field_data.items()
+    }

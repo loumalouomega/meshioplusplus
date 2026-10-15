@@ -12,6 +12,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 - **PLY**: the C++ reader now reads scalar face properties beyond `vertex_indices` (ASCII and binary) as per-block `cell_data`, so they no longer force the Python fallback (roadmap 3.4.6).
 - **Nastran**: the C++ reader sets `points_id` / `cells_id` like the Python reader (roadmap 3.4.10).
+- **Gmsh**: the Python writer derives `$PhysicalNames` and per-cell physical tags from `Cell` regions exactly as the C++ writer does (roadmap 3.4.4, 3.4.12).
 
 ## v17.2.0 (2026-10-15)
 
