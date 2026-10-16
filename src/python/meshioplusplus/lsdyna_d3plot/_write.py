@@ -41,7 +41,7 @@ _TITLE = b"meshio++"
 _VERSION = 971.0
 _END_MARK = -999999.0
 _DEFAULT_FILE_BYTES = 1 << 30
-_SOLID, _BEAM, _SHELL = range(3)
+_SOLID, _BEAM, _SHELL, _SPH = range(4)
 _FAMILY = {
     "hexahedron": _SOLID,
     "wedge": _SOLID,
@@ -54,6 +54,7 @@ _FAMILY = {
     "triangle": _SHELL,
     "quad": _SHELL,
     "quad8": _SHELL,
+    "vertex": _SPH,
 }
 # The default components of the element variables; 0 takes them from the layout
 # array.
@@ -80,7 +81,32 @@ _COMPS = {
     "beam_axial_stress": 1,
     "beam_shear_stress": 2,
     "beam_axial_strain": 1,
+    "sph_radius": 1,
+    "sph_pressure": 1,
+    "density": 1,
+    "sph_neighbors": 1,
+    "strain_rate": 6,
+    "mass": 1,
 }
+# SPH particle variables in state order: (name, flag index, components); the
+# strain flag is signed in the file and counts the strain rate too.
+_SPH_VARS = (
+    ("sph_radius", 1, 1),
+    ("sph_pressure", 2, 1),
+    ("stress", 3, 6),
+    ("effective_plastic_strain", 4, 1),
+    ("density", 5, 1),
+    ("internal_energy", 6, 1),
+    ("sph_neighbors", 7, 1),
+)
+_RIGID_FIELDS = (
+    ("coordinates", 3),
+    ("rotation", 9),
+    ("velocity", 3),
+    ("rotational_velocity", 3),
+    ("acceleration", 3),
+    ("rotational_acceleration", 3),
+)
 _BEAM_CORE = (
     ("beam_axial_force", 1),
     ("beam_shear_force", 2),
@@ -209,22 +235,29 @@ class _Model:
             else np.arange(1, n + 1, dtype=np.int64)
         )
         # the cells of each family: (block, first row in the block, count)
-        self.ranges = [[], [], []]
-        self.rows = [[], [], []]  # per family: node lists in file order
+        self.ranges = [[], [], [], []]
+        self.rows = [[], [], [], []]  # per family: node lists in file order
         self.extra = []  # tetra10: the two extra nodes per solid
         self.extra20 = []  # hexahedron20: (solid, the 12 edge nodes)
         self.extra27 = []  # hexahedron27: (solid, nodes 8 to 26)
         self.extra8 = []  # quad8: (shell, the 4 midside nodes)
-        self.cell_eid = [[], [], []]
+        self.cell_eid = [[], [], [], []]
         part_of_cell = self._part_assignment(mesh)
         skipped = {}
         base = 0
         eid_arrays = mesh.cell_data.get("lsdyna:eid")
         part_arrays = mesh.cell_data.get("lsdyna:part")
-        self.parts_of = [[], [], []]
+        self.parts_of = [[], [], [], []]
+        airbag = 0
         for b, block in enumerate(mesh.cells):
             data = np.asarray(block.data, dtype=np.int64)
             family = _FAMILY.get(block.type)
+            if family == _SPH and len(data):
+                # an airbag particle reads back on a point with no coordinates yet
+                if len(data) and np.isnan(self.points[data[:, 0]]).any():
+                    airbag += len(data)
+                    base += len(data)
+                    continue
             if family is None:
                 if len(data):
                     skipped[block.type] = skipped.get(block.type, 0) + len(data)
@@ -281,15 +314,31 @@ class _Model:
             base += len(data)
         for ctype, count in skipped.items():
             warn(f"LS-DYNA d3plot: {count} '{ctype}' cell(s) are not written")
+        if airbag:
+            warn(f"LS-DYNA d3plot: {airbag} airbag particle(s) are not written")
         self.counts = [len(r) for r in self.rows]
         if not any(self.counts):
             raise WriteError(
                 "LS-DYNA d3plot: the mesh has no solid, beam or shell cells"
             )
-        # every part, sorted; each family's number of distinct parts
-        self.part_ids = sorted({p for fam in self.parts_of for p in fam})
+        # rigid bodies: their parts (user ids) from the reader's field data
+        rigid = mesh.field_data.get("lsdyna:rigid_body_part")
+        self.rigid_parts = (
+            [int(v) for v in np.asarray(rigid).reshape(-1)] if rigid is not None else []
+        )
+        # every part, sorted; each family's number of distinct parts (SPH
+        # particles count with the solids, as LS-DYNA counts them)
+        self.part_ids = sorted(
+            {p for fam in self.parts_of for p in fam} | set(self.rigid_parts)
+        )
         self.part_index = {p: i + 1 for i, p in enumerate(self.part_ids)}
-        self.nummat = [len(set(fam)) for fam in self.parts_of]
+        self.nummat = [
+            len(set(self.parts_of[_SOLID]) | set(self.parts_of[_SPH])),
+            len(set(self.parts_of[_BEAM])),
+            len(set(self.parts_of[_SHELL])),
+        ]
+        self.nrigid = len(self.rigid_parts)
+        self.nparts = sum(self.nummat) + self.nrigid
         self.titles = self._titles
         self.signature = (
             n,
@@ -298,6 +347,7 @@ class _Model:
             self.extra20,
             self.extra27,
             self.extra8,
+            self.rigid_parts,
         )
 
     def _part_assignment(self, mesh):
@@ -350,11 +400,12 @@ class _Plan:
         self.model = model
         self.words_ = _Words(double)
         # what the arrays of all steps hold: family -> name -> [points, comps]
-        seen = [{}, {}, {}]
+        seen = [{}, {}, {}, {}]
         node = {}
         self.alive = self.alive_nodes = False
         self.globals_ = self.part_globals = False
-        nparts = sum(model.nummat)
+        self.part_count = 0
+        nparts = model.nparts
         for mesh in meshes:
             for name in _NODAL_NAMES:
                 if name in mesh.point_data:
@@ -365,17 +416,24 @@ class _Plan:
             self.globals_ = self.globals_ or any(
                 k in mesh.field_data for k, _ in _GLOBALS
             )
-            if all(
-                k in mesh.field_data
-                and np.asarray(mesh.field_data[k]).size == w * nparts
-                for k, w in _PART_GLOBALS
+            # the per-part arrays may cover more parts than the mesh uses
+            count = np.asarray(mesh.field_data.get(_PART_GLOBALS[0][0], [])).size
+            if (
+                count >= nparts
+                and not self.part_globals
+                and all(
+                    k in mesh.field_data
+                    and np.asarray(mesh.field_data[k]).size == w * count
+                    for k, w in _PART_GLOBALS
+                )
             ):
                 self.part_globals = True
+                self.part_count = count
             for name in _COMPS:
                 arrays = _cell_array(mesh, name)
                 if arrays is None:
                     continue
-                for family in (_SOLID, _BEAM, _SHELL):
+                for family in (_SOLID, _BEAM, _SHELL, _SPH):
                     for b, _, _ in model.ranges[family]:
                         a = arrays[b]
                         if a is None:
@@ -392,9 +450,25 @@ class _Plan:
                         entry[1] = max(entry[1], comps)
         self.node = node
         self.seen = seen
+        self.rigid = {}  # reader name -> components, over all steps
+        if model.nrigid:
+            for mesh in meshes:
+                for name, width in _RIGID_FIELDS:
+                    value = mesh.field_data.get("lsdyna:rigid_body_" + name)
+                    if (
+                        value is not None
+                        and np.asarray(value).size == model.nrigid * width
+                    ):
+                        self.rigid[name] = width
         self.globals_ = self.globals_ or self.part_globals
+        # the header's material counts add up to the parts the arrays cover
+        self.nummat = list(model.nummat)
+        if self.part_globals:
+            self.nummat[0] += self.part_count - nparts
         self.nglbv = (
-            (6 + (7 * nparts if self.part_globals else 0)) if self.globals_ else 0
+            (6 + (7 * self.part_count if self.part_globals else 0))
+            if self.globals_
+            else 0
         )
         self._element_layouts()
         self._nodal_flags()
@@ -499,6 +573,23 @@ class _Plan:
                 self.beam = True
                 self.beam_layers = max(layer_points) if layer_points else 0
                 self.neipb = hist[1]
+        # SPH particles: the flag block and one row of values per particle
+        self.sph_flags = [0] * 11
+        self.nsph_vars = 0
+        if m.counts[_SPH]:
+            sph_seen = seen[_SPH]
+            flags = [11] + [0] * 10
+            for name, index, comps in _SPH_VARS:
+                if name in sph_seen:
+                    flags[index] = comps
+            if "strain_rate" in sph_seen:
+                flags[8] = 12
+            elif "strain" in sph_seen:
+                flags[8] = 6
+            flags[9] = 1 if "mass" in sph_seen else 0
+            flags[10] = sph_seen.get("history_variables", [0, 0])[1]
+            self.sph_flags = flags
+            self.nsph_vars = 1 + sum(flags[1:8]) + abs(flags[8]) + flags[9] + flags[10]
         self.nv3d = solid.width() if m.counts[_SOLID] else 0
         self.nv2d = shell.width() if m.counts[_SHELL] else 0
         self.nv1d = (
@@ -546,9 +637,10 @@ class _Plan:
         n += m.counts[_SOLID] * (self.nv3d + self.nt3d)
         n += m.counts[_BEAM] * self.nv1d + m.counts[_SHELL] * self.nv2d
         if self.alive:
-            n += sum(m.counts)
+            n += sum(m.counts[:3])
         elif self.alive_nodes:
             n += m.n
+        n += m.counts[_SPH] * self.nsph_vars + m.nrigid * 24
         return n
 
     def maxint(self):
@@ -582,7 +674,7 @@ def _geometry(plan):
     words = [0] * (64 + plan.extra_words())
     fields = {
         11: 1,
-        15: 4,
+        15: 8 if m.nrigid else 4,
         16: m.n,
         17: 6,
         18: plan.nglbv,
@@ -591,7 +683,7 @@ def _geometry(plan):
         21: int(plan.vel),
         22: int(plan.acc),
         23: -m.counts[_SOLID] if m.extra else m.counts[_SOLID],
-        24: m.nummat[_SOLID],
+        24: plan.nummat[_SOLID],
         27: plan.nv3d,
         28: m.counts[_BEAM],
         29: m.nummat[_BEAM],
@@ -602,6 +694,8 @@ def _geometry(plan):
         34: plan.neiph,
         35: plan.neips,
         36: plan.maxint(),
+        37: m.counts[_SPH],
+        38: 1 if m.counts[_SPH] else 0,
         43: 1000 if plan.stress else 0,
         44: 1000 if plan.pstrain else 0,
         45: 1000 if plan.forces else 0,
@@ -624,6 +718,8 @@ def _geometry(plan):
     title = _TITLE + b" " * (10 * w.ws - len(_TITLE))
     out[: 10 * w.ws] = title
     out[14 * w.ws : 15 * w.ws] = w.f([_VERSION])
+    if m.counts[_SPH]:
+        out += w.i(plan.sph_flags)
     out += w.f(m.points.reshape(-1))
     solids = np.zeros((m.counts[_SOLID], 9), dtype=np.int64)
     for e, nodes in enumerate(m.rows[_SOLID]):
@@ -656,12 +752,21 @@ def _geometry(plan):
         [-17, solids_at, beams_at, shells_at, parts_at]
         + [m.n, m.counts[_SOLID], m.counts[_BEAM], m.counts[_SHELL], 0]
     )
-    out += w.i([parts_at, parts_at + nparts, parts_at + 2 * nparts, nparts, 0, nparts])
+    out += w.i(
+        [parts_at, parts_at + nparts, parts_at + 2 * nparts, nparts, m.nrigid, nparts]
+    )
     out += w.i(m.nid)
     for family in (_SOLID, _BEAM, _SHELL):
         out += w.i(m.cell_eid[family])
     # the parts' ids, then (as LS-DYNA writes them) in defined order and cross-referenced
     out += w.i(m.part_ids) * 2 + w.i(range(1, nparts + 1))
+    # rigid bodies (part, no node lists), then the SPH particles' (node, part)
+    if m.nrigid:
+        out += w.i([m.nrigid])
+        for part in m.rigid_parts:
+            out += w.i([m.part_index[part], 0, 0])
+    for e, nodes in enumerate(m.rows[_SPH]):
+        out += w.i([nodes[0] + 1, m.part_index[m.parts_of[_SPH][e]]])
     # the higher-order tables: eight-node shells, then 20- and 27-node solids
     for e, nodes in m.extra8:
         out += w.i([e + 1] + [v + 1 for v in nodes])
@@ -756,6 +861,48 @@ def _beam_matrix(plan, mesh):
     return out
 
 
+def _sph_matrix(plan, mesh):
+    """The SPH particles' rows: the material (negative once deleted), then the
+    variables the flag block names."""
+    m = plan.model
+    flags = plan.sph_flags
+    out = np.full((m.counts[_SPH], plan.nsph_vars), np.nan)
+    out[:, 0] = [m.part_index[p] for p in m.parts_of[_SPH]]
+    alive = mesh.cell_data.get("lsdyna:alive")
+    if alive is not None:
+        for b, first, count in m.ranges[_SPH]:
+            if b < len(alive) and count:
+                dead = np.asarray(alive[b]).reshape(-1) == 0
+                out[first : first + count, 0] *= np.where(dead, -1.0, 1.0)
+    strain = abs(flags[8])
+    columns = [
+        ("sph_radius", flags[1]),
+        ("sph_pressure", flags[2]),
+        ("stress", flags[3]),
+        ("effective_plastic_strain", flags[4]),
+        ("density", flags[5]),
+        ("internal_energy", flags[6]),
+        ("sph_neighbors", flags[7]),
+        ("strain", min(strain, 6)),
+        ("strain_rate", strain - min(strain, 6)),
+        ("mass", flags[9]),
+        ("history_variables", flags[10]),
+    ]
+    at = 1
+    for name, width in columns:
+        if width > 0:
+            arrays = _cell_array(mesh, name)
+            if arrays is not None:
+                for b, first, count in m.ranges[_SPH]:
+                    a = arrays[b]
+                    if a is None or count == 0:
+                        continue
+                    k = min(a.shape[2], width)
+                    out[first : first + count, at : at + k] = a[:, 0, :k]
+        at += max(width, 0)
+    return out
+
+
 def _state(plan, mesh, time):
     m, w = plan.model, plan.words_
     n = m.n
@@ -770,7 +917,7 @@ def _state(plan, mesh, time):
                 g[at : at + len(vals)] = vals
             at += width
         if plan.part_globals:
-            nparts = sum(m.nummat)
+            nparts = plan.part_count
             for name, width in _PART_GLOBALS:
                 v = mesh.field_data.get(name)
                 if v is not None and np.asarray(v).size == width * nparts:
@@ -831,6 +978,19 @@ def _state(plan, mesh, time):
         value = mesh.point_data.get("lsdyna:alive")
         flags = np.ones(n) if value is None else (np.asarray(value).reshape(-1) != 0)
         pieces.append(w.f(flags))
+    if m.counts[_SPH]:
+        pieces.append(w.f(_sph_matrix(plan, mesh)))
+    if m.nrigid:
+        rigid = np.full((m.nrigid, 24), np.nan)
+        at = 0
+        for name, width in _RIGID_FIELDS:
+            value = mesh.field_data.get("lsdyna:rigid_body_" + name)
+            if value is not None and np.asarray(value).size == m.nrigid * width:
+                rigid[:, at : at + width] = np.asarray(value, dtype=np.float64).reshape(
+                    m.nrigid, width
+                )
+            at += width
+        pieces.append(w.f(rigid))
     return b"".join(pieces)
 
 

@@ -1867,7 +1867,7 @@ namespace {
 
 constexpr std::size_t kD3wDefaultFileBytes = std::size_t{1} << 30;
 constexpr double kD3wVersion = 971.0;
-enum D3wFamily : int { kD3wSolid = 0, kD3wBeam = 1, kD3wShell = 2 };
+enum D3wFamily : int { kD3wSolid = 0, kD3wBeam = 1, kD3wShell = 2, kD3wSph = 3 };
 
 [[noreturn]] void d3w_fail(const std::string& rMessage) {
     throw WriteError("LS-DYNA d3plot: " + rMessage);
@@ -1906,6 +1906,8 @@ int d3w_family(std::string_view Type) {
         return kD3wBeam;
     if (Type == "triangle" || Type == "quad" || Type == "quad8")
         return kD3wShell;
+    if (Type == "vertex")
+        return kD3wSph;
     return -1;
 }
 
@@ -1940,6 +1942,12 @@ int d3w_default_comps(const std::string& rName) {
         {"beam_axial_stress", 1},
         {"beam_shear_stress", 2},
         {"beam_axial_strain", 1},
+        {"sph_radius", 1},
+        {"sph_pressure", 1},
+        {"density", 1},
+        {"sph_neighbors", 1},
+        {"strain_rate", 6},
+        {"mass", 1},
     };
     const auto it = table.find(rName);
     return it == table.end() ? 0 : it->second;
@@ -2029,6 +2037,7 @@ public:
         const std::vector<std::int64_t> part_of_cell = PartAssignment(rMesh, ncells);
 
         std::map<std::string, std::size_t> skipped;
+        std::size_t airbag = 0;
         std::size_t base = 0;
         const bool has_eid = rMesh.HasCellData("lsdyna:eid");
         const bool has_part = rMesh.HasCellData("lsdyna:part");
@@ -2048,6 +2057,19 @@ public:
             for (std::size_t i = 0; i < count * k; ++i)
                 if (conn.Data()[i] < 0 || static_cast<std::size_t>(conn.Data()[i]) >= mN)
                     d3w_fail("a '" + type + "' cell refers to a point the mesh does not have");
+            if (family == kD3wSph) {
+                // an airbag particle reads back on a point with no coordinates yet
+                bool airbag_block = false;
+                for (std::size_t i = 0; i < count && !airbag_block; ++i)
+                    for (std::size_t c = 0; c < 3; ++c)
+                        airbag_block = airbag_block ||
+                                       std::isnan(mPoints[static_cast<std::size_t>(conn.Data()[i]) * 3 + c]);
+                if (airbag_block) {
+                    airbag += count;
+                    base += count;
+                    continue;
+                }
+            }
             const std::size_t first = mRows[family].size();
             for (std::size_t r = 0; r < count; ++r) {
                 const std::int64_t* row = conn.Data() + r * k;
@@ -2089,21 +2111,43 @@ public:
         }
         for (const auto& [type, count] : skipped)
             log::warn("LS-DYNA d3plot: {} '{}' cell(s) are not written", count, type);
-        for (int f = 0; f < 3; ++f)
+        if (airbag)
+            log::warn("LS-DYNA d3plot: {} airbag particle(s) are not written", airbag);
+        for (int f = 0; f < 4; ++f)
             mCounts[f] = mRows[f].size();
-        if (!mCounts[0] && !mCounts[1] && !mCounts[2])
-            d3w_fail("the mesh has no solid, beam or shell cells");
-        std::set<std::int64_t> all;
-        for (int f = 0; f < 3; ++f) {
-            const std::set<std::int64_t> own(mPartsOf[f].begin(), mPartsOf[f].end());
-            mNummat[f] = own.size();
-            all.insert(own.begin(), own.end());
+        if (!mCounts[0] && !mCounts[1] && !mCounts[2] && !mCounts[3])
+            d3w_fail("the mesh has no solid, beam, shell or SPH cells");
+        // rigid bodies: their parts (user ids) from the reader's field data
+        if (rMesh.HasFieldData("lsdyna:rigid_body_part")) {
+            const NDArray& rp = rMesh.FieldData("lsdyna:rigid_body_part");
+            for (std::size_t i = 0; i < rp.Size(); ++i)
+                mRigidParts.push_back(detail::read_int(rp, i));
         }
+        mNrigid = mRigidParts.size();
+        // every part, sorted; each family's number of distinct parts (SPH particles count with
+        // the solids, as LS-DYNA counts them)
+        std::set<std::int64_t> all(mRigidParts.begin(), mRigidParts.end());
+        for (int f = 0; f < 4; ++f)
+            all.insert(mPartsOf[f].begin(), mPartsOf[f].end());
+        {
+            std::set<std::int64_t> solid_sph(mPartsOf[kD3wSolid].begin(), mPartsOf[kD3wSolid].end());
+            solid_sph.insert(mPartsOf[kD3wSph].begin(), mPartsOf[kD3wSph].end());
+            mNummat[kD3wSolid] = solid_sph.size();
+            mNummat[kD3wBeam] = std::set<std::int64_t>(mPartsOf[kD3wBeam].begin(),
+                                                       mPartsOf[kD3wBeam].end())
+                                    .size();
+            mNummat[kD3wShell] = std::set<std::int64_t>(mPartsOf[kD3wShell].begin(),
+                                                        mPartsOf[kD3wShell].end())
+                                     .size();
+        }
+        mNparts = mNummat[0] + mNummat[1] + mNummat[2] + mNrigid;
         mPartIds.assign(all.begin(), all.end());
         for (std::size_t i = 0; i < mPartIds.size(); ++i)
             mPartIndex[mPartIds[i]] = static_cast<std::int64_t>(i) + 1;
         mSignature = std::to_string(mN);
-        for (int f = 0; f < 3; ++f) {
+        for (const std::int64_t part : mRigidParts)
+            mSignature += "r" + std::to_string(part);
+        for (int f = 0; f < 4; ++f) {
             mSignature += "|" + std::to_string(f);
             for (const auto& row : mRows[f]) {
                 mSignature += ";";
@@ -2127,13 +2171,16 @@ public:
     std::size_t mN = 0;
     std::vector<double> mPoints;
     std::vector<std::int64_t> mNid;
-    std::array<std::vector<D3wRange>, 3> mRanges;
-    std::array<std::vector<std::vector<std::int64_t>>, 3> mRows;
+    std::array<std::vector<D3wRange>, 4> mRanges;
+    std::array<std::vector<std::vector<std::int64_t>>, 4> mRows;
     std::vector<std::pair<std::size_t, std::array<std::int64_t, 2>>> mExtra;
     /// hexahedron20 / hexahedron27 / quad8: the element and its nodes past the corners.
     std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mExtra20, mExtra27, mExtra8;
-    std::array<std::vector<std::int64_t>, 3> mPartsOf, mEid;
-    std::array<std::size_t, 3> mCounts{}, mNummat{};
+    std::array<std::vector<std::int64_t>, 4> mPartsOf, mEid;
+    std::array<std::size_t, 4> mCounts{};
+    std::array<std::size_t, 3> mNummat{};
+    std::vector<std::int64_t> mRigidParts;  ///< each rigid body's part (user id)
+    std::size_t mNrigid = 0, mNparts = 0;
     std::vector<std::int64_t> mPartIds;
     std::map<std::int64_t, std::int64_t> mPartIndex;
     std::map<std::int64_t, std::string> mTitles;
@@ -2253,16 +2300,36 @@ const std::vector<std::pair<const char*, std::size_t>>& d3w_shell_extra() {
     return v;
 }
 
+const std::vector<std::pair<const char*, std::size_t>>& d3w_rigid_fields() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"coordinates", 3},        {"rotation", 9},     {"velocity", 3},
+        {"rotational_velocity", 3}, {"acceleration", 3}, {"rotational_acceleration", 3}};
+    return v;
+}
+
+/// SPH particle variables in state order: name, flag index, components.
+struct D3wSphVar {
+    const char* mName;
+    std::size_t mFlag, mComps;
+};
+const std::vector<D3wSphVar>& d3w_sph_vars() {
+    static const std::vector<D3wSphVar> v = {
+        {"sph_radius", 1, 1}, {"sph_pressure", 2, 1},   {"stress", 3, 6},
+        {"effective_plastic_strain", 4, 1}, {"density", 5, 1}, {"internal_energy", 6, 1},
+        {"sph_neighbors", 7, 1}};
+    return v;
+}
+
 /// The header: what the states of all steps need.
 class D3wPlan {
 public:
     D3wPlan(const D3wModel& rModel, const std::vector<const Mesh*>& rMeshes, bool Double)
         : mModel(rModel), mWs(Double ? 8 : 4) {
-        const std::size_t nparts = rModel.mNummat[0] + rModel.mNummat[1] + rModel.mNummat[2];
+        const std::size_t nparts = rModel.mNparts;
         static const char* kNodal[] = {"displacement", "velocity", "acceleration", "temperature",
                                        "heat_flux", "mass_scaling", "temperature_gradient",
                                        "residual_forces", "residual_moments"};
-        std::array<D3wSeen, 3> seen;
+        std::array<D3wSeen, 4> seen;
         for (const Mesh* pMesh : rMeshes) {
             const Mesh& mesh = *pMesh;
             for (const char* name : kNodal)
@@ -2275,17 +2342,33 @@ public:
             mAliveNodes = mAliveNodes || mesh.HasPointData("lsdyna:alive");
             for (const auto& g : d3w_globals())
                 mGlobals = mGlobals || mesh.HasFieldData(g.first);
-            bool all = true;
-            for (const auto& [name, width] : d3w_part_globals())
-                all = all && mesh.HasFieldData(name) &&
-                      mesh.FieldData(name).Size() == width * nparts;
-            mPartGlobals = mPartGlobals || all;
+            // the per-part arrays may cover more parts than the mesh uses
+            const std::size_t count = mesh.HasFieldData(d3w_part_globals()[0].first)
+                                          ? mesh.FieldData(d3w_part_globals()[0].first).Size()
+                                          : 0;
+            if (count >= nparts && !mPartGlobals) {
+                bool all = true;
+                for (const auto& [name, width] : d3w_part_globals())
+                    all = all && mesh.HasFieldData(name) &&
+                          mesh.FieldData(name).Size() == width * count;
+                if (all) {
+                    mPartGlobals = true;
+                    mPartCount = count;
+                }
+            }
+            if (rModel.mNrigid)
+                for (const auto& [name, width] : d3w_rigid_fields()) {
+                    const std::string key = std::string("lsdyna:rigid_body_") + name;
+                    if (mesh.HasFieldData(key) &&
+                        mesh.FieldData(key).Size() == rModel.mNrigid * width)
+                        mRigid[name] = width;
+                }
             for (const char* name : kElementNames()) {
                 bool present = false;
                 const auto arrays = d3w_cell_array(mesh, name, present);
                 if (!present)
                     continue;
-                for (const int family : {kD3wSolid, kD3wBeam, kD3wShell})
+                for (const int family : {kD3wSolid, kD3wBeam, kD3wShell, kD3wSph})
                     for (const D3wRange& range : rModel.mRanges[family]) {
                         const D3wBlockArray& a = arrays[range.mBlock];
                         if (a.mPoints == 0)
@@ -2301,7 +2384,11 @@ public:
         }
         mSeen = std::move(seen);
         mGlobals = mGlobals || mPartGlobals;
-        mNglbv = mGlobals ? 6 + (mPartGlobals ? 7 * nparts : 0) : 0;
+        // the header's material counts add up to the parts the arrays cover
+        mNummat = rModel.mNummat;
+        if (mPartGlobals)
+            mNummat[kD3wSolid] += mPartCount - nparts;
+        mNglbv = mGlobals ? 6 + (mPartGlobals ? 7 * mPartCount : 0) : 0;
         ElementLayouts();
         NodalFlags();
         mWords = StateWords();
@@ -2318,7 +2405,8 @@ public:
             "shell_bending_moment", "shell_shear_force", "shell_normal_force", "thickness",
             "shell_element_variables", "strain_inner", "strain_outer", "internal_energy",
             "beam_axial_force", "beam_shear_force", "beam_bending_moment", "beam_torsion_moment",
-            "beam_axial_stress", "beam_shear_stress", "beam_axial_strain"};
+            "beam_axial_stress", "beam_shear_stress", "beam_axial_strain", "sph_radius",
+            "sph_pressure", "density", "sph_neighbors", "strain_rate", "mass"};
         return v;
     }
 
@@ -2440,6 +2528,27 @@ public:
                 mNeipb = hist;
             }
         }
+        mSphFlags.assign(11, 0);
+        mNsphVars = 0;
+        if (m.mCounts[kD3wSph]) {
+            std::vector<std::int64_t> flags(11, 0);
+            flags[0] = 11;
+            for (const D3wSphVar& var : d3w_sph_vars())
+                if (mSeen[kD3wSph].count(var.mName))
+                    flags[var.mFlag] = static_cast<std::int64_t>(var.mComps);
+            if (mSeen[kD3wSph].count("strain_rate"))
+                flags[8] = 12;
+            else if (mSeen[kD3wSph].count("strain"))
+                flags[8] = 6;
+            flags[9] = mSeen[kD3wSph].count("mass") ? 1 : 0;
+            flags[10] = static_cast<std::int64_t>(SeenComps(kD3wSph, "history_variables"));
+            mSphFlags = flags;
+            std::int64_t vars = 1;
+            for (std::size_t i = 1; i < 8; ++i)
+                vars += flags[i];
+            vars += std::abs(flags[8]) + flags[9] + flags[10];
+            mNsphVars = static_cast<std::size_t>(vars);
+        }
         mNv3d = m.mCounts[kD3wSolid] ? mSolid.Width() : 0;
         mNv2d = m.mCounts[kD3wShell] ? mShell.Width() : 0;
         mNv1d = mBeam ? 6 + 5 * mBeamLayers + (3 + mBeamLayers) * mNeipb : 0;
@@ -2486,6 +2595,7 @@ public:
             n += m.mCounts[0] + m.mCounts[1] + m.mCounts[2];
         else if (mAliveNodes)
             n += m.mN;
+        n += m.mCounts[kD3wSph] * mNsphVars + m.mNrigid * 24;
         return n;
     }
 
@@ -2513,7 +2623,12 @@ public:
     const D3wModel& mModel;
     int mWs;
     std::map<std::string, std::size_t> mNode;
-    std::array<D3wSeen, 3> mSeen;
+    std::array<D3wSeen, 4> mSeen;
+    std::map<std::string, std::size_t> mRigid;  ///< reader name -> components, over all steps
+    std::array<std::size_t, 3> mNummat{};
+    std::size_t mPartCount = 0;
+    std::vector<std::int64_t> mSphFlags = std::vector<std::int64_t>(11, 0);
+    std::size_t mNsphVars = 0;
     bool mAlive = false, mAliveNodes = false, mGlobals = false, mPartGlobals = false;
     bool mStress = false, mPstrain = false, mPlasticTensor = false, mThermalTensor = false;
     bool mStrain = false, mForces = false, mExtra = false, mBeam = false;
@@ -2529,7 +2644,7 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     const int ws = rPlan.mWs;
     std::vector<std::int64_t> words(64 + rPlan.ExtraWords(), 0);
     words[11] = 1;
-    words[15] = 4;
+    words[15] = m.mNrigid ? 8 : 4;
     words[16] = static_cast<std::int64_t>(m.mN);
     words[17] = 6;
     words[18] = static_cast<std::int64_t>(rPlan.mNglbv);
@@ -2539,7 +2654,7 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     words[22] = rPlan.mAcc;
     words[23] = m.mExtra.empty() ? static_cast<std::int64_t>(m.mCounts[kD3wSolid])
                                  : -static_cast<std::int64_t>(m.mCounts[kD3wSolid]);
-    words[24] = static_cast<std::int64_t>(m.mNummat[kD3wSolid]);
+    words[24] = static_cast<std::int64_t>(rPlan.mNummat[kD3wSolid]);
     words[27] = static_cast<std::int64_t>(rPlan.mNv3d);
     words[28] = static_cast<std::int64_t>(m.mCounts[kD3wBeam]);
     words[29] = static_cast<std::int64_t>(m.mNummat[kD3wBeam]);
@@ -2550,6 +2665,8 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     words[34] = static_cast<std::int64_t>(rPlan.mNeiph);
     words[35] = static_cast<std::int64_t>(rPlan.mNeips);
     words[36] = rPlan.MaxInt();
+    words[37] = static_cast<std::int64_t>(m.mCounts[kD3wSph]);
+    words[38] = m.mCounts[kD3wSph] ? 1 : 0;
     words[43] = rPlan.mStress ? 1000 : 0;
     words[44] = rPlan.mPstrain ? 1000 : 0;
     words[45] = rPlan.mForces ? 1000 : 0;
@@ -2574,6 +2691,9 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     std::string version;
     d3w_f32(version, kD3wVersion, ws);
     out.replace(14 * static_cast<std::size_t>(ws), static_cast<std::size_t>(ws), version);
+    if (m.mCounts[kD3wSph])
+        for (const std::int64_t f : rPlan.mSphFlags)
+            d3w_i32(out, f, ws);
     for (const double v : m.mPoints)
         d3w_f32(out, v, ws);
     for (std::size_t e = 0; e < m.mCounts[kD3wSolid]; ++e) {
@@ -2612,7 +2732,8 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
           static_cast<std::int64_t>(m.mCounts[kD3wSolid]),
           static_cast<std::int64_t>(m.mCounts[kD3wBeam]),
           static_cast<std::int64_t>(m.mCounts[kD3wShell]), std::int64_t{0}, parts_at,
-          parts_at + nparts, parts_at + 2 * nparts, nparts, std::int64_t{0}, nparts})
+          parts_at + nparts, parts_at + 2 * nparts, nparts,
+          static_cast<std::int64_t>(m.mNrigid), nparts})
         d3w_i32(out, v, ws);
     for (const std::int64_t v : m.mNid)
         d3w_i32(out, v, ws);
@@ -2624,6 +2745,19 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
             d3w_i32(out, v, ws);
     for (std::int64_t k = 1; k <= nparts; ++k)
         d3w_i32(out, k, ws);
+    // rigid bodies (part, no node lists), then the SPH particles' (node, part)
+    if (m.mNrigid) {
+        d3w_i32(out, static_cast<std::int64_t>(m.mNrigid), ws);
+        for (const std::int64_t part : m.mRigidParts) {
+            d3w_i32(out, m.mPartIndex.at(part), ws);
+            d3w_i32(out, 0, ws);
+            d3w_i32(out, 0, ws);
+        }
+    }
+    for (std::size_t e = 0; e < m.mCounts[kD3wSph]; ++e) {
+        d3w_i32(out, m.mRows[kD3wSph][e][0] + 1, ws);
+        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wSph][e]), ws);
+    }
     // the higher-order tables: eight-node shells, then 20- and 27-node solids
     for (const auto* table : {&m.mExtra8, &m.mExtra20, &m.mExtra27})
         for (const auto& [e, nodes] : *table) {
@@ -2766,6 +2900,59 @@ std::vector<double> d3w_beam_matrix(const D3wPlan& rPlan, const Mesh& rMesh) {
     return out;
 }
 
+/// The SPH particles' rows: the material (negative once deleted), then the variables the flag
+/// block names.
+std::vector<double> d3w_sph_matrix(const D3wPlan& rPlan, const Mesh& rMesh) {
+    const D3wModel& m = rPlan.mModel;
+    const std::size_t width = rPlan.mNsphVars;
+    std::vector<double> out(m.mCounts[kD3wSph] * width, kD3Nan);
+    for (std::size_t e = 0; e < m.mCounts[kD3wSph]; ++e)
+        out[e * width] = static_cast<double>(m.mPartIndex.at(m.mPartsOf[kD3wSph][e]));
+    if (rMesh.HasCellData("lsdyna:alive"))
+        for (const D3wRange& range : m.mRanges[kD3wSph]) {
+            if (range.mBlock >= rMesh.CellDataNumBlocks("lsdyna:alive"))
+                continue;
+            const NDArray& a = rMesh.CellData("lsdyna:alive", range.mBlock);
+            for (std::size_t e = 0; e < range.mCount && e < a.Size(); ++e)
+                if (detail::read_double(a, e) == 0.0)
+                    out[(range.mFirst + e) * width] = -out[(range.mFirst + e) * width];
+        }
+    const auto& flags = rPlan.mSphFlags;
+    const auto strain = static_cast<std::size_t>(std::abs(flags[8]));
+    const std::vector<std::pair<const char*, std::size_t>> columns = {
+        {"sph_radius", static_cast<std::size_t>(flags[1])},
+        {"sph_pressure", static_cast<std::size_t>(flags[2])},
+        {"stress", static_cast<std::size_t>(flags[3])},
+        {"effective_plastic_strain", static_cast<std::size_t>(flags[4])},
+        {"density", static_cast<std::size_t>(flags[5])},
+        {"internal_energy", static_cast<std::size_t>(flags[6])},
+        {"sph_neighbors", static_cast<std::size_t>(flags[7])},
+        {"strain", std::min<std::size_t>(strain, 6)},
+        {"strain_rate", strain - std::min<std::size_t>(strain, 6)},
+        {"mass", static_cast<std::size_t>(flags[9])},
+        {"history_variables", static_cast<std::size_t>(flags[10])}};
+    std::size_t at = 1;
+    for (const auto& [name, w] : columns) {
+        if (w > 0) {
+            bool present = false;
+            const auto arrays = d3w_cell_array(rMesh, name, present);
+            if (present)
+                for (const D3wRange& range : m.mRanges[kD3wSph]) {
+                    const D3wBlockArray& a = arrays[range.mBlock];
+                    if (a.mPoints == 0 || range.mCount == 0)
+                        continue;
+                    const std::size_t k = std::min(a.mComps, w);
+                    for (std::size_t e = 0; e < range.mCount; ++e)
+                        for (std::size_t c = 0; c < k; ++c)
+                            out[(range.mFirst + e) * width + at + c] =
+                                a.mV[e * a.mPoints * a.mComps + c];
+                }
+        }
+        at += w;
+    }
+    return out;
+}
+
 std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
     const D3wModel& m = rPlan.mModel;
     const std::size_t n = m.mN;
@@ -2784,7 +2971,7 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
             at += width;
         }
         if (rPlan.mPartGlobals) {
-            const std::size_t nparts = m.mNummat[0] + m.mNummat[1] + m.mNummat[2];
+            const std::size_t nparts = rPlan.mPartCount;
             for (const auto& [name, w] : d3w_part_globals()) {
                 if (rMesh.HasFieldData(name) && rMesh.FieldData(name).Size() == w * nparts)
                     for (std::size_t k = 0; k < w * nparts; ++k)
@@ -2876,6 +3063,24 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
                 flags[i] = detail::read_double(a, i) != 0.0 ? 1.0 : 0.0;
         }
         for (const double v : flags)
+            d3w_f32(out, v, ws);
+    }
+    if (m.mCounts[kD3wSph])
+        for (const double v : d3w_sph_matrix(rPlan, rMesh))
+            d3w_f32(out, v, ws);
+    if (m.mNrigid) {
+        std::vector<double> rigid(m.mNrigid * 24, kD3Nan);
+        std::size_t at = 0;
+        for (const auto& [name, width] : d3w_rigid_fields()) {
+            const std::string key = std::string("lsdyna:rigid_body_") + name;
+            if (rMesh.HasFieldData(key) && rMesh.FieldData(key).Size() == m.mNrigid * width)
+                for (std::size_t r = 0; r < m.mNrigid; ++r)
+                    for (std::size_t c = 0; c < width; ++c)
+                        rigid[r * 24 + at + c] =
+                            detail::read_double(rMesh.FieldData(key), r * width + c);
+            at += width;
+        }
+        for (const double v : rigid)
             d3w_f32(out, v, ws);
     }
     return out;

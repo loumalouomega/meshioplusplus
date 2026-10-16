@@ -693,6 +693,8 @@ _ROUND_TRIP = [
     "lasso/d3plot_node_temperature",
     "lasso/d3plot_solid_int",
     "dyna/projectile",
+    "dyna/bird_strike",
+    "generated/quadratic_rigid",
 ]
 
 
