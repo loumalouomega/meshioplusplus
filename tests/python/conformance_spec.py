@@ -1242,6 +1242,26 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "xplt": {
+        "cells": {
+            "vertex": "lost",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": True,
+        "regions": ["cell", "point"],
+        "note": "Everything is stored as 32-bit floats and comes back as float64 (the "
+        "probe's coordinates are exact in float32, general ones are not); a plot file "
+        "has no vertex element, and side regions and surfaces are not written.",
+    },
     "radioss_anim": {
         "cells": {
             "vertex": "exact",
@@ -1737,7 +1757,6 @@ READ_ONLY = {
         item="3.2.11",
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
     ),
-    "xplt": _GAP.format(item="3.2.7", why=_RESULT.format(tool="FEBio")),
     "vtx": _GAP.format(
         item="3.2.9",
         why="DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build.",

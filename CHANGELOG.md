@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **FEBio plot files**: `xplt` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): plot version 0x35, the nodes with ids, a domain per cell block (a region equal to a block names it and tags its part), node sets, element sets and parts, the point data, cell data and numeric field data as nodal, per-element and global variables, and a state per step. Facet surfaces, side regions, edges and compression are not written. Cell-region order in the Python writers now follows the core's `(kind, name, dim, tag)` storage order.
+
 - **OpenRadioss animation**: `radioss_anim` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): one big-endian state per file with the nodes, 2-D facets, 3-D bricks (tetrahedra, pyramids and wedges as degenerate bricks), 1-D elements and SPH particles, nodal scalars and vectors, element scalars, tensors and force sets, parts from `radioss:part` or the cell regions, ids, masses, materials and properties; a series writes `runA001`, `runA002`, … `anim_to_vtk` reads the result.
 
 - **Nastran HDF5**: `nastran_h5` is writable from both engines, value for value (`write`, `SeriesWriter`, `write_sequence`): the `GRID`, element-card, property and `MAT1` tables under `/NASTRAN/INPUT` with MSC's column sets, the nodal and centre element result tables, their `/INDEX` twins and `DOMAINS`, one domain per step. Corner, ply and station arrays are dropped with a warning. The XDMF `Information` stream now pins the classic locale.

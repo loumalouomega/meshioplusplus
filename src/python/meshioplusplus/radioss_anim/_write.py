@@ -23,6 +23,7 @@ import numpy as np
 from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
+from .._regions import canonical_regions
 from ..lsdyna._lsdyna import _expand_solid
 from ._anim import MAGIC
 
@@ -115,7 +116,7 @@ def _classify(mesh):
 
 def _region_parts(mesh, ncells):
     """(part id, name) per cell from the cell regions, or None."""
-    regions = [r for r in (getattr(mesh, "regions", None) or []) if r.kind == "cell"]
+    regions = [r for r in canonical_regions(mesh) if r.kind == "cell"]
     if not regions:
         return None
     ids = np.full(ncells, -1, dtype=np.int64)
@@ -147,7 +148,7 @@ def _bytes_state(mesh, time):
         region_parts = _region_parts(mesh, ncells)
     names_by_pid = region_parts[1] if region_parts else {}
     if part_arr is not None:
-        for r in getattr(mesh, "regions", None) or []:
+        for r in canonical_regions(mesh):
             if r.kind == "cell" and r.tag >= 0:
                 names_by_pid.setdefault(r.tag, r.name)
     alive = _concat(mesh, "radioss:alive")

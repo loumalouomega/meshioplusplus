@@ -24014,6 +24014,8 @@ private:
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -24037,6 +24039,51 @@ MESHIOPLUSPLUS_API Mesh read_xplt(const std::string& rPath, const ReadOptions& r
  */
 MESHIOPLUSPLUS_API MeshMetadata read_xplt_metadata(const std::string& rPath,
                                                    const ReadOptions& rOptions = {});
+
+/**
+ * @brief Write an FEBio plot file holding one state (plot version 0x35,
+ *        little-endian, uncompressed): the mesh and its data at
+ *        `field_data["meshio:time"]` (0 when absent), status `"xplt:status"`.
+ *        Cell blocks become domains (a region that is exactly one block names
+ *        it and tags its part), point regions node sets and cell regions
+ *        element sets; point data are nodal variables, cell data per-element
+ *        variables (`FMT_ITEM`) and numeric field data global ones. Vertices,
+ *        polygons, side regions and surfaces are not written. The Python twin
+ *        writes the same bytes.
+ * @throws WriteError when the file cannot be written or a cell names a missing point.
+ */
+MESHIOPLUSPLUS_API void write_xplt(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A plot file with a state per step: the mesh and the variables of the
+ *        first step, which every later step must share. The file is written by
+ *        `Finalize`. The Python twin is `meshioplusplus.xplt.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API XpltSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit XpltSeriesWriter(const std::string& rPath);
+    ~XpltSeriesWriter();
+
+    XpltSeriesWriter(const XpltSeriesWriter&) = delete;
+    XpltSeriesWriter& operator=(const XpltSeriesWriter&) = delete;
+    XpltSeriesWriter(XpltSeriesWriter&&) noexcept;
+    XpltSeriesWriter& operator=(XpltSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError when its points, cells or variables differ
+    /// from the first step's, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/xplt.hpp =====
@@ -158570,11 +158617,13 @@ bool XdmfTimeSeriesWriter::Finalized() const {
 // ===== end src/cpp/src/formats/xdmf_time_series.cpp =====
 // ===== begin src/cpp/src/formats/xplt.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <map>
 #include <optional>
 #include <set>
@@ -159694,6 +159743,497 @@ MeshMetadata read_xplt_metadata(const std::string& rPath, const ReadOptions& rOp
     const XpltFile file(rPath, rOptions);
     meta.mTimeValues.assign(file.mTimes.begin(), file.mTimes.end());
     return meta;
+}
+
+
+// ---------------------------------------------------------------------------
+// The writer: the reader's inverse (plot version 0x35, little-endian,
+// uncompressed). The Python twin (`xplt/_write.py`) writes the same bytes.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr std::uint32_t kXwVersion = 0x35;
+
+void xw_u32(std::string& rOut, std::uint32_t V) {
+    for (int i = 0; i < 4; ++i)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xFF));
+}
+
+void xw_f32(std::string& rOut, double V) {
+    const float f = static_cast<float>(V);
+    std::uint32_t u;
+    std::memcpy(&u, &f, 4);
+    xw_u32(rOut, u);
+}
+
+std::string xw_chunk(std::uint32_t Id, const std::string& rPayload = {}) {
+    std::string out;
+    xw_u32(out, Id);
+    xw_u32(out, static_cast<std::uint32_t>(rPayload.size()));
+    out += rPayload;
+    return out;
+}
+
+std::string xw_u32_chunk(std::uint32_t Id, std::uint32_t V) {
+    std::string p;
+    xw_u32(p, V);
+    return xw_chunk(Id, p);
+}
+
+std::string xw_string(const std::string& rText) {
+    std::string out;
+    xw_u32(out, static_cast<std::uint32_t>(rText.size()));
+    return out + rText;
+}
+
+std::string xw_name64(const std::string& rText) {
+    std::string out = rText.substr(0, 63);
+    out.resize(64, '\0');
+    return out;
+}
+
+std::string xw_ints(const std::vector<std::int64_t>& rValues) {
+    std::string out;
+    for (const std::int64_t v : rValues)
+        xw_u32(out, static_cast<std::uint32_t>(static_cast<std::int32_t>(v)));
+    return out;
+}
+
+struct XwVar {
+    std::string mName;
+    std::size_t mWidth = 1;
+};
+
+struct XwBlock {
+    std::size_t mIndex = 0;
+    std::string mType;
+    std::size_t mNodes = 0;
+    std::size_t mCount = 0;
+    std::size_t mFirst = 0;
+    std::vector<std::int64_t> mConn;  // file order
+};
+
+struct XwDomain {
+    std::string mName;
+    std::int64_t mPart = 0;
+    std::string mPartName;
+};
+
+struct XwGroupInfo {
+    const char* mName;
+    std::uint32_t mDictTag, mStateTag, mFormat;
+};
+constexpr XwGroupInfo kXwGroups[3] = {{"global", 0x01021000, 0x02020100, 3},
+                                      {"node", 0x01023000, 0x02020300, 0},
+                                      {"domain", 0x01024000, 0x02020400, 1}};
+
+int xw_element_type(const std::string& rType) {
+    static const std::map<std::string, int> kMap = {
+        {"hexahedron", 0},   {"wedge", 1},        {"tetra", 2},          {"quad", 3},
+        {"triangle", 4},     {"line", 5},         {"hexahedron20", 6},   {"tetra10", 7},
+        {"hexahedron27", 9}, {"triangle6", 10},   {"quad8", 11},         {"quad9", 12},
+        {"wedge15", 13},     {"triangle10", 15},  {"pyramid", 16},       {"pyramid13", 18},
+        {"line3", 19}};
+    const auto it = kMap.find(rType);
+    return it == kMap.end() ? -1 : it->second;
+}
+
+std::vector<double> xw_values(const NDArray& rArray) {
+    const detail::DoubleView view(rArray);
+    return std::vector<double>(view.Data(), view.Data() + rArray.Size());
+}
+
+/// Values per entry of an array of `Rows` entries, or 0 when it cannot be written.
+std::size_t xw_width(const NDArray& rArray, std::size_t Rows, const std::string& rWhat) {
+    if (rArray.Shape().size() > 2) {
+        log::warn("FEBio .xplt: {} is not written", rWhat);
+        return 0;
+    }
+    if (Rows == 0) {
+        if (rArray.Shape().size() == 2)
+            return rArray.Shape()[1];
+        return 1;
+    }
+    if (rArray.Size() % Rows != 0) {
+        log::warn("FEBio .xplt: {} is not written", rWhat);
+        return 0;
+    }
+    return rArray.Size() / Rows;
+}
+
+class XwModel {
+public:
+    explicit XwModel(const Mesh& rMesh) {
+        mN = rMesh.NumPoints();
+        mPoints.assign(mN * 3, 0.0);
+        {
+            const NDArray& pts = rMesh.Points();
+            const detail::DoubleView view(pts);
+            const std::size_t width = mN == 0 ? 3 : pts.Size() / mN;
+            for (std::size_t i = 0; i < mN; ++i)
+                for (std::size_t k = 0; k < 3 && k < width; ++k)
+                    mPoints[i * 3 + k] = view.Data()[i * width + k];
+        }
+        std::map<std::string, std::size_t> skipped;
+        std::size_t base = 0;
+        std::int64_t eid = 1;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::size_t count = cb.NumCells();
+            const std::string type = cb.Type();
+            if (xw_element_type(type) < 0) {
+                if (count > 0)
+                    skipped[type] += count;
+                base += count;
+                continue;
+            }
+            XwBlock blk;
+            blk.mIndex = b;
+            blk.mType = type;
+            blk.mNodes = cb.NodesPerCell();
+            blk.mCount = count;
+            blk.mFirst = base;
+            const detail::Int64View conn(cb.Conn());
+            blk.mConn.resize(count * blk.mNodes);
+            const detail::NodeOrder* order = detail::node_order("febio", type);
+            for (std::size_t r = 0; r < count; ++r)
+                for (std::size_t j = 0; j < blk.mNodes; ++j) {
+                    const std::size_t from =
+                        order && order->mFromMeshio.size() == blk.mNodes
+                            ? static_cast<std::size_t>(order->mFromMeshio[j])
+                            : j;
+                    const std::int64_t node = conn.Data()[r * blk.mNodes + from];
+                    if (node < 0 || static_cast<std::size_t>(node) >= mN)
+                        throw WriteError("FEBio .xplt: a '" + type +
+                                         "' cell refers to a point the mesh does not have");
+                    blk.mConn[r * blk.mNodes + j] = node;
+                }
+            for (std::size_t r = 0; r < count; ++r)
+                mNewIndex[base + r] = eid++;
+            mBlocks.push_back(std::move(blk));
+            base += count;
+        }
+        for (const auto& [type, count] : skipped)
+            log::warn("FEBio .xplt: {} '{}' cell(s) are not written", count, type);
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+            mRegions.push_back(i);
+        Names(rMesh);
+        Variables(rMesh);
+        mSignature = std::to_string(mN);
+        for (const XwBlock& blk : mBlocks)
+            mSignature += "|" + blk.mType + ":" + std::to_string(blk.mCount) + ":" +
+                          std::to_string(blk.mNodes) + ":" + std::to_string(blk.mFirst);
+        for (const auto& group : mVars) {
+            mSignature += "#";
+            for (const XwVar& v : group)
+                mSignature += v.mName + "=" + std::to_string(v.mWidth) + ",";
+        }
+    }
+
+    const std::string& Signature() const { return mSignature; }
+
+    std::string HeaderAndDictionary() const {
+        std::string header = xw_chunk(
+            0x01010000, xw_u32_chunk(0x01010001, kXwVersion) + xw_u32_chunk(0x01010004, 0) +
+                            xw_chunk(0x01010006, xw_string("meshio++")));
+        std::string dictionary;
+        for (std::size_t g = 0; g < 3; ++g) {
+            std::string items;
+            for (const XwVar& v : mVars[g]) {
+                static const std::map<std::size_t, std::uint32_t> kType = {
+                    {1, 0}, {3, 1}, {6, 2}, {9, 5}};
+                const auto t = kType.find(v.mWidth);
+                const std::uint32_t vtype = t == kType.end() ? 6 : t->second;
+                const std::uint32_t asize = vtype == 6 ? static_cast<std::uint32_t>(v.mWidth) : 0;
+                items += xw_chunk(0x01020001, xw_u32_chunk(0x01020002, vtype) +
+                                                  xw_u32_chunk(0x01020003, kXwGroups[g].mFormat) +
+                                                  xw_u32_chunk(0x01020005, asize) +
+                                                  xw_chunk(0x01020004, xw_name64(v.mName)));
+            }
+            if (!items.empty())
+                dictionary += xw_chunk(kXwGroups[g].mDictTag, items);
+        }
+        return xw_chunk(0x01000000, header + xw_chunk(0x01020000, dictionary));
+    }
+
+    std::string MeshChunk(const Mesh& rMesh) const {
+        std::string coords;
+        for (std::size_t i = 0; i < mN; ++i) {
+            xw_u32(coords, static_cast<std::uint32_t>(i + 1));
+            for (std::size_t k = 0; k < 3; ++k)
+                xw_f32(coords, mPoints[i * 3 + k]);
+        }
+        std::string nodes = xw_chunk(
+            0x01041000, xw_chunk(0x01041100, xw_u32_chunk(0x01041101, static_cast<std::uint32_t>(mN)) +
+                                                 xw_u32_chunk(0x01041102, 3)) +
+                            xw_chunk(0x01041200, coords));
+        std::string domains;
+        for (std::size_t k = 0; k < mBlocks.size(); ++k) {
+            const XwBlock& blk = mBlocks[k];
+            const XwDomain& dom = mDomains[k];
+            std::string head =
+                xw_u32_chunk(0x01042102, static_cast<std::uint32_t>(xw_element_type(blk.mType))) +
+                xw_u32_chunk(0x01042103, static_cast<std::uint32_t>(dom.mPart)) +
+                xw_u32_chunk(0x01032104, static_cast<std::uint32_t>(blk.mCount));
+            if (!dom.mName.empty())
+                head += xw_chunk(0x01032105, xw_string(dom.mName));
+            std::string elements;
+            for (std::size_t r = 0; r < blk.mCount; ++r) {
+                std::vector<std::int64_t> row = {mNewIndex.at(blk.mFirst + r)};
+                row.insert(row.end(), blk.mConn.begin() + static_cast<std::ptrdiff_t>(r * blk.mNodes),
+                           blk.mConn.begin() + static_cast<std::ptrdiff_t>((r + 1) * blk.mNodes));
+                elements += xw_chunk(0x01042201, xw_ints(row));
+            }
+            domains += xw_chunk(0x01042100,
+                                xw_chunk(0x01042101, head) + xw_chunk(0x01042200, elements));
+        }
+        std::string body = nodes + xw_chunk(0x01042000, domains);
+        // Node sets (point regions) and element sets (cell regions).
+        auto sets = [&](RegionKind Kind, std::uint32_t Section, std::uint32_t Item,
+                        std::uint32_t Hdr, std::uint32_t Ident, std::uint32_t Size,
+                        std::uint32_t Name, std::uint32_t List) {
+            std::string out;
+            std::uint32_t count = 0;
+            for (const std::size_t i : mRegions) {
+                const auto& reg = rMesh.Region(i);
+                if (reg.mKind != Kind)
+                    continue;
+                std::vector<std::int64_t> ids;
+                const detail::Int64View entries(reg.mEntries);
+                for (std::size_t e = 0; e < reg.mEntries.Size(); ++e) {
+                    const std::int64_t v = entries.Data()[e];
+                    if (Kind == RegionKind::Point) {
+                        if (v >= 0 && static_cast<std::size_t>(v) < mN)
+                            ids.push_back(v);
+                    } else {
+                        const auto it = mNewIndex.find(static_cast<std::size_t>(v));
+                        if (v >= 0 && it != mNewIndex.end())
+                            ids.push_back(it->second);
+                    }
+                }
+                ++count;
+                out += xw_chunk(Item, xw_chunk(Hdr, xw_u32_chunk(Ident, count) +
+                                                        xw_u32_chunk(Size, static_cast<std::uint32_t>(
+                                                                               ids.size())) +
+                                                        xw_chunk(Name, xw_string(reg.mName))) +
+                                          xw_chunk(List, xw_ints(ids)));
+            }
+            return out.empty() ? std::string() : xw_chunk(Section, out);
+        };
+        body += sets(RegionKind::Point, 0x01044000, 0x01044100, 0x01044101, 0x01044102, 0x01044104,
+                     0x01044103, 0x01044200);
+        body += sets(RegionKind::Cell, 0x01046000, 0x01046100, 0x01046101, 0x01046102, 0x01046104,
+                     0x01046103, 0x01046200);
+        std::string parts;
+        for (const XwDomain& dom : mDomains)
+            parts += xw_chunk(0x01045100,
+                              xw_u32_chunk(0x01045101, static_cast<std::uint32_t>(dom.mPart)) +
+                                  xw_chunk(0x01045102, xw_name64(dom.mPartName)));
+        if (!parts.empty())
+            body += xw_chunk(0x01045000, parts);
+        return xw_chunk(0x01040000, body);
+    }
+
+    std::string StateChunk(const Mesh& rMesh, double Time, std::uint32_t Status) const {
+        std::string time_payload;
+        xw_f32(time_payload, Time);
+        const std::string header =
+            xw_chunk(0x02010000, xw_chunk(0x02010002, time_payload) +
+                                     xw_u32_chunk(0x02010003, Status));
+        std::string data;
+        for (std::size_t g = 0; g < 3; ++g) {
+            std::string variables;
+            for (std::size_t k = 0; k < mVars[g].size(); ++k) {
+                const XwVar& v = mVars[g][k];
+                std::string payload;
+                auto region = [&](std::uint32_t Id, const NDArray& rArray) {
+                    std::string values;
+                    for (const double d : xw_values(rArray))
+                        xw_f32(values, d);
+                    payload += xw_chunk(Id, values);
+                };
+                if (g == 0) {
+                    region(0, rMesh.FieldData(v.mName));
+                } else if (g == 1) {
+                    region(0, rMesh.PointData(v.mName));
+                } else {
+                    for (std::size_t d = 0; d < mBlocks.size(); ++d)
+                        region(static_cast<std::uint32_t>(d + 1),
+                               rMesh.CellData(v.mName, mBlocks[d].mIndex));
+                }
+                variables += xw_chunk(0x02020001, xw_u32_chunk(0x02020002,
+                                                               static_cast<std::uint32_t>(k + 1)) +
+                                                      xw_chunk(0x02020003, payload));
+            }
+            if (!variables.empty())
+                data += xw_chunk(kXwGroups[g].mStateTag, variables);
+        }
+        return xw_chunk(0x02000000, header + xw_chunk(0x02020000, data));
+    }
+
+private:
+    void Names(const Mesh& rMesh) {
+        for (std::size_t k = 0; k < mBlocks.size(); ++k) {
+            const XwBlock& blk = mBlocks[k];
+            XwDomain dom;
+            dom.mPart = static_cast<std::int64_t>(k + 1);
+            dom.mPartName = "Part" + std::to_string(k + 1);
+            if (blk.mCount > 0) {
+                for (const std::size_t i : mRegions) {
+                    const auto& reg = rMesh.Region(i);
+                    if (reg.mKind != RegionKind::Cell || reg.mEntries.Size() != blk.mCount)
+                        continue;
+                    const detail::Int64View entries(reg.mEntries);
+                    bool same = true;
+                    for (std::size_t e = 0; e < blk.mCount && same; ++e)
+                        same = entries.Data()[e] == static_cast<std::int64_t>(blk.mFirst + e);
+                    if (same) {
+                        dom.mName = reg.mName;
+                        if (reg.mTag >= 0)
+                            dom.mPart = reg.mTag;
+                        break;
+                    }
+                }
+            }
+            mDomains.push_back(std::move(dom));
+        }
+    }
+
+    void Variables(const Mesh& rMesh) {
+        for (const std::string& name : rMesh.PointDataNames()) {
+            const std::size_t w = xw_width(rMesh.PointData(name), mN, "point data '" + name + "'");
+            if (w)
+                mVars[1].push_back({name, w});
+        }
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (name.rfind("xplt:", 0) == 0)
+                continue;
+            std::size_t width = 0;
+            bool ok = true;
+            for (const XwBlock& blk : mBlocks) {
+                const std::size_t w = xw_width(rMesh.CellData(name, blk.mIndex), blk.mCount,
+                                               "cell data '" + name + "'");
+                if (w == 0 || (width != 0 && w != width)) {
+                    ok = false;
+                    break;
+                }
+                width = w;
+            }
+            if (ok && width)
+                mVars[2].push_back({name, width});
+            else if (!ok)
+                log::warn("FEBio .xplt: cell data '{}' is not written", name);
+        }
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            if (name == kSequenceTimeKey || name.rfind("xplt:", 0) == 0)
+                continue;
+            const NDArray& a = rMesh.FieldData(name);
+            if (a.Size() > 0)
+                mVars[0].push_back({name, a.Size()});
+        }
+    }
+
+    std::size_t mN = 0;
+    std::vector<double> mPoints;
+    std::vector<XwBlock> mBlocks;
+    std::vector<XwDomain> mDomains;
+    std::vector<std::size_t> mRegions;
+    std::map<std::size_t, std::int64_t> mNewIndex;
+    std::array<std::vector<XwVar>, 3> mVars;
+    std::string mSignature;
+};
+
+double xw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+std::uint32_t xw_status_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData("xplt:status"))
+        return 0;
+    const NDArray& a = rMesh.FieldData("xplt:status");
+    return a.Size() == 0 ? 0u : static_cast<std::uint32_t>(detail::Int64View(a).Data()[0]);
+}
+
+/// The magic, header, dictionary and mesh: everything before the first state.
+std::string xw_prefix(const XwModel& rModel, const Mesh& rMesh) {
+    std::string out;
+    xw_u32(out, kXpltMagic);
+    out += rModel.HeaderAndDictionary();
+    out += rModel.MeshChunk(rMesh);
+    return out;
+}
+
+void xw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        throw WriteError("FEBio .xplt: failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_xplt(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    const XwModel model(rMesh);
+    const std::string state = model.StateChunk(rMesh, xw_time_of(rMesh), xw_status_of(rMesh));
+    xw_save(rPath, xw_prefix(model, rMesh) + state);
+}
+
+struct XpltSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<XwModel> mModel;
+    std::string mPrefix;  // magic, header, dictionary and mesh, built from the first step
+    std::vector<std::string> mStates;
+    bool mDone = false;
+};
+
+XpltSeriesWriter::XpltSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+XpltSeriesWriter::~XpltSeriesWriter() = default;
+XpltSeriesWriter::XpltSeriesWriter(XpltSeriesWriter&&) noexcept = default;
+XpltSeriesWriter& XpltSeriesWriter::operator=(XpltSeriesWriter&&) noexcept = default;
+
+void XpltSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("FEBio .xplt: series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (!s.mModel) {
+        s.mModel = std::make_unique<XwModel>(rMesh);
+        s.mPrefix = xw_prefix(*s.mModel, rMesh);
+    } else if (XwModel(rMesh).Signature() != s.mModel->Signature()) {
+        throw WriteError("FEBio .xplt: series: step " + std::to_string(s.mStates.size()) +
+                         "'s points, cells or variables differ from the first step's; a plot "
+                         "file holds one mesh -- write one file per step with '{step}'");
+    }
+    s.mStates.push_back(s.mModel->StateChunk(rMesh, Time, xw_status_of(rMesh)));
+}
+
+std::size_t XpltSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mStates.size() : 0;
+}
+
+void XpltSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    Impl& s = *mpImpl;
+    if (!s.mModel)
+        throw WriteError("FEBio .xplt: series: no step was written");
+    s.mDone = true;
+    std::string bytes = s.mPrefix;
+    for (const std::string& state : s.mStates)
+        bytes += state;
+    xw_save(s.mPath, bytes);
 }
 
 }  // namespace meshioplusplus
@@ -194247,13 +194787,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
-        rFormat == "nastran_h5" || rFormat == "radioss_anim") {
+        rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -194551,6 +195091,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "nastran_op2"   ? "Nastran OP2"
                       : rFormat == "nastran_h5"    ? "Nastran HDF5"
                       : rFormat == "radioss_anim"  ? "Radioss animation"
+                      : rFormat == "xplt"          ? "FEBio plot"
                       : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
                       : rFormat == "abaqus_fil"    ? "Abaqus results"
                                                    : "XDMF";
@@ -194583,6 +195124,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Radioss animation writer has no ASCII/binary "
             "variant to select");
+    if (rFormat == "xplt" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient FEBio plot writer has no ASCII/binary variant to "
+            "select");
     if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
@@ -194738,6 +195283,19 @@ private:
     RadiossAnimSeriesWriter mWriter;
 };
 
+/// A plot file holds the mesh once and a state per step: the writer keeps the states and
+/// writes the file when it is finalized, so `WritePointsCells` has nothing to do.
+class SeqXpltSink final : public SeqSeriesSink {
+public:
+    explicit SeqXpltSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    XpltSeriesWriter mWriter;
+};
+
 /// A binout keeps every output's records and writes the file when it is finalized, so
 /// `WritePointsCells` has nothing to do.
 class SeqLsdynaBinoutSink final : public SeqSeriesSink {
@@ -194801,6 +195359,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
 #endif
     if (rFormat == "radioss_anim")
         return std::make_unique<SeqRadiossAnimSink>(rPath);
+    if (rFormat == "xplt")
+        return std::make_unique<SeqXpltSink>(rPath);
     if (rFormat == "lsdyna_binout")
         return std::make_unique<SeqLsdynaBinoutSink>(rPath);
     if (rFormat == "abaqus_fil")
@@ -202473,6 +203033,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_openfoam(p, mm, info);
          }},
         {"radioss_anim", meshioplusplus::write_radioss_anim},
+        {"xplt", meshioplusplus::write_xplt},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},

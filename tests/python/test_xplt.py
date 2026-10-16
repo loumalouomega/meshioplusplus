@@ -360,7 +360,163 @@ def test_zlib_streams_are_one_per_chunk():
 def test_registered_and_sniffed():
     out = meshioplusplus.formats()
     assert out["extensions"][".xplt"] == ["xplt"]
-    assert "xplt" in out["readable"] and "xplt" not in out["writable"]
+    assert "xplt" in out["readable"] and "xplt" in out["writable"]
     for path in FIXTURES:
         assert meshioplusplus.sniff_format(path) == "xplt"
     assert hasattr(_core, "xplt_read")
+
+
+# ---------------------------------------------------------------------------
+# The writer: both engines write the same bytes, and either reader gets the
+# mesh back (to the 32-bit floats the file holds).
+# ---------------------------------------------------------------------------
+
+from meshioplusplus.xplt import _write as py_write  # noqa: E402
+
+
+@pytest.fixture(params=["core", "python"])
+def writer(request):
+    if request.param == "core":
+        return lambda path, mesh: _core.xplt_write(str(path), mesh)
+    return py_write.write
+
+
+def _scratch_mesh():
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+            [2, 0, 0],
+            [2, 1, 0],
+            [2, 0.5, 1],
+        ],
+        dtype=float,
+    )
+    cells = [
+        ("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]])),
+        ("tetra", np.array([[1, 8, 9, 5]])),
+        ("triangle", np.array([[0, 1, 2]])),
+        ("line", np.array([[0, 1], [1, 2]])),
+    ]
+    mesh = meshioplusplus.Mesh(pts, cells)
+    mesh.point_data["displacement"] = np.arange(33.0).reshape(11, 3)
+    mesh.point_data["temperature"] = np.arange(11.0)
+    mesh.cell_data["pressure"] = [
+        np.array([1.0]),
+        np.array([2.0]),
+        np.array([3.0]),
+        np.array([4.0, 5.0]),
+    ]
+    mesh.cell_data["stress"] = [np.arange(6.0)[None] + 10 * k for k in range(3)] + [
+        np.arange(12.0).reshape(2, 6)
+    ]
+    mesh.field_data["energy"] = np.array([4.5])
+    mesh.field_data["meshio:time"] = np.array([0.5])
+    mesh.regions = [
+        meshioplusplus.Region("steel", "cell", np.array([0]), 3, 7),
+        meshioplusplus.Region("pair", "cell", np.array([0, 1]), 3),
+        meshioplusplus.Region("base", "point", np.array([0, 1, 2, 3])),
+    ]
+    return mesh
+
+
+@pytest.mark.parametrize("path", FIXTURES, ids=[p.name for p in FIXTURES])
+def test_the_engines_write_the_same_bytes(path, tmp_path):
+    mesh = meshioplusplus.read(path)
+    _core.xplt_write(str(tmp_path / "c.xplt"), mesh)
+    py_write.write(tmp_path / "p.xplt", mesh)
+    assert (tmp_path / "c.xplt").read_bytes() == (tmp_path / "p.xplt").read_bytes()
+
+
+def test_a_scratch_mesh_survives_a_round_trip(writer, engine, tmp_path):
+    mesh = _scratch_mesh()
+    out = tmp_path / "scratch.xplt"
+    writer(out, mesh)
+    again = engine.read(out)
+    np.testing.assert_allclose(again.points, mesh.points)
+    assert [(c.type, c.data.tolist()) for c in again.cells] == [
+        (c.type, c.data.tolist()) for c in mesh.cells
+    ]
+    np.testing.assert_allclose(
+        again.point_data["displacement"], mesh.point_data["displacement"]
+    )
+    np.testing.assert_allclose(
+        again.point_data["temperature"], mesh.point_data["temperature"]
+    )
+    for name in ("pressure", "stress"):
+        for got, want in zip(again.cell_data[name], mesh.cell_data[name]):
+            np.testing.assert_allclose(got, want)
+    np.testing.assert_allclose(again.field_data["energy"], [4.5])
+    assert float(again.field_data["meshio:time"][0]) == 0.5
+    regions = {(r.kind, r.name): (r.tag, r.entries.tolist()) for r in again.regions}
+    assert regions[("cell", "steel")] == (7, [0])
+    assert regions[("cell", "pair")] == (-1, [0, 1])
+    assert regions[("point", "base")] == (-1, [0, 1, 2, 3])
+
+
+@pytest.mark.parametrize("path", FIXTURES, ids=[p.name for p in FIXTURES])
+def test_a_febio_file_survives_a_round_trip(path, writer, engine, tmp_path):
+    original = engine.read(path)
+    out = tmp_path / "again.xplt"
+    writer(out, original)
+    again = engine.read(out)
+    np.testing.assert_allclose(again.points, original.points)
+    domains = [i for i, c in enumerate(original.cells)]
+    assert [(c.type, c.data.tolist()) for c in again.cells[: len(domains)]] == [
+        (c.type, c.data.tolist()) for c in original.cells[: len(domains)]
+    ]
+    for name, value in original.point_data.items():
+        np.testing.assert_allclose(
+            again.point_data[name], value, rtol=1e-6, equal_nan=True
+        )
+
+
+def test_vertices_and_unknown_cells_are_skipped(writer, engine, tmp_path):
+    mesh = _scratch_mesh()
+    mesh.cells.append(meshioplusplus.CellBlock("vertex", np.array([[0], [3]])))
+    for name in mesh.cell_data:
+        mesh.cell_data[name].append(np.zeros((2,) + mesh.cell_data[name][0].shape[1:]))
+    out = tmp_path / "skip.xplt"
+    writer(out, mesh)
+    assert [c.type for c in engine.read(out).cells] == [
+        "hexahedron",
+        "tetra",
+        "triangle",
+        "line",
+    ]
+
+
+def test_a_series_is_a_state_per_step(tmp_path):
+    steps = []
+    for k in range(3):
+        mesh = _scratch_mesh()
+        mesh.point_data["temperature"] = mesh.point_data["temperature"] + k
+        steps.append((0.5 * k, mesh))
+    meshioplusplus.write_sequence(tmp_path / "run.xplt", iter(steps))
+    assert meshioplusplus.xplt.time_values(tmp_path / "run.xplt") == [0.0, 0.5, 1.0]
+    back = list(meshioplusplus.read_sequence(str(tmp_path / "run.xplt")))
+    for (_, got), (_, mesh) in zip(back, steps):
+        np.testing.assert_allclose(
+            got.point_data["temperature"], mesh.point_data["temperature"]
+        )
+    # The Python twin writes the same bytes.
+    with py_write.SeriesWriter(tmp_path / "py.xplt") as w:
+        for time, mesh in steps:
+            w.write(time, mesh)
+    assert (tmp_path / "py.xplt").read_bytes() == (tmp_path / "run.xplt").read_bytes()
+
+
+def test_a_series_refuses_a_different_mesh(tmp_path):
+    other = _scratch_mesh()
+    other.point_data["extra"] = np.zeros(11)
+    for make in (meshioplusplus.xplt.SeriesWriter, py_write.SeriesWriter):
+        with pytest.raises(meshioplusplus.WriteError):
+            with make(tmp_path / "bad.xplt") as w:
+                w.write(0.0, _scratch_mesh())
+                w.write(1.0, other)

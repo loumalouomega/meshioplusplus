@@ -5819,6 +5819,23 @@ PYBIND11_MODULE(_core, m) {
     });
 #endif
 
+    m.def("xplt_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_xplt(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::XpltSeriesWriter>(m, "XpltSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::XpltSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::XpltSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::XpltSeriesWriter::Finalize);
     m.def("radioss_anim_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {

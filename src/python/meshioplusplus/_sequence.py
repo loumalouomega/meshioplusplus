@@ -115,6 +115,7 @@ _SERIES_WRITERS = (
     "frd",
     "radioss_th",
     "radioss_anim",
+    "xplt",
     "nastran_op2",
     "nastran_h5",
     "lsdyna_binout",
@@ -890,6 +891,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
             for time, mesh in steps:
                 writer.write(time, mesh)
         return list(writer.paths)
+
+    if fmt == "xplt":
+        from .xplt import SeriesWriter
+
+        # Pushed: the mesh with the first step, then a state per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
 
     if fmt == "nastran_h5":
         from .nastran_h5 import SeriesWriter

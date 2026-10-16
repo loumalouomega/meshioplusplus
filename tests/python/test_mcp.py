@@ -488,7 +488,7 @@ def test_febio_xplt_states_convert_to_vtu(tmp_path):
         pathlib.Path(__file__).parent / "meshes" / "febio" / "xplt" / "xplt_hex27.xplt"
     )
     out = _dump(_tools.tool_formats())
-    assert "xplt" in out["readable"] and "xplt" not in out["writable"]
+    assert "xplt" in out["readable"] and "xplt" in out["writable"]
     info = _dump(_tools.tool_info(str(xplt)))
     assert len(info["time_values"]) == 4
     target = str(tmp_path / "last.vtu")
