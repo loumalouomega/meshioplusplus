@@ -2,6 +2,8 @@ from .. import _core
 from .._helpers import register_format
 from ._szplt import read as _py_read
 from ._szplt import time_values as _py_time_values
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import write as _py_write
 
 _HAS_TECIO = getattr(_core, "__has_tecio__", False)
 
@@ -29,6 +31,57 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-register_format("szplt", [".szplt"], read, {})
+def write(filename, mesh):
+    """Write a Tecplot SZL (``.szplt``) file through TecIO.
 
-__all__ = ["read", "time_values"]
+    The zones are the ASCII and ``.plt`` writers': one per cell block, the first
+    owning the coordinates and the nodal variables and the later ones sharing
+    them, doubles throughout, wedges and pyramids as degenerate bricks. Needs a
+    core built with ``MESHIOPLUSPLUS_WITH_TECIO=ON``, or a shared TecIO named by
+    ``MESHIOPLUSPLUS_TECIO_LIBRARY``.
+    """
+    if _HAS_TECIO:
+        return _core.szplt_write(str(filename), mesh)
+    return _py_write(filename, mesh)
+
+
+class SeriesWriter:
+    """Write a time series into one ``.szplt`` file, a strand of zones per step;
+    ``write_sequence(path, steps, file_format="szplt")`` uses it.
+
+    >>> with meshioplusplus.szplt.SeriesWriter("run.szplt") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+    """
+
+    def __init__(self, filename):
+        if _HAS_TECIO:
+            self._core, self._py = _core.SzpltSeriesWriter(str(filename)), None
+        else:
+            self._core, self._py = None, _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+register_format("szplt", [".szplt"], read, {"szplt": write})
+
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

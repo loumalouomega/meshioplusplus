@@ -222,8 +222,8 @@ def test_dispatch_and_sniffing(tmp_path):
     assert formats["extensions"][".t19"] == ["marc_t19"]
     assert formats["extensions"][".dat"] == ["marc", "tecplot"]
     assert {"marc", "marc_t19"} <= set(formats["readable"])
-    # The deck is written since v16.17.0; the post file stays read-only.
-    assert "marc" in formats["writable"] and "marc_t19" not in formats["writable"]
+    # The deck is written since v16.17.0, the post file since its writer joined.
+    assert "marc" in formats["writable"] and "marc_t19" in formats["writable"]
     # A Marc .dat reads as Marc; a Tecplot .dat still as Tecplot.
     mesh = meshioplusplus.read(MARC / "hex20.dat")
     assert [b.type for b in mesh.cells] == ["hexahedron20"]
@@ -458,3 +458,98 @@ def test_dat_writes_tecplot_unless_marc_is_named(tmp_path):
 
     assert sniff_format(tmp_path / "b.dat") == "marc"
     _same(deck, meshioplusplus.read(tmp_path / "b.dat"))
+
+
+# ---------------------------------------------------------------------------
+# The post-file writer: both engines write the same bytes, and either reader
+# gets the increments back (the reals to the e13.6 digits the file holds).
+# ---------------------------------------------------------------------------
+
+from meshioplusplus.marc import _t19 as py_t19  # noqa: E402
+
+T19_WRITERS = {
+    "core": lambda path, mesh: _core.marc_t19_write(str(path), mesh),
+    "python": py_t19.write,
+}
+
+
+@pytest.mark.parametrize("name", ["results.t19", "remesh.t19"])
+def test_the_t19_writers_agree_and_round_trip(name, tmp_path):
+    path = MARC / name
+    mesh = py_marc.read_t19(path, time_step=0)
+    written = {}
+    for key, writer in T19_WRITERS.items():
+        out = tmp_path / key / "job.t19"
+        out.parent.mkdir()
+        writer(out, mesh)
+        written[key] = out.read_bytes()
+    assert written["core"] == written["python"]
+    for read in (py_marc.read_t19, meshioplusplus.marc.read_t19):
+        back = read(tmp_path / "core" / "job.t19")
+        np.testing.assert_allclose(back.points, mesh.points)
+        assert [(c.type, c.data.tolist()) for c in back.cells] == [
+            (c.type, c.data.tolist()) for c in mesh.cells
+        ]
+        assert set(back.point_data) == set(mesh.point_data)
+        for key, value in mesh.point_data.items():
+            np.testing.assert_allclose(back.point_data[key], value, rtol=1e-5)
+        assert set(back.cell_data) == set(mesh.cell_data)
+        for key in mesh.cell_data:
+            for x, y in zip(mesh.cell_data[key], back.cell_data[key]):
+                np.testing.assert_allclose(x, y, rtol=1e-5, equal_nan=True)
+        assert _set_members(back) == _set_members(mesh)
+        assert float(back.field_data["meshio:time"][0]) == pytest.approx(
+            float(mesh.field_data["meshio:time"][0])
+        )
+
+
+def test_a_t19_series_is_an_increment_per_mesh(tmp_path):
+    steps = []
+    for k, step in enumerate((0, 1)):
+        mesh = py_marc.read_t19(MARC / "results.t19", time_step=step)
+        steps.append((0.5 * (k + 1), mesh))
+    out = tmp_path / "series.t19"
+    meshioplusplus.write_sequence(out, iter(steps), file_format="marc_t19")
+    assert meshioplusplus.marc.time_values(out) == [0.5, 1.0]
+    for k, (_, mesh) in enumerate(steps):
+        back = meshioplusplus.marc.read_t19(out, time_step=k)
+        np.testing.assert_allclose(
+            back.point_data["Displacement"], mesh.point_data["Displacement"], rtol=1e-5
+        )
+    with py_t19.SeriesWriter(tmp_path / "py.t19") as w:
+        for time, mesh in steps:
+            w.write(time, mesh)
+    assert (tmp_path / "py.t19").read_bytes() == out.read_bytes()
+    other = py_marc.read_t19(MARC / "results.t19")
+    other.point_data["extra"] = np.zeros(len(other.points))
+    for make in (meshioplusplus.marc.SeriesWriter, py_t19.SeriesWriter):
+        with pytest.raises(meshioplusplus.WriteError):
+            with make(tmp_path / "bad.t19") as w:
+                w.write(0.0, steps[0][1])
+                w.write(1.0, other)
+
+
+def test_layers_custom_names_and_nan(tmp_path):
+    mesh = py_marc.read_t19(MARC / "results.t19")
+    stress = mesh.cell_data["Stress"]
+    mesh.cell_data["Custom Scalar"] = [
+        np.arange(16.0).reshape(2, 8) + 100 * k for k, _ in enumerate(stress)
+    ]
+    mesh.cell_data["Stress@layer2"] = [np.array(a) * 2 for a in stress]
+    mesh.field_data["marc:layout:Stress@layer2"] = mesh.field_data["marc:layout:Stress"]
+    mesh.field_data["marc:layout:Custom Scalar"] = np.array([8, 1])
+    mesh.cell_data["Hole"] = [np.full((2, 8), np.nan) for _ in stress]
+    mesh.field_data["marc:layout:Hole"] = np.array([8, 1])
+    for key, writer in T19_WRITERS.items():
+        out = tmp_path / f"{key}.t19"
+        writer(out, mesh)
+        back = py_marc.read_t19(out)
+        np.testing.assert_allclose(
+            back.cell_data["Custom Scalar"][0], mesh.cell_data["Custom Scalar"][0]
+        )
+        np.testing.assert_allclose(
+            back.cell_data["Stress@layer2"][0],
+            mesh.cell_data["Stress@layer2"][0],
+            rtol=1e-5,
+        )
+        assert np.isnan(back.cell_data["Hole"][0]).all()

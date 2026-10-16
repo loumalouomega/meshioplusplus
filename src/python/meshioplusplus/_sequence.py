@@ -117,6 +117,8 @@ _SERIES_WRITERS = (
     "radioss_anim",
     "xplt",
     "vtx",
+    "szplt",
+    "marc_t19",
     "nastran_op2",
     "nastran_h5",
     "lsdyna_binout",
@@ -892,6 +894,24 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
             for time, mesh in steps:
                 writer.write(time, mesh)
         return list(writer.paths)
+
+    if fmt == "marc_t19":
+        from .marc import SeriesWriter
+
+        # Pushed: an increment per mesh, the file written when the writer closes.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "szplt":
+        from .szplt import SeriesWriter
+
+        # Pushed: a strand of zones per step into one .szplt file.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
 
     if fmt == "vtx":
         from .vtx import SeriesWriter

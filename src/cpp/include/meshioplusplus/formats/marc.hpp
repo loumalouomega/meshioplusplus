@@ -47,6 +47,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -98,6 +100,48 @@ MESHIOPLUSPLUS_API void write_marc(const std::string& rPath, const Mesh& rMesh);
  * @throws ReadError for a file that is not a post file, a remeshing increment,
  *         or an out-of-range time step
  */
+/**
+ * @brief Write one increment's MSC Marc formatted post file (`.t19`): the mesh,
+ *        its sets and, when present, element and nodal results, at
+ *        `field_data["meshio:time"]`. The model is the input deck writer's
+ *        (cells with a Marc element type, `marc:element` numbers, point and
+ *        cell regions as node and element sets). Point arrays of 1, 2, 3, 6 or 9
+ *        components are nodal results; cell arrays are element post codes (per
+ *        integration point where `marc:layout:<name>` says so). The Python twin
+ *        writes the same bytes.
+ * @throws WriteError when the mesh has no cell with a Marc element type
+ */
+MESHIOPLUSPLUS_API void write_marc_t19(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief An increment per mesh in one post file, written by `Finalize`; every
+ *        mesh must have the first one's points, cells and arrays. The Python
+ *        twin is `meshioplusplus.marc.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API MarcT19SeriesWriter {
+public:
+    explicit MarcT19SeriesWriter(const std::string& rPath);
+    ~MarcT19SeriesWriter();
+
+    MarcT19SeriesWriter(const MarcT19SeriesWriter&) = delete;
+    MarcT19SeriesWriter& operator=(const MarcT19SeriesWriter&) = delete;
+    MarcT19SeriesWriter(MarcT19SeriesWriter&&) noexcept;
+    MarcT19SeriesWriter& operator=(MarcT19SeriesWriter&&) noexcept;
+
+    /// Add one increment. @throws WriteError on a mismatch with the first one.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of increments added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no increment was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
+
 MESHIOPLUSPLUS_API Mesh read_marc_t19(const std::string& rPath, const ReadOptions& rOptions = {});
 
 /**

@@ -10,7 +10,7 @@ from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import is_buffer, open_file
-from .._regions import block_bases
+from .._regions import block_bases, canonical_regions
 from . import _ascii, _plt, _zones
 from ._plt import is_plt
 
@@ -123,7 +123,7 @@ def _zone_title(mesh, bases, block):
     entries are precisely the global cell-index range of this block.
     """
     lo, hi = bases[block], bases[block + 1]
-    for region in mesh.regions:
+    for region in canonical_regions(mesh):
         if region.kind != "cell" or len(region.entries) == 0:
             continue
         if len(region.entries) != hi - lo:
@@ -133,13 +133,17 @@ def _zone_title(mesh, bases, block):
     return f"block_{block}"
 
 
-def write(filename, mesh):
-    # One Tecplot ZONE per cell block -- no single-type restriction, no
-    # 2D/3D padding hack. Zone 1 carries the coordinates and nodal fields;
-    # later zones reuse them through VARSHARELIST rather than duplicating
-    # the (unwelded, shared) point array. A cell-data array is expected one
-    # entry per cell block (the meshio convention); a block outside
-    # ``cell_blocks`` (an unsupported type) simply never claims it.
+def write_plan(mesh):
+    """The zones and variables every Tecplot writer lays out: ``(cell_blocks,
+    variables, shared_data, cell_var_blocks, bases)``.
+
+    One Tecplot ZONE per cell block -- no single-type restriction, no 2D/3D
+    padding hack. Zone 1 carries the coordinates and nodal fields; later zones
+    reuse them through VARSHARELIST rather than duplicating the (unwelded,
+    shared) point array. A cell-data array is expected one entry per cell block
+    (the meshio convention); a block outside ``cell_blocks`` (an unsupported
+    type) simply never claims it.
+    """
     cell_blocks = []
     for ic, c in enumerate(mesh.cells):
         if _zone_type(c.type) is not None:
@@ -151,7 +155,6 @@ def write(filename, mesh):
     if not cell_blocks:
         raise WriteError("No cell type supported by Tecplot in mesh")
 
-    num_nodes = len(mesh.points)
     dim = mesh.points.shape[1]
 
     variables = ["X", "Y"]
@@ -160,7 +163,7 @@ def write(filename, mesh):
         variables.append("Z")
         shared_data.append(mesh.points[:, 2])
 
-    for k, v in mesh.point_data.items():
+    for k, v in sorted(mesh.point_data.items()):
         if k in {"X", "Y", "Z", "x", "y", "z"}:
             warn(f"Skipping point data '{k}'.")
             continue
@@ -171,12 +174,11 @@ def write(filename, mesh):
             for i, vv in enumerate(v.T):
                 variables.append(f"{k}_{i}")
                 shared_data.append(vv)
-    num_shared = len(variables)
 
     # Cell-centred variables, component-expanded: `cell_var_blocks[j]` maps
     # block index -> that component's 1-D array, for variable `num_shared+j`.
     cell_var_blocks = []
-    for k, v in mesh.cell_data.items():
+    for k, v in sorted(mesh.cell_data.items()):
         if k in {"X", "Y", "Z", "x", "y", "z"}:
             warn(f"Skipping cell data '{k}'.")
             continue
@@ -195,6 +197,13 @@ def write(filename, mesh):
             cell_var_blocks.append(per_block)
 
     bases = block_bases(mesh.cells)
+    return cell_blocks, variables, shared_data, cell_var_blocks, bases
+
+
+def write(filename, mesh):
+    cell_blocks, variables, shared_data, cell_var_blocks, bases = write_plan(mesh)
+    num_nodes = len(mesh.points)
+    num_shared = len(shared_data)
 
     if str(filename).lower().endswith(".plt"):
         _write_plt(

@@ -2450,13 +2450,28 @@ TecplotWriteFaces tecplot_write_faces(const TCellView& rCb) {
 
 }  // namespace
 
-// Writes one Tecplot ZONE per cell block (no single-type restriction). Zone
-// 1 carries the coordinates and every nodal field; later zones reuse them
-// through VARSHARELIST rather than duplicating the (unwelded, shared) point
-// array. Cell-centred variables are per-block: a zone that owns no values
-// for a given variable declares it PASSIVEVARLIST instead of writing zeros.
-void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
-    std::vector<std::size_t> blocks;
+namespace {
+
+/// The zones and variables every Tecplot writer lays out (twin of
+/// `_tecplot.write_plan`): the supported cell blocks, X, Y, (Z) then the point
+/// data as the shared variables, then the component-expanded cell data.
+struct TecplotWritePlan {
+    struct CellVarComp {
+        std::string mKey;
+        std::size_t mComp;
+        std::size_t mNumComp;
+    };
+    std::vector<std::size_t> mBlocks;
+    std::vector<std::string> mVariables;
+    std::vector<std::vector<double>> mShared;
+    std::size_t mNumShared = 0;
+    std::vector<CellVarComp> mCellVars;
+    std::vector<std::int64_t> mBases;
+};
+
+TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
+    TecplotWritePlan plan;
+    std::vector<std::size_t>& blocks = plan.mBlocks;
     for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
         const auto cb = rMesh.Cells(i);
         if (!meshio_to_tecplot(cb.Type()).empty())
@@ -2467,16 +2482,6 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     if (blocks.empty())
         throw WriteError("Tecplot writer found no supported cell blocks");
 
-    // A `.plt` name writes the binary #!TDV112 file; anything else the ASCII one.
-    std::string lower_path = rPath;
-    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    const bool plt = lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
-
-    auto os = plt ? detail::make_classic_ofstream(rPath, std::ios::binary)
-                  : detail::make_classic_ofstream(rPath);
-    if (!os)
-        throw WriteError("Could not open file for writing: " + rPath);
 
     const std::size_t dim = rMesh.PointDim();
     const std::size_t num_nodes = rMesh.NumPoints();
@@ -2484,10 +2489,11 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     const detail::DoubleView point_values(points);
 
     // Shared (nodal) variables: X, Y, (Z), then every point-data variable.
-    std::vector<std::string> variables = {"X", "Y"};
+    std::vector<std::string>& variables = plan.mVariables;
+    variables = {"X", "Y"};
     if (dim == 3)
         variables.push_back("Z");
-    std::vector<std::vector<double>> shared_data;
+    std::vector<std::vector<double>>& shared_data = plan.mShared;
     auto push_point_col = [&](std::size_t comp) {
         std::vector<double> col(num_nodes);
         for (std::size_t r = 0; r < num_nodes; ++r)
@@ -2513,16 +2519,11 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             shared_data.push_back(std::move(col));
         }
     }
-    const std::size_t num_shared = variables.size();
+    plan.mNumShared = variables.size();
 
     // Cell-centred variables (component-expanded); `mKey`/`mComp`/`mNumComp`
     // let each zone look its own values up (or find them absent) later.
-    struct CellVarComp {
-        std::string mKey;
-        std::size_t mComp;
-        std::size_t mNumComp;
-    };
-    std::vector<CellVarComp> cell_vars;
+    std::vector<TecplotWritePlan::CellVarComp>& cell_vars = plan.mCellVars;
     for (const auto& k : rMesh.CellDataNames()) {
         std::string ku = tecplot_upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z")
@@ -2530,7 +2531,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         if (rMesh.CellDataNumBlocks(k) == 0)
             continue;
         std::size_t ncomp = 1;
-        for (std::size_t b : blocks) {
+        for (std::size_t b : plan.mBlocks) {
             if (b < rMesh.CellDataNumBlocks(k)) {
                 const NDArray& vv = rMesh.CellData(k, b);
                 ncomp = vv.Shape().size() >= 2 ? vv.Shape()[1] : 1;
@@ -2543,22 +2544,55 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
-    // Zone title: an exactly-matching Cell region's name, else block_<i>.
-    auto zone_title = [&](std::size_t block) {
-        std::string title = "block_" + std::to_string(block);
-        for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
-            const meshioplusplus::Region& reg = rMesh.Region(ri);
-            if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
-                continue;
-            if (reg.NumEntries() != static_cast<std::size_t>(bases[block + 1] - bases[block]))
-                continue;
-            const std::int64_t* e = reg.Entries();
-            if (e[0] == bases[block] && e[reg.NumEntries() - 1] == bases[block + 1] - 1)
-                return reg.mName;
-        }
-        return title;
-    };
+    plan.mBases = detail::block_bases(rMesh);
+    return plan;
+}
+
+/// Zone title: an exactly-matching Cell region's name, else block_<i>.
+std::string tecplot_zone_title(const Mesh& rMesh, const std::vector<std::int64_t>& rBases,
+                               std::size_t Block) {
+    for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
+        const meshioplusplus::Region& reg = rMesh.Region(ri);
+        if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
+            continue;
+        if (reg.NumEntries() != static_cast<std::size_t>(rBases[Block + 1] - rBases[Block]))
+            continue;
+        const std::int64_t* e = reg.Entries();
+        if (e[0] == rBases[Block] && e[reg.NumEntries() - 1] == rBases[Block + 1] - 1)
+            return reg.mName;
+    }
+    return "block_" + std::to_string(Block);
+}
+
+}  // namespace
+
+// Writes one Tecplot ZONE per cell block (no single-type restriction). Zone
+// 1 carries the coordinates and every nodal field; later zones reuse them
+// through VARSHARELIST rather than duplicating the (unwelded, shared) point
+// array. Cell-centred variables are per-block: a zone that owns no values
+// for a given variable declares it PASSIVEVARLIST instead of writing zeros.
+void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
+    const TecplotWritePlan plan = tecplot_write_plan(rMesh);
+    const std::vector<std::size_t>& blocks = plan.mBlocks;
+    // A `.plt` name writes the binary #!TDV112 file; anything else the ASCII one.
+    std::string lower_path = rPath;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool plt = lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
+
+    auto os = plt ? detail::make_classic_ofstream(rPath, std::ios::binary)
+                  : detail::make_classic_ofstream(rPath);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    const std::size_t num_nodes = rMesh.NumPoints();
+    const std::vector<std::string>& variables = plan.mVariables;
+    const std::vector<std::vector<double>>& shared_data = plan.mShared;
+    const std::size_t num_shared = plan.mNumShared;
+    using CellVarComp = TecplotWritePlan::CellVarComp;
+    const std::vector<CellVarComp>& cell_vars = plan.mCellVars;
+    const std::vector<std::int64_t>& bases = plan.mBases;
+    auto zone_title = [&](std::size_t block) { return tecplot_zone_title(rMesh, bases, block); };
 
     if (plt) {
         // Binary #!TDV112 (Data Format Guide, appendix A), the twin of
@@ -2855,5 +2889,263 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 }
+
+
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+// --- SZL (.szplt) writer, through a user-installed TecIO ---------------------------
+// The twin of `szplt/_write.py`: the zones of the ASCII and `.plt` writers (one per
+// cell block, cell-centred variables passive where a block has none), in doubles.
+// TecIO shares a variable between zones only together with their connectivity, so a
+// mesh of one block is one zone with every point and a mesh of several gives each zone
+// the points its cells use. A series is a strand of zones per step; the later steps
+// share the first step's coordinates and connectivity.
+namespace {
+
+[[noreturn]] void szw_fail(const std::string& rMessage) {
+    throw WriteError("Tecplot .szplt: " + rMessage);
+}
+
+void szw_check(int Status, const char* pWhat) {
+    if (Status != 0)
+        szw_fail(std::string("TecIO failed in ") + pWhat);
+}
+
+int szw_zone_code(const std::string& rType) {
+    if (rType == "FELINESEG")
+        return 1;
+    if (rType == "FETRIANGLE")
+        return 2;
+    if (rType == "FEQUADRILATERAL")
+        return 3;
+    if (rType == "FETETRAHEDRON")
+        return 4;
+    if (rType == "FEBRICK")
+        return 5;
+    return 0;
+}
+
+class SzWriter {
+public:
+    explicit SzWriter(std::string Path) : mPath(std::move(Path)) {}
+    ~SzWriter() { Close(); }
+    SzWriter(const SzWriter&) = delete;
+    SzWriter& operator=(const SzWriter&) = delete;
+
+    void AddStep(const Mesh& rMesh, bool Unsteady, double Time) {
+        const TecplotWritePlan plan = tecplot_write_plan(rMesh);
+        std::vector<std::size_t> usable;
+        for (const std::size_t block : plan.mBlocks) {
+            if (szw_zone_code(meshio_to_tecplot(rMesh.Cells(block).Type())) != 0)
+                usable.push_back(block);
+            else
+                log::warn("Tecplot .szplt: skipping '{}' cells (SZL files are written without "
+                          "face-based zones)",
+                          rMesh.Cells(block).Type());
+        }
+        if (usable.empty())
+            szw_fail("no cell type SZL can hold in the mesh");
+        std::string signature = std::to_string(rMesh.NumPoints()) + "|";
+        for (const std::string& v : plan.mVariables)
+            signature += v + ",";
+        std::vector<std::vector<std::int64_t>> conns;
+        for (const std::size_t block : usable) {
+            const auto cb = rMesh.Cells(block);
+            signature += "|" + cb.Type() + ":" + std::to_string(cb.NumCells());
+            const detail::Int64View conn(cb.Conn());
+            conns.emplace_back(conn.Data(), conn.Data() + cb.NumCells() * cb.NodesPerCell());
+        }
+        // The first plan column of each coordinate is the step's point array.
+        const std::size_t ncoord = rMesh.PointDim() == 3 ? 3 : 2;
+        std::vector<std::vector<double>> coords(plan.mShared.begin(),
+                                                plan.mShared.begin() + static_cast<std::ptrdiff_t>(ncoord));
+        if (!mOpen) {
+            mSignature = signature;
+            mFirstCoords = coords;
+            mFirstConns = conns;
+            Open(plan.mVariables);
+        } else if (signature != mSignature) {
+            szw_fail("series: step " + std::to_string(mSteps) +
+                     "'s points, cells or variables differ from the first step's; write one "
+                     "file per step");
+        } else if (mSteps > 0 && (coords != mFirstCoords || conns != mFirstConns)) {
+            szw_fail("series: step " + std::to_string(mSteps) +
+                     "'s coordinates or connectivity differ from the first step's, which the "
+                     "later steps share; write one file per step");
+        }
+        const std::size_t nvar = plan.mVariables.size();
+        const std::size_t num_shared = plan.mNumShared;
+        const std::size_t num_points = rMesh.NumPoints();
+        const bool compact = usable.size() > 1;
+        for (std::size_t bi = 0; bi < usable.size(); ++bi) {
+            const std::size_t block = usable[bi];
+            const auto cb = rMesh.Cells(block);
+            const int ztype = szw_zone_code(meshio_to_tecplot(cb.Type()));
+            const std::size_t k = cb.NodesPerCell();
+            // The points this zone holds: all of them for a lone block, else the ones its
+            // cells use (TecIO shares variables only together with the connectivity).
+            std::vector<std::int64_t> used;
+            std::vector<std::int64_t> local = conns[bi];
+            if (compact) {
+                used = conns[bi];
+                std::sort(used.begin(), used.end());
+                used.erase(std::unique(used.begin(), used.end()), used.end());
+                for (std::int64_t& n : local)
+                    n = std::lower_bound(used.begin(), used.end(), n) - used.begin();
+            } else {
+                used.resize(num_points);
+                for (std::size_t i = 0; i < num_points; ++i)
+                    used[i] = static_cast<std::int64_t>(i);
+            }
+            std::vector<std::size_t> present;
+            for (std::size_t j = 0; j < plan.mCellVars.size(); ++j)
+                if (block < rMesh.CellDataNumBlocks(plan.mCellVars[j].mKey))
+                    present.push_back(j);
+            std::vector<std::int32_t> share(nvar, 0), location(nvar, 0), passive(nvar, 0),
+                types(nvar, 2);
+            for (std::size_t v = 0; v < num_shared; ++v)
+                location[v] = 1;
+            for (std::size_t j = 0; j < plan.mCellVars.size(); ++j)
+                if (std::find(present.begin(), present.end(), j) == present.end())
+                    passive[num_shared + j] = 1;
+            const std::int32_t conn_share =
+                mSteps > 0 && mFirstStepZone.count(bi) ? mFirstStepZone.at(bi) : 0;
+            if (conn_share != 0)
+                for (std::size_t v = 0; v < ncoord; ++v)
+                    share[v] = conn_share;
+            std::int32_t zone = 0;
+            szw_check(tecZoneCreateFE(mHandle, tecplot_zone_title(rMesh, plan.mBases, block).c_str(),
+                                      ztype, static_cast<int64_t>(used.size()),
+                                      static_cast<int64_t>(cb.NumCells()), types.data(),
+                                      share.data(), location.data(), passive.data(), conn_share, 0,
+                                      0, &zone),
+                      "tecZoneCreateFE");
+            if (mSteps == 0)
+                mFirstStepZone[bi] = zone;
+            if (Unsteady)
+                szw_check(tecZoneSetUnsteadyOptions(mHandle, zone, Time, 1),
+                          "tecZoneSetUnsteadyOptions");
+            auto write_values = [&](std::size_t Var, const std::vector<double>& rValues) {
+                if (rValues.empty())
+                    return;
+                szw_check(tecZoneVarWriteDoubleValues(mHandle, zone,
+                                                      static_cast<std::int32_t>(Var + 1), 0,
+                                                      static_cast<int64_t>(rValues.size()),
+                                                      rValues.data()),
+                          "tecZoneVarWriteDoubleValues");
+            };
+            for (std::size_t v = 0; v < num_shared; ++v) {
+                if (share[v] != 0)
+                    continue;
+                std::vector<double> col(used.size());
+                for (std::size_t i = 0; i < used.size(); ++i)
+                    col[i] = plan.mShared[v][static_cast<std::size_t>(used[i])];
+                write_values(v, col);
+            }
+            for (const std::size_t j : present) {
+                const auto& cv = plan.mCellVars[j];
+                const NDArray& vv = rMesh.CellData(cv.mKey, block);
+                const detail::DoubleView values(vv);
+                std::vector<double> col(vv.Shape()[0]);
+                for (std::size_t r = 0; r < col.size(); ++r)
+                    col[r] = values[r * cv.mNumComp + cv.mComp];
+                write_values(num_shared + j, col);
+            }
+            if (conn_share == 0) {
+                const std::vector<int>& order = tecplot_order(cb.Type());
+                std::vector<std::int32_t> nodes;
+                for (std::size_t r = 0; r < cb.NumCells(); ++r)
+                    for (const int o : order) {
+                        std::size_t src = static_cast<std::size_t>(o);
+                        if (src >= k)
+                            src = k - 1;
+                        nodes.push_back(static_cast<std::int32_t>(local[r * k + src] + 1));
+                    }
+                szw_check(tecZoneNodeMapWrite32(mHandle, zone, 0, 1,
+                                                static_cast<int64_t>(nodes.size()), nodes.data()),
+                          "tecZoneNodeMapWrite32");
+            }
+        }
+        ++mSteps;
+    }
+
+    std::size_t NumSteps() const { return mSteps; }
+
+    void Close() {
+        if (mHandle != nullptr) {
+            void* h = mHandle;
+            mHandle = nullptr;
+            tecFileWriterClose(&h);
+        }
+    }
+
+private:
+    void Open(const std::vector<std::string>& rVariables) {
+        std::string names;
+        for (std::size_t v = 0; v < rVariables.size(); ++v) {
+            std::string name = rVariables[v];
+            std::replace(name.begin(), name.end(), ',', '_');
+            names += (v ? "," : "") + name;
+        }
+        szw_check(tecFileWriterOpen(mPath.c_str(), "meshio++", names.c_str(), 1, 0, 2, nullptr,
+                                    &mHandle),
+                  "tecFileWriterOpen");
+        mOpen = true;
+    }
+
+    std::string mPath;
+    void* mHandle = nullptr;
+    bool mOpen = false;
+    std::string mSignature;
+    std::vector<std::vector<double>> mFirstCoords;
+    std::vector<std::vector<std::int64_t>> mFirstConns;
+    std::size_t mSteps = 0;
+    std::map<std::size_t, std::int32_t> mFirstStepZone;
+};
+
+}  // namespace
+
+void write_szplt(const std::string& rPath, const Mesh& rMesh) {
+    detail::LibraryLock lock;
+    SzWriter writer(rPath);
+    writer.AddStep(rMesh, false, 0.0);
+    writer.Close();
+}
+
+struct SzpltSeriesWriter::Impl {
+    std::unique_ptr<SzWriter> mWriter;
+};
+
+SzpltSeriesWriter::SzpltSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mWriter = std::make_unique<SzWriter>(rPath);
+}
+
+SzpltSeriesWriter::~SzpltSeriesWriter() {
+    if (mpImpl) {
+        detail::LibraryLock lock;
+        mpImpl.reset();
+    }
+}
+
+SzpltSeriesWriter::SzpltSeriesWriter(SzpltSeriesWriter&&) noexcept = default;
+SzpltSeriesWriter& SzpltSeriesWriter::operator=(SzpltSeriesWriter&&) noexcept = default;
+
+void SzpltSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        szw_fail("series: the writer was moved from");
+    detail::LibraryLock lock;
+    mpImpl->mWriter->AddStep(rMesh, true, Time);
+}
+
+std::size_t SzpltSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mWriter->NumSteps() : 0;
+}
+
+void SzpltSeriesWriter::Finalize() {
+    if (!mpImpl)
+        return;
+    detail::LibraryLock lock;
+    mpImpl->mWriter->Close();
+}
+#endif  // MESHIOPLUSPLUS_HAS_TECIO
 
 }  // namespace meshioplusplus

@@ -1083,8 +1083,13 @@ def _set_name(name, used):
     return out
 
 
-def write(filename, mesh):
-    """Write an MSC Marc input deck (see ``marc/__init__.py``)."""
+class _DeckModel:
+    """What a Marc writer takes from a mesh: the points, the cells that have a
+    Marc element type, their element numbers and the sets."""
+
+
+def deck_model(mesh):
+    """The ``_DeckModel`` of ``mesh``."""
     points = np.asarray(mesh.points, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] > 3:
         raise WriteError("Marc writer: points must have 1 to 3 coordinates")
@@ -1187,7 +1192,7 @@ def write(filename, mesh):
         else:
             sides += 1
             continue
-        sets.append((family, _set_name(reg.name, used_names), _set_items(members)))
+        sets.append((family, _set_name(reg.name, used_names), members))
     if unlisted:
         warn(f"Marc writer: {unlisted} set member(s) on cells not written dropped")
     if sides:
@@ -1214,13 +1219,29 @@ def write(filename, mesh):
         ]
         set_name = _set_name(name.split(":", 2)[2], used_names)
         facet_sets.append((family, set_name, [f" {t}" for t in items]))
-    if dropped_data:
+    m = _DeckModel()
+    m.points, m.npts, m.cells, m.written = points, npts, cells, written
+    m.elem_id, m.sets, m.facet_sets, m.dropped_data = (
+        elem_id,
+        sets,
+        facet_sets,
+        dropped_data,
+    )
+    return m
+
+
+def write(filename, mesh):
+    """Write an MSC Marc input deck (see ``marc/__init__.py``)."""
+    m = deck_model(mesh)
+    points, npts, cells, written = m.points, m.npts, m.cells, m.written
+    elem_id, facet_sets = m.elem_id, m.facet_sets
+    sets = [(fam, name, _set_items(members)) for fam, name, members in m.sets]
+    if m.dropped_data:
         warn(
             "Marc writer: a deck holds no data arrays; point, cell and field data other "
             "than marc:element, marc:type and the face and edge sets dropped"
         )
         _provenance.note("data-dropped", "a Marc deck holds no data arrays")
-
     types_used = sorted({cells[c][2] for c in written})
     out = [_keyword("title", "meshio++")]
     out += ["$ " + line for line in _provenance.lines(_provenance.SlotTier.BLOCK)]

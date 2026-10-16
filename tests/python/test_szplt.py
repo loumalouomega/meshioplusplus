@@ -89,3 +89,102 @@ def test_without_tecio_names_the_remedies(monkeypatch):
     with pytest.raises(ImportError, match=r"save the file as \.plt"):
         _szplt.read(SZPLT / "fe_mixed.szplt")
     assert "ctypes" in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# The writer: the zones of the ASCII and `.plt` writers, through TecIO. The
+# `.dat` twins of the fixtures are the oracle; each engine writes and reads.
+# ---------------------------------------------------------------------------
+
+from meshioplusplus.szplt import _write as py_write  # noqa: E402
+
+
+@pytest.fixture(params=["core", "ctypes"])
+def writer(request):
+    if request.param == "core":
+        if not getattr(_core, "__has_tecio__", False):
+            pytest.skip("core built without TecIO")
+        return lambda path, mesh: _core.szplt_write(str(path), mesh)
+    if not os.environ.get("MESHIOPLUSPLUS_TECIO_LIBRARY"):
+        pytest.skip("MESHIOPLUSPLUS_TECIO_LIBRARY names no shared TecIO")
+    return py_write.write
+
+
+def _any_reader():
+    if getattr(_core, "__has_tecio__", False):
+        return _core_read
+    return _szplt.read
+
+
+@pytest.mark.parametrize("name", ["fe_mixed", "triangles"])
+def test_a_written_file_reads_as_the_ascii_twin(writer, name, tmp_path):
+    twin = meshioplusplus.read(SZPLT / f"{name}.dat")
+    out = tmp_path / f"{name}.szplt"
+    writer(out, twin)
+    again = _any_reader()(out)
+    _assert_same(again, twin)
+
+
+def test_wedges_and_pyramids_are_degenerate_bricks(writer, tmp_path):
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [0, 1, 1],
+            [0.3, 0.3, 2],
+        ],
+        dtype=float,
+    )
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [
+            ("wedge", np.array([[0, 1, 2, 3, 4, 5]])),
+            ("pyramid", np.array([[0, 1, 4, 3, 6]])),
+        ],
+    )
+    mesh.point_data["p"] = np.arange(7.0)
+    out = tmp_path / "w.szplt"
+    writer(out, mesh)
+    again = _any_reader()(out)
+    # Degenerate bricks, as the `.plt` writer's: SZL has no wedge or pyramid.
+    assert [c.type for c in again.cells] == ["hexahedron", "hexahedron"]
+    rows = [sorted(set(row)) for c in again.cells for row in c.data.tolist()]
+    assert [len(r) for r in rows] == [6, 5]
+    assert len(again.points) == 11  # each block's own points (shared ones repeated)
+
+
+def test_a_series_is_a_strand_of_zones(tmp_path):
+    if not (
+        getattr(_core, "__has_tecio__", False)
+        or os.environ.get("MESHIOPLUSPLUS_TECIO_LIBRARY")
+    ):
+        pytest.skip("no TecIO")
+    base = meshioplusplus.read(SZPLT / "fe_mixed.dat")
+    steps = []
+    for k in range(3):
+        mesh = meshioplusplus.read(SZPLT / "fe_mixed.dat")
+        mesh.point_data["P"] = mesh.point_data["P"] + k
+        steps.append((0.5 * k, mesh))
+    out = tmp_path / "series.szplt"
+    meshioplusplus.write_sequence(out, iter(steps), file_format="szplt")
+    assert meshioplusplus.szplt.time_values(out) == [0.0, 0.5, 1.0]
+    for k, (_, mesh) in enumerate(steps):
+        again = _any_reader()(out, time_step=k)
+        np.testing.assert_array_equal(again.points, base.points)
+        np.testing.assert_array_equal(again.point_data["P"], mesh.point_data["P"])
+        assert [c.type for c in again.cells] == [c.type for c in base.cells]
+
+
+def test_a_series_refuses_a_different_mesh(tmp_path):
+    if not os.environ.get("MESHIOPLUSPLUS_TECIO_LIBRARY"):
+        pytest.skip("MESHIOPLUSPLUS_TECIO_LIBRARY names no shared TecIO")
+    mesh = meshioplusplus.read(SZPLT / "fe_mixed.dat")
+    other = meshioplusplus.read(SZPLT / "fe_mixed.dat")
+    other.point_data["extra"] = np.zeros(len(other.points))
+    with pytest.raises(meshioplusplus.WriteError):
+        with py_write.SeriesWriter(tmp_path / "bad.szplt") as w:
+            w.write(0.0, mesh)
+            w.write(1.0, other)

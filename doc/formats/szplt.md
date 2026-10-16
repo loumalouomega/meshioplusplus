@@ -1,12 +1,12 @@
 # Tecplot SZL (`.szplt`)
 
-Tecplot's subzone-loadable format, the default output of Tecplot 360 since 2016 and of TecIO-based solvers (SU2, FUN3D…). It is undocumented, and TecIO, Tecplot's own library, is its only reader, so meshio++ reads it through a TecIO the user already has. New in v16.13.0, read-only.
+Tecplot's subzone-loadable format, the default output of Tecplot 360 since 2016 and of TecIO-based solvers (SU2, FUN3D…). It is undocumented, and TecIO, Tecplot's own library, is its only reader, so meshio++ reads it through a TecIO the user already has. New in v16.13.0; written too since the writer joined.
 
 | | |
 |---|---|
 | **Format name** | `szplt` |
 | **Extensions** | `.szplt` (also found by content, `#!SZPLT`) |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#szplt): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.10) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#szplt)) |
 | **Time steps** | ✓ — as [Tecplot](./tecplot.md): the distinct solution times |
 | **Extra dependencies** | TecIO: a core built with `MESHIOPLUSPLUS_WITH_TECIO=ON`, or a shared TecIO named by `MESHIOPLUSPLUS_TECIO_LIBRARY` |
 
@@ -21,6 +21,19 @@ meshioplusplus.szplt.time_values("flow.szplt")
 ```
 
 A `.szplt` reads exactly as the same data saved as `.plt` or `.dat` does: TecIO's reader fills the zone model the ASCII and binary Tecplot readers share, so zones, regions, point and cell data, variable sharing, passive variables, shared connectivity and time steps follow [Tecplot](./tecplot.md#data-mapping). FEPOLYGON and FEPOLYHEDRON zones are refused by name (save such a file as `.plt`).
+
+## Writing
+
+```python
+meshioplusplus.write("flow.szplt", mesh)                                   # a static data set
+meshioplusplus.write_sequence("flow.szplt", steps, file_format="szplt")   # a strand of zones per step
+```
+
+```bash
+meshioplusplus convert model.vtu model.szplt
+```
+
+TecIO writes the file, in the layout the [ASCII and `.plt` writers](./tecplot.md#reading-writing) use: one zone per cell block (named after a cell region that is exactly the block, else `block_<i>`), X, Y, (Z) and the point data as nodal variables, cell data as cell-centred variables (a variable a block has no values for is passive in its zone), vector and tensor arrays split into `<name>_<k>`, and doubles throughout. A wedge or pyramid is a degenerate brick and comes back as a hexahedron, as in `.plt`; vertices and polygon or polyhedron blocks are skipped with a warning. TecIO shares a variable between zones only together with their connectivity, so the blocks of one mesh cannot share a point array as they do in the other Tecplot writers: a mesh of one block is one zone with every point, and a mesh of several gives each zone the points its cells use (a point several blocks use is repeated, one no cell uses is dropped), as TecIO's own files have it. A series is a strand (`STRANDID` 1) of zones per step at the step's time, the later steps sharing the first step's coordinates and connectivity, so every step needs the first step's points and cells and the same variables. The core built with TecIO and the Python twin through `MESHIOPLUSPLUS_TECIO_LIBRARY` write the same zones; they are never loaded together, since the twin needs a second, shared TecIO.
 
 ## Getting TecIO
 

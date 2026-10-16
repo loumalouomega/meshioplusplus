@@ -334,6 +334,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
+        {"marc_t19", meshioplusplus::write_marc_t19},
         {"elmer",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},
@@ -526,6 +527,9 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"xplt", meshioplusplus::write_xplt},
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
         {"vtx", meshioplusplus::write_vtx},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        {"szplt", meshioplusplus::write_szplt},
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,

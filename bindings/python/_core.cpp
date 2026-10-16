@@ -5721,6 +5721,26 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"));
     m.def(
+        "marc_t19_write",
+        [](const std::string& path, py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_marc_t19(path, mesh);
+            });
+        },
+        py::arg("path"), py::arg("mesh"));
+    py::class_<meshioplusplus::MarcT19SeriesWriter>(m, "MarcT19SeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::MarcT19SeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::MarcT19SeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::MarcT19SeriesWriter::Finalize);
+    m.def(
         "marc_t19_read",
         guard_read("marc_t19",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {
@@ -5834,6 +5854,23 @@ PYBIND11_MODULE(_core, m) {
     m.def("szplt_time_values", [](const std::string& path) {
         return core_nogil([&] { return meshioplusplus::szplt_time_values(path); });
     });
+    m.def("szplt_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_szplt(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::SzpltSeriesWriter>(m, "SzpltSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::SzpltSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::SzpltSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::SzpltSeriesWriter::Finalize);
 #endif
 
     m.def("xplt_write", [](const std::string& path, py::object pymesh) {

@@ -842,6 +842,27 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point", "side"],
     },
+    "marc_t19": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "Reals are `e13.6`, six digits, and integers come back as float64; the model "
+        "is the input deck's, so a `vertex` has no type, side regions are dropped, and "
+        "Herrmann, bubble and generalized plane strain types come back as the default type "
+        "of their shape. A post file is checked against meshio++'s own reader only, until a "
+        "Mentat run (roadmap §1.2.11).",
+    },
     "marc": {
         "cells": {
             "line": "exact",
@@ -1296,6 +1317,28 @@ SPEC: dict[str, dict] = {
         "note": "Everything is stored as 32-bit floats, so coordinates and data are "
         "approximate and integers come back as float64; the animation holds one state, "
         "so the data are the state's and field data other than the time are not kept.",
+    },
+    "szplt": {
+        "cells": {
+            "vertex": "lost",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "as hexahedron",
+            "pyramid": "as hexahedron",
+        },
+        "points": "subset",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "SZL has no wedge or pyramid zone type: both are written as degenerate bricks "
+        "and come back as hexahedra, and a zone has no vertex element. TecIO shares a variable "
+        "between zones only with their connectivity, so with several blocks each zone holds the "
+        "points its cells use (a point several blocks use is repeated: the mixed mesh reads back "
+        "with more points, and its point data with them); one block alone round-trips exactly.",
     },
     "nastran_h5": {
         "cells": {
@@ -1768,14 +1811,6 @@ READ_ONLY = {
         "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
     ),
     "lsdyna_d3plot": _GAP.format(item="3.2.2", why=_RESULT.format(tool="LS-DYNA")),
-    "marc_t19": _GAP.format(
-        item="3.2.11",
-        why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
-    ),
-    "szplt": _GAP.format(
-        item="3.2.10",
-        why="Tecplot's SZL container, written through TecIO; needs the optional TecIO build.",
-    ),
 }
 
 # The mirror: formats that write without reading. `svg`, `tikz` and `gltf` left it

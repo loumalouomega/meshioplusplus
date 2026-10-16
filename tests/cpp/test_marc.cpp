@@ -380,3 +380,43 @@ TEST(Marc, WriterPicksTypesForAPlanarMesh) {
     EXPECT_EQ(meshioplusplus::detail::read_int(back.CellData("marc:type", 1), 0), 6);
     std::remove(out.c_str());
 }
+
+TEST(MarcT19Writer, IncrementsRoundTripAndTheSeriesNumbersThem) {
+    namespace fs = std::filesystem;
+    const std::string dir = mt::temp_path("_marc_t19");
+    fs::create_directories(dir);
+    meshioplusplus::Mesh mesh = mt::hex_mesh();
+    {
+        meshioplusplus::NDArray u(meshioplusplus::DType::Float64,
+                                  {mesh.NumPoints(), std::size_t{3}});
+        for (std::size_t i = 0; i < u.Size(); ++i)
+            u.As<double>()[i] = 0.5 * static_cast<double>(i);
+        mesh.AddPointData("Displacement", std::move(u));
+        meshioplusplus::NDArray s(meshioplusplus::DType::Float64, {std::size_t{1}});
+        s.As<double>()[0] = 12.5;
+        mesh.AddCellData("Equivalent Von Mises Stress", {std::move(s)});
+    }
+    const std::string path = dir + "/job.t19";
+    meshioplusplus::write_marc_t19(path, mesh);
+    const meshioplusplus::Mesh back = meshioplusplus::read_marc_t19(path);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+    EXPECT_EQ(back.NumPoints(), mesh.NumPoints());
+    EXPECT_NEAR(back.PointData("Displacement").As<double>()[5], 2.5, 1e-5);
+    EXPECT_NEAR(back.CellData("Equivalent Von Mises Stress", 0).As<double>()[0], 12.5, 1e-4);
+
+    const std::string series = dir + "/series.t19";
+    meshioplusplus::MarcT19SeriesWriter writer(series);
+    writer.Write(0.5, mesh);
+    writer.Write(1.0, mesh);
+    writer.Finalize();
+    EXPECT_EQ(writer.NumSteps(), 2u);
+    EXPECT_EQ(meshioplusplus::read_marc_t19_metadata(series).mTimeValues,
+              (std::vector<double>{0.5, 1.0}));
+    meshioplusplus::MarcT19SeriesWriter bad(dir + "/bad.t19");
+    bad.Write(0.0, mesh);
+    meshioplusplus::Mesh other = mt::hex_mesh();
+    meshioplusplus::NDArray extra(meshioplusplus::DType::Float64, {other.NumPoints()});
+    other.AddPointData("extra", std::move(extra));
+    EXPECT_THROW(bad.Write(1.0, other), meshioplusplus::WriteError);
+}
