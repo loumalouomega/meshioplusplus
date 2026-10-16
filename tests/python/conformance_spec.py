@@ -1463,11 +1463,11 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
-        "regions": ["cell", "point"],
+        "regions": ["cell", "point", "side"],
         "note": "A results file holds the model and the results Abaqus names: only point "
         "data named like a nodal result (`U`, `RF`...) and cell data named like an element "
         "result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; "
-        "a `vertex` has no Abaqus element and side regions are dropped.",
+        "a `vertex` has no Abaqus element. Side regions are contact surfaces.",
     },
     "step": {
         "cells": {

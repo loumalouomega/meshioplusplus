@@ -17,7 +17,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | Format name | Extensions | Read | Write | Extra dependencies | Round trip |
 |---|---|---|---|---|---|
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — | [6/8 cells · no data · regions CPS](./conformance.md#abaqus) |
-| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#abaqus-fil) |
+| [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#abaqus-fil) |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansysinp) |
 | [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansys-rst) |
