@@ -370,11 +370,12 @@ TEST(Xplt, EdgeVariablesRideOnLineBlocks) {
 TEST(XpltWriter, StateAndSeriesRoundTrip) {
     const Plt p;
     const std::string path = write_plot(plot_chunks(p, 0x35, false), p, false);
-    const Mesh original = read_xplt(path, [] {
+    const auto step_one = [] {
         ReadOptions o;
         o.mTimeStep = 1;
         return o;
-    }());
+    };
+    const Mesh original = read_xplt(path, step_one());
     const std::string out = temp_path(".xplt");
     write_xplt(out, original);
     const Mesh again = read_xplt(out);
@@ -402,7 +403,8 @@ TEST(XpltWriter, StateAndSeriesRoundTrip) {
     writer.Finalize();
     EXPECT_EQ(writer.NumSteps(), 2u);
     EXPECT_EQ(read_xplt_metadata(series).mTimeValues, (std::vector<double>{0.25, 0.75}));
-    Mesh other = original;
+    // A second read of the same state rather than a copy: a KRATOS mesh cannot be copied.
+    Mesh other = read_xplt(path, step_one());
     XpltSeriesWriter mismatch(temp_path(".xplt"));
     mismatch.Write(0.0, original);
     other.AddPointData("extra", original.PointData("displacement"));
