@@ -1067,3 +1067,43 @@ def test_written_series_refuses_a_changed_model(tmp_path):
         w.write(0.0, _brick())
         with pytest.raises(Exception, match="differ"):
             w.write(1.0, other)
+
+
+_LOSSLESS = [
+    "beam44.rst",
+    "beam_static_bc.rst",
+    "cyc_stress.rst",
+    "file.rst",
+    "hex_201.rst",
+    "shell181_2021R1.rst",
+    "shell281.rst",
+    "temp_v13.rst",
+    "file.rth",
+]
+
+
+@pytest.mark.parametrize("name", _LOSSLESS)
+def test_written_set_keeps_the_raw_records_and_element_forces(tmp_path, name):
+    """read(write(read(f))) keeps everything the reader returns -- including the
+    raw element records (ENG, EMS, ...) and the element nodal forces ENF -- and
+    both engines write the same bytes."""
+    source = py_rst.read(str(RST / name), time_step=-1)
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), source)
+    py_write.write(str(twin), source)
+    assert core.read_bytes() == twin.read_bytes()
+    for read in (meshioplusplus.ansys_rst.read, py_rst.read):
+        back = read(core)
+        assert [c.type for c in back.cells] == [c.type for c in source.cells]
+        for key, value in source.point_data.items():
+            np.testing.assert_allclose(
+                np.nan_to_num(back.point_data[key]), np.nan_to_num(value), rtol=1e-6
+            )
+        for key, blocks in source.cell_data.items():
+            for x, y in zip(blocks, back.cell_data[key]):
+                assert x.shape == y.shape, key
+                np.testing.assert_allclose(
+                    np.nan_to_num(y), np.nan_to_num(x), rtol=1e-6, err_msg=key
+                )
+        for key in source.field_data:
+            assert key in back.field_data, key

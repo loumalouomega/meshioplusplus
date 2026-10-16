@@ -81035,6 +81035,8 @@ struct RstwSet {
     };
     std::vector<Reaction> mReactions;
     std::vector<RstwTensor> mTensors;
+    std::vector<const RstRawRecord*> mRaw;  ///< raw element records present in the mesh
+    bool mEnf = false;                       ///< element nodal forces, one value per DOF
     std::int64_t mMask = 0;
 };
 
@@ -81134,6 +81136,24 @@ RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
                 s.mMask |= std::int64_t{1} << kBits[t];
             }
         }
+    for (const RstRawRecord& r : kRstRawRecords)
+        if (rMesh.HasCellData(r.mName)) {
+            s.mRaw.push_back(&r);
+            s.mMask |= std::int64_t{1} << (r.mEntry + 1);
+        }
+    if (rMesh.HasCellData("ENF")) {
+        const bool layout = rMesh.HasFieldData("ansys:layout:ENF") &&
+                            rMesh.FieldData("ansys:layout:ENF").Size() >= 2 &&
+                            static_cast<std::size_t>(detail::read_int(
+                                rMesh.FieldData("ansys:layout:ENF"), 1)) == s.mDofs.size() &&
+                            !s.mDofs.empty();
+        if (layout) {
+            s.mEnf = true;
+            s.mMask |= std::int64_t{1} << (kRstEnf + 1);
+        } else {
+            log::warn("Ansys .rst writer: ENF needs its layout over the set's DOFs; dropped");
+        }
+    }
     if (!columns.empty() || !s.mReactions.empty())
         s.mMask |= std::int64_t{1} << kRstwBitNsl;
     if (!s.mReactions.empty())
@@ -81145,69 +81165,124 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
                                   const RstwSet& rSet, std::size_t Base) {
     const std::size_t esl = rF.Ints(std::vector<std::int64_t>(2 * rModel.mNelm, 0));
     rF.Patch64(Base, 118, 119, static_cast<std::int64_t>(esl - Base));
+    const std::size_t numdof = rSet.mDofs.size();
     for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
         const RstwElement& e = rModel.mElements[k];
-        if (!rModel.mHasResults[e.mBlock])
-            continue;
-        // per tensor: surfaces[top] -> (npc, 6) rows
-        struct Surfaces {
-            std::size_t mTensor = 0;
-            std::map<bool, std::vector<double>> mRows;
-        };
-        std::vector<Surfaces> entries;
-        for (const RstwTensor& t : rSet.mTensors) {
-            const NDArray& a = rMesh.CellData(t.mName, e.mBlock);
+        const RstwSlotInfo& info = rModel.mSlots.at(e.mSlot);
+        std::vector<std::pair<std::size_t, std::vector<double>>> pending;
+        // raw records: the values up to the last one the element has
+        for (const RstRawRecord* raw : rSet.mRaw) {
+            if (e.mBlock >= rMesh.CellDataNumBlocks(raw->mName))
+                continue;
+            const NDArray& a = rMesh.CellData(raw->mName, e.mBlock);
             const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
             if (a.Shape().size() != 2 || count <= e.mRow)
                 continue;
             const std::size_t width = a.Shape()[1];
-            const std::size_t npc = width / 6;
-            if (npc == 0 || width % 6)
-                continue;
             const detail::DoubleView view(a);
-            std::vector<double> row(view.Data() + e.mRow * width, view.Data() + (e.mRow + 1) * width);
-            auto it = std::find_if(entries.begin(), entries.end(),
-                                   [&](const Surfaces& s) { return s.mTensor == t.mTensor; });
-            if (it == entries.end()) {
-                entries.push_back({t.mTensor, {}});
-                it = entries.end() - 1;
-            }
-            it->mRows[t.mTop] = std::move(row);
-        }
-        if (entries.empty())
-            continue;
-        const RstwSlotInfo& info = rModel.mSlots.at(e.mSlot);
-        const std::size_t nodstr = info.mNodstr;
-        const std::size_t layers = (e.mRoutine == 181 || e.mRoutine == 281) && rModel.mLayered ? 2 : 1;
-        std::vector<std::pair<std::size_t, std::vector<double>>> pending;
-        for (const Surfaces& surfaces : entries) {
-            const std::size_t items = kRstTensors[surfaces.mTensor].mItems;
-            std::vector<double> values(nodstr * layers * items, kRstUndefined);
-            for (std::size_t row = 0; row < nodstr * layers; ++row)
-                for (std::size_t c = 6; c < items; ++c)
-                    values[row * items + c] = 0.0;
+            std::size_t last = 0;
             bool any = false;
-            for (const auto& [top, data] : surfaces.mRows) {
-                if (top && layers == 1)
-                    continue;
-                const std::size_t layer = top && layers == 2 ? 1 : 0;
-                const std::size_t npc = data.size() / 6;
-                for (std::size_t j = 0; j < e.mCellSlots.size(); ++j) {
-                    const std::size_t slot = static_cast<std::size_t>(e.mCellSlots[j]);
-                    if (j >= npc || slot >= nodstr)
-                        continue;
-                    bool finite = true;
-                    for (std::size_t c = 0; c < 6; ++c)
-                        finite = finite && std::isfinite(data[j * 6 + c]);
-                    if (!finite)
-                        continue;
-                    for (std::size_t c = 0; c < 6; ++c)
-                        values[(layer * nodstr + slot) * items + c] = data[j * 6 + c];
+            for (std::size_t c = 0; c < width; ++c)
+                if (std::isfinite(view.Data()[e.mRow * width + c])) {
+                    last = c;
                     any = true;
                 }
+            if (!any)
+                continue;
+            std::vector<double> row(last + 1);
+            for (std::size_t c = 0; c <= last; ++c) {
+                const double v = view.Data()[e.mRow * width + c];
+                row[c] = std::isfinite(v) ? v : kRstUndefined;
             }
-            if (any)
-                pending.emplace_back(kRstTensors[surfaces.mTensor].mEntry, std::move(values));
+            pending.emplace_back(raw->mEntry, std::move(row));
+        }
+        if (rModel.mHasResults[e.mBlock]) {
+            // per tensor: surfaces[top] -> (npc, 6) rows
+            struct Surfaces {
+                std::size_t mTensor = 0;
+                std::map<bool, std::vector<double>> mRows;
+            };
+            std::vector<Surfaces> entries;
+            for (const RstwTensor& t : rSet.mTensors) {
+                const NDArray& a = rMesh.CellData(t.mName, e.mBlock);
+                const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
+                if (a.Shape().size() != 2 || count <= e.mRow)
+                    continue;
+                const std::size_t width = a.Shape()[1];
+                const std::size_t npc = width / 6;
+                if (npc == 0 || width % 6)
+                    continue;
+                const detail::DoubleView view(a);
+                std::vector<double> row(view.Data() + e.mRow * width,
+                                        view.Data() + (e.mRow + 1) * width);
+                auto it = std::find_if(entries.begin(), entries.end(),
+                                       [&](const Surfaces& s) { return s.mTensor == t.mTensor; });
+                if (it == entries.end()) {
+                    entries.push_back({t.mTensor, {}});
+                    it = entries.end() - 1;
+                }
+                it->mRows[t.mTop] = std::move(row);
+            }
+            const std::size_t nodstr = info.mNodstr;
+            const std::size_t layers =
+                (e.mRoutine == 181 || e.mRoutine == 281) && rModel.mLayered ? 2 : 1;
+            for (const Surfaces& surfaces : entries) {
+                const std::size_t items = kRstTensors[surfaces.mTensor].mItems;
+                std::vector<double> values(nodstr * layers * items, kRstUndefined);
+                for (std::size_t row = 0; row < nodstr * layers; ++row)
+                    for (std::size_t c = 6; c < items; ++c)
+                        values[row * items + c] = 0.0;
+                bool any = false;
+                for (const auto& [top, data] : surfaces.mRows) {
+                    if (top && layers == 1)
+                        continue;
+                    const std::size_t layer = top && layers == 2 ? 1 : 0;
+                    const std::size_t npc = data.size() / 6;
+                    for (std::size_t j = 0; j < e.mCellSlots.size(); ++j) {
+                        const std::size_t slot = static_cast<std::size_t>(e.mCellSlots[j]);
+                        if (j >= npc || slot >= nodstr)
+                            continue;
+                        bool finite = true;
+                        for (std::size_t c = 0; c < 6; ++c)
+                            finite = finite && std::isfinite(data[j * 6 + c]);
+                        if (!finite)
+                            continue;
+                        for (std::size_t c = 0; c < 6; ++c)
+                            values[(layer * nodstr + slot) * items + c] = data[j * 6 + c];
+                        any = true;
+                    }
+                }
+                if (any)
+                    pending.emplace_back(kRstTensors[surfaces.mTensor].mEntry, std::move(values));
+            }
+            if (rSet.mEnf && info.mNodelm && numdof &&
+                e.mBlock < rMesh.CellDataNumBlocks("ENF")) {
+                const NDArray& a = rMesh.CellData("ENF", e.mBlock);
+                const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
+                if (a.Shape().size() == 2 && count > e.mRow && a.Shape()[1] % numdof == 0) {
+                    const std::size_t npc = a.Shape()[1] / numdof;
+                    const detail::DoubleView view(a);
+                    std::vector<double> forces(info.mNodelm * numdof, 0.0);
+                    bool any = false;
+                    for (std::size_t j = 0; j < e.mCellSlots.size(); ++j) {
+                        const std::size_t slot = static_cast<std::size_t>(e.mCellSlots[j]);
+                        if (j >= npc || slot >= info.mNodelm)
+                            continue;
+                        bool finite = true;
+                        for (std::size_t c = 0; c < numdof; ++c)
+                            finite = finite &&
+                                     std::isfinite(view.Data()[e.mRow * a.Shape()[1] + j * numdof + c]);
+                        if (!finite)
+                            continue;
+                        for (std::size_t c = 0; c < numdof; ++c)
+                            forces[slot * numdof + c] =
+                                view.Data()[e.mRow * a.Shape()[1] + j * numdof + c];
+                        any = true;
+                    }
+                    if (any)
+                        pending.emplace_back(kRstEnf, std::move(forces));
+                }
+            }
         }
         if (pending.empty())
             continue;
@@ -81253,7 +81328,7 @@ std::size_t rstw_set_records(RstwWords& rF, const Mesh& rMesh, const RstwModel& 
         rF.Patch(base, 7, static_cast<std::int64_t>(rSet.mReactions.size()));
         rF.Patch64(base, 106, 107, static_cast<std::int64_t>(rf - base));
     }
-    if (!rSet.mTensors.empty())
+    if (!rSet.mTensors.empty() || !rSet.mRaw.empty() || rSet.mEnf)
         rstw_element_solution(rF, rMesh, rModel, rSet, base);
     return base;
 }

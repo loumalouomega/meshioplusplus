@@ -111,7 +111,7 @@ The file is little-endian, 32-bit and uncompressed, in the pointer-linked record
 - **Result set.** `field_data["meshio:time"]` is the set's time. Point data named as the reader names them (`U`, `ROT`, `A`, `V`, `TEMP`, `PRES` ...) are the nodal solution, `RF` and `RMOM` the reactions, and cell data `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` (with `<name>@top` for a layered shell's top surface) the element nodal results, in the layout the reader returns. Other arrays are not kept.
 - **Series.** The model is written once and each step adds a set; every step must have the same points, cells and components, else the writer names the step that differs (write one file per step with `{step}` for a changing model).
 
-Not written yet: a cyclic sector (the write side of `ansys_rst_cyclic`), the raw element records (`ENF`, `EUL` ...), nodal coordinate systems and complex results.
+The raw element records (`EMS`, `ENG`, `EGR`, `EFX`, `EMN`, `ENL`, `EPT`, `ECT`, `ESV`: one row per element, NaN written as the undefined value, trailing NaN left out) and the element nodal forces `ENF` (with `field_data["ansys:layout:ENF"]`, one value per DOF of the set) are written as the reader returns them. Not written yet: a cyclic sector (the write side of `ansys_rst_cyclic`), element rotations (`EUL`), nodal coordinate systems and complex results.
 
 ## Not read
 

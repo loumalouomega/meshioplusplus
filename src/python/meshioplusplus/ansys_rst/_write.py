@@ -37,6 +37,7 @@ from ..ansysInp._ansysInp import (
 from ._ansys_rst import (
     _DOF_LABELS,
     _NO_RESULT_CELLS,
+    _RAW_RECORDS,
     _REACTION_VECTORS,
     _SCALARS,
     _TENSORS,
@@ -55,6 +56,9 @@ _TABLE_ENTRIES = {"S": _ENS, "EPEL": _EEL, "EPPL": _EPL, "EPCR": _ECR, "EPTH": _
 _ITEMS = {"S": 6, "EPEL": 7, "EPPL": 7, "EPCR": 7, "EPTH": 8}
 # AvailData bits (``resucm.inc``): item k is bit k.
 _AVAIL = {"S": 3, "EPEL": 6, "EPPL": 7, "EPCR": 8, "EPTH": 9, "NSL": 27, "RF": 30}
+_ENF = 1
+_AVAIL["ENF"] = _ENF + 1
+_AVAIL.update({name: entry + 1 for name, entry in _RAW_RECORDS})
 _CODE_OF = {name: code for code, name in _SCALARS.items()}
 # RF_AX ... RF_TEMP: the DOFs that are not in an RF or RMOM triple.
 _REACTION_SCALAR = {
@@ -244,6 +248,21 @@ class _Set:
                 if name not in mesh.cell_data:
                     continue
                 self.tensors.append((name, base, bool(suffix), mesh.cell_data[name]))
+        # raw element records, and the element nodal forces (one value per DOF)
+        self.raw = [
+            (name, entry, mesh.cell_data[name])
+            for name, entry in _RAW_RECORDS
+            if name in mesh.cell_data
+        ]
+        self.enf = None
+        if "ENF" in mesh.cell_data:
+            layout = mesh.field_data.get("ansys:layout:ENF")
+            if layout is not None and int(layout[1]) == len(used) and len(used):
+                self.enf = mesh.cell_data["ENF"]
+            else:
+                warn(
+                    "Ansys .rst writer: ENF needs its layout over the set's DOFs; dropped"
+                )
         self.mask = 0
         if columns or self.reactions:
             self.mask |= 1 << _AVAIL["NSL"]
@@ -251,6 +270,10 @@ class _Set:
             self.mask |= 1 << _AVAIL["RF"]
         for name, base, top, _ in self.tensors:
             self.mask |= 1 << _AVAIL[base]
+        for name, _, _ in self.raw:
+            self.mask |= 1 << _AVAIL[name]
+        if self.enf is not None:
+            self.mask |= 1 << _AVAIL["ENF"]
 
 
 def _file_words(model, sets):
@@ -396,7 +419,7 @@ def _set_records(f, model, s):
         f.doubles([v for _, _, v in s.reactions])
         f.patch(base, 7, len(s.reactions))
         f.patch64(base, 106, 107, rf - base)
-    if s.tensors:
+    if s.tensors or s.raw or s.enf is not None:
         _element_solution(f, model, s, base)
     return base
 
@@ -404,50 +427,72 @@ def _set_records(f, model, s):
 def _element_solution(f, model, s, base):
     esl = f.ints([0] * (2 * model.nelm))
     f.patch64(base, 118, 119, esl - base)
+    numdof = len(s.dofs)
     for k, (b, r, routine, slot, nodes, cell_slots) in enumerate(model.elements):
         entries = {}
-        if not model.has_results[b]:
-            continue
-        for name, base_name, top, per_block in s.tensors:
-            arr = np.asarray(per_block[b])
+        pending = []
+        info = model.slots[slot]
+        # raw records: the values up to the last one the element has
+        for name, entry, per_block in s.raw:
+            arr = np.asarray(per_block[b], dtype=np.float64)
             if arr.ndim != 2 or len(arr) <= r:
                 continue
-            row = arr[r]
-            width = 6
-            npc = row.size // width
-            if npc == 0 or row.size % width:
+            finite = np.nonzero(np.isfinite(arr[r]))[0]
+            if len(finite) == 0:
                 continue
-            entries.setdefault(base_name, {})[top] = row.reshape(npc, width)
-        if not entries:
-            continue
-        info = model.slots[slot]
-        nodstr = info["nodstr"]
-        layers = 2 if (routine in (181, 281) and model.layered) else 1
-        table = [0] * 25
-        pending = []
-        for base_name, surfaces in entries.items():
-            items = _ITEMS[base_name]
-            values = np.full((nodstr * layers, items), _UNDEFINED)
-            values[:, 6:] = 0.0
-            any_value = False
-            for top, data in surfaces.items():
-                layer = 1 if (top and layers == 2) else 0
-                if top and layers == 1:
+            row = arr[r, : finite[-1] + 1]
+            pending.append((entry, np.where(np.isfinite(row), row, _UNDEFINED)))
+        if model.has_results[b]:
+            for name, base_name, top, per_block in s.tensors:
+                arr = np.asarray(per_block[b])
+                if arr.ndim != 2 or len(arr) <= r:
                     continue
-                for j, slot_j in enumerate(cell_slots):
-                    if j >= len(data) or slot_j >= nodstr:
+                row = arr[r]
+                width = 6
+                npc = row.size // width
+                if npc == 0 or row.size % width:
+                    continue
+                entries.setdefault(base_name, {})[top] = row.reshape(npc, width)
+            nodstr = info["nodstr"]
+            layers = 2 if (routine in (181, 281) and model.layered) else 1
+            for base_name, surfaces in entries.items():
+                items = _ITEMS[base_name]
+                values = np.full((nodstr * layers, items), _UNDEFINED)
+                values[:, 6:] = 0.0
+                any_value = False
+                for top, data in surfaces.items():
+                    layer = 1 if (top and layers == 2) else 0
+                    if top and layers == 1:
                         continue
-                    row6 = data[j]
-                    if np.isfinite(row6).all():
-                        values[layer * nodstr + slot_j, :6] = row6
-                        any_value = True
-            if any_value:
-                pending.append((_TABLE_ENTRIES[base_name], values))
+                    for j, slot_j in enumerate(cell_slots):
+                        if j >= len(data) or slot_j >= nodstr:
+                            continue
+                        row6 = data[j]
+                        if np.isfinite(row6).all():
+                            values[layer * nodstr + slot_j, :6] = row6
+                            any_value = True
+                if any_value:
+                    pending.append((_TABLE_ENTRIES[base_name], values.reshape(-1)))
+            if s.enf is not None and info["nodelm"]:
+                arr = np.asarray(s.enf[b], dtype=np.float64)
+                if arr.ndim == 2 and len(arr) > r and arr.shape[1] % numdof == 0:
+                    npc = arr.shape[1] // numdof
+                    forces = np.zeros((info["nodelm"], numdof))
+                    any_value = False
+                    for j, slot_j in enumerate(cell_slots):
+                        if j < npc and slot_j < info["nodelm"]:
+                            row_j = arr[r, j * numdof : (j + 1) * numdof]
+                            if np.isfinite(row_j).all():
+                                forces[slot_j] = row_j
+                                any_value = True
+                    if any_value:
+                        pending.append((_ENF, forces.reshape(-1)))
         if not pending:
             continue
+        table = [0] * 25
         table_ptr = f.ints(table)
         for entry, values in pending:
-            ptr = f.doubles(values.reshape(-1))
+            ptr = f.doubles(values)
             f.patch(table_ptr, entry, ptr - table_ptr)
         f.patch(esl, 2 * k, table_ptr - esl)
 
