@@ -39,6 +39,10 @@ A single file can hold several independent zones: `NZONE= n` (always the first k
 
 Write: a mesh whose `su2:zone` carries more than one distinct value writes `NZONE=`/`IZONE=` sections, one per distinct zone value, each with its own point subset (only the points its cells actually reference, renumbered densely from 0) and its own `NMARK`/markers. A mesh with no `su2:zone`, or only one distinct value, writes the single-zone layout (no `NZONE=` line at all).
 
+### Volume regions
+
+SU2 holds volume cells and boundary markers only, so a volume `cell` region has no slot in a single-domain file and is not written. Independent sub-domains are `NZONE` zones (above), which are separate meshes; that is the only multi-domain structure the format has, and the loss is a fact of the format, not a gap.
+
 ### Marker names as regions
 
 A marker whose `MARKER_TAG` is a **name** (not a plain integer) gets a [`Region`](../regions.md) of kind `cell` over its boundary cells, so the name survives a round trip instead of collapsing into an anonymous `su2:tag` id: `"<name>"` for a single-zone file, `"zone_<i>/<name>"` for a multizone one. A multizone file also gets one `"zone_<i>"` region per zone, covering every cell (volume and boundary) of that zone. A purely numeric `MARKER_TAG` gets no region — `su2:tag` already carries it losslessly.

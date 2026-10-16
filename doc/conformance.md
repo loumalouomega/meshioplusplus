@@ -108,8 +108,9 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
 - **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
+- **`libmesh`**: A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.
 - **`lsdyna_binout`**: A binout holds `nodout`'s nodes, not elements: the points come back as a `vertex` cloud, single precision, and only `nodout`'s own vectors (`displacement`...) are `(n, 3)`; per-point scalars come back as float64 (an integer one is stored as `int32`, and the reader widens every per-point array to float64), and the canonical `fd` is not a `binout:` name.
-- **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
+- **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has no type; Herrmann, bubble and generalized plane strain types come back as the default type of their shape.
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
 - **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and regions have no place; cells come back ordered by element card.
@@ -121,10 +122,12 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
 - **`step`**: A faceted B-rep solid for CAD tools, read back through the optional OpenCASCADE backend as its triangulation: volume cells come back as their skin, and data is not kept. Checked only in a build with the backend.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
+- **`su2`**: SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.
 - **`svg`**: A 2-D drawing, read back as planar (z = 0) from the scale and offset meshio++ records in a comment. Observed with `float_fmt=".17g"`: the default `.3f` keeps three decimals of a drawing 100 units wide, so corners come back to about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `svg:fill`.
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
 - **`tikz`**: A 2-D drawing, read back as planar (z = 0) with its coordinates verbatim, to the digits `float_fmt` kept. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `tikz:fill`.
 - **`triangle`**: Triangle reads and writes 2-D triangulations only, so this row is observed on the planar part of the canonical mesh.
+- **`unv`**: Entities a dataset does not list are NaN, and NaN rows are not written back.
 - **`usd`**: A UsdGeom mesh stores faces: volume cells are written as their skin.
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).
 - **`vtr`**: RectilinearGrid holds one axis-aligned lattice; the canonical mesh is not one.

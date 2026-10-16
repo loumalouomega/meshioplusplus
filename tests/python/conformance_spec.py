@@ -823,6 +823,7 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell", "point", "side"],
+        "note": "A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.",
     },
     "lsdyna": {
         "cells": {
@@ -857,7 +858,9 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point"],
         "note": "A deck holds no data arrays; Marc's face and edge numbering is not "
-        "mapped to facets, so side regions are dropped; a `vertex` has no type.",
+        "mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has "
+        "no type; Herrmann, bubble and generalized plane strain types come back as the "
+        "default type of their shape.",
     },
     "mdpa": {
         "cells": {
@@ -1342,6 +1345,7 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": [],
+        "note": "SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.",
     },
     "svg": {
         "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
@@ -1438,6 +1442,7 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "float64", "c_i32": "float64"},
         "field_data": False,
         "regions": ["cell", "point"],
+        "note": "Entities a dataset does not list are NaN, and NaN rows are not written back.",
     },
     "usd": {
         "cells": {
