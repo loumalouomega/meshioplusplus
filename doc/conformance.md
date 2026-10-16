@@ -46,6 +46,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="libmesh">`libmesh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna">`lsdyna`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna-binout">`lsdyna_binout`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` float64 | — | — | — |
+| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | — | — | — | cell |
 | <span id="marc">`marc`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="marc-t19">`marc_t19`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point |
 | <span id="mdpa">`mdpa`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
@@ -118,6 +119,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
 - **`libmesh`**: A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.
 - **`lsdyna_binout`**: A binout holds `nodout`'s nodes, not elements: the points come back as a `vertex` cloud, single precision, and only `nodout`'s own vectors (`displacement`...) are `(n, 3)`; per-point scalars come back as float64 (an integer one is stored as `int32`, and the reader widens every per-point array to float64), and the canonical `fd` is not a `binout:` name.
+- **`lsdyna_d3plot`**: Single-precision words, so coordinates and data come back rounded to float32. Only what the state layout names is kept: point data `displacement`, `velocity`, `acceleration`, cell data `stress`, `effective_plastic_strain`, the `beam_*` resultants and `lsdyna:alive`, and the `global_*` field data; the probe's arrays are not. Blocks come back by family (solids, beams, shells), vertices are not written, and a cell belongs to one part, so only the first cell region holding it survives.
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has no type; Herrmann, bubble and generalized plane strain types come back as the default type of their shape.
 - **`marc_t19`**: Reals are `e13.6`, six digits, and integers come back as float64; the model is the input deck's, so a `vertex` has no type, side regions are dropped, and Herrmann, bubble and generalized plane strain types come back as the default type of their shape. A post file is checked against meshio++'s own reader only, until a Mentat run (roadmap §1.2.11).
 - **`mff`**: A field without geometry: one array of values, no points or cells.
@@ -160,4 +162,3 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 |---|---|---|
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
 | <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
-| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |

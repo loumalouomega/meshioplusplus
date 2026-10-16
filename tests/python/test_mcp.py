@@ -3062,7 +3062,7 @@ def test_d3plot_and_op2_formats(tmp_path):
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
     assert "lsdyna_d3plot" in out["readable"]
-    assert "lsdyna_d3plot" not in out["writable"]
+    assert "lsdyna_d3plot" in out["writable"]
     assert "nastran_op2" in out["readable"] and "nastran_op2" in out["writable"]
     assert out["extensions"][".op2"] == ["nastran_op2"]
     # d3plot has no extension: the file name and the control block tell.

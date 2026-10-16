@@ -1299,6 +1299,30 @@ SPEC: dict[str, dict] = {
         "`EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not "
         "kept. Side regions are dropped with a warning.",
     },
+    "lsdyna_d3plot": {
+        "cells": {
+            "vertex": "lost",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "Single-precision words, so coordinates and data come back rounded to "
+        "float32. Only what the state layout names is kept: point data "
+        "`displacement`, `velocity`, `acceleration`, cell data `stress`, "
+        "`effective_plastic_strain`, the `beam_*` resultants and `lsdyna:alive`, and the "
+        "`global_*` field data; the probe's arrays are not. Blocks come back by family "
+        "(solids, beams, shells), vertices are not written, and a cell belongs to one "
+        "part, so only the first cell region holding it survives.",
+    },
     "xplt": {
         "cells": {
             "vertex": "lost",
@@ -1830,7 +1854,6 @@ READ_ONLY = {
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
         "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
     ),
-    "lsdyna_d3plot": _GAP.format(item="3.2.2", why=_RESULT.format(tool="LS-DYNA")),
 }
 
 # The mirror: formats that write without reading. `svg`, `tikz` and `gltf` left it

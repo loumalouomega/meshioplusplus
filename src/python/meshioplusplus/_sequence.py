@@ -120,6 +120,7 @@ _SERIES_WRITERS = (
     "szplt",
     "marc_t19",
     "ansys_rst",
+    "lsdyna_d3plot",
     "nastran_op2",
     "nastran_h5",
     "lsdyna_binout",
@@ -918,6 +919,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         from .vtx import SeriesWriter
 
         # Pushed: a step per mesh into one .bp directory.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "lsdyna_d3plot":
+        from .lsdyna_d3plot import SeriesWriter
+
+        # Pushed: the geometry once, a state per step.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

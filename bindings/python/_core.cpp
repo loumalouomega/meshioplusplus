@@ -5873,6 +5873,28 @@ PYBIND11_MODULE(_core, m) {
         .def("finalize", &meshioplusplus::SzpltSeriesWriter::Finalize);
 #endif
 
+    m.def(
+        "lsdyna_d3plot_write",
+        [](const std::string& path, py::object pymesh, std::size_t max_file_bytes) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_lsdyna_d3plot(path, mesh, max_file_bytes);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("max_file_bytes") = std::size_t{1} << 30);
+    py::class_<meshioplusplus::LsdynaD3plotSeriesWriter>(m, "LsdynaD3plotSeriesWriter")
+        .def(py::init<const std::string&, std::size_t>(), py::arg("path"),
+             py::arg("max_file_bytes") = std::size_t{1} << 30)
+        .def(
+            "write",
+            [](meshioplusplus::LsdynaD3plotSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::LsdynaD3plotSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::LsdynaD3plotSeriesWriter::Finalize);
+
     m.def("ansys_rst_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
