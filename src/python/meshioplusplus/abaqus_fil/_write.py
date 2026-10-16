@@ -20,7 +20,14 @@ from .. import _provenance
 from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
-from ._abaqus_fil import _ELEMENT_NAMES, _NODAL_NAMES
+from ..abaqus._abaqus import _face_name
+from ._abaqus_fil import (
+    _ELEMENT_NAMES,
+    _ENERGY_NAMES,
+    _EXPLICIT_ENERGY_NAMES,
+    _EXPLICIT_PROCEDURES,
+    _NODAL_NAMES,
+)
 
 TIME_KEY = "meshio:time"
 
@@ -37,6 +44,13 @@ _STEP_FIELDS = {
     "abaqus:step_time",
     "abaqus:procedure",
 }
+# Total energies (record 1999) and the element matrices (1001-1031) are field data too.
+_MATRIX_KINDS = (
+    ("matrix_dofs", 1002, 1002),
+    ("stiffness", 1011, 1012),
+    ("mass", 1021, 1022),
+    ("load", 1031, 1031),
+)
 _MODE_FIELDS = {
     "abaqus:mode",
     "abaqus:eigenvalue",
@@ -250,6 +264,36 @@ class _Model:
         for label, xyz in zip(self.node_labels, points):
             out.append(_rec(1901, _I(label), *[_D(x) for x in xyz]))
         out += self._sets(mesh)
+        out += self._matrices(mesh)
+        return out
+
+    def _matrices(self, mesh):
+        """The element matrices: per row of an ``abaqus:<kind>:index`` table
+        (element, offset, length, flag) a 1001 record and its values."""
+        out = []
+        fd = mesh.field_data
+        for kind, key_flag, key_plain in _MATRIX_KINDS:
+            values = fd.get("abaqus:" + kind)
+            index = fd.get("abaqus:" + kind + ":index")
+            if values is None or index is None:
+                continue
+            values = np.asarray(values).ravel()
+            index = np.asarray(index, dtype=np.int64).reshape(-1, 4)
+            for element, offset, length, flag in index.tolist():
+                if offset < 0 or length < 0 or offset + length > len(values):
+                    _wfail(f"'abaqus:{kind}:index' reaches past 'abaqus:{kind}'")
+                data = values[offset : offset + length]
+                out.append(_rec(1001, _I(element)))
+                if kind == "matrix_dofs":
+                    out.append(_rec(1002, *[_I(int(v)) for v in data]))
+                elif kind == "load":
+                    out.append(_rec(1031, _I(int(flag)), *[_D(v) for v in data]))
+                else:
+                    out.append(
+                        _rec(
+                            key_flag if flag == 1 else key_plain, *[_D(v) for v in data]
+                        )
+                    )
         return out
 
     def _sets(self, mesh):
@@ -259,9 +303,6 @@ class _Model:
         out = []
         label = 0
         for region in sorted(regions, key=lambda r: (r.kind, r.name)):
-            if region.kind == "side":
-                self.dropped.add(f"region '{region.name}' (side)")
-                continue
             name = _ascii_text(region.name)
             if len(name) > 80:
                 _wfail(f"region name '{name[:20]}...' is longer than 80 characters")
@@ -271,6 +312,9 @@ class _Model:
                     label += 1
                 refs.append(_rec(1940, _I(label), *_text_items(name)))
                 name = str(label)
+            if region.kind == "side":
+                out += self._surface(mesh, region, name)
+                continue
             entries = [int(e) for e in np.asarray(region.entries).ravel()]
             if region.kind == "point":
                 if any(not 0 <= e < len(self.node_labels) for e in entries):
@@ -286,6 +330,29 @@ class _Model:
             for k in range(5, len(values), _CHUNK):
                 out.append(_rec(keys[1], *map(_I, values[k : k + _CHUNK])))
         return out + refs
+
+    def _surface(self, mesh, region, name):
+        """A side region as a contact surface: a 1501 record and a 1502 record
+        per (element, face number)."""
+        types = {g: mesh.cells[b].type for g, _n, b, _r in self.cells}
+        faces = []
+        dropped = 0
+        for cell, facet in np.asarray(region.entries, dtype=np.int64).reshape(-1, 2):
+            cell, facet = int(cell), int(facet)
+            if cell not in self.written:
+                dropped += 1
+                continue
+            label = _face_name(types[cell], facet)
+            number = int(label[1:]) if label else None
+            if number is None:
+                dropped += 1
+                continue
+            faces.append((self.cell_labels[cell], number))
+        if dropped:
+            self.dropped.add(f"{dropped} facet(s) of surface '{region.name}'")
+        out = [_rec(1501, _A(name), _I(0), _I(1))]
+        out += [_rec(1502, _I(label), _I(number)) for label, number in faces]
+        return out
 
     def cell_index(self):
         """Written cell -> its position in the file."""
@@ -366,6 +433,7 @@ class _Increment:
             )
         )
         self._mode(fd)
+        self._energies(fd, procedure)
         element = self._element(model, mesh)
         nodal = self._nodal(model, mesh)
         if element:
@@ -375,12 +443,32 @@ class _Increment:
             self.records.append(_rec(1911, _I(1), _A("")))
             self.records += nodal
         self.records.append(_rec(2001))
+        handled = {"abaqus:" + n for n in _ENERGY_NAMES + _EXPLICIT_ENERGY_NAMES if n}
+        for kind, _, _ in _MATRIX_KINDS:
+            handled |= {"abaqus:" + kind, "abaqus:" + kind + ":index"}
         for name in sorted(fd):
-            if name in _STEP_FIELDS or name in _MODE_FIELDS:
+            if name in _STEP_FIELDS or name in _MODE_FIELDS or name in handled:
                 continue
             if name.startswith("abaqus:layout:"):
                 continue
             self.dropped.add(name)
+
+    def _energies(self, fd, procedure):
+        """Record 1999, the total energies, positional: those the step's
+        procedure names, up to the last one present (an absent one in between
+        is 0)."""
+        names = (
+            _EXPLICIT_ENERGY_NAMES
+            if procedure in _EXPLICIT_PROCEDURES
+            else _ENERGY_NAMES
+        )
+        present = [k for k, n in enumerate(names) if n and "abaqus:" + n in fd]
+        if not present:
+            return
+        values = [0.0] * (max(present) + 1)
+        for k in present:
+            values[k] = float(np.asarray(fd["abaqus:" + names[k]]).ravel()[0])
+        self.records.append(_rec(1999, *map(_D, values)))
 
     def _mode(self, fd):
         if "abaqus:mode" not in fd:

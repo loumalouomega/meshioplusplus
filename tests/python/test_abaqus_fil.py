@@ -323,3 +323,35 @@ def test_real_binary_run_matches_its_dat_printout(engine):
         np.testing.assert_allclose(
             mesh.cell_data["S"][0][eids.index(label)], s11, rtol=5e-5
         )
+
+
+@pytest.mark.parametrize("name", ["extras.fil", "extras_le.fil"])
+@pytest.mark.parametrize("binary", [False, True])
+def test_written_family_keeps_energies_matrices_and_contact_surfaces(
+    tmp_path, name, binary
+):
+    """The total energies (1999), the element matrices (1001-1031) and the
+    contact surfaces (1501-1502) a file holds come back from a written one, and
+    both engines write the same bytes."""
+    from meshioplusplus.abaqus_fil import _write as py_write
+
+    source = py_fil.read(str(MESHES / name))
+    core, twin = tmp_path / "core.fil", tmp_path / "twin.fil"
+    _core.abaqus_fil_write(str(core), source, binary)
+    py_write.write(str(twin), source, binary=binary)
+    assert core.read_bytes() == twin.read_bytes()
+    for read in (meshioplusplus.read, py_fil.read):
+        back = (
+            read(str(core), file_format="abaqus_fil")
+            if read is meshioplusplus.read
+            else read(str(core))
+        )
+        for key, value in source.field_data.items():
+            np.testing.assert_allclose(
+                back.field_data[key], value, rtol=1e-12, err_msg=key
+            )
+        assert [(r.name, r.kind) for r in back.regions] == [
+            (r.name, r.kind) for r in source.regions
+        ]
+        for a, b in zip(source.regions, back.regions):
+            np.testing.assert_array_equal(a.entries, b.entries)
