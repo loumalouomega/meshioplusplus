@@ -303,6 +303,8 @@ def _read_cell_ascii(buf_or_line, point_ids):
     is_b7 = buf_or_line[1] == "B7"
     cell = [point_ids[int(l)] for l in cell]
     if is_b7:
+        if not cell:
+            raise ReadError("FLAC3D: a B7 cell with no nodes")
         cell.append(cell[-1])
     return cid, cell
 

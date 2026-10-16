@@ -367,8 +367,11 @@ Mesh read_flac3d(const std::string& rPath) {
                 std::vector<std::int64_t> cell;
                 for (std::size_t j = 3; j < s.size(); ++j)
                     cell.push_back(point_ids.at(detail::strtoll_token(s[j])));
-                if (is_b7)
+                if (is_b7) {
+                    if (cell.empty())  // back() of an empty cell is undefined behaviour
+                        throw ReadError("FLAC3D: a B7 cell with no nodes");
                     cell.push_back(cell.back());
+                }
                 const auto& tmap = numnodes_type(dim);
                 auto it = tmap.find(static_cast<int>(cell.size()));
                 if (it == tmap.end())

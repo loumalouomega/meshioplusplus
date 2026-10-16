@@ -277,3 +277,13 @@ TEST(Flac3dRead, AZoneIdNearInt64MaxDoesNotOverflow) {
     } catch (const meshioplusplus::ReadError&) {
     }
 }
+
+// A B7 record with no node ids: `back()` of its empty cell was undefined behaviour
+// (found by the fuzzer; the input is tests/fuzz/regressions/flac3d/b7-cell-without-nodes).
+TEST(Flac3dRead, AB7RecordWithoutNodesIsAReadError) {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "fuzz" / "regressions" / "flac3d" /
+                                        "b7-cell-without-nodes";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    EXPECT_THROW((void)meshioplusplus::read_flac3d(input.string()), meshioplusplus::ReadError);
+}

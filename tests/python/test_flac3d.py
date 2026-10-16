@@ -289,3 +289,13 @@ def test_named_cell_set_round_trips(binary, tmp_path):
         "zone:grain0:Default": list(range(0, n // 2)),
         "zone:grain1:Default": list(range(n // 2, n)),
     }
+
+
+def test_a_b7_record_without_nodes_is_a_read_error(tmp_path):
+    """`cell[-1]` on an empty B7 cell was an IndexError; both engines now raise ReadError."""
+    path = tmp_path / "b7.f3grid"
+    path.write_bytes(b"F B7 7\n")
+    with pytest.raises(meshioplusplus.ReadError):
+        _flac3d.read(path)
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.read(path)
