@@ -48,6 +48,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/read_options.hpp"
@@ -67,6 +68,21 @@ bool is_region_field_name(const std::string& rName);
  */
 std::vector<std::pair<std::string, NDArray>> regions_to_field_arrays(
     const Mesh& rMesh, const std::vector<std::int64_t>* pGlobalToFile);
+
+/**
+ * @brief Write @p rMesh's `<FieldData>` section: its field arrays, then its
+ * regions in the convention above (cell indices are the file's, which for
+ * the structured grids is the mesh's own block-major order). Writes nothing
+ * when there is nothing to write, so a mesh without either keeps its bytes.
+ * @param rOs The output stream, positioned before the `<Piece>`.
+ * @param rMesh The mesh.
+ * @param pFormat The format name, for the warnings.
+ * @param Binary Base64-encode the bodies instead of writing text.
+ * @param Codec The block compressor for a binary body.
+ * @param Hsz The file's `header_type` item size (4 or 8).
+ */
+void write_field_data_section(std::ostream& rOs, const Mesh& rMesh, const char* pFormat,
+                              bool Binary, VtkCodec Codec, std::size_t Hsz);
 
 /**
  * @brief Turn the region arrays among @p rArrays into regions of @p rMesh.

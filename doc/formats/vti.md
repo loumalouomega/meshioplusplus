@@ -66,14 +66,15 @@ The recovery is exact rather than a fit: `grid` writes every coordinate as `orig
 |---|---|
 | `point_data` | `<PointData>`, one `<DataArray>` per array, sorted by name |
 | `cell_data` | `<CellData>` — a lattice has one block, so one array each |
-| `field_data` | **not written** (see below) |
+| `field_data` | `<FieldData>` on the grid, numeric arrays (a `field_data` value that is not numeric is skipped with a warning) |
+| `regions` | `region:*` arrays in the same `<FieldData>` ([regions in VTK XML](../regions.md)), cell indices in the lattice's own order |
 | `point_sets` / `cell_sets` | not written |
 
 Both `Origin` and `Spacing` are written with `%.17g` — the round-trip width for a double. The stream default of six significant digits would lose about ten digits of a real origin, placing the grid ~1e-7 off its own points with nothing downstream to flag it.
 
 ## Why this format exists for `compute_sdf`
 
-A generated grid carries an `sdf:*` `field_data` header describing itself. The `.vti` writer does not persist that header: its geometry attributes carry the same lattice information, and reading them reconstructs the mesh. Numeric `<FieldData>` arrays supplied by another producer are read; use `.vtu` if field data and named regions must also be written.
+A generated grid carries an `sdf:*` `field_data` header describing itself. Since the writer persists `field_data`, that header is written like any other array; the geometry attributes carry the same lattice information, so reading reconstructs the mesh either way. Both engines write the same bytes.
 
 ## Quirks & limitations
 

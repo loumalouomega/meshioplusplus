@@ -127,3 +127,34 @@ def regions_from_field_arrays(field_data, num_points, file_to_global, fmt):
         entries = e.reshape(-1) if stride == 1 else e
         regions.append(Region(rname, kind, entries, dim, tag))
     return regions, rest
+
+
+def field_arrays_for_write(mesh, fmt, numpy_to_vtu_type, global_to_file=None) -> list:
+    """The ``<FieldData>`` arrays of a write: ``field_data`` (sorted), then regions.
+
+    A value that is not a numeric array has no VTK type and is skipped with a
+    warning, as is one whose region naming collides with the convention; the
+    caller's mapping is never modified. Mirrors the core's
+    ``write_field_data_section``.
+    """
+    out = []
+    for name in sorted(mesh.field_data):
+        if is_region_field_name(name):
+            warn(
+                f"{fmt}: field_data '{name}' uses the region naming convention; not written"
+            )
+            continue
+        try:
+            arr = np.asarray(mesh.field_data[name])
+            arr = arr.astype(arr.dtype.newbyteorder("="), copy=False)
+        except Exception:
+            arr = None
+        if arr is None or arr.dtype not in numpy_to_vtu_type:
+            warn(f"{fmt}: field_data '{name}' is not a numeric array; not written")
+            continue
+        if arr.ndim > 1 and 0 in arr.shape[1:]:
+            warn(f"{fmt}: field_data '{name}' has zero components; not written")
+            continue
+        out.append((name, arr.reshape(arr.shape[0], -1) if arr.ndim > 2 else arr))
+    out.extend(regions_to_field_arrays(mesh, global_to_file).items())
+    return out

@@ -18,6 +18,7 @@
 // The VTK XML region convention. See region_field_data.hpp.
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -27,6 +28,7 @@
 // Project includes
 #include "region_field_data.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -211,6 +213,35 @@ std::vector<RegionSummary> region_summaries_from_field_names(
         out.push_back(std::move(rs));
     }
     return out;
+}
+
+void write_field_data_section(std::ostream& rOs, const Mesh& rMesh, const char* pFormat,
+                              bool Binary, VtkCodec Codec, std::size_t Hsz) {
+    const std::vector<std::pair<std::string, NDArray>> region_arrays =
+        regions_to_field_arrays(rMesh, nullptr);
+    std::vector<std::pair<std::string, const NDArray*>> field_arrays;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        if (is_region_field_name(name)) {
+            log::warn("{}: field_data '{}' uses the region naming convention; not written",
+                      pFormat, name);
+            continue;
+        }
+        const NDArray& array = rMesh.FieldData(name);
+        const auto& shape = array.Shape();
+        if (shape.size() > 1 && std::find(shape.begin() + 1, shape.end(), 0) != shape.end()) {
+            log::warn("{}: field_data '{}' has zero components; not written", pFormat, name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &array);
+    }
+    for (const auto& [name, arr] : region_arrays)
+        field_arrays.emplace_back(name, &arr);
+    if (field_arrays.empty())
+        return;
+    rOs << "<FieldData>\n";
+    for (const auto& [name, p_arr] : field_arrays)
+        vtu_write_field_array(rOs, name, *p_arr, Binary, Binary ? Codec : VtkCodec::None, Hsz);
+    rOs << "</FieldData>\n";
 }
 
 }  // namespace detail

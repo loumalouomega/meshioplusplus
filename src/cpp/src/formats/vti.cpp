@@ -39,6 +39,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/vtu_decode.hpp"
 
@@ -116,6 +117,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
        << " " << vti_num(spec.mOrigin[1]) << " " << vti_num(spec.mOrigin[2]) << "\" Spacing=\""
        << vti_num(spec.mSpacing[0]) << " " << vti_num(spec.mSpacing[1]) << " "
        << vti_num(spec.mSpacing[2]) << "\">\n";
+    detail::write_field_data_section(os, rMesh, "vti", binary, codec, hsz);
     os << "<Piece Extent=\"" << ext.str() << "\">\n";
 
     if (rMesh.NumPointData() != 0) {
