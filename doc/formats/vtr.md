@@ -65,7 +65,8 @@ Recovering three arbitrary per-axis coordinate arrays from an unstructured point
 | `points` | `<Coordinates>`, three `Float64` `<DataArray>`s (`x_coordinates`/`y_coordinates`/`z_coordinates`), never written back individually |
 | `point_data` | `<PointData>`, one `<DataArray>` per array, sorted by name |
 | `cell_data` | `<CellData>` — a lattice has one block, so one array each |
-| `field_data` | **not written** |
+| `field_data` | `<FieldData>` on the grid, numeric arrays, both engines |
+| `regions` | `region:*` arrays in the same `<FieldData>` ([regions in VTK XML](../regions.md)) |
 | `point_sets` / `cell_sets` | not written |
 
 ## Quirks & limitations

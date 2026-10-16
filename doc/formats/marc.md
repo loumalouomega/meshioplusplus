@@ -6,7 +6,7 @@ MSC Marc's input deck (the `.dat` file Marc Mentat writes and the solver reads) 
 |---|---|
 | **Format names** | `marc` (input deck), `marc_t19` (formatted post file) |
 | **Extensions** | `.dat` (shared with Tecplot: a `.dat` file that opens as a Marc deck is Marc's), `.t19`; both also recognised by content |
-| **Read / Write** | ✓ / ✓ for the deck (since v16.17.0, by name); `marc_t19` ✓ / —, [read-only for now](../conformance.md#marc-t19): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.11 |
+| **Read / Write** | ✓ / ✓ for the deck (since v16.17.0, by name); `marc_t19` ✓ / ✓ (since its writer joined; [conformance](../conformance.md#marc-t19)) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -102,6 +102,15 @@ Elements of other types are skipped with one warning listing them; their node co
 A member element with no cell (a skipped type) drops out of the region; a member number the deck never defines is an error.
 
 `DEFINE EDGE SET name` and `DEFINE FACE SET name` (v16.12.0) list `element:number` members. Marc numbers an element's edges and faces its own way (Volume A, which was not available), so they are not mapped to meshio++ facets: each set is `field_data["marc:edge_set:<name>"]` or `["marc:face_set:<name>"]`, one row per member, `(cell, Marc edge or face number)`, the cell −1 for an element with no cell. Integration-point and other set kinds are skipped with a warning.
+
+## Writing a post file
+
+```python
+meshioplusplus.write("job.t19", mesh)                                  # one increment
+meshioplusplus.write_sequence("job.t19", steps, file_format="marc_t19")   # an increment per mesh
+```
+
+Both engines write the same bytes: the analysis title, the model blocks (header, element post codes, connectivities, coordinates, nodal codes, sets, flow lines) and, per increment between `****` and `----`, the loadcase title, the integer and real verification data (the time is `field_data["meshio:time"]`, or the step's time in a series), the element integration point values and the nodal results, closed by `++++`. The model is the input deck's: the cells with a Marc element type, `marc:element` numbers, point and cell regions as node and element sets and the face and edge sets from `marc:face_set:*`/`marc:edge_set:*`. Point arrays of 1, 2, 3, 6 or 9 components are nodal results (`Displacement` and `Reaction Force` keep their Marc ids); cell arrays are element post codes, per integration point where `marc:layout:<name>` says so (all arrays must agree on the point count). A tensor named as Marc names one (`Stress`, `Total Strain`, `Plastic Strain`...) takes its six codes, another six-component array one of the free tensor codes with its name as the label, a scalar named as Marc names one (`Equivalent Von Mises Stress`, `Temperature`...) its code and any other scalar a code from 600 with its name as the label; labels are 24 characters, and a `@layer<n>` suffix is the layer offset of 1000 × n. NaN is written as `NaN` and read back. A series keeps the first mesh's model and needs the same points, cells and arrays in every step; it does not write remeshing increments. The result is read back by meshio++'s own reader and has not been opened in Mentat ([§1.2.11](../roadmap.md#_1-2-awaiting-a-licensed-run)).
 
 ## The post file
 

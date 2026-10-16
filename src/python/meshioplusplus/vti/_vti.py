@@ -27,6 +27,7 @@ from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
+from .._region_field_data import field_arrays_for_write
 from .._vtk_xml_read import field_arrays
 from .._vtk_xml_read import load as _load_xml
 from .._vtk_xml_read import piece_extent, read_pieces
@@ -185,9 +186,8 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         f'Origin="{num(origin[0])} {num(origin[1])} {num(origin[2])}" '
         f'Spacing="{num(spacing[0])} {num(spacing[1])} {num(spacing[2])}">'
     )
-    lines.append(f'<Piece Extent="{ext}">')
 
-    def emit(section, items):
+    def emit(section, items, field=False):
         if not items:
             return
         lines.append(f"<{section}>")
@@ -196,6 +196,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             data = data.astype(data.dtype.newbyteorder("="), copy=False)
             vtu_type = numpy_to_vtu_type[data.dtype]
             head = f'<DataArray type="{vtu_type}" Name="{name}"'
+            if field:
+                # <FieldData> arrays carry an explicit tuple count (VTK requires it).
+                head += f' NumberOfTuples="{data.shape[0] if data.ndim else 1}"'
             if data.ndim == 2:
                 head += f' NumberOfComponents="{data.shape[1]}"'
             if binary:
@@ -208,6 +211,10 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             lines.append("</DataArray>")
         lines.append(f"</{section}>")
 
+    emit(
+        "FieldData", field_arrays_for_write(mesh, "VTI", numpy_to_vtu_type), field=True
+    )
+    lines.append(f'<Piece Extent="{ext}">')
     emit("PointData", sorted(mesh.point_data.items()))
     # A lattice has exactly one block, so cell_data's per-block list has one
     # entry; concatenating anyway keeps a mis-shaped input from being written

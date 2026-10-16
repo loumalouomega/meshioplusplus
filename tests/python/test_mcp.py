@@ -214,12 +214,12 @@ def test_frd_is_readable_and_writable_and_convert_reaches_its_steps(tmp_path):
     assert meshioplusplus.read(again).field_data["meshio:time"].tolist() == [2.0]
 
 
-def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_path):
+def test_nastran_h5_is_readable_writable_and_convert_reaches_its_modes(tmp_path):
     import pathlib
 
     h5 = pathlib.Path(__file__).parent / "meshes" / "nastran_h5" / "modes_elements.h5"
     out = _dump(_tools.tool_formats())
-    assert "nastran_h5" in out["readable"] and "nastran_h5" not in out["writable"]
+    assert "nastran_h5" in out["readable"] and "nastran_h5" in out["writable"]
     assert out["extensions"][".h5"] == ["nastran_h5"]
     # The MSC fixtures are Git LFS; the MCP CI job checks out without LFS.
     with open(h5, "rb") as f:
@@ -488,7 +488,7 @@ def test_febio_xplt_states_convert_to_vtu(tmp_path):
         pathlib.Path(__file__).parent / "meshes" / "febio" / "xplt" / "xplt_hex27.xplt"
     )
     out = _dump(_tools.tool_formats())
-    assert "xplt" in out["readable"] and "xplt" not in out["writable"]
+    assert "xplt" in out["readable"] and "xplt" in out["writable"]
     info = _dump(_tools.tool_info(str(xplt)))
     assert len(info["time_values"]) == 4
     target = str(tmp_path / "last.vtu")
@@ -3019,8 +3019,8 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     back_rad = str(tmp_path / "back_0000.rad")
     _tools.tool_convert(str(rad), back_rad)
     assert meshioplusplus.read(back_rad).cells[0].type == "hexahedron"
-    # OpenRadioss animation files (v16.11.0): read-only, found by name.
-    assert "radioss_anim" in out["readable"] and "radioss_anim" not in out["writable"]
+    # OpenRadioss animation files (v16.11.0): found by name, written since.
+    assert "radioss_anim" in out["readable"] and "radioss_anim" in out["writable"]
     anim = str(meshes / "radioss_anim" / "cubeA002")
     assert _dump(_tools.tool_sniff(anim))["format"] == "radioss_anim"
     assert _dump(_tools.tool_info(anim))["num_points"] == 15
@@ -3038,12 +3038,12 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
 
 
 def test_vtx_and_szplt_formats():
-    """DOLFINx VTX (.bp directories) and Tecplot SZL (v16.13.0): read-only, each
-    behind an optional library, sniffed without it."""
+    """DOLFINx VTX (.bp directories) and Tecplot SZL (v16.13.0), both written since
+    their writers joined: each behind an optional library, sniffed without it."""
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
     for fmt in ("vtx", "szplt"):
-        assert fmt in out["readable"] and fmt not in out["writable"]
+        assert fmt in out["readable"] and fmt in out["writable"]
     bp = str(meshes / "vtx" / "heat.bp")
     assert _dump(_tools.tool_sniff(bp))["format"] == "vtx"
     szl = str(meshes / "szplt" / "transient.szplt")
@@ -3062,7 +3062,7 @@ def test_d3plot_and_op2_formats(tmp_path):
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
     assert "lsdyna_d3plot" in out["readable"]
-    assert "lsdyna_d3plot" not in out["writable"]
+    assert "lsdyna_d3plot" in out["writable"]
     assert "nastran_op2" in out["readable"] and "nastran_op2" in out["writable"]
     assert out["extensions"][".op2"] == ["nastran_op2"]
     # d3plot has no extension: the file name and the control block tell.
@@ -3137,10 +3137,11 @@ def test_marc_and_ansys_results_formats(tmp_path):
     out = _dump(_tools.tool_formats())
     for fmt in ("marc", "marc_t19", "ansys_rst_cyclic"):
         assert fmt in out["readable"], fmt
-    # The deck is written since v16.17.0 (by name: ".dat" writes Tecplot).
-    assert "marc" in out["writable"]
-    for fmt in ("marc_t19", "ansys_rst_cyclic"):
-        assert fmt not in out["writable"], fmt
+    # The deck is written since v16.17.0 (by name: ".dat" writes Tecplot), the
+    # post file since its writer joined.
+    assert "marc" in out["writable"] and "marc_t19" in out["writable"]
+    assert "ansys_rst" in out["writable"]
+    assert "ansys_rst_cyclic" not in out["writable"]
     assert out["extensions"][".t19"] == ["marc_t19"]
     assert out["extensions"][".dat"] == ["marc", "tecplot"]
     deck = meshes / "marc" / "hex20.dat"

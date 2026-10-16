@@ -109,7 +109,7 @@ enum class VtkCodec {
     Zlib,  ///< vtkZLibDataCompressor -- the default, and the only one always available
     LZ4,   ///< vtkLZ4DataCompressor -- a real VTK compressor
     ZSTD,  ///< vtkZSTDDataCompressor -- a meshio++ extension; VTK has no ZSTD compressor
-    LZMA,  ///< vtkLZMADataCompressor -- recognized but not implemented (Python fallback)
+    LZMA,  ///< vtkLZMADataCompressor -- a real VTK compressor; needs MESHIOPLUSPLUS_WITH_LZMA
     LZF    ///< PCD write-option selector only; not a VTK block compressor
 };
 

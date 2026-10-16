@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 17.2.0
+  VERSION 17.3.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -206,6 +206,13 @@ endif()
 # -sUSE_ZSTD/-sUSE_LZ4 port, and a host library must never be picked up.
 option(MESHIOPLUSPLUS_WITH_ZSTD "Build the VTK XML zstd compression path" OFF)
 option(MESHIOPLUSPLUS_WITH_LZ4 "Build the VTK XML lz4 compression path" OFF)
+# liblzma (xz-utils, public domain): vtkLZMADataCompressor. Found through CMake's
+# own FindLibLZMA module; not available under Emscripten (no port, no full-artifact
+# build of it), where lzma files stay on the Python path.
+option(MESHIOPLUSPLUS_WITH_LZMA "Build the VTK XML lzma compression path" OFF)
+if(MESHIOPLUSPLUS_WITH_LZMA AND NOT EMSCRIPTEN)
+  find_package(LibLZMA QUIET)
+endif()
 if(MESHIOPLUSPLUS_WITH_ZSTD AND _mio_probe_optional)
   find_package(zstd QUIET)
   if(NOT zstd_FOUND)
@@ -755,6 +762,14 @@ elseif(MESHIOPLUSPLUS_WITH_LZ4)
   message(STATUS "meshio++: lz4 requested but not found - lz4 files fall back to Python")
 endif()
 
+if(MESHIOPLUSPLUS_WITH_LZMA AND LIBLZMA_FOUND AND NOT EMSCRIPTEN)
+  message(STATUS "meshio++: VTK XML lzma compression enabled")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_LZMA)
+  list(APPEND _mio_core_libs LibLZMA::LibLZMA)
+elseif(MESHIOPLUSPLUS_WITH_LZMA)
+  message(STATUS "meshio++: lzma requested but not found - lzma files fall back to Python")
+endif()
+
 if(MESHIOPLUSPLUS_WITH_BZIP2 AND EMSCRIPTEN AND MESHIOPLUSPLUS_WASM_FULL)
   message(STATUS "meshio++: bzip2 enabled (libMesh .bz2 meshes, Emscripten -sUSE_BZIP2=1 port)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_BZIP2)
@@ -1288,7 +1303,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT)
+foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()
@@ -1335,6 +1350,9 @@ if(_mio_has_ZLIB)
 endif()
 if(_mio_has_ZSTD)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lzstd")
+endif()
+if(_mio_has_LZMA)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -llzma")
 endif()
 if(_mio_has_LZ4)
   string(APPEND MIO_PC_LIBS_PRIVATE " -llz4")

@@ -23,6 +23,7 @@ from .. import _node_order, _provenance
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
+from .._regions import Region, canonical_regions
 
 # meshio++ <-> CGNS ElementType_t table, kept in exact sync with
 # src/cpp/src/formats/cgns.cpp's cgns_type_table(). The SIDS node order of
@@ -263,6 +264,209 @@ def _read_attr_str(obj, name):
 # ---- write -----------------------------------------------------------------
 
 
+_FIELD_DATA = "FieldData"
+_SUBREGION_NAME = "RegionName"
+_SUBREGION_TAG = "RegionTag"
+
+
+def _valid_node_name(name):
+    """Whether CGNS can name a node ``name`` (1 to 32 characters, no ``/``)."""
+    return 0 < len(name) <= 32 and "/" not in name and not name.startswith(" ")
+
+
+def _c1_node(parent, name, label, text):
+    node = _create_group(parent, name)
+    _write_node_attrs(node, name, label, "C1")
+    node.create_dataset(
+        " data", data=np.frombuffer(_padded_bytes(text, len(text)), "i1")
+    )
+    return node
+
+
+def _read_c1(node):
+    raw = np.asarray(node[" data"][()]).astype("i1")
+    return bytes(raw).decode("latin-1").strip("\0 ")
+
+
+def _write_field_data(zone, mesh):
+    """``field_data`` as ``DataArray_t`` children of a ``UserDefinedData_t`` node
+    (the arrays keep their shape; CGNS has no per-zone global variable node)."""
+    names = []
+    for name in sorted(mesh.field_data):
+        a = np.asarray(mesh.field_data[name])
+        if not _valid_node_name(name) or a.dtype.kind not in "iuf" or a.size == 0:
+            warnings.warn(
+                f"CGNS: field_data '{name}' cannot be a CGNS node (name over 32 "
+                "characters or with '/', or not numeric); not written.",
+                stacklevel=3,
+            )
+            continue
+        kind = "f" if a.dtype.kind == "f" else "i"
+        dtype = np.dtype(
+            ("<f4" if a.dtype.itemsize <= 4 else "<f8")
+            if kind == "f"
+            else ("<i4" if a.dtype.itemsize <= 4 and a.dtype.kind == "i" else "<i8")
+        )
+        names.append((name, a.astype(dtype).reshape(a.shape if a.ndim else (1,))))
+    if not names:
+        return
+    group = _create_group(zone, _FIELD_DATA)
+    _write_node_attrs(group, _FIELD_DATA, "UserDefinedData_t", "MT")
+    for name, a in names:
+        g = _create_group(group, name)
+        _write_node_attrs(g, name, "DataArray_t", _type_code(a.dtype))
+        g.create_dataset(" data", data=a)
+
+
+def _read_field_data(zone):
+    out = {}
+    for child in zone:
+        if (
+            child.startswith(" ")
+            or _read_attr_str(zone[child], "label") != "UserDefinedData_t"
+        ):
+            continue
+        group = zone[child]
+        if child != _FIELD_DATA:
+            continue
+        for name in group:
+            if (
+                name.startswith(" ")
+                or _read_attr_str(group[name], "label") != "DataArray_t"
+            ):
+                continue
+            if " data" in group[name]:
+                out[name] = np.asarray(group[name][" data"][()])
+    return out
+
+
+def _write_regions(zone, mesh, starts, firsts, n_points):
+    """Point and cell regions as ``ZoneSubRegion_t`` nodes (``GridLocation`` plus a
+    1-based ``PointList``; a cell region lists element ids). The node value is the
+    region's dimension and a ``RegionTag`` child holds its tag. Side regions and
+    cells of face-based sections have no CGNS node here and are dropped."""
+    used = set()
+    skipped_sides = 0
+    for k, region in enumerate(canonical_regions(mesh)):
+        if region.kind == "side":
+            skipped_sides += 1
+            continue
+        ids = np.asarray(region.entries, dtype=np.int64)
+        if region.kind == "point":
+            ids = ids + 1
+            location = "Vertex"
+        else:
+            location = "CellCenter"
+            block = np.searchsorted(starts[1:], ids, side="right")
+            ok = (block < len(firsts)) & (
+                firsts[np.minimum(block, len(firsts) - 1)] >= 0
+            )
+            if not ok.all():
+                warnings.warn(
+                    f"CGNS: region '{region.name}' holds cells with no element "
+                    "section of their own (face-based blocks); they are not written.",
+                    stacklevel=3,
+                )
+            ids = firsts[block[ok]] + (ids[ok] - starts[block[ok]])
+        node_name = (
+            region.name
+            if _valid_node_name(region.name) and region.name not in used
+            else f"Region{k}"
+        )
+        used.add(node_name)
+        wide = n_points > np.iinfo(np.int32).max or (
+            len(ids) and ids.max() > np.iinfo(np.int32).max
+        )
+        itype = np.dtype("<i8") if wide else np.dtype("<i4")
+        g = _create_group(zone, node_name)
+        _write_node_attrs(g, node_name, "ZoneSubRegion_t", "I4")
+        g.create_dataset(" data", data=np.array([region.dim], dtype="<i4"))
+        gl = _create_group(g, "GridLocation")
+        _write_node_attrs(gl, "GridLocation", "GridLocation_t", "C1")
+        gl.create_dataset(
+            " data", data=np.frombuffer(_padded_bytes(location, len(location)), "i1")
+        )
+        pl = _create_group(g, "PointList")
+        _write_node_attrs(pl, "PointList", "IndexArray_t", _type_code(itype))
+        pl.create_dataset(" data", data=ids.astype(itype).reshape(-1, 1))
+        tag = _create_group(g, _SUBREGION_TAG)
+        _write_node_attrs(tag, _SUBREGION_TAG, "DataArray_t", "I4")
+        tag.create_dataset(" data", data=np.array([region.tag], dtype="<i4"))
+        if node_name != region.name:
+            _c1_node(g, _SUBREGION_NAME, "DataArray_t", region.name)
+    if skipped_sides:
+        warnings.warn(
+            f"CGNS: {skipped_sides} side region(s) have no ZoneSubRegion equivalent; "
+            "not written.",
+            stacklevel=3,
+        )
+
+
+def _read_regions(zone, sections, n_points, n_cells_before):
+    """The ``ZoneSubRegion_t`` children as regions. ``sections`` are the zone's
+    ``(first element id, last, first cell index)`` triples."""
+    regions = []
+    dropped = 0
+    for child in zone:
+        if (
+            child.startswith(" ")
+            or _read_attr_str(zone[child], "label") != "ZoneSubRegion_t"
+        ):
+            continue
+        node = zone[child]
+        if "PointList" not in node or " data" not in node["PointList"]:
+            warnings.warn(
+                f"CGNS: ZoneSubRegion '{child}' has no PointList; not read.",
+                stacklevel=3,
+            )
+            continue
+        location = "Vertex"
+        if "GridLocation" in node and " data" in node["GridLocation"]:
+            location = _read_c1(node["GridLocation"])
+        ids = np.asarray(node["PointList"][" data"][()], dtype=np.int64).reshape(-1)
+        dim = -1
+        if " data" in node:
+            value = np.asarray(node[" data"][()]).reshape(-1)
+            dim = int(value[0]) if value.size else -1
+        tag = -1
+        if _SUBREGION_TAG in node and " data" in node[_SUBREGION_TAG]:
+            tag = int(np.asarray(node[_SUBREGION_TAG][" data"][()]).reshape(-1)[0])
+        name = child
+        if _SUBREGION_NAME in node and " data" in node[_SUBREGION_NAME]:
+            name = _read_c1(node[_SUBREGION_NAME])
+        if location == "Vertex":
+            if len(ids) and (ids.min() < 1 or ids.max() > n_points):
+                raise ReadError(
+                    f"CGNS: ZoneSubRegion '{child}' names a vertex the zone does not have"
+                )
+            regions.append(Region(name, "point", ids - 1, dim=dim, tag=tag))
+        elif location == "CellCenter":
+            cells = []
+            for e in ids:
+                for first, last, start in sections:
+                    if first <= e <= last:
+                        cells.append(n_cells_before + start + (e - first))
+                        break
+                else:
+                    dropped += 1
+            regions.append(
+                Region(name, "cell", np.array(cells, dtype=np.int64), dim=dim, tag=tag)
+            )
+        else:
+            warnings.warn(
+                f"CGNS: ZoneSubRegion '{child}' has GridLocation '{location}'; only "
+                "Vertex and CellCenter are supported, so it was not read.",
+                stacklevel=3,
+            )
+    if dropped:
+        warnings.warn(
+            f"CGNS: {dropped} region cell(s) name elements outside the zone's "
+            "fixed-size sections; dropped.",
+            stacklevel=3,
+        )
+    return regions
+
+
 @_provenance.slotless_writer
 def write(filename, mesh, compression="gzip", compression_opts=4):
     import h5py
@@ -381,9 +585,13 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
     # MED, sections of the same type are NOT consolidated.
     next_id = 1
     type_counts = {}
+    region_starts = [0]  # per block: its first cell index, and its first element id
+    region_firsts = []
     for cb in mesh.cells:
         conn = np.asarray(cb.data)
         nc = conn.shape[0]
+        region_starts.append(region_starts[-1] + nc)
+        region_firsts.append(next_id if nc else -1)
         if nc == 0:
             continue  # a zero-length ElementRange is not representable
         cgns_name, code = _CGNS_TYPES[cb.type]
@@ -493,6 +701,15 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
                         sol, _component_name(name, k, i), merged[:, i], gzip_kwargs
                     )
 
+    _write_field_data(zone, mesh)
+    _write_regions(
+        zone,
+        mesh,
+        np.array(region_starts, dtype=np.int64),
+        np.array(region_firsts, dtype=np.int64),
+        n_points,
+    )
+
     f.close()
 
 
@@ -541,6 +758,8 @@ def _read_spec(f):
     cells = []
     point_data = {}
     cell_data = {}
+    field_data = {}
+    regions = []
     point_offset = 0
     point_dim_out = 3
 
@@ -587,6 +806,8 @@ def _read_spec(f):
         # Cell counts of the blocks this zone contributes, in emission order --
         # what a zone-wide CellCenter FlowSolution is split back across.
         zone_block_cells = []
+        zone_sections = []  # (first element id, last, first cell index in the zone)
+        cells_before = sum(len(c[1]) for c in cells)
 
         sects = []
         for sname in zone:
@@ -661,6 +882,7 @@ def _read_spec(f):
             conn = _permute_conn(conn, meshio_type, -1)
             if point_offset:
                 conn = conn + point_offset
+            zone_sections.append((first, last, sum(zone_block_cells)))
             cells.append((meshio_type, conn.astype(np.int64)))
             zone_block_cells.append(nc)
 
@@ -704,6 +926,22 @@ def _read_spec(f):
                         stacklevel=2,
                     )
 
+        if n_zones == 1:
+            regions.extend(
+                _read_regions(zone, zone_sections, n_zone_points, cells_before)
+            )
+            field_data.update(_read_field_data(zone))
+        elif any(
+            _read_attr_str(zone[c], "label") in ("ZoneSubRegion_t", "UserDefinedData_t")
+            for c in zone
+            if not c.startswith(" ")
+        ):
+            warnings.warn(
+                f"CGNS: file has {n_zones} zones; the regions and field data of zone "
+                f"'{zname}' were not read.",
+                stacklevel=2,
+            )
+
         point_offset += n_zone_points
 
     if not point_chunks:
@@ -713,7 +951,14 @@ def _read_spec(f):
         if len(point_chunks) == 1
         else np.concatenate(point_chunks, axis=0)
     )
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_data,
+        regions=regions,
+    )
 
 
 def _read_legacy(f):

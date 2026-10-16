@@ -366,3 +366,47 @@ TEST(Xplt, EdgeVariablesRideOnLineBlocks) {
     EXPECT_EQ(m.Region(rim).mDim, 1);
     EXPECT_EQ(m.Region(rim).NumEntries(), 2u);
 }
+
+TEST(XpltWriter, StateAndSeriesRoundTrip) {
+    const Plt p;
+    const std::string path = write_plot(plot_chunks(p, 0x35, false), p, false);
+    const auto step_one = [] {
+        ReadOptions o;
+        o.mTimeStep = 1;
+        return o;
+    };
+    const Mesh original = read_xplt(path, step_one());
+    const std::string out = temp_path(".xplt");
+    write_xplt(out, original);
+    const Mesh again = read_xplt(out);
+    ASSERT_EQ(again.NumCellBlocks(), 1u);
+    EXPECT_EQ(again.Cells(0).Type(), "tetra");
+    EXPECT_EQ(again.NumPoints(), 5u);
+    EXPECT_DOUBLE_EQ(detail::read_double(again.FieldData("meshio:time"), 0), 1.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(again.FieldData("energy"), 0), 10.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(again.PointData("displacement"), 14), 14.0);
+    EXPECT_EQ(detail::read_double(again.CellData("p", 0), 1), 2.0);
+    bool tets = false, base = false;
+    for (std::size_t r = 0; r < again.NumRegions(); ++r) {
+        const auto& reg = again.Region(r);
+        tets = tets || (reg.mName == "tets" && reg.mTag == 4 && reg.NumEntries() == 2);
+        base = base ||
+               (reg.mName == "base" && reg.mKind == RegionKind::Point && reg.NumEntries() == 3);
+    }
+    EXPECT_TRUE(tets);
+    EXPECT_TRUE(base);
+
+    const std::string series = temp_path(".xplt");
+    XpltSeriesWriter writer(series);
+    writer.Write(0.25, original);
+    writer.Write(0.75, original);
+    writer.Finalize();
+    EXPECT_EQ(writer.NumSteps(), 2u);
+    EXPECT_EQ(read_xplt_metadata(series).mTimeValues, (std::vector<double>{0.25, 0.75}));
+    // A second read of the same state rather than a copy: a KRATOS mesh cannot be copied.
+    Mesh other = read_xplt(path, step_one());
+    XpltSeriesWriter mismatch(temp_path(".xplt"));
+    mismatch.Write(0.0, original);
+    other.AddPointData("extra", original.PointData("displacement"));
+    EXPECT_THROW(mismatch.Write(1.0, other), WriteError);
+}

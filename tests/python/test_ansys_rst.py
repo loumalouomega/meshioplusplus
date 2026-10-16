@@ -629,7 +629,7 @@ def test_registered_and_sniffed(tmp_path):
     out = meshioplusplus.formats()
     assert out["extensions"][".rst"] == ["ansys_rst"]
     assert out["extensions"][".rth"] == ["ansys_rst"]
-    assert "ansys_rst" in out["readable"] and "ansys_rst" not in out["writable"]
+    assert "ansys_rst" in out["readable"] and "ansys_rst" in out["writable"]
     assert "ansys_rst_cyclic" in out["readable"]
     assert "ansys_rst_cyclic" not in out["writable"]
     renamed = tmp_path / "results.bin"
@@ -948,3 +948,162 @@ def test_element_results_are_writable(tmp_path, ext):
     for name in ("S", "EPEL", "ENF"):
         for a, b in zip(mesh.cell_data[name], back.cell_data[name]):
             np.testing.assert_array_equal(a, b)
+
+
+# -- writing -----------------------------------------------------------------
+
+from meshioplusplus.ansys_rst import _write as py_write  # noqa: E402
+
+_WRITTEN = [
+    "beam_static_bc.rst",
+    "shell181_2021R1.rst",
+    "shell281.rst",
+    "temp_v13.rst",
+    "file.rth",
+]
+_SOLUTION = ("S", "EPEL", "EPPL", "EPCR", "EPTH")
+
+
+def _brick():
+    points = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
+    mesh = meshioplusplus.Mesh(points, [("hexahedron", np.arange(8)[None, :])])
+    mesh.point_data["U"] = np.arange(24.0).reshape(8, 3) * 0.1
+    mesh.point_data["TEMP"] = 100.0 + np.arange(8.0)
+    mesh.point_data["RF"] = np.arange(24.0).reshape(8, 3) - 5.0
+    mesh.cell_data["S"] = [np.arange(48.0).reshape(1, 48) * 0.5]
+    mesh.field_data["meshio:time"] = np.array([0.5])
+    return mesh
+
+
+def _same_arrays(a, b):
+    for name, value in a.point_data.items():
+        if name.startswith("S") or name in _SOLUTION:
+            continue
+        np.testing.assert_allclose(
+            np.nan_to_num(b.point_data[name]), np.nan_to_num(value)
+        )
+    for name in _SOLUTION:
+        for x, y in zip(a.cell_data.get(name, []), b.cell_data.get(name, [])):
+            np.testing.assert_allclose(np.nan_to_num(y), np.nan_to_num(x))
+
+
+@pytest.mark.parametrize("name", _WRITTEN)
+def test_written_files_round_trip_and_engines_agree(tmp_path, name):
+    mesh = meshioplusplus.read(RST / name)
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    back = meshioplusplus.read(core)
+    np.testing.assert_array_equal(back.points, mesh.points)
+    assert [c.type for c in back.cells] == [c.type for c in mesh.cells]
+    for a, b in zip(mesh.cells, back.cells):
+        np.testing.assert_array_equal(a.data, b.data)
+    _same_arrays(mesh, back)
+
+
+def test_written_model_reads_in_pymapdl_reader(tmp_path):
+    pymapdl = pytest.importorskip("ansys.mapdl.reader")
+    mesh = _brick()
+    path = tmp_path / "brick.rst"
+    meshioplusplus.write(path, mesh, file_format="ansys_rst")
+    result = pymapdl.read_binary(str(path))
+    assert result.nsets == 1
+    _, nodal = result.nodal_solution(0)
+    np.testing.assert_allclose(nodal[:, :3], mesh.point_data["U"], atol=1e-12)
+    np.testing.assert_allclose(result.nodal_temperature(0)[1], mesh.point_data["TEMP"])
+
+
+def test_written_set_carries_time_and_results(tmp_path):
+    mesh = _brick()
+    path = tmp_path / "brick.rst"
+    meshioplusplus.write(path, mesh, file_format="ansys_rst")
+    back = meshioplusplus.read(path)
+    assert back.field_data["meshio:time"][0] == pytest.approx(0.5)
+    np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
+    np.testing.assert_allclose(back.point_data["RF"], mesh.point_data["RF"])
+    np.testing.assert_allclose(back.cell_data["S"][0], mesh.cell_data["S"][0])
+
+
+def test_written_series_is_one_file_with_a_set_per_step(tmp_path):
+    steps = []
+    for i, time in enumerate((0.1, 0.2, 0.4)):
+        mesh = _brick()
+        mesh.point_data["U"] = mesh.point_data["U"] * (i + 1)
+        mesh.field_data["meshio:time"] = np.array([time])
+        steps.append((time, mesh))
+    path = tmp_path / "series.rst"
+    meshioplusplus.write_sequence(path, steps, file_format="ansys_rst")
+    assert meshioplusplus.ansys_rst.time_values(path) == pytest.approx([0.1, 0.2, 0.4])
+    for i, (_, mesh) in enumerate(steps):
+        back = meshioplusplus.ansys_rst.read(path, time_step=i)
+        np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
+    twin = tmp_path / "twin.rst"
+    with py_write.SeriesWriter(str(twin)) as writer:
+        for time, mesh in steps:
+            writer.write(time, mesh)
+    assert twin.read_bytes() == path.read_bytes()
+
+
+def test_written_series_refuses_a_changed_model(tmp_path):
+    other = _brick()
+    other.cells = [
+        meshioplusplus.CellBlock("hexahedron", np.array([[1, 0, 3, 2, 5, 4, 7, 6]]))
+    ]
+    for writer in (meshioplusplus.ansys_rst.SeriesWriter, py_write.SeriesWriter):
+        w = writer(str(tmp_path / "bad.rst"))
+        w.write(0.0, _brick())
+        with pytest.raises(Exception, match="differ"):
+            w.write(1.0, other)
+
+
+_LOSSLESS = [
+    "beam44.rst",
+    "beam_static_bc.rst",
+    "cyc_stress.rst",
+    "file.rst",
+    "hex_201.rst",
+    "shell181_2021R1.rst",
+    "shell281.rst",
+    "temp_v13.rst",
+    "file.rth",
+]
+
+
+@pytest.mark.parametrize("name", _LOSSLESS)
+def test_written_set_keeps_the_raw_records_and_element_forces(tmp_path, name):
+    """read(write(read(f))) keeps everything the reader returns -- including the
+    raw element records (ENG, EMS, ...) and the element nodal forces ENF -- and
+    both engines write the same bytes."""
+    source = py_rst.read(str(RST / name), time_step=-1)
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), source)
+    py_write.write(str(twin), source)
+    assert core.read_bytes() == twin.read_bytes()
+    for read in (meshioplusplus.ansys_rst.read, py_rst.read):
+        back = read(core)
+        assert [c.type for c in back.cells] == [c.type for c in source.cells]
+        for key, value in source.point_data.items():
+            np.testing.assert_allclose(
+                np.nan_to_num(back.point_data[key]), np.nan_to_num(value), rtol=1e-6
+            )
+        for key, blocks in source.cell_data.items():
+            for x, y in zip(blocks, back.cell_data[key]):
+                assert x.shape == y.shape, key
+                np.testing.assert_allclose(
+                    np.nan_to_num(y), np.nan_to_num(x), rtol=1e-6, err_msg=key
+                )
+        for key in source.field_data:
+            assert key in back.field_data, key

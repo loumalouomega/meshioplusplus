@@ -128,13 +128,13 @@ The choice reaches every surface, each in its own idiom: `meshioplusplus.read(pa
 | `partition:part` | the carving key; kept as an ordinary array in each piece |
 | `partition:ghost` | kept, and translated to `vtkGhostType` + `GhostLevel` |
 | `field_data` | dataset-global: written in `<FieldData>` on the grid of **every** piece, and read back as the union across pieces (the first piece carrying a name wins), never namespaced `0:name`, `1:name` |
-| named cell regions | recovered as `piece_<i>` on read, not round-tripped on write |
+| named cell regions | recovered as `piece_<i>` on read; `piece_<i>` regions that partition the cells are the pieces of a write |
 
 ## Quirks & limitations
 
 - **Field data is one value per dataset, repeated per piece.** Every piece carries the same `<FieldData>` and the reader takes the union rather than `merge()`'s renaming, so a `TimeValue` every piece repeats stays `TimeValue`; a name only some pieces carry is kept. See [VTU](./vtu.md#data-mapping) for the element's layout.
 - **The Python reference handles rectangular cell blocks only** when carving, deriving ghost arrays or dropping ghosts; a polygon or polyhedron block raises `NotImplementedError` there, and the C++ core (the normal path) handles them.
-- **Regions are not round-tripped symmetrically**: `write` does not look at existing regions, while `read` always attaches one per piece.
+- **`piece_<i>` regions are the parts.** When no `part_key` array is present and the mesh's cell regions are exactly `piece_0` … `piece_<n-1>` (n ≥ 2), disjoint and covering every cell — what `read` attaches — `write` carves by them, so a read file writes back with the same pieces. Other regions are not written (a piece has no named sets).
 - The index's own `byte_order` and `header_type` attributes are not used for reading: each piece's own header is authoritative, so an index and its pieces may disagree.
 - ParaView itself is driven by the tests (`tests/python/test_pvd_paraview.py`, through `pvpython`, skipped where it is absent): version 6.1.1 opens a ghosted `.pvtu`, recognises every `vtkGhostType` flag we write as a ghost cell, reads the pieces and the dataset's field data. Alongside it, VTK's own `vtkXMLPUnstructuredGridReader` / `vtkXMLPPolyDataReader` read every file either engine writes, and both engines read what `vtkXMLPUnstructuredGridWriter` writes.
 

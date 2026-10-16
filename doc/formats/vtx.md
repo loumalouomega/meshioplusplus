@@ -1,12 +1,12 @@
 # DOLFINx VTX (ADIOS2 `.bp`)
 
-The output of DOLFINx's `VTXWriter` (`dolfinx.io.VTXWriter`): an ADIOS2 BP4 or BP5 *directory* (`u.bp/` holding `md.idx`, `md.0`, `data.0`…) with a `vtk.xml` schema attribute and, per time step, the mesh and the functions written. It is what ParaView opens with its ADIOS2 VTX reader. New in v16.13.0, read-only.
+The output of DOLFINx's `VTXWriter` (`dolfinx.io.VTXWriter`): an ADIOS2 BP4 or BP5 *directory* (`u.bp/` holding `md.idx`, `md.0`, `data.0`…) with a `vtk.xml` schema attribute and, per time step, the mesh and the functions written. It is what ParaView opens with its ADIOS2 VTX reader. New in v16.13.0; written too since the writer joined.
 
 | | |
 |---|---|
 | **Format name** | `vtx` |
 | **Extensions** | `.bp` (a directory; one without the extension is found by its `md.idx` and `data.0`) |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#vtx): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.9) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#vtx)) |
 | **Time steps** | ✓ — `time_step=`, `read_metadata()["time_values"]`, [`read_sequence`](/sequences) |
 | **Extra dependencies** | ADIOS2: a core built with `MESHIOPLUSPLUS_WITH_ADIOS2=ON`, or the `adios2` Python package (`pip install meshioplusplus[adios2]`) |
 
@@ -35,6 +35,19 @@ meshioplusplus convert 'run_*.bp' run.pvd             # a glob keeps .bp directo
 
 ADIOS2 is a heavy dependency for one consumer, so it is never a default: the PyPI wheels have no ADIOS2 in their core, and read `.bp` through the `adios2` package when it is installed. A core built with `MESHIOPLUSPLUS_WITH_ADIOS2=ON` (see [installation](/installation)) reads it natively, which is also what the C, Fortran, Julia and R bindings and the native CLI need; the WASM build has no ADIOS2. The two engines give the same meshes. A process never holds both: a core built with ADIOS2 does not fall back to the Python reader, whose `adios2` package brings its own copy of the ADIOS2 libraries.
 
+## Writing
+
+```python
+meshioplusplus.write("u.bp", mesh)                                   # one step
+meshioplusplus.write_sequence("u.bp", steps, file_format="vtx")     # a step per mesh
+```
+
+```bash
+meshioplusplus convert model.vtu u.bp
+```
+
+The writer produces `VTXWriter`'s layout for one rank (BP5): the `vtk.xml` schema, then per step `step` (the time, `field_data["meshio:time"]`), `NumberOfNodes` and `NumberOfEntities`, the rank-local arrays `geometry`, `connectivity` and one variable per point or cell array, and the single value `types`. The mesh is written at every step (`VTXMeshPolicy.update`). Cells are written as the `VTK_LAGRANGE_*` types DOLFINx uses wherever the node order allows (every degree-1 cell, `line3`, `triangle6`, `quad9`, `tetra10`), as plain VTK types otherwise. Like DOLFINx's files, a file holds **one cell type**: a mesh with several is a `WriteError` (write each type to its own file), as is a mesh with no cells. A series needs the first step's points, cells and array names at every step. Arrays keep their dtype; those of more than two dimensions, or whose rows are not the points' or cells', are dropped with a warning, and `geometry`, `connectivity`, `types`, `step`, `TIME`, `NumberOfNodes` and `NumberOfEntities` are reserved names. The ghost arrays are written only when the mesh carries them. A core built with ADIOS2 writes through its own library, otherwise the `adios2` package does; both write the same variables and values (the byte layout of a BP5 directory is ADIOS2's).
+
 ## The layout
 
 `vtk.xml` is the VTK XML model with variable names in place of data: `Points` names the `geometry` variable (points × 3), `Cells` the `connectivity` (cells × (1 + nodes), each row prefixed with its node count, VTK legacy style) and `types` variables, `PointData`/`CellData` one variable per array, and a `TIME` array the `step` variable. Every step holds `step`; the mesh variables are written at every step (`VTXMeshPolicy.update`) or only at the first (`VTXMeshPolicy.reuse`). Every MPI rank writes one block of each variable, with its own point numbering and its ghost points.
@@ -55,7 +68,7 @@ ADIOS2 is a heavy dependency for one consumer, so it is never a default: the PyP
 ## Not read
 
 - `adios4dolfinx` checkpoints and Fides output are other ADIOS2 layouts, with no `vtk.xml`; such a `.bp` is a `ReadError` that says so.
-- Writing: DOLFINx reads its own meshes from XDMF, which meshio++ writes.
+- Ranks: the writer writes one rank; DOLFINx reads its own meshes from XDMF, which meshio++ also writes.
 
 ## Validation
 

@@ -1,9 +1,9 @@
 """
-I/O for EnSight Gold (.case/.geo), geometry only, c.f.
+I/O for EnSight Gold (.case/.geo), c.f.
 <https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf>
 
-Handles the FORMAT/GEOMETRY sections of the .case file and the Gold geometry
-file in ASCII, C-binary and Fortran-binary form (32-bit ints/floats, 80-char
+Handles the FORMAT/GEOMETRY/TIME/VARIABLE sections of the .case file and the
+Gold geometry file in ASCII, C-binary and Fortran-binary form (32-bit ints/floats, 80-char
 string records, framed as Fortran sequential records in Fortran binary;
 a foreign byte order is auto-detected from the plausibility of the
 part-number/node-count records). Per the Gold specification connectivity is
@@ -11,8 +11,10 @@ positional (1-based index into the part's coordinate list), so "node id
 given/ignore" id arrays are skipped. Multi-part files are concatenated into
 one point array with the owning part recorded as the ``ensight:part``
 cell_data field (only when there are two or more parts). The writer emits a
-single part with ``node id assign`` / ``element id assign`` and drops
-point/cell/field data (mesh-only scope). ``polygon`` blocks are written as
+single part with ``node id assign`` / ``element id assign``, one variable file
+per point/cell array and a ``constant per case`` line per scalar field_data
+entry. ``VARIABLE`` entries are read back (one file per step, the ``TIME``
+section selecting the step) as ``point_data``/``cell_data``/``field_data``. ``polygon`` blocks are written as
 ``nsided`` and ``polyhedron<N>`` blocks as ``nfaced``, the exact inverse of
 what the reader parses (counts, then for ``nfaced`` the face sizes, then the
 node ids).
@@ -87,31 +89,132 @@ def _case_geo_paths(filename):
     return None, None
 
 
-def _parse_case(case_path):
-    """Parse the .case file and return the resolved geometry file path."""
+_CASE_SECTIONS = (
+    "FORMAT",
+    "GEOMETRY",
+    "VARIABLE",
+    "TIME",
+    "FILE",
+    "MATERIAL",
+    "SCRIPTS",
+)
+_VARIABLE_KINDS = (
+    "scalar per node:",
+    "vector per node:",
+    "tensor symm per node:",
+    "tensor asym per node:",
+    "scalar per element:",
+    "vector per element:",
+    "tensor symm per element:",
+    "tensor asym per element:",
+)
+
+
+def _tokens_after_leading_ints(value):
+    """The tokens of a record without its leading ``[ts] [fs]`` integers."""
+    tokens = value.split()
+    while tokens:
+        try:
+            int(tokens[0])
+        except ValueError:
+            break
+        tokens.pop(0)
+    return tokens
+
+
+def _leading_int(text):
+    """``strtol``-style: the integer a string starts with, else 0."""
+    digits = ""
+    text = text.strip()
+    for i, ch in enumerate(text):
+        if ch.isdigit() or (i == 0 and ch in "+-"):
+            digits += ch
+        else:
+            break
+    try:
+        return int(digits)
+    except ValueError:
+        return 0
+
+
+def _parse_case_info(case_path):
+    """The .case file's GEOMETRY, TIME and VARIABLE sections."""
     section = None
     format_type = ""
     model_value = ""
+    info = {
+        "time_values": [],
+        "start": 0,
+        "increment": 1,
+        "variables": [],
+        "constants": [],
+    }
+    in_time_values = False
+    have_time_set = False
+    num_steps = -1
     with open(case_path) as f:
         for raw in f:
             line = raw.strip()
             if not line or line.startswith("#"):
+                in_time_values = False
                 continue
-            if line in (
-                "FORMAT",
-                "GEOMETRY",
-                "VARIABLE",
-                "TIME",
-                "FILE",
-                "MATERIAL",
-                "SCRIPTS",
-            ):
+            if line in _CASE_SECTIONS:
                 section = line
+                in_time_values = False
                 continue
             if section == "FORMAT" and line.startswith("type:"):
                 format_type = line[5:].strip()
             elif section == "GEOMETRY" and line.startswith("model:"):
                 model_value = line[6:].strip()
+            elif section == "VARIABLE" and line.startswith("constant per case:"):
+                toks = _tokens_after_leading_ints(line[len("constant per case:") :])
+                if len(toks) < 2:
+                    raise ReadError(
+                        f"EnSight: malformed 'constant per case' line: {line}"
+                    )
+                try:
+                    value = float(toks[-1])
+                except ValueError:
+                    raise ReadError(
+                        f"EnSight: malformed 'constant per case' line: {line}"
+                    )
+                info["constants"].append((" ".join(toks[:-1]), value))
+            elif section == "VARIABLE":
+                for kind in _VARIABLE_KINDS:
+                    if not line.startswith(kind):
+                        continue
+                    toks = _tokens_after_leading_ints(line[len(kind) :])
+                    if len(toks) < 2:
+                        raise ReadError(
+                            f"EnSight: malformed '{kind[:-1]}' line: {line}"
+                        )
+                    info["variables"].append(
+                        {
+                            "kind": kind[:-1],
+                            "name": " ".join(toks[:-1]),
+                            "pattern": toks[-1],
+                        }
+                    )
+                    break
+            elif section == "TIME":
+                if line.startswith("time set:"):
+                    if have_time_set:
+                        section = None  # only the first time set is honoured
+                        continue
+                    have_time_set = True
+                elif line.startswith("number of steps:"):
+                    num_steps = _leading_int(line[len("number of steps:") :])
+                elif line.startswith("filename start number:"):
+                    info["start"] = _leading_int(line[len("filename start number:") :])
+                elif line.startswith("filename increment:"):
+                    info["increment"] = _leading_int(line[len("filename increment:") :])
+                elif line.startswith("time values:"):
+                    in_time_values = True
+                    info["time_values"] += _floats_prefix(line[len("time values:") :])
+                elif in_time_values:
+                    info["time_values"] += _floats_prefix(line)
+                    if num_steps >= 0 and len(info["time_values"]) >= num_steps:
+                        in_time_values = False
 
     if "ensight gold" not in format_type:
         raise ReadError(
@@ -122,19 +225,44 @@ def _parse_case(case_path):
 
     # model: [ts] [fs] filename [change_coords_only] — drop leading integer
     # timeset/fileset tokens, take the first remaining token as the filename.
-    tokens = model_value.split()
-    while tokens:
-        try:
-            int(tokens[0])
-        except ValueError:
-            break
-        tokens.pop(0)
+    tokens = _tokens_after_leading_ints(model_value)
     if not tokens:
         raise ReadError("EnSight: malformed 'model:' line in case file")
     geo_name = tokens[0]
     if "*" in geo_name:
         raise ReadError("EnSight: transient (wildcard) geometry is not supported")
-    return pathlib.Path(case_path).parent / geo_name
+    info["geo_path"] = pathlib.Path(case_path).parent / geo_name
+    return info
+
+
+def _floats_prefix(text):
+    """The leading run of numbers of a line (``>>`` into a double stops at a non-number)."""
+    out = []
+    for tok in text.split():
+        try:
+            out.append(float(tok))
+        except ValueError:
+            break
+    return out
+
+
+def _parse_case(case_path):
+    """Parse the .case file and return the resolved geometry file path."""
+    return _parse_case_info(case_path)["geo_path"]
+
+
+def _resolve_wildcard(pattern, number):
+    """Replace the run of ``*`` with ``number``, zero-padded to the run's width."""
+    star = pattern.find("*")
+    if star < 0:
+        return pattern
+    width = 0
+    while star + width < len(pattern) and pattern[star + width] == "*":
+        width += 1
+    digits = f"{number:0{width}d}"
+    if len(digits) > width:
+        digits = digits[-width:]
+    return pattern[:star] + digits + pattern[star + width :]
 
 
 class _AsciiCursor:
@@ -208,10 +336,10 @@ class _BinaryCursor:
     """Record/number stream over a C-binary Gold geometry file (or a
     Fortran-binary one with its record markers stripped)."""
 
-    def __init__(self, data, order="="):
+    def __init__(self, data, order="=", start=80):
         # `order` seeds the byte order when the file says it (Fortran markers).
         self.data = data
-        self.pos = 80  # past the leading "C Binary"/"Fortran Binary" record
+        self.pos = start  # past the leading "C Binary"/"Fortran Binary" record
         self.i4 = np.dtype(np.int32).newbyteorder(order)
         self.f4 = np.dtype(np.float32).newbyteorder(order)
 
@@ -284,7 +412,7 @@ def _ids_in_file(record, what):
     raise ReadError(f"EnSight: malformed '{what} id' record: {record}")
 
 
-def _parse_geo(cur):
+def _parse_geo(cur, layout=None):
     cur.next_record()  # description line 1
     cur.next_record()  # description line 2
     node_id_rec = cur.next_record()
@@ -302,6 +430,7 @@ def _parse_geo(cur):
 
     all_points = []
     blocks = []  # (cell_type, data, num_cells, part_id)
+    parts = []  # (part_id, point_offset, num_points), in file order
     num_parts = 0
 
     while not cur.at_end():
@@ -321,6 +450,7 @@ def _parse_geo(cur):
         if nn < 0:
             raise ReadError("EnSight: negative node count")
         point_offset = sum(p.shape[0] for p in all_points)
+        parts.append((part_id, point_offset, nn))
 
         if node_ids_in_file:
             cur.skip_ints(nn)
@@ -399,6 +529,21 @@ def _parse_geo(cur):
         np.concatenate(all_points) if all_points else np.empty((0, 3), dtype=np.float64)
     )
     cells = [CellBlock(cell_type, data) for cell_type, data, _, _ in blocks]
+    if layout is not None:
+        for part_id, offset, count in parts:
+            layout.append(
+                {
+                    "id": part_id,
+                    "offset": offset,
+                    "count": count,
+                    "blocks": [
+                        (i, ne)
+                        for i, b in enumerate(blocks)
+                        if b[3] == part_id
+                        for ne in (b[2],)
+                    ],
+                }
+            )
     cell_data = {}
     if num_parts >= 2:
         cell_data["ensight:part"] = [
@@ -425,17 +570,186 @@ def _unframe_fortran(data):
     return b"".join(data[off : off + size] for off, size in records), layout[1]
 
 
-def read(filename):
+def _unframe_variable_fortran(data):
+    """Like :func:`_unframe_fortran` for a variable file, which has no format record."""
+    layout = sniff_fortran_records(data)
+    if layout is None:
+        return None
+    records = fortran_records(data, layout, "EnSight variable file")
+    return b"".join(data[off : off + size] for off, size in records), layout[1]
+
+
+def _variable_ncomp(kind):
+    if kind.startswith("vector"):
+        return 3
+    if kind.startswith("tensor symm"):
+        return 6
+    if kind.startswith("tensor asym"):
+        return 9
+    return 1
+
+
+def _read_variable_file(cur, per_node, ncomp, layout, total_points):
+    """One variable file against the geometry's part/block layout."""
+    cur.next_record()  # description line
+    point_out = None
+    if per_node:
+        shape = (total_points,) if ncomp == 1 else (total_points, ncomp)
+        point_out = np.zeros(shape, dtype=np.float64)
+    block_out = {}
+    for part in layout:
+        rec = cur.next_record()
+        if not rec.startswith("part"):
+            raise ReadError(
+                f"EnSight: expected 'part' record in variable file, got: {rec}"
+            )
+        cur.check_swap(_PLAUSIBLE_MAX, prefer_smaller=True)
+        if cur.next_int() != part["id"]:
+            raise ReadError(
+                "EnSight: variable file's part sequence does not match the geometry's"
+            )
+        if per_node:
+            rec = cur.next_record()
+            if not rec.startswith("coordinates"):
+                raise ReadError(
+                    "EnSight: expected 'coordinates' record in variable file, "
+                    f"got: {rec}"
+                )
+            lo, n = part["offset"], part["count"]
+            for c in range(ncomp):
+                values = cur.read_floats(n)
+                if ncomp == 1:
+                    point_out[lo : lo + n] = values
+                else:
+                    point_out[lo : lo + n, c] = values
+            continue
+        for block_index, num_cells in part["blocks"]:
+            cur.next_record()  # element type; not re-validated by name
+            shape = (num_cells,) if ncomp == 1 else (num_cells, ncomp)
+            block = np.zeros(shape, dtype=np.float64)
+            for c in range(ncomp):
+                values = cur.read_floats(num_cells)
+                if ncomp == 1:
+                    block[:] = values
+                else:
+                    block[:, c] = values
+            block_out[block_index] = block
+    return point_out if per_node else block_out
+
+
+def _read_variable_file_auto(path, encoding, per_node, ncomp, layout, total_points):
+    data = pathlib.Path(path).read_bytes()
+    binary_layout = (
+        len(data) >= 160 and data[80:].startswith(b"part") and b"\n" not in data[:80]
+    ) or data.startswith(b"C Binary")
+    if encoding != "ascii" and not binary_layout:
+        head = data[:1024]
+        eol = head.find(b"\n")
+        if b"\0" not in head and 0 <= eol < 81:
+            encoding = "ascii"
+    if encoding == "fortran":
+        unframed = _unframe_variable_fortran(data)
+        if unframed is None:
+            raise ReadError(
+                f"EnSight: variable file '{path}' is not Fortran binary like its "
+                "geometry file"
+            )
+        cur = _BinaryCursor(unframed[0], unframed[1], start=0)
+    elif encoding == "cbinary":
+        standard = len(data) >= 160 and data[80:].startswith(b"part")
+        start = 80 if (not standard and data.startswith(b"C Binary")) else 0
+        cur = _BinaryCursor(data, start=start)
+    else:
+        cur = _AsciiCursor(data.decode("utf-8", errors="replace"))
+    return _read_variable_file(cur, per_node, ncomp, layout, total_points)
+
+
+def _swap_tensor_symm(arr):
+    """EnSight's ``11 22 33 12 13 23`` <-> meshio++'s ``xx yy zz xy yz zx``."""
+    out = np.array(arr, copy=True)
+    if out.size:
+        out[:, [4, 5]] = out[:, [5, 4]]
+    return out
+
+
+def read(filename, time_step=0):
     filename = pathlib.Path(filename)
-    geo_path = _parse_case(filename) if filename.suffix == ".case" else filename
+    case_info = None
+    if filename.suffix == ".case":
+        case_info = _parse_case_info(filename)
+        geo_path = case_info["geo_path"]
+    else:
+        geo_path = filename
     with open(geo_path, "rb") as f:
         data = f.read()
+    layout = []
     unframed = _unframe_fortran(data)
     if unframed is not None:
-        return _parse_geo(_BinaryCursor(*unframed))
-    if len(data) >= 80 and data.startswith(b"C Binary"):
-        return _parse_geo(_BinaryCursor(data))
-    return _parse_geo(_AsciiCursor(data.decode("utf-8", errors="replace")))
+        encoding = "fortran"
+        mesh = _parse_geo(_BinaryCursor(*unframed), layout)
+    elif len(data) >= 80 and data.startswith(b"C Binary"):
+        encoding = "cbinary"
+        mesh = _parse_geo(_BinaryCursor(data), layout)
+    else:
+        encoding = "ascii"
+        mesh = _parse_geo(_AsciiCursor(data.decode("utf-8", errors="replace")), layout)
+
+    if case_info is None or not (case_info["variables"] or case_info["constants"]):
+        return mesh
+
+    for name, value in case_info["constants"]:
+        mesh.field_data[name] = np.array([value], dtype=np.float64)
+    if not case_info["variables"]:
+        return mesh
+
+    times = case_info["time_values"]
+    step = 0
+    if times:
+        step = time_step
+        if step < 0:
+            step += len(times)
+        if not 0 <= step < len(times):
+            raise ReadError(
+                f"EnSight: time step {time_step} out of range for {len(times)} step(s)"
+            )
+    elif time_step != 0:
+        raise ReadError(
+            "EnSight: mTimeStep requested but the case file has no TIME section to "
+            "resolve it against"
+        )
+    file_number = case_info["start"] + step * case_info["increment"]
+
+    for var in case_info["variables"]:
+        per_node = "per node" in var["kind"]
+        per_element = "per element" in var["kind"]
+        if not per_node and not per_element:
+            continue
+        ncomp = _variable_ncomp(var["kind"])
+        tensor_symm = var["kind"].startswith("tensor symm")
+        resolved = _resolve_wildcard(var["pattern"], file_number)
+        var_path = filename.parent / resolved
+        values = _read_variable_file_auto(
+            var_path, encoding, per_node, ncomp, layout, len(mesh.points)
+        )
+        if per_node:
+            mesh.point_data[var["name"]] = (
+                _swap_tensor_symm(values) if tensor_symm else values
+            )
+        else:
+            blocks = []
+            for i in range(len(mesh.cells)):
+                blk = values.get(i)
+                if blk is None:
+                    blk = np.zeros(
+                        (len(mesh.cells[i]),)
+                        if ncomp == 1
+                        else (len(mesh.cells[i]), ncomp)
+                    )
+                blocks.append(
+                    _swap_tensor_symm(blk) if tensor_symm and blk.size else blk
+                )
+            mesh.cell_data[var["name"]] = blocks
+    return mesh
 
 
 def _str80(s):
@@ -547,6 +861,134 @@ def _write_geo_binary(fh, points, cells, fortran=False):
         record(np.ascontiguousarray(conn, dtype=np.int32).tobytes())
 
 
+def _block_keyword(cell_block):
+    if cell_block.type.startswith("polygon"):
+        return "nsided"
+    if cell_block.type.startswith("polyhedron"):
+        return "nfaced"
+    return meshio_to_ensight_type[cell_block.type]
+
+
+def _kind_for_ncomp(ncomp):
+    """``(kind word, written component count)`` or ``None`` for an unsupported count."""
+    return {
+        1: ("scalar", 1),
+        2: ("vector", 3),
+        3: ("vector", 3),
+        6: ("tensor symm", 6),
+        9: ("tensor asym", 9),
+    }.get(ncomp)
+
+
+def _variable_extension(kind, per_node):
+    ext = {
+        "scalar": "scl",
+        "vector": "vec",
+        "tensor symm": "tsym",
+        "tensor asym": "tasym",
+    }[kind]
+    return ext if per_node else "e" + ext
+
+
+def _ncomp(arr):
+    arr = np.asarray(arr)
+    return arr.shape[1] if arr.ndim >= 2 else 1
+
+
+def _collect_variables(mesh):
+    """The arrays this writer can express: (variables, constants)."""
+    variables = []
+    constants = []
+    for name in sorted(mesh.point_data):
+        ncomp = _ncomp(mesh.point_data[name])
+        kind = _kind_for_ncomp(ncomp)
+        if kind is None:
+            warn(
+                f"EnSight: skipping point data '{name}' with {ncomp} components "
+                "(1, 2, 3, 6 or 9 are supported)"
+            )
+            continue
+        variables.append((name, kind[0], kind[1], True))
+    for name in sorted(mesh.cell_data):
+        blocks = mesh.cell_data[name]
+        if len(blocks) != len(mesh.cells):
+            warn(
+                f"EnSight: skipping cell data '{name}': not present on every cell block"
+            )
+            continue
+        ncomp = _ncomp(blocks[0]) if len(blocks) else 1
+        kind = _kind_for_ncomp(ncomp)
+        if kind is None:
+            warn(
+                f"EnSight: skipping cell data '{name}' with {ncomp} components "
+                "(1, 2, 3, 6 or 9 are supported)"
+            )
+            continue
+        variables.append((name, kind[0], kind[1], False))
+    for name in sorted(mesh.field_data):
+        arr = np.asarray(mesh.field_data[name])
+        if arr.size != 1:
+            warn(
+                f"EnSight: skipping field data '{name}': only a single scalar can "
+                "become a 'constant per case'"
+            )
+            continue
+        constants.append((name, float(arr.reshape(-1)[0])))
+    return variables, constants
+
+
+def _variable_columns(array, kind, written):
+    """The ``written`` components of ``array`` (n,) or (n, k), in EnSight file order."""
+    array = np.asarray(array, dtype=np.float64)
+    stored = array.shape[1] if array.ndim >= 2 else 1
+    columns = []
+    for comp in range(written):
+        source = comp
+        if kind == "tensor symm" and comp in (4, 5):
+            source = 9 - comp
+        if source < stored:
+            columns.append(array if array.ndim < 2 else array[:, source])
+        else:
+            columns.append(np.zeros(array.shape[0]))
+    return columns
+
+
+def _write_variable(path, mesh, variable, binary, fortran):
+    name, kind, written, per_node = variable
+    if per_node:
+        sections = [
+            ("coordinates", _variable_columns(mesh.point_data[name], kind, written))
+        ]
+    else:
+        sections = [
+            (_block_keyword(block), _variable_columns(data, kind, written))
+            for block, data in zip(mesh.cells, mesh.cell_data[name])
+        ]
+    with open(path, "wb") as fh:
+        if binary:
+
+            def record(payload):
+                if fortran:
+                    marker = np.int32(len(payload)).tobytes()
+                    fh.write(marker + payload + marker)
+                else:
+                    fh.write(payload)
+
+            record(_str80("variable"))
+            record(_str80("part"))
+            record(np.int32(1).tobytes())
+            for keyword, columns in sections:
+                record(_str80(keyword))
+                for column in columns:
+                    record(np.ascontiguousarray(column, dtype=np.float32).tobytes())
+        else:
+            fh.write(b"variable\npart\n" + f"{1:10d}\n".encode())
+            for keyword, columns in sections:
+                fh.write(f"{keyword}\n".encode())
+                for column in columns:
+                    fh.write("".join(f"{v:12.5e}\n" for v in column).encode())
+
+
 def write(filename, mesh, binary=True, fortran=False):
     if fortran and not binary:
         raise WriteError("EnSight: Fortran binary is a binary encoding (binary=True)")
@@ -563,8 +1005,7 @@ def write(filename, mesh, binary=True, fortran=False):
             raise WriteError(
                 f"EnSight: cell type '{cell_block.type}' has no EnSight keyword"
             )
-    if mesh.point_data or mesh.cell_data or mesh.field_data:
-        warn("EnSight writer is geometry-only; point/cell/field data are dropped.")
+    variables, constants = _collect_variables(mesh)
 
     points = np.asarray(mesh.points, dtype=np.float64)
     if points.shape[1] < 3:
@@ -572,19 +1013,29 @@ def write(filename, mesh, binary=True, fortran=False):
             [points, np.zeros((points.shape[0], 3 - points.shape[1]))]
         )
 
+    text = (
+        "FORMAT\n" "type: ensight gold\n" "\n" "GEOMETRY\n" f"model: {geo_path.name}\n"
+    )
+    if variables or constants:
+        text += "\nVARIABLE\n"
+        for name, kind, _, per_node in variables:
+            ext = _variable_extension(kind, per_node)
+            text += (
+                f"{kind} per {'node' if per_node else 'element'}: "
+                f"{name} {name}.{ext}\n"
+            )
+        for name, value in constants:
+            text += f"constant per case: {name} {format(value, '.17g')}\n"
     with open(case_path, "wb") as fh:
-        fh.write(
-            (
-                "FORMAT\n"
-                "type: ensight gold\n"
-                "\n"
-                "GEOMETRY\n"
-                f"model: {geo_path.name}\n"
-            ).encode()
-        )
+        fh.write(text.encode())
 
     with open(geo_path, "wb") as fh:
         if binary:
             _write_geo_binary(fh, points, mesh.cells, fortran)
         else:
             _write_geo_ascii(fh, points, mesh.cells)
+
+    for variable in variables:
+        name, kind, _, per_node = variable
+        var_path = geo_path.parent / f"{name}.{_variable_extension(kind, per_node)}"
+        _write_variable(var_path, mesh, variable, binary, fortran)

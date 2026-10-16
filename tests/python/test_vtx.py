@@ -183,3 +183,158 @@ def test_python_twin_names_its_dependency(monkeypatch):
     monkeypatch.setitem(sys.modules, "adios2", None)
     with pytest.raises(ImportError, match=r"meshioplusplus\[adios2\]"):
         _vtx.read(VTX / "heat.bp")
+
+
+# ---------------------------------------------------------------------------
+# The writer: VTXWriter's layout for one rank, from the core when it has ADIOS2
+# and from the `adios2` package otherwise.
+# ---------------------------------------------------------------------------
+
+import subprocess  # noqa: E402,F401  (the cross-engine check below)
+import textwrap  # noqa: E402
+
+from meshioplusplus import WriteError  # noqa: E402
+
+
+def _tri6_mesh():
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.5, 0, 0], [0.5, 0.5, 0], [0, 0.5, 0]],
+        dtype=float,
+    )
+    mesh = meshioplusplus.Mesh(pts, [("triangle6", np.array([[0, 1, 2, 3, 4, 5]]))])
+    mesh.point_data["u"] = np.arange(6.0)
+    mesh.point_data["v"] = np.arange(18.0).reshape(6, 3)
+    mesh.cell_data["rho"] = [np.array([2.5])]
+    mesh.field_data["meshio:time"] = np.array([0.25])
+    return mesh
+
+
+@pytest.mark.parametrize(
+    "ctype,corners",
+    [
+        ("line", [[0, 0, 0], [1, 0, 0]]),
+        ("triangle", [[0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+        ("quad", [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]),
+        ("tetra", [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        (
+            "wedge",
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1]],
+        ),
+    ],
+)
+def test_each_cell_type_survives_a_round_trip(ctype, corners, tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array(corners, dtype=float), [(ctype, np.arange(len(corners))[None])]
+    )
+    mesh.point_data["p"] = np.arange(len(corners), dtype=float)
+    path = tmp_path / "m.bp"
+    meshioplusplus.write(path, mesh, file_format="vtx")
+    again = meshioplusplus.read(path)
+    np.testing.assert_array_equal(again.points, mesh.points)
+    assert [(c.type, c.data.tolist()) for c in again.cells] == [
+        (ctype, [list(range(len(corners)))])
+    ]
+    np.testing.assert_array_equal(again.point_data["p"], mesh.point_data["p"])
+
+
+def test_a_quadratic_mesh_with_data_survives(tmp_path):
+    mesh = _tri6_mesh()
+    path = tmp_path / "t.bp"
+    meshioplusplus.write(path, mesh, file_format="vtx")
+    again = meshioplusplus.read(path)
+    assert [(c.type, c.data.tolist()) for c in again.cells] == [
+        ("triangle6", [[0, 1, 2, 3, 4, 5]])
+    ]
+    np.testing.assert_array_equal(again.point_data["u"], mesh.point_data["u"])
+    np.testing.assert_array_equal(again.point_data["v"], mesh.point_data["v"])
+    np.testing.assert_array_equal(again.cell_data["rho"][0], [2.5])
+    assert again.field_data["meshio:time"][0] == 0.25
+
+
+def test_the_layout_is_vtxwriters(tmp_path):
+    """The attribute and the variables a reader (ParaView's included) looks for."""
+    adios2 = pytest.importorskip("adios2")
+    path = tmp_path / "layout.bp"
+    meshioplusplus.write(path, _tri6_mesh(), file_format="vtx")
+    with adios2.Stream(str(path), "r") as stream:
+        for _ in stream.steps():
+            assert "vtk.xml" in stream.available_attributes()
+            xml = stream.read_attribute_string("vtk.xml")
+            xml = "".join(xml) if isinstance(xml, (list, tuple)) else xml
+            variables = stream.available_variables()
+            for name in ("geometry", "connectivity", "types", "step", "u", "v", "rho"):
+                assert name in variables, name
+            assert variables["types"]["SingleValue"] == "true"
+            assert variables["types"]["Min"] == "69"  # VTK_LAGRANGE_TRIANGLE
+            assert variables["geometry"]["Shape"] == ""  # a rank-local array
+            assert 'Name="geometry"' in xml and "<CellData>" in xml
+            break
+
+
+def test_a_series_is_a_step_per_mesh(tmp_path):
+    steps = []
+    for k in range(3):
+        mesh = _tri6_mesh()
+        mesh.point_data["u"] = mesh.point_data["u"] + 10 * k
+        steps.append((0.5 * k, mesh))
+    path = tmp_path / "series.bp"
+    meshioplusplus.write_sequence(path, iter(steps), file_format="vtx")
+    assert meshioplusplus.vtx.time_values(path) == [0.0, 0.5, 1.0]
+    for k in range(3):
+        again = meshioplusplus.read(path, time_step=k)
+        np.testing.assert_array_equal(
+            again.point_data["u"], steps[k][1].point_data["u"]
+        )
+        assert again.field_data["meshio:time"][0] == 0.5 * k
+
+
+def test_refusals(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2]])), ("quad", np.array([[0, 1, 3, 2]]))],
+    )
+    with pytest.raises(WriteError, match="one cell type"):
+        meshioplusplus.write(tmp_path / "mixed.bp", mesh, file_format="vtx")
+    empty = meshioplusplus.Mesh(np.zeros((2, 3)), [])
+    with pytest.raises(WriteError, match="no cells"):
+        meshioplusplus.write(tmp_path / "empty.bp", empty, file_format="vtx")
+    other = _tri6_mesh()
+    other.point_data["extra"] = np.zeros(6)
+    with pytest.raises(WriteError):
+        with meshioplusplus.vtx.SeriesWriter(tmp_path / "bad.bp") as w:
+            w.write(0.0, _tri6_mesh())
+            w.write(1.0, other)
+
+
+@pytest.mark.skipif(not HAS_CORE, reason="compares the core with the Python twin")
+def test_the_python_twin_writes_what_the_core_does(tmp_path):
+    """The twin runs in a child process: it loads the `adios2` package's own
+    ADIOS2 libraries, which this process (holding the core's) must not."""
+    pytest.importorskip("adios2")
+    meshioplusplus.write(tmp_path / "core.bp", _tri6_mesh(), file_format="vtx")
+    script = textwrap.dedent(
+        """
+        import sys, numpy as np
+        import meshioplusplus
+        from meshioplusplus.vtx import _write
+        pts = np.array([[0,0,0],[1,0,0],[0,1,0],[0.5,0,0],[0.5,0.5,0],[0,0.5,0]], float)
+        mesh = meshioplusplus.Mesh(pts, [("triangle6", np.array([[0,1,2,3,4,5]]))])
+        mesh.point_data["u"] = np.arange(6.0)
+        mesh.point_data["v"] = np.arange(18.0).reshape(6, 3)
+        mesh.cell_data["rho"] = [np.array([2.5])]
+        mesh.field_data["meshio:time"] = np.array([0.25])
+        _write.write(sys.argv[1], mesh)
+        """
+    )
+    subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "twin.bp")], check=True
+    )
+    a = meshioplusplus.read(tmp_path / "core.bp")
+    b = meshioplusplus.read(tmp_path / "twin.bp")
+    np.testing.assert_array_equal(a.points, b.points)
+    assert [(c.type, c.data.tolist()) for c in a.cells] == [
+        (c.type, c.data.tolist()) for c in b.cells
+    ]
+    for name in a.point_data:
+        np.testing.assert_array_equal(a.point_data[name], b.point_data[name])
+    np.testing.assert_array_equal(a.cell_data["rho"][0], b.cell_data["rho"][0])

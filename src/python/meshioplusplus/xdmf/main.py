@@ -498,12 +498,8 @@ class XdmfWriter:
 
         domain = ET.SubElement(xdmf_file, "Domain")
         grid = ET.SubElement(domain, "Grid", Name="Grid")
-        # information = ET.SubElement(
-        #     grid, "Information", Name="Information", Value=str(len(mesh.field_data))
-        # )
-
+        self.write_field_data(mesh.field_data, grid)
         self.write_points(grid, mesh.points)
-        # self.field_data(mesh.field_data, information)
         self.write_cells(mesh.cells, grid)
         self.write_point_data(mesh.point_data, grid)
         self.write_cell_data(mesh.cell_data, grid)
@@ -733,18 +729,28 @@ class XdmfWriter:
             )
             data_item.text = self.numpy_to_xml_string(data)
 
-    # The original idea was to implement field data as XML CDATA. Unfortunately, in
-    # Python's XML, CDATA handled poorly. There are workarounds, e.g.,
-    # <https://stackoverflow.com/a/30019607/353337>, but those mess around with
-    # ET._serialize_xml and lead to bugs elsewhere
-    # <https://github.com/nschloe/meshio/issues/806>.
-    # def field_data(self, field_data, information):
-    #     info = ET.Element("main")
-    #     for name, data in field_data.items():
-    #         data_item = ET.SubElement(info, "map", key=name, dim=str(data[1]))
-    #         data_item.text = str(data[0])
-    #     information.text = ET.CDATA(ET.tostring(info))
-    #     information.append(CDATA(ET.tostring(info).decode()))
+    def write_field_data(self, field_data, grid):
+        """``field_data`` as one Information element holding
+        ``<main><map key=".." dim="..">tag</map></main>``, which the readers take
+        back. The payload is escaped text rather than CDATA (ElementTree has no
+        CDATA); an XML parser hands both back identically. Only ``[tag, dim]``
+        integer pairs have this form; anything else is skipped with a warning."""
+        main = ET.Element("main")
+        for name in sorted(field_data):
+            data = np.asarray(field_data[name])
+            if data.dtype.kind not in "iu" or data.size != 2:
+                warn(
+                    f"XDMF: field_data '{name}' is not a (tag, dim) integer pair, the "
+                    "only form an Information element holds; not written"
+                )
+                continue
+            entry = ET.SubElement(main, "map", key=name, dim=str(int(data.flat[1])))
+            entry.text = str(int(data.flat[0]))
+        if len(main):
+            info = ET.SubElement(
+                grid, "Information", Name="Information", Value=str(len(main))
+            )
+            info.text = ET.tostring(main, encoding="unicode")
 
 
 def write(*args, **kwargs):

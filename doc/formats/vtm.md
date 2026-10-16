@@ -72,13 +72,13 @@ Nested `<Block>` elements are read structurally (every `<DataSet>` anywhere unde
 | `point_data` | copied onto every piece (the full array, then pruned to that piece's own points) |
 | `cell_data` | each piece gets its own block's slice |
 | `field_data` | **not written** (no per-block place to put it) |
-| named cell regions | recovered from `name=`, one per piece, not round-tripped on write |
+| named cell regions | recovered from `name=`, one per piece; a region that is exactly one block names its piece on write |
 
 ## Quirks & limitations
 
 Only `.vtu`/`.vtp` pieces are read; any other `file=` extension raises `ReadError` by name. A piece containing polyhedron cells is declined by the underlying `.vtu` writer, the same restriction [`.vtu`'s own page](./vtu.md#quirks-limitations) documents — a mesh with a polyhedron block cannot be written as `.vtm` either.
 
-Regions are not round-tripped symmetrically: `write` does not look for existing regions to name pieces after (every piece is written as `"block_<i>"`), while `read` always attaches one region per piece. Writing a mesh that already carries `.vtm`-shaped regions and reading the result back therefore does not reproduce the original region names.
+Regions round-trip: `write` names a piece after the cell region that is exactly that block's cells (every other piece is `"block_<i>"`), and `read` attaches one region per piece, so a read file writes back under its own names. A region that is not a whole block has no piece to name and is not written (a `.vtm` holds blocks, not sets).
 
 ## Notes
 

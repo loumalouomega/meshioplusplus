@@ -33,8 +33,8 @@
  *
  * The binary `.meshb` GMF variant (position-indexed records, endianness
  * flip via a leading magic code, version-dependent int/float widths) is
- * **not implemented here** — dispatch on the `"b"` filename suffix always
- * routes to the Python fallback for that variant.
+ * `read_medit_binary` / `write_medit_binary`; `read_medit` and `write_medit`
+ * dispatch on the `"b"` filename suffix.
  */
 
 // System includes
@@ -85,5 +85,33 @@ MESHIOPLUSPLUS_API void write_medit_ascii(const std::string& rPath, const Mesh& 
  * @throws ReadError on a malformed file or unrecognized required section
  */
 MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
+
+/**
+ * @brief Read a binary Medit (`.meshb`, libMeshb GMF) file.
+ *
+ * A leading code `1` (native byte order) or `16777216` (the opposite one), the
+ * version 1-4 that fixes the integer, float and position widths, then the
+ * keyword sections, each `[keyword][next position][count][records]`. Vertices,
+ * the element sections and the `Corners` ... `RequiredTriangles` id lists are
+ * read as the ASCII reader reads them (`medit:ref`, regions); every other
+ * section is skipped through its next-section position (a warning names it).
+ * @throws ReadError on a malformed or truncated file
+ */
+MESHIOPLUSPLUS_API Mesh read_medit_binary(const std::string& rPath);
+
+/**
+ * @brief Write a binary Medit (`.meshb`) file: little-endian, 64-bit float
+ *        coordinates, version 3 (32-bit integers) or 4 when an index or
+ *        reference needs 64 bits, one section per cell block and the id lists.
+ *        The Python twin writes the same bytes.
+ * @throws WriteError for points that are not 2-D or 3-D
+ */
+MESHIOPLUSPLUS_API void write_medit_binary(const std::string& rPath, const Mesh& rMesh);
+
+/// `read_medit_binary` for a path ending in `b`, else `read_medit_ascii`.
+MESHIOPLUSPLUS_API Mesh read_medit(const std::string& rPath);
+
+/// `write_medit_binary` for a path ending in `b`, else `write_medit_ascii`.
+MESHIOPLUSPLUS_API void write_medit(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus

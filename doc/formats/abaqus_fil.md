@@ -90,14 +90,17 @@ meshioplusplus.write_sequence("job.fil", steps, binary=True)   # the same
 - **Cell types** become Abaqus element types the results file can name: `line` T3D2, `line3` T3D3, `triangle` S3, `quad` S4R, `triangle6` STRI65, `quad8` S8R, `quad9` S9R5, `tetra` C3D4, `tetra10` C3D10, `pyramid` C3D5, `pyramid13` C3D13, `wedge` C3D6, `wedge15` C3D15, `hexahedron` C3D8R and `hexahedron20` C3D20R. A block with no Abaqus type is left out with a warning.
 - **An increment** is a 2000 record (total time `meshio:time`, else the step's time; `abaqus:step_time`, `abaqus:procedure`, `abaqus:step` and `abaqus:increment` when present), its results and a 2001 record. Per-point arrays named by an Abaqus identifier (`U`, `V`, `A`, `RF`, `NT`, …, or `key_<n>`) are nodal records; per-cell arrays (`S`, `E`, `PEEQ`, …) are element records, at the integration points (width `points × components`, from `abaqus:layout:<name>`), at section points (`@sp<k>`), at the element nodes, at the centroid or for the whole element, and at rebar (`@rebar:<name>`): the inverse of the table under [Steps and data](#steps-and-data). A trailing NaN is trimmed from a record and an inner NaN written as 0, so a node or element with no value has no record. A value that is not finite elsewhere, or outside the range of a `D22.15` item, is a `WriteError`.
 - **Modes**: `abaqus:mode`, `abaqus:eigenvalue` and the frequency step's mass and participation fields become a 1980 record before the mode's nodal records.
-- **Not written**, and named in one warning: arrays and regions with no place in the file, `side` regions, contact output, element matrices, total energies and the mode-based dynamics records (301 to 310).
+- **Total energies** (record 1999) are the `abaqus:ALLKE`, `ALLSE`, `ALLWK`, `ALLPD`, `ALLIE`, `ETOTAL` ... field data of the step, positional by its procedure (Explicit's names for procedures 17, 21 and 74): those present up to the last one, an absent one in between written as 0.
+- **Element matrices** (1001, 1002, 1011/1012, 1021/1022, 1031): per row of each `abaqus:matrix_dofs`, `stiffness`, `mass` and `load` array's `:index` table (element, offset, length, flag) a 1001 record and the values; the flag picks the symmetric or the full record.
+- **Contact surfaces**: a `side` region is a 1501 surface with a 1502 record per (element, face number), the face number from the cell's Abaqus face order.
+- **Not written**, and named in one warning: arrays and regions with no place in the file, contact output (1503 to 1592) and the mode-based dynamics records (301 to 310).
 - **ASCII** puts each record on 80-column lines starting with `*` (`I`, `D` with a `D` exponent, `A`, a blank line after 2001); **binary** writes 512-word blocks with 4-byte Fortran markers and pads the 2001 record to the block end.
 
 A series writes the model from the first step and an increment per step; a step whose points or cells differ from the first step's is a `WriteError` (`{step}` in the path writes one file per step instead). The step's time is the argument of `write` (or the pair's first item in `write_sequence`). One step is `write`'s bytes.
 
 pybaqus 0.2.17 reads the ASCII files (it does not read binary `.fil` files); this reader reads both layouts back. They were not opened in Abaqus/CAE.
 
-Not yet: contact output, element matrices, energies and the mode-based dynamics records, byte orders other than little-endian and 4-byte words (the rest of [roadmap 3.2.6](../roadmap.md#_3-reader-and-writer-parity)).
+Not yet: contact output and the mode-based dynamics records, byte orders other than little-endian and 4-byte words (the rest of [roadmap 3.2.6](../roadmap.md#_3-reader-and-writer-parity)).
 
 ## Validation
 

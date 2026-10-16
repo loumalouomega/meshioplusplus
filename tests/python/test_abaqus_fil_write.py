@@ -386,7 +386,7 @@ def test_sets_come_back_as_regions_with_long_names_numbered(engine, binary, tmp_
     assert by_name[(long_name, "point")] == [0, 1, 2, 3, 4, 5]
     assert by_name[("1", "cell")] == [0, 1]
     assert by_name[("EMPTY", "cell")] == []
-    assert not any(r.kind == "side" for r in back.regions)
+    assert by_name[("wall", "side")] == [[0, 1]]
 
 
 def test_what_has_no_place_in_the_file_is_dropped_with_a_warning(
@@ -396,7 +396,8 @@ def test_what_has_no_place_in_the_file_is_dropped_with_a_warning(
     mesh.point_data["temperature_like"] = np.zeros(6)
     mesh.cell_data["unknown"] = [np.zeros(1), np.zeros(1)]
     mesh.field_data["note"] = np.array([1.0])
-    mesh.regions = [meshioplusplus.Region("wall", "side", np.array([[0, 1]]))]
+    # a facet the cell has no face for is a contact-surface entry that cannot be named
+    mesh.regions = [meshioplusplus.Region("wall", "side", np.array([[0, 9]]))]
     path = tmp_path / "dropped.fil"
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())

@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "17.2.0",
+  "version": "17.3.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -80,6 +80,12 @@
       "description": "VTK XML lz4 block compression (vtkLZ4DataCompressor; ParaView-readable)",
       "dependencies": [
         "lz4"
+      ]
+    },
+    "lzma": {
+      "description": "VTK XML lzma block compression (vtkLZMADataCompressor; ParaView-readable)",
+      "dependencies": [
+        "liblzma"
       ]
     },
     "kahip": {

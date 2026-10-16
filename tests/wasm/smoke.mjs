@@ -2574,33 +2574,32 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('mphbin') && writers.includes('mphbin'));
     // CalculiX results (roadmap section 1.1, v15.3.0; the ASCII writer of roadmap 3.2.1): both ways.
     assert.ok(readers.includes('frd') && writers.includes('frd'));
-    // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt read-only.
-    for (const fmt of ['elmer', 'febio'])
+    // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt both ways (roadmap 3.2.7).
+    for (const fmt of ['elmer', 'febio', 'xplt'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    assert.ok(readers.includes('xplt') && !writers.includes('xplt'));
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // Abaqus .fil (v16.7.0) read-only; Z88 and libMesh (its writer is v16.11.0),
     // OpenRadioss starter decks (read v16.7.0, written v16.17.0) and
     // OpenRadioss time-history files (read v16.12.0, written since) both ways.
-    // OpenRadioss animation files (v16.11.0) read-only; LS-DYNA binouts and Abaqus
-    // results files (read v16.12.0 and v16.7.0, written since) both ways.
-    for (const fmt of ['radioss_anim'])
-        assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    for (const fmt of ['z88', 'libmesh', 'radioss', 'radioss_th', 'lsdyna_binout', 'abaqus_fil'])
+    // OpenRadioss animation files (read v16.11.0, written since) and LS-DYNA binouts and
+    // Abaqus results files (read v16.12.0 and v16.7.0, written since) both ways.
+    for (const fmt of ['z88', 'libmesh', 'radioss', 'radioss_th', 'lsdyna_binout', 'abaqus_fil', 'radioss_anim'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    // MSC Marc decks (read v16.8.0, written v16.17.0) both ways; its post files
-    // and the full rotor of a cyclic Ansys .rst (v16.8.0) read-only.
+    // MSC Marc decks (read v16.8.0, written v16.17.0) and Marc post files (.t19, written
+    // too) both ways; the full rotor of a cyclic Ansys .rst (v16.8.0) read-only.
     assert.ok(readers.includes('marc') && writers.includes('marc'));
-    for (const fmt of ['marc_t19', 'ansys_rst_cyclic'])
+    for (const fmt of ['marc_t19'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
+    for (const fmt of ['ansys_rst_cyclic'])
         assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
-    // LS-DYNA d3plot state databases (v16.9.0) are read-only; Nastran OP2 results
+    // LS-DYNA d3plot state databases (read v16.9.0, written since) and Nastran OP2 results
     // (read v16.9.0, written since) go both ways.
-    assert.ok(readers.includes('lsdyna_d3plot') && !writers.includes('lsdyna_d3plot'));
+    assert.ok(readers.includes('lsdyna_d3plot') && writers.includes('lsdyna_d3plot'));
     assert.ok(readers.includes('nastran_op2') && writers.includes('nastran_op2'));
-    // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
-    assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
+    // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0; written since): both ways.
+    assert.ok(readers.includes('nastran_h5') && writers.includes('nastran_h5'));
     // DOLFINx VTX and Tecplot SZL (v16.13.0) need ADIOS2 and TecIO, which the
     // Emscripten build never links: compiled out, like KaHIP.
     for (const fmt of ['vtx', 'szplt'])

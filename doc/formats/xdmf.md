@@ -63,14 +63,14 @@ meshio++ ↔ XDMF `TopologyType` names (each accepts one or more spellings on re
 | `quad9` | `Quadrilateral_9` / `Quad_9` | `hexahedron` | `Hexahedron` |
 | `pyramid` | `Pyramid` | `hexahedron20` | `Hexahedron_20` / `Hex_20` |
 | `pyramid13` | `Pyramid_13` | `hexahedron27` | `Hexahedron_27` / `Hex_27` |
-| `triangle` | `Triangle` | `hexahedron64..1331` | `Hexahedron_{64..1331}` / `Hex_{64..1331}` (Python-only, high-order) |
+| `triangle` | `Triangle` | `hexahedron64..1331` | `Hexahedron_{64..1331}` / `Hex_{64..1331}` (high-order) |
 | `triangle6` | `Triangle_6` / `Tri_6` | | |
 
-Numeric Mixed-topology type indices (a subset shared with the per-type names): `0x1`=vertex, `0x2`=line, `0x4`=triangle, `0x5`=quad, `0x6`=tetra, `0x7`=pyramid, `0x8`=wedge, `0x9`=hexahedron, `0x22`=line3, `0x23`=quad9, `0x24`=triangle6, `0x25`=quad8, `0x26`=tetra10, `0x27`=pyramid13, `0x28`=wedge15, `0x29`=wedge18, `0x30`=hexahedron20, `0x31`=hexahedron24, `0x32`=hexahedron27 (and further codes through `0x40` for the higher-order hexahedra, Python-only).
+Numeric Mixed-topology type indices (a subset shared with the per-type names): `0x1`=vertex, `0x2`=line, `0x4`=triangle, `0x5`=quad, `0x6`=tetra, `0x7`=pyramid, `0x8`=wedge, `0x9`=hexahedron, `0x22`=line3, `0x23`=quad9, `0x24`=triangle6, `0x25`=quad8, `0x26`=tetra10, `0x27`=pyramid13, `0x28`=wedge15, `0x29`=wedge18, `0x30`=hexahedron20, `0x31`=hexahedron24, `0x32`=hexahedron27 (and further codes `0x33`..`0x40` for the higher-order hexahedra, in both engines).
 
 ## Data mapping
 
-`Attribute Name="..."` maps generically to `point_data`/`cell_data`; XDMF2 also supports `field_data` via an `Information` element holding `[num_tag, dim]` per key (XDMF2-read-only; never emitted on write, since an earlier attempt hit XML `CDATA` serialization bugs and was abandoned).
+`Attribute Name="..."` maps generically to `point_data`/`cell_data`; `field_data` travels in an `Information` element holding `[num_tag, dim]` per key, read from XDMF2 and XDMF3 files and, since the parity work (roadmap 3.3.7), written by both engines: the payload is the XML `<main><map key=".." dim="..">tag</map></main>`, escaped as text (not CDATA, which ElementTree cannot emit; every XML parser hands the two back identically). Only integer `[tag, dim]` pairs have this form; any other `field_data` array is skipped with a warning.
 
 `<Set>` elements ↔ [named regions](../regions.md#xdmf-sets) (v16.27.0): `SetType` `Node` → `point`, `Cell` → `cell`, `Face`/`Edge` → `side`. A side region spanning 3-D and 2-D cells is written as one `Face` and one `Edge` set and read back as one region; `dim` and `tag` ride in `<Information>` children. Read by both engines.
 
@@ -82,7 +82,7 @@ Time-series writers use the same encoding for regions on the shared static mesh,
 - XDMF2 uses `TopologyType`/`GeometryType`; XDMF3 accepts either that or the shorter `Type`, but errors if both are given on the same element simultaneously.
 - A `Reference="XML"` / `Reference="<xpath>"` attribute on a `DataItem` resolves another `DataItem` in the same document. `XML` takes the absolute XPath from element text; the other spelling takes it from the attribute. Native full, selective and metadata reads share target validation: relative paths, missing/ambiguous targets, non-DataItem targets and cycles raise `ReadError`. General XInclude expansion and cross-document references are not implemented.
 - The **only** supported node count for a Mixed-topology `line` (`Polyline`) entry is exactly 2 — anything else raises `ReadError`.
-- **The C++ core's type table is a strict subset** of the Python one — it covers up through `hexahedron27` but omits `hexahedron64` through `hexahedron1331`; files using those higher-order types fall back to Python.
+- **Both engines cover the same type table**, through the higher-order `hexahedron64`..`hexahedron1331`.
 - `data_format="HDF"` is handled by the C++ core only when built with `MESHIO_WITH_HDF5` and `compression in (None, "gzip")`; otherwise Python handles it via `h5py`.
 - Points are restricted to dimension ≤3 on write (`WriteError` otherwise).
 

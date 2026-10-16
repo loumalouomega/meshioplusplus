@@ -508,3 +508,272 @@ def test_airbags_rigid_roads_and_sph_deletion(engine, tmp_path):
         "Airbag 77": [3, 4],
         "Rigid road 9": [5],
     }
+
+
+# -- writing -----------------------------------------------------------------
+
+from meshioplusplus.lsdyna_d3plot import _write as py_write  # noqa: E402
+
+
+def _model(nstates=1):
+    """Solids (8-point stress), a beam and shells (2 layers) in two parts."""
+    rng = np.random.default_rng(3)
+    points = np.array(
+        [
+            [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+            [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+            [2, 0, 0], [2, 1, 0], [0.5, 0.5, 2],
+        ],
+        dtype=float,
+    )  # fmt: skip
+    cells = [
+        ("hexahedron", np.arange(8)[None]),
+        ("wedge", np.array([[0, 1, 2, 4, 5, 6]])),
+        ("line", np.array([[0, 1], [1, 2]])),
+        ("quad", np.array([[1, 8, 9, 2]])),
+        ("triangle", np.array([[0, 1, 2]])),
+    ]
+    steps = []
+    for k in range(nstates):
+        mesh = meshioplusplus.Mesh(points, cells)
+        mesh.point_data["displacement"] = rng.random((11, 3)) * 0.1 * (k + 1)
+        mesh.point_data["velocity"] = rng.random((11, 3))
+        mesh.cell_data["stress"] = [
+            rng.random((1, 48)),
+            rng.random((1, 6)),
+            np.zeros((2, 6)),
+            rng.random((1, 12)),
+            rng.random((1, 12)),
+        ]
+        mesh.cell_data["effective_plastic_strain"] = [
+            rng.random((1, 8)),
+            rng.random((1, 1)),
+            np.zeros((2, 1)),
+            rng.random((1, 2)),
+            rng.random((1, 2)),
+        ]
+        mesh.cell_data["beam_axial_force"] = [
+            np.zeros(1), np.zeros(1), np.array([1.5, 2.5]), np.zeros(1), np.zeros(1)
+        ]  # fmt: skip
+        mesh.cell_data["lsdyna:alive"] = [
+            np.array([1], np.int8), np.array([0], np.int8), np.array([1, 0], np.int8),
+            np.array([1], np.int8), np.array([k % 2], np.int8),
+        ]  # fmt: skip
+        mesh.field_data["lsdyna_d3plot:layout:stress"] = np.array([2, 6])
+        mesh.field_data["global_kinetic_energy"] = np.array([3.5 + k])
+        mesh.field_data["meshio:time"] = np.array([0.125 * k])
+        mesh.regions = [
+            meshioplusplus.Region("bricks", "cell", np.array([0, 1]), dim=3, tag=3),
+            meshioplusplus.Region("skin", "cell", np.array([4, 5]), dim=2, tag=9),
+        ]
+        steps.append((0.125 * k, mesh))
+    return steps
+
+
+def _family(path):
+    return sorted(p.name for p in path.parent.iterdir() if p.name.startswith(path.name))
+
+
+def test_written_state_engines_agree_and_round_trip(tmp_path):
+    ((_, mesh),) = _model()
+    core, twin = tmp_path / "core" / "d3plot", tmp_path / "twin" / "d3plot"
+    core.parent.mkdir()
+    twin.parent.mkdir()
+    _core.lsdyna_d3plot_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    assert meshioplusplus.sniff_format(str(core)) == "lsdyna_d3plot"
+    for read in (meshioplusplus.read, py_d3plot.read):
+        back = read(str(core))
+        assert [c.type for c in back.cells] == [
+            "hexahedron",
+            "wedge",
+            "line",
+            "quad",
+            "triangle",
+        ]
+        np.testing.assert_allclose(back.points, mesh.points, atol=1e-6)
+        np.testing.assert_allclose(
+            back.point_data["displacement"], mesh.point_data["displacement"], atol=1e-6
+        )
+        np.testing.assert_allclose(
+            back.point_data["velocity"], mesh.point_data["velocity"], atol=1e-6
+        )
+        np.testing.assert_allclose(
+            back.cell_data["stress"][0], mesh.cell_data["stress"][0], atol=1e-6
+        )
+        np.testing.assert_allclose(
+            back.cell_data["stress"][3][:, :12], mesh.cell_data["stress"][3], atol=1e-6
+        )
+        np.testing.assert_array_equal(back.cell_data["lsdyna:alive"][2], [1, 0])
+        np.testing.assert_allclose(back.cell_data["beam_axial_force"][2], [1.5, 2.5])
+        assert back.field_data["global_kinetic_energy"][0] == pytest.approx(3.5)
+        assert sorted((r.name, r.tag) for r in back.regions) == [
+            ("Part 10", 10),
+            ("bricks", 3),
+            ("skin", 9),
+        ]
+        assert back.cell_data["lsdyna:part"][0][0] == 3
+
+
+def test_written_family_splits_by_size_and_replaces_stale_members(tmp_path):
+    steps = _model(5)
+    folder = tmp_path / "run"
+    folder.mkdir()
+    stale = folder / "d3plot99"
+    stale.write_bytes(b"\x01" * 16)
+    paths = {}
+    for name, factory in (
+        ("core", lambda p: meshioplusplus.lsdyna_d3plot.SeriesWriter(p, 1500)),
+        ("twin", lambda p: py_write.SeriesWriter(p, 1500)),
+    ):
+        target = tmp_path / name
+        target.mkdir()
+        stale_copy = target / "d3plot99"
+        stale_copy.write_bytes(b"\x01" * 16)
+        with factory(str(target / "d3plot")) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        paths[name] = target
+    names = _family(paths["core"] / "d3plot")
+    assert names == _family(paths["twin"] / "d3plot")
+    assert len(names) > 1 and "d3plot99" not in names
+    for name in names:
+        assert (paths["core"] / name).read_bytes() == (
+            paths["twin"] / name
+        ).read_bytes()
+    times = meshioplusplus.lsdyna_d3plot.time_values(str(paths["core"] / "d3plot"))
+    assert times == pytest.approx([0.125 * k for k in range(5)])
+    back = meshioplusplus.read(str(paths["core"] / "d3plot"), time_step=3)
+    np.testing.assert_allclose(
+        back.point_data["displacement"],
+        steps[3][1].point_data["displacement"],
+        atol=1e-6,
+    )
+
+
+def test_written_series_via_write_sequence_and_refusals(tmp_path):
+    steps = _model(3)
+    target = tmp_path / "d3plot"
+    meshioplusplus.write_sequence(target, steps, file_format="lsdyna_d3plot")
+    assert len(meshioplusplus.lsdyna_d3plot.time_values(str(target))) == 3
+    other = _model()[0][1]
+    other.cells = other.cells[:2]
+    for writer in (meshioplusplus.lsdyna_d3plot.SeriesWriter, py_write.SeriesWriter):
+        w = writer(str(tmp_path / "bad" / "d3plot"))
+        w.write(0.0, steps[0][1])
+        with pytest.raises(Exception, match="differ"):
+            w.write(1.0, other)
+    empty = meshioplusplus.Mesh(np.zeros((9, 3)), [("quad9", np.arange(9)[None])])
+    for write in (_core.lsdyna_d3plot_write, py_write.write):
+        with pytest.raises(Exception, match="no solid, beam, shell or SPH"):
+            write(str(tmp_path / "empty"), empty)
+
+
+def test_written_family_reads_in_lasso_python(tmp_path):
+    lasso = pytest.importorskip("lasso.dyna")
+    steps = _model(3)
+    target = tmp_path / "d3plot"
+    meshioplusplus.write_sequence(target, steps, file_format="lsdyna_d3plot")
+    d3 = lasso.D3plot(str(target))
+    A = lasso.ArrayType
+    np.testing.assert_allclose(
+        d3.arrays[A.global_timesteps], [0.0, 0.125, 0.25], atol=1e-6
+    )
+    assert d3.arrays[A.node_displacement].shape == (3, 11, 3)
+    assert d3.arrays[A.element_solid_node_indexes].shape == (2, 8)
+    assert d3.arrays[A.element_shell_stress].shape == (3, 2, 2, 6)
+    assert sorted(int(i) for i in d3.arrays[A.part_ids]) == [3, 9, 10]
+
+
+_FIXTURES = pathlib.Path(__file__).parent / "meshes" / "lsdyna_d3plot"
+_ROUND_TRIP = [
+    "generated/shell_solid",
+    "lasso/d3plot_beamip",
+    "lasso/d3plot_node_temperature",
+    "lasso/d3plot_solid_int",
+    "dyna/projectile",
+    "dyna/bird_strike",
+    "generated/quadratic_rigid",
+]
+
+
+def _same_state(a, b):
+    assert [c.type for c in a.cells] == [c.type for c in b.cells]
+    for name, value in a.point_data.items():
+        np.testing.assert_allclose(
+            np.nan_to_num(b.point_data[name]),
+            np.nan_to_num(value),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+    for name, blocks in a.cell_data.items():
+        for x, y in zip(blocks, b.cell_data[name]):
+            assert np.shape(x) == np.shape(y), name
+            np.testing.assert_allclose(
+                np.nan_to_num(y.astype(float)),
+                np.nan_to_num(x.astype(float)),
+                rtol=1e-5,
+                atol=1e-4,
+                err_msg=name,
+            )
+    for name in a.field_data:
+        assert name in b.field_data, name
+
+
+@pytest.mark.parametrize("name", _ROUND_TRIP)
+@pytest.mark.parametrize("double", [False, True])
+def test_written_family_keeps_what_the_reader_returns(tmp_path, name, double):
+    """read(write(read(f))) keeps every variable of the last state of a real or
+    generated family, in single and double precision, and both engines write the
+    same bytes."""
+    source = py_d3plot.read(str(_FIXTURES / name / "d3plot"), time_step=-1)
+    core, twin = tmp_path / "core", tmp_path / "twin"
+    core.mkdir()
+    twin.mkdir()
+    _core.lsdyna_d3plot_write(str(core / "d3plot"), source, double=double)
+    py_write.write(str(twin / "d3plot"), source, double=double)
+    assert (core / "d3plot").read_bytes() == (twin / "d3plot").read_bytes()
+    for read in (meshioplusplus.read, py_d3plot.read):
+        _same_state(source, read(str(core / "d3plot")))
+
+
+def test_written_higher_order_cells_round_trip(tmp_path):
+    rng = np.random.default_rng(5)
+    mesh = meshioplusplus.Mesh(
+        rng.random((60, 3)),
+        [
+            ("hexahedron20", np.arange(20)[None]),
+            ("hexahedron27", np.arange(20, 47)[None]),
+            ("quad8", np.arange(47, 55)[None]),
+            ("tetra10", np.arange(10)[None]),
+        ],
+    )
+    core, twin = tmp_path / "core", tmp_path / "twin"
+    core.mkdir()
+    twin.mkdir()
+    _core.lsdyna_d3plot_write(str(core / "d3plot"), mesh)
+    py_write.write(str(twin / "d3plot"), mesh)
+    assert (core / "d3plot").read_bytes() == (twin / "d3plot").read_bytes()
+    for read in (meshioplusplus.read, py_d3plot.read):
+        back = read(str(core / "d3plot"))
+        got = {c.type: c.data[0] for c in back.cells}
+        for block in mesh.cells:
+            np.testing.assert_array_equal(got[block.type], block.data[0])
+
+
+def test_written_family_with_every_variable_reads_in_lasso_python(tmp_path):
+    lasso = pytest.importorskip("lasso.dyna")
+    source = py_d3plot.read(str(_FIXTURES / "lasso" / "d3plot_beamip" / "d3plot"))
+    target = tmp_path / "d3plot"
+    meshioplusplus.write(target, source, file_format="lsdyna_d3plot")
+    d3 = lasso.D3plot(str(target))
+    A = lasso.ArrayType
+    assert (
+        d3.arrays[A.element_beam_axial_stress].shape[-1] == 3
+        or d3.arrays[A.element_beam_axial_stress].ndim == 3
+    )
+    double = tmp_path / "double" / "d3plot"
+    double.parent.mkdir()
+    meshioplusplus.lsdyna_d3plot.write(double, source, double=True)
+    assert lasso.D3plot(str(double)).header.wordsize == 8

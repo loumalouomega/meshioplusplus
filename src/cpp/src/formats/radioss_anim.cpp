@@ -25,7 +25,9 @@
 #include <ios>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -35,11 +37,14 @@
 #include "meshioplusplus/formats/radioss_anim.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -680,5 +685,582 @@ MeshMetadata read_radioss_anim_metadata(const std::string& rPath, const ReadOpti
     meta.mTimeValues = {mesh.FieldData("meshio:time").As<double>()[0]};
     return meta;
 }
+
+
+// ---------------------------------------------------------------------------
+// The writer: the reader's inverse. One mesh is one state; a series is one file
+// per step. The Python twin (`radioss_anim/_write.py`) writes the same bytes.
+// ---------------------------------------------------------------------------
+namespace {
+
+/// Big-endian output buffer.
+class AwOut {
+public:
+    void Ints(const std::vector<std::int64_t>& rValues) {
+        for (const std::int64_t v : rValues) {
+            const std::uint32_t u = static_cast<std::uint32_t>(static_cast<std::int32_t>(v));
+            Be32(u);
+        }
+    }
+    void Floats(const std::vector<double>& rValues) {
+        for (const double v : rValues)
+            Float(v);
+    }
+    void Float(double Value) {
+        const float f = static_cast<float>(Value);
+        std::uint32_t u;
+        std::memcpy(&u, &f, 4);
+        Be32(u);
+    }
+    void Be32(std::uint32_t U) {
+        mBytes.push_back(static_cast<char>(U >> 24));
+        mBytes.push_back(static_cast<char>(U >> 16));
+        mBytes.push_back(static_cast<char>(U >> 8));
+        mBytes.push_back(static_cast<char>(U));
+    }
+    void Text(const std::string& rText, std::size_t Width) {
+        const std::string cut = rText.substr(0, Width - 1);
+        mBytes += cut;
+        mBytes.append(Width - cut.size(), '\0');
+    }
+    void Bytes(const std::vector<std::uint8_t>& rValues) {
+        mBytes.append(reinterpret_cast<const char*>(rValues.data()), rValues.size());
+    }
+    void Zeros(std::size_t N) { mBytes.append(N, '\0'); }
+    void Append(const AwOut& rOther) { mBytes += rOther.mBytes; }
+    const std::string& Data() const { return mBytes; }
+
+private:
+    std::string mBytes;
+};
+
+struct AwFamily {
+    std::vector<std::size_t> mIndex;                // global cell numbers, ordered by part
+    std::vector<std::vector<std::int64_t>> mRows;  // file node rows
+    std::vector<std::int64_t> mParts;               // part id per element
+    std::size_t Size() const { return mIndex.size(); }
+};
+
+/// A cell array over all blocks (block-major) as doubles, with its width.
+struct AwColumn {
+    std::string mName;
+    std::vector<double> mValues;
+    std::size_t mWidth = 1;
+};
+
+enum AwKey : std::size_t { kAw2d = 0, kAw3d = 1, kAw1d = 2, kAwSph = 3 };
+
+std::string aw_pad_id(std::int64_t Id) {
+    std::string s = std::to_string(Id);
+    if (s.size() < 9)
+        s.insert(0, 9 - s.size(), ' ');
+    return s;
+}
+
+std::vector<double> aw_values(const NDArray& rArray) {
+    const detail::DoubleView view(rArray);
+    return std::vector<double>(view.Data(), view.Data() + rArray.Size());
+}
+
+std::vector<std::int64_t> aw_int_values(const NDArray& rArray) {
+    const detail::Int64View view(rArray);
+    return std::vector<std::int64_t>(view.Data(), view.Data() + rArray.Size());
+}
+
+/// The block-major cell array `rName` flattened, or false.
+bool aw_concat(const Mesh& rMesh, const std::string& rName, std::vector<double>& rOut) {
+    if (!rMesh.HasCellData(rName))
+        return false;
+    rOut.clear();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::vector<double> v = aw_values(rMesh.CellData(rName, b));
+        rOut.insert(rOut.end(), v.begin(), v.end());
+    }
+    return true;
+}
+
+bool aw_concat_int(const Mesh& rMesh, const std::string& rName, std::vector<std::int64_t>& rOut) {
+    if (!rMesh.HasCellData(rName))
+        return false;
+    rOut.clear();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::vector<std::int64_t> v = aw_int_values(rMesh.CellData(rName, b));
+        rOut.insert(rOut.end(), v.begin(), v.end());
+    }
+    return true;
+}
+
+int aw_family_of(const std::string& rType) {
+    if (rType == "vertex")
+        return kAwSph;
+    if (rType == "line")
+        return kAw1d;
+    if (rType == "triangle" || rType == "quad")
+        return kAw2d;
+    if (rType == "tetra" || rType == "pyramid" || rType == "wedge" || rType == "hexahedron")
+        return kAw3d;
+    return -1;
+}
+
+bool aw_special(const std::string& rName) {
+    return rName == "radioss:part" || rName == "radioss:alive" || rName == "radioss:element_id" ||
+           rName == "radioss:mass" || rName == "radioss:material" || rName == "radioss:property";
+}
+
+double aw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+std::string aw_state_bytes(const Mesh& rMesh, double Time) {
+    const std::size_t nn = rMesh.NumPoints();
+    std::vector<double> points(nn * 3, 0.0);
+    {
+        const NDArray& pts = rMesh.Points();
+        const detail::DoubleView view(pts);
+        const std::size_t width = nn == 0 ? 3 : pts.Size() / nn;
+        for (std::size_t i = 0; i < nn; ++i)
+            for (std::size_t k = 0; k < 3 && k < width; ++k)
+                points[i * 3 + k] = view.Data()[i * width + k];
+    }
+    // The element families.
+    std::array<AwFamily, 4> fam;
+    std::map<std::string, std::size_t> skipped;
+    std::size_t ncells = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t count = cb.NumCells();
+        const int key = aw_family_of(cb.Type());
+        if (key < 0) {
+            if (count > 0)
+                skipped[cb.Type()] += count;
+        } else {
+            const detail::Int64View conn(cb.Conn());
+            const std::size_t w = cb.NodesPerCell();
+            AwFamily& f = fam[static_cast<std::size_t>(key)];
+            for (std::size_t r = 0; r < count; ++r) {
+                const std::int64_t* row = conn.Data() + r * w;
+                for (std::size_t k = 0; k < w; ++k)
+                    if (row[k] < 0 || static_cast<std::size_t>(row[k]) >= nn)
+                        throw WriteError("Radioss animation: a '" + cb.Type() +
+                                         "' cell refers to a point the mesh does not have");
+                f.mIndex.push_back(ncells + r);
+                if (key == kAwSph) {
+                    f.mRows.push_back({row[0]});
+                } else if (key == kAw2d) {
+                    std::vector<std::int64_t> v(row, row + w);
+                    if (w == 3)
+                        v.push_back(row[2]);
+                    f.mRows.push_back(std::move(v));
+                } else if (key == kAw3d) {
+                    const auto brick = detail::expand_brick(cb.Type(), row);
+                    f.mRows.emplace_back(brick.begin(), brick.end());
+                } else {
+                    f.mRows.push_back({row[0], row[1]});
+                }
+            }
+        }
+        ncells += count;
+    }
+    for (const auto& [type, count] : skipped)
+        log::warn("Radioss animation: {} '{}' cell(s) are not written", count, type);
+
+    // Per-cell attributes.
+    std::vector<std::int64_t> part_arr, eids, emat, eprop;
+    std::vector<double> alive_d, emass;
+    const bool have_part = aw_concat_int(rMesh, "radioss:part", part_arr);
+    const bool have_alive = aw_concat(rMesh, "radioss:alive", alive_d);
+    const bool have_eids = aw_concat_int(rMesh, "radioss:element_id", eids);
+    const bool have_emass = aw_concat(rMesh, "radioss:mass", emass);
+    const bool have_emat = aw_concat_int(rMesh, "radioss:material", emat);
+    const bool have_eprop = aw_concat_int(rMesh, "radioss:property", eprop);
+    std::vector<std::int64_t> node_ids;
+    std::vector<double> nmass;
+    const bool have_nids = rMesh.HasPointData("radioss:node_id");
+    const bool have_nmass = rMesh.HasPointData("radioss:mass");
+    if (have_nids)
+        node_ids = aw_int_values(rMesh.PointData("radioss:node_id"));
+    if (have_nmass)
+        nmass = aw_values(rMesh.PointData("radioss:mass"));
+
+    // Parts: radioss:part, else the cell regions, else part 1.
+    std::vector<std::int64_t> region_pid(ncells, -1);
+    std::map<std::int64_t, std::string> names_by_pid;
+    bool have_regions = false;
+    {
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const auto& reg = rMesh.Region(i);
+            if (reg.mKind != RegionKind::Cell)
+                continue;
+            have_regions = true;
+            const std::int64_t pid = reg.mTag >= 0 ? reg.mTag : static_cast<std::int64_t>(k + 1);
+            ++k;
+            names_by_pid.emplace(pid, reg.mName);
+            if (!have_part) {
+                const detail::Int64View entries(reg.mEntries);
+                for (std::size_t e = 0; e < reg.mEntries.Size(); ++e) {
+                    const std::int64_t c = entries.Data()[e];
+                    if (c >= 0 && static_cast<std::size_t>(c) < ncells &&
+                        region_pid[static_cast<std::size_t>(c)] < 0)
+                        region_pid[static_cast<std::size_t>(c)] = pid;
+                }
+            }
+        }
+    }
+    auto pid_of = [&](std::size_t c) -> std::int64_t {
+        if (have_part)
+            return part_arr[c];
+        if (have_regions && region_pid[c] >= 0)
+            return region_pid[c];
+        return 1;
+    };
+    for (AwFamily& f : fam) {
+        std::vector<std::size_t> order(f.Size());
+        for (std::size_t k = 0; k < order.size(); ++k)
+            order[k] = k;
+        std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+            return pid_of(f.mIndex[a]) < pid_of(f.mIndex[b]);
+        });
+        AwFamily sorted;
+        for (const std::size_t k : order) {
+            sorted.mIndex.push_back(f.mIndex[k]);
+            sorted.mRows.push_back(std::move(f.mRows[k]));
+            sorted.mParts.push_back(pid_of(f.mIndex[k]));
+        }
+        f = std::move(sorted);
+    }
+
+    // Nodal and element results.
+    std::vector<AwColumn> scalars, vectors, escalars, tensors, forces;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        if (name == "radioss:node_id" || name == "radioss:mass")
+            continue;
+        AwColumn col;
+        col.mName = name;
+        col.mValues = aw_values(rMesh.PointData(name));
+        if (nn > 0 && col.mValues.size() == nn)
+            scalars.push_back(std::move(col));
+        else if (nn > 0 && col.mValues.size() == 3 * nn)
+            vectors.push_back(std::move(col));
+        else
+            log::warn("Radioss animation: point data '{}' is not written", name);
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (aw_special(name))
+            continue;
+        AwColumn col;
+        col.mName = name;
+        aw_concat(rMesh, name, col.mValues);
+        if (ncells == 0 || col.mValues.size() % ncells != 0) {
+            log::warn("Radioss animation: cell data '{}' is not written", name);
+            continue;
+        }
+        col.mWidth = col.mValues.size() / ncells;
+        if (col.mWidth == 1)
+            escalars.push_back(std::move(col));
+        else if (col.mWidth == 6)
+            tensors.push_back(std::move(col));
+        else if (col.mWidth == 9)
+            forces.push_back(std::move(col));
+        else
+            log::warn("Radioss animation: cell data '{}' is not written", name);
+    }
+
+    const bool have_mass = have_emass || have_nmass;
+    const bool have_ids = have_eids || have_nids;
+    const bool have_hier = have_emat || have_eprop;
+    const std::vector<std::int64_t> flags = {have_mass ? 1 : 0,
+                                             have_ids ? 1 : 0,
+                                             fam[kAw3d].Size() ? 1 : 0,
+                                             fam[kAw1d].Size() ? 1 : 0,
+                                             have_hier ? 1 : 0,
+                                             0,
+                                             0,
+                                             fam[kAwSph].Size() ? 1 : 0,
+                                             0,
+                                             0};
+
+    struct PartTable {
+        std::vector<std::int64_t> mEnds, mMats, mProps;
+        std::vector<std::string> mTexts;
+    };
+    auto part_table = [&](const AwFamily& f) {
+        PartTable t;
+        for (std::size_t k = 0; k < f.mParts.size(); ++k) {
+            if (k + 1 != f.mParts.size() && f.mParts[k + 1] == f.mParts[k])
+                continue;
+            const std::int64_t pid = f.mParts[k];
+            t.mEnds.push_back(static_cast<std::int64_t>(k + 1));
+            const auto name = names_by_pid.find(pid);
+            t.mTexts.push_back(aw_pad_id(pid) + ":" +
+                               (name != names_by_pid.end() ? name->second
+                                                           : "Part " + std::to_string(pid)));
+            const std::size_t c = f.mIndex[k];
+            t.mMats.push_back(have_emat ? emat[c] : 0);
+            t.mProps.push_back(have_eprop ? eprop[c] : 0);
+        }
+        return t;
+    };
+    auto alive_bytes = [&](const AwFamily& f, bool Facets) {
+        std::vector<std::uint8_t> a;
+        for (const std::size_t c : f.mIndex) {
+            const bool on = have_alive ? alive_d[c] != 0.0 : true;
+            a.push_back(on ? (Facets ? 0xFF : 1) : 0);
+        }
+        return a;
+    };
+    auto masses_of = [&](const AwFamily& f) {
+        std::vector<double> m;
+        for (const std::size_t c : f.mIndex)
+            m.push_back(have_emass ? emass[c] : 0.0);
+        return m;
+    };
+    auto ids_of = [&](const AwFamily& f) {
+        std::vector<std::int64_t> v;
+        for (const std::size_t c : f.mIndex)
+            v.push_back(have_eids ? eids[c] : static_cast<std::int64_t>(c + 1));
+        return v;
+    };
+    auto rows_flat = [](const AwFamily& f) {
+        std::vector<std::int64_t> v;
+        for (const auto& r : f.mRows)
+            v.insert(v.end(), r.begin(), r.end());
+        return v;
+    };
+    // `width` columns of `rCol` for each element of a family.
+    auto gather = [&](const AwColumn& rCol, const AwFamily& f, const std::vector<int>& rCols) {
+        std::vector<double> v;
+        for (const std::size_t c : f.mIndex)
+            for (const int k : rCols)
+                v.push_back(rCol.mValues[c * rCol.mWidth + static_cast<std::size_t>(k)]);
+        return v;
+    };
+
+    AwOut out;
+    out.Ints({kAnimMagic});
+    out.Float(Time);
+    for (const char* t : {"Time=", "ModAnim", "Radioss Run="})
+        out.Text(t, 81);
+    out.Ints(flags);
+
+    // 2-D: the nodes and the facets.
+    const AwFamily& f2 = fam[kAw2d];
+    const PartTable pt2 = part_table(f2);
+    out.Ints({static_cast<std::int64_t>(nn), static_cast<std::int64_t>(f2.Size()),
+              static_cast<std::int64_t>(pt2.mEnds.size()),
+              static_cast<std::int64_t>(scalars.size()),
+              static_cast<std::int64_t>(escalars.size()),
+              static_cast<std::int64_t>(vectors.size()),
+              static_cast<std::int64_t>(tensors.size()), 0});
+    out.Floats(points);
+    out.Ints(rows_flat(f2));
+    out.Bytes(alive_bytes(f2, true));
+    out.Ints(pt2.mEnds);
+    for (const std::string& t : pt2.mTexts)
+        out.Text(t, 50);
+    out.Zeros(2 * 3 * nn);  // nodal normals
+    if (!scalars.empty() || !escalars.empty()) {
+        for (const AwColumn& c : scalars)
+            out.Text(c.mName, 81);
+        for (const AwColumn& c : escalars)
+            out.Text(c.mName, 81);
+        for (const AwColumn& c : scalars)
+            out.Floats(c.mValues);
+        for (const AwColumn& c : escalars)
+            out.Floats(gather(c, f2, {0}));
+    }
+    for (const AwColumn& c : vectors)
+        out.Text(c.mName, 81);
+    for (const AwColumn& c : vectors)
+        out.Floats(c.mValues);
+    if (!tensors.empty()) {
+        for (const AwColumn& c : tensors)
+            out.Text(c.mName, 81);
+        for (const AwColumn& c : tensors)
+            out.Floats(gather(c, f2, {0, 1, 3}));
+    }
+    if (flags[0]) {
+        out.Floats(masses_of(f2));
+        std::vector<double> pm(nn, 0.0);
+        if (have_nmass)
+            for (std::size_t i = 0; i < nn && i < nmass.size(); ++i)
+                pm[i] = nmass[i];
+        out.Floats(pm);
+    }
+    if (flags[1]) {
+        std::vector<std::int64_t> nid(nn);
+        for (std::size_t i = 0; i < nn; ++i)
+            nid[i] = have_nids ? node_ids[i] : static_cast<std::int64_t>(i + 1);
+        out.Ints(nid);
+        out.Ints(ids_of(f2));
+    }
+    if (flags[4]) {
+        out.Ints(std::vector<std::int64_t>(pt2.mEnds.size(), 1));
+        out.Ints(pt2.mMats);
+        out.Ints(pt2.mProps);
+    }
+
+    std::array<std::size_t, 4> part_counts = {pt2.mEnds.size(), 0, 0, 0};
+    // The 3-D, 1-D and SPH sections share a tail.
+    auto section = [&](const AwFamily& f, const std::vector<std::int64_t>& rCounts,
+                       const std::vector<AwColumn>& rScalars,
+                       const std::vector<AwColumn>& rTensors, bool Facets, std::size_t Slot) {
+        const PartTable pt = part_table(f);
+        part_counts[Slot] = pt.mEnds.size();
+        std::vector<std::int64_t> counts = rCounts;
+        counts[1] = static_cast<std::int64_t>(pt.mEnds.size());
+        out.Ints(counts);
+        out.Ints(rows_flat(f));
+        out.Bytes(alive_bytes(f, Facets));
+        out.Ints(pt.mEnds);
+        for (const std::string& t : pt.mTexts)
+            out.Text(t, 50);
+        if (!rScalars.empty()) {
+            for (const AwColumn& c : rScalars)
+                out.Text(c.mName, 81);
+            for (const AwColumn& c : rScalars)
+                out.Floats(gather(c, f, {0}));
+        }
+        if (!rTensors.empty()) {
+            for (const AwColumn& c : rTensors)
+                out.Text(c.mName, 81);
+            std::vector<int> all(rTensors.front().mWidth);
+            for (std::size_t k = 0; k < all.size(); ++k)
+                all[k] = static_cast<int>(k);
+            for (const AwColumn& c : rTensors)
+                out.Floats(gather(c, f, all));
+        }
+        if (flags[0])
+            out.Floats(masses_of(f));
+        if (flags[1])
+            out.Ints(ids_of(f));
+        if (flags[4]) {
+            out.Ints(std::vector<std::int64_t>(pt.mEnds.size(), 1));
+            out.Ints(pt.mMats);
+            out.Ints(pt.mProps);
+        }
+    };
+    const AwFamily& f3 = fam[kAw3d];
+    if (flags[2])
+        section(f3,
+                {static_cast<std::int64_t>(f3.Size()), 0,
+                 static_cast<std::int64_t>(escalars.size()),
+                 static_cast<std::int64_t>(tensors.size())},
+                escalars, tensors, false, kAw3d);
+    const AwFamily& f1 = fam[kAw1d];
+    if (flags[3])
+        section(f1,
+                {static_cast<std::int64_t>(f1.Size()), 0,
+                 static_cast<std::int64_t>(escalars.size()),
+                 static_cast<std::int64_t>(forces.size()), 0},
+                escalars, forces, false, kAw1d);
+    if (flags[4]) {
+        // One subset holding every part, then the material and property tables.
+        out.Ints({1});
+        out.Text("model", 50);
+        out.Ints({0, 0});
+        for (const std::size_t slot : {static_cast<std::size_t>(kAw2d), static_cast<std::size_t>(kAw3d),
+                                       static_cast<std::size_t>(kAw1d)}) {
+            std::vector<std::int64_t> idx;
+            for (std::size_t k = 0; k < part_counts[slot]; ++k)
+                idx.push_back(static_cast<std::int64_t>(k));
+            out.Ints({static_cast<std::int64_t>(idx.size())});
+            out.Ints(idx);
+        }
+        std::set<std::int64_t> mats, props;
+        for (const std::size_t slot : {static_cast<std::size_t>(kAw2d), static_cast<std::size_t>(kAw3d),
+                                       static_cast<std::size_t>(kAw1d), static_cast<std::size_t>(kAwSph)}) {
+            const PartTable pt = part_table(fam[slot]);
+            mats.insert(pt.mMats.begin(), pt.mMats.end());
+            props.insert(pt.mProps.begin(), pt.mProps.end());
+        }
+        out.Ints({static_cast<std::int64_t>(mats.size()), static_cast<std::int64_t>(props.size())});
+        for (const std::int64_t m : mats)
+            out.Text("Material " + std::to_string(m), 50);
+        out.Ints(std::vector<std::int64_t>(mats.begin(), mats.end()));
+        for (const std::int64_t p : props)
+            out.Text("Property " + std::to_string(p), 50);
+        out.Ints(std::vector<std::int64_t>(props.begin(), props.end()));
+    }
+    const AwFamily& fs = fam[kAwSph];
+    if (flags[7])
+        section(fs,
+                {static_cast<std::int64_t>(fs.Size()), 0,
+                 static_cast<std::int64_t>(escalars.size()),
+                 static_cast<std::int64_t>(tensors.size())},
+                escalars, tensors, false, kAwSph);
+    return out.Data();
+}
+
+void aw_save(const std::string& rPath, const std::string& rBytes) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(rBytes.data(), static_cast<std::streamsize>(rBytes.size()));
+    out.close();
+    if (!out)
+        throw WriteError("Radioss animation: failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_radioss_anim(const std::string& rPath, const Mesh& rMesh) {
+    const detail::ProvenanceSlotlessWrite slotless;
+    aw_save(rPath, aw_state_bytes(rMesh, aw_time_of(rMesh)));
+}
+
+struct RadiossAnimSeriesWriter::Impl {
+    std::filesystem::path mDir;
+    std::string mStem;
+    std::size_t mWidth = 3;
+    std::uint64_t mNext = 1;
+    std::size_t mSteps = 0;
+};
+
+RadiossAnimSeriesWriter::RadiossAnimSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    const std::filesystem::path path(rPath);
+    const std::string name = path.filename().string();
+    std::size_t k = name.size();
+    while (k > 0 && std::isdigit(static_cast<unsigned char>(name[k - 1])))
+        --k;
+    mpImpl->mDir = path.parent_path();
+    if (name.size() - k < 3 || k < 2 || name[k - 1] != 'A') {
+        // Not an animation file name: the name is the stem.
+        mpImpl->mStem = name + "A";
+        mpImpl->mWidth = 3;
+        mpImpl->mNext = 1;
+    } else {
+        mpImpl->mStem = name.substr(0, k);
+        mpImpl->mWidth = name.size() - k;
+        mpImpl->mNext = std::stoull(name.substr(k));
+    }
+}
+
+RadiossAnimSeriesWriter::~RadiossAnimSeriesWriter() = default;
+RadiossAnimSeriesWriter::RadiossAnimSeriesWriter(RadiossAnimSeriesWriter&&) noexcept = default;
+RadiossAnimSeriesWriter& RadiossAnimSeriesWriter::operator=(RadiossAnimSeriesWriter&&) noexcept =
+    default;
+
+void RadiossAnimSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("Radioss animation: series: the writer was moved from");
+    Impl& s = *mpImpl;
+    std::string number = std::to_string(s.mNext++);
+    if (number.size() < s.mWidth)
+        number.insert(0, s.mWidth - number.size(), '0');
+    const detail::ProvenanceSlotlessWrite slotless;
+    aw_save((s.mDir / (s.mStem + number)).string(), aw_state_bytes(rMesh, Time));
+    ++s.mSteps;
+}
+
+std::size_t RadiossAnimSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void RadiossAnimSeriesWriter::Finalize() {}
 
 }  // namespace meshioplusplus

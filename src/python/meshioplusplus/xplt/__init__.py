@@ -2,6 +2,8 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import write as _py_write
 from ._xplt import read as _py_read
 from ._xplt import time_values as _py_time_values
 
@@ -48,6 +50,65 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-register_format("xplt", [".xplt"], read, {})
+def write(filename, mesh):
+    """Write an FEBio plot file holding one state: the mesh and its data, at
+    ``field_data["meshio:time"]``. Cell blocks become domains (one element type
+    each), point regions node sets and cell regions element sets; point data
+    are nodal variables, cell data per-element variables and numeric field data
+    global ones. Vertices, side regions and surfaces are not written. The file
+    is little-endian and uncompressed, plot version 0x35."""
+    if not is_buffer(filename, "w"):
+        try:
+            return _core.xplt_write(str(filename), mesh)
+        except Exception as exc:
+            if not core_declined(exc, "xplt", "write", filename):
+                raise
+    return _py_write(filename, mesh)
 
-__all__ = ["read", "time_values"]
+
+class SeriesWriter:
+    """Write a time series into one plot file: the mesh once and a state per
+    step; ``write_sequence(path, steps, file_format="xplt")`` uses it.
+
+    >>> with meshioplusplus.xplt.SeriesWriter("run.xplt") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+    """
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.XpltSeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "xplt", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            if self._core.num_steps():
+                self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+register_format("xplt", [".xplt"], read, {"xplt": write})
+
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

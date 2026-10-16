@@ -16,13 +16,14 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | Format | vtx | line | tri | quad | tet | hex | wdg | pyr | Points | Point data | Cell data | F | Regions |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | <span id="abaqus">`abaqus`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | — | — | — | cell, point, side |
-| <span id="abaqus-fil">`abaqus_fil`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
+| <span id="abaqus-fil">`abaqus_fil`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="ansys">`ansys`</span> |  |  | ✗ | ✗ | ↻ | ↻ | ✓ | ✓ | exact | — | — | — | cell |
+| <span id="ansys-rst">`ansys_rst`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="ansysinp">`ansysInp`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="avsucd">`avsucd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64 | — | — |
 | <span id="cad-json">`cad_json`</span> |  | ✓ |  | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="cae">`cae`</span> |  |  | ✗ | ✗ | → tri | → tri | → tri | → tri | subset | — | — | — | — |
-| <span id="cgns">`cgns`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
+| <span id="cgns">`cgns`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | ✓ | cell, point |
 | <span id="code-aster">`code_aster`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="dex">`dex`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | exact | `p_f64` float64 | — | — | — |
 | <span id="dolfin-xml">`dolfin-xml`</span> |  |  | ✗ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int64 | `c_f64` float64, `c_i32` int64 | — | — |
@@ -45,7 +46,9 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="libmesh">`libmesh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna">`lsdyna`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna-binout">`lsdyna_binout`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` float64 | — | — | — |
+| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | — | — | — | cell |
 | <span id="marc">`marc`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
+| <span id="marc-t19">`marc_t19`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point |
 | <span id="mdpa">`mdpa`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="med">`med`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point |
 | <span id="medit">`medit`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
@@ -55,12 +58,13 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="mphbin">`mphbin`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="mphtxt">`mphtxt`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="nastran">`nastran`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
+| <span id="nastran-h5">`nastran_h5`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="nastran-op2">`nastran_op2`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | — | — | — | — |
 | <span id="netgen">`netgen`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | ✓ | — |
 | <span id="neuroglancer">`neuroglancer`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="obj">`obj`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="off">`off`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
-| <span id="openfoam">`openfoam`</span> |  |  |  |  | ↻ | ↻ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="openfoam">`openfoam`</span> |  |  |  |  | ↻ | ↻ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point, side |
 | <span id="patran">`patran`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="pcd">`pcd`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` int32, `p_vec` float64 | — | — | — |
 | <span id="permas">`permas`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
@@ -70,11 +74,13 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="pvtp">`pvtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point |
 | <span id="pvtu">`pvtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
 | <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="radioss-anim">`radioss_anim`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell |
 | <span id="radioss-th">`radioss_th`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
 | <span id="step">`step`</span> |  |  |  |  | → tri | → tri | → tri | → tri | exact | — | — | — | — |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
 | <span id="su2">`su2`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
 | <span id="svg">`svg`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
+| <span id="szplt">`szplt`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | → hex | → hex | subset | — | `c_f64` float64, `c_i32` float64 | — | cell |
 | <span id="tecplot">`tecplot`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | → hex | → hex | exact | `p_f64` float64, `p_i32` float64 | `c_f64` float64, `c_i32` float64 | — | cell |
 | <span id="tetgen">`tetgen`</span> |  |  |  |  | ✓ |  |  |  | exact | — | — | — | — |
 | <span id="tikz">`tikz`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
@@ -87,49 +93,66 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="vtk42">`vtk42`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="vtk51">`vtk51`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="vtkhdf">`vtkhdf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
-| <span id="vtm">`vtm`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
+| <span id="vtm">`vtm`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell |
 | <span id="vtp">`vtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point |
 | <span id="vtr">`vtr`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vts">`vts`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vtu">`vtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
+| <span id="vtx">`vtx`</span> | ? | ? | ? | ? | ? | ? | ? | ? | fails: `WriteError` | | | | |
 | <span id="wkt">`wkt`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="xdmf">`xdmf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point, side |
+| <span id="xplt">`xplt`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell, point |
 | <span id="xyz">`xyz`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | exact | `p_f64` float64, `p_i32` float64 | — | — | — |
 | <span id="z88">`z88`</span> |  | ✓ |  |  | ✓ | ✓ |  |  | exact | — | — | — | cell, point |
 | <span id="zarr">`zarr`</span> | ✗ | ✗ | ✗ | ✗ | ✓ | → tet | → tet | → tet | approx | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
 
 ## Notes
 
-- **`abaqus_fil`**: A results file holds the model and the results Abaqus names: only point data named like a nodal result (`U`, `RF`...) and cell data named like an element result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; a `vertex` has no Abaqus element and side regions are dropped.
+- **`abaqus_fil`**: A results file holds the model and the results Abaqus names: only point data named like a nodal result (`U`, `RF`...) and cell data named like an element result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; a `vertex` has no Abaqus element. Side regions are contact surfaces.
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.
+- **`ansys_rst`**: A results file holds the solution MAPDL names: point data called `U`, `ROT`, `TEMP` ... (and `RF` reactions) and cell data `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not kept. Side regions are dropped with a warning.
 - **`cad_json`**: Kratos IGA geometry: without a B-rep side channel, quads are written as bilinear NURBS faces and lines as edges.
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
+- **`cgns`**: Cell data cannot be written for the probe: it mixes cell dimensions, which a zone-wide `CellCenter` solution cannot span. Side regions are not written, and a region's cells must lie in fixed-size sections.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
 - **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
+- **`libmesh`**: A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.
 - **`lsdyna_binout`**: A binout holds `nodout`'s nodes, not elements: the points come back as a `vertex` cloud, single precision, and only `nodout`'s own vectors (`displacement`...) are `(n, 3)`; per-point scalars come back as float64 (an integer one is stored as `int32`, and the reader widens every per-point array to float64), and the canonical `fd` is not a `binout:` name.
-- **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped; a `vertex` has no type.
+- **`lsdyna_d3plot`**: Single-precision words, so coordinates and data come back rounded to float32. Only what the state layout names is kept: the nodal variables (`displacement`, `velocity`, `temperature` ...), the element variables (`stress`, `strain`, `history_variables`, the shell and beam resultants ...), `lsdyna:alive` and the `global_*` field data; the probe's arrays are not. Blocks come back by family (solids, beams, shells, SPH particles; a vertex is an SPH particle), and a cell belongs to one part, so only the first cell region holding it survives.
+- **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has no type; Herrmann, bubble and generalized plane strain types come back as the default type of their shape.
+- **`marc_t19`**: Reals are `e13.6`, six digits, and integers come back as float64; the model is the input deck's, so a `vertex` has no type, side regions are dropped, and Herrmann, bubble and generalized plane strain types come back as the default type of their shape. A post file is checked against meshio++'s own reader only, until a Mentat run (roadmap §1.2.11).
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
+- **`mphtxt`**: A Selection selects elements, so point and side regions (which address points and facets, not elements) have no form in the file; several Mesh objects merge into one mesh on read and are written as one.
+- **`nastran_h5`**: Results are the schema's own tables: point data is nodal tables (float64), cell data only `<G>:<M>` centre values, so the canonical cell arrays, field data and regions (derived from property ids on read) have no place.
 - **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and regions have no place; cells come back ordered by element card.
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
+- **`openfoam`**: Fields are written to time directory 0 as volume and point fields (float64); OpenFOAM has no field_data.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
+- **`radioss_anim`**: Everything is stored as 32-bit floats, so coordinates and data are approximate and integers come back as float64; the animation holds one state, so the data are the state's and field data other than the time are not kept.
 - **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
 - **`step`**: A faceted B-rep solid for CAD tools, read back through the optional OpenCASCADE backend as its triangulation: volume cells come back as their skin, and data is not kept. Checked only in a build with the backend.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
+- **`su2`**: SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.
 - **`svg`**: A 2-D drawing, read back as planar (z = 0) from the scale and offset meshio++ records in a comment. Observed with `float_fmt=".17g"`: the default `.3f` keeps three decimals of a drawing 100 units wide, so corners come back to about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `svg:fill`.
+- **`szplt`**: SZL has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra, and a zone has no vertex element. TecIO shares a variable between zones only with their connectivity, so with several blocks each zone holds the points its cells use (a point several blocks use is repeated: the mixed mesh reads back with more points, and its point data with them); one block alone round-trips exactly.
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
 - **`tikz`**: A 2-D drawing, read back as planar (z = 0) with its coordinates verbatim, to the digits `float_fmt` kept. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `tikz:fill`.
 - **`triangle`**: Triangle reads and writes 2-D triangulations only, so this row is observed on the planar part of the canonical mesh.
+- **`unv`**: Entities a dataset does not list are NaN, and NaN rows are not written back.
 - **`usd`**: A UsdGeom mesh stores faces: volume cells are written as their skin.
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).
 - **`vtr`**: RectilinearGrid holds one axis-aligned lattice; the canonical mesh is not one.
 - **`vts`**: StructuredGrid holds one curvilinear lattice; the canonical mesh is not one.
+- **`vtx`**: A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical mesh is refused; each type alone round-trips.
+- **`xplt`**: Everything is stored as 32-bit floats and comes back as float64 (the probe's coordinates are exact in float32, general ones are not); a plot file has no vertex element, and side regions and surfaces are not written.
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
+- **`z88`**: A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are what Z88R writes from the deck, so none is written; Aurora's sets hold elements and nodes only, so `side` regions are dropped.
 - **`zarr`**: As `pmsh`: tetrahedra only, other volume cells simplexified.
 
 ## Formats missing a direction
@@ -138,13 +161,5 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
-| <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
 | <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
-| <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
-| <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
-| <span id="nastran-h5">`nastran_h5`</span> | writer | Tracked gap, roadmap §3.2.4: no writer yet. MSC Nastran's result file; the writer is the physics-ML loop's missing half. |
-| <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
-| <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
-| <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
-| <span id="xplt">`xplt`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. FEBio's result file; the writer is the physics-ML loop's missing half. |

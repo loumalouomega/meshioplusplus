@@ -226,3 +226,20 @@ def test_hypermesh_blocks_are_identical(tmp_path):
 
     assert block(tmp_path / "c.bdf") == block(tmp_path / "p.bdf")
     assert block(tmp_path / "c.bdf")[-2] == "$HMNAME COMP                   1\"a 'q'\""
+
+
+def test_ids_agree_between_engines(tmp_path):
+    from meshioplusplus import _core
+    from meshioplusplus.nastran import _nastran
+
+    path = tmp_path / "ids.bdf"
+    path.write_text(
+        "BEGIN BULK\n"
+        "GRID,10,,0.,0.,0.\nGRID,20,,1.,0.,0.\nGRID,30,,1.,1.,0.\nGRID,40,,0.,1.,0.\n"
+        "CTRIA3,7,1,10,20,30\nCTRIA3,9,1,10,30,40\nCQUAD4,12,1,10,20,30,40\n"
+        "ENDDATA\n"
+    )
+    native = _core.nastran_read(str(path))
+    twin = _nastran.read(str(path))
+    assert native.points_id.tolist() == twin.points_id.tolist() == [10, 20, 30, 40]
+    assert [a.tolist() for a in native.cells_id] == [a.tolist() for a in twin.cells_id]

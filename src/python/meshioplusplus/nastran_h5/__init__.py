@@ -4,6 +4,8 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._nastran_h5 import read as _py_read
 from ._nastran_h5 import time_values
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import write as _py_write
 
 _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 
@@ -34,6 +36,73 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     )
 
 
-register_format("nastran_h5", [".h5"], read, {})
+def write(filename, mesh):
+    """Write a mesh as an MSC Nastran HDF5 result database (one domain).
 
-__all__ = ["read", "time_values"]
+    The model is ``/NASTRAN/INPUT`` (GRIDs, one table per element card, the
+    property and material tables the elements name); ``nastran:eid`` and
+    ``nastran:pid`` cell data give the ids. Point data becomes the nodal tables
+    (``DISPLACEMENT`` and ``DISPLACEMENT_ROT`` of 3 components, ``T`` of one,
+    ``T:M`` members, ``_real``/``_imag`` pairs as ``_CPLX``) and ``<G>:<M>``
+    cell data the element tables of the centre values, each with its
+    ``/INDEX`` twin; ``meshio:time`` and ``nastran:*`` field data fill the
+    ``DOMAINS`` row. Needs ``h5py`` (the Python twin) or a core built with HDF5.
+    """
+    if not is_buffer(filename, "w"):
+        try:
+            _core.nastran_h5_write(str(filename), mesh)
+            return
+        except Exception as exc:
+            if not core_declined(exc, "nastran_h5", "write", filename):
+                raise
+    return _py_write(filename, mesh)
+
+
+class SeriesWriter:
+    """Write a time series into one results file: the model once and a domain
+    per step; ``write_sequence(path, steps, file_format="nastran_h5")`` uses
+    it. The C++ core writes the file; the Python twin, which writes the same
+    tables, when the core declines to.
+
+    >>> with meshioplusplus.nastran_h5.SeriesWriter("job.h5") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+    """
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        if _HAS_HDF5 and not is_buffer(filename, "w"):
+            try:
+                self._core = _core.NastranH5SeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "nastran_h5", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            if self._core.num_steps():
+                self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+register_format("nastran_h5", [".h5"], read, {"nastran_h5": write})
+
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

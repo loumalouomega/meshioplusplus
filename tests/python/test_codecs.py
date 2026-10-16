@@ -22,6 +22,7 @@ _core = pytest.importorskip("meshioplusplus._core")
 HAS_ZLIB = getattr(_core, "__has_zlib__", False)
 HAS_ZSTD = getattr(_core, "__has_zstd__", False)
 HAS_LZ4 = getattr(_core, "__has_lz4__", False)
+HAS_LZMA = getattr(_core, "__has_lzma__", False)
 
 # The compressor= attribute each codec is recorded under. lz4 is a real VTK
 # compressor; zstd is a meshio++ extension (VTK ships no ZSTD compressor).
@@ -68,6 +69,7 @@ def test_capability_flags_exist():
     # Present as booleans even when off, so callers can branch without hasattr.
     assert isinstance(_core.__has_zstd__, bool)
     assert isinstance(_core.__has_lz4__, bool)
+    assert isinstance(_core.__has_lzma__, bool)
 
 
 @pytest.mark.parametrize("fmt", ["vtu", "vtp"])
@@ -289,3 +291,19 @@ def test_vtk_cleanly_refuses_our_zstd_output(tmp_path):
     reader.Update()
     # VTK cannot construct vtkZSTDDataCompressor, so no data comes through.
     assert reader.GetOutput().GetNumberOfPoints() == 0
+
+
+@pytest.mark.skipif(not HAS_LZMA, reason="build has no lzma")
+def test_lzma_core_round_trip_and_cross_reads(tmp_path):
+    """The core writes the .xz blocks Python's lzma reads, and reads Python's."""
+    from meshioplusplus.vtu import _vtu as py_vtu
+
+    path = tmp_path / "lzma.vtu"
+    meshioplusplus.write(path, _mesh(), compression="lzma")
+    assert "vtkLZMADataCompressor" in path.read_text()
+    _assert_same(_core.vtu_read(str(path)), _mesh())  # the core reads its own file
+    _assert_same(py_vtu.read(str(path)), _mesh())  # and so does the Python twin
+
+    twin = tmp_path / "twin.vtu"
+    py_vtu.write(str(twin), _mesh(), compression="lzma")
+    _assert_same(_core.vtu_read(str(twin)), _mesh())  # the core reads Python's

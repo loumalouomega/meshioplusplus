@@ -506,8 +506,9 @@ SPEC: dict[str, dict] = {
         "points": "exact",
         "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
-        "field_data": False,
-        "regions": [],
+        "field_data": True,
+        "regions": ["cell", "point"],
+        "note": "Cell data cannot be written for the probe: it mixes cell dimensions, which a zone-wide `CellCenter` solution cannot span. Side regions are not written, and a region's cells must lie in fixed-size sections.",
     },
     "code_aster": {
         "cells": {
@@ -823,6 +824,7 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell", "point", "side"],
+        "note": "A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.",
     },
     "lsdyna": {
         "cells": {
@@ -841,6 +843,27 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point", "side"],
     },
+    "marc_t19": {
+        "cells": {
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "Reals are `e13.6`, six digits, and integers come back as float64; the model "
+        "is the input deck's, so a `vertex` has no type, side regions are dropped, and "
+        "Herrmann, bubble and generalized plane strain types come back as the default type "
+        "of their shape. A post file is checked against meshio++'s own reader only, until a "
+        "Mentat run (roadmap §1.2.11).",
+    },
     "marc": {
         "cells": {
             "line": "exact",
@@ -857,7 +880,9 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point"],
         "note": "A deck holds no data arrays; Marc's face and edge numbering is not "
-        "mapped to facets, so side regions are dropped; a `vertex` has no type.",
+        "mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has "
+        "no type; Herrmann, bubble and generalized plane strain types come back as the "
+        "default type of their shape.",
     },
     "mdpa": {
         "cells": {
@@ -956,6 +981,21 @@ SPEC: dict[str, dict] = {
         "note": "MFM holds one element type per file, so the mixed canonical mesh is refused; "
         "each type alone round-trips.",
     },
+    "vtx": {
+        "cells": {
+            "vertex": "?",
+            "line": "?",
+            "triangle": "?",
+            "quad": "?",
+            "tetra": "?",
+            "hexahedron": "?",
+            "wedge": "?",
+            "pyramid": "?",
+        },
+        "error": "WriteError",
+        "note": "A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical "
+        "mesh is refused; each type alone round-trips.",
+    },
     "mphbin": {
         "cells": {
             "vertex": "exact",
@@ -989,6 +1029,9 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell"],
+        "note": "A Selection selects elements, so point and side regions (which address "
+        "points and facets, not elements) have no form in the file; several Mesh objects "
+        "merge into one mesh on read and are written as one.",
     },
     "nastran": {
         "cells": {
@@ -1057,10 +1100,12 @@ SPEC: dict[str, dict] = {
             "pyramid": "exact",
         },
         "points": "exact",
-        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
-        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
         "field_data": False,
         "regions": ["cell", "point", "side"],
+        "note": "Fields are written to time directory 0 as volume and point fields (float64); "
+        "OpenFOAM has no field_data.",
     },
     "patran": {
         "cells": {
@@ -1234,6 +1279,134 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "ansys_rst": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "A results file holds the solution MAPDL names: point data called `U`, "
+        "`ROT`, `TEMP` ... (and `RF` reactions) and cell data `S`, `EPEL`, `EPPL`, "
+        "`EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not "
+        "kept. Side regions are dropped with a warning.",
+    },
+    "lsdyna_d3plot": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "Single-precision words, so coordinates and data come back rounded to "
+        "float32. Only what the state layout names is kept: the nodal variables "
+        "(`displacement`, `velocity`, `temperature` ...), the element variables "
+        "(`stress`, `strain`, `history_variables`, the shell and beam resultants ...), "
+        "`lsdyna:alive` and the `global_*` field data; the probe's arrays are not. "
+        "Blocks come back by family (solids, beams, shells, SPH particles; a vertex is an "
+        "SPH particle), and a cell belongs to one part, so only the first cell region holding it "
+        "survives.",
+    },
+    "xplt": {
+        "cells": {
+            "vertex": "lost",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": True,
+        "regions": ["cell", "point"],
+        "note": "Everything is stored as 32-bit floats and comes back as float64 (the "
+        "probe's coordinates are exact in float32, general ones are not); a plot file "
+        "has no vertex element, and side regions and surfaces are not written.",
+    },
+    "radioss_anim": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "Everything is stored as 32-bit floats, so coordinates and data are "
+        "approximate and integers come back as float64; the animation holds one state, "
+        "so the data are the state's and field data other than the time are not kept.",
+    },
+    "szplt": {
+        "cells": {
+            "vertex": "lost",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "as hexahedron",
+            "pyramid": "as hexahedron",
+        },
+        "points": "subset",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "SZL has no wedge or pyramid zone type: both are written as degenerate bricks "
+        "and come back as hexahedra, and a zone has no vertex element. TecIO shares a variable "
+        "between zones only with their connectivity, so with several blocks each zone holds the "
+        "points its cells use (a point several blocks use is repeated: the mixed mesh reads back "
+        "with more points, and its point data with them); one block alone round-trips exactly.",
+    },
+    "nastran_h5": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Results are the schema's own tables: point data is nodal tables (float64), "
+        "cell data only `<G>:<M>` centre values, so the canonical cell arrays, field data "
+        "and regions (derived from property ids on read) have no place.",
+    },
     "nastran_op2": {
         "cells": {
             "vertex": "exact",
@@ -1290,11 +1463,11 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
-        "regions": ["cell", "point"],
+        "regions": ["cell", "point", "side"],
         "note": "A results file holds the model and the results Abaqus names: only point "
         "data named like a nodal result (`U`, `RF`...) and cell data named like an element "
         "result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; "
-        "a `vertex` has no Abaqus element and side regions are dropped.",
+        "a `vertex` has no Abaqus element. Side regions are contact surfaces.",
     },
     "step": {
         "cells": {
@@ -1342,6 +1515,7 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": [],
+        "note": "SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.",
     },
     "svg": {
         "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
@@ -1438,6 +1612,7 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "float64", "c_i32": "float64"},
         "field_data": False,
         "regions": ["cell", "point"],
+        "note": "Entities a dataset does not list are NaN, and NaN rows are not written back.",
     },
     "usd": {
         "cells": {
@@ -1543,7 +1718,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": False,
-        "regions": [],
+        "regions": ["cell"],
     },
     "vtp": {
         "cells": {
@@ -1634,6 +1809,9 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell", "point"],
+        "note": "A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are "
+        "what Z88R writes from the deck, so none is written; Aurora's sets hold elements "
+        "and nodes only, so `side` regions are dropped.",
     },
     "zarr": {
         "cells": {
@@ -1673,29 +1851,10 @@ READ_ONLY = {
         "Exempt, not a gap: a CAD exchange format read through the optional "
         "OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes."
     ),
-    "ansys_rst": _GAP.format(item="3.2.5", why=_RESULT.format(tool="Ansys")),
     "ansys_rst_cyclic": (
         "Exempt, not a gap: not a file of its own but the full rotor that a static "
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
         "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
-    ),
-    "lsdyna_d3plot": _GAP.format(item="3.2.2", why=_RESULT.format(tool="LS-DYNA")),
-    "marc_t19": _GAP.format(
-        item="3.2.11",
-        why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
-    ),
-    "nastran_h5": _GAP.format(item="3.2.4", why=_RESULT.format(tool="MSC Nastran")),
-    "radioss_anim": _GAP.format(
-        item="3.2.8", why=_RESULT.format(tool="the OpenRadioss engine")
-    ),
-    "xplt": _GAP.format(item="3.2.7", why=_RESULT.format(tool="FEBio")),
-    "vtx": _GAP.format(
-        item="3.2.9",
-        why="DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build.",
-    ),
-    "szplt": _GAP.format(
-        item="3.2.10",
-        why="Tecplot's SZL container, written through TecIO; needs the optional TecIO build.",
     ),
 }
 
@@ -1729,3 +1888,55 @@ def write_only_drift(readable, writable, declared=None):
         "undeclared": sorted(write_only - set(declared)),
         "stale": sorted(set(declared) - write_only),
     }
+
+
+# Engine parity per direction (roadmap 3.4). A format that the core serves reads
+# and writes in its Python twin too, so it still works where the compiled core
+# does not load. A direction one engine lacks is declared here with the reason;
+# test_conformance.py scans each format package for its twin (`_py_read`,
+# `_py_write`, `_main_*`) and fails on a gap that is not declared, or a
+# declaration whose gap has closed. Formats the core does not serve at all (the
+# Python-only layers `pmsh`, `zarr`, `cae`, `usd`) have no pair to compare, and
+# the read-only result files are the READ_ONLY gaps above, whose Python writer
+# lands with the native one (roadmap section 3, "Landing an item", step 1).
+ENGINE_EXEMPT = {
+    ("gid", "read"): (
+        "Exempt, not a gap (roadmap §3.4.2): GiD is served by the core alone -- "
+        "gidpost, Gauss points and result groups are implemented once, and the "
+        "Python entry points raise naming the missing core rather than guess."
+    ),
+    ("gid", "write"): (
+        "Exempt, not a gap (roadmap §3.4.2): written through the vendored gidpost "
+        "C library, whose node-ordering permutations a second implementation would "
+        "risk silently contradicting; the HDF5 flavour is core-only by nature."
+    ),
+    ("iges", "read"): (
+        "Exempt, not a gap (roadmap §6.2.1): reading a CAD model needs the "
+        "optional OpenCASCADE kernel, which only the core links."
+    ),
+    ("step", "read"): (
+        "Exempt, not a gap (roadmap §6.2.1): reading a CAD model needs the "
+        "optional OpenCASCADE kernel, which only the core links."
+    ),
+    ("openfoam", "write"): (
+        "Exempt, not a gap (roadmap §3.4.1): the OpenFOAM case writer (polyMesh, "
+        "zones, fields, multi-region and decomposed layouts) is implemented once, "
+        "in the core; the Python reader is the portable subset."
+    ),
+}
+
+# Parts of a format that one engine handles and the other deliberately does not,
+# short of a whole direction. Each names the page that explains it.
+PARTIAL_ENGINE_EXEMPT = {
+    "cgns": (
+        "Exempt, not a gap (roadmap §3.4.3): the face-based NGON_n/NFACE_n sections "
+        "are core-only; the h5py twin raises naming the core, because the writer's "
+        "winding repair is a discrete branch two implementations could resolve "
+        "differently (doc/formats/cgns.md)."
+    ),
+    "openfoam": (
+        "Exempt, not a gap (roadmap §3.4.1): zone, field and multi-region reading "
+        "are core-only; the Python reader covers the single-region polyMesh "
+        "(doc/formats/openfoam.md)."
+    ),
+}

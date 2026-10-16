@@ -29,11 +29,13 @@
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -109,6 +111,37 @@ MESHIOPLUSPLUS_API Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient,
                                          std::string_view Label, AnsysInfo& rInfo,
                                          std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex,
                                          std::vector<AnsysCellLocation>& rCells);
+
+/**
+ * @brief The element nodes of cell type `Type` under an element of `Category`:
+ *        entry `c` is the cell node element node `c` takes (a degenerate brick
+ *        repeats cell nodes); empty when the category has no such layout.
+ */
+MESHIOPLUSPLUS_API std::vector<int> ansys_cell_layout(std::string_view Type,
+                                                      AnsysCategory Category);
+
+/// The element routine a cell type is written as when nothing better is known
+/// (185 for a hexahedron ...), or -1 when Ansys has no element for it.
+MESHIOPLUSPLUS_API int ansys_default_routine(std::string_view Type);
+
+/// The corner nodes of a cell type (8 for `"hexahedron20"`); 0 when unknown.
+MESHIOPLUSPLUS_API std::size_t ansys_num_corners(std::string_view Type);
+
+/// The Ansys element of every cell of a mesh: `mCellEtype[block][row]` is
+/// `(routine, ET slot)` and `mSlotRoutine` maps each ET slot to its routine.
+struct AnsysElementTypes {
+    std::map<int, int> mSlotRoutine;
+    std::vector<std::vector<std::pair<int, int>>> mCellEtype;
+};
+
+/**
+ * @brief Choose the Ansys element of every cell: its `ansys:element` routine and
+ *        `ansys:type` slot where the element's node layout fits the cell, else
+ *        the default routine of its type in a fresh slot.
+ * @param What Names the writer in messages (`"Ansys .cdb writer"`).
+ * @throws WriteError for a cell type (or a ragged block) with no element type.
+ */
+MESHIOPLUSPLUS_API AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What);
 
 }  // namespace detail
 }  // namespace meshioplusplus

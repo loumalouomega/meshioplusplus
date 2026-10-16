@@ -6,7 +6,7 @@ The `.xplt` file is the binary results database [FEBio](https://febio.org) write
 |---|---|
 | **Format name** | `xplt` |
 | **Extensions** | `.xplt` (also recognised by content: its magic, in either byte order) |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#xplt): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.7) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#xplt)) |
 | **Extra dependencies** | zlib for compressed files: built into the C++ core with `-DMESHIOPLUSPLUS_WITH_ZLIB=ON`; the Python fallback uses the standard library's |
 
 ## Reading
@@ -27,6 +27,19 @@ meshioplusplus info run.xplt                       # blocks, regions, arrays, ti
 ```
 
 `read` also takes `points_only`/`arrays` (read only the named arrays) and `lenient` (read FEBio's `tet5`/`tet15` domains as `tetra`/`tetra10`). Both engines read every state alike.
+
+## Writing
+
+```python
+meshioplusplus.write("run.xplt", mesh)                                  # one state
+meshioplusplus.write_sequence("run.xplt", steps)                        # a state per step
+```
+
+```bash
+meshioplusplus convert model.vtu model.xplt
+```
+
+Both engines write the same bytes: plot version `0x0035`, little-endian, uncompressed, with the node ids FEBio 4 writes. Each cell block is a domain (one element type each: the types of the [mapping](#mapping) table except surfaces' facets; `hexahedron27` goes through the `"febio"` [node-ordering](../node_ordering.md) table), and a `cell` region that is exactly one block names its domain and, if it has a tag, is the domain's part id. The other point and cell regions are written as node sets and element sets, which is how they come back. Point data are nodal variables, cell data per-element variables (`FMT_ITEM`, on every domain, so a block must carry every array) and numeric field data global variables; one component is a `float`, three a `vec3f`, six a symmetric `mat3fs`, nine a `mat3f`, any other width an array. The time of a state is `field_data["meshio:time"]` and its status `"xplt:status"`. A series is one mesh and a state per step: every step must have the first step's points, cells and variables (a remeshed run is not written), and the file is written when the writer closes. Vertices and other cell types without a plot element, side regions, surfaces, edges and material-point variables are not written (a warning names the cells); there is no compression, since FEBio reads either. FEBio Studio opens the files in the same layout the fixtures here use; no FEBio run has read a file meshio++ wrote.
 
 ## File structure
 

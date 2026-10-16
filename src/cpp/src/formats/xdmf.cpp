@@ -92,7 +92,15 @@ std::string xdmf_idx_to_meshio(int idx) {
         {0x6, "tetra"},         {0x7, "pyramid"},       {0x8, "wedge"},        {0x9, "hexahedron"},
         {0x22, "line3"},        {0x23, "quad9"},        {0x24, "triangle6"},   {0x25, "quad8"},
         {0x26, "tetra10"},      {0x27, "pyramid13"},    {0x28, "wedge15"},     {0x29, "wedge18"},
-        {0x30, "hexahedron20"}, {0x31, "hexahedron24"}, {0x32, "hexahedron27"}};
+        {0x30, "hexahedron20"}, {0x31, "hexahedron24"}, {0x32, "hexahedron27"},
+        {0x33, "hexahedron64"},
+        {0x34, "hexahedron125"},
+        {0x35, "hexahedron216"},
+        {0x36, "hexahedron343"},
+        {0x37, "hexahedron512"},
+        {0x38, "hexahedron729"},
+        {0x39, "hexahedron1000"},
+        {0x40, "hexahedron1331"}};
     auto it = m.find(idx);
     if (it == m.end())
         throw ReadError("XDMF: unknown mixed topology index");
@@ -103,7 +111,15 @@ int xdmf_idx_num_nodes(int idx) {
     static const std::unordered_map<int, int> m = {
         {1, 1},     {2, 2},     {4, 3},     {5, 4},     {6, 4},     {7, 5},    {8, 6},
         {9, 8},     {11, 6},    {0x22, 3},  {0x23, 9},  {0x24, 6},  {0x25, 8}, {0x26, 10},
-        {0x27, 13}, {0x28, 15}, {0x29, 18}, {0x30, 20}, {0x31, 24}, {0x32, 27}};
+        {0x27, 13}, {0x28, 15}, {0x29, 18}, {0x30, 20}, {0x31, 24}, {0x32, 27},
+        {0x33, 64},
+        {0x34, 125},
+        {0x35, 216},
+        {0x36, 343},
+        {0x37, 512},
+        {0x38, 729},
+        {0x39, 1000},
+        {0x40, 1331}};
     auto it = m.find(idx);
     if (it == m.end())
         throw ReadError("XDMF: unknown mixed topology index");
@@ -833,6 +849,40 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     pugi::xml_node domain = xdmf.append_child("Domain");
     pugi::xml_node grid = domain.append_child("Grid");
     grid.append_attribute("Name") = "Grid";
+
+    // field_data: the [tag, dim] pairs of gmsh-style groups, as one Information
+    // element holding `<main><map key=".." dim="..">tag</map></main>` (what the
+    // readers take back). Any other field array has no XDMF form.
+    {
+        pugi::xml_document info;
+        pugi::xml_node main_node = info.append_child("main");
+        std::size_t entries = 0;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            const NDArray& data = rMesh.FieldData(name);
+            const bool integer = data.Dtype() != DType::Float32 && data.Dtype() != DType::Float64;
+            if (!integer || data.Size() != 2) {
+                log::warn(
+                    "XDMF: field_data '{}' is not a (tag, dim) integer pair, the only form "
+                    "an Information element holds; not written",
+                    name);
+                continue;
+            }
+            pugi::xml_node entry = main_node.append_child("map");
+            entry.append_attribute("key") = name.c_str();
+            entry.append_attribute("dim") = std::to_string(detail::read_int(data, 1)).c_str();
+            entry.append_child(pugi::node_pcdata)
+                .set_value(std::to_string(detail::read_int(data, 0)).c_str());
+            ++entries;
+        }
+        if (entries > 0) {
+            auto payload = detail::make_classic_ostringstream();
+            info.save(payload, "", pugi::format_raw | pugi::format_no_declaration);
+            pugi::xml_node node = grid.append_child("Information");
+            node.append_attribute("Name") = "Information";
+            node.append_attribute("Value") = std::to_string(entries).c_str();
+            node.append_child(pugi::node_pcdata).set_value(payload.str().c_str());
+        }
+    }
 
     // Geometry
     const NDArray& points = rMesh.Points();

@@ -171,3 +171,74 @@ def test_connectivity_ids_outside_the_zone_are_read_errors(read, tmp_path):
     past.write_text(header + "1 2 4\n")
     with pytest.raises(meshioplusplus.ReadError):
         read(str(past))
+
+
+def _plt_meshes():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1.0]])
+    return {
+        "fe": meshioplusplus.Mesh(
+            pts,
+            [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]]), ("triangle", [[0, 1, 2]])],
+            point_data={"T": np.arange(5.0), "U": np.arange(15.0).reshape(5, 3)},
+            cell_data={"p": [np.array([1.5, 2.5]), np.array([9.0])]},
+        ),
+        "polygon": meshioplusplus.Mesh(
+            np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0.0]]),
+            [meshioplusplus.CellBlock("polygon3", [[0, 1, 2], [0, 2, 3]])],
+        ),
+        "polyhedron": meshioplusplus.Mesh(
+            np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1.0]]),
+            [
+                meshioplusplus.CellBlock(
+                    "polyhedron4", [[[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]]]
+                )
+            ],
+        ),
+        "passive": meshioplusplus.Mesh(
+            pts,
+            [("tetra", [[0, 1, 2, 3]]), ("tetra", [[1, 2, 3, 4]])],
+            cell_data={"c": [np.array([1.0]), np.array([2.0])]},
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", ["fe", "polygon", "polyhedron", "passive"])
+def test_binary_plt_writer_is_byte_identical_across_engines_and_reads_back(
+    name, tmp_path
+):
+    """Roadmap 3.3.2: a `.plt` name writes the binary #!TDV112 file."""
+    from meshioplusplus import _core
+    from meshioplusplus.tecplot import _tecplot
+
+    mesh = _plt_meshes()[name]
+    a, b = tmp_path / "core.plt", tmp_path / "twin.plt"
+    _core.tecplot_write(str(a), mesh)
+    _tecplot.write(b, mesh)
+    assert a.read_bytes() == b.read_bytes()
+    assert a.read_bytes()[:8] == b"#!TDV112"
+
+    ascii_path = tmp_path / "same.dat"
+    _tecplot.write(ascii_path, mesh)
+    plt, dat = meshioplusplus.read(a), meshioplusplus.read(ascii_path)
+    assert [c.type for c in plt.cells] == [c.type for c in dat.cells]
+    np.testing.assert_allclose(plt.points, dat.points)
+    for x, y in zip(plt.cells, dat.cells):
+        assert len(x.data) == len(y.data)
+        for r, q in zip(x.data, y.data):
+            np.testing.assert_array_equal(
+                (
+                    np.concatenate([np.ravel(f) for f in np.atleast_1d(r)])
+                    if x.type.startswith("polyhedron")
+                    else r
+                ),
+                (
+                    np.concatenate([np.ravel(f) for f in np.atleast_1d(q)])
+                    if y.type.startswith("polyhedron")
+                    else q
+                ),
+            )
+    for key in dat.point_data:
+        np.testing.assert_allclose(plt.point_data[key], dat.point_data[key])
+    for key in dat.cell_data:
+        for x, y in zip(plt.cell_data[key], dat.cell_data[key]):
+            np.testing.assert_allclose(x, y)

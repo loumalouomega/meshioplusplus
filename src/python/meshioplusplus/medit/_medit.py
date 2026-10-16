@@ -10,19 +10,19 @@ from ctypes import c_double, c_float
 import numpy as np
 
 from .._common import _pick_first_int_data, warn
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh
+from .._regions import Region
 from ._medit_internal import medit_codes
 
 
 def read(filename):
+    if str(filename)[-1] == "b":
+        with open_file(filename, "rb") as f:
+            return read_binary_buffer(f)
     with open_file(filename) as f:
-        if str(filename)[-1] == "b":
-            mesh = read_binary_buffer(f)
-        else:
-            mesh = read_ascii_buffer(f)
-    return mesh
+        return read_ascii_buffer(f)
 
 
 def _produce_dtype(string_type, dim, itype, ftype):
@@ -49,122 +49,171 @@ def _produce_dtype(string_type, dim, itype, ftype):
     return res
 
 
+# libMeshb codes of the sections meshio++ reads: element sections and id lists.
+_BINARY_CELLS = {
+    5: ("line", 2),
+    6: ("triangle", 3),
+    7: ("quad", 4),
+    8: ("tetra", 4),
+    9: ("wedge", 6),
+    10: ("hexahedron", 8),
+    49: ("pyramid", 5),
+}
+_BINARY_ID_LISTS = {
+    13: "Corners",
+    14: "Ridges",
+    15: "RequiredVertices",
+    16: "RequiredEdges",
+    17: "RequiredTriangles",
+}
+
+
+class _Cursor:
+    """Bounds-checked reads from the bytes of a binary file."""
+
+    def __init__(self, data, order):
+        self.data = data
+        self.at = 0
+        self.order = order
+
+    def left(self):
+        return len(self.data) - self.at
+
+    def array(self, count, dtype):
+        dtype = np.dtype(self.order + dtype)
+        if count < 0 or count * dtype.itemsize > self.left():
+            raise ReadError("Medit: the file is truncated")
+        out = np.frombuffer(self.data, dtype, count, self.at)
+        self.at += count * dtype.itemsize
+        return out
+
+    def int(self, dtype):
+        return int(self.array(1, dtype)[0])
+
+
 def read_binary_buffer(f):
+    data = f.read()
+    cursor = _Cursor(data, "")
+    code = cursor.int("i4")
+    if code == 16777216:
+        # swap endianness
+        cursor.order = ">" if struct.unpack("=l", struct.pack("<l", 1))[0] == 1 else "<"
+    elif code != 1:
+        raise ReadError("Invalid code")
 
-    meshio_from_medit = {
-        "GmfVertices": ("point", None),
-        "GmfEdges": ("line", 2),
-        "GmfTriangles": ("triangle", 3),
-        "GmfQuadrilaterals": ("quad", 4),
-        "GmfTetrahedra": ("tetra", 4),
-        "GmfPrisms": ("wedge", 6),
-        "GmfPyramids": ("pyramid", 5),
-        "GmfHexahedra": ("hexahedron", 8),
-    }
+    version = cursor.int("i4")
+    if version < 1 or version > 4:
+        raise ReadError("Invalid version")
+    itype = "i8" if version == 4 else "i4"
+    ftype = "f4" if version == 1 else "f8"
+    postype = "i8" if version >= 3 else "i4"
 
-    dim = 0
+    field = cursor.int("i4")
+    if field != 3:  # =  GmfDimension
+        raise ReadError("Invalid dimension code : " + str(field) + " it should be 3")
+    cursor.int(postype)
+    dim = cursor.int("i4")
+    if dim != 2 and dim != 3:
+        raise ReadError("Invalid mesh dimension : " + str(dim))
+
     points = None
     cells = []
     point_data = {}
     cell_data = {"medit:ref": []}
-    itype = ""
-    ftype = ""
-    postype = ""
-    # the file version
-    keytype = "i4"
-
-    code = np.fromfile(f, count=1, dtype=keytype).item()
-
-    if code != 1 and code != 16777216:
-        raise ReadError("Invalid code")
-
-    if code == 16777216:
-        # swap endianness
-        swapped = ">" if struct.unpack("=l", struct.pack("<l", 1))[0] == 1 else "<"
-        itype += swapped
-        ftype += swapped
-        postype += swapped
-        keytype = swapped + keytype
-
-    version = np.fromfile(f, count=1, dtype=keytype).item()
-
-    if version < 1 or version > 4:
-        raise ReadError("Invalid version")
-
-    if version == 1:
-        itype += "i4"
-        ftype += "f4"
-        postype += "i4"
-    elif version == 2:
-        itype += "i4"
-        ftype += "f8"
-        postype += "i4"
-    elif version == 3:
-        itype += "i4"
-        ftype += "f8"
-        postype += "i8"
-    else:
-        itype += "i8"
-        ftype += "f8"
-        postype += "i8"
-
-    field = np.fromfile(f, count=1, dtype=keytype).item()
-
-    if field != 3:  # =  GmfDimension
-        raise ReadError("Invalid dimension code : " + str(field) + " it should be 3")
-
-    np.fromfile(f, count=1, dtype=postype)
-
-    dim = np.fromfile(f, count=1, dtype=keytype).item()
-
-    if dim != 2 and dim != 3:
-        raise ReadError("Invalid mesh dimension : " + str(dim))
-
+    id_lists = {}
     while True:
-        field = np.fromfile(f, count=1, dtype=keytype)
-
-        if field.size == 0:
-            msg = "End-of-file reached before GmfEnd keyword"
-            warn(msg)
+        if cursor.left() < 4:
+            warn("End-of-file reached before GmfEnd keyword")
             break
-
-        field = field.item()
-        if field not in medit_codes.keys():
+        field = cursor.int("i4")
+        if field not in medit_codes:
             raise ReadError("Unsupported field")
-
-        field_code = medit_codes[field]
-
-        if field_code[0] == "GmfEnd":
+        name = medit_codes[field][0]
+        if name == "GmfEnd":
             break
-
-        if field_code[0] == "GmfReserved":
+        if name == "GmfReserved":
             continue
+        following = cursor.int(postype)
+        section_start = cursor.at
 
-        np.fromfile(f, count=1, dtype=postype)
-
-        nitems = 1
-        if field_code[1] == "i":
-            nitems = np.fromfile(f, count=1, dtype=itype).item()
-
-        field_template = field_code[2]
-        dtype = np.dtype(_produce_dtype(field_template, dim, itype, ftype))
-        out = np.asarray(np.fromfile(f, count=nitems, dtype=dtype))
-        if field_code[0] not in meshio_from_medit.keys():
-            warn(f"meshio++ doesn't know {field_code[0]} type. Skipping.")
-            continue
-
-        elif field_code[0] == "GmfVertices":
-            points = out["f0"]
-            point_data["medit:ref"] = out["f1"]
+        if field == 4:  # GmfVertices
+            n = cursor.int(itype)
+            row = dim * np.dtype(ftype).itemsize + np.dtype(itype).itemsize
+            if n < 0 or n * row > cursor.left():
+                raise ReadError("Medit: the file is truncated")
+            raw = np.frombuffer(
+                data,
+                np.dtype(
+                    [("x", cursor.order + ftype, (dim,)), ("ref", cursor.order + itype)]
+                ),
+                n,
+                cursor.at,
+            )
+            cursor.at += n * row
+            points = raw["x"].astype(ftype)
+            point_data["medit:ref"] = raw["ref"].astype(itype)
+        elif field in _BINARY_CELLS:
+            meshio_type, ncols = _BINARY_CELLS[field]
+            n = cursor.int(itype)
+            flat = cursor.array(n * (ncols + 1), itype).reshape(n, ncols + 1)
+            cells.append((meshio_type, flat[:, :ncols].astype(itype) - 1))
+            cell_data["medit:ref"].append(flat[:, -1].astype(itype))
+        elif field in _BINARY_ID_LISTS:
+            n = cursor.int(itype)
+            id_lists[_BINARY_ID_LISTS[field]] = cursor.array(n, itype).astype(itype) - 1
         else:
-            meshio_type, ncols = meshio_from_medit[field_code[0]]
-            # transform the structured array to integer array which suffices
-            # for the cell connectivity
-            out_view = out.view(itype).reshape(nitems, ncols + 1)
-            cells.append((meshio_type, out_view[:, :ncols] - 1))
-            cell_data["medit:ref"].append(out_view[:, -1])
+            # A section meshio++ has no home for: skipped through the position
+            # of the next one.
+            if following <= section_start or following > len(data):
+                raise ReadError(
+                    f"Medit: cannot skip keyword {field}: its next-section position "
+                    "is outside the file"
+                )
+            warn(f"meshio++ doesn't know Medit keyword {field}. Skipping.")
+            cursor.at = following
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    if points is None:
+        raise ReadError("Medit: expected Vertices")
+    regions = _regions_from_id_lists(id_lists, len(points), cells)
+    return Mesh(
+        points, cells, point_data=point_data, cell_data=cell_data, regions=regions
+    )
+
+
+# Keyword -> (region name, kind, the cell type its ids index). Corners and
+# RequiredVertices list vertices; Ridges and RequiredEdges list entries of the
+# Edges section, RequiredTriangles of the Triangles section.
+_ID_LIST_KEYWORDS = {
+    "Corners": ("medit:Corners", "point", None),
+    "RequiredVertices": ("medit:RequiredVertices", "point", None),
+    "Ridges": ("medit:Ridges", "cell", "line"),
+    "RequiredEdges": ("medit:RequiredEdges", "cell", "line"),
+    "RequiredTriangles": ("medit:RequiredTriangles", "cell", "triangle"),
+}
+
+
+def _regions_from_id_lists(id_lists, num_points, cells):
+    """The regions the id-list keywords describe, ids checked against their section."""
+    regions = []
+    for keyword, ids in id_lists.items():
+        name, kind, cell_type = _ID_LIST_KEYWORDS[keyword]
+        if kind == "point":
+            limit, base = num_points, 0
+        else:
+            base = 0
+            limit = None
+            for cell_type_i, data in cells:
+                if cell_type_i == cell_type:
+                    limit = len(data)
+                    break
+                base += len(data)
+            if limit is None:
+                warn(f"Medit: {keyword} lists {cell_type} cells the file does not have")
+                continue
+        if len(ids) and (ids.min() < 0 or ids.max() >= limit):
+            raise ReadError(f"Medit: {keyword} names an entry the file does not have")
+        regions.append(Region(name, kind, ids + base))
+    return regions
 
 
 def read_ascii_buffer(f):
@@ -185,6 +234,7 @@ def read_ascii_buffer(f):
     }
     points = None
     dtype = None
+    id_lists = {}  # keyword -> 0-based ids, kept as regions
 
     while True:
         line = f.readline()
@@ -255,10 +305,11 @@ def read_ascii_buffer(f):
             # adapt for 0-base
             cells.append((meshio_type, out[:, :points_per_cell] - 1))
             cell_data["medit:ref"].append(out[:, -1])
-        elif items[0] == "Corners":
-            # those are just discarded
-            num_corners = int(f.readline())
-            np.fromfile(f, count=num_corners, dtype=dtype, sep=" ")
+        elif items[0] in _ID_LIST_KEYWORDS:
+            # Vertex or element ids (1-based), kept as a region.
+            count = int(f.readline())
+            ids = np.fromfile(f, count=count, dtype=int, sep=" ")
+            id_lists[items[0]] = ids - 1
         elif items[0] == "Normals":
             # those are just discarded
             num_normals = int(f.readline())
@@ -298,10 +349,8 @@ def read_ascii_buffer(f):
         elif items[0] == "Identifier" or items[0] == "Geometry":
             f.readline()
         elif items[0] in [
-            "RequiredVertices",
             "TangentAtVertices",
             "Tangents",
-            "Ridges",
         ]:
             msg = f"Meshio doesn't know keyword {items[0]}. Skipping."
             warn(msg)
@@ -314,7 +363,10 @@ def read_ascii_buffer(f):
 
     if points is None:
         raise ReadError("Expected `Vertices`")
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    regions = _regions_from_id_lists(id_lists, len(points), cells)
+    return Mesh(
+        points, cells, point_data=point_data, cell_data=cell_data, regions=regions
+    )
 
 
 def write(filename, mesh, float_fmt=".16e"):
@@ -396,151 +448,155 @@ def write_ascii_file(filename, mesh, float_fmt=".16e"):
             for d, label in zip(data + 1, labels):
                 fh.write(fmt.format(*d, label).encode())
 
+        _write_id_lists(fh, mesh)
         fh.write(b"\nEnd\n")
 
 
-def write_binary_file(f, mesh):
-    with open_file(f, "wb") as fh:
-
-        version = 3
-        itype = "i4"
-        postype = "i8"
-        ftype = "f8"
-        # according to manual keywords are always written as i4 independently of
-        # the file version
-        keytype = "i4"
-
-        # if we store internally 64bit integers upgrade file version
-        has_big_ints = False
-        for cell_block in mesh.cells:
-            if cell_block.data.dtype.itemsize == 8:
-                has_big_ints = True
-                break
-
-        if has_big_ints:
-            itype = "i8"
-            version = 4
-
-        itype_size = np.dtype(itype).itemsize
-        ftype_size = np.dtype(ftype).itemsize
-        postype_size = np.dtype(postype).itemsize
-        keyword_size = np.dtype(keytype).itemsize
-
-        code = 1
-        field = 3  # GmfDimension
-        pos = 4 * keyword_size + postype_size
-
-        num_verts, dim = mesh.points.shape
-
-        header_type = np.dtype(",".join([keytype, keytype, keytype, postype, keytype]))
-        tmp_array = np.empty(1, dtype=header_type)
-        tmp_array["f0"] = code
-        tmp_array["f1"] = version
-        tmp_array["f2"] = field
-        tmp_array["f3"] = pos
-        tmp_array["f4"] = dim
-        tmp_array.tofile(fh)
-
-        # write points
-        field = 4  # GmfVertices
-        field_code = medit_codes[field]
-
-        pos += num_verts * dim * ftype_size
-        pos += num_verts * itype_size
-        pos += keyword_size + postype_size + itype_size
-        header_type = np.dtype(",".join([keytype, postype, itype]))
-        tmp_array = np.empty(1, dtype=header_type)
-        tmp_array["f0"] = field
-        tmp_array["f1"] = pos
-        tmp_array["f2"] = num_verts
-        tmp_array.tofile(fh)
-
-        field_template = field_code[2]
-        dtype = np.dtype(_produce_dtype(field_template, dim, itype, ftype))
-
-        labels_key, other = _pick_first_int_data(mesh.point_data)
-        if labels_key and other:
-            other_string = ", ".join(other)
-            warn(
-                "Medit can only write one point data array. "
-                f"Picking {labels_key}, skipping {other_string}."
-            )
-        labels = (
-            mesh.point_data[labels_key]
-            if labels_key
-            else np.ones(num_verts, dtype=itype)
-        )
-
-        tmp_array = np.empty(num_verts, dtype=dtype)
-        tmp_array["f0"] = mesh.points
-        tmp_array["f1"] = labels
-        tmp_array.tofile(fh)
-
-        labels_key, other = _pick_first_int_data(mesh.cell_data)
-        if labels_key and other:
-            string = ", ".join(other)
-            warn(
-                "Medit can only write one cell data array. "
-                f"Picking {labels_key}, skipping {string}."
-            )
-
-        # first component is medit keyword id see _medit_internal.py
-        medit_from_meshio = {
-            "line": 5,
-            "triangle": 6,
-            "quad": 7,
-            "tetra": 8,
-            "wedge": 9,
-            "pyramid": 49,
-            "hexahedron": 10,
-        }
-        for k, cell_block in enumerate(mesh.cells):
-            try:
-                medit_key = medit_from_meshio[cell_block.type]
-            except KeyError:
-                warn(
-                    f"MEDIT's mesh format doesn't know {cell_block.type} cells. "
-                    + "Skipping."
-                )
+def _id_list_sections(mesh):
+    """The regions named like the id-list keywords: ``(keyword, 0-based ids)``,
+    cell regions' ids counted within the first block of the section's type."""
+    sizes = [len(cb.data) for cb in mesh.cells]
+    starts = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+    out = []
+    for keyword, (name, kind, cell_type) in _ID_LIST_KEYWORDS.items():
+        for region in getattr(mesh, "regions", []):
+            if region.name != name or region.kind != kind:
                 continue
+            ids = np.asarray(region.entries, dtype=np.int64)
+            if kind == "cell":
+                block = next(
+                    (i for i, cb in enumerate(mesh.cells) if cb.type == cell_type),
+                    None,
+                )
+                if block is None:
+                    warn(f"Medit: region '{name}' needs {cell_type} cells; not written")
+                    continue
+                lo, hi = starts[block], starts[block + 1]
+                kept = ids[(ids >= lo) & (ids < hi)]
+                if len(kept) != len(ids):
+                    warn(
+                        f"Medit: region '{name}' holds cells outside the first "
+                        f"{cell_type} block; they are not written"
+                    )
+                ids = kept - lo
+            out.append((keyword, ids))
+            break
+    return out
 
-            num_cells, num_verts = cell_block.data.shape
 
-            pos += num_cells * (num_verts + 1) * itype_size
-            pos += keyword_size + postype_size + itype_size
+def _write_id_lists(fh, mesh):
+    """The id-list regions as their keywords."""
+    for keyword, ids in _id_list_sections(mesh):
+        fh.write(f"\n{keyword}\n{len(ids)}\n".encode())
+        fh.write("".join(f"{int(i) + 1}\n" for i in ids).encode())
 
-            header_type = np.dtype(",".join([keytype, postype, itype]))
-            tmp_array = np.empty(1, dtype=header_type)
-            tmp_array["f0"] = medit_key
-            tmp_array["f1"] = pos
-            tmp_array["f2"] = num_cells
-            tmp_array.tofile(fh)
 
-            # pick out cell data
-            labels = (
-                mesh.cell_data[labels_key][k]
-                if labels_key
-                else np.ones(len(cell_block.data), dtype=cell_block.data.dtype)
+def _first_int_key(data):
+    """The first integer array's name in sorted order (the core's order), else ``None``."""
+    for key in sorted(data):
+        if data[key][0].dtype.kind in ("i", "u"):
+            return key
+    return None
+
+
+# element type -> libMeshb code; the id lists' keyword -> code
+_BINARY_CELL_CODES = {
+    "line": 5,
+    "triangle": 6,
+    "quad": 7,
+    "tetra": 8,
+    "wedge": 9,
+    "pyramid": 49,
+    "hexahedron": 10,
+}
+_BINARY_ID_CODES = {
+    "Corners": 13,
+    "Ridges": 14,
+    "RequiredVertices": 15,
+    "RequiredEdges": 16,
+    "RequiredTriangles": 17,
+}
+
+
+def write_binary_file(f, mesh):
+    num_verts, dim = mesh.points.shape
+    if dim not in (2, 3):
+        raise WriteError(f"Medit: a binary file holds 2-D or 3-D points, not {dim}-D")
+
+    point_key = _first_int_key(mesh.point_data)
+    if point_key and len(mesh.point_data) > 1:
+        warn(
+            "Medit can only write one point data array. Picking the first integer one."
+        )
+    labels = (
+        np.asarray(mesh.point_data[point_key], dtype=np.int64)
+        if point_key
+        else np.ones(num_verts, dtype=np.int64)
+    )
+    cell_key = _first_int_key(mesh.cell_data)
+    if cell_key and len(mesh.cell_data) > 1:
+        warn("Medit can only write one cell data array. Picking the first integer one.")
+
+    blocks = []
+    for k, cell_block in enumerate(mesh.cells):
+        code = _BINARY_CELL_CODES.get(cell_block.type)
+        if code is None:
+            warn(
+                f"MEDIT's mesh format doesn't know {cell_block.type} cells. "
+                "Skipping."
             )
-            field_template = medit_codes[medit_key][2]
-            dtype = np.dtype(_produce_dtype(field_template, dim, itype, ftype))
+            continue
+        data = np.asarray(cell_block.data, dtype=np.int64)
+        refs = (
+            np.asarray(mesh.cell_data[cell_key][k], dtype=np.int64)
+            if cell_key
+            else np.ones(len(data), dtype=np.int64)
+        )
+        blocks.append((code, data, refs))
+    sections = _id_list_sections(mesh)
 
-            tmp_array = np.empty(num_cells, dtype=dtype)
-            i = 0
-            for col_type in dtype.names[:-1]:
-                tmp_array[col_type] = cell_block.data[:, i] + 1
-                i += 1
+    # version 3 (32-bit integers) unless an index or reference needs 64 bits
+    limit = np.iinfo(np.int32)
+    values = [labels] + [d + 1 for _, d, _ in blocks] + [r for _, _, r in blocks]
+    values += [ids + 1 for _, ids in sections]
+    big = num_verts > limit.max or any(
+        len(v) and (v.min() < limit.min or v.max() > limit.max) for v in values
+    )
+    version = 4 if big else 3
+    isize = 8 if big else 4
+    itype = "<i8" if big else "<i4"
+    psize = 8
+    pos = 4 * 4 + psize
 
-            tmp_array[dtype.names[-1]] = labels
-            tmp_array.tofile(fh)
+    out = [np.array([1, version, 3], "<i4").tobytes(), np.array([pos], "<i8").tobytes()]
+    out.append(np.array([dim], "<i4").tobytes())
 
-        pos = 0
-        field = 54  # GmfEnd
-        header_type = np.dtype(",".join([keytype, postype]))
-        tmp_array = np.empty(1, dtype=header_type)
-        tmp_array["f0"] = field
-        tmp_array["f1"] = pos
-        tmp_array.tofile(fh)
+    def header(code, count, nbytes):
+        nonlocal pos
+        pos += nbytes + 4 + psize + isize
+        out.append(np.array([code], "<i4").tobytes())
+        out.append(np.array([pos], "<i8").tobytes())
+        out.append(np.array([count], itype).tobytes())
+
+    header(4, num_verts, num_verts * (dim * 8 + isize))
+    vertices = np.empty(num_verts, dtype=[("x", "<f8", (dim,)), ("ref", itype)])
+    vertices["x"] = mesh.points
+    vertices["ref"] = labels
+    out.append(vertices.tobytes())
+    for code, data, refs in blocks:
+        num_cells, nodes = data.shape
+        header(code, num_cells, num_cells * (nodes + 1) * isize)
+        rows = np.empty((num_cells, nodes + 1), dtype=itype)
+        rows[:, :nodes] = data + 1
+        rows[:, nodes] = refs
+        out.append(rows.tobytes())
+    for keyword, ids in sections:
+        header(_BINARY_ID_CODES[keyword], len(ids), len(ids) * isize)
+        out.append((ids + 1).astype(itype).tobytes())
+    out.append(np.array([54], "<i4").tobytes())
+    out.append(np.array([0], "<i8").tobytes())
+    with open_file(f, "wb") as fh:
+        fh.write(b"".join(out))
 
 
 # NOTE: format registration now lives in meshioplusplus/medit/__init__.py, which wraps the

@@ -84,9 +84,14 @@ Since v9.9.0, `point_data` and `cell_data` round-trip through `FlowSolution_t` n
 |---|---|
 | `point_data` | `FlowSolution` (`FlowSolution_t`), `GridLocation` = `Vertex` |
 | `cell_data` | `FlowSolutionCells` (`FlowSolution_t`), `GridLocation` = `CellCenter` |
-| `field_data` | — (neither per-vertex nor per-cell; not written) |
+| `field_data` | `FieldData` (`UserDefinedData_t`), one `DataArray_t` per array in its own shape (`I4`/`I8`/`R4`/`R8`) |
+| point and cell regions | `ZoneSubRegion_t`, see [Regions](#regions) |
 
 Each array becomes one `DataArray_t` child, `R8`, with one value per vertex or per zone cell. On read, `GridLocation` is honoured (absent ⇒ `Vertex`, the SIDS default) and an array whose length disagrees with `NVertex`/`NCell` is a `ReadError` naming it.
+
+### Regions
+
+A point or cell [region](../regions.md) is a `ZoneSubRegion_t` node named after it (a name over 32 characters or with a `/`, or a repeat, is `Region<k>` with the real name in a `RegionName` child). Its `GridLocation` is `Vertex` or `CellCenter`, its `PointList` the 1-based vertex numbers or element ids, its value the region's dimension and a `RegionTag` child its tag. Cell regions list the element ids of the fixed-size sections, so cells of the face-based `NGON_n`/`NFACE_n` blocks are dropped with a warning; side regions have no CGNS node here and are not written. Field data and regions are read for a single-zone file, like the solutions.
 
 **Multi-component arrays are split, because CGNS has no component concept.** There is no `NumberOfComponents` anywhere in the SIDS — one `DataArray_t` is one scalar. A k-component meshio++ array is therefore written as k sibling nodes named `<name>_0 .. <name>_{k-1}` and re-joined on read from a *contiguous* `0..k-1` run. This is a documented meshio++ convention, not something SIDS specifies (the same class of deliberate extension as `zstd` for VTU). Anything that is not a contiguous run — a lone `foo_7`, a gap — stays a scalar under its own literal name, since guessing would invent components.
 

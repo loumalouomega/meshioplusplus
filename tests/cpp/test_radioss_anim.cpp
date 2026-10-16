@@ -158,3 +158,35 @@ TEST(RadiossAnim, Refusals) {
     other[3] = 0x2a;  // magic 0x542A
     EXPECT_THROW(meshioplusplus::read_radioss_anim(write(other, "oldA001")), ReadError);
 }
+
+TEST(RadiossAnimWriter, StateRoundTripsAndSeriesNumbersFiles) {
+    const std::string path = write(state(), "srcA001");
+    const Mesh original = meshioplusplus::read_radioss_anim(path);
+    const std::string out = (std::filesystem::path(path).parent_path() / "outA001").string();
+    meshioplusplus::write_radioss_anim(out, original);
+    const Mesh again = meshioplusplus::read_radioss_anim(out);
+    ASSERT_EQ(again.NumCellBlocks(), original.NumCellBlocks());
+    EXPECT_EQ(again.NumPoints(), original.NumPoints());
+    for (std::size_t b = 0; b < original.NumCellBlocks(); ++b)
+        EXPECT_EQ(again.Cells(b).Type(), original.Cells(b).Type());
+    EXPECT_EQ(detail::read_double(again.CellData("Thickness", 1), 0), 7.0);
+    EXPECT_EQ(detail::read_int(again.CellData("radioss:part", 1), 0), 9);
+    EXPECT_EQ(detail::read_int(again.PointData("radioss:node_id"), 4), 14);
+    EXPECT_EQ(again.NumRegions(), original.NumRegions());
+
+    const std::string first = (std::filesystem::path(path).parent_path() / "serA007").string();
+    meshioplusplus::RadiossAnimSeriesWriter writer(first);
+    writer.Write(1.5, original);
+    writer.Write(2.5, original);
+    writer.Finalize();
+    EXPECT_EQ(writer.NumSteps(), 2u);
+    EXPECT_DOUBLE_EQ(
+        meshioplusplus::read_radioss_anim(first).FieldData("meshio:time").As<double>()[0], 1.5);
+    EXPECT_TRUE(std::filesystem::exists(
+        std::filesystem::path(path).parent_path() / "serA008"));
+    // A name that is not an animation file's is a stem.
+    meshioplusplus::RadiossAnimSeriesWriter stem(
+        (std::filesystem::path(path).parent_path() / "plain").string());
+    stem.Write(0.0, original);
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(path).parent_path() / "plainA001"));
+}

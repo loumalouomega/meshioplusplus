@@ -44,6 +44,7 @@
 #include "pindex_common.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -312,6 +313,58 @@ std::vector<Mesh> pvtu_carve(const Mesh& rMesh, const std::string& rKey) {
     return pieces;
 }
 
+// The cells' piece, from `piece_<k>` cell regions: what a .pvtu read attaches, one
+// per piece, disjoint and covering every cell. Writing them back as pieces keeps a
+// read file's partition through a round trip. One Int64 array per block, or none
+// when the regions are anything else.
+constexpr const char* kPvtuPieceKey = "\x01pvtu:piece";
+
+std::vector<NDArray> pvtu_piece_labels(const Mesh& rMesh) {
+    std::vector<NDArray> none;
+    std::vector<std::int64_t> starts(rMesh.NumCellBlocks() + 1, 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        starts[b + 1] = starts[b] + static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+    const std::size_t total = static_cast<std::size_t>(starts.back());
+    std::vector<std::int64_t> label(total, -1);
+    std::size_t nregions = 0;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind != RegionKind::Cell)
+            continue;
+        if (reg.mName.rfind("piece_", 0) != 0 || reg.mName.size() == 6 ||
+            reg.mName.find_first_not_of("0123456789", 6) != std::string::npos)
+            return none;
+        const std::int64_t k = std::stoll(reg.mName.substr(6));
+        ++nregions;
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i) {
+            const std::int64_t c = reg.Entries()[i];
+            if (c < 0 || static_cast<std::size_t>(c) >= total || label[c] != -1)
+                return none;
+            label[c] = k;
+        }
+    }
+    if (nregions < 2 || total == 0)
+        return none;
+    std::vector<char> seen(nregions, 0);
+    for (const std::int64_t v : label) {
+        if (v < 0 || static_cast<std::size_t>(v) >= nregions)
+            return none;
+        seen[static_cast<std::size_t>(v)] = 1;
+    }
+    for (const char s : seen)
+        if (!s)
+            return none;
+    std::vector<NDArray> blocks;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::size_t n = static_cast<std::size_t>(starts[b + 1] - starts[b]);
+        NDArray a = NDArray::Uninit(DType::Int64, {n});
+        for (std::size_t i = 0; i < n; ++i)
+            a.As<std::int64_t>()[i] = label[static_cast<std::size_t>(starts[b]) + i];
+        blocks.push_back(std::move(a));
+    }
+    return blocks;
+}
+
 // --- write -------------------------------------------------------------------
 
 void pvtu_write_pieces(pvtu_kind Kind, const std::string& rPath,
@@ -397,7 +450,25 @@ void pvtu_write_pieces(pvtu_kind Kind, const std::string& rPath,
 void pvtu_write_mesh(pvtu_kind Kind, const std::string& rPath, const Mesh& rMesh, bool Binary,
                      detail::VtkCodec Codec, const std::string& rPartKey) {
     if (rPartKey.empty() || !rMesh.HasCellData(rPartKey)) {
-        pvtu_write_pieces(Kind, rPath, {&rMesh}, Binary, Codec);
+        std::vector<NDArray> labels = pvtu_piece_labels(rMesh);
+        if (labels.empty()) {
+            pvtu_write_pieces(Kind, rPath, {&rMesh}, Binary, Codec);
+            return;
+        }
+        // The piece_<k> regions are the parts: carve by them, and keep the label
+        // array out of the pieces.
+        Mesh labelled = detail::clone_mesh(rMesh);
+        labelled.AddCellData(kPvtuPieceKey, std::move(labels));
+        std::vector<Mesh> parts = pvtu_carve(labelled, kPvtuPieceKey);
+        for (Mesh& part : parts)
+            part = detail::clone_mesh(part, [](DataLocation Where, const std::string& rName,
+                                                std::string&) {
+                return !(Where == DataLocation::Cell && rName == kPvtuPieceKey);
+            });
+        std::vector<const Mesh*> ptrs;
+        for (const Mesh& m : parts)
+            ptrs.push_back(&m);
+        pvtu_write_pieces(Kind, rPath, ptrs, Binary, Codec);
         return;
     }
     const std::vector<Mesh> parts = pvtu_carve(rMesh, rPartKey);

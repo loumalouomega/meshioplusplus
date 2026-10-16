@@ -23,7 +23,8 @@
  * The file MSC Nastran writes with `MDLPRM,HDF5,...` (since 2016): compound-type
  * tables under `/NASTRAN/INPUT` (the model) and `/NASTRAN/RESULT` (the results),
  * with `/INDEX/NASTRAN/RESULT/...` giving each result table's row range per
- * result domain. Read-only.
+ * result domain. Written too (`write_nastran_h5`): the model and the nodal and
+ * centre element results, one domain per mesh or per series step.
  *
  *  - `/NASTRAN/INPUT/NODE/GRID` gives the points, in file order, moved to the
  *    basic system through the `COORDINATE_SYSTEM` CORD1R/C/S and CORD2R/C/S
@@ -65,6 +66,7 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
+#include <memory>
 #include <string>
 
 // Project includes
@@ -93,6 +95,60 @@ MESHIOPLUSPLUS_API Mesh read_nastran_h5(const std::string& rPath, const ReadOpti
  */
 MESHIOPLUSPLUS_API MeshMetadata read_nastran_h5_metadata(const std::string& rPath,
                                                          const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a mesh as an MSC Nastran HDF5 result database: one domain.
+ *
+ * The reader's inverse for the core of the schema: `/NASTRAN/INPUT` holds the
+ * GRIDs (ids 1..n), one table per element card (`nastran:eid`, `nastran:pid`
+ * give the ids; a quadratic solid's node list is zero-padded and permuted to
+ * Nastran's order), the property and material tables the elements name; the
+ * `DOMAINS` table has one row from `meshio:time` and the `nastran:*` field
+ * data; point data becomes the nodal tables (`<T>` and `<T>_ROT` of 3
+ * components, a scalar as `VALUE`, `<T>:<M>` members, `_real`/`_imag` pairs as
+ * `<T>_CPLX`) and `<G>:<M>` cell data the element tables of the centre values,
+ * each result table with its `/INDEX` twin. The file has the `SCHEMA` attribute
+ * and no `VERSION` one. The Python twin (`h5py`) writes the same tables.
+ *
+ * @throws WriteError on a non-positive or repeated element id, a property id
+ *         shared by shells, solids and rods, an array of the wrong size, or a
+ *         file that cannot be created
+ */
+MESHIOPLUSPLUS_API void write_nastran_h5(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A results file written step by step: the model from the first step,
+ *        a domain per step. The file is written by `Finalize`.
+ *
+ * Every step must have the first step's points count, cell blocks and result
+ * tables (a `WriteError` otherwise). The time of a step is the argument, not
+ * its `meshio:time`. One step is `write_nastran_h5`'s tables. The Python twin,
+ * `meshioplusplus.nastran_h5.SeriesWriter`, writes the same tables.
+ */
+class MESHIOPLUSPLUS_API NastranH5SeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be created.
+    explicit NastranH5SeriesWriter(const std::string& rPath);
+    ~NastranH5SeriesWriter();
+
+    NastranH5SeriesWriter(const NastranH5SeriesWriter&) = delete;
+    NastranH5SeriesWriter& operator=(const NastranH5SeriesWriter&) = delete;
+    NastranH5SeriesWriter(NastranH5SeriesWriter&&) noexcept;
+    NastranH5SeriesWriter& operator=(NastranH5SeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError when it differs from the first step's model or tables.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 

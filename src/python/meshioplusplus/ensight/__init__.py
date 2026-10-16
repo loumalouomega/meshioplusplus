@@ -12,19 +12,15 @@ def read(filename, time_step: int = 0):
     ``time_step`` selects one step of a transient .case file (0 = first,
     negative counts from the end), resolved the same way the C API/Fortran/
     Julia/R/WASM surfaces do -- see :func:`meshioplusplus.ensight.read`'s C++
-    counterpart, ``read_ensight``. The Python reference reader is geometry-
-    only (no VARIABLE support), so a non-default value forces the C++ path
-    and re-raises rather than silently falling back to a mesh with no data.
+    counterpart, ``read_ensight``; the Python twin resolves it identically.
     """
     if not is_buffer(filename, "r"):
         try:
             return _core.ensight_read(str(filename), time_step)
         except Exception as exc:
-            if time_step:
-                raise
             if not core_declined(exc, "ensight", "read", filename):
                 raise
-    return _py_read(filename)
+    return _py_read(filename, time_step)
 
 
 def write(filename, mesh, binary=True, fortran=False):

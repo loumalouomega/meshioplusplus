@@ -102,6 +102,9 @@ TIME_KEY = "meshio:time"
 #
 # **`abaqus_fil` joined likewise**: the model once and an increment per step
 # (`abaqus_fil.SeriesWriter`; `binary=True` writes the binary layout).
+#
+# **`nastran_h5` joined likewise**: the model once and a result domain per step
+# (`nastran_h5.SeriesWriter`, which assembles the file when it closes).
 _SERIES_WRITERS = (
     "xdmf",
     "gid",
@@ -111,7 +114,16 @@ _SERIES_WRITERS = (
     "femap",
     "frd",
     "radioss_th",
+    "radioss_anim",
+    "xplt",
+    "vtx",
+    "szplt",
+    "marc_t19",
+    "ansys_rst",
+    "lsdyna_d3plot",
+    "openfoam",
     "nastran_op2",
+    "nastran_h5",
     "lsdyna_binout",
     "abaqus_fil",
     "exodus",
@@ -872,6 +884,87 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
 
         # Pushed: each step's tables are held, and the file is assembled when
         # the writer closes (a result table holds every step).
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "radioss_anim":
+        from .radioss_anim import SeriesWriter
+
+        # Pushed: one numbered file per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return list(writer.paths)
+
+    if fmt == "marc_t19":
+        from .marc import SeriesWriter
+
+        # Pushed: an increment per mesh, the file written when the writer closes.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "szplt":
+        from .szplt import SeriesWriter
+
+        # Pushed: a strand of zones per step into one .szplt file.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "vtx":
+        from .vtx import SeriesWriter
+
+        # Pushed: a step per mesh into one .bp directory.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "openfoam":
+        from .openfoam import SeriesWriter
+
+        # Pushed: the polyMesh once, a time directory of fields per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "lsdyna_d3plot":
+        from .lsdyna_d3plot import SeriesWriter
+
+        # Pushed: the geometry once, a state per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "ansys_rst":
+        from .ansys_rst import SeriesWriter
+
+        # Pushed: the model once, a result set per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "xplt":
+        from .xplt import SeriesWriter
+
+        # Pushed: the mesh with the first step, then a state per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "nastran_h5":
+        from .nastran_h5 import SeriesWriter
+
+        # Pushed: the model with the first step, then a domain per step.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

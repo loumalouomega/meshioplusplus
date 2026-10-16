@@ -1589,3 +1589,166 @@ class TestBinaryWrite:
         owner = foamlib.FoamFile(poly / "owner")[None]
         # 8 hexahedra on a 2x2x2 grid: 36 total faces, 12 internal.
         assert len(np.asarray(owner)) == 36
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_write_emits_point_and_cell_data_as_time_zero_fields(binary, tmp_path):
+    """Roadmap 3.3.3: the writer's time directory 0 holds the fields the reader
+    reads back, ASCII and binary, so `read(write(m))` keeps the data."""
+    points = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1.0]], dtype=float
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]])],
+        point_data={"T": np.arange(5.0), "U": np.arange(15.0).reshape(5, 3)},
+        cell_data={"p": [np.array([1.5, 2.5])], "S": [np.arange(12.0).reshape(2, 6)]},
+    )
+    case = tmp_path / "case"
+    meshioplusplus.openfoam.write(case, mesh, binary=binary)
+    assert sorted(p.name for p in (case / "0").iterdir()) == ["S", "T", "U", "p"]
+    back = meshioplusplus.openfoam.read(case)
+    np.testing.assert_array_equal(back.point_data["T"].ravel(), np.arange(5.0))
+    np.testing.assert_array_equal(back.point_data["U"], mesh.point_data["U"])
+    # The volume block comes first; the boundary-face block holds NaN.
+    np.testing.assert_array_equal(back.cell_data["p"][0].ravel(), [1.5, 2.5])
+    np.testing.assert_array_equal(back.cell_data["S"][0], mesh.cell_data["S"][0])
+
+
+def test_write_skips_arrays_with_no_field_class(tmp_path):
+    points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1.0]])
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("tetra", [[0, 1, 2, 3]])],
+        point_data={"five": np.zeros((4, 5)), "tensor": np.zeros((4, 6))},
+        cell_data={"n": [np.array([2.0])]},
+    )
+    case = tmp_path / "case"
+    meshioplusplus.openfoam.write(case, mesh)
+    assert sorted(p.name for p in (case / "0").iterdir()) == ["n"]
+
+
+# -- roadmap 3.3.3: transient series, regions, decomposed cases ----------------
+
+
+def _grid(n=3):
+    xs = np.arange(n + 1.0)
+    points = np.array([[x, y, z] for z in xs for y in xs for x in xs])
+
+    def idx(i, j, k):
+        return i + (n + 1) * (j + (n + 1) * k)
+
+    cells = [
+        [
+            idx(i, j, k),
+            idx(i + 1, j, k),
+            idx(i + 1, j + 1, k),
+            idx(i, j + 1, k),
+            idx(i, j, k + 1),
+            idx(i + 1, j, k + 1),
+            idx(i + 1, j + 1, k + 1),
+            idx(i, j + 1, k + 1),
+        ]
+        for k in range(n)
+        for j in range(n)
+        for i in range(n)
+    ]
+    return meshioplusplus.Mesh(points, [("hexahedron", np.array(cells))])
+
+
+def _cells_of(mesh):
+    """The volume cells as sorted node coordinate sets: independent of numbering."""
+    return sorted(
+        tuple(sorted(map(tuple, mesh.points[c].round(9).tolist())))
+        for c in mesh.cells[0].data
+    )
+
+
+def test_series_writes_one_polymesh_and_a_time_directory_per_step(tmp_path):
+    mesh = _grid(2)
+    steps = []
+    for k, time in enumerate((0.0, 0.5, 1.00001)):
+        step = meshioplusplus.Mesh(mesh.points, mesh.cells)
+        step.cell_data["p"] = [np.arange(8.0) + k]
+        step.point_data["T"] = np.arange(27.0) * (k + 1)
+        steps.append((time, step))
+    case = tmp_path / "case.foam"
+    meshioplusplus.write_sequence(case, steps, file_format="openfoam")
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_dir()) == [
+        "0",
+        "0.5",
+        "1.00001",
+        "constant",
+    ]
+    assert meshioplusplus.read_metadata(case)["time_values"] == [0.0, 0.5, 1.00001]
+    back = meshioplusplus.read(case, time_step=1, arrays=["p", "T"])
+    np.testing.assert_array_equal(back.point_data["T"].ravel(), np.arange(27.0) * 2)
+    np.testing.assert_array_equal(back.cell_data["p"][0].ravel(), np.arange(8.0) + 1)
+    # a step over a different mesh is refused, and so is a repeated time
+    writer = meshioplusplus.openfoam.SeriesWriter(tmp_path / "bad" / "case.foam")
+    writer.write(0.0, steps[0][1])
+    with pytest.raises(Exception, match="differ"):
+        writer.write(1.0, _grid(1))
+    with pytest.raises(Exception, match="share the time"):
+        writer.write(0.0, steps[0][1])
+
+
+def test_region_writes_constant_region_polymesh_and_its_fields(tmp_path):
+    mesh = _grid(2)
+    mesh.cell_data["p"] = [np.arange(8.0)]
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, region="fluid")
+    other = _grid(1)
+    other.cell_data["p"] = [np.array([5.0])]
+    meshioplusplus.openfoam.write(case, other, region="solid")
+    assert (tmp_path / "constant" / "fluid" / "polyMesh" / "points").exists()
+    assert (tmp_path / "0" / "solid" / "p").exists()
+    with pytest.raises(Exception, match="multi-region case.*fluid, solid"):
+        meshioplusplus.openfoam.read(case)
+    fluid = meshioplusplus.openfoam.read(case, region="fluid")
+    solid = meshioplusplus.openfoam.read(case, region="solid")
+    assert len(fluid.cells[0].data) == 8 and len(solid.cells[0].data) == 1
+    np.testing.assert_array_equal(fluid.cell_data["p"][0].ravel(), np.arange(8.0))
+    np.testing.assert_array_equal(solid.cell_data["p"][0].ravel(), [5.0])
+    with pytest.raises(Exception, match="invalid region"):
+        meshioplusplus.openfoam.write(case, mesh, region="../x")
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_decomposed_case_reassembles_to_the_serial_mesh(tmp_path, binary):
+    mesh = _grid(3)
+    mesh.cell_data["partition:part"] = meshioplusplus.partition_labels(
+        mesh, 3, method="sfc"
+    )
+    mesh.cell_data["p"] = [np.arange(27.0)]
+    mesh.point_data["T"] = np.arange(64.0)
+    case = tmp_path / "dec" / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True, binary=binary)
+    for k in range(3):
+        poly = case.parent / f"processor{k}" / "constant" / "polyMesh"
+        assert {p.name for p in poly.iterdir()} >= {
+            "points",
+            "faces",
+            "owner",
+            "neighbour",
+            "boundary",
+            "pointProcAddressing",
+            "cellProcAddressing",
+            "faceProcAddressing",
+            "boundaryProcAddressing",
+        }
+        assert "processor" in (poly / "boundary").read_text(errors="ignore")
+    serial = tmp_path / "ser" / "case.foam"
+    meshioplusplus.openfoam.write(serial, mesh, binary=binary)
+    back = meshioplusplus.openfoam.read(case, arrays=["p", "T"])
+    ref = meshioplusplus.openfoam.read(serial, arrays=["p", "T"])
+    assert _cells_of(back) == _cells_of(ref)
+    assert [c.type for c in back.cells] == [c.type for c in ref.cells]
+    np.testing.assert_array_equal(back.cell_data["p"][0], ref.cell_data["p"][0])
+    np.testing.assert_array_equal(back.point_data["T"], ref.point_data["T"])
+    assert meshioplusplus.read_metadata(case)["time_values"] == [0.0]
+
+
+def test_decomposed_case_needs_partition_labels(tmp_path):
+    with pytest.raises(Exception, match="partition:part"):
+        meshioplusplus.openfoam.write(tmp_path / "case.foam", _grid(2), decomposed=True)

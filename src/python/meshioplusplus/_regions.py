@@ -404,6 +404,15 @@ class CellSetsView(_SetsView):
 # --------------------------------------------------------------------------- #
 # helpers used by the format shims and operations                             #
 # --------------------------------------------------------------------------- #
+def canonical_regions(mesh) -> list:
+    """The mesh's regions in the C++ core's storage order, ``(kind, name, dim,
+    tag)``, so a Python writer sees them as its native twin does."""
+    return sorted(
+        getattr(mesh, "regions", None) or [],
+        key=lambda r: (KINDS.index(r.kind), r.name, r.dim, r.tag),
+    )
+
+
 def regions_of_kind(mesh, kind) -> list:
     """Every region of ``mesh`` with the given kind, in mesh order."""
     return [r for r in getattr(mesh, "regions", []) if r.kind == kind]

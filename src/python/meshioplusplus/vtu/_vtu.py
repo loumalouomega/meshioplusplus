@@ -1300,14 +1300,18 @@ def write(
                 connectivity.append(d.flatten())
             connectivity = np.concatenate(connectivity)
 
-            # offset (points to the first element of the next cell)
-            offsets = [
-                v.data.shape[1]
-                * np.arange(1, v.data.shape[0] + 1, dtype=connectivity.dtype)
-                for v in mesh.cells
-            ]
-            for k in range(1, len(offsets)):
-                offsets[k] += offsets[k - 1][-1]
+            # offset (points to the first element of the next cell); a block with
+            # no cells adds nothing, so it must not restart the running total
+            offsets = []
+            base = connectivity.dtype.type(0)
+            for v in mesh.cells:
+                block = v.data.shape[1] * np.arange(
+                    1, v.data.shape[0] + 1, dtype=connectivity.dtype
+                )
+                block += base
+                offsets.append(block)
+                if len(block):
+                    base = block[-1]
             offsets = np.concatenate(offsets)
 
         # types

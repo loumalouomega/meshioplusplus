@@ -46,6 +46,15 @@
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
+#include "meshioplusplus/formats/marc.hpp"
+#include "meshioplusplus/formats/nastran_h5.hpp"
+#include "meshioplusplus/formats/radioss_anim.hpp"
+#include "meshioplusplus/formats/szplt.hpp"
+#include "meshioplusplus/formats/vtx.hpp"
+#include "meshioplusplus/formats/xplt.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
+#include "meshioplusplus/formats/lsdyna_d3plot.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
@@ -284,13 +293,16 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
-        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil") {
+        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
+        rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
+        rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
+        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'nastran_op2', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -586,6 +598,15 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "frd"           ? "CalculiX FRD"
                       : rFormat == "radioss_th"    ? "Radioss time-history"
                       : rFormat == "nastran_op2"   ? "Nastran OP2"
+                      : rFormat == "nastran_h5"    ? "Nastran HDF5"
+                      : rFormat == "radioss_anim"  ? "Radioss animation"
+                      : rFormat == "xplt"          ? "FEBio plot"
+                      : rFormat == "ansys_rst"     ? "Ansys results"
+                      : rFormat == "lsdyna_d3plot" ? "LS-DYNA d3plot"
+                      : rFormat == "openfoam"      ? "OpenFOAM"
+                      : rFormat == "vtx"           ? "DOLFINx VTX"
+                      : rFormat == "szplt"         ? "Tecplot SZL"
+                      : rFormat == "marc_t19"      ? "Marc post file"
                       : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
                       : rFormat == "abaqus_fil"    ? "Abaqus results"
                                                    : "XDMF";
@@ -610,6 +631,38 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
             "to select");
+    if (rFormat == "nastran_h5" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Nastran HDF5 writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "radioss_anim" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Radioss animation writer has no ASCII/binary "
+            "variant to select");
+    if (rFormat == "marc_t19" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Marc post-file writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "szplt" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Tecplot SZL writer has no ASCII/binary variant to "
+            "select");
+    if (rFormat == "vtx" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient DOLFINx VTX writer has no ASCII/binary variant to "
+            "select");
+    if (rFormat == "lsdyna_d3plot" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient LS-DYNA d3plot writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "ansys_rst" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Ansys results writer has no ASCII/binary variant to "
+            "select");
+    if (rFormat == "xplt" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient FEBio plot writer has no ASCII/binary variant to "
+            "select");
     if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
@@ -723,6 +776,21 @@ private:
     NastranOp2SeriesWriter mWriter;
 };
 
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+/// A Nastran HDF5 file holds the model once and a domain per step: the writer keeps the steps
+/// and writes the file when it is finalized, so `WritePointsCells` has nothing to do.
+class SeqNastranH5Sink final : public SeqSeriesSink {
+public:
+    explicit SeqNastranH5Sink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    NastranH5SeriesWriter mWriter;
+};
+#endif
+
 /// An Abaqus results file holds the model once and an increment per step: the writer keeps
 /// the steps and writes the file when it is finalized (`Encoding` binary writes the binary
 /// layout), so `WritePointsCells` has nothing to do.
@@ -735,6 +803,117 @@ public:
 
 private:
     AbaqusFilSeriesWriter mWriter;
+};
+
+/// An animation series is one file per step, written as it arrives, so
+/// `WritePointsCells` has nothing to do.
+class SeqRadiossAnimSink final : public SeqSeriesSink {
+public:
+    explicit SeqRadiossAnimSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    RadiossAnimSeriesWriter mWriter;
+};
+
+/// A Marc post file holds the model once and an increment per step: the writer keeps the
+/// increments and writes the file when it is finalized, so `WritePointsCells` has nothing to do.
+class SeqMarcT19Sink final : public SeqSeriesSink {
+public:
+    explicit SeqMarcT19Sink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    MarcT19SeriesWriter mWriter;
+};
+
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+/// A SZL file takes a strand of zones per step, written as it arrives, so `WritePointsCells`
+/// has nothing to do.
+class SeqSzpltSink final : public SeqSeriesSink {
+public:
+    explicit SeqSzpltSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    SzpltSeriesWriter mWriter;
+};
+#endif
+
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+/// A VTX file takes a step per mesh, written as it arrives, so `WritePointsCells` has nothing
+/// to do.
+class SeqVtxSink final : public SeqSeriesSink {
+public:
+    explicit SeqVtxSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    VtxSeriesWriter mWriter;
+};
+#endif
+
+/// A plot file holds the mesh once and a state per step: the writer keeps the states and
+/// writes the file when it is finalized, so `WritePointsCells` has nothing to do.
+class SeqXpltSink final : public SeqSeriesSink {
+public:
+    explicit SeqXpltSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    XpltSeriesWriter mWriter;
+};
+
+/// A results file holds the model once and a result set per step, written when finalized.
+class SeqAnsysRstSink final : public SeqSeriesSink {
+public:
+    explicit SeqAnsysRstSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    AnsysRstSeriesWriter mWriter;
+};
+
+/// A transient case: the polyMesh once and a time directory of fields per step, written as the
+/// steps arrive.
+class SeqOpenFoamSink final : public SeqSeriesSink {
+public:
+    SeqOpenFoamSink(const std::string& rPath, bool Binary)
+        : mWriter(rPath, {}, [&] {
+              OpenFoamWriteOptions o;
+              o.mBinary = Binary;
+              return o;
+          }()) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    OpenFoamSeriesWriter mWriter;
+};
+
+/// A d3plot family holds the geometry once and a state per step, written when finalized.
+class SeqLsdynaD3plotSink final : public SeqSeriesSink {
+public:
+    explicit SeqLsdynaD3plotSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    LsdynaD3plotSeriesWriter mWriter;
 };
 
 /// A binout keeps every output's records and writes the file when it is finalized, so
@@ -794,6 +973,30 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqRadiossThSink>(rPath);
     if (rFormat == "nastran_op2")
         return std::make_unique<SeqNastranOp2Sink>(rPath);
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "nastran_h5")
+        return std::make_unique<SeqNastranH5Sink>(rPath);
+#endif
+    if (rFormat == "radioss_anim")
+        return std::make_unique<SeqRadiossAnimSink>(rPath);
+    if (rFormat == "xplt")
+        return std::make_unique<SeqXpltSink>(rPath);
+    if (rFormat == "ansys_rst")
+        return std::make_unique<SeqAnsysRstSink>(rPath);
+    if (rFormat == "lsdyna_d3plot")
+        return std::make_unique<SeqLsdynaD3plotSink>(rPath);
+    if (rFormat == "openfoam")
+        return std::make_unique<SeqOpenFoamSink>(rPath, rOptions.mEncoding == WriteEncoding::Binary);
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+    if (rFormat == "vtx")
+        return std::make_unique<SeqVtxSink>(rPath);
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+    if (rFormat == "szplt")
+        return std::make_unique<SeqSzpltSink>(rPath);
+#endif
+    if (rFormat == "marc_t19")
+        return std::make_unique<SeqMarcT19Sink>(rPath);
     if (rFormat == "lsdyna_binout")
         return std::make_unique<SeqLsdynaBinoutSink>(rPath);
     if (rFormat == "abaqus_fil")

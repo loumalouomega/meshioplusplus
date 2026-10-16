@@ -391,62 +391,10 @@ namespace {
 
 // The degenerate or native layout of `Type` under an element of `Category`.
 std::optional<std::vector<int>> ans_layout(std::string_view Type, detail::AnsysCategory Category) {
-    using V = std::vector<int>;
-    if (Category == detail::AnsysCategory::Brick) {
-        if (Type == "hexahedron")
-            return V{0, 1, 2, 3, 4, 5, 6, 7};
-        if (Type == "hexahedron20")
-            return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
-        if (Type == "wedge")
-            return V{0, 1, 2, 2, 3, 4, 5, 5};
-        if (Type == "wedge15")  // K=L, O=P, S=K, W=O, B=A
-            return V{0, 1, 2, 2, 3, 4, 5, 5, 6, 7, 2, 8, 9, 10, 5, 11, 12, 13, 14, 14};
-        if (Type == "pyramid")
-            return V{0, 1, 2, 3, 4, 4, 4, 4};
-        if (Type == "pyramid13")  // M=N=O=P, U=V=W=X=M
-            return V{0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 4, 4, 4, 4, 9, 10, 11, 12};
-        if (Type == "tetra")
-            return V{0, 1, 2, 2, 3, 3, 3, 3};
-        if (Type == "tetra10")  // K=L, M..P, S=K, U..X=M, B=A
-            return V{0, 1, 2, 2, 3, 3, 3, 3, 4, 5, 2, 6, 3, 3, 3, 3, 7, 8, 9, 9};
-    } else if (Category == detail::AnsysCategory::Tet) {
-        if (Type == "tetra")
-            return V{0, 1, 2, 3};
-        if (Type == "tetra10")
-            return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    } else if (Category == detail::AnsysCategory::Shell) {
-        if (Type == "quad")
-            return V{0, 1, 2, 3};
-        if (Type == "quad8")
-            return V{0, 1, 2, 3, 4, 5, 6, 7};
-        if (Type == "triangle")
-            return V{0, 1, 2, 2};
-        if (Type == "triangle6")  // K=L, the K-L midside = K
-            return V{0, 1, 2, 2, 3, 4, 2, 5};
-    } else if (Category == detail::AnsysCategory::Line ||
-               Category == detail::AnsysCategory::LinearLine) {
-        if (Type == "line")
-            return V{0, 1};
-        if (Type == "line3" && Category == detail::AnsysCategory::Line)
-            return V{0, 1, 2};
-    } else if (Category == detail::AnsysCategory::Point) {
-        if (Type == "vertex")
-            return V{0};
-    }
-    return std::nullopt;
-}
-
-int ans_default_routine(std::string_view Type) {
-    static const std::pair<std::string_view, int> kDefault[] = {
-        {"vertex", 21},     {"line", 188},       {"line3", 189},        {"triangle", 181},
-        {"triangle6", 281}, {"quad", 181},       {"quad8", 281},        {"tetra", 285},
-        {"tetra10", 187},   {"pyramid", 185},    {"pyramid13", 186},    {"wedge", 185},
-        {"wedge15", 186},   {"hexahedron", 185}, {"hexahedron20", 186},
-    };
-    for (const auto& [type, routine] : kDefault)
-        if (Type == type)
-            return routine;
-    return -1;
+    std::vector<int> layout = detail::ansys_cell_layout(Type, Category);
+    if (layout.empty())
+        return std::nullopt;
+    return layout;
 }
 
 std::string ans_i(std::int64_t Value, int Width) {
@@ -484,49 +432,10 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     // Every cell's (element routine, ET slot): kept from `ansys:element` and
     // `ansys:type` when they describe a layout the cell's type has, else the
     // default routine for its type in a fresh slot.
-    std::map<int, int> slot_routine;  // slot -> routine
-    std::map<int, int> routine_slot;  // routine -> slot, for fresh slots
-    std::vector<std::vector<std::pair<int, int>>> cell_etype(n_blocks);
-    bool dropped_etype = false;
-    for (std::size_t b = 0; b < n_blocks; ++b) {
-        const auto cb = rMesh.Cells(b);
-        const std::string type(cb.Type());
-        const int fallback = ans_default_routine(type);
-        if (cb.IsRagged() || fallback < 0)
-            throw WriteError("Ansys .cdb writer: cell type '" + type + "' has no element type");
-        const NDArray* elements = ans_cell_column(rMesh, "ansys:element", b);
-        const NDArray* types = ans_cell_column(rMesh, "ansys:type", b);
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            int routine = static_cast<int>(ans_column_int(elements, r, fallback));
-            int slot = static_cast<int>(ans_column_int(types, r, 0));
-            if (!ans_layout(type, detail::ansys_category(routine)) ||
-                (slot > 0 && slot_routine.count(slot) && slot_routine[slot] != routine)) {
-                dropped_etype = dropped_etype || routine != fallback;
-                routine = fallback;
-                slot = 0;
-            }
-            if (slot > 0)
-                slot_routine.emplace(slot, routine);
-            cell_etype[b].emplace_back(routine, slot);
-        }
-    }
-    for (auto& per : cell_etype)
-        for (auto& [routine, slot] : per)
-            if (slot == 0) {
-                auto it = routine_slot.find(routine);
-                if (it == routine_slot.end()) {
-                    int fresh = 1;
-                    while (slot_routine.count(fresh))
-                        ++fresh;
-                    slot_routine[fresh] = routine;
-                    it = routine_slot.emplace(routine, fresh).first;
-                }
-                slot = it->second;
-            }
-    if (dropped_etype)
-        log::warn(
-            "Ansys .cdb writer: some ansys:element values do not fit their cells' shape; "
-            "the default element type was written instead");
+    detail::AnsysElementTypes element_types =
+        detail::ansys_element_types(rMesh, "Ansys .cdb writer");
+    const std::map<int, int>& slot_routine = element_types.mSlotRoutine;
+    const std::vector<std::vector<std::pair<int, int>>>& cell_etype = element_types.mCellEtype;
 
     // Components: cell and point regions, plus legacy side-channel sets not
     // already named by a region.

@@ -6,7 +6,7 @@ The result database [MSC Nastran](https://hexagon.com/products/product-groups/co
 |---|---|
 | **Format name** | `nastran_h5` |
 | **Extensions** | `.h5` (GiD's longer `.post.h5` stays `gid`) |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#nastran-h5): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.4) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#nastran-h5)) |
 | **Extra dependencies** | HDF5 (the C++ core); `h5py` for the Python reader |
 
 ## Reading
@@ -33,7 +33,15 @@ meshioplusplus convert job.h5 'mode_{step}.vtu'    # one .vtu per step
 meshioplusplus convert job.h5 job.pvd              # or a ParaView collection
 ```
 
-Both engines read the whole format: the C++ core, and a Python reference reader on `h5py` that the core falls back to. `.h5` is read-only: `meshioplusplus.write(..., file_format="nastran_h5")` is an error.
+Both engines read the whole format: the C++ core, and a Python reference reader on `h5py` that the core falls back to.
+
+## Writing
+
+```bash
+meshioplusplus convert model.vtu job.h5 -o nastran_h5
+```
+
+Both engines write the same tables, value for value. `/NASTRAN/INPUT` holds the `GRID` table, one table per element card (`CROD`, `CTUBE`, `CONROD`, `CTRIA3`, `CQUAD4`, `CTETRA`, `CPENTA`, `CHEXA`, ...) with MSC's column sets, and the `PROD`, `PSHELL`, `PSOLID`, `PTUBE` and `MAT1` tables the properties need. `/NASTRAN/RESULT` holds the nodal tables (`DISPLACEMENT`, `EIGENVECTOR`, ...) and the centre stress and strain of the linear elements, with the `/INDEX` twins and the `DOMAINS` table. The model and the result model are those of the [OP2 writer](./nastran_op2.md#writing), so the mesh round trips through either file. Element ids may repeat across cards, as they do in MSC's own files, but not within one. A series (`write_sequence`, `SeriesWriter`) is one domain per step. Arrays with no place in the file (corner, ply and station values) are dropped with a warning.
 
 ## Which files
 

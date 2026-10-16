@@ -8,7 +8,52 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.3.0 (2026-10-16)
+
+- **CGNS field data and regions**: `field_data` is written as a `UserDefinedData_t` node and point and cell regions as `ZoneSubRegion_t` nodes (`GridLocation`, `PointList`, the dimension as the node value, the tag in a child), by both engines, and read back for a single-zone file. Side regions and cells of face-based `NGON_n`/`NFACE_n` blocks are not written (a warning says so).
+
+- **OpenFOAM series, regions and decomposed cases**: the writer gains `SeriesWriter` / `write_sequence(file_format="openfoam")` (the `polyMesh` once, a time directory of fields per step), `write(..., region="fluid")` (`constant/<region>/polyMesh`, fields under `<time>/<region>/`) and `write(..., decomposed=True)` (`processorN/` with `processor` patches and the four `*ProcAddressing` lists, from `cell_data["partition:part"]`). The reader takes a region's and a decomposed case's fields back, finds regions without `regionProperties`, and no longer drops the faces interior to one processor when it reassembles a decomposed case (it only handled one cell per processor). C++ core only, like the rest of the OpenFOAM writer.
+
+- **Medit binary**: the C++ core reads and writes `.meshb` (libMeshb GMF, either byte order, versions 1-4; `read_medit_binary`, `write_medit_binary`, `read_medit`/`write_medit` dispatching on the `b` suffix), so the native CLI, C API and WASM handle it; both engines write the same bytes. The binary files now carry `Corners`, `Ridges` and the `Required*` lists as regions, sections meshio++ has no home for are skipped through their next-section position, and the writer uses version 3 unless an index needs 64 bits (it used to take version 4 for any 64-bit connectivity array).
+
+- **Abaqus `.fil` energies, matrices and surfaces**: the writer (both engines, byte for byte) keeps the total energies of an increment (record 1999: `abaqus:ALLKE`, `ALLSE`, `ALLIE`, `ETOTAL` ... by the step's procedure), the element matrices (`abaqus:stiffness`, `mass`, `load`, `matrix_dofs` with their `:index` tables) and the contact surfaces (side regions, as 1501/1502 records).
+
+- **LS-DYNA d3plot**: `lsdyna_d3plot` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): the control block, the geometry (8-, 10-, 20- and 27-node solids, beams, 4- and 8-node shells, with part numbers, user ids and part titles from `lsdyna:*` data and cell regions) and a state per step (time, globals, every nodal variable the reader returns, every solid, shell and beam element variable and the `lsdyna:alive` deletion masks), in single-precision words or, with `double=True`, 8-byte words, split over `d3plot`, `d3plot01`... by size (`max_file_bytes`, default 1 GiB; stale members are replaced). lasso-python reads the files. SPH particles (`vertex` cells) and the rigid bodies' motion are written too. Not yet written: airbags, rigid roads, `d3part` and thick shells (roadmap §3.2.2).
+
+- **Ansys results**: `ansys_rst` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): the standard, result and geometry headers, the equivalence tables, element types, nodes, elements and components, and per result set the nodal solution (`U`, `ROT`, `TEMP` ...), reactions (`RF`) and element nodal `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` (+ `@top`), which pymapdl-reader reads back. The element-type tables the `.cdb` writer used moved to `detail/ansys_model.hpp` (`ansys_element_types`). The raw element records and the element nodal forces `ENF` are written too. Not yet written: the cyclic option, element rotations, coordinate systems and complex results (roadmap §3.2.5).
+
+- **Marc post files**: `marc_t19` is writable from both engines, byte for byte (`marc.write_t19`, `marc.SeriesWriter`, `write_sequence`): the deck's model (cells with a Marc type, `marc:element` numbers, node, element, face and edge sets), the point arrays as nodal results and the cell arrays as element post codes per integration point (tensors as six codes, labels and layers), an increment per mesh. The deck writer's model now comes from one builder shared with the post-file writer.
+
+- **Tecplot SZL**: `szplt` is writable (`write`, `SeriesWriter`, `write_sequence`) from the core built with TecIO and from the Python twin on a shared TecIO, writing the same zones through TecIO's writer API: one per cell block as the `.plt` writer lays them out (wedges and pyramids as degenerate bricks), doubles, a strand of zones per step with the later steps sharing the first step's coordinates and connectivity. TecIO shares a variable only with the connectivity, so a mesh of several blocks gives each zone the points its cells use. The Python Tecplot writers now sort point and cell data by name, as the core does.
+
+- **DOLFINx VTX**: `vtx` is writable (`write`, `SeriesWriter`, `write_sequence`) from the core built with `MESHIOPLUSPLUS_WITH_ADIOS2` and from the Python twin on the `adios2` package, with the same variables and values: `VTXWriter`'s layout for one rank in BP5 (`vtk.xml`, `step`, `geometry`, `connectivity`, `types`, the point and cell arrays), Lagrange cell types where the node order allows. A file holds one cell type, as DOLFINx's does.
+
+- **FEBio plot files**: `xplt` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): plot version 0x35, the nodes with ids, a domain per cell block (a region equal to a block names it and tags its part), node sets, element sets and parts, the point data, cell data and numeric field data as nodal, per-element and global variables, and a state per step. Facet surfaces, side regions, edges and compression are not written. Cell-region order in the Python writers now follows the core's `(kind, name, dim, tag)` storage order.
+
+- **OpenRadioss animation**: `radioss_anim` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): one big-endian state per file with the nodes, 2-D facets, 3-D bricks (tetrahedra, pyramids and wedges as degenerate bricks), 1-D elements and SPH particles, nodal scalars and vectors, element scalars, tensors and force sets, parts from `radioss:part` or the cell regions, ids, masses, materials and properties; a series writes `runA001`, `runA002`, … `anim_to_vtk` reads the result.
+
+- **Nastran HDF5**: `nastran_h5` is writable from both engines, value for value (`write`, `SeriesWriter`, `write_sequence`): the `GRID`, element-card, property and `MAT1` tables under `/NASTRAN/INPUT` with MSC's column sets, the nodal and centre element result tables, their `/INDEX` twins and `DOMAINS`, one domain per step. Corner, ply and station arrays are dropped with a warning. The XDMF `Information` stream now pins the classic locale.
+
+- **Tecplot**: a `.plt` file name writes the binary `#!TDV112` format from both engines, byte-identically (FE and face-based zones, shared nodal variables, cell-centred variables with passive zones); the check in Tecplot itself waits on a licensed run (roadmap 3.3.2).
+
+- **OpenFOAM**: `write` emits `point_data` and `cell_data` as the fields of time directory `0` (volume scalar/vector/symmTensor/tensor, point scalar/vector; ASCII and binary), which `read` takes back. The page's earlier claim of a time-directory round trip held for reading only (roadmap 3.3.3, in part).
+
+- **Medit**: `Corners`, `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles` are kept as regions (`medit:<Keyword>`) and written back, in the ASCII variant of both engines; `RequiredEdges` and `RequiredTriangles` no longer stop the C++ reader (roadmap 3.3.9, in part).
+
+- **XDMF**: both engines write `[tag, dim]` integer `field_data` as an `Information` element, which both readers already took back (roadmap 3.3.7, in part).
+
+- **VTI/VTR/VTS**: the writers, both engines, write `field_data` and named regions into the grid's `<FieldData>`, byte-identically in binary (roadmap 3.3.7, in part).
+- **VTM/PVTU**: `write` names a `.vtm` piece after the cell region that is exactly its block, and carves a `.pvtu` by `piece_<k>` regions, so a read file writes back with its own pieces; both engines (roadmap 3.3.7, in part).
+
+- **PLY**: the C++ reader now reads scalar face properties beyond `vertex_indices` (ASCII and binary) as per-block `cell_data`, so they no longer force the Python fallback (roadmap 3.4.6).
+- **Nastran**: the C++ reader sets `points_id` / `cells_id` like the Python reader (roadmap 3.4.10).
+- **Gmsh**: the Python writer derives `$PhysicalNames` and per-cell physical tags from `Cell` regions exactly as the C++ writer does (roadmap 3.4.4, 3.4.12).
+- **XDMF**: the C++ reader and writer cover the high-order `hexahedron64`..`hexahedron1331` types, per-type and in `Mixed` topologies (roadmap 3.4.9).
+- **lzma**: the C++ core reads and writes `vtkLZMADataCompressor` blocks in VTU/VTP/VTI/VTR/VTS/VTM and the parallel and `.pvd` writers behind the new `MESHIOPLUSPLUS_WITH_LZMA` option (liblzma; Conan `with_lzma`, vcpkg feature `lzma`), introspectable as `_core.__has_lzma__`. The Python structured readers now accept lzma too, so both engines take the same files (roadmap 3.4.7).
+- **Neuroglancer**: a native reader and writer in the shared registry (so C, Fortran, Julia, R, WASM and both CLIs reach it); the Python twin stays as the fallback and now also rejects an index equal to the vertex count (roadmap 3.4.11).
+- **EnSight**: the Python twin reads and writes `VARIABLE` sections (point and cell arrays of 1, 2, 3, 6 and 9 components, `constant per case`, `time_step`), byte-identical to the core's writer (roadmap 3.4.5).
+- **Engine parity probe**: `test_every_format_has_both_engines_or_a_recorded_exemption` fails when a core-served format loses a Python twin direction, or an exemption outlives its gap; the standing exemptions (GiD, the OpenFOAM writer and multi-region reading, CGNS face-based polyhedra, the CAD readers) are recorded in `conformance_spec.py` with their reasons (roadmap 3.4.1–3.4.3, 3.4.13).
+- **Recorded losses**: libMesh (no data arrays; the level is implied by the tree), SU2 (no volume regions outside `NZONE`), UNV (NaN rows), MFM (one element type) and Marc (types that come back as their shape's default) are stated as facts of their formats in the conformance notes (roadmap 3.3.4, 3.3.5, 3.3.6, 3.3.8, 3.3.10); COMSOL's point and side regions and multi-object files, and Z88's result files and side regions (roadmap 3.3.1), join them.
 
 ## v17.2.0 (2026-10-15)
 

@@ -550,3 +550,78 @@ def test_cgnscheck_accepts_our_polyhedral_output(key, tmp_path):
     errors = [ln for ln in (r.stdout + r.stderr).splitlines() if "ERROR" in ln.upper()]
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
     assert not errors, errors
+
+
+def _regions_mesh():
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1.0]]),
+        [
+            ("triangle", np.array([[0, 1, 2], [0, 2, 3]])),
+            ("quad", np.array([[0, 1, 2, 3]])),
+            ("line", np.array([[0, 1]])),
+        ],
+    )
+    mesh.field_data["answer"] = np.array([42.0])
+    mesh.field_data["matrix"] = np.arange(6).reshape(2, 3)
+    mesh.regions = [
+        meshioplusplus.Region("inlet", "point", np.array([0, 3]), dim=0, tag=5),
+        meshioplusplus.Region("skin", "cell", np.array([0, 2]), dim=2, tag=7),
+        meshioplusplus.Region("a/b", "cell", np.array([3]), dim=1, tag=1),
+        meshioplusplus.Region("x" * 40, "point", np.array([1])),
+    ]
+    return mesh
+
+
+def _region_rows(mesh):
+    return sorted(
+        (r.name, r.kind, r.entries.tolist(), r.dim, r.tag) for r in mesh.regions
+    )
+
+
+@pytest.mark.parametrize("writer", ["core", "python"])
+@pytest.mark.parametrize("reader", ["core", "python"])
+def test_field_data_and_regions_round_trip_across_engines(tmp_path, writer, reader):
+    if "core" in (writer, reader) and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    mesh = _regions_mesh()
+    path = str(tmp_path / "r.cgns")
+    if writer == "core":
+        _core.cgns_write(path, mesh, 4)
+    else:
+        _cgns.write(path, mesh)
+    back = _core.cgns_read(path) if reader == "core" else _cgns.read(path)
+    assert _region_rows(back) == _region_rows(mesh)
+    assert sorted(back.field_data) == ["answer", "matrix"]
+    np.testing.assert_array_equal(back.field_data["matrix"], mesh.field_data["matrix"])
+    np.testing.assert_array_equal(back.field_data["answer"], [42.0])
+
+
+@pytest.mark.skipif(not _HAS_HDF5, reason="needs the C++ HDF5-enabled core")
+def test_regions_are_zone_sub_regions_in_the_file(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = str(tmp_path / "r.cgns")
+    _core.cgns_write(path, _regions_mesh(), 4)
+    with h5py.File(path, "r") as f:
+        zone = f["Base/Zone1"]
+        assert zone["inlet"].attrs["label"].decode().strip("\0") == "ZoneSubRegion_t"
+        assert zone["inlet/PointList/ data"][()].reshape(-1).tolist() == [1, 4]
+        # the cell region lists element ids: the triangles are 1 and 2, the quad 3
+        assert zone["skin/PointList/ data"][()].reshape(-1).tolist() == [1, 3]
+        assert (
+            zone["FieldData"].attrs["label"].decode().strip("\0") == "UserDefinedData_t"
+        )
+
+
+@pytest.mark.skipif(not _HAS_HDF5, reason="needs the C++ HDF5-enabled core")
+def test_side_regions_are_not_written(tmp_path):
+    mesh = _regions_mesh()
+    mesh.regions.append(
+        meshioplusplus.Region("sides", "side", np.array([[0, 1]]), dim=1, tag=2)
+    )
+    for write in (
+        lambda p: _core.cgns_write(p, mesh, 4),
+        lambda p: _cgns.write(p, mesh),
+    ):
+        path = str(tmp_path / "s.cgns")
+        write(path)
+        assert "sides" not in {r.name for r in _core.cgns_read(path).regions}

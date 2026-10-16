@@ -76,6 +76,7 @@
 
 // System includes
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -122,5 +123,57 @@ MESHIOPLUSPLUS_API bool is_d3plot_filename(const std::string& rPath);
  *        double precision)
  */
 MESHIOPLUSPLUS_API bool is_d3plot_head(const char* pHead, std::size_t Size);
+
+/**
+ * @brief Write a d3plot family: one state, from the mesh and its data.
+ *
+ * Single-precision little-endian words. Hexahedra, wedges, pyramids and
+ * tetrahedra are solids, `tetra10` ten-node solids, `line` beams, `triangle` and
+ * `quad` shells; other cell types are not written (a warning counts them).
+ * Point data `displacement`, `velocity`, `acceleration`; cell data `stress`,
+ * `effective_plastic_strain` (solids: 1 or 8 points, shells: layers, as the
+ * reader returns them), the `beam_*` resultants and the deletion mask
+ * `lsdyna:alive`; field data `global_*` and `part_*`; `lsdyna:nid`,
+ * `lsdyna:eid` and `lsdyna:part` the user ids, cell regions the parts and their
+ * titles; `meshio:time` the state's time (0 when absent). Files named
+ * `<path>NN` already beside the base file are replaced. The Python twin writes
+ * the same bytes.
+ * @param MaxFileBytes a file is closed once the next state would pass this size
+ * @throws WriteError for a mesh with no points or no solid, beam or shell
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_d3plot(const std::string& rPath, const Mesh& rMesh,
+                                            std::size_t MaxFileBytes = std::size_t{1} << 30,
+                                            bool DoublePrecision = false);
+
+/**
+ * @brief A state per mesh in one d3plot family, written by `Finalize`; every mesh
+ *        must have the first one's points and cells. The Python twin is
+ *        `meshioplusplus.lsdyna_d3plot.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API LsdynaD3plotSeriesWriter {
+public:
+    explicit LsdynaD3plotSeriesWriter(const std::string& rPath,
+                                      std::size_t MaxFileBytes = std::size_t{1} << 30,
+                                      bool DoublePrecision = false);
+    ~LsdynaD3plotSeriesWriter();
+
+    LsdynaD3plotSeriesWriter(const LsdynaD3plotSeriesWriter&) = delete;
+    LsdynaD3plotSeriesWriter& operator=(const LsdynaD3plotSeriesWriter&) = delete;
+    LsdynaD3plotSeriesWriter(LsdynaD3plotSeriesWriter&&) noexcept;
+    LsdynaD3plotSeriesWriter& operator=(LsdynaD3plotSeriesWriter&&) noexcept;
+
+    /// Add one state. @throws WriteError on a mismatch with the first one.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of states added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the family. Idempotent. @throws WriteError when no state was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

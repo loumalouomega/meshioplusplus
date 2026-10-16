@@ -586,7 +586,12 @@ def _cell_int(mesh, name, block, row, default):
     return int(arr[row])
 
 
-def write(filename, mesh):
+def element_types(mesh, what="Ansys .cdb writer"):
+    """The Ansys element of every cell: ``(cell_etype, slot_routine)``, where
+    ``cell_etype[block][row]`` is ``[routine, ET slot]`` and ``slot_routine``
+    maps each ET slot to its routine. A cell keeps its ``ansys:element`` and
+    ``ansys:type`` when the element's node layout fits the cell, else gets the
+    default element of its shape; cells of an unknown shape raise."""
     blocks = mesh.cells
     slot_routine = {}
     routine_slot = {}
@@ -595,9 +600,7 @@ def write(filename, mesh):
     for b, block in enumerate(blocks):
         fallback = _DEFAULT_ROUTINE.get(block.type, -1)
         if isinstance(block.data, list) or fallback < 0:
-            raise WriteError(
-                f"Ansys .cdb writer: cell type '{block.type}' has no element type"
-            )
+            raise WriteError(f"{what}: cell type '{block.type}' has no element type")
         per = []
         for r in range(len(block.data)):
             routine = _cell_int(mesh, "ansys:element", b, r, fallback)
@@ -624,10 +627,15 @@ def write(filename, mesh):
                 pair[1] = routine_slot[routine]
     if dropped_etype:
         warn(
-            "Ansys .cdb writer: some ansys:element values do not fit their cells' "
+            f"{what}: some ansys:element values do not fit their cells' "
             "shape; the default element type was written instead"
         )
+    return cell_etype, slot_routine
 
+
+def write(filename, mesh):
+    blocks = mesh.cells
+    cell_etype, slot_routine = element_types(mesh)
     bases = [0]
     for block in blocks:
         bases.append(bases[-1] + len(block.data))

@@ -170,7 +170,6 @@ def test_strict_mode_reraises_the_cores_own_error(monkeypatch, pkg, fn, kwargs):
 # name of what was asked for: a wrong answer, not a slower one.
 _NO_TWIN_FOR = [
     ("cgns", {"time_step": 1}),
-    ("ensight", {"time_step": 1}),
     ("gmsh", {"time_step": 1}),
     ("med", {"time_step": 1}),
     ("xdmf", {"time_step": 1}),

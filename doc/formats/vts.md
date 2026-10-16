@@ -63,7 +63,8 @@ Same as `.vti`: `voxelize`'s `surface`/`inside` fills and `compute_sdf`'s octree
 | `points` | `<Points>`, one `Float64` `<DataArray>` |
 | `point_data` | `<PointData>`, one `<DataArray>` per array, sorted by name |
 | `cell_data` | `<CellData>` — a lattice has one block, so one array each |
-| `field_data` | **not written** |
+| `field_data` | `<FieldData>` on the grid, numeric arrays, both engines |
+| `regions` | `region:*` arrays in the same `<FieldData>` ([regions in VTK XML](../regions.md)) |
 | `point_sets` / `cell_sets` | not written |
 
 ## Quirks & limitations

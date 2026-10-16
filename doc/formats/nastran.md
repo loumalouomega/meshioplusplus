@@ -100,7 +100,7 @@ These are comments, so no solver sees them, and both engines write the same byte
 - `point_data["nastran:ref"]` — the `GRID` card's CP field, when any card fills it; a blank field reads as 0 (the basic system).
 - `cell_data["nastran:ref"]` — the element card's PID field, when any card fills it; a blank field reads as 0. The writer writes 0 as a blank field.
 - `mesh.regions` — HyperMesh components and OptiStruct sets (above).
-- `mesh.points_id` / `mesh.cells_id` — attributes (not data-dict entries) holding the original `GRID`/element ids; set by the Python reader only.
+- `mesh.points_id` / `mesh.cells_id` — attributes (not data-dict entries) holding the original `GRID`/element ids; set by both engines.
 
 ## Quirks & limitations
 

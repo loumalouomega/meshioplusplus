@@ -10,7 +10,7 @@ from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import is_buffer, open_file
-from .._regions import block_bases
+from .._regions import block_bases, canonical_regions
 from . import _ascii, _plt, _zones
 from ._plt import is_plt
 
@@ -123,7 +123,7 @@ def _zone_title(mesh, bases, block):
     entries are precisely the global cell-index range of this block.
     """
     lo, hi = bases[block], bases[block + 1]
-    for region in mesh.regions:
+    for region in canonical_regions(mesh):
         if region.kind != "cell" or len(region.entries) == 0:
             continue
         if len(region.entries) != hi - lo:
@@ -133,13 +133,17 @@ def _zone_title(mesh, bases, block):
     return f"block_{block}"
 
 
-def write(filename, mesh):
-    # One Tecplot ZONE per cell block -- no single-type restriction, no
-    # 2D/3D padding hack. Zone 1 carries the coordinates and nodal fields;
-    # later zones reuse them through VARSHARELIST rather than duplicating
-    # the (unwelded, shared) point array. A cell-data array is expected one
-    # entry per cell block (the meshio convention); a block outside
-    # ``cell_blocks`` (an unsupported type) simply never claims it.
+def write_plan(mesh):
+    """The zones and variables every Tecplot writer lays out: ``(cell_blocks,
+    variables, shared_data, cell_var_blocks, bases)``.
+
+    One Tecplot ZONE per cell block -- no single-type restriction, no 2D/3D
+    padding hack. Zone 1 carries the coordinates and nodal fields; later zones
+    reuse them through VARSHARELIST rather than duplicating the (unwelded,
+    shared) point array. A cell-data array is expected one entry per cell block
+    (the meshio convention); a block outside ``cell_blocks`` (an unsupported
+    type) simply never claims it.
+    """
     cell_blocks = []
     for ic, c in enumerate(mesh.cells):
         if _zone_type(c.type) is not None:
@@ -151,7 +155,6 @@ def write(filename, mesh):
     if not cell_blocks:
         raise WriteError("No cell type supported by Tecplot in mesh")
 
-    num_nodes = len(mesh.points)
     dim = mesh.points.shape[1]
 
     variables = ["X", "Y"]
@@ -160,7 +163,7 @@ def write(filename, mesh):
         variables.append("Z")
         shared_data.append(mesh.points[:, 2])
 
-    for k, v in mesh.point_data.items():
+    for k, v in sorted(mesh.point_data.items()):
         if k in {"X", "Y", "Z", "x", "y", "z"}:
             warn(f"Skipping point data '{k}'.")
             continue
@@ -171,12 +174,11 @@ def write(filename, mesh):
             for i, vv in enumerate(v.T):
                 variables.append(f"{k}_{i}")
                 shared_data.append(vv)
-    num_shared = len(variables)
 
     # Cell-centred variables, component-expanded: `cell_var_blocks[j]` maps
     # block index -> that component's 1-D array, for variable `num_shared+j`.
     cell_var_blocks = []
-    for k, v in mesh.cell_data.items():
+    for k, v in sorted(mesh.cell_data.items()):
         if k in {"X", "Y", "Z", "x", "y", "z"}:
             warn(f"Skipping cell data '{k}'.")
             continue
@@ -195,6 +197,25 @@ def write(filename, mesh):
             cell_var_blocks.append(per_block)
 
     bases = block_bases(mesh.cells)
+    return cell_blocks, variables, shared_data, cell_var_blocks, bases
+
+
+def write(filename, mesh):
+    cell_blocks, variables, shared_data, cell_var_blocks, bases = write_plan(mesh)
+    num_nodes = len(mesh.points)
+    num_shared = len(shared_data)
+
+    if str(filename).lower().endswith(".plt"):
+        _write_plt(
+            filename,
+            mesh,
+            cell_blocks,
+            variables,
+            shared_data,
+            cell_var_blocks,
+            bases,
+        )
+        return
 
     with open_file(filename, "w") as f:
         f.write(f'TITLE = "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}"\n')
@@ -248,6 +269,123 @@ def write(filename, mesh):
             order = meshio_to_tecplot_order[cell.type]
             for row in cell.data[:, order]:
                 f.write(" ".join(str(c) for c in row + 1) + "\n")
+
+
+_PLT_ZONE_TYPES = {
+    "FELINESEG": 1,
+    "FETRIANGLE": 2,
+    "FEQUADRILATERAL": 3,
+    "FETETRAHEDRON": 4,
+    "FEBRICK": 5,
+    "FEPOLYGON": 6,
+    "FEPOLYHEDRON": 7,
+}
+
+
+def _write_plt(
+    filename, mesh, cell_blocks, variables, shared_data, cell_var_blocks, bases
+):
+    """The same zones as the ASCII writer, as a binary ``#!TDV112`` file.
+
+    One zone per cell block; zone 1 owns the nodal variables and the later
+    zones share them (and carry only their own cell-centred values, the others
+    passive). Values are written as doubles, so nothing narrows; connectivity is
+    0-based. The layout is the Data Format Guide's appendix A, which
+    ``_plt.py`` reads back.
+    """
+    num_nodes = len(mesh.points)
+    nvar = len(variables)
+    num_shared = len(shared_data)
+    out = bytearray()
+
+    def i32(*values):
+        out.extend(np.asarray(values, dtype="<i4").tobytes())
+
+    def f32(value):
+        out.extend(np.float32(value).tobytes())
+
+    def f64(*values):
+        out.extend(np.asarray(values, dtype="<f8").tobytes())
+
+    def string(text):
+        out.extend(np.asarray([ord(c) for c in text] + [0], dtype="<i4").tobytes())
+
+    out.extend(b"#!TDV112")
+    i32(1, 0)  # byte order, full file
+    string(_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0])
+    i32(nvar)
+    for name in variables:
+        string(name)
+
+    zones = []
+    for bi, ic in enumerate(cell_blocks):
+        cell = mesh.cells[ic]
+        zone_type = _zone_type(cell.type)
+        face_based = zone_type in ("FEPOLYGON", "FEPOLYHEDRON")
+        faces = _face_map(cell) if face_based else None
+        present = [j for j, pb in enumerate(cell_var_blocks) if ic in pb]
+        zones.append((ic, cell, zone_type, faces, present))
+        f32(299.0)
+        string(_zone_title(mesh, bases, ic))
+        i32(-1, -1)  # parent zone, strand
+        f64(0.0)  # solution time
+        i32(-1, _PLT_ZONE_TYPES[zone_type])  # color, zone type
+        if cell_var_blocks:
+            located = [0] * num_shared + [1] * len(cell_var_blocks)
+            i32(1, *located)
+        else:
+            i32(0)
+        i32(0, 0)  # raw and miscellaneous face neighbours
+        i32(num_nodes)
+        if face_based:
+            nodes = sum(len(face) for face in faces[0])
+            i32(len(faces[0]), nodes, 0, 0)
+        i32(len(cell.data), 0, 0, 0)  # cells, I/J/K cell dimensions
+        i32(0)  # no auxiliary data
+    f32(357.0)
+
+    for bi, (ic, cell, zone_type, faces, present) in enumerate(zones):
+        f32(299.0)
+        i32(*([2] * nvar))  # every variable a double
+        passive = [
+            num_shared + j for j in range(len(cell_var_blocks)) if j not in present
+        ]
+        if passive:
+            flags = [0] * nvar
+            for v in passive:
+                flags[v] = 1
+            i32(1, *flags)
+        else:
+            i32(0)
+        if bi > 0:
+            i32(1, *([0] * num_shared + [-1] * len(cell_var_blocks)))
+        else:
+            i32(0)
+        i32(-1)  # own connectivity
+        owned = []
+        if bi == 0:
+            owned += [np.asarray(col, dtype=np.float64) for col in shared_data]
+        owned += [np.asarray(cell_var_blocks[j][ic], dtype=np.float64) for j in present]
+        for column in owned:
+            finite = column[~np.isnan(column)]
+            f64(*((finite.min(), finite.max()) if finite.size else (0.0, 0.0)))
+        for column in owned:
+            out.extend(np.ascontiguousarray(column, dtype="<f8").tobytes())
+        if faces is not None:
+            face_list, left, right = faces
+            if zone_type == "FEPOLYHEDRON":
+                offsets = np.concatenate([[0], np.cumsum([len(f) for f in face_list])])
+                i32(*offsets)
+            for face in face_list:
+                i32(*face)
+            i32(*[v - 1 for v in left])
+            i32(*[v - 1 for v in right])
+            continue
+        order = meshio_to_tecplot_order[cell.type]
+        out.extend(np.ascontiguousarray(cell.data[:, order], dtype="<i4").tobytes())
+
+    with open_file(filename, "wb") as f:
+        f.write(bytes(out))
 
 
 def _write_ints(f, ints, ncol=20):

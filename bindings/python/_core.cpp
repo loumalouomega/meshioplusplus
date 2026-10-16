@@ -28,6 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/nastran_model.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/read_guard.hpp"
@@ -123,6 +124,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/neuroglancer.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -792,7 +794,7 @@ meshioplusplus::detail::VtkCodec core_codec_from_name(const std::string& rName) 
     if (rName == "lzma")
         return VtkCodec::LZMA;
     throw meshioplusplus::WriteError("meshio++: unknown codec '" + rName +
-                                     "' (expected zlib, lz4, zstd or none)");
+                                     "' (expected zlib, lz4, zstd, lzma or none)");
 }
 
 /** @brief `MeshMetadata` -> the dict shape the Python layer exposes. */
@@ -1415,6 +1417,11 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_lz4__") = true;
 #else
     m.attr("__has_lz4__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LZMA
+    m.attr("__has_lzma__") = true;
+#else
+    m.attr("__has_lzma__") = false;
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
     m.attr("__has_kahip__") = true;
@@ -5019,6 +5026,16 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::write_medit_ascii(path, mesh);
         });
     });
+    m.def("medit_write_binary", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_medit_binary(path, mesh);
+        });
+    });
+    m.def("medit_read_binary", guard_read("medit", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_medit_binary(path); }));
+          }));
     m.def("medit_read_ascii", guard_read("medit", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(
                   core_nogil([&] { return meshioplusplus::read_medit_ascii(path); }));
@@ -5578,6 +5595,27 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::write_nastran_op2(path, mesh);
         });
     });
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    // Nastran HDF5 writer, and the step-by-step series writer behind
+    // `meshioplusplus.nastran_h5.SeriesWriter`.
+    m.def("nastran_h5_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_nastran_h5(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::NastranH5SeriesWriter>(m, "NastranH5SeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::NastranH5SeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::NastranH5SeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::NastranH5SeriesWriter::Finalize);
+#endif
     py::class_<meshioplusplus::NastranOp2SeriesWriter>(m, "NastranOp2SeriesWriter")
         .def(py::init<const std::string&>(), py::arg("path"))
         .def(
@@ -5693,6 +5731,26 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"));
     m.def(
+        "marc_t19_write",
+        [](const std::string& path, py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_marc_t19(path, mesh);
+            });
+        },
+        py::arg("path"), py::arg("mesh"));
+    py::class_<meshioplusplus::MarcT19SeriesWriter>(m, "MarcT19SeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::MarcT19SeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::MarcT19SeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::MarcT19SeriesWriter::Finalize);
+    m.def(
         "marc_t19_read",
         guard_read("marc_t19",
                    [](const std::string& path, bool points_only, py::object arrays, int time_step) {
@@ -5773,6 +5831,23 @@ PYBIND11_MODULE(_core, m) {
     m.def("vtx_time_values", [](const std::string& path) {
         return core_nogil([&] { return meshioplusplus::vtx_time_values(path); });
     });
+    m.def("vtx_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_vtx(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::VtxSeriesWriter>(m, "VtxSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::VtxSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::VtxSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::VtxSeriesWriter::Finalize);
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
     // Tecplot .szplt through a user-installed TecIO; TecIO builds only.
@@ -5789,8 +5864,100 @@ PYBIND11_MODULE(_core, m) {
     m.def("szplt_time_values", [](const std::string& path) {
         return core_nogil([&] { return meshioplusplus::szplt_time_values(path); });
     });
+    m.def("szplt_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_szplt(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::SzpltSeriesWriter>(m, "SzpltSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::SzpltSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::SzpltSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::SzpltSeriesWriter::Finalize);
 #endif
 
+    m.def(
+        "lsdyna_d3plot_write",
+        [](const std::string& path, py::object pymesh, std::size_t max_file_bytes, bool dbl) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_lsdyna_d3plot(path, mesh, max_file_bytes, dbl);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("max_file_bytes") = std::size_t{1} << 30,
+        py::arg("double") = false);
+    py::class_<meshioplusplus::LsdynaD3plotSeriesWriter>(m, "LsdynaD3plotSeriesWriter")
+        .def(py::init<const std::string&, std::size_t, bool>(), py::arg("path"),
+             py::arg("max_file_bytes") = std::size_t{1} << 30, py::arg("double") = false)
+        .def(
+            "write",
+            [](meshioplusplus::LsdynaD3plotSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::LsdynaD3plotSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::LsdynaD3plotSeriesWriter::Finalize);
+
+    m.def("ansys_rst_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_ansys_rst(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::AnsysRstSeriesWriter>(m, "AnsysRstSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::AnsysRstSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::AnsysRstSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::AnsysRstSeriesWriter::Finalize);
+
+    m.def("xplt_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_xplt(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::XpltSeriesWriter>(m, "XpltSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::XpltSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::XpltSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::XpltSeriesWriter::Finalize);
+    m.def("radioss_anim_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_radioss_anim(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::RadiossAnimSeriesWriter>(m, "RadiossAnimSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::RadiossAnimSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::RadiossAnimSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::RadiossAnimSeriesWriter::Finalize);
     m.def("radioss_anim_read", guard_read("radioss_anim", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(
                   core_nogil([&] { return meshioplusplus::read_radioss_anim(path); }));
@@ -5931,8 +6098,46 @@ PYBIND11_MODULE(_core, m) {
         });
     });
     m.def("nastran_read", guard_read("nastran", [](const std::string& path) {
+              // The GRID and element ids ride along as the `points_id` /
+              // `cells_id` attributes, as the Python reader sets them.
+              struct Deck {
+                  meshioplusplus::Mesh mMesh;
+                  std::vector<std::int64_t> mGridIds, mCellIds;
+              };
+              Deck deck = core_nogil([&] {
+                  Deck d;
+                  d.mMesh = meshioplusplus::detail::nastran_read_deck(path, d.mGridIds, d.mCellIds);
+                  return d;
+              });
+              std::vector<std::size_t> block_sizes;
+              for (const auto cb : deck.mMesh.CellRange())
+                  block_sizes.push_back(cb.NumCells());
+              py::object out = meshioplusplus_py::mesh_to_py(std::move(deck.mMesh));
+              out.attr("points_id") = py::array_t<std::int64_t>(
+                  static_cast<py::ssize_t>(deck.mGridIds.size()), deck.mGridIds.data());
+              py::list cells_id;
+              std::size_t at = 0;
+              for (std::size_t n : block_sizes) {
+                  if (at + n > deck.mCellIds.size())
+                      n = deck.mCellIds.size() > at ? deck.mCellIds.size() - at : 0;
+                  cells_id.append(py::array_t<std::int64_t>(static_cast<py::ssize_t>(n),
+                                                            deck.mCellIds.data() + at));
+                  at += n;
+              }
+              out.attr("cells_id") = cells_id;
+              return out;
+          }));
+
+    // Neuroglancer precomputed mesh fragment (no extension).
+    m.def("neuroglancer_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_neuroglancer(path, mesh);
+        });
+    });
+    m.def("neuroglancer_read", guard_read("neuroglancer", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(
-                  core_nogil([&] { return meshioplusplus::read_nastran(path); }));
+                  core_nogil([&] { return meshioplusplus::read_neuroglancer(path); }));
           }));
 
     // SU2 writer / reader (.su2).
@@ -6754,32 +6959,70 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
     // is this format's native cell shape, and the reader emits them, so a
     // round-trip write would otherwise throw on our own output.
+    const auto openfoam_info = [](py::dict cell_tags, py::dict patch_types) {
+        meshioplusplus::OpenFoamInfo info;
+        for (auto item : cell_tags) {
+            std::vector<std::string> names;
+            for (auto n : py::cast<py::iterable>(item.second))
+                names.push_back(py::cast<std::string>(n));
+            info.mCellTags[py::cast<std::int64_t>(item.first)] = std::move(names);
+        }
+        for (auto item : patch_types)
+            info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
+                py::cast<std::string>(item.second);
+        return info;
+    };
     m.def(
         "openfoam_write",
-        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types,
-           bool binary, int label_bits, int scalar_bits) {
+        [openfoam_info](const std::string& path, py::object pymesh, py::dict cell_tags,
+                        py::dict patch_types, bool binary, int label_bits, int scalar_bits,
+                        const std::string& region, bool decomposed) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
-            meshioplusplus::OpenFoamInfo info;
-            for (auto item : cell_tags) {
-                std::vector<std::string> names;
-                for (auto n : py::cast<py::iterable>(item.second))
-                    names.push_back(py::cast<std::string>(n));
-                info.mCellTags[py::cast<std::int64_t>(item.first)] = std::move(names);
-            }
-            for (auto item : patch_types)
-                info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
-                    py::cast<std::string>(item.second);
+            const meshioplusplus::OpenFoamInfo info = openfoam_info(cell_tags, patch_types);
             meshioplusplus::OpenFoamWriteOptions wopts;
             wopts.mBinary = binary;
             wopts.mLabelBits = label_bits;
             wopts.mScalarBits = scalar_bits;
-            core_nogil([&] { return meshioplusplus::write_openfoam(path, cpp, info, wopts); });
+            core_nogil([&] {
+                if (decomposed)
+                    return meshioplusplus::write_openfoam_decomposed(path, cpp, info, wopts);
+                if (region.empty())
+                    return meshioplusplus::write_openfoam(path, cpp, info, wopts);
+                return meshioplusplus::write_openfoam_region(path, cpp, info, wopts, region);
+            });
         },
         py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
         py::arg("patch_types") = py::dict(), py::arg("binary") = false, py::arg("label_bits") = 32,
-        py::arg("scalar_bits") = 64);
+        py::arg("scalar_bits") = 64, py::arg("region") = std::string(),
+        py::arg("decomposed") = false);
+    py::class_<meshioplusplus::OpenFoamSeriesWriter>(m, "OpenFoamSeriesWriter")
+        .def(py::init([openfoam_info](const std::string& path, py::dict cell_tags,
+                                      py::dict patch_types, bool binary, int label_bits,
+                                      int scalar_bits, const std::string& region) {
+                 meshioplusplus::OpenFoamWriteOptions wopts;
+                 wopts.mBinary = binary;
+                 wopts.mLabelBits = label_bits;
+                 wopts.mScalarBits = scalar_bits;
+                 return std::make_unique<meshioplusplus::OpenFoamSeriesWriter>(
+                     path, openfoam_info(cell_tags, patch_types), wopts, region);
+             }),
+             py::arg("path"), py::arg("cell_tags") = py::dict(),
+             py::arg("patch_types") = py::dict(), py::arg("binary") = false,
+             py::arg("label_bits") = 32, py::arg("scalar_bits") = 64,
+             py::arg("region") = std::string())
+        .def(
+            "write",
+            [](meshioplusplus::OpenFoamSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                /*lenient_field_data=*/false,
+                                                                /*allow_ragged=*/true));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::OpenFoamSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::OpenFoamSeriesWriter::Finalize);
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {

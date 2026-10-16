@@ -412,6 +412,15 @@ TEST(SequenceCapability, WriteSupportsTimeAgreesWithReality) {
 
         SequenceInput in;
         in.mPaths = files;
+        if (fmt == "openfoam") {
+            // a polyMesh needs volume cells: the same two steps over a tetrahedron
+            in.mPaths.clear();
+            for (int i = 0; i < 2; ++i) {
+                const std::string path = dir / ("vol_" + std::to_string(i) + ".vtu");
+                meshioplusplus::registry_writers().at("vtu")(path, mt::tet_mesh());
+                in.mPaths.push_back(path);
+            }
+        }
         SequenceOutput out;
         out.mPath = dir / ("series_" + fmt + ".out");
         out.mFormat = fmt;

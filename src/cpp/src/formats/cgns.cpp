@@ -619,6 +619,288 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
     return out;
 }
 
+constexpr const char* kCgnsFieldData = "FieldData";
+constexpr const char* kCgnsRegionName = "RegionName";
+constexpr const char* kCgnsRegionTag = "RegionTag";
+
+/// Whether CGNS can name a node `rName` (1 to 32 characters, no `/`).
+bool cgns_valid_node_name(const std::string& rName) {
+    return !rName.empty() && rName.size() <= 32 && rName.find('/') == std::string::npos &&
+           rName[0] != ' ';
+}
+
+void cgns_write_c1_node(hid_t parent, const std::string& rName, const std::string& rLabel,
+                        const std::string& rText) {
+    h5::Hid node = cgns_create_group(parent, rName);
+    cgns_write_node_attrs(node, rName, rLabel, "C1");
+    h5::write_dataset(node, " data", cgns_padded_int8(rText, rText.size()));
+}
+
+std::string cgns_read_c1(hid_t node) {
+    const NDArray raw = h5::read_dataset(node, " data");
+    std::string out(raw.Size(), '\0');
+    for (std::size_t i = 0; i < raw.Size(); ++i)
+        out[i] = static_cast<char>(detail::read_int(raw, i));
+    const std::size_t end = out.find_last_not_of(std::string("\0 ", 2));
+    return end == std::string::npos ? std::string() : out.substr(0, end + 1);
+}
+
+/// `field_data` as `DataArray_t` children of a `UserDefinedData_t` node; the arrays keep their
+/// shape and are stored as I4/I8/R4/R8.
+void cgns_write_field_data(hid_t zone, const Mesh& rMesh) {
+    std::vector<std::pair<std::string, NDArray>> arrays;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& a = rMesh.FieldData(name);
+        DType target;
+        switch (a.Dtype()) {
+            case DType::Float32:
+                target = DType::Float32;
+                break;
+            case DType::Float64:
+                target = DType::Float64;
+                break;
+            case DType::Int8:
+            case DType::Int16:
+            case DType::Int32:
+                target = DType::Int32;
+                break;
+            case DType::Int64:
+            case DType::UInt8:
+            case DType::UInt16:
+            case DType::UInt32:
+            case DType::UInt64:
+                target = DType::Int64;
+                break;
+            default:
+                target = DType::Float64;
+                log::warn(
+                    "CGNS: field_data '{}' cannot be a CGNS node (not numeric); not written.",
+                    name);
+                continue;
+        }
+        if (!cgns_valid_node_name(name) || a.Size() == 0) {
+            log::warn(
+                "CGNS: field_data '{}' cannot be a CGNS node (name over 32 characters or with "
+                "'/', or empty); not written.",
+                name);
+            continue;
+        }
+        NDArray out(target, a.Ndim() ? a.Shape() : std::vector<std::size_t>{1});
+        for (std::size_t i = 0; i < a.Size(); ++i) {
+            switch (target) {
+                case DType::Float32:
+                    out.As<float>()[i] = static_cast<float>(detail::read_double(a, i));
+                    break;
+                case DType::Float64:
+                    out.As<double>()[i] = detail::read_double(a, i);
+                    break;
+                case DType::Int32:
+                    out.As<std::int32_t>()[i] = static_cast<std::int32_t>(detail::read_int(a, i));
+                    break;
+                default:
+                    out.As<std::int64_t>()[i] = detail::read_int(a, i);
+                    break;
+            }
+        }
+        arrays.emplace_back(name, std::move(out));
+    }
+    if (arrays.empty())
+        return;
+    h5::Hid group = cgns_create_group(zone, kCgnsFieldData);
+    cgns_write_node_attrs(group, kCgnsFieldData, "UserDefinedData_t", "MT");
+    for (const auto& [name, a] : arrays) {
+        h5::Hid g = cgns_create_group(group, name);
+        cgns_write_node_attrs(g, name, "DataArray_t", cgns_type_code(a.Dtype()));
+        h5::write_dataset(g, " data", a);
+    }
+}
+
+/// Point and cell regions as `ZoneSubRegion_t` nodes: `GridLocation` plus a 1-based `PointList`
+/// (a cell region lists element ids), the region's dimension as the node value and its tag in a
+/// `RegionTag` child. `rStarts` holds each block's first cell index (one more than blocks) and
+/// `rFirsts` its first element id (-1 when it has no fixed-size section of its own).
+void cgns_write_regions(hid_t zone, const Mesh& rMesh, const std::vector<std::int64_t>& rStarts,
+                        const std::vector<std::int64_t>& rFirsts, std::size_t NumPoints) {
+    std::set<std::string> used;
+    std::size_t sides = 0;
+    for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
+        const Region& region = rMesh.Region(k);
+        if (region.mKind == RegionKind::Side) {
+            ++sides;
+            continue;
+        }
+        std::vector<std::int64_t> ids;
+        std::size_t dropped = 0;
+        for (std::size_t q = 0; q < region.NumEntries(); ++q) {
+            const std::int64_t e = region.Entries()[q];
+            if (region.mKind == RegionKind::Point) {
+                ids.push_back(e + 1);
+                continue;
+            }
+            std::size_t b = 0;
+            while (b < rFirsts.size() && !(rStarts[b] <= e && e < rStarts[b + 1]))
+                ++b;
+            if (b == rFirsts.size() || rFirsts[b] < 0)
+                ++dropped;
+            else
+                ids.push_back(rFirsts[b] + (e - rStarts[b]));
+        }
+        if (dropped)
+            log::warn(
+                "CGNS: region '{}' holds cells with no element section of their own "
+                "(face-based blocks); they are not written.",
+                region.mName);
+        const std::string node_name =
+            cgns_valid_node_name(region.mName) && !used.count(region.mName)
+                ? region.mName
+                : "Region" + std::to_string(k);
+        used.insert(node_name);
+        bool wide = NumPoints > static_cast<std::size_t>(INT32_MAX);
+        for (const std::int64_t id : ids)
+            wide = wide || id > INT32_MAX;
+        NDArray list(wide ? DType::Int64 : DType::Int32, {ids.size(), std::size_t{1}});
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (wide)
+                list.As<std::int64_t>()[i] = ids[i];
+            else
+                list.As<std::int32_t>()[i] = static_cast<std::int32_t>(ids[i]);
+        }
+        h5::Hid g = cgns_create_group(zone, node_name);
+        cgns_write_node_attrs(g, node_name, "ZoneSubRegion_t", "I4");
+        NDArray dim(DType::Int32, {1});
+        dim.As<std::int32_t>()[0] = static_cast<std::int32_t>(region.mDim);
+        h5::write_dataset(g, " data", dim);
+        const std::string location = region.mKind == RegionKind::Point ? "Vertex" : "CellCenter";
+        cgns_write_c1_node(g, "GridLocation", "GridLocation_t", location);
+        {
+            h5::Hid pl = cgns_create_group(g, "PointList");
+            cgns_write_node_attrs(pl, "PointList", "IndexArray_t", wide ? "I8" : "I4");
+            h5::write_dataset(pl, " data", list);
+        }
+        {
+            h5::Hid tag = cgns_create_group(g, kCgnsRegionTag);
+            cgns_write_node_attrs(tag, kCgnsRegionTag, "DataArray_t", "I4");
+            NDArray t(DType::Int32, {1});
+            t.As<std::int32_t>()[0] = static_cast<std::int32_t>(region.mTag);
+            h5::write_dataset(tag, " data", t);
+        }
+        if (node_name != region.mName)
+            cgns_write_c1_node(g, kCgnsRegionName, "DataArray_t", region.mName);
+    }
+    if (sides)
+        log::warn("CGNS: {} side region(s) have no ZoneSubRegion equivalent; not written.", sides);
+}
+
+/// One section's element ids and where its cells start in the mesh.
+struct CgnsSectionRange {
+    std::int64_t mFirst, mLast, mStart;
+};
+
+/// A zone's `UserDefinedData_t` "FieldData" arrays into `field_data`.
+void cgns_read_field_data(hid_t zone, Mesh& rMesh) {
+    for (const std::string& child : h5::group_links(zone)) {
+        if (cgns_is_reserved_name(child) || child != kCgnsFieldData)
+            continue;
+        h5::Hid group = h5::open_group(zone, child);
+        if (!(h5::has_attr(group, "label") &&
+              h5::read_attr_string(group, "label") == "UserDefinedData_t"))
+            continue;
+        for (const std::string& name : h5::group_links(group)) {
+            if (cgns_is_reserved_name(name))
+                continue;
+            h5::Hid g = h5::open_group(group, name);
+            if (!(h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "DataArray_t") ||
+                !h5::exists(g, " data"))
+                continue;
+            rMesh.AddFieldData(name, h5::read_dataset(g, " data"));
+        }
+    }
+}
+
+/// The `ZoneSubRegion_t` children of a zone as regions.
+void cgns_read_regions(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRange>& rSections,
+                       std::size_t NumPoints, std::int64_t CellsBefore) {
+    std::size_t dropped = 0;
+    for (const std::string& child : h5::group_links(zone)) {
+        if (cgns_is_reserved_name(child))
+            continue;
+        h5::Hid node = h5::open_group(zone, child);
+        if (!(h5::has_attr(node, "label") &&
+              h5::read_attr_string(node, "label") == "ZoneSubRegion_t"))
+            continue;
+        if (!h5::exists(node, "PointList")) {
+            log::warn("CGNS: ZoneSubRegion '{}' has no PointList; not read.", child);
+            continue;
+        }
+        std::string location = "Vertex";
+        if (h5::exists(node, "GridLocation")) {
+            h5::Hid gl = h5::open_group(node, "GridLocation");
+            if (h5::exists(gl, " data"))
+                location = cgns_read_c1(gl);
+        }
+        h5::Hid pl = h5::open_group(node, "PointList");
+        const NDArray list = h5::read_dataset(pl, " data");
+        std::int64_t dim = -1, tag = -1;
+        if (h5::exists(node, " data")) {
+            const NDArray v = h5::read_dataset(node, " data");
+            if (v.Size() > 0)
+                dim = detail::read_int(v, 0);
+        }
+        if (h5::exists(node, kCgnsRegionTag)) {
+            h5::Hid t = h5::open_group(node, kCgnsRegionTag);
+            if (h5::exists(t, " data")) {
+                const NDArray v = h5::read_dataset(t, " data");
+                if (v.Size() > 0)
+                    tag = detail::read_int(v, 0);
+            }
+        }
+        std::string name = child;
+        if (h5::exists(node, kCgnsRegionName)) {
+            h5::Hid n = h5::open_group(node, kCgnsRegionName);
+            if (h5::exists(n, " data"))
+                name = cgns_read_c1(n);
+        }
+        std::vector<std::int64_t> entries;
+        if (location == "Vertex") {
+            for (std::size_t i = 0; i < list.Size(); ++i) {
+                const std::int64_t id = detail::read_int(list, i);
+                if (id < 1 || static_cast<std::size_t>(id) > NumPoints)
+                    throw ReadError(detail::format_compat(
+                        "CGNS: ZoneSubRegion '{}' names a vertex the zone does not have", child));
+                entries.push_back(id - 1);
+            }
+        } else if (location == "CellCenter") {
+            for (std::size_t i = 0; i < list.Size(); ++i) {
+                const std::int64_t e = detail::read_int(list, i);
+                bool found = false;
+                for (const CgnsSectionRange& r : rSections)
+                    if (r.mFirst <= e && e <= r.mLast) {
+                        entries.push_back(CellsBefore + r.mStart + (e - r.mFirst));
+                        found = true;
+                        break;
+                    }
+                if (!found)
+                    ++dropped;
+            }
+        } else {
+            log::warn(
+                "CGNS: ZoneSubRegion '{}' has GridLocation '{}'; only Vertex and CellCenter are "
+                "supported, so it was not read.",
+                child, location);
+            continue;
+        }
+        NDArray ids = NDArray::Uninit(DType::Int64, {entries.size()});
+        std::copy(entries.begin(), entries.end(), ids.As<std::int64_t>());
+        rMesh.AddRegion(Region(name, location == "Vertex" ? RegionKind::Point : RegionKind::Cell,
+                               static_cast<int>(dim), tag, std::move(ids)));
+    }
+    if (dropped)
+        log::warn(
+            "CGNS: {} region cell(s) name elements outside the zone's fixed-size sections; "
+            "dropped.",
+            dropped);
+}
+
 }  // namespace
 
 void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
@@ -875,6 +1157,12 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         }
     }
 
+    // Each block's first cell index and first element id, for the regions.
+    std::vector<std::int64_t> region_starts{0};
+    std::vector<std::int64_t> region_firsts(rMesh.NumCellBlocks(), -1);
+    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k)
+        region_starts.push_back(region_starts.back() +
+                                static_cast<std::int64_t>(rMesh.Cells(k).NumCells()));
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
         const std::string ctype(cb.Type());
@@ -887,6 +1175,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
             continue;  // a zero-length ElementRange is not representable
 
         const std::int64_t first = next;
+        region_firsts[k] = first;
         const std::int64_t last = next + static_cast<std::int64_t>(nc) - 1;
         next = last + 1;
 
@@ -939,8 +1228,8 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
 
     // FlowSolution_t: point_data at "Vertex", cell_data at "CellCenter".
     // Names come from the sorted *DataNames() accessors, so output order is
-    // deterministic. field_data has no CGNS home (it is neither per-vertex nor
-    // per-cell) and is not written.
+    // deterministic. field_data (neither per-vertex nor per-cell) is written below
+    // as a UserDefinedData_t node.
     {
         std::vector<std::string> pnames = rMesh.PointDataNames();
         if (!pnames.empty()) {
@@ -1032,6 +1321,9 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
             }
         }
     }
+
+    cgns_write_field_data(zone, rMesh);
+    cgns_write_regions(zone, rMesh, region_starts, region_firsts, n_points);
 }
 
 namespace {
@@ -1225,6 +1517,10 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         // Cell counts of the blocks this zone contributes, in emission order --
         // what a zone-wide CellCenter FlowSolution is split back across.
         std::vector<std::size_t> zone_block_cells;
+        std::vector<CgnsSectionRange> zone_sections;  // fixed-size sections, for the regions
+        std::int64_t cells_before = 0;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
+            cells_before += static_cast<std::int64_t>(mesh.Cells(b).NumCells());
 
         std::vector<Sect> sects;
         for (const std::string& sname : h5::group_links(zone)) {
@@ -1471,6 +1767,12 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                         d[i] = static_cast<T>(d[i] + off);
                 });
             }
+            {
+                std::size_t zone_cells = 0;
+                for (const std::size_t c : zone_block_cells)
+                    zone_cells += c;
+                zone_sections.push_back({first, last, static_cast<std::int64_t>(zone_cells)});
+            }
             mesh.AddCellBlock(meshio_type, std::move(out));
             zone_block_cells.push_back(nc);
         }
@@ -1592,6 +1894,26 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                         "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
                         "(cross-zone field concatenation is not supported).",
                         n_zones, child, zname);
+                    break;
+                }
+            }
+        }
+
+        if (n_zones == 1) {
+            cgns_read_regions(zone, mesh, zone_sections, n_zone_points, cells_before);
+            cgns_read_field_data(zone, mesh);
+        } else {
+            for (const std::string& child : h5::group_links(zone)) {
+                if (cgns_is_reserved_name(child))
+                    continue;
+                h5::Hid node = h5::open_group(zone, child);
+                if (h5::has_attr(node, "label") &&
+                    (h5::read_attr_string(node, "label") == "ZoneSubRegion_t" ||
+                     h5::read_attr_string(node, "label") == "UserDefinedData_t")) {
+                    log::warn(
+                        "CGNS: file has {} zones; the regions and field data of zone '{}' were "
+                        "not read.",
+                        n_zones, zname);
                     break;
                 }
             }

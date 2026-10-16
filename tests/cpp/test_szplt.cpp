@@ -123,6 +123,63 @@ TEST(Szplt, ReadsAsTheSameDataInAscii) {
     std::filesystem::remove(dat);
 }
 
+TEST(SzpltWriter, StaticFileAndSeriesReadBack) {
+    // Two blocks (a tetrahedron and a triangle) sharing nodes: each zone gets the points
+    // its cells use.
+    Mesh mesh = mt::tet_mesh();
+    {
+        meshioplusplus::NDArray tri(meshioplusplus::DType::Int64,
+                                    {std::size_t{1}, std::size_t{3}});
+        tri.As<std::int64_t>()[0] = 0;
+        tri.As<std::int64_t>()[1] = 1;
+        tri.As<std::int64_t>()[2] = 2;
+        mesh.AddCellBlock("triangle", std::move(tri));
+        meshioplusplus::NDArray p(meshioplusplus::DType::Float64, {mesh.NumPoints()});
+        for (std::size_t i = 0; i < mesh.NumPoints(); ++i)
+            p.As<double>()[i] = 3.0 * static_cast<double>(i);
+        mesh.AddPointData("P", std::move(p));
+    }
+    const std::string path = mt::temp_path(".szplt");
+    meshioplusplus::write_szplt(path, mesh);
+    const Mesh back = meshioplusplus::read_szplt(path);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    EXPECT_EQ(back.Cells(0).Type(), "tetra");
+    EXPECT_EQ(back.Cells(1).Type(), "triangle");
+    EXPECT_EQ(back.NumPoints(), 8u);  // 5 for the tetrahedra, 3 repeated for the triangle
+    EXPECT_EQ(back.PointData("P").As<double>()[6], 3.0);  // the triangle's second node
+
+    // A lone block keeps every point; a series shares the first step's mesh.
+    const Mesh tet = mt::tet_mesh();
+    const std::string series = mt::temp_path(".szplt");
+    {
+        meshioplusplus::SzpltSeriesWriter writer(series);
+        writer.Write(0.0, tet);
+        writer.Write(0.5, tet);
+        writer.Finalize();
+        EXPECT_EQ(writer.NumSteps(), 2u);
+    }
+    EXPECT_EQ(meshioplusplus::szplt_time_values(series), (std::vector<double>{0.0, 0.5}));
+    ReadOptions opts;
+    opts.mTimeStep = 1;
+    const Mesh second = meshioplusplus::read_szplt(series, opts);
+    EXPECT_EQ(second.NumPoints(), tet.NumPoints());
+    EXPECT_EQ(second.Cells(0).Type(), "tetra");
+
+    meshioplusplus::SzpltSeriesWriter bad(mt::temp_path(".szplt"));
+    bad.Write(0.0, tet);
+    Mesh moved = mt::tet_mesh();
+    {
+        meshioplusplus::NDArray pts(meshioplusplus::DType::Float64,
+                                    {moved.NumPoints(), moved.PointDim()});
+        const auto* src = tet.Points().As<double>();
+        for (std::size_t i = 0; i < pts.Size(); ++i)
+            pts.As<double>()[i] = src[i];
+        pts.As<double>()[0] = 9.0;
+        moved.AssignPoints(std::move(pts));
+    }
+    EXPECT_THROW(bad.Write(1.0, moved), meshioplusplus::WriteError);
+}
+
 TEST(Szplt, MissingFileIsAReadError) {
     EXPECT_THROW(meshioplusplus::read_szplt("/nonexistent/x.szplt"), ReadError);
 }

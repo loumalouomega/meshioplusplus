@@ -28,7 +28,9 @@
 #include <ios>
 #include <iterator>
 #include <limits>
+#include <cmath>
 #include <map>
+#include <memory>
 #include <set>
 #include <optional>
 #include <string>
@@ -51,6 +53,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
@@ -1529,9 +1532,33 @@ struct MarcwCell {
     std::int64_t mType = 0;  // 0: not written
 };
 
-}  // namespace
+struct MarcwSet {
+    std::string mFamily;
+    std::string mName;
+    std::vector<std::int64_t> mMembers;
+};
 
-void write_marc(const std::string& rPath, const Mesh& rMesh) {
+struct MarcwFacetSet {
+    std::string mFamily;
+    std::string mName;
+    std::vector<std::pair<std::int64_t, std::int64_t>> mPairs;  // (element number, face or edge)
+};
+
+/// What a Marc writer takes from a mesh: the cells that have a Marc element type, their
+/// element numbers and the sets.
+struct MarcwModel {
+    std::size_t mNpts = 0;
+    std::size_t mPdim = 0;
+    std::vector<MarcwCell> mCells;
+    std::vector<std::size_t> mWritten;
+    std::map<std::size_t, std::int64_t> mElemId;
+    std::vector<MarcwSet> mSets;
+    std::vector<MarcwFacetSet> mFacetSets;
+    std::size_t mDroppedData = 0;
+};
+
+MarcwModel marcw_build_model(const Mesh& rMesh) {
+    MarcwModel model;
     const NDArray& points = rMesh.Points();
     const std::size_t pdim = rMesh.PointDim();
     if (pdim > 3)
@@ -1642,12 +1669,6 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     // Sets: point regions as node sets, cell regions as element sets, in the
     // regions' own (kind, name, dim, tag) order.
     std::set<std::string> used_names;
-    struct MarcwSet {
-        std::string mFamily;
-        std::string mName;
-        std::vector<std::string> mItems;
-    };
-    std::vector<MarcwSet> sets;
     std::size_t unlisted = 0, sides = 0;
     for (std::size_t k = 0; k < rMesh.NumRegions(); ++k) {
         const Region& reg = rMesh.Region(k);
@@ -1674,7 +1695,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
             ++sides;
             continue;
         }
-        sets.push_back({family, marcw_set_name(reg.mName, used_names), marcw_set_items(members)});
+        model.mSets.push_back({family, marcw_set_name(reg.mName, used_names), std::move(members)});
     }
     if (unlisted)
         log::warn("Marc writer: {} set member(s) on cells not written dropped", unlisted);
@@ -1699,19 +1720,54 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
             continue;
         }
         const NDArray& rows = rMesh.FieldData(name);
-        std::vector<std::string> items;
+        MarcwFacetSet facet;
         const detail::Int64View row_values(rows);
         for (std::size_t q = 0; q + 1 < rows.Size(); q += 2) {
             const std::int64_t c = row_values[q];
             const auto it = c < 0 ? elem_id.end() : elem_id.find(static_cast<std::size_t>(c));
             if (it != elem_id.end())
-                items.push_back(" " + std::to_string(it->second) + ":" +
-                                std::to_string(row_values[q + 1]));
+                facet.mPairs.emplace_back(it->second, row_values[q + 1]);
         }
-        const std::string set_name = marcw_set_name(
+        facet.mFamily = family;
+        facet.mName = marcw_set_name(
             name.substr(std::string("marc:").size() + family.size() + 5), used_names);
-        sets.push_back({family, set_name, std::move(items)});
+        model.mFacetSets.push_back(std::move(facet));
     }
+    model.mNpts = npts;
+    model.mPdim = pdim;
+    model.mCells = std::move(cells);
+    model.mWritten = std::move(written);
+    model.mElemId = std::move(elem_id);
+    model.mDroppedData = dropped_data;
+    return model;
+}
+
+struct MarcwSetOut {
+    std::string mFamily;
+    std::string mName;
+    std::vector<std::string> mItems;
+};
+
+}  // namespace
+
+void write_marc(const std::string& rPath, const Mesh& rMesh) {
+    const MarcwModel model = marcw_build_model(rMesh);
+    const std::size_t npts = model.mNpts;
+    const std::size_t pdim = model.mPdim;
+    const std::vector<MarcwCell>& cells = model.mCells;
+    const std::vector<std::size_t>& written = model.mWritten;
+    std::map<std::size_t, std::int64_t> elem_id = model.mElemId;
+    const detail::DoubleView point_values(rMesh.Points());
+    std::vector<MarcwSetOut> sets;
+    for (const MarcwSet& set : model.mSets)
+        sets.push_back({set.mFamily, set.mName, marcw_set_items(set.mMembers)});
+    for (const MarcwFacetSet& facet : model.mFacetSets) {
+        std::vector<std::string> items;
+        for (const auto& [element, number] : facet.mPairs)
+            items.push_back(" " + std::to_string(element) + ":" + std::to_string(number));
+        sets.push_back({facet.mFamily, facet.mName, std::move(items)});
+    }
+    const std::size_t dropped_data = model.mDroppedData;
     if (dropped_data) {
         log::warn(
             "Marc writer: a deck holds no data arrays; point, cell and field data other than "
@@ -1769,7 +1825,7 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
             marcw_real20(line, d < pdim ? point_values[p * pdim + d] : 0.0);
         out.push_back(std::move(line));
     }
-    for (const MarcwSet& set : sets) {
+    for (const MarcwSetOut& set : sets) {
         out.push_back(marcw_keyword({"define", set.mFamily, "set", set.mName}));
         marcw_set_lines(out, set.mItems);
     }
@@ -1786,6 +1842,534 @@ void write_marc(const std::string& rPath, const Mesh& rMesh) {
     os.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!os)
         throw WriteError("Marc writer: failed writing " + rPath);
+}
+
+
+// ---------------------------------------------------------------------------
+// The post-file writer (.t19): the twin of `marc/_t19.py`. Every integer is i13 and
+// every real e13.6, six to a line, each Fortran record starting a new line.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr std::size_t kMarctLabel = 24;
+
+std::string marct_e13(double X) {
+    if (X != X)
+        return std::string(kMarcW - 3, ' ') + "NaN";
+    if (std::isinf(X))
+        return X > 0 ? std::string(kMarcW - 3, ' ') + "inf" : std::string(kMarcW - 4, ' ') + "-inf";
+    if (X == 0.0)
+        return " 0.000000E+00";
+    char buffer[40];
+    detail::snprintf_c(buffer, sizeof(buffer), "%.5E", std::fabs(X));
+    const std::string text(buffer);
+    const std::size_t e_at = text.find('E');
+    std::string digits;
+    for (std::size_t k = 0; k < e_at; ++k)
+        if (text[k] != '.')
+            digits += text[k];
+    const int e = std::atoi(text.c_str() + e_at + 1) + 1;
+    const char sign = X < 0 ? '-' : ' ';
+    char tail[16];
+    if (std::abs(e) > 99)
+        detail::snprintf_c(tail, sizeof(tail), "%+04d", e);
+    else
+        detail::snprintf_c(tail, sizeof(tail), "E%+03d", e);
+    return std::string(1, sign) + "0." + digits + tail;
+}
+
+std::string marct_i13(std::int64_t V) {
+    std::string t = std::to_string(V);
+    if (t.size() < kMarcW)
+        t.insert(0, kMarcW - t.size(), ' ');
+    return t;
+}
+
+void marct_ints(std::vector<std::string>& rOut, const std::vector<std::int64_t>& rValues) {
+    for (std::size_t k = 0; k < rValues.size(); k += 6) {
+        std::string line;
+        for (std::size_t j = k; j < std::min(k + 6, rValues.size()); ++j)
+            line += marct_i13(rValues[j]);
+        rOut.push_back(std::move(line));
+    }
+}
+
+void marct_reals(std::vector<std::string>& rOut, const std::vector<double>& rValues) {
+    for (std::size_t k = 0; k < rValues.size(); k += 6) {
+        std::string line;
+        for (std::size_t j = k; j < std::min(k + 6, rValues.size()); ++j)
+            line += marct_e13(rValues[j]);
+        rOut.push_back(std::move(line));
+    }
+}
+
+std::string marct_ljust(std::string Text, std::size_t Width) {
+    if (Text.size() > Width)
+        Text.resize(Width);
+    Text.append(Width - Text.size(), ' ');
+    return Text;
+}
+
+void marct_block(std::vector<std::string>& rOut, std::int64_t Number, const std::string& rName,
+                 const std::vector<std::string>& rBody) {
+    rOut.push_back(marct_ljust("=beg=" + std::to_string(Number) + " (" + rName + ")", 70));
+    rOut.insert(rOut.end(), rBody.begin(), rBody.end());
+    rOut.push_back("=end=");
+}
+
+struct MarctArray {
+    std::string mName;
+    std::size_t mComps = 1;
+    std::vector<double> mValues;  // [element][point][component]
+};
+
+struct MarctCodes {
+    std::vector<std::pair<std::int64_t, std::string>> mEntries;
+    std::vector<MarctArray> mArrays;
+    std::size_t mNstres = 1;
+
+    std::size_t Columns() const { return mEntries.size(); }
+
+    std::vector<double> Record(std::size_t Element, std::size_t Point) const {
+        std::vector<double> out;
+        for (const MarctArray& a : mArrays) {
+            const std::size_t base = (Element * mNstres + Point) * a.mComps;
+            out.insert(out.end(), a.mValues.begin() + static_cast<std::ptrdiff_t>(base),
+                       a.mValues.begin() + static_cast<std::ptrdiff_t>(base + a.mComps));
+        }
+        return out;
+    }
+};
+
+MarctCodes marct_codes(const Mesh& rMesh, const MarcwModel& rModel) {
+    MarctCodes codes;
+    std::map<std::string, std::vector<std::int64_t>> layouts;
+    const std::string prefix = "marc:layout:";
+    for (const std::string& name : rMesh.FieldDataNames())
+        if (name.rfind(prefix, 0) == 0) {
+            const NDArray& a = rMesh.FieldData(name);
+            const detail::Int64View view(a);
+            layouts[name.substr(prefix.size())] =
+                std::vector<std::int64_t>(view.Data(), view.Data() + a.Size());
+        }
+    std::set<std::int64_t> stres;
+    for (const auto& [name, layout] : layouts)
+        if (layout.size() >= 2)
+            stres.insert(layout[0]);
+    if (stres.size() > 1)
+        log::warn("Marc .t19: arrays with different integration point counts; writing 1");
+    else if (stres.size() == 1)
+        codes.mNstres = static_cast<std::size_t>(*stres.begin());
+    // Default names -> codes (the reader's tables, inverted).
+    std::map<std::string, std::int64_t> default_scalar, default_tensor;
+    for (std::int64_t c = 1; c < 1000; ++c) {
+        if (const char* tensor = marc_tensor_name(c))
+            default_tensor[tensor] = c;
+        const std::string scalar = marc_scalar_name(c);
+        if (scalar.rfind("post code ", 0) != 0)
+            default_scalar[scalar] = c;
+    }
+    std::vector<std::int64_t> tensor_free = {541, 461, 421, 431, 441, 411, 391, 381, 371, 361, 351};
+    std::int64_t scalar_code = 600;
+    std::set<std::int64_t> used;
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (name == "marc:element" || name == "marc:type" || name.rfind("tecplot:", 0) == 0)
+            continue;
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())
+            continue;
+        // The written cells' rows.
+        std::vector<std::vector<double>> rows;
+        std::size_t width = 0;
+        bool ok = true;
+        for (const std::size_t c : rModel.mWritten) {
+            const MarcwCell& cell = rModel.mCells[c];
+            const NDArray& a = rMesh.CellData(name, cell.mBlock);
+            const std::size_t count = rMesh.Cells(cell.mBlock).NumCells();
+            const std::size_t w = count ? a.Size() / count : 0;
+            if (a.Shape().size() > 2 || (width != 0 && w != width)) {
+                ok = false;
+                break;
+            }
+            width = w;
+            const detail::DoubleView view(a);
+            rows.emplace_back(view.Data() + cell.mRow * w, view.Data() + (cell.mRow + 1) * w);
+        }
+        if (!ok || rows.empty() || width == 0)
+            continue;
+        std::size_t comps = 0;
+        const auto layout = layouts.find(name);
+        const bool two_d = rMesh.CellData(name, rModel.mCells[rModel.mWritten[0]].mBlock)
+                               .Shape()
+                               .size() == 2;
+        if (layout != layouts.end() && layout->second.size() >= 2 &&
+            static_cast<std::size_t>(layout->second[0]) == codes.mNstres) {
+            comps = static_cast<std::size_t>(layout->second[1]);
+            if (!two_d || width != codes.mNstres * comps) {
+                log::warn("Marc .t19: cell data '{}' does not match its layout; dropped", name);
+                continue;
+            }
+        } else if (codes.mNstres == 1) {
+            comps = width;
+        } else {
+            log::warn("Marc .t19: cell data '{}' has no integration point layout; dropped", name);
+            continue;
+        }
+        std::string base_name = name;
+        std::int64_t layer = 0;
+        const std::size_t at = name.rfind("@layer");
+        if (at != std::string::npos) {
+            const std::string tail = name.substr(at + 6);
+            if (!tail.empty() && std::all_of(tail.begin(), tail.end(), [](unsigned char ch) {
+                    return std::isdigit(ch) != 0;
+                })) {
+                base_name = name.substr(0, at);
+                layer = std::stoll(tail);
+            }
+        }
+        std::vector<std::pair<std::int64_t, std::string>> entries;
+        if (comps == 6) {
+            std::int64_t base = 0;
+            std::string label;
+            const auto dt = default_tensor.find(base_name);
+            if (dt != default_tensor.end()) {
+                base = dt->second;
+            } else if (!tensor_free.empty()) {
+                base = tensor_free.front();
+                tensor_free.erase(tensor_free.begin());
+                label = base_name.substr(0, kMarctLabel);
+            }
+            if (base != 0)
+                for (std::int64_t k = 0; k < 6; ++k)
+                    entries.emplace_back(layer * 1000 + base + k, k == 0 ? label : std::string());
+        }
+        if (entries.empty() && comps == 1) {
+            const auto ds = default_scalar.find(base_name);
+            if (ds != default_scalar.end()) {
+                entries.emplace_back(layer * 1000 + ds->second, std::string());
+            } else {
+                entries.emplace_back(layer * 1000 + scalar_code, base_name.substr(0, kMarctLabel));
+                ++scalar_code;
+            }
+        }
+        if (entries.empty())
+            for (std::size_t k = 0; k < comps; ++k) {
+                entries.emplace_back(layer * 1000 + scalar_code,
+                                     (base_name + "_" + std::to_string(k)).substr(0, kMarctLabel));
+                ++scalar_code;
+            }
+        bool repeats = false;
+        for (const auto& entry : entries)
+            repeats = repeats || used.count(entry.first) != 0;
+        if (repeats) {
+            log::warn("Marc .t19: cell data '{}' repeats a post code; dropped", name);
+            continue;
+        }
+        for (const auto& entry : entries)
+            used.insert(entry.first);
+        codes.mEntries.insert(codes.mEntries.end(), entries.begin(), entries.end());
+        MarctArray array;
+        array.mName = name;
+        array.mComps = comps;
+        // (cells, nstres * comps) is already [element][point][component]
+        for (const auto& row : rows)
+            array.mValues.insert(array.mValues.end(), row.begin(), row.end());
+        codes.mArrays.push_back(std::move(array));
+    }
+    return codes;
+}
+
+struct MarctNodal {
+    std::string mName;
+    std::size_t mComps = 1;
+    std::vector<double> mValues;
+};
+
+std::vector<MarctNodal> marct_nodal(const Mesh& rMesh, std::size_t Npts) {
+    std::vector<MarctNodal> out;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t w = Npts ? a.Size() / Npts : 0;
+        if (a.Shape().size() > 2 || a.Size() != Npts * w ||
+            (w != 1 && w != 2 && w != 3 && w != 6 && w != 9)) {
+            log::warn("Marc .t19: point data '{}' is not written", name);
+            continue;
+        }
+        const detail::DoubleView view(a);
+        out.push_back({name, w, std::vector<double>(view.Data(), view.Data() + a.Size())});
+    }
+    return out;
+}
+
+std::vector<std::string> marct_model(const Mesh& rMesh, const MarcwModel& rModel,
+                                     const MarctCodes& rCodes) {
+    const std::size_t npts = rModel.mNpts, pdim = rModel.mPdim;
+    const detail::DoubleView point_values(rMesh.Points());
+    struct Element {
+        std::int64_t mId, mType;
+        std::vector<std::int64_t> mNodes;
+    };
+    std::vector<Element> elements;
+    std::vector<std::optional<detail::Int64View>> conn_views(rMesh.NumCellBlocks());
+    for (const std::size_t c : rModel.mWritten) {
+        const MarcwCell& cell = rModel.mCells[c];
+        const auto cb = rMesh.Cells(cell.mBlock);
+        const std::size_t k = cb.NodesPerCell();
+        auto& view = conn_views[cell.mBlock];
+        if (!view)
+            view.emplace(cb.Conn());
+        std::vector<std::int64_t> nodes(k);
+        for (std::size_t q = 0; q < k; ++q)
+            nodes[q] = (*view)[cell.mRow * k + q] + 1;
+        if (std::string(marc_type(cell.mType)->mCell) == "hexahedron" && cb.Type() != "hexahedron") {
+            const auto brick = detail::expand_brick(cb.Type(), nodes.data());
+            nodes.assign(brick.begin(), brick.end());
+        } else if (cell.mType >= 168 && cell.mType <= 170 && nodes.size() == 3) {
+            std::swap(nodes[1], nodes[2]);
+        }
+        elements.push_back({rModel.mElemId.at(c), cell.mType, std::move(nodes)});
+    }
+    std::size_t nnodmx = 1;
+    for (const Element& e : elements)
+        nnodmx = std::max(nnodmx, e.mNodes.size());
+    struct SetOut {
+        std::string mName;
+        std::int64_t mKind;
+        std::vector<std::int64_t> mMembers, mNumbers;
+        bool mHasNumbers = false;
+    };
+    std::vector<SetOut> sets;
+    for (const MarcwSet& set : rModel.mSets)
+        sets.push_back({set.mName, set.mFamily == "node" ? 1 : 0, set.mMembers, {}, false});
+    for (const MarcwFacetSet& facet : rModel.mFacetSets) {
+        SetOut set{facet.mName, facet.mFamily == "edge" ? 12 : 13, {}, {}, true};
+        for (const auto& [element, number] : facet.mPairs) {
+            set.mMembers.push_back(element);
+            set.mNumbers.push_back(number);
+        }
+        sets.push_back(std::move(set));
+    }
+    std::vector<std::int64_t> lm = {static_cast<std::int64_t>(rCodes.Columns()),
+                                    static_cast<std::int64_t>(npts),
+                                    static_cast<std::int64_t>(elements.size()),
+                                    3,
+                                    static_cast<std::int64_t>(rCodes.mNstres),
+                                    9,
+                                    1,
+                                    0,
+                                    3,
+                                    static_cast<std::int64_t>(nnodmx),
+                                    2,
+                                    0,
+                                    0,
+                                    12,
+                                    0,
+                                    static_cast<std::int64_t>(sets.size()),
+                                    0,
+                                    0};
+    lm.resize(30, 0);
+    std::vector<std::string> out;
+    std::vector<std::string> body;
+    marct_ints(body, lm);
+    marct_block(out, 50200, "Analysis Verification Data", body);
+    body.clear();
+    marct_ints(body, {0});
+    marct_block(out, 50400, "Dummy", body);
+    body.clear();
+    marct_ints(body, {0, 0});
+    marct_block(out, 50500, "Domain Decomposition Information", body);
+    body.clear();
+    for (const auto& [code, label] : rCodes.mEntries)
+        body.push_back(marct_i13(code) + marct_ljust(label, 24));
+    marct_block(out, 50600, "Element Variable Postcodes", body);
+    body.clear();
+    for (const Element& e : elements) {
+        std::vector<std::int64_t> record = {e.mId, e.mType, static_cast<std::int64_t>(e.mNodes.size())};
+        record.insert(record.end(), e.mNodes.begin(), e.mNodes.end());
+        record.resize(3 + nnodmx, 0);
+        marct_ints(body, record);
+    }
+    marct_block(out, 50700, "Element Connectivities", body);
+    body.clear();
+    for (std::size_t p = 0; p < npts; ++p) {
+        std::string line = marct_i13(static_cast<std::int64_t>(p + 1));
+        for (std::size_t d = 0; d < 3; ++d)
+            line += marct_e13(d < pdim ? point_values[p * pdim + d] : 0.0);
+        body.push_back(std::move(line));
+    }
+    marct_block(out, 50800, "Nodal Coordinates", body);
+    body.clear();
+    marct_ints(body, std::vector<std::int64_t>(npts, 3));
+    marct_block(out, 51000, "Nodal Codes and Transformation ID", body);
+    body.clear();
+    marct_ints(body, {static_cast<std::int64_t>(sets.size())});
+    for (const SetOut& set : sets) {
+        body.push_back(marct_ljust(set.mName, 32));
+        marct_ints(body, {static_cast<std::int64_t>(set.mMembers.size()), set.mKind});
+        marct_ints(body, set.mMembers);
+        if (set.mHasNumbers)
+            marct_ints(body, set.mNumbers);
+    }
+    marct_block(out, 51301, "Set Definitions", body);
+    body.clear();
+    marct_ints(body, std::vector<std::int64_t>(6, 0));
+    marct_block(out, 51501, "Flow Line Data", body);
+    return out;
+}
+
+std::vector<std::string> marct_increment(std::size_t Index, double Time, const MarcwModel& rModel,
+                                         const MarctCodes& rCodes,
+                                         const std::vector<MarctNodal>& rNodal) {
+    std::vector<std::string> out = {"****"};
+    std::vector<std::string> body = {marct_ljust("          meshio++", 70)};
+    marct_block(out, 51600, "Loadcase Title", body);
+    body.clear();
+    marct_ints(body, {0, static_cast<std::int64_t>(Index + 1), 0, rCodes.Columns() ? 102 : 1, 2, 0, 0,
+                      1, 0, 0, 0, 0});
+    marct_block(out, 51701, "Integer Increment Verification Data", body);
+    body.clear();
+    marct_ints(body, {24});
+    std::vector<double> xlm(24, 0.0);
+    xlm[0] = Time;
+    marct_reals(body, xlm);
+    marct_block(out, 51801, "Real Increment Verification Data", body);
+    if (rCodes.Columns()) {
+        body.clear();
+        for (std::size_t e = 0; e < rModel.mWritten.size(); ++e)
+            for (std::size_t p = 0; p < rCodes.mNstres; ++p)
+                marct_reals(body, rCodes.Record(e, p));
+        marct_block(out, 52300, "Element Integration Point Values", body);
+    }
+    body.clear();
+    marct_ints(body, {static_cast<std::int64_t>(rNodal.size()), 6});
+    for (const MarctNodal& n : rNodal) {
+        std::int64_t ident = 0;
+        if (n.mName == "Displacement")
+            ident = 1;
+        else if (n.mName == "Reaction Force")
+            ident = 5;
+        body.push_back(marct_ljust(n.mName, 48));
+        marct_ints(body, {ident, 0, 0, static_cast<std::int64_t>(n.mComps), 0, 0, -1, 0, 0, 0, 0, 0});
+        marct_reals(body, n.mValues);
+    }
+    marct_block(out, 52401, "Nodal Results", body);
+    out.push_back("----");
+    return out;
+}
+
+double marct_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+void marct_save(const std::string& rPath, const std::vector<std::string>& rLines) {
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Marc .t19: cannot open " + rPath + " for writing");
+    std::string text;
+    for (const std::string& line : rLines) {
+        text += line;
+        text += '\n';
+    }
+    os.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!os)
+        throw WriteError("Marc .t19: failed writing " + rPath);
+}
+
+struct MarctWriter {
+    std::string mPath;
+    bool mHave = false;
+    std::vector<std::string> mHeader;
+    std::string mSignature;
+    std::vector<double> mPoints;
+    std::vector<std::vector<std::string>> mIncrements;
+
+    void Add(const Mesh& rMesh, double Time) {
+        const MarcwModel model = marcw_build_model(rMesh);
+        if (model.mWritten.empty())
+            throw WriteError("Marc .t19: the mesh has no cell with a Marc element type");
+        const MarctCodes codes = marct_codes(rMesh, model);
+        const std::vector<MarctNodal> nodal = marct_nodal(rMesh, model.mNpts);
+        std::string signature = std::to_string(model.mNpts) + "|" + std::to_string(codes.mNstres);
+        for (const std::size_t c : model.mWritten)
+            signature += "|" + std::to_string(model.mElemId.at(c)) + ":" +
+                         std::to_string(model.mCells[c].mType);
+        signature += "#";
+        for (const auto& [code, label] : codes.mEntries)
+            signature += std::to_string(code) + label + ",";
+        signature += "#";
+        for (const MarctNodal& n : nodal)
+            signature += n.mName + "=" + std::to_string(n.mComps) + ",";
+        const detail::DoubleView pv(rMesh.Points());
+        std::vector<double> points(pv.Data(), pv.Data() + rMesh.Points().Size());
+        if (!mHave) {
+            mHeader = marct_model(rMesh, model, codes);
+            mSignature = signature;
+            mPoints = points;
+            mHave = true;
+        } else if (signature != mSignature || points != mPoints) {
+            throw WriteError("Marc .t19: series: step " + std::to_string(mIncrements.size()) +
+                             "'s points, cells or arrays differ from the first step's; a post "
+                             "file holds one model -- write one file per step with '{step}'");
+        }
+        mIncrements.push_back(marct_increment(mIncrements.size(), Time, model, codes, nodal));
+    }
+
+    void Save() const {
+        if (!mHave)
+            throw WriteError("Marc .t19: series: no step was written");
+        std::vector<std::string> out;
+        marct_block(out, 50100, "Analysis Title", {marct_ljust("          meshio++", 70)});
+        out.insert(out.end(), mHeader.begin(), mHeader.end());
+        for (const auto& lines : mIncrements)
+            out.insert(out.end(), lines.begin(), lines.end());
+        out.push_back("++++");
+        marct_save(mPath, out);
+    }
+};
+
+}  // namespace
+
+void write_marc_t19(const std::string& rPath, const Mesh& rMesh) {
+    MarctWriter writer;
+    writer.mPath = rPath;
+    writer.Add(rMesh, marct_time_of(rMesh));
+    writer.Save();
+}
+
+struct MarcT19SeriesWriter::Impl {
+    MarctWriter mWriter;
+    bool mDone = false;
+};
+
+MarcT19SeriesWriter::MarcT19SeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mWriter.mPath = rPath;
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Marc .t19: cannot open " + rPath + " for writing");
+}
+
+MarcT19SeriesWriter::~MarcT19SeriesWriter() = default;
+MarcT19SeriesWriter::MarcT19SeriesWriter(MarcT19SeriesWriter&&) noexcept = default;
+MarcT19SeriesWriter& MarcT19SeriesWriter::operator=(MarcT19SeriesWriter&&) noexcept = default;
+
+void MarcT19SeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("Marc .t19: series: the writer was moved from");
+    mpImpl->mWriter.Add(rMesh, Time);
+}
+
+std::size_t MarcT19SeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mWriter.mIncrements.size() : 0;
+}
+
+void MarcT19SeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    mpImpl->mDone = true;
+    mpImpl->mWriter.Save();
 }
 
 }  // namespace meshioplusplus

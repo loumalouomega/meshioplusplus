@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -44,6 +45,11 @@
 // Project includes
 #include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/detail/ansys_model.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
+#include "../detail/typed_view.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -1760,6 +1766,762 @@ MeshMetadata read_ansys_rst_metadata(const std::string& rPath, const ReadOptions
 
 MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath, const ReadOptions& rOptions) {
     return rst_metadata(rPath, rOptions, true, "ansys_rst_cyclic");
+}
+
+// ---------------------------------------------------------------------------
+// The writer: the reader's inverse (little-endian, 64-bit pointers, uncompressed). The
+// Python twin (`ansys_rst/_write.py`) writes the same bytes.
+// ---------------------------------------------------------------------------
+namespace {
+
+[[noreturn]] void rstw_fail(const std::string& rMessage) {
+    throw WriteError("Ansys .rst: " + rMessage);
+}
+
+std::int32_t rstw_i32(std::int64_t Value) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint64_t>(Value)));
+}
+
+/// A name as `Count` 4-character words, each read big-endian (the reader's name).
+std::vector<std::int64_t> rstw_text_words(const std::string& rText, std::size_t Count) {
+    std::string raw = rText.substr(0, 4 * Count);
+    raw.resize(4 * Count, ' ');
+    std::vector<std::int64_t> out(Count);
+    for (std::size_t k = 0; k < Count; ++k) {
+        std::uint32_t v = 0;
+        for (std::size_t j = 0; j < 4; ++j)
+            v = (v << 8) | static_cast<unsigned char>(raw[4 * k + j]);
+        out[k] = rstw_i32(v);
+    }
+    return out;
+}
+
+/// The file as int32 words: records of length, flags, data and a trailer.
+class RstwWords {
+public:
+    std::size_t Record(const std::vector<std::int32_t>& rData, unsigned Flags) {
+        const std::size_t ptr = mW.size();
+        mW.push_back(static_cast<std::int32_t>(rData.size()));
+        mW.push_back(rstw_i32(static_cast<std::int64_t>(Flags) << 24));
+        mW.insert(mW.end(), rData.begin(), rData.end());
+        mW.push_back(static_cast<std::int32_t>(rData.size()));
+        return ptr;
+    }
+    std::size_t Ints(const std::vector<std::int64_t>& rValues, std::size_t Size = 0) {
+        std::vector<std::int32_t> data;
+        for (const std::int64_t v : rValues)
+            data.push_back(rstw_i32(v));
+        if (Size > data.size())
+            data.resize(Size, 0);
+        return Record(data, 0x80);
+    }
+    std::size_t Doubles(const std::vector<double>& rValues) {
+        std::vector<std::int32_t> data(2 * rValues.size());
+        if (!rValues.empty())
+            std::memcpy(data.data(), rValues.data(), rValues.size() * sizeof(double));
+        return Record(data, 0x00);
+    }
+    void Patch(std::size_t Ptr, std::size_t K, std::int64_t Value) {
+        mW[Ptr + 2 + K] = rstw_i32(Value);
+    }
+    void Patch64(std::size_t Ptr, std::size_t Lo, std::size_t Hi, std::int64_t Value) {
+        Patch(Ptr, Lo, Value & 0xFFFFFFFFLL);
+        Patch(Ptr, Hi, Value >> 32);
+    }
+    std::size_t Size() const { return mW.size(); }
+    const std::vector<std::int32_t>& Words() const { return mW; }
+
+private:
+    std::vector<std::int32_t> mW;
+};
+
+struct RstwElement {
+    std::size_t mBlock = 0, mRow = 0;
+    int mRoutine = 0, mSlot = 0;
+    std::vector<std::int64_t> mNodes;  // the element's order, 1-based
+    std::vector<int> mCellSlots;       // the element node each cell node became
+};
+
+struct RstwSlotInfo {
+    int mRoutine = 0;
+    std::size_t mNodelm = 0, mNodstr = 0;
+};
+
+struct RstwComponent {
+    std::string mName;
+    bool mNodes = false;
+    std::vector<std::int64_t> mIds;
+};
+
+class RstwModel {
+public:
+    explicit RstwModel(const Mesh& rMesh) {
+        mNnod = rMesh.NumPoints();
+        if (mNnod == 0)
+            rstw_fail("the mesh has no points");
+        const NDArray& pts = rMesh.Points();
+        const detail::DoubleView view(pts);
+        const std::size_t width = pts.Size() / mNnod;
+        mPoints.assign(mNnod * 3, 0.0);
+        for (std::size_t i = 0; i < mNnod; ++i)
+            for (std::size_t k = 0; k < 3 && k < width; ++k)
+                mPoints[i * 3 + k] = view.Data()[i * width + k];
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const detail::Int64View conn(cb.Conn());
+            for (std::size_t i = 0; i < cb.NumCells() * cb.NodesPerCell(); ++i)
+                if (conn.Data()[i] < 0 || static_cast<std::size_t>(conn.Data()[i]) >= mNnod)
+                    rstw_fail("a '" + std::string(cb.Type()) +
+                              "' cell refers to a point the mesh does not have");
+        }
+        const detail::AnsysElementTypes types =
+            detail::ansys_element_types(rMesh, "Ansys .rst writer");
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::string type(cb.Type());
+            mHasResults.push_back(type != "vertex" && type != "line" && type != "line3");
+            const std::size_t k = cb.NodesPerCell();
+            const detail::Int64View conn(cb.Conn());
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                RstwElement e;
+                e.mBlock = b;
+                e.mRow = r;
+                e.mRoutine = types.mCellEtype[b][r].first;
+                e.mSlot = types.mCellEtype[b][r].second;
+                const std::vector<int> layout =
+                    detail::ansys_cell_layout(type, detail::ansys_category(e.mRoutine));
+                std::map<int, int> first;
+                for (std::size_t c = 0; c < layout.size(); ++c)
+                    first.emplace(layout[c], static_cast<int>(c));
+                for (const int j : layout)
+                    e.mNodes.push_back(conn.Data()[r * k + static_cast<std::size_t>(j)] + 1);
+                for (std::size_t j = 0; j < k; ++j)
+                    e.mCellSlots.push_back(first[static_cast<int>(j)]);
+                mElements.push_back(std::move(e));
+            }
+        }
+        mNelm = mElements.size();
+        for (const RstwElement& e : mElements) {
+            RstwSlotInfo& info = mSlots[e.mSlot];
+            info.mRoutine = e.mRoutine;
+            info.mNodelm = std::max(info.mNodelm, e.mNodes.size());
+            info.mNodstr =
+                std::max(info.mNodstr, detail::ansys_num_corners(rMesh.Cells(e.mBlock).Type()));
+        }
+        std::size_t sides = 0;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const Region& reg = rMesh.Region(i);
+            if (reg.mKind == RegionKind::Side) {
+                ++sides;
+                continue;
+            }
+            std::set<std::int64_t> ids;
+            for (std::size_t q = 0; q < reg.NumEntries(); ++q)
+                ids.insert(reg.Entries()[q] + 1);
+            mComponents.push_back({reg.mName, reg.mKind == RegionKind::Point,
+                                   std::vector<std::int64_t>(ids.begin(), ids.end())});
+        }
+        if (sides)
+            log::warn("Ansys .rst writer: side regions have no component equivalent; dropped");
+        auto column = [&](const char* pName, const RstwElement& rE) -> std::int64_t {
+            if (!rMesh.HasCellData(pName))
+                return 1;
+            const NDArray& a = rMesh.CellData(pName, rE.mBlock);
+            return a.Size() <= rE.mRow ? 1 : detail::read_int(a, rE.mRow);
+        };
+        for (const RstwElement& e : mElements) {
+            mMat.push_back(column("ansys:mat", e));
+            mReal.push_back(column("ansys:real", e));
+            mSecnum.push_back(column("ansys:secnum", e));
+        }
+        for (const std::string& name : rMesh.CellDataNames())
+            if (name.size() >= 4 && name.compare(name.size() - 4, 4, kRstTop) == 0)
+                mLayered = true;
+        mSignature = std::to_string(mNnod) + "|" + std::to_string(mLayered);
+        for (const RstwElement& e : mElements) {
+            mSignature += "|" + std::to_string(e.mRoutine) + "," + std::to_string(e.mSlot);
+            for (const std::int64_t n : e.mNodes)
+                mSignature += "," + std::to_string(n);
+        }
+        for (const RstwComponent& c : mComponents) {
+            mSignature += "#" + c.mName + (c.mNodes ? "n" : "e");
+            for (const std::int64_t v : c.mIds)
+                mSignature += "," + std::to_string(v);
+        }
+    }
+
+    std::size_t mNnod = 0, mNelm = 0;
+    std::vector<double> mPoints;
+    std::vector<RstwElement> mElements;
+    std::vector<bool> mHasResults;
+    std::map<int, RstwSlotInfo> mSlots;
+    std::vector<RstwComponent> mComponents;
+    std::vector<std::int64_t> mMat, mReal, mSecnum;
+    bool mLayered = false;
+    std::string mSignature;
+};
+
+struct RstwTensor {
+    std::string mName;        // "S", "S@top" ...
+    std::size_t mTensor = 0;  // index in kRstTensors
+    bool mTop = false;
+};
+
+// AvailData bit k is item k (resucm.inc).
+constexpr int kRstwBitNsl = 27, kRstwBitRf = 30;
+
+struct RstwSet {
+    double mTime = 0.0;
+    std::array<std::int64_t, 3> mStep{1, 1, 1};
+    std::vector<std::int64_t> mDofs;
+    std::vector<double> mNodal;  // nnod x dofs
+    struct Reaction {
+        std::size_t mPoint;
+        std::int64_t mCode;
+        double mValue;
+    };
+    std::vector<Reaction> mReactions;
+    std::vector<RstwTensor> mTensors;
+    std::vector<const RstRawRecord*> mRaw;  ///< raw element records present in the mesh
+    bool mEnf = false;                      ///< element nodal forces, one value per DOF
+    std::int64_t mMask = 0;
+};
+
+RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
+                 std::array<std::int64_t, 3> Step) {
+    RstwSet s;
+    s.mTime = Time;
+    s.mStep = Step;
+    const std::size_t n = rModel.mNnod;
+    std::map<std::int64_t, std::vector<double>> columns;
+    auto values_of = [&](const std::string& rName) {
+        const NDArray& a = rMesh.PointData(rName);
+        const detail::DoubleView view(a);
+        return std::vector<double>(view.Data(), view.Data() + a.Size());
+    };
+    auto is_triple = [&](const std::string& rName) {
+        const NDArray& a = rMesh.PointData(rName);
+        return a.Shape().size() == 2 && a.Shape()[0] == n && a.Shape()[1] == 3;
+    };
+    static const std::pair<const char*, std::int64_t> kVectorDofs[] = {
+        {"U", 1}, {"ROT", 4}, {"A", 7}, {"V", 10}};
+    for (const auto& [name, first] : kVectorDofs) {
+        if (!rMesh.HasPointData(name))
+            continue;
+        if (!is_triple(name)) {
+            log::warn("Ansys .rst writer: point data '{}' is not (points, 3); dropped", name);
+            continue;
+        }
+        const std::vector<double> a = values_of(name);
+        for (std::int64_t d = 0; d < 3; ++d) {
+            std::vector<double> col(n);
+            for (std::size_t i = 0; i < n; ++i)
+                col[i] = a[i * 3 + static_cast<std::size_t>(d)];
+            columns[first + d] = std::move(col);
+        }
+    }
+    for (std::int64_t code = 16; code <= 26; ++code) {
+        const char* name = rst_scalar_name(code);
+        if (!name || !rMesh.HasPointData(name))
+            continue;
+        const std::vector<double> a = values_of(name);
+        if (a.size() == n)
+            columns[code] = a;
+        else
+            log::warn("Ansys .rst writer: point data '{}' is not (points,); dropped", name);
+    }
+    static const std::pair<const char*, std::int64_t> kReactionVectors[] = {{"RF", 1}, {"RMOM", 4}};
+    for (const auto& [name, first] : kReactionVectors) {
+        if (!rMesh.HasPointData(name))
+            continue;
+        if (!is_triple(name)) {
+            log::warn("Ansys .rst writer: point data '{}' is not (points, 3); dropped", name);
+            continue;
+        }
+        const std::vector<double> a = values_of(name);
+        for (std::int64_t d = 0; d < 3; ++d)
+            for (std::size_t p = 0; p < n; ++p)
+                if (std::isfinite(a[p * 3 + static_cast<std::size_t>(d)]))
+                    s.mReactions.push_back({p, first + d, a[p * 3 + static_cast<std::size_t>(d)]});
+    }
+    std::vector<std::int64_t> scalar_codes;
+    for (std::int64_t code = 7; code <= 26; ++code)
+        if (code <= 12 || rst_scalar_name(code))
+            scalar_codes.push_back(code);
+    for (const std::int64_t code : scalar_codes) {
+        const std::string name = "RF_" + rst_dof_label(code);
+        if (!rMesh.HasPointData(name))
+            continue;
+        const std::vector<double> a = values_of(name);
+        if (a.size() != n)
+            continue;
+        for (std::size_t p = 0; p < n; ++p)
+            if (std::isfinite(a[p]))
+                s.mReactions.push_back({p, code, a[p]});
+    }
+    std::set<std::int64_t> used;
+    for (const auto& [code, col] : columns)
+        used.insert(code);
+    for (const auto& r : s.mReactions)
+        used.insert(r.mCode);
+    s.mDofs.assign(used.begin(), used.end());
+    s.mNodal.assign(n * s.mDofs.size(), kRstUndefined);
+    for (std::size_t k = 0; k < s.mDofs.size(); ++k) {
+        const auto it = columns.find(s.mDofs[k]);
+        if (it == columns.end())
+            continue;
+        for (std::size_t i = 0; i < n; ++i)
+            s.mNodal[i * s.mDofs.size() + k] =
+                std::isfinite(it->second[i]) ? it->second[i] : kRstUndefined;
+    }
+    static const std::int64_t kBits[] = {3, 6, 7, 8, 9};  // S, EPEL, EPPL, EPCR, EPTH
+    for (std::size_t t = 0; t < std::size(kRstTensors); ++t)
+        for (const bool top : {false, true}) {
+            const std::string name = std::string(kRstTensors[t].mName) + (top ? kRstTop : "");
+            if (rMesh.HasCellData(name)) {
+                s.mTensors.push_back({name, t, top});
+                s.mMask |= std::int64_t{1} << kBits[t];
+            }
+        }
+    for (const RstRawRecord& r : kRstRawRecords)
+        if (rMesh.HasCellData(r.mName)) {
+            s.mRaw.push_back(&r);
+            s.mMask |= std::int64_t{1} << (r.mEntry + 1);
+        }
+    if (rMesh.HasCellData("ENF")) {
+        const bool layout = rMesh.HasFieldData("ansys:layout:ENF") &&
+                            rMesh.FieldData("ansys:layout:ENF").Size() >= 2 &&
+                            static_cast<std::size_t>(detail::read_int(
+                                rMesh.FieldData("ansys:layout:ENF"), 1)) == s.mDofs.size() &&
+                            !s.mDofs.empty();
+        if (layout) {
+            s.mEnf = true;
+            s.mMask |= std::int64_t{1} << (kRstEnf + 1);
+        } else {
+            log::warn("Ansys .rst writer: ENF needs its layout over the set's DOFs; dropped");
+        }
+    }
+    if (!columns.empty() || !s.mReactions.empty())
+        s.mMask |= std::int64_t{1} << kRstwBitNsl;
+    if (!s.mReactions.empty())
+        s.mMask |= std::int64_t{1} << kRstwBitRf;
+    return s;
+}
+
+std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwModel& rModel,
+                                  const RstwSet& rSet, std::size_t Base) {
+    const std::size_t esl = rF.Ints(std::vector<std::int64_t>(2 * rModel.mNelm, 0));
+    rF.Patch64(Base, 118, 119, static_cast<std::int64_t>(esl - Base));
+    const std::size_t numdof = rSet.mDofs.size();
+    for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
+        const RstwElement& e = rModel.mElements[k];
+        const RstwSlotInfo& info = rModel.mSlots.at(e.mSlot);
+        std::vector<std::pair<std::size_t, std::vector<double>>> pending;
+        // raw records: the values up to the last one the element has
+        for (const RstRawRecord* raw : rSet.mRaw) {
+            if (e.mBlock >= rMesh.CellDataNumBlocks(raw->mName))
+                continue;
+            const NDArray& a = rMesh.CellData(raw->mName, e.mBlock);
+            const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
+            if (a.Shape().size() != 2 || count <= e.mRow)
+                continue;
+            const std::size_t width = a.Shape()[1];
+            const detail::DoubleView view(a);
+            std::size_t last = 0;
+            bool any = false;
+            for (std::size_t c = 0; c < width; ++c)
+                if (std::isfinite(view.Data()[e.mRow * width + c])) {
+                    last = c;
+                    any = true;
+                }
+            if (!any)
+                continue;
+            std::vector<double> row(last + 1);
+            for (std::size_t c = 0; c <= last; ++c) {
+                const double v = view.Data()[e.mRow * width + c];
+                row[c] = std::isfinite(v) ? v : kRstUndefined;
+            }
+            pending.emplace_back(raw->mEntry, std::move(row));
+        }
+        if (rModel.mHasResults[e.mBlock]) {
+            // per tensor: surfaces[top] -> (npc, 6) rows
+            struct Surfaces {
+                std::size_t mTensor = 0;
+                std::map<bool, std::vector<double>> mRows;
+            };
+            std::vector<Surfaces> entries;
+            for (const RstwTensor& t : rSet.mTensors) {
+                const NDArray& a = rMesh.CellData(t.mName, e.mBlock);
+                const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
+                if (a.Shape().size() != 2 || count <= e.mRow)
+                    continue;
+                const std::size_t width = a.Shape()[1];
+                const std::size_t npc = width / 6;
+                if (npc == 0 || width % 6)
+                    continue;
+                const detail::DoubleView view(a);
+                std::vector<double> row(view.Data() + e.mRow * width,
+                                        view.Data() + (e.mRow + 1) * width);
+                auto it = std::find_if(entries.begin(), entries.end(),
+                                       [&](const Surfaces& s) { return s.mTensor == t.mTensor; });
+                if (it == entries.end()) {
+                    entries.push_back({t.mTensor, {}});
+                    it = entries.end() - 1;
+                }
+                it->mRows[t.mTop] = std::move(row);
+            }
+            const std::size_t nodstr = info.mNodstr;
+            const std::size_t layers =
+                (e.mRoutine == 181 || e.mRoutine == 281) && rModel.mLayered ? 2 : 1;
+            for (const Surfaces& surfaces : entries) {
+                const std::size_t items = kRstTensors[surfaces.mTensor].mItems;
+                std::vector<double> values(nodstr * layers * items, kRstUndefined);
+                for (std::size_t row = 0; row < nodstr * layers; ++row)
+                    for (std::size_t c = 6; c < items; ++c)
+                        values[row * items + c] = 0.0;
+                bool any = false;
+                for (const auto& [top, data] : surfaces.mRows) {
+                    if (top && layers == 1)
+                        continue;
+                    const std::size_t layer = top && layers == 2 ? 1 : 0;
+                    const std::size_t npc = data.size() / 6;
+                    for (std::size_t j = 0; j < e.mCellSlots.size(); ++j) {
+                        const std::size_t slot = static_cast<std::size_t>(e.mCellSlots[j]);
+                        if (j >= npc || slot >= nodstr)
+                            continue;
+                        bool finite = true;
+                        for (std::size_t c = 0; c < 6; ++c)
+                            finite = finite && std::isfinite(data[j * 6 + c]);
+                        if (!finite)
+                            continue;
+                        for (std::size_t c = 0; c < 6; ++c)
+                            values[(layer * nodstr + slot) * items + c] = data[j * 6 + c];
+                        any = true;
+                    }
+                }
+                if (any)
+                    pending.emplace_back(kRstTensors[surfaces.mTensor].mEntry, std::move(values));
+            }
+            if (rSet.mEnf && info.mNodelm && numdof && e.mBlock < rMesh.CellDataNumBlocks("ENF")) {
+                const NDArray& a = rMesh.CellData("ENF", e.mBlock);
+                const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
+                if (a.Shape().size() == 2 && count > e.mRow && a.Shape()[1] % numdof == 0) {
+                    const std::size_t npc = a.Shape()[1] / numdof;
+                    const detail::DoubleView view(a);
+                    std::vector<double> forces(info.mNodelm * numdof, 0.0);
+                    bool any = false;
+                    for (std::size_t j = 0; j < e.mCellSlots.size(); ++j) {
+                        const std::size_t slot = static_cast<std::size_t>(e.mCellSlots[j]);
+                        if (j >= npc || slot >= info.mNodelm)
+                            continue;
+                        bool finite = true;
+                        for (std::size_t c = 0; c < numdof; ++c)
+                            finite =
+                                finite &&
+                                std::isfinite(view.Data()[e.mRow * a.Shape()[1] + j * numdof + c]);
+                        if (!finite)
+                            continue;
+                        for (std::size_t c = 0; c < numdof; ++c)
+                            forces[slot * numdof + c] =
+                                view.Data()[e.mRow * a.Shape()[1] + j * numdof + c];
+                        any = true;
+                    }
+                    if (any)
+                        pending.emplace_back(kRstEnf, std::move(forces));
+                }
+            }
+        }
+        if (pending.empty())
+            continue;
+        const std::size_t table = rF.Ints(std::vector<std::int64_t>(25, 0));
+        for (const auto& [entry, values] : pending) {
+            const std::size_t ptr = rF.Doubles(values);
+            rF.Patch(table, entry, static_cast<std::int64_t>(ptr - table));
+        }
+        rF.Patch(esl, 2 * k, static_cast<std::int64_t>(table - esl));
+    }
+    return esl;
+}
+
+std::size_t rstw_set_records(RstwWords& rF, const Mesh& rMesh, const RstwModel& rModel,
+                             const RstwSet& rSet) {
+    const std::size_t numdof = rSet.mDofs.size();
+    const std::size_t base = rF.Ints(std::vector<std::int64_t>(150, 0));
+    rF.Patch(base, 1, static_cast<std::int64_t>(rModel.mNelm));
+    rF.Patch(base, 2, static_cast<std::int64_t>(rModel.mNnod));
+    rF.Patch(base, 3, 0);
+    rF.Patch(base, 19, static_cast<std::int64_t>(numdof));
+    for (std::size_t k = 0; k < numdof; ++k)
+        rF.Patch(base, 20 + k, rSet.mDofs[k]);
+    rF.Patch(base, 146, rSet.mMask);
+    if (numdof) {
+        const std::size_t nsl = rF.Doubles(rSet.mNodal);
+        rF.Patch64(base, 104, 105, static_cast<std::int64_t>(nsl - base));
+    }
+    if (!rSet.mReactions.empty()) {
+        std::map<std::int64_t, std::size_t> order;
+        for (std::size_t k = 0; k < numdof; ++k)
+            order[rSet.mDofs[k]] = k;
+        std::vector<std::int64_t> table;
+        std::vector<double> values;
+        for (const auto& r : rSet.mReactions) {
+            const std::int64_t index =
+                static_cast<std::int64_t>(r.mPoint * numdof + order[r.mCode] + 1);
+            table.push_back(index & 0xFFFFFFFFLL);
+            table.push_back(index >> 32);
+            values.push_back(r.mValue);
+        }
+        const std::size_t rf = rF.Ints(table);
+        rF.Doubles(values);
+        rF.Patch(base, 7, static_cast<std::int64_t>(rSet.mReactions.size()));
+        rF.Patch64(base, 106, 107, static_cast<std::int64_t>(rf - base));
+    }
+    if (!rSet.mTensors.empty() || !rSet.mRaw.empty() || rSet.mEnf)
+        rstw_element_solution(rF, rMesh, rModel, rSet, base);
+    return base;
+}
+
+/// The whole file. `rMeshes` holds each set's mesh, for its element results.
+std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<RstwSet>& rSets,
+                                    const std::vector<const Mesh*>& rMeshes) {
+    RstwWords f;
+    const std::int64_t nnod = static_cast<std::int64_t>(rModel.mNnod);
+    const std::int64_t nelm = static_cast<std::int64_t>(rModel.mNelm);
+    const std::int64_t nsets = static_cast<std::int64_t>(rSets.size());
+    const std::int64_t resmax = std::max<std::int64_t>(nsets, 1);
+    std::vector<std::int64_t> std_header(100, 0);
+    std_header[0] = 12;
+    std_header[1] = -1;
+    std_header[2] = 120000;
+    std_header[3] = 20000101;
+    std_header[4] = -1;
+    std_header[9] = rstw_text_words("15.0", 1)[0];
+    std_header[10] = 20140101;
+    auto put = [&](std::size_t At, const std::vector<std::int64_t>& rWords) {
+        for (std::size_t k = 0; k < rWords.size(); ++k)
+            std_header[At + k] = rWords[k];
+    };
+    put(11, rstw_text_words("LINUX x64", 3));
+    put(14, rstw_text_words("file", 2));
+    put(16, rstw_text_words("FULL", 2));
+    std_header[22] = 0;
+    std_header[25] = 16384;
+    put(30, rstw_text_words("file", 8));
+    f.Ints(std_header);
+    const std::size_t header = f.Ints({12, nnod, nnod, resmax, 0, nelm, nelm, 0, nsets}, 80);
+    std::int64_t avail = 0;
+    std::size_t numdof_max = 0;
+    for (const RstwSet& s : rSets) {
+        avail |= s.mMask;
+        numdof_max = std::max(numdof_max, s.mDofs.size());
+    }
+    f.Patch(header, 35, avail);
+    f.Patch(header, 39, 1);
+    f.Patch(header, 20, 1);
+    f.Patch(header, 48, nnod);
+    std::vector<std::int64_t> numbers(rModel.mNnod);
+    for (std::size_t i = 0; i < numbers.size(); ++i)
+        numbers[i] = static_cast<std::int64_t>(i + 1);
+    f.Patch64(header, 14, 45, static_cast<std::int64_t>(f.Ints(numbers)));
+    numbers.resize(rModel.mNelm);
+    for (std::size_t i = 0; i < numbers.size(); ++i)
+        numbers[i] = static_cast<std::int64_t>(i + 1);
+    f.Patch64(header, 13, 44, static_cast<std::int64_t>(f.Ints(numbers)));
+    f.Patch(header, 4, static_cast<std::int64_t>(numdof_max));
+
+    const std::int64_t maxety = rModel.mSlots.empty() ? 0 : rModel.mSlots.rbegin()->first;
+    const std::size_t geometry = f.Ints({0, maxety, 0, nnod, nelm}, 80);
+    f.Patch64(header, 15, 46, static_cast<std::int64_t>(geometry));
+    f.Patch(geometry, 42, nnod);
+    f.Patch(geometry, 45, nnod);
+    const std::size_t ety = f.Ints(std::vector<std::int64_t>(std::max<std::int64_t>(maxety, 1), 0));
+    f.Patch64(geometry, 20, 21, static_cast<std::int64_t>(ety));
+    for (const auto& [slot, info] : rModel.mSlots) {
+        std::vector<std::int64_t> record(200, 0);
+        record[0] = slot;
+        record[1] = info.mRoutine;
+        if (info.mRoutine == 181 || info.mRoutine == 281)
+            record[9] = rModel.mLayered ? 0 : 1;
+        record[60] = static_cast<std::int64_t>(info.mNodelm);
+        record[62] = static_cast<std::int64_t>(info.mNodelm);
+        record[93] = static_cast<std::int64_t>(info.mNodstr);
+        const std::size_t ptr = f.Ints(record);
+        f.Patch(ety, static_cast<std::size_t>(slot - 1), static_cast<std::int64_t>(ptr - ety));
+    }
+    std::size_t first_node = 0;
+    for (std::size_t k = 0; k < rModel.mNnod; ++k) {
+        const std::size_t ptr =
+            f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k], rModel.mPoints[3 * k + 1],
+                       rModel.mPoints[3 * k + 2], 0.0, 0.0, 0.0});
+        if (k == 0)
+            first_node = ptr;
+    }
+    f.Patch64(geometry, 26, 27, static_cast<std::int64_t>(first_node));
+    const std::size_t eid = f.Ints(std::vector<std::int64_t>(2 * rModel.mNelm, 0));
+    f.Patch64(geometry, 28, 29, static_cast<std::int64_t>(eid));
+    for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
+        const RstwElement& e = rModel.mElements[k];
+        std::vector<std::int64_t> record = {rModel.mMat[k],
+                                            e.mSlot,
+                                            rModel.mReal[k],
+                                            rModel.mSecnum[k],
+                                            0,
+                                            1,
+                                            0,
+                                            0,
+                                            static_cast<std::int64_t>(k + 1),
+                                            0};
+        record.insert(record.end(), e.mNodes.begin(), e.mNodes.end());
+        const std::size_t ptr = f.Ints(record);
+        f.Patch(eid, 2 * k, static_cast<std::int64_t>(ptr - eid));
+    }
+    f.Patch(geometry, 48, static_cast<std::int64_t>(rModel.mComponents.size()));
+    if (!rModel.mComponents.empty()) {
+        std::size_t first = 0;
+        bool have = false;
+        for (const RstwComponent& c : rModel.mComponents) {
+            std::vector<std::int64_t> packed;
+            std::size_t k = 0;
+            while (k < c.mIds.size()) {
+                std::size_t j = k;
+                while (j + 1 < c.mIds.size() && c.mIds[j + 1] == c.mIds[j] + 1)
+                    ++j;
+                packed.push_back(c.mIds[k]);
+                if (j > k)
+                    packed.push_back(-c.mIds[j]);
+                k = j + 1;
+            }
+            std::vector<std::int64_t> record = {c.mNodes ? 1 : 2};
+            const auto name = rstw_text_words(c.mName, 8);
+            record.insert(record.end(), name.begin(), name.end());
+            record.insert(record.end(), packed.begin(), packed.end());
+            const std::size_t ptr = f.Ints(record);
+            if (!have) {
+                first = ptr;
+                have = true;
+            }
+        }
+        f.Patch64(geometry, 50, 51, static_cast<std::int64_t>(first));
+    }
+
+    std::vector<std::int64_t> bases;
+    for (std::size_t i = 0; i < rSets.size(); ++i)
+        bases.push_back(
+            static_cast<std::int64_t>(rstw_set_records(f, *rMeshes[i], rModel, rSets[i])));
+    std::vector<std::int64_t> dsi;
+    for (const std::int64_t b : bases)
+        dsi.push_back(b & 0xFFFFFFFFLL);
+    dsi.resize(static_cast<std::size_t>(resmax), 0);
+    for (const std::int64_t b : bases)
+        dsi.push_back(b >> 32);
+    dsi.resize(static_cast<std::size_t>(2 * resmax), 0);
+    const std::size_t dsi_ptr = f.Ints(dsi);
+    std::vector<double> times;
+    for (const RstwSet& s : rSets)
+        times.push_back(s.mTime);
+    times.resize(static_cast<std::size_t>(resmax), 0.0);
+    const std::size_t tim = f.Doubles(times);
+    std::vector<std::int64_t> lsp;
+    for (const RstwSet& s : rSets)
+        lsp.insert(lsp.end(), s.mStep.begin(), s.mStep.end());
+    lsp.resize(static_cast<std::size_t>(3 * resmax), 0);
+    const std::size_t lsp_ptr = f.Ints(lsp);
+    f.Patch64(header, 10, 40, static_cast<std::int64_t>(dsi_ptr));
+    f.Patch64(header, 11, 41, static_cast<std::int64_t>(tim));
+    f.Patch64(header, 12, 42, static_cast<std::int64_t>(lsp_ptr));
+    f.Patch(header, 9, static_cast<std::int64_t>(f.Size()));
+    f.Patch(header, 22, static_cast<std::int64_t>(f.Size()));
+    return f.Words();
+}
+
+double rstw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 1.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 1.0 : detail::DoubleView(a).Data()[0];
+}
+
+std::array<std::int64_t, 3> rstw_step_of(const Mesh& rMesh, std::size_t Index) {
+    auto get = [&](const char* pName, std::int64_t Default) {
+        if (!rMesh.HasFieldData(pName))
+            return Default;
+        const NDArray& a = rMesh.FieldData(pName);
+        return a.Size() == 0 ? Default : detail::Int64View(a).Data()[0];
+    };
+    return {get("ansys:load_step", 1), get("ansys:substep", static_cast<std::int64_t>(Index + 1)),
+            get("ansys:cumulative", static_cast<std::int64_t>(Index + 1))};
+}
+
+void rstw_save(const std::string& rPath, const std::vector<std::int32_t>& rWords) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(reinterpret_cast<const char*>(rWords.data()),
+              static_cast<std::streamsize>(rWords.size() * sizeof(std::int32_t)));
+    out.close();
+    if (!out)
+        rstw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_ansys_rst(const std::string& rPath, const Mesh& rMesh) {
+    const RstwModel model(rMesh);
+    const RstwSet set = rstw_set(rMesh, model, rstw_time_of(rMesh), rstw_step_of(rMesh, 0));
+    rstw_save(rPath, rstw_file(model, {set}, {&rMesh}));
+}
+
+struct AnsysRstSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<RstwModel> mModel;
+    std::vector<RstwSet> mSets;
+    std::vector<std::unique_ptr<Mesh>> mMeshes;  // each set's element results come from its mesh
+    bool mDone = false;
+};
+
+AnsysRstSeriesWriter::AnsysRstSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+AnsysRstSeriesWriter::~AnsysRstSeriesWriter() = default;
+AnsysRstSeriesWriter::AnsysRstSeriesWriter(AnsysRstSeriesWriter&&) noexcept = default;
+AnsysRstSeriesWriter& AnsysRstSeriesWriter::operator=(AnsysRstSeriesWriter&&) noexcept = default;
+
+void AnsysRstSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        rstw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    auto model = std::make_unique<RstwModel>(rMesh);
+    if (!s.mModel)
+        s.mModel = std::move(model);
+    else if (model->mSignature != s.mModel->mSignature)
+        rstw_fail("series: step " + std::to_string(s.mSets.size()) +
+                  "'s points, cells or components differ from the first step's; a results "
+                  "file holds one model -- write one file per step with '{step}'");
+    s.mSets.push_back(rstw_set(rMesh, *s.mModel, Time, rstw_step_of(rMesh, s.mSets.size())));
+    // The sets' tensors are read when the file is assembled: keep a copy of what they need.
+    s.mMeshes.push_back(std::make_unique<Mesh>(detail::clone_mesh(rMesh)));
+}
+
+std::size_t AnsysRstSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSets.size() : 0;
+}
+
+void AnsysRstSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    Impl& s = *mpImpl;
+    if (s.mSets.empty())
+        rstw_fail("series: no step was written");
+    s.mDone = true;
+    std::vector<const Mesh*> meshes;
+    for (const auto& m : s.mMeshes)
+        meshes.push_back(m.get());
+    rstw_save(s.mPath, rstw_file(*s.mModel, s.mSets, meshes));
 }
 
 }  // namespace meshioplusplus

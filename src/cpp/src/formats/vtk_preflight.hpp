@@ -102,8 +102,10 @@ inline void vtk_preflight(const std::string& rPath, const char* pType, const cha
     if (vtk_preflight_attribute(start_tag, "type") != pType)
         return;
     const std::string compressor = vtk_preflight_attribute(start_tag, "compressor");
-    if (compressor == vtk_codec_compressor(VtkCodec::LZMA))
-        throw ReadError(pLzmaMessage);
+    if (compressor == vtk_codec_compressor(VtkCodec::LZMA)) {
+        if (!vtk_codec_available(VtkCodec::LZMA))
+            throw ReadError(pLzmaMessage);
+    }
     if (compressor == vtk_codec_compressor(VtkCodec::LZ4))
         vtk_codec_require_read(VtkCodec::LZ4);
     else if (compressor == vtk_codec_compressor(VtkCodec::ZSTD))

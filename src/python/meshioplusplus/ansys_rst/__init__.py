@@ -4,6 +4,8 @@ from .._files import is_buffer
 from .._helpers import register_format
 from ._ansys_rst import read as _py_read
 from ._ansys_rst import time_values as _py_time_values
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import write as _py_write
 
 
 def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
@@ -76,7 +78,61 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-register_format("ansys_rst", [".rst", ".rth"], read, {})
+def write(filename, mesh):
+    """Write one result set of an Ansys MAPDL results file: the mesh and its data,
+    at ``field_data["meshio:time"]``. Point data named as the reader names them
+    (``U``, ``ROT``, ``TEMP`` ..., ``RF`` reactions) become the nodal solution,
+    cell data ``S``, ``EPEL``, ``EPPL``, ``EPCR``, ``EPTH`` (and ``<name>@top``)
+    the element nodal results, point and cell regions components. The file is
+    little-endian, 32-bit, real, and pymapdl-reader reads it."""
+    if not is_buffer(filename, "w"):
+        try:
+            return _core.ansys_rst_write(str(filename), mesh)
+        except Exception as exc:
+            if not core_declined(exc, "ansys_rst", "write", filename):
+                raise
+    return _py_write(filename, mesh)
+
+
+class SeriesWriter:
+    """Write a time series into one results file: the model once and a result set
+    per step; ``write_sequence(path, steps, file_format="ansys_rst")`` uses it."""
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.AnsysRstSeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "ansys_rst", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        if self._core is not None:
+            if self._core.num_steps():
+                self._core.finalize()
+            self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+register_format("ansys_rst", [".rst", ".rth"], read, {"ansys_rst": write})
 register_format("ansys_rst_cyclic", [], read_cyclic, {})
 
-__all__ = ["read", "read_cyclic", "time_values"]
+__all__ = ["read", "read_cyclic", "write", "time_values", "SeriesWriter"]

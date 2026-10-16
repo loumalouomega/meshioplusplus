@@ -59,6 +59,7 @@
 // System includes
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -293,5 +294,63 @@ MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMe
 MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
                                        const OpenFoamInfo& rInfo,
                                        const OpenFoamWriteOptions& rOptions);
+
+/**
+ * @brief Write one region of a multi-region case: `constant/<region>/polyMesh` and the fields
+ *        under `<time>/<region>/`. An empty @p rRegion is `write_openfoam`. `regionProperties`
+ *        names the solver's region types and is left to the solver setup; the reader finds the
+ *        regions under `constant/`. The path must be a case (a `.foam` file or a directory).
+ * @throws WriteError as `write_openfoam`, and for an invalid region name
+ */
+MESHIOPLUSPLUS_API void write_openfoam_region(const std::string& rPath, const Mesh& rMesh,
+                                              const OpenFoamInfo& rInfo,
+                                              const OpenFoamWriteOptions& rOptions,
+                                              const std::string& rRegion);
+
+/**
+ * @brief Write a decomposed case, `decomposePar`'s layout: `processorN/constant/polyMesh` for every
+ *        processor named in `cell_data["partition:part"]` (`meshioplusplus.partition_labels`), with
+ *        `processor` patches between neighbours, the four `*ProcAddressing` lists the reader
+ *        reassembles the global case from, and each processor's share of the fields in
+ *        `processorN/0/`. Zones are not decomposed. Write into a fresh directory: a serial
+ *        `constant/polyMesh` beside the processors is the one a reader prefers.
+ * @throws WriteError as `write_openfoam`, and without `partition:part` labels
+ */
+MESHIOPLUSPLUS_API void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
+                                                  const OpenFoamInfo& rInfo,
+                                                  const OpenFoamWriteOptions& rOptions);
+
+/**
+ * @brief A transient case: the `polyMesh` once and a time directory of fields per mesh, named
+ *        by the time (`0.5`, `1e-05`). Every mesh must have the first one's points and cells.
+ *        The fields are `point_data` and `cell_data` as `write_openfoam` writes them for
+ *        time `0`. The Python entry point is `meshioplusplus.openfoam.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API OpenFoamSeriesWriter {
+public:
+    explicit OpenFoamSeriesWriter(const std::string& rPath, const OpenFoamInfo& rInfo = {},
+                                  const OpenFoamWriteOptions& rOptions = {},
+                                  const std::string& rRegion = {});
+    ~OpenFoamSeriesWriter();
+
+    OpenFoamSeriesWriter(const OpenFoamSeriesWriter&) = delete;
+    OpenFoamSeriesWriter& operator=(const OpenFoamSeriesWriter&) = delete;
+    OpenFoamSeriesWriter(OpenFoamSeriesWriter&&) noexcept;
+    OpenFoamSeriesWriter& operator=(OpenFoamSeriesWriter&&) noexcept;
+
+    /// Write one step now. @throws WriteError on a mismatch with the first step, or a repeated
+    /// time.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Nothing is pending (steps are written as they arrive); @throws WriteError when none was.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

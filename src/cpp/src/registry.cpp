@@ -115,6 +115,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/formats/neuroglancer.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 
 namespace meshioplusplus {
@@ -208,7 +209,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // function pointer no longer converts to ReadFn -- the hazard noted
         // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
         {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
-        {"medit", meshioplusplus::read_medit_ascii},
+        {"medit", meshioplusplus::read_medit},
         // A lambda: read_mfem is overloaded (grid functions). `.mesh` stays
         // medit's extension; resolve_format hands MFEM files over by content.
         {"mfem", [](const std::string& path) { return meshioplusplus::read_mfem(path); }},
@@ -259,6 +260,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
+        {"neuroglancer", meshioplusplus::read_neuroglancer},
         {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
         // Side-channel info (cell-tag family names) is not carried by the flat
         // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
@@ -332,6 +334,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
         {"marc", meshioplusplus::write_marc},
+        {"marc_t19", meshioplusplus::write_marc_t19},
         {"elmer",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
         {"febio", meshioplusplus::write_febio},
@@ -368,7 +371,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
         {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
-        {"medit", meshioplusplus::write_medit_ascii},
+        {"medit", meshioplusplus::write_medit},
         {"mfem",
          [](const std::string& path, const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); }},
         {"mff", meshioplusplus::write_mff},
@@ -497,6 +500,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // XDMF's heavy-data format follows the build: HDF companion file when
         // HDF5 is available (the Python writer's default), inline XML text
         // otherwise (the only always-available option; what WASM ships).
+        {"neuroglancer", meshioplusplus::write_neuroglancer},
         {"xyz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
         {"xdmf",
          [](const std::string& p, const Mesh& mm) {
@@ -519,6 +523,19 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::OpenFoamInfo info;
              meshioplusplus::write_openfoam(p, mm, info);
          }},
+        {"radioss_anim", meshioplusplus::write_radioss_anim},
+        {"xplt", meshioplusplus::write_xplt},
+        {"ansys_rst", meshioplusplus::write_ansys_rst},
+        {"lsdyna_d3plot",
+         [](const std::string& rPath, const Mesh& rMesh) {
+             meshioplusplus::write_lsdyna_d3plot(rPath, rMesh);
+         }},
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        {"vtx", meshioplusplus::write_vtx},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        {"szplt", meshioplusplus::write_szplt},
+#endif
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},
@@ -528,6 +545,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          }},
         {"hmf", [](const std::string& p,
                    const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
+        {"nastran_h5", meshioplusplus::write_nastran_h5},
         // UnstructuredGrid with the oldest covering version; PolyData and the
         // composite types are reached through write_vtkhdf's `Type` argument.
         {"vtkhdf", [](const std::string& p,
@@ -594,6 +612,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".pf3", "flux"},
         {".mdpa", "mdpa"},
         {".mesh", "medit"},
+        {".meshb", "medit"},
         {".mfm", "mfm"},
         {".mphbin", "mphbin"},
         {".mphtxt", "mphtxt"},

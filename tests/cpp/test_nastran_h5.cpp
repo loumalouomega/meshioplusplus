@@ -341,4 +341,25 @@ TEST(NastranH5, RegistryReachesItByExtension) {
     std::filesystem::remove(path);
 }
 
+TEST(NastranH5Writer, ModelAndNodalResultsRoundTrip) {
+    Mesh mesh = mt::hex_mesh();
+    std::vector<double> disp(mesh.NumPoints() * 3);
+    for (std::size_t i = 0; i < disp.size(); ++i)
+        disp[i] = 0.25 * static_cast<double>(i);
+    meshioplusplus::NDArray arr(meshioplusplus::DType::Float64,
+                                {static_cast<std::size_t>(mesh.NumPoints()), std::size_t{3}});
+    std::copy(disp.begin(), disp.end(), arr.As<double>());
+    mesh.AddPointData("DISPLACEMENT", std::move(arr));
+    const std::string path = mt::temp_path(".h5");
+    meshioplusplus::write_nastran_h5(path, mesh);
+    const Mesh back = meshioplusplus::read_nastran_h5(path);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+    ASSERT_TRUE(back.HasPointData("DISPLACEMENT"));
+    const double* got = back.PointData("DISPLACEMENT").As<double>();
+    for (std::size_t i = 0; i < disp.size(); ++i)
+        EXPECT_DOUBLE_EQ(got[i], disp[i]);
+    std::filesystem::remove(path);
+}
+
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

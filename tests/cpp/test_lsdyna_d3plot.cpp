@@ -389,3 +389,49 @@ TEST(LsdynaD3plot, MembersTruncationAndOutOfRangeAreRefused) {
     files.first = files.first.substr(0, 300);
     EXPECT_THROW(meshioplusplus::read_lsdyna_d3plot(write_family(files)), ReadError);
 }
+
+TEST(LsdynaD3plotWriter, StateSeriesAndSplitRoundTrip) {
+    Mesh mesh = mt::hex_mesh();
+    meshioplusplus::NDArray u(meshioplusplus::DType::Float64, {mesh.NumPoints(), std::size_t{3}});
+    for (std::size_t i = 0; i < u.Size(); ++i)
+        u.As<double>()[i] = 0.25 * static_cast<double>(i);
+    mesh.AddPointData("displacement", std::move(u));
+    meshioplusplus::NDArray s(meshioplusplus::DType::Float64, {std::size_t{1}, std::size_t{6}});
+    for (std::size_t i = 0; i < 6; ++i)
+        s.As<double>()[i] = 1.5 * static_cast<double>(i);
+    mesh.AddCellData("stress", {std::move(s)});
+    meshioplusplus::NDArray t(meshioplusplus::DType::Float64, {std::size_t{1}});
+    t.As<double>()[0] = 0.5;
+    mesh.AddFieldData("meshio:time", std::move(t));
+
+    const std::string dir = mt::temp_path("_d3plot_writer");
+    std::filesystem::create_directories(dir);
+    const std::string path = dir + "/d3plot";
+    meshioplusplus::write_lsdyna_d3plot(path, mesh);
+    const Mesh back = meshioplusplus::read_lsdyna_d3plot(path);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+    ASSERT_EQ(back.NumPoints(), mesh.NumPoints());
+    for (std::size_t i = 0; i < 3 * mesh.NumPoints(); ++i)
+        EXPECT_NEAR(back.PointData("displacement").As<double>()[i], 0.25 * i, 1e-5);
+    for (int c = 0; c < 6; ++c)
+        EXPECT_NEAR(back.CellData("stress", 0).As<double>()[c], 1.5 * c, 1e-5);
+    EXPECT_NEAR(back.FieldData("meshio:time").As<double>()[0], 0.5, 1e-9);
+
+    // A family split by size: a stale member beside it is replaced.
+    std::ofstream(path + "07", std::ios::binary) << "stale";
+    meshioplusplus::LsdynaD3plotSeriesWriter writer(path, 600);
+    for (int k = 0; k < 4; ++k)
+        writer.Write(0.1 * k, mesh);
+    writer.Finalize();
+    EXPECT_EQ(writer.NumSteps(), 4u);
+    EXPECT_TRUE(std::filesystem::exists(path + "01"));
+    EXPECT_FALSE(std::filesystem::exists(path + "07"));
+    EXPECT_EQ(meshioplusplus::lsdyna_d3plot_time_values(path).size(), 4u);
+
+    meshioplusplus::LsdynaD3plotSeriesWriter mismatch(dir + "/other");
+    mismatch.Write(0.0, mesh);
+    EXPECT_THROW(mismatch.Write(1.0, mt::tet_mesh()), meshioplusplus::WriteError);
+    EXPECT_THROW(meshioplusplus::write_lsdyna_d3plot(dir + "/none", Mesh{}),
+                 meshioplusplus::WriteError);
+}

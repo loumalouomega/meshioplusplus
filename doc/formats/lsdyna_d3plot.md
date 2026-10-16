@@ -6,7 +6,7 @@ The binary result database [LS-DYNA](https://lsdyna.ansys.com/) writes for post-
 |---|---|
 | **Format name** | `lsdyna_d3plot` |
 | **Extensions** | none: found by its file name, `d3plot` (any case), or by its control block |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#lsdyna-d3plot): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.2) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#lsdyna-d3plot)) |
 | **Extra dependencies** | none |
 
 ## Reading
@@ -31,7 +31,7 @@ meshioplusplus convert run/d3plot 'state_{step}.vtu'    # one .vtu per state
 meshioplusplus convert run/d3plot run.pvd               # or a ParaView collection
 ```
 
-Both engines read the whole format: the C++ core, and a Python reference reader the core falls back to. `d3plot` is read-only.
+Both engines read the whole format: the C++ core, and a Python reference reader the core falls back to. Both write it too ([Writing](#writing)).
 
 Malformed one-based indices, including the minimum signed 64-bit value, raise `ReadError` before conversion; airbag particle ranges must fit the particle table. These checks apply to the native reader and Python reference alike.
 
@@ -100,6 +100,28 @@ Shells in rigid parts (material type 20, listed in the material-type section of 
 **Shells' plastic strain tensor.** When `IDTDT` flags it but the shell record holds it at fewer points than the shells have layers (a composite shell with 10 layers and 3 tensors), it is read at as many points as fit, with a warning, rather than past the record.
 
 **Deletion.** The deletion flags are an int8 mask, `lsdyna:alive`: 1 for an active element or node, 0 for a deleted one. With `MDLOPT = 2` (element deletion) it is cell data; with `MDLOPT = 1` (node deletion) it is point data. An SPH particle is deleted when its material word is negative; the deletion flags come before the SPH data in a state (before v16.12.0 a file with both read its flags from the wrong words). Families without flags (airbag particles, roads) are 1. Deleted cells stay in the mesh, so every state has the same cells; a consumer that wants them gone filters on the mask.
+
+## Writing
+
+```python
+meshioplusplus.write("run/d3plot", mesh)                              # one state
+meshioplusplus.write_sequence("run/d3plot", steps)                    # a state per step
+with meshioplusplus.lsdyna_d3plot.SeriesWriter("run/d3plot", max_file_bytes=1 << 28) as w:
+    for time, mesh in steps:
+        w.write(time, mesh)
+meshioplusplus.lsdyna_d3plot.write("run/d3plot", mesh, double=True)   # 8-byte words
+```
+
+The control block, geometry, user ids, part titles and states are the layout the reader (and lasso-python) reads, in single-precision little-endian words, or 8-byte words with `double=True`. Both engines write the same bytes. The states are split over `d3plot`, `d3plot01`, ... once a file would pass `max_file_bytes` (default 1 GiB; the base file also holds the geometry; a file always holds at least one state). Files named `<path>NN` already beside the base file are replaced, so the family never mixes runs.
+
+- **Cells.** `vertex` cells are SPH particles (on the nodes, `lsdyna:part` the material; an airbag particle, read on a point with no coordinates, is not written), `hexahedron`, `wedge`, `pyramid` and `tetra` are 8-node solids (the degenerate ones as bricks with repeated nodes), `tetra10`, `hexahedron20` and `hexahedron27` higher-order solids, `line` a beam and `triangle`, `quad` and `quad8` shells. Other cell types are not written (a warning counts them); the blocks come back grouped by family, as the reader orders them.
+- **Ids and parts.** `point_data["lsdyna:nid"]` and `cell_data["lsdyna:eid"]` give the user ids (1, 2, ... without them). A cell's part is `cell_data["lsdyna:part"]`, else the first [cell region](../regions.md) holding it (its tag, or a free number for tag 0; cells in no region share one part), and the region's name is the part title. A cell belongs to one part.
+- **Point data**, by the reader's names: `displacement` (current coordinates are the points plus it), `velocity`, `acceleration`, `temperature` (one value, or three through the thickness) with `heat_flux`, `mass_scaling`, `temperature_gradient`, `residual_forces` and `residual_moments`, and `lsdyna:alive` (a node deletion mask). A mesh with none of them still gets the coordinates, so its displacement reads back as zero.
+- **Cell data**, as the reader returns it, `(cells, points * components)` with `field_data["lsdyna_d3plot:layout:<name>"]` (solids hold 1 or 8 points, shells and beams any number of layers; a block with fewer points than the file's is padded with NaN, and a variable a block lacks is NaN): solids and shells `stress`, `effective_plastic_strain`, `plastic_strain_tensor`, `thermal_strain_tensor`, `history_variables` and `strain` (shells: `strain_inner`/`strain_outer`), solids `thermal_variables`, shells `shell_bending_moment`, `shell_shear_force`, `shell_normal_force`, `thickness`, `shell_element_variables` and `internal_energy`, beams `beam_axial_force`, `beam_shear_force`, `beam_bending_moment`, `beam_torsion_moment`, `beam_axial_stress`, `beam_shear_stress`, `effective_plastic_strain`, `beam_axial_strain` and `history_variables`, SPH particles `sph_radius`, `sph_pressure`, `stress`, `effective_plastic_strain`, `density`, `internal_energy`, `sph_neighbors`, `strain`, `strain_rate`, `mass` and `history_variables`, and the element deletion mask `lsdyna:alive` (for an SPH particle the sign of its material).
+- **Field data.** The rigid bodies' `lsdyna:rigid_body_part` (user part ids) and `lsdyna:rigid_body_coordinates`, `_rotation`, `_velocity`, `_rotational_velocity`, `_acceleration` and `_rotational_acceleration` (their node lists are not written); `global_kinetic_energy`, `global_internal_energy`, `global_total_energy`, `global_velocity` and, with all five present, the per-part `part_*` arrays; `meshio:time` is the state's time.
+- **Series.** The geometry is the first step's and every step must have the same points and cells; the header takes the union of the variables of all steps, so the family is written when the writer closes.
+
+Not written yet: airbag particles, rigid roads, `d3part`, thick shells (read as solids), and a check in LS-PrePost, which joins [the licensed-run list](../roadmap.md#_1-2-awaiting-a-licensed-run).
 
 ## What is not read
 

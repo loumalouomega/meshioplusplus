@@ -24,11 +24,19 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     Unlike the reader, the mesh must be a UNIFORM dense lattice today: a
     genuinely graded mesh cannot be written as ``.vtr`` yet.
     """
-    _CPP_CODECS = {None: "none", "zlib": "zlib", "lz4": "lz4", "zstd": "zstd"}
+    _CPP_CODECS = {
+        None: "none",
+        "zlib": "zlib",
+        "lz4": "lz4",
+        "zstd": "zstd",
+        "lzma": "lzma",
+    }
     cpp_compression_ok = compression in _CPP_CODECS
     if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
         cpp_compression_ok = False
     if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
+        cpp_compression_ok = False
+    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
         cpp_compression_ok = False
     if header_type is None and cpp_compression_ok and not is_buffer(filename, "w"):
         try:

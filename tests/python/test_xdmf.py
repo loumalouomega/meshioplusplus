@@ -403,3 +403,40 @@ def test_binary_payload_shorter_than_its_dimensions_is_a_read_error(tmp_path, en
     )
     with pytest.raises(meshioplusplus.ReadError):
         _read_with_engine(engine, path)
+
+
+@pytest.mark.parametrize("n", [64, 125, 1000])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_native_high_order_hexahedra(n, mixed, tmp_path):
+    core = pytest.importorskip("meshioplusplus._core")
+    points = np.random.default_rng(n).random((n, 3))
+    cells = [(f"hexahedron{n}", np.arange(n)[None, :])]
+    if mixed:
+        cells = [("hexahedron", np.arange(8)[None, :])] + cells
+    mesh = meshioplusplus.Mesh(points, cells)
+    path = tmp_path / "high_order.xdmf"
+    core.xdmf_write(str(path), mesh, "XML")
+    back = core.xdmf_read(str(path))
+    assert [c.type for c in back.cells] == [c.type for c in mesh.cells]
+    np.testing.assert_array_equal(back.cells[-1].data, mesh.cells[-1].data)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_field_data_round_trips_as_an_information_element(engine, tmp_path):
+    """Roadmap 3.3.7: (tag, dim) pairs are written, other field arrays skipped."""
+    from meshioplusplus import _core
+    from meshioplusplus.xdmf import main as xdmf_main
+
+    mesh = meshioplusplus.Mesh(
+        np.eye(3),
+        [("triangle", [[0, 1, 2]])],
+        field_data={"wall": np.array([7, 2]), "gravity": np.array([9.81])},
+    )
+    path = tmp_path / f"{engine}.xdmf"
+    if engine == "core":
+        _core.xdmf_write(str(path), mesh, "XML")
+    else:
+        xdmf_main.write(path, mesh, data_format="XML")
+    for back in (meshioplusplus.read(path), xdmf_main.read(path)):
+        assert sorted(back.field_data) == ["wall"]
+        np.testing.assert_array_equal(back.field_data["wall"], [7, 2])

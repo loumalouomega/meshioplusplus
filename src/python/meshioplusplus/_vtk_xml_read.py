@@ -49,10 +49,6 @@ def load(filename, dataset_type, format_name):
     if root.get("type") != dataset_type:
         raise ReadError(f"Expected type {dataset_type}")
     compression = root.get("compressor")
-    # Preserve the structured readers' intentional lzma parity contract.
-    # PolyData still has a Python-only lzma path, as it did before.
-    if compression == "vtkLZMADataCompressor" and dataset_type != "PolyData":
-        raise ReadError(f"lzma-compressed {format_name} is not supported")
     text = None
     appended = root.find("AppendedData")
     if appended is not None and raw is None:

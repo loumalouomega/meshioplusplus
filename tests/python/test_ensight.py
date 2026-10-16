@@ -483,3 +483,74 @@ def test_fortran_needs_binary(tmp_path):
         _ensight.write(tmp_path / "m.case", _data_mesh(), binary=False, fortran=True)
     with pytest.raises(meshioplusplus.WriteError):
         meshioplusplus.ensight.write(tmp_path / "m.case", _data_mesh(), False, True)
+
+
+# --------------------------------------------------------------------------- #
+# Roadmap 3.4.5: the Python twin carries VARIABLE reading and writing         #
+# --------------------------------------------------------------------------- #
+
+
+def _variable_mesh():
+    mesh = copy.deepcopy(_data_mesh())
+    mesh.point_data["sig"] = np.arange(30, dtype="f8").reshape(5, 6)
+    mesh.point_data["vel2d"] = np.arange(10, dtype="f8").reshape(5, 2)
+    mesh.cell_data["eps"] = [np.arange(9, dtype="f8").reshape(1, 9)] * 2
+    mesh.field_data["gravity"] = np.array([9.81])
+    return mesh
+
+
+@pytest.mark.parametrize("mode", ["ascii", "binary", "fortran"])
+def test_engines_write_the_same_variable_bytes(mode, tmp_path):
+    from meshioplusplus import _core
+
+    mesh = _variable_mesh()
+    binary, fortran = mode != "ascii", mode == "fortran"
+    a, b = tmp_path / "core", tmp_path / "twin"
+    a.mkdir()
+    b.mkdir()
+    _core.ensight_write(str(a / "m.case"), mesh, binary, fortran)
+    _ensight.write(b / "m.case", mesh, binary=binary, fortran=fortran)
+    names = sorted(p.name for p in a.iterdir())
+    assert names == sorted(p.name for p in b.iterdir())
+    assert "sig.tsym" in names and "eps.etasym" in names
+    for name in names:
+        assert (a / name).read_bytes() == (b / name).read_bytes(), name
+
+
+@pytest.mark.parametrize("mode", ["ascii", "binary", "fortran"])
+def test_engines_read_each_others_variables(mode, tmp_path):
+    from meshioplusplus import _core
+
+    mesh = _variable_mesh()
+    binary, fortran = mode != "ascii", mode == "fortran"
+    path = tmp_path / "m.case"
+    _core.ensight_write(str(path), mesh, binary, fortran)
+    native, twin = _core.ensight_read(str(path), 0), _ensight.read(path)
+    assert sorted(native.point_data) == sorted(twin.point_data)
+    for name in native.point_data:
+        np.testing.assert_array_equal(native.point_data[name], twin.point_data[name])
+    for name in native.cell_data:
+        for x, y in zip(native.cell_data[name], twin.cell_data[name]):
+            np.testing.assert_array_equal(x, y)
+    assert native.field_data["gravity"][0] == twin.field_data["gravity"][0]
+
+
+def test_python_twin_resolves_time_steps(tmp_path):
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    path = tmp_path / "transient.case"
+    _ensight.write(path, mesh, binary=False)
+    with open(path, "a") as f:
+        f.write(
+            "TIME\ntime set: 1\nnumber of steps: 2\nfilename start number: 0\n"
+            "filename increment: 1\ntime values:\n0.0\n2.5\n"
+            "VARIABLE\nscalar per node: 1 pressure pressure.****.scl\n"
+        )
+    n = len(mesh.points)
+    for step, base in enumerate([10.0, 11.0]):
+        lines = ["pressure", "part", "         1", "coordinates"]
+        lines += [str(base + i) for i in range(n)]
+        (tmp_path / f"pressure.{step:04d}.scl").write_text("\n".join(lines) + "\n")
+    assert _ensight.read(path, 0).point_data["pressure"][0] == 10.0
+    assert _ensight.read(path, -1).point_data["pressure"][0] == 11.0
+    with pytest.raises(meshioplusplus.ReadError):
+        _ensight.read(path, 5)

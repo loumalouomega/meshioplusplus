@@ -128,6 +128,14 @@ struct VProp {
     DType mDtype;
 };
 
+// One property of the face element, in header order: the vertex-index list
+// or a scalar that becomes per-face cell data.
+struct FProp {
+    std::string mName;
+    DType mDtype;
+    bool mIsList;
+};
+
 // Read one scalar of `dt` from the buffer at pos into NDArray element idx,
 // byte-swapping when the file is big-endian.
 void rd_into(NDArray& rA, std::size_t idx, std::string_view rBuf, std::size_t& rPos, bool big) {
@@ -232,6 +240,7 @@ Mesh read_ply(const std::string& rPath) {
     std::vector<VProp> vprops;
     DType face_count_dt = DType::UInt8, face_index_dt = DType::Int32;
     bool have_face = false;
+    std::vector<FProp> fprops;
 
     std::string line = next_sig();
     while (line != "end_header") {
@@ -270,11 +279,17 @@ Mesh read_ply(const std::string& rPath) {
                     if (kind == "list") {
                         std::string ct, it_, nm;
                         ps >> ct >> it_ >> nm;
+                        if (got_list)
+                            throw ReadError("PLY: more than one list property on the faces");
                         face_count_dt = ply_to_dtype(ct);
                         face_index_dt = ply_to_dtype(it_);
                         got_list = true;
+                        fprops.push_back({nm, face_index_dt, true});
                     } else {
-                        throw ReadError("PLY: extra face properties not supported by C++");
+                        // A scalar face property: per-face cell data.
+                        std::string nm;
+                        ps >> nm;
+                        fprops.push_back({nm, ply_to_dtype(kind), false});
                     }
                     line = next_sig();
                 }
@@ -365,11 +380,23 @@ Mesh read_ply(const std::string& rPath) {
         mesh.AddPointData(nm, std::move(vcols[c]));
     }
 
-    // Faces -> cell blocks grouped by consecutive vertex count.
+    // Faces -> cell blocks grouped by consecutive vertex count; the scalar
+    // face properties become one cell-data array per block.
     if (have_face) {
         std::size_t cur_n = SIZE_MAX;
         std::vector<std::int64_t> cur_conn;
         std::size_t cur_count = 0;
+        // Raw bytes of each scalar property for the block being collected,
+        // and everything flushed so far (one array per block).
+        std::vector<std::size_t> scalar_of(fprops.size(), SIZE_MAX);
+        std::vector<std::size_t> scalar_props;
+        for (std::size_t k = 0; k < fprops.size(); ++k)
+            if (!fprops[k].mIsList) {
+                scalar_of[k] = scalar_props.size();
+                scalar_props.push_back(k);
+            }
+        std::vector<std::vector<unsigned char>> cur_bytes(scalar_props.size());
+        std::vector<std::vector<NDArray>> face_data(scalar_props.size());
         auto flush = [&]() {
             if (cur_count == 0)
                 return;
@@ -377,38 +404,77 @@ Mesh read_ply(const std::string& rPath) {
             if (!cur_conn.empty())  // zero-vertex faces: nothing to copy, and no buffer
                 std::memcpy(data.Data(), cur_conn.data(), cur_conn.size() * sizeof(std::int64_t));
             mesh.AddCellBlock(cell_type_from_count(cur_n), std::move(data));
+            for (std::size_t s = 0; s < scalar_props.size(); ++s) {
+                NDArray col(fprops[scalar_props[s]].mDtype, {cur_count});
+                std::memcpy(col.Data(), cur_bytes[s].data(), cur_bytes[s].size());
+                face_data[s].push_back(std::move(col));
+                cur_bytes[s].clear();
+            }
             cur_conn.clear();
             cur_count = 0;
         };
         for (std::size_t f = 0; f < num_faces; ++f) {
-            std::size_t n;
+            std::size_t n = 0;
             std::vector<std::int64_t> idx;
-            if (is_binary) {
-                n = detail::checked_count(rd_int_val(buf, pos, face_count_dt, big),
-                                          buf.size() - std::min(pos, buf.size()), "PLY",
-                                          "face vertex");
-                idx.resize(n);
-                for (std::size_t j = 0; j < n; ++j)
-                    idx[j] = rd_int_val(buf, pos, face_index_dt, big);
-            } else {
-                const std::string row = read_line();
-                detail::TextStream rs(row);
-                long long cnt;
-                if (!(rs >> cnt))
-                    throw ReadError("PLY: a face row without a vertex count");
-                n = detail::checked_count(cnt, buf.size(), "PLY", "face vertex");
-                idx.resize(n);
-                for (std::size_t j = 0; j < n; ++j)
-                    rs >> idx[j];
+            // The scalars of this face, held until its vertex count is known.
+            std::vector<NDArray> vals;
+            vals.reserve(scalar_props.size());
+            std::optional<detail::TextStream> rs;
+            std::string row;
+            if (!is_binary) {
+                row = read_line();
+                rs.emplace(row);
+            }
+            for (const FProp& fp : fprops) {
+                if (fp.mIsList) {
+                    if (is_binary) {
+                        n = detail::checked_count(rd_int_val(buf, pos, face_count_dt, big),
+                                                  buf.size() - std::min(pos, buf.size()), "PLY",
+                                                  "face vertex");
+                        idx.resize(n);
+                        for (std::size_t j = 0; j < n; ++j)
+                            idx[j] = rd_int_val(buf, pos, face_index_dt, big);
+                    } else {
+                        long long cnt;
+                        if (!(*rs >> cnt))
+                            throw ReadError("PLY: a face row without a vertex count");
+                        n = detail::checked_count(cnt, buf.size(), "PLY", "face vertex");
+                        idx.resize(n);
+                        for (std::size_t j = 0; j < n; ++j)
+                            *rs >> idx[j];
+                    }
+                } else {
+                    NDArray v(fp.mDtype, {1});
+                    if (is_binary) {
+                        rd_into(v, 0, buf, pos, big);
+                    } else {
+                        std::string t;
+                        if (!(*rs >> t))
+                            throw ReadError("PLY: a face row is missing the property '" +
+                                            fp.mName + "'");
+                        if (detail::is_float_dtype(fp.mDtype))
+                            store_scalar(v, 0, detail::parse_double(t), 0, true);
+                        else
+                            store_scalar(v, 0, 0.0, std::strtoll(t.c_str(), nullptr, 10), false);
+                    }
+                    vals.push_back(std::move(v));
+                }
             }
             if (n != cur_n) {
                 flush();
                 cur_n = n;
             }
             cur_conn.insert(cur_conn.end(), idx.begin(), idx.end());
+            for (std::size_t s = 0; s < vals.size(); ++s) {
+                const unsigned char* b = reinterpret_cast<const unsigned char*>(vals[s].Data());
+                cur_bytes[s].insert(cur_bytes[s].end(), b, b + dtype_size(vals[s].Dtype()));
+            }
             ++cur_count;
         }
         flush();
+        for (std::size_t s = 0; s < scalar_props.size(); ++s)
+            if (!face_data[s].empty())
+                mesh.AddCellData(fprops[scalar_props[s]].mName, std::move(face_data[s]));
     }
 
     return mesh;

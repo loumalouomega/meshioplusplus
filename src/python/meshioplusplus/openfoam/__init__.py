@@ -41,7 +41,15 @@ def read(filename, region="", points_only=False, arrays=None, time_step=0):
     return _py_read(filename)
 
 
-def write(filename, mesh, binary=False, label_bits=32, scalar_bits=64):
+def write(
+    filename,
+    mesh,
+    binary=False,
+    label_bits=32,
+    scalar_bits=64,
+    region="",
+    decomposed=False,
+):
     """Write an OpenFOAM polyMesh case.
 
     ``filename`` may be a ``.foam`` marker file, a directory named ``polyMesh``,
@@ -63,6 +71,18 @@ def write(filename, mesh, binary=False, label_bits=32, scalar_bits=64):
     CLI's ``--binary``/``--ascii`` (which always use the 32/64 default). A
     binary request on a big-endian host raises by name.
 
+    ``region`` writes one region of a multi-region case: ``<case>/constant/<region>/
+    polyMesh`` and the fields under ``<time>/<region>/``; call it once per region
+    (``regionProperties`` is left to the solver setup, the reader finds the regions
+    under ``constant/``).
+
+    ``decomposed=True`` writes a decomposed case instead (``decomposePar``'s layout):
+    ``processorN/constant/polyMesh`` for every processor in
+    ``cell_data["partition:part"]`` (``meshioplusplus.partition_labels``), with
+    ``processor`` patches between neighbours, the ``*ProcAddressing`` lists and each
+    processor's share of the fields; reading the case back reassembles the mesh.
+    Write it into a fresh directory.
+
     Note there is deliberately no Python fallback: a swallowed write error would
     mean a different implementation silently produced a different case.
     """
@@ -80,11 +100,69 @@ def write(filename, mesh, binary=False, label_bits=32, scalar_bits=64):
         binary,
         label_bits,
         scalar_bits,
+        region,
+        decomposed,
     )
+
+
+class SeriesWriter:
+    """Write a transient case: ``constant/polyMesh`` once and a time directory of
+    fields (``point_data``/``cell_data``) per step, named by the time (``0.5``,
+    ``1e-05``). ``write_sequence(path, steps, file_format="openfoam")`` uses it.
+    Compiled core only, like :func:`write`.
+
+    >>> with meshioplusplus.openfoam.SeriesWriter("run/case.foam") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+    """
+
+    def __init__(
+        self,
+        filename,
+        binary=False,
+        label_bits=32,
+        scalar_bits=64,
+        region="",
+        mesh=None,
+    ):
+        if not hasattr(_core, "OpenFoamSeriesWriter"):
+            raise RuntimeError(
+                "meshio++: the OpenFOAM writer requires the compiled core "
+                "(meshioplusplus._core.OpenFoamSeriesWriter), which this installation "
+                "does not provide"
+            )
+        self._args = (str(filename), binary, label_bits, scalar_bits, region)
+        self._core = None
+
+    def write(self, time, mesh):
+        if self._core is None:
+            path, binary, label_bits, scalar_bits, region = self._args
+            self._core = _core.OpenFoamSeriesWriter(
+                path,
+                getattr(mesh, "cell_tags", None) or {},
+                getattr(mesh, "openfoam_patch_types", None) or {},
+                binary,
+                label_bits,
+                scalar_bits,
+                region,
+            )
+        self._core.write(float(time), mesh)
+
+    def close(self):
+        if self._core is not None:
+            self._core.finalize()
+            self._core = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 
 # Advertise the writer only when it can actually run, so `meshioplusplus.write`
 # does not offer a format that always raises.
 register_format("openfoam", [".foam"], read, {"openfoam": write} if _HAS_WRITE else {})
 
-__all__ = ["read", "write"]
+__all__ = ["read", "write", "SeriesWriter"]

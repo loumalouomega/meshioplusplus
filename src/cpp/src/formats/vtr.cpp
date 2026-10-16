@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/vtu_decode.hpp"
 
@@ -98,6 +99,7 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<RectilinearGrid WholeExtent=\"" << ext.str() << "\">\n";
+    detail::write_field_data_section(os, rMesh, "vtr", binary, codec, hsz);
     os << "<Piece Extent=\"" << ext.str() << "\">\n";
 
     os << "<Coordinates>\n";

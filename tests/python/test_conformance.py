@@ -8,6 +8,7 @@ doc/formats.md; the last test fails when those pages are stale.
 """
 
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -173,3 +174,57 @@ def test_every_read_only_page_links_its_reason(fmt):
     page = REPO / "doc" / "formats" / f"{_READ_ONLY_PAGE.get(fmt, fmt)}.md"
     anchor = fmt.lower().replace("_", "-")
     assert f"conformance.md#{anchor}" in page.read_text(encoding="utf-8"), page.name
+
+
+# Engine parity per direction (roadmap 3.4.13) ---------------------------------
+
+_TWIN = re.compile(r"\b_(?:py|main)_(read|write)\b")
+_PYTHON_ONLY_LAYERS = {"pmsh", "zarr", "cae", "usd"}
+# Registered names that share a package with another format.
+_ENGINE_ALIASES = {"ansys_rst_cyclic": "ansys_rst", "vtk42": "vtk", "vtk51": "vtk"}
+
+
+def _package_of(fmt):
+    table = (REPO / "src/python/meshioplusplus/_format_table.py").read_text()
+    match = re.search(r'"%s": "([^"]+)"' % re.escape(fmt), table)
+    return match.group(1) if match else fmt
+
+
+def _twin_gaps():
+    """``{(package, direction)}`` the Python twin of a core-served format lacks."""
+    formats = meshioplusplus.formats()
+    gaps = set()
+    for fmt in sorted(set(formats["readable"]) | set(formats["writable"])):
+        fmt = _ENGINE_ALIASES.get(fmt, fmt)
+        if fmt in _PYTHON_ONLY_LAYERS:
+            continue
+        init = REPO / "src/python/meshioplusplus" / _package_of(fmt) / "__init__.py"
+        found = set(_TWIN.findall(init.read_text())) if init.exists() else set()
+        for direction in ("read", "write"):
+            if direction not in found:
+                gaps.add((fmt, direction))
+    return gaps
+
+
+def test_every_format_has_both_engines_or_a_recorded_exemption():
+    declared = set(cs.ENGINE_EXEMPT) | {(f, "write") for f in cs.READ_ONLY}
+    declared = {(_ENGINE_ALIASES.get(f, f), d) for f, d in declared}
+    gaps = _twin_gaps()
+    assert not gaps - declared, (
+        "no Python twin for "
+        + ", ".join(f"{f} ({d})" for f, d in sorted(gaps - declared))
+        + " -- port it, or record the exemption in conformance_spec.ENGINE_EXEMPT"
+    )
+    assert (
+        not set(cs.ENGINE_EXEMPT) - gaps
+    ), "stale engine exemption (the twin now exists): " + ", ".join(
+        f"{f} ({d})" for f, d in sorted(set(cs.ENGINE_EXEMPT) - gaps)
+    )
+
+
+def test_engine_exemptions_name_their_roadmap_item():
+    for key, reason in cs.ENGINE_EXEMPT.items():
+        assert "roadmap §" in reason and reason.startswith("Exempt"), key
+    for fmt, reason in cs.PARTIAL_ENGINE_EXEMPT.items():
+        assert "roadmap §3.4." in reason, fmt
+        assert (REPO / "doc/formats" / f"{fmt}.md").exists(), fmt

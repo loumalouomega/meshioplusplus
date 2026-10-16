@@ -1520,6 +1520,7 @@ private:
             mRecords.push_back(std::move(r));
         }
         Sets(rMesh);
+        Matrices(rMesh);
     }
 
     void Sets(const Mesh& rMesh) {
@@ -1544,10 +1545,6 @@ private:
         constexpr std::size_t kChunk = 10;
         for (const Ref& ref : order) {
             const auto& region = rMesh.Region(ref.mIndex);
-            if (region.mKind == RegionKind::Side) {
-                mDropped.insert("region '" + region.mName + "' (side)");
-                continue;
-            }
             std::string name = filw_ascii(region.mName);
             if (name.size() > 80)
                 filw_fail("region name '" + name.substr(0, 20) +
@@ -1561,6 +1558,10 @@ private:
                 filw_text_items(r, name);
                 refs.push_back(std::move(r));
                 name = std::to_string(label);
+            }
+            if (region.mKind == RegionKind::Side) {
+                Surface(rMesh, region, name);
+                continue;
             }
             const detail::Int64View entries(region.mEntries);
             std::vector<std::int64_t> values;
@@ -1589,6 +1590,90 @@ private:
             }
         }
         mRecords.insert(mRecords.end(), refs.begin(), refs.end());
+    }
+
+    /// A side region as a contact surface: a 1501 record and a 1502 record per (element, face).
+    void Surface(const Mesh& rMesh, const Region& rRegion, const std::string& rName) {
+        std::unordered_map<std::size_t, std::size_t> block_of;
+        for (const Cell& c : mCells)
+            block_of[c.mGlobal] = c.mBlock;
+        FilwRecord head = filw_rec(1501);
+        head.push_back(filw_a(rName));
+        head.push_back(filw_i(0));
+        head.push_back(filw_i(1));
+        std::vector<FilwRecord> faces;
+        std::size_t dropped = 0;
+        const detail::Int64View entries(rRegion.mEntries);
+        for (std::size_t k = 0; k + 1 < rRegion.mEntries.Size(); k += 2) {
+            const auto cell = static_cast<std::size_t>(entries.Data()[k]);
+            const std::int64_t facet = entries.Data()[k + 1];
+            const auto it = block_of.find(cell);
+            if (it == block_of.end()) {
+                ++dropped;
+                continue;
+            }
+            const std::string label =
+                detail::abaqus_face_name(std::string(rMesh.Cells(it->second).Type()), facet);
+            if (label.empty()) {
+                ++dropped;
+                continue;
+            }
+            FilwRecord r = filw_rec(1502);
+            r.push_back(filw_i(mCellLabels[cell]));
+            r.push_back(filw_i(std::stoll(label.substr(1))));
+            faces.push_back(std::move(r));
+        }
+        if (dropped)
+            mDropped.insert(std::to_string(dropped) + " facet(s) of surface '" + rRegion.mName +
+                            "'");
+        mRecords.push_back(std::move(head));
+        mRecords.insert(mRecords.end(), faces.begin(), faces.end());
+    }
+
+    /// The element matrices: per row of an `abaqus:<kind>:index` table (element, offset, length,
+    /// flag) a 1001 record and its values.
+    void Matrices(const Mesh& rMesh) {
+        static const struct {
+            const char* mKind;
+            std::int64_t mKeyFlag, mKeyPlain;
+        } kinds[] = {{"matrix_dofs", 1002, 1002},
+                     {"stiffness", 1011, 1012},
+                     {"mass", 1021, 1022},
+                     {"load", 1031, 1031}};
+        for (const auto& kind : kinds) {
+            const std::string values_name = std::string("abaqus:") + kind.mKind;
+            const std::string index_name = values_name + ":index";
+            if (!rMesh.HasFieldData(values_name) || !rMesh.HasFieldData(index_name))
+                continue;
+            const NDArray& values = rMesh.FieldData(values_name);
+            const NDArray& index = rMesh.FieldData(index_name);
+            for (std::size_t row = 0; row + 3 < index.Size(); row += 4) {
+                const std::int64_t element = detail::read_int(index, row);
+                const std::int64_t offset = detail::read_int(index, row + 1);
+                const std::int64_t length = detail::read_int(index, row + 2);
+                const std::int64_t flag = detail::read_int(index, row + 3);
+                if (offset < 0 || length < 0 ||
+                    static_cast<std::size_t>(offset + length) > values.Size())
+                    filw_fail("'" + index_name + "' reaches past '" + values_name + "'");
+                FilwRecord head = filw_rec(1001);
+                head.push_back(filw_i(element));
+                mRecords.push_back(std::move(head));
+                const std::string kind_name = kind.mKind;
+                FilwRecord r = filw_rec(kind_name == "matrix_dofs" ? 1002
+                                        : kind_name == "load"      ? 1031
+                                        : flag == 1                ? kind.mKeyFlag
+                                                                   : kind.mKeyPlain);
+                if (kind_name == "load")
+                    r.push_back(filw_i(flag));
+                for (std::int64_t k = 0; k < length; ++k) {
+                    const auto at = static_cast<std::size_t>(offset + k);
+                    r.push_back(kind_name == "matrix_dofs"
+                                    ? filw_i(detail::read_int(values, at))
+                                    : filw_d(detail::read_double(values, at)));
+                }
+                mRecords.push_back(std::move(r));
+            }
+        }
     }
 
     FilwSignature mSignature;
@@ -1708,6 +1793,7 @@ struct FilwIncrement {
         filw_text_items(head, "");
         mRecords.push_back(std::move(head));
         Mode(rMesh);
+        Energies(rMesh, procedure);
         const std::vector<FilwRecord> element = Element(rModel, rMesh);
         const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
         if (!element.empty()) {
@@ -1733,12 +1819,46 @@ struct FilwIncrement {
             "abaqus:eigenvalue",        "abaqus:generalized_mass",
             "abaqus:composite_damping", "abaqus:participation_factor",
             "abaqus:effective_mass"};
+        std::set<std::string> handled;
+        for (const bool explicit_names : {false, true})
+            for (std::size_t k = 0; k < 18; ++k)
+                if (const char* n = fil_energy_name(k, explicit_names))
+                    handled.insert(std::string("abaqus:") + n);
+        for (const char* kind : {"matrix_dofs", "stiffness", "mass", "load"}) {
+            handled.insert(std::string("abaqus:") + kind);
+            handled.insert(std::string("abaqus:") + kind + ":index");
+        }
         for (const std::string& name : rMesh.FieldDataNames())
-            if (known.count(name) == 0 && name.compare(0, 14, "abaqus:layout:") != 0)
+            if (known.count(name) == 0 && handled.count(name) == 0 &&
+                name.compare(0, 14, "abaqus:layout:") != 0)
                 mDropped.insert(name);
     }
 
 private:
+    /// Record 1999, the total energies, positional: those the step's procedure names, up to the
+    /// last one present (an absent one in between is 0).
+    void Energies(const Mesh& rMesh, std::int64_t Procedure) {
+        const bool explicit_names = Procedure == 17 || Procedure == 21 || Procedure == 74;
+        std::vector<std::pair<std::size_t, double>> present;
+        for (std::size_t k = 0; k < 18; ++k) {
+            const char* name = fil_energy_name(k, explicit_names);
+            if (!name)
+                continue;
+            const std::string key = std::string("abaqus:") + name;
+            if (rMesh.HasFieldData(key) && rMesh.FieldData(key).Size() > 0)
+                present.emplace_back(k, detail::read_double(rMesh.FieldData(key), 0));
+        }
+        if (present.empty())
+            return;
+        std::vector<double> values(present.back().first + 1, 0.0);
+        for (const auto& [k, v] : present)
+            values[k] = v;
+        FilwRecord r = filw_rec(1999);
+        for (const double v : values)
+            r.push_back(filw_d(v));
+        mRecords.push_back(std::move(r));
+    }
+
     void Mode(const Mesh& rMesh) {
         const auto mode = filw_int_scalar(rMesh, "abaqus:mode");
         if (!mode)

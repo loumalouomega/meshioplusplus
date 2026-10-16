@@ -51,6 +51,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -77,5 +79,50 @@ MESHIOPLUSPLUS_API Mesh read_xplt(const std::string& rPath, const ReadOptions& r
  */
 MESHIOPLUSPLUS_API MeshMetadata read_xplt_metadata(const std::string& rPath,
                                                    const ReadOptions& rOptions = {});
+
+/**
+ * @brief Write an FEBio plot file holding one state (plot version 0x35,
+ *        little-endian, uncompressed): the mesh and its data at
+ *        `field_data["meshio:time"]` (0 when absent), status `"xplt:status"`.
+ *        Cell blocks become domains (a region that is exactly one block names
+ *        it and tags its part), point regions node sets and cell regions
+ *        element sets; point data are nodal variables, cell data per-element
+ *        variables (`FMT_ITEM`) and numeric field data global ones. Vertices,
+ *        polygons, side regions and surfaces are not written. The Python twin
+ *        writes the same bytes.
+ * @throws WriteError when the file cannot be written or a cell names a missing point.
+ */
+MESHIOPLUSPLUS_API void write_xplt(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A plot file with a state per step: the mesh and the variables of the
+ *        first step, which every later step must share. The file is written by
+ *        `Finalize`. The Python twin is `meshioplusplus.xplt.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API XpltSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit XpltSeriesWriter(const std::string& rPath);
+    ~XpltSeriesWriter();
+
+    XpltSeriesWriter(const XpltSeriesWriter&) = delete;
+    XpltSeriesWriter& operator=(const XpltSeriesWriter&) = delete;
+    XpltSeriesWriter(XpltSeriesWriter&&) noexcept;
+    XpltSeriesWriter& operator=(XpltSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError when its points, cells or variables differ
+    /// from the first step's, or on a moved-from writer.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no step was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

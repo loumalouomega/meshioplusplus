@@ -48,9 +48,8 @@
  * per-type `TopologyType` names, e.g. `0x6`=tetra, `0x9`=hexahedron,
  * `0x26`=tetra10). A `line`/`Polyline` entry in a Mixed array carries an
  * extra "point count" field that **must equal exactly 2** — anything else
- * throws ReadError. The C++ type table is a strict subset of the Python
- * one: it covers through `hexahedron27` but omits the higher-order
- * `hexahedron64`..`hexahedron1331` types, which fall back to Python.
+ * throws ReadError. The C++ type table matches the Python one, through the
+ * higher-order `hexahedron64`..`hexahedron1331` types.
  * Absolute DataItem references and embedded Information field data are read
  * natively; cycles and invalid reference targets raise ReadError.
  * Points are restricted to dimension <=3 on write.
@@ -111,7 +110,7 @@ MESHIOPLUSPLUS_API void write_xdmf(const std::string& rPath, const Mesh& rMesh,
  * @return the read Mesh
  * @throws ReadError on an invalid reference/Information payload,
  *         a Mixed `Polyline` entry with a point count other than 2, a
- *         cell type outside the C++ type table (e.g. `hexahedron64`+), or a
+ *         cell type outside the type table, or a
  *         `Format="HDF"` DataItem on a build without HDF5 support — the shim
  *         then falls back to the Python/`h5py` reader.
  * @note `<Attribute>` elements map generically to `point_data`/`cell_data`.

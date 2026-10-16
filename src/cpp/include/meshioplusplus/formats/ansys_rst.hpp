@@ -57,6 +57,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -105,5 +107,50 @@ MESHIOPLUSPLUS_API Mesh read_ansys_rst_cyclic(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath,
                                                                const ReadOptions& rOptions = {});
+
+/**
+ * @brief Write an Ansys MAPDL results file holding one result set: the model
+ *        (nodes numbered 1..n in point order, elements 1..m in cell order, point
+ *        and cell regions as components), the nodal DOF solution from the point
+ *        data (`U`, `ROT`, `A`, `V` vectors; `TEMP`, `PRES` ... scalars), the
+ *        reaction forces (`RF`, `RMOM`, `RF_<DOF>`) and the element nodal
+ *        stresses and strains (`S`, `EPEL`, `EPPL`, `EPCR`, `EPTH`, a layered
+ *        shell's top surface as `<name>@top`; `(cells, nodes * 6)` as the reader
+ *        returns them). Little-endian, 64-bit pointers, uncompressed. The time
+ *        is `meshio:time` (1 when absent). Element nodal forces, raw element
+ *        records, element rotations and cyclic-symmetry records are not
+ *        written. The Python twin writes the same bytes.
+ * @throws WriteError for a mesh with no points or a cell type Ansys has no element for
+ */
+MESHIOPLUSPLUS_API void write_ansys_rst(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A result set per mesh in one results file, written by `Finalize`; every
+ *        mesh must have the first one's points, cells and components. The Python
+ *        twin is `meshioplusplus.ansys_rst.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API AnsysRstSeriesWriter {
+public:
+    explicit AnsysRstSeriesWriter(const std::string& rPath);
+    ~AnsysRstSeriesWriter();
+
+    AnsysRstSeriesWriter(const AnsysRstSeriesWriter&) = delete;
+    AnsysRstSeriesWriter& operator=(const AnsysRstSeriesWriter&) = delete;
+    AnsysRstSeriesWriter(AnsysRstSeriesWriter&&) noexcept;
+    AnsysRstSeriesWriter& operator=(AnsysRstSeriesWriter&&) noexcept;
+
+    /// Add one result set. @throws WriteError on a mismatch with the first one.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of result sets added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no set was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

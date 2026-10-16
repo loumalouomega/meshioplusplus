@@ -38,6 +38,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtu_decode.hpp"
@@ -102,6 +103,7 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<StructuredGrid WholeExtent=\"" << ext.str() << "\">\n";
+    detail::write_field_data_section(os, rMesh, "vts", binary, codec, hsz);
     os << "<Piece Extent=\"" << ext.str() << "\">\n";
 
     const NDArray& pts = rMesh.Points();

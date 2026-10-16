@@ -33,17 +33,17 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary; every increment is a step, nodal and element results by output location; written too, the model and an increment per step),
 > [ANSYS Fluent](https://www.ansys.com/products/fluids/ansys-fluent) mesh (`.msh`; cells rebuilt from faces, written face-based as Fluent reads it, zones as named regions),
-> [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`, read-only; nodal solution, reactions and element nodal stresses, strains and forces, every result set is a step; distributed solves merged, the full rotor of a static cyclic model),
+> [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`; nodal solution, reactions and element nodal stresses, strains and forces, every result set is a step; distributed solves merged, the full rotor of a static cyclic model),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
 > [CAE sample layout](https://docs.nvidia.com/physicsnemo/) (`.npz`, what PhysicsNeMo's DoMINO/Transolver datapipes read),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
 > [DOLFIN XML](https://manpages.ubuntu.com/manpages/jammy/en/man1/dolfin-convert.1.html) (`.xml`),
-> [DOLFINx VTX](https://docs.fenicsproject.org/dolfinx/main/python/generated/dolfinx.io.html) (`.bp`, an ADIOS2 directory, read-only; each step a mesh, with an optional ADIOS2 build or the `adios2` package),
+> [DOLFINx VTX](https://docs.fenicsproject.org/dolfinx/main/python/generated/dolfinx.io.html) (`.bp`, an ADIOS2 directory, read and written; each step a mesh, with an optional ADIOS2 build or the `adios2` package),
 > [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`, text or ElmerGrid's binary; bodies and boundaries as named regions, ElmerGrid partitions merged, `partition:part` written as `partitioning.N`, recognised by content),
 > [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`; C and Fortran binary),
-> [FEBio](https://febio.org) input (`.feb`, spec 2.5/3.0/4.0 read, 4.0 written; sets and surfaces as named regions, MeshData read and written) and plot files (`.xplt`, read-only; every state is a step, remeshed runs included, surface variables on facet blocks),
+> [FEBio](https://febio.org) input (`.feb`, spec 2.5/3.0/4.0 read, 4.0 written; sets and surfaces as named regions, MeshData read and written) and plot files (`.xplt`; every state is a step, remeshed runs included, surface variables on facet blocks),
 > [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/) neutral file (`.neu`, 4.41 to 2020.1 read, 8.2 mesh written; properties and groups as named regions, every output set is a step, a series written as one output set per step),
 > [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`, named cell groups),
 > [FLUX](https://www.altair.com/flux/) (mesh `.pf3`, field `.dex`),
@@ -60,14 +60,14 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [Kratos CAD JSON](https://loumalouomega.github.io/meshioplusplus/formats/cad_json) (`.cad.json`; trimmed NURBS faces, trimming loops and coupling edges for Kratos IGA, sampled as Lagrange cells and kept exactly in a side channel on every surface, and the `ImportNurbsSbmModeler` dialect),
 > [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, also gzip/bzip2; active cells of refined meshes, subdomains, side, edge, shell-face and node sets as named regions, written back in the 1.8.0 layout),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
-> [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read-only; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
+> [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read and write; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
 > [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output; `nodout` outputs are steps, the other databases field data; written too, a `nodout` cloud per step with each database on its own cadence),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions, NURBS meshes with their patches kept and written back) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),
-> [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`, read-only; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values; written too, with nodal results and the centre stress and strain of shells, solids and rods, one step per call or a series),
+> [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values; written too, with nodal results and the centre stress and strain of shells, solids and rods, one step per call or a series),
 > [Nastran OP2](https://loumalouomega.github.io/meshioplusplus/formats/nastran_op2) results (`.op2`, MSC and NX, 32- and 64-bit; every subcase, mode, time or frequency is a step; coordinate systems applied; corner, ply, station and grid point force values),
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
@@ -77,8 +77,8 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
-> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed; written with optional placeholder materials and properties), animation files (`<run>A001`…, read-only; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`; each output a step of field data; written too, from the `radioss_th:*` field data),
-> [MSC Marc](https://hexagon.com/products/marc) input deck (`.dat`, written by name) and formatted post file (`.t19`, read-only; `DEFINE` sets as named regions, every increment is a step),
+> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed; written with optional placeholder materials and properties), animation files (`<run>A001`…; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`; each output a step of field data; written too, from the `radioss_th:*` field data),
+> [MSC Marc](https://hexagon.com/products/marc) input deck (`.dat`, written by name) and formatted post file (`.t19`; `DEFINE` sets as named regions, every increment is a step),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
@@ -89,7 +89,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [PVTU](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtu`; a parallel index over per-piece `.vtu` files, ghost cells and `partition` output included),
 > [STEP](https://en.wikipedia.org/wiki/ISO_10303-21) (a closed surface written as a faceted AP214 solid that CAD tools open; read with the optional OpenCASCADE backend as a triangulation plus its NURBS B-rep) (`.step`, `.stp`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
-> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones; `.szplt` read-only through a TecIO you supply),
+> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt`; FE, ordered, polygonal and polyhedral zones; `.szplt` through a TecIO you supply),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
 > [Triangle .node/.ele/.poly](https://www.cs.cmu.edu/~quake/triangle.html),
 > [SVG](https://www.w3.org/TR/SVG/) (2D drawing: 2D direct, 3D via skin projection; reads back only what meshio++ wrote, as planar) (`.svg`),
@@ -1206,7 +1206,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 17.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 17.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

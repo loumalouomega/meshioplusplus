@@ -1,12 +1,12 @@
 # Tecplot (`.dat`, `.tec`, `.plt`)
 
-The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format, a `VARIABLES` list and one or more finite-element or ordered `ZONE`s, and its binary form `.plt` (read only, since v16.10.0; see [Binary `.plt`](#binary-plt)). meshio++ writes one zone per cell block; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one **step** of the file's `SOLUTIONTIME`/`STRANDID` timeline — a step being every zone sharing one distinct `SOLUTIONTIME` — see [Selecting a time step](#selecting-a-time-step). A non-transient file (no `SOLUTIONTIME` anywhere) is a single step holding every zone in the file — see [Multiple zones](#multiple-zones).
+The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format, a `VARIABLES` list and one or more finite-element or ordered `ZONE`s, and its binary form `.plt` (read since v16.10.0, written since the parity work; see [Binary `.plt`](#binary-plt)). meshio++ writes one zone per cell block; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one **step** of the file's `SOLUTIONTIME`/`STRANDID` timeline — a step being every zone sharing one distinct `SOLUTIONTIME` — see [Selecting a time step](#selecting-a-time-step). A non-transient file (no `SOLUTIONTIME` anywhere) is a single step holding every zone in the file — see [Multiple zones](#multiple-zones).
 
 | | |
 |---|---|
 | **Format name** | `tecplot` |
 | **Extensions** | `.dat`, `.tec`, `.plt` (a file starting with `#!TDV` is binary whatever its extension; a `.dat` file that opens as an MSC Marc input deck is read as [`marc`](./marc.md#which-dat-is-marc-s) instead, v16.8.0) |
-| **Read / Write** | ✓ / ✓ (ASCII); ✓ / — (`.plt`) |
+| **Read / Write** | ✓ / ✓ (ASCII and `.plt`) |
 | **Extra dependencies** | — |
 
 ## Reading & writing
@@ -85,6 +85,8 @@ Refused with `ReadError`: a missing `FACES` (or `TOTALNUMFACENODES` for polyhedr
 This closes the roadmap gap where several static zones were previously not a timeline and only the first was read (with a warning); they are now read in full, as multiple parts of one step, matching how SU2's multizone files and VTKHDF's composites are modeled.
 
 ## Binary `.plt`
+
+**Writing** (roadmap 3.3.2): a file name ending in `.plt` writes a `#!TDV112` binary file instead of the ASCII one, from both engines and byte for byte alike. It holds the zones of the ASCII writer — one per cell block, FE zone types and the face-based `FEPOLYGON`/`FEPOLYHEDRON` — with block packing, every variable as a double, 0-based connectivity, the nodal variables owned by zone 1 and shared by the others, cell-centred variables per zone (the zones lacking one passive), and each owned variable's minimum and maximum. There are no solution times (a mesh holds one step). The file is read back by meshio++'s own reader and has not been opened in Tecplot or `preplot` ([§1.2.6](../roadmap.md#_1-2-awaiting-a-licensed-run)).
 
 Since v16.10.0 the reader decodes the binary format of the Data Format Guide's appendix A, version `#!TDV112` (Tecplot 360 2009 onwards), in either byte order; since v16.12.0 the older versions as well (see [Older versions](#older-versions)). A binary file decodes into the same zone model as an ASCII one, so everything on this page (zones and regions, sharing, passive variables, time steps) applies to both, and a `.plt` reads identically to the ASCII file it was made from. In detail:
 

@@ -4,6 +4,9 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._anim import read as _py_read
+from ._write import SeriesWriter as _PySeriesWriter
+from ._write import numbered_names
+from ._write import write as _py_write
 
 
 def read(filename, time_step=0):
@@ -33,8 +36,70 @@ def read(filename, time_step=0):
     return _py_read(filename)
 
 
+def write(filename, mesh):
+    """Write one OpenRadioss animation file: the state of ``mesh`` (its time is
+    ``field_data["meshio:time"]``), big-endian, magic ``0x542C``. The name is
+    ``<run>A001``-shaped, with no extension. Points, nodal scalars and vectors,
+    element scalars, 6-wide tensors (xx yy zz xy yz zx), 9-wide 1-D force sets,
+    parts (``radioss:part`` or the cell regions), ids, masses, materials and
+    properties are written; vertices become SPH particles, lines 1-D elements,
+    triangles and quads facets, and tetrahedra, pyramids, wedges and hexahedra
+    bricks."""
+    if not is_buffer(filename, "w"):
+        try:
+            return _core.radioss_anim_write(str(filename), mesh)
+        except Exception as exc:
+            if not core_declined(exc, "radioss_anim", "write", filename):
+                raise
+    return _py_write(filename, mesh)
+
+
+class SeriesWriter:
+    """One animation file per step, numbered from the number in ``filename``
+    (``runA001``, ``runA002``...); ``write_sequence(path, steps,
+    file_format="radioss_anim")`` uses it.
+
+    >>> with meshioplusplus.radioss_anim.SeriesWriter("runA001") as w:
+    ...     for time, mesh in steps:
+    ...         w.write(time, mesh)
+    """
+
+    def __init__(self, filename):
+        self._core = self._py = None
+        self._names = numbered_names(filename)
+        self.paths = []
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.RadiossAnimSeriesWriter(str(filename))
+            except Exception as exc:
+                if not core_declined(exc, "radioss_anim", "write", filename):
+                    raise
+        if self._core is None:
+            self._py = _PySeriesWriter(filename)
+
+    def write(self, time, mesh):
+        self.paths.append(next(self._names))
+        if self._core is not None:
+            self._core.write(float(time), mesh)
+        else:
+            self._py.write(time, mesh)
+
+    def close(self):
+        self._core = None
+        if self._py is not None:
+            self._py.close()
+            self._py = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
 # Found by its file name (a stem, then A and three or more digits) or its magic
 # number, never an extension.
-register_format("radioss_anim", [], read, {})
+register_format("radioss_anim", [], read, {"radioss_anim": write})
 
-__all__ = ["read"]
+__all__ = ["read", "write", "SeriesWriter"]

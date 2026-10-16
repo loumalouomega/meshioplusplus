@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -294,5 +295,55 @@ TEST(Vtx, RegistrySniffAndSequenceGlob) {
 }
 
 }  // namespace
+
+TEST(VtxWriter, StepsRoundTripAndOneCellTypeIsEnforced) {
+    VtxTempDir dir;
+    meshioplusplus::Mesh mesh;
+    {
+        // Two P2 triangles' worth of nodes: one triangle6 with a vector and a cell array.
+        meshioplusplus::NDArray pts(meshioplusplus::DType::Float64, {std::size_t{6}, std::size_t{3}});
+        const double x[6][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0.5, 0, 0}, {0.5, 0.5, 0}, {0, 0.5, 0}};
+        std::memcpy(pts.As<double>(), x, sizeof(x));
+        mesh.AssignPoints(std::move(pts));
+        meshioplusplus::NDArray conn(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{6}});
+        for (int k = 0; k < 6; ++k)
+            conn.As<std::int64_t>()[k] = k;
+        mesh.AddCellBlock("triangle6", std::move(conn));
+        meshioplusplus::NDArray u(meshioplusplus::DType::Float64, {std::size_t{6}});
+        for (int k = 0; k < 6; ++k)
+            u.As<double>()[k] = k;
+        mesh.AddPointData("u", std::move(u));
+        meshioplusplus::NDArray rho(meshioplusplus::DType::Float64, {std::size_t{1}});
+        rho.As<double>()[0] = 2.5;
+        mesh.AddCellData("rho", {std::move(rho)});
+    }
+    const std::string path = dir / "w.bp";
+    meshioplusplus::VtxSeriesWriter writer(path);
+    writer.Write(0.0, mesh);
+    writer.Write(0.5, mesh);
+    writer.Finalize();
+    EXPECT_EQ(writer.NumSteps(), 2u);
+    EXPECT_EQ(meshioplusplus::vtx_time_values(path), (std::vector<double>{0.0, 0.5}));
+    ReadOptions opts;
+    opts.mTimeStep = 1;
+    const Mesh back = meshioplusplus::read_vtx(path, opts);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "triangle6");
+    EXPECT_EQ(back.NumPoints(), 6u);
+    EXPECT_EQ(back.PointData("u").As<double>()[5], 5.0);
+    EXPECT_EQ(back.CellData("rho", 0).As<double>()[0], 2.5);
+    EXPECT_EQ(back.FieldData("meshio:time").As<double>()[0], 0.5);
+
+    const std::string one = dir / "one.bp";
+    meshioplusplus::write_vtx(one, mesh);
+    EXPECT_EQ(meshioplusplus::read_vtx(one).Cells(0).Type(), "triangle6");
+
+    // A second cell type is refused: a VTX file holds one, as DOLFINx's does.
+    meshioplusplus::NDArray tri(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{3}});
+    for (int k = 0; k < 3; ++k)
+        tri.As<std::int64_t>()[k] = k;
+    mesh.AddCellBlock("triangle", std::move(tri));
+    EXPECT_THROW(meshioplusplus::write_vtx(dir / "mixed.bp", mesh), meshioplusplus::WriteError);
+}
 
 #endif  // MESHIOPLUSPLUS_HAS_ADIOS2
