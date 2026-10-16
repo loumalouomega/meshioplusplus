@@ -209,7 +209,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // function pointer no longer converts to ReadFn -- the hazard noted
         // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
         {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
-        {"medit", meshioplusplus::read_medit_ascii},
+        {"medit", meshioplusplus::read_medit},
         // A lambda: read_mfem is overloaded (grid functions). `.mesh` stays
         // medit's extension; resolve_format hands MFEM files over by content.
         {"mfem", [](const std::string& path) { return meshioplusplus::read_mfem(path); }},
@@ -371,7 +371,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
         {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
-        {"medit", meshioplusplus::write_medit_ascii},
+        {"medit", meshioplusplus::write_medit},
         {"mfem",
          [](const std::string& path, const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); }},
         {"mff", meshioplusplus::write_mff},
@@ -612,6 +612,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".pf3", "flux"},
         {".mdpa", "mdpa"},
         {".mesh", "medit"},
+        {".meshb", "medit"},
         {".mfm", "mfm"},
         {".mphbin", "mphbin"},
         {".mphtxt", "mphtxt"},

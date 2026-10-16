@@ -263,3 +263,86 @@ def test_keyword_id_lists_are_regions_and_come_back(engine, tmp_path):
         assert {r.name: list(r.entries) for r in again.regions} == {
             n: e for n, (_, e) in regions.items()
         }
+
+
+# -- binary, both engines ------------------------------------------------------
+
+import glob  # noqa: E402
+
+from meshioplusplus import _core  # noqa: E402
+from meshioplusplus.medit import _medit as py_medit  # noqa: E402
+
+BINARY = sorted(
+    glob.glob(str(pathlib.Path(__file__).parent / "meshes" / "medit" / "*.meshb"))
+)
+
+
+def _same(a, b):
+    np.testing.assert_array_equal(a.points, b.points)
+    assert [c.type for c in a.cells] == [c.type for c in b.cells]
+    for x, y in zip(a.cells, b.cells):
+        np.testing.assert_array_equal(x.data, y.data)
+    np.testing.assert_array_equal(a.point_data["medit:ref"], b.point_data["medit:ref"])
+    for x, y in zip(a.cell_data["medit:ref"], b.cell_data["medit:ref"]):
+        np.testing.assert_array_equal(x, y)
+
+
+@pytest.mark.parametrize("path", BINARY)
+def test_binary_engines_read_and_write_the_same(tmp_path, path):
+    core, twin = _core.medit_read_binary(path), py_medit.read(path)
+    _same(core, twin)
+    _core.medit_write_binary(str(tmp_path / "c.meshb"), core)
+    py_medit.write_binary_file(str(tmp_path / "p.meshb"), core)
+    assert (tmp_path / "c.meshb").read_bytes() == (tmp_path / "p.meshb").read_bytes()
+    _same(meshioplusplus.read(tmp_path / "c.meshb"), core)
+
+
+def _lists_mesh(refs):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0.0]]),
+        [
+            ("triangle", np.array([[0, 1, 2], [0, 2, 3]])),
+            ("line", np.array([[0, 1], [1, 2]])),
+        ],
+    )
+    mesh.point_data["medit:ref"] = np.array([1, 2, 3, 4])
+    mesh.cell_data["medit:ref"] = [np.array([5, 6]), np.array(refs)]
+    mesh.regions = [
+        meshioplusplus.Region("medit:Corners", "point", np.array([0, 2])),
+        meshioplusplus.Region("medit:Ridges", "cell", np.array([2, 3])),
+        meshioplusplus.Region("medit:RequiredTriangles", "cell", np.array([1])),
+    ]
+    return mesh
+
+
+@pytest.mark.parametrize("refs", [[7, 8], [7, 2**40]])
+def test_binary_id_lists_and_wide_integers(tmp_path, refs):
+    mesh = _lists_mesh(refs)
+    _core.medit_write_binary(str(tmp_path / "c.meshb"), mesh)
+    py_medit.write_binary_file(str(tmp_path / "p.meshb"), mesh)
+    data = (tmp_path / "c.meshb").read_bytes()
+    assert data == (tmp_path / "p.meshb").read_bytes()
+    assert int.from_bytes(data[4:8], "little") == (4 if refs[1] > 2**31 else 3)
+    for read in (_core.medit_read_binary, py_medit.read):
+        back = read(str(tmp_path / "c.meshb"))
+        assert {r.name: r.entries.tolist() for r in back.regions} == {
+            "medit:Corners": [0, 2],
+            "medit:Ridges": [2, 3],
+            "medit:RequiredTriangles": [1],
+        }
+        np.testing.assert_array_equal(back.cell_data["medit:ref"][1], refs)
+
+
+def test_binary_refusals(tmp_path):
+    raw = tmp_path / "ok.meshb"
+    _core.medit_write_binary(str(raw), _lists_mesh([7, 8]))
+    data = raw.read_bytes()
+    for cut in (10, 40, 100):
+        (tmp_path / "t.meshb").write_bytes(data[:cut])
+        for read in (_core.medit_read_binary, py_medit.read):
+            with pytest.raises(meshioplusplus.ReadError):
+                read(str(tmp_path / "t.meshb"))
+    (tmp_path / "bad.meshb").write_bytes(b"\x07\x00\x00\x00" + data[4:])
+    for read in (_core.medit_read_binary, py_medit.read):
+        with pytest.raises(meshioplusplus.ReadError, match="nvalid code"):
+            read(str(tmp_path / "bad.meshb"))

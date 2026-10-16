@@ -19452,8 +19452,8 @@ MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, c
  *
  * The binary `.meshb` GMF variant (position-indexed records, endianness
  * flip via a leading magic code, version-dependent int/float widths) is
- * **not implemented here** — dispatch on the `"b"` filename suffix always
- * routes to the Python fallback for that variant.
+ * `read_medit_binary` / `write_medit_binary`; `read_medit` and `write_medit`
+ * dispatch on the `"b"` filename suffix.
  */
 
 // System includes
@@ -19502,6 +19502,34 @@ MESHIOPLUSPLUS_API void write_medit_ascii(const std::string& rPath, const Mesh& 
  * @throws ReadError on a malformed file or unrecognized required section
  */
 MESHIOPLUSPLUS_API Mesh read_medit_ascii(const std::string& rPath);
+
+/**
+ * @brief Read a binary Medit (`.meshb`, libMeshb GMF) file.
+ *
+ * A leading code `1` (native byte order) or `16777216` (the opposite one), the
+ * version 1-4 that fixes the integer, float and position widths, then the
+ * keyword sections, each `[keyword][next position][count][records]`. Vertices,
+ * the element sections and the `Corners` ... `RequiredTriangles` id lists are
+ * read as the ASCII reader reads them (`medit:ref`, regions); every other
+ * section is skipped through its next-section position (a warning names it).
+ * @throws ReadError on a malformed or truncated file
+ */
+MESHIOPLUSPLUS_API Mesh read_medit_binary(const std::string& rPath);
+
+/**
+ * @brief Write a binary Medit (`.meshb`) file: little-endian, 64-bit float
+ *        coordinates, version 3 (32-bit integers) or 4 when an index or
+ *        reference needs 64 bits, one section per cell block and the id lists.
+ *        The Python twin writes the same bytes.
+ * @throws WriteError for points that are not 2-D or 3-D
+ */
+MESHIOPLUSPLUS_API void write_medit_binary(const std::string& rPath, const Mesh& rMesh);
+
+/// `read_medit_binary` for a path ending in `b`, else `read_medit_ascii`.
+MESHIOPLUSPLUS_API Mesh read_medit(const std::string& rPath);
+
+/// `write_medit_binary` for a path ending in `b`, else `write_medit_ascii`.
+MESHIOPLUSPLUS_API void write_medit(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/medit.hpp =====
@@ -119157,11 +119185,14 @@ void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& r
 // ===== end src/cpp/src/formats/med.cpp =====
 // ===== begin src/cpp/src/formats/medit.cpp =====
 #include <algorithm>
+#include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -119321,6 +119352,84 @@ const MeditIdList* medit_id_list(const std::string& rKeyword) {
     return nullptr;
 }
 
+/// The id-list sections to write: each region named like an id-list keyword, as 0-based ids
+/// within the section (cell regions: within the first block of the section's type).
+std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> medit_id_list_sections(
+    const Mesh& rMesh) {
+    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> out;
+    std::vector<std::int64_t> block_start(rMesh.NumCellBlocks() + 1, 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        block_start[b + 1] = block_start[b] + static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+    for (const MeditIdList& list : kMeditIdLists) {
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+            const Region& reg = rMesh.Region(r);
+            if (reg.mName != list.mRegion || reg.mKind != list.mKind)
+                continue;
+            std::vector<std::int64_t> ids(reg.Entries(), reg.Entries() + reg.NumEntries());
+            if (list.mKind == RegionKind::Cell) {
+                std::size_t block = rMesh.NumCellBlocks();
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                    if (rMesh.Cells(b).Type() == list.mCellType) {
+                        block = b;
+                        break;
+                    }
+                if (block == rMesh.NumCellBlocks()) {
+                    log::warn("Medit: region '{}' needs {} cells; not written", list.mRegion,
+                              list.mCellType);
+                    break;
+                }
+                const std::size_t before = ids.size();
+                ids.erase(std::remove_if(ids.begin(), ids.end(),
+                                         [&](std::int64_t Id) {
+                                             return Id < block_start[block] ||
+                                                    Id >= block_start[block + 1];
+                                         }),
+                          ids.end());
+                if (ids.size() != before)
+                    log::warn(
+                        "Medit: region '{}' holds cells outside the first {} block; they are "
+                        "not written",
+                        list.mRegion, list.mCellType);
+                for (std::int64_t& id : ids)
+                    id -= block_start[block];
+            }
+            out.emplace_back(&list, std::move(ids));
+            break;
+        }
+    }
+    return out;
+}
+
+/// The region an id-list section becomes: ids checked against the section they index.
+void medit_add_id_list_region(Mesh& rMesh, const MeditIdList& rList, std::vector<std::int64_t> Ids) {
+    std::int64_t base = 0, limit = static_cast<std::int64_t>(rMesh.NumPoints());
+    if (rList.mKind == RegionKind::Cell) {
+        bool found = false;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks() && !found; ++b) {
+            if (rMesh.Cells(b).Type() == rList.mCellType) {
+                limit = static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+                found = true;
+            } else {
+                base += static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+            }
+        }
+        if (!found) {
+            log::warn("Medit: {} lists {} cells the file does not have", rList.mKeyword,
+                      rList.mCellType);
+            return;
+        }
+    }
+    for (std::int64_t& id : Ids) {
+        if (id < 0 || id >= limit)
+            throw ReadError(std::string("Medit: ") + rList.mKeyword +
+                            " names an entry the file does not have");
+        id += base;
+    }
+    NDArray entries = NDArray::Uninit(DType::Int64, {Ids.size()});
+    std::copy(Ids.begin(), Ids.end(), entries.As<std::int64_t>());
+    rMesh.AddRegion(Region(rList.mRegion, rList.mKind, std::move(entries)));
+}
+
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
@@ -119432,34 +119541,8 @@ Mesh read_medit_ascii(const std::string& rPath) {
         pr.As<std::int64_t>()[i] = point_ref[i];
     mesh.AddPointData("medit:ref", std::move(pr));
 
-    for (auto& [list, ids] : id_lists) {
-        std::int64_t base = 0, limit = static_cast<std::int64_t>(mesh.NumPoints());
-        if (list->mKind == RegionKind::Cell) {
-            bool found = false;
-            for (std::size_t b = 0; b < mesh.NumCellBlocks() && !found; ++b) {
-                if (mesh.Cells(b).Type() == list->mCellType) {
-                    limit = static_cast<std::int64_t>(mesh.Cells(b).NumCells());
-                    found = true;
-                } else {
-                    base += static_cast<std::int64_t>(mesh.Cells(b).NumCells());
-                }
-            }
-            if (!found) {
-                log::warn("Medit: {} lists {} cells the file does not have", list->mKeyword,
-                          list->mCellType);
-                continue;
-            }
-        }
-        for (std::int64_t& id : ids) {
-            if (id < 0 || id >= limit)
-                throw ReadError(std::string("Medit: ") + list->mKeyword +
-                                " names an entry the file does not have");
-            id += base;
-        }
-        NDArray entries = NDArray::Uninit(DType::Int64, {ids.size()});
-        std::copy(ids.begin(), ids.end(), entries.As<std::int64_t>());
-        mesh.AddRegion(Region(list->mRegion, list->mKind, std::move(entries)));
-    }
+    for (auto& [list, ids] : id_lists)
+        medit_add_id_list_region(mesh, *list, std::move(ids));
     return mesh;
 }
 
@@ -119533,50 +119616,355 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     }
 
     // Regions named like the id-list keywords, written back as those keywords.
-    std::vector<std::int64_t> block_start(rMesh.NumCellBlocks() + 1, 0);
-    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-        block_start[b + 1] = block_start[b] + static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
-    for (const MeditIdList& list : kMeditIdLists) {
-        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
-            const Region& reg = rMesh.Region(r);
-            if (reg.mName != list.mRegion || reg.mKind != list.mKind)
-                continue;
-            std::vector<std::int64_t> ids(reg.Entries(), reg.Entries() + reg.NumEntries());
-            if (list.mKind == RegionKind::Cell) {
-                std::size_t block = rMesh.NumCellBlocks();
-                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-                    if (rMesh.Cells(b).Type() == list.mCellType) {
-                        block = b;
-                        break;
-                    }
-                if (block == rMesh.NumCellBlocks()) {
-                    log::warn("Medit: region '{}' needs {} cells; not written", list.mRegion,
-                              list.mCellType);
-                    break;
-                }
-                const std::size_t before = ids.size();
-                ids.erase(std::remove_if(ids.begin(), ids.end(),
-                                         [&](std::int64_t Id) {
-                                             return Id < block_start[block] ||
-                                                    Id >= block_start[block + 1];
-                                         }),
-                          ids.end());
-                if (ids.size() != before)
-                    log::warn(
-                        "Medit: region '{}' holds cells outside the first {} block; they are "
-                        "not written",
-                        list.mRegion, list.mCellType);
-                for (std::int64_t& id : ids)
-                    id -= block_start[block];
-            }
-            os << "\n" << list.mKeyword << "\n" << ids.size() << "\n";
-            for (const std::int64_t id : ids)
-                os << (id + 1) << "\n";
-            break;
-        }
+    for (const auto& [list, ids] : medit_id_list_sections(rMesh)) {
+        os << "\n" << list->mKeyword << "\n" << ids.size() << "\n";
+        for (const std::int64_t id : ids)
+            os << (id + 1) << "\n";
     }
 
     os << "\nEnd\n";
+}
+
+// --- binary (.meshb, libMeshb GMF) ----------------------------------------------------------
+
+namespace {
+
+constexpr int kMbEnd = 54;
+constexpr int kMbMaxCode = 198;
+constexpr int kMbVertices = 4;
+
+bool medit_is_reserved(int Code) {
+    return Code == 0 || Code == 2 || Code == 11 || Code == 12 || Code == 51;
+}
+
+// The element sections: libMeshb code -> (meshio type, nodes per cell).
+struct MeditBinCell {
+    int mCode;
+    const char* mType;
+    int mNodes;
+};
+const MeditBinCell kMeditBinCells[] = {
+    {5, "line", 2},     {6, "triangle", 3}, {7, "quad", 4},   {8, "tetra", 4},
+    {9, "wedge", 6},    {10, "hexahedron", 8}, {49, "pyramid", 5},
+};
+
+// The id-list sections: libMeshb code -> keyword.
+struct MeditBinIdList {
+    int mCode;
+    const char* mKeyword;
+};
+const MeditBinIdList kMeditBinIdLists[] = {
+    {13, "Corners"}, {14, "Ridges"}, {15, "RequiredVertices"}, {16, "RequiredEdges"},
+    {17, "RequiredTriangles"},
+};
+
+/// Little- or big-endian reads at a byte offset, bounds-checked.
+struct MeditBinCursor {
+    const char* mData;
+    std::size_t mSize;
+    std::size_t mAt = 0;
+    bool mSwap = false;
+
+    [[noreturn]] static void Fail(const std::string& rWhy) { throw ReadError("Medit: " + rWhy); }
+
+    std::size_t Left() const { return mSize - mAt; }
+
+    std::int64_t Int(std::size_t Width) {
+        if (Left() < Width)
+            Fail("the file is truncated");
+        std::int64_t v;
+        if (Width == 4) {
+            std::uint32_t u;
+            std::memcpy(&u, mData + mAt, 4);
+            if (mSwap)
+                u = detail::bswap32(u);
+            v = static_cast<std::int32_t>(u);
+        } else {
+            std::uint64_t u;
+            std::memcpy(&u, mData + mAt, 8);
+            if (mSwap)
+                u = detail::bswap64(u);
+            v = static_cast<std::int64_t>(u);
+        }
+        mAt += Width;
+        return v;
+    }
+
+    double Real(std::size_t Width) {
+        if (Left() < Width)
+            Fail("the file is truncated");
+        double v;
+        if (Width == 4) {
+            std::uint32_t u;
+            std::memcpy(&u, mData + mAt, 4);
+            if (mSwap)
+                u = detail::bswap32(u);
+            v = std::bit_cast<float>(u);
+        } else {
+            std::uint64_t u;
+            std::memcpy(&u, mData + mAt, 8);
+            if (mSwap)
+                u = detail::bswap64(u);
+            v = std::bit_cast<double>(u);
+        }
+        mAt += Width;
+        return v;
+    }
+};
+
+void medit_put_int(std::string& rOut, std::int64_t V, std::size_t Width) {
+    const auto u = static_cast<std::uint64_t>(V);
+    for (std::size_t k = 0; k < Width; ++k)
+        rOut.push_back(static_cast<char>((u >> (8 * k)) & 0xff));
+}
+
+void medit_put_double(std::string& rOut, double V) {
+    medit_put_int(rOut, static_cast<std::int64_t>(std::bit_cast<std::uint64_t>(V)), 8);
+}
+
+}  // namespace
+
+Mesh read_medit_binary(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = source.View();
+    MeditBinCursor c{buf.data(), buf.size()};
+
+    const std::int64_t code = c.Int(4);
+    if (code == 16777216)
+        c.mSwap = true;
+    else if (code != 1)
+        throw ReadError("Medit: invalid code");
+    const std::int64_t version = c.Int(4);
+    if (version < 1 || version > 4)
+        throw ReadError("Medit: invalid version");
+    const std::size_t isize = version == 4 ? 8 : 4;
+    const std::size_t fsize = version == 1 ? 4 : 8;
+    const std::size_t psize = version >= 3 ? 8 : 4;
+    const std::int64_t field = c.Int(4);
+    if (field != 3)
+        throw ReadError("Medit: invalid dimension code : " + std::to_string(field) +
+                        " it should be 3");
+    c.Int(psize);
+    const std::int64_t dim = c.Int(4);
+    if (dim != 2 && dim != 3)
+        throw ReadError("Medit: invalid mesh dimension : " + std::to_string(dim));
+
+    Mesh mesh;
+    bool have_points = false;
+    std::vector<std::int64_t> point_ref;
+    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> id_lists;
+    const DType fdtype = version == 1 ? DType::Float32 : DType::Float64;
+
+    while (true) {
+        if (c.Left() < 4) {
+            log::warn("Medit: end-of-file reached before GmfEnd keyword");
+            break;
+        }
+        const std::int64_t kw = c.Int(4);
+        if (kw < 0 || kw > kMbMaxCode)
+            throw ReadError("Medit: unsupported field " + std::to_string(kw));
+        if (kw == kMbEnd)
+            break;
+        if (medit_is_reserved(static_cast<int>(kw)))
+            continue;
+        const std::int64_t next = c.Int(psize);
+        const std::size_t section_start = c.mAt;
+
+        const MeditBinCell* cell = nullptr;
+        for (const MeditBinCell& k : kMeditBinCells)
+            if (k.mCode == kw)
+                cell = &k;
+        const MeditBinIdList* idl = nullptr;
+        for (const MeditBinIdList& k : kMeditBinIdLists)
+            if (k.mCode == kw)
+                idl = &k;
+
+        if (kw == kMbVertices) {
+            const std::size_t row = static_cast<std::size_t>(dim) * fsize + isize;
+            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "vertex");
+            NDArray pts(fdtype, {n, static_cast<std::size_t>(dim)});
+            point_ref.resize(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::int64_t d = 0; d < dim; ++d) {
+                    const double v = c.Real(fsize);
+                    if (fdtype == DType::Float32)
+                        pts.As<float>()[i * dim + d] = static_cast<float>(v);
+                    else
+                        pts.As<double>()[i * dim + d] = v;
+                }
+                point_ref[i] = c.Int(isize);
+            }
+            mesh.AssignPoints(std::move(pts));
+            have_points = true;
+        } else if (cell) {
+            const auto k = static_cast<std::size_t>(cell->mNodes);
+            const std::size_t row = (k + 1) * isize;
+            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "cell");
+            NDArray data(DType::Int64, {n, k});
+            NDArray ref(DType::Int64, {n});
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::size_t j = 0; j < k; ++j)
+                    data.As<std::int64_t>()[i * k + j] = c.Int(isize) - 1;
+                ref.As<std::int64_t>()[i] = c.Int(isize);
+            }
+            mesh.AddCellBlock(cell->mType, std::move(data));
+            mesh.AppendCellData("medit:ref", std::move(ref));
+        } else if (idl) {
+            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / isize, "Medit", "entry");
+            std::vector<std::int64_t> ids(n);
+            for (std::int64_t& id : ids)
+                id = c.Int(isize) - 1;
+            id_lists.emplace_back(medit_id_list(idl->mKeyword), std::move(ids));
+        } else {
+            // A section meshio++ has no home for: skipped through the position of the next one.
+            if (next <= static_cast<std::int64_t>(section_start) ||
+                static_cast<std::uint64_t>(next) > buf.size())
+                throw ReadError("Medit: cannot skip keyword " + std::to_string(kw) +
+                                ": its next-section position is outside the file");
+            log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", kw);
+            c.mAt = static_cast<std::size_t>(next);
+        }
+    }
+
+    if (!have_points)
+        throw ReadError("Medit: expected Vertices");
+    NDArray pr(DType::Int64, {point_ref.size()});
+    for (std::size_t i = 0; i < point_ref.size(); ++i)
+        pr.As<std::int64_t>()[i] = point_ref[i];
+    mesh.AddPointData("medit:ref", std::move(pr));
+    for (auto& [list, ids] : id_lists)
+        medit_add_id_list_region(mesh, *list, std::move(ids));
+    return mesh;
+}
+
+void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t d = rMesh.PointDim();
+    if (d != 2 && d != 3)
+        throw WriteError("Medit: a binary file holds 2-D or 3-D points, not " +
+                         std::to_string(d) + "-D");
+    const NDArray* vlabels = pick_first_int(rMesh);
+    if (vlabels && rMesh.PointDataNames().size() > 1)
+        log::warn("Medit can only write one point data array. Picking the first integer one.");
+    const std::string clabel_key = pick_first_int_cell(rMesh);
+
+    // Which blocks are written, and does everything fit 32-bit integers?
+    struct Block {
+        std::size_t mIndex;
+        int mCode;
+        std::size_t mNodes;
+    };
+    std::vector<Block> blocks;
+    bool big = n > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+    const auto fits = [](std::int64_t V) {
+        return V >= std::numeric_limits<std::int32_t>::min() &&
+               V <= std::numeric_limits<std::int32_t>::max();
+    };
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const MeditBinCell* found = nullptr;
+        for (const MeditBinCell& k : kMeditBinCells)
+            if (cb.Type() == k.mType)
+                found = &k;
+        if (!found) {
+            log::warn("MEDIT's mesh format doesn't know {} cells. Skipping.", std::string(cb.Type()));
+            continue;
+        }
+        blocks.push_back({b, found->mCode, static_cast<std::size_t>(found->mNodes)});
+        const detail::Int64View conn(cb.Conn());
+        for (std::size_t i = 0; i < cb.NumCells() * cb.NodesPerCell() && !big; ++i)
+            big = !fits(conn[i] + 1);
+        if (!clabel_key.empty() && b < rMesh.CellDataNumBlocks(clabel_key)) {
+            const NDArray& lab = rMesh.CellData(clabel_key, b);
+            const detail::Int64View lv(lab);
+            for (std::size_t i = 0; i < lab.Size() && !big; ++i)
+                big = !fits(lv[i]);
+        }
+    }
+    std::optional<detail::Int64View> plabels;
+    if (vlabels) {
+        plabels.emplace(*vlabels);
+        for (std::size_t i = 0; i < n && !big; ++i)
+            big = !fits((*plabels)[i]);
+    }
+    const auto sections = medit_id_list_sections(rMesh);
+    for (const auto& [list, ids] : sections)
+        for (std::size_t i = 0; i < ids.size() && !big; ++i)
+            big = !fits(ids[i] + 1);
+
+    const std::size_t isize = big ? 8 : 4;
+    const std::size_t psize = 8;
+    std::string out;
+    medit_put_int(out, 1, 4);
+    medit_put_int(out, big ? 4 : 3, 4);
+    medit_put_int(out, 3, 4);  // GmfDimension
+    std::int64_t pos = 4 * 4 + static_cast<std::int64_t>(psize);
+    medit_put_int(out, pos, psize);
+    medit_put_int(out, static_cast<std::int64_t>(d), 4);
+
+    const auto header = [&](int Code, std::int64_t Count, std::int64_t Bytes) {
+        pos += Bytes + 4 + static_cast<std::int64_t>(psize + isize);
+        medit_put_int(out, Code, 4);
+        medit_put_int(out, pos, psize);
+        medit_put_int(out, Count, isize);
+    };
+
+    header(kMbVertices, static_cast<std::int64_t>(n),
+           static_cast<std::int64_t>(n * (d * 8 + isize)));
+    {
+        const detail::DoubleView pv(rMesh.Points());
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t c = 0; c < d; ++c)
+                medit_put_double(out, pv[i * d + c]);
+            medit_put_int(out, plabels ? (*plabels)[i] : 1, isize);
+        }
+    }
+    for (const Block& blk : blocks) {
+        const auto cb = rMesh.Cells(blk.mIndex);
+        const std::size_t count = cb.NumCells();
+        header(blk.mCode, static_cast<std::int64_t>(count),
+               static_cast<std::int64_t>(count * (blk.mNodes + 1) * isize));
+        const detail::Int64View conn(cb.Conn());
+        std::optional<detail::Int64View> labels;
+        if (!clabel_key.empty() && blk.mIndex < rMesh.CellDataNumBlocks(clabel_key))
+            labels.emplace(rMesh.CellData(clabel_key, blk.mIndex));
+        for (std::size_t r = 0; r < count; ++r) {
+            for (std::size_t j = 0; j < blk.mNodes; ++j)
+                medit_put_int(out, conn[r * blk.mNodes + j] + 1, isize);
+            medit_put_int(out, labels ? (*labels)[r] : 1, isize);
+        }
+    }
+    for (const auto& [list, ids] : sections) {
+        int code = 0;
+        for (const MeditBinIdList& k : kMeditBinIdLists)
+            if (std::string(k.mKeyword) == list->mKeyword)
+                code = k.mCode;
+        header(code, static_cast<std::int64_t>(ids.size()),
+               static_cast<std::int64_t>(ids.size() * isize));
+        for (const std::int64_t id : ids)
+            medit_put_int(out, id + 1, isize);
+    }
+    medit_put_int(out, kMbEnd, 4);
+    medit_put_int(out, 0, psize);
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os.write(out.data(), static_cast<std::streamsize>(out.size()));
+    os.close();
+    if (!os)
+        throw WriteError("Medit: failed writing " + rPath);
+}
+
+Mesh read_medit(const std::string& rPath) {
+    return !rPath.empty() && rPath.back() == 'b' ? read_medit_binary(rPath) : read_medit_ascii(rPath);
+}
+
+void write_medit(const std::string& rPath, const Mesh& rMesh) {
+    if (!rPath.empty() && rPath.back() == 'b')
+        write_medit_binary(rPath, rMesh);
+    else
+        write_medit_ascii(rPath, rMesh);
 }
 
 }  // namespace meshioplusplus
@@ -205722,7 +206110,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // function pointer no longer converts to ReadFn -- the hazard noted
         // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
         {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
-        {"medit", meshioplusplus::read_medit_ascii},
+        {"medit", meshioplusplus::read_medit},
         // A lambda: read_mfem is overloaded (grid functions). `.mesh` stays
         // medit's extension; resolve_format hands MFEM files over by content.
         {"mfem", [](const std::string& path) { return meshioplusplus::read_mfem(path); }},
@@ -205884,7 +206272,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
         {"ip", meshioplusplus::write_ip},
         {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
-        {"medit", meshioplusplus::write_medit_ascii},
+        {"medit", meshioplusplus::write_medit},
         {"mfem",
          [](const std::string& path, const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); }},
         {"mff", meshioplusplus::write_mff},
@@ -206125,6 +206513,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".pf3", "flux"},
         {".mdpa", "mdpa"},
         {".mesh", "medit"},
+        {".meshb", "medit"},
         {".mfm", "mfm"},
         {".mphbin", "mphbin"},
         {".mphtxt", "mphtxt"},

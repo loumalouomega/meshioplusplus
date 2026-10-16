@@ -5026,6 +5026,16 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::write_medit_ascii(path, mesh);
         });
     });
+    m.def("medit_write_binary", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_medit_binary(path, mesh);
+        });
+    });
+    m.def("medit_read_binary", guard_read("medit", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_medit_binary(path); }));
+          }));
     m.def("medit_read_ascii", guard_read("medit", [](const std::string& path) {
               return meshioplusplus_py::mesh_to_py(
                   core_nogil([&] { return meshioplusplus::read_medit_ascii(path); }));

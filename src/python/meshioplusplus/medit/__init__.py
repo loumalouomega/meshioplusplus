@@ -11,13 +11,13 @@ def _is_binary_name(filename):
 
 
 def read(filename):
-    """Read a Medit file.
-
-    Uses the C++ core for the ascii .mesh variant; the binary .meshb variant is
-    handled by the reference Python reader.
-    """
-    if not is_buffer(filename, "r") and not _is_binary_name(filename):
+    """Read a Medit file: ``.mesh`` ascii, or ``.meshb`` binary (libMeshb GMF)
+    when the name ends in ``b``. The C++ core reads both; the reference Python
+    reader is the fallback."""
+    if not is_buffer(filename, "r"):
         try:
+            if _is_binary_name(filename):
+                return _core.medit_read_binary(str(filename))
             return _core.medit_read_ascii(str(filename))
         except Exception as exc:
             if not core_declined(exc, "medit", "read", filename):
@@ -26,14 +26,16 @@ def read(filename):
 
 
 def write(filename, mesh, float_fmt=".16e"):
-    """Write a Medit file (C++ core for ascii .mesh; Python for binary .meshb)."""
-    if (
-        not is_buffer(filename, "w")
-        and not _is_binary_name(filename)
-        and float_fmt == ".16e"
+    """Write a Medit file: ascii ``.mesh``, or binary ``.meshb`` (little-endian
+    float64, version 3 or, for 64-bit indices, 4) when the name ends in ``b``."""
+    if not is_buffer(filename, "w") and (
+        _is_binary_name(filename) or float_fmt == ".16e"
     ):
         try:
-            _core.medit_write_ascii(str(filename), mesh)
+            if _is_binary_name(filename):
+                _core.medit_write_binary(str(filename), mesh)
+            else:
+                _core.medit_write_ascii(str(filename), mesh)
             return
         except Exception as exc:
             if not core_declined(exc, "medit", "write", filename):
