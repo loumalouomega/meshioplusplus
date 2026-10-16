@@ -1551,7 +1551,7 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": False,
-        "regions": [],
+        "regions": ["cell"],
     },
     "vtp": {
         "cells": {

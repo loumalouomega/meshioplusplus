@@ -390,6 +390,38 @@ def drop_ghosts(mesh):
 # --------------------------------------------------------------------------- #
 # carving a single mesh into parts                                             #
 # --------------------------------------------------------------------------- #
+def _piece_labels(mesh):
+    """Per-block part ids from ``piece_<k>`` cell regions, or ``None``.
+
+    The regions must be disjoint, cover every cell and number their parts
+    ``0..n-1`` (``n >= 2``) -- what a ``.pvtu`` read attaches -- so writing a
+    read mesh back keeps its pieces.
+    """
+    sizes = [len(blk.data) for blk in mesh.cells]
+    total = sum(sizes)
+    label = np.full(total, -1, dtype=np.int64)
+    count = 0
+    for region in getattr(mesh, "regions", []):
+        if region.kind != "cell":
+            continue
+        name = region.name
+        if not (name.startswith("piece_") and name[6:].isdigit()):
+            return None
+        entries = np.asarray(region.entries, dtype=np.int64)
+        if entries.size and (entries.min() < 0 or entries.max() >= total):
+            return None
+        if entries.size and (label[entries] != -1).any():
+            return None
+        label[entries] = int(name[6:])
+        count += 1
+    if count < 2 or total == 0 or label.min() < 0 or label.max() >= count:
+        return None
+    if len(np.unique(label)) != count:
+        return None
+    starts = np.concatenate([[0], np.cumsum(sizes)])
+    return [label[a:b] for a, b in zip(starts[:-1], starts[1:])]
+
+
 def carve_by_part(mesh, key=PARTITION_PART):
     """One piece per part id ``0..max`` of the integer ``cell_data[key]``.
 
@@ -399,7 +431,10 @@ def carve_by_part(mesh, key=PARTITION_PART):
     """
     labels = mesh.cell_data.get(key)
     if labels is None:
-        return [mesh]
+        # The piece_<k> regions a .pvtu read attaches are the parts.
+        labels = _piece_labels(mesh)
+        if labels is None:
+            return [mesh]
     labels = [np.asarray(x) for x in labels]
     for x in labels:
         if x.dtype.kind not in "iu":

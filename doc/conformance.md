@@ -87,7 +87,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="vtk42">`vtk42`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="vtk51">`vtk51`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="vtkhdf">`vtkhdf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
-| <span id="vtm">`vtm`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
+| <span id="vtm">`vtm`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell |
 | <span id="vtp">`vtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point |
 | <span id="vtr">`vtr`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vts">`vts`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |

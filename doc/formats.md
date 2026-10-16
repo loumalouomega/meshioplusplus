@@ -95,7 +95,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vtkhdf`](./formats/vtkhdf.md) | `.vtkhdf`, `.hdf` | ✓ | ✓ | `h5py` | [8/8 cells · data PCF](./conformance.md#vtkhdf) |
 | [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — | [fails](./conformance.md#vts) |
 | [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — | [fails](./conformance.md#vtr) |
-| [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#vtm) |
+| [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — | [8/8 cells · data PC · regions C](./conformance.md#vtm) |
 | [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#vtp) |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#vtu) |
 | [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | — | ADIOS2 (a core built with it, or `adios2`) | [read-only](./conformance.md#vtx) |

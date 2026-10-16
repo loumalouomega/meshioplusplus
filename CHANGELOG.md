@@ -11,6 +11,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 ## Unreleased
 
 - **VTI/VTR/VTS**: the writers, both engines, write `field_data` and named regions into the grid's `<FieldData>`, byte-identically in binary (roadmap 3.3.7, in part).
+- **VTM/PVTU**: `write` names a `.vtm` piece after the cell region that is exactly its block, and carves a `.pvtu` by `piece_<k>` regions, so a read file writes back with its own pieces; both engines (roadmap 3.3.7, in part).
 
 - **PLY**: the C++ reader now reads scalar face properties beyond `vertex_indices` (ASCII and binary) as per-block `cell_data`, so they no longer force the Python fallback (roadmap 3.4.6).
 - **Nastran**: the C++ reader sets `points_id` / `cells_id` like the Python reader (roadmap 3.4.10).

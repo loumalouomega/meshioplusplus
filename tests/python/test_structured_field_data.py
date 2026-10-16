@@ -80,3 +80,72 @@ def test_engines_write_the_same_binary_bytes(fmt, tmp_path):
     getattr(_core, f"{fmt}_write")(str(a), mesh, True, True)
     TWINS[fmt].write(b, mesh, binary=True)
     assert a.read_bytes() == b.read_bytes()
+
+
+# --------------------------------------------------------------------------- #
+# Roadmap 3.3.7: pvtu / vtm piece regions survive a write                      #
+# --------------------------------------------------------------------------- #
+
+
+def _pieces_mesh():
+    points = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 0], [2, 1, 0.0]]
+    )
+    return meshioplusplus.Mesh(
+        points,
+        [("triangle", [[0, 1, 2], [1, 3, 2]]), ("triangle", [[1, 4, 3], [4, 5, 3]])],
+        regions=[
+            meshioplusplus.Region("left", "cell", [0, 1]),
+            meshioplusplus.Region("right", "cell", [2, 3]),
+        ],
+    )
+
+
+def test_vtm_pieces_are_named_after_their_regions(tmp_path):
+    from meshioplusplus.vtm import _vtm
+
+    for name, write in (
+        ("core", lambda p, m: meshioplusplus.vtm.write(p, m)),
+        ("twin", lambda p, m: _vtm.write(p, m)),
+    ):
+        path = tmp_path / f"{name}.vtm"
+        write(path, _pieces_mesh())
+        back = meshioplusplus.read(path)
+        assert sorted(r.name for r in back.regions) == ["left", "right"], name
+
+
+def test_vtm_region_names_are_escaped(tmp_path):
+    mesh = _pieces_mesh()
+    mesh.regions = [
+        meshioplusplus.Region('a"<b>&', "cell", [0, 1]),
+        meshioplusplus.Region("right", "cell", [2, 3]),
+    ]
+    path = tmp_path / "q.vtm"
+    meshioplusplus.vtm.write(path, mesh)
+    back = meshioplusplus.read(path)
+    assert 'a"<b>&' in {r.name for r in back.regions}
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_pvtu_write_keeps_the_pieces_of_a_read_file(engine, tmp_path):
+    from meshioplusplus.pvtu import _pvtu
+
+    mesh = _pieces_mesh()
+    mesh.regions = [
+        meshioplusplus.Region("piece_0", "cell", [0, 1]),
+        meshioplusplus.Region("piece_1", "cell", [2, 3]),
+    ]
+    mesh.cell_data["c"] = [np.arange(2.0), np.arange(2.0, 4.0)]
+    path = tmp_path / f"{engine}.pvtu"
+    if engine == "core":
+        _core.pvtu_write_codec(str(path), mesh, True, "zlib", "partition:part")
+    else:
+        _pvtu.write(path, mesh)
+    pieces = sorted((tmp_path / engine).glob("*.vtu"))
+    assert len(pieces) == 2
+    back = meshioplusplus.read(path)
+    assert [(r.name, list(r.entries)) for r in back.regions] == [
+        ("piece_0", [0, 1]),
+        ("piece_1", [2, 3]),
+    ]
+    assert list(back.cell_data) == ["c"]

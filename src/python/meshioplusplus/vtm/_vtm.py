@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
@@ -94,6 +95,29 @@ def read(filename):
     return out
 
 
+def _piece_names(mesh):
+    """Each block's name: the cell region that is exactly its cells, else ``block_<i>``."""
+    names = []
+    start = 0
+    for i, cb in enumerate(mesh.cells):
+        count = len(cb.data)
+        wanted = np.arange(start, start + count, dtype=np.int64)
+        name = f"block_{i}"
+        for region in getattr(mesh, "regions", []):
+            if (
+                region.kind == "cell"
+                and region.name
+                and region.name not in names
+                and count > 0
+                and np.array_equal(region.entries, wanted)
+            ):
+                name = region.name
+                break
+        names.append(name)
+        start += count
+    return names
+
+
 def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     filename = str(filename)
     stem = os.path.splitext(os.path.basename(filename))[0]
@@ -104,7 +128,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     from .. import vtu as vtu_pkg
 
     piece_files = []
-    piece_names = []
+    piece_names = _piece_names(mesh)
     for i, cb in enumerate(mesh.cells):
         piece = Mesh(
             mesh.points,
@@ -128,7 +152,6 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             header_type=header_type,
         )
         piece_files.append(f"{stem}/{piece_file_name}")
-        piece_names.append(f"block_{i}")
 
     lines = ['<?xml version="1.0"?>']
     lines.append(
@@ -138,7 +161,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     lines.append("<vtkMultiBlockDataSet>")
     lines.append('<Block index="0">')
     for i, (f, name) in enumerate(zip(piece_files, piece_names)):
-        lines.append(f'<DataSet index="{i}" name="{name}" file="{f}"/>')
+        lines.append(f'<DataSet index="{i}" name={quoteattr(name)} file="{f}"/>')
     lines.append("</Block>")
     lines.append("</vtkMultiBlockDataSet>")
     lines.append("</VTKFile>")

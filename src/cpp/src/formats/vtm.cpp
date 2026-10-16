@@ -132,6 +132,50 @@ std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_d
     return pieces;
 }
 
+// A piece's name: the cell region that is exactly that block's cells (so a mesh
+// read from a .vtm writes its pieces back under their names), else block_<i>.
+// A name used by an earlier piece, or none, falls back to block_<i>.
+std::vector<std::string> vtm_piece_names(const Mesh& rMesh) {
+    std::vector<std::int64_t> starts(rMesh.NumCellBlocks() + 1, 0);
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i)
+        starts[i + 1] = starts[i] + static_cast<std::int64_t>(rMesh.Cells(i).NumCells());
+    std::vector<std::string> names;
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        std::string name = "block_" + std::to_string(i);
+        const std::size_t count = static_cast<std::size_t>(starts[i + 1] - starts[i]);
+        for (std::size_t r = 0; r < rMesh.NumRegions() && count > 0; ++r) {
+            const Region& reg = rMesh.Region(r);
+            if (reg.mKind != RegionKind::Cell || reg.mName.empty() ||
+                reg.NumEntries() != count || std::find(names.begin(), names.end(), reg.mName) != names.end())
+                continue;
+            const std::int64_t* e = reg.Entries();
+            bool exact = true;
+            for (std::size_t k = 0; k < count && exact; ++k)
+                exact = e[k] == starts[i] + static_cast<std::int64_t>(k);
+            if (exact) {
+                name = reg.mName;
+                break;
+            }
+        }
+        names.push_back(std::move(name));
+    }
+    return names;
+}
+
+std::string vtm_xml_attr(const std::string& rText) {
+    std::string out;
+    for (const char c : rText) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, detail::VtkCodec codec) {
@@ -149,9 +193,8 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
                           ec.message());
 
     std::vector<std::string> piece_files;
-    std::vector<std::string> piece_names;
+    const std::vector<std::string> piece_names = vtm_piece_names(rMesh);
     piece_files.reserve(rMesh.NumCellBlocks());
-    piece_names.reserve(rMesh.NumCellBlocks());
 
     for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
         const Mesh piece = vtm_extract_piece(rMesh, i);
@@ -167,7 +210,6 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
         write_vtu_codec(piece_path.string(), cleaned.mMesh, binary, binary ? codec : detail::VtkCodec::None);
 
         piece_files.push_back((fs::path(stem) / piece_file_name).generic_string());
-        piece_names.push_back("block_" + std::to_string(i));
     }
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
@@ -180,7 +222,7 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
     os << "<vtkMultiBlockDataSet>\n";
     os << "<Block index=\"0\">\n";
     for (std::size_t i = 0; i < piece_files.size(); ++i)
-        os << "<DataSet index=\"" << i << "\" name=\"" << piece_names[i] << "\" file=\""
+        os << "<DataSet index=\"" << i << "\" name=\"" << vtm_xml_attr(piece_names[i]) << "\" file=\""
            << piece_files[i] << "\"/>\n";
     os << "</Block>\n";
     os << "</vtkMultiBlockDataSet>\n";
