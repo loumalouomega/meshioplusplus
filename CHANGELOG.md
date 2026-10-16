@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **XDMF**: both engines write `[tag, dim]` integer `field_data` as an `Information` element, which both readers already took back (roadmap 3.3.7, in part).
+
 - **VTI/VTR/VTS**: the writers, both engines, write `field_data` and named regions into the grid's `<FieldData>`, byte-identically in binary (roadmap 3.3.7, in part).
 - **VTM/PVTU**: `write` names a `.vtm` piece after the cell region that is exactly its block, and carves a `.pvtu` by `piece_<k>` regions, so a read file writes back with its own pieces; both engines (roadmap 3.3.7, in part).
 

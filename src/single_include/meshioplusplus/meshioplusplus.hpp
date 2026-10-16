@@ -155876,6 +155876,40 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
     pugi::xml_node grid = domain.append_child("Grid");
     grid.append_attribute("Name") = "Grid";
 
+    // field_data: the [tag, dim] pairs of gmsh-style groups, as one Information
+    // element holding `<main><map key=".." dim="..">tag</map></main>` (what the
+    // readers take back). Any other field array has no XDMF form.
+    {
+        pugi::xml_document info;
+        pugi::xml_node main_node = info.append_child("main");
+        std::size_t entries = 0;
+        for (const std::string& name : rMesh.FieldDataNames()) {
+            const NDArray& data = rMesh.FieldData(name);
+            const bool integer = data.Dtype() != DType::Float32 && data.Dtype() != DType::Float64;
+            if (!integer || data.Size() != 2) {
+                log::warn(
+                    "XDMF: field_data '{}' is not a (tag, dim) integer pair, the only form "
+                    "an Information element holds; not written",
+                    name);
+                continue;
+            }
+            pugi::xml_node entry = main_node.append_child("map");
+            entry.append_attribute("key") = name.c_str();
+            entry.append_attribute("dim") = std::to_string(detail::read_int(data, 1)).c_str();
+            entry.append_child(pugi::node_pcdata)
+                .set_value(std::to_string(detail::read_int(data, 0)).c_str());
+            ++entries;
+        }
+        if (entries > 0) {
+            std::ostringstream payload;
+            info.save(payload, "", pugi::format_raw | pugi::format_no_declaration);
+            pugi::xml_node node = grid.append_child("Information");
+            node.append_attribute("Name") = "Information";
+            node.append_attribute("Value") = std::to_string(entries).c_str();
+            node.append_child(pugi::node_pcdata).set_value(payload.str().c_str());
+        }
+    }
+
     // Geometry
     const NDArray& points = rMesh.Points();
     const std::size_t pdim = points.Shape().size() >= 2 ? points.Shape()[1] : 3;
