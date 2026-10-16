@@ -341,8 +341,6 @@ TEST(NastranH5, RegistryReachesItByExtension) {
     std::filesystem::remove(path);
 }
 
-#endif  // MESHIOPLUSPLUS_HAS_HDF5
-
 TEST(NastranH5Writer, ModelAndNodalResultsRoundTrip) {
     Mesh mesh = mt::hex_mesh();
     std::vector<double> disp(mesh.NumPoints() * 3);
@@ -363,3 +361,5 @@ TEST(NastranH5Writer, ModelAndNodalResultsRoundTrip) {
         EXPECT_DOUBLE_EQ(got[i], disp[i]);
     std::filesystem::remove(path);
 }
+
+#endif  // MESHIOPLUSPLUS_HAS_HDF5

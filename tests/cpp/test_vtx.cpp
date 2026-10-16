@@ -296,8 +296,6 @@ TEST(Vtx, RegistrySniffAndSequenceGlob) {
 
 }  // namespace
 
-#endif  // MESHIOPLUSPLUS_HAS_ADIOS2
-
 TEST(VtxWriter, StepsRoundTripAndOneCellTypeIsEnforced) {
     VtxTempDir dir;
     meshioplusplus::Mesh mesh;
@@ -347,3 +345,5 @@ TEST(VtxWriter, StepsRoundTripAndOneCellTypeIsEnforced) {
     mesh.AddCellBlock("triangle", std::move(tri));
     EXPECT_THROW(meshioplusplus::write_vtx(dir / "mixed.bp", mesh), meshioplusplus::WriteError);
 }
+
+#endif  // MESHIOPLUSPLUS_HAS_ADIOS2
