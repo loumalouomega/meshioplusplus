@@ -246,7 +246,8 @@ std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> medit_id_l
 }
 
 /// The region an id-list section becomes: ids checked against the section they index.
-void medit_add_id_list_region(Mesh& rMesh, const MeditIdList& rList, std::vector<std::int64_t> Ids) {
+void medit_add_id_list_region(Mesh& rMesh, const MeditIdList& rList,
+                              std::vector<std::int64_t> Ids) {
     std::int64_t base = 0, limit = static_cast<std::int64_t>(rMesh.NumPoints());
     if (rList.mKind == RegionKind::Cell) {
         bool found = false;
@@ -489,8 +490,8 @@ struct MeditBinCell {
     int mNodes;
 };
 const MeditBinCell kMeditBinCells[] = {
-    {5, "line", 2},     {6, "triangle", 3}, {7, "quad", 4},   {8, "tetra", 4},
-    {9, "wedge", 6},    {10, "hexahedron", 8}, {49, "pyramid", 5},
+    {5, "line", 2},  {6, "triangle", 3},    {7, "quad", 4},     {8, "tetra", 4},
+    {9, "wedge", 6}, {10, "hexahedron", 8}, {49, "pyramid", 5},
 };
 
 // The id-list sections: libMeshb code -> keyword.
@@ -499,7 +500,7 @@ struct MeditBinIdList {
     const char* mKeyword;
 };
 const MeditBinIdList kMeditBinIdLists[] = {
-    {13, "Corners"}, {14, "Ridges"}, {15, "RequiredVertices"}, {16, "RequiredEdges"},
+    {13, "Corners"},           {14, "Ridges"}, {15, "RequiredVertices"}, {16, "RequiredEdges"},
     {17, "RequiredTriangles"},
 };
 
@@ -626,7 +627,8 @@ Mesh read_medit_binary(const std::string& rPath) {
 
         if (kw == kMbVertices) {
             const std::size_t row = static_cast<std::size_t>(dim) * fsize + isize;
-            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "vertex");
+            const std::size_t n =
+                detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "vertex");
             NDArray pts(fdtype, {n, static_cast<std::size_t>(dim)});
             point_ref.resize(n);
             for (std::size_t i = 0; i < n; ++i) {
@@ -644,7 +646,8 @@ Mesh read_medit_binary(const std::string& rPath) {
         } else if (cell) {
             const auto k = static_cast<std::size_t>(cell->mNodes);
             const std::size_t row = (k + 1) * isize;
-            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "cell");
+            const std::size_t n =
+                detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "cell");
             NDArray data(DType::Int64, {n, k});
             NDArray ref(DType::Int64, {n});
             for (std::size_t i = 0; i < n; ++i) {
@@ -655,7 +658,8 @@ Mesh read_medit_binary(const std::string& rPath) {
             mesh.AddCellBlock(cell->mType, std::move(data));
             mesh.AppendCellData("medit:ref", std::move(ref));
         } else if (idl) {
-            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / isize, "Medit", "entry");
+            const std::size_t n =
+                detail::checked_count(c.Int(isize), c.Left() / isize, "Medit", "entry");
             std::vector<std::int64_t> ids(n);
             for (std::int64_t& id : ids)
                 id = c.Int(isize) - 1;
@@ -686,8 +690,8 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t n = rMesh.NumPoints();
     const std::size_t d = rMesh.PointDim();
     if (d != 2 && d != 3)
-        throw WriteError("Medit: a binary file holds 2-D or 3-D points, not " +
-                         std::to_string(d) + "-D");
+        throw WriteError("Medit: a binary file holds 2-D or 3-D points, not " + std::to_string(d) +
+                         "-D");
     const NDArray* vlabels = pick_first_int(rMesh);
     if (vlabels && rMesh.PointDataNames().size() > 1)
         log::warn("Medit can only write one point data array. Picking the first integer one.");
@@ -712,7 +716,8 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
             if (cb.Type() == k.mType)
                 found = &k;
         if (!found) {
-            log::warn("MEDIT's mesh format doesn't know {} cells. Skipping.", std::string(cb.Type()));
+            log::warn("MEDIT's mesh format doesn't know {} cells. Skipping.",
+                      std::string(cb.Type()));
             continue;
         }
         blocks.push_back({b, found->mCode, static_cast<std::size_t>(found->mNodes)});
@@ -802,7 +807,8 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
 }
 
 Mesh read_medit(const std::string& rPath) {
-    return !rPath.empty() && rPath.back() == 'b' ? read_medit_binary(rPath) : read_medit_ascii(rPath);
+    return !rPath.empty() && rPath.back() == 'b' ? read_medit_binary(rPath)
+                                                 : read_medit_ascii(rPath);
 }
 
 void write_medit(const std::string& rPath, const Mesh& rMesh) {

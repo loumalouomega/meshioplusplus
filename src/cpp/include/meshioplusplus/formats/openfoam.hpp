@@ -338,7 +338,8 @@ public:
     OpenFoamSeriesWriter(OpenFoamSeriesWriter&&) noexcept;
     OpenFoamSeriesWriter& operator=(OpenFoamSeriesWriter&&) noexcept;
 
-    /// Write one step now. @throws WriteError on a mismatch with the first step, or a repeated time.
+    /// Write one step now. @throws WriteError on a mismatch with the first step, or a repeated
+    /// time.
     void Write(double Time, const Mesh& rMesh);
 
     /// The number of steps written so far.

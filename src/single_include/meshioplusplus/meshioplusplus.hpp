@@ -20805,7 +20805,8 @@ public:
     OpenFoamSeriesWriter(OpenFoamSeriesWriter&&) noexcept;
     OpenFoamSeriesWriter& operator=(OpenFoamSeriesWriter&&) noexcept;
 
-    /// Write one step now. @throws WriteError on a mismatch with the first step, or a repeated time.
+    /// Write one step now. @throws WriteError on a mismatch with the first step, or a repeated
+    /// time.
     void Write(double Time, const Mesh& rMesh);
 
     /// The number of steps written so far.
@@ -56679,8 +56680,7 @@ std::vector<int> ansys_cell_layout(std::string_view Type, AnsysCategory Category
             return V{0, 1, 2, 2};
         if (Type == "triangle6")  // K=L, the K-L midside = K
             return V{0, 1, 2, 2, 3, 4, 2, 5};
-    } else if (Category == AnsysCategory::Line ||
-               Category == AnsysCategory::LinearLine) {
+    } else if (Category == AnsysCategory::Line || Category == AnsysCategory::LinearLine) {
         if (Type == "line")
             return V{0, 1};
         if (Type == "line3" && Category == AnsysCategory::Line)
@@ -56691,7 +56691,6 @@ std::vector<int> ansys_cell_layout(std::string_view Type, AnsysCategory Category
     }
     return {};
 }
-
 
 int ansys_default_routine(std::string_view Type) {
     static const std::pair<std::string_view, int> kDefault[] = {
@@ -56760,9 +56759,10 @@ AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What) 
                 slot = it->second;
             }
     if (dropped_etype)
-        log::warn("{}: some ansys:element values do not fit their cells' shape; the default "
-                  "element type was written instead",
-                  What);
+        log::warn(
+            "{}: some ansys:element values do not fit their cells' shape; the default "
+            "element type was written instead",
+            What);
     return out;
 }
 
@@ -77512,8 +77512,9 @@ private:
                     r.push_back(filw_i(flag));
                 for (std::int64_t k = 0; k < length; ++k) {
                     const auto at = static_cast<std::size_t>(offset + k);
-                    r.push_back(kind_name == "matrix_dofs" ? filw_i(detail::read_int(values, at))
-                                                           : filw_d(detail::read_double(values, at)));
+                    r.push_back(kind_name == "matrix_dofs"
+                                    ? filw_i(detail::read_int(values, at))
+                                    : filw_d(detail::read_double(values, at)));
                 }
                 mRecords.push_back(std::move(r));
             }
@@ -80941,7 +80942,6 @@ MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath, const Read
     return rst_metadata(rPath, rOptions, true, "ansys_rst_cyclic");
 }
 
-
 // ---------------------------------------------------------------------------
 // The writer: the reader's inverse (little-endian, 64-bit pointers, uncompressed). The
 // Python twin (`ansys_rst/_write.py`) writes the same bytes.
@@ -80995,7 +80995,9 @@ public:
             std::memcpy(data.data(), rValues.data(), rValues.size() * sizeof(double));
         return Record(data, 0x00);
     }
-    void Patch(std::size_t Ptr, std::size_t K, std::int64_t Value) { mW[Ptr + 2 + K] = rstw_i32(Value); }
+    void Patch(std::size_t Ptr, std::size_t K, std::int64_t Value) {
+        mW[Ptr + 2 + K] = rstw_i32(Value);
+    }
     void Patch64(std::size_t Ptr, std::size_t Lo, std::size_t Hi, std::int64_t Value) {
         Patch(Ptr, Lo, Value & 0xFFFFFFFFLL);
         Patch(Ptr, Hi, Value >> 32);
@@ -81077,8 +81079,8 @@ public:
             RstwSlotInfo& info = mSlots[e.mSlot];
             info.mRoutine = e.mRoutine;
             info.mNodelm = std::max(info.mNodelm, e.mNodes.size());
-            info.mNodstr = std::max(
-                info.mNodstr, detail::ansys_num_corners(rMesh.Cells(e.mBlock).Type()));
+            info.mNodstr =
+                std::max(info.mNodstr, detail::ansys_num_corners(rMesh.Cells(e.mBlock).Type()));
         }
         std::size_t sides = 0;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
@@ -81134,7 +81136,7 @@ public:
 };
 
 struct RstwTensor {
-    std::string mName;  // "S", "S@top" ...
+    std::string mName;        // "S", "S@top" ...
     std::size_t mTensor = 0;  // index in kRstTensors
     bool mTop = false;
 };
@@ -81155,7 +81157,7 @@ struct RstwSet {
     std::vector<Reaction> mReactions;
     std::vector<RstwTensor> mTensors;
     std::vector<const RstRawRecord*> mRaw;  ///< raw element records present in the mesh
-    bool mEnf = false;                       ///< element nodal forces, one value per DOF
+    bool mEnf = false;                      ///< element nodal forces, one value per DOF
     std::int64_t mMask = 0;
 };
 
@@ -81374,8 +81376,7 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
                 if (any)
                     pending.emplace_back(kRstTensors[surfaces.mTensor].mEntry, std::move(values));
             }
-            if (rSet.mEnf && info.mNodelm && numdof &&
-                e.mBlock < rMesh.CellDataNumBlocks("ENF")) {
+            if (rSet.mEnf && info.mNodelm && numdof && e.mBlock < rMesh.CellDataNumBlocks("ENF")) {
                 const NDArray& a = rMesh.CellData("ENF", e.mBlock);
                 const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
                 if (a.Shape().size() == 2 && count > e.mRow && a.Shape()[1] % numdof == 0) {
@@ -81389,8 +81390,9 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
                             continue;
                         bool finite = true;
                         for (std::size_t c = 0; c < numdof; ++c)
-                            finite = finite &&
-                                     std::isfinite(view.Data()[e.mRow * a.Shape()[1] + j * numdof + c]);
+                            finite =
+                                finite &&
+                                std::isfinite(view.Data()[e.mRow * a.Shape()[1] + j * numdof + c]);
                         if (!finite)
                             continue;
                         for (std::size_t c = 0; c < numdof; ++c)
@@ -81437,7 +81439,8 @@ std::size_t rstw_set_records(RstwWords& rF, const Mesh& rMesh, const RstwModel& 
         std::vector<std::int64_t> table;
         std::vector<double> values;
         for (const auto& r : rSet.mReactions) {
-            const std::int64_t index = static_cast<std::int64_t>(r.mPoint * numdof + order[r.mCode] + 1);
+            const std::int64_t index =
+                static_cast<std::int64_t>(r.mPoint * numdof + order[r.mCode] + 1);
             table.push_back(index & 0xFFFFFFFFLL);
             table.push_back(index >> 32);
             values.push_back(r.mValue);
@@ -81521,9 +81524,9 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     }
     std::size_t first_node = 0;
     for (std::size_t k = 0; k < rModel.mNnod; ++k) {
-        const std::size_t ptr = f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k],
-                                           rModel.mPoints[3 * k + 1], rModel.mPoints[3 * k + 2],
-                                           0.0, 0.0, 0.0});
+        const std::size_t ptr =
+            f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k], rModel.mPoints[3 * k + 1],
+                       rModel.mPoints[3 * k + 2], 0.0, 0.0, 0.0});
         if (k == 0)
             first_node = ptr;
     }
@@ -81532,11 +81535,16 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     f.Patch64(geometry, 28, 29, static_cast<std::int64_t>(eid));
     for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
         const RstwElement& e = rModel.mElements[k];
-        std::vector<std::int64_t> record = {rModel.mMat[k],  e.mSlot,
-                                            rModel.mReal[k], rModel.mSecnum[k],
-                                            0,               1,
-                                            0,               0,
-                                            static_cast<std::int64_t>(k + 1), 0};
+        std::vector<std::int64_t> record = {rModel.mMat[k],
+                                            e.mSlot,
+                                            rModel.mReal[k],
+                                            rModel.mSecnum[k],
+                                            0,
+                                            1,
+                                            0,
+                                            0,
+                                            static_cast<std::int64_t>(k + 1),
+                                            0};
         record.insert(record.end(), e.mNodes.begin(), e.mNodes.end());
         const std::size_t ptr = f.Ints(record);
         f.Patch(eid, 2 * k, static_cast<std::int64_t>(ptr - eid));
@@ -81572,7 +81580,8 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
 
     std::vector<std::int64_t> bases;
     for (std::size_t i = 0; i < rSets.size(); ++i)
-        bases.push_back(static_cast<std::int64_t>(rstw_set_records(f, *rMeshes[i], rModel, rSets[i])));
+        bases.push_back(
+            static_cast<std::int64_t>(rstw_set_records(f, *rMeshes[i], rModel, rSets[i])));
     std::vector<std::int64_t> dsi;
     for (const std::int64_t b : bases)
         dsi.push_back(b & 0xFFFFFFFFLL);
@@ -82086,7 +82095,8 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     // Every cell's (element routine, ET slot): kept from `ansys:element` and
     // `ansys:type` when they describe a layout the cell's type has, else the
     // default routine for its type in a fresh slot.
-    detail::AnsysElementTypes element_types = detail::ansys_element_types(rMesh, "Ansys .cdb writer");
+    detail::AnsysElementTypes element_types =
+        detail::ansys_element_types(rMesh, "Ansys .cdb writer");
     const std::map<int, int>& slot_routine = element_types.mSlotRoutine;
     const std::vector<std::vector<std::pair<int, int>>>& cell_etype = element_types.mCellEtype;
 
@@ -112851,8 +112861,9 @@ public:
                 bool airbag_block = false;
                 for (std::size_t i = 0; i < count && !airbag_block; ++i)
                     for (std::size_t c = 0; c < 3; ++c)
-                        airbag_block = airbag_block ||
-                                       std::isnan(mPoints[static_cast<std::size_t>(conn.Data()[i]) * 3 + c]);
+                        airbag_block =
+                            airbag_block ||
+                            std::isnan(mPoints[static_cast<std::size_t>(conn.Data()[i]) * 3 + c]);
                 if (airbag_block) {
                     airbag += count;
                     base += count;
@@ -112868,10 +112879,12 @@ public:
                     mExtra.push_back({mRows[family].size(), {row[8], row[9]}});
                 } else if (family == kD3wSolid && type == "hexahedron20") {
                     nodes.assign(row, row + 8);
-                    mExtra20.push_back({mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 20)});
+                    mExtra20.push_back(
+                        {mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 20)});
                 } else if (family == kD3wSolid && type == "hexahedron27") {
                     nodes.assign(row, row + 8);
-                    mExtra27.push_back({mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 27)});
+                    mExtra27.push_back(
+                        {mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 27)});
                 } else if (family == kD3wSolid) {
                     const auto eight = detail::expand_brick(type, row);
                     nodes.assign(eight.begin(), eight.end());
@@ -112880,14 +112893,16 @@ public:
                     if (type == "triangle") {
                         nodes.push_back(nodes[2]);
                     } else if (type == "quad8") {
-                        mExtra8.push_back({mRows[family].size(),
-                                           std::vector<std::int64_t>(nodes.begin() + 4, nodes.end())});
+                        mExtra8.push_back(
+                            {mRows[family].size(),
+                             std::vector<std::int64_t>(nodes.begin() + 4, nodes.end())});
                         nodes.resize(4);
                     }
                 }
                 mRows[family].push_back(std::move(nodes));
                 if (has_part && rMesh.CellData("lsdyna:part", b).Size() > r)
-                    mPartsOf[family].push_back(detail::read_int(rMesh.CellData("lsdyna:part", b), r));
+                    mPartsOf[family].push_back(
+                        detail::read_int(rMesh.CellData("lsdyna:part", b), r));
                 else
                     mPartsOf[family].push_back(part_of_cell[base + r]);
                 if (has_eid && rMesh.CellData("lsdyna:eid", b).Size() > r)
@@ -112919,15 +112934,15 @@ public:
         for (int f = 0; f < 4; ++f)
             all.insert(mPartsOf[f].begin(), mPartsOf[f].end());
         {
-            std::set<std::int64_t> solid_sph(mPartsOf[kD3wSolid].begin(), mPartsOf[kD3wSolid].end());
+            std::set<std::int64_t> solid_sph(mPartsOf[kD3wSolid].begin(),
+                                             mPartsOf[kD3wSolid].end());
             solid_sph.insert(mPartsOf[kD3wSph].begin(), mPartsOf[kD3wSph].end());
             mNummat[kD3wSolid] = solid_sph.size();
-            mNummat[kD3wBeam] = std::set<std::int64_t>(mPartsOf[kD3wBeam].begin(),
-                                                       mPartsOf[kD3wBeam].end())
-                                    .size();
-            mNummat[kD3wShell] = std::set<std::int64_t>(mPartsOf[kD3wShell].begin(),
-                                                        mPartsOf[kD3wShell].end())
-                                     .size();
+            mNummat[kD3wBeam] =
+                std::set<std::int64_t>(mPartsOf[kD3wBeam].begin(), mPartsOf[kD3wBeam].end()).size();
+            mNummat[kD3wShell] =
+                std::set<std::int64_t>(mPartsOf[kD3wShell].begin(), mPartsOf[kD3wShell].end())
+                    .size();
         }
         mNparts = mNummat[0] + mNummat[1] + mNummat[2] + mNrigid;
         mPartIds.assign(all.begin(), all.end());
@@ -113059,11 +113074,10 @@ const std::vector<std::pair<const char*, std::size_t>>& d3w_part_globals() {
 }
 
 const std::vector<std::pair<const char*, std::size_t>>& d3w_beam_core() {
-    static const std::vector<std::pair<const char*, std::size_t>> v = {
-        {"beam_axial_force", 1},
-        {"beam_shear_force", 2},
-        {"beam_bending_moment", 2},
-        {"beam_torsion_moment", 1}};
+    static const std::vector<std::pair<const char*, std::size_t>> v = {{"beam_axial_force", 1},
+                                                                       {"beam_shear_force", 2},
+                                                                       {"beam_bending_moment", 2},
+                                                                       {"beam_torsion_moment", 1}};
     return v;
 }
 
@@ -113091,7 +113105,7 @@ const std::vector<std::pair<const char*, std::size_t>>& d3w_shell_extra() {
 
 const std::vector<std::pair<const char*, std::size_t>>& d3w_rigid_fields() {
     static const std::vector<std::pair<const char*, std::size_t>> v = {
-        {"coordinates", 3},        {"rotation", 9},     {"velocity", 3},
+        {"coordinates", 3},         {"rotation", 9},     {"velocity", 3},
         {"rotational_velocity", 3}, {"acceleration", 3}, {"rotational_acceleration", 3}};
     return v;
 }
@@ -113103,8 +113117,9 @@ struct D3wSphVar {
 };
 const std::vector<D3wSphVar>& d3w_sph_vars() {
     static const std::vector<D3wSphVar> v = {
-        {"sph_radius", 1, 1}, {"sph_pressure", 2, 1},   {"stress", 3, 6},
-        {"effective_plastic_strain", 4, 1}, {"density", 5, 1}, {"internal_energy", 6, 1},
+        {"sph_radius", 1, 1},   {"sph_pressure", 2, 1},
+        {"stress", 3, 6},       {"effective_plastic_strain", 4, 1},
+        {"density", 5, 1},      {"internal_energy", 6, 1},
         {"sph_neighbors", 7, 1}};
     return v;
 }
@@ -113115,9 +113130,10 @@ public:
     D3wPlan(const D3wModel& rModel, const std::vector<const Mesh*>& rMeshes, bool Double)
         : mModel(rModel), mWs(Double ? 8 : 4) {
         const std::size_t nparts = rModel.mNparts;
-        static const char* kNodal[] = {"displacement", "velocity", "acceleration", "temperature",
-                                       "heat_flux", "mass_scaling", "temperature_gradient",
-                                       "residual_forces", "residual_moments"};
+        static const char* kNodal[] = {
+            "displacement",         "velocity",        "acceleration",
+            "temperature",          "heat_flux",       "mass_scaling",
+            "temperature_gradient", "residual_forces", "residual_moments"};
         std::array<D3wSeen, 4> seen;
         for (const Mesh* pMesh : rMeshes) {
             const Mesh& mesh = *pMesh;
@@ -113188,14 +113204,34 @@ public:
     }
 
     static const std::vector<const char*>& kElementNames() {
-        static const std::vector<const char*> v = {
-            "stress", "effective_plastic_strain", "plastic_strain_tensor",
-            "thermal_strain_tensor", "strain", "thermal_variables", "history_variables",
-            "shell_bending_moment", "shell_shear_force", "shell_normal_force", "thickness",
-            "shell_element_variables", "strain_inner", "strain_outer", "internal_energy",
-            "beam_axial_force", "beam_shear_force", "beam_bending_moment", "beam_torsion_moment",
-            "beam_axial_stress", "beam_shear_stress", "beam_axial_strain", "sph_radius",
-            "sph_pressure", "density", "sph_neighbors", "strain_rate", "mass"};
+        static const std::vector<const char*> v = {"stress",
+                                                   "effective_plastic_strain",
+                                                   "plastic_strain_tensor",
+                                                   "thermal_strain_tensor",
+                                                   "strain",
+                                                   "thermal_variables",
+                                                   "history_variables",
+                                                   "shell_bending_moment",
+                                                   "shell_shear_force",
+                                                   "shell_normal_force",
+                                                   "thickness",
+                                                   "shell_element_variables",
+                                                   "strain_inner",
+                                                   "strain_outer",
+                                                   "internal_energy",
+                                                   "beam_axial_force",
+                                                   "beam_shear_force",
+                                                   "beam_bending_moment",
+                                                   "beam_torsion_moment",
+                                                   "beam_axial_stress",
+                                                   "beam_shear_stress",
+                                                   "beam_axial_strain",
+                                                   "sph_radius",
+                                                   "sph_pressure",
+                                                   "density",
+                                                   "sph_neighbors",
+                                                   "strain_rate",
+                                                   "mass"};
         return v;
     }
 
@@ -113220,10 +113256,10 @@ public:
         mStress = Has(kD3wSolid, {"stress"}) || Has(kD3wShell, {"stress"});
         mPstrain = Has(kD3wSolid, {"effective_plastic_strain"}) ||
                    Has(kD3wShell, {"effective_plastic_strain"});
-        mPlasticTensor = Has(kD3wSolid, {"plastic_strain_tensor"}) ||
-                         Has(kD3wShell, {"plastic_strain_tensor"});
-        mThermalTensor = Has(kD3wSolid, {"thermal_strain_tensor"}) ||
-                         Has(kD3wShell, {"thermal_strain_tensor"});
+        mPlasticTensor =
+            Has(kD3wSolid, {"plastic_strain_tensor"}) || Has(kD3wShell, {"plastic_strain_tensor"});
+        mThermalTensor =
+            Has(kD3wSolid, {"thermal_strain_tensor"}) || Has(kD3wShell, {"thermal_strain_tensor"});
         mStrain = Has(kD3wSolid, {"strain"}) || Has(kD3wShell, {"strain_inner", "strain_outer"});
         mForces = false;
         for (const auto& f : d3w_shell_forces())
@@ -113517,12 +113553,12 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     const auto shells_at = beams_at + static_cast<std::int64_t>(m.mCounts[kD3wBeam]);
     const auto parts_at = shells_at + static_cast<std::int64_t>(m.mCounts[kD3wShell]);
     for (const std::int64_t v :
-         {std::int64_t{-17}, solids_at, beams_at, shells_at, parts_at, static_cast<std::int64_t>(m.mN),
-          static_cast<std::int64_t>(m.mCounts[kD3wSolid]),
+         {std::int64_t{-17}, solids_at, beams_at, shells_at, parts_at,
+          static_cast<std::int64_t>(m.mN), static_cast<std::int64_t>(m.mCounts[kD3wSolid]),
           static_cast<std::int64_t>(m.mCounts[kD3wBeam]),
           static_cast<std::int64_t>(m.mCounts[kD3wShell]), std::int64_t{0}, parts_at,
-          parts_at + nparts, parts_at + 2 * nparts, nparts,
-          static_cast<std::int64_t>(m.mNrigid), nparts})
+          parts_at + nparts, parts_at + 2 * nparts, nparts, static_cast<std::int64_t>(m.mNrigid),
+          nparts})
         d3w_i32(out, v, ws);
     for (const std::int64_t v : m.mNid)
         d3w_i32(out, v, ws);
@@ -113648,7 +113684,8 @@ std::vector<double> d3w_beam_matrix(const D3wPlan& rPlan, const Mesh& rMesh) {
                 const std::size_t k = std::min(a.mComps, comps);
                 for (std::size_t e = 0; e < range.mCount; ++e)
                     for (std::size_t c = 0; c < k; ++c)
-                        out[(range.mFirst + e) * width + at + c] = a.mV[e * a.mPoints * a.mComps + c];
+                        out[(range.mFirst + e) * width + at + c] =
+                            a.mV[e * a.mPoints * a.mComps + c];
             }
         at += comps;
     }
@@ -113939,8 +113976,7 @@ struct LsdynaD3plotSeriesWriter::Impl {
 };
 
 LsdynaD3plotSeriesWriter::LsdynaD3plotSeriesWriter(const std::string& rPath,
-                                                   std::size_t MaxFileBytes,
-                                                   bool DoublePrecision)
+                                                   std::size_t MaxFileBytes, bool DoublePrecision)
     : mpImpl(std::make_unique<Impl>()) {
     mpImpl->mPath = rPath;
     mpImpl->mMaxBytes = MaxFileBytes;
@@ -113949,8 +113985,8 @@ LsdynaD3plotSeriesWriter::LsdynaD3plotSeriesWriter(const std::string& rPath,
 
 LsdynaD3plotSeriesWriter::~LsdynaD3plotSeriesWriter() = default;
 LsdynaD3plotSeriesWriter::LsdynaD3plotSeriesWriter(LsdynaD3plotSeriesWriter&&) noexcept = default;
-LsdynaD3plotSeriesWriter& LsdynaD3plotSeriesWriter::operator=(
-    LsdynaD3plotSeriesWriter&&) noexcept = default;
+LsdynaD3plotSeriesWriter& LsdynaD3plotSeriesWriter::operator=(LsdynaD3plotSeriesWriter&&) noexcept =
+    default;
 
 void LsdynaD3plotSeriesWriter::Write(double Time, const Mesh& rMesh) {
     if (!mpImpl)
@@ -113987,7 +114023,6 @@ void LsdynaD3plotSeriesWriter::Finalize() {
     const D3wPlan plan(*s.mModel, meshes, s.mDouble);
     d3w_store(s.mPath, d3w_assemble(plan, steps, s.mMaxBytes));
 }
-
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/lsdyna_d3plot.cpp =====
@@ -120643,7 +120678,8 @@ std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> medit_id_l
 }
 
 /// The region an id-list section becomes: ids checked against the section they index.
-void medit_add_id_list_region(Mesh& rMesh, const MeditIdList& rList, std::vector<std::int64_t> Ids) {
+void medit_add_id_list_region(Mesh& rMesh, const MeditIdList& rList,
+                              std::vector<std::int64_t> Ids) {
     std::int64_t base = 0, limit = static_cast<std::int64_t>(rMesh.NumPoints());
     if (rList.mKind == RegionKind::Cell) {
         bool found = false;
@@ -120886,8 +120922,8 @@ struct MeditBinCell {
     int mNodes;
 };
 const MeditBinCell kMeditBinCells[] = {
-    {5, "line", 2},     {6, "triangle", 3}, {7, "quad", 4},   {8, "tetra", 4},
-    {9, "wedge", 6},    {10, "hexahedron", 8}, {49, "pyramid", 5},
+    {5, "line", 2},  {6, "triangle", 3},    {7, "quad", 4},     {8, "tetra", 4},
+    {9, "wedge", 6}, {10, "hexahedron", 8}, {49, "pyramid", 5},
 };
 
 // The id-list sections: libMeshb code -> keyword.
@@ -120896,7 +120932,7 @@ struct MeditBinIdList {
     const char* mKeyword;
 };
 const MeditBinIdList kMeditBinIdLists[] = {
-    {13, "Corners"}, {14, "Ridges"}, {15, "RequiredVertices"}, {16, "RequiredEdges"},
+    {13, "Corners"},           {14, "Ridges"}, {15, "RequiredVertices"}, {16, "RequiredEdges"},
     {17, "RequiredTriangles"},
 };
 
@@ -121023,7 +121059,8 @@ Mesh read_medit_binary(const std::string& rPath) {
 
         if (kw == kMbVertices) {
             const std::size_t row = static_cast<std::size_t>(dim) * fsize + isize;
-            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "vertex");
+            const std::size_t n =
+                detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "vertex");
             NDArray pts(fdtype, {n, static_cast<std::size_t>(dim)});
             point_ref.resize(n);
             for (std::size_t i = 0; i < n; ++i) {
@@ -121041,7 +121078,8 @@ Mesh read_medit_binary(const std::string& rPath) {
         } else if (cell) {
             const auto k = static_cast<std::size_t>(cell->mNodes);
             const std::size_t row = (k + 1) * isize;
-            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "cell");
+            const std::size_t n =
+                detail::checked_count(c.Int(isize), c.Left() / row, "Medit", "cell");
             NDArray data(DType::Int64, {n, k});
             NDArray ref(DType::Int64, {n});
             for (std::size_t i = 0; i < n; ++i) {
@@ -121052,7 +121090,8 @@ Mesh read_medit_binary(const std::string& rPath) {
             mesh.AddCellBlock(cell->mType, std::move(data));
             mesh.AppendCellData("medit:ref", std::move(ref));
         } else if (idl) {
-            const std::size_t n = detail::checked_count(c.Int(isize), c.Left() / isize, "Medit", "entry");
+            const std::size_t n =
+                detail::checked_count(c.Int(isize), c.Left() / isize, "Medit", "entry");
             std::vector<std::int64_t> ids(n);
             for (std::int64_t& id : ids)
                 id = c.Int(isize) - 1;
@@ -121083,8 +121122,8 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t n = rMesh.NumPoints();
     const std::size_t d = rMesh.PointDim();
     if (d != 2 && d != 3)
-        throw WriteError("Medit: a binary file holds 2-D or 3-D points, not " +
-                         std::to_string(d) + "-D");
+        throw WriteError("Medit: a binary file holds 2-D or 3-D points, not " + std::to_string(d) +
+                         "-D");
     const NDArray* vlabels = pick_first_int(rMesh);
     if (vlabels && rMesh.PointDataNames().size() > 1)
         log::warn("Medit can only write one point data array. Picking the first integer one.");
@@ -121109,7 +121148,8 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
             if (cb.Type() == k.mType)
                 found = &k;
         if (!found) {
-            log::warn("MEDIT's mesh format doesn't know {} cells. Skipping.", std::string(cb.Type()));
+            log::warn("MEDIT's mesh format doesn't know {} cells. Skipping.",
+                      std::string(cb.Type()));
             continue;
         }
         blocks.push_back({b, found->mCode, static_cast<std::size_t>(found->mNodes)});
@@ -121199,7 +121239,8 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
 }
 
 Mesh read_medit(const std::string& rPath) {
-    return !rPath.empty() && rPath.back() == 'b' ? read_medit_binary(rPath) : read_medit_ascii(rPath);
+    return !rPath.empty() && rPath.back() == 'b' ? read_medit_binary(rPath)
+                                                 : read_medit_ascii(rPath);
 }
 
 void write_medit(const std::string& rPath, const Mesh& rMesh) {

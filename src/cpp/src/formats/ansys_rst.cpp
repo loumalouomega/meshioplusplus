@@ -1768,7 +1768,6 @@ MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath, const Read
     return rst_metadata(rPath, rOptions, true, "ansys_rst_cyclic");
 }
 
-
 // ---------------------------------------------------------------------------
 // The writer: the reader's inverse (little-endian, 64-bit pointers, uncompressed). The
 // Python twin (`ansys_rst/_write.py`) writes the same bytes.
@@ -1822,7 +1821,9 @@ public:
             std::memcpy(data.data(), rValues.data(), rValues.size() * sizeof(double));
         return Record(data, 0x00);
     }
-    void Patch(std::size_t Ptr, std::size_t K, std::int64_t Value) { mW[Ptr + 2 + K] = rstw_i32(Value); }
+    void Patch(std::size_t Ptr, std::size_t K, std::int64_t Value) {
+        mW[Ptr + 2 + K] = rstw_i32(Value);
+    }
     void Patch64(std::size_t Ptr, std::size_t Lo, std::size_t Hi, std::int64_t Value) {
         Patch(Ptr, Lo, Value & 0xFFFFFFFFLL);
         Patch(Ptr, Hi, Value >> 32);
@@ -1904,8 +1905,8 @@ public:
             RstwSlotInfo& info = mSlots[e.mSlot];
             info.mRoutine = e.mRoutine;
             info.mNodelm = std::max(info.mNodelm, e.mNodes.size());
-            info.mNodstr = std::max(
-                info.mNodstr, detail::ansys_num_corners(rMesh.Cells(e.mBlock).Type()));
+            info.mNodstr =
+                std::max(info.mNodstr, detail::ansys_num_corners(rMesh.Cells(e.mBlock).Type()));
         }
         std::size_t sides = 0;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
@@ -1961,7 +1962,7 @@ public:
 };
 
 struct RstwTensor {
-    std::string mName;  // "S", "S@top" ...
+    std::string mName;        // "S", "S@top" ...
     std::size_t mTensor = 0;  // index in kRstTensors
     bool mTop = false;
 };
@@ -1982,7 +1983,7 @@ struct RstwSet {
     std::vector<Reaction> mReactions;
     std::vector<RstwTensor> mTensors;
     std::vector<const RstRawRecord*> mRaw;  ///< raw element records present in the mesh
-    bool mEnf = false;                       ///< element nodal forces, one value per DOF
+    bool mEnf = false;                      ///< element nodal forces, one value per DOF
     std::int64_t mMask = 0;
 };
 
@@ -2201,8 +2202,7 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
                 if (any)
                     pending.emplace_back(kRstTensors[surfaces.mTensor].mEntry, std::move(values));
             }
-            if (rSet.mEnf && info.mNodelm && numdof &&
-                e.mBlock < rMesh.CellDataNumBlocks("ENF")) {
+            if (rSet.mEnf && info.mNodelm && numdof && e.mBlock < rMesh.CellDataNumBlocks("ENF")) {
                 const NDArray& a = rMesh.CellData("ENF", e.mBlock);
                 const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
                 if (a.Shape().size() == 2 && count > e.mRow && a.Shape()[1] % numdof == 0) {
@@ -2216,8 +2216,9 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
                             continue;
                         bool finite = true;
                         for (std::size_t c = 0; c < numdof; ++c)
-                            finite = finite &&
-                                     std::isfinite(view.Data()[e.mRow * a.Shape()[1] + j * numdof + c]);
+                            finite =
+                                finite &&
+                                std::isfinite(view.Data()[e.mRow * a.Shape()[1] + j * numdof + c]);
                         if (!finite)
                             continue;
                         for (std::size_t c = 0; c < numdof; ++c)
@@ -2264,7 +2265,8 @@ std::size_t rstw_set_records(RstwWords& rF, const Mesh& rMesh, const RstwModel& 
         std::vector<std::int64_t> table;
         std::vector<double> values;
         for (const auto& r : rSet.mReactions) {
-            const std::int64_t index = static_cast<std::int64_t>(r.mPoint * numdof + order[r.mCode] + 1);
+            const std::int64_t index =
+                static_cast<std::int64_t>(r.mPoint * numdof + order[r.mCode] + 1);
             table.push_back(index & 0xFFFFFFFFLL);
             table.push_back(index >> 32);
             values.push_back(r.mValue);
@@ -2348,9 +2350,9 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     }
     std::size_t first_node = 0;
     for (std::size_t k = 0; k < rModel.mNnod; ++k) {
-        const std::size_t ptr = f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k],
-                                           rModel.mPoints[3 * k + 1], rModel.mPoints[3 * k + 2],
-                                           0.0, 0.0, 0.0});
+        const std::size_t ptr =
+            f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k], rModel.mPoints[3 * k + 1],
+                       rModel.mPoints[3 * k + 2], 0.0, 0.0, 0.0});
         if (k == 0)
             first_node = ptr;
     }
@@ -2359,11 +2361,16 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     f.Patch64(geometry, 28, 29, static_cast<std::int64_t>(eid));
     for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
         const RstwElement& e = rModel.mElements[k];
-        std::vector<std::int64_t> record = {rModel.mMat[k],  e.mSlot,
-                                            rModel.mReal[k], rModel.mSecnum[k],
-                                            0,               1,
-                                            0,               0,
-                                            static_cast<std::int64_t>(k + 1), 0};
+        std::vector<std::int64_t> record = {rModel.mMat[k],
+                                            e.mSlot,
+                                            rModel.mReal[k],
+                                            rModel.mSecnum[k],
+                                            0,
+                                            1,
+                                            0,
+                                            0,
+                                            static_cast<std::int64_t>(k + 1),
+                                            0};
         record.insert(record.end(), e.mNodes.begin(), e.mNodes.end());
         const std::size_t ptr = f.Ints(record);
         f.Patch(eid, 2 * k, static_cast<std::int64_t>(ptr - eid));
@@ -2399,7 +2406,8 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
 
     std::vector<std::int64_t> bases;
     for (std::size_t i = 0; i < rSets.size(); ++i)
-        bases.push_back(static_cast<std::int64_t>(rstw_set_records(f, *rMeshes[i], rModel, rSets[i])));
+        bases.push_back(
+            static_cast<std::int64_t>(rstw_set_records(f, *rMeshes[i], rModel, rSets[i])));
     std::vector<std::int64_t> dsi;
     for (const std::int64_t b : bases)
         dsi.push_back(b & 0xFFFFFFFFLL);

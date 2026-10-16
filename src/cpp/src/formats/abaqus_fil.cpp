@@ -1667,8 +1667,9 @@ private:
                     r.push_back(filw_i(flag));
                 for (std::int64_t k = 0; k < length; ++k) {
                     const auto at = static_cast<std::size_t>(offset + k);
-                    r.push_back(kind_name == "matrix_dofs" ? filw_i(detail::read_int(values, at))
-                                                           : filw_d(detail::read_double(values, at)));
+                    r.push_back(kind_name == "matrix_dofs"
+                                    ? filw_i(detail::read_int(values, at))
+                                    : filw_d(detail::read_double(values, at)));
                 }
                 mRecords.push_back(std::move(r));
             }

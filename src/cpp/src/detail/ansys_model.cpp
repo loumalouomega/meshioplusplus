@@ -419,8 +419,7 @@ std::vector<int> ansys_cell_layout(std::string_view Type, AnsysCategory Category
             return V{0, 1, 2, 2};
         if (Type == "triangle6")  // K=L, the K-L midside = K
             return V{0, 1, 2, 2, 3, 4, 2, 5};
-    } else if (Category == AnsysCategory::Line ||
-               Category == AnsysCategory::LinearLine) {
+    } else if (Category == AnsysCategory::Line || Category == AnsysCategory::LinearLine) {
         if (Type == "line")
             return V{0, 1};
         if (Type == "line3" && Category == AnsysCategory::Line)
@@ -431,7 +430,6 @@ std::vector<int> ansys_cell_layout(std::string_view Type, AnsysCategory Category
     }
     return {};
 }
-
 
 int ansys_default_routine(std::string_view Type) {
     static const std::pair<std::string_view, int> kDefault[] = {
@@ -500,9 +498,10 @@ AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What) 
                 slot = it->second;
             }
     if (dropped_etype)
-        log::warn("{}: some ansys:element values do not fit their cells' shape; the default "
-                  "element type was written instead",
-                  What);
+        log::warn(
+            "{}: some ansys:element values do not fit their cells' shape; the default "
+            "element type was written instead",
+            What);
     return out;
 }
 

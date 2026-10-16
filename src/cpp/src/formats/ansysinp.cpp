@@ -432,7 +432,8 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     // Every cell's (element routine, ET slot): kept from `ansys:element` and
     // `ansys:type` when they describe a layout the cell's type has, else the
     // default routine for its type in a fresh slot.
-    detail::AnsysElementTypes element_types = detail::ansys_element_types(rMesh, "Ansys .cdb writer");
+    detail::AnsysElementTypes element_types =
+        detail::ansys_element_types(rMesh, "Ansys .cdb writer");
     const std::map<int, int>& slot_routine = element_types.mSlotRoutine;
     const std::vector<std::vector<std::pair<int, int>>>& cell_etype = element_types.mCellEtype;
 
