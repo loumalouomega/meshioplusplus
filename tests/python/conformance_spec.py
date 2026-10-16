@@ -1242,6 +1242,26 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "nastran_h5": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Results are the schema's own tables: point data is nodal tables (float64), "
+        "cell data only `<G>:<M>` centre values, so the canonical cell arrays, field data "
+        "and regions (derived from property ids on read) have no place.",
+    },
     "nastran_op2": {
         "cells": {
             "vertex": "exact",
@@ -1697,7 +1717,6 @@ READ_ONLY = {
         item="3.2.11",
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
     ),
-    "nastran_h5": _GAP.format(item="3.2.4", why=_RESULT.format(tool="MSC Nastran")),
     "radioss_anim": _GAP.format(
         item="3.2.8", why=_RESULT.format(tool="the OpenRadioss engine")
     ),

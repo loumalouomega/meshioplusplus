@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Nastran HDF5**: `nastran_h5` is writable from both engines, value for value (`write`, `SeriesWriter`, `write_sequence`): the `GRID`, element-card, property and `MAT1` tables under `/NASTRAN/INPUT` with MSC's column sets, the nodal and centre element result tables, their `/INDEX` twins and `DOMAINS`, one domain per step. Corner, ply and station arrays are dropped with a warning. The XDMF `Information` stream now pins the classic locale.
+
 - **Tecplot**: a `.plt` file name writes the binary `#!TDV112` format from both engines, byte-identically (FE and face-based zones, shared nodal variables, cell-centred variables with passive zones); the check in Tecplot itself waits on a licensed run (roadmap 3.3.2).
 
 - **OpenFOAM**: `write` emits `point_data` and `cell_data` as the fields of time directory `0` (volume scalar/vector/symmTensor/tensor, point scalar/vector; ASCII and binary), which `read` takes back. The page's earlier claim of a time-directory round trip held for reading only (roadmap 3.3.3, in part).

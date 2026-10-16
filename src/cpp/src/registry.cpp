@@ -531,6 +531,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          }},
         {"hmf", [](const std::string& p,
                    const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
+        {"nastran_h5", meshioplusplus::write_nastran_h5},
         // UnstructuredGrid with the oldest covering version; PolyData and the
         // composite types are reached through write_vtkhdf's `Type` argument.
         {"vtkhdf", [](const std::string& p,

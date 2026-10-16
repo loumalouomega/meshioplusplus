@@ -5585,6 +5585,27 @@ PYBIND11_MODULE(_core, m) {
             return meshioplusplus::write_nastran_op2(path, mesh);
         });
     });
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    // Nastran HDF5 writer, and the step-by-step series writer behind
+    // `meshioplusplus.nastran_h5.SeriesWriter`.
+    m.def("nastran_h5_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_nastran_h5(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::NastranH5SeriesWriter>(m, "NastranH5SeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::NastranH5SeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::NastranH5SeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::NastranH5SeriesWriter::Finalize);
+#endif
     py::class_<meshioplusplus::NastranOp2SeriesWriter>(m, "NastranOp2SeriesWriter")
         .def(py::init<const std::string&>(), py::arg("path"))
         .def(

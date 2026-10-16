@@ -46,6 +46,7 @@
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
+#include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
@@ -284,13 +285,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // CI red naming itself.
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
-        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil") {
+        rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
+        rFormat == "nastran_h5") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'nastran_op2', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -586,6 +588,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "frd"           ? "CalculiX FRD"
                       : rFormat == "radioss_th"    ? "Radioss time-history"
                       : rFormat == "nastran_op2"   ? "Nastran OP2"
+                      : rFormat == "nastran_h5"    ? "Nastran HDF5"
                       : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
                       : rFormat == "abaqus_fil"    ? "Abaqus results"
                                                    : "XDMF";
@@ -609,6 +612,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (rFormat == "nastran_op2" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
+            "to select");
+    if (rFormat == "nastran_h5" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Nastran HDF5 writer has no ASCII/binary variant "
             "to select");
     if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
@@ -723,6 +730,21 @@ private:
     NastranOp2SeriesWriter mWriter;
 };
 
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+/// A Nastran HDF5 file holds the model once and a domain per step: the writer keeps the steps
+/// and writes the file when it is finalized, so `WritePointsCells` has nothing to do.
+class SeqNastranH5Sink final : public SeqSeriesSink {
+public:
+    explicit SeqNastranH5Sink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    NastranH5SeriesWriter mWriter;
+};
+#endif
+
 /// An Abaqus results file holds the model once and an increment per step: the writer keeps
 /// the steps and writes the file when it is finalized (`Encoding` binary writes the binary
 /// layout), so `WritePointsCells` has nothing to do.
@@ -794,6 +816,10 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqRadiossThSink>(rPath);
     if (rFormat == "nastran_op2")
         return std::make_unique<SeqNastranOp2Sink>(rPath);
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "nastran_h5")
+        return std::make_unique<SeqNastranH5Sink>(rPath);
+#endif
     if (rFormat == "lsdyna_binout")
         return std::make_unique<SeqLsdynaBinoutSink>(rPath);
     if (rFormat == "abaqus_fil")

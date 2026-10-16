@@ -102,6 +102,9 @@ TIME_KEY = "meshio:time"
 #
 # **`abaqus_fil` joined likewise**: the model once and an increment per step
 # (`abaqus_fil.SeriesWriter`; `binary=True` writes the binary layout).
+#
+# **`nastran_h5` joined likewise**: the model once and a result domain per step
+# (`nastran_h5.SeriesWriter`, which assembles the file when it closes).
 _SERIES_WRITERS = (
     "xdmf",
     "gid",
@@ -112,6 +115,7 @@ _SERIES_WRITERS = (
     "frd",
     "radioss_th",
     "nastran_op2",
+    "nastran_h5",
     "lsdyna_binout",
     "abaqus_fil",
     "exodus",
@@ -872,6 +876,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
 
         # Pushed: each step's tables are held, and the file is assembled when
         # the writer closes (a result table holds every step).
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "nastran_h5":
+        from .nastran_h5 import SeriesWriter
+
+        # Pushed: the model with the first step, then a domain per step.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

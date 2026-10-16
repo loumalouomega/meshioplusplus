@@ -17,6 +17,8 @@ from meshioplusplus import _core, _sequence
 from meshioplusplus._exceptions import ReadError, WriteError
 from meshioplusplus._fallback import set_strict_core
 from meshioplusplus.nastran_h5 import _nastran_h5 as py_nh5
+from meshioplusplus.nastran_h5._write import SeriesWriter as py_series
+from meshioplusplus.nastran_h5._write import write as py_write
 
 h5py = pytest.importorskip("h5py")
 
@@ -700,14 +702,10 @@ class TestRegistration:
         assert formats["extensions"][".h5"] == ["nastran_h5"]
         assert "gid" in formats["extensions"][".post.h5"]
 
-    def test_it_is_read_only(self, tmp_path):
+    def test_it_is_readable_and_writable(self):
         formats = meshioplusplus.formats()
         assert "nastran_h5" in formats["readable"]
-        assert "nastran_h5" not in formats["writable"]
-        with pytest.raises(WriteError):
-            meshioplusplus.write(
-                tmp_path / "out.h5", meshioplusplus.read(path_of("static_elements"))
-            )
+        assert "nastran_h5" in formats["writable"]
 
     def test_core_has_the_function(self):
         assert hasattr(_core, "nastran_h5_read")
@@ -772,3 +770,220 @@ def test_coordinate_systems_engines_agree(tmp_path):
     np.testing.assert_array_equal(a.points, b.points)
     for name in ("DISPLACEMENT", "DISPLACEMENT_ROT", "SPC_FORCE", "APPLIED_LOAD"):
         np.testing.assert_array_equal(a.point_data[name], b.point_data[name])
+
+
+# ---------------------------------------------------------------------------
+# The writer (roadmap 3.2.4): both engines, against each other and the real files.
+# ---------------------------------------------------------------------------
+
+
+def _write_mesh():
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1], [1, 1, 0], [2, 0, 0]],
+        dtype=float,
+    )
+    return meshioplusplus.Mesh(
+        pts,
+        [
+            ("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]]),
+            ("triangle", [[0, 1, 5]]),
+            ("quad", [[0, 1, 5, 2]]),
+            ("line", [[0, 1]]),
+            ("hexahedron", [[0, 1, 5, 2, 3, 4, 4, 3]]),
+        ],
+        point_data={
+            "DISPLACEMENT": np.arange(21.0).reshape(7, 3),
+            "DISPLACEMENT_ROT": np.arange(21.0).reshape(7, 3) * 2,
+            "TEMPERATURE": np.arange(7.0),
+            "EIGENVECTOR_real": np.ones((7, 3)),
+            "EIGENVECTOR_imag": np.zeros((7, 3)),
+            "KINETIC_ENERGY:KET1": np.arange(7.0) + 0.5,
+        },
+        cell_data={
+            "STRESS:X": [
+                np.array([1.0, 2.0]),
+                np.array([np.nan]),
+                np.array([3.0]),
+                np.array([4.0]),
+                np.array([7.0]),
+            ],
+            "nastran:eid": [
+                np.array([10, 11]),
+                np.array([20]),
+                np.array([21]),
+                np.array([22]),
+                np.array([23]),
+            ],
+            "nastran:pid": [
+                np.array([2, 2]),
+                np.array([1]),
+                np.array([1]),
+                np.array([-1]),
+                np.array([2]),
+            ],
+        },
+        field_data={
+            "meshio:time": np.array([0.5]),
+            "nastran:subcase": np.array([3]),
+            "nastran:mode": np.array([4]),
+        },
+    )
+
+
+def _tables(path):
+    out = {}
+    with h5py.File(path, "r") as f:
+
+        def visit(name, obj):
+            if isinstance(obj, h5py.Dataset) and obj.dtype.names:
+                out[name] = obj[()]
+
+        f.visititems(visit)
+    return out
+
+
+def _same_tables(a, b):
+    assert sorted(a) == sorted(b)
+    for name in a:
+        assert a[name].dtype == b[name].dtype, name
+        for member in a[name].dtype.names:
+            np.testing.assert_array_equal(a[name][member], b[name][member], name)
+
+
+class TestWriter:
+    def test_engines_write_the_same_tables(self, tmp_path):
+        mesh = _write_mesh()
+        a, b = tmp_path / "core.h5", tmp_path / "py.h5"
+        _core.nastran_h5_write(str(a), mesh)
+        py_write(b, mesh)
+        _same_tables(_tables(a), _tables(b))
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_round_trip_in_both_readers(self, writer, engine, tmp_path):
+        mesh = _write_mesh()
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        back = engine(path)
+        np.testing.assert_array_equal(back.points, mesh.points)
+        assert sorted(c.type for c in back.cells) == sorted(c.type for c in mesh.cells)
+        for name in ("DISPLACEMENT", "DISPLACEMENT_ROT", "EIGENVECTOR_real"):
+            np.testing.assert_array_equal(back.point_data[name], mesh.point_data[name])
+        np.testing.assert_array_equal(
+            back.point_data["TEMPERATURE"], mesh.point_data["TEMPERATURE"]
+        )
+        np.testing.assert_array_equal(
+            back.point_data["KINETIC_ENERGY:KET1"],
+            mesh.point_data["KINETIC_ENERGY:KET1"],
+        )
+        by_type = {c.type: i for i, c in enumerate(back.cells)}
+        tetra = back.cell_data["STRESS:X"][by_type["tetra"]]
+        np.testing.assert_array_equal(tetra, [1.0, 2.0])
+        np.testing.assert_array_equal(
+            back.cell_data["nastran:eid"][by_type["hexahedron"]], [23]
+        )
+        assert back.field_data["meshio:time"][0] == 0.5
+        assert back.field_data["nastran:subcase"][0] == 3
+        assert back.field_data["nastran:mode"][0] == 4
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_a_real_file_survives_a_round_trip(self, name, engine, tmp_path):
+        """Read MSC Nastran's own file, write it, read it back: the model and
+        every nodal table of the first domain survive."""
+        original = engine(path_of(name))
+        path = tmp_path / "again.h5"
+        _core.nastran_h5_write(str(path), original)
+        again = engine(path)
+        np.testing.assert_allclose(again.points, original.points)
+
+        def census(mesh):
+            counts = {}
+            for block in mesh.cells:
+                counts[block.type] = counts.get(block.type, 0) + len(block.data)
+            return counts
+
+        assert census(again) == census(original)
+        for key, value in original.point_data.items():
+            if key.startswith("nastran:") or key.count(":"):
+                continue
+            np.testing.assert_allclose(
+                again.point_data[key], value, equal_nan=True, err_msg=key
+            )
+
+    def test_input_tables_have_the_columns_msc_writes(self, tmp_path):
+        mesh = _write_mesh()
+        path = tmp_path / "m.h5"
+        _core.nastran_h5_write(str(path), mesh)
+        ours = _tables(path)
+        real = {}
+        for fixture in NAMES:
+            for key, table in _tables(path_of(fixture)).items():
+                real.setdefault(key, table.dtype)
+        compared = 0
+        for key, table in ours.items():
+            if key.startswith("INDEX") or "/RESULT/ELEMENTAL/" in key:
+                continue
+            if "/RESULT/" in key:  # MSC's result columns: roadmap 3.2.4
+                continue
+            if key in real:
+                assert table.dtype.names == real[key].names, key
+                assert [table.dtype[n] for n in table.dtype.names] == [
+                    real[key][n] for n in real[key].names
+                ], key
+                compared += 1
+        assert compared >= 6  # GRID, the cards, properties, MAT1, DOMAINS
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_series_writer_is_one_domain_per_step(self, writer, engine, tmp_path):
+        steps = []
+        for k in range(3):
+            mesh = _write_mesh()
+            mesh.point_data["DISPLACEMENT"] = mesh.point_data["DISPLACEMENT"] * (k + 1)
+            mesh.field_data["nastran:subcase"] = np.array([k + 1])
+            steps.append((0.25 * k, mesh))
+        path = tmp_path / "series.h5"
+        if writer == "core":
+            series = meshioplusplus.nastran_h5.SeriesWriter
+        else:
+            series = py_series
+        with series(str(path)) as w:
+            for time, mesh in steps:
+                w.write(time, mesh)
+        for k in range(3):
+            back = engine(path, time_step=k)
+            assert back.field_data["meshio:time"][0] == pytest.approx(0.25 * k)
+            np.testing.assert_array_equal(
+                back.point_data["DISPLACEMENT"], steps[k][1].point_data["DISPLACEMENT"]
+            )
+        assert meshioplusplus.nastran_h5.time_values(path) == [0.0, 0.25, 0.5]
+
+    def test_write_sequence_reaches_the_series_writer(self, tmp_path):
+        steps = [(0.5 * k, _write_mesh()) for k in range(2)]
+        path = tmp_path / "seq.h5"
+        meshioplusplus.write_sequence(str(path), steps, file_format="nastran_h5")
+        assert meshioplusplus.nastran_h5.time_values(path) == [0.0, 0.5]
+
+    def test_a_property_id_shared_by_shells_and_solids_is_refused(self, tmp_path):
+        mesh = _write_mesh()
+        mesh.cell_data["nastran:pid"] = [
+            np.array([2, 2]),
+            np.array([2]),
+            np.array([1]),
+            np.array([-1]),
+            np.array([2]),
+        ]
+        with pytest.raises(WriteError, match="property id 2"):
+            _core.nastran_h5_write(str(tmp_path / "x.h5"), mesh)
+        with pytest.raises(WriteError, match="property id 2"):
+            py_write(tmp_path / "y.h5", mesh)
+
+    def test_series_rejects_a_step_with_other_tables(self, tmp_path):
+        a, b = _write_mesh(), _write_mesh()
+        del b.point_data["TEMPERATURE"]
+        for series in (meshioplusplus.nastran_h5.SeriesWriter, py_series):
+            w = series(str(tmp_path / "bad.h5"))
+            w.write(0.0, a)
+            with pytest.raises(WriteError):
+                w.write(1.0, b)

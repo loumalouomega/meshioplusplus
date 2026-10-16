@@ -214,12 +214,12 @@ def test_frd_is_readable_and_writable_and_convert_reaches_its_steps(tmp_path):
     assert meshioplusplus.read(again).field_data["meshio:time"].tolist() == [2.0]
 
 
-def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_path):
+def test_nastran_h5_is_readable_writable_and_convert_reaches_its_modes(tmp_path):
     import pathlib
 
     h5 = pathlib.Path(__file__).parent / "meshes" / "nastran_h5" / "modes_elements.h5"
     out = _dump(_tools.tool_formats())
-    assert "nastran_h5" in out["readable"] and "nastran_h5" not in out["writable"]
+    assert "nastran_h5" in out["readable"] and "nastran_h5" in out["writable"]
     assert out["extensions"][".h5"] == ["nastran_h5"]
     # The MSC fixtures are Git LFS; the MCP CI job checks out without LFS.
     with open(h5, "rb") as f:

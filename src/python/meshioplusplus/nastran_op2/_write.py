@@ -252,7 +252,7 @@ def _signature(mesh):
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
-    def __init__(self, mesh):
+    def __init__(self, mesh, per_card_ids=False):
         self.npoints = len(mesh.points)
         points = np.asarray(mesh.points, dtype=np.float64).reshape(self.npoints, -1)
         self.points = np.zeros((self.npoints, 3))
@@ -323,7 +323,16 @@ class _Model:
             if self.blocks
             else np.zeros(0, dtype=np.int64)
         )
-        if len(np.unique(every)) != len(every):
+        if per_card_ids:
+            # A card's table is keyed by element id; two cards may share one.
+            keyed = [
+                (str(c), int(e))
+                for blk in self.blocks
+                for c, e in zip(blk["cards"], blk["eids"])
+            ]
+            if len(set(keyed)) != len(keyed):
+                _wfail("element ids are not unique")
+        elif len(np.unique(every)) != len(every):
             _wfail("element ids are not unique")
         # Cards in name order, each one's rows by element id.
         self.cards = {}  # card -> ([(block, rows)], row order by element id)

@@ -875,7 +875,7 @@ void write_xdmf(const std::string& rPath, const Mesh& rMesh, const std::string& 
             ++entries;
         }
         if (entries > 0) {
-            std::ostringstream payload;
+            auto payload = detail::make_classic_ostringstream();
             info.save(payload, "", pugi::format_raw | pugi::format_no_declaration);
             pugi::xml_node node = grid.append_child("Information");
             node.append_attribute("Name") = "Information";
