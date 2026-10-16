@@ -17,6 +17,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **lzma**: the C++ core reads and writes `vtkLZMADataCompressor` blocks in VTU/VTP/VTI/VTR/VTS/VTM and the parallel and `.pvd` writers behind the new `MESHIOPLUSPLUS_WITH_LZMA` option (liblzma; Conan `with_lzma`, vcpkg feature `lzma`), introspectable as `_core.__has_lzma__`. The Python structured readers now accept lzma too, so both engines take the same files (roadmap 3.4.7).
 - **Neuroglancer**: a native reader and writer in the shared registry (so C, Fortran, Julia, R, WASM and both CLIs reach it); the Python twin stays as the fallback and now also rejects an index equal to the vertex count (roadmap 3.4.11).
 - **EnSight**: the Python twin reads and writes `VARIABLE` sections (point and cell arrays of 1, 2, 3, 6 and 9 components, `constant per case`, `time_step`), byte-identical to the core's writer (roadmap 3.4.5).
+- **Engine parity probe**: `test_every_format_has_both_engines_or_a_recorded_exemption` fails when a core-served format loses a Python twin direction, or an exemption outlives its gap; the standing exemptions (GiD, the OpenFOAM writer and multi-region reading, CGNS face-based polyhedra, the CAD readers) are recorded in `conformance_spec.py` with their reasons (roadmap 3.4.1–3.4.3, 3.4.13).
 
 ## v17.2.0 (2026-10-15)
 

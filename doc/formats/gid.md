@@ -278,3 +278,7 @@ No headless GiD invocation is known to exist, so this format has no automated `c
 - Implemented entirely in the C++ core (`src/cpp/src/formats/gid.cpp`); no Python reference exists (see "Provenance" above).
 - `tests/cpp/test_gid.cpp`'s `GidOrdering` suite is the written-bytes ordering oracle for `hexahedron20`/`tetra10`/`triangle6`/`quad8`; `GidWrite` covers multi-block element-id uniqueness, the empty-coordinates-block requirement, unsupported-type errors, and Gauss-point-set referencing.
 - `src/cpp/third_party/gidpost/README.meshioplusplus.md` records exactly what was vendored from upstream gidpost 2.14 and why (notably, gidpost's own Fortran binding and its `cfortran.h`-dependent file are excluded — a licence carve-out, and meshio++ has its own Fortran module over its own C API regardless).
+
+## Engine parity
+
+GiD reads and writes in the C++ core only. This is a recorded exemption (roadmap 3.4.2, `ENGINE_EXEMPT` in `tests/python/conformance_spec.py`): the writer is gidpost, the HDF5 flavour is core-only by nature, and the Python entry points raise naming the missing core rather than guess.

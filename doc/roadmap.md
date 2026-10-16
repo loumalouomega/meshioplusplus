@@ -150,12 +150,7 @@ What changed since parity last had a section. The reader/writer triage of Septem
 - **3.3.9 Medit keywords.** The reader discards `Corners`, `Ridges`, `RequiredVertices`, `RequiredEdges` and `RequiredTriangles`; keep them as regions and write them back, together with `.sol` solutions (4.3.6).
 - **3.3.10 Facts to record, not gaps:** UNV's NaN rows, and MFM's one element type per file.
 
-**3.4 Engine parity per direction.** A format whose two engines differ in what they read or write. Each either gains the missing half, or records a core-only (or Python-only) exemption with its reason, as GiD's HDF5 flavour does through gidpost; the exemptions are what the probe checks against. **S–M each**
-
-- **3.4.1 OpenFOAM**: the writer, and zone, field and multi-region reading, are C++ only.
-- **3.4.2 GiD**: the writer is C++ only, through gidpost; the ASCII flavour's layout is documented and can have a Python twin, the HDF5 flavour stays core-only.
-- **3.4.3 CGNS**: face-based polyhedra (`NGON_n`/`NFACE_n`) have no Python path.
-- **3.4.13 Probe, per engine.** `test_the_native_registry_agrees` already checks that nothing reads without writing, or writes without reading, in either registry, against the recorded gaps (`READ_ONLY`, `WRITE_ONLY`). What it does not check is the second half: for every format, read and write in *both* the core and Python, against the exemptions this section records. Extend it once the items above name their exemptions.
+**3.4 Engine parity per direction.** Complete: every format the core serves has a Python twin for both directions, or a recorded exemption with its reason (`ENGINE_EXEMPT` and `PARTIAL_ENGINE_EXEMPT` in `tests/python/conformance_spec.py`: GiD, the OpenFOAM writer and its zone, field and multi-region reading, CGNS's face-based polyhedra, and the CAD readers), which `test_every_format_has_both_engines_or_a_recorded_exemption` checks in both directions. The number is kept so the items below do not move.
 
 **3.5 Done when.** Every row of the [format table](./formats.md) has ✓ under both Read and Write (`svg` and `tikz` marked 2-D); `READ_ONLY` holds only `ansys_rst_cyclic`; the conformance matrix has no `write-only` row but `step`'s; every partial-writer note left is a fact of its format; and the binding docs and the MCP server list both directions.
 

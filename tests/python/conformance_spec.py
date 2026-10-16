@@ -1729,3 +1729,55 @@ def write_only_drift(readable, writable, declared=None):
         "undeclared": sorted(write_only - set(declared)),
         "stale": sorted(set(declared) - write_only),
     }
+
+
+# Engine parity per direction (roadmap 3.4). A format that the core serves reads
+# and writes in its Python twin too, so it still works where the compiled core
+# does not load. A direction one engine lacks is declared here with the reason;
+# test_conformance.py scans each format package for its twin (`_py_read`,
+# `_py_write`, `_main_*`) and fails on a gap that is not declared, or a
+# declaration whose gap has closed. Formats the core does not serve at all (the
+# Python-only layers `pmsh`, `zarr`, `cae`, `usd`) have no pair to compare, and
+# the read-only result files are the READ_ONLY gaps above, whose Python writer
+# lands with the native one (roadmap section 3, "Landing an item", step 1).
+ENGINE_EXEMPT = {
+    ("gid", "read"): (
+        "Exempt, not a gap (roadmap §3.4.2): GiD is served by the core alone -- "
+        "gidpost, Gauss points and result groups are implemented once, and the "
+        "Python entry points raise naming the missing core rather than guess."
+    ),
+    ("gid", "write"): (
+        "Exempt, not a gap (roadmap §3.4.2): written through the vendored gidpost "
+        "C library, whose node-ordering permutations a second implementation would "
+        "risk silently contradicting; the HDF5 flavour is core-only by nature."
+    ),
+    ("iges", "read"): (
+        "Exempt, not a gap (roadmap §6.2.1): reading a CAD model needs the "
+        "optional OpenCASCADE kernel, which only the core links."
+    ),
+    ("step", "read"): (
+        "Exempt, not a gap (roadmap §6.2.1): reading a CAD model needs the "
+        "optional OpenCASCADE kernel, which only the core links."
+    ),
+    ("openfoam", "write"): (
+        "Exempt, not a gap (roadmap §3.4.1): the OpenFOAM case writer (polyMesh, "
+        "zones, fields, multi-region and decomposed layouts) is implemented once, "
+        "in the core; the Python reader is the portable subset."
+    ),
+}
+
+# Parts of a format that one engine handles and the other deliberately does not,
+# short of a whole direction. Each names the page that explains it.
+PARTIAL_ENGINE_EXEMPT = {
+    "cgns": (
+        "Exempt, not a gap (roadmap §3.4.3): the face-based NGON_n/NFACE_n sections "
+        "are core-only; the h5py twin raises naming the core, because the writer's "
+        "winding repair is a discrete branch two implementations could resolve "
+        "differently (doc/formats/cgns.md)."
+    ),
+    "openfoam": (
+        "Exempt, not a gap (roadmap §3.4.1): zone, field and multi-region reading "
+        "are core-only; the Python reader covers the single-region polyMesh "
+        "(doc/formats/openfoam.md)."
+    ),
+}
