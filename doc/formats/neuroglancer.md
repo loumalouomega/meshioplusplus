@@ -41,10 +41,10 @@ None — no point_data, cell_data, or field_data; a bare `Mesh(points, [CellBloc
 ## Quirks & limitations
 
 - **Write silently casts points to `float32`** regardless of the input mesh's dtype — unlike most other meshio++ writers, there is no warning for this precision loss.
-- Triangle-index validation is `np.any(triangles > num_vertices)` — using `>` rather than `>=` — so an index **exactly equal to** `num_vertices` (out of range, since indices are 0-based) would not be caught.
-- No C++ implementation — this format is Python-only.
+- Triangle-index validation rejects an index **equal to or above** the vertex count, in both engines.
+- The C++ core reads and writes the format, so it is reachable from C, Fortran, Julia, R, WASM and the native CLI, always with an explicit format name; the two engines write the same bytes.
 
 ## Notes
 
 - `tests/python/meshes/neuroglancer/simple1` (100 bytes, no file extension) — checked for `ref_sum=20` and `ref_num_cells=4`.
-- Implemented in pure Python (no C++ core path).
+- Implemented in both engines: `src/cpp/src/formats/neuroglancer.cpp` and `neuroglancer/_neuroglancer.py`; the registered shim tries the core first and falls back to the twin.

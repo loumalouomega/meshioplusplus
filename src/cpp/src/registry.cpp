@@ -115,6 +115,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/formats/neuroglancer.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 
 namespace meshioplusplus {
@@ -259,6 +260,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
+        {"neuroglancer", meshioplusplus::read_neuroglancer},
         {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
         // Side-channel info (cell-tag family names) is not carried by the flat
         // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
@@ -497,6 +499,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // XDMF's heavy-data format follows the build: HDF companion file when
         // HDF5 is available (the Python writer's default), inline XML text
         // otherwise (the only always-available option; what WASM ships).
+        {"neuroglancer", meshioplusplus::write_neuroglancer},
         {"xyz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
         {"xdmf",
          [](const std::string& p, const Mesh& mm) {

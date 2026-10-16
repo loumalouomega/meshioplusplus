@@ -20084,6 +20084,42 @@ MESHIOPLUSPLUS_API Mesh read_netgen(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/netgen.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/neuroglancer.hpp =====
+/**
+ * @file neuroglancer.hpp
+ * @brief Neuroglancer precomputed single-resolution mesh fragments (no extension).
+ *
+ * Little-endian binary: a `uint32` vertex count `n`, `n * 3` `float32` coordinates,
+ * then the rest of the file as `uint32` triangle indices (three per triangle).
+ *
+ * **Mesh mapping.** float32 points plus one `triangle` block (int64 indices). The
+ * writer keeps the triangle blocks only, warns about the other cell types, and narrows
+ * the points to float32; data arrays are not stored.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read a Neuroglancer precomputed mesh fragment.
+ * @throws ReadError on a truncated vertex table, a triangle table that is not a
+ *         whole number of triangles, or an index outside the vertex table
+ */
+MESHIOPLUSPLUS_API Mesh read_neuroglancer(const std::string& rPath);
+
+/**
+ * @brief Write the triangle blocks of a mesh as a Neuroglancer fragment.
+ * @throws WriteError if the file cannot be opened, there are more than 2^32 - 1
+ *         points, or a point index does not fit in 32 bits
+ */
+MESHIOPLUSPLUS_API void write_neuroglancer(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/neuroglancer.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/obj_off.hpp =====
 /**
  * @file obj_off.hpp
@@ -128905,6 +128941,114 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/netgen.cpp =====
+// ===== begin src/cpp/src/formats/neuroglancer.cpp =====
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+std::uint32_t ng_le32(const char* pP) {
+    const auto* u = reinterpret_cast<const unsigned char*>(pP);
+    return static_cast<std::uint32_t>(u[0]) | (static_cast<std::uint32_t>(u[1]) << 8) |
+           (static_cast<std::uint32_t>(u[2]) << 16) | (static_cast<std::uint32_t>(u[3]) << 24);
+}
+
+void ng_put_le32(std::string& rOut, std::uint32_t V) {
+    for (int k = 0; k < 4; ++k)
+        rOut.push_back(static_cast<char>((V >> (8 * k)) & 0xffu));
+}
+
+}  // namespace
+
+Mesh read_neuroglancer(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = source.View();
+    if (buf.size() < 4)
+        throw ReadError("Neuroglancer: the file is shorter than its vertex count");
+    const std::size_t n =
+        detail::checked_count(ng_le32(buf.data()), (buf.size() - 4) / 12, "Neuroglancer",
+                              "vertex");
+    const std::size_t tri_bytes = buf.size() - 4 - n * 12;
+    if (tri_bytes % 12 != 0)
+        throw ReadError("Neuroglancer: the size of the precomputed mesh data is not adequate");
+
+    NDArray points = NDArray::Uninit(DType::Float32, {n, 3});
+    float* pp = points.As<float>();
+    for (std::size_t i = 0; i < n * 3; ++i) {
+        const std::uint32_t bits = ng_le32(buf.data() + 4 + 4 * i);
+        std::memcpy(pp + i, &bits, 4);
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(points));
+
+    const std::size_t nt = tri_bytes / 12;
+    NDArray cells = NDArray::Uninit(DType::Int64, {nt, 3});
+    std::int64_t* cp = cells.As<std::int64_t>();
+    const char* tri = buf.data() + 4 + n * 12;
+    for (std::size_t i = 0; i < nt * 3; ++i) {
+        const std::uint32_t id = ng_le32(tri + 4 * i);
+        if (id >= n)
+            throw ReadError("Neuroglancer: the mesh references nonexistent vertices");
+        cp[i] = id;
+    }
+    mesh.AddCellBlock("triangle", std::move(cells));
+    return mesh;
+}
+
+void write_neuroglancer(const std::string& rPath, const Mesh& rMesh) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
+    if (n > UINT32_MAX)
+        throw WriteError("Neuroglancer: too many points for a 32-bit vertex count");
+
+    std::string out;
+    ng_put_le32(out, static_cast<std::uint32_t>(n));
+    const detail::DoubleView values(points);
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const float f = k < dim ? static_cast<float>(values.Data()[i * dim + k]) : 0.0f;
+            std::uint32_t bits;
+            std::memcpy(&bits, &f, 4);
+            ng_put_le32(out, bits);
+        }
+
+    std::size_t skipped = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type() != "triangle") {
+            ++skipped;
+            continue;
+        }
+        const NDArray& data = cb.Conn();
+        const detail::Int64View ids(data);
+        for (std::size_t i = 0; i < data.Size(); ++i) {
+            const std::int64_t id = ids.Data()[i];
+            if (id < 0 || static_cast<std::uint64_t>(id) > UINT32_MAX)
+                throw WriteError("Neuroglancer: a point index does not fit in 32 bits");
+            ng_put_le32(out, static_cast<std::uint32_t>(id));
+        }
+    }
+    if (skipped)
+        log::warn("Neuroglancer only supports triangle cells; {} other cell block(s) skipped.",
+                  skipped);
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os.write(out.data(), static_cast<std::streamsize>(out.size()));
+    if (!os)
+        throw WriteError("Neuroglancer: could not write " + rPath);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/neuroglancer.cpp =====
 // ===== begin src/cpp/src/formats/obj.cpp =====
 #include <array>
 #include <charconv>
@@ -199666,6 +199810,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
+        {"neuroglancer", meshioplusplus::read_neuroglancer},
         {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
         // Side-channel info (cell-tag family names) is not carried by the flat
         // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
@@ -199904,6 +200049,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // XDMF's heavy-data format follows the build: HDF companion file when
         // HDF5 is available (the Python writer's default), inline XML text
         // otherwise (the only always-available option; what WASM ships).
+        {"neuroglancer", meshioplusplus::write_neuroglancer},
         {"xyz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
         {"xdmf",
          [](const std::string& p, const Mesh& mm) {

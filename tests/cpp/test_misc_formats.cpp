@@ -30,6 +30,7 @@
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
+#include "meshioplusplus/formats/neuroglancer.hpp"
 #include "meshioplusplus/formats/su2.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
@@ -376,6 +377,35 @@ TEST(Wkt, TriangleGeometry) {
     ASSERT_EQ(out.NumCellBlocks(), 1u);
     EXPECT_EQ(out.Cells(0).Type(), "triangle");
     EXPECT_EQ(out.Cells(0).NumCells(), 2u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Neuroglancer, TriangleRoundTripAndRejections) {
+    mt::Mesh in = mt::tri_mesh();
+    std::string path = mt::temp_path("");
+    meshioplusplus::write_neuroglancer(path, in);
+    mt::Mesh out = meshioplusplus::read_neuroglancer(path);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).Type(), "triangle");
+    EXPECT_EQ(out.Cells(0).NumCells(), in.Cells(0).NumCells());
+    EXPECT_EQ(out.NumPoints(), in.NumPoints());
+
+    // A count larger than the file, and an index outside the vertex table.
+    {
+        std::ofstream bad(path, std::ios::binary | std::ios::trunc);
+        const unsigned char bytes[] = {5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        bad.write(reinterpret_cast<const char*>(bytes), sizeof bytes);
+    }
+    EXPECT_THROW(meshioplusplus::read_neuroglancer(path), meshioplusplus::ReadError);
+    {
+        std::ofstream bad(path, std::ios::binary | std::ios::trunc);
+        std::string payload(4 + 12 + 12, '\0');
+        payload[0] = 1;
+        payload[16] = 1;  // first triangle index = 1, but only one vertex exists
+        bad.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    }
+    EXPECT_THROW(meshioplusplus::read_neuroglancer(path), meshioplusplus::ReadError);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

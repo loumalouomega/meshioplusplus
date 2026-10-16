@@ -124,6 +124,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/neuroglancer.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -5965,6 +5966,18 @@ PYBIND11_MODULE(_core, m) {
               }
               out.attr("cells_id") = cells_id;
               return out;
+          }));
+
+    // Neuroglancer precomputed mesh fragment (no extension).
+    m.def("neuroglancer_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_neuroglancer(path, mesh);
+        });
+    });
+    m.def("neuroglancer_read", guard_read("neuroglancer", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_neuroglancer(path); }));
           }));
 
     // SU2 writer / reader (.su2).

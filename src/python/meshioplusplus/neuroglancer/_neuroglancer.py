@@ -11,7 +11,6 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
-from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
 
 
@@ -71,10 +70,7 @@ def read_buffer(file):
         raise ReadError("The size of the precomputed mesh data is not adequate")
     flat_triangles = np.frombuffer(buf, "<I")
     triangles = np.reshape(flat_triangles, (-1, 3)).copy(order="C")  # TODO remove copy
-    if np.any(triangles > num_vertices):
+    if np.any(triangles >= num_vertices):
         raise ReadError("The mesh references nonexistent vertices")
 
     return Mesh(vertices, [CellBlock("triangle", triangles)])
-
-
-register_format("neuroglancer", [], read, {"neuroglancer": write})
