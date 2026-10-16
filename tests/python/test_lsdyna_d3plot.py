@@ -664,7 +664,7 @@ def test_written_series_via_write_sequence_and_refusals(tmp_path):
         w.write(0.0, steps[0][1])
         with pytest.raises(Exception, match="differ"):
             w.write(1.0, other)
-    empty = meshioplusplus.Mesh(np.zeros((3, 3)), [("vertex", np.array([[0], [1]]))])
+    empty = meshioplusplus.Mesh(np.zeros((9, 3)), [("quad9", np.arange(9)[None])])
     for write in (_core.lsdyna_d3plot_write, py_write.write):
         with pytest.raises(Exception, match="no solid, beam, shell or SPH"):
             write(str(tmp_path / "empty"), empty)
