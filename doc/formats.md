@@ -76,7 +76,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#pvtp) |
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
-| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | — | — | [read-only](./conformance.md#radioss-anim) |
+| [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | ✓ | — | [8/8 cells · data PC · regions C](./conformance.md#radioss-anim) |
 | [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#radioss-th) |
 | [`step`](./formats/step.md) | `.step`, `.stp` | ✓ (OpenCASCADE) | ✓ | reading: OpenCASCADE | [0/8 cells · no data](./conformance.md#step) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |

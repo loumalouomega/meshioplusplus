@@ -71,6 +71,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="pvtp">`pvtp`</span> | ✓ | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point |
 | <span id="pvtu">`pvtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
 | <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="radioss-anim">`radioss_anim`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell |
 | <span id="radioss-th">`radioss_th`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
 | <span id="step">`step`</span> |  |  |  |  | → tri | → tri | → tri | → tri | exact | — | — | — | — |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
@@ -123,6 +124,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
+- **`radioss_anim`**: Everything is stored as 32-bit floats, so coordinates and data are approximate and integers come back as float64; the animation holds one state, so the data are the state's and field data other than the time are not kept.
 - **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
 - **`step`**: A faceted B-rep solid for CAD tools, read back through the optional OpenCASCADE backend as its triangulation: volume cells come back as their skin, and data is not kept. Checked only in a build with the backend.
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
@@ -151,7 +153,6 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 | <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
 | <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
 | <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
-| <span id="radioss-anim">`radioss_anim`</span> | writer | Tracked gap, roadmap §3.2.8: no writer yet. the OpenRadioss engine's result file; the writer is the physics-ML loop's missing half. |
 | <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
 | <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
 | <span id="xplt">`xplt`</span> | writer | Tracked gap, roadmap §3.2.7: no writer yet. FEBio's result file; the writer is the physics-ML loop's missing half. |

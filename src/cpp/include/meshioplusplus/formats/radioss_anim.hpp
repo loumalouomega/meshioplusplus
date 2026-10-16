@@ -47,6 +47,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -81,5 +83,48 @@ MESHIOPLUSPLUS_API Mesh read_radioss_anim(const std::string& rPath);
  */
 MESHIOPLUSPLUS_API MeshMetadata read_radioss_anim_metadata(const std::string& rPath,
                                                            const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write one OpenRadioss animation file: the state of @p rMesh, big-endian,
+ *        magic `0x542C`, the reader's inverse. The time is `meshio:time` (0 when
+ *        absent). Vertices become SPH particles, lines 1-D elements, triangles
+ *        and quads facets and tetrahedra, pyramids, wedges and hexahedra bricks;
+ *        other cells are skipped with a warning. Nodal scalars and 3-vectors,
+ *        element scalars, 6-wide tensors, 9-wide 1-D force sets, parts
+ *        (`radioss:part` or the cell regions), ids, masses, materials and
+ *        properties are written; other arrays are dropped with a warning.
+ * @throws WriteError when the file cannot be written or a cell names a missing point.
+ */
+MESHIOPLUSPLUS_API void write_radioss_anim(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief One animation file per step: `<run>A001`, `<run>A002`... numbered from
+ *        the number in the first path. The Python twin,
+ *        `meshioplusplus.radioss_anim.SeriesWriter`, writes the same bytes.
+ */
+class MESHIOPLUSPLUS_API RadiossAnimSeriesWriter {
+public:
+    /// A path that is not an animation file name is a stem: `<path>A001`, ...
+    explicit RadiossAnimSeriesWriter(const std::string& rPath);
+    ~RadiossAnimSeriesWriter();
+
+    RadiossAnimSeriesWriter(const RadiossAnimSeriesWriter&) = delete;
+    RadiossAnimSeriesWriter& operator=(const RadiossAnimSeriesWriter&) = delete;
+    RadiossAnimSeriesWriter(RadiossAnimSeriesWriter&&) noexcept;
+    RadiossAnimSeriesWriter& operator=(RadiossAnimSeriesWriter&&) noexcept;
+
+    /// Write the next file. @throws WriteError on a write failure.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of files written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Nothing is pending: every step is a file as soon as it is written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

@@ -6,7 +6,7 @@ The animation files an OpenRadioss (or Radioss) run writes, one per output time:
 |---|---|
 | **Format name** | `radioss_anim` |
 | **File names** | a stem, then `A` and three or more digits (`crashA001`, `crashA042`); also recognised by content, the magic number `0x542C` |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#radioss-anim): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.8) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#radioss-anim)) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -24,6 +24,19 @@ meshioplusplus convert 'crashA*' crash.vtkhdf              # the whole run as on
 ```
 
 `read` takes no options. Both engines (the C++ core and the pure-Python reference) read the same meshes. The state's time is `field_data["meshio:time"]` and `read_metadata(...).time_values`, so a sequence over a run's files takes each file's own time rather than the number in its name.
+
+## Writing
+
+```python
+meshioplusplus.write("runA001", mesh)                              # one state
+meshioplusplus.write_sequence("runA001", steps, file_format="radioss_anim")   # runA001, runA002, ...
+```
+
+```bash
+meshioplusplus convert model.vtu runA001                             # the file name decides the format
+```
+
+Both engines write the same bytes. A mesh is one state, its time `field_data["meshio:time"]` (0 when absent); a series is one file per step, numbered from the number in the first name (`runA001`, `runA002`, …; a name that is not animation-shaped is a stem, `run` giving `runA001`). Vertices become SPH particles, lines 1-D elements, triangles and quads facets (a triangle repeats its last node), and tetrahedra, pyramids, wedges and hexahedra 8-node bricks with repeated nodes, the patterns the reader collapses again. Elements are grouped by family and part, so the blocks come back in the file's order. Nodal arrays of one or three components are scalars and vectors; cell arrays of one component are scalars, six components (xx yy zz xy yz zx) tensors (a facet keeps xx, yy and xy), nine components 1-D force and moment sets. `radioss:part` or the cell regions name the parts; `radioss:alive`, `radioss:element_id`, `radioss:node_id`, `radioss:mass`, `radioss:material` and `radioss:property` are written when present (a missing partner array is written as zeros or a running number). Everything numeric is stored as a 32-bit float, so values come back to that precision. Other cell types and arrays of other shapes are dropped with a warning; the normals, the time-history lists and the older layouts are not written.
 
 ## The file
 

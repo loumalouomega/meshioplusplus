@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **OpenRadioss animation**: `radioss_anim` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): one big-endian state per file with the nodes, 2-D facets, 3-D bricks (tetrahedra, pyramids and wedges as degenerate bricks), 1-D elements and SPH particles, nodal scalars and vectors, element scalars, tensors and force sets, parts from `radioss:part` or the cell regions, ids, masses, materials and properties; a series writes `runA001`, `runA002`, … `anim_to_vtk` reads the result.
+
 - **Nastran HDF5**: `nastran_h5` is writable from both engines, value for value (`write`, `SeriesWriter`, `write_sequence`): the `GRID`, element-card, property and `MAT1` tables under `/NASTRAN/INPUT` with MSC's column sets, the nodal and centre element result tables, their `/INDEX` twins and `DOMAINS`, one domain per step. Corner, ply and station arrays are dropped with a warning. The XDMF `Information` stream now pins the classic locale.
 
 - **Tecplot**: a `.plt` file name writes the binary `#!TDV112` format from both engines, byte-identically (FE and face-based zones, shared nodal variables, cell-centred variables with passive zones); the check in Tecplot itself waits on a licensed run (roadmap 3.3.2).

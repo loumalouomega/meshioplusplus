@@ -258,3 +258,176 @@ def test_refusals(read, tmp_path):
     bad.write_bytes(b"\x00\x00\x54\x2a" + data[4:])
     with pytest.raises(meshioplusplus.ReadError, match="magic"):
         read(bad)
+
+
+# ---------------------------------------------------------------------------
+# The writer: both engines write the same bytes, and either reader gets the
+# mesh back (to the 32-bit floats the file holds).
+# ---------------------------------------------------------------------------
+
+from meshioplusplus.radioss_anim import _write as py_write  # noqa: E402
+
+
+@pytest.fixture(params=["core", "python"])
+def write_engine(request):
+    if request.param == "core":
+        return lambda path, mesh: _core.radioss_anim_write(str(path), mesh)
+    return py_write.write
+
+
+def _census(mesh):
+    counts = {}
+    for block in mesh.cells:
+        counts[block.type] = counts.get(block.type, 0) + len(block.data)
+    return counts
+
+
+def _all_families_mesh():
+    points = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+            [2, 0, 0],
+            [2, 1, 0],
+            [2, 0.5, 1],
+            [3, 0, 0],
+        ],
+        dtype=float,
+    )
+    cells = [
+        ("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]])),
+        ("tetra", np.array([[1, 8, 9, 5]])),
+        ("wedge", np.array([[1, 8, 9, 5, 10, 6]])),
+        ("pyramid", np.array([[0, 1, 2, 3, 4]])),
+        ("quad", np.array([[4, 5, 6, 7]])),
+        ("triangle", np.array([[5, 10, 6]])),
+        ("line", np.array([[0, 8], [8, 11]])),
+        ("vertex", np.array([[11], [10]])),
+    ]
+    mesh = meshioplusplus.Mesh(points, cells)
+    n = len(points)
+    mesh.point_data["Temperature"] = np.arange(n, dtype=float) + 20.0
+    mesh.point_data["Velocity"] = np.arange(3 * n, dtype=float).reshape(n, 3)
+    ncell = sum(len(c.data) for c in mesh.cells)
+    per = [len(c.data) for c in mesh.cells]
+    split = np.cumsum(per)[:-1]
+    mesh.cell_data["Thickness"] = list(
+        np.split(np.arange(ncell, dtype=float) + 0.5, split)
+    )
+    mesh.cell_data["radioss:part"] = list(
+        np.split(np.array([1, 1, 1, 1, 2, 2, 3, 3, 4, 4], dtype=np.int64), split)
+    )
+    mesh.field_data["meshio:time"] = np.array([0.25])
+    return mesh
+
+
+def test_the_engines_write_the_same_bytes(tmp_path):
+    for name in STATES:
+        mesh = meshioplusplus.read(MESHES / name)
+        _core.radioss_anim_write(str(tmp_path / "cA001"), mesh)
+        py_write.write(tmp_path / "pA001", mesh)
+        assert (tmp_path / "cA001").read_bytes() == (tmp_path / "pA001").read_bytes()
+    mesh = _all_families_mesh()
+    _core.radioss_anim_write(str(tmp_path / "cA001"), mesh)
+    py_write.write(tmp_path / "pA001", mesh)
+    assert (tmp_path / "cA001").read_bytes() == (tmp_path / "pA001").read_bytes()
+
+
+@pytest.mark.parametrize("name", STATES)
+def test_a_state_survives_a_round_trip(name, write_engine, read, tmp_path):
+    original = meshioplusplus.read(MESHES / name)
+    out = tmp_path / "outA001"
+    write_engine(out, original)
+    again = read(out)
+    np.testing.assert_allclose(again.points, original.points)
+    assert _census(again) == _census(original)
+    assert sorted(again.point_data) == sorted(original.point_data)
+    for key, value in original.point_data.items():
+        np.testing.assert_allclose(again.point_data[key], value, equal_nan=True)
+    assert sorted(again.cell_data) == sorted(original.cell_data)
+    for key in original.cell_data:
+        np.testing.assert_allclose(
+            _flat(again.cell_data[key]), _flat(original.cell_data[key]), equal_nan=True
+        )
+    assert _regions(again) == _regions(original)
+    assert float(again.field_data["meshio:time"][0]) == pytest.approx(
+        float(original.field_data["meshio:time"][0])
+    )
+
+
+def test_every_family_from_scratch(write_engine, read, tmp_path):
+    mesh = _all_families_mesh()
+    out = tmp_path / "scratchA001"
+    write_engine(out, mesh)
+    again = read(out)
+    assert _census(again) == _census(mesh)
+    np.testing.assert_allclose(again.point_data["Temperature"], 20 + np.arange(12))
+    np.testing.assert_allclose(
+        again.point_data["Velocity"], mesh.point_data["Velocity"]
+    )
+    assert float(again.field_data["meshio:time"][0]) == 0.25
+    # Elements come back grouped by family, in the file's order; the part ids
+    # and the thickness follow them.
+    parts = {}
+    for block, ids in zip(again.cells, again.cell_data["radioss:part"]):
+        parts.setdefault(block.type, []).extend(ids.tolist())
+    assert sorted(parts["hexahedron"]) == [1]
+    assert sorted(parts["quad"] + parts["triangle"]) == [2, 2]
+    assert sorted(parts["line"]) == [3, 3]
+    assert sorted(parts["vertex"]) == [4, 4]
+
+
+def test_cells_with_no_family_are_skipped_with_a_warning(write_engine, read, tmp_path):
+    mesh = _all_families_mesh()
+    mesh.cells.append(meshioplusplus.CellBlock("tetra10", np.arange(10)[None, :]))
+    for name in list(mesh.cell_data):
+        mesh.cell_data[name].append(np.zeros(1, dtype=mesh.cell_data[name][0].dtype))
+    out = tmp_path / "skipA001"
+    write_engine(out, mesh)
+    assert "tetra10" not in _census(read(out))
+
+
+def test_a_series_is_one_numbered_file_per_step(tmp_path):
+    steps = []
+    for k in range(3):
+        mesh = _all_families_mesh()
+        mesh.point_data["Temperature"] = mesh.point_data["Temperature"] + k
+        steps.append((0.5 * k, mesh))
+    written = meshioplusplus.write_sequence(
+        tmp_path / "runA001", iter(steps), file_format="radioss_anim"
+    )
+    assert [pathlib.Path(p).name for p in written] == ["runA001", "runA002", "runA003"]
+    back = list(meshioplusplus.read_sequence(str(tmp_path / "runA*")))
+    assert [t for t, _ in back] == [0.0, 0.5, 1.0]
+    for (_, got), (_, mesh) in zip(back, steps):
+        np.testing.assert_allclose(
+            got.point_data["Temperature"], mesh.point_data["Temperature"]
+        )
+    # The Python twin numbers the same files.
+    with py_write.SeriesWriter(tmp_path / "pyA010") as w:
+        w.write(0.0, steps[0][1])
+        w.write(1.0, steps[1][1])
+    assert (tmp_path / "pyA010").exists() and (tmp_path / "pyA011").exists()
+
+
+def test_the_name_decides_the_format_and_a_plain_name_is_a_stem(tmp_path):
+    formats = meshioplusplus.formats()
+    assert "radioss_anim" in formats["writable"]
+    meshioplusplus.write(tmp_path / "autoA001", _all_families_mesh())
+    assert meshioplusplus.read(tmp_path / "autoA001").points.shape == (12, 3)
+    # A name that is not an animation file's is a stem.
+    written = meshioplusplus.write_sequence(
+        tmp_path / "plain.out",
+        [(0.0, _all_families_mesh())],
+        file_format="radioss_anim",
+    )
+    assert [pathlib.Path(p).name for p in written] == ["plain.outA001"]
+    with py_write.SeriesWriter(tmp_path / "stem") as w:
+        w.write(0.0, _all_families_mesh())
+    assert (tmp_path / "stemA001").exists()

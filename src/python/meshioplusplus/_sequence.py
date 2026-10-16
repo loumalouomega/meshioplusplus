@@ -114,6 +114,7 @@ _SERIES_WRITERS = (
     "femap",
     "frd",
     "radioss_th",
+    "radioss_anim",
     "nastran_op2",
     "nastran_h5",
     "lsdyna_binout",
@@ -880,6 +881,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
             for time, mesh in steps:
                 writer.write(time, mesh)
         return [str(path)]
+
+    if fmt == "radioss_anim":
+        from .radioss_anim import SeriesWriter
+
+        # Pushed: one numbered file per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return list(writer.paths)
 
     if fmt == "nastran_h5":
         from .nastran_h5 import SeriesWriter

@@ -522,6 +522,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::OpenFoamInfo info;
              meshioplusplus::write_openfoam(p, mm, info);
          }},
+        {"radioss_anim", meshioplusplus::write_radioss_anim},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},

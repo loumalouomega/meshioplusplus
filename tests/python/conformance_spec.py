@@ -1242,6 +1242,26 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "radioss_anim": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "approx",
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "Everything is stored as 32-bit floats, so coordinates and data are "
+        "approximate and integers come back as float64; the animation holds one state, "
+        "so the data are the state's and field data other than the time are not kept.",
+    },
     "nastran_h5": {
         "cells": {
             "vertex": "exact",
@@ -1716,9 +1736,6 @@ READ_ONLY = {
     "marc_t19": _GAP.format(
         item="3.2.11",
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
-    ),
-    "radioss_anim": _GAP.format(
-        item="3.2.8", why=_RESULT.format(tool="the OpenRadioss engine")
     ),
     "xplt": _GAP.format(item="3.2.7", why=_RESULT.format(tool="FEBio")),
     "vtx": _GAP.format(
