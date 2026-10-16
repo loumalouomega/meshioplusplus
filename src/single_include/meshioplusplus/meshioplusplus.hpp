@@ -116782,6 +116782,7 @@ void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& r
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/formats/med.cpp =====
 // ===== begin src/cpp/src/formats/medit.cpp =====
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -116921,6 +116922,31 @@ std::string pick_first_int_cell(const Mesh& rMesh) {
     return "";
 }
 
+// An id-list keyword and the region it becomes: Corners and RequiredVertices list
+// vertices; Ridges and RequiredEdges list entries of the Edges section, and
+// RequiredTriangles of the Triangles section.
+struct MeditIdList {
+    const char* mKeyword;
+    const char* mRegion;
+    RegionKind mKind;
+    const char* mCellType;  // the type whose section the ids index; null for points
+};
+
+const MeditIdList kMeditIdLists[] = {
+    {"Corners", "medit:Corners", RegionKind::Point, nullptr},
+    {"RequiredVertices", "medit:RequiredVertices", RegionKind::Point, nullptr},
+    {"Ridges", "medit:Ridges", RegionKind::Cell, "line"},
+    {"RequiredEdges", "medit:RequiredEdges", RegionKind::Cell, "line"},
+    {"RequiredTriangles", "medit:RequiredTriangles", RegionKind::Cell, "triangle"},
+};
+
+const MeditIdList* medit_id_list(const std::string& rKeyword) {
+    for (const MeditIdList& l : kMeditIdLists)
+        if (rKeyword == l.mKeyword)
+            return &l;
+    return nullptr;
+}
+
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
@@ -116936,6 +116962,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
     bool have_points = false;
 
     const auto& e2m = medit_to_meshio();
+    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> id_lists;
 
     while (!tok.eof()) {
         std::string kw(tok.next());
@@ -116979,10 +117006,13 @@ Mesh read_medit_ascii(const std::string& rPath) {
             }
             mesh.AddCellBlock(type, std::move(data));
             mesh.AppendCellData("medit:ref", std::move(ref));
-        } else if (kw == "Corners") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n; ++i)
-                tok.next();
+        } else if (const MeditIdList* id_list = medit_id_list(kw)) {
+            // Vertex or element ids (1-based), kept as a region.
+            const std::int64_t n = tok.next_count();
+            std::vector<std::int64_t> ids(static_cast<std::size_t>(n));
+            for (std::int64_t& id : ids)
+                id = tok.next_int() - 1;
+            id_lists.emplace_back(id_list, std::move(ids));
         } else if (kw == "Normals") {
             std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n * dim; ++i)
@@ -117009,8 +117039,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
                 tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
-        } else if (kw == "RequiredVertices" || kw == "TangentAtVertices" || kw == "Tangents" ||
-                   kw == "Ridges") {
+        } else if (kw == "TangentAtVertices" || kw == "Tangents") {
             std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n; ++i)
                 tok.next();
@@ -117028,6 +117057,35 @@ Mesh read_medit_ascii(const std::string& rPath) {
     for (std::size_t i = 0; i < point_ref.size(); ++i)
         pr.As<std::int64_t>()[i] = point_ref[i];
     mesh.AddPointData("medit:ref", std::move(pr));
+
+    for (auto& [list, ids] : id_lists) {
+        std::int64_t base = 0, limit = static_cast<std::int64_t>(mesh.NumPoints());
+        if (list->mKind == RegionKind::Cell) {
+            bool found = false;
+            for (std::size_t b = 0; b < mesh.NumCellBlocks() && !found; ++b) {
+                if (mesh.Cells(b).Type() == list->mCellType) {
+                    limit = static_cast<std::int64_t>(mesh.Cells(b).NumCells());
+                    found = true;
+                } else {
+                    base += static_cast<std::int64_t>(mesh.Cells(b).NumCells());
+                }
+            }
+            if (!found) {
+                log::warn("Medit: {} lists {} cells the file does not have", list->mKeyword,
+                          list->mCellType);
+                continue;
+            }
+        }
+        for (std::int64_t& id : ids) {
+            if (id < 0 || id >= limit)
+                throw ReadError(std::string("Medit: ") + list->mKeyword +
+                                " names an entry the file does not have");
+            id += base;
+        }
+        NDArray entries = NDArray::Uninit(DType::Int64, {ids.size()});
+        std::copy(ids.begin(), ids.end(), entries.As<std::int64_t>());
+        mesh.AddRegion(Region(list->mRegion, list->mKind, std::move(entries)));
+    }
     return mesh;
 }
 
@@ -117097,6 +117155,50 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
                                              rBuf += '\n';
                                          }
                                      });
+        }
+    }
+
+    // Regions named like the id-list keywords, written back as those keywords.
+    std::vector<std::int64_t> block_start(rMesh.NumCellBlocks() + 1, 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        block_start[b + 1] = block_start[b] + static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+    for (const MeditIdList& list : kMeditIdLists) {
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+            const Region& reg = rMesh.Region(r);
+            if (reg.mName != list.mRegion || reg.mKind != list.mKind)
+                continue;
+            std::vector<std::int64_t> ids(reg.Entries(), reg.Entries() + reg.NumEntries());
+            if (list.mKind == RegionKind::Cell) {
+                std::size_t block = rMesh.NumCellBlocks();
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                    if (rMesh.Cells(b).Type() == list.mCellType) {
+                        block = b;
+                        break;
+                    }
+                if (block == rMesh.NumCellBlocks()) {
+                    log::warn("Medit: region '{}' needs {} cells; not written", list.mRegion,
+                              list.mCellType);
+                    break;
+                }
+                const std::size_t before = ids.size();
+                ids.erase(std::remove_if(ids.begin(), ids.end(),
+                                         [&](std::int64_t Id) {
+                                             return Id < block_start[block] ||
+                                                    Id >= block_start[block + 1];
+                                         }),
+                          ids.end());
+                if (ids.size() != before)
+                    log::warn(
+                        "Medit: region '{}' holds cells outside the first {} block; they are "
+                        "not written",
+                        list.mRegion, list.mCellType);
+                for (std::int64_t& id : ids)
+                    id -= block_start[block];
+            }
+            os << "\n" << list.mKeyword << "\n" << ids.size() << "\n";
+            for (const std::int64_t id : ids)
+                os << (id + 1) << "\n";
+            break;
         }
     }
 

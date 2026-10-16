@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Medit**: `Corners`, `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles` are kept as regions (`medit:<Keyword>`) and written back, in the ASCII variant of both engines; `RequiredEdges` and `RequiredTriangles` no longer stop the C++ reader (roadmap 3.3.9, in part).
+
 - **XDMF**: both engines write `[tag, dim]` integer `field_data` as an `Information` element, which both readers already took back (roadmap 3.3.7, in part).
 
 - **VTI/VTR/VTS**: the writers, both engines, write `field_data` and named regions into the grid's `<FieldData>`, byte-identically in binary (roadmap 3.3.7, in part).

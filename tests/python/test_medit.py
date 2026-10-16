@@ -187,3 +187,79 @@ def test_medit_file_ending_inside_vertices_raises(tmp_path):
     p.write_text("MeshVersionFormatted 2\nVertices\n3\n\n")
     with pytest.raises(meshioplusplus.ReadError, match="ends inside"):
         _medit_py_read(str(p))
+
+
+_KEYWORD_FILE = """MeshVersionFormatted 2
+Dimension 3
+
+Vertices
+4
+0 0 0 1
+1 0 0 1
+0 1 0 1
+0 0 1 1
+
+Edges
+3
+1 2 1
+2 3 1
+3 1 1
+
+Triangles
+1
+1 2 3 1
+
+Corners
+2
+1
+3
+
+RequiredVertices
+1
+2
+
+Ridges
+2
+1
+3
+
+RequiredEdges
+1
+2
+
+RequiredTriangles
+1
+1
+
+End
+"""
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_keyword_id_lists_are_regions_and_come_back(engine, tmp_path):
+    """Roadmap 3.3.9: Corners, Ridges and the Required* lists are kept."""
+    from meshioplusplus import _core
+    from meshioplusplus.medit import _medit
+
+    path = tmp_path / "keywords.mesh"
+    path.write_text(_KEYWORD_FILE)
+    read = _core.medit_read_ascii if engine == "core" else _medit.read
+    mesh = read(str(path))
+    regions = {r.name: (r.kind, list(r.entries)) for r in mesh.regions}
+    assert regions == {
+        "medit:Corners": ("point", [0, 2]),
+        "medit:RequiredVertices": ("point", [1]),
+        "medit:Ridges": ("cell", [0, 2]),
+        "medit:RequiredEdges": ("cell", [1]),
+        "medit:RequiredTriangles": ("cell", [3]),
+    }
+
+    # Written back (by either engine), they are read back the same by both.
+    out = tmp_path / "again.mesh"
+    write = _core.medit_write_ascii if engine == "core" else _medit.write
+    write(str(out), mesh)
+    for reader in (_core.medit_read_ascii, _medit.read):
+        again = reader(str(out))
+        assert {r.name: list(r.entries) for r in again.regions} == {
+            n: e for n, (_, e) in regions.items()
+        }

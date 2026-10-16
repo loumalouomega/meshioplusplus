@@ -41,7 +41,7 @@ v0 v1 v2 ref                  # n rows, 1-based
 End
 ```
 
-Recognized element keywords: `Edges`, `Triangles`, `Quadrilaterals`, `Tetrahedra`, `Prisms`, `Pyramids`, `Hexahedra` (and the alternate spelling `Hexaedra`). Every keyword listed above is followed by a count then that many rows of `<node ids> <ref>`. Several other keywords are recognized but discarded on read: `Corners`, `Normals`, `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/`Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`, `RequiredVertices`, `TangentAtVertices`, `Tangents`, `Ridges`.
+Recognized element keywords: `Edges`, `Triangles`, `Quadrilaterals`, `Tetrahedra`, `Prisms`, `Pyramids`, `Hexahedra` (and the alternate spelling `Hexaedra`). Every keyword listed above is followed by a count then that many rows of `<node ids> <ref>`. Several other keywords are recognized but discarded on read: `Normals`, `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/`Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`, `TangentAtVertices`, `Tangents`, `Ridges`.
 
 ### Binary (`.meshb`, libMeshb GMF)
 
@@ -70,7 +70,7 @@ A leading `int32` magic code — `1` for native byte order, or its byte-swap (`1
 - Only **one** integer point-data array and **one** integer cell-data array can be written (Medit's single-`ref`-column limitation): if more than one candidate exists, the first is used and the rest silently dropped (a warning is emitted for the dropped ones).
 - Coordinate dtype is version-driven, not user-selectable in binary mode: ASCII `MeshVersionFormatted` 0 or 1 → `float32`, 2 → `float64`; binary version 1 → `float32`, versions 2-4 → `float64`. The writer auto-upgrades to binary version 4 if any cell block's connectivity needs 8-byte integers.
 - Binary record headers embed **absolute byte offsets** (`pos` fields) that the writer must track precisely while emitting records — a strict requirement for libMeshb compatibility, not merely a convenience field.
-- `Corners`/`Normals`/etc. sections are read-but-discarded in the ASCII path; no equivalent handling exists in the C++ reader beyond simple token-skipping.
+- `Normals`/`Tangents`/etc. sections are read but discarded. `Corners`, `RequiredVertices` (point regions `medit:Corners`, `medit:RequiredVertices`), `Ridges` and `RequiredEdges` (cell regions `medit:Ridges`, `medit:RequiredEdges` over the file's Edges) and `RequiredTriangles` (cell region `medit:RequiredTriangles` over its Triangles) are kept as regions and written back as those keywords, in the ASCII variant of both engines. The binary `.meshb` path does not carry them yet. A cell region is written relative to the first block of its type, so entries elsewhere are dropped with a warning.
 - The C++ core implements **only the ASCII `.mesh` variant**. The binary `.meshb` GMF format (including its little/big-endian variants) always falls back to the Python implementation.
 
 ## Notes

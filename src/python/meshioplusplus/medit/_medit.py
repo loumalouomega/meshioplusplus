@@ -13,6 +13,7 @@ from .._common import _pick_first_int_data, warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import Mesh
+from .._regions import Region
 from ._medit_internal import medit_codes
 
 
@@ -167,6 +168,42 @@ def read_binary_buffer(f):
     return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
 
+# Keyword -> (region name, kind, the cell type its ids index). Corners and
+# RequiredVertices list vertices; Ridges and RequiredEdges list entries of the
+# Edges section, RequiredTriangles of the Triangles section.
+_ID_LIST_KEYWORDS = {
+    "Corners": ("medit:Corners", "point", None),
+    "RequiredVertices": ("medit:RequiredVertices", "point", None),
+    "Ridges": ("medit:Ridges", "cell", "line"),
+    "RequiredEdges": ("medit:RequiredEdges", "cell", "line"),
+    "RequiredTriangles": ("medit:RequiredTriangles", "cell", "triangle"),
+}
+
+
+def _regions_from_id_lists(id_lists, num_points, cells):
+    """The regions the id-list keywords describe, ids checked against their section."""
+    regions = []
+    for keyword, ids in id_lists.items():
+        name, kind, cell_type = _ID_LIST_KEYWORDS[keyword]
+        if kind == "point":
+            limit, base = num_points, 0
+        else:
+            base = 0
+            limit = None
+            for cell_type_i, data in cells:
+                if cell_type_i == cell_type:
+                    limit = len(data)
+                    break
+                base += len(data)
+            if limit is None:
+                warn(f"Medit: {keyword} lists {cell_type} cells the file does not have")
+                continue
+        if len(ids) and (ids.min() < 0 or ids.max() >= limit):
+            raise ReadError(f"Medit: {keyword} names an entry the file does not have")
+        regions.append(Region(name, kind, ids + base))
+    return regions
+
+
 def read_ascii_buffer(f):
     dim = 0
     cells = []
@@ -185,6 +222,7 @@ def read_ascii_buffer(f):
     }
     points = None
     dtype = None
+    id_lists = {}  # keyword -> 0-based ids, kept as regions
 
     while True:
         line = f.readline()
@@ -255,10 +293,11 @@ def read_ascii_buffer(f):
             # adapt for 0-base
             cells.append((meshio_type, out[:, :points_per_cell] - 1))
             cell_data["medit:ref"].append(out[:, -1])
-        elif items[0] == "Corners":
-            # those are just discarded
-            num_corners = int(f.readline())
-            np.fromfile(f, count=num_corners, dtype=dtype, sep=" ")
+        elif items[0] in _ID_LIST_KEYWORDS:
+            # Vertex or element ids (1-based), kept as a region.
+            count = int(f.readline())
+            ids = np.fromfile(f, count=count, dtype=int, sep=" ")
+            id_lists[items[0]] = ids - 1
         elif items[0] == "Normals":
             # those are just discarded
             num_normals = int(f.readline())
@@ -298,10 +337,8 @@ def read_ascii_buffer(f):
         elif items[0] == "Identifier" or items[0] == "Geometry":
             f.readline()
         elif items[0] in [
-            "RequiredVertices",
             "TangentAtVertices",
             "Tangents",
-            "Ridges",
         ]:
             msg = f"Meshio doesn't know keyword {items[0]}. Skipping."
             warn(msg)
@@ -314,7 +351,10 @@ def read_ascii_buffer(f):
 
     if points is None:
         raise ReadError("Expected `Vertices`")
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    regions = _regions_from_id_lists(id_lists, len(points), cells)
+    return Mesh(
+        points, cells, point_data=point_data, cell_data=cell_data, regions=regions
+    )
 
 
 def write(filename, mesh, float_fmt=".16e"):
@@ -396,7 +436,38 @@ def write_ascii_file(filename, mesh, float_fmt=".16e"):
             for d, label in zip(data + 1, labels):
                 fh.write(fmt.format(*d, label).encode())
 
+        _write_id_lists(fh, mesh)
         fh.write(b"\nEnd\n")
+
+
+def _write_id_lists(fh, mesh):
+    """The regions named like the id-list keywords, as those keywords."""
+    sizes = [len(cb.data) for cb in mesh.cells]
+    starts = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+    for keyword, (name, kind, cell_type) in _ID_LIST_KEYWORDS.items():
+        for region in getattr(mesh, "regions", []):
+            if region.name != name or region.kind != kind:
+                continue
+            ids = np.asarray(region.entries, dtype=np.int64)
+            if kind == "cell":
+                block = next(
+                    (i for i, cb in enumerate(mesh.cells) if cb.type == cell_type),
+                    None,
+                )
+                if block is None:
+                    warn(f"Medit: region '{name}' needs {cell_type} cells; not written")
+                    continue
+                lo, hi = starts[block], starts[block + 1]
+                kept = ids[(ids >= lo) & (ids < hi)]
+                if len(kept) != len(ids):
+                    warn(
+                        f"Medit: region '{name}' holds cells outside the first "
+                        f"{cell_type} block; they are not written"
+                    )
+                ids = kept - lo
+            fh.write(f"\n{keyword}\n{len(ids)}\n".encode())
+            fh.write("".join(f"{int(i) + 1}\n" for i in ids).encode())
+            break
 
 
 def write_binary_file(f, mesh):
