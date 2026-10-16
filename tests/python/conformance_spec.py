@@ -1063,10 +1063,12 @@ SPEC: dict[str, dict] = {
             "pyramid": "exact",
         },
         "points": "exact",
-        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
-        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "float64"},
         "field_data": False,
         "regions": ["cell", "point", "side"],
+        "note": "Fields are written to time directory 0 as volume and point fields (float64); "
+        "OpenFOAM has no field_data.",
     },
     "patran": {
         "cells": {

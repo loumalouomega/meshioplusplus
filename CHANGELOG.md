@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **OpenFOAM**: `write` emits `point_data` and `cell_data` as the fields of time directory `0` (volume scalar/vector/symmTensor/tensor, point scalar/vector; ASCII and binary), which `read` takes back. The page's earlier claim of a time-directory round trip held for reading only (roadmap 3.3.3, in part).
+
 - **Medit**: `Corners`, `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles` are kept as regions (`medit:<Keyword>`) and written back, in the ASCII variant of both engines; `RequiredEdges` and `RequiredTriangles` no longer stop the C++ reader (roadmap 3.3.9, in part).
 
 - **XDMF**: both engines write `[tag, dim]` integer `field_data` as an `Information` element, which both readers already took back (roadmap 3.3.7, in part).

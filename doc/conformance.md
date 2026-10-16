@@ -60,7 +60,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="neuroglancer">`neuroglancer`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="obj">`obj`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="off">`off`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
-| <span id="openfoam">`openfoam`</span> |  |  |  |  | ↻ | ↻ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="openfoam">`openfoam`</span> |  |  |  |  | ↻ | ↻ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point, side |
 | <span id="patran">`patran`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="pcd">`pcd`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` int32, `p_vec` float64 | — | — | — |
 | <span id="permas">`permas`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
@@ -116,6 +116,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`mphtxt`**: A Selection selects elements, so point and side regions (which address points and facets, not elements) have no form in the file; several Mesh objects merge into one mesh on read and are written as one.
 - **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and regions have no place; cells come back ordered by element card.
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
+- **`openfoam`**: Fields are written to time directory 0 as volume and point fields (float64); OpenFOAM has no field_data.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.

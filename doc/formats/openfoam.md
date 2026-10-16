@@ -112,6 +112,8 @@ This is **read-side only and C++-core only**: a multi-region *write* (and by ext
 
 ## Time-directory fields
 
+**Writing** (roadmap 3.3.3): `write` emits `point_data` and `cell_data` as the fields of time directory `0` — `volScalarField`/`volVectorField`/`volSymmTensorField`/`volTensorField` for cell arrays of 1/3/6/9 components (in OpenFOAM's volume-cell order; the boundary-face blocks have no cell to carry a value), `pointScalarField`/`pointVectorField` for point arrays of 1/3 — ASCII or binary like the mesh, each with a `calculated` catch-all `boundaryField` so the case loads. Arrays with any other component count, or a cell array missing from a block, are skipped with a warning. Reading takes them back as `float64`, scalars as one-column arrays. Only one time directory is written; a series is not.
+
 `<case>/<time>/<field>` dictionaries round-trip as `point_data`/`cell_data` (v11.4.0, tier B2), selected the same way every other transient format's `time_step`/`arrays` work:
 
 ```python

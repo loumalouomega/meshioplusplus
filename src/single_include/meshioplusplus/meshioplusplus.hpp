@@ -129649,6 +129649,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <bit>
 #include <cctype>
 #include <cstdint>
+#include <deque>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -131410,7 +131411,8 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 /// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
 /// but the rest is what makes the file legible to OpenFOAM itself.
 void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject,
-                       const OpenFoamWriteOptions& rOpts) {
+                       const OpenFoamWriteOptions& rOpts,
+                       const char* pLocation = "constant/polyMesh") {
     // The credit cell is fixed-width (48 chars before the closing box edge) so
     // the banner stays aligned regardless of how long the release string is.
     std::string credit = detail::provenance_lines(detail::SlotTier::Bounded)[0];
@@ -131435,7 +131437,9 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
             << "\";\n";
     rOs << "    class       " << rClass
         << ";\n"
-           "    location    \"constant/polyMesh\";\n"
+           "    location    \""
+        << pLocation
+        << "\";\n"
            "    object      "
         << rObject
         << ";\n"
@@ -131911,6 +131915,148 @@ std::vector<FoamZoneOut> foam_collect_face_zones(
     return zones;
 }
 
+/// One field to write into the time directory: a name, its OpenFOAM class, and
+/// `mComponents` values per entry in OpenFOAM's own entry order.
+struct FoamFieldOut {
+    std::string mName;
+    const char* mClass;
+    const char* mListType;  // scalar, vector, symmTensor or tensor
+    std::size_t mComponents;
+    bool mIsPoint;
+    std::vector<double> mValues;  // entries x components
+};
+
+const char* foam_field_class_name(std::size_t Components, bool IsPoint, const char** pListType) {
+    switch (Components) {
+        case 1:
+            *pListType = "scalar";
+            return IsPoint ? "pointScalarField" : "volScalarField";
+        case 3:
+            *pListType = "vector";
+            return IsPoint ? "pointVectorField" : "volVectorField";
+        case 6:
+            *pListType = "symmTensor";
+            return IsPoint ? nullptr : "volSymmTensorField";
+        case 9:
+            *pListType = "tensor";
+            return IsPoint ? nullptr : "volTensorField";
+        default:
+            return nullptr;
+    }
+}
+
+/// `point_data` and `cell_data` as the fields of time directory `0`, the inverse
+/// of the reader: volume cell data in OpenFOAM's compact cell order (a block of
+/// boundary faces has no cell to carry a value), point data in point order.
+/// Arrays with no OpenFOAM field class (component counts other than 1/3/6/9,
+/// vectors-only on points) are skipped with a warning.
+void foam_write_fields(const fs::path& rCaseRoot, const Mesh& rMesh,
+                       const detail::GlobalFaces& rFaces, const OpenFoamWriteOptions& rOpts) {
+    std::vector<FoamFieldOut> out;
+    auto usable_name = [](const std::string& rName) {
+        return !rName.empty() && rName != "cell_tags" &&
+               rName.find_first_of("/\\") == std::string::npos && rName[0] != '.';
+    };
+    auto components_of = [](const NDArray& rArr) {
+        return rArr.Shape().size() >= 2 ? detail::cols(rArr) : std::size_t{1};
+    };
+    for (const std::string& name : rMesh.PointDataNames()) {
+        if (!usable_name(name))
+            continue;
+        const NDArray& arr = rMesh.PointData(name);
+        const std::size_t nc = components_of(arr);
+        FoamFieldOut f{name, nullptr, nullptr, nc, true, {}};
+        f.mClass = foam_field_class_name(nc, true, &f.mListType);
+        if (f.mClass == nullptr) {
+            log::warn("OpenFOAM: point data '{}' has {} component(s); OpenFOAM point fields hold "
+                      "1 or 3. Not written",
+                      name, nc);
+            continue;
+        }
+        const detail::DoubleView values(arr);
+        f.mValues.assign(values.Data(), values.Data() + arr.Size());
+        out.push_back(std::move(f));
+    }
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (!usable_name(name))
+            continue;
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+            log::warn("OpenFOAM: cell data '{}' is not present on every cell block. Not written",
+                      name);
+            continue;
+        }
+        const std::size_t nc = components_of(rMesh.CellData(name, 0));
+        FoamFieldOut f{name, nullptr, nullptr, nc, false, {}};
+        f.mClass = foam_field_class_name(nc, false, &f.mListType);
+        if (f.mClass == nullptr) {
+            log::warn("OpenFOAM: cell data '{}' has {} component(s); OpenFOAM cell fields hold "
+                      "1, 3, 6 or 9. Not written",
+                      name, nc);
+            continue;
+        }
+        std::deque<detail::DoubleView> views;  // views are neither copyable nor movable
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            views.emplace_back(rMesh.CellData(name, b));
+        f.mValues.resize(rFaces.NumCells() * nc);
+        for (std::size_t cell = 0; cell < rFaces.NumCells(); ++cell) {
+            const auto [block, row] = detail::global_to_block_row(bases, rFaces.mCellToGlobal[cell]);
+            for (std::size_t c = 0; c < nc; ++c)
+                f.mValues[cell * nc + c] = views[block][row * nc + c];
+        }
+        out.push_back(std::move(f));
+    }
+    if (out.empty())
+        return;
+
+    const fs::path dir = rCaseRoot / "0";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec && !fs::is_directory(dir))
+        throw WriteError("OpenFOAM: could not create directory " + dir.string() + ": " +
+                         ec.message());
+    for (const FoamFieldOut& field : out) {
+        auto f = foam_open(dir / field.mName);
+        foam_write_header(f, field.mClass, field.mName, rOpts, "0");
+        f << "dimensions      [0 0 0 0 0 0 0];\n\n";
+        const std::size_t entries = field.mValues.size() / field.mComponents;
+        f << "internalField   nonuniform List<" << field.mListType << ">\n" << entries << "\n(";
+        if (rOpts.mBinary) {
+            for (const double v : field.mValues)
+                foam_write_binary_scalar(f, v, rOpts.mScalarBits);
+            f << ")\n;\n";
+        } else {
+            f << "\n";
+            const detail::CNumber num;
+            std::string buf;
+            for (std::size_t i = 0; i < entries; ++i) {
+                if (field.mComponents > 1)
+                    buf += '(';
+                for (std::size_t c = 0; c < field.mComponents; ++c) {
+                    if (c)
+                        buf += ' ';
+                    num.Append(buf, "%.16g", field.mValues[i * field.mComponents + c]);
+                }
+                buf += field.mComponents > 1 ? ")\n" : "\n";
+            }
+            f << buf << ")\n;\n";
+        }
+        // A catch-all patch value keeps the case loadable; the reader takes only
+        // internalField, and a solver replaces these with its real conditions.
+        f << "\nboundaryField\n{\n    \".*\"\n    {\n        type            calculated;\n"
+             "        value           uniform ";
+        if (field.mComponents == 1) {
+            f << "0";
+        } else {
+            f << "(0";
+            for (std::size_t c = 1; c < field.mComponents; ++c)
+                f << " 0";
+            f << ")";
+        }
+        f << ";\n    }\n}\n";
+    }
+}
+
 }  // namespace
 
 void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo,
@@ -132160,6 +132306,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
                         foam_collect_face_zones(rMesh, faces, global_to_compact, old_to_new),
                         "faceZoneList", "faceZone", "faceLabels");
     }
+
+    foam_write_fields(poly.parent_path().parent_path(), rMesh, faces, rOpts);
 
     log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
               faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());

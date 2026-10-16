@@ -1589,3 +1589,40 @@ class TestBinaryWrite:
         owner = foamlib.FoamFile(poly / "owner")[None]
         # 8 hexahedra on a 2x2x2 grid: 36 total faces, 12 internal.
         assert len(np.asarray(owner)) == 36
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_write_emits_point_and_cell_data_as_time_zero_fields(binary, tmp_path):
+    """Roadmap 3.3.3: the writer's time directory 0 holds the fields the reader
+    reads back, ASCII and binary, so `read(write(m))` keeps the data."""
+    points = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1.0]], dtype=float
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]])],
+        point_data={"T": np.arange(5.0), "U": np.arange(15.0).reshape(5, 3)},
+        cell_data={"p": [np.array([1.5, 2.5])], "S": [np.arange(12.0).reshape(2, 6)]},
+    )
+    case = tmp_path / "case"
+    meshioplusplus.openfoam.write(case, mesh, binary=binary)
+    assert sorted(p.name for p in (case / "0").iterdir()) == ["S", "T", "U", "p"]
+    back = meshioplusplus.openfoam.read(case)
+    np.testing.assert_array_equal(back.point_data["T"].ravel(), np.arange(5.0))
+    np.testing.assert_array_equal(back.point_data["U"], mesh.point_data["U"])
+    # The volume block comes first; the boundary-face block holds NaN.
+    np.testing.assert_array_equal(back.cell_data["p"][0].ravel(), [1.5, 2.5])
+    np.testing.assert_array_equal(back.cell_data["S"][0], mesh.cell_data["S"][0])
+
+
+def test_write_skips_arrays_with_no_field_class(tmp_path):
+    points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1.0]])
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("tetra", [[0, 1, 2, 3]])],
+        point_data={"five": np.zeros((4, 5)), "tensor": np.zeros((4, 6))},
+        cell_data={"n": [np.array([2.0])]},
+    )
+    case = tmp_path / "case"
+    meshioplusplus.openfoam.write(case, mesh)
+    assert sorted(p.name for p in (case / "0").iterdir()) == ["n"]
