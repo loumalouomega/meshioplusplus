@@ -37337,6 +37337,21 @@ std::vector<std::pair<std::string, NDArray>> regions_to_field_arrays(
     const Mesh& rMesh, const std::vector<std::int64_t>* pGlobalToFile);
 
 /**
+ * @brief Write @p rMesh's `<FieldData>` section: its field arrays, then its
+ * regions in the convention above (cell indices are the file's, which for
+ * the structured grids is the mesh's own block-major order). Writes nothing
+ * when there is nothing to write, so a mesh without either keeps its bytes.
+ * @param rOs The output stream, positioned before the `<Piece>`.
+ * @param rMesh The mesh.
+ * @param pFormat The format name, for the warnings.
+ * @param Binary Base64-encode the bodies instead of writing text.
+ * @param Codec The block compressor for a binary body.
+ * @param Hsz The file's `header_type` item size (4 or 8).
+ */
+void write_field_data_section(std::ostream& rOs, const Mesh& rMesh, const char* pFormat,
+                              bool Binary, VtkCodec Codec, std::size_t Hsz);
+
+/**
  * @brief Turn the region arrays among @p rArrays into regions of @p rMesh.
  *
  * Call after the cells are built. Every array that is not a well-formed
@@ -68492,6 +68507,7 @@ const RefineMaskTemplate& refine_mask_template(CellType Type, std::uint16_t Mask
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/refine_templates.cpp =====
 // ===== begin src/cpp/src/detail/region_field_data.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -68681,6 +68697,35 @@ std::vector<RegionSummary> region_summaries_from_field_names(
         out.push_back(std::move(rs));
     }
     return out;
+}
+
+void write_field_data_section(std::ostream& rOs, const Mesh& rMesh, const char* pFormat,
+                              bool Binary, VtkCodec Codec, std::size_t Hsz) {
+    const std::vector<std::pair<std::string, NDArray>> region_arrays =
+        regions_to_field_arrays(rMesh, nullptr);
+    std::vector<std::pair<std::string, const NDArray*>> field_arrays;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        if (is_region_field_name(name)) {
+            log::warn("{}: field_data '{}' uses the region naming convention; not written",
+                      pFormat, name);
+            continue;
+        }
+        const NDArray& array = rMesh.FieldData(name);
+        const auto& shape = array.Shape();
+        if (shape.size() > 1 && std::find(shape.begin() + 1, shape.end(), 0) != shape.end()) {
+            log::warn("{}: field_data '{}' has zero components; not written", pFormat, name);
+            continue;
+        }
+        field_arrays.emplace_back(name, &array);
+    }
+    for (const auto& [name, arr] : region_arrays)
+        field_arrays.emplace_back(name, &arr);
+    if (field_arrays.empty())
+        return;
+    rOs << "<FieldData>\n";
+    for (const auto& [name, p_arr] : field_arrays)
+        vtu_write_field_array(rOs, name, *p_arr, Binary, Binary ? Codec : VtkCodec::None, Hsz);
+    rOs << "</FieldData>\n";
 }
 
 }  // namespace detail
@@ -148597,6 +148642,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
        << " " << vti_num(spec.mOrigin[1]) << " " << vti_num(spec.mOrigin[2]) << "\" Spacing=\""
        << vti_num(spec.mSpacing[0]) << " " << vti_num(spec.mSpacing[1]) << " "
        << vti_num(spec.mSpacing[2]) << "\">\n";
+    detail::write_field_data_section(os, rMesh, "vti", binary, codec, hsz);
     os << "<Piece Extent=\"" << ext.str() << "\">\n";
 
     if (rMesh.NumPointData() != 0) {
@@ -152388,6 +152434,7 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<RectilinearGrid WholeExtent=\"" << ext.str() << "\">\n";
+    detail::write_field_data_section(os, rMesh, "vtr", binary, codec, hsz);
     os << "<Piece Extent=\"" << ext.str() << "\">\n";
 
     os << "<Coordinates>\n";
@@ -152531,6 +152578,7 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<StructuredGrid WholeExtent=\"" << ext.str() << "\">\n";
+    detail::write_field_data_section(os, rMesh, "vts", binary, codec, hsz);
     os << "<Piece Extent=\"" << ext.str() << "\">\n";
 
     const NDArray& pts = rMesh.Points();
