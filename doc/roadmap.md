@@ -66,7 +66,7 @@ The [vendor-runtime routes](./vendor_routes.md) of v16.13.0 are tested against s
 
 The readers:
 
-- **1.2.6 Tecplot.** A `.plt` written by `preplot` from the ASCII fixtures (`#!TDV112`), read identically to its `.dat`; binary files of versions 100–105 and 109–111, of which no sample was found (the VisIt suite covers 71, 75, 106–108).
+- **1.2.6 Tecplot.** A `.plt` written by `preplot` from the ASCII fixtures (`#!TDV112`), read identically to its `.dat`, and the `.plt` meshio++ now writes opened in Tecplot or checked by `preplot`; binary files of versions 100–105 and 109–111, of which no sample was found (the VisIt suite covers 71, 75, 106–108).
 - **1.2.7 Femap.** Element (404) and group (408) records written by Femap 10 and by 12 or later (the public 2401 files hold none); the slot layout of the 13-node pyramid (topology 19); a file meshio++ writes, a multi-set series included, imported into Femap.
 - **1.2.8 Patran.** A neutral file exported by ANSA or HyperMesh.
 - **1.2.9 Abaqus `.fil`.** A binary run with shells and C3D20R, checked against its `.dat` printout (the truss run TenBarArea is checked).
@@ -139,7 +139,6 @@ What changed since parity last had a section. The reader/writer triage of Septem
 
 **3.3 Writers that keep less than their reader.** Each closes, or its page records the loss as a fact of the format. **S–M each**
 
-- **3.3.2 Tecplot binary `.plt`.** Read back to `#!TDV71`, written only as ASCII `.dat`. A binary writer at `#!TDV112` (the version `preplot` writes) — FE zones, cell-centred variables, shared connectivity and solution times — also makes [§1.2.6](#_1-2-awaiting-a-licensed-run)'s `preplot` check symmetric.
 - **3.3.3 OpenFOAM.** Fields are written (time directory `0`; the page's earlier claim of a time-directory round trip was true of reading only). What is left is the multi-region case (`constant/<region>/polyMesh`, `regionProperties`, fields under `<time>/<region>`), the decomposed case (`processor*/` from [`partition`](./partition.md)) and a transient series of time directories.
 - **3.3.5 Marc deck.** Side regions wait on Volume A's face numbering ([§1.2.11](#_1-2-awaiting-a-licensed-run)); the Herrmann, bubble and generalized-plane-strain types coming back as the default type of their shape, and a deck holding no data arrays, are facts of the format, recorded in the [conformance](./conformance.md#marc) notes.
 - **3.3.7 XML and HDF5 families.** `field_data` and sets in `cgns`. (XDMF writes `[tag, dim]` field_data as an `Information` element in both engines; `vti`, `vtr` and `vts` write `field_data` and regions, and `pvtu` and `vtm` keep their piece regions, in both engines.) CGNS cell data was verified: it does come back (the conformance row's loss is its mixed-dimension canonical mesh, which a zone-wide `CellCenter` solution cannot span).

@@ -83,7 +83,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
 | [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |
 | [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | — | TecIO (a core built with it, or a shared TecIO) | [read-only](./conformance.md#szplt) |
-| [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary, read only) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
+| [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
 | [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
 | [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |

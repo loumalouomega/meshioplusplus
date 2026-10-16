@@ -2467,7 +2467,14 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     if (blocks.empty())
         throw WriteError("Tecplot writer found no supported cell blocks");
 
-    auto os = detail::make_classic_ofstream(rPath);
+    // A `.plt` name writes the binary #!TDV112 file; anything else the ASCII one.
+    std::string lower_path = rPath;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool plt = lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
+
+    auto os = plt ? detail::make_classic_ofstream(rPath, std::ios::binary)
+                  : detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -2536,13 +2543,208 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    // Zone title: an exactly-matching Cell region's name, else block_<i>.
+    auto zone_title = [&](std::size_t block) {
+        std::string title = "block_" + std::to_string(block);
+        for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
+            const meshioplusplus::Region& reg = rMesh.Region(ri);
+            if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
+                continue;
+            if (reg.NumEntries() != static_cast<std::size_t>(bases[block + 1] - bases[block]))
+                continue;
+            const std::int64_t* e = reg.Entries();
+            if (e[0] == bases[block] && e[reg.NumEntries() - 1] == bases[block + 1] - 1)
+                return reg.mName;
+        }
+        return title;
+    };
+
+    if (plt) {
+        // Binary #!TDV112 (Data Format Guide, appendix A), the twin of
+        // `_tecplot._write_plt`: the zones of the ASCII file, doubles throughout,
+        // 0-based connectivity, zone 1 owning the nodal variables.
+        std::vector<char> out;
+        auto raw = [&](const void* pData, std::size_t Size) {
+            const char* p = static_cast<const char*>(pData);
+            out.insert(out.end(), p, p + Size);
+        };
+        auto i32 = [&](std::int64_t V) {
+            const std::int32_t v = static_cast<std::int32_t>(V);
+            raw(&v, 4);
+        };
+        auto f32 = [&](float V) { raw(&V, 4); };
+        auto f64 = [&](double V) { raw(&V, 8); };
+        auto str = [&](const std::string& rS) {
+            for (const char c : rS)
+                i32(static_cast<unsigned char>(c));
+            i32(0);
+        };
+        static const std::map<std::string, int> zone_codes = {
+            {"FELINESEG", 1},      {"FETRIANGLE", 2}, {"FEQUADRILATERAL", 3}, {"FETETRAHEDRON", 4},
+            {"FEBRICK", 5},        {"FEPOLYGON", 6},  {"FEPOLYHEDRON", 7}};
+        const std::size_t nvar = variables.size();
+
+        raw("#!TDV112", 8);
+        i32(1);
+        i32(0);
+        str(detail::provenance_lines(detail::SlotTier::SingleLine)[0]);
+        i32(static_cast<std::int64_t>(nvar));
+        for (const std::string& name : variables)
+            str(name);
+
+        struct PltZone {
+            std::size_t mBlock;
+            std::string mType;
+            TecplotWriteFaces mFaces;
+            std::vector<std::size_t> mPresent;
+        };
+        std::vector<PltZone> zones;
+        for (const std::size_t block : blocks) {
+            const auto cb = rMesh.Cells(block);
+            PltZone z{block, meshio_to_tecplot(cb.Type()), {}, {}};
+            const bool face_based = z.mType == "FEPOLYGON" || z.mType == "FEPOLYHEDRON";
+            if (face_based)
+                z.mFaces = tecplot_write_faces(cb);
+            for (std::size_t j = 0; j < cell_vars.size(); ++j)
+                if (block < rMesh.CellDataNumBlocks(cell_vars[j].mKey))
+                    z.mPresent.push_back(j);
+            f32(299.0f);
+            str(zone_title(block));
+            i32(-1);
+            i32(-1);
+            f64(0.0);
+            i32(-1);
+            i32(zone_codes.at(z.mType));
+            if (!cell_vars.empty()) {
+                i32(1);
+                for (std::size_t v = 0; v < nvar; ++v)
+                    i32(v >= num_shared ? 1 : 0);
+            } else {
+                i32(0);
+            }
+            i32(0);
+            i32(0);
+            i32(static_cast<std::int64_t>(num_nodes));
+            if (face_based) {
+                std::size_t total = 0;
+                for (const auto& f : z.mFaces.mFaces)
+                    total += f.size();
+                i32(static_cast<std::int64_t>(z.mFaces.mFaces.size()));
+                i32(static_cast<std::int64_t>(total));
+                i32(0);
+                i32(0);
+            }
+            i32(static_cast<std::int64_t>(cb.NumCells()));
+            i32(0);
+            i32(0);
+            i32(0);
+            i32(0);
+            zones.push_back(std::move(z));
+        }
+        f32(357.0f);
+
+        for (std::size_t bi = 0; bi < zones.size(); ++bi) {
+            const PltZone& z = zones[bi];
+            const auto cb = rMesh.Cells(z.mBlock);
+            f32(299.0f);
+            for (std::size_t v = 0; v < nvar; ++v)
+                i32(2);
+            const bool any_passive = z.mPresent.size() != cell_vars.size();
+            if (any_passive) {
+                i32(1);
+                std::vector<char> flag(nvar, 0);
+                std::size_t next = 0;
+                for (std::size_t j = 0; j < cell_vars.size(); ++j) {
+                    if (next < z.mPresent.size() && z.mPresent[next] == j)
+                        ++next;
+                    else
+                        flag[num_shared + j] = 1;
+                }
+                for (std::size_t v = 0; v < nvar; ++v)
+                    i32(flag[v]);
+            } else {
+                i32(0);
+            }
+            if (bi > 0) {
+                i32(1);
+                for (std::size_t v = 0; v < nvar; ++v)
+                    i32(v < num_shared ? 0 : -1);
+            } else {
+                i32(0);
+            }
+            i32(-1);
+
+            std::vector<std::vector<double>> owned;
+            if (bi == 0)
+                owned = shared_data;
+            for (const std::size_t j : z.mPresent) {
+                const CellVarComp& cv = cell_vars[j];
+                const NDArray& vv = rMesh.CellData(cv.mKey, z.mBlock);
+                std::vector<double> col(vv.Shape()[0]);
+                const detail::DoubleView vv_values(vv);
+                for (std::size_t r = 0; r < vv.Shape()[0]; ++r)
+                    col[r] = vv_values[r * cv.mNumComp + cv.mComp];
+                owned.push_back(std::move(col));
+            }
+            for (const auto& col : owned) {
+                double lo = 0.0, hi = 0.0;
+                bool seen = false;
+                for (const double v : col) {
+                    if (std::isnan(v))
+                        continue;
+                    lo = seen ? std::min(lo, v) : v;
+                    hi = seen ? std::max(hi, v) : v;
+                    seen = true;
+                }
+                f64(lo);
+                f64(hi);
+            }
+            for (const auto& col : owned)
+                raw(col.data(), col.size() * sizeof(double));
+
+            if (z.mType == "FEPOLYGON" || z.mType == "FEPOLYHEDRON") {
+                if (z.mType == "FEPOLYHEDRON") {
+                    std::int64_t offset = 0;
+                    i32(0);
+                    for (const auto& f : z.mFaces.mFaces) {
+                        offset += static_cast<std::int64_t>(f.size());
+                        i32(offset);
+                    }
+                }
+                for (const auto& f : z.mFaces.mFaces)
+                    for (const std::int64_t v : f)
+                        i32(v);
+                for (const std::int64_t v : z.mFaces.mLeft)
+                    i32(v - 1);
+                for (const std::int64_t v : z.mFaces.mRight)
+                    i32(v - 1);
+                continue;
+            }
+            const std::vector<int>& order = tecplot_order(cb.Type());
+            const NDArray& conn_array = cb.Conn();
+            const std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
+            const detail::Int64View conn(conn_array);
+            for (std::size_t r = 0; r < cb.NumCells(); ++r)
+                for (std::size_t j = 0; j < order.size(); ++j) {
+                    std::size_t src = static_cast<std::size_t>(order[j]);
+                    if (src >= k)
+                        src = k - 1;
+                    i32(conn[r * k + src]);
+                }
+        }
+        os.write(out.data(), static_cast<std::streamsize>(out.size()));
+        if (!os)
+            throw WriteError("Tecplot: could not write " + rPath);
+        return;
+    }
+
     os << "TITLE = \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\"\n";
     os << "VARIABLES = ";
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";
     os << "\n";
 
-    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     // Twenty values per line, formatted in parallel chunks (row_writer.hpp);
     // each separator depends on the value's own index, not the chunk's.
     const detail::CNumber num;
@@ -2565,20 +2767,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         const std::vector<int>& order = tecplot_order(cb.Type());
         const std::size_t num_cells = cb.NumCells();
 
-        // Zone title: an exactly-matching Cell region's name, else block_<i>.
-        std::string title = "block_" + std::to_string(block);
-        for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
-            const meshioplusplus::Region& reg = rMesh.Region(ri);
-            if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
-                continue;
-            if (reg.NumEntries() != static_cast<std::size_t>(bases[block + 1] - bases[block]))
-                continue;
-            const std::int64_t* e = reg.Entries();
-            if (e[0] == bases[block] && e[reg.NumEntries() - 1] == bases[block + 1] - 1) {
-                title = reg.mName;
-                break;
-            }
-        }
+        const std::string title = zone_title(block);
 
         // Which cell variables this zone owns vs. leaves passive.
         std::vector<std::size_t> present, passive;

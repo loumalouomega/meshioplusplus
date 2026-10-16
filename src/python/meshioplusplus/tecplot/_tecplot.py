@@ -196,6 +196,18 @@ def write(filename, mesh):
 
     bases = block_bases(mesh.cells)
 
+    if str(filename).lower().endswith(".plt"):
+        _write_plt(
+            filename,
+            mesh,
+            cell_blocks,
+            variables,
+            shared_data,
+            cell_var_blocks,
+            bases,
+        )
+        return
+
     with open_file(filename, "w") as f:
         f.write(f'TITLE = "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}"\n')
         variables_str = ", ".join(f'"{var}"' for var in variables)
@@ -248,6 +260,123 @@ def write(filename, mesh):
             order = meshio_to_tecplot_order[cell.type]
             for row in cell.data[:, order]:
                 f.write(" ".join(str(c) for c in row + 1) + "\n")
+
+
+_PLT_ZONE_TYPES = {
+    "FELINESEG": 1,
+    "FETRIANGLE": 2,
+    "FEQUADRILATERAL": 3,
+    "FETETRAHEDRON": 4,
+    "FEBRICK": 5,
+    "FEPOLYGON": 6,
+    "FEPOLYHEDRON": 7,
+}
+
+
+def _write_plt(
+    filename, mesh, cell_blocks, variables, shared_data, cell_var_blocks, bases
+):
+    """The same zones as the ASCII writer, as a binary ``#!TDV112`` file.
+
+    One zone per cell block; zone 1 owns the nodal variables and the later
+    zones share them (and carry only their own cell-centred values, the others
+    passive). Values are written as doubles, so nothing narrows; connectivity is
+    0-based. The layout is the Data Format Guide's appendix A, which
+    ``_plt.py`` reads back.
+    """
+    num_nodes = len(mesh.points)
+    nvar = len(variables)
+    num_shared = len(shared_data)
+    out = bytearray()
+
+    def i32(*values):
+        out.extend(np.asarray(values, dtype="<i4").tobytes())
+
+    def f32(value):
+        out.extend(np.float32(value).tobytes())
+
+    def f64(*values):
+        out.extend(np.asarray(values, dtype="<f8").tobytes())
+
+    def string(text):
+        out.extend(np.asarray([ord(c) for c in text] + [0], dtype="<i4").tobytes())
+
+    out.extend(b"#!TDV112")
+    i32(1, 0)  # byte order, full file
+    string(_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0])
+    i32(nvar)
+    for name in variables:
+        string(name)
+
+    zones = []
+    for bi, ic in enumerate(cell_blocks):
+        cell = mesh.cells[ic]
+        zone_type = _zone_type(cell.type)
+        face_based = zone_type in ("FEPOLYGON", "FEPOLYHEDRON")
+        faces = _face_map(cell) if face_based else None
+        present = [j for j, pb in enumerate(cell_var_blocks) if ic in pb]
+        zones.append((ic, cell, zone_type, faces, present))
+        f32(299.0)
+        string(_zone_title(mesh, bases, ic))
+        i32(-1, -1)  # parent zone, strand
+        f64(0.0)  # solution time
+        i32(-1, _PLT_ZONE_TYPES[zone_type])  # color, zone type
+        if cell_var_blocks:
+            located = [0] * num_shared + [1] * len(cell_var_blocks)
+            i32(1, *located)
+        else:
+            i32(0)
+        i32(0, 0)  # raw and miscellaneous face neighbours
+        i32(num_nodes)
+        if face_based:
+            nodes = sum(len(face) for face in faces[0])
+            i32(len(faces[0]), nodes, 0, 0)
+        i32(len(cell.data), 0, 0, 0)  # cells, I/J/K cell dimensions
+        i32(0)  # no auxiliary data
+    f32(357.0)
+
+    for bi, (ic, cell, zone_type, faces, present) in enumerate(zones):
+        f32(299.0)
+        i32(*([2] * nvar))  # every variable a double
+        passive = [
+            num_shared + j for j in range(len(cell_var_blocks)) if j not in present
+        ]
+        if passive:
+            flags = [0] * nvar
+            for v in passive:
+                flags[v] = 1
+            i32(1, *flags)
+        else:
+            i32(0)
+        if bi > 0:
+            i32(1, *([0] * num_shared + [-1] * len(cell_var_blocks)))
+        else:
+            i32(0)
+        i32(-1)  # own connectivity
+        owned = []
+        if bi == 0:
+            owned += [np.asarray(col, dtype=np.float64) for col in shared_data]
+        owned += [np.asarray(cell_var_blocks[j][ic], dtype=np.float64) for j in present]
+        for column in owned:
+            finite = column[~np.isnan(column)]
+            f64(*((finite.min(), finite.max()) if finite.size else (0.0, 0.0)))
+        for column in owned:
+            out.extend(np.ascontiguousarray(column, dtype="<f8").tobytes())
+        if faces is not None:
+            face_list, left, right = faces
+            if zone_type == "FEPOLYHEDRON":
+                offsets = np.concatenate([[0], np.cumsum([len(f) for f in face_list])])
+                i32(*offsets)
+            for face in face_list:
+                i32(*face)
+            i32(*[v - 1 for v in left])
+            i32(*[v - 1 for v in right])
+            continue
+        order = meshio_to_tecplot_order[cell.type]
+        out.extend(np.ascontiguousarray(cell.data[:, order], dtype="<i4").tobytes())
+
+    with open_file(filename, "wb") as f:
+        f.write(bytes(out))
 
 
 def _write_ints(f, ints, ncol=20):
