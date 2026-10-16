@@ -6958,32 +6958,70 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
     // is this format's native cell shape, and the reader emits them, so a
     // round-trip write would otherwise throw on our own output.
+    const auto openfoam_info = [](py::dict cell_tags, py::dict patch_types) {
+        meshioplusplus::OpenFoamInfo info;
+        for (auto item : cell_tags) {
+            std::vector<std::string> names;
+            for (auto n : py::cast<py::iterable>(item.second))
+                names.push_back(py::cast<std::string>(n));
+            info.mCellTags[py::cast<std::int64_t>(item.first)] = std::move(names);
+        }
+        for (auto item : patch_types)
+            info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
+                py::cast<std::string>(item.second);
+        return info;
+    };
     m.def(
         "openfoam_write",
-        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types,
-           bool binary, int label_bits, int scalar_bits) {
+        [openfoam_info](const std::string& path, py::object pymesh, py::dict cell_tags,
+                        py::dict patch_types, bool binary, int label_bits, int scalar_bits,
+                        const std::string& region, bool decomposed) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
-            meshioplusplus::OpenFoamInfo info;
-            for (auto item : cell_tags) {
-                std::vector<std::string> names;
-                for (auto n : py::cast<py::iterable>(item.second))
-                    names.push_back(py::cast<std::string>(n));
-                info.mCellTags[py::cast<std::int64_t>(item.first)] = std::move(names);
-            }
-            for (auto item : patch_types)
-                info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
-                    py::cast<std::string>(item.second);
+            const meshioplusplus::OpenFoamInfo info = openfoam_info(cell_tags, patch_types);
             meshioplusplus::OpenFoamWriteOptions wopts;
             wopts.mBinary = binary;
             wopts.mLabelBits = label_bits;
             wopts.mScalarBits = scalar_bits;
-            core_nogil([&] { return meshioplusplus::write_openfoam(path, cpp, info, wopts); });
+            core_nogil([&] {
+                if (decomposed)
+                    return meshioplusplus::write_openfoam_decomposed(path, cpp, info, wopts);
+                if (region.empty())
+                    return meshioplusplus::write_openfoam(path, cpp, info, wopts);
+                return meshioplusplus::write_openfoam_region(path, cpp, info, wopts, region);
+            });
         },
         py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
         py::arg("patch_types") = py::dict(), py::arg("binary") = false, py::arg("label_bits") = 32,
-        py::arg("scalar_bits") = 64);
+        py::arg("scalar_bits") = 64, py::arg("region") = std::string(),
+        py::arg("decomposed") = false);
+    py::class_<meshioplusplus::OpenFoamSeriesWriter>(m, "OpenFoamSeriesWriter")
+        .def(py::init([openfoam_info](const std::string& path, py::dict cell_tags,
+                                      py::dict patch_types, bool binary, int label_bits,
+                                      int scalar_bits, const std::string& region) {
+                 meshioplusplus::OpenFoamWriteOptions wopts;
+                 wopts.mBinary = binary;
+                 wopts.mLabelBits = label_bits;
+                 wopts.mScalarBits = scalar_bits;
+                 return std::make_unique<meshioplusplus::OpenFoamSeriesWriter>(
+                     path, openfoam_info(cell_tags, patch_types), wopts, region);
+             }),
+             py::arg("path"), py::arg("cell_tags") = py::dict(),
+             py::arg("patch_types") = py::dict(), py::arg("binary") = false,
+             py::arg("label_bits") = 32, py::arg("scalar_bits") = 64,
+             py::arg("region") = std::string())
+        .def(
+            "write",
+            [](meshioplusplus::OpenFoamSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                /*lenient_field_data=*/false,
+                                                                /*allow_ragged=*/true));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::OpenFoamSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::OpenFoamSeriesWriter::Finalize);
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {

@@ -54,6 +54,7 @@
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
@@ -295,13 +296,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
         rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
-        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot") {
+        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -602,6 +603,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "xplt"          ? "FEBio plot"
                       : rFormat == "ansys_rst"     ? "Ansys results"
                       : rFormat == "lsdyna_d3plot" ? "LS-DYNA d3plot"
+                      : rFormat == "openfoam"      ? "OpenFOAM"
                       : rFormat == "vtx"           ? "DOLFINx VTX"
                       : rFormat == "szplt"         ? "Tecplot SZL"
                       : rFormat == "marc_t19"      ? "Marc post file"
@@ -884,6 +886,24 @@ private:
     AnsysRstSeriesWriter mWriter;
 };
 
+/// A transient case: the polyMesh once and a time directory of fields per step, written as the
+/// steps arrive.
+class SeqOpenFoamSink final : public SeqSeriesSink {
+public:
+    SeqOpenFoamSink(const std::string& rPath, bool Binary)
+        : mWriter(rPath, {}, [&] {
+              OpenFoamWriteOptions o;
+              o.mBinary = Binary;
+              return o;
+          }()) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    OpenFoamSeriesWriter mWriter;
+};
+
 /// A d3plot family holds the geometry once and a state per step, written when finalized.
 class SeqLsdynaD3plotSink final : public SeqSeriesSink {
 public:
@@ -965,6 +985,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqAnsysRstSink>(rPath);
     if (rFormat == "lsdyna_d3plot")
         return std::make_unique<SeqLsdynaD3plotSink>(rPath);
+    if (rFormat == "openfoam")
+        return std::make_unique<SeqOpenFoamSink>(rPath, rOptions.mEncoding == WriteEncoding::Binary);
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     if (rFormat == "vtx")
         return std::make_unique<SeqVtxSink>(rPath);

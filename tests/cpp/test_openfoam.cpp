@@ -1335,3 +1335,83 @@ TEST(OpenFoam, ParseBoundaryHandlesNestedBracesAndReadsType) {
     std::error_code ec;
     fs::remove_all(base, ec);
 }
+
+// Roadmap 3.3.3: a decomposed case written by `write_openfoam_decomposed` reassembles to the mesh
+// the serial writer produces (a 2x2x2 grid in two processors, so each owns internal faces of its
+// own as well as the ones it shares), a repeated step is refused, and a region lands under
+// `constant/<region>/polyMesh`.
+namespace {
+
+meshioplusplus::Mesh foam_test_grid(std::size_t N) {
+    const std::size_t p = N + 1;
+    meshioplusplus::NDArray pts(meshioplusplus::DType::Float64, {p * p * p, std::size_t{3}});
+    for (std::size_t k = 0; k < p; ++k)
+        for (std::size_t j = 0; j < p; ++j)
+            for (std::size_t i = 0; i < p; ++i) {
+                double* x = pts.As<double>() + 3 * (i + p * (j + p * k));
+                x[0] = static_cast<double>(i);
+                x[1] = static_cast<double>(j);
+                x[2] = static_cast<double>(k);
+            }
+    meshioplusplus::NDArray conn(meshioplusplus::DType::Int64,
+                                 {N * N * N, std::size_t{8}});
+    std::size_t c = 0;
+    const auto id = [&](std::size_t i, std::size_t j, std::size_t k) {
+        return static_cast<std::int64_t>(i + p * (j + p * k));
+    };
+    for (std::size_t k = 0; k < N; ++k)
+        for (std::size_t j = 0; j < N; ++j)
+            for (std::size_t i = 0; i < N; ++i, ++c) {
+                std::int64_t* row = conn.As<std::int64_t>() + 8 * c;
+                const std::int64_t v[8] = {id(i, j, k),         id(i + 1, j, k),
+                                           id(i + 1, j + 1, k), id(i, j + 1, k),
+                                           id(i, j, k + 1),     id(i + 1, j, k + 1),
+                                           id(i + 1, j + 1, k + 1), id(i, j + 1, k + 1)};
+                std::copy(v, v + 8, row);
+            }
+    meshioplusplus::Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    mesh.AddCellBlock("hexahedron", std::move(conn));
+    return mesh;
+}
+
+}  // namespace
+
+TEST(OpenFoamWriter, DecomposedCaseReassemblesAndRegionsAndSeriesWrite) {
+    meshioplusplus::Mesh mesh = foam_test_grid(2);
+    meshioplusplus::NDArray part(meshioplusplus::DType::Int64, {std::size_t{8}});
+    for (std::size_t c = 0; c < 8; ++c)
+        part.As<std::int64_t>()[c] = c < 4 ? 0 : 1;
+    mesh.AddCellData("partition:part", {std::move(part)});
+
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamInfo info;
+    EXPECT_THROW(meshioplusplus::write_openfoam_decomposed((base / "x.foam").string(),
+                                                           foam_test_grid(2), info, {}),
+                 meshioplusplus::WriteError);
+    meshioplusplus::write_openfoam_decomposed((base / "case.foam").string(), mesh, info, {});
+    ASSERT_TRUE(fs::exists(base / "processor1" / "constant" / "polyMesh" / "faceProcAddressing"));
+    meshioplusplus::OpenFoamInfo read_info;
+    const meshioplusplus::Mesh back =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), read_info);
+    ASSERT_GE(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+    EXPECT_EQ(back.Cells(0).NumCells(), 8u);
+    EXPECT_EQ(back.NumPoints(), 27u);
+
+    meshioplusplus::write_openfoam_region((base / "mr.foam").string(), foam_test_grid(1), info, {},
+                                          "fluid");
+    EXPECT_TRUE(fs::exists(base / "constant" / "fluid" / "polyMesh" / "points"));
+    EXPECT_THROW(meshioplusplus::write_openfoam_region((base / "mr.foam").string(),
+                                                       foam_test_grid(1), info, {}, "a/b"),
+                 meshioplusplus::WriteError);
+
+    meshioplusplus::OpenFoamSeriesWriter series((base / "series" / "case.foam").string());
+    series.Write(0.25, foam_test_grid(1));
+    series.Write(0.5, foam_test_grid(1));
+    series.Finalize();
+    EXPECT_EQ(series.NumSteps(), 2u);
+    EXPECT_THROW(series.Write(1.0, foam_test_grid(2)), meshioplusplus::WriteError);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}

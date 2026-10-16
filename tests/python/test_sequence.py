@@ -387,10 +387,24 @@ def test_series_writers_list_agrees_with_reality(steps, tmp_path):
         if fmt == "usd" and not _importable("pxr"):
             continue
         works = True
+        pattern = steps / "out_*.vtu"
+        if fmt == "openfoam":
+            # a polyMesh needs volume cells: the same two steps over a tetrahedron
+            (tmp_path / "volume").mkdir()
+            for i in range(2):
+                meshioplusplus.write(
+                    str(tmp_path / "volume" / f"out_{i}.vtu"),
+                    meshioplusplus.Mesh(
+                        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+                        [("tetra", np.array([[0, 1, 2, 3]]))],
+                    ),
+                    compression=None,
+                )
+            pattern = tmp_path / "volume" / "out_*.vtu"
         try:
             meshioplusplus.write_sequence(
                 str(tmp_path / f"series_{fmt}{suffixes.get(fmt, '.out')}"),
-                meshioplusplus.read_sequence(str(steps / "out_*.vtu")),
+                meshioplusplus.read_sequence(str(pattern)),
                 file_format=fmt,
             )
         except Exception:
