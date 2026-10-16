@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.3.0 (2026-10-16)
 
 - **CGNS field data and regions**: `field_data` is written as a `UserDefinedData_t` node and point and cell regions as `ZoneSubRegion_t` nodes (`GridLocation`, `PointList`, the dimension as the node value, the tag in a child), by both engines, and read back for a single-zone file. Side regions and cells of face-based `NGON_n`/`NFACE_n` blocks are not written (a warning says so).
 

@@ -82,10 +82,10 @@ def _sha(path) -> str:
 # change**. They were recorded at v10.19.0 and went stale for three releases
 # before anyone noticed, which is what this note is for.
 BASELINE_HASHES = {
-    "vtu_ascii": "d9238218052df88ff9572d49a92fc4319f935fdd7f5043ae46605c960c2b8cf3",
-    "vtu_binary_raw": "7a76b204d898d6da096a1e5822905b5c135fd440f33040fb340fb0c64bd42d75",
-    "vtp_ascii": "268bc617bbe4dd8b2fc957a453c5629d47549970a43db1cede4b7f1b75f6e000",
-    "vtp_binary_raw": "b865f0b2b17c5d8b46908c653716f1712c28b86f3dc290949db1633544e80914",
+    "vtu_ascii": "7bb6c92c5153e7e4751e29406e64e3b48e4c4e1e11f031c89b4331d19c567883",
+    "vtu_binary_raw": "3513ff6464b0d1a31676bcc0aa3e065acd63c41ed992ad64c699d63471e835d0",
+    "vtp_ascii": "d66923e9dc121cef18e4afdd1d83c8a90d1de33ea69e86ae1b529ae38bd650a2",
+    "vtp_binary_raw": "14d89b274e11298f99169c7f0a3f3c59b3a4359cebf8f65bd22d65b9b99eb920",
 }
 
 
