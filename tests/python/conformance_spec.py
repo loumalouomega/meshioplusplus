@@ -992,6 +992,9 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell"],
+        "note": "A Selection selects elements, so point and side regions (which address "
+        "points and facets, not elements) have no form in the file; several Mesh objects "
+        "merge into one mesh on read and are written as one.",
     },
     "nastran": {
         "cells": {

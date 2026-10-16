@@ -69,7 +69,7 @@ On write:
 - **Selections.** Every cell region that is exactly a union of whole entities of one dimension is written as a Selection; any other region is dropped with a warning. Without `mphtxt:geom`, every disjoint region is its own entity, so it always survives, and so does a region that unions several.
 - **What is dropped.** Point and side regions are dropped with a warning, as are data arrays other than `mphtxt:geom`.
 
-The writer writes a single Mesh object, so the regions of a multi-object file (which are not unions of whole entities there) are dropped on write.
+The writer writes a single Mesh object, so the regions of a multi-object file (which are not unions of whole entities there) are dropped on write. Both drops are facts of the format, not gaps: a COMSOL Selection selects *elements* (entity indices of a Mesh object), so a `point` or `side` region, which addresses points or cell facets, has no form in the file, and the separate Mesh objects a file can hold are merged on read into one mesh, which is written back as one object.
 
 ## Data mapping
 

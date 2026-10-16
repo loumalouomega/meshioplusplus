@@ -113,6 +113,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has no type; Herrmann, bubble and generalized plane strain types come back as the default type of their shape.
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
+- **`mphtxt`**: A Selection selects elements, so point and side regions (which address points and facets, not elements) have no form in the file; several Mesh objects merge into one mesh on read and are written as one.
 - **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and regions have no place; cells come back ordered by element card.
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
