@@ -380,9 +380,13 @@ def test_series_writers_list_agrees_with_reality(steps, tmp_path):
     from meshioplusplus._interop import _importable
 
     has_gidpost = getattr(_core, "__has_gidpost__", False)
+    # 'szplt' needs TecIO at build time, as 'gid' needs gidpost: no TecIO, no writer.
+    has_tecio = getattr(_core, "__has_tecio__", False)
     suffixes = {"usd": ".usda"}
     for fmt in sorted(meshioplusplus._helpers._writer_map):
         if fmt == "gid" and not has_gidpost:
+            continue
+        if fmt == "szplt" and not has_tecio:
             continue
         if fmt == "usd" and not _importable("pxr"):
             continue

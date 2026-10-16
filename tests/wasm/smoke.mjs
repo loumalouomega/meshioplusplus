@@ -2574,10 +2574,9 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('mphbin') && writers.includes('mphbin'));
     // CalculiX results (roadmap section 1.1, v15.3.0; the ASCII writer of roadmap 3.2.1): both ways.
     assert.ok(readers.includes('frd') && writers.includes('frd'));
-    // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt read-only.
-    for (const fmt of ['elmer', 'febio'])
+    // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt both ways (roadmap 3.2.7).
+    for (const fmt of ['elmer', 'febio', 'xplt'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
-    assert.ok(readers.includes('xplt') && !writers.includes('xplt'));
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);

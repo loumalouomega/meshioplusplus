@@ -581,6 +581,8 @@ def _region_rows(mesh):
 @pytest.mark.parametrize("writer", ["core", "python"])
 @pytest.mark.parametrize("reader", ["core", "python"])
 def test_field_data_and_regions_round_trip_across_engines(tmp_path, writer, reader):
+    if "core" in (writer, reader) and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
     mesh = _regions_mesh()
     path = str(tmp_path / "r.cgns")
     if writer == "core":
@@ -594,6 +596,7 @@ def test_field_data_and_regions_round_trip_across_engines(tmp_path, writer, read
     np.testing.assert_array_equal(back.field_data["answer"], [42.0])
 
 
+@pytest.mark.skipif(not _HAS_HDF5, reason="needs the C++ HDF5-enabled core")
 def test_regions_are_zone_sub_regions_in_the_file(tmp_path):
     h5py = pytest.importorskip("h5py")
     path = str(tmp_path / "r.cgns")
@@ -609,6 +612,7 @@ def test_regions_are_zone_sub_regions_in_the_file(tmp_path):
         )
 
 
+@pytest.mark.skipif(not _HAS_HDF5, reason="needs the C++ HDF5-enabled core")
 def test_side_regions_are_not_written(tmp_path):
     mesh = _regions_mesh()
     mesh.regions.append(

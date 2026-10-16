@@ -11,6 +11,8 @@ from meshioplusplus.vtr import _vtr
 from meshioplusplus.vts import _vts
 
 TWINS = {"vti": _vti, "vtr": _vtr, "vts": _vts}
+HAS_ZLIB = getattr(_core, "__has_zlib__", False)
+ZLIB_REASON = "the core writes binary VTK XML zlib-compressed; this build has no zlib"
 
 
 def _lattice():
@@ -63,6 +65,8 @@ def _check(back):
 @pytest.mark.parametrize("binary", [False, True])
 @pytest.mark.parametrize("engine", ["core", "python"])
 def test_field_data_and_regions_round_trip(fmt, binary, engine, tmp_path):
+    if engine == "core" and binary and not HAS_ZLIB:
+        pytest.skip(ZLIB_REASON)
     path = tmp_path / f"m.{fmt}"
     mesh = _lattice()
     if engine == "core":
@@ -75,6 +79,8 @@ def test_field_data_and_regions_round_trip(fmt, binary, engine, tmp_path):
 
 @pytest.mark.parametrize("fmt", ["vti", "vtr", "vts"])
 def test_engines_write_the_same_binary_bytes(fmt, tmp_path):
+    if not HAS_ZLIB:
+        pytest.skip(ZLIB_REASON)
     a, b = tmp_path / f"core.{fmt}", tmp_path / f"twin.{fmt}"
     mesh = _lattice()
     getattr(_core, f"{fmt}_write")(str(a), mesh, True, True)
@@ -130,6 +136,8 @@ def test_vtm_region_names_are_escaped(tmp_path):
 def test_pvtu_write_keeps_the_pieces_of_a_read_file(engine, tmp_path):
     from meshioplusplus.pvtu import _pvtu
 
+    if engine == "core" and not HAS_ZLIB:
+        pytest.skip(ZLIB_REASON)
     mesh = _pieces_mesh()
     mesh.regions = [
         meshioplusplus.Region("piece_0", "cell", [0, 1]),
@@ -149,3 +157,23 @@ def test_pvtu_write_keeps_the_pieces_of_a_read_file(engine, tmp_path):
         ("piece_1", [2, 3]),
     ]
     assert list(back.cell_data) == ["c"]
+
+
+def test_the_python_vtu_writer_takes_a_piece_that_opens_with_an_empty_block(tmp_path):
+    # carve_by_part keeps the parts with no cells, so a piece can open with an empty
+    # cell block; the offsets of the blocks after it must still start from zero.
+    from meshioplusplus.vtu import _vtu
+
+    points = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0], [2, 1, 0.0], [1, 1, 0]])
+    mesh = meshioplusplus.Mesh(
+        points,
+        [
+            ("triangle", np.empty((0, 3), dtype=np.int64)),
+            ("triangle", [[0, 1, 4], [1, 2, 3]]),
+        ],
+    )
+    path = tmp_path / "empty_first.vtu"
+    _vtu.write(path, mesh)
+    back = meshioplusplus.read(path)
+    cells = np.concatenate([np.asarray(c.data) for c in back.cells if len(c.data)])
+    np.testing.assert_array_equal(cells, [[0, 1, 4], [1, 2, 3]])
