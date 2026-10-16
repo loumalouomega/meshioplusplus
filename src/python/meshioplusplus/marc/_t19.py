@@ -23,12 +23,7 @@ import numpy as np
 from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
-from ._marc import (
-    _SCALAR_NAMES,
-    _TENSOR_NAMES,
-    TYPES,
-    deck_model,
-)
+from ._marc import _SCALAR_NAMES, _TENSOR_NAMES, TYPES, deck_model
 
 __all__ = ["write", "SeriesWriter"]
 

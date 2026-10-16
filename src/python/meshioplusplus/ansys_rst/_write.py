@@ -28,12 +28,7 @@ from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
 from .._regions import canonical_regions
-from ..ansysInp._ansysInp import (
-    _cell_int,
-    _layout,
-    _num_corners,
-    element_types,
-)
+from ..ansysInp._ansysInp import _cell_int, _layout, _num_corners, element_types
 from ._ansys_rst import (
     _DOF_LABELS,
     _NO_RESULT_CELLS,

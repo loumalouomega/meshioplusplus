@@ -312,7 +312,8 @@ def test_the_python_twin_writes_what_the_core_does(tmp_path):
     ADIOS2 libraries, which this process (holding the core's) must not."""
     pytest.importorskip("adios2")
     meshioplusplus.write(tmp_path / "core.bp", _tri6_mesh(), file_format="vtx")
-    script = textwrap.dedent("""
+    script = textwrap.dedent(
+        """
         import sys, numpy as np
         import meshioplusplus
         from meshioplusplus.vtx import _write
@@ -323,7 +324,8 @@ def test_the_python_twin_writes_what_the_core_does(tmp_path):
         mesh.cell_data["rho"] = [np.array([2.5])]
         mesh.field_data["meshio:time"] = np.array([0.25])
         _write.write(sys.argv[1], mesh)
-        """)
+        """
+    )
     subprocess.run(
         [sys.executable, "-c", script, str(tmp_path / "twin.bp")], check=True
     )
