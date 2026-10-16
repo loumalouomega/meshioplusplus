@@ -6,7 +6,7 @@ The `.rst` file is the binary results database Ansys MAPDL writes (Ansys Mechani
 |---|---|
 | **Format name** | `ansys_rst`; `ansys_rst_cyclic` for the full rotor of a cyclic model (by name only; [read-only](../conformance.md#ansys-rst-cyclic) like `ansys_rst`) |
 | **Extensions** | `.rst`, `.rth` (also recognised by content: the standard header of MAPDL file 12) |
-| **Read / Write** | ✓ / — ([read-only for now](../conformance.md#ansys-rst): the writer is tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.5) |
+| **Read / Write** | ✓ / ✓ ([conformance](../conformance.md#ansys-rst); `ansys_rst_cyclic` stays read-only) |
 | **Extra dependencies** | — |
 
 ## Reading
@@ -97,6 +97,21 @@ A cyclic-symmetry model holds one sector (the base sector, element numbers up to
 
 A **modal** cyclic analysis (since v16.12.0) is expanded mode by mode, as MAPDL's `/CYCEXPAND` and pymapdl-reader's `CyclicResult` do. Each set carries a harmonic index `h` (the nodal diameter; `field_data["ansys:harmonic_index"]`) and holds one half of a travelling mode, `x`. Its other half, `x'`, is the set's **mode pair** (the neighbouring set of the same frequency, which MAPDL writes with the index `-h` since release 18.2; earlier releases repeat `h`, and the second set of the pair is read as `-h`). Without a pair, `x'` is the **duplicate sector**'s solution, its nodes past `csNds` paired with the base sector's in number order; with neither, it is zero (a standing wave). Sector `i` of the full rotor is then `scale * (x cos(h θᵢ) - x' sin(h θᵢ))`, rotated with the sector, with `θᵢ = 2πi/N` and `scale = 1/√N` for `h = 0` or `N/2`, else `1/√(N/2)`. Every nodal, reaction and element nodal array is combined this way; raw element records are copied from the base sector unchanged. Other analysis types (transient, harmonic ...) are refused.
 
+
+## Writing
+
+```python
+meshioplusplus.write("run.rst", mesh)                  # one result set
+meshioplusplus.write_sequence("run.rst", steps)        # a result set per step
+```
+
+The file is little-endian, 32-bit and uncompressed, in the pointer-linked record layout MAPDL writes (standard, result and geometry headers, the equivalence tables, element types, nodes, elements and components), and pymapdl-reader reads it. Both engines write the same bytes.
+
+- **Model.** Cell blocks become elements with the element type the [`.cdb`](./ansysinp.md) writer chooses (`ansys:*` cell data and `ansys:element` select it), point and cell regions become node and element components. Side regions have no equivalent and are dropped with a warning.
+- **Result set.** `field_data["meshio:time"]` is the set's time. Point data named as the reader names them (`U`, `ROT`, `A`, `V`, `TEMP`, `PRES` ...) are the nodal solution, `RF` and `RMOM` the reactions, and cell data `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` (with `<name>@top` for a layered shell's top surface) the element nodal results, in the layout the reader returns. Other arrays are not kept.
+- **Series.** The model is written once and each step adds a set; every step must have the same points, cells and components, else the writer names the step that differs (write one file per step with `{step}` for a changing model).
+
+Not written yet: a cyclic sector (the write side of `ansys_rst_cyclic`), the raw element records (`ENF`, `EUL` ...), nodal coordinate systems and complex results.
 
 ## Not read
 

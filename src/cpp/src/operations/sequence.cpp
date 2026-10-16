@@ -52,6 +52,7 @@
 #include "meshioplusplus/formats/szplt.hpp"
 #include "meshioplusplus/formats/vtx.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
@@ -292,13 +293,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
-        rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19") {
+        rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
+        rFormat == "ansys_rst") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -597,6 +599,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "nastran_h5"    ? "Nastran HDF5"
                       : rFormat == "radioss_anim"  ? "Radioss animation"
                       : rFormat == "xplt"          ? "FEBio plot"
+                      : rFormat == "ansys_rst"     ? "Ansys results"
                       : rFormat == "vtx"           ? "DOLFINx VTX"
                       : rFormat == "szplt"         ? "Tecplot SZL"
                       : rFormat == "marc_t19"      ? "Marc post file"
@@ -643,6 +646,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (rFormat == "vtx" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient DOLFINx VTX writer has no ASCII/binary variant to "
+            "select");
+    if (rFormat == "ansys_rst" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Ansys results writer has no ASCII/binary variant to "
             "select");
     if (rFormat == "xplt" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
@@ -859,6 +866,18 @@ private:
     XpltSeriesWriter mWriter;
 };
 
+/// A results file holds the model once and a result set per step, written when finalized.
+class SeqAnsysRstSink final : public SeqSeriesSink {
+public:
+    explicit SeqAnsysRstSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    AnsysRstSeriesWriter mWriter;
+};
+
 /// A binout keeps every output's records and writes the file when it is finalized, so
 /// `WritePointsCells` has nothing to do.
 class SeqLsdynaBinoutSink final : public SeqSeriesSink {
@@ -924,6 +943,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqRadiossAnimSink>(rPath);
     if (rFormat == "xplt")
         return std::make_unique<SeqXpltSink>(rPath);
+    if (rFormat == "ansys_rst")
+        return std::make_unique<SeqAnsysRstSink>(rPath);
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     if (rFormat == "vtx")
         return std::make_unique<SeqVtxSink>(rPath);

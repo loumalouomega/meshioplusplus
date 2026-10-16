@@ -6404,11 +6404,13 @@ MESHIOPLUSPLUS_API void write_ansysinp(const std::string& rPath, const Mesh& rMe
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -6481,6 +6483,37 @@ MESHIOPLUSPLUS_API Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient,
                                          std::string_view Label, AnsysInfo& rInfo,
                                          std::unordered_map<std::int64_t, std::int64_t>& rNodeIndex,
                                          std::vector<AnsysCellLocation>& rCells);
+
+/**
+ * @brief The element nodes of cell type `Type` under an element of `Category`:
+ *        entry `c` is the cell node element node `c` takes (a degenerate brick
+ *        repeats cell nodes); empty when the category has no such layout.
+ */
+MESHIOPLUSPLUS_API std::vector<int> ansys_cell_layout(std::string_view Type,
+                                                      AnsysCategory Category);
+
+/// The element routine a cell type is written as when nothing better is known
+/// (185 for a hexahedron ...), or -1 when Ansys has no element for it.
+MESHIOPLUSPLUS_API int ansys_default_routine(std::string_view Type);
+
+/// The corner nodes of a cell type (8 for `"hexahedron20"`); 0 when unknown.
+MESHIOPLUSPLUS_API std::size_t ansys_num_corners(std::string_view Type);
+
+/// The Ansys element of every cell of a mesh: `mCellEtype[block][row]` is
+/// `(routine, ET slot)` and `mSlotRoutine` maps each ET slot to its routine.
+struct AnsysElementTypes {
+    std::map<int, int> mSlotRoutine;
+    std::vector<std::vector<std::pair<int, int>>> mCellEtype;
+};
+
+/**
+ * @brief Choose the Ansys element of every cell: its `ansys:element` routine and
+ *        `ansys:type` slot where the element's node layout fits the cell, else
+ *        the default routine of its type in a fresh slot.
+ * @param What Names the writer in messages (`"Ansys .cdb writer"`).
+ * @throws WriteError for a cell type (or a ragged block) with no element type.
+ */
+MESHIOPLUSPLUS_API AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -15370,6 +15403,8 @@ MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath);
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
@@ -15415,6 +15450,51 @@ MESHIOPLUSPLUS_API Mesh read_ansys_rst_cyclic(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath,
                                                                const ReadOptions& rOptions = {});
+
+/**
+ * @brief Write an Ansys MAPDL results file holding one result set: the model
+ *        (nodes numbered 1..n in point order, elements 1..m in cell order, point
+ *        and cell regions as components), the nodal DOF solution from the point
+ *        data (`U`, `ROT`, `A`, `V` vectors; `TEMP`, `PRES` ... scalars), the
+ *        reaction forces (`RF`, `RMOM`, `RF_<DOF>`) and the element nodal
+ *        stresses and strains (`S`, `EPEL`, `EPPL`, `EPCR`, `EPTH`, a layered
+ *        shell's top surface as `<name>@top`; `(cells, nodes * 6)` as the reader
+ *        returns them). Little-endian, 64-bit pointers, uncompressed. The time
+ *        is `meshio:time` (1 when absent). Element nodal forces, raw element
+ *        records, element rotations and cyclic-symmetry records are not
+ *        written. The Python twin writes the same bytes.
+ * @throws WriteError for a mesh with no points or a cell type Ansys has no element for
+ */
+MESHIOPLUSPLUS_API void write_ansys_rst(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A result set per mesh in one results file, written by `Finalize`; every
+ *        mesh must have the first one's points, cells and components. The Python
+ *        twin is `meshioplusplus.ansys_rst.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API AnsysRstSeriesWriter {
+public:
+    explicit AnsysRstSeriesWriter(const std::string& rPath);
+    ~AnsysRstSeriesWriter();
+
+    AnsysRstSeriesWriter(const AnsysRstSeriesWriter&) = delete;
+    AnsysRstSeriesWriter& operator=(const AnsysRstSeriesWriter&) = delete;
+    AnsysRstSeriesWriter(AnsysRstSeriesWriter&&) noexcept;
+    AnsysRstSeriesWriter& operator=(AnsysRstSeriesWriter&&) noexcept;
+
+    /// Add one result set. @throws WriteError on a mismatch with the first one.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of result sets added so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the file. Idempotent. @throws WriteError when no set was added.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ansys_rst.hpp =====
@@ -56427,6 +56507,126 @@ Mesh ansys_build_mesh(const AnsysModel& rModel, bool Lenient, std::string_view L
     return mesh;
 }
 
+std::vector<int> ansys_cell_layout(std::string_view Type, AnsysCategory Category) {
+    using V = std::vector<int>;
+    if (Category == AnsysCategory::Brick) {
+        if (Type == "hexahedron")
+            return V{0, 1, 2, 3, 4, 5, 6, 7};
+        if (Type == "hexahedron20")
+            return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
+        if (Type == "wedge")
+            return V{0, 1, 2, 2, 3, 4, 5, 5};
+        if (Type == "wedge15")  // K=L, O=P, S=K, W=O, B=A
+            return V{0, 1, 2, 2, 3, 4, 5, 5, 6, 7, 2, 8, 9, 10, 5, 11, 12, 13, 14, 14};
+        if (Type == "pyramid")
+            return V{0, 1, 2, 3, 4, 4, 4, 4};
+        if (Type == "pyramid13")  // M=N=O=P, U=V=W=X=M
+            return V{0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 4, 4, 4, 4, 9, 10, 11, 12};
+        if (Type == "tetra")
+            return V{0, 1, 2, 2, 3, 3, 3, 3};
+        if (Type == "tetra10")  // K=L, M..P, S=K, U..X=M, B=A
+            return V{0, 1, 2, 2, 3, 3, 3, 3, 4, 5, 2, 6, 3, 3, 3, 3, 7, 8, 9, 9};
+    } else if (Category == AnsysCategory::Tet) {
+        if (Type == "tetra")
+            return V{0, 1, 2, 3};
+        if (Type == "tetra10")
+            return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    } else if (Category == AnsysCategory::Shell) {
+        if (Type == "quad")
+            return V{0, 1, 2, 3};
+        if (Type == "quad8")
+            return V{0, 1, 2, 3, 4, 5, 6, 7};
+        if (Type == "triangle")
+            return V{0, 1, 2, 2};
+        if (Type == "triangle6")  // K=L, the K-L midside = K
+            return V{0, 1, 2, 2, 3, 4, 2, 5};
+    } else if (Category == AnsysCategory::Line ||
+               Category == AnsysCategory::LinearLine) {
+        if (Type == "line")
+            return V{0, 1};
+        if (Type == "line3" && Category == AnsysCategory::Line)
+            return V{0, 1, 2};
+    } else if (Category == AnsysCategory::Point) {
+        if (Type == "vertex")
+            return V{0};
+    }
+    return {};
+}
+
+
+int ansys_default_routine(std::string_view Type) {
+    static const std::pair<std::string_view, int> kDefault[] = {
+        {"vertex", 21},     {"line", 188},       {"line3", 189},        {"triangle", 181},
+        {"triangle6", 281}, {"quad", 181},       {"quad8", 281},        {"tetra", 285},
+        {"tetra10", 187},   {"pyramid", 185},    {"pyramid13", 186},    {"wedge", 185},
+        {"wedge15", 186},   {"hexahedron", 185}, {"hexahedron20", 186},
+    };
+    for (const auto& [type, routine] : kDefault)
+        if (Type == type)
+            return routine;
+    return -1;
+}
+
+std::size_t ansys_num_corners(std::string_view Type) {
+    return amod_num_corners(Type);
+}
+
+AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What) {
+    AnsysElementTypes out;
+    const std::size_t n_blocks = rMesh.NumCellBlocks();
+    std::map<int, int> routine_slot;  // routine -> slot, for fresh slots
+    out.mCellEtype.resize(n_blocks);
+    bool dropped_etype = false;
+    auto column = [&](const char* pName, std::size_t Block) -> const NDArray* {
+        return rMesh.HasCellData(pName) ? &rMesh.CellData(pName, Block) : nullptr;
+    };
+    auto column_int = [](const NDArray* pColumn, std::size_t Row, std::int64_t Default) {
+        if (!pColumn || pColumn->Size() <= Row)
+            return Default;
+        return read_int(*pColumn, Row);
+    };
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const int fallback = ansys_default_routine(type);
+        if (cb.IsRagged() || fallback < 0)
+            throw WriteError(std::string(What) + ": cell type '" + type + "' has no element type");
+        const NDArray* elements = column("ansys:element", b);
+        const NDArray* types = column("ansys:type", b);
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            int routine = static_cast<int>(column_int(elements, r, fallback));
+            int slot = static_cast<int>(column_int(types, r, 0));
+            if (ansys_cell_layout(type, ansys_category(routine)).empty() ||
+                (slot > 0 && out.mSlotRoutine.count(slot) && out.mSlotRoutine[slot] != routine)) {
+                dropped_etype = dropped_etype || routine != fallback;
+                routine = fallback;
+                slot = 0;
+            }
+            if (slot > 0)
+                out.mSlotRoutine.emplace(slot, routine);
+            out.mCellEtype[b].emplace_back(routine, slot);
+        }
+    }
+    for (auto& per : out.mCellEtype)
+        for (auto& [routine, slot] : per)
+            if (slot == 0) {
+                auto it = routine_slot.find(routine);
+                if (it == routine_slot.end()) {
+                    int fresh = 1;
+                    while (out.mSlotRoutine.count(fresh))
+                        ++fresh;
+                    out.mSlotRoutine[fresh] = routine;
+                    it = routine_slot.emplace(routine, fresh).first;
+                }
+                slot = it->second;
+            }
+    if (dropped_etype)
+        log::warn("{}: some ansys:element values do not fit their cells' shape; the default "
+                  "element type was written instead",
+                  What);
+    return out;
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/ansys_model.cpp =====
@@ -78759,6 +78959,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -80482,6 +80683,679 @@ MeshMetadata read_ansys_rst_cyclic_metadata(const std::string& rPath, const Read
     return rst_metadata(rPath, rOptions, true, "ansys_rst_cyclic");
 }
 
+
+// ---------------------------------------------------------------------------
+// The writer: the reader's inverse (little-endian, 64-bit pointers, uncompressed). The
+// Python twin (`ansys_rst/_write.py`) writes the same bytes.
+// ---------------------------------------------------------------------------
+namespace {
+
+[[noreturn]] void rstw_fail(const std::string& rMessage) {
+    throw WriteError("Ansys .rst: " + rMessage);
+}
+
+std::int32_t rstw_i32(std::int64_t Value) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint64_t>(Value)));
+}
+
+/// A name as `Count` 4-character words, each read big-endian (the reader's name).
+std::vector<std::int64_t> rstw_text_words(const std::string& rText, std::size_t Count) {
+    std::string raw = rText.substr(0, 4 * Count);
+    raw.resize(4 * Count, ' ');
+    std::vector<std::int64_t> out(Count);
+    for (std::size_t k = 0; k < Count; ++k) {
+        std::uint32_t v = 0;
+        for (std::size_t j = 0; j < 4; ++j)
+            v = (v << 8) | static_cast<unsigned char>(raw[4 * k + j]);
+        out[k] = rstw_i32(v);
+    }
+    return out;
+}
+
+/// The file as int32 words: records of length, flags, data and a trailer.
+class RstwWords {
+public:
+    std::size_t Record(const std::vector<std::int32_t>& rData, unsigned Flags) {
+        const std::size_t ptr = mW.size();
+        mW.push_back(static_cast<std::int32_t>(rData.size()));
+        mW.push_back(rstw_i32(static_cast<std::int64_t>(Flags) << 24));
+        mW.insert(mW.end(), rData.begin(), rData.end());
+        mW.push_back(static_cast<std::int32_t>(rData.size()));
+        return ptr;
+    }
+    std::size_t Ints(const std::vector<std::int64_t>& rValues, std::size_t Size = 0) {
+        std::vector<std::int32_t> data;
+        for (const std::int64_t v : rValues)
+            data.push_back(rstw_i32(v));
+        if (Size > data.size())
+            data.resize(Size, 0);
+        return Record(data, 0x80);
+    }
+    std::size_t Doubles(const std::vector<double>& rValues) {
+        std::vector<std::int32_t> data(2 * rValues.size());
+        if (!rValues.empty())
+            std::memcpy(data.data(), rValues.data(), rValues.size() * sizeof(double));
+        return Record(data, 0x00);
+    }
+    void Patch(std::size_t Ptr, std::size_t K, std::int64_t Value) { mW[Ptr + 2 + K] = rstw_i32(Value); }
+    void Patch64(std::size_t Ptr, std::size_t Lo, std::size_t Hi, std::int64_t Value) {
+        Patch(Ptr, Lo, Value & 0xFFFFFFFFLL);
+        Patch(Ptr, Hi, Value >> 32);
+    }
+    std::size_t Size() const { return mW.size(); }
+    const std::vector<std::int32_t>& Words() const { return mW; }
+
+private:
+    std::vector<std::int32_t> mW;
+};
+
+struct RstwElement {
+    std::size_t mBlock = 0, mRow = 0;
+    int mRoutine = 0, mSlot = 0;
+    std::vector<std::int64_t> mNodes;  // the element's order, 1-based
+    std::vector<int> mCellSlots;       // the element node each cell node became
+};
+
+struct RstwSlotInfo {
+    int mRoutine = 0;
+    std::size_t mNodelm = 0, mNodstr = 0;
+};
+
+struct RstwComponent {
+    std::string mName;
+    bool mNodes = false;
+    std::vector<std::int64_t> mIds;
+};
+
+class RstwModel {
+public:
+    explicit RstwModel(const Mesh& rMesh) {
+        mNnod = rMesh.NumPoints();
+        if (mNnod == 0)
+            rstw_fail("the mesh has no points");
+        const NDArray& pts = rMesh.Points();
+        const detail::DoubleView view(pts);
+        const std::size_t width = pts.Size() / mNnod;
+        mPoints.assign(mNnod * 3, 0.0);
+        for (std::size_t i = 0; i < mNnod; ++i)
+            for (std::size_t k = 0; k < 3 && k < width; ++k)
+                mPoints[i * 3 + k] = view.Data()[i * width + k];
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const detail::Int64View conn(cb.Conn());
+            for (std::size_t i = 0; i < cb.NumCells() * cb.NodesPerCell(); ++i)
+                if (conn.Data()[i] < 0 || static_cast<std::size_t>(conn.Data()[i]) >= mNnod)
+                    rstw_fail("a '" + std::string(cb.Type()) +
+                              "' cell refers to a point the mesh does not have");
+        }
+        const detail::AnsysElementTypes types =
+            detail::ansys_element_types(rMesh, "Ansys .rst writer");
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::string type(cb.Type());
+            mHasResults.push_back(type != "vertex" && type != "line" && type != "line3");
+            const std::size_t k = cb.NodesPerCell();
+            const detail::Int64View conn(cb.Conn());
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                RstwElement e;
+                e.mBlock = b;
+                e.mRow = r;
+                e.mRoutine = types.mCellEtype[b][r].first;
+                e.mSlot = types.mCellEtype[b][r].second;
+                const std::vector<int> layout =
+                    detail::ansys_cell_layout(type, detail::ansys_category(e.mRoutine));
+                std::map<int, int> first;
+                for (std::size_t c = 0; c < layout.size(); ++c)
+                    first.emplace(layout[c], static_cast<int>(c));
+                for (const int j : layout)
+                    e.mNodes.push_back(conn.Data()[r * k + static_cast<std::size_t>(j)] + 1);
+                for (std::size_t j = 0; j < k; ++j)
+                    e.mCellSlots.push_back(first[static_cast<int>(j)]);
+                mElements.push_back(std::move(e));
+            }
+        }
+        mNelm = mElements.size();
+        for (const RstwElement& e : mElements) {
+            RstwSlotInfo& info = mSlots[e.mSlot];
+            info.mRoutine = e.mRoutine;
+            info.mNodelm = std::max(info.mNodelm, e.mNodes.size());
+            info.mNodstr = std::max(
+                info.mNodstr, detail::ansys_num_corners(rMesh.Cells(e.mBlock).Type()));
+        }
+        std::size_t sides = 0;
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const Region& reg = rMesh.Region(i);
+            if (reg.mKind == RegionKind::Side) {
+                ++sides;
+                continue;
+            }
+            std::set<std::int64_t> ids;
+            for (std::size_t q = 0; q < reg.NumEntries(); ++q)
+                ids.insert(reg.Entries()[q] + 1);
+            mComponents.push_back({reg.mName, reg.mKind == RegionKind::Point,
+                                   std::vector<std::int64_t>(ids.begin(), ids.end())});
+        }
+        if (sides)
+            log::warn("Ansys .rst writer: side regions have no component equivalent; dropped");
+        auto column = [&](const char* pName, const RstwElement& rE) -> std::int64_t {
+            if (!rMesh.HasCellData(pName))
+                return 1;
+            const NDArray& a = rMesh.CellData(pName, rE.mBlock);
+            return a.Size() <= rE.mRow ? 1 : detail::read_int(a, rE.mRow);
+        };
+        for (const RstwElement& e : mElements) {
+            mMat.push_back(column("ansys:mat", e));
+            mReal.push_back(column("ansys:real", e));
+            mSecnum.push_back(column("ansys:secnum", e));
+        }
+        for (const std::string& name : rMesh.CellDataNames())
+            if (name.size() >= 4 && name.compare(name.size() - 4, 4, kRstTop) == 0)
+                mLayered = true;
+        mSignature = std::to_string(mNnod) + "|" + std::to_string(mLayered);
+        for (const RstwElement& e : mElements) {
+            mSignature += "|" + std::to_string(e.mRoutine) + "," + std::to_string(e.mSlot);
+            for (const std::int64_t n : e.mNodes)
+                mSignature += "," + std::to_string(n);
+        }
+        for (const RstwComponent& c : mComponents) {
+            mSignature += "#" + c.mName + (c.mNodes ? "n" : "e");
+            for (const std::int64_t v : c.mIds)
+                mSignature += "," + std::to_string(v);
+        }
+    }
+
+    std::size_t mNnod = 0, mNelm = 0;
+    std::vector<double> mPoints;
+    std::vector<RstwElement> mElements;
+    std::vector<bool> mHasResults;
+    std::map<int, RstwSlotInfo> mSlots;
+    std::vector<RstwComponent> mComponents;
+    std::vector<std::int64_t> mMat, mReal, mSecnum;
+    bool mLayered = false;
+    std::string mSignature;
+};
+
+struct RstwTensor {
+    std::string mName;  // "S", "S@top" ...
+    std::size_t mTensor = 0;  // index in kRstTensors
+    bool mTop = false;
+};
+
+// AvailData bit k is item k (resucm.inc).
+constexpr int kRstwBitNsl = 27, kRstwBitRf = 30;
+
+struct RstwSet {
+    double mTime = 0.0;
+    std::array<std::int64_t, 3> mStep{1, 1, 1};
+    std::vector<std::int64_t> mDofs;
+    std::vector<double> mNodal;  // nnod x dofs
+    struct Reaction {
+        std::size_t mPoint;
+        std::int64_t mCode;
+        double mValue;
+    };
+    std::vector<Reaction> mReactions;
+    std::vector<RstwTensor> mTensors;
+    std::int64_t mMask = 0;
+};
+
+RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
+                 std::array<std::int64_t, 3> Step) {
+    RstwSet s;
+    s.mTime = Time;
+    s.mStep = Step;
+    const std::size_t n = rModel.mNnod;
+    std::map<std::int64_t, std::vector<double>> columns;
+    auto values_of = [&](const std::string& rName) {
+        const NDArray& a = rMesh.PointData(rName);
+        const detail::DoubleView view(a);
+        return std::vector<double>(view.Data(), view.Data() + a.Size());
+    };
+    auto is_triple = [&](const std::string& rName) {
+        const NDArray& a = rMesh.PointData(rName);
+        return a.Shape().size() == 2 && a.Shape()[0] == n && a.Shape()[1] == 3;
+    };
+    static const std::pair<const char*, std::int64_t> kVectorDofs[] = {
+        {"U", 1}, {"ROT", 4}, {"A", 7}, {"V", 10}};
+    for (const auto& [name, first] : kVectorDofs) {
+        if (!rMesh.HasPointData(name))
+            continue;
+        if (!is_triple(name)) {
+            log::warn("Ansys .rst writer: point data '{}' is not (points, 3); dropped", name);
+            continue;
+        }
+        const std::vector<double> a = values_of(name);
+        for (std::int64_t d = 0; d < 3; ++d) {
+            std::vector<double> col(n);
+            for (std::size_t i = 0; i < n; ++i)
+                col[i] = a[i * 3 + static_cast<std::size_t>(d)];
+            columns[first + d] = std::move(col);
+        }
+    }
+    for (std::int64_t code = 16; code <= 26; ++code) {
+        const char* name = rst_scalar_name(code);
+        if (!name || !rMesh.HasPointData(name))
+            continue;
+        const std::vector<double> a = values_of(name);
+        if (a.size() == n)
+            columns[code] = a;
+        else
+            log::warn("Ansys .rst writer: point data '{}' is not (points,); dropped", name);
+    }
+    static const std::pair<const char*, std::int64_t> kReactionVectors[] = {{"RF", 1}, {"RMOM", 4}};
+    for (const auto& [name, first] : kReactionVectors) {
+        if (!rMesh.HasPointData(name))
+            continue;
+        if (!is_triple(name)) {
+            log::warn("Ansys .rst writer: point data '{}' is not (points, 3); dropped", name);
+            continue;
+        }
+        const std::vector<double> a = values_of(name);
+        for (std::int64_t d = 0; d < 3; ++d)
+            for (std::size_t p = 0; p < n; ++p)
+                if (std::isfinite(a[p * 3 + static_cast<std::size_t>(d)]))
+                    s.mReactions.push_back({p, first + d, a[p * 3 + static_cast<std::size_t>(d)]});
+    }
+    std::vector<std::int64_t> scalar_codes;
+    for (std::int64_t code = 7; code <= 26; ++code)
+        if (code <= 12 || rst_scalar_name(code))
+            scalar_codes.push_back(code);
+    for (const std::int64_t code : scalar_codes) {
+        const std::string name = "RF_" + rst_dof_label(code);
+        if (!rMesh.HasPointData(name))
+            continue;
+        const std::vector<double> a = values_of(name);
+        if (a.size() != n)
+            continue;
+        for (std::size_t p = 0; p < n; ++p)
+            if (std::isfinite(a[p]))
+                s.mReactions.push_back({p, code, a[p]});
+    }
+    std::set<std::int64_t> used;
+    for (const auto& [code, col] : columns)
+        used.insert(code);
+    for (const auto& r : s.mReactions)
+        used.insert(r.mCode);
+    s.mDofs.assign(used.begin(), used.end());
+    s.mNodal.assign(n * s.mDofs.size(), kRstUndefined);
+    for (std::size_t k = 0; k < s.mDofs.size(); ++k) {
+        const auto it = columns.find(s.mDofs[k]);
+        if (it == columns.end())
+            continue;
+        for (std::size_t i = 0; i < n; ++i)
+            s.mNodal[i * s.mDofs.size() + k] =
+                std::isfinite(it->second[i]) ? it->second[i] : kRstUndefined;
+    }
+    static const std::int64_t kBits[] = {3, 6, 7, 8, 9};  // S, EPEL, EPPL, EPCR, EPTH
+    for (std::size_t t = 0; t < std::size(kRstTensors); ++t)
+        for (const bool top : {false, true}) {
+            const std::string name = std::string(kRstTensors[t].mName) + (top ? kRstTop : "");
+            if (rMesh.HasCellData(name)) {
+                s.mTensors.push_back({name, t, top});
+                s.mMask |= std::int64_t{1} << kBits[t];
+            }
+        }
+    if (!columns.empty() || !s.mReactions.empty())
+        s.mMask |= std::int64_t{1} << kRstwBitNsl;
+    if (!s.mReactions.empty())
+        s.mMask |= std::int64_t{1} << kRstwBitRf;
+    return s;
+}
+
+std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwModel& rModel,
+                                  const RstwSet& rSet, std::size_t Base) {
+    const std::size_t esl = rF.Ints(std::vector<std::int64_t>(2 * rModel.mNelm, 0));
+    rF.Patch64(Base, 118, 119, static_cast<std::int64_t>(esl - Base));
+    for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
+        const RstwElement& e = rModel.mElements[k];
+        if (!rModel.mHasResults[e.mBlock])
+            continue;
+        // per tensor: surfaces[top] -> (npc, 6) rows
+        struct Surfaces {
+            std::size_t mTensor = 0;
+            std::map<bool, std::vector<double>> mRows;
+        };
+        std::vector<Surfaces> entries;
+        for (const RstwTensor& t : rSet.mTensors) {
+            const NDArray& a = rMesh.CellData(t.mName, e.mBlock);
+            const std::size_t count = rMesh.Cells(e.mBlock).NumCells();
+            if (a.Shape().size() != 2 || count <= e.mRow)
+                continue;
+            const std::size_t width = a.Shape()[1];
+            const std::size_t npc = width / 6;
+            if (npc == 0 || width % 6)
+                continue;
+            const detail::DoubleView view(a);
+            std::vector<double> row(view.Data() + e.mRow * width, view.Data() + (e.mRow + 1) * width);
+            auto it = std::find_if(entries.begin(), entries.end(),
+                                   [&](const Surfaces& s) { return s.mTensor == t.mTensor; });
+            if (it == entries.end()) {
+                entries.push_back({t.mTensor, {}});
+                it = entries.end() - 1;
+            }
+            it->mRows[t.mTop] = std::move(row);
+        }
+        if (entries.empty())
+            continue;
+        const RstwSlotInfo& info = rModel.mSlots.at(e.mSlot);
+        const std::size_t nodstr = info.mNodstr;
+        const std::size_t layers = (e.mRoutine == 181 || e.mRoutine == 281) && rModel.mLayered ? 2 : 1;
+        std::vector<std::pair<std::size_t, std::vector<double>>> pending;
+        for (const Surfaces& surfaces : entries) {
+            const std::size_t items = kRstTensors[surfaces.mTensor].mItems;
+            std::vector<double> values(nodstr * layers * items, kRstUndefined);
+            for (std::size_t row = 0; row < nodstr * layers; ++row)
+                for (std::size_t c = 6; c < items; ++c)
+                    values[row * items + c] = 0.0;
+            bool any = false;
+            for (const auto& [top, data] : surfaces.mRows) {
+                if (top && layers == 1)
+                    continue;
+                const std::size_t layer = top && layers == 2 ? 1 : 0;
+                const std::size_t npc = data.size() / 6;
+                for (std::size_t j = 0; j < e.mCellSlots.size(); ++j) {
+                    const std::size_t slot = static_cast<std::size_t>(e.mCellSlots[j]);
+                    if (j >= npc || slot >= nodstr)
+                        continue;
+                    bool finite = true;
+                    for (std::size_t c = 0; c < 6; ++c)
+                        finite = finite && std::isfinite(data[j * 6 + c]);
+                    if (!finite)
+                        continue;
+                    for (std::size_t c = 0; c < 6; ++c)
+                        values[(layer * nodstr + slot) * items + c] = data[j * 6 + c];
+                    any = true;
+                }
+            }
+            if (any)
+                pending.emplace_back(kRstTensors[surfaces.mTensor].mEntry, std::move(values));
+        }
+        if (pending.empty())
+            continue;
+        const std::size_t table = rF.Ints(std::vector<std::int64_t>(25, 0));
+        for (const auto& [entry, values] : pending) {
+            const std::size_t ptr = rF.Doubles(values);
+            rF.Patch(table, entry, static_cast<std::int64_t>(ptr - table));
+        }
+        rF.Patch(esl, 2 * k, static_cast<std::int64_t>(table - esl));
+    }
+    return esl;
+}
+
+std::size_t rstw_set_records(RstwWords& rF, const Mesh& rMesh, const RstwModel& rModel,
+                             const RstwSet& rSet) {
+    const std::size_t numdof = rSet.mDofs.size();
+    const std::size_t base = rF.Ints(std::vector<std::int64_t>(150, 0));
+    rF.Patch(base, 1, static_cast<std::int64_t>(rModel.mNelm));
+    rF.Patch(base, 2, static_cast<std::int64_t>(rModel.mNnod));
+    rF.Patch(base, 3, 0);
+    rF.Patch(base, 19, static_cast<std::int64_t>(numdof));
+    for (std::size_t k = 0; k < numdof; ++k)
+        rF.Patch(base, 20 + k, rSet.mDofs[k]);
+    rF.Patch(base, 146, rSet.mMask);
+    if (numdof) {
+        const std::size_t nsl = rF.Doubles(rSet.mNodal);
+        rF.Patch64(base, 104, 105, static_cast<std::int64_t>(nsl - base));
+    }
+    if (!rSet.mReactions.empty()) {
+        std::map<std::int64_t, std::size_t> order;
+        for (std::size_t k = 0; k < numdof; ++k)
+            order[rSet.mDofs[k]] = k;
+        std::vector<std::int64_t> table;
+        std::vector<double> values;
+        for (const auto& r : rSet.mReactions) {
+            const std::int64_t index = static_cast<std::int64_t>(r.mPoint * numdof + order[r.mCode] + 1);
+            table.push_back(index & 0xFFFFFFFFLL);
+            table.push_back(index >> 32);
+            values.push_back(r.mValue);
+        }
+        const std::size_t rf = rF.Ints(table);
+        rF.Doubles(values);
+        rF.Patch(base, 7, static_cast<std::int64_t>(rSet.mReactions.size()));
+        rF.Patch64(base, 106, 107, static_cast<std::int64_t>(rf - base));
+    }
+    if (!rSet.mTensors.empty())
+        rstw_element_solution(rF, rMesh, rModel, rSet, base);
+    return base;
+}
+
+/// The whole file. `rMeshes` holds each set's mesh, for its element results.
+std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<RstwSet>& rSets,
+                                    const std::vector<const Mesh*>& rMeshes) {
+    RstwWords f;
+    const std::int64_t nnod = static_cast<std::int64_t>(rModel.mNnod);
+    const std::int64_t nelm = static_cast<std::int64_t>(rModel.mNelm);
+    const std::int64_t nsets = static_cast<std::int64_t>(rSets.size());
+    const std::int64_t resmax = std::max<std::int64_t>(nsets, 1);
+    std::vector<std::int64_t> std_header(100, 0);
+    std_header[0] = 12;
+    std_header[1] = -1;
+    std_header[2] = 120000;
+    std_header[3] = 20000101;
+    std_header[4] = -1;
+    std_header[9] = rstw_text_words("15.0", 1)[0];
+    std_header[10] = 20140101;
+    auto put = [&](std::size_t At, const std::vector<std::int64_t>& rWords) {
+        for (std::size_t k = 0; k < rWords.size(); ++k)
+            std_header[At + k] = rWords[k];
+    };
+    put(11, rstw_text_words("LINUX x64", 3));
+    put(14, rstw_text_words("file", 2));
+    put(16, rstw_text_words("FULL", 2));
+    std_header[22] = 0;
+    std_header[25] = 16384;
+    put(30, rstw_text_words("file", 8));
+    f.Ints(std_header);
+    const std::size_t header = f.Ints({12, nnod, nnod, resmax, 0, nelm, nelm, 0, nsets}, 80);
+    std::int64_t avail = 0;
+    std::size_t numdof_max = 0;
+    for (const RstwSet& s : rSets) {
+        avail |= s.mMask;
+        numdof_max = std::max(numdof_max, s.mDofs.size());
+    }
+    f.Patch(header, 35, avail);
+    f.Patch(header, 39, 1);
+    f.Patch(header, 20, 1);
+    f.Patch(header, 48, nnod);
+    std::vector<std::int64_t> numbers(rModel.mNnod);
+    for (std::size_t i = 0; i < numbers.size(); ++i)
+        numbers[i] = static_cast<std::int64_t>(i + 1);
+    f.Patch64(header, 14, 45, static_cast<std::int64_t>(f.Ints(numbers)));
+    numbers.resize(rModel.mNelm);
+    for (std::size_t i = 0; i < numbers.size(); ++i)
+        numbers[i] = static_cast<std::int64_t>(i + 1);
+    f.Patch64(header, 13, 44, static_cast<std::int64_t>(f.Ints(numbers)));
+    f.Patch(header, 4, static_cast<std::int64_t>(numdof_max));
+
+    const std::int64_t maxety = rModel.mSlots.empty() ? 0 : rModel.mSlots.rbegin()->first;
+    const std::size_t geometry = f.Ints({0, maxety, 0, nnod, nelm}, 80);
+    f.Patch64(header, 15, 46, static_cast<std::int64_t>(geometry));
+    f.Patch(geometry, 42, nnod);
+    f.Patch(geometry, 45, nnod);
+    const std::size_t ety = f.Ints(std::vector<std::int64_t>(std::max<std::int64_t>(maxety, 1), 0));
+    f.Patch64(geometry, 20, 21, static_cast<std::int64_t>(ety));
+    for (const auto& [slot, info] : rModel.mSlots) {
+        std::vector<std::int64_t> record(200, 0);
+        record[0] = slot;
+        record[1] = info.mRoutine;
+        if (info.mRoutine == 181 || info.mRoutine == 281)
+            record[9] = rModel.mLayered ? 0 : 1;
+        record[60] = static_cast<std::int64_t>(info.mNodelm);
+        record[62] = static_cast<std::int64_t>(info.mNodelm);
+        record[93] = static_cast<std::int64_t>(info.mNodstr);
+        const std::size_t ptr = f.Ints(record);
+        f.Patch(ety, static_cast<std::size_t>(slot - 1), static_cast<std::int64_t>(ptr - ety));
+    }
+    std::size_t first_node = 0;
+    for (std::size_t k = 0; k < rModel.mNnod; ++k) {
+        const std::size_t ptr = f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k],
+                                           rModel.mPoints[3 * k + 1], rModel.mPoints[3 * k + 2],
+                                           0.0, 0.0, 0.0});
+        if (k == 0)
+            first_node = ptr;
+    }
+    f.Patch64(geometry, 26, 27, static_cast<std::int64_t>(first_node));
+    const std::size_t eid = f.Ints(std::vector<std::int64_t>(2 * rModel.mNelm, 0));
+    f.Patch64(geometry, 28, 29, static_cast<std::int64_t>(eid));
+    for (std::size_t k = 0; k < rModel.mElements.size(); ++k) {
+        const RstwElement& e = rModel.mElements[k];
+        std::vector<std::int64_t> record = {rModel.mMat[k],  e.mSlot,
+                                            rModel.mReal[k], rModel.mSecnum[k],
+                                            0,               1,
+                                            0,               0,
+                                            static_cast<std::int64_t>(k + 1), 0};
+        record.insert(record.end(), e.mNodes.begin(), e.mNodes.end());
+        const std::size_t ptr = f.Ints(record);
+        f.Patch(eid, 2 * k, static_cast<std::int64_t>(ptr - eid));
+    }
+    f.Patch(geometry, 48, static_cast<std::int64_t>(rModel.mComponents.size()));
+    if (!rModel.mComponents.empty()) {
+        std::size_t first = 0;
+        bool have = false;
+        for (const RstwComponent& c : rModel.mComponents) {
+            std::vector<std::int64_t> packed;
+            std::size_t k = 0;
+            while (k < c.mIds.size()) {
+                std::size_t j = k;
+                while (j + 1 < c.mIds.size() && c.mIds[j + 1] == c.mIds[j] + 1)
+                    ++j;
+                packed.push_back(c.mIds[k]);
+                if (j > k)
+                    packed.push_back(-c.mIds[j]);
+                k = j + 1;
+            }
+            std::vector<std::int64_t> record = {c.mNodes ? 1 : 2};
+            const auto name = rstw_text_words(c.mName, 8);
+            record.insert(record.end(), name.begin(), name.end());
+            record.insert(record.end(), packed.begin(), packed.end());
+            const std::size_t ptr = f.Ints(record);
+            if (!have) {
+                first = ptr;
+                have = true;
+            }
+        }
+        f.Patch64(geometry, 50, 51, static_cast<std::int64_t>(first));
+    }
+
+    std::vector<std::int64_t> bases;
+    for (std::size_t i = 0; i < rSets.size(); ++i)
+        bases.push_back(static_cast<std::int64_t>(rstw_set_records(f, *rMeshes[i], rModel, rSets[i])));
+    std::vector<std::int64_t> dsi;
+    for (const std::int64_t b : bases)
+        dsi.push_back(b & 0xFFFFFFFFLL);
+    dsi.resize(static_cast<std::size_t>(resmax), 0);
+    for (const std::int64_t b : bases)
+        dsi.push_back(b >> 32);
+    dsi.resize(static_cast<std::size_t>(2 * resmax), 0);
+    const std::size_t dsi_ptr = f.Ints(dsi);
+    std::vector<double> times;
+    for (const RstwSet& s : rSets)
+        times.push_back(s.mTime);
+    times.resize(static_cast<std::size_t>(resmax), 0.0);
+    const std::size_t tim = f.Doubles(times);
+    std::vector<std::int64_t> lsp;
+    for (const RstwSet& s : rSets)
+        lsp.insert(lsp.end(), s.mStep.begin(), s.mStep.end());
+    lsp.resize(static_cast<std::size_t>(3 * resmax), 0);
+    const std::size_t lsp_ptr = f.Ints(lsp);
+    f.Patch64(header, 10, 40, static_cast<std::int64_t>(dsi_ptr));
+    f.Patch64(header, 11, 41, static_cast<std::int64_t>(tim));
+    f.Patch64(header, 12, 42, static_cast<std::int64_t>(lsp_ptr));
+    f.Patch(header, 9, static_cast<std::int64_t>(f.Size()));
+    f.Patch(header, 22, static_cast<std::int64_t>(f.Size()));
+    return f.Words();
+}
+
+double rstw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 1.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 1.0 : detail::DoubleView(a).Data()[0];
+}
+
+std::array<std::int64_t, 3> rstw_step_of(const Mesh& rMesh, std::size_t Index) {
+    auto get = [&](const char* pName, std::int64_t Default) {
+        if (!rMesh.HasFieldData(pName))
+            return Default;
+        const NDArray& a = rMesh.FieldData(pName);
+        return a.Size() == 0 ? Default : detail::Int64View(a).Data()[0];
+    };
+    return {get("ansys:load_step", 1), get("ansys:substep", static_cast<std::int64_t>(Index + 1)),
+            get("ansys:cumulative", static_cast<std::int64_t>(Index + 1))};
+}
+
+void rstw_save(const std::string& rPath, const std::vector<std::int32_t>& rWords) {
+    auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + rPath);
+    out.write(reinterpret_cast<const char*>(rWords.data()),
+              static_cast<std::streamsize>(rWords.size() * sizeof(std::int32_t)));
+    out.close();
+    if (!out)
+        rstw_fail("failed writing " + rPath);
+}
+
+}  // namespace
+
+void write_ansys_rst(const std::string& rPath, const Mesh& rMesh) {
+    const RstwModel model(rMesh);
+    const RstwSet set = rstw_set(rMesh, model, rstw_time_of(rMesh), rstw_step_of(rMesh, 0));
+    rstw_save(rPath, rstw_file(model, {set}, {&rMesh}));
+}
+
+struct AnsysRstSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<RstwModel> mModel;
+    std::vector<RstwSet> mSets;
+    std::vector<std::unique_ptr<Mesh>> mMeshes;  // each set's element results come from its mesh
+    bool mDone = false;
+};
+
+AnsysRstSeriesWriter::AnsysRstSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!probe)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+AnsysRstSeriesWriter::~AnsysRstSeriesWriter() = default;
+AnsysRstSeriesWriter::AnsysRstSeriesWriter(AnsysRstSeriesWriter&&) noexcept = default;
+AnsysRstSeriesWriter& AnsysRstSeriesWriter::operator=(AnsysRstSeriesWriter&&) noexcept = default;
+
+void AnsysRstSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        rstw_fail("series: the writer was moved from");
+    Impl& s = *mpImpl;
+    auto model = std::make_unique<RstwModel>(rMesh);
+    if (!s.mModel)
+        s.mModel = std::move(model);
+    else if (model->mSignature != s.mModel->mSignature)
+        rstw_fail("series: step " + std::to_string(s.mSets.size()) +
+                  "'s points, cells or components differ from the first step's; a results "
+                  "file holds one model -- write one file per step with '{step}'");
+    s.mSets.push_back(rstw_set(rMesh, *s.mModel, Time, rstw_step_of(rMesh, s.mSets.size())));
+    // The sets' tensors are read when the file is assembled: keep a copy of what they need.
+    s.mMeshes.push_back(std::make_unique<Mesh>(detail::clone_mesh(rMesh)));
+}
+
+std::size_t AnsysRstSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSets.size() : 0;
+}
+
+void AnsysRstSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    Impl& s = *mpImpl;
+    if (s.mSets.empty())
+        rstw_fail("series: no step was written");
+    s.mDone = true;
+    std::vector<const Mesh*> meshes;
+    for (const auto& m : s.mMeshes)
+        meshes.push_back(m.get());
+    rstw_save(s.mPath, rstw_file(*s.mModel, s.mSets, meshes));
+}
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/ansys_rst.cpp =====
 // ===== begin src/cpp/src/formats/ansysinp.cpp =====
@@ -80838,62 +81712,10 @@ namespace {
 
 // The degenerate or native layout of `Type` under an element of `Category`.
 std::optional<std::vector<int>> ans_layout(std::string_view Type, detail::AnsysCategory Category) {
-    using V = std::vector<int>;
-    if (Category == detail::AnsysCategory::Brick) {
-        if (Type == "hexahedron")
-            return V{0, 1, 2, 3, 4, 5, 6, 7};
-        if (Type == "hexahedron20")
-            return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
-        if (Type == "wedge")
-            return V{0, 1, 2, 2, 3, 4, 5, 5};
-        if (Type == "wedge15")  // K=L, O=P, S=K, W=O, B=A
-            return V{0, 1, 2, 2, 3, 4, 5, 5, 6, 7, 2, 8, 9, 10, 5, 11, 12, 13, 14, 14};
-        if (Type == "pyramid")
-            return V{0, 1, 2, 3, 4, 4, 4, 4};
-        if (Type == "pyramid13")  // M=N=O=P, U=V=W=X=M
-            return V{0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 4, 4, 4, 4, 9, 10, 11, 12};
-        if (Type == "tetra")
-            return V{0, 1, 2, 2, 3, 3, 3, 3};
-        if (Type == "tetra10")  // K=L, M..P, S=K, U..X=M, B=A
-            return V{0, 1, 2, 2, 3, 3, 3, 3, 4, 5, 2, 6, 3, 3, 3, 3, 7, 8, 9, 9};
-    } else if (Category == detail::AnsysCategory::Tet) {
-        if (Type == "tetra")
-            return V{0, 1, 2, 3};
-        if (Type == "tetra10")
-            return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    } else if (Category == detail::AnsysCategory::Shell) {
-        if (Type == "quad")
-            return V{0, 1, 2, 3};
-        if (Type == "quad8")
-            return V{0, 1, 2, 3, 4, 5, 6, 7};
-        if (Type == "triangle")
-            return V{0, 1, 2, 2};
-        if (Type == "triangle6")  // K=L, the K-L midside = K
-            return V{0, 1, 2, 2, 3, 4, 2, 5};
-    } else if (Category == detail::AnsysCategory::Line ||
-               Category == detail::AnsysCategory::LinearLine) {
-        if (Type == "line")
-            return V{0, 1};
-        if (Type == "line3" && Category == detail::AnsysCategory::Line)
-            return V{0, 1, 2};
-    } else if (Category == detail::AnsysCategory::Point) {
-        if (Type == "vertex")
-            return V{0};
-    }
-    return std::nullopt;
-}
-
-int ans_default_routine(std::string_view Type) {
-    static const std::pair<std::string_view, int> kDefault[] = {
-        {"vertex", 21},     {"line", 188},       {"line3", 189},        {"triangle", 181},
-        {"triangle6", 281}, {"quad", 181},       {"quad8", 281},        {"tetra", 285},
-        {"tetra10", 187},   {"pyramid", 185},    {"pyramid13", 186},    {"wedge", 185},
-        {"wedge15", 186},   {"hexahedron", 185}, {"hexahedron20", 186},
-    };
-    for (const auto& [type, routine] : kDefault)
-        if (Type == type)
-            return routine;
-    return -1;
+    std::vector<int> layout = detail::ansys_cell_layout(Type, Category);
+    if (layout.empty())
+        return std::nullopt;
+    return layout;
 }
 
 std::string ans_i(std::int64_t Value, int Width) {
@@ -80931,49 +81753,9 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     // Every cell's (element routine, ET slot): kept from `ansys:element` and
     // `ansys:type` when they describe a layout the cell's type has, else the
     // default routine for its type in a fresh slot.
-    std::map<int, int> slot_routine;  // slot -> routine
-    std::map<int, int> routine_slot;  // routine -> slot, for fresh slots
-    std::vector<std::vector<std::pair<int, int>>> cell_etype(n_blocks);
-    bool dropped_etype = false;
-    for (std::size_t b = 0; b < n_blocks; ++b) {
-        const auto cb = rMesh.Cells(b);
-        const std::string type(cb.Type());
-        const int fallback = ans_default_routine(type);
-        if (cb.IsRagged() || fallback < 0)
-            throw WriteError("Ansys .cdb writer: cell type '" + type + "' has no element type");
-        const NDArray* elements = ans_cell_column(rMesh, "ansys:element", b);
-        const NDArray* types = ans_cell_column(rMesh, "ansys:type", b);
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            int routine = static_cast<int>(ans_column_int(elements, r, fallback));
-            int slot = static_cast<int>(ans_column_int(types, r, 0));
-            if (!ans_layout(type, detail::ansys_category(routine)) ||
-                (slot > 0 && slot_routine.count(slot) && slot_routine[slot] != routine)) {
-                dropped_etype = dropped_etype || routine != fallback;
-                routine = fallback;
-                slot = 0;
-            }
-            if (slot > 0)
-                slot_routine.emplace(slot, routine);
-            cell_etype[b].emplace_back(routine, slot);
-        }
-    }
-    for (auto& per : cell_etype)
-        for (auto& [routine, slot] : per)
-            if (slot == 0) {
-                auto it = routine_slot.find(routine);
-                if (it == routine_slot.end()) {
-                    int fresh = 1;
-                    while (slot_routine.count(fresh))
-                        ++fresh;
-                    slot_routine[fresh] = routine;
-                    it = routine_slot.emplace(routine, fresh).first;
-                }
-                slot = it->second;
-            }
-    if (dropped_etype)
-        log::warn(
-            "Ansys .cdb writer: some ansys:element values do not fit their cells' shape; "
-            "the default element type was written instead");
+    detail::AnsysElementTypes element_types = detail::ansys_element_types(rMesh, "Ansys .cdb writer");
+    const std::map<int, int>& slot_routine = element_types.mSlotRoutine;
+    const std::vector<std::vector<std::pair<int, int>>>& cell_etype = element_types.mCellEtype;
 
     // Components: cell and point regions, plus legacy side-channel sets not
     // already named by a region.
@@ -196173,13 +196955,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
-        rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19") {
+        rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
+        rFormat == "ansys_rst") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -196478,6 +197261,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "nastran_h5"    ? "Nastran HDF5"
                       : rFormat == "radioss_anim"  ? "Radioss animation"
                       : rFormat == "xplt"          ? "FEBio plot"
+                      : rFormat == "ansys_rst"     ? "Ansys results"
                       : rFormat == "vtx"           ? "DOLFINx VTX"
                       : rFormat == "szplt"         ? "Tecplot SZL"
                       : rFormat == "marc_t19"      ? "Marc post file"
@@ -196524,6 +197308,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
     if (rFormat == "vtx" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient DOLFINx VTX writer has no ASCII/binary variant to "
+            "select");
+    if (rFormat == "ansys_rst" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient Ansys results writer has no ASCII/binary variant to "
             "select");
     if (rFormat == "xplt" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
@@ -196740,6 +197528,18 @@ private:
     XpltSeriesWriter mWriter;
 };
 
+/// A results file holds the model once and a result set per step, written when finalized.
+class SeqAnsysRstSink final : public SeqSeriesSink {
+public:
+    explicit SeqAnsysRstSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    AnsysRstSeriesWriter mWriter;
+};
+
 /// A binout keeps every output's records and writes the file when it is finalized, so
 /// `WritePointsCells` has nothing to do.
 class SeqLsdynaBinoutSink final : public SeqSeriesSink {
@@ -196805,6 +197605,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqRadiossAnimSink>(rPath);
     if (rFormat == "xplt")
         return std::make_unique<SeqXpltSink>(rPath);
+    if (rFormat == "ansys_rst")
+        return std::make_unique<SeqAnsysRstSink>(rPath);
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     if (rFormat == "vtx")
         return std::make_unique<SeqVtxSink>(rPath);
@@ -204489,6 +205291,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          }},
         {"radioss_anim", meshioplusplus::write_radioss_anim},
         {"xplt", meshioplusplus::write_xplt},
+        {"ansys_rst", meshioplusplus::write_ansys_rst},
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
         {"vtx", meshioplusplus::write_vtx},
 #endif

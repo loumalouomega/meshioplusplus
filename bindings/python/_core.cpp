@@ -5873,6 +5873,24 @@ PYBIND11_MODULE(_core, m) {
         .def("finalize", &meshioplusplus::SzpltSeriesWriter::Finalize);
 #endif
 
+    m.def("ansys_rst_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_ansys_rst(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::AnsysRstSeriesWriter>(m, "AnsysRstSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::AnsysRstSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::AnsysRstSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::AnsysRstSeriesWriter::Finalize);
+
     m.def("xplt_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {

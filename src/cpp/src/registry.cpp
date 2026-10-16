@@ -525,6 +525,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          }},
         {"radioss_anim", meshioplusplus::write_radioss_anim},
         {"xplt", meshioplusplus::write_xplt},
+        {"ansys_rst", meshioplusplus::write_ansys_rst},
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
         {"vtx", meshioplusplus::write_vtx},
 #endif

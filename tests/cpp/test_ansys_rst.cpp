@@ -420,3 +420,37 @@ TEST(AnsysRst, ElementCategories) {
     EXPECT_EQ(meshioplusplus::detail::ansys_category(999), AnsysCategory::Skip);
     EXPECT_EQ(meshioplusplus::detail::ansys_mesh200_category(6), AnsysCategory::Shell);
 }
+
+TEST(AnsysRstWriter, StateAndSeriesRoundTrip) {
+    meshioplusplus::Mesh mesh = mt::hex_mesh();
+    meshioplusplus::NDArray u(meshioplusplus::DType::Float64, {mesh.NumPoints(), std::size_t{3}});
+    for (std::size_t i = 0; i < u.Size(); ++i)
+        u.As<double>()[i] = 0.25 * static_cast<double>(i);
+    mesh.AddPointData("U", std::move(u));
+    meshioplusplus::NDArray t(meshioplusplus::DType::Float64, {std::size_t{1}});
+    t.As<double>()[0] = 0.5;
+    mesh.AddFieldData("meshio:time", std::move(t));
+
+    const std::string path = mt::temp_path(".rst");
+    meshioplusplus::write_ansys_rst(path, mesh);
+    const meshioplusplus::Mesh back = meshioplusplus::read_ansys_rst(path);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+    ASSERT_EQ(back.NumPoints(), mesh.NumPoints());
+    for (std::size_t i = 0; i < 3 * mesh.NumPoints(); ++i)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.PointData("U"), i), 0.25 * i);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.FieldData("meshio:time"), 0), 0.5);
+
+    const std::string series = mt::temp_path(".rst");
+    meshioplusplus::AnsysRstSeriesWriter writer(series);
+    writer.Write(0.25, mesh);
+    writer.Write(0.75, mesh);
+    writer.Finalize();
+    EXPECT_EQ(writer.NumSteps(), 2u);
+    EXPECT_EQ(meshioplusplus::read_ansys_rst_metadata(series).mTimeValues,
+              (std::vector<double>{0.25, 0.75}));
+
+    meshioplusplus::AnsysRstSeriesWriter mismatch(mt::temp_path(".rst"));
+    mismatch.Write(0.0, mesh);
+    EXPECT_THROW(mismatch.Write(1.0, mt::tet_mesh()), meshioplusplus::WriteError);
+}

@@ -18,6 +18,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="abaqus">`abaqus`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | — | — | — | cell, point, side |
 | <span id="abaqus-fil">`abaqus_fil`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="ansys">`ansys`</span> |  |  | ✗ | ✗ | ↻ | ↻ | ✓ | ✓ | exact | — | — | — | cell |
+| <span id="ansys-rst">`ansys_rst`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="ansysinp">`ansysInp`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="avsucd">`avsucd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64 | — | — |
 | <span id="cad-json">`cad_json`</span> |  | ✓ |  | ✓ |  |  |  |  | exact | — | — | — | — |
@@ -108,6 +109,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 
 - **`abaqus_fil`**: A results file holds the model and the results Abaqus names: only point data named like a nodal result (`U`, `RF`...) and cell data named like an element result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; a `vertex` has no Abaqus element and side regions are dropped.
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.
+- **`ansys_rst`**: A results file holds the solution MAPDL names: point data called `U`, `ROT`, `TEMP` ... (and `RF` reactions) and cell data `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not kept. Side regions are dropped with a warning.
 - **`cad_json`**: Kratos IGA geometry: without a B-rep side channel, quads are written as bilinear NURBS faces and lines as edges.
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
@@ -156,7 +158,6 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
-| <span id="ansys-rst">`ansys_rst`</span> | writer | Tracked gap, roadmap §3.2.5: no writer yet. Ansys's result file; the writer is the physics-ML loop's missing half. |
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
 | <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
 | <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |

@@ -20,7 +20,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#abaqus-fil) |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansysinp) |
-| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — | [read-only](./conformance.md#ansys-rst) |
+| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansys-rst) |
 | [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — | [read-only](./conformance.md#ansys-rst-cyclic) |
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#avsucd) |
 | [`cad_json`](./formats/cad_json.md) | `.cad.json` (Kratos IGA geometry; a `.json` by content) | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#cad-json) |

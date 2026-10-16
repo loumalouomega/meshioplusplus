@@ -1278,6 +1278,27 @@ SPEC: dict[str, dict] = {
         "cells, regions and other data are not kept (a warning names the field data "
         "dropped); the canonical `fd` is not a `radioss_th:` name.",
     },
+    "ansys_rst": {
+        "cells": {
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell", "point"],
+        "note": "A results file holds the solution MAPDL names: point data called `U`, "
+        "`ROT`, `TEMP` ... (and `RF` reactions) and cell data `S`, `EPEL`, `EPPL`, "
+        "`EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not "
+        "kept. Side regions are dropped with a warning.",
+    },
     "xplt": {
         "cells": {
             "vertex": "lost",
@@ -1804,7 +1825,6 @@ READ_ONLY = {
         "Exempt, not a gap: a CAD exchange format read through the optional "
         "OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes."
     ),
-    "ansys_rst": _GAP.format(item="3.2.5", why=_RESULT.format(tool="Ansys")),
     "ansys_rst_cyclic": (
         "Exempt, not a gap: not a file of its own but the full rotor that a static "
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "

@@ -3140,6 +3140,7 @@ def test_marc_and_ansys_results_formats(tmp_path):
     # The deck is written since v16.17.0 (by name: ".dat" writes Tecplot), the
     # post file since its writer joined.
     assert "marc" in out["writable"] and "marc_t19" in out["writable"]
+    assert "ansys_rst" in out["writable"]
     assert "ansys_rst_cyclic" not in out["writable"]
     assert out["extensions"][".t19"] == ["marc_t19"]
     assert out["extensions"][".dat"] == ["marc", "tecplot"]
