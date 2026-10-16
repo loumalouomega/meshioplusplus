@@ -134,6 +134,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`vtr`**: RectilinearGrid holds one axis-aligned lattice; the canonical mesh is not one.
 - **`vts`**: StructuredGrid holds one curvilinear lattice; the canonical mesh is not one.
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
+- **`z88`**: A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are what Z88R writes from the deck, so none is written; Aurora's sets hold elements and nodes only, so `side` regions are dropped.
 - **`zarr`**: As `pmsh`: tetrahedra only, other volume cells simplexified.
 
 ## Formats missing a direction

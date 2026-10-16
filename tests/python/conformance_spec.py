@@ -1642,6 +1642,9 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell", "point"],
+        "note": "A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are "
+        "what Z88R writes from the deck, so none is written; Aurora's sets hold elements "
+        "and nodes only, so `side` regions are dropped.",
     },
     "zarr": {
         "cells": {

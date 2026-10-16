@@ -139,7 +139,6 @@ What changed since parity last had a section. The reader/writer triage of Septem
 
 **3.3 Writers that keep less than their reader.** Each closes, or its page records the loss as a fact of the format. **S–M each**
 
-- **3.3.1 Z88.** The writer writes the structure and input files only; the results the reader takes from `z88o2`/`z88o3`/`z88o4` (`U`, `SIG`, `F`), side regions and other arrays are dropped ([Z88](./formats/z88.md)).
 - **3.3.2 Tecplot binary `.plt`.** Read back to `#!TDV71`, written only as ASCII `.dat`. A binary writer at `#!TDV112` (the version `preplot` writes) — FE zones, cell-centred variables, shared connectivity and solution times — also makes [§1.2.6](#_1-2-awaiting-a-licensed-run)'s `preplot` check symmetric.
 - **3.3.3 OpenFOAM.** Multi-region cases (`constant/<region>/polyMesh` and `regionProperties`), decomposed cases (`processor*/` from [`partition`](./partition.md)) and transient time directories are read, not written. Verify first: the page says time-directory fields round-trip, which the code review behind this item could not confirm.
 - **3.3.5 Marc deck.** Side regions wait on Volume A's face numbering ([§1.2.11](#_1-2-awaiting-a-licensed-run)); the Herrmann, bubble and generalized-plane-strain types coming back as the default type of their shape, and a deck holding no data arrays, are facts of the format, recorded in the [conformance](./conformance.md#marc) notes.
