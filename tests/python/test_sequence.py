@@ -382,11 +382,15 @@ def test_series_writers_list_agrees_with_reality(steps, tmp_path):
     has_gidpost = getattr(_core, "__has_gidpost__", False)
     # 'szplt' needs TecIO at build time, as 'gid' needs gidpost: no TecIO, no writer.
     has_tecio = getattr(_core, "__has_tecio__", False)
+    # 'vtx' needs ADIOS2: a core built with it, or the adios2 package for the twin.
+    has_adios2 = getattr(_core, "__has_adios2__", False) or _importable("adios2")
     suffixes = {"usd": ".usda"}
     for fmt in sorted(meshioplusplus._helpers._writer_map):
         if fmt == "gid" and not has_gidpost:
             continue
         if fmt == "szplt" and not has_tecio:
+            continue
+        if fmt == "vtx" and not has_adios2:
             continue
         if fmt == "usd" and not _importable("pxr"):
             continue
