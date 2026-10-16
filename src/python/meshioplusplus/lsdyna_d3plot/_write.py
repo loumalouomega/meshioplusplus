@@ -319,7 +319,7 @@ class _Model:
         self.counts = [len(r) for r in self.rows]
         if not any(self.counts):
             raise WriteError(
-                "LS-DYNA d3plot: the mesh has no solid, beam or shell cells"
+                "LS-DYNA d3plot: the mesh has no solid, beam, shell or SPH cells"
             )
         # rigid bodies: their parts (user ids) from the reader's field data
         rigid = mesh.field_data.get("lsdyna:rigid_body_part")

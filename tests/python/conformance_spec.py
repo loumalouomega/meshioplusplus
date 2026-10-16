@@ -1302,7 +1302,7 @@ SPEC: dict[str, dict] = {
     },
     "lsdyna_d3plot": {
         "cells": {
-            "vertex": "lost",
+            "vertex": "exact",
             "line": "exact",
             "triangle": "exact",
             "quad": "exact",
@@ -1321,8 +1321,8 @@ SPEC: dict[str, dict] = {
         "(`displacement`, `velocity`, `temperature` ...), the element variables "
         "(`stress`, `strain`, `history_variables`, the shell and beam resultants ...), "
         "`lsdyna:alive` and the `global_*` field data; the probe's arrays are not. "
-        "Blocks come back by family (solids, beams, shells), vertices are not written, "
-        "and a cell belongs to one part, so only the first cell region holding it "
+        "Blocks come back by family (solids, beams, shells, SPH particles; a vertex is an "
+        "SPH particle), and a cell belongs to one part, so only the first cell region holding it "
         "survives.",
     },
     "xplt": {
