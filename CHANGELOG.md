@@ -16,6 +16,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **XDMF**: the C++ reader and writer cover the high-order `hexahedron64`..`hexahedron1331` types, per-type and in `Mixed` topologies (roadmap 3.4.9).
 - **lzma**: the C++ core reads and writes `vtkLZMADataCompressor` blocks in VTU/VTP/VTI/VTR/VTS/VTM and the parallel and `.pvd` writers behind the new `MESHIOPLUSPLUS_WITH_LZMA` option (liblzma; Conan `with_lzma`, vcpkg feature `lzma`), introspectable as `_core.__has_lzma__`. The Python structured readers now accept lzma too, so both engines take the same files (roadmap 3.4.7).
 - **Neuroglancer**: a native reader and writer in the shared registry (so C, Fortran, Julia, R, WASM and both CLIs reach it); the Python twin stays as the fallback and now also rejects an index equal to the vertex count (roadmap 3.4.11).
+- **EnSight**: the Python twin reads and writes `VARIABLE` sections (point and cell arrays of 1, 2, 3, 6 and 9 components, `constant per case`, `time_step`), byte-identical to the core's writer (roadmap 3.4.5).
 
 ## v17.2.0 (2026-10-15)
 

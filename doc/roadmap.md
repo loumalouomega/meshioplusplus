@@ -155,7 +155,6 @@ What changed since parity last had a section. The reader/writer triage of Septem
 - **3.4.1 OpenFOAM**: the writer, and zone, field and multi-region reading, are C++ only.
 - **3.4.2 GiD**: the writer is C++ only, through gidpost; the ASCII flavour's layout is documented and can have a Python twin, the HDF5 flavour stays core-only.
 - **3.4.3 CGNS**: face-based polyhedra (`NGON_n`/`NFACE_n`) have no Python path.
-- **3.4.5 EnSight**: `VARIABLE` reading and writing are C++ only.
 - **3.4.13 Probe, per engine.** `test_the_native_registry_agrees` already checks that nothing reads without writing, or writes without reading, in either registry, against the recorded gaps (`READ_ONLY`, `WRITE_ONLY`). What it does not check is the second half: for every format, read and write in *both* the core and Python, against the exemptions this section records. Extend it once the items above name their exemptions.
 
 **3.5 Done when.** Every row of the [format table](./formats.md) has ✓ under both Read and Write (`svg` and `tikz` marked 2-D); `READ_ONLY` holds only `ansys_rst_cyclic`; the conformance matrix has no `write-only` row but `step`'s; every partial-writer note left is a fact of its format; and the binding docs and the MCP server list both directions.
