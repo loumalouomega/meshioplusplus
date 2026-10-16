@@ -26,6 +26,7 @@
 #include <cstring>
 #include <exception>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -39,6 +40,8 @@
 #include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/vtx.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
+#include "meshioplusplus/vtk_common.hpp"
+#include "../detail/typed_view.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -794,6 +797,382 @@ MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpt
         vtx_fail(std::string(rE.what()));
     }
     return meta;
+}
+
+
+// ---------------------------------------------------------------------------
+// The writer: VTXWriter's layout for one rank. The Python twin
+// (`vtx/_write.py`) writes the same variables, attribute and values.
+// ---------------------------------------------------------------------------
+namespace {
+
+[[noreturn]] void vw_fail(const std::string& rMessage) {
+    throw WriteError("VTX (.bp): " + rMessage);
+}
+
+// (VTK type, node count) -> VTK_LAGRANGE_* type, the inverse of the reader's lowering.
+int vw_lagrange(int VtkType, std::size_t Nodes) {
+    static const std::map<std::pair<int, std::size_t>, int> kMap = {
+        {{3, 2}, 68},  {{21, 3}, 68}, {{5, 3}, 69},  {{22, 6}, 69}, {{9, 4}, 70},  {{28, 9}, 70},
+        {{10, 4}, 71}, {{24, 10}, 71}, {{12, 8}, 72}, {{13, 6}, 73}, {{14, 5}, 74}};
+    const auto it = kMap.find({VtkType, Nodes});
+    return it == kMap.end() ? VtkType : it->second;
+}
+
+bool vw_reserved(const std::string& rName) {
+    return rName == "geometry" || rName == "connectivity" || rName == "types" || rName == "step" ||
+           rName == "TIME" || rName == "NumberOfNodes" || rName == "NumberOfEntities";
+}
+
+// Python's xml.sax.saxutils.quoteattr, so the schema attribute reads the same.
+std::string vw_quoteattr(const std::string& rValue) {
+    std::string v;
+    for (const char c : rValue) {
+        if (c == '&')
+            v += "&amp;";
+        else if (c == '<')
+            v += "&lt;";
+        else if (c == '>')
+            v += "&gt;";
+        else if (c == '\n')
+            v += "&#10;";
+        else if (c == '\r')
+            v += "&#13;";
+        else if (c == '\t')
+            v += "&#9;";
+        else
+            v += c;
+    }
+    char quote = '"';
+    if (v.find('"') != std::string::npos) {
+        if (v.find('\'') != std::string::npos) {
+            std::string e;
+            for (const char c : v)
+                e += c == '"' ? std::string("&quot;") : std::string(1, c);
+            v = e;
+        } else {
+            quote = '\'';
+        }
+    }
+    return std::string(1, quote) + v + std::string(1, quote);
+}
+
+struct VwArray {
+    std::string mName;
+    bool mCell = false;
+};
+
+class VwModel {
+public:
+    explicit VwModel(const Mesh& rMesh) {
+        mN = rMesh.NumPoints();
+        mGeometry.assign(mN * 3, 0.0);
+        {
+            const NDArray& pts = rMesh.Points();
+            const detail::DoubleView view(pts);
+            const std::size_t width = mN == 0 ? 3 : pts.Size() / mN;
+            for (std::size_t i = 0; i < mN; ++i)
+                for (std::size_t k = 0; k < 3 && k < width; ++k)
+                    mGeometry[i * 3 + k] = view.Data()[i * width + k];
+        }
+        std::set<std::string> types;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            if (rMesh.Cells(b).NumCells() > 0)
+                types.insert(rMesh.Cells(b).Type());
+        if (types.size() > 1) {
+            std::string list;
+            for (const std::string& t : types)
+                list += (list.empty() ? "" : ", ") + t;
+            vw_fail("a VTX file holds one cell type, as DOLFINx's does; this mesh has " + list +
+                    " (write each type to its own file)");
+        }
+        const auto& vtk_types = meshio_to_vtk_type();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::size_t count = cb.NumCells();
+            if (count == 0)
+                continue;
+            const auto found = vtk_types.find(cb.Type());
+            if (found == vtk_types.end())
+                vw_fail("cell type '" + cb.Type() + "' has no VTK type");
+            const std::size_t w = cb.NodesPerCell();
+            std::vector<int> order = meshio_to_vtk_order(cb.Type());
+            if (order.size() != w)
+                order.clear();
+            const detail::Int64View conn(cb.Conn());
+            for (std::size_t r = 0; r < count; ++r) {
+                mConn.push_back(static_cast<std::int64_t>(w));
+                for (std::size_t j = 0; j < w; ++j) {
+                    const std::int64_t node =
+                        conn.Data()[r * w + (order.empty() ? j : static_cast<std::size_t>(order[j]))];
+                    if (node < 0 || static_cast<std::size_t>(node) >= mN)
+                        vw_fail("a '" + cb.Type() + "' cell refers to a point the mesh does not have");
+                    mConn.push_back(node);
+                }
+            }
+            mWidth = w + 1;
+            mVtkType = vw_lagrange(found->second, w);
+            mCells += count;
+        }
+        if (mCells == 0)
+            vw_fail("the mesh has no cells");
+        for (const std::string& name : rMesh.PointDataNames())
+            if (Usable(name, rMesh.PointData(name), mN, "point"))
+                mArrays.push_back({name, false});
+        for (const std::string& name : rMesh.CellDataNames()) {
+            std::size_t total = 0;
+            bool ok = true;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                total += rMesh.CellData(name, b).Size();
+            // The concatenation must be (cells[, w]).
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks() && ok; ++b) {
+                const NDArray& a = rMesh.CellData(name, b);
+                const std::size_t rows = rMesh.Cells(b).NumCells();
+                ok = Usable(name, a, rows, "cell");
+            }
+            if (ok && total % mCells == 0)
+                mArrays.push_back({name, true});
+        }
+        mSignature = std::to_string(mN) + "|" + std::to_string(mCells) + "|" +
+                     std::to_string(mVtkType);
+        for (const VwArray& a : mArrays)
+            mSignature += "|" + a.mName + (a.mCell ? "c" : "p");
+    }
+
+    const std::string& Signature() const { return mSignature; }
+
+    std::string Schema() const {
+        auto arrays = [&](bool Cell) {
+            std::string out;
+            for (const VwArray& a : mArrays)
+                if (a.mCell == Cell)
+                    out += "        <DataArray Name=" + vw_quoteattr(a.mName) + " />\n";
+            return out;
+        };
+        bool any_cell = false;
+        for (const VwArray& a : mArrays)
+            any_cell = any_cell || a.mCell;
+        std::string xml =
+            "<?xml version=\"1.0\"?>\n"
+            "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\">\n"
+            "  <UnstructuredGrid>\n"
+            "    <Piece NumberOfPoints=\"NumberOfNodes\" NumberOfCells=\"NumberOfEntities\">\n"
+            "      <Points>\n"
+            "        <DataArray Name=\"geometry\" />\n"
+            "      </Points>\n"
+            "      <Cells>\n"
+            "        <DataArray Name=\"connectivity\" />\n"
+            "        <DataArray Name=\"types\" />\n"
+            "      </Cells>\n"
+            "      <PointData>\n"
+            "        <DataArray Name=\"TIME\">step</DataArray>\n" +
+            arrays(false) + "      </PointData>\n";
+        if (any_cell)
+            xml += "      <CellData>\n" + arrays(true) + "      </CellData>\n";
+        xml += "    </Piece>\n  </UnstructuredGrid>\n</VTKFile>\n";
+        return xml;
+    }
+
+    void PutStep(adios2::IO& rIo, adios2::Engine& rEngine, const Mesh& rMesh, double Time) const {
+        rEngine.BeginStep();
+        Put<double>(rIo, rEngine, "step", &Time, {}, true);
+        const std::uint32_t nodes = static_cast<std::uint32_t>(mN);
+        const std::uint32_t cells = static_cast<std::uint32_t>(mCells);
+        PutGlobal(rIo, rEngine, "NumberOfNodes", nodes);
+        PutGlobal(rIo, rEngine, "NumberOfEntities", cells);
+        Put<double>(rIo, rEngine, "geometry", mGeometry.data(), {mN, 3}, false);
+        Put<std::int64_t>(rIo, rEngine, "connectivity", mConn.data(), {mCells, mWidth}, false);
+        const std::uint32_t type = static_cast<std::uint32_t>(mVtkType);
+        Put<std::uint32_t>(rIo, rEngine, "types", &type, {}, true);
+        for (const VwArray& a : mArrays) {
+            if (!a.mCell) {
+                const NDArray& arr = rMesh.PointData(a.mName);
+                PutArray(rIo, rEngine, a.mName, arr.Dtype(), arr.Data(), Shape(arr, mN));
+            } else {
+                // The blocks' values one after the other, in cell order.
+                const NDArray& first = rMesh.CellData(a.mName, 0);
+                std::vector<std::byte> bytes;
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                    const NDArray& arr = rMesh.CellData(a.mName, b);
+                    const std::byte* p = static_cast<const std::byte*>(arr.Data());
+                    bytes.insert(bytes.end(), p, p + arr.Size() * dtype_size(arr.Dtype()));
+                }
+                std::vector<std::size_t> dims = Shape(first, mCells);
+                PutArray(rIo, rEngine, a.mName, first.Dtype(), bytes.data(), dims);
+            }
+        }
+        rEngine.EndStep();
+    }
+
+private:
+    static std::vector<std::size_t> Shape(const NDArray& rArray, std::size_t Rows) {
+        if (rArray.Shape().size() <= 1)
+            return {Rows};
+        return {Rows, rArray.Size() / Rows};
+    }
+
+    bool Usable(const std::string& rName, const NDArray& rArray, std::size_t Rows,
+                const char* pWhat) const {
+        if (vw_reserved(rName)) {
+            log::warn("VTX (.bp): {} data '{}' is a reserved name and is not written", pWhat, rName);
+            return false;
+        }
+        if (rArray.Shape().size() > 2 || rArray.Shape().empty() || Rows == 0 ||
+            rArray.Size() % Rows != 0) {
+            log::warn("VTX (.bp): {} data '{}' is not written", pWhat, rName);
+            return false;
+        }
+        return true;
+    }
+
+    template <class T>
+    static void Put(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName, const T* pData,
+                    const std::vector<std::size_t>& rCount, bool Value) {
+        adios2::Variable<T> var = rIo.InquireVariable<T>(rName);
+        if (!var)
+            var = Value ? rIo.DefineVariable<T>(rName)
+                        : rIo.DefineVariable<T>(rName, {}, {}, rCount);
+        rEngine.Put(var, pData, adios2::Mode::Sync);
+    }
+
+    static void PutGlobal(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName,
+                          std::uint32_t Value) {
+        adios2::Variable<std::uint32_t> var = rIo.InquireVariable<std::uint32_t>(rName);
+        if (!var)
+            var = rIo.DefineVariable<std::uint32_t>(rName, {1}, {0}, {1});
+        rEngine.Put(var, &Value, adios2::Mode::Sync);
+    }
+
+    static void PutArray(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName,
+                         DType Type, const void* pData, const std::vector<std::size_t>& rCount) {
+        switch (Type) {
+            case DType::Float32:
+                return Put<float>(rIo, rEngine, rName, static_cast<const float*>(pData), rCount, false);
+            case DType::Float64:
+                return Put<double>(rIo, rEngine, rName, static_cast<const double*>(pData), rCount, false);
+            case DType::Int8:
+                return Put<std::int8_t>(rIo, rEngine, rName, static_cast<const std::int8_t*>(pData), rCount, false);
+            case DType::Int16:
+                return Put<std::int16_t>(rIo, rEngine, rName, static_cast<const std::int16_t*>(pData), rCount, false);
+            case DType::Int32:
+                return Put<std::int32_t>(rIo, rEngine, rName, static_cast<const std::int32_t*>(pData), rCount, false);
+            case DType::Int64:
+                return Put<std::int64_t>(rIo, rEngine, rName, static_cast<const std::int64_t*>(pData), rCount, false);
+            case DType::UInt8:
+                return Put<std::uint8_t>(rIo, rEngine, rName, static_cast<const std::uint8_t*>(pData), rCount, false);
+            case DType::UInt16:
+                return Put<std::uint16_t>(rIo, rEngine, rName, static_cast<const std::uint16_t*>(pData), rCount, false);
+            case DType::UInt32:
+                return Put<std::uint32_t>(rIo, rEngine, rName, static_cast<const std::uint32_t*>(pData), rCount, false);
+            case DType::UInt64:
+                return Put<std::uint64_t>(rIo, rEngine, rName, static_cast<const std::uint64_t*>(pData), rCount, false);
+        }
+    }
+
+    std::size_t mN = 0, mCells = 0, mWidth = 0;
+    int mVtkType = 0;
+    std::vector<double> mGeometry;
+    std::vector<std::int64_t> mConn;
+    std::vector<VwArray> mArrays;
+    std::string mSignature;
+};
+
+double vw_time_of(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kSequenceTimeKey))
+        return 0.0;
+    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
+    return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
+}
+
+}  // namespace
+
+void write_vtx(const std::string& rPath, const Mesh& rMesh) {
+    detail::LibraryLock lock;
+    const VwModel model(rMesh);
+    try {
+        adios2::ADIOS adios;
+        adios2::IO io = adios.DeclareIO("meshioplusplus_vtx_write");
+        io.SetEngine("BP5");
+        adios2::Engine engine = io.Open(rPath, adios2::Mode::Write);
+        io.DefineAttribute<std::string>("vtk.xml", model.Schema());
+        model.PutStep(io, engine, rMesh, vw_time_of(rMesh));
+        engine.Close();
+    } catch (const WriteError&) {
+        throw;
+    } catch (const std::exception& rE) {
+        vw_fail(std::string(rE.what()));
+    }
+}
+
+struct VtxSeriesWriter::Impl {
+    std::string mPath;
+    std::unique_ptr<adios2::ADIOS> mAdios;
+    adios2::IO mIo;
+    adios2::Engine mEngine;
+    std::unique_ptr<VwModel> mModel;
+    std::size_t mSteps = 0;
+    bool mDone = false;
+};
+
+VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+    detail::LibraryLock lock;
+    mpImpl->mPath = rPath;
+}
+
+VtxSeriesWriter::~VtxSeriesWriter() {
+    if (!mpImpl)
+        return;
+    detail::LibraryLock lock;
+    try {
+        if (mpImpl->mEngine && !mpImpl->mDone)
+            mpImpl->mEngine.Close();
+    } catch (...) {
+    }
+    mpImpl.reset();
+}
+
+VtxSeriesWriter::VtxSeriesWriter(VtxSeriesWriter&&) noexcept = default;
+VtxSeriesWriter& VtxSeriesWriter::operator=(VtxSeriesWriter&&) noexcept = default;
+
+void VtxSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        vw_fail("series: the writer was moved from");
+    detail::LibraryLock lock;
+    Impl& s = *mpImpl;
+    auto model = std::make_unique<VwModel>(rMesh);
+    try {
+        if (!s.mModel) {
+            s.mAdios = std::make_unique<adios2::ADIOS>();
+            s.mIo = s.mAdios->DeclareIO("meshioplusplus_vtx_series");
+            s.mIo.SetEngine("BP5");
+            s.mEngine = s.mIo.Open(s.mPath, adios2::Mode::Write);
+            s.mIo.DefineAttribute<std::string>("vtk.xml", model->Schema());
+            s.mModel = std::move(model);
+        } else if (model->Signature() != s.mModel->Signature()) {
+            vw_fail("series: step " + std::to_string(s.mSteps) +
+                    "'s points, cells or arrays differ from the first step's; write one file per "
+                    "step with '{step}'");
+        }
+        s.mModel->PutStep(s.mIo, s.mEngine, rMesh, Time);
+        ++s.mSteps;
+    } catch (const WriteError&) {
+        throw;
+    } catch (const std::exception& rE) {
+        vw_fail(std::string(rE.what()));
+    }
+}
+
+std::size_t VtxSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void VtxSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mDone)
+        return;
+    detail::LibraryLock lock;
+    mpImpl->mDone = true;
+    if (mpImpl->mEngine)
+        mpImpl->mEngine.Close();
 }
 
 }  // namespace meshioplusplus

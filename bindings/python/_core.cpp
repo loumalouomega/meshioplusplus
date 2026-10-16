@@ -5801,6 +5801,23 @@ PYBIND11_MODULE(_core, m) {
     m.def("vtx_time_values", [](const std::string& path) {
         return core_nogil([&] { return meshioplusplus::vtx_time_values(path); });
     });
+    m.def("vtx_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_vtx(path, mesh);
+        });
+    });
+    py::class_<meshioplusplus::VtxSeriesWriter>(m, "VtxSeriesWriter")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(
+            "write",
+            [](meshioplusplus::VtxSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+            },
+            py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &meshioplusplus::VtxSeriesWriter::NumSteps)
+        .def("finalize", &meshioplusplus::VtxSeriesWriter::Finalize);
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
     // Tecplot .szplt through a user-installed TecIO; TecIO builds only.

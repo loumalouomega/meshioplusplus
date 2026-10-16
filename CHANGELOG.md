@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **DOLFINx VTX**: `vtx` is writable (`write`, `SeriesWriter`, `write_sequence`) from the core built with `MESHIOPLUSPLUS_WITH_ADIOS2` and from the Python twin on the `adios2` package, with the same variables and values: `VTXWriter`'s layout for one rank in BP5 (`vtk.xml`, `step`, `geometry`, `connectivity`, `types`, the point and cell arrays), Lagrange cell types where the node order allows. A file holds one cell type, as DOLFINx's does.
+
 - **FEBio plot files**: `xplt` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): plot version 0x35, the nodes with ids, a domain per cell block (a region equal to a block names it and tags its part), node sets, element sets and parts, the point data, cell data and numeric field data as nodal, per-element and global variables, and a state per step. Facet surfaces, side regions, edges and compression are not written. Cell-region order in the Python writers now follows the core's `(kind, name, dim, tag)` storage order.
 
 - **OpenRadioss animation**: `radioss_anim` is writable from both engines, byte for byte (`write`, `SeriesWriter`, `write_sequence`): one big-endian state per file with the nodes, 2-D facets, 3-D bricks (tetrahedra, pyramids and wedges as degenerate bricks), 1-D elements and SPH particles, nodal scalars and vectors, element scalars, tensors and force sets, parts from `radioss:part` or the cell regions, ids, masses, materials and properties; a series writes `runA001`, `runA002`, … `anim_to_vtk` reads the result.

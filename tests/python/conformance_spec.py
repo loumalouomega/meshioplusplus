@@ -959,6 +959,21 @@ SPEC: dict[str, dict] = {
         "note": "MFM holds one element type per file, so the mixed canonical mesh is refused; "
         "each type alone round-trips.",
     },
+    "vtx": {
+        "cells": {
+            "vertex": "?",
+            "line": "?",
+            "triangle": "?",
+            "quad": "?",
+            "tetra": "?",
+            "hexahedron": "?",
+            "wedge": "?",
+            "pyramid": "?",
+        },
+        "error": "WriteError",
+        "note": "A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical "
+        "mesh is refused; each type alone round-trips.",
+    },
     "mphbin": {
         "cells": {
             "vertex": "exact",
@@ -1756,10 +1771,6 @@ READ_ONLY = {
     "marc_t19": _GAP.format(
         item="3.2.11",
         why=_RESULT.format(tool="Marc") + " Only Mentat can check it.",
-    ),
-    "vtx": _GAP.format(
-        item="3.2.9",
-        why="DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build.",
     ),
     "szplt": _GAP.format(
         item="3.2.10",

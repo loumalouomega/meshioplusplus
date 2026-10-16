@@ -55,6 +55,8 @@
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -85,6 +87,47 @@ MESHIOPLUSPLUS_API std::vector<double> vtx_time_values(const std::string& rPath)
  */
 MESHIOPLUSPLUS_API MeshMetadata read_vtx_metadata(const std::string& rPath,
                                                   const ReadOptions& rOpts = {});
+
+/**
+ * @brief Write a DOLFINx VTX `.bp` directory (BP5) holding one step: `VTXWriter`'s
+ *        layout for one rank (a `vtk.xml` schema attribute, `step`, `geometry`,
+ *        `connectivity`, `types`, `NumberOfNodes`, `NumberOfEntities` and one
+ *        variable per point or cell array). The time is `meshio:time` (0 when
+ *        absent). Cells are written as the `VTK_LAGRANGE_*` types DOLFINx uses
+ *        where the node order allows. The Python twin writes the same variables.
+ * @throws WriteError when the mesh has several cell types (as DOLFINx's files
+ *         hold one), no cells, or the file cannot be written.
+ */
+MESHIOPLUSPLUS_API void write_vtx(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief A VTX file with a step per mesh, the mesh written at every step
+ *        (`VTXMeshPolicy.update`). Every step must have the first step's points,
+ *        cells and array names. The Python twin is `meshioplusplus.vtx.SeriesWriter`.
+ */
+class MESHIOPLUSPLUS_API VtxSeriesWriter {
+public:
+    explicit VtxSeriesWriter(const std::string& rPath);
+    ~VtxSeriesWriter();
+
+    VtxSeriesWriter(const VtxSeriesWriter&) = delete;
+    VtxSeriesWriter& operator=(const VtxSeriesWriter&) = delete;
+    VtxSeriesWriter(VtxSeriesWriter&&) noexcept;
+    VtxSeriesWriter& operator=(VtxSeriesWriter&&) noexcept;
+
+    /// Add one step. @throws WriteError on a mismatch with the first step or a failure.
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 

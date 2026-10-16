@@ -524,6 +524,9 @@ const std::map<std::string, WriteFn>& registry_writers() {
          }},
         {"radioss_anim", meshioplusplus::write_radioss_anim},
         {"xplt", meshioplusplus::write_xplt},
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        {"vtx", meshioplusplus::write_vtx},
+#endif
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"cgns", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},

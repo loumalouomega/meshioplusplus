@@ -48,6 +48,7 @@
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
 #include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/formats/radioss_anim.hpp"
+#include "meshioplusplus/formats/vtx.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
@@ -288,13 +289,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd" ||
         rFormat == "femap" || rFormat == "frd" || rFormat == "radioss_th" ||
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
-        rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt") {
+        rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
+        rFormat == "vtx") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -593,6 +595,7 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
                       : rFormat == "nastran_h5"    ? "Nastran HDF5"
                       : rFormat == "radioss_anim"  ? "Radioss animation"
                       : rFormat == "xplt"          ? "FEBio plot"
+                      : rFormat == "vtx"           ? "DOLFINx VTX"
                       : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
                       : rFormat == "abaqus_fil"    ? "Abaqus results"
                                                    : "XDMF";
@@ -625,6 +628,10 @@ void seq_check_series_write_options(const std::string& rFormat, const WriteOptio
         throw WriteError(
             "meshio++: sequence: the transient Radioss animation writer has no ASCII/binary "
             "variant to select");
+    if (rFormat == "vtx" && rOptions.mEncoding != WriteEncoding::Default)
+        throw WriteError(
+            "meshio++: sequence: the transient DOLFINx VTX writer has no ASCII/binary variant to "
+            "select");
     if (rFormat == "xplt" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
             "meshio++: sequence: the transient FEBio plot writer has no ASCII/binary variant to "
@@ -784,6 +791,21 @@ private:
     RadiossAnimSeriesWriter mWriter;
 };
 
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+/// A VTX file takes a step per mesh, written as it arrives, so `WritePointsCells` has nothing
+/// to do.
+class SeqVtxSink final : public SeqSeriesSink {
+public:
+    explicit SeqVtxSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    VtxSeriesWriter mWriter;
+};
+#endif
+
 /// A plot file holds the mesh once and a state per step: the writer keeps the states and
 /// writes the file when it is finalized, so `WritePointsCells` has nothing to do.
 class SeqXpltSink final : public SeqSeriesSink {
@@ -862,6 +884,10 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqRadiossAnimSink>(rPath);
     if (rFormat == "xplt")
         return std::make_unique<SeqXpltSink>(rPath);
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+    if (rFormat == "vtx")
+        return std::make_unique<SeqVtxSink>(rPath);
+#endif
     if (rFormat == "lsdyna_binout")
         return std::make_unique<SeqLsdynaBinoutSink>(rPath);
     if (rFormat == "abaqus_fil")

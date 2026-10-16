@@ -3038,12 +3038,12 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
 
 
 def test_vtx_and_szplt_formats():
-    """DOLFINx VTX (.bp directories) and Tecplot SZL (v16.13.0): read-only, each
-    behind an optional library, sniffed without it."""
+    """DOLFINx VTX (.bp directories, written since the writer joined) and Tecplot
+    SZL (v16.13.0, read-only): each behind an optional library, sniffed without it."""
     meshes = pathlib.Path(__file__).parent / "meshes"
     out = _dump(_tools.tool_formats())
-    for fmt in ("vtx", "szplt"):
-        assert fmt in out["readable"] and fmt not in out["writable"]
+    assert "vtx" in out["readable"] and "vtx" in out["writable"]
+    assert "szplt" in out["readable"] and "szplt" not in out["writable"]
     bp = str(meshes / "vtx" / "heat.bp")
     assert _dump(_tools.tool_sniff(bp))["format"] == "vtx"
     szl = str(meshes / "szplt" / "transient.szplt")

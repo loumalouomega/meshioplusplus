@@ -94,6 +94,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="vtr">`vtr`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vts">`vts`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vtu">`vtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
+| <span id="vtx">`vtx`</span> | ? | ? | ? | ? | ? | ? | ? | ? | fails: `WriteError` | | | | |
 | <span id="wkt">`wkt`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="xdmf">`xdmf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point, side |
 | <span id="xplt">`xplt`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell, point |
@@ -139,6 +140,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).
 - **`vtr`**: RectilinearGrid holds one axis-aligned lattice; the canonical mesh is not one.
 - **`vts`**: StructuredGrid holds one curvilinear lattice; the canonical mesh is not one.
+- **`vtx`**: A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical mesh is refused; each type alone round-trips.
 - **`xplt`**: Everything is stored as 32-bit floats and comes back as float64 (the probe's coordinates are exact in float32, general ones are not); a plot file has no vertex element, and side regions and surfaces are not written.
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`z88`**: A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are what Z88R writes from the deck, so none is written; Aurora's sets hold elements and nodes only, so `side` regions are dropped.
@@ -156,4 +158,3 @@ Every registered format is meant to read and write, in both engines ([roadmap §
 | <span id="lsdyna-d3plot">`lsdyna_d3plot`</span> | writer | Tracked gap, roadmap §3.2.2: no writer yet. LS-DYNA's result file; the writer is the physics-ML loop's missing half. |
 | <span id="marc-t19">`marc_t19`</span> | writer | Tracked gap, roadmap §3.2.11: no writer yet. Marc's result file; the writer is the physics-ML loop's missing half. Only Mentat can check it. |
 | <span id="szplt">`szplt`</span> | writer | Tracked gap, roadmap §3.2.10: no writer yet. Tecplot's SZL container, written through TecIO; needs the optional TecIO build. |
-| <span id="vtx">`vtx`</span> | writer | Tracked gap, roadmap §3.2.9: no writer yet. DOLFINx's ADIOS2 output, read by ParaView; needs the optional ADIOS2 build. |
