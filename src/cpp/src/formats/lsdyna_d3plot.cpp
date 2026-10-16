@@ -1873,13 +1873,26 @@ enum D3wFamily : int { kD3wSolid = 0, kD3wBeam = 1, kD3wShell = 2 };
     throw WriteError("LS-DYNA d3plot: " + rMessage);
 }
 
-void d3w_i32(std::string& rOut, std::int64_t V) {
+/// Little-endian words of `Ws` bytes (4, or 8 in double precision).
+void d3w_i32(std::string& rOut, std::int64_t V, int Ws = 4) {
+    if (Ws == 8) {
+        const auto u = static_cast<std::uint64_t>(V);
+        for (int k = 0; k < 8; ++k)
+            rOut.push_back(static_cast<char>((u >> (8 * k)) & 0xff));
+        return;
+    }
     const auto u = static_cast<std::uint32_t>(static_cast<std::int32_t>(V));
     for (int k = 0; k < 4; ++k)
         rOut.push_back(static_cast<char>((u >> (8 * k)) & 0xff));
 }
 
-void d3w_f32(std::string& rOut, double V) {
+void d3w_f32(std::string& rOut, double V, int Ws = 4) {
+    if (Ws == 8) {
+        const auto u = std::bit_cast<std::uint64_t>(V);
+        for (int k = 0; k < 8; ++k)
+            rOut.push_back(static_cast<char>((u >> (8 * k)) & 0xff));
+        return;
+    }
     const auto u = std::bit_cast<std::uint32_t>(static_cast<float>(V));
     for (int k = 0; k < 4; ++k)
         rOut.push_back(static_cast<char>((u >> (8 * k)) & 0xff));
@@ -1887,11 +1900,11 @@ void d3w_f32(std::string& rOut, double V) {
 
 int d3w_family(std::string_view Type) {
     if (Type == "hexahedron" || Type == "wedge" || Type == "pyramid" || Type == "tetra" ||
-        Type == "tetra10")
+        Type == "tetra10" || Type == "hexahedron20" || Type == "hexahedron27")
         return kD3wSolid;
     if (Type == "line")
         return kD3wBeam;
-    if (Type == "triangle" || Type == "quad")
+    if (Type == "triangle" || Type == "quad" || Type == "quad8")
         return kD3wShell;
     return -1;
 }
@@ -1902,13 +1915,44 @@ double d3w_time_of(const Mesh& rMesh) {
                : 0.0;
 }
 
+/// The default components of an element variable (0: from the layout array).
+int d3w_default_comps(const std::string& rName) {
+    static const std::unordered_map<std::string, int> table = {
+        {"stress", 6},
+        {"effective_plastic_strain", 1},
+        {"plastic_strain_tensor", 6},
+        {"thermal_strain_tensor", 6},
+        {"strain", 6},
+        {"thermal_variables", 0},
+        {"history_variables", 0},
+        {"shell_bending_moment", 3},
+        {"shell_shear_force", 2},
+        {"shell_normal_force", 3},
+        {"thickness", 1},
+        {"shell_element_variables", 2},
+        {"strain_inner", 6},
+        {"strain_outer", 6},
+        {"internal_energy", 1},
+        {"beam_axial_force", 1},
+        {"beam_shear_force", 2},
+        {"beam_bending_moment", 2},
+        {"beam_torsion_moment", 1},
+        {"beam_axial_stress", 1},
+        {"beam_shear_stress", 2},
+        {"beam_axial_strain", 1},
+    };
+    const auto it = table.find(rName);
+    return it == table.end() ? 0 : it->second;
+}
+
 /// One block's values of a cell array as (cells, points, comps); mPoints 0 when unusable.
 struct D3wBlockArray {
     std::size_t mPoints = 0;
+    std::size_t mComps = 0;
     std::vector<double> mV;
 };
 
-std::vector<D3wBlockArray> d3w_cell_array(const Mesh& rMesh, const std::string& rName, int Comps,
+std::vector<D3wBlockArray> d3w_cell_array(const Mesh& rMesh, const std::string& rName,
                                           bool& rPresent) {
     rPresent = rMesh.HasCellData(rName);
     std::vector<D3wBlockArray> out(rMesh.NumCellBlocks());
@@ -1922,21 +1966,31 @@ std::vector<D3wBlockArray> d3w_cell_array(const Mesh& rMesh, const std::string& 
         layout1 = detail::read_int(rMesh.FieldData(key), 1);
         has_layout = true;
     }
+    const auto dflt = static_cast<std::size_t>(d3w_default_comps(rName));
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const std::size_t n = rMesh.Cells(b).NumCells();
+        if (b >= rMesh.CellDataNumBlocks(rName))
+            continue;
         const NDArray& a = rMesh.CellData(rName, b);
         if (n == 0 || a.Size() % n != 0)
             continue;
         const std::size_t width = a.Size() / n;
-        std::size_t points = 0;
-        if (has_layout && layout1 == Comps && layout0 >= 0 &&
-            width == static_cast<std::size_t>(layout0) * static_cast<std::size_t>(Comps))
+        std::size_t points = 0, comps = 0;
+        if (has_layout && layout0 > 0 && layout1 > 0 &&
+            width == static_cast<std::size_t>(layout0) * static_cast<std::size_t>(layout1)) {
             points = static_cast<std::size_t>(layout0);
-        else if (width > 0 && width % static_cast<std::size_t>(Comps) == 0)
-            points = width / static_cast<std::size_t>(Comps);
-        else
+            comps = static_cast<std::size_t>(layout1);
+        } else if (dflt && width > 0 && width % dflt == 0) {
+            points = width / dflt;
+            comps = dflt;
+        } else if (!dflt && width > 0) {
+            points = 1;
+            comps = width;
+        } else {
             continue;
+        }
         out[b].mPoints = points;
+        out[b].mComps = comps;
         out[b].mV.resize(a.Size());
         for (std::size_t i = 0; i < a.Size(); ++i)
             out[b].mV[i] = detail::read_double(a, i);
@@ -2001,13 +2055,24 @@ public:
                 if (family == kD3wSolid && type == "tetra10") {
                     nodes.assign(row, row + 8);
                     mExtra.push_back({mRows[family].size(), {row[8], row[9]}});
+                } else if (family == kD3wSolid && type == "hexahedron20") {
+                    nodes.assign(row, row + 8);
+                    mExtra20.push_back({mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 20)});
+                } else if (family == kD3wSolid && type == "hexahedron27") {
+                    nodes.assign(row, row + 8);
+                    mExtra27.push_back({mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 27)});
                 } else if (family == kD3wSolid) {
                     const auto eight = detail::expand_brick(type, row);
                     nodes.assign(eight.begin(), eight.end());
                 } else {
                     nodes.assign(row, row + k);
-                    if (type == "triangle")
+                    if (type == "triangle") {
                         nodes.push_back(nodes[2]);
+                    } else if (type == "quad8") {
+                        mExtra8.push_back({mRows[family].size(),
+                                           std::vector<std::int64_t>(nodes.begin() + 4, nodes.end())});
+                        nodes.resize(4);
+                    }
                 }
                 mRows[family].push_back(std::move(nodes));
                 if (has_part && rMesh.CellData("lsdyna:part", b).Size() > r)
@@ -2046,6 +2111,17 @@ public:
                     mSignature += std::to_string(v) + ",";
             }
         }
+        for (const auto& [e, nodes] : mExtra) {
+            mSignature += "|t" + std::to_string(e);
+            for (const std::int64_t v : nodes)
+                mSignature += "," + std::to_string(v);
+        }
+        for (const auto* table : {&mExtra20, &mExtra27, &mExtra8})
+            for (const auto& [e, nodes] : *table) {
+                mSignature += "|x" + std::to_string(e);
+                for (const std::int64_t v : nodes)
+                    mSignature += "," + std::to_string(v);
+            }
     }
 
     std::size_t mN = 0;
@@ -2054,6 +2130,8 @@ public:
     std::array<std::vector<D3wRange>, 3> mRanges;
     std::array<std::vector<std::vector<std::int64_t>>, 3> mRows;
     std::vector<std::pair<std::size_t, std::array<std::int64_t, 2>>> mExtra;
+    /// hexahedron20 / hexahedron27 / quad8: the element and its nodes past the corners.
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mExtra20, mExtra27, mExtra8;
     std::array<std::vector<std::int64_t>, 3> mPartsOf, mEid;
     std::array<std::size_t, 3> mCounts{}, mNummat{};
     std::vector<std::int64_t> mPartIds;
@@ -2097,61 +2175,135 @@ private:
     }
 };
 
+/// A family's element-variable columns: the `mLayer` slots (name, components) repeat for each of
+/// `mLayers` layers, the `mTail` slots (name, components, count) follow once.
+struct D3wLayout {
+    std::size_t mLayers = 1;
+    std::vector<std::pair<std::string, std::size_t>> mLayer;
+    struct Tail {
+        std::string mName;
+        std::size_t mComps, mCount;
+    };
+    std::vector<Tail> mTail;
+
+    std::size_t LayerWidth() const {
+        std::size_t w = 0;
+        for (const auto& slot : mLayer)
+            w += slot.second;
+        return w;
+    }
+    std::size_t Width() const {
+        std::size_t w = mLayers * LayerWidth();
+        for (const Tail& t : mTail)
+            w += t.mComps * t.mCount;
+        return w;
+    }
+};
+
+/// What the arrays of all steps hold for one family: name -> {points, comps}.
+using D3wSeen = std::map<std::string, std::array<std::size_t, 2>>;
+
+const std::vector<std::pair<const char*, std::size_t>>& d3w_globals() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"global_kinetic_energy", 1},
+        {"global_internal_energy", 1},
+        {"global_total_energy", 1},
+        {"global_velocity", 3}};
+    return v;
+}
+
+const std::vector<std::pair<const char*, std::size_t>>& d3w_part_globals() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"part_internal_energy", 1},
+        {"part_kinetic_energy", 1},
+        {"part_velocity", 3},
+        {"part_mass", 1},
+        {"part_hourglass_energy", 1}};
+    return v;
+}
+
+const std::vector<std::pair<const char*, std::size_t>>& d3w_beam_core() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"beam_axial_force", 1},
+        {"beam_shear_force", 2},
+        {"beam_bending_moment", 2},
+        {"beam_torsion_moment", 1}};
+    return v;
+}
+
+/// Per beam layer: axial stress, shear stress (2), plastic strain, axial strain.
+const std::vector<std::pair<const char*, std::size_t>>& d3w_beam_layer() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"beam_axial_stress", 1},
+        {"beam_shear_stress", 2},
+        {"effective_plastic_strain", 1},
+        {"beam_axial_strain", 1}};
+    return v;
+}
+
+const std::vector<std::pair<const char*, std::size_t>>& d3w_shell_forces() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"shell_bending_moment", 3}, {"shell_shear_force", 2}, {"shell_normal_force", 3}};
+    return v;
+}
+
+const std::vector<std::pair<const char*, std::size_t>>& d3w_shell_extra() {
+    static const std::vector<std::pair<const char*, std::size_t>> v = {
+        {"thickness", 1}, {"shell_element_variables", 2}};
+    return v;
+}
+
 /// The header: what the states of all steps need.
 class D3wPlan {
 public:
-    D3wPlan(const D3wModel& rModel, const std::vector<const Mesh*>& rMeshes) : mModel(rModel) {
+    D3wPlan(const D3wModel& rModel, const std::vector<const Mesh*>& rMeshes, bool Double)
+        : mModel(rModel), mWs(Double ? 8 : 4) {
         const std::size_t nparts = rModel.mNummat[0] + rModel.mNummat[1] + rModel.mNummat[2];
-        static const char* kGlobals[] = {"global_kinetic_energy", "global_internal_energy",
-                                         "global_total_energy", "global_velocity"};
+        static const char* kNodal[] = {"displacement", "velocity", "acceleration", "temperature",
+                                       "heat_flux", "mass_scaling", "temperature_gradient",
+                                       "residual_forces", "residual_moments"};
+        std::array<D3wSeen, 3> seen;
         for (const Mesh* pMesh : rMeshes) {
             const Mesh& mesh = *pMesh;
-            mDisp = mDisp || mesh.HasPointData("displacement");
-            mVel = mVel || mesh.HasPointData("velocity");
-            mAcc = mAcc || mesh.HasPointData("acceleration");
+            for (const char* name : kNodal)
+                if (mesh.HasPointData(name)) {
+                    const std::size_t comps =
+                        mesh.PointData(name).Size() / std::max<std::size_t>(rModel.mN, 1);
+                    mNode[name] = std::max(mNode[name], comps);
+                }
             mAlive = mAlive || mesh.HasCellData("lsdyna:alive");
-            for (const char* name : kGlobals)
-                mGlobals = mGlobals || mesh.HasFieldData(name);
-            if (rModel.mCounts[kD3wBeam])
-                for (const auto& [name, comps] : BeamArrays())
-                    mBeam = mBeam || mesh.HasCellData(name);
+            mAliveNodes = mAliveNodes || mesh.HasPointData("lsdyna:alive");
+            for (const auto& g : d3w_globals())
+                mGlobals = mGlobals || mesh.HasFieldData(g.first);
             bool all = true;
-            for (const auto& [name, width] : PartGlobals())
+            for (const auto& [name, width] : d3w_part_globals())
                 all = all && mesh.HasFieldData(name) &&
-                      mesh.FieldData(name).Size() == static_cast<std::size_t>(width) * nparts;
+                      mesh.FieldData(name).Size() == width * nparts;
             mPartGlobals = mPartGlobals || all;
-            for (const auto& [name, comps] :
-                 {std::pair<const char*, int>{"stress", 6},
-                  std::pair<const char*, int>{"effective_plastic_strain", 1}}) {
+            for (const char* name : kElementNames()) {
                 bool present = false;
-                const auto arrays = d3w_cell_array(mesh, name, comps, present);
+                const auto arrays = d3w_cell_array(mesh, name, present);
                 if (!present)
                     continue;
-                for (const int family : {kD3wSolid, kD3wShell})
+                for (const int family : {kD3wSolid, kD3wBeam, kD3wShell})
                     for (const D3wRange& range : rModel.mRanges[family]) {
                         const D3wBlockArray& a = arrays[range.mBlock];
                         if (a.mPoints == 0)
                             continue;
-                        if (family == kD3wSolid) {
-                            if (a.mPoints != 1 && a.mPoints != 8)
-                                continue;
-                            mSolidPoints = std::max(mSolidPoints, a.mPoints);
-                        } else {
-                            mShellPoints = std::max(mShellPoints, a.mPoints);
-                        }
-                        if (comps == 6)
-                            mStress = true;
-                        else
-                            mPstrain = true;
+                        if (family == kD3wSolid && std::string(name) != "thermal_variables" &&
+                            a.mPoints != 1 && a.mPoints != 8)
+                            continue;
+                        auto& entry = seen[family][name];
+                        entry[0] = std::max(entry[0], a.mPoints);
+                        entry[1] = std::max(entry[1], a.mComps);
                     }
             }
         }
+        mSeen = std::move(seen);
         mGlobals = mGlobals || mPartGlobals;
         mNglbv = mGlobals ? 6 + (mPartGlobals ? 7 * nparts : 0) : 0;
-        const std::size_t per_point = 6 * static_cast<std::size_t>(mStress) + (mPstrain ? 1 : 0);
-        mNv3d = rModel.mCounts[kD3wSolid] ? mSolidPoints * per_point : 0;
-        mNv2d = rModel.mCounts[kD3wShell] ? mShellPoints * per_point : 0;
-        mNv1d = mBeam ? 6 : 0;
+        ElementLayouts();
+        NodalFlags();
         mWords = StateWords();
         if (mWords < 2) {
             mDisp = true;
@@ -2159,49 +2311,229 @@ public:
         }
     }
 
-    static const std::vector<std::pair<const char*, int>>& BeamArrays() {
-        static const std::vector<std::pair<const char*, int>> v = {
-            {"beam_axial_force", 1}, {"beam_shear_force", 2}, {"beam_bending_moment", 2},
-            {"beam_torsion_moment", 1}};
+    static const std::vector<const char*>& kElementNames() {
+        static const std::vector<const char*> v = {
+            "stress", "effective_plastic_strain", "plastic_strain_tensor",
+            "thermal_strain_tensor", "strain", "thermal_variables", "history_variables",
+            "shell_bending_moment", "shell_shear_force", "shell_normal_force", "thickness",
+            "shell_element_variables", "strain_inner", "strain_outer", "internal_energy",
+            "beam_axial_force", "beam_shear_force", "beam_bending_moment", "beam_torsion_moment",
+            "beam_axial_stress", "beam_shear_stress", "beam_axial_strain"};
         return v;
     }
-    static const std::vector<std::pair<const char*, int>>& PartGlobals() {
-        static const std::vector<std::pair<const char*, int>> v = {
-            {"part_internal_energy", 1}, {"part_kinetic_energy", 1}, {"part_velocity", 3},
-            {"part_mass", 1}, {"part_hourglass_energy", 1}};
-        return v;
+
+    bool Has(int Family, std::initializer_list<const char*> Names) const {
+        for (const char* n : Names)
+            if (mSeen[Family].count(n))
+                return true;
+        return false;
+    }
+
+    std::size_t SeenPoints(int Family, const char* pName, std::size_t Default) const {
+        const auto it = mSeen[Family].find(pName);
+        return it == mSeen[Family].end() ? Default : it->second[0];
+    }
+    std::size_t SeenComps(int Family, const char* pName) const {
+        const auto it = mSeen[Family].find(pName);
+        return it == mSeen[Family].end() ? 0 : it->second[1];
+    }
+
+    void ElementLayouts() {
+        const D3wModel& m = mModel;
+        mStress = Has(kD3wSolid, {"stress"}) || Has(kD3wShell, {"stress"});
+        mPstrain = Has(kD3wSolid, {"effective_plastic_strain"}) ||
+                   Has(kD3wShell, {"effective_plastic_strain"});
+        mPlasticTensor = Has(kD3wSolid, {"plastic_strain_tensor"}) ||
+                         Has(kD3wShell, {"plastic_strain_tensor"});
+        mThermalTensor = Has(kD3wSolid, {"thermal_strain_tensor"}) ||
+                         Has(kD3wShell, {"thermal_strain_tensor"});
+        mStrain = Has(kD3wSolid, {"strain"}) || Has(kD3wShell, {"strain_inner", "strain_outer"});
+        mForces = false;
+        for (const auto& f : d3w_shell_forces())
+            mForces = mForces || Has(kD3wShell, {f.first});
+        mExtra = Has(kD3wShell, {"thickness", "shell_element_variables", "internal_energy"});
+
+        mSolid = D3wLayout{};
+        if (m.mCounts[kD3wSolid]) {
+            bool eight = false;
+            for (const auto& kv : mSeen[kD3wSolid])
+                eight = eight || kv.second[0] == 8;
+            mSolid.mLayers = eight ? 8 : 1;
+            const std::size_t hist = SeenComps(kD3wSolid, "history_variables");
+            if (mStress)
+                mSolid.mLayer.push_back({"stress", 6});
+            if (mPstrain)
+                mSolid.mLayer.push_back({"effective_plastic_strain", 1});
+            if (mPlasticTensor)
+                mSolid.mLayer.push_back({"plastic_strain_tensor", 6});
+            if (mThermalTensor)
+                mSolid.mLayer.push_back({"thermal_strain_tensor", 6});
+            if (hist)
+                mSolid.mLayer.push_back({"history_variables", hist});
+            if (mStrain)
+                mSolid.mLayer.push_back({"strain", 6});
+        }
+        mNeiph = 0;
+        for (const auto& slot : mSolid.mLayer)
+            if (slot.first != "stress" && slot.first != "effective_plastic_strain")
+                mNeiph += slot.second;
+        mNt3d = SeenComps(kD3wSolid, "thermal_variables");
+
+        mShell = D3wLayout{};
+        mNeips = 0;
+        if (m.mCounts[kD3wShell]) {
+            std::size_t layers = 0;
+            for (const char* n : {"stress", "effective_plastic_strain", "history_variables"})
+                layers = std::max(layers, SeenPoints(kD3wShell, n, 0));
+            mShell.mLayers = layers ? layers : 1;
+            const std::size_t hist = SeenComps(kD3wShell, "history_variables");
+            if (mStress)
+                mShell.mLayer.push_back({"stress", 6});
+            if (mPstrain)
+                mShell.mLayer.push_back({"effective_plastic_strain", 1});
+            if (hist)
+                mShell.mLayer.push_back({"history_variables", hist});
+            mNeips = hist;
+            if (mForces)
+                for (const auto& f : d3w_shell_forces())
+                    mShell.mTail.push_back({f.first, f.second, 1});
+            if (mExtra)
+                for (const auto& f : d3w_shell_extra())
+                    mShell.mTail.push_back({f.first, f.second, 1});
+            if (mStrain) {
+                mShell.mTail.push_back({"strain_inner", 6, 1});
+                mShell.mTail.push_back({"strain_outer", 6, 1});
+            }
+            if (mExtra)
+                mShell.mTail.push_back({"internal_energy", 1, 1});
+            if (mPlasticTensor)
+                mShell.mTail.push_back(
+                    {"plastic_strain_tensor", 6,
+                     SeenPoints(kD3wShell, "plastic_strain_tensor", mShell.mLayers)});
+            if (mThermalTensor)
+                mShell.mTail.push_back({"thermal_strain_tensor", 6, 1});
+        }
+
+        mBeam = false;
+        mBeamLayers = 0;
+        mNeipb = 0;
+        if (m.mCounts[kD3wBeam]) {
+            std::size_t layers = 0;
+            bool any_layer = false;
+            for (const auto& l : d3w_beam_layer())
+                if (mSeen[kD3wBeam].count(l.first)) {
+                    any_layer = true;
+                    layers = std::max(layers, SeenPoints(kD3wBeam, l.first, 0));
+                }
+            const std::size_t hist = SeenComps(kD3wBeam, "history_variables");
+            bool core = false;
+            for (const auto& c : d3w_beam_core())
+                core = core || Has(kD3wBeam, {c.first});
+            if (hist) {
+                any_layer = true;
+                const std::size_t hp = SeenPoints(kD3wBeam, "history_variables", 0);
+                layers = std::max(layers, hp > 3 ? hp - 3 : std::size_t{0});
+            }
+            if (core || any_layer || hist) {
+                mBeam = true;
+                mBeamLayers = layers;
+                mNeipb = hist;
+            }
+        }
+        mNv3d = m.mCounts[kD3wSolid] ? mSolid.Width() : 0;
+        mNv2d = m.mCounts[kD3wShell] ? mShell.Width() : 0;
+        mNv1d = mBeam ? 6 + 5 * mBeamLayers + (3 + mBeamLayers) * mNeipb : 0;
+    }
+
+    void NodalFlags() {
+        mDisp = mNode.count("displacement") != 0;
+        mVel = mNode.count("velocity") != 0;
+        mAcc = mNode.count("acceleration") != 0;
+        mIt0 = 0;
+        if (mNode.count("temperature") && mNode["temperature"] > 1)
+            mIt0 = 3;
+        else if (mNode.count("heat_flux"))
+            mIt0 = 2;
+        else if (mNode.count("temperature"))
+            mIt0 = 1;
+        mIt1 = mNode.count("mass_scaling") ? 1 : 0;
+        mTgrad = mNode.count("temperature_gradient") != 0;
+        mResid = mNode.count("residual_forces") || mNode.count("residual_moments");
+    }
+
+    std::size_t NodeWidth() const {
+        std::size_t w = 3 * static_cast<std::size_t>(mDisp);
+        if (mIt0) {
+            w += mIt0 == 1 ? 1 : 4;
+            if (mIt0 == 3)
+                w += 2;
+        }
+        if (mIt1)
+            w += 1;
+        if (mTgrad)
+            w += 1;
+        if (mResid)
+            w += 6;
+        return w + 3 * static_cast<std::size_t>(mVel) + 3 * static_cast<std::size_t>(mAcc);
     }
 
     std::size_t StateWords() const {
         const D3wModel& m = mModel;
-        std::size_t n = 1 + mNglbv + 3 * m.mN * (static_cast<std::size_t>(mDisp) + mVel + mAcc);
-        n += m.mCounts[kD3wSolid] * mNv3d + m.mCounts[kD3wBeam] * mNv1d;
-        n += m.mCounts[kD3wShell] * mNv2d;
+        std::size_t n = 1 + mNglbv + m.mN * NodeWidth();
+        n += m.mCounts[kD3wSolid] * (mNv3d + mNt3d);
+        n += m.mCounts[kD3wBeam] * mNv1d + m.mCounts[kD3wShell] * mNv2d;
         if (mAlive)
             n += m.mCounts[0] + m.mCounts[1] + m.mCounts[2];
+        else if (mAliveNodes)
+            n += m.mN;
         return n;
     }
 
     std::int64_t MaxInt() const {
-        const auto layers = static_cast<std::int64_t>(std::max<std::size_t>(mShellPoints, 1));
-        return mAlive ? -(10000 + layers) : layers;
+        const auto layers = static_cast<std::int64_t>(
+            std::max<std::size_t>(mModel.mCounts[kD3wShell] ? mShell.mLayers : 1, 1));
+        if (mAlive)
+            return -(10000 + layers);
+        if (mAliveNodes)
+            return -layers;
+        return layers;
+    }
+
+    std::int64_t Idtdt() const {
+        return 100000 + 10000 * static_cast<std::int64_t>(mStrain) +
+               1000 * static_cast<std::int64_t>(mThermalTensor) +
+               100 * static_cast<std::int64_t>(mPlasticTensor) +
+               10 * static_cast<std::int64_t>(mResid) + static_cast<std::int64_t>(mTgrad);
+    }
+    std::int64_t It() const { return 10 * mIt1 + mIt0; }
+    std::size_t ExtraWords() const {
+        return (mNt3d || mNeipb || !mModel.mExtra20.empty() || !mModel.mExtra27.empty()) ? 16 : 0;
     }
 
     const D3wModel& mModel;
-    std::size_t mSolidPoints = 1, mShellPoints = 0;
-    bool mStress = false, mPstrain = false, mDisp = false, mVel = false, mAcc = false;
-    bool mAlive = false, mBeam = false, mGlobals = false, mPartGlobals = false;
+    int mWs;
+    std::map<std::string, std::size_t> mNode;
+    std::array<D3wSeen, 3> mSeen;
+    bool mAlive = false, mAliveNodes = false, mGlobals = false, mPartGlobals = false;
+    bool mStress = false, mPstrain = false, mPlasticTensor = false, mThermalTensor = false;
+    bool mStrain = false, mForces = false, mExtra = false, mBeam = false;
+    bool mDisp = false, mVel = false, mAcc = false, mTgrad = false, mResid = false;
+    std::int64_t mIt0 = 0, mIt1 = 0;
+    D3wLayout mSolid, mShell;
+    std::size_t mNeiph = 0, mNeips = 0, mNeipb = 0, mNt3d = 0, mBeamLayers = 0;
     std::size_t mNglbv = 0, mNv3d = 0, mNv2d = 0, mNv1d = 0, mWords = 0;
 };
 
 std::string d3w_geometry(const D3wPlan& rPlan) {
     const D3wModel& m = rPlan.mModel;
-    std::array<std::int64_t, 64> words{};
+    const int ws = rPlan.mWs;
+    std::vector<std::int64_t> words(64 + rPlan.ExtraWords(), 0);
     words[11] = 1;
     words[15] = 4;
     words[16] = static_cast<std::int64_t>(m.mN);
     words[17] = 6;
     words[18] = static_cast<std::int64_t>(rPlan.mNglbv);
+    words[19] = rPlan.It();
     words[20] = rPlan.mDisp;
     words[21] = rPlan.mVel;
     words[22] = rPlan.mAcc;
@@ -2215,47 +2547,60 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     words[31] = static_cast<std::int64_t>(m.mCounts[kD3wShell]);
     words[32] = static_cast<std::int64_t>(m.mNummat[kD3wShell]);
     words[33] = static_cast<std::int64_t>(rPlan.mNv2d);
+    words[34] = static_cast<std::int64_t>(rPlan.mNeiph);
+    words[35] = static_cast<std::int64_t>(rPlan.mNeips);
     words[36] = rPlan.MaxInt();
     words[43] = rPlan.mStress ? 1000 : 0;
     words[44] = rPlan.mPstrain ? 1000 : 0;
+    words[45] = rPlan.mForces ? 1000 : 0;
+    words[46] = rPlan.mExtra ? 1000 : 0;
     words[51] = static_cast<std::int64_t>(m.mPartIds.size());
+    words[55] = static_cast<std::int64_t>(m.mExtra8.size());
+    words[56] = rPlan.Idtdt();
+    if (rPlan.ExtraWords()) {
+        words[57] = static_cast<std::int64_t>(rPlan.ExtraWords());
+        words[64] = static_cast<std::int64_t>(m.mExtra20.size());
+        words[65] = static_cast<std::int64_t>(rPlan.mNt3d);
+        words[66] = static_cast<std::int64_t>(m.mExtra27.size());
+        words[67] = static_cast<std::int64_t>(rPlan.mNeipb);
+    }
     const std::size_t ids = m.mCounts[0] + m.mCounts[1] + m.mCounts[2];
     words[39] = static_cast<std::int64_t>(16 + m.mN + ids + 3 * m.mPartIds.size());
     std::string out;
     for (const std::int64_t w : words)
-        d3w_i32(out, w);
-    const std::string title = "meshio++" + std::string(32, ' ');
-    out.replace(0, 40, title);
+        d3w_i32(out, w, ws);
+    const std::string title = "meshio++" + std::string(10 * static_cast<std::size_t>(ws) - 8, ' ');
+    out.replace(0, title.size(), title);
     std::string version;
-    d3w_f32(version, kD3wVersion);
-    out.replace(14 * 4, 4, version);
+    d3w_f32(version, kD3wVersion, ws);
+    out.replace(14 * static_cast<std::size_t>(ws), static_cast<std::size_t>(ws), version);
     for (const double v : m.mPoints)
-        d3w_f32(out, v);
+        d3w_f32(out, v, ws);
     for (std::size_t e = 0; e < m.mCounts[kD3wSolid]; ++e) {
         for (const std::int64_t v : m.mRows[kD3wSolid][e])
-            d3w_i32(out, v + 1);
-        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wSolid][e]));
+            d3w_i32(out, v + 1, ws);
+        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wSolid][e]), ws);
     }
     if (!m.mExtra.empty()) {
         std::vector<std::array<std::int64_t, 2>> extra(m.mCounts[kD3wSolid], {0, 0});
         for (const auto& [e, nodes] : m.mExtra)
             extra[e] = {nodes[0] + 1, nodes[1] + 1};
         for (const auto& row : extra) {
-            d3w_i32(out, row[0]);
-            d3w_i32(out, row[1]);
+            d3w_i32(out, row[0], ws);
+            d3w_i32(out, row[1], ws);
         }
     }
     for (std::size_t e = 0; e < m.mCounts[kD3wBeam]; ++e) {
-        d3w_i32(out, m.mRows[kD3wBeam][e][0] + 1);
-        d3w_i32(out, m.mRows[kD3wBeam][e][1] + 1);
+        d3w_i32(out, m.mRows[kD3wBeam][e][0] + 1, ws);
+        d3w_i32(out, m.mRows[kD3wBeam][e][1] + 1, ws);
         for (int k = 0; k < 3; ++k)
-            d3w_i32(out, 0);
-        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wBeam][e]));
+            d3w_i32(out, 0, ws);
+        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wBeam][e]), ws);
     }
     for (std::size_t e = 0; e < m.mCounts[kD3wShell]; ++e) {
         for (std::size_t k = 0; k < 4; ++k)
-            d3w_i32(out, m.mRows[kD3wShell][e][k] + 1);
-        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wShell][e]));
+            d3w_i32(out, m.mRows[kD3wShell][e][k] + 1, ws);
+        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wShell][e]), ws);
     }
     const auto nparts = static_cast<std::int64_t>(m.mPartIds.size());
     const auto solids_at = static_cast<std::int64_t>(17 + m.mN);
@@ -2268,89 +2613,169 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
           static_cast<std::int64_t>(m.mCounts[kD3wBeam]),
           static_cast<std::int64_t>(m.mCounts[kD3wShell]), std::int64_t{0}, parts_at,
           parts_at + nparts, parts_at + 2 * nparts, nparts, std::int64_t{0}, nparts})
-        d3w_i32(out, v);
+        d3w_i32(out, v, ws);
     for (const std::int64_t v : m.mNid)
-        d3w_i32(out, v);
+        d3w_i32(out, v, ws);
     for (const int family : {kD3wSolid, kD3wBeam, kD3wShell})
         for (const std::int64_t v : m.mEid[family])
-            d3w_i32(out, v);
+            d3w_i32(out, v, ws);
     for (int copy = 0; copy < 2; ++copy)
         for (const std::int64_t v : m.mPartIds)
-            d3w_i32(out, v);
+            d3w_i32(out, v, ws);
     for (std::int64_t k = 1; k <= nparts; ++k)
-        d3w_i32(out, k);
-    d3w_f32(out, kD3EofMarker);
-    d3w_i32(out, 90001);
-    d3w_i32(out, static_cast<std::int64_t>(m.mPartIds.size()));
+        d3w_i32(out, k, ws);
+    // the higher-order tables: eight-node shells, then 20- and 27-node solids
+    for (const auto* table : {&m.mExtra8, &m.mExtra20, &m.mExtra27})
+        for (const auto& [e, nodes] : *table) {
+            d3w_i32(out, static_cast<std::int64_t>(e) + 1, ws);
+            for (const std::int64_t v : nodes)
+                d3w_i32(out, v + 1, ws);
+        }
+    d3w_f32(out, kD3EofMarker, ws);
+    d3w_i32(out, 90001, ws);
+    d3w_i32(out, static_cast<std::int64_t>(m.mPartIds.size()), ws);
     for (const std::int64_t pid : m.mPartIds) {
         const auto it = m.mTitles.find(pid);
         std::string text = it != m.mTitles.end() ? it->second : "Part " + std::to_string(pid);
         text = text.substr(0, 72);
-        d3w_i32(out, pid);
+        d3w_i32(out, pid, ws);
         out += text;
         out.append(72 - text.size(), ' ');
     }
-    d3w_f32(out, kD3EofMarker);
+    d3w_f32(out, kD3EofMarker, ws);
     return out;
 }
 
-std::vector<double> d3w_node_array(const Mesh& rMesh, const char* pName, std::size_t N) {
-    std::vector<double> out(N * 3, 0.0);
+/// A point array as (n, comps) doubles: missing components and arrays are NaN.
+std::vector<double> d3w_node_array(const Mesh& rMesh, const char* pName, std::size_t N,
+                                   std::size_t Comps = 3) {
+    std::vector<double> out(N * Comps, kD3Nan);
     if (!rMesh.HasPointData(pName))
         return out;
     const NDArray& a = rMesh.PointData(pName);
     const std::size_t width = a.Size() / N;
     for (std::size_t i = 0; i < N; ++i)
-        for (std::size_t k = 0; k < 3 && k < width; ++k)
-            out[i * 3 + k] = detail::read_double(a, i * width + k);
+        for (std::size_t k = 0; k < Comps && k < width; ++k)
+            out[i * Comps + k] = detail::read_double(a, i * width + k);
     return out;
 }
 
-void d3w_element_block(std::string& rOut, const D3wPlan& rPlan, const Mesh& rMesh, int Family,
-                       std::size_t Count, std::size_t Points) {
-    const std::size_t per_point = 6 * static_cast<std::size_t>(rPlan.mStress) +
-                                  (rPlan.mPstrain ? 1 : 0);
-    const std::size_t nv = Points * per_point;
-    std::vector<double> out(Count * nv, kD3Nan);
-    std::size_t column = 0;
-    for (const auto& [name, comps, wanted] :
-         {std::tuple<const char*, int, bool>{"stress", 6, rPlan.mStress},
-          std::tuple<const char*, int, bool>{"effective_plastic_strain", 1, rPlan.mPstrain}}) {
-        if (!wanted)
-            continue;
+/// A family's element variables as (cells, width), NaN where absent.
+std::vector<double> d3w_family_matrix(const D3wPlan& rPlan, const Mesh& rMesh, int Family,
+                                      const D3wLayout& rLayout) {
+    const D3wModel& m = rPlan.mModel;
+    const std::size_t width = rLayout.Width();
+    std::vector<double> out(m.mCounts[Family] * width, kD3Nan);
+    const std::size_t layer_width = rLayout.LayerWidth();
+    std::size_t offset = 0;
+    for (const auto& [name, comps] : rLayout.mLayer) {
         bool present = false;
-        const auto arrays = d3w_cell_array(rMesh, name, comps, present);
+        const auto arrays = d3w_cell_array(rMesh, name, present);
         if (present)
-            for (const D3wRange& range : rPlan.mModel.mRanges[Family]) {
+            for (const D3wRange& range : m.mRanges[Family]) {
                 const D3wBlockArray& a = arrays[range.mBlock];
                 if (a.mPoints == 0 || range.mCount == 0)
                     continue;
-                if (Family == kD3wSolid && a.mPoints != 1 && a.mPoints != 8)
-                    continue;
-                const std::size_t p = std::min(a.mPoints, Points);
+                const std::size_t k = std::min(a.mComps, comps);
                 for (std::size_t e = 0; e < range.mCount; ++e)
-                    for (std::size_t q = 0; q < p; ++q)
-                        for (int c = 0; c < comps; ++c)
-                            out[(range.mFirst + e) * nv + q * per_point + column + c] =
-                                a.mV[(e * a.mPoints + q) * comps + c];
+                    for (std::size_t layer = 0; layer < std::min(a.mPoints, rLayout.mLayers);
+                         ++layer)
+                        for (std::size_t c = 0; c < k; ++c)
+                            out[(range.mFirst + e) * width + layer * layer_width + offset + c] =
+                                a.mV[(e * a.mPoints + layer) * a.mComps + c];
             }
-        column += static_cast<std::size_t>(comps);
+        offset += comps;
     }
-    for (const double v : out)
-        d3w_f32(rOut, v);
+    std::size_t base = rLayout.mLayers * layer_width;
+    for (const auto& tail : rLayout.mTail) {
+        bool present = false;
+        const auto arrays = d3w_cell_array(rMesh, tail.mName, present);
+        if (present)
+            for (const D3wRange& range : m.mRanges[Family]) {
+                const D3wBlockArray& a = arrays[range.mBlock];
+                if (a.mPoints == 0 || range.mCount == 0)
+                    continue;
+                const std::size_t k = std::min(a.mComps, tail.mComps);
+                for (std::size_t e = 0; e < range.mCount; ++e)
+                    for (std::size_t point = 0; point < std::min(a.mPoints, tail.mCount); ++point)
+                        for (std::size_t c = 0; c < k; ++c)
+                            out[(range.mFirst + e) * width + base + point * tail.mComps + c] =
+                                a.mV[(e * a.mPoints + point) * a.mComps + c];
+            }
+        base += tail.mComps * tail.mCount;
+    }
+    return out;
+}
+
+/// The beams' columns: six resultants, then per layer the axial stress, shear stress (2),
+/// plastic strain and axial strain, then the history values.
+std::vector<double> d3w_beam_matrix(const D3wPlan& rPlan, const Mesh& rMesh) {
+    const D3wModel& m = rPlan.mModel;
+    const std::size_t nl = rPlan.mBeamLayers, nh = rPlan.mNeipb, width = rPlan.mNv1d;
+    std::vector<double> out(m.mCounts[kD3wBeam] * width, kD3Nan);
+    std::size_t at = 0;
+    for (const auto& [name, comps] : d3w_beam_core()) {
+        bool present = false;
+        const auto arrays = d3w_cell_array(rMesh, name, present);
+        if (present)
+            for (const D3wRange& range : m.mRanges[kD3wBeam]) {
+                const D3wBlockArray& a = arrays[range.mBlock];
+                if (a.mPoints == 0 || range.mCount == 0)
+                    continue;
+                const std::size_t k = std::min(a.mComps, comps);
+                for (std::size_t e = 0; e < range.mCount; ++e)
+                    for (std::size_t c = 0; c < k; ++c)
+                        out[(range.mFirst + e) * width + at + c] = a.mV[e * a.mPoints * a.mComps + c];
+            }
+        at += comps;
+    }
+    std::size_t offset = 0;
+    for (const auto& [name, comps] : d3w_beam_layer()) {
+        bool present = false;
+        const auto arrays = d3w_cell_array(rMesh, name, present);
+        if (present)
+            for (const D3wRange& range : m.mRanges[kD3wBeam]) {
+                const D3wBlockArray& a = arrays[range.mBlock];
+                if (a.mPoints == 0 || range.mCount == 0)
+                    continue;
+                const std::size_t k = std::min(a.mComps, comps);
+                for (std::size_t e = 0; e < range.mCount; ++e)
+                    for (std::size_t layer = 0; layer < std::min(a.mPoints, nl); ++layer)
+                        for (std::size_t c = 0; c < k; ++c)
+                            out[(range.mFirst + e) * width + 6 + layer * 5 + offset + c] =
+                                a.mV[(e * a.mPoints + layer) * a.mComps + c];
+            }
+        offset += comps;
+    }
+    if (nh) {
+        bool present = false;
+        const auto arrays = d3w_cell_array(rMesh, "history_variables", present);
+        if (present)
+            for (const D3wRange& range : m.mRanges[kD3wBeam]) {
+                const D3wBlockArray& a = arrays[range.mBlock];
+                if (a.mPoints == 0 || range.mCount == 0)
+                    continue;
+                const std::size_t k = std::min(a.mComps, nh);
+                for (std::size_t e = 0; e < range.mCount; ++e)
+                    for (std::size_t point = 0; point < std::min(a.mPoints, 3 + nl); ++point)
+                        for (std::size_t c = 0; c < k; ++c)
+                            out[(range.mFirst + e) * width + 6 + 5 * nl + point * nh + c] =
+                                a.mV[(e * a.mPoints + point) * a.mComps + c];
+            }
+    }
+    return out;
 }
 
 std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
     const D3wModel& m = rPlan.mModel;
     const std::size_t n = m.mN;
+    const int ws = rPlan.mWs;
     std::string out;
-    d3w_f32(out, Time);
+    d3w_f32(out, Time, ws);
     if (rPlan.mNglbv) {
         std::vector<double> g(rPlan.mNglbv, 0.0);
         std::size_t at = 0;
-        for (const auto& [name, width] : std::vector<std::pair<const char*, std::size_t>>{
-                 {"global_kinetic_energy", 1}, {"global_internal_energy", 1},
-                 {"global_total_energy", 1}, {"global_velocity", 3}}) {
+        for (const auto& [name, width] : d3w_globals()) {
             if (rMesh.HasFieldData(name)) {
                 const NDArray& v = rMesh.FieldData(name);
                 for (std::size_t k = 0; k < width && k < v.Size(); ++k)
@@ -2360,8 +2785,7 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
         }
         if (rPlan.mPartGlobals) {
             const std::size_t nparts = m.mNummat[0] + m.mNummat[1] + m.mNummat[2];
-            for (const auto& [name, width] : D3wPlan::PartGlobals()) {
-                const auto w = static_cast<std::size_t>(width);
+            for (const auto& [name, w] : d3w_part_globals()) {
                 if (rMesh.HasFieldData(name) && rMesh.FieldData(name).Size() == w * nparts)
                     for (std::size_t k = 0; k < w * nparts; ++k)
                         g[at + k] = detail::read_double(rMesh.FieldData(name), k);
@@ -2369,57 +2793,90 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
             }
         }
         for (const double v : g)
-            d3w_f32(out, v);
+            d3w_f32(out, v, ws);
     }
+    // nodal variables, in the reader's order
     if (rPlan.mDisp) {
         const std::vector<double> d = d3w_node_array(rMesh, "displacement", n);
         for (std::size_t i = 0; i < 3 * n; ++i)
-            d3w_f32(out, m.mPoints[i] + d[i]);
+            d3w_f32(out, m.mPoints[i] + (std::isnan(d[i]) ? 0.0 : d[i]), ws);
+    }
+    if (rPlan.mIt0) {
+        for (const double v : d3w_node_array(rMesh, "temperature", n, rPlan.mIt0 == 3 ? 3 : 1))
+            d3w_f32(out, v, ws);
+        if (rPlan.mIt0 >= 2)
+            for (const double v : d3w_node_array(rMesh, "heat_flux", n))
+                d3w_f32(out, v, ws);
+    }
+    if (rPlan.mIt1)
+        for (const double v : d3w_node_array(rMesh, "mass_scaling", n, 1))
+            d3w_f32(out, v, ws);
+    if (rPlan.mTgrad)
+        for (const double v : d3w_node_array(rMesh, "temperature_gradient", n, 1))
+            d3w_f32(out, v, ws);
+    if (rPlan.mResid) {
+        for (const double v : d3w_node_array(rMesh, "residual_forces", n))
+            d3w_f32(out, v, ws);
+        for (const double v : d3w_node_array(rMesh, "residual_moments", n))
+            d3w_f32(out, v, ws);
     }
     if (rPlan.mVel)
         for (const double v : d3w_node_array(rMesh, "velocity", n))
-            d3w_f32(out, v);
+            d3w_f32(out, v, ws);
     if (rPlan.mAcc)
         for (const double v : d3w_node_array(rMesh, "acceleration", n))
-            d3w_f32(out, v);
-    if (rPlan.mNv3d)
-        d3w_element_block(out, rPlan, rMesh, kD3wSolid, m.mCounts[kD3wSolid], rPlan.mSolidPoints);
-    if (rPlan.mNv1d) {
-        std::vector<double> beams(m.mCounts[kD3wBeam] * 6, kD3Nan);
-        std::size_t at = 0;
-        for (const auto& [name, comps] : D3wPlan::BeamArrays()) {
-            bool present = false;
-            const auto arrays = d3w_cell_array(rMesh, name, comps, present);
-            if (present)
-                for (const D3wRange& range : m.mRanges[kD3wBeam]) {
-                    const D3wBlockArray& a = arrays[range.mBlock];
-                    if (a.mPoints == 0 || range.mCount == 0)
-                        continue;
-                    for (std::size_t e = 0; e < range.mCount; ++e)
-                        for (int c = 0; c < comps; ++c)
-                            beams[(range.mFirst + e) * 6 + at + c] =
-                                a.mV[e * a.mPoints * comps + c];
-                }
-            at += static_cast<std::size_t>(comps);
-        }
-        for (const double v : beams)
-            d3w_f32(out, v);
+            d3w_f32(out, v, ws);
+    if (rPlan.mNt3d) {
+        std::vector<double> thermal(m.mCounts[kD3wSolid] * rPlan.mNt3d, kD3Nan);
+        bool present = false;
+        const auto arrays = d3w_cell_array(rMesh, "thermal_variables", present);
+        if (present)
+            for (const D3wRange& range : m.mRanges[kD3wSolid]) {
+                const D3wBlockArray& a = arrays[range.mBlock];
+                if (a.mPoints == 0 || range.mCount == 0)
+                    continue;
+                const std::size_t k = std::min(a.mComps, rPlan.mNt3d);
+                for (std::size_t e = 0; e < range.mCount; ++e)
+                    for (std::size_t c = 0; c < k; ++c)
+                        thermal[(range.mFirst + e) * rPlan.mNt3d + c] =
+                            a.mV[e * a.mPoints * a.mComps + c];
+            }
+        for (const double v : thermal)
+            d3w_f32(out, v, ws);
     }
+    if (rPlan.mNv3d)
+        for (const double v : d3w_family_matrix(rPlan, rMesh, kD3wSolid, rPlan.mSolid))
+            d3w_f32(out, v, ws);
+    if (rPlan.mNv1d)
+        for (const double v : d3w_beam_matrix(rPlan, rMesh))
+            d3w_f32(out, v, ws);
     if (rPlan.mNv2d)
-        d3w_element_block(out, rPlan, rMesh, kD3wShell, m.mCounts[kD3wShell], rPlan.mShellPoints);
+        for (const double v : d3w_family_matrix(rPlan, rMesh, kD3wShell, rPlan.mShell))
+            d3w_f32(out, v, ws);
     if (rPlan.mAlive) {
         const bool has = rMesh.HasCellData("lsdyna:alive");
         for (const int family : {kD3wSolid, kD3wShell, kD3wBeam}) {
             std::vector<double> flags(m.mCounts[family], 1.0);
             if (has)
                 for (const D3wRange& range : m.mRanges[family]) {
+                    if (range.mBlock >= rMesh.CellDataNumBlocks("lsdyna:alive"))
+                        continue;
                     const NDArray& a = rMesh.CellData("lsdyna:alive", range.mBlock);
                     for (std::size_t e = 0; e < range.mCount && e < a.Size(); ++e)
                         flags[range.mFirst + e] = detail::read_double(a, e) != 0.0 ? 1.0 : 0.0;
                 }
             for (const double v : flags)
-                d3w_f32(out, v);
+                d3w_f32(out, v, ws);
         }
+    } else if (rPlan.mAliveNodes) {
+        std::vector<double> flags(n, 1.0);
+        if (rMesh.HasPointData("lsdyna:alive")) {
+            const NDArray& a = rMesh.PointData("lsdyna:alive");
+            for (std::size_t i = 0; i < n && i < a.Size(); ++i)
+                flags[i] = detail::read_double(a, i) != 0.0 ? 1.0 : 0.0;
+        }
+        for (const double v : flags)
+            d3w_f32(out, v, ws);
     }
     return out;
 }
@@ -2429,7 +2886,7 @@ std::vector<std::string> d3w_assemble(const D3wPlan& rPlan,
                                       const std::vector<std::pair<double, const Mesh*>>& rSteps,
                                       std::size_t MaxBytes) {
     std::string mark;
-    d3w_f32(mark, kD3EofMarker);
+    d3w_f32(mark, kD3EofMarker, rPlan.mWs);
     std::vector<std::string> files;
     std::string current = d3w_geometry(rPlan);
     bool any = false;
@@ -2470,15 +2927,17 @@ void d3w_store(const std::string& rPath, const std::vector<std::string>& rFiles)
 
 }  // namespace
 
-void write_lsdyna_d3plot(const std::string& rPath, const Mesh& rMesh, std::size_t MaxFileBytes) {
+void write_lsdyna_d3plot(const std::string& rPath, const Mesh& rMesh, std::size_t MaxFileBytes,
+                         bool DoublePrecision) {
     const D3wModel model(rMesh);
-    const D3wPlan plan(model, {&rMesh});
+    const D3wPlan plan(model, {&rMesh}, DoublePrecision);
     d3w_store(rPath, d3w_assemble(plan, {{d3w_time_of(rMesh), &rMesh}}, MaxFileBytes));
 }
 
 struct LsdynaD3plotSeriesWriter::Impl {
     std::string mPath;
     std::size_t mMaxBytes = kD3wDefaultFileBytes;
+    bool mDouble = false;
     std::unique_ptr<D3wModel> mModel;
     std::vector<double> mTimes;
     std::vector<std::unique_ptr<Mesh>> mMeshes;
@@ -2486,10 +2945,12 @@ struct LsdynaD3plotSeriesWriter::Impl {
 };
 
 LsdynaD3plotSeriesWriter::LsdynaD3plotSeriesWriter(const std::string& rPath,
-                                                   std::size_t MaxFileBytes)
+                                                   std::size_t MaxFileBytes,
+                                                   bool DoublePrecision)
     : mpImpl(std::make_unique<Impl>()) {
     mpImpl->mPath = rPath;
     mpImpl->mMaxBytes = MaxFileBytes;
+    mpImpl->mDouble = DoublePrecision;
 }
 
 LsdynaD3plotSeriesWriter::~LsdynaD3plotSeriesWriter() = default;
@@ -2529,7 +2990,7 @@ void LsdynaD3plotSeriesWriter::Finalize() {
         meshes.push_back(s.mMeshes[i].get());
         steps.push_back({s.mTimes[i], s.mMeshes[i].get()});
     }
-    const D3wPlan plan(*s.mModel, meshes);
+    const D3wPlan plan(*s.mModel, meshes, s.mDouble);
     d3w_store(s.mPath, d3w_assemble(plan, steps, s.mMaxBytes));
 }
 

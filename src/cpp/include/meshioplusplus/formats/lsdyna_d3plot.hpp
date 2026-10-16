@@ -142,7 +142,8 @@ MESHIOPLUSPLUS_API bool is_d3plot_head(const char* pHead, std::size_t Size);
  * @throws WriteError for a mesh with no points or no solid, beam or shell
  */
 MESHIOPLUSPLUS_API void write_lsdyna_d3plot(const std::string& rPath, const Mesh& rMesh,
-                                            std::size_t MaxFileBytes = std::size_t{1} << 30);
+                                            std::size_t MaxFileBytes = std::size_t{1} << 30,
+                                            bool DoublePrecision = false);
 
 /**
  * @brief A state per mesh in one d3plot family, written by `Finalize`; every mesh
@@ -152,7 +153,8 @@ MESHIOPLUSPLUS_API void write_lsdyna_d3plot(const std::string& rPath, const Mesh
 class MESHIOPLUSPLUS_API LsdynaD3plotSeriesWriter {
 public:
     explicit LsdynaD3plotSeriesWriter(const std::string& rPath,
-                                      std::size_t MaxFileBytes = std::size_t{1} << 30);
+                                      std::size_t MaxFileBytes = std::size_t{1} << 30,
+                                      bool DoublePrecision = false);
     ~LsdynaD3plotSeriesWriter();
 
     LsdynaD3plotSeriesWriter(const LsdynaD3plotSeriesWriter&) = delete;

@@ -1317,12 +1317,13 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell"],
         "note": "Single-precision words, so coordinates and data come back rounded to "
-        "float32. Only what the state layout names is kept: point data "
-        "`displacement`, `velocity`, `acceleration`, cell data `stress`, "
-        "`effective_plastic_strain`, the `beam_*` resultants and `lsdyna:alive`, and the "
-        "`global_*` field data; the probe's arrays are not. Blocks come back by family "
-        "(solids, beams, shells), vertices are not written, and a cell belongs to one "
-        "part, so only the first cell region holding it survives.",
+        "float32. Only what the state layout names is kept: the nodal variables "
+        "(`displacement`, `velocity`, `temperature` ...), the element variables "
+        "(`stress`, `strain`, `history_variables`, the shell and beam resultants ...), "
+        "`lsdyna:alive` and the `global_*` field data; the probe's arrays are not. "
+        "Blocks come back by family (solids, beams, shells), vertices are not written, "
+        "and a cell belongs to one part, so only the first cell region holding it "
+        "survives.",
     },
     "xplt": {
         "cells": {

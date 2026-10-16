@@ -5885,16 +5885,17 @@ PYBIND11_MODULE(_core, m) {
 
     m.def(
         "lsdyna_d3plot_write",
-        [](const std::string& path, py::object pymesh, std::size_t max_file_bytes) {
+        [](const std::string& path, py::object pymesh, std::size_t max_file_bytes, bool dbl) {
             meshioplusplus_py::PyMeshRefs refs;
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_lsdyna_d3plot(path, mesh, max_file_bytes);
+                return meshioplusplus::write_lsdyna_d3plot(path, mesh, max_file_bytes, dbl);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("max_file_bytes") = std::size_t{1} << 30);
+        py::arg("path"), py::arg("mesh"), py::arg("max_file_bytes") = std::size_t{1} << 30,
+        py::arg("double") = false);
     py::class_<meshioplusplus::LsdynaD3plotSeriesWriter>(m, "LsdynaD3plotSeriesWriter")
-        .def(py::init<const std::string&, std::size_t>(), py::arg("path"),
-             py::arg("max_file_bytes") = std::size_t{1} << 30)
+        .def(py::init<const std::string&, std::size_t, bool>(), py::arg("path"),
+             py::arg("max_file_bytes") = std::size_t{1} << 30, py::arg("double") = false)
         .def(
             "write",
             [](meshioplusplus::LsdynaD3plotSeriesWriter& rSelf, double time, py::object pymesh) {

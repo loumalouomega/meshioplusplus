@@ -47,24 +47,29 @@ def time_values(filename):
 
 
 # Found by its file name (``d3plot``) or its control block, never an extension.
-def write(filename, mesh):
-    """Write one state as an LS-DYNA d3plot (single-precision words, one file).
+def write(filename, mesh, double=False):
+    """Write one state as an LS-DYNA d3plot (``double=True``: 8-byte words).
 
     Hexahedra, wedges, pyramids, tetrahedra and ``tetra10`` are solids, ``line``
-    beams, ``triangle`` and ``quad`` shells; other cells are not written. Point
-    data ``displacement``, ``velocity``, ``acceleration``; cell data ``stress``,
-    ``effective_plastic_strain``, the ``beam_*`` resultants and ``lsdyna:alive``
-    (as the reader returns them); the ``global_*`` and ``part_*`` field data;
-    ``lsdyna:nid``, ``lsdyna:eid`` and ``lsdyna:part`` the user ids, cell regions
-    the parts and their titles; ``field_data["meshio:time"]`` the state's time.
+    beams, ``triangle`` and ``quad`` shells; other cells are not written. The
+    variables go by the names the reader returns: point data ``displacement``,
+    ``velocity``, ``acceleration``, ``temperature``, ``heat_flux``,
+    ``mass_scaling``, ``temperature_gradient``, ``residual_forces``,
+    ``residual_moments`` and ``lsdyna:alive``; cell data ``stress``,
+    ``effective_plastic_strain``, ``strain``, ``plastic_strain_tensor``,
+    ``thermal_strain_tensor``, ``history_variables``, ``thermal_variables``, the
+    shell resultants and extras, the ``beam_*`` resultants and layers and
+    ``lsdyna:alive``; the ``global_*`` and ``part_*`` field data; ``lsdyna:nid``,
+    ``lsdyna:eid`` and ``lsdyna:part`` the user ids, cell regions the parts and
+    their titles; ``field_data["meshio:time"]`` the state's time.
     """
     if not is_buffer(filename, "w"):
         try:
-            return _core.lsdyna_d3plot_write(str(filename), mesh)
+            return _core.lsdyna_d3plot_write(str(filename), mesh, double=double)
         except Exception as exc:
             if not core_declined(exc, "lsdyna_d3plot", "write", filename):
                 raise
-    return _py_write(filename, mesh)
+    return _py_write(filename, mesh, double=double)
 
 
 class SeriesWriter:
@@ -78,18 +83,18 @@ class SeriesWriter:
     ...         w.write(time, mesh)
     """
 
-    def __init__(self, filename, max_file_bytes=1 << 30):
+    def __init__(self, filename, max_file_bytes=1 << 30, double=False):
         self._core = self._py = None
         if not is_buffer(filename, "w"):
             try:
                 self._core = _core.LsdynaD3plotSeriesWriter(
-                    str(filename), int(max_file_bytes)
+                    str(filename), int(max_file_bytes), bool(double)
                 )
             except Exception as exc:
                 if not core_declined(exc, "lsdyna_d3plot", "write", filename):
                     raise
         if self._core is None:
-            self._py = _PySeriesWriter(filename, max_file_bytes)
+            self._py = _PySeriesWriter(filename, max_file_bytes, double)
 
     def write(self, time, mesh):
         if self._core is not None:

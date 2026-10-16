@@ -684,3 +684,94 @@ def test_written_family_reads_in_lasso_python(tmp_path):
     assert d3.arrays[A.element_solid_node_indexes].shape == (2, 8)
     assert d3.arrays[A.element_shell_stress].shape == (3, 2, 2, 6)
     assert sorted(int(i) for i in d3.arrays[A.part_ids]) == [3, 9, 10]
+
+
+_FIXTURES = pathlib.Path(__file__).parent / "meshes" / "lsdyna_d3plot"
+_ROUND_TRIP = [
+    "generated/shell_solid",
+    "lasso/d3plot_beamip",
+    "lasso/d3plot_node_temperature",
+    "lasso/d3plot_solid_int",
+    "dyna/projectile",
+]
+
+
+def _same_state(a, b):
+    assert [c.type for c in a.cells] == [c.type for c in b.cells]
+    for name, value in a.point_data.items():
+        np.testing.assert_allclose(
+            np.nan_to_num(b.point_data[name]),
+            np.nan_to_num(value),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+    for name, blocks in a.cell_data.items():
+        for x, y in zip(blocks, b.cell_data[name]):
+            assert np.shape(x) == np.shape(y), name
+            np.testing.assert_allclose(
+                np.nan_to_num(y.astype(float)),
+                np.nan_to_num(x.astype(float)),
+                rtol=1e-5,
+                atol=1e-4,
+                err_msg=name,
+            )
+    for name in a.field_data:
+        assert name in b.field_data, name
+
+
+@pytest.mark.parametrize("name", _ROUND_TRIP)
+@pytest.mark.parametrize("double", [False, True])
+def test_written_family_keeps_what_the_reader_returns(tmp_path, name, double):
+    """read(write(read(f))) keeps every variable of the last state of a real or
+    generated family, in single and double precision, and both engines write the
+    same bytes."""
+    source = py_d3plot.read(str(_FIXTURES / name / "d3plot"), time_step=-1)
+    core, twin = tmp_path / "core", tmp_path / "twin"
+    core.mkdir()
+    twin.mkdir()
+    _core.lsdyna_d3plot_write(str(core / "d3plot"), source, double=double)
+    py_write.write(str(twin / "d3plot"), source, double=double)
+    assert (core / "d3plot").read_bytes() == (twin / "d3plot").read_bytes()
+    for read in (meshioplusplus.read, py_d3plot.read):
+        _same_state(source, read(str(core / "d3plot")))
+
+
+def test_written_higher_order_cells_round_trip(tmp_path):
+    rng = np.random.default_rng(5)
+    mesh = meshioplusplus.Mesh(
+        rng.random((60, 3)),
+        [
+            ("hexahedron20", np.arange(20)[None]),
+            ("hexahedron27", np.arange(20, 47)[None]),
+            ("quad8", np.arange(47, 55)[None]),
+            ("tetra10", np.arange(10)[None]),
+        ],
+    )
+    core, twin = tmp_path / "core", tmp_path / "twin"
+    core.mkdir()
+    twin.mkdir()
+    _core.lsdyna_d3plot_write(str(core / "d3plot"), mesh)
+    py_write.write(str(twin / "d3plot"), mesh)
+    assert (core / "d3plot").read_bytes() == (twin / "d3plot").read_bytes()
+    for read in (meshioplusplus.read, py_d3plot.read):
+        back = read(str(core / "d3plot"))
+        got = {c.type: c.data[0] for c in back.cells}
+        for block in mesh.cells:
+            np.testing.assert_array_equal(got[block.type], block.data[0])
+
+
+def test_written_family_with_every_variable_reads_in_lasso_python(tmp_path):
+    lasso = pytest.importorskip("lasso.dyna")
+    source = py_d3plot.read(str(_FIXTURES / "lasso" / "d3plot_beamip" / "d3plot"))
+    target = tmp_path / "d3plot"
+    meshioplusplus.write(target, source, file_format="lsdyna_d3plot")
+    d3 = lasso.D3plot(str(target))
+    A = lasso.ArrayType
+    assert (
+        d3.arrays[A.element_beam_axial_stress].shape[-1] == 3
+        or d3.arrays[A.element_beam_axial_stress].ndim == 3
+    )
+    double = tmp_path / "double" / "d3plot"
+    double.parent.mkdir()
+    meshioplusplus.lsdyna_d3plot.write(double, source, double=True)
+    assert lasso.D3plot(str(double)).header.wordsize == 8
