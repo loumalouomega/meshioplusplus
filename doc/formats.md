@@ -25,7 +25,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — | [8/8 cells · data PC](./conformance.md#avsucd) |
 | [`cad_json`](./formats/cad_json.md) | `.cad.json` (Kratos IGA geometry; a `.json` by content) | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#cad-json) |
 | [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#cae) |
-| [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` | [8/8 cells · data P](./conformance.md#cgns) |
+| [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` | [8/8 cells · data PF · regions CP](./conformance.md#cgns) |
 | [`code_aster`](./formats/code_aster.md) | `.mail` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#code-aster) |
 | [`dex`](./formats/dex.md) | `.dex` | ✓ | ✓ | — | [0/8 cells · data P](./conformance.md#dex) |
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — | [1/8 cells · data PC](./conformance.md#dolfin-xml) |

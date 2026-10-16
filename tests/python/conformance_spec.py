@@ -506,8 +506,9 @@ SPEC: dict[str, dict] = {
         "points": "exact",
         "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
-        "field_data": False,
-        "regions": [],
+        "field_data": True,
+        "regions": ["cell", "point"],
+        "note": "Cell data cannot be written for the probe: it mixes cell dimensions, which a zone-wide `CellCenter` solution cannot span. Side regions are not written, and a region's cells must lie in fixed-size sections.",
     },
     "code_aster": {
         "cells": {

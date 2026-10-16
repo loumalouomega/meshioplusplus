@@ -23,7 +23,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="avsucd">`avsucd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64 | — | — |
 | <span id="cad-json">`cad_json`</span> |  | ✓ |  | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="cae">`cae`</span> |  |  | ✗ | ✗ | → tri | → tri | → tri | → tri | subset | — | — | — | — |
-| <span id="cgns">`cgns`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
+| <span id="cgns">`cgns`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | ✓ | cell, point |
 | <span id="code-aster">`code_aster`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="dex">`dex`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | exact | `p_f64` float64 | — | — | — |
 | <span id="dolfin-xml">`dolfin-xml`</span> |  |  | ✗ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int64 | `c_f64` float64, `c_i32` int64 | — | — |
@@ -113,6 +113,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`ansys_rst`**: A results file holds the solution MAPDL names: point data called `U`, `ROT`, `TEMP` ... (and `RF` reactions) and cell data `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not kept. Side regions are dropped with a warning.
 - **`cad_json`**: Kratos IGA geometry: without a B-rep side channel, quads are written as bilinear NURBS faces and lines as edges.
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
+- **`cgns`**: Cell data cannot be written for the probe: it mixes cell dimensions, which a zone-wide `CellCenter` solution cannot span. Side regions are not written, and a region's cells must lie in fixed-size sections.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
 - **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
