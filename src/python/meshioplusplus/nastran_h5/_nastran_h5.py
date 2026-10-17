@@ -26,6 +26,7 @@ _NAN = float("nan")
 _GRID = "/NASTRAN/INPUT/NODE/GRID"
 _ELEMENTS = "/NASTRAN/INPUT/ELEMENT"
 _PROPERTIES = "/NASTRAN/INPUT/PROPERTY"
+_MATERIALS = "/NASTRAN/INPUT/MATERIAL"
 _DOMAINS = "/NASTRAN/RESULT/DOMAINS"
 _NODAL = "/NASTRAN/RESULT/NODAL"
 _ELEMENTAL = "/NASTRAN/RESULT/ELEMENTAL"
@@ -298,6 +299,39 @@ def _property_types(f):
     return ptype
 
 
+# The property and material members read as ``nastran:<CARD>_<id>:<MEMBER>`` field data.
+_VALUE_MEMBERS = {
+    "PSHELL": ("MID1", "T", "NSM"),
+    "PROD": ("MID", "A", "J", "C", "NSM"),
+    "PTUBE": ("MID", "OD", "T", "NSM"),
+    "PSOLID": ("MID",),
+    "MAT1": ("E", "G", "NU", "RHO", "A", "TREF", "GE"),
+}
+
+
+def _property_values(f):
+    out = {}
+    for card, members in _VALUE_MEMBERS.items():
+        path = f"{_PROPERTIES}/{card}" if card != "MAT1" else f"{_MATERIALS}/MAT1"
+        if not _is_dataset(f, path):
+            continue
+        ds = f[path]
+        key = "PID" if card != "MAT1" else "MID"
+        if key not in _names(ds):
+            continue
+        ids = np.asarray(ds[key], dtype=np.int64).tolist()
+        for member in members:
+            if member not in _names(ds):
+                continue
+            column = np.asarray(ds[member])
+            dtype = np.int64 if member.startswith("MID") else np.float64
+            for ident, value in zip(ids, column.tolist()):
+                out.setdefault(
+                    f"nastran:{card}_{ident}:{member}", np.array([value], dtype)
+                )
+    return out
+
+
 def _resolve_step(time_step, count):
     if count == 0:
         if time_step in (0, -1):
@@ -397,6 +431,7 @@ def _read(nf, points_only, arrays, time_step):
         point_data["nastran:nid"] = ids  # GRID ids that are not 1 to n
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
     mesh.regions = regions
+    mesh.field_data.update(_property_values(f))
     mesh.time_values = [s["time"] for s in nf.steps]
 
     s = _resolve_step(time_step, len(nf.steps))

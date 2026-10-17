@@ -20,7 +20,7 @@ from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
 from ..nastran_op2._write import _CARDS as _OP2_CARDS
-from ..nastran_op2._write import _Model
+from ..nastran_op2._write import _Model, material_ids
 
 TIME_KEY = "meshio:time"
 SCHEMA = 20200
@@ -437,16 +437,24 @@ def _write_model(f, model):
         pids = sorted(model.properties[ptype])
         if not pids:
             continue
-        _table(
-            prop,
-            ptype,
-            [("PID", "<i8", pids)]
-            + _filled(len(pids), _PROPERTY_COLUMNS[ptype])
-            + [one(len(pids))],
-        )
-    if any(model.properties.values()):
+        columns = _filled(len(pids), _PROPERTY_COLUMNS[ptype])
+        for k, pid in enumerate(pids):
+            for member, value in model.values.get((ptype, pid), {}).items():
+                for c in columns:
+                    if c[0] == member:
+                        c[2][k] = value
+        _table(prop, ptype, [("PID", "<i8", pids)] + columns + [one(len(pids))])
+    mids = material_ids(model.properties, model.values)
+    if mids:
         mat = nas.create_group("INPUT/MATERIAL")
-        _table(mat, "MAT1", _filled(1, _MATERIAL_COLUMNS) + [one(1)])
+        columns = _filled(len(mids), _MATERIAL_COLUMNS)
+        for k, mid in enumerate(mids):
+            columns[0][2][k] = mid
+            for member, value in model.values.get(("MAT1", mid), {}).items():
+                for c in columns:
+                    if c[0] == member:
+                        c[2][k] = value
+        _table(mat, "MAT1", columns + [one(len(mids))])
 
 
 def _write_results(f, model, steps):

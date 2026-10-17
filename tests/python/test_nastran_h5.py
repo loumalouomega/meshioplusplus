@@ -1066,3 +1066,43 @@ class TestWriter:
             w.write(0.0, a)
             with pytest.raises(WriteError):
                 w.write(1.0, b)
+
+
+class TestPropertyValues:
+    @staticmethod
+    def _mesh():
+        mesh = _write_mesh()
+        mesh.field_data.update(
+            {
+                "nastran:PSHELL_1:T": np.array([0.25]),
+                "nastran:PSHELL_1:MID1": np.array([7]),
+                "nastran:MAT1_7:E": np.array([2.1e5]),
+                "nastran:MAT1_7:NU": np.array([0.29]),
+                "nastran:MAT1_7:RHO": np.array([7.8e-9]),
+            }
+        )
+        return mesh
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_values_round_trip(self, writer, engine, tmp_path):
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), self._mesh())
+        else:
+            py_write(path, self._mesh())
+        data = engine(path).field_data
+        assert data["nastran:PSHELL_1:T"][0] == 0.25
+        assert data["nastran:PSHELL_1:MID1"].tolist() == [7]
+        assert data["nastran:MAT1_7:E"][0] == 2.1e5
+        assert data["nastran:MAT1_7:NU"][0] == 0.29
+        assert data["nastran:MAT1_7:RHO"][0] == 7.8e-9
+        assert data["nastran:PSOLID_2:MID"].tolist() == [1]
+        assert (
+            data["nastran:MAT1_1:E"][0] == 1.0
+        )  # the default material the others name
+
+    def test_engines_write_the_same_tables_with_values(self, tmp_path):
+        a, b = tmp_path / "core.h5", tmp_path / "py.h5"
+        _core.nastran_h5_write(str(a), self._mesh())
+        py_write(b, self._mesh())
+        _same_tables(_tables(a), _tables(b))

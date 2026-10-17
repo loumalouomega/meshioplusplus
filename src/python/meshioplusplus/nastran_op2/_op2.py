@@ -609,6 +609,40 @@ def _read_properties(s, tables):
     return ptype
 
 
+def _read_property_values(s, tables):
+    """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID
+    and MAT1 records (the members ``nastran_op2._write.PROPERTY_VALUES`` lists)."""
+    from ._write import PROPERTY_VALUES
+
+    out = {}
+
+    def take(card, raw, size):
+        body = raw[3 * s.ws :]
+        if len(body) == 0 or len(body) % (size * s.ws):
+            return
+        ints = _ints(s, body).reshape(-1, size)
+        floats = _floats(s, body).reshape(-1, size)
+        for row in range(len(ints)):
+            ident = int(ints[row, 0])
+            if card == "PSHELL" and ints[row, 1] >= 100000000:
+                continue  # NX's PSHELL twin of a PCOMP
+            for member, (word, _default) in PROPERTY_VALUES[card].items():
+                if member.startswith("MID"):
+                    value = np.array([ints[row, word]], dtype=np.int64)
+                else:
+                    value = np.array([floats[row, word]], dtype=np.float64)
+                out.setdefault(f"nastran:{card}_{ident}:{member}", value)
+
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        spec = _PROPERTIES.get((k1, k2))
+        if spec is not None and spec[0] in ("PSHELL", "PROD", "PTUBE", "PSOLID"):
+            take(spec[0], raw, spec[1])
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
+        if (k1, k2) == (103, 1):
+            take("MAT1", raw, 12)
+    return out
+
+
 # -- results ---------------------------------------------------------------------------
 
 _NODAL_PREFIXES = ("OUG", "BOUG", "OQG", "OQMG", "OPG")
@@ -1284,6 +1318,7 @@ def _build_mesh(nf):
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
     mesh, grid_index, cell_index, offsets, sizes, systems, cd = _build_mesh(nf)
+    mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)
     if n == 0:

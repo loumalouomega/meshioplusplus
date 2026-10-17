@@ -600,3 +600,58 @@ def test_pynastran_reads_the_grid_ids(tmp_path):
     model = op2.OP2(debug=False)
     model.read_op2(str(path), build_dataframe=False)
     np.testing.assert_array_equal(model.displacements[1].node_gridtype[:, 0], _GRID_IDS)
+
+
+def _material_mesh():
+    mesh = results_mesh()  # PROD 4, PSHELL 1, PSOLID 2
+    mesh.field_data.update(
+        {
+            "nastran:PSHELL_1:T": np.array([0.25]),
+            "nastran:PSHELL_1:MID1": np.array([7]),
+            "nastran:PROD_4:A": np.array([2.5]),
+            "nastran:PROD_4:J": np.array([0.5]),
+            "nastran:MAT1_7:E": np.array([2.1e5]),
+            "nastran:MAT1_7:NU": np.array([0.29]),
+            "nastran:MAT1_7:RHO": np.array([7.8e-9]),
+            "nastran:MAT1_1:E": np.array([70000.0]),
+        }
+    )
+    return mesh
+
+
+def test_property_and_material_values_round_trip(engine, tmp_path):
+    """``nastran:<CARD>_<id>:<MEMBER>`` sets the property and material values, and
+    the readers return them."""
+    path = tmp_path / "values.op2"
+    write_with(engine, path, _material_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        data = back.field_data
+        assert data["nastran:PSHELL_1:T"][0] == pytest.approx(0.25)
+        assert data["nastran:PSHELL_1:MID1"].tolist() == [7]
+        assert data["nastran:PROD_4:A"][0] == pytest.approx(2.5)
+        assert data["nastran:PROD_4:J"][0] == pytest.approx(0.5)
+        assert data["nastran:PROD_4:MID"].tolist() == [1]
+        assert data["nastran:PSOLID_2:MID"].tolist() == [1]
+        assert data["nastran:MAT1_7:E"][0] == pytest.approx(2.1e5)
+        assert data["nastran:MAT1_7:NU"][0] == pytest.approx(0.29)
+        assert data["nastran:MAT1_7:RHO"][0] == pytest.approx(7.8e-9, rel=1e-6)
+        assert data["nastran:MAT1_1:E"][0] == pytest.approx(70000.0)
+        assert data["nastran:MAT1_1:NU"][0] == pytest.approx(0.3)
+
+
+def test_the_engines_write_the_same_bytes_with_values(tmp_path):
+    mesh = _material_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_default_values_are_the_old_placeholders(engine, tmp_path):
+    path = tmp_path / "plain.op2"
+    write_with(engine, path, results_mesh())
+    data = meshioplusplus.nastran_op2.read(path).field_data
+    assert data["nastran:PSHELL_1:T"][0] == 1.0
+    assert data["nastran:MAT1_1:E"][0] == 1.0
+    assert data["nastran:MAT1_1:NU"][0] == pytest.approx(0.3)

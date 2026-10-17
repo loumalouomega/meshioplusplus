@@ -60,6 +60,7 @@ namespace {
 constexpr const char* kNh5Grid = "/NASTRAN/INPUT/NODE/GRID";
 constexpr const char* kNh5Elements = "/NASTRAN/INPUT/ELEMENT";
 constexpr const char* kNh5Properties = "/NASTRAN/INPUT/PROPERTY";
+constexpr const char* kNh5Materials = "/NASTRAN/INPUT/MATERIAL";
 constexpr const char* kNh5Domains = "/NASTRAN/RESULT/DOMAINS";
 constexpr const char* kNh5Nodal = "/NASTRAN/RESULT/NODAL";
 constexpr const char* kNh5Elemental = "/NASTRAN/RESULT/ELEMENTAL";
@@ -67,6 +68,33 @@ constexpr const char* kNh5Elemental = "/NASTRAN/RESULT/ELEMENTAL";
 [[noreturn]] void nh5_fail(const std::string& rMessage) {
     throw ReadError("MSC Nastran HDF5: " + rMessage);
 }
+
+// The property and material members `nastran:<CARD>_<id>:<MEMBER>` field data sets and
+// reads: the table's column names; `true` marks the integer (MID) ones.
+struct Nh5ValueCard {
+    const char* mCard;
+    const char* mKey;  // the id column
+    std::vector<std::pair<const char*, bool>> mMembers;
+};
+const std::vector<Nh5ValueCard>& nh5_value_cards() {
+    static const std::vector<Nh5ValueCard> cards = {
+        {"PSHELL", "PID", {{"MID1", true}, {"T", false}, {"NSM", false}}},
+        {"PROD", "PID", {{"MID", true}, {"A", false}, {"J", false}, {"C", false}, {"NSM", false}}},
+        {"PTUBE", "PID", {{"MID", true}, {"OD", false}, {"T", false}, {"NSM", false}}},
+        {"PSOLID", "PID", {{"MID", true}}},
+        {"MAT1",
+         "MID",
+         {{"E", false},
+          {"G", false},
+          {"NU", false},
+          {"RHO", false},
+          {"A", false},
+          {"TREF", false},
+          {"GE", false}}},
+    };
+    return cards;
+}
+
 
 bool nh5_has_member(const std::vector<h5::CompoundMember>& rMembers, const std::string& rName) {
     for (const h5::CompoundMember& m : rMembers)
@@ -576,6 +604,40 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
         mesh, cards, file.mGridIndex, file.mScalarPoints, ptype, "MSC Nastran HDF5");
     const auto& cell_index = model.mCellIndex;
     const std::size_t ncells = model.mNumCells;
+    for (const Nh5ValueCard& card : nh5_value_cards()) {  // property and material values
+        const std::string path = std::string(card.mCard) == "MAT1"
+                                     ? std::string(kNh5Materials) + "/MAT1"
+                                     : std::string(kNh5Properties) + "/" + card.mCard;
+        if (!nh5_is_dataset(f, path))
+            continue;
+        const auto members = h5::compound_members(f, path);
+        if (!nh5_has_member(members, card.mKey))
+            continue;
+        const std::size_t rows = nh5_rows(f, path);
+        const auto ids = nh5_int_member(f, path, card.mKey, 0, rows);
+        for (const auto& [member, is_int] : card.mMembers) {
+            if (!nh5_has_member(members, member))
+                continue;
+            std::vector<double> floats;
+            std::vector<std::int64_t> ints;
+            if (is_int)
+                ints = nh5_int_member(f, path, member, 0, rows);
+            else
+                floats = nh5_float_member(f, path, member, 0, rows);
+            for (std::size_t r = 0; r < ids.size(); ++r) {
+                const std::string name = std::string("nastran:") + card.mCard + "_" +
+                                         std::to_string(ids[r]) + ":" + member;
+                if (mesh.HasFieldData(name))
+                    continue;
+                NDArray a(is_int ? DType::Int64 : DType::Float64, {1});
+                if (is_int)
+                    a.As<std::int64_t>()[0] = ints[r];
+                else
+                    a.As<double>()[0] = floats[r];
+                mesh.AddFieldData(name, std::move(a));
+            }
+        }
+    }
     for (std::size_t i = 0; i < file.mGridIds.size(); ++i)
         if (file.mGridIds[i] != static_cast<std::int64_t>(i + 1)) {  // not 1 to n: keep them
             NDArray nid(DType::Int64, {file.mGridIds.size()});
@@ -1107,11 +1169,47 @@ std::vector<std::int64_t> nh5w_node_ids(const Mesh& rMesh, std::size_t N) {
     return ids;
 }
 
+using Nh5wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
+
+/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
+/// that name no card or member here are left alone.
+Nh5wValues nh5w_property_values(const Mesh& rMesh) {
+    Nh5wValues out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind("nastran:", 0) != 0)
+            continue;
+        const std::size_t colon = name.rfind(':');
+        const std::size_t under = name.rfind('_', colon);
+        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
+            continue;
+        const std::string card = name.substr(8, under - 8);
+        const std::string member = name.substr(colon + 1);
+        const std::string digits = name.substr(under + 1, colon - under - 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        for (const Nh5ValueCard& c : nh5_value_cards()) {
+            if (card != c.mCard)
+                continue;
+            for (const auto& [m, is_int] : c.mMembers)
+                if (member == m) {
+                    const NDArray& a = rMesh.FieldData(name);
+                    if (a.Size() != 1)
+                        nh5w_fail("'" + name + "' must hold one value");
+                    out[{card, std::stoll(digits)}][member] =
+                        is_int ? static_cast<double>(detail::Int64View(a).Data()[0])
+                               : detail::DoubleView(a).Data()[0];
+                }
+        }
+    }
+    return out;
+}
+
 /// The mesh as the file holds it: GRIDs, element cards and properties.
 class Nh5wModel {
 public:
     explicit Nh5wModel(const Mesh& rMesh) {
         mSignature = nh5w_signature(rMesh);
+        mValues = nh5w_property_values(rMesh);
         mNpoints = rMesh.NumPoints();
         mNodeIds = nh5w_node_ids(rMesh, mNpoints);
         {
@@ -1236,6 +1334,7 @@ public:
     std::size_t NumPoints() const { return mNpoints; }
     const std::vector<double>& Points() const { return mPoints; }
     const std::vector<std::int64_t>& NodeIds() const { return mNodeIds; }
+    const Nh5wValues& Values() const { return mValues; }
     const std::vector<Nh5wBlock>& Blocks() const { return mBlocks; }
     const std::vector<Nh5wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
     const std::set<std::int64_t>& Props(int Prop) const { return mProps[Prop]; }
@@ -1252,6 +1351,7 @@ private:
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
     std::vector<std::int64_t> mNodeIds;
+    Nh5wValues mValues;
     std::vector<Nh5wBlock> mBlocks;
     std::vector<std::vector<Nh5wRow>> mRows;
     std::set<std::int64_t> mProps[4];
@@ -1736,6 +1836,20 @@ struct Nh5wSpecCol {
     const char* mText;
 };
 
+/// Set row `Row` of the columns named in `rValues` (a float or an integer column).
+void nh5w_set_values(std::vector<Nh5wColumn>& rColumns, std::size_t Row,
+                     const std::map<std::string, double>& rValues) {
+    for (Nh5wColumn& c : rColumns) {
+        const auto it = rValues.find(c.mName);
+        if (it == rValues.end() || c.mString || c.mArity != 1)
+            continue;
+        if (c.mFloat)
+            c.mF[Row] = it->second;
+        else
+            c.mI[Row] = static_cast<std::int64_t>(it->second);
+    }
+}
+
 std::vector<Nh5wColumn> nh5w_filled(std::size_t Rows, const std::vector<Nh5wSpecCol>& rSpec) {
     std::vector<Nh5wColumn> out;
     for (const Nh5wSpecCol& c : rSpec) {
@@ -1886,17 +2000,51 @@ void nh5w_write_model(hid_t File, const Nh5wModel& rModel) {
         columns.push_back(nh5w_ints("PID", std::vector<std::int64_t>(pids.begin(), pids.end())));
         for (auto& col : nh5w_filled(pids.size(), nh5w_property_columns(prop)))
             columns.push_back(std::move(col));
+        std::size_t k = 0;
+        for (const std::int64_t pid : pids) {
+            const auto given = rModel.Values().find({names[prop], pid});
+            if (given != rModel.Values().end())
+                nh5w_set_values(columns, k, given->second);
+            ++k;
+        }
         columns.push_back(domain(pids.size()));
         nh5w_write_table(File, std::string("/NASTRAN/INPUT/PROPERTY/") + names[prop], columns);
     }
-    if (rModel.HasProperties()) {
+    // The materials the properties name (MID, default 1) and those given.
+    std::set<std::int64_t> mids;
+    for (const int prop : {kNh5wProd, kNh5wPshell, kNh5wPsolid, kNh5wPtube})
+        for (const std::int64_t pid : rModel.Props(prop)) {
+            std::int64_t mid = 1;
+            const auto given = rModel.Values().find({names[prop], pid});
+            if (given != rModel.Values().end()) {
+                const auto it = given->second.find(prop == kNh5wPshell ? "MID1" : "MID");
+                if (it != given->second.end())
+                    mid = static_cast<std::int64_t>(it->second);
+            }
+            mids.insert(mid);
+        }
+    for (const auto& [key, members] : rModel.Values())
+        if (key.first == "MAT1")
+            mids.insert(key.second);
+    if (!mids.empty()) {
         nh5w_require_group(File, "/NASTRAN/INPUT/MATERIAL");
         std::vector<Nh5wColumn> columns = nh5w_filled(
-            1, {{"MID", 'i', 1, 1, ""},   {"E", 'f', 1, 1.0, ""},   {"G", 'f', 1, 0.0, ""},
+            mids.size(),
+            {{"MID", 'i', 1, 1, ""},   {"E", 'f', 1, 1.0, ""},   {"G", 'f', 1, 0.0, ""},
                 {"NU", 'f', 1, 0.3, ""},  {"RHO", 'f', 1, 0.0, ""}, {"A", 'f', 1, 0.0, ""},
                 {"TREF", 'f', 1, 0.0, ""}, {"GE", 'f', 1, 0.0, ""},  {"ST", 'f', 1, 0.0, ""},
                 {"SC", 'f', 1, 0.0, ""},  {"SS", 'f', 1, 0.0, ""},  {"MCSID", 'i', 1, 0, ""}});
-        columns.push_back(domain(1));
+        std::size_t k = 0;
+        for (const std::int64_t mid : mids) {
+            std::map<std::string, double> values;
+            const auto given = rModel.Values().find({"MAT1", mid});
+            if (given != rModel.Values().end())
+                values = given->second;
+            values["MID"] = static_cast<double>(mid);
+            nh5w_set_values(columns, k, values);
+            ++k;
+        }
+        columns.push_back(domain(mids.size()));
         nh5w_write_table(File, "/NASTRAN/INPUT/MATERIAL/MAT1", columns);
     }
 }

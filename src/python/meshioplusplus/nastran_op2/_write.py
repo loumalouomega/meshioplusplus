@@ -100,6 +100,65 @@ _PSOLID = ((2402, 24, 281), 7)
 _PROD = ((902, 9, 29), 6)
 _PTUBE = ((1602, 16, 30), 5)
 
+# The property and material values the field data can set, as
+# ``field_data["nastran:<CARD>_<id>:<MEMBER>"]``: card -> {member: (word, default)}.
+# ``MID*`` members are integers; the others are floats. Words are those of the
+# ``EPT`` and ``MPT`` records; the member names are the ``nastran_h5`` columns.
+PROPERTY_VALUES = {
+    "PSHELL": {"MID1": (1, 1), "T": (2, 1.0), "NSM": (7, 0.0)},
+    "PROD": {
+        "MID": (1, 1),
+        "A": (2, 1.0),
+        "J": (3, 0.0),
+        "C": (4, 0.0),
+        "NSM": (5, 0.0),
+    },
+    "PTUBE": {"MID": (1, 1), "OD": (2, 1.0), "T": (3, 0.0), "NSM": (4, 0.0)},
+    "PSOLID": {"MID": (1, 1)},
+    "MAT1": {
+        "E": (1, 1.0),
+        "G": (2, 0.0),
+        "NU": (3, 0.3),
+        "RHO": (4, 0.0),
+        "A": (5, 0.0),
+        "TREF": (6, 0.0),
+        "GE": (7, 0.0),
+    },
+}
+_VALUE_KEY = re.compile(r"^nastran:([A-Z0-9]+)_([0-9]+):([A-Z0-9]+)$")
+
+
+def property_values(mesh):
+    """``{(card, id): {member: value}}`` from the ``nastran:<CARD>_<id>:<MEMBER>``
+    field data; keys that name no card or member here are left alone."""
+    out = {}
+    for name, array in mesh.field_data.items():
+        m = _VALUE_KEY.match(name)
+        if m is None or m.group(1) not in PROPERTY_VALUES:
+            continue
+        card, ident, member = m.group(1), int(m.group(2)), m.group(3)
+        if member not in PROPERTY_VALUES[card]:
+            continue
+        values = np.asarray(array).ravel()
+        if values.size != 1:
+            _wfail(f"'{name}' must hold one value")
+        out.setdefault((card, ident), {})[member] = (
+            int(values[0]) if member.startswith("MID") else float(values[0])
+        )
+    return out
+
+
+def material_ids(properties, values):
+    """The MAT1 ids: those the properties name (MID default 1) and those given."""
+    ids = set()
+    for ptype, pids in properties.items():
+        for pid in pids:
+            given = values.get((ptype, pid), {})
+            ids.add(given.get("MID", given.get("MID1", 1)))
+    ids.update(i for (card, i) in values if card == "MAT1")
+    return sorted(ids) or []
+
+
 # Nodal tables in file order: (array, table, table code, thermal flag)
 _NODAL = (
     ("DISPLACEMENT", "OUGV1", 1, 0),
@@ -275,6 +334,7 @@ class _Model:
         self.points[:, : min(3, points.shape[1])] = points[:, :3]
         self.node_ids = _node_ids(mesh, self.npoints)
         self.signature = _signature(mesh)
+        self.values = property_values(mesh)
         ptube = set()
         for region in getattr(mesh, "regions", None) or []:
             m = _PTYPE.match(region.name)
@@ -468,24 +528,30 @@ class _Model:
                 continue
             words = np.zeros((len(pids), size), dtype="<u4")
             words[:, 0] = _i32(pids)
-            words[:, 1] = _i32(np.ones(len(pids)))  # MID
-            if ptype == "PSHELL":
-                words[:, 2] = _f32(np.ones(len(pids)))  # T
-            elif ptype == "PROD":
-                words[:, 2] = _f32(np.ones(len(pids)))  # A
-            elif ptype == "PTUBE":
-                words[:, 2] = _f32(np.ones(len(pids)))  # OD
-            elif ptype == "PSOLID":
+            for k, pid in enumerate(pids):
+                given = self.values.get((ptype, pid), {})
+                for member, (word, default) in PROPERTY_VALUES[ptype].items():
+                    value = given.get(member, default)
+                    if member.startswith("MID"):
+                        words[k, word] = _i32(np.array([value]))[0]
+                    else:
+                        words[k, word] = _f32(np.array([value]))[0]
+            if ptype == "PSOLID":
                 words[:, 6] = 0x43454D53  # FCTN 'SMEC'
             records.append(_key(*key) + _bytes(words))
         records.append(_key(65535, 65535, 65535))
         return _table("EPT", records)
 
     def mpt(self):
-        """The one material the properties name: a unit-modulus MAT1."""
-        words = np.zeros((1, 12), dtype="<u4")
-        words[0, 0] = 1
-        words[0, 1:4] = _f32(np.array([1.0, 0.0, 0.3]))
+        """A MAT1 per material the properties name: unit modulus unless the field
+        data gives its values."""
+        ids = material_ids(self.properties, self.values) or [1]
+        words = np.zeros((len(ids), 12), dtype="<u4")
+        for k, mid in enumerate(ids):
+            words[k, 0] = _i32(np.array([mid]))[0]
+            given = self.values.get(("MAT1", mid), {})
+            for member, (word, default) in PROPERTY_VALUES["MAT1"].items():
+                words[k, word] = _f32(np.array([given.get(member, default)]))[0]
         return _table(
             "MPT", [_key(103, 1, 77) + _bytes(words), _key(65535, 65535, 65535)]
         )

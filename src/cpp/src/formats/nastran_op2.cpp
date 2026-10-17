@@ -680,6 +680,91 @@ std::vector<detail::NastranCardRows> op2_read_elements(
     return out;
 }
 
+// The property and material values the field data can set, as
+// `nastran:<CARD>_<id>:<MEMBER>`: each member's word in the EPT/MPT record, default and
+// whether it is an integer (the MID members).
+struct Op2wValueMember {
+    const char* mName;
+    std::size_t mWord;
+    double mDefault;
+    bool mInt;
+};
+struct Op2wValueCard {
+    const char* mCard;
+    std::vector<Op2wValueMember> mMembers;
+};
+const std::vector<Op2wValueCard>& op2w_value_cards() {
+    static const std::vector<Op2wValueCard> cards = {
+        {"PSHELL", {{"MID1", 1, 1, true}, {"T", 2, 1.0, false}, {"NSM", 7, 0.0, false}}},
+        {"PROD",
+         {{"MID", 1, 1, true},
+          {"A", 2, 1.0, false},
+          {"J", 3, 0.0, false},
+          {"C", 4, 0.0, false},
+          {"NSM", 5, 0.0, false}}},
+        {"PTUBE",
+         {{"MID", 1, 1, true}, {"OD", 2, 1.0, false}, {"T", 3, 0.0, false}, {"NSM", 4, 0.0, false}}},
+        {"PSOLID", {{"MID", 1, 1, true}}},
+        {"MAT1",
+         {{"E", 1, 1.0, false},
+          {"G", 2, 0.0, false},
+          {"NU", 3, 0.3, false},
+          {"RHO", 4, 0.0, false},
+          {"A", 5, 0.0, false},
+          {"TREF", 6, 0.0, false},
+          {"GE", 7, 0.0, false}}},
+    };
+    return cards;
+}
+
+/// `nastran:<CARD>_<id>:<MEMBER>` field data of the PSHELL, PROD, PTUBE, PSOLID and MAT1
+/// records (the members `op2w_value_cards` lists).
+void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
+                             const std::vector<Op2Table>& rTables) {
+    const Op2Words& w = rS.Words();
+    const auto ws = static_cast<std::size_t>(w.mWs);
+    auto take = [&](const std::string& rCard, const std::string& rRaw, std::size_t Size) {
+        if (rRaw.size() <= 3 * ws || (rRaw.size() - 3 * ws) % (Size * ws))
+            return;
+        const std::size_t rows = (rRaw.size() - 3 * ws) / (Size * ws);
+        for (const Op2wValueCard& c : op2w_value_cards()) {
+            if (rCard != c.mCard)
+                continue;
+            for (std::size_t r = 0; r < rows; ++r) {
+                const char* row = rRaw.data() + 3 * ws + r * Size * ws;
+                const std::int64_t ident = w.Int(row);
+                if (rCard == "PSHELL" && w.Int(row + ws) >= 100000000)
+                    continue;  // NX's PSHELL twin of a PCOMP
+                for (const Op2wValueMember& m : c.mMembers) {
+                    const std::string name = "nastran:" + rCard + "_" + std::to_string(ident) +
+                                             ":" + m.mName;
+                    if (rMesh.HasFieldData(name))
+                        continue;  // the first record wins
+                    const char* at = row + m.mWord * ws;
+                    NDArray a(m.mInt ? DType::Int64 : DType::Float64, {1});
+                    if (m.mInt)
+                        a.As<std::int64_t>()[0] = w.Int(at);
+                    else
+                        a.As<double>()[0] = w.Float(at);
+                    rMesh.AddFieldData(name, std::move(a));
+                }
+            }
+        }
+    };
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"EPT"})) {
+        for (const Op2PropertySpec& p : kOp2Properties)
+            if (p.mK1 == r.mK1 && p.mK2 == r.mK2) {
+                const std::string card = p.mCard;
+                if (card == "PSHELL" || card == "PROD" || card == "PTUBE" || card == "PSOLID")
+                    take(card, r.mRaw, static_cast<std::size_t>(p.mSizes[0]));
+                break;
+            }
+    }
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"MPT", "MAT"}))
+        if (r.mK1 == 103 && r.mK2 == 1)
+            take("MAT1", r.mRaw, 12);
+}
+
 // NX also writes each PCOMP as a PSHELL whose material ids are 100000000 and
 // up; those PSHELL entries are ignored, and a PCOMPG wins over a PCOMP of the
 // same id, as pyNastran reads them.
@@ -1716,6 +1801,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     const Op2Reader r(rPath);
     Op2Model model = op2_build_mesh(r);
     Mesh& mesh = model.mMesh;
+    op2_add_property_values(mesh, r.mStream, r.mTables);
     const std::size_t n = r.mSteps.size();
     if (n == 0) {
         if (rOpts.mTimeStep != 0 && rOpts.mTimeStep != -1)
@@ -2328,10 +2414,46 @@ std::vector<std::int64_t> op2w_node_ids(const Mesh& rMesh, std::size_t N) {
     return ids;
 }
 
+using Op2wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
+
+/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
+/// that name no card or member here are left alone.
+Op2wValues op2w_property_values(const Mesh& rMesh) {
+    Op2wValues out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind("nastran:", 0) != 0)
+            continue;
+        const std::size_t colon = name.rfind(':');
+        const std::size_t under = name.rfind('_', colon);
+        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
+            continue;
+        const std::string card = name.substr(8, under - 8);
+        const std::string member = name.substr(colon + 1);
+        const std::string digits = name.substr(under + 1, colon - under - 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        for (const Op2wValueCard& c : op2w_value_cards()) {
+            if (card != c.mCard)
+                continue;
+            for (const Op2wValueMember& m : c.mMembers)
+                if (member == m.mName) {
+                    const NDArray& a = rMesh.FieldData(name);
+                    if (a.Size() != 1)
+                        op2w_fail("'" + name + "' must hold one value");
+                    out[{card, std::stoll(digits)}][member] =
+                        m.mInt ? static_cast<double>(detail::Int64View(a).Data()[0])
+                               : detail::DoubleView(a).Data()[0];
+                }
+        }
+    }
+    return out;
+}
+
 class Op2wModel {
 public:
     explicit Op2wModel(const Mesh& rMesh) {
         mSignature = op2w_signature(rMesh);
+        mValues = op2w_property_values(rMesh);
         mNpoints = rMesh.NumPoints();
         mNodeIds = op2w_node_ids(rMesh, mNpoints);
         {
@@ -2521,13 +2643,14 @@ public:
     std::string Ept() const {
         struct Prop {
             Op2wProp mProp;
+            const char* mCard;
             std::int32_t mK1, mK2, mK3;
             std::size_t mSize;
         };
-        static const Prop props[] = {{kOp2wProd, 902, 9, 29, 6},
-                                     {kOp2wPshell, 2302, 23, 283, 11},
-                                     {kOp2wPsolid, 2402, 24, 281, 7},
-                                     {kOp2wPtube, 1602, 16, 30, 5}};
+        static const Prop props[] = {{kOp2wProd, "PROD", 902, 9, 29, 6},
+                                     {kOp2wPshell, "PSHELL", 2302, 23, 283, 11},
+                                     {kOp2wPsolid, "PSOLID", 2402, 24, 281, 7},
+                                     {kOp2wPtube, "PTUBE", 1602, 16, 30, 5}};
         std::vector<std::string> records;
         for (const Prop& p : props) {
             if (mProps[p.mProp].empty())
@@ -2536,11 +2659,25 @@ public:
             for (const std::int64_t pid : mProps[p.mProp]) {
                 Op2wRowBuf w(p.mSize);
                 w.I(0, pid);
-                w.I(1, 1);  // MID
+                const auto given = mValues.find({p.mCard, pid});
+                for (const Op2wValueCard& c : op2w_value_cards()) {
+                    if (std::string_view(c.mCard) != p.mCard)
+                        continue;
+                    for (const Op2wValueMember& m : c.mMembers) {
+                        double v = m.mDefault;
+                        if (given != mValues.end()) {
+                            const auto it = given->second.find(m.mName);
+                            if (it != given->second.end())
+                                v = it->second;
+                        }
+                        if (m.mInt)
+                            w.I(m.mWord, static_cast<std::int64_t>(v));
+                        else
+                            w.F(m.mWord, v);
+                    }
+                }
                 if (p.mProp == kOp2wPsolid)
                     w.I(6, 0x43454D53);  // FCTN 'SMEC'
-                else
-                    w.F(2, 1.0);  // T, A, OD
                 w.Append(rows);
             }
             records.push_back(op2w_key(p.mK1, p.mK2, p.mK3) + rows);
@@ -2549,15 +2686,44 @@ public:
         return op2w_table("EPT", records);
     }
 
-    /// The one material the properties name: a unit-modulus MAT1.
-    static std::string Mpt() {
-        Op2wRowBuf w(12);
-        w.I(0, 1);
-        w.F(1, 1.0);
-        w.F(2, 0.0);
-        w.F(3, 0.3);
+    /// A MAT1 per material the properties name (unit modulus unless the field data gives
+    /// its values), and per `nastran:MAT1_<id>:*` given.
+    std::string Mpt() const {
+        std::set<std::int64_t> ids;
+        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube}) {
+            static const char* const names[] = {"PROD", "PSHELL", "PSOLID", "PTUBE"};
+            for (const std::int64_t pid : mProps[prop]) {
+                std::int64_t mid = 1;
+                const auto given = mValues.find({names[prop], pid});
+                if (given != mValues.end()) {
+                    const auto it = given->second.find(prop == kOp2wPshell ? "MID1" : "MID");
+                    if (it != given->second.end())
+                        mid = static_cast<std::int64_t>(it->second);
+                }
+                ids.insert(mid);
+            }
+        }
+        for (const auto& [key, members] : mValues)
+            if (key.first == "MAT1")
+                ids.insert(key.second);
+        if (ids.empty())
+            ids.insert(1);
         std::string rows;
-        w.Append(rows);
+        for (const std::int64_t mid : ids) {
+            Op2wRowBuf w(12);
+            w.I(0, mid);
+            const auto given = mValues.find({"MAT1", mid});
+            for (const Op2wValueMember& m : op2w_value_cards().back().mMembers) {
+                double v = m.mDefault;
+                if (given != mValues.end()) {
+                    const auto it = given->second.find(m.mName);
+                    if (it != given->second.end())
+                        v = it->second;
+                }
+                w.F(m.mWord, v);
+            }
+            w.Append(rows);
+        }
         return op2w_table("MPT", {op2w_key(103, 1, 77) + rows, op2w_key(65535, 65535, 65535)});
     }
 
@@ -2570,6 +2736,7 @@ private:
     std::vector<std::vector<Op2wRow>> mRows;
     std::set<std::int64_t> mProps[4];
     std::set<std::string> mSkipped;
+    Op2wValues mValues;
 };
 
 // -- steps -----------------------------------------------------------------------------
@@ -2943,7 +3110,7 @@ std::string op2w_assemble(const Op2wModel& rModel, const std::vector<Op2wStep>& 
     out += rModel.Geom2();
     out += rModel.Ept();
     if (rModel.HasProperties())
-        out += Op2wModel::Mpt();
+        out += rModel.Mpt();
     for (const char* table : kOp2wTables) {
         std::vector<std::string> records;
         for (const Op2wStep& step : rSteps) {
