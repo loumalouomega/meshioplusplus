@@ -43,7 +43,7 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-def write(filename, mesh, split_size=0):
+def write(filename, mesh, split_size=0, word_size=8, big_endian=False):
     """Write a mesh as a one-output LS-DYNA binout (``binout``).
 
     The inverse of :func:`read`: a single LSDA file. ``nodout`` is the points
@@ -59,16 +59,20 @@ def write(filename, mesh, split_size=0):
     dropped with a warning. ``split_size`` (bytes, 0 for none) starts a
     continuation file (``binout%001``, ``%002``...) once the data written to the
     current one would pass it; an output stays whole in one file, and ``read``
-    merges them.
+    merges them. ``word_size`` (8, or 4 for a file under 4 GiB) sets the bytes of every
+    length and offset in the LSDA records and ``big_endian`` their byte order and the
+    data's.
     """
     if not is_buffer(filename, "w"):
         try:
-            _core.lsdyna_binout_write(str(filename), mesh, split_size)
+            _core.lsdyna_binout_write(
+                str(filename), mesh, split_size, word_size, big_endian
+            )
             return
         except Exception as exc:
             if not core_declined(exc, "lsdyna_binout", "write", filename):
                 raise
-    return _py_write(filename, mesh, split_size)
+    return _py_write(filename, mesh, split_size, word_size, big_endian)
 
 
 class SeriesWriter:
@@ -84,21 +88,23 @@ class SeriesWriter:
     ...     for time, mesh in steps:
     ...         w.write(time, mesh)
 
-    ``split_size`` (bytes) starts ``%001``... continuation files as in
+    ``split_size``, ``word_size`` and ``big_endian`` are as in
     :func:`write`. The C++ core writes the file; the Python twin, which writes
     the same bytes, when the core declines to open it.
     """
 
-    def __init__(self, filename, split_size=0):
+    def __init__(self, filename, split_size=0, word_size=8, big_endian=False):
         self._core = self._py = None
         if not is_buffer(filename, "w"):
             try:
-                self._core = _core.LsdynaBinoutSeriesWriter(str(filename), split_size)
+                self._core = _core.LsdynaBinoutSeriesWriter(
+                    str(filename), split_size, word_size, big_endian
+                )
             except Exception as exc:
                 if not core_declined(exc, "lsdyna_binout", "write", filename):
                     raise
         if self._core is None:
-            self._py = _PySeriesWriter(filename, split_size)
+            self._py = _PySeriesWriter(filename, split_size, word_size, big_endian)
 
     def write(self, time, mesh):
         if self._core is not None:

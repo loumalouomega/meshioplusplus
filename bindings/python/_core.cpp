@@ -5655,16 +5655,30 @@ PYBIND11_MODULE(_core, m) {
     // `meshioplusplus.lsdyna_binout.SeriesWriter`.
     m.def(
         "lsdyna_binout_write",
-        [](const std::string& path, py::object pymesh, std::size_t split_size) {
+        [](const std::string& path, py::object pymesh, std::size_t split_size, int word_size,
+           bool big_endian) {
+            meshioplusplus::LsdynaBinoutWriteOptions options;
+            options.mSplitSize = split_size;
+            options.mWordSize = word_size;
+            options.mBigEndian = big_endian;
             meshioplusplus_py::PyMeshRefs refs;
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_lsdyna_binout(path, mesh, split_size);
+                return meshioplusplus::write_lsdyna_binout(path, mesh, options);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("split_size") = 0);
+        py::arg("path"), py::arg("mesh"), py::arg("split_size") = 0, py::arg("word_size") = 8,
+        py::arg("big_endian") = false);
     py::class_<meshioplusplus::LsdynaBinoutSeriesWriter>(m, "LsdynaBinoutSeriesWriter")
-        .def(py::init<const std::string&, std::size_t>(), py::arg("path"),
-             py::arg("split_size") = 0)
+        .def(py::init([](const std::string& path, std::size_t split_size, int word_size,
+                         bool big_endian) {
+                 meshioplusplus::LsdynaBinoutWriteOptions options;
+                 options.mSplitSize = split_size;
+                 options.mWordSize = word_size;
+                 options.mBigEndian = big_endian;
+                 return std::make_unique<meshioplusplus::LsdynaBinoutSeriesWriter>(path, options);
+             }),
+             py::arg("path"), py::arg("split_size") = 0, py::arg("word_size") = 8,
+             py::arg("big_endian") = false)
         .def(
             "write",
             [](meshioplusplus::LsdynaBinoutSeriesWriter& rSelf, double time, py::object pymesh) {

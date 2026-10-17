@@ -18359,6 +18359,24 @@ MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
 MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
 
 /**
+ * @brief Options of the binout writers.
+ *
+ * `mSplitSize`: the data bytes after which a new continuation file (`<path>%001`,
+ * `%002`...) starts (0: one file). `mWordSize`: the bytes of every length and offset in
+ * the LSDA records, 8 or 4 (a file under 4 GiB). `mBigEndian`: the byte order of the
+ * records and the data. The Python twin takes the same options.
+ */
+struct LsdynaBinoutWriteOptions {
+    std::size_t mSplitSize = 0;
+    int mWordSize = 8;
+    bool mBigEndian = false;
+};
+
+/// `write_lsdyna_binout` with options.
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh,
+                                            const LsdynaBinoutWriteOptions& rOptions);
+
+/**
  * @brief `write_lsdyna_binout` split into continuation files.
  *
  * When @p SplitSize is not 0, a new file (`<path>%001`, `%002`...) starts once the
@@ -18391,6 +18409,9 @@ public:
     /// As above, splitting into `%001`... continuation files at @p SplitSize data bytes
     /// (see the split `write_lsdyna_binout`).
     LsdynaBinoutSeriesWriter(const std::string& rPath, std::size_t SplitSize);
+
+    /// As above, with the word size and byte order of `LsdynaBinoutWriteOptions`.
+    LsdynaBinoutSeriesWriter(const std::string& rPath, const LsdynaBinoutWriteOptions& rOptions);
     ~LsdynaBinoutSeriesWriter();
 
     LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
@@ -110477,11 +110498,21 @@ std::size_t lbw_record_size(const LbwArray& rArray) {
 /// DATA records as they are added, and the entries of the symbol table.
 class LbwLsda {
 public:
-    LbwLsda() {
-        mData.assign(reinterpret_cast<const char*>(kHeader), 8);
-        lbw_put(mData, 17, 8);
-        lbw_put(mData, static_cast<std::uint64_t>(kLbwOffset), 1);
-        lbw_put(mData, 0, 8);
+    /// @p WordSize: the bytes of every length and offset (4 or 8); @p BigEndian the byte order.
+    LbwLsda(int WordSize = 8, bool BigEndian = false)
+        : mWord(static_cast<std::size_t>(WordSize)), mBig(BigEndian) {
+        const unsigned char header[8] = {8,
+                                         static_cast<unsigned char>(WordSize),
+                                         static_cast<unsigned char>(WordSize),
+                                         1,
+                                         1,
+                                         static_cast<unsigned char>(BigEndian ? 0 : 1),
+                                         0,
+                                         0};
+        mData.assign(reinterpret_cast<const char*>(header), 8);
+        Put(mData, mWord + 1 + mWord, mWord);
+        Put(mData, static_cast<std::uint64_t>(kLbwOffset), 1);
+        Put(mData, 0, mWord);
     }
 
     void Var(const std::string& rDir, const LbwArray& rArray) {
@@ -110493,7 +110524,7 @@ public:
             code = kLbwInt8;
             count = rArray.mInts.size();
             for (const std::int64_t v : rArray.mInts)
-                lbw_put(raw, static_cast<std::uint8_t>(v & 0xff), 1);
+                Put(raw, static_cast<std::uint8_t>(v & 0xff), 1);
         } else if (rArray.mFloat) {
             code = kLbwFloat32;
             count = rArray.mReals.size();
@@ -110501,7 +110532,7 @@ public:
                 const float f = lbw_float(v);
                 std::uint32_t bits;
                 std::memcpy(&bits, &f, 4);
-                lbw_put(raw, bits, 4);
+                Put(raw, bits, 4);
             }
         } else {
             code = kLbwInt32;
@@ -110509,14 +110540,14 @@ public:
             for (const std::int64_t v : rArray.mInts) {
                 if (v < -2147483648LL || v > 2147483647LL)
                     lbw_fail(what + " holds an integer outside the 32-bit range");
-                lbw_put(raw, static_cast<std::uint32_t>(static_cast<std::int32_t>(v)), 4);
+                Put(raw, static_cast<std::uint32_t>(static_cast<std::int32_t>(v)), 4);
             }
         }
         const std::size_t offset = mData.size();
-        lbw_put(mData, 8 + 1 + 1 + 1 + rArray.mName.size() + raw.size(), 8);
-        lbw_put(mData, kLbwData, 1);
-        lbw_put(mData, code, 1);
-        lbw_put(mData, rArray.mName.size(), 1);
+        Put(mData, mWord + 1 + 1 + 1 + rArray.mName.size() + raw.size(), mWord);
+        Put(mData, kLbwData, 1);
+        Put(mData, code, 1);
+        Put(mData, rArray.mName.size(), 1);
         mData += rArray.mName;
         mData += raw;
         mEntries.push_back({rDir, rArray.mName, code, offset, count});
@@ -110527,28 +110558,31 @@ public:
     std::string Finish() const {
         std::string out = mData;
         const std::uint64_t table = out.size();
-        for (std::size_t i = 0; i < 8; ++i)
-            out[17 + i] = static_cast<char>((table >> (8 * i)) & 0xffu);
-        lbw_put(out, 9, 8);
-        lbw_put(out, kLbwBegin, 1);
+        if (mWord == 4 && table > 0xffffffffull)
+            lbw_fail("the file is too large for 4-byte offsets");
+        std::string at;
+        Put(at, table, mWord);
+        out.replace(8 + mWord + 1, mWord, at);
+        Put(out, mWord + 1, mWord);
+        Put(out, kLbwBegin, 1);
         std::string cwd;
         for (const Entry& e : mEntries) {
             if (e.mDir != cwd) {
-                lbw_put(out, 9 + e.mDir.size(), 8);
-                lbw_put(out, kLbwCd, 1);
+                Put(out, mWord + 1 + e.mDir.size(), mWord);
+                Put(out, kLbwCd, 1);
                 out += e.mDir;
                 cwd = e.mDir;
             }
-            lbw_put(out, 9 + e.mName.size() + 1 + 8 + 8, 8);
-            lbw_put(out, kLbwVariable, 1);
+            Put(out, mWord + 1 + e.mName.size() + 1 + mWord + mWord, mWord);
+            Put(out, kLbwVariable, 1);
             out += e.mName;
-            lbw_put(out, e.mCode, 1);
-            lbw_put(out, e.mOffset, 8);
-            lbw_put(out, e.mCount, 8);
+            Put(out, e.mCode, 1);
+            Put(out, e.mOffset, mWord);
+            Put(out, e.mCount, mWord);
         }
-        lbw_put(out, 17, 8);
-        lbw_put(out, kLbwEnd, 1);
-        lbw_put(out, 0, 8);
+        Put(out, mWord + 1 + mWord, mWord);
+        Put(out, kLbwEnd, 1);
+        Put(out, 0, mWord);
         return out;
     }
 
@@ -110558,7 +110592,18 @@ private:
         std::uint8_t mCode;
         std::size_t mOffset, mCount;
     };
-    static constexpr unsigned char kHeader[8] = {8, 8, 8, 1, 1, 1, 0, 0};
+
+    void Put(std::string& rOut, std::uint64_t V, std::size_t N) const {
+        if (!mBig) {
+            lbw_put(rOut, V, N);
+            return;
+        }
+        for (std::size_t i = N; i-- > 0;)
+            rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+    }
+
+    std::size_t mWord;
+    bool mBig;
     std::string mData;
     std::vector<Entry> mEntries;
 };
@@ -110781,7 +110826,12 @@ private:
 class LbwArchive {
 public:
     /// @p SplitSize: the data bytes after which a new continuation file starts (0: one file).
-    explicit LbwArchive(std::size_t SplitSize = 0) : mSplit(SplitSize) { mFiles.emplace_back(); }
+    explicit LbwArchive(const LsdynaBinoutWriteOptions& rOptions = {})
+        : mSplit(rOptions.mSplitSize), mWord(rOptions.mWordSize), mBig(rOptions.mBigEndian) {
+        if (mWord != 4 && mWord != 8)
+            lbw_fail("the word size must be 4 or 8");
+        mFiles.emplace_back(mWord, mBig);
+    }
 
     void Add(const LbwStep& rStep) {
         const std::size_t index = mSteps;
@@ -110873,7 +110923,7 @@ private:
             for (const LbwArray& a : rOut.mVars)
                 bytes += lbw_record_size(a);
             if (mFiles.back().DataSize() + bytes > mSplit) {
-                mFiles.emplace_back();
+                mFiles.emplace_back(mWord, mBig);
                 mFolders = 0;
             }
         }
@@ -110885,6 +110935,8 @@ private:
 
     std::vector<LbwLsda> mFiles;
     std::size_t mSplit = 0;
+    int mWord = 8;
+    bool mBig = false;
     std::size_t mFolders = 0;  // folders in the current file
     std::vector<std::pair<std::string, bool>> mNodoutLayout;
     std::map<std::string, std::vector<std::pair<std::string, bool>>> mDbLayout;
@@ -110936,14 +110988,21 @@ void lbw_save(const std::string& rPath, const std::vector<std::string>& rFiles) 
 }  // namespace
 
 void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh) {
-    write_lsdyna_binout(rPath, rMesh, 0);
+    write_lsdyna_binout(rPath, rMesh, LsdynaBinoutWriteOptions{});
 }
 
 void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh, std::size_t SplitSize) {
+    LsdynaBinoutWriteOptions options;
+    options.mSplitSize = SplitSize;
+    write_lsdyna_binout(rPath, rMesh, options);
+}
+
+void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh,
+                         const LsdynaBinoutWriteOptions& rOptions) {
     const detail::ProvenanceSlotlessWrite slotless;
     const LbwStep step(rMesh, lbw_time_of(rMesh));
     lbw_warn_dropped(step);
-    LbwArchive archive(SplitSize);
+    LbwArchive archive(rOptions);
     archive.Add(step);
     lbw_save(rPath, archive.Finish());
 }
@@ -110952,14 +111011,22 @@ struct LsdynaBinoutSeriesWriter::Impl {
     std::string mPath;
     LbwArchive mArchive;
     bool mDone = false;
-    explicit Impl(std::size_t SplitSize) : mArchive(SplitSize) {}
+    explicit Impl(const LsdynaBinoutWriteOptions& rOptions) : mArchive(rOptions) {}
 };
 
 LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath)
-    : LsdynaBinoutSeriesWriter(rPath, 0) {}
+    : LsdynaBinoutSeriesWriter(rPath, LsdynaBinoutWriteOptions{}) {}
 
 LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath, std::size_t SplitSize)
-    : mpImpl(std::make_unique<Impl>(SplitSize)) {
+    : LsdynaBinoutSeriesWriter(rPath, [&] {
+          LsdynaBinoutWriteOptions options;
+          options.mSplitSize = SplitSize;
+          return options;
+      }()) {}
+
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath,
+                                                   const LsdynaBinoutWriteOptions& rOptions)
+    : mpImpl(std::make_unique<Impl>(rOptions)) {
     mpImpl->mPath = rPath;
     // Fail now, not when the last step is written, if the path cannot be written.
     auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);

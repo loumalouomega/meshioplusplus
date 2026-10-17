@@ -483,3 +483,64 @@ def test_a_split_binout_needs_a_path():
         with py_write.SeriesWriter(io.BytesIO(), split_size=1) as writer:
             for time, mesh in series_steps():
                 writer.write(time, mesh)
+
+
+@pytest.mark.parametrize("word_size", [8, 4])
+@pytest.mark.parametrize("big_endian", [False, True])
+def test_word_size_and_byte_order_round_trip(engine, tmp_path, word_size, big_endian):
+    """``word_size`` (4 or 8 bytes a length and offset) and ``big_endian`` change the
+    LSDA records and the data's byte order; the read is unchanged."""
+    reference = tmp_path / "ref"
+    path = tmp_path / "out"
+    mesh = step_mesh(0.5, glstat=0.25)
+    mesh.field_data["binout:nodout:@title"] = np.frombuffer(b"beam", np.uint8)
+    write_with(engine, reference, mesh)
+    if engine == "core":
+        _core.lsdyna_binout_write(str(path), mesh, 0, word_size, big_endian)
+    else:
+        py_write.write(str(path), mesh, 0, word_size, big_endian)
+    head = path.read_bytes()[:8]
+    assert head[1] == word_size and head[2] == word_size and head[5] == (not big_endian)
+    for read in (meshioplusplus.lsdyna_binout.read, py_binout.read):
+        a, b = read(reference), read(path)
+        np.testing.assert_array_equal(a.points, b.points)
+        assert sorted(a.field_data) == sorted(b.field_data)
+        for name in a.field_data:
+            np.testing.assert_array_equal(a.field_data[name], b.field_data[name])
+        for name in a.point_data:
+            np.testing.assert_array_equal(a.point_data[name], b.point_data[name])
+
+
+def test_the_engines_write_the_same_bytes_in_every_layout(tmp_path):
+    mesh = step_mesh(0.5, glstat=0.25)
+    for word_size in (8, 4):
+        for big in (False, True):
+            core, python = (
+                tmp_path / f"c{word_size}{big}",
+                tmp_path / f"p{word_size}{big}",
+            )
+            _core.lsdyna_binout_write(str(core), mesh, 0, word_size, big)
+            py_write.write(str(python), mesh, 0, word_size, big)
+            assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_bad_word_size_is_refused(engine, tmp_path):
+    with pytest.raises(Exception, match="word size"):
+        if engine == "core":
+            _core.lsdyna_binout_write(str(tmp_path / "x"), step_mesh(0.5), 0, 2, False)
+        else:
+            py_write.write(str(tmp_path / "x"), step_mesh(0.5), 0, 2, False)
+
+
+@pytest.mark.parametrize("word_size,big_endian", [(4, False), (8, True), (4, True)])
+def test_lasso_reads_the_other_layouts(tmp_path, word_size, big_endian):
+    lasso = pytest.importorskip("lasso.dyna", exc_type=ImportError)
+    path = tmp_path / "binout"
+    _core.lsdyna_binout_write(
+        str(path), step_mesh(0.5, glstat=0.25), 0, word_size, big_endian
+    )
+    binout = lasso.Binout(str(path))
+    np.testing.assert_array_equal(binout.read("nodout", "ids"), [11, 12, 13])
+    np.testing.assert_allclose(
+        binout.read("nodout", "x_coordinate")[0], step_mesh(0.5).points[:, 0], rtol=1e-6
+    )

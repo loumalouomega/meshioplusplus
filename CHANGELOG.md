@@ -14,7 +14,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - `nastran_h5` writes `<G>:<M>@corner` arrays as array members with a `GRID` column, in both engines.
 - `ansys_rst` writes a static cyclic-symmetry sector from `field_data["ansys:cyclic_sectors"]` (which a sector read now returns), in both engines; `ansys_rst_cyclic` reads it back as the rotor.
 - `lsdyna_binout` reads and writes each database's metadata text (titles, legends, dates) as `binout:<database>:@<name>` field data, in both engines.
-- `lsdyna_binout` writes continuation files (`binout%001`...) with the `split_size` option of `write`, `SeriesWriter` and `write_sequence`, in both engines.
+- `lsdyna_binout` writes continuation files (`binout%001`...) with the `split_size` option, and 4-byte-offset (`word_size=4`) and big-endian (`big_endian=True`) files, through `write`, `SeriesWriter` and `write_sequence`, in both engines.
 - `ansys_rst` writes modal cyclic-symmetry sets (`ansys:harmonic_index`, mode pairs as consecutive sets of one frequency), and a plain read returns each set's index, in both engines.
 - `nastran_op2` writes the element forces of rods and linear plates (`ELEMENT_FORCE:<member>`, an `OEF1X` table), pyNastran-checked, in both engines.
 - `nastran_op2` writes complex nodal tables from `<name>_real`/`_imag` point data (pyNastran-checked), in both engines.

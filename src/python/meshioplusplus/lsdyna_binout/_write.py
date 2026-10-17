@@ -27,7 +27,6 @@ TIME_KEY = "meshio:time"
 _CD, _DATA, _VARIABLE, _BEGIN, _END, _OFFSET = 2, 3, 4, 5, 6, 7
 _INT8, _INT32, _FLOAT32 = 1, 3, 9
 
-_HEADER = bytes([8, 8, 8, 1, 1, 1, 0, 0])
 
 # nodout's per-node variables: (point data name, its x, y, z variables)
 _NODOUT_VECTORS = (
@@ -68,9 +67,13 @@ def _check_name(name, what):
 class _Lsda:
     """DATA records as they are added, and the entries of the symbol table."""
 
-    def __init__(self):
-        self.data = bytearray(_HEADER)
-        self.data += struct.pack("<QB", 17, _OFFSET) + struct.pack("<Q", 0)
+    def __init__(self, word=8, big=False):
+        self.word = word
+        self.o = ">" if big else "<"
+        self.L = "Q" if word == 8 else "I"  # a length or an offset
+        self.data = bytearray([8, word, word, 1, 1, 0 if big else 1, 0, 0])
+        self.data += struct.pack(self.o + self.L + "B", word + 1 + word, _OFFSET)
+        self.data += struct.pack(self.o + self.L, 0)
         self.entries = []  # (directory, name, type, offset, count)
 
     def var(self, directory, name, values, text=False):
@@ -80,44 +83,50 @@ class _Lsda:
         if text:
             code, raw = _INT8, (values.astype(np.int64) & 0xFF).astype("u1").tobytes()
         elif values.dtype.kind == "f":
-            code, raw = _FLOAT32, _f32(values)
+            code, raw = _FLOAT32, _f32(values, self.o)
         else:
-            code, raw = _INT32, _i32(values, f"'{directory}/{name}'")
+            code, raw = _INT32, _i32(values, f"'{directory}/{name}'", self.o)
         offset = len(self.data)
         encoded = name.encode("latin-1")
-        length = 8 + 1 + 1 + 1 + len(encoded) + len(raw)
-        self.data += struct.pack("<QBBB", length, _DATA, code, len(encoded))
+        length = self.word + 1 + 1 + 1 + len(encoded) + len(raw)
+        self.data += struct.pack(
+            self.o + self.L + "BBB", length, _DATA, code, len(encoded)
+        )
         self.data += encoded + raw
         self.entries.append((directory, name, code, offset, values.size))
 
     def finish(self):
+        w, o, L = self.word, self.o, self.L
         table = len(self.data)
+        if w == 4 and table > 0xFFFFFFFF:
+            _wfail("the file is too large for 4-byte offsets")
         out = bytearray(self.data)
-        out[17:25] = struct.pack("<Q", table)  # after the header, length and command
-        out += struct.pack("<QB", 9, _BEGIN)
+        at = 8 + w + 1  # after the header, the length and the command
+        out[at : at + w] = struct.pack(o + L, table)
+        out += struct.pack(o + L + "B", w + 1, _BEGIN)
         cwd = ""
         for directory, name, code, offset, count in self.entries:
             if directory != cwd:
                 encoded = directory.encode("latin-1")
-                out += struct.pack("<QB", 9 + len(encoded), _CD) + encoded
+                out += struct.pack(o + L + "B", w + 1 + len(encoded), _CD) + encoded
                 cwd = directory
             encoded = name.encode("latin-1")
-            out += struct.pack("<QB", 9 + len(encoded) + 1 + 8 + 8, _VARIABLE)
-            out += encoded + struct.pack("<BQQ", code, offset, count)
-        out += struct.pack("<QB", 17, 6) + struct.pack("<Q", 0)
+            out += struct.pack(o + L + "B", w + 1 + len(encoded) + 1 + w + w, _VARIABLE)
+            out += encoded + struct.pack(o + "B" + L + L, code, offset, count)
+        out += struct.pack(o + L + "B", w + 1 + w, 6) + struct.pack(o + L, 0)
         return bytes(out)
 
 
-def _f32(values):
+def _f32(values, order="<"):
     with np.errstate(over="ignore"):
-        return np.ascontiguousarray(values, dtype="<f4").tobytes()
+        return np.ascontiguousarray(values, dtype=order + "f4").tobytes()
 
 
-def _i32(values, what):
+def _i32(values, what, order="<"):
     wide = np.asarray(values, dtype=np.int64)
     if wide.size and (wide.min() < _INT32_RANGE[0] or wide.max() > _INT32_RANGE[1]):
         _wfail(f"{what} holds an integer outside the 32-bit range")
-    return np.ascontiguousarray(wide, dtype="<i4").tobytes()
+    return np.ascontiguousarray(wide, dtype=order + "i4").tobytes()
 
 
 # -- one step of the mesh --------------------------------------------------------------
@@ -278,8 +287,11 @@ class _Step:
 class _Archive:
     """The whole file: every step added so far."""
 
-    def __init__(self, split_size=0):
-        self.files = [_Lsda()]
+    def __init__(self, split_size=0, word_size=8, big_endian=False):
+        if word_size not in (4, 8):
+            _wfail("the word size must be 4 or 8")
+        self.word, self.big = word_size, big_endian
+        self.files = [_Lsda(word_size, big_endian)]
         self.split = int(split_size or 0)
         self.folders = 0  # folders in the current file
         self.layout = None  # nodout's variables, and each database's
@@ -350,7 +362,7 @@ class _Archive:
             size = _record_size("time", time)
             size += sum(_record_size(n, a) for n, a in out.variables)
             if len(self.lsda.data) + size > self.split:
-                self.files.append(_Lsda())
+                self.files.append(_Lsda(self.word, self.big))
                 self.folders = 0
         self.folders += 1
         self.lsda.var(directory, "time", time)
@@ -402,10 +414,10 @@ def _save(filename, files):
 
 
 @_provenance.slotless_writer
-def write(filename, mesh, split_size=0):
+def write(filename, mesh, split_size=0, word_size=8, big_endian=False):
     step = _Step(mesh, _time_of(mesh))
     _warn_dropped(step)
-    archive = _Archive(split_size)
+    archive = _Archive(split_size, word_size, big_endian)
     archive.add(step)
     _save(filename, archive.finish())
 
@@ -418,9 +430,9 @@ class SeriesWriter:
     variables of each database (a database may be absent from a step, and
     appear later). Use as a context manager, or call :meth:`close`."""
 
-    def __init__(self, filename, split_size=0):
+    def __init__(self, filename, split_size=0, word_size=8, big_endian=False):
         self._filename = filename
-        self._archive = _Archive(split_size)
+        self._archive = _Archive(split_size, word_size, big_endian)
 
     def write(self, time, mesh):
         step = _Step(mesh, float(time))
