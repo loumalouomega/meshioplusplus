@@ -11,6 +11,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 ## Unreleased
 
 - `nastran_h5` writes complex nodal tables in MSC's column order (`XR,YR,ZR,XI,YI,ZI`), in both engines.
+- `nastran_h5` writes `<G>:<M>@corner` arrays as array members with a `GRID` column, in both engines.
 
 ## v17.3.0 (2026-10-16)
 

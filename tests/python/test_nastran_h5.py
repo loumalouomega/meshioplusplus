@@ -936,6 +936,44 @@ class TestWriter:
         assert compared >= 6  # GRID, the cards, properties, MAT1, DOMAINS
 
     @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_corner_values_round_trip(self, writer, engine, tmp_path):
+        """``<G>:<M>@corner`` is written as the array member whose entry 0 is the
+        centre and whose GRID column names each corner's node."""
+        mesh = _write_mesh()
+        rng = np.random.default_rng(3)
+        corner = [rng.random((len(c.data), c.data.shape[1])) for c in mesh.cells]
+        mesh.cell_data["STRESS:X@corner"] = corner
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        table = _tables(path)["NASTRAN/RESULT/ELEMENTAL/STRESS/HEXA"]
+        assert table["X"].shape == (1, 9)
+        assert table["GRID"][0][0] == 0
+        assert table["X"][0][0] == 7.0  # the centre value
+        np.testing.assert_array_equal(
+            table["GRID"][0][1:], np.array([0, 1, 5, 2, 3, 4, 4, 3]) + 1
+        )
+        back = engine(path)
+        by_type = {c.type: i for i, c in enumerate(back.cells)}
+        for k, cell in enumerate(mesh.cells):
+            if cell.type == "line":
+                continue  # a rod has no corner output
+            got = back.cell_data["STRESS:X@corner"][by_type[cell.type]]
+            # A repeated node is read back at its first position with its last
+            # value.
+            conn = np.asarray(cell.data)[0]
+            nodes = list(dict.fromkeys(conn))
+            at = [int(np.nonzero(conn == n)[0][0]) for n in nodes]
+            last = [int(np.nonzero(conn == n)[0][-1]) for n in nodes]
+            np.testing.assert_allclose(
+                got[:, at], corner[k][:, last], err_msg=cell.type
+            )
+        tetra = back.cell_data["STRESS:X"][by_type["tetra"]]
+        np.testing.assert_array_equal(tetra, [1.0, 2.0])
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
     def test_complex_columns_are_in_msc_order(self, writer, tmp_path):
         """MSC's complex nodal tables list every real component, then every imaginary one."""
         mesh = _write_mesh()

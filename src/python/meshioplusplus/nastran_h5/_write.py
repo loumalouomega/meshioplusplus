@@ -162,8 +162,68 @@ def _nodal_members(mesh, npoints, taken):
     return tables
 
 
+def _gather_wide(mesh, name, parts, order, width):
+    """A ``@corner`` array of the cells of a card, in the card's row order, as
+    ``width`` entries per row: entry 0 is NaN (the centre), entry j + 1 is column j;
+    ``None`` when no block of the card has it."""
+    arrays = mesh.cell_data.get(name)
+    if arrays is None:
+        return None
+    out = np.full((sum(len(rows) for _, rows in parts), width), np.nan)
+    at = 0
+    for blk, rows in parts:
+        a = np.asarray(arrays[blk["index"]], dtype=np.float64)
+        n = len(blk["eids"])
+        if n and (a.size < n or a.size % n):
+            _wfail(f"'{name}' must have one value per cell and node")
+        a = a.reshape(n, -1)
+        k = min(a.shape[1], width - 1)
+        out[at : at + len(rows), 1 : 1 + k] = a[rows, :k]
+        at += len(rows)
+    return out[order]
+
+
+def _corner_members(model, mesh, taken, out):
+    """Fold ``<G>:<M>@corner`` into ``out`` as array members: ``{(group, card):
+    [("GRID", ints), (member, floats), ...]}`` with ``(rows, width)`` columns whose
+    entry 0 is the centre value ``<G>:<M>``."""
+    for name in sorted(mesh.cell_data):
+        if not name.endswith("@corner") or ":" not in name:
+            continue
+        group, member = name[: -len("@corner")].split(":", 1)
+        if not _GROUP.match(group) or not member:
+            continue
+        for card in sorted(model.cards):
+            if card not in _FAMILY:
+                continue
+            _eid, parts, order = _family_rows(model, card)
+            width = 1 + max(blk["conn"].shape[1] for blk, _ in parts)
+            wide = _gather_wide(mesh, name, parts, order, width)
+            if wide is None:
+                continue
+            columns = out.setdefault((group, card), [])
+            if not any(m == "GRID" for m, _ in columns):
+                grid = np.zeros((wide.shape[0], width), dtype=np.int64)
+                at = 0
+                for blk, rows in parts:
+                    conn = blk["conn"][rows] + 1
+                    grid[at : at + len(rows), 1 : 1 + conn.shape[1]] = conn
+                    at += len(rows)
+                columns.append(("GRID", grid[order]))
+            for k, (m, column) in enumerate(columns):
+                if m == member and column.ndim == 1:
+                    wide[:, 0] = column
+                    del columns[k]
+                    break
+            columns.append((member, wide))
+            taken.add(name)
+    for key in [k for k, v in out.items() if not v]:
+        del out[key]
+
+
 def _element_members(model, mesh, taken):
-    """``{(group, card): [(member, column)]}`` of the centre values."""
+    """``{(group, card): [(member, column)]}`` of the centre values, and of the
+    corner values as array members."""
     groups = {}
     for name in sorted(mesh.cell_data):
         if name in _QUIET_CELL or ":" not in name:
@@ -186,6 +246,7 @@ def _element_members(model, mesh, taken):
                     columns.append((member, column))
             if columns:
                 out[(group, card)] = columns
+    _corner_members(model, mesh, taken, out)
     return out
 
 
@@ -475,12 +536,14 @@ def _write_results(f, model, steps):
 
         def element_columns(payload, group=group, card=card):
             columns, eid = payload
-            keep = np.nonzero(
-                ~np.all(np.isnan(np.stack([c for _, c in columns])), axis=0)
-            )[0]
+            empty = np.ones(len(eid), dtype=bool)
+            for m, c in columns:
+                if m != "GRID":
+                    empty &= np.isnan(c).reshape(len(c), -1).all(axis=1)
+            keep = np.nonzero(~empty)[0]
             key = "ID" if group == "ENERGY" else "EID"
             cols = [(key, "<i8", eid[keep])]
-            cols += [(m, "<f8", c[keep]) for m, c in columns]
+            cols += [(m, "<i8" if m == "GRID" else "<f8", c[keep]) for m, c in columns]
             return cols
 
         eid = model.element_rows(card)[0]
