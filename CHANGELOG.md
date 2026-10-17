@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.4.0 (2026-10-17)
 
 - `nastran_op2` writes `CBUSH` bushings with their `PBUSH` properties (`nastran:PBUSH_<id>:*` field data: stiffnesses, damping and stress coefficients), their orientation (`nastran:x` or `nastran:g0`), pyNastran-checked, in both engines. The reader returns the `PBUSH` values and a bush's orientation.
 - `nastran_op2` writes `CBEAM` beams with their `PBEAM` properties (`nastran:PBEAM_<id>:*` field data: the segments, and each station's section and outline), their orientation vector and offsets (`nastran:x`, `nastran:pin`, `nastran:w`), pyNastran-checked, in both engines. A beam oriented by a G0 is refused for now.
