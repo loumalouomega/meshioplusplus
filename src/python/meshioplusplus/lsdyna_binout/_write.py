@@ -25,9 +25,8 @@ TIME_KEY = "meshio:time"
 
 # LSDA commands and the two data types written.
 _CD, _DATA, _VARIABLE, _BEGIN, _END, _OFFSET = 2, 3, 4, 5, 6, 7
-_INT32, _FLOAT32 = 3, 9
+_INT8, _INT32, _FLOAT32 = 1, 3, 9
 
-_HEADER = bytes([8, 8, 8, 1, 1, 1, 0, 0])
 
 # nodout's per-node variables: (point data name, its x, y, z variables)
 _NODOUT_VECTORS = (
@@ -68,53 +67,66 @@ def _check_name(name, what):
 class _Lsda:
     """DATA records as they are added, and the entries of the symbol table."""
 
-    def __init__(self):
-        self.data = bytearray(_HEADER)
-        self.data += struct.pack("<QB", 17, _OFFSET) + struct.pack("<Q", 0)
+    def __init__(self, word=8, big=False):
+        self.word = word
+        self.o = ">" if big else "<"
+        self.L = "Q" if word == 8 else "I"  # a length or an offset
+        self.data = bytearray([8, word, word, 1, 1, 0 if big else 1, 0, 0])
+        self.data += struct.pack(self.o + self.L + "B", word + 1 + word, _OFFSET)
+        self.data += struct.pack(self.o + self.L, 0)
         self.entries = []  # (directory, name, type, offset, count)
 
-    def var(self, directory, name, values):
-        """One variable: float32 for reals, int32 for integers."""
+    def var(self, directory, name, values, text=False):
+        """One variable: float32 for reals, int32 for integers, or (``text``) the
+        1-byte integers LS-DYNA writes titles and dates as."""
         values = np.asarray(values)
-        if values.dtype.kind == "f":
-            code, raw = _FLOAT32, _f32(values)
+        if text:
+            code, raw = _INT8, (values.astype(np.int64) & 0xFF).astype("u1").tobytes()
+        elif values.dtype.kind == "f":
+            code, raw = _FLOAT32, _f32(values, self.o)
         else:
-            code, raw = _INT32, _i32(values, f"'{directory}/{name}'")
+            code, raw = _INT32, _i32(values, f"'{directory}/{name}'", self.o)
         offset = len(self.data)
         encoded = name.encode("latin-1")
-        length = 8 + 1 + 1 + 1 + len(encoded) + len(raw)
-        self.data += struct.pack("<QBBB", length, _DATA, code, len(encoded))
+        length = self.word + 1 + 1 + 1 + len(encoded) + len(raw)
+        self.data += struct.pack(
+            self.o + self.L + "BBB", length, _DATA, code, len(encoded)
+        )
         self.data += encoded + raw
         self.entries.append((directory, name, code, offset, values.size))
 
     def finish(self):
+        w, o, L = self.word, self.o, self.L
         table = len(self.data)
+        if w == 4 and table > 0xFFFFFFFF:
+            _wfail("the file is too large for 4-byte offsets")
         out = bytearray(self.data)
-        out[17:25] = struct.pack("<Q", table)  # after the header, length and command
-        out += struct.pack("<QB", 9, _BEGIN)
+        at = 8 + w + 1  # after the header, the length and the command
+        out[at : at + w] = struct.pack(o + L, table)
+        out += struct.pack(o + L + "B", w + 1, _BEGIN)
         cwd = ""
         for directory, name, code, offset, count in self.entries:
             if directory != cwd:
                 encoded = directory.encode("latin-1")
-                out += struct.pack("<QB", 9 + len(encoded), _CD) + encoded
+                out += struct.pack(o + L + "B", w + 1 + len(encoded), _CD) + encoded
                 cwd = directory
             encoded = name.encode("latin-1")
-            out += struct.pack("<QB", 9 + len(encoded) + 1 + 8 + 8, _VARIABLE)
-            out += encoded + struct.pack("<BQQ", code, offset, count)
-        out += struct.pack("<QB", 17, 6) + struct.pack("<Q", 0)
+            out += struct.pack(o + L + "B", w + 1 + len(encoded) + 1 + w + w, _VARIABLE)
+            out += encoded + struct.pack(o + "B" + L + L, code, offset, count)
+        out += struct.pack(o + L + "B", w + 1 + w, 6) + struct.pack(o + L, 0)
         return bytes(out)
 
 
-def _f32(values):
+def _f32(values, order="<"):
     with np.errstate(over="ignore"):
-        return np.ascontiguousarray(values, dtype="<f4").tobytes()
+        return np.ascontiguousarray(values, dtype=order + "f4").tobytes()
 
 
-def _i32(values, what):
+def _i32(values, what, order="<"):
     wide = np.asarray(values, dtype=np.int64)
     if wide.size and (wide.min() < _INT32_RANGE[0] or wide.max() > _INT32_RANGE[1]):
         _wfail(f"{what} holds an integer outside the 32-bit range")
-    return np.ascontiguousarray(wide, dtype="<i4").tobytes()
+    return np.ascontiguousarray(wide, dtype=order + "i4").tobytes()
 
 
 # -- one step of the mesh --------------------------------------------------------------
@@ -132,10 +144,11 @@ def _flat(array):
 class _Output:
     """One database's variables of one step: ``(name, array)`` in file order."""
 
-    def __init__(self, time, variables, ids=None):
+    def __init__(self, time, variables, ids=None, text=()):
         self.time = time
         self.variables = variables
         self.ids = ids
+        self.text = list(text)  # (name, bytes) of the database's metadata
 
     def layout(self):
         return [(n, "f" if a.dtype.kind == "f" else "i") for n, a in self.variables]
@@ -204,8 +217,12 @@ class _Step:
                 _wfail(f"point data '{name}' is a variable of nodout of its own")
             used.add(name)
             variables.append((name, _flat(array)))
+        text = []
         for variable in sorted(items):
             name, array = items[variable]
+            if variable.startswith("@"):
+                self._text(text, variable, name, array)
+                continue
             _check_name(variable, "variable")
             if variable in ("time", "ids") or not _numeric(array):
                 self.dropped.append(name)
@@ -213,7 +230,19 @@ class _Step:
             if any(variable == v for v, _ in variables):
                 _wfail(f"'{name}' repeats a variable of nodout")
             variables.append((variable, _flat(array).ravel()))
-        return _Output(self.time, variables, ids.astype(np.int64))
+        return _Output(self.time, variables, ids.astype(np.int64), text)
+
+    def _text(self, text, variable, name, array):
+        """``@<name>``: a metadata text variable (bytes), kept in ``text``."""
+        label = variable[1:]
+        _check_name(label, "text variable")
+        if label == "ids" or array.dtype.kind not in "iu":
+            self.dropped.append(name)
+            return
+        values = array.astype(np.int64).ravel()
+        if values.size and (values.min() < -128 or values.max() > 255):
+            _wfail(f"the text '{name}' holds a value that is not a byte")
+        text.append((label, values))
 
     def _database(self, database, items):
         if database == "nodout":
@@ -227,8 +256,12 @@ class _Step:
         time = self.time
         ids = None
         variables = []
+        text = []
         for variable in sorted(items):
             name, array = items[variable]
+            if variable.startswith("@"):
+                self._text(text, variable, name, array)
+                continue
             _check_name(variable, "variable")
             if variable == "time":
                 values = array.astype(np.float64).ravel()
@@ -245,7 +278,7 @@ class _Step:
                 self.dropped.append(name)
                 continue
             variables.append((variable, _flat(array).ravel()))
-        self.databases[database] = _Output(time, variables, ids)
+        self.databases[database] = _Output(time, variables, ids, text)
 
 
 # -- the file ----------------------------------------------------------------------------
@@ -254,8 +287,13 @@ class _Step:
 class _Archive:
     """The whole file: every step added so far."""
 
-    def __init__(self):
-        self.lsda = _Lsda()
+    def __init__(self, split_size=0, word_size=8, big_endian=False):
+        if word_size not in (4, 8):
+            _wfail("the word size must be 4 or 8")
+        self.word, self.big = word_size, big_endian
+        self.files = [_Lsda(word_size, big_endian)]
+        self.split = int(split_size or 0)
+        self.folders = 0  # folders in the current file
         self.layout = None  # nodout's variables, and each database's
         self.counts = {}  # database -> outputs written
         self.last = {}  # database -> time of its last output
@@ -286,6 +324,8 @@ class _Archive:
         if self.steps == 0:
             self.ids = out.ids
             self.lsda.var("/nodout/metadata", "ids", out.ids)
+            for label, values in out.text:
+                self.lsda.var("/nodout/metadata", label, values, text=True)
         elif out.layout() != self.layout or not np.array_equal(out.ids, self.ids):
             _wfail(
                 f"series: step {index}'s nodes or variables differ from the first "
@@ -299,6 +339,8 @@ class _Archive:
             self.db_layout[database] = (layout, None if out.ids is None else out.ids)
             if out.ids is not None:
                 self.lsda.var(f"/{database}/metadata", "ids", out.ids)
+            for label, values in out.text:
+                self.lsda.var(f"/{database}/metadata", label, values, text=True)
         elif layout != self.db_layout[database][0]:
             _wfail(
                 f"series: step {index}'s variables of '{database}' differ from "
@@ -314,14 +356,32 @@ class _Archive:
         self.counts[database] = count
         self.last[database] = out.time
         directory = f"/{database}/d{count:06d}"
-        self.lsda.var(directory, "time", np.array([out.time], dtype=np.float32))
+        time = np.array([out.time], dtype=np.float32)
+        # A folder stays whole in one file: a new file starts when it would pass the split.
+        if self.split > 0 and self.folders > 0:
+            size = _record_size("time", time)
+            size += sum(_record_size(n, a) for n, a in out.variables)
+            if len(self.lsda.data) + size > self.split:
+                self.files.append(_Lsda(self.word, self.big))
+                self.folders = 0
+        self.folders += 1
+        self.lsda.var(directory, "time", time)
         for name, array in out.variables:
             self.lsda.var(directory, name, array)
+
+    @property
+    def lsda(self):
+        return self.files[-1]
 
     def finish(self):
         if not self.counts:
             _wfail("the mesh holds no database: no points and no binout:* field data")
-        return self.lsda.finish()
+        return [f.finish() for f in self.files]
+
+
+def _record_size(name, values):
+    """The bytes of one DATA record of a variable (4 per value; text is 1)."""
+    return 8 + 3 + len(name) + 4 * np.asarray(values).size
 
 
 def _warn_dropped(step):
@@ -340,19 +400,24 @@ def _time_of(mesh):
     return float(values[0]) if values.size else 0.0
 
 
-def _save(filename, data):
+def _save(filename, files):
+    """The binout, then ``<name>%001``, ``%002``... for its continuation files."""
     if is_buffer(filename, "w"):
-        filename.write(data)
-    else:
-        with open(filename, "wb") as fh:
+        if len(files) > 1:
+            _wfail("a split binout needs a file path, not a stream")
+        filename.write(files[0])
+        return
+    for k, data in enumerate(files):
+        path = str(filename) + (f"%{k:03d}" if k else "")
+        with open(path, "wb") as fh:
             fh.write(data)
 
 
 @_provenance.slotless_writer
-def write(filename, mesh):
+def write(filename, mesh, split_size=0, word_size=8, big_endian=False):
     step = _Step(mesh, _time_of(mesh))
     _warn_dropped(step)
-    archive = _Archive()
+    archive = _Archive(split_size, word_size, big_endian)
     archive.add(step)
     _save(filename, archive.finish())
 
@@ -365,9 +430,9 @@ class SeriesWriter:
     variables of each database (a database may be absent from a step, and
     appear later). Use as a context manager, or call :meth:`close`."""
 
-    def __init__(self, filename):
+    def __init__(self, filename, split_size=0, word_size=8, big_endian=False):
         self._filename = filename
-        self._archive = _Archive()
+        self._archive = _Archive(split_size, word_size, big_endian)
 
     def write(self, time, mesh):
         step = _Step(mesh, float(time))

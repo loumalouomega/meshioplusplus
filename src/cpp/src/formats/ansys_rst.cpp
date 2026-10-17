@@ -34,6 +34,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -1699,6 +1700,11 @@ Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic
     }
     RstModel model = rst_model(std::move(parts), rOptions.mLenient);
     const RstResults& results = model.mParts[0]->mResults;
+    if (!Cyclic && results.mNumSectors > 1) {
+        NDArray sectors(DType::Int64, {1});
+        sectors.As<std::int64_t>()[0] = results.mNumSectors;
+        model.mMesh.AddFieldData("ansys:cyclic_sectors", std::move(sectors));
+    }
     std::vector<std::int64_t> enf_dofs;
     const std::size_t n = results.mSets.size();
     if (n == 0) {
@@ -1723,6 +1729,9 @@ Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic
     mesh.AddFieldData("ansys:substep", scalar(DType::Int64, static_cast<double>(set.mSubstep)));
     mesh.AddFieldData("ansys:cumulative",
                       scalar(DType::Int64, static_cast<double>(set.mCumulative)));
+    if (!Cyclic && index < results.mHarmonic.size() && results.mNumSectors > 1)
+        mesh.AddFieldData("ansys:harmonic_index",
+                          scalar(DType::Int64, static_cast<double>(results.mHarmonic[index])));
     if (!rOptions.mPointsOnly) {
         rst_solution(model, index, rOptions);
         rst_reactions(model, index, rOptions);
@@ -1859,6 +1868,12 @@ public:
         mNnod = rMesh.NumPoints();
         if (mNnod == 0)
             rstw_fail("the mesh has no points");
+        if (rMesh.HasFieldData("ansys:cyclic_sectors") &&
+            rMesh.FieldData("ansys:cyclic_sectors").Size() > 0) {
+            mSectors = detail::Int64View(rMesh.FieldData("ansys:cyclic_sectors")).Data()[0];
+            if (mSectors < 1)
+                rstw_fail("'ansys:cyclic_sectors' must be at least 1");
+        }
         const NDArray& pts = rMesh.Points();
         const detail::DoubleView view(pts);
         const std::size_t width = pts.Size() / mNnod;
@@ -1951,6 +1966,7 @@ public:
     }
 
     std::size_t mNnod = 0, mNelm = 0;
+    std::int64_t mSectors = 1;  // a cyclic-symmetry sector: the model's sector count
     std::vector<double> mPoints;
     std::vector<RstwElement> mElements;
     std::vector<bool> mHasResults;
@@ -1985,6 +2001,7 @@ struct RstwSet {
     std::vector<const RstRawRecord*> mRaw;  ///< raw element records present in the mesh
     bool mEnf = false;                      ///< element nodal forces, one value per DOF
     std::int64_t mMask = 0;
+    std::optional<std::int64_t> mHarmonic;  ///< a cyclic modal set's harmonic index
 };
 
 RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
@@ -1992,6 +2009,9 @@ RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
     RstwSet s;
     s.mTime = Time;
     s.mStep = Step;
+    if (rMesh.HasFieldData("ansys:harmonic_index") &&
+        rMesh.FieldData("ansys:harmonic_index").Size() > 0)
+        s.mHarmonic = detail::Int64View(rMesh.FieldData("ansys:harmonic_index")).Data()[0];
     const std::size_t n = rModel.mNnod;
     std::map<std::int64_t, std::vector<double>> columns;
     auto values_of = [&](const std::string& rName) {
@@ -2317,7 +2337,11 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     }
     f.Patch(header, 35, avail);
     f.Patch(header, 39, 1);
-    f.Patch(header, 20, 1);
+    f.Patch(header, 20, rModel.mSectors);
+    if (rModel.mSectors > 1) {  // the mesh is the base sector, with no duplicate sector
+        f.Patch(header, 18, nelm);
+        f.Patch(header, 31, nnod);
+    }
     f.Patch(header, 48, nnod);
     std::vector<std::int64_t> numbers(rModel.mNnod);
     for (std::size_t i = 0; i < numbers.size(); ++i)
@@ -2429,6 +2453,15 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     f.Patch64(header, 10, 40, static_cast<std::int64_t>(dsi_ptr));
     f.Patch64(header, 11, 41, static_cast<std::int64_t>(tim));
     f.Patch64(header, 12, 42, static_cast<std::int64_t>(lsp_ptr));
+    if (std::any_of(rSets.begin(), rSets.end(), [](const RstwSet& S) { return S.mHarmonic; })) {
+        // A modal cyclic-symmetry file: the harmonic index of every set, analysis type 2.
+        std::vector<std::int64_t> harmonic;
+        for (const RstwSet& s : rSets)
+            harmonic.push_back(s.mHarmonic.value_or(0));
+        harmonic.resize(static_cast<std::size_t>(resmax), 0);
+        f.Patch64(header, 16, 43, static_cast<std::int64_t>(f.Ints(harmonic)));
+        f.Patch(header, 7, 2);
+    }
     f.Patch(header, 9, static_cast<std::int64_t>(f.Size()));
     f.Patch(header, 22, static_cast<std::int64_t>(f.Size()));
     return f.Words();

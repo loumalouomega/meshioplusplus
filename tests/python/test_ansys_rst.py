@@ -1037,6 +1037,28 @@ def test_written_set_carries_time_and_results(tmp_path):
     np.testing.assert_allclose(back.cell_data["S"][0], mesh.cell_data["S"][0])
 
 
+def test_written_cyclic_sector_expands_to_the_rotor(tmp_path):
+    """``ansys:cyclic_sectors`` writes the mesh as the base sector of a cyclic model."""
+    mesh = _brick()
+    mesh.field_data["ansys:cyclic_sectors"] = np.array([6])
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    back = meshioplusplus.ansys_rst.read(core)
+    assert back.field_data["ansys:cyclic_sectors"][0] == 6
+    np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
+    rotor = meshioplusplus.ansys_rst.read_cyclic(core)
+    assert rotor.field_data["ansys:sectors"][0] == 6
+    assert sum(len(c.data) for c in rotor.cells) == 6
+    assert len(rotor.points) == 6 * len(mesh.points)
+    # sector k is the base sector turned by k * 60 degrees about global Z
+    turned = rotor.points[8:16]
+    c, s_ = np.cos(np.pi / 3), np.sin(np.pi / 3)
+    expected = mesh.points @ np.array([[c, s_, 0], [-s_, c, 0], [0, 0, 1]])
+    np.testing.assert_allclose(turned, expected, atol=1e-12)
+
+
 def test_written_series_is_one_file_with_a_set_per_step(tmp_path):
     steps = []
     for i, time in enumerate((0.1, 0.2, 0.4)):
@@ -1107,3 +1129,54 @@ def test_written_set_keeps_the_raw_records_and_element_forces(tmp_path, name):
                 )
         for key in source.field_data:
             assert key in back.field_data, key
+
+
+def _modal_pair(harmonic=2):
+    first, second = _brick(), _brick()
+    rng = np.random.default_rng(5)
+    first.point_data["U"] = rng.random((8, 3))
+    second.point_data["U"] = rng.random((8, 3))
+    for mesh, h in ((first, harmonic), (second, -harmonic)):
+        mesh.field_data["ansys:cyclic_sectors"] = np.array([6])
+        mesh.field_data["ansys:harmonic_index"] = np.array([h])
+        mesh.field_data["meshio:time"] = np.array([12.5])
+        for name in ("TEMP", "RF", "S"):
+            mesh.point_data.pop(name, None)
+            mesh.cell_data.pop(name, None)
+    return first, second
+
+
+def test_written_modal_cyclic_pair_expands_to_the_rotor(tmp_path):
+    """Two sets of one frequency with harmonic indices ``h`` and ``-h`` are a mode
+    pair; ``ansys_rst_cyclic`` combines them as MAPDL's /CYCEXPAND does."""
+    first, second = _modal_pair()
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    steps = [(12.5, first), (12.5, second)]
+    writer = _core.AnsysRstSeriesWriter(str(core))
+    for time, mesh in steps:
+        writer.write(time, mesh)
+    writer.finalize()
+    with py_write.SeriesWriter(str(twin)) as w:
+        for time, mesh in steps:
+            w.write(time, mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    plain = meshioplusplus.ansys_rst.read(core, time_step=0)
+    assert plain.field_data["ansys:harmonic_index"][0] == 2
+    assert meshioplusplus.ansys_rst.read(core, time_step=1).field_data[
+        "ansys:harmonic_index"
+    ][0] in (-2, 2)
+    rotor = meshioplusplus.ansys_rst.read_cyclic(core, time_step=0)
+    assert rotor.field_data["ansys:harmonic_index"][0] == 2
+    x, xp = first.point_data["U"], second.point_data["U"]
+    scale = 1.0 / np.sqrt(
+        3.0
+    )  # n / 2 sectors for a harmonic that is neither 0 nor n / 2
+    for sector in (0, 1, 4):
+        theta = 2.0 * np.pi * sector / 6
+        phase = 2.0 * np.pi * 2 * sector / 6
+        combined = scale * (x * np.cos(phase) - xp * np.sin(phase))
+        c, s = np.cos(theta), np.sin(theta)
+        expected = combined @ np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+        np.testing.assert_allclose(
+            rotor.point_data["U"][8 * sector : 8 * sector + 8], expected, atol=1e-12
+        )

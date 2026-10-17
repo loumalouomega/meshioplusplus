@@ -60,6 +60,7 @@ namespace {
 constexpr const char* kNh5Grid = "/NASTRAN/INPUT/NODE/GRID";
 constexpr const char* kNh5Elements = "/NASTRAN/INPUT/ELEMENT";
 constexpr const char* kNh5Properties = "/NASTRAN/INPUT/PROPERTY";
+constexpr const char* kNh5Materials = "/NASTRAN/INPUT/MATERIAL";
 constexpr const char* kNh5Domains = "/NASTRAN/RESULT/DOMAINS";
 constexpr const char* kNh5Nodal = "/NASTRAN/RESULT/NODAL";
 constexpr const char* kNh5Elemental = "/NASTRAN/RESULT/ELEMENTAL";
@@ -67,6 +68,33 @@ constexpr const char* kNh5Elemental = "/NASTRAN/RESULT/ELEMENTAL";
 [[noreturn]] void nh5_fail(const std::string& rMessage) {
     throw ReadError("MSC Nastran HDF5: " + rMessage);
 }
+
+// The property and material members `nastran:<CARD>_<id>:<MEMBER>` field data sets and
+// reads: the table's column names; `true` marks the integer (MID) ones.
+struct Nh5ValueCard {
+    const char* mCard;
+    const char* mKey;  // the id column
+    std::vector<std::pair<const char*, bool>> mMembers;
+};
+const std::vector<Nh5ValueCard>& nh5_value_cards() {
+    static const std::vector<Nh5ValueCard> cards = {
+        {"PSHELL", "PID", {{"MID1", true}, {"T", false}, {"NSM", false}}},
+        {"PROD", "PID", {{"MID", true}, {"A", false}, {"J", false}, {"C", false}, {"NSM", false}}},
+        {"PTUBE", "PID", {{"MID", true}, {"OD", false}, {"T", false}, {"NSM", false}}},
+        {"PSOLID", "PID", {{"MID", true}}},
+        {"MAT1",
+         "MID",
+         {{"E", false},
+          {"G", false},
+          {"NU", false},
+          {"RHO", false},
+          {"A", false},
+          {"TREF", false},
+          {"GE", false}}},
+    };
+    return cards;
+}
+
 
 bool nh5_has_member(const std::vector<h5::CompoundMember>& rMembers, const std::string& rName) {
     for (const h5::CompoundMember& m : rMembers)
@@ -576,6 +604,50 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
         mesh, cards, file.mGridIndex, file.mScalarPoints, ptype, "MSC Nastran HDF5");
     const auto& cell_index = model.mCellIndex;
     const std::size_t ncells = model.mNumCells;
+    for (const Nh5ValueCard& card : nh5_value_cards()) {  // property and material values
+        const std::string path = std::string(card.mCard) == "MAT1"
+                                     ? std::string(kNh5Materials) + "/MAT1"
+                                     : std::string(kNh5Properties) + "/" + card.mCard;
+        if (!nh5_is_dataset(f, path))
+            continue;
+        const auto members = h5::compound_members(f, path);
+        if (!nh5_has_member(members, card.mKey))
+            continue;
+        const std::size_t rows = nh5_rows(f, path);
+        const auto ids = nh5_int_member(f, path, card.mKey, 0, rows);
+        for (const auto& [member, is_int] : card.mMembers) {
+            if (!nh5_has_member(members, member))
+                continue;
+            std::vector<double> floats;
+            std::vector<std::int64_t> ints;
+            if (is_int)
+                ints = nh5_int_member(f, path, member, 0, rows);
+            else
+                floats = nh5_float_member(f, path, member, 0, rows);
+            for (std::size_t r = 0; r < ids.size(); ++r) {
+                const std::string name = std::string("nastran:") + card.mCard + "_" +
+                                         std::to_string(ids[r]) + ":" + member;
+                if (mesh.HasFieldData(name))
+                    continue;
+                NDArray a(is_int ? DType::Int64 : DType::Float64, {1});
+                if (is_int)
+                    a.As<std::int64_t>()[0] = ints[r];
+                else
+                    a.As<double>()[0] = floats[r];
+                mesh.AddFieldData(name, std::move(a));
+            }
+        }
+    }
+    // GRID ids that are not 1 to n, as point data: only when point data is wanted
+    // (`points_only` drops it, and `arrays` names what to keep).
+    if (rOpts.WantsAnyData() && rOpts.WantsArray("nastran:nid"))
+        for (std::size_t i = 0; i < file.mGridIds.size(); ++i)
+            if (file.mGridIds[i] != static_cast<std::int64_t>(i + 1)) {  // not 1 to n: keep them
+                NDArray nid(DType::Int64, {file.mGridIds.size()});
+                std::copy(file.mGridIds.begin(), file.mGridIds.end(), nid.As<std::int64_t>());
+                mesh.AddPointData("nastran:nid", std::move(nid));
+                break;
+            }
 
     // --- the step -------------------------------------------------------------
     if (file.mSteps.empty()) {
@@ -1078,12 +1150,71 @@ std::int64_t nh5w_ptube_pid(const std::string& rName) {
     return pid;
 }
 
+/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n.
+std::vector<std::int64_t> nh5w_node_ids(const Mesh& rMesh, std::size_t N) {
+    std::vector<std::int64_t> ids(N);
+    if (!rMesh.HasPointData("nastran:nid")) {
+        for (std::size_t i = 0; i < N; ++i)
+            ids[i] = static_cast<std::int64_t>(i + 1);
+        return ids;
+    }
+    const NDArray& a = rMesh.PointData("nastran:nid");
+    if (a.Size() != N || detail::is_float_dtype(a.Dtype()))
+        nh5w_fail("'nastran:nid' must hold one integer per point");
+    const detail::Int64View v(a);
+    ids.assign(v.Data(), v.Data() + N);
+    std::vector<std::int64_t> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    if (!sorted.empty() && sorted.front() < 1)
+        nh5w_fail("GRID ids must be positive");
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        nh5w_fail("GRID ids are not unique");
+    return ids;
+}
+
+using Nh5wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
+
+/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
+/// that name no card or member here are left alone.
+Nh5wValues nh5w_property_values(const Mesh& rMesh) {
+    Nh5wValues out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind("nastran:", 0) != 0)
+            continue;
+        const std::size_t colon = name.rfind(':');
+        const std::size_t under = name.rfind('_', colon);
+        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
+            continue;
+        const std::string card = name.substr(8, under - 8);
+        const std::string member = name.substr(colon + 1);
+        const std::string digits = name.substr(under + 1, colon - under - 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        for (const Nh5ValueCard& c : nh5_value_cards()) {
+            if (card != c.mCard)
+                continue;
+            for (const auto& [m, is_int] : c.mMembers)
+                if (member == m) {
+                    const NDArray& a = rMesh.FieldData(name);
+                    if (a.Size() != 1)
+                        nh5w_fail("'" + name + "' must hold one value");
+                    out[{card, std::stoll(digits)}][member] =
+                        is_int ? static_cast<double>(detail::Int64View(a).Data()[0])
+                               : detail::DoubleView(a).Data()[0];
+                }
+        }
+    }
+    return out;
+}
+
 /// The mesh as the file holds it: GRIDs, element cards and properties.
 class Nh5wModel {
 public:
     explicit Nh5wModel(const Mesh& rMesh) {
         mSignature = nh5w_signature(rMesh);
+        mValues = nh5w_property_values(rMesh);
         mNpoints = rMesh.NumPoints();
+        mNodeIds = nh5w_node_ids(rMesh, mNpoints);
         {
             const NDArray& pts = rMesh.Points();
             const std::size_t dim = rMesh.PointDim();
@@ -1205,6 +1336,8 @@ public:
     const Nh5wSignature& Signature() const { return mSignature; }
     std::size_t NumPoints() const { return mNpoints; }
     const std::vector<double>& Points() const { return mPoints; }
+    const std::vector<std::int64_t>& NodeIds() const { return mNodeIds; }
+    const Nh5wValues& Values() const { return mValues; }
     const std::vector<Nh5wBlock>& Blocks() const { return mBlocks; }
     const std::vector<Nh5wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
     const std::set<std::int64_t>& Props(int Prop) const { return mProps[Prop]; }
@@ -1220,6 +1353,8 @@ private:
     Nh5wSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
+    std::vector<std::int64_t> mNodeIds;
+    Nh5wValues mValues;
     std::vector<Nh5wBlock> mBlocks;
     std::vector<std::vector<Nh5wRow>> mRows;
     std::set<std::int64_t> mProps[4];
@@ -1230,11 +1365,20 @@ private:
 
 using Nh5wMembers = std::vector<std::pair<std::string, std::vector<double>>>;
 
+/// The members of one result table that hold an array per element: entry 0 is the
+/// centre, entry k the value at the GRID in `mGrid` (the cell's k-th node).
+struct Nh5wWide {
+    std::size_t mWidth = 0;
+    std::vector<std::int64_t> mGrid;  // rows x mWidth, 0 where an entry has no node
+    Nh5wMembers mMembers;             // rows x mWidth values each
+};
+
 struct Nh5wStep {
     std::int64_t mDomain = 1, mSubcase = 1, mStep = 0, mAnalysis = 1, mMode = 1;
     double mTime = 0.0, mEigi = 0.0;
     std::map<std::string, Nh5wMembers> mNodal;                           // table -> members
     std::map<std::pair<std::string, std::size_t>, Nh5wMembers> mElemental;  // (group, card)
+    std::map<std::pair<std::string, std::size_t>, Nh5wWide> mCorner;        // (group, card)
     std::string mSignature;  // the tables and their members, in a canonical text
 };
 
@@ -1317,10 +1461,11 @@ void nh5w_nodal_members(const Mesh& rMesh, std::size_t NumPoints, std::set<std::
             const auto re = vector_of(base + "_real");
             const auto im = vector_of(base + "_imag");
             const char axes[] = {'X', 'Y', 'Z'};
-            for (std::size_t k = 0; k < 3; ++k) {
+            // MSC's column order: every real component, then every imaginary one.
+            for (std::size_t k = 0; k < 3; ++k)
                 nh5w_put(rTables[table], prefix + axes[k] + "R", re[k]);
+            for (std::size_t k = 0; k < 3; ++k)
                 nh5w_put(rTables[table], prefix + axes[k] + "I", im[k]);
-            }
         }
     }
     for (const std::string& name : names) {
@@ -1393,8 +1538,43 @@ bool nh5w_gather(const Mesh& rMesh, const std::string& rName, const Nh5wModel& r
     return true;
 }
 
+/// A `@corner` cell-data array of the cells of a card, in the card's row order, as
+/// `Width` entries per row: entry 0 is left NaN for the centre and entry j + 1 holds
+/// column j (the cell's j-th node).
+bool nh5w_gather_wide(const Mesh& rMesh, const std::string& rName, const Nh5wModel& rModel,
+                      std::size_t Card, std::size_t Width, std::vector<double>& rOut) {
+    if (!rMesh.HasCellData(rName))
+        return false;
+    const std::size_t nblocks = rMesh.CellDataNumBlocks(rName);
+    const auto& rows = rModel.Rows(Card);
+    rOut.assign(rows.size() * Width, std::numeric_limits<double>::quiet_NaN());
+    std::map<std::size_t, std::pair<std::size_t, std::vector<double>>> by_block;
+    for (const Nh5wRow& row : rows) {
+        if (by_block.find(row.mBlock) != by_block.end())
+            continue;
+        const Nh5wBlock& blk = rModel.Blocks()[row.mBlock];
+        if (blk.mIndex >= nblocks)
+            nh5w_fail("'" + rName + "' has no array for every cell block");
+        const NDArray& a = rMesh.CellData(rName, blk.mIndex);
+        const std::size_t n = blk.mCount;
+        if (n && (a.Size() < n || a.Size() % n))
+            nh5w_fail("'" + rName + "' must have one value per cell and node");
+        const detail::DoubleView view(a);
+        by_block.emplace(row.mBlock,
+                         std::make_pair(n ? a.Size() / n : 1,
+                                        std::vector<double>(view.Data(), view.Data() + a.Size())));
+    }
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto& [w, v] = by_block[rows[i].mBlock];
+        for (std::size_t j = 0; j < w && j + 1 < Width; ++j)
+            rOut[i * Width + 1 + j] = v[rows[i].mRow * w + j];
+    }
+    return true;
+}
+
 void nh5w_element_members(const Mesh& rMesh, const Nh5wModel& rModel, std::set<std::string>& rTaken,
-                          std::map<std::pair<std::string, std::size_t>, Nh5wMembers>& rOut) {
+                          std::map<std::pair<std::string, std::size_t>, Nh5wMembers>& rOut,
+                          std::map<std::pair<std::string, std::size_t>, Nh5wWide>& rCorner) {
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> groups;
     for (const std::string& name : rMesh.CellDataNames()) {
         if (name == "nastran:eid" || name == "nastran:pid")
@@ -1424,6 +1604,58 @@ void nh5w_element_members(const Mesh& rMesh, const Nh5wModel& rModel, std::set<s
                 rOut[{group, card}] = std::move(columns);
         }
     }
+    // `<G>:<M>@corner` (cells, nodes): the corner entries of the array member `M`,
+    // whose entry 0 is the centre value `<G>:<M>`.
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (!nh5w_ends_with(name, "@corner"))
+            continue;
+        const std::string base = name.substr(0, name.size() - 7);
+        const std::size_t colon = base.find(':');
+        if (colon == std::string::npos)
+            continue;
+        const std::string group = base.substr(0, colon);
+        const std::string member = base.substr(colon + 1);
+        if (!nh5w_is_group_name(group) || member.empty())
+            continue;
+        for (std::size_t card = 0; card < kNh5wNumCards; ++card) {
+            const auto& rows = rModel.Rows(card);
+            if (kNh5wCards[card].mFamily == nullptr || rows.empty())
+                continue;
+            std::size_t width = 1;
+            for (const Nh5wRow& row : rows)
+                width = std::max(width, rModel.Blocks()[row.mBlock].mNodes + 1);
+            std::vector<double> wide;
+            if (!nh5w_gather_wide(rMesh, name, rModel, card, width, wide))
+                continue;
+            Nh5wWide& w = rCorner[{group, card}];
+            if (w.mWidth == 0) {
+                w.mWidth = width;
+                w.mGrid.assign(rows.size() * width, 0);
+                for (std::size_t i = 0; i < rows.size(); ++i) {
+                    const Nh5wBlock& blk = rModel.Blocks()[rows[i].mBlock];
+                    for (std::size_t j = 0; j < blk.mNodes; ++j)
+                        w.mGrid[i * width + 1 + j] =
+                            rModel.NodeIds()[static_cast<std::size_t>(
+                                blk.mConn[rows[i].mRow * blk.mNodes + j])];
+                }
+            }
+            const auto centre = rOut.find({group, card});
+            if (centre != rOut.end()) {
+                auto& members = centre->second;
+                for (auto m = members.begin(); m != members.end(); ++m)
+                    if (m->first == member) {
+                        for (std::size_t i = 0; i < rows.size(); ++i)
+                            wide[i * width] = m->second[i];
+                        members.erase(m);
+                        break;
+                    }
+                if (members.empty())
+                    rOut.erase(centre);
+            }
+            nh5w_put(w.mMembers, member, std::move(wide));
+            rTaken.insert(name);
+        }
+    }
 }
 
 Nh5wStep nh5w_make_step(const Mesh& rMesh, const Nh5wModel& rModel, double Time, std::size_t Index,
@@ -1437,7 +1669,7 @@ Nh5wStep nh5w_make_step(const Mesh& rMesh, const Nh5wModel& rModel, double Time,
     step.mEigi = nh5w_scalar_double(rMesh, "nastran:eigi", 0.0);
     step.mMode = nh5w_scalar_int(rMesh, "nastran:mode", 1);
     nh5w_nodal_members(rMesh, rModel.NumPoints(), rTaken, step.mNodal);
-    nh5w_element_members(rMesh, rModel, rTaken, step.mElemental);
+    nh5w_element_members(rMesh, rModel, rTaken, step.mElemental, step.mCorner);
     for (const auto& [table, members] : step.mNodal) {
         step.mSignature += "N:" + table;
         for (const auto& [m, v] : members)
@@ -1450,6 +1682,12 @@ Nh5wStep nh5w_make_step(const Mesh& rMesh, const Nh5wModel& rModel, double Time,
             step.mSignature += "," + m;
         step.mSignature += ";";
     }
+    for (const auto& [key, wide] : step.mCorner) {
+        step.mSignature += "C:" + key.first + "/" + std::to_string(key.second);
+        for (const auto& [m, v] : wide.mMembers)
+            step.mSignature += "," + m;
+        step.mSignature += ";";
+    }
     return step;
 }
 
@@ -1457,7 +1695,7 @@ void nh5w_warn_dropped(const Mesh& rMesh, const Nh5wModel& rModel,
                        const std::set<std::string>& rTaken) {
     std::set<std::string> names;
     for (const std::string& n : rMesh.PointDataNames())
-        if (!rTaken.count(n) && n != "nastran:cp" && n != "nastran:cd")
+        if (!rTaken.count(n) && n != "nastran:cp" && n != "nastran:cd" && n != "nastran:nid")
             names.insert(n);
     for (const std::string& n : rMesh.CellDataNames())
         if (!rTaken.count(n) && n != "nastran:eid" && n != "nastran:pid")
@@ -1590,13 +1828,6 @@ void nh5w_write_table(hid_t File, const std::string& rPath, const std::vector<Nh
         nh5w_fail("could not write the table " + rPath);
 }
 
-std::vector<std::int64_t> nh5w_iota(std::size_t N, std::int64_t First = 1) {
-    std::vector<std::int64_t> v(N);
-    for (std::size_t i = 0; i < N; ++i)
-        v[i] = First + static_cast<std::int64_t>(i);
-    return v;
-}
-
 // Columns the MSC tables carry beyond the ones the reader uses, and the value this writer
 // gives them: kind 'i' (int64), 'f' (float64) or 's' (a 4-byte string, `mText`), `mArity`
 // values per row.
@@ -1607,6 +1838,20 @@ struct Nh5wSpecCol {
     double mValue;
     const char* mText;
 };
+
+/// Set row `Row` of the columns named in `rValues` (a float or an integer column).
+void nh5w_set_values(std::vector<Nh5wColumn>& rColumns, std::size_t Row,
+                     const std::map<std::string, double>& rValues) {
+    for (Nh5wColumn& c : rColumns) {
+        const auto it = rValues.find(c.mName);
+        if (it == rValues.end() || c.mString || c.mArity != 1)
+            continue;
+        if (c.mFloat)
+            c.mF[Row] = it->second;
+        else
+            c.mI[Row] = static_cast<std::int64_t>(it->second);
+    }
+}
 
 std::vector<Nh5wColumn> nh5w_filled(std::size_t Rows, const std::vector<Nh5wSpecCol>& rSpec) {
     std::vector<Nh5wColumn> out;
@@ -1686,7 +1931,7 @@ void nh5w_write_model(hid_t File, const Nh5wModel& rModel) {
                       nh5w_ints("TRMC", {0}), nh5w_ints("MODULE", {1})});
     nh5w_require_group(File, "/NASTRAN/INPUT/NODE");
     nh5w_write_table(File, "/NASTRAN/INPUT/NODE/GRID",
-                     {nh5w_ints("ID", nh5w_iota(n)), nh5w_ints("CP", std::vector<std::int64_t>(n, 0)),
+                     {nh5w_ints("ID", rModel.NodeIds()), nh5w_ints("CP", std::vector<std::int64_t>(n, 0)),
                       nh5w_floats("X", rModel.Points(), 3),
                       nh5w_ints("CD", std::vector<std::int64_t>(n, 0)),
                       nh5w_ints("PS", std::vector<std::int64_t>(n, 0)),
@@ -1706,7 +1951,7 @@ void nh5w_write_model(hid_t File, const Nh5wModel& rModel) {
             for (std::size_t k = 0; k < blk.mNodes; ++k) {
                 const std::size_t at =
                     (blk.mNodes > card.mLinear && card.mPerm != nullptr) ? card.mPerm[k] : k;
-                nodes[r * card.mWidth + at] = conn[k] + 1;
+                nodes[r * card.mWidth + at] = rModel.NodeIds()[static_cast<std::size_t>(conn[k])];
             }
         }
         std::vector<Nh5wColumn> columns;
@@ -1758,17 +2003,51 @@ void nh5w_write_model(hid_t File, const Nh5wModel& rModel) {
         columns.push_back(nh5w_ints("PID", std::vector<std::int64_t>(pids.begin(), pids.end())));
         for (auto& col : nh5w_filled(pids.size(), nh5w_property_columns(prop)))
             columns.push_back(std::move(col));
+        std::size_t k = 0;
+        for (const std::int64_t pid : pids) {
+            const auto given = rModel.Values().find({names[prop], pid});
+            if (given != rModel.Values().end())
+                nh5w_set_values(columns, k, given->second);
+            ++k;
+        }
         columns.push_back(domain(pids.size()));
         nh5w_write_table(File, std::string("/NASTRAN/INPUT/PROPERTY/") + names[prop], columns);
     }
-    if (rModel.HasProperties()) {
+    // The materials the properties name (MID, default 1) and those given.
+    std::set<std::int64_t> mids;
+    for (const int prop : {kNh5wProd, kNh5wPshell, kNh5wPsolid, kNh5wPtube})
+        for (const std::int64_t pid : rModel.Props(prop)) {
+            std::int64_t mid = 1;
+            const auto given = rModel.Values().find({names[prop], pid});
+            if (given != rModel.Values().end()) {
+                const auto it = given->second.find(prop == kNh5wPshell ? "MID1" : "MID");
+                if (it != given->second.end())
+                    mid = static_cast<std::int64_t>(it->second);
+            }
+            mids.insert(mid);
+        }
+    for (const auto& [key, members] : rModel.Values())
+        if (key.first == "MAT1")
+            mids.insert(key.second);
+    if (!mids.empty()) {
         nh5w_require_group(File, "/NASTRAN/INPUT/MATERIAL");
         std::vector<Nh5wColumn> columns = nh5w_filled(
-            1, {{"MID", 'i', 1, 1, ""},   {"E", 'f', 1, 1.0, ""},   {"G", 'f', 1, 0.0, ""},
+            mids.size(),
+            {{"MID", 'i', 1, 1, ""},   {"E", 'f', 1, 1.0, ""},   {"G", 'f', 1, 0.0, ""},
                 {"NU", 'f', 1, 0.3, ""},  {"RHO", 'f', 1, 0.0, ""}, {"A", 'f', 1, 0.0, ""},
                 {"TREF", 'f', 1, 0.0, ""}, {"GE", 'f', 1, 0.0, ""},  {"ST", 'f', 1, 0.0, ""},
                 {"SC", 'f', 1, 0.0, ""},  {"SS", 'f', 1, 0.0, ""},  {"MCSID", 'i', 1, 0, ""}});
-        columns.push_back(domain(1));
+        std::size_t k = 0;
+        for (const std::int64_t mid : mids) {
+            std::map<std::string, double> values;
+            const auto given = rModel.Values().find({"MAT1", mid});
+            if (given != rModel.Values().end())
+                values = given->second;
+            values["MID"] = static_cast<double>(mid);
+            nh5w_set_values(columns, k, values);
+            ++k;
+        }
+        columns.push_back(domain(mids.size()));
         nh5w_write_table(File, "/NASTRAN/INPUT/MATERIAL/MAT1", columns);
     }
 }
@@ -1825,7 +2104,7 @@ void nh5w_emit(hid_t File, const std::string& rParent, const std::string& rName,
 void nh5w_write_results(hid_t File, const Nh5wModel& rModel, const std::vector<Nh5wStep>& rSteps) {
     bool any = false;
     for (const Nh5wStep& s : rSteps)
-        any = any || !s.mNodal.empty() || !s.mElemental.empty();
+        any = any || !s.mNodal.empty() || !s.mElemental.empty() || !s.mCorner.empty();
     if (!any)
         return;
     nh5w_require_group(File, "/NASTRAN/RESULT");
@@ -1874,7 +2153,7 @@ void nh5w_write_results(hid_t File, const Nh5wModel& rModel, const std::vector<N
             std::vector<Nh5wColumn> columns;
             std::vector<std::int64_t> ids;
             for (const std::size_t i : keep)
-                ids.push_back(static_cast<std::int64_t>(i) + 1);
+                ids.push_back(rModel.NodeIds()[i]);
             columns.push_back(nh5w_ints("ID", ids));
             for (const auto& [m, v] : members) {
                 std::vector<double> picked;
@@ -1887,23 +2166,33 @@ void nh5w_write_results(hid_t File, const Nh5wModel& rModel, const std::vector<N
         nh5w_emit(File, "NODAL", table, per_step);
     }
     std::set<std::pair<std::string, std::size_t>> keys;
-    for (const Nh5wStep& s : rSteps)
+    for (const Nh5wStep& s : rSteps) {
         for (const auto& [k, m] : s.mElemental)
             keys.insert(k);
+        for (const auto& [k, m] : s.mCorner)
+            keys.insert(k);
+    }
     for (const auto& key : keys) {
         const std::size_t card = key.second;
         std::vector<std::pair<std::int64_t, std::vector<Nh5wColumn>>> per_step;
         const auto& rows = rModel.Rows(card);
         for (const Nh5wStep& s : rSteps) {
             const auto it = s.mElemental.find(key);
-            if (it == s.mElemental.end())
+            const auto wt = s.mCorner.find(key);
+            if (it == s.mElemental.end() && wt == s.mCorner.end())
                 continue;
-            const Nh5wMembers& members = it->second;
+            const Nh5wMembers none;
+            const Nh5wMembers& members = it == s.mElemental.end() ? none : it->second;
+            const std::size_t width = wt == s.mCorner.end() ? 0 : wt->second.mWidth;
             std::vector<std::size_t> keep;
             for (std::size_t i = 0; i < rows.size(); ++i) {
                 bool all_nan = true;
                 for (const auto& [m, v] : members)
                     all_nan = all_nan && std::isnan(v[i]);
+                if (wt != s.mCorner.end())
+                    for (const auto& [m, v] : wt->second.mMembers)
+                        for (std::size_t k = 0; k < width; ++k)
+                            all_nan = all_nan && std::isnan(v[i * width + k]);
                 if (!all_nan)
                     keep.push_back(i);
             }
@@ -1917,6 +2206,20 @@ void nh5w_write_results(hid_t File, const Nh5wModel& rModel, const std::vector<N
                 for (const std::size_t i : keep)
                     picked.push_back(v[i]);
                 columns.push_back(nh5w_floats(m, std::move(picked)));
+            }
+            if (wt != s.mCorner.end()) {
+                std::vector<std::int64_t> grids;
+                for (const std::size_t i : keep)
+                    grids.insert(grids.end(), wt->second.mGrid.begin() + i * width,
+                                 wt->second.mGrid.begin() + (i + 1) * width);
+                columns.push_back(nh5w_ints("GRID", std::move(grids), width));
+                for (const auto& [m, v] : wt->second.mMembers) {
+                    std::vector<double> picked;
+                    for (const std::size_t i : keep)
+                        picked.insert(picked.end(), v.begin() + i * width,
+                                      v.begin() + (i + 1) * width);
+                    columns.push_back(nh5w_floats(m, std::move(picked), width));
+                }
             }
             per_step.emplace_back(s.mDomain, std::move(columns));
         }

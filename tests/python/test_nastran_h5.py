@@ -936,6 +936,104 @@ class TestWriter:
         assert compared >= 6  # GRID, the cards, properties, MAT1, DOMAINS
 
     @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_corner_values_round_trip(self, writer, engine, tmp_path):
+        """``<G>:<M>@corner`` is written as the array member whose entry 0 is the
+        centre and whose GRID column names each corner's node."""
+        mesh = _write_mesh()
+        rng = np.random.default_rng(3)
+        corner = [rng.random((len(c.data), c.data.shape[1])) for c in mesh.cells]
+        mesh.cell_data["STRESS:X@corner"] = corner
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        table = _tables(path)["NASTRAN/RESULT/ELEMENTAL/STRESS/HEXA"]
+        assert table["X"].shape == (1, 9)
+        assert table["GRID"][0][0] == 0
+        assert table["X"][0][0] == 7.0  # the centre value
+        np.testing.assert_array_equal(
+            table["GRID"][0][1:], np.array([0, 1, 5, 2, 3, 4, 4, 3]) + 1
+        )
+        back = engine(path)
+        by_type = {c.type: i for i, c in enumerate(back.cells)}
+        for k, cell in enumerate(mesh.cells):
+            if cell.type == "line":
+                continue  # a rod has no corner output
+            got = back.cell_data["STRESS:X@corner"][by_type[cell.type]]
+            # A repeated node is read back at its first position with its last
+            # value.
+            conn = np.asarray(cell.data)[0]
+            nodes = list(dict.fromkeys(conn))
+            at = [int(np.nonzero(conn == n)[0][0]) for n in nodes]
+            last = [int(np.nonzero(conn == n)[0][-1]) for n in nodes]
+            np.testing.assert_allclose(
+                got[:, at], corner[k][:, last], err_msg=cell.type
+            )
+        tetra = back.cell_data["STRESS:X"][by_type["tetra"]]
+        np.testing.assert_array_equal(tetra, [1.0, 2.0])
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_grid_ids_other_than_one_to_n_round_trip(self, writer, engine, tmp_path):
+        """``point_data["nastran:nid"]`` numbers the GRIDs, the element cards and the
+        nodal tables."""
+        mesh = _write_mesh()
+        ids = np.array([70, 3, 41, 9, 20, 5, 100])
+        mesh.point_data["nastran:nid"] = ids
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        tables = _tables(path)
+        np.testing.assert_array_equal(tables["NASTRAN/INPUT/NODE/GRID"]["ID"], ids)
+        np.testing.assert_array_equal(
+            tables["NASTRAN/INPUT/ELEMENT/CTETRA"]["G"][0][:4], ids[[0, 1, 2, 3]]
+        )
+        back = engine(path)
+        np.testing.assert_array_equal(back.point_data["nastran:nid"], ids)
+        for a, b in zip(
+            sorted(mesh.cells, key=lambda c: c.type),
+            sorted(back.cells, key=lambda c: c.type),
+        ):
+            np.testing.assert_array_equal(a.data, b.data)
+        np.testing.assert_array_equal(
+            back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"]
+        )
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_grid_id_array_follows_the_read_options(self, writer, engine, tmp_path):
+        """``nastran:nid`` is point data: ``points_only`` drops it, and ``arrays``
+        keeps it only when it is named (both engines)."""
+        mesh = _write_mesh()
+        ids = np.array([70, 3, 41, 9, 20, 5, 100])
+        mesh.point_data["nastran:nid"] = ids
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        np.testing.assert_array_equal(engine(path).point_data["nastran:nid"], ids)
+        narrow = engine(path, arrays=["DISPLACEMENT"]).point_data
+        assert "DISPLACEMENT" in narrow and "nastran:nid" not in narrow
+        named = engine(path, arrays=["DISPLACEMENT", "nastran:nid"]).point_data
+        np.testing.assert_array_equal(named["nastran:nid"], ids)
+        assert not engine(path, points_only=True).point_data
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_complex_columns_are_in_msc_order(self, writer, tmp_path):
+        """MSC's complex nodal tables list every real component, then every imaginary one."""
+        mesh = _write_mesh()
+        mesh.point_data["EIGENVECTOR_imag"] = np.arange(21.0).reshape(7, 3)
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        table = _tables(path)["NASTRAN/RESULT/NODAL/EIGENVECTOR_CPLX"]
+        assert table.dtype.names[:7] == ("ID", "XR", "YR", "ZR", "XI", "YI", "ZI")
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
     def test_series_writer_is_one_domain_per_step(self, writer, engine, tmp_path):
         steps = []
         for k in range(3):
@@ -987,3 +1085,43 @@ class TestWriter:
             w.write(0.0, a)
             with pytest.raises(WriteError):
                 w.write(1.0, b)
+
+
+class TestPropertyValues:
+    @staticmethod
+    def _mesh():
+        mesh = _write_mesh()
+        mesh.field_data.update(
+            {
+                "nastran:PSHELL_1:T": np.array([0.25]),
+                "nastran:PSHELL_1:MID1": np.array([7]),
+                "nastran:MAT1_7:E": np.array([2.1e5]),
+                "nastran:MAT1_7:NU": np.array([0.29]),
+                "nastran:MAT1_7:RHO": np.array([7.8e-9]),
+            }
+        )
+        return mesh
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_values_round_trip(self, writer, engine, tmp_path):
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), self._mesh())
+        else:
+            py_write(path, self._mesh())
+        data = engine(path).field_data
+        assert data["nastran:PSHELL_1:T"][0] == 0.25
+        assert data["nastran:PSHELL_1:MID1"].tolist() == [7]
+        assert data["nastran:MAT1_7:E"][0] == 2.1e5
+        assert data["nastran:MAT1_7:NU"][0] == 0.29
+        assert data["nastran:MAT1_7:RHO"][0] == 7.8e-9
+        assert data["nastran:PSOLID_2:MID"].tolist() == [1]
+        assert (
+            data["nastran:MAT1_1:E"][0] == 1.0
+        )  # the default material the others name
+
+    def test_engines_write_the_same_tables_with_values(self, tmp_path):
+        a, b = tmp_path / "core.h5", tmp_path / "py.h5"
+        _core.nastran_h5_write(str(a), self._mesh())
+        py_write(b, self._mesh())
+        _same_tables(_tables(a), _tables(b))

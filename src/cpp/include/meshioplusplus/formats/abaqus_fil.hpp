@@ -129,6 +129,21 @@ MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& r
                                          bool Binary = false);
 
 /**
+ * @brief Options of the `.fil` writers: ASCII or binary, and for the binary layout its byte
+ *        order and the size of its record markers (4 or 8 bytes). Both orders and both marker
+ *        sizes are read.
+ */
+struct AbaqusFilWriteOptions {
+    bool mBinary = false;
+    bool mBigEndian = false;
+    int mMarkerSize = 4;
+};
+
+/// `write_abaqus_fil` with the binary layout's byte order and marker size.
+MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh,
+                                         const AbaqusFilWriteOptions& rOptions);
+
+/**
  * @brief A results file written step by step: the model with the first step,
  *        then an increment per step.
  *
@@ -141,6 +156,9 @@ class MESHIOPLUSPLUS_API AbaqusFilSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit AbaqusFilSeriesWriter(const std::string& rPath, bool Binary = false);
+
+    /// As above, with the binary layout's byte order and marker size.
+    AbaqusFilSeriesWriter(const std::string& rPath, const AbaqusFilWriteOptions& rOptions);
     ~AbaqusFilSeriesWriter();
 
     AbaqusFilSeriesWriter(const AbaqusFilSeriesWriter&) = delete;

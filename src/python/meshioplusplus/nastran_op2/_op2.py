@@ -30,6 +30,7 @@ from ..nastran._model import (
     CoordSystems,
     add_cells,
     apply_frames,
+    pbeam_station_slots,
     rotate_to_basic,
 )
 
@@ -512,19 +513,105 @@ def _read_elements(s, tables, grids):
                 f"{WHO}: a {card} record of {len(words)} words matches no known layout; skipped"
             )
             continue
-        entry = cards.setdefault(card, [[], [], []])
+        entry = cards.setdefault(card, [[], [], [], [], []])
         entry[0].append(rows[:, 0])
         entry[1].append(
             rows[:, pid_word] if pid_word is not None else np.full(len(rows), -1)
         )
         entry[2].append(rows[:, first : first + count])
+        # A spring or damper's component numbers follow its two ends.
+        if scalar_ends:
+            entry[3].append(rows[:, first + count : first + count + 2])
+        else:
+            entry[3].append(np.zeros((len(rows), 2), dtype=np.int64))
+        if card == "CBAR":
+            entry[4].append(_bar_payload(s, raw, rows))
+        elif card == "CBEAM":
+            entry[4].append(_beam_payload(s, raw, rows))
+        elif card == "CBUSH":
+            entry[4].append(_bush_payload(s, raw, rows))
+        elif card in ("CELAS2", "CDAMP2"):
+            # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 at word 1.
+            floats = _floats(s, raw)[3:].reshape(rows.shape)
+            columns = [1, 6, 7] if card == "CELAS2" else [1]
+            entry[4].append(floats[:, columns])
     if skipped:
         warn(f"{WHO}: skipped element records with no cell type: " + ", ".join(skipped))
     out = []
     for card in sorted(cards):
-        eid, pid, g = cards[card]
-        out.append((card, np.concatenate(eid), np.concatenate(pid), np.concatenate(g)))
+        eid, pid, g, comps, payload = cards[card]
+        out.append(
+            (
+                card,
+                np.concatenate(eid),
+                np.concatenate(pid),
+                np.concatenate(g),
+                np.concatenate(comps),
+                np.concatenate(payload) if payload else None,
+            )
+        )
     return out
+
+
+def _bar_payload(s, raw, rows):
+    """The CBAR fields of each row of a CBAR record as float64 ``(n, 12)``: the
+    orientation vector X1..X3 (zeros with a G0), the G0, the pins PA and PB, and the
+    end offsets W1A..W3A and W1B..W3B. The record holds X1..X3 at words 4 to 6, the
+    orientation flag at word 7 (2 with a G0, in word 4), PA and PB at 8 and 9, and
+    the offsets at 10 to 15."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    g0 = rows[:, 7] == 2
+    x = np.where(g0[:, None], 0.0, floats[:, 4:7])
+    return np.column_stack(
+        [
+            x,
+            np.where(g0, rows[:, 4], 0).astype(np.float64),
+            rows[:, 8:10].astype(np.float64),
+            floats[:, 10:16],
+        ]
+    )
+
+
+def _bush_payload(s, raw, rows):
+    """The CBUSH fields of each row of a CBUSH record as float64 ``(n, 12)``, in the CBAR
+    layout: the orientation vector X1..X3 at words 4 to 6 when the flag at word 7 is 0 or 1,
+    and the G0 at word 4 when it is 2 (its vector then zeros). A flag of -1 orients the bush
+    by its element coordinate system, which is not read, so its X is read as zeros."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    flag = rows[:, 7]
+    if np.any(flag == -1):
+        warn(
+            f"{WHO}: {int(np.count_nonzero(flag == -1))} CBUSH element(s) are oriented by "
+            "their element coordinate system; their X vector is read as zeros"
+        )
+    vector = (flag == 0) | (flag == 1)
+    out = np.zeros((len(rows), 12))
+    out[:, 0:3] = np.where(vector[:, None], floats[:, 4:7], 0.0)
+    out[:, 3] = np.where(flag == 2, rows[:, 4], 0)
+    return out
+
+
+def _beam_payload(s, raw, rows):
+    """The CBEAM fields of each row of a CBEAM record as float64 ``(n, 12)``, in the CBAR
+    layout: the orientation vector X1..X3 at words 6 to 8, the flag at word 9 (its low two
+    bits: 0 and 1 are vectors in basic and global coordinates), the pins PA and PB at 10
+    and 11, and the end offsets W1A..W3A and W1B..W3B at 12 to 17. A beam oriented by a
+    grid or a local system has no X vector here, so its X is read as zeros."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    vector = (rows[:, 9] & 3) <= 1
+    if not vector.all():
+        warn(
+            f"{WHO}: {int(np.count_nonzero(~vector))} CBEAM element(s) are oriented by a grid "
+            "or a local system; their X vector is read as zeros"
+        )
+    return np.column_stack(
+        [
+            np.where(vector[:, None], floats[:, 6:9], 0.0),
+            np.zeros(len(rows)),
+            rows[:, 10:12].astype(np.float64),
+            floats[:, 12:18],
+        ]
+    )
 
 
 def _entries_terminated(words, start):
@@ -607,6 +694,159 @@ def _read_properties(s, tables):
         chosen = next((c for c in _PROPERTY_PRIORITY if c in cards), cards[0])
         ptype[pid] = chosen
     return ptype
+
+
+def _read_property_values(s, tables):
+    """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID,
+    PELAS, PDAMP and MAT1 records (the members ``nastran_op2._write.PROPERTY_VALUES``
+    lists)."""
+    from ._write import PROPERTY_VALUES
+
+    out = {}
+
+    def take(card, raw, size):
+        body = raw[3 * s.ws :]
+        if len(body) == 0 or len(body) % (size * s.ws):
+            return
+        ints = _ints(s, body).reshape(-1, size)
+        floats = _floats(s, body).reshape(-1, size)
+        for row in range(len(ints)):
+            ident = int(ints[row, 0])
+            if card == "PSHELL" and ints[row, 1] >= 100000000:
+                continue  # NX's PSHELL twin of a PCOMP
+            for member, (word, _default) in PROPERTY_VALUES[card].items():
+                if member.startswith("MID"):
+                    value = np.array([ints[row, word]], dtype=np.int64)
+                else:
+                    value = np.array([floats[row, word]], dtype=np.float64)
+                out.setdefault(f"nastran:{card}_{ident}:{member}", value)
+
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        spec = _PROPERTIES.get((k1, k2))
+        if spec is not None and spec[0] in (
+            "PSHELL",
+            "PROD",
+            "PTUBE",
+            "PSOLID",
+            "PBAR",
+            "PELAS",
+            "PDAMP",
+        ):
+            take(spec[0], raw, spec[1])
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
+        if (k1, k2) == (103, 1):
+            take("MAT1", raw, 12)
+    return out
+
+
+def _read_pbeam_values(s, tables):
+    """``nastran:PBEAM_<id>:<MEMBER>`` field data of the PBEAM records: MID, NSEG (the
+    segments, one fewer than the stations) and CCF as scalars, and for each station the SO,
+    XXB, A, I1, I2, I12, J and NSM values, and the outline points C1, C2, D1 and D2 as
+    ``(n, 2)`` rows of x and y. A record is pid, mid, segments, ccf and a zero, then 11
+    station slots and a 12th slot of 16 words (SO, XXB, A, I1, I2, I12, J, NSM, then the
+    four points). The stations used are segments + 1: the first in slot 0, the last in
+    slot 10, and any between them in the slots after the first."""
+    out = {}
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) != (5402, 54):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) != 197 * s.ws:
+            continue
+        ints = _ints(s, body)
+        floats = _floats(s, body)
+        pid, mid, nseg, ccf = (int(v) for v in ints[:4])
+        if not 1 <= nseg <= 10:
+            continue
+        n = nseg + 1
+        prefix = f"nastran:PBEAM_{pid}:"
+        if prefix + "MID" in out:  # the first record of an id wins
+            continue
+        out[prefix + "MID"] = np.array([mid], dtype=np.int64)
+        out[prefix + "NSEG"] = np.array([nseg], dtype=np.int64)
+        out[prefix + "CCF"] = np.array([ccf], dtype=np.int64)
+        slots = floats[5 : 5 + 16 * 11].reshape(11, 16)
+        stations = slots[pbeam_station_slots(n)]
+        for column, member in enumerate(
+            ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM")
+        ):
+            out[prefix + member] = stations[:, column].copy()
+        for first, member in zip((8, 10, 12, 14), ("C1", "C2", "D1", "D2")):
+            out[prefix + member] = stations[:, first : first + 2].copy()
+    return out
+
+
+def _read_bush_values(s, tables):
+    """``nastran:PBUSH_<id>:<MEMBER>`` field data of the PBUSH records: K and B as (6,)
+    arrays, GE as one value (the 18-word NX layout) or six (the 23-word MSC layout), and the
+    stress and strain coefficients SA, ST, EA and ET as scalars. A record of another size is
+    not read."""
+    out = {}
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) != (1402, 14):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) not in (18 * s.ws, 23 * s.ws):
+            continue
+        floats = _floats(s, body)
+        prefix = f"nastran:PBUSH_{_ints(s, body)[0]}:"
+        if prefix + "K" in out:  # the first record of an id wins
+            continue
+        out[prefix + "K"] = floats[1:7].copy()
+        out[prefix + "B"] = floats[7:13].copy()
+        out[prefix + "GE"] = floats[13 : len(floats) - 4].copy()
+        for member, value in zip(("SA", "ST", "EA", "ET"), floats[-4:]):
+            out[prefix + member] = np.array([value])
+    return out
+
+
+def _read_pcomp_values(s, tables):
+    """``nastran:PCOMP_<id>:<MEMBER>`` field data of the PCOMP records: the scalars Z0,
+    NSM, SB, TREF and GE, the failure theory FT and SYM (1 for a symmetric layup), and
+    PLY, the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT. A record's words are
+    pid, layer count (negative for a symmetric layup), Z0, NSM, SB, FT, TREF, GE, then
+    MID, T, THETA and SOUT for each ply."""
+    out = {}
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) != (2706, 27):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) == 0 or len(body) % s.ws:
+            continue
+        ints = _ints(s, body)
+        floats = _floats(s, body)
+        k = 0
+        while k + 8 <= len(ints):
+            pid, nlayers = int(ints[k]), int(ints[k + 1])
+            count = abs(nlayers)
+            if pid <= 0 or count == 0 or k + 8 + 4 * count > len(ints):
+                break
+            prefix = f"nastran:PCOMP_{pid}"
+            scalars = {
+                "Z0": floats[k + 2],
+                "NSM": floats[k + 3],
+                "SB": floats[k + 4],
+                "FT": ints[k + 5],
+                "TREF": floats[k + 6],
+                "GE": floats[k + 7],
+                "SYM": 1 if nlayers < 0 else 0,
+            }
+            for member, value in scalars.items():
+                dtype = np.int64 if member in ("FT", "SYM") else np.float64
+                out.setdefault(f"{prefix}:{member}", np.array([value], dtype=dtype))
+            start, stop = k + 8, k + 8 + 4 * count
+            plies = np.column_stack(
+                [
+                    ints[start:stop:4],
+                    floats[start + 1 : stop : 4],
+                    floats[start + 2 : stop : 4],
+                    ints[start + 3 : stop : 4],
+                ]
+            ).astype(np.float64)
+            out.setdefault(f"{prefix}:PLY", plies)
+            k = stop
+    return out
 
 
 # -- results ---------------------------------------------------------------------------
@@ -1195,7 +1435,7 @@ def _sibling_deck(path):
     return None, tried
 
 
-def _mesh_from_deck(path):
+def _mesh_from_deck(path, want_nid):
     from ..nastran._nastran import read as read_deck
 
     mesh = read_deck(path)
@@ -1213,12 +1453,15 @@ def _mesh_from_deck(path):
         mesh.cell_data["nastran:eid"] = [
             np.asarray(b, dtype=np.int64) for b in mesh.cells_id
         ]
+    ids = np.asarray(mesh.points_id, dtype=np.int64)
+    if want_nid and not np.array_equal(ids, np.arange(1, len(ids) + 1)):
+        mesh.point_data["nastran:nid"] = ids
     del mesh.points_id
     del mesh.cells_id
     return mesh, grid_index, cell_index, offsets, sizes
 
 
-def _build_mesh(nf):
+def _build_mesh(nf, want_nid):
     s = nf.stream
     ids, xyz, cp, cd, spoints, cords = _read_grids(s, nf.tables)
     if not ids:
@@ -1231,7 +1474,7 @@ def _build_mesh(nf):
                 "looked for " + ", ".join(tried)
             )
         if deck is not None:
-            return _mesh_from_deck(deck) + (CoordSystems(), None)
+            return _mesh_from_deck(deck, want_nid) + (CoordSystems(), None)
         ids, xyz, cd, more = bgpdt
         spoints |= more
         cp = [0] * len(ids)
@@ -1267,18 +1510,47 @@ def _build_mesh(nf):
     points = np.asarray(xyz, dtype=np.float64).reshape(len(ids), 3)
     point_data = {}
     systems = apply_frames(points, point_data, cords, ids, cp, cd, WHO)
+    if want_nid and list(map(int, ids)) != list(range(1, len(ids) + 1)):  # not 1 to n
+        point_data["nastran:nid"] = np.asarray(ids, dtype=np.int64)
     cards = _read_elements(s, nf.tables, set(ids))
+    extras = {}
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
-        cards, grid_index, spoints, _read_properties(s, nf.tables), WHO
+        cards, grid_index, spoints, _read_properties(s, nf.tables), WHO, extras
     )
+    cell_data.update(extras)
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
     mesh.regions = regions
     return mesh, grid_index, cell_index, offsets, sizes, systems, cd
 
 
+def _cord_fields(systems):
+    """The resolved coordinate systems as ``nastran:CORD2_<id>:*`` field data: each one's
+    type, its origin A and its axes X, Y and Z, all in basic coordinates."""
+    out = {}
+    for cid, (ctype, origin, axes) in sorted(systems.systems.items()):
+        if cid == 0:
+            continue
+        prefix = f"nastran:CORD2_{cid}:"
+        out[prefix + "TYPE"] = np.array([ctype], dtype=np.int64)
+        out[prefix + "A"] = np.array(origin, dtype=np.float64)
+        out[prefix + "X"] = np.array(axes[0], dtype=np.float64)
+        out[prefix + "Y"] = np.array(axes[1], dtype=np.float64)
+        out[prefix + "Z"] = np.array(axes[2], dtype=np.float64)
+    return out
+
+
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
-    mesh, grid_index, cell_index, offsets, sizes, systems, cd = _build_mesh(nf)
+    # GRID ids that are not 1 to n, as point data: only when point data is wanted.
+    want_nid = not points_only and (arrays is None or "nastran:nid" in arrays)
+    mesh, grid_index, cell_index, offsets, sizes, systems, cd = _build_mesh(
+        nf, want_nid
+    )
+    mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_pcomp_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_pbeam_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_bush_values(nf.stream, nf.tables))
+    mesh.field_data.update(_cord_fields(systems))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)
     if n == 0:

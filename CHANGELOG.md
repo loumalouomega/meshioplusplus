@@ -8,6 +8,27 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- `nastran_op2` writes `CBUSH` bushings with their `PBUSH` properties (`nastran:PBUSH_<id>:*` field data: stiffnesses, damping and stress coefficients), their orientation (`nastran:x` or `nastran:g0`), pyNastran-checked, in both engines. The reader returns the `PBUSH` values and a bush's orientation.
+- `nastran_op2` writes `CBEAM` beams with their `PBEAM` properties (`nastran:PBEAM_<id>:*` field data: the segments, and each station's section and outline), their orientation vector and offsets (`nastran:x`, `nastran:pin`, `nastran:w`), pyNastran-checked, in both engines. A beam oriented by a G0 is refused for now.
+- `nastran_op2` writes the coordinate systems that GRIDs' `nastran:cp` names as `CORD2R`, `CORD2C` and `CORD2S` records, and puts each GRID back in its local coordinates. The reader now returns every system the file defines as `nastran:CORD2_<id>:TYPE`, `A`, `X`, `Y` and `Z` field data (basic coordinates), which a write uses; pyNastran-checked, in both engines. Output systems (`nastran:cd`) are not written yet: their GRIDs keep CD 0 and their results stay in basic coordinates, with a warning.
+- `nastran_op2` writes the springs and dampers `CELAS2` and `CDAMP2` (between two GRIDs, or grounded at the second end) with their values inline: a `CELAS2`'s stiffness `nastran:k` (required), damping coefficient `nastran:ge` and stress coefficient `nastran:s`, and a `CDAMP2`'s damping `nastran:b` (required), pyNastran-checked, in both engines. A `CELAS2` without `nastran:k`, or a `CDAMP2` without `nastran:b`, is refused.
+- `nastran_op2` writes composite `PCOMP` properties from `nastran:PCOMP_<id>:*` field data (the layup's scalars and its plies, a symmetric layup's flag included), in place of the `PSHELL` of their shells, with the plies' materials as `MAT1` cards, pyNastran-checked, in both engines. A read returns the same field data.
+- `nastran_op2` writes `CBAR` beams with their `PBAR` properties (`nastran:PBAR_<id>:<MEMBER>` field data), their orientation vector or G0 (`nastran:x`, `nastran:g0`), pins (`nastran:pin`) and end offsets (`nastran:w`), pyNastran-checked, in both engines. A `CBAR` the writer used to write as a rod is now written as a beam.
+- `nastran_op2` writes the springs and dampers `CELAS1` and `CDAMP1` (lines between two GRIDs, or vertices when grounded) with their `PELAS` and `PDAMP` values (`nastran:PELAS_<id>:K`, `GE`, `S` and `nastran:PDAMP_<id>:B` field data) and their component numbers (`nastran:c1`, `nastran:c2`), pyNastran-checked, in both engines. The reader gives every cell block its element card (`nastran:card`, the GEOM2 type number), so `CONROD`, `CELAS2` and `CDAMP2` are no longer told apart by guesswork. A line or vertex that the writer used to write as a rod or a mass is now written as its own card, or left out with a warning when the writer does not hold that card yet (`CBEAM`, `CBUSH`, `CVISC`, `PLOTEL`, `CSHEAR`).
+- `nastran_h5` writes complex nodal tables in MSC's column order (`XR,YR,ZR,XI,YI,ZI`), in both engines.
+- `nastran_h5` writes `<G>:<M>@corner` arrays as array members with a `GRID` column, in both engines.
+- `ansys_rst` writes a static cyclic-symmetry sector from `field_data["ansys:cyclic_sectors"]` (which a sector read now returns), in both engines; `ansys_rst_cyclic` reads it back as the rotor.
+- `lsdyna_binout` reads and writes each database's metadata text (titles, legends, dates) as `binout:<database>:@<name>` field data, in both engines.
+- `abaqus_fil` writes the binary layout big-endian (`big_endian=True`) and with 8-byte record markers (`marker_size=8`), in both engines.
+- `lsdyna_binout` writes continuation files (`binout%001`...) with the `split_size` option, and 4-byte-offset (`word_size=4`) and big-endian (`big_endian=True`) files, through `write`, `SeriesWriter` and `write_sequence`, in both engines.
+- `ansys_rst` writes modal cyclic-symmetry sets (`ansys:harmonic_index`, mode pairs as consecutive sets of one frequency), and a plain read returns each set's index, in both engines.
+- `nastran_op2` writes the element forces of rods and linear plates (`ELEMENT_FORCE:<member>`, an `OEF1X` table), pyNastran-checked, in both engines.
+- `nastran_op2` writes complex nodal tables from `<name>_real`/`_imag` point data (pyNastran-checked), in both engines.
+- `nastran_op2` and `nastran_h5` write and read property and material values (`PSHELL`, `PROD`, `PTUBE`, `PSOLID`, `MAT1`) as `nastran:<CARD>_<id>:<MEMBER>` field data, in both engines.
+- `nastran_op2` and `nastran_h5` write GRID ids other than 1 to n from `point_data["nastran:nid"]`, and read them back into it, in both engines.
+
 ## v17.3.0 (2026-10-16)
 
 - **CGNS field data and regions**: `field_data` is written as a `UserDefinedData_t` node and point and cell regions as `ZoneSubRegion_t` nodes (`GridLocation`, `PointList`, the dimension as the node value, the tag in a child), by both engines, and read back for a single-zone file. Side regions and cells of face-based `NGON_n`/`NFACE_n` blocks are not written (a warning says so).

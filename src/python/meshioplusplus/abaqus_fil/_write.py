@@ -152,8 +152,10 @@ def _ascii(records):
     return ("\n".join(text) + "\n").encode()
 
 
-def _binary(records):
-    order = "<"
+def _binary(records, big_endian=False, marker_size=4):
+    if marker_size not in (4, 8):
+        _wfail("the record marker size must be 4 or 8")
+    order = ">" if big_endian else "<"
     words = []
     for r in records:
         rec_words = [struct.pack(order + "q", len(r) + 1)]
@@ -173,7 +175,7 @@ def _binary(records):
             rec_words += [b"\0" * 8] * pad
         words += rec_words
     words += [b"\0" * 8] * ((_BLOCK_WORDS - len(words) % _BLOCK_WORDS) % _BLOCK_WORDS)
-    marker = struct.pack(order + "i", 8 * _BLOCK_WORDS)
+    marker = struct.pack(order + ("i" if marker_size == 4 else "q"), 8 * _BLOCK_WORDS)
     out = bytearray()
     for b in range(0, len(words), _BLOCK_WORDS):
         out += marker + b"".join(words[b : b + _BLOCK_WORDS]) + marker
@@ -665,8 +667,10 @@ def _warn_dropped(model, increments):
         )
 
 
-def _encode(binary, records):
-    return _binary(records) if binary else _ascii(records)
+def _encode(binary, records, big_endian=False, marker_size=4):
+    if binary:
+        return _binary(records, big_endian, marker_size)
+    return _ascii(records)
 
 
 def _time_of(mesh):
@@ -685,7 +689,7 @@ def _save(filename, data):
 
 
 @_provenance.slotless_writer
-def write(filename, mesh, binary=False):
+def write(filename, mesh, binary=False, big_endian=False, marker_size=4):
     model = _Model(mesh)
     increments = []
     if _has_results(mesh):
@@ -694,7 +698,7 @@ def write(filename, mesh, binary=False):
     records = list(model.records)
     for inc in increments:
         records += inc.records
-    _save(filename, _encode(binary, records))
+    _save(filename, _encode(binary, records, big_endian, marker_size))
 
 
 class SeriesWriter:
@@ -707,9 +711,11 @@ class SeriesWriter:
     assembled when the writer closes. Use as a context manager, or call
     :meth:`close`."""
 
-    def __init__(self, filename, binary=False):
+    def __init__(self, filename, binary=False, big_endian=False, marker_size=4):
         self._filename = filename
         self._binary = bool(binary)
+        self._big_endian = bool(big_endian)
+        self._marker_size = marker_size
         self._model = None
         self._increments = []
 
@@ -735,7 +741,10 @@ class SeriesWriter:
         records = list(self._model.records)
         for inc in self._increments:
             records += inc.records
-        _save(filename, _encode(self._binary, records))
+        _save(
+            filename,
+            _encode(self._binary, records, self._big_endian, self._marker_size),
+        )
 
     def __enter__(self):
         return self

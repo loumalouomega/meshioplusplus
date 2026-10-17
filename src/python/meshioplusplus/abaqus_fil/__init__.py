@@ -41,7 +41,7 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-def write(filename, mesh, binary=False):
+def write(filename, mesh, binary=False, big_endian=False, marker_size=4):
     """Write a mesh as a one-increment Abaqus results file (``.fil``).
 
     The inverse of :func:`read`. The model is the points (``abaqus:id`` labels,
@@ -54,17 +54,23 @@ def write(filename, mesh, binary=False):
     ``abaqus:layout:<name>`` of ``(points, components)`` is per integration
     point (per element node for ``NFORC``), any other one value set per element.
     Its time is ``meshio:time`` (0 when absent). ``binary=True`` writes the
-    little-endian binary layout instead of ASCII. Cells with no Abaqus element,
+    little-endian binary layout instead of ASCII; ``big_endian=True`` writes the
+    big-endian one and ``marker_size=8`` 8-byte record markers (both orders and
+    both marker sizes are read). Cells with no Abaqus element,
     side regions and other arrays are dropped with a warning.
     """
     if not is_buffer(filename, "w"):
         try:
-            _core.abaqus_fil_write(str(filename), mesh, bool(binary))
+            _core.abaqus_fil_write(
+                str(filename), mesh, bool(binary), bool(big_endian), marker_size
+            )
             return
         except Exception as exc:
             if not core_declined(exc, "abaqus_fil", "write", filename):
                 raise
-    return _py_write(filename, mesh, binary=binary)
+    return _py_write(
+        filename, mesh, binary=binary, big_endian=big_endian, marker_size=marker_size
+    )
 
 
 class SeriesWriter:
@@ -83,16 +89,20 @@ class SeriesWriter:
     when the core declines to open it.
     """
 
-    def __init__(self, filename, binary=False):
+    def __init__(self, filename, binary=False, big_endian=False, marker_size=4):
         self._core = self._py = None
         if not is_buffer(filename, "w"):
             try:
-                self._core = _core.AbaqusFilSeriesWriter(str(filename), bool(binary))
+                self._core = _core.AbaqusFilSeriesWriter(
+                    str(filename), bool(binary), bool(big_endian), marker_size
+                )
             except Exception as exc:
                 if not core_declined(exc, "abaqus_fil", "write", filename):
                     raise
         if self._core is None:
-            self._py = _PySeriesWriter(filename, binary=binary)
+            self._py = _PySeriesWriter(
+                filename, binary=binary, big_endian=big_endian, marker_size=marker_size
+            )
 
     def write(self, time, mesh):
         if self._core is not None:

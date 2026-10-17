@@ -273,9 +273,13 @@ MIO_ABI_LAYOUT(meshioplusplus::NastranOp2SeriesWriter, 8, 8);
 // `LsdynaBinoutSeriesWriter` is the same shape, pinned from the release that
 // introduces it.
 MIO_ABI_LAYOUT(meshioplusplus::LsdynaBinoutSeriesWriter, 8, 8);
+// The binout writers' options: a `std::size_t`, an `int` and a `bool`.
+MIO_ABI_LAYOUT(meshioplusplus::LsdynaBinoutWriteOptions, 16, 8);
 // `AbaqusFilSeriesWriter` is the same shape, pinned from the release that
 // introduces it.
 MIO_ABI_LAYOUT(meshioplusplus::AbaqusFilSeriesWriter, 8, 8);
+// The `.fil` writers' options: two `bool`s and an `int`.
+MIO_ABI_LAYOUT(meshioplusplus::AbaqusFilWriteOptions, 8, 4);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both

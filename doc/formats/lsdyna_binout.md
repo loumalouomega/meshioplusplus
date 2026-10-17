@@ -6,7 +6,7 @@ The binary file [LS-DYNA](https://lsdyna.ansys.com/) writes in place of its ASCI
 |---|---|
 | **Format name** | `lsdyna_binout` |
 | **Extensions** | none: found by its file name, `binout` or `binout0000`... (any case), or by its LSDA header |
-| **Read / Write** | ✓ / ✓ (one file, no continuation files; see [Writing](#writing) for what is left, tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.3) |
+| **Read / Write** | ✓ / ✓ (one file, or `%001` continuation files with `split_size`; see [Writing](#writing) for what is left, tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.3) |
 | **Extra dependencies** | none |
 
 ## Reading
@@ -71,13 +71,13 @@ The writer is the reader's inverse. It writes one LSDA file (8-byte lengths and 
 
 A series writes `nodout`'s ids once and an output folder per step. A database gets a new folder only when its own `binout:<database>:time` changes, which is the inverse of what `read` attaches (the latest output at or before the step's time): a database written every second beside a `nodout` written every tenth keeps its cadence, and `write_sequence(read_sequence(...))` round trips. A database may be absent from a step and appear later; once it has appeared its variables must match its first output's. Every step must have the first step's number of points and ids and `nodout` variables, or the step is a `WriteError` naming it (and `{step}` in the path writes one file per step instead). A step's time is the argument of `write` (or the pair's first item in `write_sequence`), not its `meshio:time`. One step is `write`'s bytes. The file is assembled when the series closes. Both engines write the same bytes: the C++ `write_lsdyna_binout` and `LsdynaBinoutSeriesWriter` and their Python twins, which the test suite compares, and a hand-built file spells out.
 
-Not yet: continuation files (`binout%001`), 4-byte-offset and big-endian files, the databases' text metadata (titles, legends, dates) and links; they are the rest of [roadmap 3.2.3](../roadmap.md#_3-reader-and-writer-parity).
+**Metadata text.** A database's `metadata` titles, legends and dates (1-byte integers) are field data `binout:<database>:@<name>`, as `uint8` bytes (`binout:nodout:@title`); written back as 1-byte integers beside `ids`, from the first step. **Continuation files.** `split_size` (bytes; `write`, `SeriesWriter`, `write_sequence(..., split_size=...)`, 0 for one file) starts `binout%001`, `binout%002`... once the data written to the current file would pass it; an output folder stays whole in one file, a folder larger than the split makes a file of its own, and the symbol tables add a little more, so the size is a target. The reader merges the files. **Word size and byte order.** `word_size=4` writes 4-byte lengths and offsets (a file under 4 GiB; the default is 8) and `big_endian=True` the big-endian records and data the header's order byte announces; both go through `write`, `SeriesWriter` and `write_sequence`, and the reader and lasso-python read every combination. Not yet: links; they are the rest of [roadmap 3.2.3](../roadmap.md#_3-reader-and-writer-parity).
 
 lasso-python 2.0.4 reads the written files (`Binout`): the databases, `nodout`'s ids, times and coordinates, and the `glstat` and `elout/beam` outputs of a series, each database with its own number of outputs. They were not opened in LS-PrePost.
 
 ## Not read
 
-- The databases' text metadata (titles, legends, dates, revisions).
+- Metadata text of any type but 1-byte integers (revisions, version records).
 - An MPP run's per-processor files together: each `binout0000`... reads on its own.
 
 ## Verification

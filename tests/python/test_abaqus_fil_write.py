@@ -585,3 +585,47 @@ def test_pybaqus_reads_the_written_file(tmp_path):
         [np.ravel(model.get_element_result(f"S{c}", 1, 2)) for c in range(1, 7)]
     )
     np.testing.assert_allclose(stress, np.arange(6.0)[None, :])
+
+
+@pytest.mark.parametrize("marker_size", [4, 8])
+@pytest.mark.parametrize("big_endian", [False, True])
+def test_byte_order_and_marker_size_round_trip(
+    engine, tmp_path, big_endian, marker_size
+):
+    """The binary layout in either byte order and with 4- or 8-byte record markers
+    reads back as the default layout does."""
+    mesh = results_mesh()
+    reference, path = tmp_path / "ref.fil", tmp_path / "out.fil"
+    write_with(engine, reference, mesh, binary=True)
+    if engine == "core":
+        _core.abaqus_fil_write(str(path), mesh, True, big_endian, marker_size)
+    else:
+        py_write.write(str(path), mesh, True, big_endian, marker_size)
+    head = path.read_bytes()[:8]
+    first = int.from_bytes(head[:marker_size], "big" if big_endian else "little")
+    assert first == 8 * 512
+    for read in (meshioplusplus.abaqus_fil.read, py_fil.read):
+        same_mesh(read(reference), read(path))
+
+
+def test_the_engines_write_the_same_bytes_in_every_binary_layout(tmp_path):
+    mesh = results_mesh()
+    for big in (False, True):
+        for marker in (4, 8):
+            core, python = (
+                tmp_path / f"c{big}{marker}.fil",
+                tmp_path / f"p{big}{marker}.fil",
+            )
+            _core.abaqus_fil_write(str(core), mesh, True, big, marker)
+            py_write.write(str(python), mesh, True, big, marker)
+            assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_bad_marker_size_is_refused(engine, tmp_path):
+    with pytest.raises(Exception, match="marker size"):
+        if engine == "core":
+            _core.abaqus_fil_write(
+                str(tmp_path / "x.fil"), results_mesh(), True, False, 2
+            )
+        else:
+            py_write.write(str(tmp_path / "x.fil"), results_mesh(), True, False, 2)

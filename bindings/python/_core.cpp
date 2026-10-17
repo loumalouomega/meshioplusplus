@@ -5632,15 +5632,29 @@ PYBIND11_MODULE(_core, m) {
     // `meshioplusplus.abaqus_fil.SeriesWriter`.
     m.def(
         "abaqus_fil_write",
-        [](const std::string& path, py::object pymesh, bool binary) {
+        [](const std::string& path, py::object pymesh, bool binary, bool big_endian,
+           int marker_size) {
+            meshioplusplus::AbaqusFilWriteOptions options;
+            options.mBinary = binary;
+            options.mBigEndian = big_endian;
+            options.mMarkerSize = marker_size;
             meshioplusplus_py::PyMeshRefs refs;
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_abaqus_fil(path, mesh, binary);
+                return meshioplusplus::write_abaqus_fil(path, mesh, options);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("binary") = false);
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = false,
+        py::arg("big_endian") = false, py::arg("marker_size") = 4);
     py::class_<meshioplusplus::AbaqusFilSeriesWriter>(m, "AbaqusFilSeriesWriter")
-        .def(py::init<const std::string&, bool>(), py::arg("path"), py::arg("binary") = false)
+        .def(py::init([](const std::string& path, bool binary, bool big_endian, int marker_size) {
+                 meshioplusplus::AbaqusFilWriteOptions options;
+                 options.mBinary = binary;
+                 options.mBigEndian = big_endian;
+                 options.mMarkerSize = marker_size;
+                 return std::make_unique<meshioplusplus::AbaqusFilSeriesWriter>(path, options);
+             }),
+             py::arg("path"), py::arg("binary") = false, py::arg("big_endian") = false,
+             py::arg("marker_size") = 4)
         .def(
             "write",
             [](meshioplusplus::AbaqusFilSeriesWriter& rSelf, double time, py::object pymesh) {
@@ -5653,14 +5667,32 @@ PYBIND11_MODULE(_core, m) {
 
     // LS-DYNA binout writer, and the step-by-step series writer behind
     // `meshioplusplus.lsdyna_binout.SeriesWriter`.
-    m.def("lsdyna_binout_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-            return meshioplusplus::write_lsdyna_binout(path, mesh);
-        });
-    });
+    m.def(
+        "lsdyna_binout_write",
+        [](const std::string& path, py::object pymesh, std::size_t split_size, int word_size,
+           bool big_endian) {
+            meshioplusplus::LsdynaBinoutWriteOptions options;
+            options.mSplitSize = split_size;
+            options.mWordSize = word_size;
+            options.mBigEndian = big_endian;
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_lsdyna_binout(path, mesh, options);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("split_size") = 0, py::arg("word_size") = 8,
+        py::arg("big_endian") = false);
     py::class_<meshioplusplus::LsdynaBinoutSeriesWriter>(m, "LsdynaBinoutSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(py::init([](const std::string& path, std::size_t split_size, int word_size,
+                         bool big_endian) {
+                 meshioplusplus::LsdynaBinoutWriteOptions options;
+                 options.mSplitSize = split_size;
+                 options.mWordSize = word_size;
+                 options.mBigEndian = big_endian;
+                 return std::make_unique<meshioplusplus::LsdynaBinoutSeriesWriter>(path, options);
+             }),
+             py::arg("path"), py::arg("split_size") = 0, py::arg("word_size") = 8,
+             py::arg("big_endian") = false)
         .def(
             "write",
             [](meshioplusplus::LsdynaBinoutSeriesWriter& rSelf, double time, py::object pymesh) {

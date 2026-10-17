@@ -114,6 +114,36 @@ MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
 MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
 
 /**
+ * @brief Options of the binout writers.
+ *
+ * `mSplitSize`: the data bytes after which a new continuation file (`<path>%001`,
+ * `%002`...) starts (0: one file). `mWordSize`: the bytes of every length and offset in
+ * the LSDA records, 8 or 4 (a file under 4 GiB). `mBigEndian`: the byte order of the
+ * records and the data. The Python twin takes the same options.
+ */
+struct LsdynaBinoutWriteOptions {
+    std::size_t mSplitSize = 0;
+    int mWordSize = 8;
+    bool mBigEndian = false;
+};
+
+/// `write_lsdyna_binout` with options.
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh,
+                                            const LsdynaBinoutWriteOptions& rOptions);
+
+/**
+ * @brief `write_lsdyna_binout` split into continuation files.
+ *
+ * When @p SplitSize is not 0, a new file (`<path>%001`, `%002`...) starts once the
+ * data written to the current one would pass @p SplitSize bytes; an output folder
+ * stays whole in one file (so one folder larger than the split makes a file of its
+ * own), and the symbol tables add a little more. `read_lsdyna_binout` merges the
+ * files. 0 writes one file.
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh,
+                                            std::size_t SplitSize);
+
+/**
  * @brief A binout written step by step: `nodout`'s ids once and an output
  *        folder per step, and any other database's output whenever its own
  *        `binout:<database>:time` changes (so a database written less often
@@ -130,6 +160,13 @@ class MESHIOPLUSPLUS_API LsdynaBinoutSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit LsdynaBinoutSeriesWriter(const std::string& rPath);
+
+    /// As above, splitting into `%001`... continuation files at @p SplitSize data bytes
+    /// (see the split `write_lsdyna_binout`).
+    LsdynaBinoutSeriesWriter(const std::string& rPath, std::size_t SplitSize);
+
+    /// As above, with the word size and byte order of `LsdynaBinoutWriteOptions`.
+    LsdynaBinoutSeriesWriter(const std::string& rPath, const LsdynaBinoutWriteOptions& rOptions);
     ~LsdynaBinoutSeriesWriter();
 
     LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
