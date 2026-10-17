@@ -535,3 +535,68 @@ def test_pynastran_reads_the_written_file(tmp_path):
     )
     assert model.crod_stress[1].data[0, 0, 0] == 11.0
     assert model.cquad4_stress[1].data[0, 0, 1] == 7.0
+
+
+_GRID_IDS = [40, 7, 23, 5, 19, 11]
+
+
+def _numbered_mesh():
+    mesh = results_mesh()
+    mesh.point_data["nastran:nid"] = np.array(_GRID_IDS, dtype=np.int64)
+    return mesh
+
+
+def test_grid_ids_other_than_one_to_n_round_trip(engine, tmp_path):
+    """``point_data["nastran:nid"]`` numbers the GRIDs; the elements, the nodal
+    tables and the solids' corner GRIDs use those ids. GEOM1 holds the GRIDs by id,
+    so the points come back in id order."""
+    path = tmp_path / "ids.op2"
+    mesh = _numbered_mesh()
+    write_with(engine, path, mesh)
+    order = np.argsort(_GRID_IDS)
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.point_data["nastran:nid"].tolist() == sorted(_GRID_IDS)
+        np.testing.assert_allclose(back.points, mesh.points[order], rtol=1e-6)
+        by_type = {b.type: b for b in back.cells}
+        for a in mesh.cells:  # the same GRIDs, by id
+            b = by_type[a.type]
+            np.testing.assert_array_equal(
+                np.asarray(_GRID_IDS)[a.data],
+                back.point_data["nastran:nid"][b.data],
+            )
+        np.testing.assert_allclose(
+            back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"][order]
+        )
+        np.testing.assert_array_equal(
+            back.point_data["TEMPERATURE"], mesh.point_data["TEMPERATURE"][order]
+        )
+        types = [b.type for b in back.cells]
+        np.testing.assert_array_equal(
+            back.cell_data["STRESS:X@corner"][types.index("tetra")], [[9.0] * 4]
+        )
+
+
+def test_the_engines_write_the_same_bytes_with_grid_ids(tmp_path):
+    mesh = _numbered_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+@pytest.mark.parametrize("ids", [[1, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]])
+def test_bad_grid_ids_are_refused(engine, tmp_path, ids):
+    mesh = results_mesh()
+    mesh.point_data["nastran:nid"] = np.array(ids)
+    with pytest.raises((WriteError, RuntimeError)):
+        write_with(engine, tmp_path / "bad.op2", mesh)
+
+
+def test_pynastran_reads_the_grid_ids(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2", exc_type=ImportError)
+    path = tmp_path / "pn_ids.op2"
+    _core.nastran_op2_write(str(path), _numbered_mesh())
+    model = op2.OP2(debug=False)
+    model.read_op2(str(path), build_dataframe=False)
+    np.testing.assert_array_equal(model.displacements[1].node_gridtype[:, 0], _GRID_IDS)

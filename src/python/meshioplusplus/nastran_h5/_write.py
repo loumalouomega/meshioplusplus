@@ -61,7 +61,7 @@ _NO_PID = ("CONM2", "CONROD")
 _PROPERTY_MEMBER = {"PSHELL": "MID1", "PSOLID": "MID", "PROD": "MID", "PTUBE": "MID"}
 
 _GROUP = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_QUIET_POINT = ("nastran:cp", "nastran:cd")
+_QUIET_POINT = ("nastran:cp", "nastran:cd", "nastran:nid")
 _QUIET_CELL = ("nastran:eid", "nastran:pid")
 
 
@@ -206,7 +206,7 @@ def _corner_members(model, mesh, taken, out):
                 grid = np.zeros((wide.shape[0], width), dtype=np.int64)
                 at = 0
                 for blk, rows in parts:
-                    conn = blk["conn"][rows] + 1
+                    conn = model.node_ids[blk["conn"][rows]]
                     grid[at : at + len(rows), 1 : 1 + conn.shape[1]] = conn
                     at += len(rows)
                 columns.append(("GRID", grid[order]))
@@ -382,7 +382,7 @@ def _write_model(f, model):
         node,
         "GRID",
         [
-            ("ID", "<i8", np.arange(1, n + 1)),
+            ("ID", "<i8", model.node_ids),
             ("CP", "<i8", zeros),
             ("X", "<f8", model.points),
             ("CD", "<i8", zeros),
@@ -400,7 +400,7 @@ def _write_model(f, model):
         nodes = np.zeros((len(eid), width), dtype=np.int64)
         at = 0
         for blk, rows in parts:
-            conn = blk["conn"][rows] + 1
+            conn = model.node_ids[blk["conn"][rows]]
             if blk["nodes"] > linear and perm is not None:
                 placed = np.zeros_like(conn)
                 for i, p in enumerate(perm):
@@ -521,7 +521,7 @@ def _write_results(f, model, steps):
             keep = np.nonzero(
                 ~np.all(np.isnan(np.stack(list(members.values()))), axis=0)
             )[0]
-            cols = [("ID", "<i8", keep + 1)]
+            cols = [("ID", "<i8", model.node_ids[keep])]
             cols += [(m, "<f8", v[keep]) for m, v in members.items()]
             return cols
 

@@ -974,6 +974,34 @@ class TestWriter:
         np.testing.assert_array_equal(tetra, [1.0, 2.0])
 
     @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_grid_ids_other_than_one_to_n_round_trip(self, writer, engine, tmp_path):
+        """``point_data["nastran:nid"]`` numbers the GRIDs, the element cards and the
+        nodal tables."""
+        mesh = _write_mesh()
+        ids = np.array([70, 3, 41, 9, 20, 5, 100])
+        mesh.point_data["nastran:nid"] = ids
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        tables = _tables(path)
+        np.testing.assert_array_equal(tables["NASTRAN/INPUT/NODE/GRID"]["ID"], ids)
+        np.testing.assert_array_equal(
+            tables["NASTRAN/INPUT/ELEMENT/CTETRA"]["G"][0][:4], ids[[0, 1, 2, 3]]
+        )
+        back = engine(path)
+        np.testing.assert_array_equal(back.point_data["nastran:nid"], ids)
+        for a, b in zip(
+            sorted(mesh.cells, key=lambda c: c.type),
+            sorted(back.cells, key=lambda c: c.type),
+        ):
+            np.testing.assert_array_equal(a.data, b.data)
+        np.testing.assert_array_equal(
+            back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"]
+        )
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
     def test_complex_columns_are_in_msc_order(self, writer, tmp_path):
         """MSC's complex nodal tables list every real component, then every imaginary one."""
         mesh = _write_mesh()

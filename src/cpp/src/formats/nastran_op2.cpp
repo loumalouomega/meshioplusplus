@@ -27,6 +27,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -1555,6 +1556,15 @@ NDArray op2_int_array(const std::vector<std::int64_t>& rV) {
     return a;
 }
 
+// GRID ids that are not 1 to n, as `nastran:nid` point data.
+void op2_add_node_ids(Mesh& rMesh, const std::vector<std::int64_t>& rIds) {
+    for (std::size_t i = 0; i < rIds.size(); ++i)
+        if (rIds[i] != static_cast<std::int64_t>(i + 1)) {
+            rMesh.AddPointData("nastran:nid", op2_int_array(rIds));
+            return;
+        }
+}
+
 NDArray op2_scalar(double V, DType T) {
     NDArray a(T, {1});
     if (T == DType::Float64)
@@ -1616,6 +1626,7 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
         auto [deck, tried] = op2_sibling_deck(rR.mPath);
         std::vector<std::int64_t> grid_ids, cell_ids;
         m.mMesh = detail::nastran_read_deck(deck, grid_ids, cell_ids);
+        op2_add_node_ids(m.mMesh, grid_ids);
         for (std::size_t i = 0; i < grid_ids.size(); ++i)
             m.mGridIndex.emplace(grid_ids[i], i);
         std::vector<NDArray> eids;
@@ -1677,6 +1688,7 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
         std::fill(g.mCd.begin(), g.mCd.end(), 0);
     }
     m.mSystems = detail::nastran_apply_frames(m.mMesh, g.mCords, g.mIds, g.mCp, g.mCd, kOp2Who);
+    op2_add_node_ids(m.mMesh, g.mIds);
     m.mCd = g.mCd;
     const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
     const auto cards = op2_read_elements(rR.mStream, rR.mTables, grids);
@@ -2294,11 +2306,34 @@ std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype)
     return pid;
 }
 
+/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n.
+std::vector<std::int64_t> op2w_node_ids(const Mesh& rMesh, std::size_t N) {
+    std::vector<std::int64_t> ids(N);
+    if (!rMesh.HasPointData("nastran:nid")) {
+        for (std::size_t i = 0; i < N; ++i)
+            ids[i] = static_cast<std::int64_t>(i + 1);
+        return ids;
+    }
+    const NDArray& a = rMesh.PointData("nastran:nid");
+    if (a.Size() != N || detail::is_float_dtype(a.Dtype()))
+        op2w_fail("'nastran:nid' must hold one integer per point");
+    const detail::Int64View v(a);
+    ids.assign(v.Data(), v.Data() + N);
+    std::vector<std::int64_t> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    if (!sorted.empty() && sorted.front() < 1)
+        op2w_fail("GRID ids must be positive");
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        op2w_fail("GRID ids are not unique");
+    return ids;
+}
+
 class Op2wModel {
 public:
     explicit Op2wModel(const Mesh& rMesh) {
         mSignature = op2w_signature(rMesh);
         mNpoints = rMesh.NumPoints();
+        mNodeIds = op2w_node_ids(rMesh, mNpoints);
         {
             const NDArray& pts = rMesh.Points();
             const std::size_t dim = rMesh.PointDim();
@@ -2417,6 +2452,7 @@ public:
 
     const Op2wSignature& Signature() const { return mSignature; }
     std::size_t NumPoints() const { return mNpoints; }
+    const std::vector<std::int64_t>& NodeIds() const { return mNodeIds; }
     const std::vector<Op2wBlock>& Blocks() const { return mBlocks; }
     const std::vector<Op2wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
     const std::set<std::string>& Skipped() const { return mSkipped; }
@@ -2429,9 +2465,14 @@ public:
 
     std::string Geom1() const {
         std::string rows;
-        for (std::size_t i = 0; i < mNpoints; ++i) {
+        std::vector<std::size_t> order(mNpoints);  // GEOM1 holds the GRIDs by id
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::stable_sort(order.begin(), order.end(), [this](std::size_t A, std::size_t B) {
+            return mNodeIds[A] < mNodeIds[B];
+        });
+        for (const std::size_t i : order) {
             Op2wRowBuf w(8);
-            w.I(0, static_cast<std::int64_t>(i + 1));
+            w.I(0, mNodeIds[i]);
             for (std::size_t k = 0; k < 3; ++k)
                 w.F(2 + k, mPoints[3 * i + k]);
             w.Append(rows);
@@ -2455,7 +2496,7 @@ public:
                 for (std::size_t k = 0; k < blk.mNodes; ++k) {
                     const std::size_t at =
                         (blk.mNodes > card.mLinear && card.mPerm != nullptr) ? card.mPerm[k] : k;
-                    nodes[at] = conn[k] + 1;
+                    nodes[at] = mNodeIds[static_cast<std::size_t>(conn[k])];
                 }
                 if (std::string_view(card.mName) == "CONM2") {
                     w.I(1, nodes[0]);
@@ -2524,6 +2565,7 @@ private:
     Op2wSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
+    std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
     std::set<std::int64_t> mProps[4];
@@ -2781,7 +2823,9 @@ void op2w_element_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wH
                 for (std::size_t k = 0; k < 1 + ncorner; ++k) {
                     const std::size_t base = 4 + 21 * k;
                     w.mWords[base] =
-                        k == 0 ? 0x2F4E4543u : static_cast<std::uint32_t>(conn[k - 1] + 1);
+                        k == 0 ? 0x2F4E4543u
+                               : static_cast<std::uint32_t>(
+                                     rModel.NodeIds()[static_cast<std::size_t>(conn[k - 1])]);
                     for (const std::string& m : members) {
                         double v = value(m, r);
                         if (k > 0) {
@@ -2831,7 +2875,12 @@ Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Tim
         }
         std::string data;
         std::size_t kept = 0;
-        for (std::size_t i = 0; i < npts; ++i) {
+        std::vector<std::size_t> by_id(npts);  // the rows are by GRID id
+        std::iota(by_id.begin(), by_id.end(), std::size_t{0});
+        std::stable_sort(by_id.begin(), by_id.end(), [&rModel](std::size_t A, std::size_t B) {
+            return rModel.NodeIds()[A] < rModel.NodeIds()[B];
+        });
+        for (const std::size_t i : by_id) {
             bool all_nan = true;
             for (std::size_t k = 0; k < ncomp; ++k)
                 all_nan = all_nan && std::isnan(base.Data()[i * ncomp + k]);
@@ -2839,7 +2888,7 @@ Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Tim
                 continue;
             ++kept;
             Op2wRowBuf w(8);
-            w.I(0, static_cast<std::int64_t>((i + 1) * 10 + kOp2wDevice));
+            w.I(0, rModel.NodeIds()[i] * 10 + kOp2wDevice);
             w.I(1, 1);
             for (std::size_t k = 0; k < ncomp; ++k)
                 w.F(2 + k, base.Data()[i * ncomp + k]);
@@ -2864,7 +2913,7 @@ void op2w_warn_dropped(const Mesh& rMesh, const Op2wModel& rModel,
                        const std::set<std::string>& rTaken) {
     std::set<std::string> names;
     for (const std::string& n : rMesh.PointDataNames())
-        if (rTaken.count(n) == 0 && n != "nastran:cp" && n != "nastran:cd")
+        if (rTaken.count(n) == 0 && n != "nastran:cp" && n != "nastran:cd" && n != "nastran:nid")
             names.insert(n);
     for (const std::string& n : rMesh.CellDataNames())
         if (rTaken.count(n) == 0 && n != "nastran:eid" && n != "nastran:pid")

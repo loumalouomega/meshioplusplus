@@ -576,6 +576,13 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
         mesh, cards, file.mGridIndex, file.mScalarPoints, ptype, "MSC Nastran HDF5");
     const auto& cell_index = model.mCellIndex;
     const std::size_t ncells = model.mNumCells;
+    for (std::size_t i = 0; i < file.mGridIds.size(); ++i)
+        if (file.mGridIds[i] != static_cast<std::int64_t>(i + 1)) {  // not 1 to n: keep them
+            NDArray nid(DType::Int64, {file.mGridIds.size()});
+            std::copy(file.mGridIds.begin(), file.mGridIds.end(), nid.As<std::int64_t>());
+            mesh.AddPointData("nastran:nid", std::move(nid));
+            break;
+        }
 
     // --- the step -------------------------------------------------------------
     if (file.mSteps.empty()) {
@@ -1078,12 +1085,35 @@ std::int64_t nh5w_ptube_pid(const std::string& rName) {
     return pid;
 }
 
+/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n.
+std::vector<std::int64_t> nh5w_node_ids(const Mesh& rMesh, std::size_t N) {
+    std::vector<std::int64_t> ids(N);
+    if (!rMesh.HasPointData("nastran:nid")) {
+        for (std::size_t i = 0; i < N; ++i)
+            ids[i] = static_cast<std::int64_t>(i + 1);
+        return ids;
+    }
+    const NDArray& a = rMesh.PointData("nastran:nid");
+    if (a.Size() != N || detail::is_float_dtype(a.Dtype()))
+        nh5w_fail("'nastran:nid' must hold one integer per point");
+    const detail::Int64View v(a);
+    ids.assign(v.Data(), v.Data() + N);
+    std::vector<std::int64_t> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    if (!sorted.empty() && sorted.front() < 1)
+        nh5w_fail("GRID ids must be positive");
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        nh5w_fail("GRID ids are not unique");
+    return ids;
+}
+
 /// The mesh as the file holds it: GRIDs, element cards and properties.
 class Nh5wModel {
 public:
     explicit Nh5wModel(const Mesh& rMesh) {
         mSignature = nh5w_signature(rMesh);
         mNpoints = rMesh.NumPoints();
+        mNodeIds = nh5w_node_ids(rMesh, mNpoints);
         {
             const NDArray& pts = rMesh.Points();
             const std::size_t dim = rMesh.PointDim();
@@ -1205,6 +1235,7 @@ public:
     const Nh5wSignature& Signature() const { return mSignature; }
     std::size_t NumPoints() const { return mNpoints; }
     const std::vector<double>& Points() const { return mPoints; }
+    const std::vector<std::int64_t>& NodeIds() const { return mNodeIds; }
     const std::vector<Nh5wBlock>& Blocks() const { return mBlocks; }
     const std::vector<Nh5wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
     const std::set<std::int64_t>& Props(int Prop) const { return mProps[Prop]; }
@@ -1220,6 +1251,7 @@ private:
     Nh5wSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
+    std::vector<std::int64_t> mNodeIds;
     std::vector<Nh5wBlock> mBlocks;
     std::vector<std::vector<Nh5wRow>> mRows;
     std::set<std::int64_t> mProps[4];
@@ -1499,7 +1531,9 @@ void nh5w_element_members(const Mesh& rMesh, const Nh5wModel& rModel, std::set<s
                 for (std::size_t i = 0; i < rows.size(); ++i) {
                     const Nh5wBlock& blk = rModel.Blocks()[rows[i].mBlock];
                     for (std::size_t j = 0; j < blk.mNodes; ++j)
-                        w.mGrid[i * width + 1 + j] = blk.mConn[rows[i].mRow * blk.mNodes + j] + 1;
+                        w.mGrid[i * width + 1 + j] =
+                            rModel.NodeIds()[static_cast<std::size_t>(
+                                blk.mConn[rows[i].mRow * blk.mNodes + j])];
                 }
             }
             const auto centre = rOut.find({group, card});
@@ -1558,7 +1592,7 @@ void nh5w_warn_dropped(const Mesh& rMesh, const Nh5wModel& rModel,
                        const std::set<std::string>& rTaken) {
     std::set<std::string> names;
     for (const std::string& n : rMesh.PointDataNames())
-        if (!rTaken.count(n) && n != "nastran:cp" && n != "nastran:cd")
+        if (!rTaken.count(n) && n != "nastran:cp" && n != "nastran:cd" && n != "nastran:nid")
             names.insert(n);
     for (const std::string& n : rMesh.CellDataNames())
         if (!rTaken.count(n) && n != "nastran:eid" && n != "nastran:pid")
@@ -1691,13 +1725,6 @@ void nh5w_write_table(hid_t File, const std::string& rPath, const std::vector<Nh
         nh5w_fail("could not write the table " + rPath);
 }
 
-std::vector<std::int64_t> nh5w_iota(std::size_t N, std::int64_t First = 1) {
-    std::vector<std::int64_t> v(N);
-    for (std::size_t i = 0; i < N; ++i)
-        v[i] = First + static_cast<std::int64_t>(i);
-    return v;
-}
-
 // Columns the MSC tables carry beyond the ones the reader uses, and the value this writer
 // gives them: kind 'i' (int64), 'f' (float64) or 's' (a 4-byte string, `mText`), `mArity`
 // values per row.
@@ -1787,7 +1814,7 @@ void nh5w_write_model(hid_t File, const Nh5wModel& rModel) {
                       nh5w_ints("TRMC", {0}), nh5w_ints("MODULE", {1})});
     nh5w_require_group(File, "/NASTRAN/INPUT/NODE");
     nh5w_write_table(File, "/NASTRAN/INPUT/NODE/GRID",
-                     {nh5w_ints("ID", nh5w_iota(n)), nh5w_ints("CP", std::vector<std::int64_t>(n, 0)),
+                     {nh5w_ints("ID", rModel.NodeIds()), nh5w_ints("CP", std::vector<std::int64_t>(n, 0)),
                       nh5w_floats("X", rModel.Points(), 3),
                       nh5w_ints("CD", std::vector<std::int64_t>(n, 0)),
                       nh5w_ints("PS", std::vector<std::int64_t>(n, 0)),
@@ -1807,7 +1834,7 @@ void nh5w_write_model(hid_t File, const Nh5wModel& rModel) {
             for (std::size_t k = 0; k < blk.mNodes; ++k) {
                 const std::size_t at =
                     (blk.mNodes > card.mLinear && card.mPerm != nullptr) ? card.mPerm[k] : k;
-                nodes[r * card.mWidth + at] = conn[k] + 1;
+                nodes[r * card.mWidth + at] = rModel.NodeIds()[static_cast<std::size_t>(conn[k])];
             }
         }
         std::vector<Nh5wColumn> columns;
@@ -1975,7 +2002,7 @@ void nh5w_write_results(hid_t File, const Nh5wModel& rModel, const std::vector<N
             std::vector<Nh5wColumn> columns;
             std::vector<std::int64_t> ids;
             for (const std::size_t i : keep)
-                ids.push_back(static_cast<std::int64_t>(i) + 1);
+                ids.push_back(rModel.NodeIds()[i]);
             columns.push_back(nh5w_ints("ID", ids));
             for (const auto& [m, v] : members) {
                 std::vector<double> picked;

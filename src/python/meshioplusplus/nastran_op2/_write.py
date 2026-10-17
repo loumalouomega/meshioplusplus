@@ -162,7 +162,7 @@ _FAMILIES = (
 _CORNERS = {"CTETRA": 4, "CHEXA": 8, "CPENTA": 6, "CPYRAM": 5}
 
 # Arrays and field data that mean something without being results.
-_QUIET_POINT = ("nastran:cp", "nastran:cd")
+_QUIET_POINT = ("nastran:cp", "nastran:cd", "nastran:nid")
 _QUIET_CELL = ("nastran:eid", "nastran:pid")
 
 _PTYPE = re.compile(r"^([A-Z][A-Z0-9]*)_([0-9]+)$")
@@ -249,6 +249,22 @@ def _signature(mesh):
     return (len(mesh.points), [(c.type, np.asarray(c.data).shape) for c in mesh.cells])
 
 
+def _node_ids(mesh, n):
+    """The GRID id of each point: ``point_data["nastran:nid"]``, else 1 to n."""
+    given = mesh.point_data.get("nastran:nid")
+    if given is None:
+        return np.arange(1, n + 1, dtype=np.int64)
+    given = np.asarray(given)
+    if given.size != n or given.dtype.kind not in "iu":
+        _wfail("'nastran:nid' must hold one integer per point")
+    ids = given.astype(np.int64).reshape(n)
+    if n and ids.min() < 1:
+        _wfail("GRID ids must be positive")
+    if len(np.unique(ids)) != n:
+        _wfail("GRID ids are not unique")
+    return ids
+
+
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
@@ -257,6 +273,7 @@ class _Model:
         points = np.asarray(mesh.points, dtype=np.float64).reshape(self.npoints, -1)
         self.points = np.zeros((self.npoints, 3))
         self.points[:, : min(3, points.shape[1])] = points[:, :3]
+        self.node_ids = _node_ids(mesh, self.npoints)
         self.signature = _signature(mesh)
         ptube = set()
         for region in getattr(mesh, "regions", None) or []:
@@ -396,8 +413,9 @@ class _Model:
     def geom1(self):
         n = self.npoints
         words = np.zeros((n, 8), dtype="<u4")
-        words[:, 0] = _i32(np.arange(1, n + 1))
-        words[:, 2:5] = _f32(self.points)
+        order = np.argsort(self.node_ids, kind="stable")  # GEOM1 holds GRIDs by id
+        words[:, 0] = _i32(self.node_ids[order])
+        words[:, 2:5] = _f32(self.points[order])
         records = [_key(4501, 45, 1) + _bytes(words), _key(65535, 65535, 65535)]
         return _table("GEOM1", records)
 
@@ -412,7 +430,7 @@ class _Model:
             nodes = np.zeros((len(eid), max(width, 1)), dtype=np.int64)
             at = 0
             for blk, rows in parts:
-                conn = blk["conn"][rows] + 1
+                conn = self.node_ids[blk["conn"][rows]]
                 if blk["nodes"] > linear and perm is not None:
                     placed = np.zeros_like(conn)
                     for i, p in enumerate(perm):
@@ -556,8 +574,9 @@ def _step_tables(model, mesh, time, taken):
         keep = np.nonzero(~np.all(np.isnan(base), axis=1))[0]
         if not len(keep):
             continue
+        keep = keep[np.argsort(model.node_ids[keep], kind="stable")]  # rows by id
         words = np.zeros((len(keep), 8), dtype="<u4")
-        words[:, 0] = _i32((keep + 1) * 10 + _DEVICE)
+        words[:, 0] = _i32(model.node_ids[keep] * 10 + _DEVICE)
         words[:, 1] = 1
         words[:, 2 : 2 + ncomp] = _f32(base[keep])
         if rot is not None:
@@ -659,7 +678,9 @@ def _element_tables(model, mesh, header, group, table, tables, taken, layout):
                 words[:, 1 + j] = _f32(value(m))
         else:
             ncorner = _CORNERS[card]
-            ids = np.concatenate([blk["conn"][r][:, :ncorner] + 1 for blk, r in parts])
+            ids = np.concatenate(
+                [model.node_ids[blk["conn"][r][:, :ncorner]] for blk, r in parts]
+            )
             ids = ids[order][keep]
             words[:, 2] = 0x44495247  # 'GRID'
             words[:, 3] = ncorner

@@ -393,6 +393,8 @@ def _read(nf, points_only, arrays, time_step):
     )
     ncells = sum(sizes)
 
+    if not np.array_equal(ids, np.arange(1, len(ids) + 1)):
+        point_data["nastran:nid"] = ids  # GRID ids that are not 1 to n
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
     mesh.regions = regions
     mesh.time_values = [s["time"] for s in nf.steps]

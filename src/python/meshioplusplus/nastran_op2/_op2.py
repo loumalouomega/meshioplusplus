@@ -1213,6 +1213,9 @@ def _mesh_from_deck(path):
         mesh.cell_data["nastran:eid"] = [
             np.asarray(b, dtype=np.int64) for b in mesh.cells_id
         ]
+    ids = np.asarray(mesh.points_id, dtype=np.int64)
+    if not np.array_equal(ids, np.arange(1, len(ids) + 1)):
+        mesh.point_data["nastran:nid"] = ids
     del mesh.points_id
     del mesh.cells_id
     return mesh, grid_index, cell_index, offsets, sizes
@@ -1267,6 +1270,8 @@ def _build_mesh(nf):
     points = np.asarray(xyz, dtype=np.float64).reshape(len(ids), 3)
     point_data = {}
     systems = apply_frames(points, point_data, cords, ids, cp, cd, WHO)
+    if list(map(int, ids)) != list(range(1, len(ids) + 1)):  # not 1 to n
+        point_data["nastran:nid"] = np.asarray(ids, dtype=np.int64)
     cards = _read_elements(s, nf.tables, set(ids))
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
         cards, grid_index, spoints, _read_properties(s, nf.tables), WHO
