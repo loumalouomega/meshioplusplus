@@ -1167,6 +1167,10 @@ def read(
         )
     model = _Model(files, lenient)
     mesh = model.mesh
+    if main.n_sectors > 1 and not cyclic:
+        mesh.field_data["ansys:cyclic_sectors"] = np.array(
+            [main.n_sectors], dtype=np.int64
+        )
     n = len(main.sets)
     if not n:
         if time_step not in (0, -1):

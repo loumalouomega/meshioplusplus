@@ -1699,6 +1699,11 @@ Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic
     }
     RstModel model = rst_model(std::move(parts), rOptions.mLenient);
     const RstResults& results = model.mParts[0]->mResults;
+    if (!Cyclic && results.mNumSectors > 1) {
+        NDArray sectors(DType::Int64, {1});
+        sectors.As<std::int64_t>()[0] = results.mNumSectors;
+        model.mMesh.AddFieldData("ansys:cyclic_sectors", std::move(sectors));
+    }
     std::vector<std::int64_t> enf_dofs;
     const std::size_t n = results.mSets.size();
     if (n == 0) {
@@ -1859,6 +1864,12 @@ public:
         mNnod = rMesh.NumPoints();
         if (mNnod == 0)
             rstw_fail("the mesh has no points");
+        if (rMesh.HasFieldData("ansys:cyclic_sectors") &&
+            rMesh.FieldData("ansys:cyclic_sectors").Size() > 0) {
+            mSectors = detail::Int64View(rMesh.FieldData("ansys:cyclic_sectors")).Data()[0];
+            if (mSectors < 1)
+                rstw_fail("'ansys:cyclic_sectors' must be at least 1");
+        }
         const NDArray& pts = rMesh.Points();
         const detail::DoubleView view(pts);
         const std::size_t width = pts.Size() / mNnod;
@@ -1951,6 +1962,7 @@ public:
     }
 
     std::size_t mNnod = 0, mNelm = 0;
+    std::int64_t mSectors = 1;  // a cyclic-symmetry sector: the model's sector count
     std::vector<double> mPoints;
     std::vector<RstwElement> mElements;
     std::vector<bool> mHasResults;
@@ -2317,7 +2329,11 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     }
     f.Patch(header, 35, avail);
     f.Patch(header, 39, 1);
-    f.Patch(header, 20, 1);
+    f.Patch(header, 20, rModel.mSectors);
+    if (rModel.mSectors > 1) {  // the mesh is the base sector, with no duplicate sector
+        f.Patch(header, 18, nelm);
+        f.Patch(header, 31, nnod);
+    }
     f.Patch(header, 48, nnod);
     std::vector<std::int64_t> numbers(rModel.mNnod);
     for (std::size_t i = 0; i < numbers.size(); ++i)

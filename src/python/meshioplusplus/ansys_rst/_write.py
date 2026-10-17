@@ -17,7 +17,8 @@ components.
 
 Not written: element nodal forces, the raw element records (``EMS``, ``ENG``...),
 element rotation angles (the results are in the global axes), nodal coordinate
-system angles, coordinate systems, materials, and the cyclic-symmetry records.
+system angles, coordinate systems, materials, and the modal cyclic-symmetry records
+(``field_data["ansys:cyclic_sectors"]`` writes a static sector).
 """
 
 from __future__ import annotations
@@ -118,6 +119,11 @@ class _Model:
         points = points.reshape(n, -1)
         self.points[:, : min(3, points.shape[1])] = points[:, :3]
         self.nnod = n
+        # A cyclic-symmetry sector: the base sector of a model of this many sectors.
+        sectors = (getattr(mesh, "field_data", None) or {}).get("ansys:cyclic_sectors")
+        self.sectors = 1 if sectors is None else int(np.asarray(sectors).reshape(-1)[0])
+        if self.sectors < 1:
+            raise WriteError("Ansys .rst: 'ansys:cyclic_sectors' must be at least 1")
         for block in mesh.cells:
             data = np.asarray(block.data)
             if len(data) and (data.min() < 0 or data.max() >= n):
@@ -300,7 +306,10 @@ def _file_words(model, sets):
         avail |= s.mask
     f.patch(header, 35, avail)
     f.patch(header, 39, 1)  # rstsprs: ENS holds six items per node
-    f.patch(header, 20, 1)  # one sector
+    f.patch(header, 20, model.sectors)  # one sector, or the cyclic sector count
+    if model.sectors > 1:  # the mesh is the base sector, with no duplicate sector
+        f.patch(header, 18, nelm)
+        f.patch(header, 31, nnod)
     f.patch(header, 48, nnod)  # the whole model's nodes: not a distributed file
     neqv = f.ints(range(1, nnod + 1))
     f.patch64(header, 14, 45, neqv)

@@ -1037,6 +1037,28 @@ def test_written_set_carries_time_and_results(tmp_path):
     np.testing.assert_allclose(back.cell_data["S"][0], mesh.cell_data["S"][0])
 
 
+def test_written_cyclic_sector_expands_to_the_rotor(tmp_path):
+    """``ansys:cyclic_sectors`` writes the mesh as the base sector of a cyclic model."""
+    mesh = _brick()
+    mesh.field_data["ansys:cyclic_sectors"] = np.array([6])
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    back = meshioplusplus.ansys_rst.read(core)
+    assert back.field_data["ansys:cyclic_sectors"][0] == 6
+    np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
+    rotor = meshioplusplus.ansys_rst.read_cyclic(core)
+    assert rotor.field_data["ansys:sectors"][0] == 6
+    assert sum(len(c.data) for c in rotor.cells) == 6
+    assert len(rotor.points) == 6 * len(mesh.points)
+    # sector k is the base sector turned by k * 60 degrees about global Z
+    turned = rotor.points[8:16]
+    c, s_ = np.cos(np.pi / 3), np.sin(np.pi / 3)
+    expected = mesh.points @ np.array([[c, s_, 0], [-s_, c, 0], [0, 0, 1]])
+    np.testing.assert_allclose(turned, expected, atol=1e-12)
+
+
 def test_written_series_is_one_file_with_a_set_per_step(tmp_path):
     steps = []
     for i, time in enumerate((0.1, 0.2, 0.4)):
