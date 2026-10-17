@@ -19,6 +19,7 @@ from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
 from .._fortran_records import fortran_record
+from ..nastran._model import CARD_TYPE
 
 TIME_KEY = "meshio:time"
 
@@ -39,6 +40,8 @@ _PENTA15 = list(range(9)) + [12, 13, 14, 9, 10, 11]
 # card -> ((k1, k2, k3) key, record words, node count of the linear card,
 # first node word, node permutation to Nastran's order or None)
 _CARDS = {
+    "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
+    "CELAS1": ((601, 6, 73), 6, 2, 2, None),
     "CONM2": ((1501, 15, 64), 13, 1, 1, None),
     "CONROD": ((1601, 16, 47), 8, 2, 1, None),
     "CHEXA": ((7308, 73, 253), 22, 8, 2, _HEXA20),
@@ -99,6 +102,28 @@ _PSHELL = ((2302, 23, 283), 11)
 _PSOLID = ((2402, 24, 281), 7)
 _PROD = ((902, 9, 29), 6)
 _PTUBE = ((1602, 16, 30), 5)
+_PELAS = ((302, 3, 46), 4)
+_PDAMP = ((202, 2, 45), 2)
+
+# The writer's card for each element type number of ``nastran:card`` on a line or a
+# vertex, the cards each of those cell types may hold, and the cards it does not
+# write yet (CBAR, CBEAM, CBUSH, CELAS2, CDAMP2, CVISC, PLOTEL, CSHEAR): their rows
+# are left out rather than written as another card.
+_LINE_CARDS = {
+    30: "CROD",
+    16: "CONROD",
+    37: "CTUBE",
+    6: "CELAS1",
+    2: "CDAMP1",
+    15: "CONM2",
+}
+_BLOCK_CARDS = {
+    "vertex": ("CONM2", "CELAS1", "CDAMP1"),
+    "line": ("CROD", "CONROD", "CTUBE", "CELAS1", "CDAMP1"),
+}
+_CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
+# A cell of another type whose card this writer leaves out: CSHEAR is a quad.
+_UNWRITTEN_CELLS = {31: "CSHEAR"}
 
 # The property and material values the field data can set, as
 # ``field_data["nastran:<CARD>_<id>:<MEMBER>"]``: card -> {member: (word, default)}.
@@ -115,6 +140,8 @@ PROPERTY_VALUES = {
     },
     "PTUBE": {"MID": (1, 1), "OD": (2, 1.0), "T": (3, 0.0), "NSM": (4, 0.0)},
     "PSOLID": {"MID": (1, 1)},
+    "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
+    "PDAMP": {"B": (1, 1.0)},
     "MAT1": {
         "E": (1, 1.0),
         "G": (2, 0.0),
@@ -151,8 +178,8 @@ def property_values(mesh):
 def material_ids(properties, values):
     """The MAT1 ids: those the properties name (MID default 1) and those given."""
     ids = set()
-    for ptype, pids in properties.items():
-        for pid in pids:
+    for ptype in ("PSHELL", "PSOLID", "PROD", "PTUBE"):  # the families with a material
+        for pid in properties.get(ptype, ()):
             given = values.get((ptype, pid), {})
             ids.add(given.get("MID", given.get("MID1", 1)))
     ids.update(i for (card, i) in values if card == "MAT1")
@@ -235,7 +262,7 @@ _FORCE_FAMILIES = (
 
 # Arrays and field data that mean something without being results.
 _QUIET_POINT = ("nastran:cp", "nastran:cd", "nastran:nid")
-_QUIET_CELL = ("nastran:eid", "nastran:pid")
+_QUIET_CELL = ("nastran:eid", "nastran:pid", "nastran:card", "nastran:c1", "nastran:c2")
 
 _PTYPE = re.compile(r"^([A-Z][A-Z0-9]*)_([0-9]+)$")
 
@@ -337,6 +364,47 @@ def _node_ids(mesh, n):
     return ids
 
 
+def _components(mesh, b, n, ctype):
+    """The ``(n, 2)`` component numbers of block ``b``: ``nastran:c1`` and
+    ``nastran:c2``, else 1 at each end. A vertex's second end is ground: 0."""
+    out = np.ones((n, 2), dtype=np.int64)
+    for k, name in enumerate(("nastran:c1", "nastran:c2")):
+        if name in mesh.cell_data:
+            values = np.asarray(mesh.cell_data[name][b], dtype=np.int64)
+            if values.size != n:
+                _wfail(f"'{name}' must have one value per cell")
+            out[:, k] = values
+    if ctype == "vertex":
+        out[:, 1] = 0
+    return out
+
+
+def _written(codes, ctype, card):
+    """The card of each row of a block that carries ``nastran:card``, the rows to
+    keep, and the names of the cards left out. A line or vertex takes the card its
+    number names, and a mismatch with its cell type is an error; any other cell
+    keeps the card of its type, unless its number is one this writer leaves out."""
+    cards = np.empty(len(codes), dtype=object)
+    keep = np.ones(len(codes), dtype=bool)
+    left = set()
+    for i, code in enumerate(np.asarray(codes, dtype=np.int64).tolist()):
+        if ctype in _BLOCK_CARDS:
+            name = _LINE_CARDS.get(code)
+            if name is None:
+                keep[i] = False
+                left.add(_CARD_OF_TYPE.get(code, f"card {code}"))
+            elif name not in _BLOCK_CARDS[ctype]:
+                _wfail(f"a '{ctype}' block cannot hold {name} cards")
+            else:
+                cards[i] = name
+        elif code in _UNWRITTEN_CELLS:
+            keep[i] = False
+            left.add(_UNWRITTEN_CELLS[code])
+        else:
+            cards[i] = card
+    return cards, keep, left
+
+
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
@@ -358,6 +426,8 @@ class _Model:
         have_pid = "nastran:pid" in mesh.cell_data
         self.blocks = []  # per written block: dict
         self.skipped = []
+        self.unwritten = set()  # element cards the file does not hold yet
+        have_card = "nastran:card" in mesh.cell_data
         for b, block in enumerate(mesh.cells):
             conn = np.asarray(block.data)
             spec = _TYPES.get(block.type)
@@ -386,14 +456,28 @@ class _Model:
                     _wfail("'nastran:pid' must have one value per cell")
             else:
                 pids = np.full(n, _DEFAULT_PID[block.type], dtype=np.int64)
-            if card is None:
-                cards = np.where(
-                    pids <= 0,
-                    "CONROD",
-                    np.where(np.isin(pids, sorted(ptube)), "CTUBE", "CROD"),
+            comps = _components(mesh, b, n, block.type)
+            if have_card:
+                cards, keep, left = _written(
+                    mesh.cell_data["nastran:card"][b], block.type, card
                 )
+                self.unwritten.update(left)
             else:
-                cards = np.full(n, card)
+                keep = np.ones(n, dtype=bool)
+                if card is None:
+                    cards = np.where(
+                        pids <= 0,
+                        "CONROD",
+                        np.where(np.isin(pids, sorted(ptube)), "CTUBE", "CROD"),
+                    )
+                else:
+                    cards = np.full(n, card, dtype=object)
+            if not keep.all():
+                conn, eids, pids = conn[keep], eids[keep], pids[keep]
+                comps, cards = comps[keep], cards[keep]
+                n = len(eids)
+            if not n:
+                continue
             self.blocks.append(
                 {
                     "index": b,
@@ -403,6 +487,7 @@ class _Model:
                     "eids": eids,
                     "pids": pids,
                     "cards": cards,
+                    "comps": comps,
                 }
             )
         for blk in self.blocks:
@@ -443,6 +528,8 @@ class _Model:
             "PSOLID": set(),
             "PROD": set(),
             "PTUBE": set(),
+            "PELAS": set(),
+            "PDAMP": set(),
         }
         for blk in self.blocks:
             for name, ptype in (
@@ -457,6 +544,8 @@ class _Model:
                 ("CHEXA", "PSOLID"),
                 ("CROD", "PROD"),
                 ("CTUBE", "PTUBE"),
+                ("CELAS1", "PELAS"),
+                ("CDAMP1", "PDAMP"),
             ):
                 rows = blk["cards"] == name
                 if rows.any():
@@ -499,6 +588,7 @@ class _Model:
             parts, order = self.cards[name]
             eid = np.concatenate([blk["eids"][r] for blk, r in parts])
             pid = np.concatenate([blk["pids"][r] for blk, r in parts])
+            comp = np.concatenate([blk["comps"][r] for blk, r in parts])
             width = max(blk["nodes"] for blk, _ in parts)
             nodes = np.zeros((len(eid), max(width, 1)), dtype=np.int64)
             at = 0
@@ -511,7 +601,7 @@ class _Model:
                     conn = placed
                 nodes[at : at + len(rows), : conn.shape[1]] = conn
                 at += len(rows)
-            eid, pid, nodes = eid[order], pid[order], nodes[order]
+            eid, pid, nodes, comp = eid[order], pid[order], nodes[order], comp[order]
             words = np.zeros((len(eid), size), dtype="<u4")
             words[:, 0] = _i32(eid)
             if name == "CONM2":
@@ -524,6 +614,8 @@ class _Model:
             else:
                 words[:, 1] = _i32(pid)
                 words[:, 2 : 2 + nodes.shape[1]] = _i32(nodes)
+                if name in ("CELAS1", "CDAMP1"):
+                    words[:, 4:6] = _i32(comp)
             records.append(_key(*key) + _bytes(words))
         records.append(_key(65535, 65535, 65535))
         return _table("GEOM2", records)
@@ -535,6 +627,8 @@ class _Model:
             ("PSHELL", _PSHELL),
             ("PSOLID", _PSOLID),
             ("PTUBE", _PTUBE),
+            ("PELAS", _PELAS),
+            ("PDAMP", _PDAMP),
         ):
             pids = sorted(self.properties[ptype])
             if not pids:
@@ -874,6 +968,11 @@ def _warn_dropped(model, mesh, taken):
         warn(
             "Nastran OP2: cell blocks with no element card are not written: "
             + ", ".join(sorted(set(model.skipped)))
+        )
+    if model.unwritten:
+        warn(
+            "Nastran OP2: element cards not written yet, their elements are left out: "
+            + ", ".join(sorted(model.unwritten))
         )
 
 

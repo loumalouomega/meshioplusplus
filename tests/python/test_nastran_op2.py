@@ -428,3 +428,26 @@ def test_multi_valued_results_match_pynastran(engine, path):
                 compared += 1
     if stem in ("static_elements", "static_solid_shell_bar"):
         assert compared > 0
+
+
+def test_a_spring_grounded_at_its_first_end_leads_with_its_free_end():
+    """A CELAS1 grounded at its first end (GRID 0) is a vertex at its second end, and
+    the component of that end comes with it; grounded at the second end it keeps its
+    own first component. The shared builder gives both the same cards and components
+    in either engine."""
+    from meshioplusplus.nastran._model import add_cells
+
+    extras = {}
+    cards = [
+        ("CELAS1", [30], [5], [[0, 2]], [[4, 3]]),  # grounded first: free end GRID 2, comp 3
+        ("CELAS1", [31], [5], [[1, 0]], [[4, 3]]),  # grounded second: free end GRID 1, comp 4
+    ]
+    cells, cell_data, _, _, _, _ = add_cells(
+        cards, {1: 0, 2: 1}, set(), {5: "PELAS"}, "test", extras
+    )
+    assert [c.type for c in cells] == ["vertex", "vertex"]
+    assert [c.data.tolist() for c in cells] == [[[1]], [[0]]]
+    assert cell_data["nastran:eid"][0].tolist() == [30]
+    assert [a.tolist() for a in extras["nastran:card"]] == [[6], [6]]
+    assert [a.tolist() for a in extras["nastran:c1"]] == [[3], [4]]
+    assert [a.tolist() for a in extras["nastran:c2"]] == [[0], [0]]

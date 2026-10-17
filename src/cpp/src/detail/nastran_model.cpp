@@ -82,6 +82,22 @@ NDArray nm_int_array(const std::vector<std::int64_t>& rV) {
     return a;
 }
 
+// The GEOM2 type number of each card: the `nastran:card` cell data (`CARD_TYPE` in
+// the Python twin). Zero for a card it does not name.
+std::int64_t nm_card_type(const std::string& rCard) {
+    static const std::pair<const char*, std::int64_t> kTypes[] = {
+        {"CBAR", 24},   {"CBEAM", 54},   {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
+        {"CELAS1", 6},  {"CELAS2", 7},   {"CHEXA", 73},  {"CONM2", 15},  {"CONROD", 16},
+        {"CPENTA", 41}, {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47},
+        {"CQUADR", 80}, {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59},
+        {"CTRIA6", 48}, {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
+    };
+    for (const auto& [name, number] : kTypes)
+        if (rCard == name)
+            return number;
+    return 0;
+}
+
 struct NmBlock {
     std::string mCard;
     std::string mType;
@@ -89,6 +105,7 @@ struct NmBlock {
     std::vector<std::int64_t> mConn;
     std::vector<std::int64_t> mEid;
     std::vector<std::int64_t> mPid;
+    std::vector<std::int64_t> mComp;  // two per cell: the components at each end
 };
 
 }  // namespace
@@ -105,17 +122,30 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                                const std::unordered_set<std::int64_t>& rScalarPoints,
                                const std::map<std::int64_t, std::string>& rPtype,
                                const std::string& rWho) {
+    return nastran_add_cells(rMesh, rCards, rGridIndex, rScalarPoints, rPtype, rWho, {}, nullptr);
+}
+
+NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& rCards,
+                               const std::unordered_map<std::int64_t, std::size_t>& rGridIndex,
+                               const std::unordered_set<std::int64_t>& rScalarPoints,
+                               const std::map<std::int64_t, std::string>& rPtype,
+                               const std::string& rWho,
+                               const std::vector<std::vector<std::int64_t>>& rComps,
+                               NastranCellIds* pIds) {
     std::vector<NmBlock> blocks;
     std::size_t dropped = 0;
-    for (const NastranCardRows& card : rCards) {
+    for (std::size_t ci = 0; ci < rCards.size(); ++ci) {
+        const NastranCardRows& card = rCards[ci];
         const NastranCardSpec* spec = nastran_card_spec(card.mCard);
         if (spec == nullptr)
             continue;
         const std::size_t width = card.mWidth;
         const std::size_t n = card.mEid.size();
-        NmBlock linear{card.mCard, spec->mLinear, spec->mLinearNodes, {}, {}, {}};
+        const std::vector<std::int64_t>* comps =
+            ci < rComps.size() && !rComps[ci].empty() ? &rComps[ci] : nullptr;
+        NmBlock linear{card.mCard, spec->mLinear, spec->mLinearNodes, {}, {}, {}, {}};
         NmBlock quadratic{
-            card.mCard, spec->mQuadratic ? spec->mQuadratic : "", spec->mQuadraticNodes, {}, {},
+            card.mCard, spec->mQuadratic ? spec->mQuadratic : "", spec->mQuadraticNodes, {}, {}, {},
             {}};
         std::size_t partial = 0;
         // A spring or damper grounded at its first end: the other end leads.
@@ -123,9 +153,17 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             spec->mLinearNodes == 1 && spec->mQuadraticNodes == 2 && width >= 2;
         for (std::size_t i = 0; i < n; ++i) {
             const std::int64_t* row = card.mNodes.data() + i * width;
+            std::int64_t comp[2] = {0, 0};
+            if (comps != nullptr) {
+                comp[0] = (*comps)[2 * i];
+                comp[1] = (*comps)[2 * i + 1];
+            }
             const std::int64_t swapped[2] = {grounded_first ? row[1] : 0, 0};
-            if (grounded_first && row[0] == 0)
+            if (grounded_first && row[0] == 0) {
                 row = swapped;
+                comp[0] = comp[1];
+                comp[1] = 0;
+            }
             bool quad = false;
             if (spec->mQuadratic != nullptr && width >= spec->mQuadraticNodes) {
                 std::size_t given = 0;
@@ -135,6 +173,9 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                 partial += (given != 0 && !quad) ? 1 : 0;
             }
             NmBlock& b = quad ? quadratic : linear;
+            // A vertex has one end: no second component.
+            if (&b == &linear && spec->mLinearNodes == 1)
+                comp[1] = 0;
             std::vector<std::int64_t> conn(b.mNodes);
             bool ok = true;
             for (std::size_t k = 0; k < b.mNodes && ok; ++k) {
@@ -162,6 +203,8 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             b.mConn.insert(b.mConn.end(), conn.begin(), conn.end());
             b.mEid.push_back(card.mEid[i]);
             b.mPid.push_back(card.mPid[i]);
+            b.mComp.push_back(comp[0]);
+            b.mComp.push_back(comp[1]);
         }
         if (partial != 0)
             log::warn("{}: {} {} element(s) have only some mid-side nodes; read as {}", rWho,
@@ -200,6 +243,21 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
         if (!blocks.empty()) {
             rMesh.AddCellData("nastran:eid", std::move(eids));
             rMesh.AddCellData("nastran:pid", std::move(pids));
+        }
+    }
+    if (pIds != nullptr) {
+        for (const NmBlock& b : blocks) {
+            const std::size_t n = b.mEid.size();
+            std::vector<std::int64_t> card(n, nm_card_type(b.mCard));
+            std::vector<std::int64_t> c1(n);
+            std::vector<std::int64_t> c2(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                c1[i] = b.mComp[2 * i];
+                c2[i] = b.mComp[2 * i + 1];
+            }
+            pIds->mCard.push_back(nm_int_array(card));
+            pIds->mC1.push_back(nm_int_array(c1));
+            pIds->mC2.push_back(nm_int_array(c2));
         }
     }
 

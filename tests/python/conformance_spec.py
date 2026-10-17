@@ -1424,8 +1424,10 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
         "note": "Single precision; results are the OP2 tables' own point and cell data "
-        "(`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and "
-        "regions have no place; cells come back ordered by element card.",
+        "(`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays have no place; the "
+        "property and material values are field data (`nastran:<CARD>_<id>:<MEMBER>`), "
+        "and the regions come from the property ids; cells come back ordered by element "
+        "card.",
     },
     "lsdyna_binout": {
         "cells": {

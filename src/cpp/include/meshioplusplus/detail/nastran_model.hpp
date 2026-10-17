@@ -47,6 +47,7 @@
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -98,6 +99,30 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                                const std::unordered_set<std::int64_t>& rScalarPoints,
                                const std::map<std::int64_t, std::string>& rPtype,
                                const std::string& rWho);
+
+/** @brief The `nastran:card`, `nastran:c1` and `nastran:c2` arrays of the blocks
+ *         that nastran_add_cells made, one per block. */
+struct NastranCellIds {
+    std::vector<NDArray> mCard;  ///< the card's type number (its GEOM2 record's second key)
+    std::vector<NDArray> mC1;    ///< a spring or damper's component at its first end
+    std::vector<NDArray> mC2;    ///< its component at its second end (0 at a vertex)
+};
+
+/**
+ * @brief nastran_add_cells, which also reports each block's card and spring
+ *        components.
+ * @param rComps per card of @p rCards, two `int64` per element (its components
+ *               at the first and at the second end), or empty for none
+ * @param pIds receives the blocks' `nastran:card`, `nastran:c1` and `nastran:c2`
+ *        arrays, which the caller adds to @p rMesh; nullptr leaves them out
+ */
+NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& rCards,
+                               const std::unordered_map<std::int64_t, std::size_t>& rGridIndex,
+                               const std::unordered_set<std::int64_t>& rScalarPoints,
+                               const std::map<std::int64_t, std::string>& rPtype,
+                               const std::string& rWho,
+                               const std::vector<std::vector<std::int64_t>>& rComps,
+                               NastranCellIds* pIds);
 
 /** @brief One coordinate system card: CORD1R/C/S (three GRIDs) or CORD2R/C/S. */
 struct NastranCoordCard {

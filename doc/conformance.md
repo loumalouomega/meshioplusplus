@@ -127,7 +127,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
 - **`mphtxt`**: A Selection selects elements, so point and side regions (which address points and facets, not elements) have no form in the file; several Mesh objects merge into one mesh on read and are written as one.
 - **`nastran_h5`**: Results are the schema's own tables: point data is nodal tables (float64), cell data only `<G>:<M>` centre values, so the canonical cell arrays, field data and regions (derived from property ids on read) have no place.
-- **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays, field data and regions have no place; cells come back ordered by element card.
+- **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays have no place; the property and material values are field data (`nastran:<CARD>_<id>:<MEMBER>`), and the regions come from the property ids; cells come back ordered by element card.
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
 - **`openfoam`**: Fields are written to time directory 0 as volume and point fields (float64); OpenFOAM has no field_data.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.

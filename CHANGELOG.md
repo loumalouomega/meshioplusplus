@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- `nastran_op2` writes the springs and dampers `CELAS1` and `CDAMP1` (lines between two GRIDs, or vertices when grounded) with their `PELAS` and `PDAMP` values (`nastran:PELAS_<id>:K`, `GE`, `S` and `nastran:PDAMP_<id>:B` field data) and their component numbers (`nastran:c1`, `nastran:c2`), pyNastran-checked, in both engines. The reader gives every cell block its element card (`nastran:card`, the GEOM2 type number), so `CONROD`, `CELAS2` and `CDAMP2` are no longer told apart by guesswork. A line or vertex that the writer used to write as a rod or a mass is now written as its own card, or left out with a warning when the writer does not hold that card yet (`CBAR`, `CBEAM`, `CBUSH`, `CELAS2`, `CDAMP2`, `CVISC`, `PLOTEL`, `CSHEAR`).
 - `nastran_h5` writes complex nodal tables in MSC's column order (`XR,YR,ZR,XI,YI,ZI`), in both engines.
 - `nastran_h5` writes `<G>:<M>@corner` arrays as array members with a `GRID` column, in both engines.
 - `ansys_rst` writes a static cyclic-symmetry sector from `field_data["ansys:cyclic_sectors"]` (which a sector read now returns), in both engines; `ansys_rst_cyclic` reads it back as the rotor.

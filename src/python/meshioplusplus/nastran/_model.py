@@ -56,6 +56,37 @@ CARDS = {
     "PLOTEL": ("line", 2, None, 0, None),
 }
 
+# card -> its type number in the GEOM2 table (the second key of the record): the
+# ``nastran:card`` cell data of a read, which tells cards apart where a cell type
+# and a property id do not (CONROD, CELAS2 and CDAMP2 are all lines with no pid).
+CARD_TYPE = {
+    "CBAR": 24,
+    "CBEAM": 54,
+    "CBUSH": 26,
+    "CDAMP1": 2,
+    "CDAMP2": 3,
+    "CELAS1": 6,
+    "CELAS2": 7,
+    "CHEXA": 73,
+    "CONM2": 15,
+    "CONROD": 16,
+    "CPENTA": 41,
+    "CPYRAM": 172,
+    "CQUAD": 91,
+    "CQUAD4": 51,
+    "CQUAD8": 47,
+    "CQUADR": 80,
+    "CROD": 30,
+    "CSHEAR": 31,
+    "CTETRA": 55,
+    "CTRIA3": 59,
+    "CTRIA6": 48,
+    "CTRIAR": 92,
+    "CTUBE": 37,
+    "CVISC": 39,
+    "PLOTEL": 52,
+}
+
 _DIM = {
     "vertex": 0,
     "line": 1,
@@ -75,34 +106,42 @@ _DIM = {
 }
 
 
-def add_cells(cards, grid_index, scalar_points, ptype, who):
+def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
     """Cell blocks, cell data and property regions of a Nastran model.
 
     ``cards`` is a list of ``(card, eid, pid, g)`` with ``g`` an ``(n, width)``
     array of grid ids, in the order the blocks should take (cards without a
-    spec in :data:`CARDS` are ignored). Returns ``(cells, cell_data, regions,
-    cell_index, offsets, sizes)``: ``cell_index`` maps EID -> global cell
-    (without CONM2, which MSC accepts sharing an id with a structural element).
+    spec in :data:`CARDS` are ignored). A fifth item, when given, is the
+    ``(n, 2)`` component numbers of a spring or damper. Returns ``(cells,
+    cell_data, regions, cell_index, offsets, sizes)``: ``cell_index`` maps EID
+    -> global cell (without CONM2, which MSC accepts sharing an id with a
+    structural element). When ``extras`` is a dict it receives the per-block
+    ``nastran:card`` (see :data:`CARD_TYPE`), ``nastran:c1`` and ``nastran:c2``.
     """
-    blocks = []  # [type, conn list, eid list, pid list, card]
+    blocks = []  # [type, conn list, eid list, pid list, card, component pairs]
     dropped = 0
-    for card, eid, pid, g in cards:
+    for item in cards:
+        card, eid, pid, g = item[:4]
         spec = CARDS.get(card)
         if spec is None:
             continue
         lin_type, lin_n, quad_type, quad_n, perm = spec
         g = np.asarray(g, dtype=np.int64)
         width = g.shape[1] if g.ndim == 2 else 0
-        linear = [lin_type, [], [], [], card]
-        quadratic = [quad_type, [], [], [], card]
+        linear = [lin_type, [], [], [], card, []]
+        quadratic = [quad_type, [], [], [], card, []]
         partial = 0
         eid = [int(v) for v in eid]
         pid = [int(v) for v in pid]
+        comps = item[4] if len(item) > 4 else np.zeros((len(eid), 2), dtype=np.int64)
+        comps = np.asarray(comps, dtype=np.int64).tolist()
         # A spring or damper grounded at its first end: the other end leads.
         grounded_first = lin_n == 1 and quad_n == 2 and width >= 2
         for i, row in enumerate(g.tolist()):
+            comp = comps[i]
             if grounded_first and row[0] == 0:
                 row = [row[1], 0]
+                comp = [comp[1], 0]
             quad = False
             if quad_type is not None and width >= quad_n:
                 given = sum(1 for k in range(lin_n, quad_n) if row[k] != 0)
@@ -127,9 +166,12 @@ def add_cells(cards, grid_index, scalar_points, ptype, who):
                 dropped += 1
                 continue
             b = quadratic if quad else linear
+            if b is linear and lin_n == 1:  # a vertex has one end: no second component
+                comp = [comp[0], 0]
             b[1].append(conn)
             b[2].append(eid[i])
             b[3].append(pid[i])
+            b[5].append(comp)
         if partial:
             warn(
                 f"{who}: {partial} {card} element(s) have only some mid-side nodes; read as {lin_type}"
@@ -147,7 +189,7 @@ def add_cells(cards, grid_index, scalar_points, ptype, who):
     sizes = []
     ncells = 0
     shared = 0
-    for ctype, conn, eid, pid, card in blocks:
+    for ctype, conn, eid, pid, card, _ in blocks:
         offsets.append(ncells)
         sizes.append(len(eid))
         if card != "CONM2":
@@ -168,9 +210,19 @@ def add_cells(cards, grid_index, scalar_points, ptype, who):
     if blocks:
         cell_data["nastran:eid"] = [np.asarray(b[2], dtype=np.int64) for b in blocks]
         cell_data["nastran:pid"] = [np.asarray(b[3], dtype=np.int64) for b in blocks]
+    if extras is not None and blocks:
+        extras["nastran:card"] = [
+            np.full(len(b[2]), CARD_TYPE[b[4]], dtype=np.int64) for b in blocks
+        ]
+        extras["nastran:c1"] = [
+            np.asarray([c[0] for c in b[5]], dtype=np.int64) for b in blocks
+        ]
+        extras["nastran:c2"] = [
+            np.asarray([c[1] for c in b[5]], dtype=np.int64) for b in blocks
+        ]
 
     by_pid = {}
-    for b, (ctype, _, _, pid, _) in enumerate(blocks):
+    for b, (ctype, _, _, pid, _, _) in enumerate(blocks):
         dim = _DIM[ctype]
         for i, p in enumerate(pid):
             if p <= 0:

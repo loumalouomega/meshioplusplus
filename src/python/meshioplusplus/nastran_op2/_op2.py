@@ -512,18 +512,31 @@ def _read_elements(s, tables, grids):
                 f"{WHO}: a {card} record of {len(words)} words matches no known layout; skipped"
             )
             continue
-        entry = cards.setdefault(card, [[], [], []])
+        entry = cards.setdefault(card, [[], [], [], []])
         entry[0].append(rows[:, 0])
         entry[1].append(
             rows[:, pid_word] if pid_word is not None else np.full(len(rows), -1)
         )
         entry[2].append(rows[:, first : first + count])
+        # A spring or damper's component numbers follow its two ends.
+        if scalar_ends:
+            entry[3].append(rows[:, first + count : first + count + 2])
+        else:
+            entry[3].append(np.zeros((len(rows), 2), dtype=np.int64))
     if skipped:
         warn(f"{WHO}: skipped element records with no cell type: " + ", ".join(skipped))
     out = []
     for card in sorted(cards):
-        eid, pid, g = cards[card]
-        out.append((card, np.concatenate(eid), np.concatenate(pid), np.concatenate(g)))
+        eid, pid, g, comps = cards[card]
+        out.append(
+            (
+                card,
+                np.concatenate(eid),
+                np.concatenate(pid),
+                np.concatenate(g),
+                np.concatenate(comps),
+            )
+        )
     return out
 
 
@@ -610,8 +623,9 @@ def _read_properties(s, tables):
 
 
 def _read_property_values(s, tables):
-    """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID
-    and MAT1 records (the members ``nastran_op2._write.PROPERTY_VALUES`` lists)."""
+    """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID,
+    PELAS, PDAMP and MAT1 records (the members ``nastran_op2._write.PROPERTY_VALUES``
+    lists)."""
     from ._write import PROPERTY_VALUES
 
     out = {}
@@ -635,7 +649,14 @@ def _read_property_values(s, tables):
 
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
         spec = _PROPERTIES.get((k1, k2))
-        if spec is not None and spec[0] in ("PSHELL", "PROD", "PTUBE", "PSOLID"):
+        if spec is not None and spec[0] in (
+            "PSHELL",
+            "PROD",
+            "PTUBE",
+            "PSOLID",
+            "PELAS",
+            "PDAMP",
+        ):
             take(spec[0], raw, spec[1])
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
         if (k1, k2) == (103, 1):
@@ -1307,9 +1328,11 @@ def _build_mesh(nf, want_nid):
     if want_nid and list(map(int, ids)) != list(range(1, len(ids) + 1)):  # not 1 to n
         point_data["nastran:nid"] = np.asarray(ids, dtype=np.int64)
     cards = _read_elements(s, nf.tables, set(ids))
+    extras = {}
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
-        cards, grid_index, spoints, _read_properties(s, nf.tables), WHO
+        cards, grid_index, spoints, _read_properties(s, nf.tables), WHO, extras
     )
+    cell_data.update(extras)
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
     mesh.regions = regions
     return mesh, grid_index, cell_index, offsets, sizes, systems, cd
