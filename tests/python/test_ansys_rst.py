@@ -1129,3 +1129,54 @@ def test_written_set_keeps_the_raw_records_and_element_forces(tmp_path, name):
                 )
         for key in source.field_data:
             assert key in back.field_data, key
+
+
+def _modal_pair(harmonic=2):
+    first, second = _brick(), _brick()
+    rng = np.random.default_rng(5)
+    first.point_data["U"] = rng.random((8, 3))
+    second.point_data["U"] = rng.random((8, 3))
+    for mesh, h in ((first, harmonic), (second, -harmonic)):
+        mesh.field_data["ansys:cyclic_sectors"] = np.array([6])
+        mesh.field_data["ansys:harmonic_index"] = np.array([h])
+        mesh.field_data["meshio:time"] = np.array([12.5])
+        for name in ("TEMP", "RF", "S"):
+            mesh.point_data.pop(name, None)
+            mesh.cell_data.pop(name, None)
+    return first, second
+
+
+def test_written_modal_cyclic_pair_expands_to_the_rotor(tmp_path):
+    """Two sets of one frequency with harmonic indices ``h`` and ``-h`` are a mode
+    pair; ``ansys_rst_cyclic`` combines them as MAPDL's /CYCEXPAND does."""
+    first, second = _modal_pair()
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    steps = [(12.5, first), (12.5, second)]
+    writer = _core.AnsysRstSeriesWriter(str(core))
+    for time, mesh in steps:
+        writer.write(time, mesh)
+    writer.finalize()
+    with py_write.SeriesWriter(str(twin)) as w:
+        for time, mesh in steps:
+            w.write(time, mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    plain = meshioplusplus.ansys_rst.read(core, time_step=0)
+    assert plain.field_data["ansys:harmonic_index"][0] == 2
+    assert meshioplusplus.ansys_rst.read(core, time_step=1).field_data[
+        "ansys:harmonic_index"
+    ][0] in (-2, 2)
+    rotor = meshioplusplus.ansys_rst.read_cyclic(core, time_step=0)
+    assert rotor.field_data["ansys:harmonic_index"][0] == 2
+    x, xp = first.point_data["U"], second.point_data["U"]
+    scale = 1.0 / np.sqrt(
+        3.0
+    )  # n / 2 sectors for a harmonic that is neither 0 nor n / 2
+    for sector in (0, 1, 4):
+        theta = 2.0 * np.pi * sector / 6
+        phase = 2.0 * np.pi * 2 * sector / 6
+        combined = scale * (x * np.cos(phase) - xp * np.sin(phase))
+        c, s = np.cos(theta), np.sin(theta)
+        expected = combined @ np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+        np.testing.assert_allclose(
+            rotor.point_data["U"][8 * sector : 8 * sector + 8], expected, atol=1e-12
+        )

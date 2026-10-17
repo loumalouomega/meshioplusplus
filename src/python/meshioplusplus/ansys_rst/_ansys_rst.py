@@ -1186,6 +1186,10 @@ def read(
     mesh.field_data["ansys:load_step"] = np.array([load_step], dtype=np.int64)
     mesh.field_data["ansys:substep"] = np.array([substep], dtype=np.int64)
     mesh.field_data["ansys:cumulative"] = np.array([cumulative], dtype=np.int64)
+    if not cyclic and index < len(main.harmonic) and main.n_sectors > 1:
+        mesh.field_data["ansys:harmonic_index"] = np.array(
+            [main.harmonic[index]], dtype=np.int64
+        )
     dofs = main.numdof(index)
     if not points_only:
         wanted = None if arrays is None else set(arrays)

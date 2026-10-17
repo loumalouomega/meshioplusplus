@@ -79236,6 +79236,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
 #include <map>
 #include <set>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -80918,6 +80919,9 @@ Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic
     mesh.AddFieldData("ansys:substep", scalar(DType::Int64, static_cast<double>(set.mSubstep)));
     mesh.AddFieldData("ansys:cumulative",
                       scalar(DType::Int64, static_cast<double>(set.mCumulative)));
+    if (!Cyclic && index < results.mHarmonic.size() && results.mNumSectors > 1)
+        mesh.AddFieldData("ansys:harmonic_index",
+                          scalar(DType::Int64, static_cast<double>(results.mHarmonic[index])));
     if (!rOptions.mPointsOnly) {
         rst_solution(model, index, rOptions);
         rst_reactions(model, index, rOptions);
@@ -81187,6 +81191,7 @@ struct RstwSet {
     std::vector<const RstRawRecord*> mRaw;  ///< raw element records present in the mesh
     bool mEnf = false;                      ///< element nodal forces, one value per DOF
     std::int64_t mMask = 0;
+    std::optional<std::int64_t> mHarmonic;  ///< a cyclic modal set's harmonic index
 };
 
 RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
@@ -81194,6 +81199,9 @@ RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
     RstwSet s;
     s.mTime = Time;
     s.mStep = Step;
+    if (rMesh.HasFieldData("ansys:harmonic_index") &&
+        rMesh.FieldData("ansys:harmonic_index").Size() > 0)
+        s.mHarmonic = detail::Int64View(rMesh.FieldData("ansys:harmonic_index")).Data()[0];
     const std::size_t n = rModel.mNnod;
     std::map<std::int64_t, std::vector<double>> columns;
     auto values_of = [&](const std::string& rName) {
@@ -81635,6 +81643,15 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     f.Patch64(header, 10, 40, static_cast<std::int64_t>(dsi_ptr));
     f.Patch64(header, 11, 41, static_cast<std::int64_t>(tim));
     f.Patch64(header, 12, 42, static_cast<std::int64_t>(lsp_ptr));
+    if (std::any_of(rSets.begin(), rSets.end(), [](const RstwSet& S) { return S.mHarmonic; })) {
+        // A modal cyclic-symmetry file: the harmonic index of every set, analysis type 2.
+        std::vector<std::int64_t> harmonic;
+        for (const RstwSet& s : rSets)
+            harmonic.push_back(s.mHarmonic.value_or(0));
+        harmonic.resize(static_cast<std::size_t>(resmax), 0);
+        f.Patch64(header, 16, 43, static_cast<std::int64_t>(f.Ints(harmonic)));
+        f.Patch(header, 7, 2);
+    }
     f.Patch(header, 9, static_cast<std::int64_t>(f.Size()));
     f.Patch(header, 22, static_cast<std::int64_t>(f.Size()));
     return f.Words();

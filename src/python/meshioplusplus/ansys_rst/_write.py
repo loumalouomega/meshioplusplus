@@ -196,6 +196,10 @@ class _Set:
         n = model.nnod
         self.time = float(time)
         self.step = step
+        harmonic = (getattr(mesh, "field_data", None) or {}).get("ansys:harmonic_index")
+        self.harmonic = None
+        if harmonic is not None and np.asarray(harmonic).size:
+            self.harmonic = int(np.asarray(harmonic).reshape(-1)[0])
         columns = {}  # DOF code -> values (n,)
         for name, codes in _VECTORS.items():
             if name in mesh.point_data:
@@ -393,6 +397,11 @@ def _file_words(model, sets):
     f.patch64(header, 10, 40, dsi)
     f.patch64(header, 11, 41, tim)
     f.patch64(header, 12, 42, lsp)
+    if any(s.harmonic is not None for s in sets):
+        # A modal cyclic-symmetry file: the harmonic index of every set, type 2.
+        cyc = f.ints([s.harmonic or 0 for s in sets] + [0] * (resmax - nsets))
+        f.patch64(header, 16, 43, cyc)
+        f.patch(header, 7, 2)
     end = len(f.w)
     f.patch(header, 9, end)
     f.patch(header, 22, end)
