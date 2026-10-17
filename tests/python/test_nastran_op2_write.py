@@ -813,7 +813,7 @@ def test_grid_id_array_follows_the_read_options(
 def _spring_mesh():
     """Springs CELAS1 30 and 31 between GRIDs 1-2 and 2-3 (PELAS 5), one grounded at
     GRID 4 (its second component is 0), a CDAMP1 50 between 2 and 4 (PDAMP 6), and a
-    CBEAM 40 the writer does not hold yet."""
+    CVISC 40 the writer does not hold yet."""
     points = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
     )
@@ -842,7 +842,7 @@ def _spring_mesh():
         np.array([6, 6]),
         np.array([6]),
         np.array([2]),
-        np.array([26]),
+        np.array([39]),
     ]
     mesh.cell_data["nastran:c1"] = [
         np.array([1, 1]),
@@ -927,7 +927,7 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())
     assert "element cards not written yet" in err
-    assert "CBUSH" in err and "CSHEAR" in err
+    assert "CVISC" in err and "CSHEAR" in err
     back = py_op2.read(path)
     assert sorted(_elements(back)) == [30, 31, 32, 50]
 
@@ -1423,3 +1423,96 @@ def test_pynastran_reads_the_cbeams_and_pbeams(tmp_path):
     np.testing.assert_allclose(prop.xxb, [0, 0.5, 1])
     np.testing.assert_allclose(prop.A, [0.25, 0.3, 0.25], rtol=1e-6)
     np.testing.assert_allclose(prop.i1, [0.005, 0.006, 0.005], rtol=1e-5)
+
+
+# -- CBUSH bushings and PBUSH properties --------------------------------------------------
+
+
+def _bush_mesh():
+    """Two CBUSHes of PBUSH 7 between GRIDs 1-2 and 2-3: the first oriented by X = (1, 0, 0),
+    the second by GRID 3 as its G0. The stiffnesses and damping are given per direction, and
+    GE by one value, as the 18-word NX layout holds it."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([50, 51])]
+    mesh.cell_data["nastran:pid"] = [np.array([7, 7])]
+    mesh.cell_data["nastran:card"] = [np.array([26, 26])]
+    mesh.cell_data["nastran:x"] = [np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 3])]
+    mesh.field_data["nastran:PBUSH_7:K"] = np.array([1e6, 2e6, 3e6, 4e5, 5e5, 6e5])
+    mesh.field_data["nastran:PBUSH_7:B"] = np.array([0.1, 0.2, 0.3, 0.0, 0.0, 0.0])
+    mesh.field_data["nastran:PBUSH_7:GE"] = np.array([0.05])
+    mesh.field_data["nastran:PBUSH_7:SA"] = np.array([0.5])
+    mesh.field_data["nastran:PBUSH_7:ST"] = np.array([0.6])
+    mesh.field_data["nastran:PBUSH_7:EA"] = np.array([0.7])
+    mesh.field_data["nastran:PBUSH_7:ET"] = np.array([0.8])
+    return mesh
+
+
+def test_cbushes_and_their_pbushes_round_trip(engine, tmp_path):
+    path = tmp_path / "cbush.op2"
+    write_with(engine, path, _bush_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert _elements(back) == {
+            50: ([0, 1], 7, 26, 0, 0),
+            51: ([1, 2], 7, 26, 0, 0),
+        }
+        np.testing.assert_allclose(
+            np.concatenate(back.cell_data["nastran:x"]), [[1, 0, 0], [0, 0, 0]]
+        )
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:g0"]), [0, 3]
+        )
+        np.testing.assert_allclose(
+            back.field_data["nastran:PBUSH_7:K"],
+            [1e6, 2e6, 3e6, 4e5, 5e5, 6e5],
+            rtol=1e-6,
+        )
+        np.testing.assert_allclose(
+            back.field_data["nastran:PBUSH_7:B"], [0.1, 0.2, 0.3, 0, 0, 0], rtol=1e-6
+        )
+        # The written record holds the 23-word layout, so GE comes back for each direction.
+        np.testing.assert_allclose(
+            back.field_data["nastran:PBUSH_7:GE"], [0.05] * 6, rtol=1e-6
+        )
+        for member, value in (("SA", 0.5), ("ST", 0.6), ("EA", 0.7), ("ET", 0.8)):
+            assert back.field_data[f"nastran:PBUSH_7:{member}"][0] == pytest.approx(
+                value, rel=1e-6
+            )
+        assert [r.name for r in back.regions] == ["PBUSH_7"]
+
+
+def test_the_engines_write_the_same_bytes_with_bushes(tmp_path):
+    mesh = _bush_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cbush_needs_its_orientation(engine, tmp_path):
+    mesh = _bush_mesh()
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
+    with pytest.raises(Exception, match="orientation"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_pynastran_reads_the_cbushes_and_pbushes(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cbush.op2"
+    _core.nastran_op2_write(str(path), _bush_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[50], model.elements[51]
+    assert first.type == second.type == "CBUSH" and first.pid == 7
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    np.testing.assert_allclose(first.x, [1, 0, 0])
+    assert second.g0 == 3 and second.x == [None, None, None]
+    prop = model.properties[7]
+    assert prop.type == "PBUSH"
+    np.testing.assert_allclose(prop.Ki, [1e6, 2e6, 3e6, 4e5, 5e5, 6e5], rtol=1e-6)
+    np.testing.assert_allclose(prop.Bi, [0.1, 0.2, 0.3, 0, 0, 0], rtol=1e-6)
+    np.testing.assert_allclose(prop.GEi, [0.05] * 6, rtol=1e-6)
+    assert (prop.sa, prop.st, prop.ea, prop.et) == pytest.approx((0.5, 0.6, 0.7, 0.8))

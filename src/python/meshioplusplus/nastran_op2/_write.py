@@ -43,6 +43,7 @@ _PENTA15 = list(range(9)) + [12, 13, 14, 9, 10, 11]
 _CARDS = {
     "CBAR": ((2408, 24, 180), 16, 2, 2, None),
     "CBEAM": ((5408, 54, 261), 18, 2, 2, None),
+    "CBUSH": ((2608, 26, 60), 14, 2, 2, None),
     "CDAMP2": ((301, 3, 70), 6, 2, 2, None),
     "CELAS2": ((701, 7, 74), 8, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
@@ -112,6 +113,10 @@ _PBAR = ((52, 20, 181), 19)
 # holding the stations (see ``pbeam_station_slots``) and the last one a spare:
 # SO, XXB, A, I1, I2, I12, J and NSM, then the outline points C1, C2, D1 and D2 as x, y.
 _PBEAM = ((5402, 54, 262), 197)
+# A PBUSH is the MSC layout of 23 words: the id, six stiffnesses K, six damping B, six GE
+# and the stress and strain coefficients SA, ST, EA and ET.
+_PBUSH = ((1402, 14, 37), 23)
+_BUSH_ARRAYS = (("K", 1), ("B", 7), ("GE", 13))
 _BEAM_STATION_MEMBERS = ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM")
 _BEAM_POINT_MEMBERS = ("C1", "C2", "D1", "D2")
 _PELAS = ((302, 3, 46), 4)
@@ -131,6 +136,7 @@ _LINE_CARDS = {
     15: "CONM2",
     24: "CBAR",
     54: "CBEAM",
+    26: "CBUSH",
     3: "CDAMP2",
     7: "CELAS2",
 }
@@ -144,6 +150,7 @@ _BLOCK_CARDS = {
         "CDAMP1",
         "CBAR",
         "CBEAM",
+        "CBUSH",
         "CELAS2",
         "CDAMP2",
     ),
@@ -496,13 +503,19 @@ def _raw_bar_fields(mesh, b, n):
 
 def _bar_matrix(raw, cards):
     """The ``(n, 12)`` card fields of the rows, by their cards: a CBAR's orientation
-    X1..X3, G0, pins PA and PB and offsets W1A..W3A and W1B..W3B; a CELAS2's K, GE and S
-    in columns 0 to 2; a CDAMP2's B in column 0. Each row takes only its own card's."""
+    X1..X3, G0, pins PA and PB and offsets W1A..W3A and W1B..W3B, and a CBUSH's X1..X3
+    and G0; a CELAS2's K, GE and S in columns 0 to 2; a CDAMP2's B in column 0. Each row
+    takes only its own card's."""
     n = len(cards)
     out = np.zeros((n, 12))
-    bars = np.isin(cards, ["CBAR", "CBEAM"])
+    oriented = np.isin(cards, ["CBAR", "CBEAM", "CBUSH"])
+    if oriented.any():
+        for key, lo, hi in (("x", 0, 3), ("g0", 3, 4)):
+            if raw[key] is not None:
+                out[oriented, lo:hi] = raw[key][oriented]
+    bars = np.isin(cards, ["CBAR", "CBEAM"])  # a CBUSH has no pins or offsets
     if bars.any():
-        for key, lo, hi in (("x", 0, 3), ("g0", 3, 4), ("pin", 4, 6), ("w", 6, 12)):
+        for key, lo, hi in (("pin", 4, 6), ("w", 6, 12)):
             if raw[key] is not None:
                 out[bars, lo:hi] = raw[key][bars]
     springs = np.asarray(cards == "CELAS2")
@@ -615,6 +628,16 @@ def _local_points(mesh, points):
     return cp, local, cords
 
 
+def _bush_values(mesh):
+    """The PBUSH field data by id: ``{pid: {member: array}}`` from ``nastran:PBUSH_<id>:*``."""
+    out = {}
+    for name, value in mesh.field_data.items():
+        match = re.fullmatch(r"nastran:PBUSH_([0-9]+):([A-Z]+)", name)
+        if match:
+            out.setdefault(int(match.group(1)), {})[match.group(2)] = np.asarray(value)
+    return out
+
+
 def _beam_values(mesh):
     """The PBEAM field data by id: ``{pid: {member: array}}`` from ``nastran:PBEAM_<id>:*``."""
     out = {}
@@ -638,6 +661,7 @@ class _Model:
         self.signature = _signature(mesh)
         self.values = property_values(mesh)
         self.beams = _beam_values(mesh)
+        self.bushes = _bush_values(mesh)
         ptube = set()
         for region in getattr(mesh, "regions", None) or []:
             m = _PTYPE.match(region.name)
@@ -720,6 +744,14 @@ class _Model:
                 g0 = raw_bar["g0"]
                 if g0 is not None and np.any((cards == "CBEAM") & (g0[:, 0] != 0)):
                     _wfail("a CBEAM oriented by a G0 is not written yet")
+            if (
+                np.any(cards == "CBUSH")
+                and raw_bar["x"] is None
+                and raw_bar["g0"] is None
+            ):
+                _wfail(
+                    "a CBUSH needs its orientation: nastran:x, or nastran:g0 for a G0"
+                )
             self.blocks.append(
                 {
                     "index": b,
@@ -773,6 +805,7 @@ class _Model:
             "PTUBE": set(),
             "PBAR": set(),
             "PBEAM": set(),
+            "PBUSH": set(),
             "PELAS": set(),
             "PDAMP": set(),
             "PCOMP": set(),
@@ -792,6 +825,7 @@ class _Model:
                 ("CTUBE", "PTUBE"),
                 ("CBAR", "PBAR"),
                 ("CBEAM", "PBEAM"),
+                ("CBUSH", "PBUSH"),
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
             ):
@@ -907,6 +941,17 @@ class _Model:
                     words[:, 7] = _i32(flag)
                     words[:, 8:10] = _i32(bar[:, 4:6].astype(np.int64))
                     words[:, 10:16] = _f32(bar[:, 6:12])
+                if name == "CBUSH":
+                    # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7; the
+                    # element system 0 and the stress coefficient 0.5; output system -1.
+                    g0 = bar[:, 3].astype(np.int64)
+                    flag = np.where(g0 != 0, 2, 0)
+                    words[:, 4:7] = _f32(bar[:, 0:3])
+                    words[flag == 2, 4] = _i32(g0[flag == 2])
+                    words[flag == 2, 5:7] = 0
+                    words[:, 7] = _i32(flag)
+                    words[:, 9] = _f32(np.full(len(eid), 0.5))
+                    words[:, 10] = _i32(np.full(len(eid), -1, dtype=np.int64))
                 if name == "CBEAM":
                     # X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
                     # 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
@@ -949,6 +994,8 @@ class _Model:
             records.append(_key(*_PCOMP[0]) + _bytes(self._pcomp_words()))
         if self.properties["PBEAM"]:
             records.append(_key(*_PBEAM[0]) + _bytes(self._pbeam_words()))
+        if self.properties["PBUSH"]:
+            records.append(_key(*_PBUSH[0]) + _bytes(self._pbush_words()))
         records.append(_key(65535, 65535, 65535))
         return _table("EPT", records)
 
@@ -1018,6 +1065,34 @@ class _Model:
             slots = np.zeros((11, 16))
             slots[pbeam_station_slots(n)] = stations
             words[5 : 5 + 16 * 11] = _f32(slots).ravel()
+            out.append(words)
+        return np.concatenate(out)
+
+    def _pbush_words(self):
+        """The PBUSH records, one per id: the id, K, B and GE (six each) and SA, ST, EA and
+        ET, from the id's field data. An id with none gets K of 1, B of 0 and GE of 0, and
+        stress and strain coefficients of 1. A GE given as one value is written to all six.
+        """
+        out = []
+        for pid in sorted(self.properties["PBUSH"]):
+            given = self.bushes.get(pid, {})
+            words = np.zeros(_PBUSH[1], dtype="<u4")
+            words[0] = _i32(np.array([pid]))[0]
+            for member, first in _BUSH_ARRAYS:
+                default = {"K": 1.0, "B": 0.0, "GE": 0.0}[member]
+                values = np.asarray(
+                    given.get(member, [default]), dtype=np.float64
+                ).ravel()
+                if values.size == 1:
+                    values = np.full(6, values[0])
+                if values.size != 6:
+                    _wfail(f"'nastran:PBUSH_{pid}:{member}' must have 1 or 6 value(s)")
+                words[first : first + 6] = _f32(values)
+            for word, member in zip(range(19, 23), ("SA", "ST", "EA", "ET")):
+                value = np.asarray(given.get(member, [1.0]), dtype=np.float64).ravel()
+                if value.size != 1:
+                    _wfail(f"'nastran:PBUSH_{pid}:{member}' must have 1 value")
+                words[word] = _f32(value)[0]
             out.append(words)
         return np.concatenate(out)
 

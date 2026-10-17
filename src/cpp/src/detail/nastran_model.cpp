@@ -270,7 +270,7 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
         for (const NmBlock& b : blocks) {
             const std::size_t n = b.mEid.size();
             // A block holds one card, so each card's fields are zero in every other block.
-            const bool bar = b.mCard == "CBAR" || b.mCard == "CBEAM";
+            const bool bar = b.mCard == "CBAR" || b.mCard == "CBEAM" || b.mCard == "CBUSH";
             const bool spring = b.mCard == "CELAS2";
             const bool damper = b.mCard == "CDAMP2";
             std::vector<std::int64_t> card(n, nm_card_type(b.mCard));

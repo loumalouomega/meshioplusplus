@@ -133,7 +133,9 @@ def _payload_matrix(block, card=None):
 def _bar_arrays(block):
     """The CBAR (or CBEAM) fields of one cell block as ``(x, g0, pin, w)`` arrays, zeros
     for the rows that are neither."""
-    rows = _payload_matrix(block, "CBEAM" if block[4] == "CBEAM" else "CBAR")
+    rows = _payload_matrix(
+        block, block[4] if block[4] in ("CBEAM", "CBUSH") else "CBAR"
+    )
     return (
         rows[:, 0:3].copy(),
         rows[:, 3].astype(np.int64),
@@ -261,7 +263,7 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
         extras["nastran:c2"] = [
             np.asarray([c[1] for c in b[5]], dtype=np.int64) for b in blocks
         ]
-        if any(b[4] in ("CBAR", "CBEAM") for b in blocks):
+        if any(b[4] in ("CBAR", "CBEAM", "CBUSH") for b in blocks):
             bars = [_bar_arrays(b) for b in blocks]
             extras["nastran:x"] = [bar[0] for bar in bars]
             extras["nastran:g0"] = [bar[1] for bar in bars]

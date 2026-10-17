@@ -528,6 +528,8 @@ def _read_elements(s, tables, grids):
             entry[4].append(_bar_payload(s, raw, rows))
         elif card == "CBEAM":
             entry[4].append(_beam_payload(s, raw, rows))
+        elif card == "CBUSH":
+            entry[4].append(_bush_payload(s, raw, rows))
         elif card in ("CELAS2", "CDAMP2"):
             # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 at word 1.
             floats = _floats(s, raw)[3:].reshape(rows.shape)
@@ -568,6 +570,25 @@ def _bar_payload(s, raw, rows):
             floats[:, 10:16],
         ]
     )
+
+
+def _bush_payload(s, raw, rows):
+    """The CBUSH fields of each row of a CBUSH record as float64 ``(n, 12)``, in the CBAR
+    layout: the orientation vector X1..X3 at words 4 to 6 when the flag at word 7 is 0 or 1,
+    and the G0 at word 4 when it is 2 (its vector then zeros). A flag of -1 orients the bush
+    by its element coordinate system, which is not read, so its X is read as zeros."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    flag = rows[:, 7]
+    if np.any(flag == -1):
+        warn(
+            f"{WHO}: {int(np.count_nonzero(flag == -1))} CBUSH element(s) are oriented by "
+            "their element coordinate system; their X vector is read as zeros"
+        )
+    vector = (flag == 0) | (flag == 1)
+    out = np.zeros((len(rows), 12))
+    out[:, 0:3] = np.where(vector[:, None], floats[:, 4:7], 0.0)
+    out[:, 3] = np.where(flag == 2, rows[:, 4], 0)
+    return out
 
 
 def _beam_payload(s, raw, rows):
@@ -753,6 +774,30 @@ def _read_pbeam_values(s, tables):
             out[prefix + member] = stations[:, column].copy()
         for first, member in zip((8, 10, 12, 14), ("C1", "C2", "D1", "D2")):
             out[prefix + member] = stations[:, first : first + 2].copy()
+    return out
+
+
+def _read_bush_values(s, tables):
+    """``nastran:PBUSH_<id>:<MEMBER>`` field data of the PBUSH records: K and B as (6,)
+    arrays, GE as one value (the 18-word NX layout) or six (the 23-word MSC layout), and the
+    stress and strain coefficients SA, ST, EA and ET as scalars. A record of another size is
+    not read."""
+    out = {}
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) != (1402, 14):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) not in (18 * s.ws, 23 * s.ws):
+            continue
+        floats = _floats(s, body)
+        prefix = f"nastran:PBUSH_{_ints(s, body)[0]}:"
+        if prefix + "K" in out:  # the first record of an id wins
+            continue
+        out[prefix + "K"] = floats[1:7].copy()
+        out[prefix + "B"] = floats[7:13].copy()
+        out[prefix + "GE"] = floats[13 : len(floats) - 4].copy()
+        for member, value in zip(("SA", "ST", "EA", "ET"), floats[-4:]):
+            out[prefix + member] = np.array([value])
     return out
 
 
@@ -1504,6 +1549,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
     mesh.field_data.update(_read_pcomp_values(nf.stream, nf.tables))
     mesh.field_data.update(_read_pbeam_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_bush_values(nf.stream, nf.tables))
     mesh.field_data.update(_cord_fields(systems))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)
