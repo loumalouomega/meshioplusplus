@@ -638,13 +638,16 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             }
         }
     }
-    for (std::size_t i = 0; i < file.mGridIds.size(); ++i)
-        if (file.mGridIds[i] != static_cast<std::int64_t>(i + 1)) {  // not 1 to n: keep them
-            NDArray nid(DType::Int64, {file.mGridIds.size()});
-            std::copy(file.mGridIds.begin(), file.mGridIds.end(), nid.As<std::int64_t>());
-            mesh.AddPointData("nastran:nid", std::move(nid));
-            break;
-        }
+    // GRID ids that are not 1 to n, as point data: only when point data is wanted
+    // (`points_only` drops it, and `arrays` names what to keep).
+    if (rOpts.WantsAnyData() && rOpts.WantsArray("nastran:nid"))
+        for (std::size_t i = 0; i < file.mGridIds.size(); ++i)
+            if (file.mGridIds[i] != static_cast<std::int64_t>(i + 1)) {  // not 1 to n: keep them
+                NDArray nid(DType::Int64, {file.mGridIds.size()});
+                std::copy(file.mGridIds.begin(), file.mGridIds.end(), nid.As<std::int64_t>());
+                mesh.AddPointData("nastran:nid", std::move(nid));
+                break;
+            }
 
     // --- the step -------------------------------------------------------------
     if (file.mSteps.empty()) {

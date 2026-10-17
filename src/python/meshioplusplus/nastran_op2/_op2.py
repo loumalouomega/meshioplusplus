@@ -1229,7 +1229,7 @@ def _sibling_deck(path):
     return None, tried
 
 
-def _mesh_from_deck(path):
+def _mesh_from_deck(path, want_nid):
     from ..nastran._nastran import read as read_deck
 
     mesh = read_deck(path)
@@ -1248,14 +1248,14 @@ def _mesh_from_deck(path):
             np.asarray(b, dtype=np.int64) for b in mesh.cells_id
         ]
     ids = np.asarray(mesh.points_id, dtype=np.int64)
-    if not np.array_equal(ids, np.arange(1, len(ids) + 1)):
+    if want_nid and not np.array_equal(ids, np.arange(1, len(ids) + 1)):
         mesh.point_data["nastran:nid"] = ids
     del mesh.points_id
     del mesh.cells_id
     return mesh, grid_index, cell_index, offsets, sizes
 
 
-def _build_mesh(nf):
+def _build_mesh(nf, want_nid):
     s = nf.stream
     ids, xyz, cp, cd, spoints, cords = _read_grids(s, nf.tables)
     if not ids:
@@ -1268,7 +1268,7 @@ def _build_mesh(nf):
                 "looked for " + ", ".join(tried)
             )
         if deck is not None:
-            return _mesh_from_deck(deck) + (CoordSystems(), None)
+            return _mesh_from_deck(deck, want_nid) + (CoordSystems(), None)
         ids, xyz, cd, more = bgpdt
         spoints |= more
         cp = [0] * len(ids)
@@ -1304,7 +1304,7 @@ def _build_mesh(nf):
     points = np.asarray(xyz, dtype=np.float64).reshape(len(ids), 3)
     point_data = {}
     systems = apply_frames(points, point_data, cords, ids, cp, cd, WHO)
-    if list(map(int, ids)) != list(range(1, len(ids) + 1)):  # not 1 to n
+    if want_nid and list(map(int, ids)) != list(range(1, len(ids) + 1)):  # not 1 to n
         point_data["nastran:nid"] = np.asarray(ids, dtype=np.int64)
     cards = _read_elements(s, nf.tables, set(ids))
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
@@ -1317,7 +1317,11 @@ def _build_mesh(nf):
 
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
-    mesh, grid_index, cell_index, offsets, sizes, systems, cd = _build_mesh(nf)
+    # GRID ids that are not 1 to n, as point data: only when point data is wanted.
+    want_nid = not points_only and (arrays is None or "nastran:nid" in arrays)
+    mesh, grid_index, cell_index, offsets, sizes, systems, cd = _build_mesh(
+        nf, want_nid
+    )
     mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)

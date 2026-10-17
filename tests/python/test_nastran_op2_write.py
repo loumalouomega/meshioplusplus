@@ -780,3 +780,28 @@ def test_pynastran_reads_the_element_forces(tmp_path):
     assert rod.data[0, 0, 0] == 12.5 and rod.data[0, 0, 1] == -1.5
     plate = model.cquad4_force[1]
     np.testing.assert_allclose(plate.data[0, 0, :8], 10.0 + np.arange(8))
+
+
+@pytest.mark.parametrize(
+    "points_only,arrays,expect_nid",
+    [
+        (True, None, False),
+        (False, ["DISPLACEMENT"], False),
+        (False, ["DISPLACEMENT", "nastran:nid"], True),
+        (False, None, True),
+    ],
+)
+def test_grid_id_array_follows_the_read_options(
+    engine, tmp_path, points_only, arrays, expect_nid
+):
+    """``nastran:nid`` is point data: ``points_only`` drops it, and ``arrays`` keeps it
+    only when it is named (both readers)."""
+    path = tmp_path / "read_options.op2"
+    write_with(engine, path, _numbered_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path, points_only=points_only, arrays=arrays)
+        assert ("nastran:nid" in back.point_data) == expect_nid
+        if expect_nid:
+            np.testing.assert_array_equal(
+                back.point_data["nastran:nid"], sorted(_GRID_IDS)
+            )

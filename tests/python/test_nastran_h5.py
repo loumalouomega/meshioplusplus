@@ -1002,6 +1002,25 @@ class TestWriter:
         )
 
     @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_grid_id_array_follows_the_read_options(self, writer, engine, tmp_path):
+        """``nastran:nid`` is point data: ``points_only`` drops it, and ``arrays``
+        keeps it only when it is named (both engines)."""
+        mesh = _write_mesh()
+        ids = np.array([70, 3, 41, 9, 20, 5, 100])
+        mesh.point_data["nastran:nid"] = ids
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        np.testing.assert_array_equal(engine(path).point_data["nastran:nid"], ids)
+        narrow = engine(path, arrays=["DISPLACEMENT"]).point_data
+        assert "DISPLACEMENT" in narrow and "nastran:nid" not in narrow
+        named = engine(path, arrays=["DISPLACEMENT", "nastran:nid"]).point_data
+        np.testing.assert_array_equal(named["nastran:nid"], ids)
+        assert not engine(path, points_only=True).point_data
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
     def test_complex_columns_are_in_msc_order(self, writer, tmp_path):
         """MSC's complex nodal tables list every real component, then every imaginary one."""
         mesh = _write_mesh()

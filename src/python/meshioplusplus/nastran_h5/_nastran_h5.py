@@ -427,8 +427,14 @@ def _read(nf, points_only, arrays, time_step):
     )
     ncells = sum(sizes)
 
-    if not np.array_equal(ids, np.arange(1, len(ids) + 1)):
-        point_data["nastran:nid"] = ids  # GRID ids that are not 1 to n
+    # GRID ids that are not 1 to n, as point data: only when point data is wanted
+    # (`points_only` drops it, and `arrays` names what to keep).
+    if (
+        not points_only
+        and (arrays is None or "nastran:nid" in arrays)
+        and not np.array_equal(ids, np.arange(1, len(ids) + 1))
+    ):
+        point_data["nastran:nid"] = ids
     mesh = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
     mesh.regions = regions
     mesh.field_data.update(_property_values(f))

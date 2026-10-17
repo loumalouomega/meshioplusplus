@@ -1642,11 +1642,18 @@ NDArray op2_int_array(const std::vector<std::int64_t>& rV) {
     return a;
 }
 
-// GRID ids that are not 1 to n, as `nastran:nid` point data.
-void op2_add_node_ids(Mesh& rMesh, const std::vector<std::int64_t>& rIds) {
-    for (std::size_t i = 0; i < rIds.size(); ++i)
-        if (rIds[i] != static_cast<std::int64_t>(i + 1)) {
-            rMesh.AddPointData("nastran:nid", op2_int_array(rIds));
+// GRID ids that are not 1 to n, as `nastran:nid` point data, from the model's GRID index
+// (GRID id -> point index).
+void op2_add_node_ids(Mesh& rMesh,
+                      const std::unordered_map<std::int64_t, std::size_t>& rGridIndex) {
+    const std::size_t n = rMesh.NumPoints();
+    std::vector<std::int64_t> ids(n, 0);
+    for (const auto& [id, index] : rGridIndex)
+        if (index < n)
+            ids[index] = id;
+    for (std::size_t i = 0; i < n; ++i)
+        if (ids[i] != static_cast<std::int64_t>(i + 1)) {
+            rMesh.AddPointData("nastran:nid", op2_int_array(ids));
             return;
         }
 }
@@ -1712,7 +1719,6 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
         auto [deck, tried] = op2_sibling_deck(rR.mPath);
         std::vector<std::int64_t> grid_ids, cell_ids;
         m.mMesh = detail::nastran_read_deck(deck, grid_ids, cell_ids);
-        op2_add_node_ids(m.mMesh, grid_ids);
         for (std::size_t i = 0; i < grid_ids.size(); ++i)
             m.mGridIndex.emplace(grid_ids[i], i);
         std::vector<NDArray> eids;
@@ -1774,7 +1780,6 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
         std::fill(g.mCd.begin(), g.mCd.end(), 0);
     }
     m.mSystems = detail::nastran_apply_frames(m.mMesh, g.mCords, g.mIds, g.mCp, g.mCd, kOp2Who);
-    op2_add_node_ids(m.mMesh, g.mIds);
     m.mCd = g.mCd;
     const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
     const auto cards = op2_read_elements(rR.mStream, rR.mTables, grids);
@@ -1802,6 +1807,10 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     const Op2Reader r(rPath);
     Op2Model model = op2_build_mesh(r);
     Mesh& mesh = model.mMesh;
+    // GRID ids that are not 1 to n, as point data: only when point data is wanted
+    // (`points_only` drops it, and `arrays` names what to keep).
+    if (rOpts.WantsAnyData() && rOpts.WantsArray("nastran:nid"))
+        op2_add_node_ids(mesh, model.mGridIndex);
     op2_add_property_values(mesh, r.mStream, r.mTables);
     const std::size_t n = r.mSteps.size();
     if (n == 0) {
