@@ -525,6 +525,11 @@ def _read_elements(s, tables, grids):
             entry[3].append(np.zeros((len(rows), 2), dtype=np.int64))
         if card == "CBAR":
             entry[4].append(_bar_payload(s, raw, rows))
+        elif card in ("CELAS2", "CDAMP2"):
+            # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 at word 1.
+            floats = _floats(s, raw)[3:].reshape(rows.shape)
+            columns = [1, 6, 7] if card == "CELAS2" else [1]
+            entry[4].append(floats[:, columns])
     if skipped:
         warn(f"{WHO}: skipped element records with no cell type: " + ", ".join(skipped))
     out = []

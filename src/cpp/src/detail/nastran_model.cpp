@@ -82,6 +82,12 @@ NDArray nm_int_array(const std::vector<std::int64_t>& rV) {
     return a;
 }
 
+NDArray nm_double_array(const std::vector<double>& rV) {
+    NDArray a(DType::Float64, {rV.size()});
+    std::copy(rV.begin(), rV.end(), a.As<double>());
+    return a;
+}
+
 // The GEOM2 type number of each card: the `nastran:card` cell data (`CARD_TYPE` in
 // the Python twin). Zero for a card it does not name.
 std::int64_t nm_card_type(const std::string& rCard) {
@@ -108,7 +114,8 @@ struct NmBlock {
     std::vector<std::int64_t> mEid;
     std::vector<std::int64_t> mPid;
     std::vector<std::int64_t> mComp;  // two per cell: the components at each end
-    std::vector<double> mBar;         // kNmBarWidth per cell: a CBAR's fields
+    std::vector<double> mBar;         // kNmBarWidth per cell: a CBAR's fields, a CELAS2's K,
+                                      // GE and S, or a CDAMP2's B (the card's first columns)
 };
 
 }  // namespace
@@ -262,6 +269,10 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
     if (pIds != nullptr) {
         for (const NmBlock& b : blocks) {
             const std::size_t n = b.mEid.size();
+            // A block holds one card, so each card's fields are zero in every other block.
+            const bool bar = b.mCard == "CBAR";
+            const bool spring = b.mCard == "CELAS2";
+            const bool damper = b.mCard == "CDAMP2";
             std::vector<std::int64_t> card(n, nm_card_type(b.mCard));
             std::vector<std::int64_t> c1(n);
             std::vector<std::int64_t> c2(n);
@@ -269,18 +280,35 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             std::vector<std::int64_t> g0(n);
             std::vector<std::int64_t> pin(2 * n);
             std::vector<double> w(6 * n);
+            std::vector<double> k(n);
+            std::vector<double> ge(n);
+            std::vector<double> s(n);
+            std::vector<double> damping(n);
             for (std::size_t i = 0; i < n; ++i) {
                 c1[i] = b.mComp[2 * i];
                 c2[i] = b.mComp[2 * i + 1];
                 const double* f = b.mBar.data() + i * kNmBarWidth;
-                std::copy(f, f + 3, x.begin() + static_cast<std::ptrdiff_t>(3 * i));
-                g0[i] = static_cast<std::int64_t>(f[3]);
-                pin[2 * i] = static_cast<std::int64_t>(f[4]);
-                pin[2 * i + 1] = static_cast<std::int64_t>(f[5]);
-                std::copy(f + 6, f + 12, w.begin() + static_cast<std::ptrdiff_t>(6 * i));
+                if (bar) {
+                    std::copy(f, f + 3, x.begin() + static_cast<std::ptrdiff_t>(3 * i));
+                    g0[i] = static_cast<std::int64_t>(f[3]);
+                    pin[2 * i] = static_cast<std::int64_t>(f[4]);
+                    pin[2 * i + 1] = static_cast<std::int64_t>(f[5]);
+                    std::copy(f + 6, f + 12, w.begin() + static_cast<std::ptrdiff_t>(6 * i));
+                }
+                if (spring) {
+                    k[i] = f[0];
+                    ge[i] = f[1];
+                    s[i] = f[2];
+                }
+                if (damper)
+                    damping[i] = f[0];
             }
-            if (b.mCard == "CBAR")
+            if (bar)
                 pIds->mHasBar = true;
+            if (spring)
+                pIds->mHasSpring = true;
+            if (damper)
+                pIds->mHasDamper = true;
             pIds->mCard.push_back(nm_int_array(card));
             pIds->mC1.push_back(nm_int_array(c1));
             pIds->mC2.push_back(nm_int_array(c2));
@@ -294,6 +322,10 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             NDArray wa(DType::Float64, {n, 6});
             std::copy(w.begin(), w.end(), wa.As<double>());
             pIds->mW.push_back(std::move(wa));
+            pIds->mK.push_back(nm_double_array(k));
+            pIds->mGe.push_back(nm_double_array(ge));
+            pIds->mS.push_back(nm_double_array(s));
+            pIds->mB.push_back(nm_double_array(damping));
         }
     }
 

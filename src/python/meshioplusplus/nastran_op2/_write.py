@@ -41,6 +41,8 @@ _PENTA15 = list(range(9)) + [12, 13, 14, 9, 10, 11]
 # first node word, node permutation to Nastran's order or None)
 _CARDS = {
     "CBAR": ((2408, 24, 180), 16, 2, 2, None),
+    "CDAMP2": ((301, 3, 70), 6, 2, 2, None),
+    "CELAS2": ((701, 7, 74), 8, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
     "CELAS1": ((601, 6, 73), 6, 2, 2, None),
     "CONM2": ((1501, 15, 64), 13, 1, 1, None),
@@ -110,8 +112,8 @@ _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
-# write yet (CBAR, CBEAM, CBUSH, CELAS2, CDAMP2, CVISC, PLOTEL, CSHEAR): their rows
-# are left out rather than written as another card.
+# write yet (CBEAM, CBUSH, CVISC, PLOTEL, CSHEAR): their rows are left out rather
+# than written as another card.
 _LINE_CARDS = {
     30: "CROD",
     16: "CONROD",
@@ -120,10 +122,12 @@ _LINE_CARDS = {
     2: "CDAMP1",
     15: "CONM2",
     24: "CBAR",
+    3: "CDAMP2",
+    7: "CELAS2",
 }
 _BLOCK_CARDS = {
-    "vertex": ("CONM2", "CELAS1", "CDAMP1"),
-    "line": ("CROD", "CONROD", "CTUBE", "CELAS1", "CDAMP1", "CBAR"),
+    "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
+    "line": ("CROD", "CONROD", "CTUBE", "CELAS1", "CDAMP1", "CBAR", "CELAS2", "CDAMP2"),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
 # A cell of another type whose card this writer leaves out: CSHEAR is a quad.
@@ -319,6 +323,10 @@ _QUIET_CELL = (
     "nastran:g0",
     "nastran:pin",
     "nastran:w",
+    "nastran:k",
+    "nastran:ge",
+    "nastran:s",
+    "nastran:b",
 )
 
 _PTYPE = re.compile(r"^([A-Z][A-Z0-9]*)_([0-9]+)$")
@@ -436,23 +444,52 @@ def _components(mesh, b, n, ctype):
     return out
 
 
-def _bar_fields(mesh, b, n):
-    """The ``(n, 12)`` CBAR fields of block ``b``: the orientation vector X1..X3, the
-    G0, the pins PA and PB, and the end offsets W1A..W3A and W1B..W3B, from
-    ``nastran:x``, ``nastran:g0``, ``nastran:pin`` and ``nastran:w``. A missing one is
-    zero."""
+def _raw_bar_fields(mesh, b, n):
+    """The per-cell values of block ``b`` that the card fields are made of, as a dict
+    of arrays (``None`` where the mesh has none): ``x`` ``(n, 3)``, ``g0``, ``pin``
+    ``(n, 2)``, ``w`` ``(n, 6)``, ``k``, ``ge``, ``s`` and ``b``."""
+    widths = {"x": 3, "g0": 1, "pin": 2, "w": 6, "k": 1, "ge": 1, "s": 1, "b": 1}
+    names = {
+        "x": "nastran:x",
+        "g0": "nastran:g0",
+        "pin": "nastran:pin",
+        "w": "nastran:w",
+        "k": "nastran:k",
+        "ge": "nastran:ge",
+        "s": "nastran:s",
+        "b": "nastran:b",
+    }
+    out = {}
+    for key, name in names.items():
+        if name not in mesh.cell_data:
+            out[key] = None
+            continue
+        values = np.asarray(mesh.cell_data[name][b], dtype=np.float64)
+        if values.size != n * widths[key]:
+            _wfail(f"'{name}' must have {widths[key]} value(s) per cell")
+        out[key] = values.reshape(n, widths[key])
+    return out
+
+
+def _bar_matrix(raw, cards):
+    """The ``(n, 12)`` card fields of the rows, by their cards: a CBAR's orientation
+    X1..X3, G0, pins PA and PB and offsets W1A..W3A and W1B..W3B; a CELAS2's K, GE and S
+    in columns 0 to 2; a CDAMP2's B in column 0. Each row takes only its own card's."""
+    n = len(cards)
     out = np.zeros((n, 12))
-    for name, lo, hi in (
-        ("nastran:x", 0, 3),
-        ("nastran:g0", 3, 4),
-        ("nastran:pin", 4, 6),
-        ("nastran:w", 6, 12),
-    ):
-        if name in mesh.cell_data:
-            values = np.asarray(mesh.cell_data[name][b], dtype=np.float64)
-            if values.size != n * (hi - lo):
-                _wfail(f"'{name}' must have {hi - lo} value(s) per cell")
-            out[:, lo:hi] = values.reshape(n, hi - lo)
+    bars = np.asarray(cards == "CBAR")
+    if bars.any():
+        for key, lo, hi in (("x", 0, 3), ("g0", 3, 4), ("pin", 4, 6), ("w", 6, 12)):
+            if raw[key] is not None:
+                out[bars, lo:hi] = raw[key][bars]
+    springs = np.asarray(cards == "CELAS2")
+    if springs.any():
+        for key, col in (("k", 0), ("ge", 1), ("s", 2)):
+            if raw[key] is not None:
+                out[springs, col] = raw[key][springs, 0]
+    dampers = np.asarray(cards == "CDAMP2")
+    if dampers.any() and raw["b"] is not None:
+        out[dampers, 0] = raw["b"][dampers, 0]
     return out
 
 
@@ -534,7 +571,7 @@ class _Model:
             else:
                 pids = np.full(n, _DEFAULT_PID[block.type], dtype=np.int64)
             comps = _components(mesh, b, n, block.type)
-            bar = _bar_fields(mesh, b, n)
+            raw_bar = _raw_bar_fields(mesh, b, n)
             if have_card:
                 cards, keep, left = _written(
                     mesh.cell_data["nastran:card"][b], block.type, card
@@ -552,7 +589,11 @@ class _Model:
                     cards = np.full(n, card, dtype=object)
             if not keep.all():
                 conn, eids, pids = conn[keep], eids[keep], pids[keep]
-                comps, cards, bar = comps[keep], cards[keep], bar[keep]
+                comps, cards = comps[keep], cards[keep]
+                raw_bar = {
+                    key: (None if value is None else value[keep])
+                    for key, value in raw_bar.items()
+                }
                 n = len(eids)
             if not n:
                 continue
@@ -562,6 +603,9 @@ class _Model:
                 _wfail(
                     "a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0"
                 )
+            for card, key in (("CELAS2", "nastran:k"), ("CDAMP2", "nastran:b")):
+                if np.any(cards == card) and key not in mesh.cell_data:
+                    _wfail(f"a {card} needs its value: {key}")
             self.blocks.append(
                 {
                     "index": b,
@@ -572,7 +616,7 @@ class _Model:
                     "pids": pids,
                     "cards": cards,
                     "comps": comps,
-                    "bar": bar,
+                    "bar": _bar_matrix(raw_bar, cards),
                 }
             )
         for blk in self.blocks:
@@ -708,8 +752,15 @@ class _Model:
             else:
                 words[:, 1] = _i32(pid)
                 words[:, 2 : 2 + nodes.shape[1]] = _i32(nodes)
-                if name in ("CELAS1", "CDAMP1"):
+                if name in ("CELAS1", "CDAMP1", "CELAS2", "CDAMP2"):
                     words[:, 4:6] = _i32(comp)
+                if name == "CELAS2":
+                    # K at 1, GE at 6 and S at 7 (the reader's "bar" columns 0 to 2)
+                    words[:, 1] = _f32(bar[:, 0])
+                    words[:, 6] = _f32(bar[:, 1])
+                    words[:, 7] = _f32(bar[:, 2])
+                if name == "CDAMP2":
+                    words[:, 1] = _f32(bar[:, 0])
                 if name == "CBAR":
                     # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7
                     g0 = bar[:, 3].astype(np.int64)

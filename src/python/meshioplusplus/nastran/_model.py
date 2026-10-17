@@ -111,14 +111,22 @@ _DIM = {
 _BAR_WIDTH = 12
 
 
+def _payload_matrix(block, card=None):
+    """The ``(n, 12)`` payload of one cell block, zeros for the rows that carry none (and
+    for a block that is not of ``card``, when one is named). A CELAS2 carries its K, GE
+    and S in the first three columns and a CDAMP2 its B in the first column."""
+    n = len(block[2])
+    rows = np.zeros((n, _BAR_WIDTH))
+    if block[6] and (card is None or block[4] == card):
+        values = np.asarray(block[6], dtype=np.float64)
+        rows[:, : values.shape[1]] = values.reshape(n, -1)
+    return rows
+
+
 def _bar_arrays(block):
     """The CBAR fields of one cell block as ``(x, g0, pin, w)`` arrays, zeros for the
     rows that are not CBARs."""
-    n = len(block[2])
-    if block[6]:
-        rows = np.asarray(block[6], dtype=np.float64).reshape(n, _BAR_WIDTH)
-    else:
-        rows = np.zeros((n, _BAR_WIDTH))
+    rows = _payload_matrix(block, "CBAR")
     return (
         rows[:, 0:3].copy(),
         rows[:, 3].astype(np.int64),
@@ -252,6 +260,15 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
             extras["nastran:g0"] = [bar[1] for bar in bars]
             extras["nastran:pin"] = [bar[2] for bar in bars]
             extras["nastran:w"] = [bar[3] for bar in bars]
+        if any(b[4] == "CELAS2" for b in blocks):
+            values = [_payload_matrix(b, "CELAS2") for b in blocks]
+            extras["nastran:k"] = [v[:, 0].copy() for v in values]
+            extras["nastran:ge"] = [v[:, 1].copy() for v in values]
+            extras["nastran:s"] = [v[:, 2].copy() for v in values]
+        if any(b[4] == "CDAMP2" for b in blocks):
+            extras["nastran:b"] = [
+                _payload_matrix(b, "CDAMP2")[:, 0].copy() for b in blocks
+            ]
 
     by_pid = {}
     for b, (ctype, _, _, pid, _, _, _) in enumerate(blocks):

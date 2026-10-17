@@ -11616,7 +11616,9 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
 /** @brief The arrays nastran_add_cells makes for the blocks it built: the
  *         `nastran:card`, `nastran:c1` and `nastran:c2` of every block and, when some
  *         block holds a CBAR (`mHasBar`), the CBAR's `nastran:x`, `nastran:g0`,
- *         `nastran:pin` and `nastran:w`. */
+ *         `nastran:pin` and `nastran:w`; when some block holds a CELAS2 (`mHasSpring`),
+ *         its `nastran:k`, `nastran:ge` and `nastran:s`; when some block holds a CDAMP2
+ *         (`mHasDamper`), its `nastran:b`. */
 struct NastranCellIds {
     std::vector<NDArray> mCard;  ///< the card's type number (its GEOM2 record's second key)
     std::vector<NDArray> mC1;    ///< a spring or damper's component at its first end
@@ -11626,6 +11628,12 @@ struct NastranCellIds {
     std::vector<NDArray> mG0;    ///< a CBAR's G0 (0 with an orientation vector), `(n,)`
     std::vector<NDArray> mPin;   ///< a CBAR's pins PA and PB, `(n, 2)`
     std::vector<NDArray> mW;     ///< a CBAR's offsets W1A..W3A and W1B..W3B, `(n, 6)`
+    bool mHasSpring = false;     ///< some block holds a CELAS2: the three arrays below are filled
+    std::vector<NDArray> mK;     ///< a CELAS2's stiffness K, `(n,)`
+    std::vector<NDArray> mGe;    ///< a CELAS2's damping coefficient GE, `(n,)`
+    std::vector<NDArray> mS;     ///< a CELAS2's stress coefficient S, `(n,)`
+    bool mHasDamper = false;     ///< some block holds a CDAMP2: the array below is filled
+    std::vector<NDArray> mB;     ///< a CDAMP2's damping B, `(n,)`
 };
 
 /**
@@ -11633,9 +11641,10 @@ struct NastranCellIds {
  *        and CBAR fields.
  * @param rComps per card of @p rCards, two `int64` per element (its components
  *               at the first and at the second end), or empty for none
- * @param rBar per card of @p rCards, twelve doubles per element for a CBAR card: its
+ * @param rBar per card of @p rCards, twelve doubles per element: for a CBAR, its
  *             orientation vector X1..X3, its G0 (0 with a vector), its pins PA and PB,
- *             and its offsets W1A..W3A and W1B..W3B; empty for none
+ *             and its offsets W1A..W3A and W1B..W3B; for a CELAS2, its K, GE and S in
+ *             the first three; for a CDAMP2, its B in the first; empty for none
  * @param pIds receives the blocks' arrays, which the caller adds to @p rMesh; nullptr
  *        leaves them out
  */
@@ -65207,6 +65216,12 @@ NDArray nm_int_array(const std::vector<std::int64_t>& rV) {
     return a;
 }
 
+NDArray nm_double_array(const std::vector<double>& rV) {
+    NDArray a(DType::Float64, {rV.size()});
+    std::copy(rV.begin(), rV.end(), a.As<double>());
+    return a;
+}
+
 // The GEOM2 type number of each card: the `nastran:card` cell data (`CARD_TYPE` in
 // the Python twin). Zero for a card it does not name.
 std::int64_t nm_card_type(const std::string& rCard) {
@@ -65233,7 +65248,8 @@ struct NmBlock {
     std::vector<std::int64_t> mEid;
     std::vector<std::int64_t> mPid;
     std::vector<std::int64_t> mComp;  // two per cell: the components at each end
-    std::vector<double> mBar;         // kNmBarWidth per cell: a CBAR's fields
+    std::vector<double> mBar;         // kNmBarWidth per cell: a CBAR's fields, a CELAS2's K,
+                                      // GE and S, or a CDAMP2's B (the card's first columns)
 };
 
 }  // namespace
@@ -65387,6 +65403,10 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
     if (pIds != nullptr) {
         for (const NmBlock& b : blocks) {
             const std::size_t n = b.mEid.size();
+            // A block holds one card, so each card's fields are zero in every other block.
+            const bool bar = b.mCard == "CBAR";
+            const bool spring = b.mCard == "CELAS2";
+            const bool damper = b.mCard == "CDAMP2";
             std::vector<std::int64_t> card(n, nm_card_type(b.mCard));
             std::vector<std::int64_t> c1(n);
             std::vector<std::int64_t> c2(n);
@@ -65394,18 +65414,35 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             std::vector<std::int64_t> g0(n);
             std::vector<std::int64_t> pin(2 * n);
             std::vector<double> w(6 * n);
+            std::vector<double> k(n);
+            std::vector<double> ge(n);
+            std::vector<double> s(n);
+            std::vector<double> damping(n);
             for (std::size_t i = 0; i < n; ++i) {
                 c1[i] = b.mComp[2 * i];
                 c2[i] = b.mComp[2 * i + 1];
                 const double* f = b.mBar.data() + i * kNmBarWidth;
-                std::copy(f, f + 3, x.begin() + static_cast<std::ptrdiff_t>(3 * i));
-                g0[i] = static_cast<std::int64_t>(f[3]);
-                pin[2 * i] = static_cast<std::int64_t>(f[4]);
-                pin[2 * i + 1] = static_cast<std::int64_t>(f[5]);
-                std::copy(f + 6, f + 12, w.begin() + static_cast<std::ptrdiff_t>(6 * i));
+                if (bar) {
+                    std::copy(f, f + 3, x.begin() + static_cast<std::ptrdiff_t>(3 * i));
+                    g0[i] = static_cast<std::int64_t>(f[3]);
+                    pin[2 * i] = static_cast<std::int64_t>(f[4]);
+                    pin[2 * i + 1] = static_cast<std::int64_t>(f[5]);
+                    std::copy(f + 6, f + 12, w.begin() + static_cast<std::ptrdiff_t>(6 * i));
+                }
+                if (spring) {
+                    k[i] = f[0];
+                    ge[i] = f[1];
+                    s[i] = f[2];
+                }
+                if (damper)
+                    damping[i] = f[0];
             }
-            if (b.mCard == "CBAR")
+            if (bar)
                 pIds->mHasBar = true;
+            if (spring)
+                pIds->mHasSpring = true;
+            if (damper)
+                pIds->mHasDamper = true;
             pIds->mCard.push_back(nm_int_array(card));
             pIds->mC1.push_back(nm_int_array(c1));
             pIds->mC2.push_back(nm_int_array(c2));
@@ -65419,6 +65456,10 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             NDArray wa(DType::Float64, {n, 6});
             std::copy(w.begin(), w.end(), wa.As<double>());
             pIds->mW.push_back(std::move(wa));
+            pIds->mK.push_back(nm_double_array(k));
+            pIds->mGe.push_back(nm_double_array(ge));
+            pIds->mS.push_back(nm_double_array(s));
+            pIds->mB.push_back(nm_double_array(damping));
         }
     }
 
@@ -131987,13 +132028,14 @@ std::vector<detail::NastranCardRows> op2_read_elements(
             const std::size_t after = first + static_cast<std::size_t>(spec->mCount);
             card_comps.push_back(scalar_ends ? row[after] : 0);
             card_comps.push_back(scalar_ends ? row[after + 1] : 0);
+            // A float word of this row; the record's three key words come before the row.
+            const std::size_t base = 3 + i * chosen;
+            auto fword = [&](std::size_t Word) {
+                return w.Float(r.mRaw.data() + (base + Word) * static_cast<std::size_t>(w.mWs));
+            };
             if (std::strcmp(spec->mCard, "CBAR") == 0) {
                 // X1..X3 at words 4 to 6, or a G0 at 4 with the flag 2 at 7; PA and PB at
                 // 8 and 9; the offsets W1A..W3A and W1B..W3B at 10 to 15.
-                const std::size_t base = 3 + i * chosen;
-                auto fword = [&](std::size_t Word) {
-                    return w.Float(r.mRaw.data() + (base + Word) * static_cast<std::size_t>(w.mWs));
-                };
                 const bool g0 = row[7] == 2;
                 for (std::size_t k = 0; k < 3; ++k)
                     card_bars.push_back(g0 ? 0.0 : fword(4 + k));
@@ -132002,6 +132044,16 @@ std::vector<detail::NastranCardRows> op2_read_elements(
                 card_bars.push_back(static_cast<double>(row[9]));
                 for (std::size_t k = 0; k < 6; ++k)
                     card_bars.push_back(fword(10 + k));
+            } else if (std::strcmp(spec->mCard, "CELAS2") == 0) {
+                // K at word 1, GE at 6 and S at 7.
+                card_bars.push_back(fword(1));
+                card_bars.push_back(fword(6));
+                card_bars.push_back(fword(7));
+                card_bars.insert(card_bars.end(), 9, 0.0);
+            } else if (std::strcmp(spec->mCard, "CDAMP2") == 0) {
+                // B at word 1.
+                card_bars.push_back(fword(1));
+                card_bars.insert(card_bars.end(), 11, 0.0);
             }
         }
     }
@@ -133236,6 +133288,13 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
         m.mMesh.AddCellData("nastran:pin", std::move(ids.mPin));
         m.mMesh.AddCellData("nastran:w", std::move(ids.mW));
     }
+    if (ids.mHasSpring) {
+        m.mMesh.AddCellData("nastran:k", std::move(ids.mK));
+        m.mMesh.AddCellData("nastran:ge", std::move(ids.mGe));
+        m.mMesh.AddCellData("nastran:s", std::move(ids.mS));
+    }
+    if (ids.mHasDamper)
+        m.mMesh.AddCellData("nastran:b", std::move(ids.mB));
     m.mCellIndex = cells.mCellIndex;
     m.mOffsets = cells.mOffsets;
     m.mSizes = cells.mSizes;
@@ -133764,7 +133823,9 @@ struct Op2wCard {
 constexpr Op2wCard kOp2wCards[] = {
     {"CBAR", 2408, 24, 180, 16, 2, 2, nullptr, kOp2wPbar, 0},
     {"CDAMP1", 201, 2, 69, 6, 2, 2, nullptr, kOp2wPdamp, 0},
+    {"CDAMP2", 301, 3, 70, 6, 2, 2, nullptr, kOp2wNoProp, 0},
     {"CELAS1", 601, 6, 73, 6, 2, 2, nullptr, kOp2wPelas, 0},
+    {"CELAS2", 701, 7, 74, 8, 2, 2, nullptr, kOp2wNoProp, 0},
     {"CHEXA", 7308, 73, 253, 22, 8, 2, kOp2wHexa20, kOp2wPsolid, 8},
     {"CONM2", 1501, 15, 64, 13, 1, 1, nullptr, kOp2wNoProp, 0},
     {"CONROD", 1601, 16, 47, 8, 2, 1, nullptr, kOp2wNoProp, 0},
@@ -133789,7 +133850,7 @@ std::size_t op2w_card_index(std::string_view Name) {
 }
 
 /// The card a line or vertex takes from its `nastran:card` number, or nullptr when the
-/// writer does not write that card yet (CBAR, CBEAM, ...).
+/// writer does not write that card yet (CBEAM, CBUSH, ...).
 const char* op2w_line_card(std::int64_t Code) {
     switch (Code) {
         case 30:
@@ -133806,6 +133867,10 @@ const char* op2w_line_card(std::int64_t Code) {
             return "CONM2";
         case 24:
             return "CBAR";
+        case 3:
+            return "CDAMP2";
+        case 7:
+            return "CELAS2";
         default:
             return nullptr;
     }
@@ -133814,10 +133879,11 @@ const char* op2w_line_card(std::int64_t Code) {
 /// Whether a cell block of @p rType may hold an element of card @p Card.
 bool op2w_block_holds(const std::string& rType, std::string_view Card) {
     if (rType == "vertex")
-        return Card == "CONM2" || Card == "CELAS1" || Card == "CDAMP1";
+        return Card == "CONM2" || Card == "CELAS1" || Card == "CDAMP1" || Card == "CELAS2" ||
+               Card == "CDAMP2";
     if (rType == "line")
         return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
-               Card == "CDAMP1" || Card == "CBAR";
+               Card == "CDAMP1" || Card == "CBAR" || Card == "CELAS2" || Card == "CDAMP2";
     return false;
 }
 
@@ -133879,7 +133945,8 @@ struct Op2wBlock {
     std::vector<std::int64_t> mPids;
     std::vector<std::size_t> mCards;  // card index per cell
     std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
-    std::vector<double> mBar;          // twelve per cell: a CBAR's fields
+    std::vector<double> mBar;          // twelve per cell: a CBAR's fields, a CELAS2's K, GE
+                                       // and S, or a CDAMP2's B (the card's first columns)
 };
 
 struct Op2wRow {
@@ -134114,6 +134181,14 @@ public:
                 if (keep[i] && blk.mCards[i] == cbar && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0");
+            const std::size_t celas2 = op2w_card_index("CELAS2");
+            const std::size_t cdamp2 = op2w_card_index("CDAMP2");
+            for (std::size_t i = 0; i < blk.mCount; ++i) {
+                if (keep[i] && blk.mCards[i] == celas2 && !rMesh.HasCellData("nastran:k"))
+                    op2w_fail("a CELAS2 needs its value: nastran:k");
+                if (keep[i] && blk.mCards[i] == cdamp2 && !rMesh.HasCellData("nastran:b"))
+                    op2w_fail("a CDAMP2 needs its value: nastran:b");
+            }
             std::size_t kept = 0;
             for (const bool k : keep)
                 kept += k ? 1 : 0;
@@ -134134,9 +134209,12 @@ public:
             };
             read_component("nastran:c1", c1);
             read_component("nastran:c2", c2);
-            // A CBAR's fields: X1..X3, the G0, PA and PB, W1A..W3A and W1B..W3B.
+            // The card fields of each row, from the cell data of its own card only: a CBAR's
+            // X1..X3, G0, PA and PB, W1A..W3A and W1B..W3B; a CELAS2's K, GE and S; a CDAMP2's B.
+            // A CELAS2's K and a CDAMP2's B share column 0, so a row takes only its own card's.
             blk.mBar.assign(blk.mCount * 12, 0.0);
-            const auto read_bar = [&](const char* pName, std::size_t Lo, std::size_t Width) {
+            const auto read_field = [&](const char* pName, std::size_t Card, std::size_t Lo,
+                                        std::size_t Width) {
                 if (!rMesh.HasCellData(pName))
                     return;
                 const NDArray& a = rMesh.CellData(pName, b);
@@ -134145,13 +134223,18 @@ public:
                               " value(s) per cell");
                 const detail::DoubleView view(a);
                 for (std::size_t i = 0; i < blk.mCount; ++i)
-                    for (std::size_t k = 0; k < Width; ++k)
-                        blk.mBar[i * 12 + Lo + k] = view.Data()[i * Width + k];
+                    if (blk.mCards[i] == Card)
+                        for (std::size_t k = 0; k < Width; ++k)
+                            blk.mBar[i * 12 + Lo + k] = view.Data()[i * Width + k];
             };
-            read_bar("nastran:x", 0, 3);
-            read_bar("nastran:g0", 3, 1);
-            read_bar("nastran:pin", 4, 2);
-            read_bar("nastran:w", 6, 6);
+            read_field("nastran:x", cbar, 0, 3);
+            read_field("nastran:g0", cbar, 3, 1);
+            read_field("nastran:pin", cbar, 4, 2);
+            read_field("nastran:w", cbar, 6, 6);
+            read_field("nastran:k", celas2, 0, 1);
+            read_field("nastran:ge", celas2, 1, 1);
+            read_field("nastran:s", celas2, 2, 1);
+            read_field("nastran:b", cdamp2, 0, 1);
             blk.mComps.resize(2 * blk.mCount);
             for (std::size_t i = 0; i < blk.mCount; ++i) {
                 blk.mComps[2 * i] = c1[i];
@@ -134308,9 +134391,20 @@ public:
                             w.F(10 + k, f[6 + k]);
                     }
                     if (std::string_view(card.mName) == "CELAS1" ||
-                        std::string_view(card.mName) == "CDAMP1") {
+                        std::string_view(card.mName) == "CDAMP1" ||
+                        std::string_view(card.mName) == "CELAS2" ||
+                        std::string_view(card.mName) == "CDAMP2") {
                         w.I(4, blk.mComps[2 * row.mRow]);
                         w.I(5, blk.mComps[2 * row.mRow + 1]);
+                    }
+                    if (std::string_view(card.mName) == "CELAS2") {
+                        // K at 1, in place of the property id; GE at 6 and S at 7.
+                        const double* f = blk.mBar.data() + row.mRow * 12;
+                        w.F(1, f[0]);
+                        w.F(6, f[1]);
+                        w.F(7, f[2]);
+                    } else if (std::string_view(card.mName) == "CDAMP2") {
+                        w.F(1, blk.mBar[row.mRow * 12]);  // B, in place of the property id
                     }
                 }
                 w.Append(rows);
@@ -134923,7 +135017,8 @@ void op2w_warn_dropped(const Mesh& rMesh, const Op2wModel& rModel,
     for (const std::string& n : rMesh.CellDataNames())
         if (rTaken.count(n) == 0 && n != "nastran:eid" && n != "nastran:pid" &&
             n != "nastran:card" && n != "nastran:c1" && n != "nastran:c2" && n != "nastran:x" &&
-            n != "nastran:g0" && n != "nastran:pin" && n != "nastran:w")
+            n != "nastran:g0" && n != "nastran:pin" && n != "nastran:w" && n != "nastran:k" &&
+            n != "nastran:ge" && n != "nastran:s" && n != "nastran:b")
             names.insert(n);
     for (const std::string& n : rMesh.FieldDataNames())
         if (n != kSequenceTimeKey && n.rfind("nastran:", 0) != 0)

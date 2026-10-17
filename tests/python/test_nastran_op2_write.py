@@ -1113,3 +1113,91 @@ def test_pynastran_reads_the_pcomp(tmp_path):
     assert (prop.z0, prop.sb, prop.ft) == (0.5, 2.0, "TSAI")
     assert prop.tref == 20.0 and prop.lam is None
     assert sorted(model.materials) == [1, 2]
+
+
+# -- CELAS2 and CDAMP2 -------------------------------------------------------------------
+
+
+def _inline_spring_mesh():
+    """A CELAS2 30 between GRIDs 1 and 2 (K 1000, GE 0.02), a CDAMP2 31 between 2 and 3
+    (B 2.5) and a CELAS2 32 grounded at GRID 4 (K 55). None has a property."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points, [("line", np.array([[0, 1], [1, 2]])), ("vertex", np.array([[3]]))]
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([30, 31]), np.array([32])]
+    mesh.cell_data["nastran:pid"] = [np.array([-1, -1]), np.array([-1])]
+    mesh.cell_data["nastran:card"] = [np.array([7, 3]), np.array([7])]
+    mesh.cell_data["nastran:c1"] = [np.array([1, 2]), np.array([3])]
+    mesh.cell_data["nastran:c2"] = [np.array([1, 2]), np.array([0])]
+    mesh.cell_data["nastran:k"] = [np.array([1000.0, 0.0]), np.array([55.0])]
+    mesh.cell_data["nastran:ge"] = [np.array([0.02, 0.0]), np.array([0.0])]
+    mesh.cell_data["nastran:s"] = [np.array([0.0, 0.0]), np.array([0.0])]
+    mesh.cell_data["nastran:b"] = [np.array([0.0, 2.5]), np.array([0.0])]
+    return mesh
+
+
+def _rows_by_eid(mesh):
+    rows = {}
+    for block, eids in enumerate(mesh.cell_data["nastran:eid"]):
+        for row, eid in enumerate(eids.tolist()):
+            rows[eid] = {
+                name: mesh.cell_data[name][block][row]
+                for name in (
+                    "nastran:card",
+                    "nastran:k",
+                    "nastran:ge",
+                    "nastran:b",
+                    "nastran:c1",
+                    "nastran:c2",
+                )
+            }
+    return rows
+
+
+def test_inline_springs_and_dampers_round_trip(engine, tmp_path):
+    path = tmp_path / "inline.op2"
+    write_with(engine, path, _inline_spring_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        rows = _rows_by_eid(read(path))
+        assert sorted(rows) == [30, 31, 32]
+        assert rows[30]["nastran:card"] == 7 and rows[30]["nastran:k"] == 1000.0
+        assert rows[30]["nastran:ge"] == pytest.approx(0.02)
+        assert (rows[30]["nastran:c1"], rows[30]["nastran:c2"]) == (1, 1)
+        assert rows[31]["nastran:card"] == 3 and rows[31]["nastran:b"] == 2.5
+        assert (rows[31]["nastran:c1"], rows[31]["nastran:c2"]) == (2, 2)
+        assert rows[32]["nastran:card"] == 7 and rows[32]["nastran:k"] == 55.0
+        assert (rows[32]["nastran:c1"], rows[32]["nastran:c2"]) == (3, 0)
+
+
+def test_the_engines_write_the_same_bytes_with_inline_springs(tmp_path):
+    mesh = _inline_spring_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_celas2_needs_its_stiffness(engine, tmp_path):
+    mesh = _inline_spring_mesh()
+    del mesh.cell_data["nastran:k"]
+    with pytest.raises(Exception, match="nastran:k"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_pynastran_reads_the_inline_springs_and_dampers(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_inline.op2"
+    _core.nastran_op2_write(str(path), _inline_spring_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, damper, grounded = model.elements[30], model.elements[31], model.elements[32]
+    assert first.type == "CELAS2" and first.k == 1000.0
+    assert first.ge == pytest.approx(0.02) and first.s == 0.0
+    assert (first.c1, first.c2) == (1, 1) and first.node_ids == [1, 2]
+    assert damper.type == "CDAMP2" and damper.b == 2.5
+    assert damper.node_ids == [2, 3] and (damper.c1, damper.c2) == (2, 2)
+    assert grounded.type == "CELAS2" and grounded.k == 55.0
+    assert grounded.node_ids == [4, None] and (grounded.c1, grounded.c2) == (3, 0)

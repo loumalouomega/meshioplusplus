@@ -103,7 +103,9 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
 /** @brief The arrays nastran_add_cells makes for the blocks it built: the
  *         `nastran:card`, `nastran:c1` and `nastran:c2` of every block and, when some
  *         block holds a CBAR (`mHasBar`), the CBAR's `nastran:x`, `nastran:g0`,
- *         `nastran:pin` and `nastran:w`. */
+ *         `nastran:pin` and `nastran:w`; when some block holds a CELAS2 (`mHasSpring`),
+ *         its `nastran:k`, `nastran:ge` and `nastran:s`; when some block holds a CDAMP2
+ *         (`mHasDamper`), its `nastran:b`. */
 struct NastranCellIds {
     std::vector<NDArray> mCard;  ///< the card's type number (its GEOM2 record's second key)
     std::vector<NDArray> mC1;    ///< a spring or damper's component at its first end
@@ -113,6 +115,12 @@ struct NastranCellIds {
     std::vector<NDArray> mG0;    ///< a CBAR's G0 (0 with an orientation vector), `(n,)`
     std::vector<NDArray> mPin;   ///< a CBAR's pins PA and PB, `(n, 2)`
     std::vector<NDArray> mW;     ///< a CBAR's offsets W1A..W3A and W1B..W3B, `(n, 6)`
+    bool mHasSpring = false;     ///< some block holds a CELAS2: the three arrays below are filled
+    std::vector<NDArray> mK;     ///< a CELAS2's stiffness K, `(n,)`
+    std::vector<NDArray> mGe;    ///< a CELAS2's damping coefficient GE, `(n,)`
+    std::vector<NDArray> mS;     ///< a CELAS2's stress coefficient S, `(n,)`
+    bool mHasDamper = false;     ///< some block holds a CDAMP2: the array below is filled
+    std::vector<NDArray> mB;     ///< a CDAMP2's damping B, `(n,)`
 };
 
 /**
@@ -120,9 +128,10 @@ struct NastranCellIds {
  *        and CBAR fields.
  * @param rComps per card of @p rCards, two `int64` per element (its components
  *               at the first and at the second end), or empty for none
- * @param rBar per card of @p rCards, twelve doubles per element for a CBAR card: its
+ * @param rBar per card of @p rCards, twelve doubles per element: for a CBAR, its
  *             orientation vector X1..X3, its G0 (0 with a vector), its pins PA and PB,
- *             and its offsets W1A..W3A and W1B..W3B; empty for none
+ *             and its offsets W1A..W3A and W1B..W3B; for a CELAS2, its K, GE and S in
+ *             the first three; for a CDAMP2, its B in the first; empty for none
  * @param pIds receives the blocks' arrays, which the caller adds to @p rMesh; nullptr
  *        leaves them out
  */
