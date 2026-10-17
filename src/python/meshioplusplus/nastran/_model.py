@@ -106,6 +106,27 @@ _DIM = {
 }
 
 
+# A CBAR row's payload: its orientation vector (X1..X3; zeros with a G0), its G0,
+# its pin flags PA and PB, and its end offsets W1A..W3A and W1B..W3B.
+_BAR_WIDTH = 12
+
+
+def _bar_arrays(block):
+    """The CBAR fields of one cell block as ``(x, g0, pin, w)`` arrays, zeros for the
+    rows that are not CBARs."""
+    n = len(block[2])
+    if block[6]:
+        rows = np.asarray(block[6], dtype=np.float64).reshape(n, _BAR_WIDTH)
+    else:
+        rows = np.zeros((n, _BAR_WIDTH))
+    return (
+        rows[:, 0:3].copy(),
+        rows[:, 3].astype(np.int64),
+        rows[:, 4:6].astype(np.int64),
+        rows[:, 6:12].copy(),
+    )
+
+
 def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
     """Cell blocks, cell data and property regions of a Nastran model.
 
@@ -118,7 +139,7 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
     structural element). When ``extras`` is a dict it receives the per-block
     ``nastran:card`` (see :data:`CARD_TYPE`), ``nastran:c1`` and ``nastran:c2``.
     """
-    blocks = []  # [type, conn list, eid list, pid list, card, component pairs]
+    blocks = []  # [type, conn, eid, pid, card, component pairs, payload rows]
     dropped = 0
     for item in cards:
         card, eid, pid, g = item[:4]
@@ -128,13 +149,16 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
         lin_type, lin_n, quad_type, quad_n, perm = spec
         g = np.asarray(g, dtype=np.int64)
         width = g.shape[1] if g.ndim == 2 else 0
-        linear = [lin_type, [], [], [], card, []]
-        quadratic = [quad_type, [], [], [], card, []]
+        linear = [lin_type, [], [], [], card, [], []]
+        quadratic = [quad_type, [], [], [], card, [], []]
         partial = 0
         eid = [int(v) for v in eid]
         pid = [int(v) for v in pid]
         comps = item[4] if len(item) > 4 else np.zeros((len(eid), 2), dtype=np.int64)
         comps = np.asarray(comps, dtype=np.int64).tolist()
+        payload = item[5] if len(item) > 5 else None
+        if payload is not None:
+            payload = np.asarray(payload, dtype=np.float64).tolist()
         # A spring or damper grounded at its first end: the other end leads.
         grounded_first = lin_n == 1 and quad_n == 2 and width >= 2
         for i, row in enumerate(g.tolist()):
@@ -172,6 +196,8 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
             b[2].append(eid[i])
             b[3].append(pid[i])
             b[5].append(comp)
+            if payload is not None:
+                b[6].append(payload[i])
         if partial:
             warn(
                 f"{who}: {partial} {card} element(s) have only some mid-side nodes; read as {lin_type}"
@@ -189,7 +215,7 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
     sizes = []
     ncells = 0
     shared = 0
-    for ctype, conn, eid, pid, card, _ in blocks:
+    for ctype, conn, eid, pid, card, _, _ in blocks:
         offsets.append(ncells)
         sizes.append(len(eid))
         if card != "CONM2":
@@ -220,9 +246,15 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
         extras["nastran:c2"] = [
             np.asarray([c[1] for c in b[5]], dtype=np.int64) for b in blocks
         ]
+        if any(b[4] == "CBAR" for b in blocks):
+            bars = [_bar_arrays(b) for b in blocks]
+            extras["nastran:x"] = [bar[0] for bar in bars]
+            extras["nastran:g0"] = [bar[1] for bar in bars]
+            extras["nastran:pin"] = [bar[2] for bar in bars]
+            extras["nastran:w"] = [bar[3] for bar in bars]
 
     by_pid = {}
-    for b, (ctype, _, _, pid, _, _) in enumerate(blocks):
+    for b, (ctype, _, _, pid, _, _, _) in enumerate(blocks):
         dim = _DIM[ctype]
         for i, p in enumerate(pid):
             if p <= 0:

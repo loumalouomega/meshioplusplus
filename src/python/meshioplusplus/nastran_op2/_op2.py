@@ -512,7 +512,7 @@ def _read_elements(s, tables, grids):
                 f"{WHO}: a {card} record of {len(words)} words matches no known layout; skipped"
             )
             continue
-        entry = cards.setdefault(card, [[], [], [], []])
+        entry = cards.setdefault(card, [[], [], [], [], []])
         entry[0].append(rows[:, 0])
         entry[1].append(
             rows[:, pid_word] if pid_word is not None else np.full(len(rows), -1)
@@ -523,11 +523,13 @@ def _read_elements(s, tables, grids):
             entry[3].append(rows[:, first + count : first + count + 2])
         else:
             entry[3].append(np.zeros((len(rows), 2), dtype=np.int64))
+        if card == "CBAR":
+            entry[4].append(_bar_payload(s, raw, rows))
     if skipped:
         warn(f"{WHO}: skipped element records with no cell type: " + ", ".join(skipped))
     out = []
     for card in sorted(cards):
-        eid, pid, g, comps = cards[card]
+        eid, pid, g, comps, payload = cards[card]
         out.append(
             (
                 card,
@@ -535,9 +537,29 @@ def _read_elements(s, tables, grids):
                 np.concatenate(pid),
                 np.concatenate(g),
                 np.concatenate(comps),
+                np.concatenate(payload) if payload else None,
             )
         )
     return out
+
+
+def _bar_payload(s, raw, rows):
+    """The CBAR fields of each row of a CBAR record as float64 ``(n, 12)``: the
+    orientation vector X1..X3 (zeros with a G0), the G0, the pins PA and PB, and the
+    end offsets W1A..W3A and W1B..W3B. The record holds X1..X3 at words 4 to 6, the
+    orientation flag at word 7 (2 with a G0, in word 4), PA and PB at 8 and 9, and
+    the offsets at 10 to 15."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    g0 = rows[:, 7] == 2
+    x = np.where(g0[:, None], 0.0, floats[:, 4:7])
+    return np.column_stack(
+        [
+            x,
+            np.where(g0, rows[:, 4], 0).astype(np.float64),
+            rows[:, 8:10].astype(np.float64),
+            floats[:, 10:16],
+        ]
+    )
 
 
 def _entries_terminated(words, start):
@@ -654,6 +676,7 @@ def _read_property_values(s, tables):
             "PROD",
             "PTUBE",
             "PSOLID",
+            "PBAR",
             "PELAS",
             "PDAMP",
         ):

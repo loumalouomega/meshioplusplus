@@ -40,6 +40,7 @@ _PENTA15 = list(range(9)) + [12, 13, 14, 9, 10, 11]
 # card -> ((k1, k2, k3) key, record words, node count of the linear card,
 # first node word, node permutation to Nastran's order or None)
 _CARDS = {
+    "CBAR": ((2408, 24, 180), 16, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
     "CELAS1": ((601, 6, 73), 6, 2, 2, None),
     "CONM2": ((1501, 15, 64), 13, 1, 1, None),
@@ -102,6 +103,7 @@ _PSHELL = ((2302, 23, 283), 11)
 _PSOLID = ((2402, 24, 281), 7)
 _PROD = ((902, 9, 29), 6)
 _PTUBE = ((1602, 16, 30), 5)
+_PBAR = ((52, 20, 181), 19)
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
 
@@ -116,10 +118,11 @@ _LINE_CARDS = {
     6: "CELAS1",
     2: "CDAMP1",
     15: "CONM2",
+    24: "CBAR",
 }
 _BLOCK_CARDS = {
     "vertex": ("CONM2", "CELAS1", "CDAMP1"),
-    "line": ("CROD", "CONROD", "CTUBE", "CELAS1", "CDAMP1"),
+    "line": ("CROD", "CONROD", "CTUBE", "CELAS1", "CDAMP1", "CBAR"),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
 # A cell of another type whose card this writer leaves out: CSHEAR is a quad.
@@ -140,6 +143,25 @@ PROPERTY_VALUES = {
     },
     "PTUBE": {"MID": (1, 1), "OD": (2, 1.0), "T": (3, 0.0), "NSM": (4, 0.0)},
     "PSOLID": {"MID": (1, 1)},
+    "PBAR": {
+        "MID": (1, 1),
+        "A": (2, 1.0),
+        "I1": (3, 0.0),
+        "I2": (4, 0.0),
+        "J": (5, 0.0),
+        "NSM": (6, 0.0),
+        "C1": (8, 0.0),
+        "C2": (9, 0.0),
+        "D1": (10, 0.0),
+        "D2": (11, 0.0),
+        "E1": (12, 0.0),
+        "E2": (13, 0.0),
+        "F1": (14, 0.0),
+        "F2": (15, 0.0),
+        "K1": (16, 0.0),
+        "K2": (17, 0.0),
+        "I12": (18, 0.0),
+    },
     "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
     "PDAMP": {"B": (1, 1.0)},
     "MAT1": {
@@ -178,7 +200,7 @@ def property_values(mesh):
 def material_ids(properties, values):
     """The MAT1 ids: those the properties name (MID default 1) and those given."""
     ids = set()
-    for ptype in ("PSHELL", "PSOLID", "PROD", "PTUBE"):  # the families with a material
+    for ptype in ("PSHELL", "PSOLID", "PROD", "PTUBE", "PBAR"):  # with a material
         for pid in properties.get(ptype, ()):
             given = values.get((ptype, pid), {})
             ids.add(given.get("MID", given.get("MID1", 1)))
@@ -262,7 +284,17 @@ _FORCE_FAMILIES = (
 
 # Arrays and field data that mean something without being results.
 _QUIET_POINT = ("nastran:cp", "nastran:cd", "nastran:nid")
-_QUIET_CELL = ("nastran:eid", "nastran:pid", "nastran:card", "nastran:c1", "nastran:c2")
+_QUIET_CELL = (
+    "nastran:eid",
+    "nastran:pid",
+    "nastran:card",
+    "nastran:c1",
+    "nastran:c2",
+    "nastran:x",
+    "nastran:g0",
+    "nastran:pin",
+    "nastran:w",
+)
 
 _PTYPE = re.compile(r"^([A-Z][A-Z0-9]*)_([0-9]+)$")
 
@@ -379,6 +411,26 @@ def _components(mesh, b, n, ctype):
     return out
 
 
+def _bar_fields(mesh, b, n):
+    """The ``(n, 12)`` CBAR fields of block ``b``: the orientation vector X1..X3, the
+    G0, the pins PA and PB, and the end offsets W1A..W3A and W1B..W3B, from
+    ``nastran:x``, ``nastran:g0``, ``nastran:pin`` and ``nastran:w``. A missing one is
+    zero."""
+    out = np.zeros((n, 12))
+    for name, lo, hi in (
+        ("nastran:x", 0, 3),
+        ("nastran:g0", 3, 4),
+        ("nastran:pin", 4, 6),
+        ("nastran:w", 6, 12),
+    ):
+        if name in mesh.cell_data:
+            values = np.asarray(mesh.cell_data[name][b], dtype=np.float64)
+            if values.size != n * (hi - lo):
+                _wfail(f"'{name}' must have {hi - lo} value(s) per cell")
+            out[:, lo:hi] = values.reshape(n, hi - lo)
+    return out
+
+
 def _written(codes, ctype, card):
     """The card of each row of a block that carries ``nastran:card``, the rows to
     keep, and the names of the cards left out. A line or vertex takes the card its
@@ -457,6 +509,7 @@ class _Model:
             else:
                 pids = np.full(n, _DEFAULT_PID[block.type], dtype=np.int64)
             comps = _components(mesh, b, n, block.type)
+            bar = _bar_fields(mesh, b, n)
             if have_card:
                 cards, keep, left = _written(
                     mesh.cell_data["nastran:card"][b], block.type, card
@@ -474,10 +527,16 @@ class _Model:
                     cards = np.full(n, card, dtype=object)
             if not keep.all():
                 conn, eids, pids = conn[keep], eids[keep], pids[keep]
-                comps, cards = comps[keep], cards[keep]
+                comps, cards, bar = comps[keep], cards[keep], bar[keep]
                 n = len(eids)
             if not n:
                 continue
+            if np.any(cards == "CBAR") and not {"nastran:x", "nastran:g0"} & set(
+                mesh.cell_data
+            ):
+                _wfail(
+                    "a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0"
+                )
             self.blocks.append(
                 {
                     "index": b,
@@ -488,6 +547,7 @@ class _Model:
                     "pids": pids,
                     "cards": cards,
                     "comps": comps,
+                    "bar": bar,
                 }
             )
         for blk in self.blocks:
@@ -528,6 +588,7 @@ class _Model:
             "PSOLID": set(),
             "PROD": set(),
             "PTUBE": set(),
+            "PBAR": set(),
             "PELAS": set(),
             "PDAMP": set(),
         }
@@ -544,6 +605,7 @@ class _Model:
                 ("CHEXA", "PSOLID"),
                 ("CROD", "PROD"),
                 ("CTUBE", "PTUBE"),
+                ("CBAR", "PBAR"),
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
             ):
@@ -589,6 +651,7 @@ class _Model:
             eid = np.concatenate([blk["eids"][r] for blk, r in parts])
             pid = np.concatenate([blk["pids"][r] for blk, r in parts])
             comp = np.concatenate([blk["comps"][r] for blk, r in parts])
+            bar = np.concatenate([blk["bar"][r] for blk, r in parts])
             width = max(blk["nodes"] for blk, _ in parts)
             nodes = np.zeros((len(eid), max(width, 1)), dtype=np.int64)
             at = 0
@@ -601,7 +664,8 @@ class _Model:
                     conn = placed
                 nodes[at : at + len(rows), : conn.shape[1]] = conn
                 at += len(rows)
-            eid, pid, nodes, comp = eid[order], pid[order], nodes[order], comp[order]
+            eid, pid, nodes = eid[order], pid[order], nodes[order]
+            comp, bar = comp[order], bar[order]
             words = np.zeros((len(eid), size), dtype="<u4")
             words[:, 0] = _i32(eid)
             if name == "CONM2":
@@ -616,6 +680,16 @@ class _Model:
                 words[:, 2 : 2 + nodes.shape[1]] = _i32(nodes)
                 if name in ("CELAS1", "CDAMP1"):
                     words[:, 4:6] = _i32(comp)
+                if name == "CBAR":
+                    # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7
+                    g0 = bar[:, 3].astype(np.int64)
+                    flag = np.where(g0 != 0, 2, 0)
+                    words[:, 4:7] = _f32(bar[:, 0:3])
+                    words[flag == 2, 4] = _i32(g0[flag == 2])
+                    words[flag == 2, 5:7] = 0
+                    words[:, 7] = _i32(flag)
+                    words[:, 8:10] = _i32(bar[:, 4:6].astype(np.int64))
+                    words[:, 10:16] = _f32(bar[:, 6:12])
             records.append(_key(*key) + _bytes(words))
         records.append(_key(65535, 65535, 65535))
         return _table("GEOM2", records)
@@ -627,6 +701,7 @@ class _Model:
             ("PSHELL", _PSHELL),
             ("PSOLID", _PSOLID),
             ("PTUBE", _PTUBE),
+            ("PBAR", _PBAR),
             ("PELAS", _PELAS),
             ("PDAMP", _PDAMP),
         ):

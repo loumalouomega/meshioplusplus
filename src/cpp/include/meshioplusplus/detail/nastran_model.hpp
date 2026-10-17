@@ -100,21 +100,31 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                                const std::map<std::int64_t, std::string>& rPtype,
                                const std::string& rWho);
 
-/** @brief The `nastran:card`, `nastran:c1` and `nastran:c2` arrays of the blocks
- *         that nastran_add_cells made, one per block. */
+/** @brief The arrays nastran_add_cells makes for the blocks it built: the
+ *         `nastran:card`, `nastran:c1` and `nastran:c2` of every block and, when some
+ *         block holds a CBAR (`mHasBar`), the CBAR's `nastran:x`, `nastran:g0`,
+ *         `nastran:pin` and `nastran:w`. */
 struct NastranCellIds {
     std::vector<NDArray> mCard;  ///< the card's type number (its GEOM2 record's second key)
     std::vector<NDArray> mC1;    ///< a spring or damper's component at its first end
     std::vector<NDArray> mC2;    ///< its component at its second end (0 at a vertex)
+    bool mHasBar = false;        ///< some block holds a CBAR: the four arrays below are filled
+    std::vector<NDArray> mX;     ///< a CBAR's orientation vector X1..X3, `(n, 3)`
+    std::vector<NDArray> mG0;    ///< a CBAR's G0 (0 with an orientation vector), `(n,)`
+    std::vector<NDArray> mPin;   ///< a CBAR's pins PA and PB, `(n, 2)`
+    std::vector<NDArray> mW;     ///< a CBAR's offsets W1A..W3A and W1B..W3B, `(n, 6)`
 };
 
 /**
- * @brief nastran_add_cells, which also reports each block's card and spring
- *        components.
+ * @brief nastran_add_cells, which also reports each block's card, spring components
+ *        and CBAR fields.
  * @param rComps per card of @p rCards, two `int64` per element (its components
  *               at the first and at the second end), or empty for none
- * @param pIds receives the blocks' `nastran:card`, `nastran:c1` and `nastran:c2`
- *        arrays, which the caller adds to @p rMesh; nullptr leaves them out
+ * @param rBar per card of @p rCards, twelve doubles per element for a CBAR card: its
+ *             orientation vector X1..X3, its G0 (0 with a vector), its pins PA and PB,
+ *             and its offsets W1A..W3A and W1B..W3B; empty for none
+ * @param pIds receives the blocks' arrays, which the caller adds to @p rMesh; nullptr
+ *        leaves them out
  */
 NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& rCards,
                                const std::unordered_map<std::int64_t, std::size_t>& rGridIndex,
@@ -122,7 +132,7 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                                const std::map<std::int64_t, std::string>& rPtype,
                                const std::string& rWho,
                                const std::vector<std::vector<std::int64_t>>& rComps,
-                               NastranCellIds* pIds);
+                               const std::vector<std::vector<double>>& rBar, NastranCellIds* pIds);
 
 /** @brief One coordinate system card: CORD1R/C/S (three GRIDs) or CORD2R/C/S. */
 struct NastranCoordCard {

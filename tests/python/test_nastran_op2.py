@@ -439,8 +439,20 @@ def test_a_spring_grounded_at_its_first_end_leads_with_its_free_end():
 
     extras = {}
     cards = [
-        ("CELAS1", [30], [5], [[0, 2]], [[4, 3]]),  # grounded first: free end GRID 2, comp 3
-        ("CELAS1", [31], [5], [[1, 0]], [[4, 3]]),  # grounded second: free end GRID 1, comp 4
+        (
+            "CELAS1",
+            [30],
+            [5],
+            [[0, 2]],
+            [[4, 3]],
+        ),  # grounded first: free end GRID 2, comp 3
+        (
+            "CELAS1",
+            [31],
+            [5],
+            [[1, 0]],
+            [[4, 3]],
+        ),  # grounded second: free end GRID 1, comp 4
     ]
     cells, cell_data, _, _, _, _ = add_cells(
         cards, {1: 0, 2: 1}, set(), {5: "PELAS"}, "test", extras

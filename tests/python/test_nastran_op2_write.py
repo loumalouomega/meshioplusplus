@@ -813,7 +813,7 @@ def test_grid_id_array_follows_the_read_options(
 def _spring_mesh():
     """Springs CELAS1 30 and 31 between GRIDs 1-2 and 2-3 (PELAS 5), one grounded at
     GRID 4 (its second component is 0), a CDAMP1 50 between 2 and 4 (PDAMP 6), and a
-    CBAR 40 the writer does not hold yet."""
+    CBEAM 40 the writer does not hold yet."""
     points = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
     )
@@ -842,7 +842,7 @@ def _spring_mesh():
         np.array([6, 6]),
         np.array([6]),
         np.array([2]),
-        np.array([24]),
+        np.array([54]),
     ]
     mesh.cell_data["nastran:c1"] = [
         np.array([1, 1]),
@@ -927,7 +927,7 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())
     assert "element cards not written yet" in err
-    assert "CBAR" in err and "CSHEAR" in err
+    assert "CBEAM" in err and "CSHEAR" in err
     back = py_op2.read(path)
     assert sorted(_elements(back)) == [30, 31, 32, 50]
 
@@ -947,3 +947,91 @@ def test_pynastran_reads_the_springs_and_dampers(tmp_path):
     assert model.properties[5].k == 1000.0
     assert model.properties[5].ge == pytest.approx(0.02)
     assert model.properties[6].type == "PDAMP" and model.properties[6].b == 3.5
+
+
+# -- CBAR and PBAR -----------------------------------------------------------------------
+
+
+def _bar_mesh():
+    """Two CBARs of PBAR 3: the first oriented by X = (0, 0, 1), the second by GRID 3 as
+    its G0, with pins (1, 2) and offsets at both ends."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([24, 25])]
+    mesh.cell_data["nastran:pid"] = [np.array([3, 3])]
+    mesh.cell_data["nastran:card"] = [np.array([24, 24])]
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 3])]
+    mesh.cell_data["nastran:pin"] = [np.array([[0, 0], [1, 2]])]
+    mesh.cell_data["nastran:w"] = [
+        np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6], [0.0] * 6])
+    ]
+    mesh.field_data["nastran:PBAR_3:A"] = np.array([2.5])
+    mesh.field_data["nastran:PBAR_3:I1"] = np.array([0.25])
+    mesh.field_data["nastran:PBAR_3:J"] = np.array([0.5])
+    mesh.field_data["nastran:PBAR_3:MID"] = np.array([1], dtype=np.int64)
+    return mesh
+
+
+def test_cbars_and_their_pbars_round_trip(engine, tmp_path):
+    path = tmp_path / "cbar.op2"
+    write_with(engine, path, _bar_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert np.concatenate(back.cell_data["nastran:eid"]).tolist() == [24, 25]
+        assert np.concatenate(back.cell_data["nastran:card"]).tolist() == [24, 24]
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:g0"]), [0, 3]
+        )
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:pin"]), [[0, 0], [1, 2]]
+        )
+        np.testing.assert_allclose(
+            np.concatenate(back.cell_data["nastran:x"]), [[0, 0, 1], [0, 0, 0]]
+        )
+        w = np.concatenate(back.cell_data["nastran:w"])
+        np.testing.assert_allclose(w[0], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], rtol=1e-6)
+        assert not w[1].any()
+        assert back.field_data["nastran:PBAR_3:A"][0] == 2.5
+        assert back.field_data["nastran:PBAR_3:I1"][0] == 0.25
+        assert back.field_data["nastran:PBAR_3:J"][0] == 0.5
+        assert back.field_data["nastran:PBAR_3:MID"][0] == 1
+        assert [r.name for r in back.regions] == ["PBAR_3"]
+
+
+def test_the_engines_write_the_same_bytes_with_cbars(tmp_path):
+    mesh = _bar_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cbar_needs_its_orientation(engine, tmp_path):
+    mesh = _bar_mesh()
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
+    with pytest.raises(Exception, match="orientation"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_pynastran_reads_the_cbars_and_pbars(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cbar.op2"
+    _core.nastran_op2_write(str(path), _bar_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[24], model.elements[25]
+    assert first.type == second.type == "CBAR" and first.pid == 3
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    assert first.g0 is None
+    assert second.g0 == 3 and second.x is None
+    assert (second.pa, second.pb) == (1, 2)
+    np.testing.assert_allclose(first.wa, [0.1, 0.2, 0.3], rtol=1e-6)
+    np.testing.assert_allclose(first.wb, [0.4, 0.5, 0.6], rtol=1e-6)
+    prop = model.properties[3]
+    assert prop.type == "PBAR" and prop.mid == 1
+    assert prop.A == 2.5 and prop.i1 == 0.25 and prop.j == 0.5
