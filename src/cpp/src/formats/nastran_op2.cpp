@@ -2827,7 +2827,24 @@ constexpr Op2wNodal kOp2wNodal[] = {
     {"TEMPERATURE", "OUGV1", 1, true},   {"SPC_FORCE", "OQG1", 3, false},
     {"MPC_FORCE", "OQMG1", 3, false},    {"APPLIED_LOAD", "OPG1", 2, false},
 };
-constexpr const char* kOp2wTables[] = {"OUGV1", "OQG1", "OQMG1", "OPG1", "OES1X1", "OSTR1X"};
+constexpr const char* kOp2wTables[] = {"OUGV1",  "OQG1",   "OQMG1",  "OPG1",
+                                       "OEF1X",  "OES1X1", "OSTR1X"};
+
+// Element force families (OEF1X, table code 4): the rods' axial force and torque and the
+// plates' eight membrane and bending forces, as `ELEMENT_FORCE:<member>` cell data.
+struct Op2wForceFamily {
+    std::int32_t mEtype;
+    const char* mCard;
+    std::vector<const char*> mMembers;
+};
+const std::vector<Op2wForceFamily>& op2w_force_families() {
+    static const std::vector<const char*> shell = {"MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"};
+    static const std::vector<Op2wForceFamily> families = {
+        {1, "CROD", {"AF", "TRQ"}},   {3, "CTUBE", {"AF", "TRQ"}}, {10, "CONROD", {"AF", "TRQ"}},
+        {33, "CQUAD4", shell},        {74, "CTRIA3", shell},
+    };
+    return families;
+}
 
 const char* const kOp2wRodMembers[] = {"A", "MSA", "T", "MST"};
 const char* const kOp2wTubeMembers[] = {"AS", "MSA", "TS", "MST"};
@@ -2886,6 +2903,52 @@ std::vector<double> op2w_gather(const Mesh& rMesh, const Op2wModel& rModel,
             out[r * stride + k] = row[k];
     }
     return out;
+}
+
+/// `ELEMENT_FORCE:<member>` of the rods and plates, one OEF1X block each.
+void op2w_force_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
+                       Op2wStep& rStep, std::set<std::string>& rTaken) {
+    for (const Op2wForceFamily& family : op2w_force_families()) {
+        const std::size_t card = op2w_card_index(family.mCard);
+        const std::vector<Op2wRow>& rows = rModel.Rows(card);
+        if (rows.empty())
+            continue;
+        std::vector<std::vector<double>> columns(family.mMembers.size());
+        bool any = false;
+        for (std::size_t j = 0; j < family.mMembers.size(); ++j) {
+            const std::string name = std::string("ELEMENT_FORCE:") + family.mMembers[j];
+            columns[j] = op2w_gather(rMesh, rModel, name, rows, 0);
+            if (!columns[j].empty()) {
+                rTaken.insert(name);
+                any = true;
+            }
+        }
+        if (!any)
+            continue;
+        const std::size_t wide = 1 + family.mMembers.size();
+        std::string data;
+        std::size_t kept = 0;
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            bool shown = false;
+            for (const auto& c : columns)
+                shown = shown || (!c.empty() && !std::isnan(c[r]));
+            if (!shown)
+                continue;
+            ++kept;
+            Op2wRowBuf w(wide);
+            w.I(0, rows[r].mEid * 10 + kOp2wDevice);
+            for (std::size_t j = 0; j < columns.size(); ++j)
+                if (!columns[j].empty() && !std::isnan(columns[j][r]))
+                    w.F(1 + j, columns[j][r]);
+            w.Append(data);
+        }
+        if (kept == 0)
+            continue;
+        rStep.mLayout.emplace_back("OEF1X", 4, family.mEtype);
+        auto& records = rStep.mTables["OEF1X"];
+        records.push_back(rHeader.Words(4, family.mEtype, wide, 0));
+        records.push_back(std::move(data));
+    }
 }
 
 void op2w_element_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
@@ -3126,6 +3189,7 @@ Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Tim
         records.push_back(header.Words(1000 + nodal.mTCode, 0, 14, 0, 0, 2));
         records.push_back(std::move(data));
     }
+    op2w_force_tables(rMesh, rModel, header, step, rTaken);
     op2w_element_tables(rMesh, rModel, header, "STRESS", "OES1X1", step, rTaken);
     op2w_element_tables(rMesh, rModel, header, "STRAIN", "OSTR1X", step, rTaken);
     return step;

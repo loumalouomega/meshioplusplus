@@ -171,6 +171,7 @@ _NODAL = (
     ("APPLIED_LOAD", "OPG1", 2, 0),
 )
 _NODAL_TABLES = ("OUGV1", "OQG1", "OQMG1", "OPG1")
+_RESULT_TABLES = _NODAL_TABLES + ("OEF1X", "OES1X1", "OSTR1X")
 
 # Element result families in file order: (element type, card, members). The
 # members are the words after the element id of a row (rods, shells), or the
@@ -219,6 +220,18 @@ _FAMILIES = (
     (255, "CPYRAM", "solid"),
 )
 _CORNERS = {"CTETRA": 4, "CHEXA": 8, "CPENTA": 6, "CPYRAM": 5}
+
+# Element force families (``OEF1X``, table code 4): (element type, card, members) of
+# the rods (axial force and torque) and the plates (the eight membrane and bending
+# forces), as ``ELEMENT_FORCE:<member>`` cell data.
+_SHELL_FORCE = ["MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"]
+_FORCE_FAMILIES = (
+    (1, "CROD", ["AF", "TRQ"]),
+    (3, "CTUBE", ["AF", "TRQ"]),
+    (10, "CONROD", ["AF", "TRQ"]),
+    (33, "CQUAD4", _SHELL_FORCE),
+    (74, "CTRIA3", _SHELL_FORCE),
+)
 
 # Arrays and field data that mean something without being results.
 _QUIET_POINT = ("nastran:cp", "nastran:cd", "nastran:nid")
@@ -689,6 +702,7 @@ def _step_tables(model, mesh, time, taken):
             [header.words(1000 + tcode, 0, 14, 0, 0, 2), _bytes(words)]
         )
     # Element tables.
+    _force_tables(model, mesh, header, tables, taken, layout)
     for group, table in (("STRESS", "OES1X1"), ("STRAIN", "OSTR1X")):
         _element_tables(model, mesh, header, group, table, tables, taken, layout)
     return header, tables, layout
@@ -716,6 +730,38 @@ def _gather(mesh, name, parts, order, width=None):
             out[at : at + len(rows), :k] = a[rows][:, :k]
         at += len(rows)
     return out[order]
+
+
+def _force_tables(model, mesh, header, tables, taken, layout):
+    """``ELEMENT_FORCE:<member>`` of the rods and plates, one ``OEF1X`` block each."""
+    for etype, card, members in _FORCE_FAMILIES:
+        if card not in model.cards:
+            continue
+        eid, _pid, parts, order = model.element_rows(card)
+        columns = {}
+        for m in members:
+            column = _gather(mesh, "ELEMENT_FORCE:" + m, parts, order)
+            if column is not None:
+                taken.add("ELEMENT_FORCE:" + m)
+                columns[m] = column
+        if not columns:
+            continue
+        shown = np.zeros(len(eid), dtype=bool)
+        for column in columns.values():
+            shown |= ~np.isnan(column)
+        keep = np.nonzero(shown)[0]
+        if not len(keep):
+            continue
+        wide = 1 + len(members)
+        words = np.zeros((len(keep), wide), dtype="<u4")
+        words[:, 0] = _i32(eid[keep] * 10 + _DEVICE)
+        for j, m in enumerate(members):
+            if m in columns:
+                words[:, 1 + j] = _f32(np.nan_to_num(columns[m][keep], nan=0.0))
+        layout.append(("OEF1X", 4, etype))
+        tables.setdefault("OEF1X", []).extend(
+            [header.words(4, etype, wide, 0), _bytes(words)]
+        )
 
 
 def _element_tables(model, mesh, header, group, table, tables, taken, layout):
@@ -845,7 +891,7 @@ def _assemble(model, steps):
     out = [_file_header(), model.geom1(), model.geom2(), model.ept()]
     if any(model.properties.values()):
         out.append(model.mpt())
-    for table in _NODAL_TABLES + ("OES1X1", "OSTR1X"):
+    for table in _RESULT_TABLES:
         records = []
         for tables in steps:
             records.extend(tables.get(table, []))

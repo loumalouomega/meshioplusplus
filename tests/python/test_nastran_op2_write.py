@@ -726,3 +726,57 @@ def test_pynastran_reads_the_complex_table(tmp_path):
     np.testing.assert_allclose(
         table.data[0, :, :3].imag, mesh.point_data["DISPLACEMENT_imag"], rtol=1e-6
     )
+
+
+def _force_mesh():
+    mesh = results_mesh()  # line (CROD 1), quad (CQUAD4 2), tetra (CTETRA 3)
+    mesh.cell_data["ELEMENT_FORCE:AF"] = [
+        np.array([12.5]),
+        np.array([np.nan]),
+        np.array([np.nan]),
+    ]
+    mesh.cell_data["ELEMENT_FORCE:TRQ"] = [
+        np.array([-1.5]),
+        np.array([np.nan]),
+        np.array([np.nan]),
+    ]
+    for k, name in enumerate(["MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"]):
+        mesh.cell_data["ELEMENT_FORCE:" + name] = [
+            np.array([np.nan]),
+            np.array([10.0 + k]),
+            np.array([np.nan]),
+        ]
+    return mesh
+
+
+def test_element_forces_of_rods_and_plates_round_trip(engine, tmp_path):
+    path = tmp_path / "forces.op2"
+    write_with(engine, path, _force_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        types = [b.type for b in back.cells]
+        rod, plate = types.index("line"), types.index("quad")
+        assert back.cell_data["ELEMENT_FORCE:AF"][rod][0] == 12.5
+        assert back.cell_data["ELEMENT_FORCE:TRQ"][rod][0] == -1.5
+        for k, name in enumerate(["MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"]):
+            assert back.cell_data["ELEMENT_FORCE:" + name][plate][0] == 10.0 + k
+
+
+def test_the_engines_write_the_same_bytes_with_element_forces(tmp_path):
+    mesh = _force_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_element_forces(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2", exc_type=ImportError)
+    path = tmp_path / "pn_forces.op2"
+    _core.nastran_op2_write(str(path), _force_mesh())
+    model = op2.OP2(debug=False)
+    model.read_op2(str(path), build_dataframe=False)
+    rod = model.crod_force[1]
+    assert rod.data[0, 0, 0] == 12.5 and rod.data[0, 0, 1] == -1.5
+    plate = model.cquad4_force[1]
+    np.testing.assert_allclose(plate.data[0, 0, :8], 10.0 + np.arange(8))
