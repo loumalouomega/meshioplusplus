@@ -386,3 +386,44 @@ def test_lasso_reads_the_written_file(tmp_path):
     np.testing.assert_allclose(
         binout.read("elout", "beam", "axial"), [[0.0, 0.0], [0.25, 0.5]]
     )
+
+
+def test_metadata_text_round_trips_as_one_byte_integers(engine, tmp_path):
+    """``binout:<database>:@<name>`` is a database's metadata text, written the way
+    LS-DYNA writes titles and dates: 1-byte integers beside the ids."""
+    mesh = step_mesh(0.5, glstat=0.25)
+    title = np.frombuffer(b"crash of a beam", dtype=np.uint8)
+    mesh.field_data["binout:nodout:@title"] = title
+    mesh.field_data["binout:glstat:@date"] = np.frombuffer(b"10/17/2026", np.uint8)
+    path = tmp_path / "binout"
+    write_with(engine, path, mesh)
+    back = meshioplusplus.lsdyna_binout.read(path)
+    assert back.field_data["binout:nodout:@title"].dtype == np.uint8
+    assert bytes(back.field_data["binout:nodout:@title"]) == b"crash of a beam"
+    assert bytes(back.field_data["binout:glstat:@date"]) == b"10/17/2026"
+    # the numbers are untouched
+    assert back.field_data["binout:glstat:kinetic_energy"][0] == 1.875
+    assert back.point_data["lsdyna:nid"].tolist() == [11, 12, 13]
+
+
+def test_the_engines_write_the_same_bytes_with_metadata_text(tmp_path):
+    mesh = step_mesh(0.5, glstat=0.25)
+    mesh.field_data["binout:nodout:@title"] = np.frombuffer(b"abc", np.uint8)
+    mesh.field_data["binout:glstat:@legend"] = np.array([-1, 0, 200], dtype=np.int16)
+    core, python = tmp_path / "core", tmp_path / "python"
+    _core.lsdyna_binout_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+    for reader in (meshioplusplus.lsdyna_binout.read, py_binout.read):
+        back = reader(core)
+        assert back.field_data["binout:glstat:@legend"].tolist() == [255, 0, 200]
+
+
+def test_lasso_reads_the_metadata_text(tmp_path):
+    lasso = pytest.importorskip("lasso.dyna", exc_type=ImportError)
+    mesh = step_mesh(0.5, glstat=0.25)
+    mesh.field_data["binout:nodout:@title"] = np.frombuffer(b"beam", np.uint8)
+    path = tmp_path / "binout"
+    _core.lsdyna_binout_write(str(path), mesh)
+    binout = lasso.Binout(str(path))
+    assert binout.read("nodout", "title") == "beam"

@@ -13,6 +13,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - `nastran_h5` writes complex nodal tables in MSC's column order (`XR,YR,ZR,XI,YI,ZI`), in both engines.
 - `nastran_h5` writes `<G>:<M>@corner` arrays as array members with a `GRID` column, in both engines.
 - `ansys_rst` writes a static cyclic-symmetry sector from `field_data["ansys:cyclic_sectors"]` (which a sector read now returns), in both engines; `ansys_rst_cyclic` reads it back as the rotor.
+- `lsdyna_binout` reads and writes each database's metadata text (titles, legends, dates) as `binout:<database>:@<name>` field data, in both engines.
 
 ## v17.3.0 (2026-10-16)
 

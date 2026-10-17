@@ -464,6 +464,29 @@ std::size_t lb_latest(const std::vector<double>& rTimes, double Time) {
     return k == 0 ? static_cast<std::size_t>(-1) : k - 1;
 }
 
+// A database's metadata text (titles, dates: 1-byte integers) as `<prefix>@<name>`, bytes.
+void lb_metadata_text(Mesh& rMesh, const LbArchive& rA, const std::vector<std::string>& rDb,
+                      const std::string& rPrefix, const ReadOptions& rOpts) {
+    std::vector<std::string> meta = rDb;
+    meta.push_back("metadata");
+    const LbDir* d = rA.Dir(meta);
+    if (d == nullptr)
+        return;
+    for (const auto& [name, var] : d->mVars) {
+        bool integer = false, numeric = false;
+        const std::string key = rPrefix + "@" + name;
+        if (name == "ids" || !rOpts.WantsArray(key))
+            continue;
+        const auto v = rA.Values(var, integer, numeric);
+        if (numeric || !integer)
+            continue;
+        NDArray a(DType::UInt8, {v.size()});
+        for (std::size_t i = 0; i < v.size(); ++i)
+            a.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(static_cast<std::int64_t>(v[i]));
+        rMesh.AddFieldData(key, std::move(a));
+    }
+}
+
 void lb_field_data(Mesh& rMesh, const LbArchive& rA, const std::vector<std::string>& rDb,
                    const std::string& rStep, const ReadOptions& rOpts, const double* pTime) {
     const std::string prefix = "binout:" + lb_join(rDb) + ":";
@@ -481,6 +504,7 @@ void lb_field_data(Mesh& rMesh, const LbArchive& rA, const std::vector<std::stri
         if (numeric && rOpts.WantsArray(prefix + "ids"))
             rMesh.AddFieldData(prefix + "ids", lb_array(v, true));
     }
+    lb_metadata_text(rMesh, rA, rDb, prefix, rOpts);
     std::vector<std::string> folder = rDb;
     folder.push_back(rStep);
     const LbDir* d = rA.Dir(folder);
@@ -619,6 +643,7 @@ Mesh read_lsdyna_binout(const std::string& rPath, const ReadOptions& rOpts) {
                 mesh.AddFieldData("binout:nodout:" + name, lb_array(v, integer));
             }
         }
+        lb_metadata_text(mesh, a, b.mMain, "binout:nodout:", rOpts);
     } else {
         lb_field_data(mesh, a, b.mMain, step, rOpts, nullptr);
     }
@@ -656,7 +681,7 @@ namespace {
 
 constexpr std::int32_t kLbwCd = 2, kLbwData = 3, kLbwVariable = 4, kLbwBegin = 5, kLbwEnd = 6,
                        kLbwOffset = 7;
-constexpr std::uint8_t kLbwInt32 = 3, kLbwFloat32 = 9;
+constexpr std::uint8_t kLbwInt8 = 1, kLbwInt32 = 3, kLbwFloat32 = 9;
 
 [[noreturn]] void lbw_fail(const std::string& rMessage) {
     throw WriteError("LS-DYNA binout: " + rMessage);
@@ -684,7 +709,21 @@ struct LbwArray {
     bool mFloat = false;
     std::vector<double> mReals;
     std::vector<std::int64_t> mInts;
+    bool mText = false;  // mInts are bytes: 1-byte integers, as LS-DYNA writes titles and dates
 };
+
+/// A `binout:<database>:@<name>` item as a metadata text variable.
+LbwArray lbw_text(const std::string& rName, const NDArray& rData) {
+    LbwArray a;
+    a.mName = rName;
+    a.mText = true;
+    const detail::Int64View v(rData);
+    a.mInts.assign(v.Data(), v.Data() + rData.Size());
+    for (const std::int64_t b : a.mInts)
+        if (b < -128 || b > 255)
+            lbw_fail("the text '" + rName + "' holds a value that is not a byte");
+    return a;
+}
 
 LbwArray lbw_array(const std::string& rName, const NDArray& rData) {
     LbwArray a;
@@ -734,7 +773,12 @@ public:
         std::string raw;
         std::size_t count;
         std::uint8_t code;
-        if (rArray.mFloat) {
+        if (rArray.mText) {
+            code = kLbwInt8;
+            count = rArray.mInts.size();
+            for (const std::int64_t v : rArray.mInts)
+                lbw_put(raw, static_cast<std::uint8_t>(v & 0xff), 1);
+        } else if (rArray.mFloat) {
             code = kLbwFloat32;
             count = rArray.mReals.size();
             for (const double v : rArray.mReals) {
@@ -805,6 +849,7 @@ private:
 struct LbwOutput {
     double mTime = 0.0;
     std::vector<LbwArray> mVars;
+    std::vector<LbwArray> mText;  // the database's metadata text (title, date ...)
     std::optional<std::vector<std::int64_t>> mIds;
 
     std::vector<std::pair<std::string, bool>> Layout() const {
@@ -882,6 +927,19 @@ public:
     std::set<std::string> mDropped;
 
 private:
+    /// `@<name>`: a metadata text variable; false when it was dropped.
+    bool Text(LbwOutput& rOut, const std::string& rVariable,
+              const std::pair<std::string, const NDArray*>& rItem) {
+        const std::string name = rVariable.substr(1);
+        lbw_check_name(name, "text variable");
+        if (name == "ids" || detail::is_float_dtype(rItem.second->Dtype())) {
+            mDropped.insert(rItem.first);
+            return false;
+        }
+        rOut.mText.push_back(lbw_text(name, *rItem.second));
+        return true;
+    }
+
     LbwOutput Nodout(const Mesh& rMesh, std::set<std::string>& rUsed,
                      const std::map<std::string, std::pair<std::string, const NDArray*>>& rItems) {
         const std::size_t n = mNpoints;
@@ -942,6 +1000,10 @@ private:
             out.mVars.push_back(lbw_array(name, a));
         }
         for (const auto& [variable, item] : rItems) {
+            if (variable[0] == '@') {
+                Text(out, variable, item);
+                continue;
+            }
             lbw_check_name(variable, "variable");
             if (variable == "time" || variable == "ids") {
                 mDropped.insert(item.first);
@@ -971,6 +1033,10 @@ private:
         LbwOutput out;
         out.mTime = mTime;
         for (const auto& [variable, item] : rItems) {
+            if (variable[0] == '@') {
+                Text(out, variable, item);
+                continue;
+            }
             lbw_check_name(variable, "variable");
             const NDArray& a = *item.second;
             if (variable == "time") {
@@ -1032,6 +1098,8 @@ private:
             ids.mName = "ids";
             ids.mInts = mIds;
             mLsda.Var("/nodout/metadata", ids);
+            for (const LbwArray& t : rOut.mText)
+                mLsda.Var("/nodout/metadata", t);
         } else if (rOut.Layout() != mNodoutLayout || *rOut.mIds != mIds) {
             lbw_fail("series: step " + std::to_string(Index) +
                      "'s nodes or variables differ from the first step's; a binout holds one "
@@ -1051,6 +1119,8 @@ private:
                 ids.mInts = *rOut.mIds;
                 mLsda.Var("/" + rDatabase + "/metadata", ids);
             }
+            for (const LbwArray& t : rOut.mText)
+                mLsda.Var("/" + rDatabase + "/metadata", t);
         } else if (layout != it->second) {
             lbw_fail("series: step " + std::to_string(Index) + "'s variables of '" + rDatabase +
                      "' differ from its first output's");

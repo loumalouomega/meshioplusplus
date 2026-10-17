@@ -286,6 +286,23 @@ def _numeric(values):
     return values.dtype.kind in "iuf" and values.dtype.itemsize > 1
 
 
+def _metadata_text(mesh, archive, database, want):
+    """A database's metadata text (titles, dates: 1-byte integers) as
+    ``binout:<database>:@<name>``, bytes."""
+    meta = archive.get(list(database) + ["metadata"])
+    prefix = "binout:" + "/".join(database) + ":@"
+    if not isinstance(meta, dict):
+        return
+    for name, var in sorted(meta.items()):
+        if name == "ids" or not isinstance(var, _Var) or not want(prefix + name):
+            continue
+        v = archive.values(var)
+        if v.dtype.kind in "iu" and v.dtype.itemsize == 1:
+            mesh.field_data[prefix + name] = (v.astype(np.int64) & 0xFF).astype(
+                np.uint8
+            )
+
+
 def read(filename, points_only=False, arrays=None, time_step=0):
     b = _Binout(filename)
     a = b.archive
@@ -347,6 +364,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                 mesh.field_data[key] = v.astype(
                     np.float64 if v.dtype.kind == "f" else np.int64
                 )
+        _metadata_text(mesh, a, b.main, want)
     else:
         _field_data(mesh, a, b.main, step, want)
     # every other database's latest output at or before this time
@@ -370,6 +388,7 @@ def _field_data(mesh, archive, database, step, want, time=None):
     prefix = "binout:" + "/".join(database) + ":"
     if time is not None and want(prefix + "time"):
         mesh.field_data[prefix + "time"] = np.array([time], dtype=np.float64)
+    _metadata_text(mesh, archive, database, want)
     meta = archive.get(list(database) + ["metadata"])
     if isinstance(meta, dict) and isinstance(meta.get("ids"), _Var):
         ids = archive.values(meta["ids"])

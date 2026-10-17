@@ -25,7 +25,7 @@ TIME_KEY = "meshio:time"
 
 # LSDA commands and the two data types written.
 _CD, _DATA, _VARIABLE, _BEGIN, _END, _OFFSET = 2, 3, 4, 5, 6, 7
-_INT32, _FLOAT32 = 3, 9
+_INT8, _INT32, _FLOAT32 = 1, 3, 9
 
 _HEADER = bytes([8, 8, 8, 1, 1, 1, 0, 0])
 
@@ -73,10 +73,13 @@ class _Lsda:
         self.data += struct.pack("<QB", 17, _OFFSET) + struct.pack("<Q", 0)
         self.entries = []  # (directory, name, type, offset, count)
 
-    def var(self, directory, name, values):
-        """One variable: float32 for reals, int32 for integers."""
+    def var(self, directory, name, values, text=False):
+        """One variable: float32 for reals, int32 for integers, or (``text``) the
+        1-byte integers LS-DYNA writes titles and dates as."""
         values = np.asarray(values)
-        if values.dtype.kind == "f":
+        if text:
+            code, raw = _INT8, (values.astype(np.int64) & 0xFF).astype("u1").tobytes()
+        elif values.dtype.kind == "f":
             code, raw = _FLOAT32, _f32(values)
         else:
             code, raw = _INT32, _i32(values, f"'{directory}/{name}'")
@@ -132,10 +135,11 @@ def _flat(array):
 class _Output:
     """One database's variables of one step: ``(name, array)`` in file order."""
 
-    def __init__(self, time, variables, ids=None):
+    def __init__(self, time, variables, ids=None, text=()):
         self.time = time
         self.variables = variables
         self.ids = ids
+        self.text = list(text)  # (name, bytes) of the database's metadata
 
     def layout(self):
         return [(n, "f" if a.dtype.kind == "f" else "i") for n, a in self.variables]
@@ -204,8 +208,12 @@ class _Step:
                 _wfail(f"point data '{name}' is a variable of nodout of its own")
             used.add(name)
             variables.append((name, _flat(array)))
+        text = []
         for variable in sorted(items):
             name, array = items[variable]
+            if variable.startswith("@"):
+                self._text(text, variable, name, array)
+                continue
             _check_name(variable, "variable")
             if variable in ("time", "ids") or not _numeric(array):
                 self.dropped.append(name)
@@ -213,7 +221,19 @@ class _Step:
             if any(variable == v for v, _ in variables):
                 _wfail(f"'{name}' repeats a variable of nodout")
             variables.append((variable, _flat(array).ravel()))
-        return _Output(self.time, variables, ids.astype(np.int64))
+        return _Output(self.time, variables, ids.astype(np.int64), text)
+
+    def _text(self, text, variable, name, array):
+        """``@<name>``: a metadata text variable (bytes), kept in ``text``."""
+        label = variable[1:]
+        _check_name(label, "text variable")
+        if label == "ids" or array.dtype.kind not in "iu":
+            self.dropped.append(name)
+            return
+        values = array.astype(np.int64).ravel()
+        if values.size and (values.min() < -128 or values.max() > 255):
+            _wfail(f"the text '{name}' holds a value that is not a byte")
+        text.append((label, values))
 
     def _database(self, database, items):
         if database == "nodout":
@@ -227,8 +247,12 @@ class _Step:
         time = self.time
         ids = None
         variables = []
+        text = []
         for variable in sorted(items):
             name, array = items[variable]
+            if variable.startswith("@"):
+                self._text(text, variable, name, array)
+                continue
             _check_name(variable, "variable")
             if variable == "time":
                 values = array.astype(np.float64).ravel()
@@ -245,7 +269,7 @@ class _Step:
                 self.dropped.append(name)
                 continue
             variables.append((variable, _flat(array).ravel()))
-        self.databases[database] = _Output(time, variables, ids)
+        self.databases[database] = _Output(time, variables, ids, text)
 
 
 # -- the file ----------------------------------------------------------------------------
@@ -286,6 +310,8 @@ class _Archive:
         if self.steps == 0:
             self.ids = out.ids
             self.lsda.var("/nodout/metadata", "ids", out.ids)
+            for label, values in out.text:
+                self.lsda.var("/nodout/metadata", label, values, text=True)
         elif out.layout() != self.layout or not np.array_equal(out.ids, self.ids):
             _wfail(
                 f"series: step {index}'s nodes or variables differ from the first "
@@ -299,6 +325,8 @@ class _Archive:
             self.db_layout[database] = (layout, None if out.ids is None else out.ids)
             if out.ids is not None:
                 self.lsda.var(f"/{database}/metadata", "ids", out.ids)
+            for label, values in out.text:
+                self.lsda.var(f"/{database}/metadata", label, values, text=True)
         elif layout != self.db_layout[database][0]:
             _wfail(
                 f"series: step {index}'s variables of '{database}' differ from "
