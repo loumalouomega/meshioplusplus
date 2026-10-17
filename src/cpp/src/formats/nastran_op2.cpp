@@ -16,6 +16,7 @@
 //
 // System includes
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -2781,7 +2782,8 @@ struct Op2wHeader {
     }
 
     std::string Words(std::int32_t TCode, std::int32_t EType, std::size_t NumWide,
-                      std::int32_t SCode = 0, std::int32_t Thermal = 0) const {
+                      std::int32_t SCode = 0, std::int32_t Thermal = 0,
+                      std::int32_t FormatCode = 1) const {
         Op2wRowBuf w(146);
         for (std::size_t i = 50; i < 146; ++i)
             w.mWords[i] = 0x20202020u;  // the title, subtitle and label: blanks
@@ -2791,7 +2793,7 @@ struct Op2wHeader {
         w.I(3, mSubcase);
         w.mWords[4] = static_cast<std::uint32_t>(mW5);
         w.F(5, mW6);
-        w.I(8, 1);
+        w.I(8, FormatCode);
         w.I(9, static_cast<std::int64_t>(NumWide));
         w.I(10, SCode);
         w.I(22, Thermal);
@@ -3069,6 +3071,59 @@ Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Tim
         step.mLayout.emplace_back(nodal.mTable, nodal.mTCode, 0);
         auto& records = step.mTables[nodal.mTable];
         records.push_back(header.Words(nodal.mTCode, 0, 8, 0, nodal.mThermal ? 1 : 0));
+        records.push_back(std::move(data));
+    }
+    // Complex nodal tables: `<name>_real`/`_imag` and their `_ROT_` rotations, table code
+    // 1000 + the real one, format code 2 (real/imaginary).
+    for (const Op2wNodal& nodal : kOp2wNodal) {
+        const std::string name = nodal.mName;
+        if (nodal.mThermal || !rMesh.HasPointData(name + "_real") ||
+            !rMesh.HasPointData(name + "_imag"))
+            continue;
+        std::array<std::optional<detail::DoubleView>, 4> parts;
+        static const char* const suffixes[] = {"_real", "_imag", "_ROT_real", "_ROT_imag"};
+        for (std::size_t k = 0; k < 4; ++k) {
+            if (!rMesh.HasPointData(name + suffixes[k]))
+                continue;
+            rTaken.insert(name + suffixes[k]);
+            const NDArray& a = rMesh.PointData(name + suffixes[k]);
+            if (a.Size() != npts * 3)
+                op2w_fail("'" + name + suffixes[k] + "' must have 3 components per point");
+            parts[k].emplace(a);
+        }
+        std::string data;
+        std::size_t kept = 0;
+        std::vector<std::size_t> by_id(npts);
+        std::iota(by_id.begin(), by_id.end(), std::size_t{0});
+        std::stable_sort(by_id.begin(), by_id.end(), [&rModel](std::size_t A, std::size_t B) {
+            return rModel.NodeIds()[A] < rModel.NodeIds()[B];
+        });
+        for (const std::size_t i : by_id) {
+            bool all_nan = true;
+            for (std::size_t k = 0; k < 3; ++k)
+                all_nan = all_nan && std::isnan(parts[0]->Data()[i * 3 + k]) &&
+                          std::isnan(parts[1]->Data()[i * 3 + k]);
+            if (all_nan)
+                continue;
+            ++kept;
+            Op2wRowBuf w(14);
+            w.I(0, rModel.NodeIds()[i] * 10 + kOp2wDevice);
+            w.I(1, 1);
+            for (std::size_t k = 0; k < 3; ++k) {
+                w.F(2 + k, parts[0]->Data()[i * 3 + k]);
+                w.F(8 + k, parts[1]->Data()[i * 3 + k]);
+                if (parts[2])
+                    w.F(5 + k, parts[2]->Data()[i * 3 + k]);
+                if (parts[3])
+                    w.F(11 + k, parts[3]->Data()[i * 3 + k]);
+            }
+            w.Append(data);
+        }
+        if (kept == 0)
+            continue;
+        step.mLayout.emplace_back(nodal.mTable, 1000 + nodal.mTCode, 0);
+        auto& records = step.mTables[nodal.mTable];
+        records.push_back(header.Words(1000 + nodal.mTCode, 0, 14, 0, 0, 2));
         records.push_back(std::move(data));
     }
     op2w_element_tables(rMesh, rModel, header, "STRESS", "OES1X1", step, rTaken);

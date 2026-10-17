@@ -599,7 +599,9 @@ def test_pynastran_reads_the_grid_ids(tmp_path):
     _core.nastran_op2_write(str(path), _numbered_mesh())
     model = op2.OP2(debug=False)
     model.read_op2(str(path), build_dataframe=False)
-    np.testing.assert_array_equal(model.displacements[1].node_gridtype[:, 0], _GRID_IDS)
+    np.testing.assert_array_equal(
+        model.displacements[1].node_gridtype[:, 0], sorted(_GRID_IDS)
+    )
 
 
 def _material_mesh():
@@ -655,3 +657,72 @@ def test_default_values_are_the_old_placeholders(engine, tmp_path):
     assert data["nastran:PSHELL_1:T"][0] == 1.0
     assert data["nastran:MAT1_1:E"][0] == 1.0
     assert data["nastran:MAT1_1:NU"][0] == pytest.approx(0.3)
+
+
+def _complex_mesh():
+    mesh = results_mesh()
+    rng = np.random.default_rng(11)
+    mesh.point_data["EIGENVECTOR_real"] = rng.random((6, 3))
+    mesh.point_data["EIGENVECTOR_imag"] = rng.random((6, 3))
+    mesh.point_data["EIGENVECTOR_ROT_real"] = rng.random((6, 3))
+    mesh.point_data["EIGENVECTOR_ROT_imag"] = rng.random((6, 3))
+    mesh.point_data["DISPLACEMENT_real"] = rng.random((6, 3))
+    mesh.point_data["DISPLACEMENT_imag"] = rng.random((6, 3))
+    mesh.field_data["nastran:analysis"] = np.array([5])
+    mesh.field_data["meshio:time"] = np.array([12.5])
+    return mesh
+
+
+def test_complex_nodal_tables_round_trip(engine, tmp_path):
+    """``<name>_real``/``_imag`` (and ``_ROT_``) are a complex table: table code
+    1000 + the real one, format code 2, 14 words a node."""
+    path = tmp_path / "complex.op2"
+    mesh = _complex_mesh()
+    write_with(engine, path, mesh)
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        for name in (
+            "EIGENVECTOR_real",
+            "EIGENVECTOR_imag",
+            "EIGENVECTOR_ROT_real",
+            "EIGENVECTOR_ROT_imag",
+            "DISPLACEMENT_real",
+            "DISPLACEMENT_imag",
+        ):
+            np.testing.assert_allclose(
+                back.point_data[name], mesh.point_data[name], rtol=1e-6, err_msg=name
+            )
+        # the real table of the same name is untouched (a real DISPLACEMENT)
+        np.testing.assert_allclose(
+            back.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT"], rtol=1e-6
+        )
+
+
+def test_the_engines_write_the_same_bytes_with_complex_tables(tmp_path):
+    mesh = _complex_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_complex_table(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2", exc_type=ImportError)
+    path = tmp_path / "pn_complex.op2"
+    mesh = _complex_mesh()
+    del mesh.point_data["EIGENVECTOR_real"], mesh.point_data["EIGENVECTOR_imag"]
+    del mesh.point_data["EIGENVECTOR_ROT_real"], mesh.point_data["EIGENVECTOR_ROT_imag"]
+    del mesh.point_data["DISPLACEMENT"]
+    mesh.cell_data = {
+        k: v for k, v in mesh.cell_data.items() if k.startswith("nastran")
+    }
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.OP2(debug=False)
+    model.read_op2(str(path), build_dataframe=False)
+    table = model.displacements[1]
+    np.testing.assert_allclose(
+        table.data[0, :, :3].real, mesh.point_data["DISPLACEMENT_real"], rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        table.data[0, :, :3].imag, mesh.point_data["DISPLACEMENT_imag"], rtol=1e-6
+    )

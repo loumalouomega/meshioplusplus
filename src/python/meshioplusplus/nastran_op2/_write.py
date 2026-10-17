@@ -595,7 +595,7 @@ class _Header:
     def key(self):
         return (self.subcase, self.analysis, self.w5)
 
-    def words(self, tcode, etype, num_wide, s_code=0, thermal=0):
+    def words(self, tcode, etype, num_wide, s_code=0, thermal=0, format_code=1):
         w = np.zeros(146, dtype="<u4")
         w[50:] = 0x20202020  # the title, subtitle and label: blanks
         w[0] = self.analysis * 10 + _DEVICE
@@ -604,7 +604,7 @@ class _Header:
         w[3] = self.subcase
         w[4] = np.uint32(self.w5 & 0xFFFFFFFF)
         w[5:6] = _f32(np.array([self.w6]))
-        w[8] = 1
+        w[8] = format_code
         w[9] = num_wide
         w[10] = s_code
         w[22] = thermal
@@ -650,6 +650,43 @@ def _step_tables(model, mesh, time, taken):
         layout.append((table, tcode, 0))
         tables.setdefault(table, []).extend(
             [header.words(tcode, 0, 8, 0, thermal), _bytes(words)]
+        )
+    # Complex nodal tables: real and imaginary parts (``<name>_real``/``_imag`` and
+    # their ``_ROT_`` rotations), table code 1000 + the real one, format code 2.
+    for name, table, tcode, thermal in _NODAL:
+        if thermal or name + "_real" not in mesh.point_data:
+            continue
+        if name + "_imag" not in mesh.point_data:
+            continue
+        parts = []
+        for suffix in ("_real", "_imag", "_ROT_real", "_ROT_imag"):
+            array = mesh.point_data.get(name + suffix)
+            if array is None:
+                parts.append(None)
+                continue
+            taken.add(name + suffix)
+            array = np.asarray(array, dtype=np.float64)
+            if array.size != model.npoints * 3:
+                _wfail(f"'{name}{suffix}' must have 3 components per point")
+            parts.append(array.reshape(model.npoints, 3))
+        real, imag, rot_real, rot_imag = parts
+        shown = np.isnan(real).all(axis=1) & np.isnan(imag).all(axis=1)
+        keep = np.nonzero(~shown)[0]
+        if not len(keep):
+            continue
+        keep = keep[np.argsort(model.node_ids[keep], kind="stable")]  # rows by id
+        words = np.zeros((len(keep), 14), dtype="<u4")
+        words[:, 0] = _i32(model.node_ids[keep] * 10 + _DEVICE)
+        words[:, 1] = 1
+        words[:, 2:5] = _f32(real[keep])
+        words[:, 8:11] = _f32(imag[keep])
+        if rot_real is not None:
+            words[:, 5:8] = _f32(rot_real[keep])
+        if rot_imag is not None:
+            words[:, 11:14] = _f32(rot_imag[keep])
+        layout.append((table, 1000 + tcode, 0))
+        tables.setdefault(table, []).extend(
+            [header.words(1000 + tcode, 0, 14, 0, 0, 2), _bytes(words)]
         )
     # Element tables.
     for group, table in (("STRESS", "OES1X1"), ("STRAIN", "OSTR1X")):
