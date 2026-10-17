@@ -30,6 +30,7 @@ from ..nastran._model import (
     CoordSystems,
     add_cells,
     apply_frames,
+    pbeam_station_slots,
     rotate_to_basic,
 )
 
@@ -525,6 +526,8 @@ def _read_elements(s, tables, grids):
             entry[3].append(np.zeros((len(rows), 2), dtype=np.int64))
         if card == "CBAR":
             entry[4].append(_bar_payload(s, raw, rows))
+        elif card == "CBEAM":
+            entry[4].append(_beam_payload(s, raw, rows))
         elif card in ("CELAS2", "CDAMP2"):
             # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 at word 1.
             floats = _floats(s, raw)[3:].reshape(rows.shape)
@@ -563,6 +566,29 @@ def _bar_payload(s, raw, rows):
             np.where(g0, rows[:, 4], 0).astype(np.float64),
             rows[:, 8:10].astype(np.float64),
             floats[:, 10:16],
+        ]
+    )
+
+
+def _beam_payload(s, raw, rows):
+    """The CBEAM fields of each row of a CBEAM record as float64 ``(n, 12)``, in the CBAR
+    layout: the orientation vector X1..X3 at words 6 to 8, the flag at word 9 (its low two
+    bits: 0 and 1 are vectors in basic and global coordinates), the pins PA and PB at 10
+    and 11, and the end offsets W1A..W3A and W1B..W3B at 12 to 17. A beam oriented by a
+    grid or a local system has no X vector here, so its X is read as zeros."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    vector = (rows[:, 9] & 3) <= 1
+    if not vector.all():
+        warn(
+            f"{WHO}: {int(np.count_nonzero(~vector))} CBEAM element(s) are oriented by a grid "
+            "or a local system; their X vector is read as zeros"
+        )
+    return np.column_stack(
+        [
+            np.where(vector[:, None], floats[:, 6:9], 0.0),
+            np.zeros(len(rows)),
+            rows[:, 10:12].astype(np.float64),
+            floats[:, 12:18],
         ]
     )
 
@@ -689,6 +715,44 @@ def _read_property_values(s, tables):
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
         if (k1, k2) == (103, 1):
             take("MAT1", raw, 12)
+    return out
+
+
+def _read_pbeam_values(s, tables):
+    """``nastran:PBEAM_<id>:<MEMBER>`` field data of the PBEAM records: MID, NSEG (the
+    segments, one fewer than the stations) and CCF as scalars, and for each station the SO,
+    XXB, A, I1, I2, I12, J and NSM values, and the outline points C1, C2, D1 and D2 as
+    ``(n, 2)`` rows of x and y. A record is pid, mid, segments, ccf and a zero, then 11
+    station slots and a 12th slot of 16 words (SO, XXB, A, I1, I2, I12, J, NSM, then the
+    four points). The stations used are segments + 1: the first in slot 0, the last in
+    slot 10, and any between them in the slots after the first."""
+    out = {}
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) != (5402, 54):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) != 197 * s.ws:
+            continue
+        ints = _ints(s, body)
+        floats = _floats(s, body)
+        pid, mid, nseg, ccf = (int(v) for v in ints[:4])
+        if not 1 <= nseg <= 10:
+            continue
+        n = nseg + 1
+        prefix = f"nastran:PBEAM_{pid}:"
+        if prefix + "MID" in out:  # the first record of an id wins
+            continue
+        out[prefix + "MID"] = np.array([mid], dtype=np.int64)
+        out[prefix + "NSEG"] = np.array([nseg], dtype=np.int64)
+        out[prefix + "CCF"] = np.array([ccf], dtype=np.int64)
+        slots = floats[5 : 5 + 16 * 11].reshape(11, 16)
+        stations = slots[pbeam_station_slots(n)]
+        for column, member in enumerate(
+            ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM")
+        ):
+            out[prefix + member] = stations[:, column].copy()
+        for first, member in zip((8, 10, 12, 14), ("C1", "C2", "D1", "D2")):
+            out[prefix + member] = stations[:, first : first + 2].copy()
     return out
 
 
@@ -1439,6 +1503,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     )
     mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
     mesh.field_data.update(_read_pcomp_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_pbeam_values(nf.stream, nf.tables))
     mesh.field_data.update(_cord_fields(systems))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)

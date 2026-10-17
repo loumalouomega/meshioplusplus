@@ -20,7 +20,7 @@ from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
 from .._fortran_records import fortran_record
-from ..nastran._model import CARD_TYPE
+from ..nastran._model import CARD_TYPE, pbeam_station_slots
 
 TIME_KEY = "meshio:time"
 
@@ -42,6 +42,7 @@ _PENTA15 = list(range(9)) + [12, 13, 14, 9, 10, 11]
 # first node word, node permutation to Nastran's order or None)
 _CARDS = {
     "CBAR": ((2408, 24, 180), 16, 2, 2, None),
+    "CBEAM": ((5408, 54, 261), 18, 2, 2, None),
     "CDAMP2": ((301, 3, 70), 6, 2, 2, None),
     "CELAS2": ((701, 7, 74), 8, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
@@ -107,14 +108,20 @@ _PSOLID = ((2402, 24, 281), 7)
 _PROD = ((902, 9, 29), 6)
 _PTUBE = ((1602, 16, 30), 5)
 _PBAR = ((52, 20, 181), 19)
+# A PBEAM is a header (pid, mid, segments, ccf, a zero) and 12 slots of 16 words, the first 11
+# holding the stations (see ``pbeam_station_slots``) and the last one a spare:
+# SO, XXB, A, I1, I2, I12, J and NSM, then the outline points C1, C2, D1 and D2 as x, y.
+_PBEAM = ((5402, 54, 262), 197)
+_BEAM_STATION_MEMBERS = ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM")
+_BEAM_POINT_MEMBERS = ("C1", "C2", "D1", "D2")
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
 _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
-# write yet (CBEAM, CBUSH, CVISC, PLOTEL, CSHEAR): their rows are left out rather
-# than written as another card.
+# write yet (CBUSH, CVISC, PLOTEL, CSHEAR): their rows are left out rather than
+# written as another card.
 _LINE_CARDS = {
     30: "CROD",
     16: "CONROD",
@@ -123,12 +130,23 @@ _LINE_CARDS = {
     2: "CDAMP1",
     15: "CONM2",
     24: "CBAR",
+    54: "CBEAM",
     3: "CDAMP2",
     7: "CELAS2",
 }
 _BLOCK_CARDS = {
     "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
-    "line": ("CROD", "CONROD", "CTUBE", "CELAS1", "CDAMP1", "CBAR", "CELAS2", "CDAMP2"),
+    "line": (
+        "CROD",
+        "CONROD",
+        "CTUBE",
+        "CELAS1",
+        "CDAMP1",
+        "CBAR",
+        "CBEAM",
+        "CELAS2",
+        "CDAMP2",
+    ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
 # A cell of another type whose card this writer leaves out: CSHEAR is a quad.
@@ -224,13 +242,17 @@ def property_values(mesh):
     return out
 
 
-def material_ids(properties, values):
-    """The MAT1 ids: those the properties name (MID default 1) and those given."""
+def material_ids(properties, values, beams=None):
+    """The MAT1 ids: those the properties name (MID default 1) and those given. A PBEAM's
+    MID is in the beams' field data (``{pid: {member: array}}``), not in the values."""
     ids = set()
     for ptype in ("PSHELL", "PSOLID", "PROD", "PTUBE", "PBAR"):  # with a material
         for pid in properties.get(ptype, ()):
             given = values.get((ptype, pid), {})
             ids.add(given.get("MID", given.get("MID1", 1)))
+    for pid in properties.get("PBEAM", ()):
+        mid = (beams or {}).get(pid, {}).get("MID")
+        ids.add(1 if mid is None else int(np.asarray(mid).ravel()[0]))
     for pid in properties.get("PCOMP", ()):
         plies = np.asarray(values[("PCOMP", pid)]["PLY"]).reshape(-1, 4)
         ids.update(int(mid) for mid in plies[:, 0])
@@ -478,7 +500,7 @@ def _bar_matrix(raw, cards):
     in columns 0 to 2; a CDAMP2's B in column 0. Each row takes only its own card's."""
     n = len(cards)
     out = np.zeros((n, 12))
-    bars = np.asarray(cards == "CBAR")
+    bars = np.isin(cards, ["CBAR", "CBEAM"])
     if bars.any():
         for key, lo, hi in (("x", 0, 3), ("g0", 3, 4), ("pin", 4, 6), ("w", 6, 12)):
             if raw[key] is not None:
@@ -593,6 +615,16 @@ def _local_points(mesh, points):
     return cp, local, cords
 
 
+def _beam_values(mesh):
+    """The PBEAM field data by id: ``{pid: {member: array}}`` from ``nastran:PBEAM_<id>:*``."""
+    out = {}
+    for name, value in mesh.field_data.items():
+        match = re.fullmatch(r"nastran:PBEAM_([0-9]+):([A-Z0-9]+)", name)
+        if match:
+            out.setdefault(int(match.group(1)), {})[match.group(2)] = np.asarray(value)
+    return out
+
+
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
@@ -605,6 +637,7 @@ class _Model:
         self.cp, self.local, self.cords = _local_points(mesh, self.points)
         self.signature = _signature(mesh)
         self.values = property_values(mesh)
+        self.beams = _beam_values(mesh)
         ptube = set()
         for region in getattr(mesh, "regions", None) or []:
             m = _PTYPE.match(region.name)
@@ -681,6 +714,12 @@ class _Model:
             for card, key in (("CELAS2", "nastran:k"), ("CDAMP2", "nastran:b")):
                 if np.any(cards == card) and key not in mesh.cell_data:
                     _wfail(f"a {card} needs its value: {key}")
+            if np.any(cards == "CBEAM"):
+                if raw_bar["x"] is None:
+                    _wfail("a CBEAM needs its orientation: nastran:x")
+                g0 = raw_bar["g0"]
+                if g0 is not None and np.any((cards == "CBEAM") & (g0[:, 0] != 0)):
+                    _wfail("a CBEAM oriented by a G0 is not written yet")
             self.blocks.append(
                 {
                     "index": b,
@@ -733,6 +772,7 @@ class _Model:
             "PROD": set(),
             "PTUBE": set(),
             "PBAR": set(),
+            "PBEAM": set(),
             "PELAS": set(),
             "PDAMP": set(),
             "PCOMP": set(),
@@ -751,6 +791,7 @@ class _Model:
                 ("CROD", "PROD"),
                 ("CTUBE", "PTUBE"),
                 ("CBAR", "PBAR"),
+                ("CBEAM", "PBEAM"),
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
             ):
@@ -866,6 +907,13 @@ class _Model:
                     words[:, 7] = _i32(flag)
                     words[:, 8:10] = _i32(bar[:, 4:6].astype(np.int64))
                     words[:, 10:16] = _f32(bar[:, 6:12])
+                if name == "CBEAM":
+                    # X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
+                    # 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
+                    words[:, 6:9] = _f32(bar[:, 0:3])
+                    words[:, 9] = _i32(np.ones(len(eid), dtype=np.int64))
+                    words[:, 10:12] = _i32(bar[:, 4:6].astype(np.int64))
+                    words[:, 12:18] = _f32(bar[:, 6:12])
             records.append(_key(*key) + _bytes(words))
         records.append(_key(65535, 65535, 65535))
         return _table("GEOM2", records)
@@ -899,6 +947,8 @@ class _Model:
             records.append(_key(*key) + _bytes(words))
         if self.properties["PCOMP"]:
             records.append(_key(*_PCOMP[0]) + _bytes(self._pcomp_words()))
+        if self.properties["PBEAM"]:
+            records.append(_key(*_PBEAM[0]) + _bytes(self._pbeam_words()))
         records.append(_key(65535, 65535, 65535))
         return _table("EPT", records)
 
@@ -924,10 +974,57 @@ class _Model:
             out.append(np.concatenate([head, body.ravel()]))
         return np.concatenate(out)
 
+    def _pbeam_words(self):
+        """The PBEAM records, one per id: the header (pid, MID, segments, CCF and a zero),
+        then the stations in slots of 16 words, from the id's field data. An id with none
+        gets placeholders: one segment of constant section, with A, I1, I2 and J of 1.
+        """
+        out = []
+        for pid in sorted(self.properties["PBEAM"]):
+            given = self.beams.get(pid, {})
+            mid = int(np.asarray(given.get("MID", [1])).ravel()[0])
+            nseg = int(np.asarray(given.get("NSEG", [1])).ravel()[0])
+            ccf = int(np.asarray(given.get("CCF", [1])).ravel()[0])
+            n = nseg + 1
+            if not 1 <= nseg <= 10:
+                _wfail(f"PBEAM {pid} has {nseg} segments; a PBEAM holds 1 to 10")
+            defaults = {
+                "SO": np.ones(n),
+                "XXB": np.linspace(0.0, 1.0, n),
+                "A": np.ones(n),
+                "I1": np.ones(n),
+                "I2": np.ones(n),
+                "I12": np.zeros(n),
+                "J": np.ones(n),
+                "NSM": np.zeros(n),
+            }
+            stations = np.zeros((n, 16))
+            for column, member in enumerate(_BEAM_STATION_MEMBERS):
+                values = np.asarray(
+                    given.get(member, defaults[member]), dtype=np.float64
+                ).ravel()
+                if values.size != n:
+                    _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} value(s)")
+                stations[:, column] = values
+            for first, member in zip((8, 10, 12, 14), _BEAM_POINT_MEMBERS):
+                values = np.asarray(
+                    given.get(member, np.zeros((n, 2))), dtype=np.float64
+                ).reshape(-1, 2)
+                if values.shape != (n, 2):
+                    _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} x 2 value(s)")
+                stations[:, first : first + 2] = values
+            words = np.zeros(_PBEAM[1], dtype="<u4")
+            words[:4] = _i32([pid, mid, nseg, ccf])
+            slots = np.zeros((11, 16))
+            slots[pbeam_station_slots(n)] = stations
+            words[5 : 5 + 16 * 11] = _f32(slots).ravel()
+            out.append(words)
+        return np.concatenate(out)
+
     def mpt(self):
         """A MAT1 per material the properties name: unit modulus unless the field
         data gives its values."""
-        ids = material_ids(self.properties, self.values) or [1]
+        ids = material_ids(self.properties, self.values, self.beams) or [1]
         words = np.zeros((len(ids), 12), dtype="<u4")
         for k, mid in enumerate(ids):
             words[k, 0] = _i32(np.array([mid]))[0]

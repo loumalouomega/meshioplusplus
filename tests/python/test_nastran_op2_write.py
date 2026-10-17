@@ -842,7 +842,7 @@ def _spring_mesh():
         np.array([6, 6]),
         np.array([6]),
         np.array([2]),
-        np.array([54]),
+        np.array([26]),
     ]
     mesh.cell_data["nastran:c1"] = [
         np.array([1, 1]),
@@ -927,7 +927,7 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())
     assert "element cards not written yet" in err
-    assert "CBEAM" in err and "CSHEAR" in err
+    assert "CBUSH" in err and "CSHEAR" in err
     back = py_op2.read(path)
     assert sorted(_elements(back)) == [30, 31, 32, 50]
 
@@ -1306,3 +1306,120 @@ def test_pynastran_reads_the_coordinate_systems(tmp_path):
     for gid, expected in zip((1, 2, 3, 4), mesh.points):
         np.testing.assert_allclose(model.nodes[gid].get_position(), expected, atol=1e-5)
     assert model.elements[30].node_ids == [1, 4]
+
+
+# -- CBEAM and PBEAM beams ----------------------------------------------------------------
+
+
+def _beam_mesh():
+    """Two CBEAMs of PBEAM 9 along the x axis: the first oriented by X = (0, 0, 1), the
+    second by X = (0, 1, 0) with pins (1, 2) and offsets at both ends. PBEAM 9 has two
+    segments, so three stations: the middle one lies between the ends (in slot 1)."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([40, 41])]
+    mesh.cell_data["nastran:pid"] = [np.array([9, 9])]
+    mesh.cell_data["nastran:card"] = [np.array([54, 54])]
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 0])]
+    mesh.cell_data["nastran:pin"] = [np.array([[0, 0], [1, 2]])]
+    mesh.cell_data["nastran:w"] = [
+        np.array([[0.0] * 6, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
+    ]
+    mesh.field_data["nastran:PBEAM_9:MID"] = np.array([1], dtype=np.int64)
+    mesh.field_data["nastran:PBEAM_9:NSEG"] = np.array([2], dtype=np.int64)
+    mesh.field_data["nastran:PBEAM_9:CCF"] = np.array([1], dtype=np.int64)
+    mesh.field_data["nastran:PBEAM_9:SO"] = np.array([1.0, 1.0, 1.0])
+    mesh.field_data["nastran:PBEAM_9:XXB"] = np.array([0.0, 0.5, 1.0])
+    mesh.field_data["nastran:PBEAM_9:A"] = np.array([0.25, 0.3, 0.25])
+    mesh.field_data["nastran:PBEAM_9:I1"] = np.array([0.005, 0.006, 0.005])
+    mesh.field_data["nastran:PBEAM_9:I2"] = np.array([0.005, 0.006, 0.005])
+    mesh.field_data["nastran:PBEAM_9:J"] = np.array([0.01, 0.012, 0.01])
+    mesh.field_data["nastran:PBEAM_9:C1"] = np.array([[0.5, 0.5]] * 3)
+    mesh.field_data["nastran:PBEAM_9:D2"] = np.array([[-0.5, 0.5]] * 3)
+    return mesh
+
+
+def test_cbeams_and_their_pbeams_round_trip(engine, tmp_path):
+    path = tmp_path / "cbeam.op2"
+    write_with(engine, path, _beam_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert _elements(back) == {
+            40: ([0, 1], 9, 54, 0, 0),
+            41: ([1, 2], 9, 54, 0, 0),
+        }
+        np.testing.assert_allclose(
+            np.concatenate(back.cell_data["nastran:x"]), [[0, 0, 1], [0, 1, 0]]
+        )
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:pin"]), [[0, 0], [1, 2]]
+        )
+        w = np.concatenate(back.cell_data["nastran:w"])
+        np.testing.assert_allclose(w[1], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], rtol=1e-6)
+        assert not w[0].any()
+        assert back.field_data["nastran:PBEAM_9:MID"][0] == 1
+        assert back.field_data["nastran:PBEAM_9:NSEG"][0] == 2
+        assert back.field_data["nastran:PBEAM_9:CCF"][0] == 1
+        np.testing.assert_allclose(back.field_data["nastran:PBEAM_9:XXB"], [0, 0.5, 1])
+        np.testing.assert_allclose(
+            back.field_data["nastran:PBEAM_9:A"], [0.25, 0.3, 0.25], rtol=1e-6
+        )
+        np.testing.assert_allclose(
+            back.field_data["nastran:PBEAM_9:J"], [0.01, 0.012, 0.01], rtol=1e-6
+        )
+        assert back.field_data["nastran:PBEAM_9:C1"].shape == (3, 2)
+        np.testing.assert_allclose(
+            back.field_data["nastran:PBEAM_9:D2"], [[-0.5, 0.5]] * 3, rtol=1e-6
+        )
+        assert [r.name for r in back.regions] == ["PBEAM_9"]
+
+
+def test_the_engines_write_the_same_bytes_with_beams(tmp_path):
+    mesh = _beam_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cbeam_needs_its_orientation(engine, tmp_path):
+    mesh = _beam_mesh()
+    del mesh.cell_data["nastran:x"]
+    with pytest.raises(Exception, match="orientation"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_a_cbeam_oriented_by_a_grid_is_refused(engine, tmp_path):
+    mesh = _beam_mesh()
+    mesh.cell_data["nastran:g0"] = [np.array([3, 0])]
+    with pytest.raises(Exception, match="G0"):
+        write_with(engine, tmp_path / "g0.op2", mesh)
+
+
+def test_a_pbeam_needs_a_segment(engine, tmp_path):
+    mesh = _beam_mesh()
+    mesh.field_data["nastran:PBEAM_9:NSEG"] = np.array([0], dtype=np.int64)
+    with pytest.raises(Exception, match="segments"):
+        write_with(engine, tmp_path / "seg.op2", mesh)
+
+
+def test_pynastran_reads_the_cbeams_and_pbeams(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cbeam.op2"
+    _core.nastran_op2_write(str(path), _beam_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[40], model.elements[41]
+    assert first.type == second.type == "CBEAM" and first.pid == 9
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    np.testing.assert_allclose(second.x, [0, 1, 0])
+    assert (second.pa, second.pb) == (1, 2)
+    np.testing.assert_allclose(second.wa, [0.1, 0.2, 0.3], rtol=1e-6)
+    np.testing.assert_allclose(second.wb, [0.4, 0.5, 0.6], rtol=1e-6)
+    prop = model.properties[9]
+    assert prop.type == "PBEAM" and prop.mid == 1
+    np.testing.assert_allclose(prop.xxb, [0, 0.5, 1])
+    np.testing.assert_allclose(prop.A, [0.25, 0.3, 0.25], rtol=1e-6)
+    np.testing.assert_allclose(prop.i1, [0.005, 0.006, 0.005], rtol=1e-5)

@@ -65406,7 +65406,7 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
         for (const NmBlock& b : blocks) {
             const std::size_t n = b.mEid.size();
             // A block holds one card, so each card's fields are zero in every other block.
-            const bool bar = b.mCard == "CBAR";
+            const bool bar = b.mCard == "CBAR" || b.mCard == "CBEAM";
             const bool spring = b.mCard == "CELAS2";
             const bool damper = b.mCard == "CDAMP2";
             std::vector<std::int64_t> card(n, nm_card_type(b.mCard));
@@ -131967,6 +131967,7 @@ std::vector<detail::NastranCardRows> op2_read_elements(
     // Per CBAR, twelve doubles per element: its orientation, G0, pins and offsets.
     std::map<std::string, std::vector<double>> bars;
     std::vector<std::string> skipped;
+    std::size_t grid_oriented = 0;  // CBEAMs whose X vector is not read
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2"})) {
         if ((r.mK1 == 65535 && r.mK2 == 65535) || (r.mK1 == 5551 && r.mK2 == 49) ||
             (r.mK1 == 707 && r.mK2 == 7))
@@ -132046,6 +132047,19 @@ std::vector<detail::NastranCardRows> op2_read_elements(
                 card_bars.push_back(static_cast<double>(row[9]));
                 for (std::size_t k = 0; k < 6; ++k)
                     card_bars.push_back(fword(10 + k));
+            } else if (std::strcmp(spec->mCard, "CBEAM") == 0) {
+                // X1..X3 at words 6 to 8 when the flag at 9 names a vector (its low two bits:
+                // 0 basic, 1 global); PA and PB at 10 and 11; the offsets at 12 to 17.
+                const bool vector = (row[9] & 3) <= 1;
+                if (!vector)
+                    ++grid_oriented;
+                for (std::size_t k = 0; k < 3; ++k)
+                    card_bars.push_back(vector ? fword(6 + k) : 0.0);
+                card_bars.push_back(0.0);
+                card_bars.push_back(static_cast<double>(row[10]));
+                card_bars.push_back(static_cast<double>(row[11]));
+                for (std::size_t k = 0; k < 6; ++k)
+                    card_bars.push_back(fword(12 + k));
             } else if (std::strcmp(spec->mCard, "CELAS2") == 0) {
                 // K at word 1, GE at 6 and S at 7.
                 card_bars.push_back(fword(1));
@@ -132065,6 +132079,11 @@ std::vector<detail::NastranCardRows> op2_read_elements(
             list += (list.empty() ? "" : ", ") + s;
         log::warn("{}: skipped element records with no cell type: {}", kOp2Who, list);
     }
+    if (grid_oriented > 0)
+        log::warn(
+            "{}: {} CBEAM element(s) are oriented by a grid or a local system; their X "
+            "vector is read as zeros",
+            kOp2Who, grid_oriented);
     std::vector<detail::NastranCardRows> out;
     out.reserve(cards.size());
     rComps.clear();
@@ -132205,6 +132224,68 @@ void op2_add_pcomp_values(Mesh& rMesh, const Op2Stream& rS, const std::vector<Op
                 rMesh.AddFieldData(prefix + ":PLY", std::move(plies));
             }
             k += 8 + 4 * count;
+        }
+    }
+}
+
+/// The word of station @p I (of @p N) in a PBEAM record's eleven station slots: the first
+/// station in slot 0, the last in slot 10, and any between them in the slots after the first.
+std::size_t op2_pbeam_slot(std::size_t I, std::size_t N) {
+    return I == 0 ? 0 : (I + 1 == N ? 10 : I);
+}
+
+/// `nastran:PBEAM_<id>:<MEMBER>` field data of the PBEAM records: MID, NSEG and CCF as
+/// scalars, each station's SO, XXB, A, I1, I2, I12, J and NSM as (n,) arrays and the points
+/// C1, C2, D1 and D2 as (n, 2) rows, for the n = NSEG + 1 stations. The first record of an
+/// id wins.
+void op2_add_pbeam_values(Mesh& rMesh, const Op2Stream& rS, const std::vector<Op2Table>& rTables) {
+    const Op2Words& w = rS.Words();
+    const auto ws = static_cast<std::size_t>(w.mWs);
+    static const char* const kStation[] = {"SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM"};
+    static const char* const kPoint[] = {"C1", "C2", "D1", "D2"};
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"EPT"})) {
+        if (r.mK1 != 5402 || r.mK2 != 54)
+            continue;
+        const std::size_t body = 3 * ws;
+        if (r.mRaw.size() != body + 197 * ws)
+            continue;
+        const char* base = r.mRaw.data() + body;
+        const std::int64_t pid = w.Int(base);
+        const std::int64_t mid = w.Int(base + ws);
+        const std::int64_t nseg = w.Int(base + 2 * ws);
+        const std::int64_t ccf = w.Int(base + 3 * ws);
+        if (nseg < 1 || nseg > 10)
+            continue;
+        const auto n = static_cast<std::size_t>(nseg) + 1;
+        const std::string prefix = "nastran:PBEAM_" + std::to_string(pid) + ":";
+        if (rMesh.HasFieldData(prefix + "MID"))
+            continue;
+        const auto put_int = [&](const std::string& rName, std::int64_t Value) {
+            NDArray a(DType::Int64, {1});
+            a.As<std::int64_t>()[0] = Value;
+            rMesh.AddFieldData(rName, std::move(a));
+        };
+        put_int(prefix + "MID", mid);
+        put_int(prefix + "NSEG", nseg);
+        put_int(prefix + "CCF", ccf);
+        const auto station = [&](std::size_t I, std::size_t Word) {
+            return w.Float(base + (5 + 16 * op2_pbeam_slot(I, n) + Word) * ws);
+        };
+        for (std::size_t m = 0; m < 8; ++m) {
+            NDArray a(DType::Float64, {n});
+            double* out = a.As<double>();
+            for (std::size_t i = 0; i < n; ++i)
+                out[i] = station(i, m);
+            rMesh.AddFieldData(prefix + kStation[m], std::move(a));
+        }
+        for (std::size_t p = 0; p < 4; ++p) {
+            NDArray a(DType::Float64, {n, 2});
+            double* out = a.As<double>();
+            for (std::size_t i = 0; i < n; ++i) {
+                out[2 * i] = station(i, 8 + 2 * p);
+                out[2 * i + 1] = station(i, 9 + 2 * p);
+            }
+            rMesh.AddFieldData(prefix + kPoint[p], std::move(a));
         }
     }
 }
@@ -133352,6 +133433,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
         op2_add_node_ids(mesh, model.mGridIndex);
     op2_add_property_values(mesh, r.mStream, r.mTables);
     op2_add_pcomp_values(mesh, r.mStream, r.mTables);
+    op2_add_pbeam_values(mesh, r.mStream, r.mTables);
     op2_add_cord_systems(mesh, model.mSystems, model.mCordIds);
     const std::size_t n = r.mSteps.size();
     if (n == 0) {
@@ -133831,7 +133913,8 @@ enum Op2wProp {
     kOp2wPelas,
     kOp2wPdamp,
     kOp2wPbar,
-    kOp2wPcomp
+    kOp2wPcomp,
+    kOp2wPbeam
 };
 enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
@@ -133853,6 +133936,7 @@ struct Op2wCard {
 // In card-name order: the order of the GEOM2 records.
 constexpr Op2wCard kOp2wCards[] = {
     {"CBAR", 2408, 24, 180, 16, 2, 2, nullptr, kOp2wPbar, 0},
+    {"CBEAM", 5408, 54, 261, 18, 2, 2, nullptr, kOp2wPbeam, 0},
     {"CDAMP1", 201, 2, 69, 6, 2, 2, nullptr, kOp2wPdamp, 0},
     {"CDAMP2", 301, 3, 70, 6, 2, 2, nullptr, kOp2wNoProp, 0},
     {"CELAS1", 601, 6, 73, 6, 2, 2, nullptr, kOp2wPelas, 0},
@@ -133898,6 +133982,8 @@ const char* op2w_line_card(std::int64_t Code) {
             return "CONM2";
         case 24:
             return "CBAR";
+        case 54:
+            return "CBEAM";
         case 3:
             return "CDAMP2";
         case 7:
@@ -133914,7 +134000,8 @@ bool op2w_block_holds(const std::string& rType, std::string_view Card) {
                Card == "CDAMP2";
     if (rType == "line")
         return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
-               Card == "CDAMP1" || Card == "CBAR" || Card == "CELAS2" || Card == "CDAMP2";
+               Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CELAS2" ||
+               Card == "CDAMP2";
     return false;
 }
 
@@ -134101,6 +134188,121 @@ Op2wValues op2w_property_values(const Mesh& rMesh) {
     return out;
 }
 
+/// `nastran:PBEAM_<id>:<MEMBER>` field data of the PBEAM records, as values per member.
+using Op2wBeams = std::map<std::int64_t, std::map<std::string, std::vector<double>>>;
+
+std::vector<double> op2w_as_doubles(const NDArray& rA) {
+    std::vector<double> out(rA.Size());
+    if (rA.Dtype() == DType::Int64) {
+        const detail::Int64View view(rA);
+        for (std::size_t i = 0; i < out.size(); ++i)
+            out[i] = static_cast<double>(view.Data()[i]);
+    } else {
+        const detail::DoubleView view(rA);
+        std::copy(view.Data(), view.Data() + out.size(), out.begin());
+    }
+    return out;
+}
+
+Op2wBeams op2w_beam_values(const Mesh& rMesh) {
+    static const std::string kPrefix = "nastran:PBEAM_";
+    Op2wBeams out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind(kPrefix, 0) != 0)
+            continue;
+        const std::size_t colon = name.find(':', kPrefix.size());
+        if (colon == std::string::npos || colon == kPrefix.size())
+            continue;
+        const std::string digits = name.substr(kPrefix.size(), colon - kPrefix.size());
+        const std::string member = name.substr(colon + 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        if (member.empty() ||
+            member.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
+            continue;
+        out[std::stoll(digits)][member] = op2w_as_doubles(rMesh.FieldData(name));
+    }
+    return out;
+}
+
+/// A PBEAM's scalar (MID, NSEG or CCF) from the beams' field data, or @p Default.
+double op2w_beam_scalar(const Op2wBeams& rBeams, std::int64_t Pid, const char* pMember,
+                        double Default) {
+    const auto beam = rBeams.find(Pid);
+    if (beam == rBeams.end())
+        return Default;
+    const auto it = beam->second.find(pMember);
+    if (it == beam->second.end() || it->second.empty())
+        return Default;
+    return it->second[0];
+}
+
+/// A station member the field data leaves out: the defaults of a unit section, and XXB
+/// spaced evenly from 0 to 1 (as numpy's linspace spaces it).
+std::vector<double> op2w_beam_default(const std::string& rMember, std::size_t N) {
+    if (rMember == "XXB") {
+        std::vector<double> out(N);
+        const double step = 1.0 / static_cast<double>(N - 1);
+        for (std::size_t i = 0; i < N; ++i)
+            out[i] = static_cast<double>(i) * step;
+        out.back() = 1.0;
+        return out;
+    }
+    const bool unit =
+        rMember == "SO" || rMember == "A" || rMember == "I1" || rMember == "I2" || rMember == "J";
+    return std::vector<double>(N, unit ? 1.0 : 0.0);
+}
+
+/// The 197-word PBEAM record of one id: the header (pid, MID, segments, CCF and a zero), then
+/// the stations in the slots `op2_pbeam_slot` names, from the id's field data.
+std::string op2w_pbeam_row(std::int64_t Pid, const Op2wBeams& rBeams) {
+    const auto mid = static_cast<std::int64_t>(op2w_beam_scalar(rBeams, Pid, "MID", 1));
+    const auto nseg = static_cast<std::int64_t>(op2w_beam_scalar(rBeams, Pid, "NSEG", 1));
+    const auto ccf = static_cast<std::int64_t>(op2w_beam_scalar(rBeams, Pid, "CCF", 1));
+    if (nseg < 1 || nseg > 10)
+        op2w_fail("PBEAM " + std::to_string(Pid) + " has " + std::to_string(nseg) +
+                  " segments; a PBEAM holds 1 to 10");
+    const auto n = static_cast<std::size_t>(nseg) + 1;
+    static const char* const kStation[] = {"SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM"};
+    static const char* const kPoint[] = {"C1", "C2", "D1", "D2"};
+    static const std::map<std::string, std::vector<double>> kNone;
+    const auto beam = rBeams.find(Pid);
+    const auto& given = beam == rBeams.end() ? kNone : beam->second;
+    const auto given_values = [&](const char* pName, std::size_t Count,
+                                  std::vector<double> Default) {
+        const auto it = given.find(pName);
+        if (it == given.end())
+            return Default;
+        if (it->second.size() != Count)
+            op2w_fail("'nastran:PBEAM_" + std::to_string(Pid) + ":" + pName + "' must have " +
+                      std::to_string(Count) + " value(s)");
+        return it->second;
+    };
+    std::vector<std::vector<double>> stations;
+    for (const char* pName : kStation)
+        stations.push_back(given_values(pName, n, op2w_beam_default(pName, n)));
+    std::vector<std::vector<double>> points;
+    for (const char* pName : kPoint)
+        points.push_back(given_values(pName, 2 * n, std::vector<double>(2 * n, 0.0)));
+    Op2wRowBuf w(197);
+    w.I(0, Pid);
+    w.I(1, mid);
+    w.I(2, nseg);
+    w.I(3, ccf);
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t at = 5 + 16 * op2_pbeam_slot(i, n);
+        for (std::size_t m = 0; m < 8; ++m)
+            w.F(at + m, stations[m][i]);
+        for (std::size_t p = 0; p < 4; ++p) {
+            w.F(at + 8 + 2 * p, points[p][2 * i]);
+            w.F(at + 9 + 2 * p, points[p][2 * i + 1]);
+        }
+    }
+    std::string out;
+    w.Append(out);
+    return out;
+}
+
 /// A coordinate system a GRID's CP names, as the writer needs it: its type (1 rectangular,
 /// 2 cylindrical, 3 spherical), its origin A and its axes X, Y and Z, all in basic
 /// coordinates, from the `nastran:CORD2_<id>:*` field data.
@@ -134222,6 +134424,7 @@ public:
         mSignature = op2w_signature(rMesh);
         mValues = op2w_property_values(rMesh);
         mPlies = op2w_plies(rMesh);
+        mBeams = op2w_beam_values(rMesh);
         mNpoints = rMesh.NumPoints();
         mNodeIds = op2w_node_ids(rMesh, mNpoints);
         {
@@ -134328,6 +134531,10 @@ public:
                 if (keep[i] && blk.mCards[i] == cbar && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0");
+            const std::size_t cbeam = op2w_card_index("CBEAM");
+            for (std::size_t i = 0; i < blk.mCount; ++i)
+                if (keep[i] && blk.mCards[i] == cbeam && !rMesh.HasCellData("nastran:x"))
+                    op2w_fail("a CBEAM needs its orientation: nastran:x");
             const std::size_t celas2 = op2w_card_index("CELAS2");
             const std::size_t cdamp2 = op2w_card_index("CDAMP2");
             for (std::size_t i = 0; i < blk.mCount; ++i) {
@@ -134360,8 +134567,8 @@ public:
             // X1..X3, G0, PA and PB, W1A..W3A and W1B..W3B; a CELAS2's K, GE and S; a CDAMP2's B.
             // A CELAS2's K and a CDAMP2's B share column 0, so a row takes only its own card's.
             blk.mBar.assign(blk.mCount * 12, 0.0);
-            const auto read_field = [&](const char* pName, std::size_t Card, std::size_t Lo,
-                                        std::size_t Width) {
+            const auto read_field = [&](const char* pName, std::initializer_list<std::size_t> Cards,
+                                        std::size_t Lo, std::size_t Width) {
                 if (!rMesh.HasCellData(pName))
                     return;
                 const NDArray& a = rMesh.CellData(pName, b);
@@ -134370,18 +134577,22 @@ public:
                               " value(s) per cell");
                 const detail::DoubleView view(a);
                 for (std::size_t i = 0; i < blk.mCount; ++i)
-                    if (blk.mCards[i] == Card)
+                    if (std::find(Cards.begin(), Cards.end(), blk.mCards[i]) != Cards.end())
                         for (std::size_t k = 0; k < Width; ++k)
                             blk.mBar[i * 12 + Lo + k] = view.Data()[i * Width + k];
             };
-            read_field("nastran:x", cbar, 0, 3);
-            read_field("nastran:g0", cbar, 3, 1);
-            read_field("nastran:pin", cbar, 4, 2);
-            read_field("nastran:w", cbar, 6, 6);
-            read_field("nastran:k", celas2, 0, 1);
-            read_field("nastran:ge", celas2, 1, 1);
-            read_field("nastran:s", celas2, 2, 1);
-            read_field("nastran:b", cdamp2, 0, 1);
+            // A CBAR and a CBEAM share the orientation, G0, pin and offset fields.
+            read_field("nastran:x", {cbar, cbeam}, 0, 3);
+            read_field("nastran:g0", {cbar, cbeam}, 3, 1);
+            read_field("nastran:pin", {cbar, cbeam}, 4, 2);
+            read_field("nastran:w", {cbar, cbeam}, 6, 6);
+            for (std::size_t i = 0; i < blk.mCount; ++i)
+                if (keep[i] && blk.mCards[i] == cbeam && blk.mBar[i * 12 + 3] != 0.0)
+                    op2w_fail("a CBEAM oriented by a G0 is not written yet");
+            read_field("nastran:k", {celas2}, 0, 1);
+            read_field("nastran:ge", {celas2}, 1, 1);
+            read_field("nastran:s", {celas2}, 2, 1);
+            read_field("nastran:b", {cdamp2}, 0, 1);
             blk.mComps.resize(2 * blk.mCount);
             for (std::size_t i = 0; i < blk.mCount; ++i) {
                 blk.mComps[2 * i] = c1[i];
@@ -134432,8 +134643,8 @@ public:
                 if (prop != kOp2wNoProp)
                     mProps[prop].insert(blk.mPids[r]);
             }
-        static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE",
-                                            "PELAS", "PDAMP",  "PBAR",   "PCOMP"};
+        static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE", "PELAS",
+                                            "PDAMP", "PBAR",   "PCOMP",  "PBEAM"};
         // A shell whose property has plies is a PCOMP, not a PSHELL.
         for (auto it = mProps[kOp2wPshell].begin(); it != mProps[kOp2wPshell].end();) {
             if (mPlies.count(*it) != 0) {
@@ -134445,7 +134656,7 @@ public:
         }
         std::map<std::int64_t, int> used;
         for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar,
-                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp})
+                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp, kOp2wPbeam})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -134566,6 +134777,18 @@ public:
                         for (std::size_t k = 0; k < 6; ++k)
                             w.F(10 + k, f[6 + k]);
                     }
+                    if (std::string_view(card.mName) == "CBEAM") {
+                        // X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
+                        // 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
+                        const double* f = blk.mBar.data() + row.mRow * 12;
+                        for (std::size_t k = 0; k < 3; ++k)
+                            w.F(6 + k, f[k]);
+                        w.I(9, 1);
+                        w.I(10, static_cast<std::int64_t>(f[4]));
+                        w.I(11, static_cast<std::int64_t>(f[5]));
+                        for (std::size_t k = 0; k < 6; ++k)
+                            w.F(12 + k, f[6 + k]);
+                    }
                     if (std::string_view(card.mName) == "CELAS1" ||
                         std::string_view(card.mName) == "CDAMP1" ||
                         std::string_view(card.mName) == "CELAS2" ||
@@ -134665,6 +134888,12 @@ public:
             }
             records.push_back(op2w_key(2706, 27, 287) + rows);
         }
+        if (!mProps[kOp2wPbeam].empty()) {
+            std::string rows;
+            for (const std::int64_t pid : mProps[kOp2wPbeam])
+                rows += op2w_pbeam_row(pid, mBeams);
+            records.push_back(op2w_key(5402, 54, 262) + rows);
+        }
         records.push_back(op2w_key(65535, 65535, 65535));
         return op2w_table("EPT", records);
     }
@@ -134691,6 +134920,8 @@ public:
                 ids.insert(mid);
             }
         }
+        for (const std::int64_t pid : mProps[kOp2wPbeam])
+            ids.insert(static_cast<std::int64_t>(op2w_beam_scalar(mBeams, pid, "MID", 1)));
         for (const auto& [key, members] : mValues)
             if (key.first == "MAT1")
                 ids.insert(key.second);
@@ -134725,11 +134956,12 @@ private:
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
-    std::set<std::int64_t> mProps[8];
+    std::set<std::int64_t> mProps[9];
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;
     Op2wPlies mPlies;
+    Op2wBeams mBeams;
 };
 
 // -- steps -----------------------------------------------------------------------------
