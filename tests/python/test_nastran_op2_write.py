@@ -1516,3 +1516,31 @@ def test_pynastran_reads_the_cbushes_and_pbushes(tmp_path):
     np.testing.assert_allclose(prop.Bi, [0.1, 0.2, 0.3, 0, 0, 0], rtol=1e-6)
     np.testing.assert_allclose(prop.GEi, [0.05] * 6, rtol=1e-6)
     assert (prop.sa, prop.st, prop.ea, prop.et) == pytest.approx((0.5, 0.6, 0.7, 0.8))
+
+
+def _default_bush_mesh():
+    """The bush mesh with no PBUSH values, so the writer gives each one its default."""
+    mesh = _bush_mesh()
+    for member in ("K", "B", "GE", "SA", "ST", "EA", "ET"):
+        del mesh.field_data[f"nastran:PBUSH_7:{member}"]
+    return mesh
+
+
+def test_a_pbush_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _default_bush_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_allclose(back.field_data["nastran:PBUSH_7:K"], [1.0] * 6)
+        np.testing.assert_allclose(back.field_data["nastran:PBUSH_7:B"], [0.0] * 6)
+        np.testing.assert_allclose(back.field_data["nastran:PBUSH_7:GE"], [0.0] * 6)
+        for member in ("SA", "ST", "EA", "ET"):
+            assert back.field_data[f"nastran:PBUSH_7:{member}"][0] == pytest.approx(1.0)
+
+
+def test_the_engines_write_the_same_bytes_with_default_bushes(tmp_path):
+    mesh = _default_bush_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()

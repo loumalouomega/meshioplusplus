@@ -3016,8 +3016,11 @@ std::string op2w_pbush_row(std::int64_t Pid, const Op2wArrays& rArrays) {
     const auto six = [&](const char* pMember, double Default, std::size_t First) {
         const auto it = given.find(pMember);
         std::vector<double> values = it == given.end() ? std::vector<double>{Default} : it->second;
-        if (values.size() == 1)
-            values.assign(6, values[0]);
+        if (values.size() == 1) {
+            // Copy the value first: assign() would read it from a buffer it may free.
+            const double value = values[0];
+            values.assign(6, value);
+        }
         if (values.size() != 6)
             op2w_fail("'nastran:PBUSH_" + std::to_string(Pid) + ":" + pMember +
                       "' must have 1 or 6 value(s)");
