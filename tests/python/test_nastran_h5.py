@@ -936,6 +936,19 @@ class TestWriter:
         assert compared >= 6  # GRID, the cards, properties, MAT1, DOMAINS
 
     @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_complex_columns_are_in_msc_order(self, writer, tmp_path):
+        """MSC's complex nodal tables list every real component, then every imaginary one."""
+        mesh = _write_mesh()
+        mesh.point_data["EIGENVECTOR_imag"] = np.arange(21.0).reshape(7, 3)
+        path = tmp_path / "m.h5"
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        table = _tables(path)["NASTRAN/RESULT/NODAL/EIGENVECTOR_CPLX"]
+        assert table.dtype.names[:7] == ("ID", "XR", "YR", "ZR", "XI", "YI", "ZI")
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
     def test_series_writer_is_one_domain_per_step(self, writer, engine, tmp_path):
         steps = []
         for k in range(3):

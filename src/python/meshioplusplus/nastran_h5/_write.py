@@ -134,6 +134,7 @@ def _nodal_members(mesh, npoints, taken):
             re_, im_ = vector(base + "_real"), vector(base + "_imag")
             for k, axis in enumerate("XYZ"):
                 put(table, f"{prefix}{axis}R", re_[:, k])
+            for k, axis in enumerate("XYZ"):
                 put(table, f"{prefix}{axis}I", im_[:, k])
         elif name.endswith("_imag") and name[:-5] + "_real" in mesh.point_data:
             continue  # taken with its real part

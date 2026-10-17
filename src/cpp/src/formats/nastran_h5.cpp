@@ -1317,10 +1317,11 @@ void nh5w_nodal_members(const Mesh& rMesh, std::size_t NumPoints, std::set<std::
             const auto re = vector_of(base + "_real");
             const auto im = vector_of(base + "_imag");
             const char axes[] = {'X', 'Y', 'Z'};
-            for (std::size_t k = 0; k < 3; ++k) {
+            // MSC's column order: every real component, then every imaginary one.
+            for (std::size_t k = 0; k < 3; ++k)
                 nh5w_put(rTables[table], prefix + axes[k] + "R", re[k]);
+            for (std::size_t k = 0; k < 3; ++k)
                 nh5w_put(rTables[table], prefix + axes[k] + "I", im[k]);
-            }
         }
     }
     for (const std::string& name : names) {
