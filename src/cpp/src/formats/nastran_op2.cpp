@@ -741,6 +741,14 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
           {"T", 3, 0.0, false},
           {"NSM", 4, 0.0, false}}},
         {"PSOLID", {{"MID", 1, 1, true}}},
+        {"PCOMP",
+         {{"Z0", 2, 0.0, false},
+          {"NSM", 3, 0.0, false},
+          {"SB", 4, 0.0, false},
+          {"FT", 5, 0.0, true},
+          {"TREF", 6, 0.0, false},
+          {"GE", 7, 0.0, false},
+          {"SYM", 1, 0.0, true}}},
         {"PBAR",
          {{"MID", 1, 1, true},
           {"A", 2, 1.0, false},
@@ -775,6 +783,68 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
 
 /// `nastran:<CARD>_<id>:<MEMBER>` field data of the PSHELL, PROD, PTUBE, PSOLID and MAT1
 /// records (the members `op2w_value_cards` lists).
+/// `nastran:PCOMP_<id>:<MEMBER>` field data of the PCOMP records: the scalars Z0, NSM, SB,
+/// TREF and GE, the failure theory FT and SYM (1 for a symmetric layup), and PLY, the
+/// plies as (n, 4) rows of MID, T, THETA and SOUT. The first record of an id wins.
+void op2_add_pcomp_values(Mesh& rMesh, const Op2Stream& rS, const std::vector<Op2Table>& rTables) {
+    const Op2Words& w = rS.Words();
+    const auto ws = static_cast<std::size_t>(w.mWs);
+    const auto put_float = [&](const std::string& rName, double Value) {
+        if (rMesh.HasFieldData(rName))
+            return;
+        NDArray a(DType::Float64, {1});
+        a.As<double>()[0] = Value;
+        rMesh.AddFieldData(rName, std::move(a));
+    };
+    const auto put_int = [&](const std::string& rName, std::int64_t Value) {
+        if (rMesh.HasFieldData(rName))
+            return;
+        NDArray a(DType::Int64, {1});
+        a.As<std::int64_t>()[0] = Value;
+        rMesh.AddFieldData(rName, std::move(a));
+    };
+    for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"EPT"})) {
+        if (r.mK1 != 2706 || r.mK2 != 27)
+            continue;
+        const std::size_t body = 3 * ws;
+        if (r.mRaw.size() <= body || (r.mRaw.size() - body) % ws)
+            continue;
+        const std::size_t total = (r.mRaw.size() - body) / ws;
+        const char* base = r.mRaw.data() + body;
+        const auto int_at = [&](std::size_t k) { return w.Int(base + k * ws); };
+        const auto float_at = [&](std::size_t k) { return w.Float(base + k * ws); };
+        std::size_t k = 0;
+        while (k + 8 <= total) {
+            const std::int64_t pid = int_at(k);
+            const std::int64_t nlayers = int_at(k + 1);
+            const auto count = static_cast<std::size_t>(nlayers < 0 ? -nlayers : nlayers);
+            if (pid <= 0 || count == 0 || k + 8 + 4 * count > total)
+                break;
+            const std::string prefix = "nastran:PCOMP_" + std::to_string(pid);
+            put_float(prefix + ":Z0", float_at(k + 2));
+            put_float(prefix + ":NSM", float_at(k + 3));
+            put_float(prefix + ":SB", float_at(k + 4));
+            put_int(prefix + ":FT", int_at(k + 5));
+            put_float(prefix + ":TREF", float_at(k + 6));
+            put_float(prefix + ":GE", float_at(k + 7));
+            put_int(prefix + ":SYM", nlayers < 0 ? 1 : 0);
+            if (!rMesh.HasFieldData(prefix + ":PLY")) {
+                NDArray plies(DType::Float64, {count, 4});
+                double* out = plies.As<double>();
+                for (std::size_t j = 0; j < count; ++j) {
+                    const std::size_t at = k + 8 + 4 * j;
+                    out[4 * j] = static_cast<double>(int_at(at));
+                    out[4 * j + 1] = float_at(at + 1);
+                    out[4 * j + 2] = float_at(at + 2);
+                    out[4 * j + 3] = static_cast<double>(int_at(at + 3));
+                }
+                rMesh.AddFieldData(prefix + ":PLY", std::move(plies));
+            }
+            k += 8 + 4 * count;
+        }
+    }
+}
+
 void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
                              const std::vector<Op2Table>& rTables) {
     const Op2Words& w = rS.Words();
@@ -1882,6 +1952,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     if (rOpts.WantsAnyData() && rOpts.WantsArray("nastran:nid"))
         op2_add_node_ids(mesh, model.mGridIndex);
     op2_add_property_values(mesh, r.mStream, r.mTables);
+    op2_add_pcomp_values(mesh, r.mStream, r.mTables);
     const std::size_t n = r.mSteps.size();
     if (n == 0) {
         if (rOpts.mTimeStep != 0 && rOpts.mTimeStep != -1)
@@ -2359,7 +2430,8 @@ enum Op2wProp {
     kOp2wPtube,
     kOp2wPelas,
     kOp2wPdamp,
-    kOp2wPbar
+    kOp2wPbar,
+    kOp2wPcomp
 };
 enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
@@ -2560,6 +2632,36 @@ using Op2wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::
 
 /// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
 /// that name no card or member here are left alone.
+/// The plies of each PCOMP id: `nastran:PCOMP_<id>:PLY`, rows of MID, T, THETA and SOUT.
+using Op2wPlies = std::map<std::int64_t, std::vector<std::array<double, 4>>>;
+
+Op2wPlies op2w_plies(const Mesh& rMesh) {
+    Op2wPlies out;
+    const std::string prefix = "nastran:PCOMP_";
+    const std::string suffix = ":PLY";
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+            continue;
+        const std::string digits =
+            name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        if (digits.empty() || digits.size() > 15 ||
+            digits.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        const NDArray& a = rMesh.FieldData(name);
+        const std::vector<std::size_t>& shape = a.Shape();
+        if (shape.size() != 2 || shape[1] != 4 || shape[0] == 0)
+            op2w_fail("'" + name + "' must hold (plies, 4) rows of MID, T, THETA and SOUT");
+        const detail::DoubleView view(a);
+        auto& plies = out[std::stoll(digits)];
+        for (std::size_t r = 0; r < shape[0]; ++r) {
+            const double* row = view.Data() + 4 * r;
+            plies.push_back({row[0], row[1], row[2], row[3]});
+        }
+    }
+    return out;
+}
+
 Op2wValues op2w_property_values(const Mesh& rMesh) {
     Op2wValues out;
     for (const std::string& name : rMesh.FieldDataNames()) {
@@ -2596,6 +2698,7 @@ public:
     explicit Op2wModel(const Mesh& rMesh) {
         mSignature = op2w_signature(rMesh);
         mValues = op2w_property_values(rMesh);
+        mPlies = op2w_plies(rMesh);
         mNpoints = rMesh.NumPoints();
         mNodeIds = op2w_node_ids(rMesh, mNpoints);
         {
@@ -2790,10 +2893,19 @@ public:
                     mProps[prop].insert(blk.mPids[r]);
             }
         static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE",
-                                            "PELAS", "PDAMP",  "PBAR"};
+                                            "PELAS", "PDAMP",  "PBAR",   "PCOMP"};
+        // A shell whose property has plies is a PCOMP, not a PSHELL.
+        for (auto it = mProps[kOp2wPshell].begin(); it != mProps[kOp2wPshell].end();) {
+            if (mPlies.count(*it) != 0) {
+                mProps[kOp2wPcomp].insert(*it);
+                it = mProps[kOp2wPshell].erase(it);
+            } else {
+                ++it;
+            }
+        }
         std::map<std::int64_t, int> used;
-        for (const int prop :
-             {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPelas, kOp2wPdamp})
+        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar,
+                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -2942,6 +3054,37 @@ public:
             }
             records.push_back(op2w_key(p.mK1, p.mK2, p.mK3) + rows);
         }
+        if (!mProps[kOp2wPcomp].empty()) {
+            std::string rows;
+            for (const std::int64_t pid : mProps[kOp2wPcomp]) {
+                const auto given = mValues.find({"PCOMP", pid});
+                const auto value = [&](const char* pMember, double Default) {
+                    if (given != mValues.end()) {
+                        const auto it = given->second.find(pMember);
+                        if (it != given->second.end())
+                            return it->second;
+                    }
+                    return Default;
+                };
+                const auto& plies = mPlies.at(pid);
+                const auto count = static_cast<std::int64_t>(plies.size());
+                op2w_i32(rows, pid);
+                op2w_i32(rows, value("SYM", 0) != 0 ? -count : count);
+                op2w_f32(rows, value("Z0", 0.0));
+                op2w_f32(rows, value("NSM", 0.0));
+                op2w_f32(rows, value("SB", 0.0));
+                op2w_i32(rows, static_cast<std::int64_t>(value("FT", 0.0)));
+                op2w_f32(rows, value("TREF", 0.0));
+                op2w_f32(rows, value("GE", 0.0));
+                for (const std::array<double, 4>& ply : plies) {
+                    op2w_i32(rows, static_cast<std::int64_t>(ply[0]));
+                    op2w_f32(rows, ply[1]);
+                    op2w_f32(rows, ply[2]);
+                    op2w_i32(rows, static_cast<std::int64_t>(ply[3]));
+                }
+            }
+            records.push_back(op2w_key(2706, 27, 287) + rows);
+        }
         records.push_back(op2w_key(65535, 65535, 65535));
         return op2w_table("EPT", records);
     }
@@ -2950,6 +3093,10 @@ public:
     /// its values), and per `nastran:MAT1_<id>:*` given.
     std::string Mpt() const {
         std::set<std::int64_t> ids;
+        for (const auto& [pid, plies] : mPlies)
+            if (mProps[kOp2wPcomp].count(pid) != 0)
+                for (const std::array<double, 4>& ply : plies)
+                    ids.insert(static_cast<std::int64_t>(ply[0]));
         for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar}) {
             static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE",
                                                 "PELAS", "PDAMP",  "PBAR"};
@@ -2995,10 +3142,11 @@ private:
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
-    std::set<std::int64_t> mProps[7];
+    std::set<std::int64_t> mProps[8];
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;
+    Op2wPlies mPlies;
 };
 
 // -- steps -----------------------------------------------------------------------------

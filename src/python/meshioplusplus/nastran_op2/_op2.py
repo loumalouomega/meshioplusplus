@@ -687,6 +687,54 @@ def _read_property_values(s, tables):
     return out
 
 
+def _read_pcomp_values(s, tables):
+    """``nastran:PCOMP_<id>:<MEMBER>`` field data of the PCOMP records: the scalars Z0,
+    NSM, SB, TREF and GE, the failure theory FT and SYM (1 for a symmetric layup), and
+    PLY, the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT. A record's words are
+    pid, layer count (negative for a symmetric layup), Z0, NSM, SB, FT, TREF, GE, then
+    MID, T, THETA and SOUT for each ply."""
+    out = {}
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) != (2706, 27):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) == 0 or len(body) % s.ws:
+            continue
+        ints = _ints(s, body)
+        floats = _floats(s, body)
+        k = 0
+        while k + 8 <= len(ints):
+            pid, nlayers = int(ints[k]), int(ints[k + 1])
+            count = abs(nlayers)
+            if pid <= 0 or count == 0 or k + 8 + 4 * count > len(ints):
+                break
+            prefix = f"nastran:PCOMP_{pid}"
+            scalars = {
+                "Z0": floats[k + 2],
+                "NSM": floats[k + 3],
+                "SB": floats[k + 4],
+                "FT": ints[k + 5],
+                "TREF": floats[k + 6],
+                "GE": floats[k + 7],
+                "SYM": 1 if nlayers < 0 else 0,
+            }
+            for member, value in scalars.items():
+                dtype = np.int64 if member in ("FT", "SYM") else np.float64
+                out.setdefault(f"{prefix}:{member}", np.array([value], dtype=dtype))
+            start, stop = k + 8, k + 8 + 4 * count
+            plies = np.column_stack(
+                [
+                    ints[start:stop:4],
+                    floats[start + 1 : stop : 4],
+                    floats[start + 2 : stop : 4],
+                    ints[start + 3 : stop : 4],
+                ]
+            ).astype(np.float64)
+            out.setdefault(f"{prefix}:PLY", plies)
+            k = stop
+    return out
+
+
 # -- results ---------------------------------------------------------------------------
 
 _NODAL_PREFIXES = ("OUG", "BOUG", "OQG", "OQMG", "OPG")
@@ -1369,6 +1417,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
         nf, want_nid
     )
     mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_pcomp_values(nf.stream, nf.tables))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)
     if n == 0:

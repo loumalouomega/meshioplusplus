@@ -106,6 +106,7 @@ _PTUBE = ((1602, 16, 30), 5)
 _PBAR = ((52, 20, 181), 19)
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
+_PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
@@ -164,6 +165,18 @@ PROPERTY_VALUES = {
     },
     "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
     "PDAMP": {"B": (1, 1.0)},
+    # The header words of a PCOMP (its layer count is negative for a symmetric layup,
+    # ``SYM``), and ``PLY``: the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT.
+    "PCOMP": {
+        "Z0": (2, 0.0),
+        "NSM": (3, 0.0),
+        "SB": (4, 0.0),
+        "FT": (5, 0),
+        "TREF": (6, 0.0),
+        "GE": (7, 0.0),
+        "SYM": (None, 0),
+        "PLY": (None, None),
+    },
     "MAT1": {
         "E": (1, 1.0),
         "G": (2, 0.0),
@@ -175,6 +188,8 @@ PROPERTY_VALUES = {
     },
 }
 _VALUE_KEY = re.compile(r"^nastran:([A-Z0-9]+)_([0-9]+):([A-Z0-9]+)$")
+# The members that are integers besides the ``MID`` ones.
+_INT_MEMBERS = ("FT", "SYM")
 
 
 def property_values(mesh):
@@ -188,11 +203,18 @@ def property_values(mesh):
         card, ident, member = m.group(1), int(m.group(2)), m.group(3)
         if member not in PROPERTY_VALUES[card]:
             continue
+        if member == "PLY":
+            plies = np.asarray(array, dtype=np.float64)
+            if plies.ndim != 2 or plies.shape[1] != 4 or not len(plies):
+                _wfail(f"'{name}' must hold (plies, 4) rows of MID, T, THETA and SOUT")
+            out.setdefault((card, ident), {})[member] = plies
+            continue
         values = np.asarray(array).ravel()
         if values.size != 1:
             _wfail(f"'{name}' must hold one value")
+        is_int = member.startswith("MID") or member in _INT_MEMBERS
         out.setdefault((card, ident), {})[member] = (
-            int(values[0]) if member.startswith("MID") else float(values[0])
+            int(values[0]) if is_int else float(values[0])
         )
     return out
 
@@ -204,6 +226,9 @@ def material_ids(properties, values):
         for pid in properties.get(ptype, ()):
             given = values.get((ptype, pid), {})
             ids.add(given.get("MID", given.get("MID1", 1)))
+    for pid in properties.get("PCOMP", ()):
+        plies = np.asarray(values[("PCOMP", pid)]["PLY"]).reshape(-1, 4)
+        ids.update(int(mid) for mid in plies[:, 0])
     ids.update(i for (card, i) in values if card == "MAT1")
     return sorted(ids) or []
 
@@ -591,6 +616,7 @@ class _Model:
             "PBAR": set(),
             "PELAS": set(),
             "PDAMP": set(),
+            "PCOMP": set(),
         }
         for blk in self.blocks:
             for name, ptype in (
@@ -612,6 +638,10 @@ class _Model:
                 rows = blk["cards"] == name
                 if rows.any():
                     self.properties[ptype].update(blk["pids"][rows].tolist())
+        for pid in sorted(self.properties["PSHELL"]):
+            if "PLY" in self.values.get(("PCOMP", pid), {}):
+                self.properties["PSHELL"].discard(pid)
+                self.properties["PCOMP"].add(pid)
         used = {}
         for ptype, pids in self.properties.items():
             for p in pids:
@@ -721,8 +751,32 @@ class _Model:
             if ptype == "PSOLID":
                 words[:, 6] = 0x43454D53  # FCTN 'SMEC'
             records.append(_key(*key) + _bytes(words))
+        if self.properties["PCOMP"]:
+            records.append(_key(*_PCOMP[0]) + _bytes(self._pcomp_words()))
         records.append(_key(65535, 65535, 65535))
         return _table("EPT", records)
+
+    def _pcomp_words(self):
+        """The PCOMP records: the header words (pid, layer count, Z0, NSM, SB, FT, TREF,
+        GE) and the plies (MID, T, THETA, SOUT), one entry per id."""
+        out = []
+        for pid in sorted(self.properties["PCOMP"]):
+            given = self.values[("PCOMP", pid)]
+            plies = given["PLY"]
+            count = len(plies)
+            head = np.zeros(8, dtype="<u4")
+            head[0] = _i32(np.array([pid]))[0]
+            head[1] = _i32(np.array([-count if given.get("SYM", 0) else count]))[0]
+            for k, member in ((2, "Z0"), (3, "NSM"), (4, "SB"), (6, "TREF"), (7, "GE")):
+                head[k] = _f32(np.array([given.get(member, 0.0)]))[0]
+            head[5] = _i32(np.array([int(given.get("FT", 0))]))[0]
+            body = np.zeros((count, 4), dtype="<u4")
+            body[:, 0] = _i32(plies[:, 0].astype(np.int64))
+            body[:, 1] = _f32(plies[:, 1])
+            body[:, 2] = _f32(plies[:, 2])
+            body[:, 3] = _i32(plies[:, 3].astype(np.int64))
+            out.append(np.concatenate([head, body.ravel()]))
+        return np.concatenate(out)
 
     def mpt(self):
         """A MAT1 per material the properties name: unit modulus unless the field

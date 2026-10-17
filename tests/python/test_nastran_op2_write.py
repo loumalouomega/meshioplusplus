@@ -1035,3 +1035,81 @@ def test_pynastran_reads_the_cbars_and_pbars(tmp_path):
     prop = model.properties[3]
     assert prop.type == "PBAR" and prop.mid == 1
     assert prop.A == 2.5 and prop.i1 == 0.25 and prop.j == 0.5
+
+
+# -- PCOMP composites --------------------------------------------------------------------
+
+
+def _composite_mesh(sym=0):
+    """A quad (CQUAD4 7) whose property 9 is a three-ply PCOMP, its plies' materials 1
+    and 2: Z0 0.5, NSM 0.1, SB 2, failure theory 3 (TSAI), TREF 20, GE 0.02."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(points, [("quad", np.array([[0, 1, 2, 3]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([7])]
+    mesh.cell_data["nastran:pid"] = [np.array([9])]
+    mesh.field_data["nastran:PCOMP_9:Z0"] = np.array([0.5])
+    mesh.field_data["nastran:PCOMP_9:NSM"] = np.array([0.1])
+    mesh.field_data["nastran:PCOMP_9:SB"] = np.array([2.0])
+    mesh.field_data["nastran:PCOMP_9:FT"] = np.array([3], dtype=np.int64)
+    mesh.field_data["nastran:PCOMP_9:TREF"] = np.array([20.0])
+    mesh.field_data["nastran:PCOMP_9:GE"] = np.array([0.02])
+    mesh.field_data["nastran:PCOMP_9:SYM"] = np.array([sym], dtype=np.int64)
+    mesh.field_data["nastran:PCOMP_9:PLY"] = np.array(
+        [[1, 0.1, 0.0, 1], [2, 0.2, 45.0, 0], [1, 0.1, -45.0, 1]], dtype=float
+    )
+    return mesh
+
+
+def test_a_pcomp_round_trips_with_its_plies(engine, tmp_path):
+    path = tmp_path / "pcomp.op2"
+    write_with(engine, path, _composite_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert [r.name for r in back.regions] == ["PCOMP_9"]
+        np.testing.assert_allclose(
+            back.field_data["nastran:PCOMP_9:PLY"],
+            [[1, 0.1, 0.0, 1], [2, 0.2, 45.0, 0], [1, 0.1, -45.0, 1]],
+            rtol=1e-6,
+        )
+        assert back.field_data["nastran:PCOMP_9:Z0"][0] == 0.5
+        assert back.field_data["nastran:PCOMP_9:SB"][0] == 2.0
+        assert back.field_data["nastran:PCOMP_9:FT"][0] == 3
+        assert back.field_data["nastran:PCOMP_9:TREF"][0] == 20.0
+        assert back.field_data["nastran:PCOMP_9:SYM"][0] == 0
+        assert back.field_data["nastran:PCOMP_9:GE"][0] == pytest.approx(0.02)
+        assert "nastran:PSHELL_9:T" not in back.field_data
+
+
+def test_a_symmetric_pcomp_keeps_its_layup_flag(engine, tmp_path):
+    path = tmp_path / "pcomp_sym.op2"
+    write_with(engine, path, _composite_mesh(sym=1))
+    back = py_op2.read(path)
+    assert back.field_data["nastran:PCOMP_9:SYM"][0] == 1
+    assert back.field_data["nastran:PCOMP_9:PLY"].shape == (3, 4)
+
+
+def test_the_engines_write_the_same_bytes_with_a_pcomp(tmp_path):
+    mesh = _composite_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_pcomp(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_pcomp.op2"
+    _core.nastran_op2_write(str(path), _composite_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    prop = model.properties[9]
+    assert prop.type == "PCOMP" and prop.nplies == 3
+    assert prop.material_ids == [1, 2, 1]
+    np.testing.assert_allclose(prop.thicknesses, [0.1, 0.2, 0.1], rtol=1e-6)
+    np.testing.assert_allclose(prop.thetas, [0.0, 45.0, -45.0])
+    assert prop.souts == ["YES", "NO", "YES"]
+    assert (prop.z0, prop.sb, prop.ft) == (0.5, 2.0, "TSAI")
+    assert prop.tref == 20.0 and prop.lam is None
+    assert sorted(model.materials) == [1, 2]
