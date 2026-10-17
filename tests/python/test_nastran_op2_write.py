@@ -813,7 +813,7 @@ def test_grid_id_array_follows_the_read_options(
 def _spring_mesh():
     """Springs CELAS1 30 and 31 between GRIDs 1-2 and 2-3 (PELAS 5), one grounded at
     GRID 4 (its second component is 0), a CDAMP1 50 between 2 and 4 (PDAMP 6), and a
-    CVISC 40 the writer does not hold yet."""
+    PLOTEL 40 the writer does not hold yet."""
     points = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
     )
@@ -842,7 +842,7 @@ def _spring_mesh():
         np.array([6, 6]),
         np.array([6]),
         np.array([2]),
-        np.array([39]),
+        np.array([52]),
     ]
     mesh.cell_data["nastran:c1"] = [
         np.array([1, 1]),
@@ -927,7 +927,7 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())
     assert "element cards not written yet" in err
-    assert "CVISC" in err and "CSHEAR" in err
+    assert "PLOTEL" in err and "CSHEAR" in err
     back = py_op2.read(path)
     assert sorted(_elements(back)) == [30, 31, 32, 50]
 
@@ -1544,3 +1544,65 @@ def test_the_engines_write_the_same_bytes_with_default_bushes(tmp_path):
     _core.nastran_op2_write(str(core), mesh)
     py_write.write(str(python), mesh)
     assert core.read_bytes() == python.read_bytes()
+
+
+# -- CVISC viscous dampers and PVISC properties -------------------------------------------
+
+
+def _visc_mesh(values=True):
+    """Two CVISCs of PVISC 8 between GRIDs 1-2 and 2-3."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([60, 61])]
+    mesh.cell_data["nastran:pid"] = [np.array([8, 8])]
+    mesh.cell_data["nastran:card"] = [np.array([39, 39])]
+    if values:
+        mesh.field_data["nastran:PVISC_8:CE"] = np.array([2.5])
+        mesh.field_data["nastran:PVISC_8:CR"] = np.array([0.75])
+    return mesh
+
+
+def test_cviscs_and_their_pviscs_round_trip(engine, tmp_path):
+    path = tmp_path / "cvisc.op2"
+    write_with(engine, path, _visc_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.cells[0].type == "line"
+        np.testing.assert_array_equal(back.cells[0].data, [[0, 1], [1, 2]])
+        np.testing.assert_array_equal(back.cell_data["nastran:eid"][0], [60, 61])
+        np.testing.assert_array_equal(back.cell_data["nastran:pid"][0], [8, 8])
+        np.testing.assert_array_equal(back.cell_data["nastran:card"][0], [39, 39])
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CE"], [2.5])
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CR"], [0.75])
+
+
+def test_a_pvisc_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _visc_mesh(values=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CE"], [1.0])
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CR"], [0.0])
+
+
+@pytest.mark.parametrize("values", [True, False])
+def test_the_engines_write_the_same_bytes_with_viscous_dampers(tmp_path, values):
+    mesh = _visc_mesh(values)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_cviscs_and_pviscs(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cvisc.op2"
+    _core.nastran_op2_write(str(path), _visc_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[60], model.elements[61]
+    assert first.type == second.type == "CVISC" and first.pid == 8
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    prop = model.properties[8]
+    assert prop.type == "PVISC"
+    assert (prop.ce, prop.cr) == pytest.approx((2.5, 0.75))

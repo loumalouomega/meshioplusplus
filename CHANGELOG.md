@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- `nastran_op2` writes `CVISC` viscous dampers with their `PVISC` properties (`nastran:PVISC_<id>:CE` and `CR` field data, which the reader now returns too), in both engines; pyNastran reads them back.
+
 ## v17.4.0 (2026-10-17)
 
 - `nastran_op2` writes `CBUSH` bushings with their `PBUSH` properties (`nastran:PBUSH_<id>:*` field data: stiffnesses, damping and stress coefficients), their orientation (`nastran:x` or `nastran:g0`), pyNastran-checked, in both engines. The reader returns the `PBUSH` values and a bush's orientation.

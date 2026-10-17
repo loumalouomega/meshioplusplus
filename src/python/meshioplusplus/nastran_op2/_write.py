@@ -61,6 +61,7 @@ _CARDS = {
     "CTRIA3": ((5959, 59, 282), 13, 3, 2, None),
     "CTRIA6": ((4801, 48, 327), 14, 3, 2, None),
     "CTUBE": ((3701, 37, 49), 4, 2, 2, None),
+    "CVISC": ((3901, 39, 50), 4, 2, 2, None),
 }
 
 # meshio++ cell type -> (card, nodes written); a line takes CROD, CTUBE or
@@ -121,11 +122,12 @@ _BEAM_STATION_MEMBERS = ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM")
 _BEAM_POINT_MEMBERS = ("C1", "C2", "D1", "D2")
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
+_PVISC = ((1802, 18, 31), 3)
 _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
-# write yet (CBUSH, CVISC, PLOTEL, CSHEAR): their rows are left out rather than
+# write yet (PLOTEL, CSHEAR): their rows are left out rather than
 # written as another card.
 _LINE_CARDS = {
     30: "CROD",
@@ -139,6 +141,7 @@ _LINE_CARDS = {
     26: "CBUSH",
     3: "CDAMP2",
     7: "CELAS2",
+    39: "CVISC",
 }
 _BLOCK_CARDS = {
     "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
@@ -153,6 +156,7 @@ _BLOCK_CARDS = {
         "CBUSH",
         "CELAS2",
         "CDAMP2",
+        "CVISC",
     ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
@@ -195,6 +199,7 @@ PROPERTY_VALUES = {
     },
     "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
     "PDAMP": {"B": (1, 1.0)},
+    "PVISC": {"CE": (1, 1.0), "CR": (2, 0.0)},
     # The header words of a PCOMP (its layer count is negative for a symmetric layup,
     # ``SYM``), and ``PLY``: the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT.
     "PCOMP": {
@@ -808,6 +813,7 @@ class _Model:
             "PBUSH": set(),
             "PELAS": set(),
             "PDAMP": set(),
+            "PVISC": set(),
             "PCOMP": set(),
         }
         for blk in self.blocks:
@@ -828,6 +834,7 @@ class _Model:
                 ("CBUSH", "PBUSH"),
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
+                ("CVISC", "PVISC"),
             ):
                 rows = blk["cards"] == name
                 if rows.any():
@@ -973,6 +980,7 @@ class _Model:
             ("PBAR", _PBAR),
             ("PELAS", _PELAS),
             ("PDAMP", _PDAMP),
+            ("PVISC", _PVISC),
         ):
             pids = sorted(self.properties[ptype])
             if not pids:

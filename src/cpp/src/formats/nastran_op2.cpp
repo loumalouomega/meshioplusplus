@@ -815,6 +815,7 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
           {"I12", 18, 0.0, false}}},
         {"PELAS", {{"K", 1, 1.0, false}, {"GE", 2, 0.0, false}, {"S", 3, 0.0, false}}},
         {"PDAMP", {{"B", 1, 1.0, false}}},
+        {"PVISC", {{"CE", 1, 1.0, false}, {"CR", 2, 0.0, false}}},
         {"MAT1",
          {{"E", 1, 1.0, false},
           {"G", 2, 0.0, false},
@@ -1023,7 +1024,7 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
             if (p.mK1 == r.mK1 && p.mK2 == r.mK2) {
                 const std::string card = p.mCard;
                 if (card == "PSHELL" || card == "PROD" || card == "PTUBE" || card == "PSOLID" ||
-                    card == "PBAR" || card == "PELAS" || card == "PDAMP")
+                    card == "PBAR" || card == "PELAS" || card == "PDAMP" || card == "PVISC")
                     take(card, r.mRaw, static_cast<std::size_t>(p.mSizes[0]));
                 break;
             }
@@ -2612,7 +2613,8 @@ enum Op2wProp {
     kOp2wPbar,
     kOp2wPcomp,
     kOp2wPbeam,
-    kOp2wPbush
+    kOp2wPbush,
+    kOp2wPvisc
 };
 enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
@@ -2653,6 +2655,7 @@ constexpr Op2wCard kOp2wCards[] = {
     {"CTRIA3", 5959, 59, 282, 13, 3, 2, nullptr, kOp2wPshell, 0},
     {"CTRIA6", 4801, 48, 327, 14, 3, 2, nullptr, kOp2wPshell, 0},
     {"CTUBE", 3701, 37, 49, 4, 2, 2, nullptr, kOp2wPtube, 0},
+    {"CVISC", 3901, 39, 50, 4, 2, 2, nullptr, kOp2wPvisc, 0},
 };
 constexpr std::size_t kOp2wNumCards = sizeof(kOp2wCards) / sizeof(kOp2wCards[0]);
 
@@ -2689,6 +2692,8 @@ const char* op2w_line_card(std::int64_t Code) {
             return "CDAMP2";
         case 7:
             return "CELAS2";
+        case 39:
+            return "CVISC";
         default:
             return nullptr;
     }
@@ -2702,7 +2707,7 @@ bool op2w_block_holds(const std::string& rType, std::string_view Card) {
     if (rType == "line")
         return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
                Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2";
+               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC";
     return false;
 }
 
@@ -3391,7 +3396,7 @@ public:
                     mProps[prop].insert(blk.mPids[r]);
             }
         static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE", "PELAS",
-                                            "PDAMP", "PBAR",   "PCOMP",  "PBEAM", "PBUSH"};
+                                            "PDAMP", "PBAR",   "PCOMP",  "PBEAM", "PBUSH", "PVISC"};
         // A shell whose property has plies is a PCOMP, not a PSHELL.
         for (auto it = mProps[kOp2wPshell].begin(); it != mProps[kOp2wPshell].end();) {
             if (mPlies.count(*it) != 0) {
@@ -3403,7 +3408,8 @@ public:
         }
         std::map<std::int64_t, int> used;
         for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar,
-                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp, kOp2wPbeam, kOp2wPbush})
+                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp, kOp2wPbeam, kOp2wPbush,
+                               kOp2wPvisc})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -3588,7 +3594,7 @@ public:
             {kOp2wProd, "PROD", 902, 9, 29, 6},        {kOp2wPshell, "PSHELL", 2302, 23, 283, 11},
             {kOp2wPsolid, "PSOLID", 2402, 24, 281, 7}, {kOp2wPtube, "PTUBE", 1602, 16, 30, 5},
             {kOp2wPbar, "PBAR", 52, 20, 181, 19},      {kOp2wPelas, "PELAS", 302, 3, 46, 4},
-            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2}};
+            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},       {kOp2wPvisc, "PVISC", 1802, 18, 31, 3}};
         std::vector<std::string> records;
         for (const Prop& p : props) {
             if (mProps[p.mProp].empty())
@@ -3725,7 +3731,7 @@ private:
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
-    std::set<std::int64_t> mProps[10];
+    std::set<std::int64_t> mProps[11];
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;

@@ -731,6 +731,7 @@ def _read_property_values(s, tables):
             "PBAR",
             "PELAS",
             "PDAMP",
+            "PVISC",
         ):
             take(spec[0], raw, spec[1])
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
