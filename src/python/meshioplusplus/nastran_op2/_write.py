@@ -9,6 +9,7 @@ element cards, ``EPT`` property cards), the nodal tables (``OUGV1``,
 (``OES1X1``, ``OSTR1X``) of shells, solids and rods, one block per step.
 """
 
+import math
 import re
 import struct
 
@@ -519,6 +520,79 @@ def _written(codes, ctype, card):
     return cards, keep, left
 
 
+# Degrees to radians: the reader's constant, so both engines round the same way.
+_DEGREE = 3.14159265358979323846 / 180.0
+
+
+def _cord_system(mesh, cid):
+    """System ``cid``'s type, origin A and axes X, Y, Z (basic), from its
+    ``nastran:CORD2_<cid>:*`` field data."""
+    prefix = f"nastran:CORD2_{cid}:"
+    if any(prefix + m not in mesh.field_data for m in ("TYPE", "A", "X", "Y", "Z")):
+        _wfail(
+            f"GRIDs are in coordinate system {cid}, which has no '{prefix}*' field data"
+        )
+    kind = np.asarray(mesh.field_data[prefix + "TYPE"]).ravel()
+    if kind.size != 1:
+        _wfail(f"'{prefix}TYPE' must have one value")
+    if int(kind[0]) not in (1, 2, 3):
+        _wfail(f"'{prefix}TYPE' must be 1, 2 or 3")
+    vectors = []
+    for m in ("A", "X", "Y", "Z"):
+        value = np.asarray(mesh.field_data[prefix + m], dtype=np.float64).ravel()
+        if value.size != 3:
+            _wfail(f"'{prefix}{m}' must have 3 values")
+        vectors.append([float(v) for v in value])
+    return (int(kind[0]), *vectors)
+
+
+def _to_local(system, point):
+    """The basic ``point`` in ``system``'s local coordinates: the inverse of the reader's
+    transform, in the operation order of the C++ core."""
+    ctype, o, x, y, z = system
+    d0, d1, d2 = point[0] - o[0], point[1] - o[1], point[2] - o[2]
+    xl = d0 * x[0] + d1 * x[1] + d2 * x[2]
+    yl = d0 * y[0] + d1 * y[1] + d2 * y[2]
+    zl = d0 * z[0] + d1 * z[1] + d2 * z[2]
+    if ctype == 1:
+        return [xl, yl, zl]
+    if ctype == 2:
+        return [math.sqrt(xl * xl + yl * yl), math.atan2(yl, xl) / _DEGREE, zl]
+    r = math.sqrt(xl * xl + yl * yl + zl * zl)
+    theta = 0.0
+    if r > 0.0:
+        theta = math.acos(min(1.0, max(-1.0, zl / r))) / _DEGREE
+    return [r, theta, math.atan2(yl, xl) / _DEGREE]
+
+
+def _local_points(mesh, points):
+    """Each point's coordinates in its own system (basic for CP 0), each point's CP and
+    the systems the CPs name, by id: what GEOM1 holds. Output systems (CD) are not
+    written, so a non-zero CD is reported."""
+    n = len(points)
+    cp = np.zeros(n, dtype=np.int64)
+    if "nastran:cp" in mesh.point_data:
+        cp = np.asarray(mesh.point_data["nastran:cp"], dtype=np.int64).reshape(-1)
+        if cp.size != n:
+            _wfail("'nastran:cp' must hold one integer per point")
+    if np.any(cp < 0):
+        _wfail("coordinate system ids must be positive")
+    cords = {}
+    for cid in sorted(set(cp[cp != 0].tolist())):
+        cords[cid] = _cord_system(mesh, cid)
+    local = np.array(points, dtype=np.float64)
+    for i in np.flatnonzero(cp):
+        local[i] = _to_local(cords[int(cp[i])], points[i])
+    if "nastran:cd" in mesh.point_data:
+        named = int(np.count_nonzero(np.asarray(mesh.point_data["nastran:cd"]) > 0))
+        if named:
+            warn(
+                f"Nastran OP2: {named} GRID(s) have an output system (nastran:cd) that is "
+                "not written: their CD stays 0 and their results stay in basic coordinates"
+            )
+    return cp, local, cords
+
+
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
@@ -528,6 +602,7 @@ class _Model:
         self.points = np.zeros((self.npoints, 3))
         self.points[:, : min(3, points.shape[1])] = points[:, :3]
         self.node_ids = _node_ids(mesh, self.npoints)
+        self.cp, self.local, self.cords = _local_points(mesh, self.points)
         self.signature = _signature(mesh)
         self.values = property_values(mesh)
         ptube = set()
@@ -709,12 +784,32 @@ class _Model:
     # -- geometry ---------------------------------------------------------------------
 
     def geom1(self):
+        records = []
+        # The coordinate systems the GRIDs are in: CORD2C, then CORD2R, then CORD2S, by id.
+        for ctype, key in ((2, (2001, 20, 9)), (1, (2101, 21, 8)), (3, (2201, 22, 10))):
+            ids = [cid for cid in sorted(self.cords) if self.cords[cid][0] == ctype]
+            if not ids:
+                continue
+            systems = [self.cords[cid] for cid in ids]
+            origin = np.array([s[1] for s in systems], dtype=np.float64)
+            x_axis = np.array([s[2] for s in systems], dtype=np.float64)
+            z_axis = np.array([s[4] for s in systems], dtype=np.float64)
+            words = np.zeros((len(ids), 13), dtype="<u4")
+            words[:, 0] = _i32(ids)
+            words[:, 1] = ctype
+            words[:, 2] = 2
+            words[:, 3] = 0  # RID 0: the points are in basic coordinates
+            words[:, 4:7] = _f32(origin)
+            words[:, 7:10] = _f32(origin + z_axis)  # B: a point on +z
+            words[:, 10:13] = _f32(origin + x_axis)  # C: a point in the xz plane
+            records.append(_key(*key) + _bytes(words))
         n = self.npoints
         words = np.zeros((n, 8), dtype="<u4")
         order = np.argsort(self.node_ids, kind="stable")  # GEOM1 holds GRIDs by id
         words[:, 0] = _i32(self.node_ids[order])
-        words[:, 2:5] = _f32(self.points[order])
-        records = [_key(4501, 45, 1) + _bytes(words), _key(65535, 65535, 65535)]
+        words[:, 1] = _i32(self.cp[order])  # CP: the system the coordinates are in
+        words[:, 2:5] = _f32(self.local[order])
+        records += [_key(4501, 45, 1) + _bytes(words), _key(65535, 65535, 65535)]
         return _table("GEOM1", records)
 
     def geom2(self):

@@ -11684,6 +11684,8 @@ public:
 
     NastranCoordSystems();
     bool Has(std::int64_t Cid) const { return mSystems.count(Cid) != 0; }
+    /** @brief The resolved system @p Cid, which must exist. */
+    const System& Get(std::int64_t Cid) const { return mSystems.at(Cid); }
     /** @brief Local coordinates of system @p Cid (which must exist) to basic. */
     void ToBasic(std::int64_t Cid, const double* pLocal, double* pBasic) const;
     /**
@@ -133180,6 +133182,7 @@ struct Op2Model {
     Mesh mMesh;
     detail::NastranCoordSystems mSystems;
     std::vector<std::int64_t> mCd;  // per point; empty for a deck-built model
+    std::vector<std::int64_t> mCordIds;  // the id of every coordinate system card the file holds
     std::unordered_map<std::int64_t, std::size_t> mGridIndex;
     std::unordered_map<std::int64_t, std::size_t> mCellIndex;
     std::vector<std::size_t> mOffsets, mSizes;
@@ -133268,6 +133271,8 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
         std::fill(g.mCd.begin(), g.mCd.end(), 0);
     }
     m.mSystems = detail::nastran_apply_frames(m.mMesh, g.mCords, g.mIds, g.mCp, g.mCd, kOp2Who);
+    for (const detail::NastranCoordCard& c : g.mCords)
+        m.mCordIds.push_back(c.mCid);
     m.mCd = g.mCd;
     const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
     std::vector<std::vector<std::int64_t>> comps;
@@ -133310,6 +133315,31 @@ void op2_warn_skipped(const Op2Reader& rR) {
     log::warn("{}: result tables not read: {}", kOp2Who, list);
 }
 
+// A 3-vector as a float64 array.
+NDArray op2_vec3(const double* pV) {
+    NDArray a(DType::Float64, {3});
+    std::copy(pV, pV + 3, a.As<double>());
+    return a;
+}
+
+// The coordinate systems the file defines, as `nastran:CORD2_<id>:*` field data: the type,
+// the origin A and the axes X, Y and Z, all in basic coordinates. A write puts GRIDs back in
+// them from these.
+void op2_add_cord_systems(Mesh& rMesh, const detail::NastranCoordSystems& rSystems,
+                          const std::vector<std::int64_t>& rIds) {
+    for (const std::int64_t cid : std::set<std::int64_t>(rIds.begin(), rIds.end())) {
+        if (cid == 0 || !rSystems.Has(cid))
+            continue;
+        const detail::NastranCoordSystems::System& s = rSystems.Get(cid);
+        const std::string prefix = "nastran:CORD2_" + std::to_string(cid) + ":";
+        rMesh.AddFieldData(prefix + "TYPE", op2_scalar(static_cast<double>(s.mType), DType::Int64));
+        rMesh.AddFieldData(prefix + "A", op2_vec3(s.mOrigin));
+        rMesh.AddFieldData(prefix + "X", op2_vec3(s.mAxes));
+        rMesh.AddFieldData(prefix + "Y", op2_vec3(s.mAxes + 3));
+        rMesh.AddFieldData(prefix + "Z", op2_vec3(s.mAxes + 6));
+    }
+}
+
 }  // namespace
 
 Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
@@ -133322,6 +133352,7 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
         op2_add_node_ids(mesh, model.mGridIndex);
     op2_add_property_values(mesh, r.mStream, r.mTables);
     op2_add_pcomp_values(mesh, r.mStream, r.mTables);
+    op2_add_cord_systems(mesh, model.mSystems, model.mCordIds);
     const std::size_t n = r.mSteps.size();
     if (n == 0) {
         if (rOpts.mTimeStep != 0 && rOpts.mTimeStep != -1)
@@ -134070,6 +134101,121 @@ Op2wValues op2w_property_values(const Mesh& rMesh) {
     return out;
 }
 
+/// A coordinate system a GRID's CP names, as the writer needs it: its type (1 rectangular,
+/// 2 cylindrical, 3 spherical), its origin A and its axes X, Y and Z, all in basic
+/// coordinates, from the `nastran:CORD2_<id>:*` field data.
+struct Op2wCord {
+    std::int64_t mCid = 0;
+    int mType = 1;
+    double mA[3] = {0, 0, 0};
+    double mX[3] = {1, 0, 0};
+    double mY[3] = {0, 1, 0};
+    double mZ[3] = {0, 0, 1};
+};
+
+// Degrees to radians: the reader's constant, so both engines round the same way.
+constexpr double kOp2wDegree = 3.14159265358979323846 / 180.0;
+
+/// The basic point @p pBasic in the local coordinates of system @p rC: the inverse of the
+/// reader's transform, in the operation order of the Python twin.
+void op2w_to_local(const Op2wCord& rC, const double* pBasic, double* pOut) {
+    const double d0 = pBasic[0] - rC.mA[0];
+    const double d1 = pBasic[1] - rC.mA[1];
+    const double d2 = pBasic[2] - rC.mA[2];
+    const double xl = d0 * rC.mX[0] + d1 * rC.mX[1] + d2 * rC.mX[2];
+    const double yl = d0 * rC.mY[0] + d1 * rC.mY[1] + d2 * rC.mY[2];
+    const double zl = d0 * rC.mZ[0] + d1 * rC.mZ[1] + d2 * rC.mZ[2];
+    if (rC.mType == 1) {
+        pOut[0] = xl;
+        pOut[1] = yl;
+        pOut[2] = zl;
+    } else if (rC.mType == 2) {
+        pOut[0] = std::sqrt(xl * xl + yl * yl);
+        pOut[1] = std::atan2(yl, xl) / kOp2wDegree;
+        pOut[2] = zl;
+    } else {
+        const double r = std::sqrt(xl * xl + yl * yl + zl * zl);
+        pOut[0] = r;
+        pOut[1] = r > 0.0 ? std::acos(std::min(1.0, std::max(-1.0, zl / r))) / kOp2wDegree : 0.0;
+        pOut[2] = std::atan2(yl, xl) / kOp2wDegree;
+    }
+}
+
+/// System @p Cid's type, origin and axes, from its `nastran:CORD2_<id>:*` field data.
+Op2wCord op2w_cord(const Mesh& rMesh, std::int64_t Cid) {
+    const std::string p = "nastran:CORD2_" + std::to_string(Cid) + ":";
+    for (const char* member : {"TYPE", "A", "X", "Y", "Z"})
+        if (!rMesh.HasFieldData(p + member))
+            op2w_fail("GRIDs are in coordinate system " + std::to_string(Cid) + ", which has no '" +
+                      p + "*' field data");
+    Op2wCord c;
+    c.mCid = Cid;
+    const NDArray& t = rMesh.FieldData(p + "TYPE");
+    if (t.Size() != 1)
+        op2w_fail("'" + p + "TYPE' must have one value");
+    const detail::DoubleView kind(t);
+    if (kind.Data()[0] != 1.0 && kind.Data()[0] != 2.0 && kind.Data()[0] != 3.0)
+        op2w_fail("'" + p + "TYPE' must be 1, 2 or 3");
+    c.mType = static_cast<int>(kind.Data()[0]);
+    const auto vector = [&](const char* member, double* pOut) {
+        const NDArray& a = rMesh.FieldData(p + member);
+        if (a.Size() != 3)
+            op2w_fail("'" + p + member + "' must have 3 values");
+        const detail::DoubleView view(a);
+        std::copy(view.Data(), view.Data() + 3, pOut);
+    };
+    vector("A", c.mA);
+    vector("X", c.mX);
+    vector("Y", c.mY);
+    vector("Z", c.mZ);
+    return c;
+}
+
+/// Each point's coordinates in its own system (basic for CP 0), each point's CP and the
+/// systems the CPs name, by id: what GEOM1 holds. Output systems (CD) are not written, so
+/// a non-zero CD is reported.
+void op2w_local_points(const Mesh& rMesh, std::size_t N, const std::vector<double>& rBasic,
+                       std::vector<std::int64_t>& rCp, std::vector<Op2wCord>& rCords,
+                       std::vector<double>& rLocal) {
+    rCp.assign(N, 0);
+    if (rMesh.HasPointData("nastran:cp")) {
+        const NDArray& a = rMesh.PointData("nastran:cp");
+        if (a.Size() != N)
+            op2w_fail("'nastran:cp' must hold one integer per point");
+        const detail::Int64View view(a);
+        rCp.assign(view.Data(), view.Data() + N);
+    }
+    std::set<std::int64_t> ids;
+    for (const std::int64_t cid : rCp) {
+        if (cid < 0)
+            op2w_fail("coordinate system ids must be positive");
+        if (cid != 0)
+            ids.insert(cid);
+    }
+    rCords.clear();
+    std::map<std::int64_t, std::size_t> at;
+    for (const std::int64_t cid : ids) {
+        at[cid] = rCords.size();
+        rCords.push_back(op2w_cord(rMesh, cid));
+    }
+    rLocal = rBasic;
+    for (std::size_t i = 0; i < N; ++i)
+        if (rCp[i] != 0)
+            op2w_to_local(rCords[at[rCp[i]]], rBasic.data() + 3 * i, rLocal.data() + 3 * i);
+    if (rMesh.HasPointData("nastran:cd")) {
+        const NDArray& a = rMesh.PointData("nastran:cd");
+        const detail::Int64View view(a);
+        std::size_t named = 0;
+        for (std::size_t i = 0; i < a.Size(); ++i)
+            named += view.Data()[i] > 0 ? 1 : 0;
+        if (named != 0)
+            log::warn(
+                "Nastran OP2: {} GRID(s) have an output system (nastran:cd) that is not "
+                "written: their CD stays 0 and their results stay in basic coordinates",
+                named);
+    }
+}
+
 class Op2wModel {
 public:
     explicit Op2wModel(const Mesh& rMesh) {
@@ -134087,6 +134233,7 @@ public:
                 for (std::size_t k = 0; k < 3 && k < dim; ++k)
                     mPoints[3 * i + k] = view.Data()[i * dim + k];
         }
+        op2w_local_points(rMesh, mNpoints, mPoints, mCp, mCords, mLocal);
         std::set<std::int64_t> ptube;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
             const std::int64_t pid = op2w_ptype_pid(rMesh.Region(i).mName, "PTUBE");
@@ -134327,6 +134474,32 @@ public:
     }
 
     std::string Geom1() const {
+        // The coordinate systems the GRIDs are in: CORD2C, then CORD2R, then CORD2S, by id.
+        static const struct {
+            int mType;
+            std::int32_t mK1, mK2, mK3;
+        } kCords[] = {{2, 2001, 20, 9}, {1, 2101, 21, 8}, {3, 2201, 22, 10}};
+        std::vector<std::string> records;
+        for (const auto& k : kCords) {
+            std::string rows;
+            for (const Op2wCord& c : mCords) {
+                if (c.mType != k.mType)
+                    continue;
+                Op2wRowBuf w(13);
+                w.I(0, c.mCid);
+                w.I(1, c.mType);
+                w.I(2, 2);
+                w.I(3, 0);  // RID 0: the points are in basic coordinates
+                for (std::size_t j = 0; j < 3; ++j) {
+                    w.F(4 + j, c.mA[j]);
+                    w.F(7 + j, c.mA[j] + c.mZ[j]);   // B: a point on +z
+                    w.F(10 + j, c.mA[j] + c.mX[j]);  // C: a point in the xz plane
+                }
+                w.Append(rows);
+            }
+            if (!rows.empty())
+                records.push_back(op2w_key(k.mK1, k.mK2, k.mK3) + rows);
+        }
         std::string rows;
         std::vector<std::size_t> order(mNpoints);  // GEOM1 holds the GRIDs by id
         std::iota(order.begin(), order.end(), std::size_t{0});
@@ -134336,11 +134509,14 @@ public:
         for (const std::size_t i : order) {
             Op2wRowBuf w(8);
             w.I(0, mNodeIds[i]);
+            w.I(1, mCp[i]);  // CP: the system the coordinates are in (CD stays 0)
             for (std::size_t k = 0; k < 3; ++k)
-                w.F(2 + k, mPoints[3 * i + k]);
+                w.F(2 + k, mLocal[3 * i + k]);
             w.Append(rows);
         }
-        return op2w_table("GEOM1", {op2w_key(4501, 45, 1) + rows, op2w_key(65535, 65535, 65535)});
+        records.push_back(op2w_key(4501, 45, 1) + rows);
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("GEOM1", records);
     }
 
     std::string Geom2() const {
@@ -134543,6 +134719,9 @@ private:
     Op2wSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
+    std::vector<std::int64_t> mCp;       // each point's coordinate system (0: basic)
+    std::vector<double> mLocal;          // each point's coordinates in that system
+    std::vector<Op2wCord> mCords;        // the systems the CPs name, by id
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;

@@ -1414,6 +1414,22 @@ def _build_mesh(nf, want_nid):
     return mesh, grid_index, cell_index, offsets, sizes, systems, cd
 
 
+def _cord_fields(systems):
+    """The resolved coordinate systems as ``nastran:CORD2_<id>:*`` field data: each one's
+    type, its origin A and its axes X, Y and Z, all in basic coordinates."""
+    out = {}
+    for cid, (ctype, origin, axes) in sorted(systems.systems.items()):
+        if cid == 0:
+            continue
+        prefix = f"nastran:CORD2_{cid}:"
+        out[prefix + "TYPE"] = np.array([ctype], dtype=np.int64)
+        out[prefix + "A"] = np.array(origin, dtype=np.float64)
+        out[prefix + "X"] = np.array(axes[0], dtype=np.float64)
+        out[prefix + "Y"] = np.array(axes[1], dtype=np.float64)
+        out[prefix + "Z"] = np.array(axes[2], dtype=np.float64)
+    return out
+
+
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
     # GRID ids that are not 1 to n, as point data: only when point data is wanted.
@@ -1423,6 +1439,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     )
     mesh.field_data.update(_read_property_values(nf.stream, nf.tables))
     mesh.field_data.update(_read_pcomp_values(nf.stream, nf.tables))
+    mesh.field_data.update(_cord_fields(systems))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)
     if n == 0:

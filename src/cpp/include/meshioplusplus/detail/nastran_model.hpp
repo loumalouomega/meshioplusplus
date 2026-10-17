@@ -171,6 +171,8 @@ public:
 
     NastranCoordSystems();
     bool Has(std::int64_t Cid) const { return mSystems.count(Cid) != 0; }
+    /** @brief The resolved system @p Cid, which must exist. */
+    const System& Get(std::int64_t Cid) const { return mSystems.at(Cid); }
     /** @brief Local coordinates of system @p Cid (which must exist) to basic. */
     void ToBasic(std::int64_t Cid, const double* pLocal, double* pBasic) const;
     /**

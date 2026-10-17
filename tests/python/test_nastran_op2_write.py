@@ -1201,3 +1201,108 @@ def test_pynastran_reads_the_inline_springs_and_dampers(tmp_path):
     assert damper.node_ids == [2, 3] and (damper.c1, damper.c2) == (2, 2)
     assert grounded.type == "CELAS2" and grounded.k == 55.0
     assert grounded.node_ids == [4, None] and (grounded.c1, grounded.c2) == (3, 0)
+
+
+# -- coordinate systems -------------------------------------------------------------------
+
+
+def _cord_mesh():
+    """Four GRIDs: one in rectangular system 3 (origin (1, 2, 3), turned a quarter turn
+    about z), one in cylindrical system 4 and one in spherical system 5, both at the
+    origin, and one in basic coordinates. A CELAS1 spring (PELAS 5) joins GRIDs 1 and 4.
+    """
+    c30, s30 = np.cos(np.radians(30.0)), np.sin(np.radians(30.0))
+    t60, f45 = np.radians(60.0), np.radians(45.0)
+    points = np.array(
+        [
+            [1.0, 3.0, 3.0],  # system 3, local (1, 0, 0)
+            [2.0 * c30, 2.0 * s30, 1.0],  # system 4, local (r 2, theta 30, z 1)
+            [  # system 5, local (r 2, theta 60, phi 45)
+                2.0 * np.sin(t60) * np.cos(f45),
+                2.0 * np.sin(t60) * np.sin(f45),
+                2.0 * np.cos(t60),
+            ],
+            [0.5, 0.5, 0.5],
+        ]
+    )
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 3]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([30])]
+    mesh.cell_data["nastran:pid"] = [np.array([5])]
+    mesh.cell_data["nastran:card"] = [np.array([6])]  # CELAS1
+    mesh.cell_data["nastran:c1"] = [np.array([1])]
+    mesh.cell_data["nastran:c2"] = [np.array([1])]
+    mesh.field_data["nastran:PELAS_5:K"] = np.array([100.0])
+    mesh.point_data["nastran:cp"] = np.array([3, 4, 5, 0])
+    systems = {
+        3: (1, [1.0, 2.0, 3.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        4: (2, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+        5: (3, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+    }
+    for cid, (ctype, origin, x, y, z) in systems.items():
+        prefix = f"nastran:CORD2_{cid}:"
+        mesh.field_data[prefix + "TYPE"] = np.array([ctype], dtype=np.int64)
+        mesh.field_data[prefix + "A"] = np.array(origin)
+        mesh.field_data[prefix + "X"] = np.array(x)
+        mesh.field_data[prefix + "Y"] = np.array(y)
+        mesh.field_data[prefix + "Z"] = np.array(z)
+    return mesh
+
+
+def test_grids_in_coordinate_systems_round_trip(engine, tmp_path):
+    path = tmp_path / "cord.op2"
+    mesh = _cord_mesh()
+    write_with(engine, path, mesh)
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_allclose(back.points, mesh.points, atol=1e-5)
+        np.testing.assert_array_equal(back.point_data["nastran:cp"], [3, 4, 5, 0])
+        for cid in (3, 4, 5):
+            prefix = f"nastran:CORD2_{cid}:"
+            np.testing.assert_array_equal(
+                back.field_data[prefix + "TYPE"], mesh.field_data[prefix + "TYPE"]
+            )
+            for member in "AXYZ":
+                np.testing.assert_allclose(
+                    back.field_data[prefix + member],
+                    mesh.field_data[prefix + member],
+                    atol=1e-5,
+                )
+
+
+def test_the_engines_write_the_same_bytes_with_coordinate_systems(tmp_path):
+    mesh = _cord_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_grid_in_an_undefined_system_is_refused(engine, tmp_path):
+    mesh = _cord_mesh()
+    del mesh.field_data["nastran:CORD2_4:Y"]
+    with pytest.raises(Exception, match="coordinate system 4"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_an_output_system_is_not_written_and_is_reported(engine, tmp_path, capfd):
+    mesh = _cord_mesh()
+    mesh.point_data["nastran:cd"] = np.array([0, 3, 0, 0])
+    path = tmp_path / "cd.op2"
+    write_with(engine, path, mesh)
+    err = " ".join(capfd.readouterr().err.split())
+    assert "output system (nastran:cd) that is not written" in err
+    assert "nastran:cd" not in meshioplusplus.nastran_op2.read(path).point_data
+
+
+def test_pynastran_reads_the_coordinate_systems(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cord.op2"
+    mesh = _cord_mesh()
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    model.cross_reference()
+    assert [model.coords[c].type for c in (3, 4, 5)] == ["CORD2R", "CORD2C", "CORD2S"]
+    for gid, expected in zip((1, 2, 3, 4), mesh.points):
+        np.testing.assert_allclose(model.nodes[gid].get_position(), expected, atol=1e-5)
+    assert model.elements[30].node_ids == [1, 4]
