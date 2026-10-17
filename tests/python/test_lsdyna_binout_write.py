@@ -427,3 +427,59 @@ def test_lasso_reads_the_metadata_text(tmp_path):
     _core.lsdyna_binout_write(str(path), mesh)
     binout = lasso.Binout(str(path))
     assert binout.read("nodout", "title") == "beam"
+
+
+def _split_series():
+    return series_steps()
+
+
+def test_split_size_writes_continuation_files_the_reader_merges(engine, tmp_path):
+    """``split_size`` starts ``binout%001``... files; an output stays whole in one,
+    and the merged read equals the single file's."""
+    one, split = tmp_path / "one" / "binout", tmp_path / "split" / "binout"
+    one.parent.mkdir()
+    split.parent.mkdir()
+    write_series_with(engine, one, _split_series())
+    if engine == "core":
+        writer = _core.LsdynaBinoutSeriesWriter(str(split), 400)
+        for time, mesh in _split_series():
+            writer.write(float(time), mesh)
+        writer.finalize()
+    else:
+        with py_write.SeriesWriter(str(split), split_size=400) as writer:
+            for time, mesh in _split_series():
+                writer.write(time, mesh)
+    names = sorted(p.name for p in split.parent.iterdir())
+    assert names[0] == "binout" and names[1] == "binout%001" and len(names) > 2
+    assert meshioplusplus.lsdyna_binout.time_values(
+        split
+    ) == meshioplusplus.lsdyna_binout.time_values(one)
+    for step in range(4):
+        a = meshioplusplus.lsdyna_binout.read(one, time_step=step)
+        b = meshioplusplus.lsdyna_binout.read(split, time_step=step)
+        np.testing.assert_array_equal(a.points, b.points)
+        for name in a.point_data:
+            np.testing.assert_array_equal(a.point_data[name], b.point_data[name])
+        assert sorted(a.field_data) == sorted(b.field_data)
+        for name in a.field_data:
+            np.testing.assert_array_equal(a.field_data[name], b.field_data[name])
+
+
+def test_the_engines_write_the_same_split_files(tmp_path):
+    for sub in ("core", "python"):
+        (tmp_path / sub).mkdir()
+    mesh = step_mesh(0.5, glstat=0.25)
+    _core.lsdyna_binout_write(str(tmp_path / "core" / "binout"), mesh, 1)
+    py_write.write(str(tmp_path / "python" / "binout"), mesh, 1)
+    core = {p.name: p.read_bytes() for p in (tmp_path / "core").iterdir()}
+    python = {p.name: p.read_bytes() for p in (tmp_path / "python").iterdir()}
+    assert core == python
+
+
+def test_a_split_binout_needs_a_path():
+    import io
+
+    with pytest.raises(Exception, match="stream"):
+        with py_write.SeriesWriter(io.BytesIO(), split_size=1) as writer:
+            for time, mesh in series_steps():
+                writer.write(time, mesh)

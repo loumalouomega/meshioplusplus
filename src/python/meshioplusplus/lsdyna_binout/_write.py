@@ -278,8 +278,10 @@ class _Step:
 class _Archive:
     """The whole file: every step added so far."""
 
-    def __init__(self):
-        self.lsda = _Lsda()
+    def __init__(self, split_size=0):
+        self.files = [_Lsda()]
+        self.split = int(split_size or 0)
+        self.folders = 0  # folders in the current file
         self.layout = None  # nodout's variables, and each database's
         self.counts = {}  # database -> outputs written
         self.last = {}  # database -> time of its last output
@@ -342,14 +344,32 @@ class _Archive:
         self.counts[database] = count
         self.last[database] = out.time
         directory = f"/{database}/d{count:06d}"
-        self.lsda.var(directory, "time", np.array([out.time], dtype=np.float32))
+        time = np.array([out.time], dtype=np.float32)
+        # A folder stays whole in one file: a new file starts when it would pass the split.
+        if self.split > 0 and self.folders > 0:
+            size = _record_size("time", time)
+            size += sum(_record_size(n, a) for n, a in out.variables)
+            if len(self.lsda.data) + size > self.split:
+                self.files.append(_Lsda())
+                self.folders = 0
+        self.folders += 1
+        self.lsda.var(directory, "time", time)
         for name, array in out.variables:
             self.lsda.var(directory, name, array)
+
+    @property
+    def lsda(self):
+        return self.files[-1]
 
     def finish(self):
         if not self.counts:
             _wfail("the mesh holds no database: no points and no binout:* field data")
-        return self.lsda.finish()
+        return [f.finish() for f in self.files]
+
+
+def _record_size(name, values):
+    """The bytes of one DATA record of a variable (4 per value; text is 1)."""
+    return 8 + 3 + len(name) + 4 * np.asarray(values).size
 
 
 def _warn_dropped(step):
@@ -368,19 +388,24 @@ def _time_of(mesh):
     return float(values[0]) if values.size else 0.0
 
 
-def _save(filename, data):
+def _save(filename, files):
+    """The binout, then ``<name>%001``, ``%002``... for its continuation files."""
     if is_buffer(filename, "w"):
-        filename.write(data)
-    else:
-        with open(filename, "wb") as fh:
+        if len(files) > 1:
+            _wfail("a split binout needs a file path, not a stream")
+        filename.write(files[0])
+        return
+    for k, data in enumerate(files):
+        path = str(filename) + (f"%{k:03d}" if k else "")
+        with open(path, "wb") as fh:
             fh.write(data)
 
 
 @_provenance.slotless_writer
-def write(filename, mesh):
+def write(filename, mesh, split_size=0):
     step = _Step(mesh, _time_of(mesh))
     _warn_dropped(step)
-    archive = _Archive()
+    archive = _Archive(split_size)
     archive.add(step)
     _save(filename, archive.finish())
 
@@ -393,9 +418,9 @@ class SeriesWriter:
     variables of each database (a database may be absent from a step, and
     appear later). Use as a context manager, or call :meth:`close`."""
 
-    def __init__(self, filename):
+    def __init__(self, filename, split_size=0):
         self._filename = filename
-        self._archive = _Archive()
+        self._archive = _Archive(split_size)
 
     def write(self, time, mesh):
         step = _Step(mesh, float(time))

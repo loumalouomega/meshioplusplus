@@ -5653,14 +5653,18 @@ PYBIND11_MODULE(_core, m) {
 
     // LS-DYNA binout writer, and the step-by-step series writer behind
     // `meshioplusplus.lsdyna_binout.SeriesWriter`.
-    m.def("lsdyna_binout_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-            return meshioplusplus::write_lsdyna_binout(path, mesh);
-        });
-    });
+    m.def(
+        "lsdyna_binout_write",
+        [](const std::string& path, py::object pymesh, std::size_t split_size) {
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_lsdyna_binout(path, mesh, split_size);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("split_size") = 0);
     py::class_<meshioplusplus::LsdynaBinoutSeriesWriter>(m, "LsdynaBinoutSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(py::init<const std::string&, std::size_t>(), py::arg("path"),
+             py::arg("split_size") = 0)
         .def(
             "write",
             [](meshioplusplus::LsdynaBinoutSeriesWriter& rSelf, double time, py::object pymesh) {

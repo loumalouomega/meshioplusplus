@@ -18359,6 +18359,18 @@ MESHIOPLUSPLUS_API bool is_binout_head(const char* pHead, std::size_t Size);
 MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh);
 
 /**
+ * @brief `write_lsdyna_binout` split into continuation files.
+ *
+ * When @p SplitSize is not 0, a new file (`<path>%001`, `%002`...) starts once the
+ * data written to the current one would pass @p SplitSize bytes; an output folder
+ * stays whole in one file (so one folder larger than the split makes a file of its
+ * own), and the symbol tables add a little more. `read_lsdyna_binout` merges the
+ * files. 0 writes one file.
+ */
+MESHIOPLUSPLUS_API void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh,
+                                            std::size_t SplitSize);
+
+/**
  * @brief A binout written step by step: `nodout`'s ids once and an output
  *        folder per step, and any other database's output whenever its own
  *        `binout:<database>:time` changes (so a database written less often
@@ -18375,6 +18387,10 @@ class MESHIOPLUSPLUS_API LsdynaBinoutSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit LsdynaBinoutSeriesWriter(const std::string& rPath);
+
+    /// As above, splitting into `%001`... continuation files at @p SplitSize data bytes
+    /// (see the split `write_lsdyna_binout`).
+    LsdynaBinoutSeriesWriter(const std::string& rPath, std::size_t SplitSize);
     ~LsdynaBinoutSeriesWriter();
 
     LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
@@ -110435,6 +110451,12 @@ void lbw_check_name(const std::string& rName, const char* pWhat) {
         lbw_fail(std::string(pWhat) + " '" + rName + "' is not a name a binout can hold");
 }
 
+/// The bytes of one DATA record of a variable.
+std::size_t lbw_record_size(const LbwArray& rArray) {
+    const std::size_t count = rArray.mFloat ? rArray.mReals.size() : rArray.mInts.size();
+    return 8 + 1 + 1 + 1 + rArray.mName.size() + count * (rArray.mText ? 1 : 4);
+}
+
 /// DATA records as they are added, and the entries of the symbol table.
 class LbwLsda {
 public:
@@ -110482,6 +110504,8 @@ public:
         mData += raw;
         mEntries.push_back({rDir, rArray.mName, code, offset, count});
     }
+
+    std::size_t DataSize() const { return mData.size(); }
 
     std::string Finish() const {
         std::string out = mData;
@@ -110739,6 +110763,9 @@ private:
 /// The whole file: every step added so far.
 class LbwArchive {
 public:
+    /// @p SplitSize: the data bytes after which a new continuation file starts (0: one file).
+    explicit LbwArchive(std::size_t SplitSize = 0) : mSplit(SplitSize) { mFiles.emplace_back(); }
+
     void Add(const LbwStep& rStep) {
         const std::size_t index = mSteps;
         if (mSteps == 0) {
@@ -110761,10 +110788,14 @@ public:
 
     std::size_t Steps() const { return mSteps; }
 
-    std::string Finish() const {
+    /// The files: the binout, then its `%001`... continuations.
+    std::vector<std::string> Finish() const {
         if (mCounts.empty())
             lbw_fail("the mesh holds no database: no points and no binout:* field data");
-        return mLsda.Finish();
+        std::vector<std::string> files;
+        for (const LbwLsda& f : mFiles)
+            files.push_back(f.Finish());
+        return files;
     }
 
 private:
@@ -110774,9 +110805,9 @@ private:
             LbwArray ids;
             ids.mName = "ids";
             ids.mInts = mIds;
-            mLsda.Var("/nodout/metadata", ids);
+            mFiles.back().Var("/nodout/metadata", ids);
             for (const LbwArray& t : rOut.mText)
-                mLsda.Var("/nodout/metadata", t);
+                mFiles.back().Var("/nodout/metadata", t);
         } else if (rOut.Layout() != mNodoutLayout || *rOut.mIds != mIds) {
             lbw_fail("series: step " + std::to_string(Index) +
                      "'s nodes or variables differ from the first step's; a binout holds one "
@@ -110794,10 +110825,10 @@ private:
                 LbwArray ids;
                 ids.mName = "ids";
                 ids.mInts = *rOut.mIds;
-                mLsda.Var("/" + rDatabase + "/metadata", ids);
+                mFiles.back().Var("/" + rDatabase + "/metadata", ids);
             }
             for (const LbwArray& t : rOut.mText)
-                mLsda.Var("/" + rDatabase + "/metadata", t);
+                mFiles.back().Var("/" + rDatabase + "/metadata", t);
         } else if (layout != it->second) {
             lbw_fail("series: step " + std::to_string(Index) + "'s variables of '" + rDatabase +
                      "' differ from its first output's");
@@ -110819,12 +110850,25 @@ private:
         time.mName = "time";
         time.mFloat = true;
         time.mReals = {rOut.mTime};
-        mLsda.Var(dir, time);
+        // A folder stays whole in one file: a new file starts when it would pass the split.
+        if (mSplit > 0 && mFolders > 0) {
+            std::size_t bytes = lbw_record_size(time);
+            for (const LbwArray& a : rOut.mVars)
+                bytes += lbw_record_size(a);
+            if (mFiles.back().DataSize() + bytes > mSplit) {
+                mFiles.emplace_back();
+                mFolders = 0;
+            }
+        }
+        ++mFolders;
+        mFiles.back().Var(dir, time);
         for (const LbwArray& a : rOut.mVars)
-            mLsda.Var(dir, a);
+            mFiles.back().Var(dir, a);
     }
 
-    LbwLsda mLsda;
+    std::vector<LbwLsda> mFiles;
+    std::size_t mSplit = 0;
+    std::size_t mFolders = 0;  // folders in the current file
     std::vector<std::pair<std::string, bool>> mNodoutLayout;
     std::map<std::string, std::vector<std::pair<std::string, bool>>> mDbLayout;
     std::map<std::string, std::size_t> mCounts;
@@ -110850,7 +110894,7 @@ double lbw_time_of(const Mesh& rMesh) {
     return a.Size() == 0 ? 0.0 : detail::DoubleView(a).Data()[0];
 }
 
-void lbw_save(const std::string& rPath, const std::string& rBytes) {
+void lbw_save_one(const std::string& rPath, const std::string& rBytes) {
     auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!out)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -110860,13 +110904,29 @@ void lbw_save(const std::string& rPath, const std::string& rBytes) {
         lbw_fail("failed writing " + rPath);
 }
 
+/// The binout, then `<path>%001`, `%002`... for the continuation files.
+void lbw_save(const std::string& rPath, const std::vector<std::string>& rFiles) {
+    for (std::size_t i = 0; i < rFiles.size(); ++i) {
+        std::string path = rPath;
+        if (i > 0) {
+            std::string n = std::to_string(i);
+            path += "%" + std::string(n.size() < 3 ? 3 - n.size() : 0, '0') + n;
+        }
+        lbw_save_one(path, rFiles[i]);
+    }
+}
+
 }  // namespace
 
 void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh) {
+    write_lsdyna_binout(rPath, rMesh, 0);
+}
+
+void write_lsdyna_binout(const std::string& rPath, const Mesh& rMesh, std::size_t SplitSize) {
     const detail::ProvenanceSlotlessWrite slotless;
     const LbwStep step(rMesh, lbw_time_of(rMesh));
     lbw_warn_dropped(step);
-    LbwArchive archive;
+    LbwArchive archive(SplitSize);
     archive.Add(step);
     lbw_save(rPath, archive.Finish());
 }
@@ -110875,10 +110935,14 @@ struct LsdynaBinoutSeriesWriter::Impl {
     std::string mPath;
     LbwArchive mArchive;
     bool mDone = false;
+    explicit Impl(std::size_t SplitSize) : mArchive(SplitSize) {}
 };
 
 LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath)
-    : mpImpl(std::make_unique<Impl>()) {
+    : LsdynaBinoutSeriesWriter(rPath, 0) {}
+
+LsdynaBinoutSeriesWriter::LsdynaBinoutSeriesWriter(const std::string& rPath, std::size_t SplitSize)
+    : mpImpl(std::make_unique<Impl>(SplitSize)) {
     mpImpl->mPath = rPath;
     // Fail now, not when the last step is written, if the path cannot be written.
     auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
@@ -208302,7 +208366,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"radioss_th", meshioplusplus::write_radioss_th},
         {"nastran_op2", meshioplusplus::write_nastran_op2},
         // No extension (`binout`): by name or explicit format only.
-        {"lsdyna_binout", meshioplusplus::write_lsdyna_binout},
+        {"lsdyna_binout",
+         [](const std::string& p, const Mesh& m) { meshioplusplus::write_lsdyna_binout(p, m); }},
         {"abaqus_fil",
          [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
         // By name only: ".dat" writes Tecplot (resolve_write_format).
