@@ -21,6 +21,11 @@ from meshioplusplus.vtx import _vtx
 HAS_CORE = getattr(_core, "__has_adios2__", False)
 if not HAS_CORE:
     pytest.importorskip("adios2")
+    if sys.platform == "win32":
+        # The Windows `adios2` wheel dies with a native access violation in
+        # `blocks_info` at random (it cannot be caught, and it takes the whole
+        # pytest process down); Linux and macOS cover the twin.
+        pytest.skip("adios2 wheel crashes on Windows", allow_module_level=True)
 
 VTX = pathlib.Path(__file__).parent / "meshes" / "vtx"
 NAMES = ["heat", "elastic", "quads", "heat_np2", "complex"]

@@ -435,8 +435,13 @@ def test_no_regions_writes_the_same_bytes(
         b = tmp_path / "b" / ("deck" + suffix)
         a.parent.mkdir()
         b.parent.mkdir()
-    meshioplusplus.write(a, plain, file_format=fmt)
-    meshioplusplus.write(b, stripped, file_format=fmt)
+    # HDF5 stamps each object with the wall-clock second, so two writes that
+    # straddle a second boundary differ in those bytes alone: write again.
+    for _ in range(3):
+        meshioplusplus.write(a, plain, file_format=fmt)
+        meshioplusplus.write(b, stripped, file_format=fmt)
+        if a.read_bytes() == b.read_bytes():
+            break
 
     assert a.read_bytes() == b.read_bytes()
 
