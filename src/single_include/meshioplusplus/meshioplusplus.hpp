@@ -15247,6 +15247,21 @@ MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& r
                                          bool Binary = false);
 
 /**
+ * @brief Options of the `.fil` writers: ASCII or binary, and for the binary layout its byte
+ *        order and the size of its record markers (4 or 8 bytes). Both orders and both marker
+ *        sizes are read.
+ */
+struct AbaqusFilWriteOptions {
+    bool mBinary = false;
+    bool mBigEndian = false;
+    int mMarkerSize = 4;
+};
+
+/// `write_abaqus_fil` with the binary layout's byte order and marker size.
+MESHIOPLUSPLUS_API void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh,
+                                         const AbaqusFilWriteOptions& rOptions);
+
+/**
  * @brief A results file written step by step: the model with the first step,
  *        then an increment per step.
  *
@@ -15259,6 +15274,9 @@ class MESHIOPLUSPLUS_API AbaqusFilSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit AbaqusFilSeriesWriter(const std::string& rPath, bool Binary = false);
+
+    /// As above, with the binary layout's byte order and marker size.
+    AbaqusFilSeriesWriter(const std::string& rPath, const AbaqusFilWriteOptions& rOptions);
     ~AbaqusFilSeriesWriter();
 
     AbaqusFilSeriesWriter(const AbaqusFilSeriesWriter&) = delete;
@@ -77164,20 +77182,34 @@ void filw_put_le(std::string& rOut, std::uint64_t V, std::size_t N) {
         rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
 }
 
-std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords) {
+void filw_put_be(std::string& rOut, std::uint64_t V, std::size_t N) {
+    for (std::size_t i = N; i-- > 0;)
+        rOut.push_back(static_cast<char>((V >> (8 * i)) & 0xffu));
+}
+
+std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords, bool BigEndian = false,
+                              int MarkerSize = 4) {
+    if (MarkerSize != 4 && MarkerSize != 8)
+        filw_fail("the record marker size must be 4 or 8");
+    const auto put = [BigEndian](std::string& rOut, std::uint64_t V, std::size_t N) {
+        if (BigEndian)
+            filw_put_be(rOut, V, N);
+        else
+            filw_put_le(rOut, V, N);
+    };
     constexpr std::size_t kBlock = 512;
     std::vector<std::string> words;
     for (const FilwRecord& r : rRecords) {
         std::vector<std::string> rec_words;
         std::string w;
-        filw_put_le(w, static_cast<std::uint64_t>(r.size() + 1), 8);
+        put(w, static_cast<std::uint64_t>(r.size() + 1), 8);
         rec_words.push_back(w);
         for (const FilwItem& it : r) {
             std::string x;
             if (it.mTag == 'I') {
-                filw_put_le(x, static_cast<std::uint64_t>(it.mInt), 8);
+                put(x, static_cast<std::uint64_t>(it.mInt), 8);
             } else if (it.mTag == 'D') {
-                filw_put_le(x, std::bit_cast<std::uint64_t>(it.mReal), 8);
+                put(x, std::bit_cast<std::uint64_t>(it.mReal), 8);
             } else {
                 x = it.mText;
             }
@@ -77187,7 +77219,7 @@ std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords) {
             // The last record of an increment pads to the end of its block.
             const std::size_t pad = (kBlock - (words.size() + rec_words.size()) % kBlock) % kBlock;
             std::string len;
-            filw_put_le(len, rec_words.size() + pad, 8);
+            put(len, rec_words.size() + pad, 8);
             rec_words[0] = len;
             for (std::size_t k = 0; k < pad; ++k)
                 rec_words.push_back(std::string(8, '\0'));
@@ -77198,7 +77230,7 @@ std::string filw_binary_bytes(const std::vector<FilwRecord>& rRecords) {
     for (std::size_t k = 0; k < tail; ++k)
         words.push_back(std::string(8, '\0'));
     std::string marker;
-    filw_put_le(marker, 8 * kBlock, 4);
+    put(marker, 8 * kBlock, static_cast<std::size_t>(MarkerSize));
     std::string out;
     for (std::size_t b = 0; b < words.size(); b += kBlock) {
         out += marker;
@@ -77956,8 +77988,11 @@ private:
 
 namespace {
 
-std::string filw_encode(bool Binary, const std::vector<FilwRecord>& rRecords) {
-    return Binary ? filw_binary_bytes(rRecords) : filw_ascii_bytes(rRecords);
+std::string filw_encode(const AbaqusFilWriteOptions& rOptions,
+                        const std::vector<FilwRecord>& rRecords) {
+    return rOptions.mBinary
+               ? filw_binary_bytes(rRecords, rOptions.mBigEndian, rOptions.mMarkerSize)
+               : filw_ascii_bytes(rRecords);
 }
 
 bool filw_has_results(const Mesh& rMesh) {
@@ -78008,6 +78043,13 @@ void filw_save(const std::string& rPath, const std::string& rBytes) {
 }  // namespace
 
 void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh, bool Binary) {
+    AbaqusFilWriteOptions options;
+    options.mBinary = Binary;
+    write_abaqus_fil(rPath, rMesh, options);
+}
+
+void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh,
+                      const AbaqusFilWriteOptions& rOptions) {
     const detail::ProvenanceSlotlessWrite slotless;
     const FilwModel model(rMesh);
     std::vector<FilwIncrement> increments;
@@ -78017,21 +78059,29 @@ void write_abaqus_fil(const std::string& rPath, const Mesh& rMesh, bool Binary) 
     std::vector<FilwRecord> records = model.Records();
     for (const FilwIncrement& inc : increments)
         records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
-    filw_save(rPath, filw_encode(Binary, records));
+    filw_save(rPath, filw_encode(rOptions, records));
 }
 
 struct AbaqusFilSeriesWriter::Impl {
     std::string mPath;
-    bool mBinary = false;
+    AbaqusFilWriteOptions mOptions;
     std::optional<FilwModel> mModel;
     std::vector<FilwIncrement> mIncrements;
     bool mDone = false;
 };
 
 AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(const std::string& rPath, bool Binary)
+    : AbaqusFilSeriesWriter(rPath, [&] {
+          AbaqusFilWriteOptions options;
+          options.mBinary = Binary;
+          return options;
+      }()) {}
+
+AbaqusFilSeriesWriter::AbaqusFilSeriesWriter(const std::string& rPath,
+                                             const AbaqusFilWriteOptions& rOptions)
     : mpImpl(std::make_unique<Impl>()) {
     mpImpl->mPath = rPath;
-    mpImpl->mBinary = Binary;
+    mpImpl->mOptions = rOptions;
     // Fail now, not when the last step is written, if the path cannot be written.
     auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!probe)
@@ -78071,7 +78121,7 @@ void AbaqusFilSeriesWriter::Finalize() {
     std::vector<FilwRecord> records = mpImpl->mModel->Records();
     for (const FilwIncrement& inc : mpImpl->mIncrements)
         records.insert(records.end(), inc.mRecords.begin(), inc.mRecords.end());
-    filw_save(mpImpl->mPath, filw_encode(mpImpl->mBinary, records));
+    filw_save(mpImpl->mPath, filw_encode(mpImpl->mOptions, records));
 }
 
 }  // namespace meshioplusplus

@@ -5632,15 +5632,29 @@ PYBIND11_MODULE(_core, m) {
     // `meshioplusplus.abaqus_fil.SeriesWriter`.
     m.def(
         "abaqus_fil_write",
-        [](const std::string& path, py::object pymesh, bool binary) {
+        [](const std::string& path, py::object pymesh, bool binary, bool big_endian,
+           int marker_size) {
+            meshioplusplus::AbaqusFilWriteOptions options;
+            options.mBinary = binary;
+            options.mBigEndian = big_endian;
+            options.mMarkerSize = marker_size;
             meshioplusplus_py::PyMeshRefs refs;
             core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-                return meshioplusplus::write_abaqus_fil(path, mesh, binary);
+                return meshioplusplus::write_abaqus_fil(path, mesh, options);
             });
         },
-        py::arg("path"), py::arg("mesh"), py::arg("binary") = false);
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = false,
+        py::arg("big_endian") = false, py::arg("marker_size") = 4);
     py::class_<meshioplusplus::AbaqusFilSeriesWriter>(m, "AbaqusFilSeriesWriter")
-        .def(py::init<const std::string&, bool>(), py::arg("path"), py::arg("binary") = false)
+        .def(py::init([](const std::string& path, bool binary, bool big_endian, int marker_size) {
+                 meshioplusplus::AbaqusFilWriteOptions options;
+                 options.mBinary = binary;
+                 options.mBigEndian = big_endian;
+                 options.mMarkerSize = marker_size;
+                 return std::make_unique<meshioplusplus::AbaqusFilSeriesWriter>(path, options);
+             }),
+             py::arg("path"), py::arg("binary") = false, py::arg("big_endian") = false,
+             py::arg("marker_size") = 4)
         .def(
             "write",
             [](meshioplusplus::AbaqusFilSeriesWriter& rSelf, double time, py::object pymesh) {
