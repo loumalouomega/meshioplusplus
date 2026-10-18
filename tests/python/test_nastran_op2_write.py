@@ -1386,16 +1386,64 @@ def test_the_engines_write_the_same_bytes_with_beams(tmp_path):
 
 def test_a_cbeam_needs_its_orientation(engine, tmp_path):
     mesh = _beam_mesh()
-    del mesh.cell_data["nastran:x"]
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
     with pytest.raises(Exception, match="orientation"):
         write_with(engine, tmp_path / "x.op2", mesh)
 
 
-def test_a_cbeam_oriented_by_a_grid_is_refused(engine, tmp_path):
+def _g0_beam_mesh():
+    """The beam mesh with a fourth point, GRID 4, as the G0 of its second CBEAM."""
     mesh = _beam_mesh()
-    mesh.cell_data["nastran:g0"] = [np.array([3, 0])]
-    with pytest.raises(Exception, match="G0"):
-        write_with(engine, tmp_path / "g0.op2", mesh)
+    mesh.points = np.vstack([mesh.points, [0.0, 1.0, 0.0]])
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 4])]
+    return mesh
+
+
+def test_a_cbeam_oriented_by_a_grid_round_trips(engine, tmp_path):
+    path = tmp_path / "cbeam_g0.op2"
+    write_with(engine, path, _g0_beam_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:g0"]), [0, 4]
+        )
+        np.testing.assert_allclose(
+            np.concatenate(back.cell_data["nastran:x"]), [[0, 0, 1], [0, 0, 0]]
+        )
+
+
+def test_the_engines_write_the_same_bytes_with_g0_beams(tmp_path):
+    mesh = _g0_beam_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cbeam_with_only_a_g0_is_written(engine, tmp_path):
+    mesh = _g0_beam_mesh()
+    del mesh.cell_data["nastran:x"]
+    mesh.cell_data["nastran:g0"] = [np.array([4, 4])]
+    write_with(engine, tmp_path / "only.op2", mesh)
+
+
+def test_pynastran_reads_the_g0_cbeams(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cbeam_g0.op2"
+    mesh = _g0_beam_mesh()
+    # pyNastran takes a CBEAM's orientation flag from the low bits of word 10 (PA), not
+    # word 9 where the record holds it, so it reads a G0 only when PA is 2.
+    mesh.cell_data["nastran:pin"] = [np.array([[0, 0], [2, 0]])]
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[40], model.elements[41]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    assert first.g0 is None
+    assert second.g0 == 4 and second.x is None
+    assert second.node_ids == [2, 3] and second.pa == 2
 
 
 def test_a_pbeam_needs_a_segment(engine, tmp_path):
@@ -1894,3 +1942,103 @@ def test_pynastran_reads_the_mat2_and_mat8(tmp_path):
     assert shell.mcsid == 3
     assert model.materials[1].type == "MAT1"
     assert model.properties[1].mid1 == 5
+
+
+# -- CGAP gaps and PGAP properties ------------------------------------------------------------
+
+
+def _gap_mesh(values=True):
+    """Two CGAPs of PGAP 12 between GRIDs 1-2 and 2-3: the first oriented by X = (0, 0, 1),
+    the second by GRID 4 as its G0."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([80, 81])]
+    mesh.cell_data["nastran:pid"] = [np.array([12, 12])]
+    mesh.cell_data["nastran:card"] = [np.array([19, 19])]
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 4])]
+    if values:
+        for member, value in (
+            ("U0", 0.01),
+            ("F0", 2.0),
+            ("KA", 5.0e6),
+            ("KB", 0.5),
+            ("KT", 1.5e3),
+            ("MU1", 0.3),
+            ("MU2", 0.2),
+            ("TMAX", 4.0),
+            ("MAR", 50.0),
+            ("TRMIN", 0.01),
+        ):
+            mesh.field_data[f"nastran:PGAP_12:{member}"] = np.array([value])
+    return mesh
+
+
+def test_cgaps_and_their_pgaps_round_trip(engine, tmp_path):
+    path = tmp_path / "cgap.op2"
+    write_with(engine, path, _gap_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.cells[0].type == "line"
+        np.testing.assert_array_equal(back.cells[0].data, [[0, 1], [1, 2]])
+        np.testing.assert_array_equal(back.cell_data["nastran:eid"][0], [80, 81])
+        np.testing.assert_array_equal(back.cell_data["nastran:pid"][0], [12, 12])
+        np.testing.assert_array_equal(back.cell_data["nastran:card"][0], [19, 19])
+        np.testing.assert_array_equal(back.cell_data["nastran:g0"][0], [0, 4])
+        np.testing.assert_allclose(
+            back.cell_data["nastran:x"][0], [[0, 0, 1], [0, 0, 0]]
+        )
+        assert [r.name for r in back.regions] == ["PGAP_12"]
+        for member, value in (("U0", 0.01), ("KA", 5.0e6), ("MU1", 0.3), ("MAR", 50.0)):
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:PGAP_12:{member}"], [value], rtol=1e-6
+            )
+
+
+def test_a_pgap_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _gap_mesh(values=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_allclose(back.field_data["nastran:PGAP_12:KA"], [1.0e8])
+        np.testing.assert_allclose(back.field_data["nastran:PGAP_12:MAR"], [100.0])
+
+
+@pytest.mark.parametrize("values", [True, False])
+def test_the_engines_write_the_same_bytes_with_gaps(tmp_path, values):
+    mesh = _gap_mesh(values)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cgap_needs_its_orientation(engine, tmp_path):
+    mesh = _gap_mesh()
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
+    with pytest.raises(Exception, match="orientation"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_pynastran_reads_the_cgaps_and_pgaps(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cgap.op2"
+    _core.nastran_op2_write(str(path), _gap_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[80], model.elements[81]
+    assert first.type == second.type == "CGAP" and first.pid == 12
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    assert first.g0 is None and second.g0 == 4
+    prop = model.properties[12]
+    assert prop.type == "PGAP"
+    assert (prop.u0, prop.f0, prop.ka, prop.kb, prop.kt) == pytest.approx(
+        (0.01, 2.0, 5.0e6, 0.5, 1.5e3), rel=1e-6
+    )
+    assert (prop.mu1, prop.mu2, prop.tmax, prop.mar, prop.trmin) == pytest.approx(
+        (0.3, 0.2, 4.0, 50.0, 0.01), rel=1e-6
+    )

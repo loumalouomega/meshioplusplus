@@ -56,6 +56,7 @@ constexpr NastranCardSpec kNmCards[] = {
     {"CDAMP2", "vertex", 1, "line", 2, nullptr},
     {"CELAS1", "vertex", 1, "line", 2, nullptr},
     {"CELAS2", "vertex", 1, "line", 2, nullptr},
+    {"CGAP", "line", 2, nullptr, 0, nullptr},
     {"CHEXA", "hexahedron", 8, "hexahedron20", 20, kNmHexa20},
     {"CONM2", "vertex", 1, nullptr, 0, nullptr},
     {"CONROD", "line", 2, nullptr, 0, nullptr},
@@ -92,11 +93,12 @@ NDArray nm_double_array(const std::vector<double>& rV) {
 // the Python twin). Zero for a card it does not name.
 std::int64_t nm_card_type(const std::string& rCard) {
     static const std::pair<const char*, std::int64_t> kTypes[] = {
-        {"CBAR", 24},   {"CBEAM", 54},   {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
-        {"CELAS1", 6},  {"CELAS2", 7},   {"CHEXA", 73},  {"CONM2", 15},  {"CONROD", 16},
-        {"CPENTA", 41}, {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47},
-        {"CQUADR", 80}, {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59},
-        {"CTRIA6", 48}, {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
+        {"CBAR", 24},   {"CBEAM", 54},  {"CBUSH", 26},   {"CDAMP1", 2},  {"CDAMP2", 3},
+        {"CELAS1", 6},  {"CELAS2", 7},  {"CGAP", 19},    {"CHEXA", 73},  {"CONM2", 15},
+        {"CONROD", 16}, {"CPENTA", 41}, {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51},
+        {"CQUAD8", 47}, {"CQUADR", 80}, {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55},
+        {"CTRIA3", 59}, {"CTRIA6", 48}, {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},
+        {"PLOTEL", 52},
     };
     for (const auto& [name, number] : kTypes)
         if (rCard == name)
@@ -270,7 +272,8 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
         for (const NmBlock& b : blocks) {
             const std::size_t n = b.mEid.size();
             // A block holds one card, so each card's fields are zero in every other block.
-            const bool bar = b.mCard == "CBAR" || b.mCard == "CBEAM" || b.mCard == "CBUSH";
+            const bool bar =
+                b.mCard == "CBAR" || b.mCard == "CBEAM" || b.mCard == "CBUSH" || b.mCard == "CGAP";
             const bool spring = b.mCard == "CELAS2";
             const bool damper = b.mCard == "CDAMP2";
             std::vector<std::int64_t> card(n, nm_card_type(b.mCard));

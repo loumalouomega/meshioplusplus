@@ -194,6 +194,7 @@ _ELEMENTS = {
     (9200, 92): ("CTRIAR", (13, 14), 2, 3, 1),
     (3701, 37): ("CTUBE", (4,), 2, 2, 1),
     (3901, 39): ("CVISC", (4,), 2, 2, 1),
+    (1908, 19): ("CGAP", (9,), 2, 2, 1),
     (5201, 52): ("PLOTEL", (3,), 1, 2, None),
     # NX 2019 and later write CQUAD4/CTRIA3 as these (pyNastran's CQUADRN/CTRIARN)
     (15401, 154): ("CQUAD4", (14, 15), 2, 4, 1),
@@ -211,7 +212,6 @@ _NAMED_ELEMENT_KEYS = {
     (1201, 12): "CMASS3",
     (1301, 13): "CMASS4",
     (1401, 14): "CONM1",
-    (1908, 19): "CGAP",
     (5608, 56): "CBUSH1D",
     (6108, 61): "CTRIAX6",
     (9008, 90): "CQUADX",
@@ -530,6 +530,8 @@ def _read_elements(s, tables, grids):
             entry[4].append(_beam_payload(s, raw, rows))
         elif card == "CBUSH":
             entry[4].append(_bush_payload(s, raw, rows))
+        elif card == "CGAP":
+            entry[4].append(_gap_payload(s, raw, rows))
         elif card in ("CELAS2", "CDAMP2"):
             # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 at word 1.
             floats = _floats(s, raw)[3:].reshape(rows.shape)
@@ -591,23 +593,39 @@ def _bush_payload(s, raw, rows):
     return out
 
 
+def _gap_payload(s, raw, rows):
+    """The CGAP fields of each row of a CGAP record as float64 ``(n, 12)``, in the CBAR
+    layout: the orientation vector X1..X3 at words 4 to 6 when the flag at word 7 is 1, and
+    the G0 at word 4 when it is 2 (its vector then zeros). The coordinate system at word 8
+    is not read."""
+    floats = _floats(s, raw)[3:].reshape(rows.shape)
+    flag = rows[:, 7]
+    out = np.zeros((len(rows), 12))
+    out[:, 0:3] = np.where((flag != 2)[:, None], floats[:, 4:7], 0.0)
+    out[:, 3] = np.where(flag == 2, rows[:, 4], 0)
+    return out
+
+
 def _beam_payload(s, raw, rows):
     """The CBEAM fields of each row of a CBEAM record as float64 ``(n, 12)``, in the CBAR
-    layout: the orientation vector X1..X3 at words 6 to 8, the flag at word 9 (its low two
-    bits: 0 and 1 are vectors in basic and global coordinates), the pins PA and PB at 10
-    and 11, and the end offsets W1A..W3A and W1B..W3B at 12 to 17. A beam oriented by a
-    grid or a local system has no X vector here, so its X is read as zeros."""
+    layout: the orientation vector X1..X3 at words 6 to 8, or the G0 at word 6 (the flag at
+    word 9, its low two bits: 0 and 1 are vectors in basic and global coordinates, 2 a G0),
+    the pins PA and PB at 10 and 11, and the end offsets W1A..W3A and W1B..W3B at 12 to 17.
+    A beam oriented by a local system has no X vector here, so its X is read as zeros.
+    """
     floats = _floats(s, raw)[3:].reshape(rows.shape)
-    vector = (rows[:, 9] & 3) <= 1
-    if not vector.all():
+    low = rows[:, 9] & 3
+    vector = low <= 1
+    g0 = low == 2
+    if (low == 3).any():
         warn(
-            f"{WHO}: {int(np.count_nonzero(~vector))} CBEAM element(s) are oriented by a grid "
-            "or a local system; their X vector is read as zeros"
+            f"{WHO}: {int(np.count_nonzero(low == 3))} CBEAM element(s) are oriented by a "
+            "local system; their X vector is read as zeros"
         )
     return np.column_stack(
         [
             np.where(vector[:, None], floats[:, 6:9], 0.0),
-            np.zeros(len(rows)),
+            np.where(g0, rows[:, 6], 0).astype(np.float64),
             rows[:, 10:12].astype(np.float64),
             floats[:, 12:18],
         ]
@@ -698,7 +716,7 @@ def _read_properties(s, tables):
 
 def _read_property_values(s, tables):
     """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID,
-    PELAS, PDAMP, PVISC, PSHEAR, MAT1, MAT2 and MAT8 records (the members
+    PELAS, PDAMP, PVISC, PGAP, PSHEAR, MAT1, MAT2 and MAT8 records (the members
     ``nastran_op2._write.PROPERTY_VALUES``
     lists)."""
     from ._write import PROPERTY_VALUES, is_int_member
@@ -733,6 +751,7 @@ def _read_property_values(s, tables):
             "PELAS",
             "PDAMP",
             "PVISC",
+            "PGAP",
             "PSHEAR",
         ):
             take(spec[0], raw, spec[1])

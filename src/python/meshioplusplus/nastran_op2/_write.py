@@ -46,6 +46,7 @@ _CARDS = {
     "CBUSH": ((2608, 26, 60), 14, 2, 2, None),
     "CDAMP2": ((301, 3, 70), 6, 2, 2, None),
     "CELAS2": ((701, 7, 74), 8, 2, 2, None),
+    "CGAP": ((1908, 19, 104), 9, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
     "CELAS1": ((601, 6, 73), 6, 2, 2, None),
     "CONM2": ((1501, 15, 64), 13, 1, 1, None),
@@ -125,6 +126,7 @@ _BEAM_POINT_MEMBERS = ("C1", "C2", "D1", "D2")
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
 _PVISC = ((1802, 18, 31), 3)
+_PGAP = ((2102, 21, 121), 11)
 _PSHEAR = ((1002, 10, 42), 6)
 _PCOMP = ((2706, 27, 287), 8)
 
@@ -145,6 +147,7 @@ _LINE_CARDS = {
     7: "CELAS2",
     39: "CVISC",
     52: "PLOTEL",
+    19: "CGAP",
 }
 _BLOCK_CARDS = {
     "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
@@ -161,6 +164,7 @@ _BLOCK_CARDS = {
         "CDAMP2",
         "CVISC",
         "PLOTEL",
+        "CGAP",
     ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
@@ -204,6 +208,18 @@ PROPERTY_VALUES = {
     "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
     "PDAMP": {"B": (1, 1.0)},
     "PVISC": {"CE": (1, 1.0), "CR": (2, 0.0)},
+    "PGAP": {
+        "U0": (1, 0.0),
+        "F0": (2, 0.0),
+        "KA": (3, 1.0e8),
+        "KB": (4, 1.0e-6),
+        "KT": (5, 0.0),
+        "MU1": (6, 0.0),
+        "MU2": (7, 0.0),
+        "TMAX": (8, 0.0),
+        "MAR": (9, 100.0),
+        "TRMIN": (10, 0.001),
+    },
     "PSHEAR": {
         "MID": (1, 1),
         "T": (2, 1.0),
@@ -597,7 +613,7 @@ def _bar_matrix(raw, cards):
     takes only its own card's."""
     n = len(cards)
     out = np.zeros((n, 12))
-    oriented = np.isin(cards, ["CBAR", "CBEAM", "CBUSH"])
+    oriented = np.isin(cards, ["CBAR", "CBEAM", "CBUSH", "CGAP"])
     if oriented.any():
         for key, lo, hi in (("x", 0, 3), ("g0", 3, 4)):
             if raw[key] is not None:
@@ -830,19 +846,19 @@ class _Model:
                 if np.any(cards == card) and key not in mesh.cell_data:
                     _wfail(f"a {card} needs its value: {key}")
             if np.any(cards == "CBEAM"):
-                if raw_bar["x"] is None:
-                    _wfail("a CBEAM needs its orientation: nastran:x")
-                g0 = raw_bar["g0"]
-                if g0 is not None and np.any((cards == "CBEAM") & (g0[:, 0] != 0)):
-                    _wfail("a CBEAM oriented by a G0 is not written yet")
-            if (
-                np.any(cards == "CBUSH")
-                and raw_bar["x"] is None
-                and raw_bar["g0"] is None
-            ):
-                _wfail(
-                    "a CBUSH needs its orientation: nastran:x, or nastran:g0 for a G0"
-                )
+                if raw_bar["x"] is None and raw_bar["g0"] is None:
+                    _wfail(
+                        "a CBEAM needs its orientation: nastran:x, or nastran:g0 for a G0"
+                    )
+            for card in ("CBUSH", "CGAP"):
+                if (
+                    np.any(cards == card)
+                    and raw_bar["x"] is None
+                    and raw_bar["g0"] is None
+                ):
+                    _wfail(
+                        f"a {card} needs its orientation: nastran:x, or nastran:g0 for a G0"
+                    )
             self.blocks.append(
                 {
                     "index": b,
@@ -900,6 +916,7 @@ class _Model:
             "PELAS": set(),
             "PDAMP": set(),
             "PVISC": set(),
+            "PGAP": set(),
             "PSHEAR": set(),
             "PCOMP": set(),
         }
@@ -922,6 +939,7 @@ class _Model:
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
                 ("CVISC", "PVISC"),
+                ("CGAP", "PGAP"),
                 ("CSHEAR", "PSHEAR"),
             ):
                 rows = blk["cards"] == name
@@ -1010,6 +1028,17 @@ class _Model:
             words[:, 0] = _i32(eid)
             if name == "CONM2":
                 words[:, 1] = _i32(nodes[:, 0])
+            elif name == "CGAP":
+                # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7 (1 for a
+                # vector); the coordinate system CID (8) stays 0.
+                g0 = bar[:, 3].astype(np.int64)
+                flag = np.where(g0 != 0, 2, 1)
+                words[:, 1] = _i32(pid)
+                words[:, 2:4] = _i32(nodes)
+                words[:, 4:7] = _f32(bar[:, 0:3])
+                words[flag == 2, 4] = _i32(g0[flag == 2])
+                words[flag == 2, 5:7] = 0
+                words[:, 7] = _i32(flag)
             elif name == "PLOTEL":
                 words[:, 1] = _i32(nodes[:, 0])  # no property: the nodes at 1 and 2
                 words[:, 2] = _i32(nodes[:, 1])
@@ -1052,10 +1081,15 @@ class _Model:
                     words[:, 9] = _f32(np.full(len(eid), 0.5))
                     words[:, 10] = _i32(np.full(len(eid), -1, dtype=np.int64))
                 if name == "CBEAM":
-                    # X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
-                    # 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
+                    # X1..X3 at 6 to 8 (flag 1: global) or the G0 at 6 with zero 7 and 8
+                    # (flag 2), the flag at 9, PA and PB at 10 and 11, the offsets at 12
+                    # to 17; the scalar ends SA and SB stay zero.
+                    g0 = bar[:, 3].astype(np.int64)
+                    flag = np.where(g0 != 0, 2, 1)
                     words[:, 6:9] = _f32(bar[:, 0:3])
-                    words[:, 9] = _i32(np.ones(len(eid), dtype=np.int64))
+                    words[flag == 2, 6] = _i32(g0[flag == 2])
+                    words[flag == 2, 7:9] = 0
+                    words[:, 9] = _i32(flag)
                     words[:, 10:12] = _i32(bar[:, 4:6].astype(np.int64))
                     words[:, 12:18] = _f32(bar[:, 6:12])
             records.append(_key(*key) + _bytes(words))
@@ -1073,6 +1107,7 @@ class _Model:
             ("PELAS", _PELAS),
             ("PDAMP", _PDAMP),
             ("PVISC", _PVISC),
+            ("PGAP", _PGAP),
             ("PSHEAR", _PSHEAR),
         ):
             pids = sorted(self.properties[ptype])
