@@ -917,7 +917,8 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     engine, tmp_path, capfd
 ):
     mesh = _spring_mesh()
-    mesh.cells.append(meshioplusplus.CellBlock("quad", np.array([[0, 1, 2, 3]])))
+    # A CSHEAR is a quad: on a triangle its number names a card that is left out.
+    mesh.cells.append(meshioplusplus.CellBlock("triangle", np.array([[0, 1, 2]])))
     mesh.cell_data["nastran:eid"].append(np.array([60]))
     mesh.cell_data["nastran:pid"].append(np.array([8]))
     mesh.cell_data["nastran:card"].append(np.array([31]))  # CSHEAR
@@ -1656,3 +1657,100 @@ def test_pynastran_reads_the_plotels(tmp_path):
     assert sorted(model.plotels) == [70, 71]
     assert model.plotels[70].node_ids == [1, 2]
     assert model.plotels[71].node_ids == [2, 3]
+
+
+# -- CSHEAR shear panels and PSHEAR properties -----------------------------------------------
+
+
+def _shear_mesh(values=True):
+    """A CQUAD4 (PSHELL 1) and a CSHEAR (PSHEAR 4) in one quad block, GRIDs 1 to 6."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        + [[2.0, 0.0, 0.0], [2.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points, [("quad", np.array([[0, 1, 2, 3], [1, 4, 5, 2]]))]
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([80, 81])]
+    mesh.cell_data["nastran:pid"] = [np.array([1, 4])]
+    mesh.cell_data["nastran:card"] = [np.array([51, 31])]
+    if values:
+        mesh.field_data["nastran:PSHEAR_4:MID"] = np.array([3], dtype=np.int64)
+        mesh.field_data["nastran:PSHEAR_4:T"] = np.array([0.25])
+        mesh.field_data["nastran:PSHEAR_4:NSM"] = np.array([0.5])
+        mesh.field_data["nastran:PSHEAR_4:F1"] = np.array([0.75])
+        mesh.field_data["nastran:PSHEAR_4:F2"] = np.array([1.5])
+    return mesh
+
+
+def _by_eid(mesh):
+    """``{eid: (nodes, pid, card)}`` of a mesh read from an OP2."""
+    out = {}
+    for block, eids, pids, cards in zip(
+        mesh.cells,
+        mesh.cell_data["nastran:eid"],
+        mesh.cell_data["nastran:pid"],
+        mesh.cell_data["nastran:card"],
+    ):
+        for row, eid in enumerate(eids):
+            out[int(eid)] = (block.data[row].tolist(), int(pids[row]), int(cards[row]))
+    return out
+
+
+def test_cshears_and_pshears_round_trip(engine, tmp_path):
+    path = tmp_path / "shear.op2"
+    write_with(engine, path, _shear_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert _by_eid(back) == {
+            80: ([0, 1, 2, 3], 1, 51),
+            81: ([1, 4, 5, 2], 4, 31),
+        }
+        assert back.field_data["nastran:PSHEAR_4:MID"][0] == 3
+        for member, value in (("T", 0.25), ("NSM", 0.5), ("F1", 0.75), ("F2", 1.5)):
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:PSHEAR_4:{member}"], [value]
+            )
+        # the PSHEAR's material is written as a MAT1
+        assert "nastran:MAT1_3:E" in back.field_data
+
+
+def test_a_pshear_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _shear_mesh(values=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.field_data["nastran:PSHEAR_4:MID"][0] == 1
+        np.testing.assert_allclose(back.field_data["nastran:PSHEAR_4:T"], [1.0])
+        np.testing.assert_allclose(back.field_data["nastran:PSHEAR_4:F1"], [0.0])
+
+
+@pytest.mark.parametrize("values", [True, False])
+def test_the_engines_write_the_same_bytes_with_shear_panels(tmp_path, values):
+    mesh = _shear_mesh(values)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_pshear_cannot_share_an_id_with_a_pshell(engine, tmp_path):
+    mesh = _shear_mesh()
+    mesh.cell_data["nastran:pid"] = [np.array([4, 4])]
+    with pytest.raises(Exception, match="PSHELL and PSHEAR|PSHEAR and PSHELL"):
+        write_with(engine, tmp_path / "shared.op2", mesh)
+
+
+def test_pynastran_reads_the_cshears_and_pshears(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_shear.op2"
+    _core.nastran_op2_write(str(path), _shear_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    assert model.elements[80].type == "CQUAD4"
+    shear = model.elements[81]
+    assert shear.type == "CSHEAR" and shear.pid == 4
+    assert shear.node_ids == [2, 5, 6, 3]
+    prop = model.properties[4]
+    assert prop.type == "PSHEAR" and prop.mid == 3
+    assert (prop.t, prop.nsm, prop.f1, prop.f2) == pytest.approx((0.25, 0.5, 0.75, 1.5))

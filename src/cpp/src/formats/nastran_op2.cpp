@@ -816,6 +816,12 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
         {"PELAS", {{"K", 1, 1.0, false}, {"GE", 2, 0.0, false}, {"S", 3, 0.0, false}}},
         {"PDAMP", {{"B", 1, 1.0, false}}},
         {"PVISC", {{"CE", 1, 1.0, false}, {"CR", 2, 0.0, false}}},
+        {"PSHEAR",
+         {{"MID", 1, 1, true},
+          {"T", 2, 1.0, false},
+          {"NSM", 3, 0.0, false},
+          {"F1", 4, 0.0, false},
+          {"F2", 5, 0.0, false}}},
         {"MAT1",
          {{"E", 1, 1.0, false},
           {"G", 2, 0.0, false},
@@ -826,6 +832,14 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
           {"GE", 7, 0.0, false}}},
     };
     return cards;
+}
+
+/// The members of the value card named @p pCard.
+const Op2wValueCard& op2w_value_card(const char* pCard) {
+    for (const Op2wValueCard& c : op2w_value_cards())
+        if (std::string_view(c.mCard) == pCard)
+            return c;
+    throw std::logic_error(std::string("no value card ") + pCard);
 }
 
 /// `nastran:<CARD>_<id>:<MEMBER>` field data of the PSHELL, PROD, PTUBE, PSOLID and MAT1
@@ -1024,7 +1038,8 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
             if (p.mK1 == r.mK1 && p.mK2 == r.mK2) {
                 const std::string card = p.mCard;
                 if (card == "PSHELL" || card == "PROD" || card == "PTUBE" || card == "PSOLID" ||
-                    card == "PBAR" || card == "PELAS" || card == "PDAMP" || card == "PVISC")
+                    card == "PBAR" || card == "PELAS" || card == "PDAMP" || card == "PVISC" ||
+                    card == "PSHEAR")
                     take(card, r.mRaw, static_cast<std::size_t>(p.mSizes[0]));
                 break;
             }
@@ -2614,8 +2629,12 @@ enum Op2wProp {
     kOp2wPcomp,
     kOp2wPbeam,
     kOp2wPbush,
-    kOp2wPvisc
+    kOp2wPvisc,
+    kOp2wPshear
 };
+// The property cards' names, in the order of `Op2wProp`.
+constexpr const char* kOp2wPropNames[] = {"PROD", "PSHELL", "PSOLID", "PTUBE", "PELAS", "PDAMP",
+                                          "PBAR", "PCOMP",  "PBEAM",  "PBUSH", "PVISC", "PSHEAR"};
 enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
 constexpr int kOp2wHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
@@ -2651,6 +2670,7 @@ constexpr Op2wCard kOp2wCards[] = {
     {"CQUAD4", 2958, 51, 177, 14, 4, 2, nullptr, kOp2wPshell, 0},
     {"CQUAD8", 4701, 47, 326, 17, 4, 2, nullptr, kOp2wPshell, 0},
     {"CROD", 3001, 30, 48, 4, 2, 2, nullptr, kOp2wProd, 0},
+    {"CSHEAR", 3101, 31, 61, 6, 4, 2, nullptr, kOp2wPshear, 0},
     {"CTETRA", 5508, 55, 217, 12, 4, 2, nullptr, kOp2wPsolid, 4},
     {"CTRIA3", 5959, 59, 282, 13, 3, 2, nullptr, kOp2wPshell, 0},
     {"CTRIA6", 4801, 48, 327, 14, 3, 2, nullptr, kOp2wPshell, 0},
@@ -3264,9 +3284,14 @@ public:
                     } else {
                         blk.mCards[i] = op2w_card_index(name);
                     }
-                } else if (have_card && codes[i] == 31) {  // CSHEAR: no card here yet
-                    keep[i] = false;
-                    mUnwritten.insert("CSHEAR");
+                } else if (have_card && codes[i] == 31) {
+                    // A quad is a CSHEAR; no other cell type holds one.
+                    if (cb.Type() == "quad") {
+                        blk.mCards[i] = op2w_card_index("CSHEAR");
+                    } else {
+                        keep[i] = false;
+                        mUnwritten.insert("CSHEAR");
+                    }
                 } else if (spec->mCard != nullptr) {
                     blk.mCards[i] = op2w_card_index(spec->mCard);
                 } else {
@@ -3398,8 +3423,7 @@ public:
                 if (prop != kOp2wNoProp)
                     mProps[prop].insert(blk.mPids[r]);
             }
-        static const char* const names[] = {"PROD", "PSHELL", "PSOLID", "PTUBE", "PELAS", "PDAMP",
-                                            "PBAR", "PCOMP",  "PBEAM",  "PBUSH", "PVISC"};
+        const char* const* const names = kOp2wPropNames;
         // A shell whose property has plies is a PCOMP, not a PSHELL.
         for (auto it = mProps[kOp2wPshell].begin(); it != mProps[kOp2wPshell].end();) {
             if (mPlies.count(*it) != 0) {
@@ -3412,7 +3436,7 @@ public:
         std::map<std::int64_t, int> used;
         for (const int prop :
              {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPelas, kOp2wPdamp,
-              kOp2wPcomp, kOp2wPbeam, kOp2wPbush, kOp2wPvisc})
+              kOp2wPcomp, kOp2wPbeam, kOp2wPbush, kOp2wPvisc, kOp2wPshear})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -3600,7 +3624,8 @@ public:
             {kOp2wProd, "PROD", 902, 9, 29, 6},        {kOp2wPshell, "PSHELL", 2302, 23, 283, 11},
             {kOp2wPsolid, "PSOLID", 2402, 24, 281, 7}, {kOp2wPtube, "PTUBE", 1602, 16, 30, 5},
             {kOp2wPbar, "PBAR", 52, 20, 181, 19},      {kOp2wPelas, "PELAS", 302, 3, 46, 4},
-            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},      {kOp2wPvisc, "PVISC", 1802, 18, 31, 3}};
+            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},      {kOp2wPvisc, "PVISC", 1802, 18, 31, 3},
+            {kOp2wPshear, "PSHEAR", 1002, 10, 42, 6}};
         std::vector<std::string> records;
         for (const Prop& p : props) {
             if (mProps[p.mProp].empty())
@@ -3687,12 +3712,11 @@ public:
             if (mProps[kOp2wPcomp].count(pid) != 0)
                 for (const std::array<double, 4>& ply : plies)
                     ids.insert(static_cast<std::int64_t>(ply[0]));
-        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar}) {
-            static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE",
-                                                "PELAS", "PDAMP",  "PBAR"};
+        for (const int prop :
+             {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPshear}) {
             for (const std::int64_t pid : mProps[prop]) {
                 std::int64_t mid = 1;
-                const auto given = mValues.find({names[prop], pid});
+                const auto given = mValues.find({kOp2wPropNames[prop], pid});
                 if (given != mValues.end()) {
                     const auto it = given->second.find(prop == kOp2wPshell ? "MID1" : "MID");
                     if (it != given->second.end())
@@ -3713,7 +3737,7 @@ public:
             Op2wRowBuf w(12);
             w.I(0, mid);
             const auto given = mValues.find({"MAT1", mid});
-            for (const Op2wValueMember& m : op2w_value_cards().back().mMembers) {
+            for (const Op2wValueMember& m : op2w_value_card("MAT1").mMembers) {
                 double v = m.mDefault;
                 if (given != mValues.end()) {
                     const auto it = given->second.find(m.mName);
@@ -3737,7 +3761,7 @@ private:
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
-    std::set<std::int64_t> mProps[11];
+    std::set<std::int64_t> mProps[12];
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;

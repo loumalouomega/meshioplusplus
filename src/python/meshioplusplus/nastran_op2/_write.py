@@ -57,6 +57,7 @@ _CARDS = {
     "CQUAD4": ((2958, 51, 177), 14, 4, 2, None),
     "CQUAD8": ((4701, 47, 326), 17, 4, 2, None),
     "CROD": ((3001, 30, 48), 4, 2, 2, None),
+    "CSHEAR": ((3101, 31, 61), 6, 4, 2, None),
     "CTETRA": ((5508, 55, 217), 12, 4, 2, None),
     "CTRIA3": ((5959, 59, 282), 13, 3, 2, None),
     "CTRIA6": ((4801, 48, 327), 14, 3, 2, None),
@@ -124,11 +125,12 @@ _BEAM_POINT_MEMBERS = ("C1", "C2", "D1", "D2")
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
 _PVISC = ((1802, 18, 31), 3)
+_PSHEAR = ((1002, 10, 42), 6)
 _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
-# write yet (CSHEAR): their rows are left out rather than written as another card.
+# write yet: their rows are left out rather than written as another card.
 _LINE_CARDS = {
     30: "CROD",
     16: "CONROD",
@@ -162,8 +164,8 @@ _BLOCK_CARDS = {
     ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
-# A cell of another type whose card this writer leaves out: CSHEAR is a quad.
-_UNWRITTEN_CELLS = {31: "CSHEAR"}
+# The element type number of a CSHEAR, which only a quad holds.
+_CSHEAR = 31
 
 # The property and material values the field data can set, as
 # ``field_data["nastran:<CARD>_<id>:<MEMBER>"]``: card -> {member: (word, default)}.
@@ -202,6 +204,13 @@ PROPERTY_VALUES = {
     "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
     "PDAMP": {"B": (1, 1.0)},
     "PVISC": {"CE": (1, 1.0), "CR": (2, 0.0)},
+    "PSHEAR": {
+        "MID": (1, 1),
+        "T": (2, 1.0),
+        "NSM": (3, 0.0),
+        "F1": (4, 0.0),
+        "F2": (5, 0.0),
+    },
     # The header words of a PCOMP (its layer count is negative for a symmetric layup,
     # ``SYM``), and ``PLY``: the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT.
     "PCOMP": {
@@ -260,7 +269,14 @@ def material_ids(properties, values, beams=None):
     """The MAT1 ids: those the properties name (MID default 1) and those given. A PBEAM's
     MID is in the beams' field data (``{pid: {member: array}}``), not in the values."""
     ids = set()
-    for ptype in ("PSHELL", "PSOLID", "PROD", "PTUBE", "PBAR"):  # with a material
+    for ptype in (
+        "PSHELL",
+        "PSOLID",
+        "PROD",
+        "PTUBE",
+        "PBAR",
+        "PSHEAR",
+    ):  # with a material
         for pid in properties.get(ptype, ()):
             given = values.get((ptype, pid), {})
             ids.add(given.get("MID", given.get("MID1", 1)))
@@ -554,9 +570,11 @@ def _written(codes, ctype, card):
                 _wfail(f"a '{ctype}' block cannot hold {name} cards")
             else:
                 cards[i] = name
-        elif code in _UNWRITTEN_CELLS:
+        elif code == _CSHEAR and ctype == "quad":
+            cards[i] = "CSHEAR"
+        elif code == _CSHEAR:
             keep[i] = False
-            left.add(_UNWRITTEN_CELLS[code])
+            left.add("CSHEAR")
         else:
             cards[i] = card
     return cards, keep, left
@@ -816,6 +834,7 @@ class _Model:
             "PELAS": set(),
             "PDAMP": set(),
             "PVISC": set(),
+            "PSHEAR": set(),
             "PCOMP": set(),
         }
         for blk in self.blocks:
@@ -837,6 +856,7 @@ class _Model:
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
                 ("CVISC", "PVISC"),
+                ("CSHEAR", "PSHEAR"),
             ):
                 rows = blk["cards"] == name
                 if rows.any():
@@ -986,6 +1006,7 @@ class _Model:
             ("PELAS", _PELAS),
             ("PDAMP", _PDAMP),
             ("PVISC", _PVISC),
+            ("PSHEAR", _PSHEAR),
         ):
             pids = sorted(self.properties[ptype])
             if not pids:
