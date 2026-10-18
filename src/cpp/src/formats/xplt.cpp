@@ -56,6 +56,10 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/typed_view.hpp"
 
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
+
 namespace meshioplusplus {
 
 namespace {
@@ -1325,9 +1329,48 @@ struct XwGroupInfo {
     const char* mName;
     std::uint32_t mDictTag, mStateTag, mFormat;
 };
-constexpr XwGroupInfo kXwGroups[3] = {{"global", 0x01021000, 0x02020100, 3},
-                                      {"node", 0x01023000, 0x02020300, 0},
-                                      {"domain", 0x01024000, 0x02020400, 1}};
+constexpr std::size_t kXwNumGroups = 5;
+constexpr XwGroupInfo kXwGroups[kXwNumGroups] = {{"global", 0x01021000, 0x02020100, 3},
+                                                 {"node", 0x01023000, 0x02020300, 0},
+                                                 {"domain", 0x01024000, 0x02020400, 1},
+                                                 {"surface", 0x01025000, 0x02020500, 1},
+                                                 {"edge", 0x01026000, 0x02020600, 1}};
+constexpr int kXwDeflateLevel = 6;  // zlib's default; the Python twin deflates at the same level
+
+/// One state as the file stores it: with compression, its own zlib stream.
+std::string xw_pack(const std::string& rState, bool Compress) {
+    if (!Compress)
+        return rState;
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    uLongf size = compressBound(static_cast<uLong>(rState.size()));
+    std::string out(size, '\0');
+    if (compress2(reinterpret_cast<Bytef*>(&out[0]), &size,
+                  reinterpret_cast<const Bytef*>(rState.data()),
+                  static_cast<uLong>(rState.size()), kXwDeflateLevel) != Z_OK)
+        throw WriteError("FEBio .xplt: zlib failed to compress a state");
+    out.resize(size);
+    return out;
+#else
+    throw Unsupported("FEBio .xplt: this build has no zlib (MESHIOPLUSPLUS_WITH_ZLIB) to compress");
+#endif
+}
+
+/// Whether any of the cell blocks @p rBlocks holds a finite (or non-float) value of @p rName.
+bool xw_has_values(const Mesh& rMesh, const std::string& rName,
+                   const std::vector<std::size_t>& rBlocks) {
+    for (const std::size_t b : rBlocks) {
+        const NDArray& a = rMesh.CellData(rName, b);
+        if (a.Size() == 0)
+            continue;
+        if (a.Dtype() != DType::Float32 && a.Dtype() != DType::Float64)
+            return true;
+        const detail::DoubleView view(a);
+        for (std::size_t i = 0; i < a.Size(); ++i)
+            if (std::isfinite(view.Data()[i]))
+                return true;
+    }
+    return false;
+}
 
 int xw_element_type(const std::string& rType) {
     static const std::map<std::string, int> kMap = {
@@ -1346,9 +1389,11 @@ std::vector<double> xw_values(const NDArray& rArray) {
 }
 
 /// Values per entry of an array of `Rows` entries, or 0 when it cannot be written.
-std::size_t xw_width(const NDArray& rArray, std::size_t Rows, const std::string& rWhat) {
+std::size_t xw_width(const NDArray& rArray, std::size_t Rows, const std::string& rWhat,
+                     bool Loud = true) {
     if (rArray.Shape().size() > 2) {
-        log::warn("FEBio .xplt: {} is not written", rWhat);
+        if (Loud)
+            log::warn("FEBio .xplt: {} is not written", rWhat);
         return 0;
     }
     if (Rows == 0) {
@@ -1357,7 +1402,8 @@ std::size_t xw_width(const NDArray& rArray, std::size_t Rows, const std::string&
         return 1;
     }
     if (rArray.Size() % Rows != 0) {
-        log::warn("FEBio .xplt: {} is not written", rWhat);
+        if (Loud)
+            log::warn("FEBio .xplt: {} is not written", rWhat);
         return 0;
     }
     return rArray.Size() / Rows;
@@ -1365,7 +1411,9 @@ std::size_t xw_width(const NDArray& rArray, std::size_t Rows, const std::string&
 
 class XwModel {
 public:
-    explicit XwModel(const Mesh& rMesh) {
+    bool Compress() const { return mCompress; }
+
+    explicit XwModel(const Mesh& rMesh, bool Compress = false) : mCompress(Compress) {
         mN = rMesh.NumPoints();
         mPoints.assign(mN * 3, 0.0);
         {
@@ -1434,8 +1482,8 @@ public:
             log::warn("FEBio .xplt: {} '{}' cell(s) are not written", count, type);
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
             mRegions.push_back(i);
-        Carriers(rMesh, surface_blocks, "Surface", mSurfaces);
-        Carriers(rMesh, edge_blocks, "Edge", mEdges);
+        Carriers(rMesh, surface_blocks, "Surface", mSurfaces, mSources[0]);
+        Carriers(rMesh, edge_blocks, "Edge", mEdges, mSources[1]);
         FacetSets(rMesh);
         Names(rMesh);
         Variables(rMesh);
@@ -1466,10 +1514,10 @@ public:
 
     std::string HeaderAndDictionary() const {
         std::string header = xw_chunk(
-            0x01010000, xw_u32_chunk(0x01010001, kXwVersion) + xw_u32_chunk(0x01010004, 0) +
+            0x01010000, xw_u32_chunk(0x01010001, kXwVersion) + xw_u32_chunk(0x01010004, mCompress ? 1 : 0) +
                             xw_chunk(0x01010006, xw_string("meshio++")));
         std::string dictionary;
-        for (std::size_t g = 0; g < 3; ++g) {
+        for (std::size_t g = 0; g < kXwNumGroups; ++g) {
             std::string items;
             for (const XwVar& v : mVars[g]) {
                 static const std::map<std::size_t, std::uint32_t> kType = {
@@ -1582,7 +1630,7 @@ public:
             xw_chunk(0x02010000, xw_chunk(0x02010002, time_payload) +
                                      xw_u32_chunk(0x02010003, Status));
         std::string data;
-        for (std::size_t g = 0; g < 3; ++g) {
+        for (std::size_t g = 0; g < kXwNumGroups; ++g) {
             std::string variables;
             for (std::size_t k = 0; k < mVars[g].size(); ++k) {
                 const XwVar& v = mVars[g][k];
@@ -1597,10 +1645,28 @@ public:
                     region(0, rMesh.FieldData(v.mName));
                 } else if (g == 1) {
                     region(0, rMesh.PointData(v.mName));
-                } else {
+                } else if (g == 2) {
                     for (std::size_t d = 0; d < mBlocks.size(); ++d)
                         region(static_cast<std::uint32_t>(d + 1),
                                rMesh.CellData(v.mName, mBlocks[d].mIndex));
+                } else {
+                    // Region k is surface (edge) k: its facets' values in order; none
+                    // for a surface that holds nothing but NaN.
+                    const auto& sources = mSources[g - 3];
+                    for (std::size_t k = 0; k < sources.size(); ++k) {
+                        std::vector<double> values;
+                        for (const std::size_t b : sources[k]) {
+                            const std::vector<double> part = xw_values(rMesh.CellData(v.mName, b));
+                            values.insert(values.end(), part.begin(), part.end());
+                        }
+                        if (std::all_of(values.begin(), values.end(),
+                                        [](double D) { return std::isnan(D); }))
+                            continue;
+                        std::string bytes;
+                        for (const double d : values)
+                            xw_f32(bytes, d);
+                        payload += xw_chunk(static_cast<std::uint32_t>(k + 1), bytes);
+                    }
                 }
                 variables += xw_chunk(0x02020001, xw_u32_chunk(0x02020002,
                                                                static_cast<std::uint32_t>(k + 1)) +
@@ -1618,13 +1684,16 @@ private:
     void Carriers(const Mesh& rMesh,
                   const std::map<std::int64_t, std::vector<std::pair<std::size_t, std::size_t>>>&
                       rById,
-                  const char* pFallback, std::vector<XwFacets>& rOut) const {
+                  const char* pFallback, std::vector<XwFacets>& rOut,
+                  std::vector<std::vector<std::size_t>>& rSources) const {
         std::size_t k = 0;
         for (const auto& [id, blocks] : rById) {
             ++k;
             XwFacets item;
             std::vector<std::int64_t> cells;
+            rSources.emplace_back();
             for (const auto& [first, b] : blocks) {
+                rSources.back().push_back(b);
                 const auto cb = rMesh.Cells(b);
                 const std::size_t nn = cb.NodesPerCell();
                 const detail::Int64View conn(cb.Conn());
@@ -1729,20 +1798,54 @@ private:
         for (const std::string& name : rMesh.CellDataNames()) {
             if (name.rfind("xplt:", 0) == 0)
                 continue;
+            std::vector<std::size_t> domain_blocks;
+            for (const XwBlock& blk : mBlocks)
+                domain_blocks.push_back(blk.mIndex);
+            // A variable with a value on a domain is a domain variable; otherwise
+            // finite values on the facets' cells make a surface or edge variable.
+            const bool has_domain = xw_has_values(rMesh, name, domain_blocks);
+            bool written = false;
+            for (std::size_t c = 0; c < 2 && !has_domain; ++c) {
+                std::vector<std::size_t> blocks;
+                for (const auto& srcs : mSources[c])
+                    blocks.insert(blocks.end(), srcs.begin(), srcs.end());
+                if (blocks.empty() || !xw_has_values(rMesh, name, blocks))
+                    continue;
+                std::size_t width = 0;
+                bool ok = true;
+                for (const std::size_t b : blocks) {
+                    const NDArray& a = rMesh.CellData(name, b);
+                    const std::size_t count = rMesh.Cells(b).NumCells();
+                    if (a.Shape().size() > 2 || count == 0 || a.Size() % count != 0) {
+                        ok = false;
+                        break;
+                    }
+                    const std::size_t w = a.Size() / count;
+                    if (width != 0 && w != width) {
+                        ok = false;
+                        break;
+                    }
+                    width = w;
+                }
+                if (ok && width) {
+                    mVars[3 + c].push_back({name, width});
+                    written = true;
+                }
+            }
             std::size_t width = 0;
             bool ok = true;
             for (const XwBlock& blk : mBlocks) {
                 const std::size_t w = xw_width(rMesh.CellData(name, blk.mIndex), blk.mCount,
-                                               "cell data '" + name + "'");
+                                               "cell data '" + name + "'", !written);
                 if (w == 0 || (width != 0 && w != width)) {
                     ok = false;
                     break;
                 }
                 width = w;
             }
-            if (ok && width)
+            if (ok && width && !written)
                 mVars[2].push_back({name, width});
-            else if (!ok)
+            else if (!ok && !written)
                 log::warn("FEBio .xplt: cell data '{}' is not written", name);
         }
         for (const std::string& name : rMesh.FieldDataNames()) {
@@ -1762,7 +1865,9 @@ private:
     std::vector<XwFacets> mSurfaces, mEdges, mFacetSets;
     std::set<std::size_t> mCarrierCells;  // global cells written as a surface or edge facet
     std::map<std::size_t, std::int64_t> mNewIndex;
-    std::array<std::vector<XwVar>, 3> mVars;
+    std::array<std::vector<XwVar>, kXwNumGroups> mVars;
+    std::array<std::vector<std::vector<std::size_t>>, 2> mSources;  // per surface/edge: its blocks
+    bool mCompress = false;
     std::string mSignature;
 };
 
@@ -1802,22 +1907,33 @@ void xw_save(const std::string& rPath, const std::string& rBytes) {
 }  // namespace
 
 void write_xplt(const std::string& rPath, const Mesh& rMesh) {
+    write_xplt(rPath, rMesh, XpltWriteOptions{});
+}
+
+void write_xplt(const std::string& rPath, const Mesh& rMesh, const XpltWriteOptions& rOptions) {
     const detail::ProvenanceSlotlessWrite slotless;
-    const XwModel model(rMesh);
-    const std::string state = model.StateChunk(rMesh, xw_time_of(rMesh), xw_status_of(rMesh));
+    const XwModel model(rMesh, rOptions.mCompress);
+    const std::string state = xw_pack(
+        model.StateChunk(rMesh, xw_time_of(rMesh), xw_status_of(rMesh)), model.Compress());
     xw_save(rPath, xw_prefix(model, rMesh) + state);
 }
 
 struct XpltSeriesWriter::Impl {
     std::string mPath;
     std::unique_ptr<XwModel> mModel;
+    bool mCompress = false;
     std::string mPrefix;  // magic, header, dictionary and mesh, built from the first step
     std::vector<std::string> mStates;
     bool mDone = false;
 };
 
-XpltSeriesWriter::XpltSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+XpltSeriesWriter::XpltSeriesWriter(const std::string& rPath)
+    : XpltSeriesWriter(rPath, XpltWriteOptions{}) {}
+
+XpltSeriesWriter::XpltSeriesWriter(const std::string& rPath, const XpltWriteOptions& rOptions)
+    : mpImpl(std::make_unique<Impl>()) {
     mpImpl->mPath = rPath;
+    mpImpl->mCompress = rOptions.mCompress;
     auto probe = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!probe)
         throw WriteError("Could not open file for writing: " + rPath);
@@ -1832,14 +1948,15 @@ void XpltSeriesWriter::Write(double Time, const Mesh& rMesh) {
         throw WriteError("FEBio .xplt: series: the writer was moved from");
     Impl& s = *mpImpl;
     if (!s.mModel) {
-        s.mModel = std::make_unique<XwModel>(rMesh);
+        s.mModel = std::make_unique<XwModel>(rMesh, s.mCompress);
         s.mPrefix = xw_prefix(*s.mModel, rMesh);
     } else if (XwModel(rMesh).Signature() != s.mModel->Signature()) {
         throw WriteError("FEBio .xplt: series: step " + std::to_string(s.mStates.size()) +
                          "'s points, cells or variables differ from the first step's; a plot "
                          "file holds one mesh -- write one file per step with '{step}'");
     }
-    s.mStates.push_back(s.mModel->StateChunk(rMesh, Time, xw_status_of(rMesh)));
+    s.mStates.push_back(
+        xw_pack(s.mModel->StateChunk(rMesh, Time, xw_status_of(rMesh)), s.mCompress));
 }
 
 std::size_t XpltSeriesWriter::NumSteps() const noexcept {

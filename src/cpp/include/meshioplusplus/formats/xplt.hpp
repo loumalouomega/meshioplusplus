@@ -41,10 +41,10 @@
  *    (`FMT_ITEM`) cell data, NaN on domains without them; per-region ones
  *    (`FMT_REGION`) cell data repeated over the domain; per-element-node ones
  *    (`FMT_NODE`, `FMT_MULT`) point data, averaged over the elements sharing a
- *    node. Global variables are field data. Surface variables live on the facet
- *    cells the same way (per facet, per surface, or averaged per facet node);
- *    one on no surface of the mesh gives no array. Edge and material-point
- *    variables are not read (a warning names them).
+ *    node. Global variables are field data. Surface and edge variables live on
+ *    the facet and segment cells the same way (per facet, per surface, or
+ *    averaged per facet node); one on no surface of the mesh gives no array.
+ *    Material-point variables are not read (a warning names them).
  *  - Symmetric tensors keep FEBio's 6 components (xx, yy, zz, xy, yz, xz).
  *
  * See doc/formats/xplt.md.
@@ -81,18 +81,39 @@ MESHIOPLUSPLUS_API MeshMetadata read_xplt_metadata(const std::string& rPath,
                                                    const ReadOptions& rOptions = {});
 
 /**
+ * @brief Options of the FEBio plot file writers.
+ */
+struct XpltWriteOptions {
+    /// Store each state as its own zlib stream (level 6) and set the header's
+    /// compression flag, as FEBio's `compression` option does. Needs a build with
+    /// `MESHIOPLUSPLUS_WITH_ZLIB`: otherwise the writer throws `Unsupported`.
+    bool mCompress = false;
+};
+
+/**
  * @brief Write an FEBio plot file holding one state (plot version 0x35,
  *        little-endian, uncompressed): the mesh and its data at
  *        `field_data["meshio:time"]` (0 when absent), status `"xplt:status"`.
  *        Cell blocks become domains (a region that is exactly one block names
  *        it and tags its part), point regions node sets and cell regions
  *        element sets; point data are nodal variables, cell data per-element
- *        variables (`FMT_ITEM`) and numeric field data global ones. Vertices,
- *        polygons, side regions and surfaces are not written. The Python twin
- *        writes the same bytes.
+ *        variables (`FMT_ITEM`) and numeric field data global ones. A block of
+ *        facet (segment) cells whose `cell_data["xplt:surface"]` (`"xplt:edge"`)
+ *        is one positive id is a surface (edge), a side region no surface is named
+ *        after a facet set, and cell data with finite values on a surface's (edge's)
+ *        cells and none on a domain a surface (edge) variable. Vertices and polygons are not written.
+ *        The Python twin writes the same bytes.
  * @throws WriteError when the file cannot be written or a cell names a missing point.
  */
 MESHIOPLUSPLUS_API void write_xplt(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief `write_xplt` with options: `XpltWriteOptions::mCompress` stores the
+ *        state as a zlib stream.
+ * @throws Unsupported when compression is asked for and the build has no zlib.
+ */
+MESHIOPLUSPLUS_API void write_xplt(const std::string& rPath, const Mesh& rMesh,
+                                   const XpltWriteOptions& rOptions);
 
 /**
  * @brief A plot file with a state per step: the mesh and the variables of the
@@ -103,6 +124,8 @@ class MESHIOPLUSPLUS_API XpltSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit XpltSeriesWriter(const std::string& rPath);
+    /// @throws WriteError when @p rPath cannot be opened.
+    XpltSeriesWriter(const std::string& rPath, const XpltWriteOptions& rOptions);
     ~XpltSeriesWriter();
 
     XpltSeriesWriter(const XpltSeriesWriter&) = delete;

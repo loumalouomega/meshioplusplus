@@ -76,6 +76,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/frd.hpp"
+#include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
@@ -467,6 +468,8 @@ static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
 MIO_ABI_LAYOUT(meshioplusplus::FrdReadOptions, 1, 1);
 // The CalculiX writer's option struct (v16.39.0, an addition, ABI unchanged): two `bool`s.
 MIO_ABI_LAYOUT(meshioplusplus::FrdWriteOptions, 2, 1);
+// The FEBio plot writer's option struct (v17.4.0, an addition, ABI unchanged): one `bool`.
+MIO_ABI_LAYOUT(meshioplusplus::XpltWriteOptions, 1, 1);
 
 // The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
 // and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a
@@ -601,6 +604,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::detail::CardField>("CardField");
     report<meshioplusplus::FrdReadOptions>("FrdReadOptions");
     report<meshioplusplus::FrdWriteOptions>("FrdWriteOptions");
+    report<meshioplusplus::XpltWriteOptions>("XpltWriteOptions");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

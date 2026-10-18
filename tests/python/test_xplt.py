@@ -660,3 +660,204 @@ def test_the_engines_write_the_same_surface_bytes(tmp_path):
         tmp_path / "cs.xplt", iter([(0.0, mesh), (1.0, mesh)])
     )
     assert (tmp_path / "ps.xplt").read_bytes() == (tmp_path / "cs.xplt").read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Surface and edge variables, and compression.
+# ---------------------------------------------------------------------------
+
+
+def _dictionary_groups(path):
+    """The dictionary's group ids and variable names, by group."""
+    data = path.read_bytes()
+    groups = {}
+    root = struct.unpack_from("<II", data, 4)
+    dictionary = None
+    a = 12
+    while a + 8 <= 12 + root[1]:
+        ident, size = struct.unpack_from("<II", data, a)
+        if ident == 0x01020000:
+            dictionary = (a + 8, a + 8 + size)
+        a += 8 + size
+    a, end = dictionary
+    while a + 8 <= end:
+        gid, gsize = struct.unpack_from("<II", data, a)
+        names, b = [], a + 8
+        while b + 8 <= a + 8 + gsize:
+            iid, isize = struct.unpack_from("<II", data, b)
+            c = b + 8
+            while c + 8 <= b + 8 + isize:
+                cid, csize = struct.unpack_from("<II", data, c)
+                if cid == 0x01020004:
+                    names.append(
+                        data[c + 8 : c + 8 + csize].split(b"\0", 1)[0].decode()
+                    )
+                c += 8 + csize
+            b += 8 + isize
+        groups[gid] = names
+        a += 8 + gsize
+    return groups
+
+
+def _equal_cell_data(got, want, names):
+    for name in names:
+        assert name in got.cell_data, name
+        for x, y in zip(got.cell_data[name], want.cell_data[name]):
+            np.testing.assert_allclose(x, y, rtol=1e-6, equal_nan=True)
+
+
+def test_febio_surface_variables_survive_a_round_trip(writer, engine, tmp_path):
+    path = XPLT / "xplt_surface.xplt"
+    if _lfs_pointer(path):
+        pytest.skip("the FEBio fixture is a Git-LFS pointer")
+    for step in range(4):
+        original = engine.read(path, time_step=step)
+        out = tmp_path / f"again{step}.xplt"
+        writer(out, original)
+        again = engine.read(out)
+        _equal_cell_data(again, original, ["facet area", "surface area"])
+        # they are surface variables, not domain variables
+        groups = _dictionary_groups(out)
+        assert "facet area" in groups[0x01025000]
+        assert "facet area" not in groups.get(0x01024000, [])
+
+
+def test_the_engines_write_the_same_bytes_with_surface_variables(tmp_path):
+    original = meshioplusplus.read(XPLT / "xplt_surface.xplt", time_step=2)
+    _core.xplt_write(str(tmp_path / "c.xplt"), original)
+    py_write.write(tmp_path / "p.xplt", original)
+    assert (tmp_path / "c.xplt").read_bytes() == (tmp_path / "p.xplt").read_bytes()
+
+
+def _variable_mesh():
+    """The surface mesh with a vector variable on the triangle surface, a scalar
+    one on the edge and a scalar one shared with the domains."""
+    mesh = _surface_mesh()
+    nan = np.nan
+    mesh.cell_data["traction"] = [
+        np.full((1, 3), nan),
+        np.full((1, 3), nan),
+        np.array([[1.0, 2.0, 3.0]]),
+        np.full((2, 3), nan),
+    ]
+    mesh.cell_data["gap"] = [
+        np.full(1, nan),
+        np.full(1, nan),
+        np.full(1, nan),
+        np.array([0.5, 0.25]),
+    ]
+    mesh.cell_data["shared"] = [
+        np.array([1.0]),
+        np.array([2.0]),
+        np.array([3.0]),
+        np.array([4.0, 5.0]),
+    ]
+    return mesh
+
+
+def test_surface_and_edge_variables_are_written(writer, engine, tmp_path):
+    mesh = _variable_mesh()
+    out = tmp_path / "vars.xplt"
+    writer(out, mesh)
+    groups = _dictionary_groups(out)
+    # "shared" has values on the domains, so it is a domain variable only
+    assert groups[0x01025000] == ["traction"]
+    assert groups[0x01026000] == ["gap"]
+    assert groups[0x01024000] == ["shared"]
+    again = engine.read(out)
+    _equal_cell_data(again, mesh, ["traction", "gap"])
+    np.testing.assert_allclose(
+        np.concatenate(again.cell_data["shared"][:2]), [1.0, 2.0]
+    )
+    # the surface variable is NaN off its surface, the gap off its edge
+    assert np.isnan(again.cell_data["traction"][0]).all()
+    assert np.isnan(again.cell_data["gap"][2]).all()
+
+
+def test_a_variable_that_only_the_domains_hold_stays_a_domain_variable(
+    writer, engine, tmp_path
+):
+    mesh = _surface_mesh()
+    mesh.cell_data["load"] = [
+        np.array([1.0]),
+        np.array([2.0]),
+        np.full(1, np.nan),
+        np.full(2, np.nan),
+    ]
+    out = tmp_path / "load.xplt"
+    writer(out, mesh)
+    groups = _dictionary_groups(out)
+    assert groups[0x01024000] == ["load"]
+    assert 0x01025000 not in groups and 0x01026000 not in groups
+
+
+def test_the_engines_write_the_same_bytes_with_variables_and_series(tmp_path):
+    mesh = _variable_mesh()
+    _core.xplt_write(str(tmp_path / "c.xplt"), mesh)
+    py_write.write(tmp_path / "p.xplt", mesh)
+    assert (tmp_path / "c.xplt").read_bytes() == (tmp_path / "p.xplt").read_bytes()
+    with py_write.SeriesWriter(tmp_path / "ps.xplt") as w:
+        w.write(0.0, mesh)
+        w.write(1.0, mesh)
+    meshioplusplus.write_sequence(
+        tmp_path / "cs.xplt", iter([(0.0, mesh), (1.0, mesh)])
+    )
+    assert (tmp_path / "ps.xplt").read_bytes() == (tmp_path / "cs.xplt").read_bytes()
+
+
+def _core_has_zlib(tmp_path):
+    try:
+        _core.xplt_write(str(tmp_path / "probe.xplt"), _scratch_mesh(), True)
+    except Exception:
+        return False
+    return True
+
+
+def test_a_compressed_file_reads_like_the_plain_one(writer, engine, tmp_path):
+    mesh = _variable_mesh()
+    plain = tmp_path / "plain.xplt"
+    packed = tmp_path / "packed.xplt"
+    writer(plain, mesh)
+    py_write.write(packed, mesh, compress=True)
+    assert packed.read_bytes()[:4] == plain.read_bytes()[:4]
+    # the header's compression flag is set and the state is one zlib stream
+    data = packed.read_bytes()
+    assert struct.unpack_from("<I", data, 40)[0] == 1
+    pos = 12 + struct.unpack_from("<I", data, 8)[0]  # after the root chunk
+    pos += 8 + struct.unpack_from("<I", data, pos + 4)[0]  # after the mesh chunk
+    state = zlib.decompress(data[pos:])
+    assert struct.unpack_from("<I", state, 0)[0] == 0x02000000
+    _same(engine.read(packed), engine.read(plain))
+
+
+def test_the_engines_write_the_same_compressed_bytes(tmp_path):
+    if not _core_has_zlib(tmp_path):
+        pytest.skip("the C++ core was built without zlib")
+    mesh = _variable_mesh()
+    _core.xplt_write(str(tmp_path / "c.xplt"), mesh, True)
+    py_write.write(tmp_path / "p.xplt", mesh, compress=True)
+    assert (tmp_path / "c.xplt").read_bytes() == (tmp_path / "p.xplt").read_bytes()
+    with py_write.SeriesWriter(tmp_path / "ps.xplt", compress=True) as w:
+        w.write(0.0, mesh)
+        w.write(1.0, mesh)
+    with meshioplusplus.xplt.SeriesWriter(tmp_path / "cs.xplt", compress=True) as w:
+        w.write(0.0, mesh)
+        w.write(1.0, mesh)
+    assert (tmp_path / "ps.xplt").read_bytes() == (tmp_path / "cs.xplt").read_bytes()
+    assert meshioplusplus.xplt.time_values(tmp_path / "cs.xplt") == [0.0, 1.0]
+
+
+@pytest.mark.parametrize("path", FIXTURES, ids=[p.name for p in FIXTURES])
+def test_a_febio_file_survives_a_compressed_round_trip(path, tmp_path):
+    original = meshioplusplus.xplt.read(path)
+    plain, packed = tmp_path / "plain.xplt", tmp_path / "packed.xplt"
+    meshioplusplus.xplt.write(plain, original)
+    meshioplusplus.xplt.write(packed, original, compress=True)
+    _same(meshioplusplus.xplt.read(packed), meshioplusplus.xplt.read(plain))
+    _same(py_xplt.read(packed), meshioplusplus.xplt.read(plain))
+
+
+def test_compression_is_off_by_default(tmp_path):
+    meshioplusplus.write(tmp_path / "a.xplt", _scratch_mesh())
+    data = (tmp_path / "a.xplt").read_bytes()
+    assert struct.unpack_from("<I", data, 40)[0] == 0
