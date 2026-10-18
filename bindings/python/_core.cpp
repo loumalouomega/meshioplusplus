@@ -5956,14 +5956,24 @@ PYBIND11_MODULE(_core, m) {
         .def("num_steps", &meshioplusplus::AnsysRstSeriesWriter::NumSteps)
         .def("finalize", &meshioplusplus::AnsysRstSeriesWriter::Finalize);
 
-    m.def("xplt_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
-            return meshioplusplus::write_xplt(path, mesh);
-        });
-    });
+    m.def(
+        "xplt_write",
+        [](const std::string& path, py::object pymesh, bool compress) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::XpltWriteOptions options;
+            options.mCompress = compress;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+                return meshioplusplus::write_xplt(path, mesh, options);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("compress") = false);
     py::class_<meshioplusplus::XpltSeriesWriter>(m, "XpltSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(py::init([](const std::string& path, bool compress) {
+                 meshioplusplus::XpltWriteOptions options;
+                 options.mCompress = compress;
+                 return std::make_unique<meshioplusplus::XpltSeriesWriter>(path, options);
+             }),
+             py::arg("path"), py::arg("compress") = false)
         .def(
             "write",
             [](meshioplusplus::XpltSeriesWriter& rSelf, double time, py::object pymesh) {
