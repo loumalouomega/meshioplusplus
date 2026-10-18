@@ -698,9 +698,10 @@ def _read_properties(s, tables):
 
 def _read_property_values(s, tables):
     """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID,
-    PELAS, PDAMP and MAT1 records (the members ``nastran_op2._write.PROPERTY_VALUES``
+    PELAS, PDAMP, PVISC, PSHEAR, MAT1, MAT2 and MAT8 records (the members
+    ``nastran_op2._write.PROPERTY_VALUES``
     lists)."""
-    from ._write import PROPERTY_VALUES
+    from ._write import PROPERTY_VALUES, is_int_member
 
     out = {}
 
@@ -715,7 +716,7 @@ def _read_property_values(s, tables):
             if card == "PSHELL" and ints[row, 1] >= 100000000:
                 continue  # NX's PSHELL twin of a PCOMP
             for member, (word, _default) in PROPERTY_VALUES[card].items():
-                if member.startswith("MID"):
+                if is_int_member(member):
                     value = np.array([ints[row, word]], dtype=np.int64)
                 else:
                     value = np.array([floats[row, word]], dtype=np.float64)
@@ -738,6 +739,10 @@ def _read_property_values(s, tables):
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
         if (k1, k2) == (103, 1):
             take("MAT1", raw, 12)
+        elif (k1, k2) == (203, 2):
+            take("MAT2", raw, 17)
+        elif (k1, k2) == (2503, 25):
+            take("MAT8", raw, 19)
     return out
 
 

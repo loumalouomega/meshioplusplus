@@ -232,10 +232,62 @@ PROPERTY_VALUES = {
         "TREF": (6, 0.0),
         "GE": (7, 0.0),
     },
+    # The anisotropic shell material (17 words): the stiffness matrix, the thermal
+    # expansion and the stress limits; MCSID is an integer.
+    "MAT2": {
+        "G11": (1, 1.0),
+        "G12": (2, 0.0),
+        "G13": (3, 0.0),
+        "G22": (4, 1.0),
+        "G23": (5, 0.0),
+        "G33": (6, 1.0),
+        "RHO": (7, 0.0),
+        "A1": (8, 0.0),
+        "A2": (9, 0.0),
+        "A3": (10, 0.0),
+        "TREF": (11, 0.0),
+        "GE": (12, 0.0),
+        "ST": (13, 0.0),
+        "SC": (14, 0.0),
+        "SS": (15, 0.0),
+        "MCSID": (16, 0),
+    },
+    # The orthotropic ply material (19 words).
+    "MAT8": {
+        "E1": (1, 1.0),
+        "E2": (2, 1.0),
+        "NU12": (3, 0.3),
+        "G12": (4, 0.0),
+        "G1Z": (5, 0.0),
+        "G2Z": (6, 0.0),
+        "RHO": (7, 0.0),
+        "A1": (8, 0.0),
+        "A2": (9, 0.0),
+        "TREF": (10, 0.0),
+        "XT": (11, 0.0),
+        "XC": (12, 0.0),
+        "YT": (13, 0.0),
+        "YC": (14, 0.0),
+        "S": (15, 0.0),
+        "GE": (16, 0.0),
+        "F12": (17, 0.0),
+        "STRN": (18, 0.0),
+    },
 }
+# The material cards, with their MPT keys and record words.
+_MATERIALS = (
+    ("MAT1", (103, 1, 77), 12),
+    ("MAT2", (203, 2, 78), 17),
+    ("MAT8", (2503, 25, 288), 19),
+)
 _VALUE_KEY = re.compile(r"^nastran:([A-Z0-9]+)_([0-9]+):([A-Z0-9]+)$")
 # The members that are integers besides the ``MID`` ones.
-_INT_MEMBERS = ("FT", "SYM")
+_INT_MEMBERS = ("FT", "SYM", "MCSID")
+
+
+def is_int_member(member):
+    """Whether a property or material member holds an integer."""
+    return member.startswith("MID") or member in _INT_MEMBERS
 
 
 def property_values(mesh):
@@ -258,9 +310,8 @@ def property_values(mesh):
         values = np.asarray(array).ravel()
         if values.size != 1:
             _wfail(f"'{name}' must hold one value")
-        is_int = member.startswith("MID") or member in _INT_MEMBERS
         out.setdefault((card, ident), {})[member] = (
-            int(values[0]) if is_int else float(values[0])
+            int(values[0]) if is_int_member(member) else float(values[0])
         )
     return out
 
@@ -286,8 +337,23 @@ def material_ids(properties, values, beams=None):
     for pid in properties.get("PCOMP", ()):
         plies = np.asarray(values[("PCOMP", pid)]["PLY"]).reshape(-1, 4)
         ids.update(int(mid) for mid in plies[:, 0])
-    ids.update(i for (card, i) in values if card == "MAT1")
+    ids.update(material_cards(values))
     return sorted(ids) or []
+
+
+def material_cards(values):
+    """``{id: card}`` of the materials the field data gives (``nastran:MAT1_<id>:*``,
+    ``MAT2`` or ``MAT8``); an id given as two cards is an error."""
+    cards = {}
+    for card, ident in sorted(values):
+        if card not in ("MAT1", "MAT2", "MAT8"):
+            continue
+        if cards.setdefault(ident, card) != card:
+            _wfail(
+                f"material id {ident} is given as both {cards[ident]} and {card} "
+                "field data"
+            )
+    return cards
 
 
 # Nodal tables in file order: (array, table, table code, thermal flag)
@@ -877,6 +943,7 @@ class _Model:
         for p in used:
             if p <= 0:
                 _wfail("property ids must be positive")
+        material_cards(self.values)  # refuses a material id given as two cards
 
     def element_rows(self, name):
         """(eids, pids, [(block, rows)], order) of a card; the first two by id."""
@@ -1132,17 +1199,27 @@ class _Model:
 
     def mpt(self):
         """A MAT1 per material the properties name: unit modulus unless the field
-        data gives its values."""
+        data gives its values. A material given as ``nastran:MAT2_<id>:*`` or
+        ``nastran:MAT8_<id>:*`` is written as that card instead."""
         ids = material_ids(self.properties, self.values, self.beams) or [1]
-        words = np.zeros((len(ids), 12), dtype="<u4")
-        for k, mid in enumerate(ids):
-            words[k, 0] = _i32(np.array([mid]))[0]
-            given = self.values.get(("MAT1", mid), {})
-            for member, (word, default) in PROPERTY_VALUES["MAT1"].items():
-                words[k, word] = _f32(np.array([given.get(member, default)]))[0]
-        return _table(
-            "MPT", [_key(103, 1, 77) + _bytes(words), _key(65535, 65535, 65535)]
-        )
+        given_cards = material_cards(self.values)
+        records = []
+        for card, key, size in _MATERIALS:
+            mids = [mid for mid in ids if given_cards.get(mid, "MAT1") == card]
+            if not mids:
+                continue
+            words = np.zeros((len(mids), size), dtype="<u4")
+            for k, mid in enumerate(mids):
+                words[k, 0] = _i32(np.array([mid]))[0]
+                given = self.values.get((card, mid), {})
+                for member, (word, default) in PROPERTY_VALUES[card].items():
+                    value = np.array([given.get(member, default)])
+                    words[k, word] = (
+                        _i32(value)[0] if is_int_member(member) else _f32(value)[0]
+                    )
+            records.append(_key(*key) + _bytes(words))
+        records.append(_key(65535, 65535, 65535))
+        return _table("MPT", records)
 
 
 # -- steps -----------------------------------------------------------------------------

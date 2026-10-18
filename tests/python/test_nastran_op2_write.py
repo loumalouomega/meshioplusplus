@@ -1754,3 +1754,143 @@ def test_pynastran_reads_the_cshears_and_pshears(tmp_path):
     prop = model.properties[4]
     assert prop.type == "PSHEAR" and prop.mid == 3
     assert (prop.t, prop.nsm, prop.f1, prop.f2) == pytest.approx((0.25, 0.5, 0.75, 1.5))
+
+
+# -- MAT2 and MAT8 materials -----------------------------------------------------------------
+
+_MAT2_5 = {
+    "G11": 4.0e4,
+    "G12": 1.0e4,
+    "G13": 0.5e4,
+    "G22": 3.0e4,
+    "G23": 0.25e4,
+    "G33": 2.0e4,
+    "RHO": 7.8e-9,
+    "A1": 1.0e-5,
+    "A2": 2.0e-5,
+    "A3": 3.0e-5,
+    "TREF": 20.0,
+    "GE": 0.02,
+    "ST": 100.0,
+    "SC": 200.0,
+    "SS": 50.0,
+}
+_MAT8_2 = {
+    "E1": 1.5e5,
+    "E2": 9.0e3,
+    "NU12": 0.28,
+    "G12": 5.0e3,
+    "G1Z": 4.0e3,
+    "G2Z": 3.0e3,
+    "RHO": 1.6e-9,
+    "A1": 1.0e-6,
+    "A2": 3.0e-5,
+    "TREF": 25.0,
+    "XT": 1500.0,
+    "XC": 1200.0,
+    "YT": 50.0,
+    "YC": 250.0,
+    "S": 70.0,
+    "GE": 0.01,
+    "F12": -0.5,
+    "STRN": 1.0,
+}
+
+
+def _anisotropic_mesh(mat1=True, mat2=True, mat8=True):
+    """A PCOMP quad (CQUAD4 7, PCOMP 9, plies of materials 1, 2 and 1) and a PSHELL
+    triangle (CTRIA3 8, PSHELL 1 on material 5), with material 2 a MAT8 and material 5 a
+    MAT2 when asked, and material 1 a MAT1 of its own."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        + [[2.0, 0.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("quad", np.array([[0, 1, 2, 3]])), ("triangle", np.array([[1, 4, 2]]))],
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([7]), np.array([8])]
+    mesh.cell_data["nastran:pid"] = [np.array([9]), np.array([1])]
+    mesh.field_data["nastran:PCOMP_9:PLY"] = np.array(
+        [[1, 0.1, 0.0, 1], [2, 0.2, 45.0, 0], [1, 0.1, -45.0, 1]], dtype=float
+    )
+    mesh.field_data["nastran:PSHELL_1:MID1"] = np.array([5], dtype=np.int64)
+    if mat1:
+        mesh.field_data["nastran:MAT1_1:E"] = np.array([70000.0])
+    if mat2:
+        for member, value in _MAT2_5.items():
+            mesh.field_data[f"nastran:MAT2_5:{member}"] = np.array([value])
+        mesh.field_data["nastran:MAT2_5:MCSID"] = np.array([3], dtype=np.int64)
+    if mat8:
+        for member, value in _MAT8_2.items():
+            mesh.field_data[f"nastran:MAT8_2:{member}"] = np.array([value])
+    return mesh
+
+
+def test_mat2_and_mat8_materials_round_trip(engine, tmp_path):
+    path = tmp_path / "anisotropic.op2"
+    write_with(engine, path, _anisotropic_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        for member, value in _MAT2_5.items():
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:MAT2_5:{member}"], [value], rtol=1e-6
+            )
+        assert back.field_data["nastran:MAT2_5:MCSID"].tolist() == [3]
+        for member, value in _MAT8_2.items():
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:MAT8_2:{member}"], [value], rtol=1e-6
+            )
+        # a material is the one card it was given as: no MAT1 twin of the others
+        assert "nastran:MAT1_1:E" in back.field_data
+        assert "nastran:MAT1_2:E" not in back.field_data
+        assert "nastran:MAT1_5:E" not in back.field_data
+
+
+def test_materials_without_values_stay_mat1(engine, tmp_path):
+    path = tmp_path / "plain.op2"
+    write_with(engine, path, _anisotropic_mesh(mat1=False, mat2=False, mat8=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        for mid in (1, 2, 5):
+            assert back.field_data[f"nastran:MAT1_{mid}:E"][0] == 1.0
+        assert not any(":MAT2_" in name or ":MAT8_" in name for name in back.field_data)
+
+
+@pytest.mark.parametrize(
+    "flags", [(True, True, True), (False, True, False), (False, False, True)]
+)
+def test_the_engines_write_the_same_bytes_with_mat2_and_mat8(tmp_path, flags):
+    mesh = _anisotropic_mesh(*flags)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_material_id_given_as_two_cards_is_refused(engine, tmp_path):
+    mesh = _anisotropic_mesh()
+    mesh.field_data["nastran:MAT1_2:E"] = np.array([1.0e5])  # 2 is also a MAT8
+    with pytest.raises(Exception, match="material id 2 is given as both MAT1 and MAT8"):
+        write_with(engine, tmp_path / "conflict.op2", mesh)
+
+
+def test_pynastran_reads_the_mat2_and_mat8(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_anisotropic.op2"
+    _core.nastran_op2_write(str(path), _anisotropic_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    assert sorted(model.materials) == [1, 2, 5]
+    ply = model.materials[2]
+    assert ply.type == "MAT8"
+    assert (ply.e11, ply.e22, ply.nu12) == pytest.approx((1.5e5, 9.0e3, 0.28))
+    assert (ply.g12, ply.Xt, ply.F12) == pytest.approx((5.0e3, 1500.0, -0.5))
+    shell = model.materials[5]
+    assert shell.type == "MAT2"
+    assert (shell.G11, shell.G12, shell.G22, shell.G33) == pytest.approx(
+        (4.0e4, 1.0e4, 3.0e4, 2.0e4)
+    )
+    assert shell.mcsid == 3
+    assert model.materials[1].type == "MAT1"
+    assert model.properties[1].mid1 == 5

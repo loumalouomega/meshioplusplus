@@ -31,6 +31,7 @@
 #include <numeric>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -830,6 +831,45 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
           {"A", 5, 0.0, false},
           {"TREF", 6, 0.0, false},
           {"GE", 7, 0.0, false}}},
+        // The anisotropic shell material: the stiffness matrix, the thermal expansion and the
+        // stress limits (the MAT2 record is 17 words).
+        {"MAT2",
+         {{"G11", 1, 1.0, false},
+          {"G12", 2, 0.0, false},
+          {"G13", 3, 0.0, false},
+          {"G22", 4, 1.0, false},
+          {"G23", 5, 0.0, false},
+          {"G33", 6, 1.0, false},
+          {"RHO", 7, 0.0, false},
+          {"A1", 8, 0.0, false},
+          {"A2", 9, 0.0, false},
+          {"A3", 10, 0.0, false},
+          {"TREF", 11, 0.0, false},
+          {"GE", 12, 0.0, false},
+          {"ST", 13, 0.0, false},
+          {"SC", 14, 0.0, false},
+          {"SS", 15, 0.0, false},
+          {"MCSID", 16, 0, true}}},
+        // The orthotropic ply material (the MAT8 record is 19 words).
+        {"MAT8",
+         {{"E1", 1, 1.0, false},
+          {"E2", 2, 1.0, false},
+          {"NU12", 3, 0.3, false},
+          {"G12", 4, 0.0, false},
+          {"G1Z", 5, 0.0, false},
+          {"G2Z", 6, 0.0, false},
+          {"RHO", 7, 0.0, false},
+          {"A1", 8, 0.0, false},
+          {"A2", 9, 0.0, false},
+          {"TREF", 10, 0.0, false},
+          {"XT", 11, 0.0, false},
+          {"XC", 12, 0.0, false},
+          {"YT", 13, 0.0, false},
+          {"YC", 14, 0.0, false},
+          {"S", 15, 0.0, false},
+          {"GE", 16, 0.0, false},
+          {"F12", 17, 0.0, false},
+          {"STRN", 18, 0.0, false}}},
     };
     return cards;
 }
@@ -1047,6 +1087,10 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"MPT", "MAT"}))
         if (r.mK1 == 103 && r.mK2 == 1)
             take("MAT1", r.mRaw, 12);
+        else if (r.mK1 == 203 && r.mK2 == 2)
+            take("MAT2", r.mRaw, 17);
+        else if (r.mK1 == 2503 && r.mK2 == 25)
+            take("MAT8", r.mRaw, 19);
 }
 
 // NX also writes each PCOMP as a PSHELL whose material ids are 100000000 and
@@ -3448,6 +3492,7 @@ public:
         for (const auto& [pid, prop] : used)
             if (pid <= 0)
                 op2w_fail("property ids must be positive");
+        MaterialCards();  // refuses a material id given as two cards
     }
 
     const Op2wSignature& Signature() const { return mSignature; }
@@ -3704,9 +3749,26 @@ public:
         return op2w_table("EPT", records);
     }
 
+    /// The card of each material id the field data gives (`nastran:MAT1_<id>:*`, `MAT2` or
+    /// `MAT8`); an id given as two cards is an error. An id with none is a MAT1.
+    std::map<std::int64_t, std::string> MaterialCards() const {
+        std::map<std::int64_t, std::string> cards;
+        for (const auto& [key, members] : mValues) {
+            if (key.first != "MAT1" && key.first != "MAT2" && key.first != "MAT8")
+                continue;
+            const auto [it, added] = cards.emplace(key.second, key.first);
+            if (!added)
+                op2w_fail("material id " + std::to_string(key.second) + " is given as both " +
+                          it->second + " and " + key.first + " field data");
+        }
+        return cards;
+    }
+
     /// A MAT1 per material the properties name (unit modulus unless the field data gives
-    /// its values), and per `nastran:MAT1_<id>:*` given.
+    /// its values), and per `nastran:MAT1_<id>:*` given; a material given as `nastran:MAT2_<id>:*`
+    /// or `nastran:MAT8_<id>:*` is written as that card instead.
     std::string Mpt() const {
+        const std::map<std::int64_t, std::string> given_cards = MaterialCards();
         std::set<std::int64_t> ids;
         for (const auto& [pid, plies] : mPlies)
             if (mProps[kOp2wPcomp].count(pid) != 0)
@@ -3727,28 +3789,45 @@ public:
         }
         for (const std::int64_t pid : mProps[kOp2wPbeam])
             ids.insert(static_cast<std::int64_t>(op2w_array_scalar(mArrays, pid, "MID", 1)));
-        for (const auto& [key, members] : mValues)
-            if (key.first == "MAT1")
-                ids.insert(key.second);
+        for (const auto& [mid, card] : given_cards)
+            ids.insert(mid);
         if (ids.empty())
             ids.insert(1);
-        std::string rows;
-        for (const std::int64_t mid : ids) {
-            Op2wRowBuf w(12);
-            w.I(0, mid);
-            const auto given = mValues.find({"MAT1", mid});
-            for (const Op2wValueMember& m : op2w_value_card("MAT1").mMembers) {
-                double v = m.mDefault;
-                if (given != mValues.end()) {
-                    const auto it = given->second.find(m.mName);
-                    if (it != given->second.end())
-                        v = it->second;
+        static const struct {
+            const char* mCard;
+            std::int32_t mK1, mK2, mK3;
+            std::size_t mSize;
+        } kMaterials[] = {
+            {"MAT1", 103, 1, 77, 12}, {"MAT2", 203, 2, 78, 17}, {"MAT8", 2503, 25, 288, 19}};
+        std::vector<std::string> records;
+        for (const auto& k : kMaterials) {
+            std::string rows;
+            for (const std::int64_t mid : ids) {
+                const auto at = given_cards.find(mid);
+                if ((at == given_cards.end() ? "MAT1" : at->second) != k.mCard)
+                    continue;
+                Op2wRowBuf w(k.mSize);
+                w.I(0, mid);
+                const auto given = mValues.find({k.mCard, mid});
+                for (const Op2wValueMember& m : op2w_value_card(k.mCard).mMembers) {
+                    double v = m.mDefault;
+                    if (given != mValues.end()) {
+                        const auto it = given->second.find(m.mName);
+                        if (it != given->second.end())
+                            v = it->second;
+                    }
+                    if (m.mInt)
+                        w.I(m.mWord, static_cast<std::int64_t>(v));
+                    else
+                        w.F(m.mWord, v);
                 }
-                w.F(m.mWord, v);
+                w.Append(rows);
             }
-            w.Append(rows);
+            if (!rows.empty())
+                records.push_back(op2w_key(k.mK1, k.mK2, k.mK3) + rows);
         }
-        return op2w_table("MPT", {op2w_key(103, 1, 77) + rows, op2w_key(65535, 65535, 65535)});
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("MPT", records);
     }
 
 private:
