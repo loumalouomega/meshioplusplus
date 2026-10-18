@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.5.0 (2026-10-18)
 
 - `nastran_op2` writes `PLOTEL` plot elements, `CSHEAR` shear panels with their `PSHEAR` properties (`nastran:PSHEAR_<id>:MID`, `T`, `NSM`, `F1`, `F2`) and `MAT2` and `MAT8` materials (`nastran:MAT2_<id>:*`, `nastran:MAT8_<id>:*`, written in place of the `MAT1` placeholder; an id given as two cards is a `WriteError`), in both engines with identical bytes; the reader returns the `PSHEAR`, `MAT2` and `MAT8` values as field data.
 - `xplt` writes surfaces, edges and facet sets: blocks marked by `xplt:surface` / `xplt:edge` cell data become surface and edge sections, and `side` regions become facet sets, so a read file round-trips.
@@ -20,6 +20,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - `xplt` writes surface and edge variables (cell data that is finite on a surface's or edge's cells and not on a domain becomes one per-facet variable; an all-NaN surface gets no region) and, with `compress=True` (`XpltWriteOptions::mCompress` in C++), stores each state as its own zlib stream at level 6 with the header flag set. Compression is off by default, so existing output is byte-identical; both engines write the same bytes when they link the same zlib.
 - `abaqus_fil` writes the mode-based dynamics records (301-310: `abaqus:GU`, `GV`, `GA`, `BM`, `GPU`, `GPV`, `GPA`, `SNE`, `KE`, `T`) in both engines, ASCII and binary, and reads them back (checked by round trip only: pybaqus reads neither binary files nor these records).
 - `nastran_h5` (Python engine) no longer fails with a `KeyError` on a mesh whose `nastran:card` names an OP2 card it has no table for (`CVISC`, `CSHEAR`, `PLOTEL`, `CBAR`, ...); like the C++ engine it picks the card from the cell type and property.
+- The CLIs' `iga-evaluate` accepts `--json` (it prints JSON regardless); it used to exit with an argument error, so the CLI parity tests failed on both engines.
 
 ## v17.4.0 (2026-10-17)
 
