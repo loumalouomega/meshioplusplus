@@ -186,6 +186,14 @@ def add_evaluate_args(parser):
         default=16,
         help="B-rep: points per knot span a trimming curve is sampled at (default: 16)",
     )
+    # The verb prints JSON regardless -- emit_json in evaluate_cmd -- so the
+    # flag changes nothing; the other verbs take it, and test_cli_json.py runs
+    # every verb both CLIs share with --json and holds the exit codes equal.
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit a summary as JSON (always; accepted for uniformity)",
+    )
 
 
 def evaluate_cmd(args):

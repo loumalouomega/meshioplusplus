@@ -2058,6 +2058,7 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
                                   {"patch", {}, true},
                                   {"derivatives", {}, true},
                                   {"trim-samples", {}, true},
+                                  {"json", {}, false},
                               });
     if (p.positionals.size() != 1)
         throw std::runtime_error("iga-evaluate requires exactly INFILE");
