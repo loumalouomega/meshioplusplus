@@ -251,6 +251,9 @@ MIO_ABI_LAYOUT(meshioplusplus::MdpaRawBlock, 96, 8);
 // above. Three POD fields, no pointer/std::string member, so it is 4-aligned
 // rather than the 8 most options structs here get.
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamWriteOptions, 12, 4);
+// `OpenFoamRegionGroup` (a `regionProperties` line) is a pure addition, pinned from the release
+// that introduces it: a `std::string` family and a `std::vector<std::string>` of regions.
+MIO_ABI_LAYOUT(meshioplusplus::OpenFoamRegionGroup, 56, 8);
 // `PatranResultFile` (v16.12.0) is a pure addition, pinned from the release
 // that introduces it: two `std::string`s (the data name and the file), passed
 // in a vector to the new `read_patran` overload.
@@ -571,6 +574,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::MeshMetadata>("MeshMetadata");
     report<meshioplusplus::OpenFoamInfo>("OpenFoamInfo");
     report<meshioplusplus::OpenFoamWriteOptions>("OpenFoamWriteOptions");
+    report<meshioplusplus::OpenFoamRegionGroup>("OpenFoamRegionGroup");
     report<meshioplusplus::PatranResultFile>("PatranResultFile");
     report<meshioplusplus::GmshInfo>("GmshInfo");
     report<meshioplusplus::NurbsPatch>("NurbsPatch");

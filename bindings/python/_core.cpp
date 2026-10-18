@@ -7029,6 +7029,34 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("patch_types") = py::dict(), py::arg("binary") = false, py::arg("label_bits") = 32,
         py::arg("scalar_bits") = 64, py::arg("region") = std::string(),
         py::arg("decomposed") = false);
+    // `constant/regionProperties` of a multi-region case: {family: [regions]}, in dict order.
+    m.def(
+        "openfoam_write_region_properties",
+        [](const std::string& path, py::dict regions) {
+            std::vector<meshioplusplus::OpenFoamRegionGroup> groups;
+            for (auto item : regions) {
+                meshioplusplus::OpenFoamRegionGroup group;
+                group.mFamily = py::cast<std::string>(item.first);
+                if (py::isinstance<py::str>(item.second))
+                    throw py::type_error("each family needs a list of region names, not a string");
+                for (auto name : py::cast<py::iterable>(item.second))
+                    group.mRegions.push_back(py::cast<std::string>(name));
+                groups.push_back(std::move(group));
+            }
+            core_nogil(
+                [&] { return meshioplusplus::write_openfoam_region_properties(path, groups); });
+        },
+        py::arg("path"), py::arg("regions"));
+    m.def(
+        "openfoam_read_region_properties",
+        [](const std::string& path) {
+            py::dict out;
+            for (const auto& group :
+                 core_nogil([&] { return meshioplusplus::read_openfoam_region_properties(path); }))
+                out[py::str(group.mFamily)] = group.mRegions;
+            return out;
+        },
+        py::arg("path"));
     py::class_<meshioplusplus::OpenFoamSeriesWriter>(m, "OpenFoamSeriesWriter")
         .def(py::init([openfoam_info](const std::string& path, py::dict cell_tags,
                                       py::dict patch_types, bool binary, int label_bits,

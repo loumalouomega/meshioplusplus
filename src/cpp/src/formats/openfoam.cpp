@@ -1756,7 +1756,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     }
     if (poly.empty()) {
         // Regions are the `constant/<name>/polyMesh` directories; `regionProperties` (the solver's
-        // region types) is not needed to find them, and this writer does not make one.
+        // region families) is not needed to find them.
         std::vector<std::string> regions;
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(case_root / "constant", ec)) {
@@ -1764,6 +1764,15 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                 regions.push_back(entry.path().filename().string());
         }
         if (!regions.empty() || fs::exists(case_root / "constant" / "regionProperties")) {
+            if (regions.empty()) {
+                // regionProperties without region directories: name the regions it lists
+                try {
+                    for (const OpenFoamRegionGroup& group :
+                         read_openfoam_region_properties(case_root.string()))
+                        regions.insert(regions.end(), group.mRegions.begin(), group.mRegions.end());
+                } catch (const ReadError&) {
+                }
+            }
             std::sort(regions.begin(), regions.end());
             std::string joined;
             for (std::size_t i = 0; i < regions.size(); ++i)
@@ -3819,6 +3828,134 @@ void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
     FoamTarget target;
     target.mParts = &parts;
     foam_write_impl(rPath, rMesh, rInfo, rOptions, target, FoamWriteMode::Decomposed);
+}
+
+namespace {
+
+/// `constant/regionProperties` of the case @p rPath names (a `.foam` file or a case directory).
+fs::path foam_region_properties_path(const std::string& rPath) {
+    const fs::path given(rPath);
+    const fs::path root = given.extension() == ".foam" ? given.parent_path() : given;
+    return root / "constant" / "regionProperties";
+}
+
+/// A name that can sit in a `regionProperties` list unquoted: one OpenFOAM word.
+bool foam_region_properties_word_ok(const std::string& rWord) {
+    if (rWord.empty())
+        return false;
+    for (const char c : rWord)
+        if (static_cast<unsigned char>(c) <= ' ' || static_cast<unsigned char>(c) >= 127 ||
+            std::strchr("(){};\"'#$/\\", c) != nullptr)
+            return false;
+    return true;
+}
+
+/// The words of @p rText, with `(`, `)` and `;` as words of their own.
+std::vector<std::string> foam_region_properties_tokens(const std::string& rText) {
+    std::vector<std::string> tokens;
+    std::string word;
+    const auto flush = [&] {
+        if (!word.empty())
+            tokens.push_back(std::move(word));
+        word.clear();
+    };
+    for (const char c : rText) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            flush();
+        } else if (c == '(' || c == ')' || c == ';') {
+            flush();
+            tokens.emplace_back(1, c);
+        } else {
+            word.push_back(c);
+        }
+    }
+    flush();
+    return tokens;
+}
+
+}  // namespace
+
+void write_openfoam_region_properties(const std::string& rPath,
+                                      const std::vector<OpenFoamRegionGroup>& rGroups) {
+    if (rGroups.empty())
+        throw WriteError("OpenFOAM: regionProperties needs at least one family of regions");
+    if (fs::path(rPath).filename() == "polyMesh")
+        throw WriteError(
+            "OpenFOAM: regionProperties belongs to a case (a .foam file or a case directory), not "
+            "a polyMesh directory");
+    std::set<std::string> families, regions;
+    for (const OpenFoamRegionGroup& group : rGroups) {
+        if (!foam_region_properties_word_ok(group.mFamily))
+            throw WriteError("OpenFOAM: invalid regionProperties family name '" + group.mFamily +
+                             "'");
+        if (!families.insert(group.mFamily).second)
+            throw WriteError("OpenFOAM: regionProperties lists the family '" + group.mFamily +
+                             "' twice");
+        if (group.mRegions.empty())
+            throw WriteError("OpenFOAM: regionProperties family '" + group.mFamily +
+                             "' has no region");
+        for (const std::string& region : group.mRegions) {
+            if (!foam_region_properties_word_ok(region) || region[0] == '.')
+                throw WriteError("OpenFOAM: invalid region name '" + region + "'");
+            if (!regions.insert(region).second)
+                throw WriteError("OpenFOAM: regionProperties lists the region '" + region +
+                                 "' twice");
+        }
+    }
+    const fs::path file = foam_region_properties_path(rPath);
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    if (ec && !fs::is_directory(file.parent_path()))
+        throw WriteError("OpenFOAM: could not create directory " + file.parent_path().string() +
+                         ": " + ec.message());
+    auto f = foam_open(file);
+    foam_write_header(f, "dictionary", "regionProperties", OpenFoamWriteOptions{}, "constant");
+    f << "regions\n(\n";
+    for (const OpenFoamRegionGroup& group : rGroups) {
+        f << "    " << group.mFamily << " (";
+        for (std::size_t i = 0; i < group.mRegions.size(); ++i)
+            f << (i ? " " : "") << group.mRegions[i];
+        f << ")\n";
+    }
+    f << ");\n";
+}
+
+std::vector<OpenFoamRegionGroup> read_openfoam_region_properties(const std::string& rPath) {
+    const fs::path file = foam_region_properties_path(rPath);
+    if (!fs::exists(file))
+        throw ReadError("OpenFOAM: no " + file.string());
+    const std::vector<std::string> tokens =
+        foam_region_properties_tokens(strip_comments_and_header(read_whole(file.string()).View()));
+    const auto bad = [&](const std::string& rWhy) {
+        return ReadError("OpenFOAM: " + file.string() + ": " + rWhy);
+    };
+    std::size_t i = 0;
+    while (i < tokens.size() && tokens[i] != "regions")
+        ++i;
+    if (i + 1 >= tokens.size() || tokens[i + 1] != "(")
+        throw bad("no `regions ( family (names) ... )` list");
+    std::vector<OpenFoamRegionGroup> groups;
+    for (i += 2;;) {
+        if (i >= tokens.size())
+            throw bad("the `regions` list is not closed");
+        if (tokens[i] == ")")
+            break;
+        OpenFoamRegionGroup group;
+        group.mFamily = tokens[i++];
+        if (group.mFamily == "(" || group.mFamily == ";" || i >= tokens.size() || tokens[i] != "(")
+            throw bad("expected `family (regions)`, found '" + group.mFamily + "'");
+        for (++i;; ++i) {
+            if (i >= tokens.size() || tokens[i] == "(" || tokens[i] == ";")
+                throw bad("the region list of '" + group.mFamily + "' is not closed");
+            if (tokens[i] == ")") {
+                ++i;
+                break;
+            }
+            group.mRegions.push_back(tokens[i]);
+        }
+        groups.push_back(std::move(group));
+    }
+    return groups;
 }
 
 struct OpenFoamSeriesWriter::Impl {

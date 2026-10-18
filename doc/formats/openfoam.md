@@ -112,7 +112,23 @@ The pure-Python fallback reader has no concept of `processor*/` directories. A d
 
 ## Writing multi-region cases
 
-`write(path, mesh, region="fluid")` writes `constant/fluid/polyMesh` (and the fields under `<time>/fluid/`); call it once per region on the same case path. `constant/regionProperties`, which names the solver's region types, is left to the solver setup: the reader finds the regions as the `constant/<name>/polyMesh` directories. `read(path, region="fluid")` reads one back, fields included; without `region` it raises naming the regions.
+`write(path, mesh, region="fluid")` writes `constant/fluid/polyMesh` (and the fields under `<time>/fluid/`); call it once per region on the same case path. `constant/regionProperties`, which a solver reads for its region families, is written only on request (below); the reader finds the regions as the `constant/<name>/polyMesh` directories either way. `read(path, region="fluid")` reads one back, fields included; without `region` it raises naming the regions.
+
+### regionProperties
+
+`write(path, mesh, region="water", region_family="fluid")` also lists the region under a family in `constant/regionProperties`: an existing file is read, the region is added to the family (the family is created last if new; a region already listed under another family is an error, and a region written twice is listed once), and the file is written again. `write_region_properties(path, {"fluid": ["water", "air"], "solid": ["heater"]})` writes the whole file, and `read_region_properties(path)` returns it as `{family: [regions]}` in file order. The C++ counterparts are `write_openfoam_region_properties` and `read_openfoam_region_properties` with `OpenFoamRegionGroup {mFamily, mRegions}`.
+
+The file is the `regions ( fluid (water air) solid (heater) );` list of `chtMultiRegionFoam`-style solvers:
+
+```
+regions
+(
+    fluid (water air)
+    solid (heater)
+);
+```
+
+meshio++ has no solver-neutral content for this file, so it does not invent any: the family names are the caller's and are written verbatim, nothing else (no `controlDict` or `regionSolvers` entry) is written, and without `region_family` no file is made. Names are validated as one unquoted word (no whitespace or any of `(){};"'#$/\`), a region may not start with a dot, and a family or region may not repeat. The older `fluidRegionNames`/`solidRegionNames` keys are not read, and a hand-written file's other entries are lost when `region_family` rewrites it. The reader needs no file; when a multi-region case has no region directory yet, the error from reading it with no `region` names the regions `regionProperties` lists. Compiled core only.
 
 ## Writing decomposed cases
 

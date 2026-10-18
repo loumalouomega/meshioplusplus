@@ -298,8 +298,8 @@ MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMe
 /**
  * @brief Write one region of a multi-region case: `constant/<region>/polyMesh` and the fields
  *        under `<time>/<region>/`. An empty @p rRegion is `write_openfoam`. `regionProperties`
- *        names the solver's region types and is left to the solver setup; the reader finds the
- *        regions under `constant/`. The path must be a case (a `.foam` file or a directory).
+ *        is made on request by `write_openfoam_region_properties`; the reader finds the regions
+ *        under `constant/` either way. The path must be a case (a `.foam` file or a directory).
  * @throws WriteError as `write_openfoam`, and for an invalid region name
  */
 MESHIOPLUSPLUS_API void write_openfoam_region(const std::string& rPath, const Mesh& rMesh,
@@ -320,6 +320,41 @@ MESHIOPLUSPLUS_API void write_openfoam_region(const std::string& rPath, const Me
 MESHIOPLUSPLUS_API void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
                                                   const OpenFoamInfo& rInfo,
                                                   const OpenFoamWriteOptions& rOptions);
+
+/**
+ * @brief One line of a multi-region case's `constant/regionProperties`: a solver family and the
+ *        regions it solves, e.g. `fluid (water air)`.
+ */
+struct OpenFoamRegionGroup {
+    std::string mFamily;
+    std::vector<std::string> mRegions;
+};
+
+/**
+ * @brief Write `constant/regionProperties` of a multi-region case, the `regions` list of
+ *        `chtMultiRegionFoam`-style solvers:
+ *
+ *        regions ( fluid (water air) solid (heater) );
+ *
+ *        meshio++ does not know which family names a solver wants (`fluid`/`solid` for
+ *        `chtMultiRegionFoam`, others for other solvers), so the caller names them and this writes
+ *        them verbatim, in order; no file is made unless this is called. The file is replaced, not
+ *        merged, and the region directories need not exist yet (`write_openfoam_region` makes
+ *        them). @p rPath is a case (a `.foam` file or a directory), as for `write_openfoam_region`.
+ * @throws WriteError for no group, a family with no region, a name that is empty or holds
+ *         whitespace or any of `(){};"'#$/\` (a region name must also not start with a dot), a
+ *         repeated family, or a region listed twice
+ */
+MESHIOPLUSPLUS_API void write_openfoam_region_properties(
+    const std::string& rPath, const std::vector<OpenFoamRegionGroup>& rGroups);
+
+/**
+ * @brief Read the `regions` list of `constant/regionProperties`, in file order.
+ * @throws ReadError when the file is missing or has no well-formed `regions ( family (names) ... )`
+ *         list. Older `<family>RegionNames` keys are not read.
+ */
+MESHIOPLUSPLUS_API std::vector<OpenFoamRegionGroup> read_openfoam_region_properties(
+    const std::string& rPath);
 
 /**
  * @brief A transient case: the `polyMesh` once and a time directory of fields per mesh, named

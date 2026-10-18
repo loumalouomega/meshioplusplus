@@ -2047,3 +2047,113 @@ def test_decomposed_zone_files_follow_the_regions(tmp_path):
         poly = tmp_path / f"processor{k}" / "constant" / "polyMesh"
         assert not (poly / "cellZones").exists()
     assert not meshioplusplus.openfoam.read(case).regions
+
+
+# -- roadmap 3.3.3: constant/regionProperties ----------------------------------
+
+
+def test_region_properties_is_written_only_when_asked(tmp_path):
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, _grid(1), region="fluid")
+    assert not (tmp_path / "constant" / "regionProperties").exists()
+
+
+def test_region_properties_round_trip_and_text(tmp_path):
+    case = tmp_path / "case.foam"
+    families = {"fluid": ["water", "air"], "solid": ["heater"]}
+    meshioplusplus.openfoam.write_region_properties(case, families)
+    text = (tmp_path / "constant" / "regionProperties").read_text()
+    assert "class       dictionary;" in text
+    assert "object      regionProperties;" in text
+    assert "regions\n(\n    fluid (water air)\n    solid (heater)\n);" in text
+    assert meshioplusplus.openfoam.read_region_properties(case) == families
+    # a case directory names the same file; the order of the families is kept
+    assert list(meshioplusplus.openfoam.read_region_properties(tmp_path)) == [
+        "fluid",
+        "solid",
+    ]
+    meshioplusplus.openfoam.write_region_properties(tmp_path, {"b": ["x"], "a": ["y"]})
+    assert list(meshioplusplus.openfoam.read_region_properties(case)) == ["b", "a"]
+
+
+def test_foamlib_reads_our_region_properties(tmp_path):
+    foamlib = pytest.importorskip("foamlib")
+    meshioplusplus.openfoam.write_region_properties(
+        tmp_path, {"fluid": ["water", "air"], "solid": ["heater"]}
+    )
+    regions = foamlib.FoamFile(tmp_path / "constant" / "regionProperties")["regions"]
+    assert list(regions) == ["fluid", ["water", "air"], "solid", ["heater"]]
+
+
+def test_region_properties_reader_takes_what_a_solver_setup_holds(tmp_path):
+    (tmp_path / "constant").mkdir()
+    (tmp_path / "constant" / "regionProperties").write_text(
+        "FoamFile { version 2.0; format ascii; class dictionary; "
+        "object regionProperties; }\n"
+        "// the regions\n"
+        "regions\n(\n  fluid ( bottomAir topAir ) /* two */\n  solid (heater)\n);\n"
+    )
+    assert meshioplusplus.openfoam.read_region_properties(tmp_path) == {
+        "fluid": ["bottomAir", "topAir"],
+        "solid": ["heater"],
+    }
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        {},
+        {"fluid": []},
+        {"fluid": ["a b"]},
+        {"fluid": [".hidden"]},
+        {"fluid": ["a/b"]},
+        {"fluid": ["a;"]},
+        {"": ["a"]},
+        {"fluid": ["a"], "solid": ["a"]},
+        {"fluid": ["a", "a"]},
+    ],
+)
+def test_region_properties_refuses_what_a_solver_could_not_read(tmp_path, regions):
+    with pytest.raises(Exception, match="OpenFOAM"):
+        meshioplusplus.openfoam.write_region_properties(tmp_path, regions)
+    assert not (tmp_path / "constant" / "regionProperties").exists()
+
+
+def test_region_properties_reader_refuses_a_missing_or_malformed_file(tmp_path):
+    with pytest.raises(Exception, match="no .*regionProperties"):
+        meshioplusplus.openfoam.read_region_properties(tmp_path)
+    (tmp_path / "constant").mkdir()
+    for body in ("regions ( fluid water );", "regions ( fluid (water );", "x 1;"):
+        (tmp_path / "constant" / "regionProperties").write_text(body)
+        with pytest.raises(Exception, match="regionProperties"):
+            meshioplusplus.openfoam.read_region_properties(tmp_path)
+
+
+def test_write_region_family_builds_the_file_region_by_region(tmp_path):
+    case = tmp_path / "case.foam"
+    for region, family in (("water", "fluid"), ("air", "fluid"), ("heater", "solid")):
+        meshioplusplus.openfoam.write(
+            case, _grid(1), region=region, region_family=family
+        )
+    # writing a region again does not repeat it
+    meshioplusplus.openfoam.write(case, _grid(1), region="air", region_family="fluid")
+    assert meshioplusplus.openfoam.read_region_properties(case) == {
+        "fluid": ["water", "air"],
+        "solid": ["heater"],
+    }
+    with pytest.raises(ValueError, match="already listed under 'fluid'"):
+        meshioplusplus.openfoam.write(
+            case, _grid(1), region="air", region_family="solid"
+        )
+    with pytest.raises(ValueError, match="region_family needs region"):
+        meshioplusplus.openfoam.write(case, _grid(1), region_family="fluid")
+    # every region reads back through the regions the file names
+    for names in meshioplusplus.openfoam.read_region_properties(case).values():
+        for name in names:
+            assert len(meshioplusplus.openfoam.read(case, region=name).points) == 8
+
+
+def test_multi_region_error_names_the_regions_of_region_properties(tmp_path):
+    meshioplusplus.openfoam.write_region_properties(tmp_path, {"fluid": ["a", "b"]})
+    with pytest.raises(Exception, match="multi-region case.*a, b"):
+        meshioplusplus.openfoam.read(tmp_path / "case.foam")

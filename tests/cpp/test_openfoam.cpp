@@ -1776,3 +1776,70 @@ TEST(OpenFoamFields, AnUnsupportedArchWidthInAFieldFileIsRefused) {
     std::error_code ec;
     fs::remove_all(base, ec);
 }
+
+// Roadmap 3.3.3: `constant/regionProperties`, written only on request and read back in order.
+TEST(OpenFoamRegionProperties, WrittenOnRequestAndReadBackInOrder) {
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamInfo info;
+    meshioplusplus::write_openfoam_region((base / "case.foam").string(), foam_test_grid(1), info,
+                                          {}, "water");
+    EXPECT_FALSE(fs::exists(base / "constant" / "regionProperties"));
+
+    const std::vector<meshioplusplus::OpenFoamRegionGroup> groups = {{"fluid", {"water", "air"}},
+                                                                     {"solid", {"heater"}}};
+    meshioplusplus::write_openfoam_region_properties((base / "case.foam").string(), groups);
+    std::ifstream in(base / "constant" / "regionProperties");
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("regions\n(\n    fluid (water air)\n    solid (heater)\n);"),
+              std::string::npos);
+    EXPECT_NE(text.find("object      regionProperties;"), std::string::npos);
+
+    for (const std::string& path : {(base / "case.foam").string(), base.string()}) {
+        const auto back = meshioplusplus::read_openfoam_region_properties(path);
+        ASSERT_EQ(back.size(), 2u);
+        EXPECT_EQ(back[0].mFamily, "fluid");
+        EXPECT_EQ(back[0].mRegions, (std::vector<std::string>{"water", "air"}));
+        EXPECT_EQ(back[1].mFamily, "solid");
+        EXPECT_EQ(back[1].mRegions, (std::vector<std::string>{"heater"}));
+    }
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamRegionProperties, RefusesWhatASolverCouldNotReadAndMalformedFiles) {
+    const fs::path base = temp_case_dir();
+    const std::string path = (base / "case.foam").string();
+    using Groups = std::vector<meshioplusplus::OpenFoamRegionGroup>;
+    EXPECT_THROW(meshioplusplus::write_openfoam_region_properties(path, Groups{}),
+                 meshioplusplus::WriteError);
+    for (const Groups& bad :
+         {Groups{{"fluid", {}}}, Groups{{"fluid", {"a b"}}}, Groups{{"fluid", {".hidden"}}},
+          Groups{{"fluid", {"a/b"}}}, Groups{{"", {"a"}}},
+          Groups{{"fluid", {"a"}}, {"fluid", {"b"}}}, Groups{{"fluid", {"a"}}, {"solid", {"a"}}}})
+        EXPECT_THROW(meshioplusplus::write_openfoam_region_properties(path, bad),
+                     meshioplusplus::WriteError);
+    EXPECT_FALSE(fs::exists(base / "constant" / "regionProperties"));
+    EXPECT_THROW(meshioplusplus::write_openfoam_region_properties(
+                     (base / "constant" / "polyMesh").string(), Groups{{"fluid", {"a"}}}),
+                 meshioplusplus::WriteError);
+
+    EXPECT_THROW(meshioplusplus::read_openfoam_region_properties(path), meshioplusplus::ReadError);
+    fs::create_directories(base / "constant");
+    for (const char* body : {"regions ( fluid water );", "regions ( fluid (water );", "x 1;"}) {
+        std::ofstream(base / "constant" / "regionProperties") << body;
+        EXPECT_THROW(meshioplusplus::read_openfoam_region_properties(path),
+                     meshioplusplus::ReadError)
+            << body;
+    }
+    // the multi-region error names the regions the file lists when no directory exists yet
+    std::ofstream(base / "constant" / "regionProperties") << "regions ( fluid (a b) );";
+    meshioplusplus::OpenFoamInfo info;
+    try {
+        meshioplusplus::read_openfoam(path, info);
+        FAIL() << "expected a ReadError";
+    } catch (const meshioplusplus::ReadError& rException) {
+        EXPECT_NE(std::string(rException.what()).find("a, b"), std::string::npos);
+    }
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
