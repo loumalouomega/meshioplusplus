@@ -139292,7 +139292,9 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     // in that block, so a field's per-patch values can be attached to the right cell.
     struct BoundaryFaceDest {
         std::size_t mSize = 0;
-        std::size_t mRow = npos;
+        // Not `npos`: MSVC rejects a local class whose initializer names a local of the
+        // enclosing function (C2672 on `std::construct_at`).
+        std::size_t mRow = static_cast<std::size_t>(-1);
     };
     std::vector<std::vector<BoundaryFaceDest>> patch_dest(boundary.size());
     std::map<std::size_t, std::size_t> dest_rows;  // vertex count -> rows handed out so far
