@@ -6,9 +6,10 @@ import pathlib
 import struct
 import zlib
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus import _core
 from meshioplusplus.xplt import _xplt as py_xplt
 
