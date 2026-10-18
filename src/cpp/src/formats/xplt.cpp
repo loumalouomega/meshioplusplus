@@ -1233,6 +1233,88 @@ struct XwBlock {
     std::vector<std::int64_t> mConn;  // file order
 };
 
+/// A surface, facet set or edge to write: its name and facets (node count, nodes).
+struct XwFacets {
+    std::string mName;
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mFacets;
+};
+
+/// The id of block @p Block when every cell carries one positive integer in the
+/// cell data @p pKey, else 0.
+std::int64_t xw_marker(const Mesh& rMesh, const char* pKey, std::size_t Block, std::size_t Count) {
+    if (Count == 0 || !rMesh.HasCellData(pKey) || Block >= rMesh.NumCellBlocks())
+        return 0;
+    const NDArray& a = rMesh.CellData(pKey, Block);
+    if (a.Size() != Count ||
+        a.Dtype() == DType::Float32 || a.Dtype() == DType::Float64)
+        return 0;
+    const detail::Int64View view(a);
+    for (std::size_t i = 1; i < Count; ++i)
+        if (view.Data()[i] != view.Data()[0])
+            return 0;
+    return std::max<std::int64_t>(view.Data()[0], 0);
+}
+
+int xw_surface_nodes(const std::string& rType) {
+    static const std::map<std::string, int> kMap = {{"triangle", 3},  {"quad", 4},
+                                                    {"triangle6", 6}, {"triangle7", 7},
+                                                    {"quad8", 8},     {"quad9", 9},
+                                                    {"triangle10", 10}};
+    const auto it = kMap.find(rType);
+    return it == kMap.end() ? 0 : it->second;
+}
+
+int xw_edge_nodes(const std::string& rType) {
+    return rType == "line" ? 2 : rType == "line3" ? 3 : 0;
+}
+
+/// The chunk ids of one facet section: section, item, header, id, size, name,
+/// widest facet, list and leaf.
+struct XwFacetTags {
+    std::uint32_t mSection, mItem, mHeader, mId, mSize, mName, mWidest, mList, mLeaf;
+};
+constexpr XwFacetTags kXwSurfaceTags = {0x01043000, 0x01043100, 0x01043101, 0x01043102, 0x01043103,
+                                        0x01043104, 0x01043105, 0x01043200, 0x01043201};
+constexpr XwFacetTags kXwFacetsetTags = {0x01047000, 0x01047100, 0x01047101, 0x01047102, 0x01047104,
+                                         0x01047103, 0x01047105, 0x01047200, 0x01047201};
+constexpr XwFacetTags kXwEdgeTags = {0x01048000, 0x01048100, 0x01048101, 0x01048102, 0x01048103,
+                                     0x01048104, 0x01048105, 0x01048200, 0x01048201};
+constexpr std::size_t kXwFacetsetPad = 10;  // a facet set's leaves are padded to this many nodes
+constexpr std::size_t kXwEdgePad = 3;
+
+/// A section of surfaces, facet sets or edges: FEBio's header (id, size, name,
+/// widest facet) and a list of [facet id, node count, nodes] leaves, padded to
+/// @p Pad nodes (the widest facet when 0).
+std::string xw_facet_section(const std::vector<XwFacets>& rItems, const XwFacetTags& rTags,
+                             std::size_t Pad) {
+    if (rItems.empty())
+        return {};
+    std::string out;
+    std::uint32_t k = 0;
+    for (const XwFacets& item : rItems) {
+        ++k;
+        std::size_t width = Pad;
+        if (width == 0)
+            for (const auto& facet : item.mFacets)
+                width = std::max(width, facet.first);
+        const std::string head = xw_u32_chunk(rTags.mId, k) +
+                                 xw_u32_chunk(rTags.mSize,
+                                              static_cast<std::uint32_t>(item.mFacets.size())) +
+                                 xw_chunk(rTags.mName, xw_string(item.mName)) +
+                                 xw_u32_chunk(rTags.mWidest, static_cast<std::uint32_t>(width));
+        std::string leaves;
+        std::int64_t f = 0;
+        for (const auto& [nn, nodes] : item.mFacets) {
+            std::vector<std::int64_t> row = {++f, static_cast<std::int64_t>(nn)};
+            row.insert(row.end(), nodes.begin(), nodes.end());
+            row.resize(2 + width, 0);
+            leaves += xw_chunk(rTags.mLeaf, xw_ints(row));
+        }
+        out += xw_chunk(rTags.mItem, xw_chunk(rTags.mHeader, head) + xw_chunk(rTags.mList, leaves));
+    }
+    return xw_chunk(rTags.mSection, out);
+}
+
 struct XwDomain {
     std::string mName;
     std::int64_t mPart = 0;
@@ -1295,12 +1377,27 @@ public:
                     mPoints[i * 3 + k] = view.Data()[i * width + k];
         }
         std::map<std::string, std::size_t> skipped;
+        // Surface and edge ids -> their blocks (first cell, block index).
+        std::map<std::int64_t, std::vector<std::pair<std::size_t, std::size_t>>> surface_blocks,
+            edge_blocks;
         std::size_t base = 0;
         std::int64_t eid = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
             const std::size_t count = cb.NumCells();
             const std::string type = cb.Type();
+            const bool is_surface = xw_surface_nodes(type) > 0;
+            const std::int64_t carrier =
+                is_surface ? xw_marker(rMesh, "xplt:surface", b, count)
+                           : (xw_edge_nodes(type) > 0 ? xw_marker(rMesh, "xplt:edge", b, count)
+                                                      : 0);
+            if (carrier > 0) {
+                (is_surface ? surface_blocks : edge_blocks)[carrier].emplace_back(base, b);
+                for (std::size_t r = 0; r < count; ++r)
+                    mCarrierCells.insert(base + r);
+                base += count;
+                continue;
+            }
             if (xw_element_type(type) < 0) {
                 if (count > 0)
                     skipped[type] += count;
@@ -1337,12 +1434,27 @@ public:
             log::warn("FEBio .xplt: {} '{}' cell(s) are not written", count, type);
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
             mRegions.push_back(i);
+        Carriers(rMesh, surface_blocks, "Surface", mSurfaces);
+        Carriers(rMesh, edge_blocks, "Edge", mEdges);
+        FacetSets(rMesh);
         Names(rMesh);
         Variables(rMesh);
         mSignature = std::to_string(mN);
         for (const XwBlock& blk : mBlocks)
             mSignature += "|" + blk.mType + ":" + std::to_string(blk.mCount) + ":" +
                           std::to_string(blk.mNodes) + ":" + std::to_string(blk.mFirst);
+        for (const auto* list : {&mSurfaces, &mEdges, &mFacetSets}) {
+            mSignature += "@";
+            for (const XwFacets& item : *list) {
+                mSignature += item.mName + ":";
+                for (const auto& [nn, nodes] : item.mFacets) {
+                    mSignature += std::to_string(nn) + "(";
+                    for (const std::int64_t v : nodes)
+                        mSignature += std::to_string(v) + ",";
+                    mSignature += ")";
+                }
+            }
+        }
         for (const auto& group : mVars) {
             mSignature += "#";
             for (const XwVar& v : group)
@@ -1420,7 +1532,10 @@ public:
                     continue;
                 std::vector<std::int64_t> ids;
                 const detail::Int64View entries(reg.mEntries);
+                bool all_carriers = reg.mEntries.Size() > 0;
                 for (std::size_t e = 0; e < reg.mEntries.Size(); ++e) {
+                    if (mCarrierCells.count(static_cast<std::size_t>(entries.Data()[e])) == 0)
+                        all_carriers = false;
                     const std::int64_t v = entries.Data()[e];
                     if (Kind == RegionKind::Point) {
                         if (v >= 0 && static_cast<std::size_t>(v) < mN)
@@ -1431,6 +1546,9 @@ public:
                             ids.push_back(it->second);
                     }
                 }
+                // A surface or edge is written as one, not as an element set.
+                if (Kind == RegionKind::Cell && ids.empty() && all_carriers)
+                    continue;
                 ++count;
                 out += xw_chunk(Item, xw_chunk(Hdr, xw_u32_chunk(Ident, count) +
                                                         xw_u32_chunk(Size, static_cast<std::uint32_t>(
@@ -1451,6 +1569,9 @@ public:
                                   xw_chunk(0x01045102, xw_name64(dom.mPartName)));
         if (!parts.empty())
             body += xw_chunk(0x01045000, parts);
+        body += xw_facet_section(mSurfaces, kXwSurfaceTags, 0);
+        body += xw_facet_section(mFacetSets, kXwFacetsetTags, kXwFacetsetPad);
+        body += xw_facet_section(mEdges, kXwEdgeTags, kXwEdgePad);
         return xw_chunk(0x01040000, body);
     }
 
@@ -1492,6 +1613,86 @@ public:
     }
 
 private:
+    /// Per surface (edge), in id order: its name -- the cell region holding
+    /// exactly its cells -- and facets.
+    void Carriers(const Mesh& rMesh,
+                  const std::map<std::int64_t, std::vector<std::pair<std::size_t, std::size_t>>>&
+                      rById,
+                  const char* pFallback, std::vector<XwFacets>& rOut) const {
+        std::size_t k = 0;
+        for (const auto& [id, blocks] : rById) {
+            ++k;
+            XwFacets item;
+            std::vector<std::int64_t> cells;
+            for (const auto& [first, b] : blocks) {
+                const auto cb = rMesh.Cells(b);
+                const std::size_t nn = cb.NodesPerCell();
+                const detail::Int64View conn(cb.Conn());
+                for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                    cells.push_back(static_cast<std::int64_t>(first + r));
+                    std::vector<std::int64_t> nodes(conn.Data() + r * nn, conn.Data() + (r + 1) * nn);
+                    for (const std::int64_t v : nodes)
+                        if (v < 0 || static_cast<std::size_t>(v) >= mN)
+                            throw WriteError("FEBio .xplt: a '" + cb.Type() +
+                                             "' cell refers to a point the mesh does not have");
+                    item.mFacets.emplace_back(nn, std::move(nodes));
+                }
+            }
+            std::sort(cells.begin(), cells.end());
+            item.mName = std::string(pFallback) + std::to_string(k);
+            for (const std::size_t i : mRegions) {
+                const auto& reg = rMesh.Region(i);
+                if (reg.mKind != RegionKind::Cell || reg.mEntries.Size() != cells.size())
+                    continue;
+                const detail::Int64View entries(reg.mEntries);
+                std::vector<std::int64_t> mine(entries.Data(), entries.Data() + cells.size());
+                std::sort(mine.begin(), mine.end());
+                if (mine == cells) {
+                    item.mName = reg.mName;
+                    break;
+                }
+            }
+            rOut.push_back(std::move(item));
+        }
+    }
+
+    /// Per side region no written surface is named after: the faces it names.
+    void FacetSets(const Mesh& rMesh) {
+        std::set<std::string> taken;
+        for (const XwFacets& item : mSurfaces)
+            taken.insert(item.mName);
+        for (const std::size_t i : mRegions) {
+            const auto& reg = rMesh.Region(i);
+            if (reg.mKind != RegionKind::Side || taken.count(reg.mName))
+                continue;
+            XwFacets item;
+            item.mName = reg.mName;
+            const detail::Int64View entries(reg.mEntries);
+            std::size_t dropped = 0;
+            for (std::size_t e = 0; e + 1 < reg.mEntries.Size(); e += 2) {
+                CellType type;
+                std::vector<std::int64_t> nodes;
+                if (!detail::facet_nodes(rMesh, entries.Data()[e], entries.Data()[e + 1], type,
+                                         nodes)) {
+                    ++dropped;
+                    continue;
+                }
+                const std::size_t nn = nodes.size();
+                if (nn != 3 && nn != 4 && (nn < 6 || nn > 10)) {
+                    ++dropped;
+                    continue;
+                }
+                item.mFacets.emplace_back(nn, std::move(nodes));
+            }
+            if (dropped)
+                log::warn(
+                    "FEBio .xplt: {} edge or missing facet(s) of the side region '{}' are not "
+                    "written",
+                    dropped, reg.mName);
+            mFacetSets.push_back(std::move(item));
+        }
+    }
+
     void Names(const Mesh& rMesh) {
         for (std::size_t k = 0; k < mBlocks.size(); ++k) {
             const XwBlock& blk = mBlocks[k];
@@ -1558,6 +1759,8 @@ private:
     std::vector<XwBlock> mBlocks;
     std::vector<XwDomain> mDomains;
     std::vector<std::size_t> mRegions;
+    std::vector<XwFacets> mSurfaces, mEdges, mFacetSets;
+    std::set<std::size_t> mCarrierCells;  // global cells written as a surface or edge facet
     std::map<std::size_t, std::int64_t> mNewIndex;
     std::array<std::vector<XwVar>, 3> mVars;
     std::string mSignature;

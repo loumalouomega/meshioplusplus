@@ -7,8 +7,15 @@ and the dictionary of variables, the mesh (nodes with ids, one domain per cell
 block, node sets, element sets, parts) and one state per step.
 
 Variables: point data are nodal variables, cell data are per-element domain
-variables (``FMT_ITEM``) and numeric field data are global variables. Facet
-surfaces, edges, side regions and vertices are not written.
+variables (``FMT_ITEM``) and numeric field data are global variables.
+
+Surfaces, edges and facet sets are the inverse of what the reader builds. A
+block of ``triangle``/``quad``-family (``line``/``line3``) cells carrying a
+positive ``xplt:surface`` (``xplt:edge``) cell-data id is not a domain: the
+blocks of one id are one surface (edge) named after the cell region holding
+exactly its cells, and the id is not a variable. Every ``side`` region that no
+written surface is named after becomes a facet set of the faces it names.
+Vertices, surface and edge variables and compression are not written.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import numpy as np
 
 from .._common import warn
 from .._exceptions import WriteError
+from .._facets import facet_nodes
 from .._files import is_buffer
 from .._node_order import from_meshio
 from .._regions import canonical_regions
@@ -48,6 +56,20 @@ _ELEM = {
     "pyramid13": 18,
     "line3": 19,
 }
+# Facet node counts FEBio's surfaces take, and the cell types that hold them.
+_SURFACE_NODES = {
+    "triangle": 3,
+    "quad": 4,
+    "triangle6": 6,
+    "triangle7": 7,
+    "quad8": 8,
+    "quad9": 9,
+    "triangle10": 10,
+}
+_EDGE_NODES = {"line": 2, "line3": 3}
+_FACET_WIDTH = {3, 4, 6, 7, 8, 9, 10}
+_FACETSET_PAD = 10  # a facet set's leaves are padded to this many nodes
+_EDGE_PAD = 3
 _GROUPS = (
     # (dictionary tag, state tag, storage format)
     ("global", 0x01021000, 0x02020100, 3),
@@ -84,6 +106,18 @@ def _i32(values):
     return np.asarray(values, dtype="<i4").tobytes()
 
 
+def _marker(mesh, key, b, count):
+    """The surface (edge) id of block ``b``: its ``key`` cell data when every
+    cell of the block carries the same positive integer, else 0."""
+    arrays = mesh.cell_data.get(key)
+    if arrays is None or b >= len(arrays) or not count:
+        return 0
+    a = np.asarray(arrays[b]).reshape(-1)
+    if a.dtype.kind not in "iu" or len(a) != count or (a != a[0]).any():
+        return 0
+    return max(int(a[0]), 0)
+
+
 class _Var:
     def __init__(self, name, width):
         self.name = name
@@ -106,10 +140,29 @@ class _Model:
         self.blocks = []  # (block index, cell type, conn in file order, first cell)
         skipped = {}
         self.new_index = {}  # global cell number -> element id (1-based)
+        carriers = {"surface": {}, "edge": {}}  # id -> [(first cell, rows)]
+        self.carrier_cells = set()
         base = 0
         eid = 1
         for b, block in enumerate(mesh.cells):
             data = np.asarray(block.data, dtype=np.int64)
+            carrier = None
+            if block.type in _SURFACE_NODES:
+                ident = _marker(mesh, "xplt:surface", b, len(data))
+                carrier = ("surface", ident) if ident else None
+            elif block.type in _EDGE_NODES:
+                ident = _marker(mesh, "xplt:edge", b, len(data))
+                carrier = ("edge", ident) if ident else None
+            if carrier is not None:
+                if data.min() < 0 or data.max() >= n:
+                    raise WriteError(
+                        f"FEBio .xplt: a '{block.type}' cell refers to a point the "
+                        "mesh does not have"
+                    )
+                carriers[carrier[0]].setdefault(carrier[1], []).append((base, data))
+                self.carrier_cells.update(range(base, base + len(data)))
+                base += len(data)
+                continue
             if block.type not in _ELEM:
                 if len(data):
                     skipped[block.type] = skipped.get(block.type, 0) + len(data)
@@ -127,17 +180,61 @@ class _Model:
             self.blocks.append((b, block.type, conn, base))
             base += len(data)
         self.ncells = base
+        self.regions = canonical_regions(mesh)
+        self.surfaces = self._carriers(carriers["surface"], "Surface")
+        self.edges = self._carriers(carriers["edge"], "Edge")
+        self.facetsets = self._facetsets(mesh)
         for ctype, count in skipped.items():
             warn(f"FEBio .xplt: {count} '{ctype}' cell(s) are not written")
-        self.regions = canonical_regions(mesh)
         self._names(mesh)
         self.vars = {"global": [], "node": [], "domain": []}
         self._variables(mesh)
         self.signature = (
             n,
             [(t, c.shape, s) for _, t, c, s in self.blocks],
+            [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.surfaces],
+            [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.edges],
+            [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.facetsets],
             {g: [v.key() for v in vs] for g, vs in self.vars.items()},
         )
+
+    def _carriers(self, by_id, fallback):
+        """Per surface (edge), in id order: (name, [(nodes per facet, nodes)])."""
+        by_cells = {}
+        for r in self.regions:
+            if r.kind == "cell":
+                by_cells.setdefault(tuple(sorted(np.asarray(r.entries).tolist())), r)
+        out = []
+        for k, ident in enumerate(sorted(by_id), start=1):
+            cells, facets = [], []
+            for first, data in by_id[ident]:
+                cells.extend(range(first, first + len(data)))
+                facets.extend((data.shape[1], row) for row in data.tolist())
+            match = by_cells.get(tuple(sorted(cells)))
+            out.append((match.name if match else f"{fallback}{k}", facets))
+        return out
+
+    def _facetsets(self, mesh):
+        """Per side region no written surface is named after: its faces."""
+        taken = {name for name, _ in self.surfaces}
+        out = []
+        for r in self.regions:
+            if r.kind != "side" or r.name in taken:
+                continue
+            facets, dropped = [], 0
+            for cell, facet in np.asarray(r.entries).reshape(-1, 2).tolist():
+                found = facet_nodes(mesh, cell, facet)
+                if found is None or len(found[1]) not in _FACET_WIDTH:
+                    dropped += 1
+                    continue
+                facets.append((len(found[1]), found[1]))
+            if dropped:
+                warn(
+                    f"FEBio .xplt: {dropped} edge or missing facet(s) of the side "
+                    f"region '{r.name}' are not written"
+                )
+            out.append((r.name, facets))
+        return out
 
     def _names(self, mesh):
         """Per domain: (name, part id)."""
@@ -257,7 +354,11 @@ class _Model:
             for r in self.regions:
                 if r.kind != kind:
                     continue
-                ids = members(np.asarray(r.entries).tolist())
+                entries = np.asarray(r.entries).tolist()
+                ids = members(entries)
+                if kind == "cell" and entries and not ids:
+                    if all(i in self.carrier_cells for i in entries):
+                        continue  # a surface or edge, written as one
                 count += 1
                 out += _chunk(
                     item,
@@ -302,7 +403,51 @@ class _Model:
         )
         if parts:
             body += _chunk(0x01045000, parts)
+        # (section, item, header, id, size, name), (widest, list, leaf), padding
+        body += self._facet_section(
+            self.surfaces,
+            (0x01043000, 0x01043100, 0x01043101, 0x01043102, 0x01043103, 0x01043104),
+            (0x01043105, 0x01043200, 0x01043201),
+            None,
+        )
+        body += self._facet_section(
+            self.facetsets,
+            (0x01047000, 0x01047100, 0x01047101, 0x01047102, 0x01047104, 0x01047103),
+            (0x01047105, 0x01047200, 0x01047201),
+            _FACETSET_PAD,
+        )
+        body += self._facet_section(
+            self.edges,
+            (0x01048000, 0x01048100, 0x01048101, 0x01048102, 0x01048103, 0x01048104),
+            (0x01048105, 0x01048200, 0x01048201),
+            _EDGE_PAD,
+        )
         return _chunk(0x01040000, body)
+
+    @staticmethod
+    def _facet_section(items, head_tags, list_tags, pad):
+        """A section of surfaces, facet sets or edges: FEBio's header (id, size,
+        name, widest facet) and a list of ``[facet id, node count, nodes]``
+        leaves, padded to ``pad`` nodes (the widest facet when ``None``)."""
+        if not items:
+            return b""
+        section, item, header, t_id, t_size, t_name = head_tags
+        t_widest, t_list, t_leaf = list_tags
+        out = b""
+        for k, (name, facets) in enumerate(items, start=1):
+            width = pad or max((nn for nn, _ in facets), default=0)
+            head = (
+                _chunk(t_id, _u32(k))
+                + _chunk(t_size, _u32(len(facets)))
+                + _chunk(t_name, _string(name))
+                + _chunk(t_widest, _u32(width))
+            )
+            leaves = b"".join(
+                _chunk(t_leaf, _i32([f + 1, nn] + list(nodes) + [0] * (width - nn)))
+                for f, (nn, nodes) in enumerate(facets)
+            )
+            out += _chunk(item, _chunk(header, head) + _chunk(t_list, leaves))
+        return _chunk(section, out)
 
     # -- one state -------------------------------------------------------------------
     def state_chunk(self, mesh, time, status=0):
