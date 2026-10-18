@@ -698,13 +698,14 @@ std::vector<detail::NastranCardRows> op2_read_elements(
                     card_bars.push_back(fword(10 + k));
             } else if (std::strcmp(spec->mCard, "CBEAM") == 0) {
                 // X1..X3 at words 6 to 8 when the flag at 9 names a vector (its low two bits:
-                // 0 basic, 1 global); PA and PB at 10 and 11; the offsets at 12 to 17.
-                const bool vector = (row[9] & 3) <= 1;
-                if (!vector)
+                // 0 basic, 1 global), the G0 at word 6 when it is 2; PA and PB at 10 and 11;
+                // the offsets at 12 to 17.
+                const std::int64_t low = row[9] & 3;
+                if (low == 3)
                     ++grid_oriented;
                 for (std::size_t k = 0; k < 3; ++k)
-                    card_bars.push_back(vector ? fword(6 + k) : 0.0);
-                card_bars.push_back(0.0);
+                    card_bars.push_back(low <= 1 ? fword(6 + k) : 0.0);
+                card_bars.push_back(low == 2 ? static_cast<double>(row[6]) : 0.0);
                 card_bars.push_back(static_cast<double>(row[10]));
                 card_bars.push_back(static_cast<double>(row[11]));
                 for (std::size_t k = 0; k < 6; ++k)
@@ -740,7 +741,7 @@ std::vector<detail::NastranCardRows> op2_read_elements(
     }
     if (grid_oriented > 0)
         log::warn(
-            "{}: {} CBEAM element(s) are oriented by a grid or a local system; their X "
+            "{}: {} CBEAM element(s) are oriented by a local system; their X "
             "vector is read as zeros",
             kOp2Who, grid_oriented);
     if (element_oriented > 0)
@@ -3352,8 +3353,9 @@ public:
                     op2w_fail("a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0");
             const std::size_t cbeam = op2w_card_index("CBEAM");
             for (std::size_t i = 0; i < blk.mCount; ++i)
-                if (keep[i] && blk.mCards[i] == cbeam && !rMesh.HasCellData("nastran:x"))
-                    op2w_fail("a CBEAM needs its orientation: nastran:x");
+                if (keep[i] && blk.mCards[i] == cbeam && !rMesh.HasCellData("nastran:x") &&
+                    !rMesh.HasCellData("nastran:g0"))
+                    op2w_fail("a CBEAM needs its orientation: nastran:x, or nastran:g0 for a G0");
             const std::size_t cbush = op2w_card_index("CBUSH");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cbush && !rMesh.HasCellData("nastran:x") &&
@@ -3410,9 +3412,6 @@ public:
             read_field("nastran:g0", {cbar, cbeam, cbush}, 3, 1);
             read_field("nastran:pin", {cbar, cbeam}, 4, 2);
             read_field("nastran:w", {cbar, cbeam}, 6, 6);
-            for (std::size_t i = 0; i < blk.mCount; ++i)
-                if (keep[i] && blk.mCards[i] == cbeam && blk.mBar[i * 12 + 3] != 0.0)
-                    op2w_fail("a CBEAM oriented by a G0 is not written yet");
             read_field("nastran:k", {celas2}, 0, 1);
             read_field("nastran:ge", {celas2}, 1, 1);
             read_field("nastran:s", {celas2}, 2, 1);
@@ -3606,12 +3605,18 @@ public:
                             w.F(10 + k, f[6 + k]);
                     }
                     if (std::string_view(card.mName) == "CBEAM") {
-                        // X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
-                        // 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
+                        // X1..X3 at 6 to 8 (flag 1: global) or the G0 at 6 with zero 7 and 8
+                        // (flag 2), the flag at 9, PA and PB at 10 and 11, the offsets at 12 to
+                        // 17; the scalar ends SA and SB stay zero.
                         const double* f = blk.mBar.data() + row.mRow * 12;
-                        for (std::size_t k = 0; k < 3; ++k)
-                            w.F(6 + k, f[k]);
-                        w.I(9, 1);
+                        const auto g0 = static_cast<std::int64_t>(f[3]);
+                        if (g0 != 0) {
+                            w.I(6, g0);
+                        } else {
+                            for (std::size_t k = 0; k < 3; ++k)
+                                w.F(6 + k, f[k]);
+                        }
+                        w.I(9, g0 != 0 ? 2 : 1);
                         w.I(10, static_cast<std::int64_t>(f[4]));
                         w.I(11, static_cast<std::int64_t>(f[5]));
                         for (std::size_t k = 0; k < 6; ++k)

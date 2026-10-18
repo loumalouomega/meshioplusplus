@@ -1386,16 +1386,64 @@ def test_the_engines_write_the_same_bytes_with_beams(tmp_path):
 
 def test_a_cbeam_needs_its_orientation(engine, tmp_path):
     mesh = _beam_mesh()
-    del mesh.cell_data["nastran:x"]
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
     with pytest.raises(Exception, match="orientation"):
         write_with(engine, tmp_path / "x.op2", mesh)
 
 
-def test_a_cbeam_oriented_by_a_grid_is_refused(engine, tmp_path):
+def _g0_beam_mesh():
+    """The beam mesh with a fourth point, GRID 4, as the G0 of its second CBEAM."""
     mesh = _beam_mesh()
-    mesh.cell_data["nastran:g0"] = [np.array([3, 0])]
-    with pytest.raises(Exception, match="G0"):
-        write_with(engine, tmp_path / "g0.op2", mesh)
+    mesh.points = np.vstack([mesh.points, [0.0, 1.0, 0.0]])
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 4])]
+    return mesh
+
+
+def test_a_cbeam_oriented_by_a_grid_round_trips(engine, tmp_path):
+    path = tmp_path / "cbeam_g0.op2"
+    write_with(engine, path, _g0_beam_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:g0"]), [0, 4]
+        )
+        np.testing.assert_allclose(
+            np.concatenate(back.cell_data["nastran:x"]), [[0, 0, 1], [0, 0, 0]]
+        )
+
+
+def test_the_engines_write_the_same_bytes_with_g0_beams(tmp_path):
+    mesh = _g0_beam_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cbeam_with_only_a_g0_is_written(engine, tmp_path):
+    mesh = _g0_beam_mesh()
+    del mesh.cell_data["nastran:x"]
+    mesh.cell_data["nastran:g0"] = [np.array([4, 4])]
+    write_with(engine, tmp_path / "only.op2", mesh)
+
+
+def test_pynastran_reads_the_g0_cbeams(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cbeam_g0.op2"
+    mesh = _g0_beam_mesh()
+    # pyNastran takes a CBEAM's orientation flag from the low bits of word 10 (PA), not
+    # word 9 where the record holds it, so it reads a G0 only when PA is 2.
+    mesh.cell_data["nastran:pin"] = [np.array([[0, 0], [2, 0]])]
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[40], model.elements[41]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    assert first.g0 is None
+    assert second.g0 == 4 and second.x is None
+    assert second.node_ids == [2, 3] and second.pa == 2
 
 
 def test_a_pbeam_needs_a_segment(engine, tmp_path):

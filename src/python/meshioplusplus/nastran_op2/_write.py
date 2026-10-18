@@ -830,11 +830,10 @@ class _Model:
                 if np.any(cards == card) and key not in mesh.cell_data:
                     _wfail(f"a {card} needs its value: {key}")
             if np.any(cards == "CBEAM"):
-                if raw_bar["x"] is None:
-                    _wfail("a CBEAM needs its orientation: nastran:x")
-                g0 = raw_bar["g0"]
-                if g0 is not None and np.any((cards == "CBEAM") & (g0[:, 0] != 0)):
-                    _wfail("a CBEAM oriented by a G0 is not written yet")
+                if raw_bar["x"] is None and raw_bar["g0"] is None:
+                    _wfail(
+                        "a CBEAM needs its orientation: nastran:x, or nastran:g0 for a G0"
+                    )
             if (
                 np.any(cards == "CBUSH")
                 and raw_bar["x"] is None
@@ -1052,10 +1051,15 @@ class _Model:
                     words[:, 9] = _f32(np.full(len(eid), 0.5))
                     words[:, 10] = _i32(np.full(len(eid), -1, dtype=np.int64))
                 if name == "CBEAM":
-                    # X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
-                    # 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
+                    # X1..X3 at 6 to 8 (flag 1: global) or the G0 at 6 with zero 7 and 8
+                    # (flag 2), the flag at 9, PA and PB at 10 and 11, the offsets at 12
+                    # to 17; the scalar ends SA and SB stay zero.
+                    g0 = bar[:, 3].astype(np.int64)
+                    flag = np.where(g0 != 0, 2, 1)
                     words[:, 6:9] = _f32(bar[:, 0:3])
-                    words[:, 9] = _i32(np.ones(len(eid), dtype=np.int64))
+                    words[flag == 2, 6] = _i32(g0[flag == 2])
+                    words[flag == 2, 7:9] = 0
+                    words[:, 9] = _i32(flag)
                     words[:, 10:12] = _i32(bar[:, 4:6].astype(np.int64))
                     words[:, 12:18] = _f32(bar[:, 6:12])
             records.append(_key(*key) + _bytes(words))

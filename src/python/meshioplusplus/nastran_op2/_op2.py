@@ -593,21 +593,24 @@ def _bush_payload(s, raw, rows):
 
 def _beam_payload(s, raw, rows):
     """The CBEAM fields of each row of a CBEAM record as float64 ``(n, 12)``, in the CBAR
-    layout: the orientation vector X1..X3 at words 6 to 8, the flag at word 9 (its low two
-    bits: 0 and 1 are vectors in basic and global coordinates), the pins PA and PB at 10
-    and 11, and the end offsets W1A..W3A and W1B..W3B at 12 to 17. A beam oriented by a
-    grid or a local system has no X vector here, so its X is read as zeros."""
+    layout: the orientation vector X1..X3 at words 6 to 8, or the G0 at word 6 (the flag at
+    word 9, its low two bits: 0 and 1 are vectors in basic and global coordinates, 2 a G0),
+    the pins PA and PB at 10 and 11, and the end offsets W1A..W3A and W1B..W3B at 12 to 17.
+    A beam oriented by a local system has no X vector here, so its X is read as zeros.
+    """
     floats = _floats(s, raw)[3:].reshape(rows.shape)
-    vector = (rows[:, 9] & 3) <= 1
-    if not vector.all():
+    low = rows[:, 9] & 3
+    vector = low <= 1
+    g0 = low == 2
+    if (low == 3).any():
         warn(
-            f"{WHO}: {int(np.count_nonzero(~vector))} CBEAM element(s) are oriented by a grid "
-            "or a local system; their X vector is read as zeros"
+            f"{WHO}: {int(np.count_nonzero(low == 3))} CBEAM element(s) are oriented by a "
+            "local system; their X vector is read as zeros"
         )
     return np.column_stack(
         [
             np.where(vector[:, None], floats[:, 6:9], 0.0),
-            np.zeros(len(rows)),
+            np.where(g0, rows[:, 6], 0).astype(np.float64),
             rows[:, 10:12].astype(np.float64),
             floats[:, 12:18],
         ]
