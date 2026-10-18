@@ -312,7 +312,8 @@ MESHIOPLUSPLUS_API void write_openfoam_region(const std::string& rPath, const Me
  *        processor named in `cell_data["partition:part"]` (`meshioplusplus.partition_labels`), with
  *        `processor` patches between neighbours, the four `*ProcAddressing` lists the reader
  *        reassembles the global case from, and each processor's share of the fields in
- *        `processorN/0/`. Zones are not decomposed. Write into a fresh directory: a serial
+ *        `processorN/0/`. Zones (`cellZones`/`faceZones`/`pointZones`) are written per processor
+ *        in processor-local ids and merged back on read. Write into a fresh directory: a serial
  *        `constant/polyMesh` beside the processors is the one a reader prefers.
  * @throws WriteError as `write_openfoam`, and without `partition:part` labels
  */

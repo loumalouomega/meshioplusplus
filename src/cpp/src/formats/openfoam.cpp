@@ -735,6 +735,10 @@ struct RawPolyMesh {
     /// and the face's offset within that processor's copy of the patch -- where a field's patch
     /// values live.
     std::vector<std::vector<std::pair<std::size_t, std::int64_t>>> mBoundarySource;
+    /// Decomposed cases only: the decomposed case's global face id (the `faceProcAddressing`
+    /// number, minus one) -> this reconstruction's face index; -1 for a face not reconstructed
+    /// (a `processor` patch face).
+    std::vector<std::int64_t> mFaceOfGlobal;
 };
 
 /// Refuse a polyMesh whose lists disagree, before anything indexes one list
@@ -900,7 +904,8 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
     }
 
     std::vector<Face> internal_faces;
-    std::vector<std::int64_t> internal_owner, internal_neighbour;
+    std::vector<std::int64_t> internal_owner, internal_neighbour, internal_gids;
+    std::map<std::int64_t, std::vector<std::int64_t>> patch_gids;
     // Global patch id -> its (name, type) plus the member faces' node rings
     // and owner cells, in the order they are found.
     std::map<std::int64_t, Patch> patch_table;
@@ -938,6 +943,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
             internal_faces.push_back(std::move(gf));
             internal_owner.push_back(owner_cell);
             internal_neighbour.push_back(neigh_cell);
+            internal_gids.push_back(static_cast<std::int64_t>(g));
             continue;
         }
 
@@ -950,6 +956,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
                 internal_faces.push_back(std::move(gf));
                 internal_owner.push_back(owner_cell);
                 internal_neighbour.push_back(op.mCellAddr[static_cast<std::size_t>(local_neigh)]);
+                internal_gids.push_back(static_cast<std::int64_t>(g));
                 continue;
             }
         }
@@ -976,6 +983,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         }
         patch_faces[global_patch].push_back(std::move(gf));
         patch_owners[global_patch].push_back(owner_cell);
+        patch_gids[global_patch].push_back(static_cast<std::int64_t>(g));
         patch_sources[global_patch].emplace_back(
             static_cast<std::size_t>(owner_claim->mProc),
             owner_claim->mLocalFace - op.mRaw.mBoundary[local_patch].mStartFace);
@@ -992,8 +1000,15 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
     out.mFaces = std::move(internal_faces);
     out.mOwner = internal_owner;
     out.mNeighbour = std::move(internal_neighbour);
+    out.mFaceOfGlobal.assign(n_faces, -1);
+    for (std::size_t i = 0; i < internal_gids.size(); ++i)
+        out.mFaceOfGlobal[static_cast<std::size_t>(internal_gids[i])] =
+            static_cast<std::int64_t>(i);
     for (auto& kv : patch_table) {
         kv.second.mStartFace = static_cast<std::int64_t>(out.mFaces.size());
+        for (std::size_t j = 0; j < patch_gids[kv.first].size(); ++j)
+            out.mFaceOfGlobal[static_cast<std::size_t>(patch_gids[kv.first][j])] =
+                kv.second.mStartFace + static_cast<std::int64_t>(j);
         for (Face& f : patch_faces[kv.first])
             out.mFaces.push_back(std::move(f));
         for (std::int64_t c : patch_owners[kv.first])
@@ -1003,6 +1018,66 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         out.mBoundarySource.push_back(std::move(patch_sources[kv.first]));
     }
     return out;
+}
+
+/// One `cellZones`/`faceZones`/`pointZones` file; empty when the file is absent.
+std::vector<Zone> foam_read_zone_file(const fs::path& rPath, const char* pKey) {
+    if (!fs::exists(rPath))
+        return {};
+    const detail::FileSource source = read_whole(rPath.string());
+    const FoamFormat fmt = detect_format(source.View());
+    // strip_comments_and_header's comment-removal pass scans the whole body and is unsafe over
+    // raw id bytes -- see parse_zone_file_binary's own doc comment.
+    if (fmt.mBinary)
+        return parse_zone_file_binary(source.View(), pKey, fmt.mLabelBytes);
+    return parse_zone_file(strip_comments_and_header(source.View()), pKey);
+}
+
+/// A decomposed case's zones of one kind, back in the global numbering: each processor's
+/// `<file>` ids go through that processor's `<kind>ProcAddressing` (a face's, through the signed
+/// `faceProcAddressing` and then @p pFaceOfGlobal), and a zone's members from every processor are
+/// merged, sorted and made unique -- a face on a processor boundary is listed by both. Zones keep
+/// the order they first appear in. An id no addressing entry covers is dropped, as is a face that
+/// the reconstruction did not keep (a `processor` patch face).
+std::vector<Zone> foam_read_decomposed_zones(const fs::path& rCaseRoot,
+                                             const std::vector<std::size_t>& rProcIds,
+                                             const char* pFile, const char* pKey,
+                                             const char* pAddressing,
+                                             const std::vector<std::int64_t>* pFaceOfGlobal) {
+    std::vector<std::string> order;
+    std::map<std::string, std::set<std::int64_t>> merged;
+    for (const std::size_t proc : rProcIds) {
+        const fs::path poly =
+            rCaseRoot / ("processor" + std::to_string(proc)) / "constant" / "polyMesh";
+        const std::vector<Zone> zones = foam_read_zone_file(poly / pFile, pKey);
+        if (zones.empty())
+            continue;
+        const std::vector<std::int64_t> addr = read_int_list(poly / pAddressing);
+        for (const Zone& z : zones) {
+            if (!merged.count(z.mName))
+                order.push_back(z.mName);
+            std::set<std::int64_t>& out = merged[z.mName];
+            for (const std::int64_t local : z.mIds) {
+                if (local < 0 || static_cast<std::size_t>(local) >= addr.size())
+                    continue;
+                std::int64_t id = addr[static_cast<std::size_t>(local)];
+                if (pFaceOfGlobal) {
+                    const std::int64_t g = std::abs(id) - 1;
+                    if (g < 0 || static_cast<std::size_t>(g) >= pFaceOfGlobal->size())
+                        continue;
+                    id = (*pFaceOfGlobal)[static_cast<std::size_t>(g)];
+                    if (id < 0)
+                        continue;
+                }
+                out.insert(id);
+            }
+        }
+    }
+    std::vector<Zone> result;
+    for (const std::string& name : order)
+        result.push_back(
+            {name, std::vector<std::int64_t>(merged[name].begin(), merged[name].end())});
+    return result;
 }
 
 // ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
@@ -1728,6 +1803,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     std::vector<std::int64_t> owner = std::move(raw.mOwner);
     std::vector<std::int64_t> neighbour = std::move(raw.mNeighbour);
     std::vector<Patch> boundary = std::move(raw.mBoundary);
+    const std::vector<std::int64_t> raw_face_of_global = std::move(raw.mFaceOfGlobal);
 
     std::int64_t owner_max = -1, neigh_max = -1;
     for (std::int64_t v : owner)
@@ -1925,22 +2001,16 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
             return -1;
         };
 
+        // A decomposed case keeps its zones per processor, in processor-local ids.
         auto read_zone_file = [&](const char* pFile, const char* pKey) {
-            std::vector<Zone> zones;
-            const fs::path zone_path = poly / pFile;
-            if (!fs::exists(zone_path))
-                return zones;
-            const detail::FileSource source = read_whole(zone_path.string());
-            const FoamFormat zone_fmt = detect_format(source.View());
-            if (zone_fmt.mBinary) {
-                // strip_comments_and_header's comment-removal pass scans the
-                // whole body and is unsafe over raw id bytes -- see
-                // parse_zone_file_binary's own doc comment.
-                zones = parse_zone_file_binary(source.View(), pKey, zone_fmt.mLabelBytes);
-            } else {
-                zones = parse_zone_file(strip_comments_and_header(source.View()), pKey);
-            }
-            return zones;
+            if (!decomposed)
+                return foam_read_zone_file(poly / pFile, pKey);
+            const std::string file = pFile;
+            return foam_read_decomposed_zones(case_root, proc_ids, pFile, pKey,
+                                              file == "cellZones"    ? "cellProcAddressing"
+                                              : file == "pointZones" ? "pointProcAddressing"
+                                                                     : "faceProcAddressing",
+                                              file == "faceZones" ? &raw_face_of_global : nullptr);
         };
 
         for (const Zone& z : read_zone_file("cellZones", "cellLabels")) {
@@ -3122,6 +3192,12 @@ struct FoamLocalFace {
     bool mFlipped = false;
 };
 
+/// The zones of a mesh in the serial case's numbering (compact cell ids, point ids, written face
+/// ids), which a decomposed write splits per processor.
+struct FoamZonesOut {
+    std::vector<FoamZoneOut> mCell, mPoint, mFace;
+};
+
 void foam_emit_label_list(const fs::path& rFile, const char* pObject,
                           const std::vector<std::int64_t>& rValues,
                           const OpenFoamWriteOptions& rOpts) {
@@ -3147,7 +3223,8 @@ void foam_emit_label_list(const fs::path& rFile, const char* pObject,
 void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                            const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
                            const FoamPatchAssignment& rAssign, const OpenFoamWriteOptions& rOpts,
-                           const std::vector<std::int64_t>& rParts, const std::string& rTime) {
+                           const std::vector<std::int64_t>& rParts, const std::string& rTime,
+                           const FoamZonesOut& rZones) {
     const fs::path given(rPath);
     const fs::path root = given.extension() == ".foam" ? given.parent_path() : given;
     if (fs::exists(root / "constant" / "polyMesh"))
@@ -3341,6 +3418,45 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         foam_emit_label_list(poly / "boundaryProcAddressing", "boundaryProcAddressing",
                              boundary_addr, rOpts);
 
+        // This processor's zones, as decomposePar writes them: every zone on every processor
+        // (an empty list where it has no member), with processor-local ids. A face on a
+        // processor boundary is in both processors' zones.
+        {
+            std::vector<std::int64_t> face_local(nfaces, -1);
+            for (std::size_t li = 0; li < all.size(); ++li)
+                face_local[static_cast<std::size_t>(all[li].mSerial)] =
+                    static_cast<std::int64_t>(li);
+            auto localize = [&](const std::vector<FoamZoneOut>& rGlobal,
+                                const std::vector<std::int64_t>& rMap) {
+                std::vector<FoamZoneOut> local;
+                for (const auto& [name, ids] : rGlobal) {
+                    FoamZoneOut z{name, {}};
+                    for (const std::int64_t g : ids) {
+                        const std::int64_t l = rMap[static_cast<std::size_t>(g)];
+                        if (l >= 0)
+                            z.second.push_back(l);
+                    }
+                    local.push_back(std::move(z));
+                }
+                return local;
+            };
+            auto emit = [&](const char* pFile, const std::vector<FoamZoneOut>& rLocal,
+                            const char* pClass, const char* pType, const char* pKey) {
+                if (rLocal.empty()) {
+                    std::error_code rc;
+                    fs::remove(poly / pFile, rc);
+                    return;
+                }
+                foam_write_zone_file(poly / pFile, pClass, pFile, pType, pKey, rLocal, rOpts);
+            };
+            emit("cellZones", localize(rZones.mCell, cell_local), "cellZoneList", "cellZone",
+                 "cellLabels");
+            emit("pointZones", localize(rZones.mPoint, point_local), "pointZoneList", "pointZone",
+                 "pointLabels");
+            emit("faceZones", localize(rZones.mFace, face_local), "faceZoneList", "faceZone",
+                 "faceLabels");
+        }
+
         // this processor's share of the fields
         std::vector<FoamFieldOut> local;
         for (const FoamFieldOut& field : fields) {
@@ -3456,8 +3572,18 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         throw WriteError("OpenFOAM: internal error, the written face order violates " + bad);
 
     if (Mode == FoamWriteMode::Decomposed) {
+        std::unordered_map<std::int64_t, std::int64_t> global_to_compact;
+        for (std::size_t c = 0; c < faces.mCellToGlobal.size(); ++c)
+            global_to_compact[faces.mCellToGlobal[c]] = static_cast<std::int64_t>(c);
+        std::vector<std::int64_t> old_to_new(faces.NumFaces());
+        for (std::size_t i = 0; i < order.mNewToOld.size(); ++i)
+            old_to_new[static_cast<std::size_t>(order.mNewToOld[i])] = static_cast<std::int64_t>(i);
+        FoamZonesOut zones;
+        zones.mCell = foam_collect_cell_zones(rMesh, global_to_compact);
+        zones.mPoint = foam_collect_point_zones(rMesh);
+        zones.mFace = foam_collect_face_zones(rMesh, faces, global_to_compact, old_to_new);
         foam_write_decomposed(rPath, rMesh, faces, order, assign, rOpts, *rTarget.mParts,
-                              rTarget.mTime);
+                              rTarget.mTime, zones);
         return;
     }
 

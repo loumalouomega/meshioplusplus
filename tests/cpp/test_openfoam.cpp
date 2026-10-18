@@ -1419,6 +1419,95 @@ TEST(OpenFoamWriter, DecomposedCaseReassemblesAndRegionsAndSeriesWrite) {
     fs::remove_all(base, ec);
 }
 
+// Roadmap 3.3.3: zones in a decomposed case. Each processor writes every zone in its own ids; the
+// reader merges them back through the `*ProcAddressing` lists, so the reconstruction names the same
+// cells, points and faces as the serial case does.
+namespace {
+
+// A zone's entries as sorted rows (pairs for a side zone), so two meshes compare by content.
+std::map<std::string, std::vector<std::int64_t>> zone_entries(const meshioplusplus::Mesh& rMesh) {
+    std::map<std::string, std::vector<std::int64_t>> out;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        const std::size_t width = r.mKind == meshioplusplus::RegionKind::Side ? 2 : 1;
+        std::vector<std::int64_t> rows;
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            std::int64_t key = 0;
+            for (std::size_t w = 0; w < width; ++w)
+                key = key * 1000 + r.Entries()[k * width + w];
+            rows.push_back(key);
+        }
+        std::sort(rows.begin(), rows.end());
+        out[r.mName + ":" + std::to_string(static_cast<int>(r.mKind))] = std::move(rows);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(OpenFoamWriter, DecomposedZonesComeBackAsInTheSerialCase) {
+    for (const bool binary : {false, true}) {
+        meshioplusplus::Mesh mesh = foam_test_grid(3);
+        meshioplusplus::NDArray part(meshioplusplus::DType::Int64, {std::size_t{27}});
+        for (std::size_t c = 0; c < 27; ++c)
+            part.As<std::int64_t>()[c] = static_cast<std::int64_t>(c / 9);
+        mesh.AddCellData("partition:part", {std::move(part)});
+        mesh.AddRegion(
+            meshioplusplus::Region("core", meshioplusplus::RegionKind::Cell, i64({2, 11, 20})));
+        mesh.AddRegion(meshioplusplus::Region("none", meshioplusplus::RegionKind::Cell, i64({})));
+        mesh.AddRegion(
+            meshioplusplus::Region("rim", meshioplusplus::RegionKind::Point, i64({0, 5, 17, 40})));
+        // facets 0 and 5 of cells on either side of both processor boundaries
+        mesh.AddRegion(
+            meshioplusplus::Region("baffle", meshioplusplus::RegionKind::Side,
+                                   i64_pairs({0, 0, 0, 5, 8, 5, 9, 0, 17, 5, 18, 0, 26, 5})));
+
+        const fs::path base = temp_case_dir();
+        meshioplusplus::OpenFoamInfo info;
+        meshioplusplus::OpenFoamWriteOptions options;
+        options.mBinary = binary;
+        meshioplusplus::write_openfoam_decomposed((base / "dec" / "case.foam").string(), mesh, info,
+                                                  options);
+        meshioplusplus::write_openfoam((base / "ser" / "case.foam").string(), mesh, info, options);
+        for (int p = 0; p < 3; ++p) {
+            const fs::path poly =
+                base / "dec" / ("processor" + std::to_string(p)) / "constant" / "polyMesh";
+            EXPECT_TRUE(fs::exists(poly / "cellZones"));
+            EXPECT_TRUE(fs::exists(poly / "faceZones"));
+            EXPECT_TRUE(fs::exists(poly / "pointZones"));
+        }
+        meshioplusplus::OpenFoamInfo dec_info, ser_info;
+        const meshioplusplus::Mesh dec =
+            meshioplusplus::read_openfoam((base / "dec" / "case.foam").string(), dec_info);
+        const meshioplusplus::Mesh ser =
+            meshioplusplus::read_openfoam((base / "ser" / "case.foam").string(), ser_info);
+        const auto got = zone_entries(dec);
+        const auto want = zone_entries(ser);
+        EXPECT_EQ(got.size(), 4u);
+        EXPECT_EQ(got, want);
+        EXPECT_EQ(
+            got.at("core:" + std::to_string(static_cast<int>(meshioplusplus::RegionKind::Cell))),
+            (std::vector<std::int64_t>{2, 11, 20}));
+        EXPECT_EQ(
+            got.at("baffle:" + std::to_string(static_cast<int>(meshioplusplus::RegionKind::Side)))
+                .size(),
+            7u);
+
+        // Dropping the zones drops the files with them.
+        meshioplusplus::Mesh plain = foam_test_grid(3);
+        meshioplusplus::NDArray part2(meshioplusplus::DType::Int64, {std::size_t{27}});
+        for (std::size_t c = 0; c < 27; ++c)
+            part2.As<std::int64_t>()[c] = static_cast<std::int64_t>(c / 9);
+        plain.AddCellData("partition:part", {std::move(part2)});
+        meshioplusplus::write_openfoam_decomposed((base / "dec" / "case.foam").string(), plain,
+                                                  info, options);
+        EXPECT_FALSE(
+            fs::exists(base / "dec" / "processor0" / "constant" / "polyMesh" / "cellZones"));
+        std::error_code ec;
+        fs::remove_all(base, ec);
+    }
+}
+
 // Roadmap 3.3.3: boundary-patch values. The values of the boundary-face cell blocks are written
 // as per-patch `boundaryField` entries and read back onto those blocks.
 namespace {

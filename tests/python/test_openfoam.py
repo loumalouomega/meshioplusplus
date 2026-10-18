@@ -1953,3 +1953,97 @@ def test_reader_takes_boundary_values_in_the_forms_openfoam_writes(tmp_path):
     u = mesh.cell_data["U"][quad]
     assert np.isnan(u[:3]).all()
     np.testing.assert_array_equal(u[3:], [[0, 0, 1], [0, 0, 2], [0, 0, 3]])
+
+
+# -- roadmap 3.3.3: zones in a decomposed case ---------------------------------
+
+
+def _zoned_grid(n=3, parts=3):
+    mesh = _grid(n)
+    mesh.cell_data["partition:part"] = meshioplusplus.partition_labels(
+        mesh, parts, method="sfc"
+    )
+    ncells = len(mesh.cells[0].data)
+    mesh.regions.append(meshioplusplus.Region("core", "cell", np.arange(2, ncells, 3)))
+    mesh.regions.append(meshioplusplus.Region("none", "cell", np.array([], np.int64)))
+    mesh.regions.append(meshioplusplus.Region("rim", "point", np.array([0, 5, 17, 40])))
+    # a local facet of every other cell: the faces inside one processor, on a processor
+    # boundary and on the outer boundary all land in the zone
+    sides = [(c, f) for c in range(0, ncells, 2) for f in (0, 5)]
+    mesh.regions.append(
+        meshioplusplus.Region("baffle", "side", np.array(sides, dtype=np.int64))
+    )
+    return mesh
+
+
+def _region_entries(mesh):
+    out = {}
+    for r in mesh.regions:
+        entries = np.asarray(r.entries)
+        rows = entries.tolist() if entries.ndim == 1 else map(tuple, entries.tolist())
+        out[(r.name, r.kind)] = sorted(rows)
+    return out
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_zones_in_a_decomposed_case_come_back_as_in_the_serial_case(tmp_path, binary):
+    mesh = _zoned_grid()
+    case = tmp_path / "dec" / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True, binary=binary)
+    serial = tmp_path / "ser" / "case.foam"
+    meshioplusplus.openfoam.write(serial, mesh, binary=binary)
+    for k in range(3):
+        poly = case.parent / f"processor{k}" / "constant" / "polyMesh"
+        assert {"cellZones", "faceZones", "pointZones"} <= {
+            p.name for p in poly.iterdir()
+        }
+    got = _region_entries(meshioplusplus.openfoam.read(case))
+    want = _region_entries(meshioplusplus.openfoam.read(serial))
+    assert got == want
+    assert got[("core", "cell")] == list(range(2, 27, 3))
+    assert got[("none", "cell")] == []
+    assert len(got[("baffle", "side")]) > 0
+
+
+def _zone_labels(path, zone, key):
+    """One zone's label list, read through foamlib."""
+    foamlib = pytest.importorskip("foamlib")
+    entry = dict(foamlib.FoamFile(path)[None])[zone]
+    return np.asarray(entry[key][1], dtype=int)
+
+
+def test_decomposed_zones_use_processor_local_ids(tmp_path):
+    foamlib = pytest.importorskip("foamlib")
+    mesh = _zoned_grid()
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True)
+    parts = np.asarray(mesh.cell_data["partition:part"][0])
+    seen = []
+    for k in range(3):
+        poly = tmp_path / f"processor{k}" / "constant" / "polyMesh"
+        cell_addr = np.asarray(foamlib.FoamFile(poly / "cellProcAddressing")[None])
+        labels = _zone_labels(poly / "cellZones", "core", "cellLabels")
+        # local ids, naming this processor's own cells
+        assert labels.max(initial=-1) < len(cell_addr)
+        assert all(parts[c] == k for c in cell_addr[labels])
+        seen.extend(cell_addr[labels].tolist())
+        n_faces = len(np.asarray(foamlib.FoamFile(poly / "owner")[None]))
+        faces = _zone_labels(poly / "faceZones", "baffle", "faceLabels")
+        assert 0 < len(faces) and faces.max() < n_faces
+        points = _zone_labels(poly / "pointZones", "rim", "pointLabels")
+        n_points = len(np.asarray(foamlib.FoamFile(poly / "points")[None]))
+        assert points.max(initial=-1) < n_points
+    assert sorted(seen) == list(range(2, 27, 3))
+
+
+def test_decomposed_zone_files_follow_the_regions(tmp_path):
+    mesh = _zoned_grid()
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True)
+    plain = _grid(3)
+    plain.cell_data["partition:part"] = mesh.cell_data["partition:part"]
+    meshioplusplus.openfoam.write(case, plain, decomposed=True)
+    for k in range(3):
+        poly = tmp_path / f"processor{k}" / "constant" / "polyMesh"
+        assert not (poly / "cellZones").exists()
+    assert not meshioplusplus.openfoam.read(case).regions
