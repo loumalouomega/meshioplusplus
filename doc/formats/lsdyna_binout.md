@@ -6,7 +6,7 @@ The binary file [LS-DYNA](https://lsdyna.ansys.com/) writes in place of its ASCI
 |---|---|
 | **Format name** | `lsdyna_binout` |
 | **Extensions** | none: found by its file name, `binout` or `binout0000`... (any case), or by its LSDA header |
-| **Read / Write** | ✓ / ✓ (one file, or `%001` continuation files with `split_size`; see [Writing](#writing) for what is left, tracked in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.3) |
+| **Read / Write** | ✓ / ✓ (one file, or `%001` continuation files with `split_size`; see [Writing](#writing) for what it leaves out) |
 | **Extra dependencies** | none |
 
 ## Reading

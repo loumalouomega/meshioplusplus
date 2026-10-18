@@ -98,7 +98,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="vtr">`vtr`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vts">`vts`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="vtu">`vtu`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
-| <span id="vtx">`vtx`</span> | ? | ? | ? | ? | ? | ? | ? | ? | fails: `WriteError` | | | | |
+| <span id="vtx">`vtx`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="wkt">`wkt`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="xdmf">`xdmf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point, side |
 | <span id="xplt">`xplt`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell, point, side |
@@ -149,7 +149,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).
 - **`vtr`**: RectilinearGrid holds one axis-aligned lattice; the canonical mesh is not one.
 - **`vts`**: StructuredGrid holds one curvilinear lattice; the canonical mesh is not one.
-- **`vtx`**: A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical mesh is refused; each type alone round-trips.
+- **`vtx`**: A mesh of several cell types is one block per type, each with the points it uses and the ghost arrays that let the reader weld the shared points back, so the mixed canonical mesh round-trips exactly (DOLFINx and ParaView read a single type only); the file holds the mesh and its arrays, with no regions or field data other than the time.
 - **`xplt`**: Everything is stored as 32-bit floats and comes back as float64 (the probe's coordinates are exact in float32, general ones are not); a plot file has no vertex element. A side region is a facet set.
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`z88`**: A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are what Z88R writes from the deck, so none is written; Aurora's sets hold elements and nodes only, so `side` regions are dropped.
@@ -157,9 +157,9 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 
 ## Formats missing a direction
 
-Every registered format is meant to read and write, in both engines ([roadmap §3](./roadmap.md#_3-reader-and-writer-parity)). A format that does only one is a tracked gap, listed here with the roadmap item that closes it; `ansys_rst_cyclic` and `step` are the exemptions. `test_conformance.py` fails when a format reads without writing, or writes without reading, and is not listed here, or is listed and has gained the missing direction, in either the Python or the native registry.
+Every registered format is meant to read and write, in both engines ([roadmap decisions](./roadmap.md#non-goals-and-decisions-taken)). A format that does only one is a tracked gap, listed here with the roadmap item that closes it; `ansys_rst_cyclic`, `iges` and `step` are the exemptions. `test_conformance.py` fails when a format reads without writing, or writes without reading, and is not listed here, or is listed and has gained the missing direction, in either the Python or the native registry.
 
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
-| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap §3.2.5). |
-| <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes. |
+| <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap non-goals: every format reads and writes). |
+| <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap non-goals: every format reads and writes); STEP is the CAD format meshio++ writes. |

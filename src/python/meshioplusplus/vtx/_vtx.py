@@ -20,6 +20,9 @@ from .._vtk_common import vtk_cells_from_data
 
 TIME_KEY = "meshio:time"
 _GHOST_ARRAYS = ("vtkGhostType", "vtkOriginalPointIds")
+# set by this package's writer on a file whose blocks each hold the points they use
+# (several cell types, or the parts of a partition): the ghost copies are one mesh
+_SHARED_ATTRIBUTE = "meshio.shared_points"
 
 # VTK_LAGRANGE_* cells whose node order is a linear or quadratic VTK cell's:
 # (Lagrange type, node count) -> VTK type.
@@ -115,6 +118,7 @@ def _scan(filename):
                         "Fides output are other layouts)"
                     )
                 schema = _parse_schema(_attribute_string(stream, "vtk.xml"))
+                schema["shared"] = _SHARED_ATTRIBUTE in stream.available_attributes()
             names = set(stream.available_variables())
             t = schema["time"]
             times.append(
@@ -227,7 +231,7 @@ def _concat_matching(blocks, counts, name):
     return out
 
 
-def _weld_ghosts(points, conn, point_data):
+def _weld_ghosts(points, conn, point_data, sort_by_id=False):
     ids = point_data.get("vtkOriginalPointIds")
     if ids is None:
         _log.warning("VTX: no vtkOriginalPointIds, so ghost points cannot be welded")
@@ -244,6 +248,8 @@ def _weld_ghosts(points, conn, point_data):
                 owner.setdefault(int(ids[i]), i)
     rep = np.array([owner[int(v)] for v in ids], dtype=np.int64)
     keep = np.flatnonzero(rep == np.arange(n))
+    if sort_by_id:
+        keep = keep[np.argsort(np.asarray(ids)[keep], kind="stable")]
     new_index = np.full(n, -1, dtype=np.int64)
     new_index[keep] = np.arange(len(keep))
     conn = new_index[rep[conn]]
@@ -274,7 +280,8 @@ def _read_step(filename, step_request, points_only, arrays, ghosts):
     if conn_step is None or types_step is None:
         _fail(f"no step up to {step} holds the cells")
 
-    drop = ghosts == "drop"
+    shared = schema["shared"]
+    drop = ghosts == "drop" or shared
     with adios2.FileReader(str(filename)) as reader:
 
         def blocks_at(name, s, rows=None):
@@ -338,8 +345,12 @@ def _read_step(filename, step_request, points_only, arrays, ghosts):
             wanted = not points_only and (arrays is None or name in arrays)
             if not wanted and not (drop and is_ghost_array and not is_cell):
                 continue
+            # the ghost arrays of a `reuse` file are written with the mesh only
+            start = step
             if var not in present[step]:
-                continue
+                start = _last_with(present, var, step) if is_ghost_array else None
+                if start is None:
+                    continue
             rows = cell_counts if is_cell else point_counts
             # DOLFINx 0.11 writes the ghost arrays twice in the first step of a
             # `reuse` file, the second time as one-value blocks whose payload is
@@ -347,12 +358,12 @@ def _read_step(filename, step_request, points_only, arrays, ghosts):
             # block too): a ghost array whose blocks do not match the rank blocks
             # one to one is taken from the nearest step where they do; any other
             # array is dropped.
-            source = step
-            if not _clean(reader, present, var, step, rows):
+            source = start
+            if not _clean(reader, present, var, start, rows):
                 source = None
                 if is_ghost_array:
                     for d in range(1, nsteps):
-                        for s in (step + d, step - d):
+                        for s in (start + d, start - d):
                             if 0 <= s < nsteps and _clean(
                                 reader, present, var, s, rows
                             ):
@@ -379,7 +390,7 @@ def _read_step(filename, step_request, points_only, arrays, ghosts):
             (cell_data_raw if is_cell else point_data)[name] = joined
 
     if drop:
-        points, conn, point_data = _weld_ghosts(points, conn, point_data)
+        points, conn, point_data = _weld_ghosts(points, conn, point_data, shared)
     cells, cell_data = vtk_cells_from_data(conn, offsets, types, cell_data_raw)
     mesh = Mesh(
         points,

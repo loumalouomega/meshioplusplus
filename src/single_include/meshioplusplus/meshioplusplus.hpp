@@ -23920,11 +23920,13 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtu_metadata(const std::string& rPath, cons
  * - Every step is one mesh; `ReadOptions::mTimeStep` selects it and its time is
  *   attached as `field_data["meshio:time"]`. A step without mesh variables (a
  *   `VTXMeshPolicy.reuse` file writes the mesh in step 0 only) takes the mesh of
- *   the last step that has one.
+ *   the last step that has one, and so does a ghost array the first step wrote.
  * - The rank blocks are concatenated in block order, as ParaView merges them.
  *   `ReadOptions::mGhosts == GhostPolicy::Drop` instead welds every ghost point
  *   onto its owner through `vtkOriginalPointIds`, which gives the serial mesh,
- *   and removes the two ghost arrays.
+ *   and removes the two ghost arrays. A file with the `meshio.shared_points` attribute
+ *   (this library's writer sets it on a mesh of several cell types or parts) is always welded,
+ *   the points ordered by `vtkOriginalPointIds`.
  * - `VTK_LAGRANGE_*` cells whose node count is a linear or quadratic VTK cell's
  *   with the same node order (every degree-1 cell, and the 3-node curve,
  *   6-node triangle, 9-node quadrilateral and 10-node tetrahedron) are read as
@@ -23942,6 +23944,7 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtu_metadata(const std::string& rPath, cons
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23978,19 +23981,31 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtx_metadata(const std::string& rPath,
  *        variable per point or cell array). The time is `meshio:time` (0 when
  *        absent). Cells are written as the `VTK_LAGRANGE_*` types DOLFINx uses
  *        where the node order allows. The Python twin writes the same variables.
- * @throws WriteError when the mesh has several cell types (as DOLFINx's files
- *         hold one), no cells, or the file cannot be written.
+ *        A mesh of several cell types, or whose cells carry `partition:part` values of
+ *        several parts, is one block per cell type (and part), each holding the points
+ *        it uses: a point several blocks use is a ghost copy in all but the first
+ *        (`vtkGhostType`, `vtkOriginalPointIds`), and the `meshio.shared_points`
+ *        attribute makes the reader weld the copies back into one mesh.
+ * @throws WriteError when the mesh has no cells, or the file cannot be written.
  */
 MESHIOPLUSPLUS_API void write_vtx(const std::string& rPath, const Mesh& rMesh);
 
+/// When a VTX series writes its mesh: DOLFINx's `VTXMeshPolicy`.
+enum class VtxMeshPolicy : std::uint8_t {
+    Update = 0,  ///< at every step
+    Reuse = 1,   ///< at the first step only; every step must then have the first step's mesh
+};
+
 /**
  * @brief A VTX file with a step per mesh, the mesh written at every step
- *        (`VTXMeshPolicy.update`). Every step must have the first step's points,
+ *        (`VtxMeshPolicy::Update`, the default) or at the first only
+ *        (`VtxMeshPolicy::Reuse`). Every step must have the first step's points,
  *        cells and array names. The Python twin is `meshioplusplus.vtx.SeriesWriter`.
  */
 class MESHIOPLUSPLUS_API VtxSeriesWriter {
 public:
     explicit VtxSeriesWriter(const std::string& rPath);
+    VtxSeriesWriter(const std::string& rPath, VtxMeshPolicy Policy);
     ~VtxSeriesWriter();
 
     VtxSeriesWriter(const VtxSeriesWriter&) = delete;
@@ -157297,7 +157312,30 @@ struct TecplotWritePlan {
     std::size_t mNumShared = 0;
     std::vector<CellVarComp> mCellVars;
     std::vector<std::int64_t> mBases;
+    /// Per variable, TecIO's data type for it: the narrowest of float (1), double (2), int32
+    /// (3), int16 (4) and byte (5) that holds the array's dtype exactly. Only SZL files keep it.
+    std::vector<std::int32_t> mVarTypes;
 };
+
+/// TecIO's variable type for a dtype: single precision stays single, small integers stay
+/// small, and what no TecIO type holds exactly (64-bit integers, unsigned 32- and 64-bit)
+/// is a double, as before.
+std::int32_t tecplot_szl_type(DType Type) {
+    switch (Type) {
+        case DType::Float32:
+            return 1;
+        case DType::Int32:
+        case DType::UInt16:
+            return 3;
+        case DType::Int16:
+        case DType::Int8:
+            return 4;
+        case DType::UInt8:
+            return 5;
+        default:
+            return 2;
+    }
+}
 
 TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
     TecplotWritePlan plan;
@@ -157311,7 +157349,6 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
     }
     if (blocks.empty())
         throw WriteError("Tecplot writer found no supported cell blocks");
-
 
     const std::size_t dim = rMesh.PointDim();
     const std::size_t num_nodes = rMesh.NumPoints();
@@ -157329,6 +157366,7 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
         for (std::size_t r = 0; r < num_nodes; ++r)
             col[r] = point_values[r * dim + comp];
         shared_data.push_back(std::move(col));
+        plan.mVarTypes.push_back(tecplot_szl_type(points.Dtype()));
     };
     push_point_col(0);
     push_point_col(1);
@@ -157347,6 +157385,7 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
             for (std::size_t r = 0; r < num_nodes; ++r)
                 col[r] = v_values[r * ncomp + c];
             shared_data.push_back(std::move(col));
+            plan.mVarTypes.push_back(tecplot_szl_type(v.Dtype()));
         }
     }
     plan.mNumShared = variables.size();
@@ -157361,16 +157400,22 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
         if (rMesh.CellDataNumBlocks(k) == 0)
             continue;
         std::size_t ncomp = 1;
+        std::int32_t type = 0;  // the blocks' common type, a double when they disagree
+        bool first = true;
         for (std::size_t b : plan.mBlocks) {
             if (b < rMesh.CellDataNumBlocks(k)) {
                 const NDArray& vv = rMesh.CellData(k, b);
-                ncomp = vv.Shape().size() >= 2 ? vv.Shape()[1] : 1;
-                break;
+                if (first)
+                    ncomp = vv.Shape().size() >= 2 ? vv.Shape()[1] : 1;
+                const std::int32_t t = tecplot_szl_type(vv.Dtype());
+                type = first || type == t ? t : 2;
+                first = false;
             }
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
             cell_vars.push_back({k, c, ncomp});
+            plan.mVarTypes.push_back(type == 0 ? 2 : type);
         }
     }
 
@@ -157408,7 +157453,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     std::string lower_path = rPath;
     std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    const bool plt = lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
+    const bool plt =
+        lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
 
     auto os = plt ? detail::make_classic_ofstream(rPath, std::ios::binary)
                   : detail::make_classic_ofstream(rPath);
@@ -157445,8 +157491,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             i32(0);
         };
         static const std::map<std::string, int> zone_codes = {
-            {"FELINESEG", 1},      {"FETRIANGLE", 2}, {"FEQUADRILATERAL", 3}, {"FETETRAHEDRON", 4},
-            {"FEBRICK", 5},        {"FEPOLYGON", 6},  {"FEPOLYHEDRON", 7}};
+            {"FELINESEG", 1}, {"FETRIANGLE", 2}, {"FEQUADRILATERAL", 3}, {"FETETRAHEDRON", 4},
+            {"FEBRICK", 5},   {"FEPOLYGON", 6},  {"FEPOLYHEDRON", 7}};
         const std::size_t nvar = variables.size();
 
         raw("#!TDV112", 8);
@@ -157720,11 +157766,16 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     }
 }
 
-
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // --- SZL (.szplt) writer, through a user-installed TecIO ---------------------------
 // The twin of `szplt/_write.py`: the zones of the ASCII and `.plt` writers (one per
-// cell block, cell-centred variables passive where a block has none), in doubles.
+// cell block, cell-centred variables passive where a block has none), each variable in
+// the TecIO type that holds its array's dtype (single precision stays single, 16-bit and
+// byte integers stay small, the rest is double). A static file's tetrahedron and brick
+// zones whose cells carry `partition:part` values of several parts are written as
+// partitioned zones, one partition per part (TecIO takes partitions of 3D FE zones only,
+// and a zone sharing its connectivity from a partitioned one needs the partitions
+// again, so a series is written whole).
 // TecIO shares a variable between zones only together with their connectivity, so a
 // mesh of one block is one zone with every point and a mesh of several gives each zone
 // the points its cells use. A series is a strand of zones per step; the later steps
@@ -157754,6 +157805,127 @@ int szw_zone_code(const std::string& rType) {
     return 0;
 }
 
+/// One variable's values written in TecIO's type for it, to a zone's partition (0: the
+/// whole zone).
+void szw_write_values(void* pHandle, std::int32_t Zone, std::int32_t Var, std::int32_t Partition,
+                      std::int32_t Type, const std::vector<double>& rValues) {
+    if (rValues.empty())
+        return;
+    const auto n = static_cast<int64_t>(rValues.size());
+    switch (Type) {
+        case 1: {
+            const std::vector<float> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteFloatValues(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteFloatValues");
+        }
+        case 3: {
+            const std::vector<std::int32_t> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteInt32Values(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteInt32Values");
+        }
+        case 4: {
+            const std::vector<std::int16_t> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteInt16Values(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteInt16Values");
+        }
+        case 5: {
+            const std::vector<std::uint8_t> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteUInt8Values(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteUInt8Values");
+        }
+        default:
+            return szw_check(
+                tecZoneVarWriteDoubleValues(pHandle, Zone, Var, Partition, n, rValues.data()),
+                "tecZoneVarWriteDoubleValues");
+    }
+}
+
+/// The parts of a block's cells (`partition:part`, an integer value per cell), or empty.
+std::vector<std::int64_t> szw_parts(const Mesh& rMesh, std::size_t Block) {
+    if (!rMesh.HasCellData("partition:part") || Block >= rMesh.CellDataNumBlocks("partition:part"))
+        return {};
+    const NDArray& a = rMesh.CellData("partition:part", Block);
+    if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
+        a.Size() != rMesh.Cells(Block).NumCells())
+        return {};
+    const detail::Int64View view(a);
+    return std::vector<std::int64_t>(view.Data(), view.Data() + a.Size());
+}
+
+/// How a 3D FE zone splits into one partition per part. A node belongs to the lowest
+/// partition that uses it (so a ghost node always names an earlier partition), a node no cell
+/// uses to the first. A partition lists the nodes it owns, then its ghost nodes, each in node
+/// order. TecIO refuses a partition that owns no node: such a zone is not partitioned.
+struct SzPartitions {
+    std::vector<std::vector<std::size_t>> mCells;   // per partition, the block's cell rows
+    std::vector<std::vector<std::int64_t>> mNodes;  // per partition, its zone-local nodes, sorted
+    std::vector<std::vector<std::int64_t>> mOwn;    // the nodes it owns
+    std::vector<std::vector<std::int64_t>> mGhost;  // and the ones it holds as ghosts
+    std::vector<std::int32_t> mOwner;               // per zone-local node, its partition from 1
+
+    /// The 1-based number of a node in a partition's list.
+    std::int64_t Locate(std::size_t Partition, std::int64_t Node) const {
+        const auto& own = mOwn[Partition];
+        if (mOwner[static_cast<std::size_t>(Node)] == static_cast<std::int32_t>(Partition + 1))
+            return static_cast<std::int64_t>(std::lower_bound(own.begin(), own.end(), Node) -
+                                             own.begin()) +
+                   1;
+        const auto& ghost = mGhost[Partition];
+        return static_cast<std::int64_t>(
+                   own.size() +
+                   static_cast<std::size_t>(std::lower_bound(ghost.begin(), ghost.end(), Node) -
+                                            ghost.begin())) +
+               1;
+    }
+};
+
+/// The split of a zone's cells by `rParts`/`rLabels` (the sorted distinct parts), or nothing
+/// when TecIO could not take it. `rLocal` is the zone-local node of each cell's `Width` slots.
+bool szw_partition_plan(const std::vector<std::int64_t>& rParts,
+                        const std::vector<std::int64_t>& rLabels, std::size_t NumNodes,
+                        const std::vector<std::int64_t>& rLocal, std::size_t Width,
+                        SzPartitions& rPlan) {
+    const std::size_t count = rLabels.size();
+    rPlan = SzPartitions();
+    rPlan.mCells.resize(count);
+    rPlan.mNodes.resize(count);
+    rPlan.mOwn.resize(count);
+    rPlan.mGhost.resize(count);
+    for (std::size_t r = 0; r < rParts.size(); ++r)
+        rPlan
+            .mCells[static_cast<std::size_t>(
+                std::lower_bound(rLabels.begin(), rLabels.end(), rParts[r]) - rLabels.begin())]
+            .push_back(r);
+    rPlan.mOwner.assign(NumNodes, 0);
+    for (std::size_t p = 0; p < count; ++p) {
+        for (const std::size_t r : rPlan.mCells[p])
+            for (std::size_t j = 0; j < Width; ++j)
+                rPlan.mNodes[p].push_back(rLocal[r * Width + j]);
+        std::sort(rPlan.mNodes[p].begin(), rPlan.mNodes[p].end());
+        rPlan.mNodes[p].erase(std::unique(rPlan.mNodes[p].begin(), rPlan.mNodes[p].end()),
+                              rPlan.mNodes[p].end());
+    }
+    for (std::size_t p = count; p-- > 0;)
+        for (const std::int64_t n : rPlan.mNodes[p])
+            rPlan.mOwner[static_cast<std::size_t>(n)] = static_cast<std::int32_t>(p + 1);
+    for (std::size_t n = 0; n < NumNodes; ++n)
+        if (rPlan.mOwner[n] == 0) {
+            rPlan.mOwner[n] = 1;
+            rPlan.mNodes[0].push_back(static_cast<std::int64_t>(n));
+        }
+    std::sort(rPlan.mNodes[0].begin(), rPlan.mNodes[0].end());
+    for (std::size_t p = 0; p < count; ++p) {
+        for (const std::int64_t n : rPlan.mNodes[p])
+            (rPlan.mOwner[static_cast<std::size_t>(n)] == static_cast<std::int32_t>(p + 1)
+                 ? rPlan.mOwn[p]
+                 : rPlan.mGhost[p])
+                .push_back(n);
+        if (rPlan.mOwn[p].empty())
+            return false;
+    }
+    return true;
+}
+
 class SzWriter {
 public:
     explicit SzWriter(std::string Path) : mPath(std::move(Path)) {}
@@ -157768,9 +157940,10 @@ public:
             if (szw_zone_code(meshio_to_tecplot(rMesh.Cells(block).Type())) != 0)
                 usable.push_back(block);
             else
-                log::warn("Tecplot .szplt: skipping '{}' cells (SZL files are written without "
-                          "face-based zones)",
-                          rMesh.Cells(block).Type());
+                log::warn(
+                    "Tecplot .szplt: skipping '{}' cells (TecIO 2018.3 refuses polygon and "
+                    "polyhedral zones in SZL files)",
+                    rMesh.Cells(block).Type());
         }
         if (usable.empty())
             szw_fail("no cell type SZL can hold in the mesh");
@@ -157786,8 +157959,8 @@ public:
         }
         // The first plan column of each coordinate is the step's point array.
         const std::size_t ncoord = rMesh.PointDim() == 3 ? 3 : 2;
-        std::vector<std::vector<double>> coords(plan.mShared.begin(),
-                                                plan.mShared.begin() + static_cast<std::ptrdiff_t>(ncoord));
+        std::vector<std::vector<double>> coords(
+            plan.mShared.begin(), plan.mShared.begin() + static_cast<std::ptrdiff_t>(ncoord));
         if (!mOpen) {
             mSignature = signature;
             mFirstCoords = coords;
@@ -157831,38 +158004,74 @@ public:
                 if (block < rMesh.CellDataNumBlocks(plan.mCellVars[j].mKey))
                     present.push_back(j);
             std::vector<std::int32_t> share(nvar, 0), location(nvar, 0), passive(nvar, 0),
-                types(nvar, 2);
+                types(plan.mVarTypes.begin(), plan.mVarTypes.end());
             for (std::size_t v = 0; v < num_shared; ++v)
                 location[v] = 1;
             for (std::size_t j = 0; j < plan.mCellVars.size(); ++j)
                 if (std::find(present.begin(), present.end(), j) == present.end())
                     passive[num_shared + j] = 1;
+            SzPartitions partitions;
+            bool partitioned = false;
+            if (!Unsteady && (ztype == 4 || ztype == 5)) {
+                std::vector<std::int64_t> labels = szw_parts(rMesh, block);
+                std::sort(labels.begin(), labels.end());
+                labels.erase(std::unique(labels.begin(), labels.end()), labels.end());
+                if (labels.size() > 1) {
+                    partitioned = szw_partition_plan(szw_parts(rMesh, block), labels, used.size(),
+                                                     local, k, partitions);
+                    if (!partitioned)
+                        log::warn(
+                            "Tecplot .szplt: a part owns no node of its own, which TecIO "
+                            "cannot partition; the zone is written whole");
+                }
+            }
             const std::int32_t conn_share =
                 mSteps > 0 && mFirstStepZone.count(bi) ? mFirstStepZone.at(bi) : 0;
             if (conn_share != 0)
                 for (std::size_t v = 0; v < ncoord; ++v)
                     share[v] = conn_share;
             std::int32_t zone = 0;
-            szw_check(tecZoneCreateFE(mHandle, tecplot_zone_title(rMesh, plan.mBases, block).c_str(),
-                                      ztype, static_cast<int64_t>(used.size()),
-                                      static_cast<int64_t>(cb.NumCells()), types.data(),
-                                      share.data(), location.data(), passive.data(), conn_share, 0,
-                                      0, &zone),
-                      "tecZoneCreateFE");
+            szw_check(
+                tecZoneCreateFE(mHandle, tecplot_zone_title(rMesh, plan.mBases, block).c_str(),
+                                ztype, static_cast<int64_t>(used.size()),
+                                static_cast<int64_t>(cb.NumCells()), types.data(), share.data(),
+                                location.data(), passive.data(), conn_share, 0, 0, &zone),
+                "tecZoneCreateFE");
             if (mSteps == 0)
                 mFirstStepZone[bi] = zone;
             if (Unsteady)
                 szw_check(tecZoneSetUnsteadyOptions(mHandle, zone, Time, 1),
                           "tecZoneSetUnsteadyOptions");
-            auto write_values = [&](std::size_t Var, const std::vector<double>& rValues) {
-                if (rValues.empty())
-                    return;
-                szw_check(tecZoneVarWriteDoubleValues(mHandle, zone,
-                                                      static_cast<std::int32_t>(Var + 1), 0,
-                                                      static_cast<int64_t>(rValues.size()),
-                                                      rValues.data()),
-                          "tecZoneVarWriteDoubleValues");
+            auto write_values = [&](std::size_t Var, const std::vector<double>& rValues,
+                                    std::int32_t Partition = 0) {
+                szw_write_values(mHandle, zone, static_cast<std::int32_t>(Var + 1), Partition,
+                                 types[Var], rValues);
             };
+            // The block's cell-centred columns, and its cells' nodes in TecIO's order.
+            std::vector<std::pair<std::size_t, std::vector<double>>> cell_columns;
+            for (const std::size_t j : present) {
+                const auto& cv = plan.mCellVars[j];
+                const NDArray& vv = rMesh.CellData(cv.mKey, block);
+                const detail::DoubleView values(vv);
+                std::vector<double> col(vv.Shape()[0]);
+                for (std::size_t r = 0; r < col.size(); ++r)
+                    col[r] = values[r * cv.mNumComp + cv.mComp];
+                cell_columns.emplace_back(num_shared + j, std::move(col));
+            }
+            const std::vector<int>& order = tecplot_order(cb.Type());
+            auto cell_nodes = [&](std::size_t Row, std::size_t Slot) {
+                std::size_t src = static_cast<std::size_t>(order[Slot]);
+                if (src >= k)
+                    src = k - 1;
+                return local[Row * k + src];
+            };
+
+            if (partitioned) {
+                WritePartitions(zone, partitions, num_shared, plan.mShared, used, types,
+                                cell_columns, order.size(), cell_nodes);
+                continue;
+            }
+
             for (std::size_t v = 0; v < num_shared; ++v) {
                 if (share[v] != 0)
                     continue;
@@ -157871,31 +158080,78 @@ public:
                     col[i] = plan.mShared[v][static_cast<std::size_t>(used[i])];
                 write_values(v, col);
             }
-            for (const std::size_t j : present) {
-                const auto& cv = plan.mCellVars[j];
-                const NDArray& vv = rMesh.CellData(cv.mKey, block);
-                const detail::DoubleView values(vv);
-                std::vector<double> col(vv.Shape()[0]);
-                for (std::size_t r = 0; r < col.size(); ++r)
-                    col[r] = values[r * cv.mNumComp + cv.mComp];
-                write_values(num_shared + j, col);
-            }
+            for (const auto& [var, col] : cell_columns)
+                write_values(var, col);
             if (conn_share == 0) {
-                const std::vector<int>& order = tecplot_order(cb.Type());
                 std::vector<std::int32_t> nodes;
                 for (std::size_t r = 0; r < cb.NumCells(); ++r)
-                    for (const int o : order) {
-                        std::size_t src = static_cast<std::size_t>(o);
-                        if (src >= k)
-                            src = k - 1;
-                        nodes.push_back(static_cast<std::int32_t>(local[r * k + src] + 1));
-                    }
+                    for (std::size_t slot = 0; slot < order.size(); ++slot)
+                        nodes.push_back(static_cast<std::int32_t>(cell_nodes(r, slot) + 1));
                 szw_check(tecZoneNodeMapWrite32(mHandle, zone, 0, 1,
                                                 static_cast<int64_t>(nodes.size()), nodes.data()),
                           "tecZoneNodeMapWrite32");
             }
         }
         ++mSteps;
+    }
+
+    /// A 3D FE zone written as one partition per part (see `SzPartitions`).
+    template <class TCellNodes>
+    void WritePartitions(
+        std::int32_t Zone, const SzPartitions& rPlan, std::size_t NumShared,
+        const std::vector<std::vector<double>>& rShared, const std::vector<std::int64_t>& rUsed,
+        const std::vector<std::int32_t>& rTypes,
+        const std::vector<std::pair<std::size_t, std::vector<double>>>& rCellColumns,
+        std::size_t Slots, const TCellNodes& rCellNodes) {
+        const std::size_t count = rPlan.mCells.size();
+        for (std::size_t p = 0; p < count; ++p) {
+            std::vector<std::int64_t> ghost_local, neighbor_node;
+            std::vector<std::int32_t> neighbor;
+            for (std::size_t g = 0; g < rPlan.mGhost[p].size(); ++g) {
+                const std::int64_t node = rPlan.mGhost[p][g];
+                const std::int32_t o = rPlan.mOwner[static_cast<std::size_t>(node)];
+                ghost_local.push_back(static_cast<std::int64_t>(rPlan.mOwn[p].size() + g + 1));
+                neighbor.push_back(o);
+                neighbor_node.push_back(rPlan.Locate(static_cast<std::size_t>(o - 1), node));
+            }
+            szw_check(tecFEPartitionCreate64(mHandle, Zone, static_cast<std::int32_t>(p + 1),
+                                             static_cast<int64_t>(rPlan.mNodes[p].size()),
+                                             static_cast<int64_t>(rPlan.mCells[p].size()),
+                                             static_cast<int64_t>(ghost_local.size()),
+                                             ghost_local.empty() ? nullptr : ghost_local.data(),
+                                             neighbor.empty() ? nullptr : neighbor.data(),
+                                             neighbor_node.empty() ? nullptr : neighbor_node.data(),
+                                             0, nullptr),
+                      "tecFEPartitionCreate64");
+        }
+        for (std::size_t p = 0; p < count; ++p) {
+            const auto partition = static_cast<std::int32_t>(p + 1);
+            std::vector<std::int64_t> listed = rPlan.mOwn[p];
+            listed.insert(listed.end(), rPlan.mGhost[p].begin(), rPlan.mGhost[p].end());
+            for (std::size_t v = 0; v < NumShared; ++v) {
+                std::vector<double> col(listed.size());
+                for (std::size_t i = 0; i < col.size(); ++i)
+                    col[i] = rShared[v][static_cast<std::size_t>(
+                        rUsed[static_cast<std::size_t>(listed[i])])];
+                szw_write_values(mHandle, Zone, static_cast<std::int32_t>(v + 1), partition,
+                                 rTypes[v], col);
+            }
+            for (const auto& [var, column] : rCellColumns) {
+                std::vector<double> col;
+                col.reserve(rPlan.mCells[p].size());
+                for (const std::size_t r : rPlan.mCells[p])
+                    col.push_back(column[r]);
+                szw_write_values(mHandle, Zone, static_cast<std::int32_t>(var + 1), partition,
+                                 rTypes[var], col);
+            }
+            std::vector<std::int32_t> map;
+            for (const std::size_t r : rPlan.mCells[p])
+                for (std::size_t slot = 0; slot < Slots; ++slot)
+                    map.push_back(static_cast<std::int32_t>(rPlan.Locate(p, rCellNodes(r, slot))));
+            szw_check(tecZoneNodeMapWrite32(mHandle, Zone, partition, 1,
+                                            static_cast<int64_t>(map.size()), map.data()),
+                      "tecZoneNodeMapWrite32");
+        }
     }
 
     std::size_t NumSteps() const { return mSteps; }
@@ -157916,9 +158172,9 @@ private:
             std::replace(name.begin(), name.end(), ',', '_');
             names += (v ? "," : "") + name;
         }
-        szw_check(tecFileWriterOpen(mPath.c_str(), "meshio++", names.c_str(), 1, 0, 2, nullptr,
-                                    &mHandle),
-                  "tecFileWriterOpen");
+        szw_check(
+            tecFileWriterOpen(mPath.c_str(), "meshio++", names.c_str(), 1, 0, 2, nullptr, &mHandle),
+            "tecFileWriterOpen");
         mOpen = true;
     }
 
@@ -167916,7 +168172,12 @@ struct VtxLayout {
     VtxSchema mSchema;
     std::vector<std::set<std::string>> mPresent;
     std::vector<double> mTimes;
+    bool mShared = false;  // the blocks hold the points they use (see kVtxSharedAttribute)
 };
+
+// Set by this library's writer on a file whose blocks each hold the points they use (several
+// cell types, or the parts of a partition): the ghost copies are one mesh and are welded on read.
+constexpr const char* kVtxSharedAttribute = "meshio.shared_points";
 
 // A single value of the current step. A value several ranks wrote has one
 // instance per writer, so it is taken from the block list: a Get would deliver
@@ -167963,6 +168224,8 @@ VtxLayout vtx_scan(const std::string& rPath) {
             for (const std::string& rPart : attr.Data())
                 xml += rPart;
             layout.mSchema = vtx_parse_schema(xml);
+            layout.mShared =
+                static_cast<bool>(io.InquireAttribute<std::string>(kVtxSharedAttribute));
             have_schema = true;
         }
         std::set<std::string> names;
@@ -168296,7 +168559,7 @@ struct VtxStep {
 // GhostPolicy::Drop: weld every point onto the owned copy sharing its
 // vtkOriginalPointIds (the first with vtkGhostType 0, else the first seen), keep
 // the surviving points in their first-seen order, and drop both ghost arrays.
-void vtx_weld_ghosts(VtxStep& rStep) {
+void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
     auto ids_it = rStep.mPointData.find("vtkOriginalPointIds");
     auto ghost_it = rStep.mPointData.find("vtkGhostType");
     if (ids_it == rStep.mPointData.end()) {
@@ -168317,10 +168580,15 @@ void vtx_weld_ghosts(VtxStep& rStep) {
     std::vector<std::size_t> keep;
     std::vector<std::int64_t> new_index(n, -1);
     for (std::size_t i = 0; i < n; ++i)
-        if (owner[vtx_int_at(rIds, i)] == i) {
-            new_index[i] = static_cast<std::int64_t>(keep.size());
+        if (owner[vtx_int_at(rIds, i)] == i)
             keep.push_back(i);
-        }
+    // A shared-points file lists the points in the mesh's order, whatever block holds them.
+    if (SortById)
+        std::stable_sort(keep.begin(), keep.end(), [&](std::size_t A, std::size_t B) {
+            return vtx_int_at(rIds, A) < vtx_int_at(rIds, B);
+        });
+    for (std::size_t k = 0; k < keep.size(); ++k)
+        new_index[keep[k]] = static_cast<std::int64_t>(k);
     for (std::int64_t& rV : rStep.mConn)
         rV = new_index[owner[vtx_int_at(rIds, static_cast<std::size_t>(rV))]];
     rStep.mPoints = vtx_take_rows(rStep.mPoints, keep);
@@ -168406,14 +168674,20 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
     }
 
     // Data arrays of the requested step itself.
-    const bool drop = rOpts.mGhosts == GhostPolicy::Drop;
+    const bool drop = rOpts.mGhosts == GhostPolicy::Drop || layout.mShared;
     for (const VtxArray& rA : rS.mArrays) {
         const bool ghost_array = rA.mName == "vtkGhostType" || rA.mName == "vtkOriginalPointIds";
         const bool wanted = !rOpts.mPointsOnly && rOpts.WantsArray(rA.mName);
         if (!wanted && !(drop && ghost_array && !rA.mCell))
             continue;
-        if (!layout.mPresent[step].count(rA.mVariable))
-            continue;
+        // The ghost arrays of a `reuse` file are written with the mesh only.
+        constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+        std::size_t start = step;
+        if (!layout.mPresent[step].count(rA.mVariable)) {
+            start = ghost_array ? vtx_last_with(layout, rA.mVariable, step) : kNone;
+            if (start == kNone)
+                continue;
+        }
         const std::vector<std::size_t>& rRows = rA.mCell ? cell_counts : point_counts;
         // DOLFINx 0.11 writes the ghost arrays twice in the first step of a
         // `reuse` file, the second time as one-value blocks whose payload is not
@@ -168421,23 +168695,22 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
         // block too. An array whose blocks do not match the rank blocks one to
         // one is taken from the nearest step where they do (DOLFINx rewrites
         // the ghost arrays, unchanged, every step).
-        std::size_t source = step;
+        std::size_t source = start;
         auto clean = [&](std::size_t S) {
             return layout.mPresent[S].count(rA.mVariable) &&
                    vtx_block_rows(io, engine, rA.mVariable,
                                   vtx_relative_step(layout, rA.mVariable, S)) == rRows;
         };
-        if (!clean(step)) {
-            constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+        if (!clean(start)) {
             source = kNone;
             // Only the ghost arrays are constant over the steps; any other array
             // is dropped rather than replaced by another step's values.
             for (std::size_t d = 1; ghost_array && d < layout.mPresent.size() && source == kNone;
                  ++d) {
-                if (step + d < layout.mPresent.size() && clean(step + d))
-                    source = step + d;
-                else if (d <= step && clean(step - d))
-                    source = step - d;
+                if (start + d < layout.mPresent.size() && clean(start + d))
+                    source = start + d;
+                else if (d <= start && clean(start - d))
+                    source = start - d;
             }
             if (source == kNone) {
                 log::warn("VTX: the blocks of '{}' match no rank's {} count and it is not read",
@@ -168462,7 +168735,7 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
     engine.Close();
 
     if (drop)
-        vtx_weld_ghosts(out);
+        vtx_weld_ghosts(out, layout.mShared);
     return out;
 }
 
@@ -168589,12 +168862,17 @@ MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpt
     return meta;
 }
 
-
 // ---------------------------------------------------------------------------
-// The writer: VTXWriter's layout for one rank. The Python twin
-// (`vtx/_write.py`) writes the same variables, attribute and values.
+// The writer: VTXWriter's layout. One block for a mesh of one cell type, as for one rank;
+// a mesh of several cell types, or one whose cells carry `partition:part` values of several
+// parts, is one block per cell type (and part), every block holding the points it uses. The
+// Python twin (`vtx/_write.py`) writes the same variables, attributes and values.
 // ---------------------------------------------------------------------------
 namespace {
+
+constexpr const char* kVwPartition = "partition:part";
+constexpr const char* kVwGhostType = "vtkGhostType";
+constexpr const char* kVwOriginalIds = "vtkOriginalPointIds";
 
 [[noreturn]] void vw_fail(const std::string& rMessage) {
     throw WriteError("VTX (.bp): " + rMessage);
@@ -168603,7 +168881,7 @@ namespace {
 // (VTK type, node count) -> VTK_LAGRANGE_* type, the inverse of the reader's lowering.
 int vw_lagrange(int VtkType, std::size_t Nodes) {
     static const std::map<std::pair<int, std::size_t>, int> kMap = {
-        {{3, 2}, 68},  {{21, 3}, 68}, {{5, 3}, 69},  {{22, 6}, 69}, {{9, 4}, 70},  {{28, 9}, 70},
+        {{3, 2}, 68},  {{21, 3}, 68},  {{5, 3}, 69},  {{22, 6}, 69}, {{9, 4}, 70}, {{28, 9}, 70},
         {{10, 4}, 71}, {{24, 10}, 71}, {{12, 8}, 72}, {{13, 6}, 73}, {{14, 5}, 74}};
     const auto it = kMap.find({VtkType, Nodes});
     return it == kMap.end() ? VtkType : it->second;
@@ -168652,6 +168930,31 @@ struct VwArray {
     bool mCell = false;
 };
 
+// One block of the file: a cell type (of one part) and the points it uses.
+struct VwGroup {
+    int mVtkType = 0;
+    std::size_t mWidth = 0;             // 1 + nodes
+    std::vector<std::int64_t> mConn;    // rows x mWidth, each row led by its node count
+    bool mAllCells = true;              // the block's cells are the mesh's, in order
+    std::vector<std::size_t> mCells;    // else their numbers in the mesh
+    bool mAllPoints = true;             // the block's points are the mesh's
+    std::vector<std::int64_t> mPoints;  // else the mesh points it holds
+    std::vector<std::uint8_t> mGhost;   // 1 where another block owns the point
+    std::size_t Rows() const { return mWidth == 0 ? 0 : mConn.size() / mWidth; }
+};
+
+// The rows `rIndex` of an array of `Rows` rows, as bytes.
+std::vector<std::byte> vw_take_rows(const NDArray& rArray, std::size_t Rows,
+                                    const std::vector<std::size_t>& rIndex) {
+    const std::size_t row_bytes = Rows == 0 ? 0 : rArray.Size() / Rows * dtype_size(rArray.Dtype());
+    const std::byte* p = static_cast<const std::byte*>(rArray.Data());
+    std::vector<std::byte> out;
+    out.reserve(rIndex.size() * row_bytes);
+    for (const std::size_t i : rIndex)
+        out.insert(out.end(), p + i * row_bytes, p + (i + 1) * row_bytes);
+    return out;
+}
+
 class VwModel {
 public:
     explicit VwModel(const Mesh& rMesh) {
@@ -168665,17 +168968,14 @@ public:
                 for (std::size_t k = 0; k < 3 && k < width; ++k)
                     mGeometry[i * 3 + k] = view.Data()[i * width + k];
         }
-        std::set<std::string> types;
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            if (rMesh.Cells(b).NumCells() > 0)
-                types.insert(rMesh.Cells(b).Type());
-        if (types.size() > 1) {
-            std::string list;
-            for (const std::string& t : types)
-                list += (list.empty() ? "" : ", ") + t;
-            vw_fail("a VTX file holds one cell type, as DOLFINx's does; this mesh has " + list +
-                    " (write each type to its own file)");
-        }
+        struct Block {
+            std::size_t mIndex = 0;
+            std::string mType;
+            int mVtk = 0;
+            std::size_t mWidth = 0, mFirst = 0, mCount = 0;
+            std::vector<std::int64_t> mRows;
+        };
+        std::vector<Block> blocks;
         const auto& vtk_types = meshio_to_vtk_type();
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
@@ -168689,26 +168989,118 @@ public:
             std::vector<int> order = meshio_to_vtk_order(cb.Type());
             if (order.size() != w)
                 order.clear();
+            Block blk;
+            blk.mIndex = b;
+            blk.mType = cb.Type();
+            blk.mVtk = vw_lagrange(found->second, w);
+            blk.mWidth = w + 1;
+            blk.mFirst = mCells;
+            blk.mCount = count;
             const detail::Int64View conn(cb.Conn());
+            blk.mRows.reserve(count * (w + 1));
             for (std::size_t r = 0; r < count; ++r) {
-                mConn.push_back(static_cast<std::int64_t>(w));
+                blk.mRows.push_back(static_cast<std::int64_t>(w));
                 for (std::size_t j = 0; j < w; ++j) {
                     const std::int64_t node =
-                        conn.Data()[r * w + (order.empty() ? j : static_cast<std::size_t>(order[j]))];
+                        conn.Data()[r * w +
+                                    (order.empty() ? j : static_cast<std::size_t>(order[j]))];
                     if (node < 0 || static_cast<std::size_t>(node) >= mN)
-                        vw_fail("a '" + cb.Type() + "' cell refers to a point the mesh does not have");
-                    mConn.push_back(node);
+                        vw_fail("a '" + cb.Type() +
+                                "' cell refers to a point the mesh does not have");
+                    blk.mRows.push_back(node);
                 }
             }
-            mWidth = w + 1;
-            mVtkType = vw_lagrange(found->second, w);
             mCells += count;
+            blocks.push_back(std::move(blk));
         }
         if (mCells == 0)
             vw_fail("the mesh has no cells");
-        for (const std::string& name : rMesh.PointDataNames())
-            if (Usable(name, rMesh.PointData(name), mN, "point"))
-                mArrays.push_back({name, false});
+
+        // The parts, when every cell block says which one each cell belongs to.
+        std::vector<std::vector<std::int64_t>> parts;
+        if (rMesh.HasCellData(kVwPartition) &&
+            rMesh.CellDataNumBlocks(kVwPartition) == rMesh.NumCellBlocks()) {
+            bool ok = true;
+            for (const Block& blk : blocks) {
+                const NDArray& a = rMesh.CellData(kVwPartition, blk.mIndex);
+                if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
+                    a.Size() != blk.mCount) {
+                    ok = false;
+                    break;
+                }
+                const detail::Int64View view(a);
+                parts.emplace_back(view.Data(), view.Data() + blk.mCount);
+            }
+            if (!ok)
+                parts.clear();
+        }
+        std::set<std::int64_t> labels;
+        for (const auto& rPart : parts)
+            labels.insert(rPart.begin(), rPart.end());
+        std::set<std::string> types;
+        for (const Block& blk : blocks)
+            types.insert(blk.mType);
+
+        auto from_rows = [](const Block& rBlk, const std::vector<std::size_t>* pKeep) {
+            VwGroup g;
+            g.mVtkType = rBlk.mVtk;
+            g.mWidth = rBlk.mWidth;
+            if (pKeep == nullptr) {
+                g.mConn = rBlk.mRows;
+                return g;
+            }
+            g.mAllCells = false;
+            for (const std::size_t r : *pKeep) {
+                g.mConn.insert(g.mConn.end(), rBlk.mRows.begin() + r * rBlk.mWidth,
+                               rBlk.mRows.begin() + (r + 1) * rBlk.mWidth);
+                g.mCells.push_back(rBlk.mFirst + r);
+            }
+            return g;
+        };
+        if (labels.size() > 1) {
+            // One block per part and cell block: a rank's cells, as DOLFINx writes them.
+            for (const std::int64_t label : labels)
+                for (std::size_t k = 0; k < blocks.size(); ++k) {
+                    std::vector<std::size_t> keep;
+                    for (std::size_t r = 0; r < blocks[k].mCount; ++r)
+                        if (parts[k][r] == label)
+                            keep.push_back(r);
+                    if (!keep.empty())
+                        mGroups.push_back(from_rows(blocks[k], &keep));
+                }
+        } else if (types.size() > 1) {
+            for (const Block& blk : blocks) {
+                std::vector<std::size_t> all(blk.mCount);
+                for (std::size_t r = 0; r < all.size(); ++r)
+                    all[r] = r;
+                mGroups.push_back(from_rows(blk, &all));
+            }
+        } else {
+            VwGroup g;
+            g.mVtkType = blocks.back().mVtk;
+            g.mWidth = blocks.back().mWidth;
+            for (const Block& blk : blocks)
+                g.mConn.insert(g.mConn.end(), blk.mRows.begin(), blk.mRows.end());
+            mGroups.push_back(std::move(g));
+        }
+        mShared = mGroups.size() > 1;
+        if (mShared)
+            SharePoints();
+
+        std::set<std::string> point_names;
+        for (const std::string& name : rMesh.PointDataNames()) {
+            if (mShared && (name == kVwGhostType || name == kVwOriginalIds))
+                log::warn("VTX (.bp): point data '{}' is replaced by the ghost array of the blocks",
+                          name);
+            else if (Usable(name, rMesh.PointData(name), mN, "point"))
+                point_names.insert(name);
+        }
+        if (mShared) {
+            point_names.insert(kVwGhostType);
+            point_names.insert(kVwOriginalIds);
+        }
+        for (const std::string& name : point_names)
+            mArrays.push_back({name, false});
         for (const std::string& name : rMesh.CellDataNames()) {
             std::size_t total = 0;
             bool ok = true;
@@ -168723,13 +169115,31 @@ public:
             if (ok && total % mCells == 0)
                 mArrays.push_back({name, true});
         }
-        mSignature = std::to_string(mN) + "|" + std::to_string(mCells) + "|" +
-                     std::to_string(mVtkType);
+        mSignature = std::to_string(mN) + "|" + std::to_string(mCells);
+        for (const VwGroup& g : mGroups)
+            mSignature += "|" + std::to_string(g.mVtkType) + "," + std::to_string(g.mWidth) + "," +
+                          std::to_string(g.Rows()) + "," + std::to_string(g.mCells.size());
         for (const VwArray& a : mArrays)
             mSignature += "|" + a.mName + (a.mCell ? "c" : "p");
     }
 
     const std::string& Signature() const { return mSignature; }
+
+    bool Shared() const { return mShared; }
+
+    // True when `rOther` has this model's points and cells exactly.
+    bool SameMesh(const VwModel& rOther) const {
+        if (mGeometry != rOther.mGeometry || mGroups.size() != rOther.mGroups.size())
+            return false;
+        for (std::size_t g = 0; g < mGroups.size(); ++g) {
+            const VwGroup& a = mGroups[g];
+            const VwGroup& b = rOther.mGroups[g];
+            if (a.mVtkType != b.mVtkType || a.mConn != b.mConn || a.mAllPoints != b.mAllPoints ||
+                a.mPoints != b.mPoints)
+                return false;
+        }
+        return true;
+    }
 
     std::string Schema() const {
         auto arrays = [&](bool Cell) {
@@ -168763,48 +169173,167 @@ public:
         return xml;
     }
 
-    void PutStep(adios2::IO& rIo, adios2::Engine& rEngine, const Mesh& rMesh, double Time) const {
+    void DefineAttributes(adios2::IO& rIo) const {
+        rIo.DefineAttribute<std::string>("vtk.xml", Schema());
+        if (mShared)
+            rIo.DefineAttribute<std::string>(kVtxSharedAttribute, kVwOriginalIds);
+    }
+
+    // One step. `WithMesh` false is the step of a `reuse` file after the first: the time and
+    // the arrays only.
+    void PutStep(adios2::IO& rIo, adios2::Engine& rEngine, const Mesh& rMesh, double Time,
+                 bool WithMesh = true) const {
         rEngine.BeginStep();
         Put<double>(rIo, rEngine, "step", &Time, {}, true);
-        const std::uint32_t nodes = static_cast<std::uint32_t>(mN);
-        const std::uint32_t cells = static_cast<std::uint32_t>(mCells);
-        PutGlobal(rIo, rEngine, "NumberOfNodes", nodes);
-        PutGlobal(rIo, rEngine, "NumberOfEntities", cells);
-        Put<double>(rIo, rEngine, "geometry", mGeometry.data(), {mN, 3}, false);
-        Put<std::int64_t>(rIo, rEngine, "connectivity", mConn.data(), {mCells, mWidth}, false);
-        const std::uint32_t type = static_cast<std::uint32_t>(mVtkType);
-        Put<std::uint32_t>(rIo, rEngine, "types", &type, {}, true);
-        for (const VwArray& a : mArrays) {
-            if (!a.mCell) {
-                const NDArray& arr = rMesh.PointData(a.mName);
-                PutArray(rIo, rEngine, a.mName, arr.Dtype(), arr.Data(), Shape(arr, mN));
-            } else {
-                // The blocks' values one after the other, in cell order.
-                const NDArray& first = rMesh.CellData(a.mName, 0);
-                std::vector<std::byte> bytes;
-                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-                    const NDArray& arr = rMesh.CellData(a.mName, b);
-                    const std::byte* p = static_cast<const std::byte*>(arr.Data());
-                    bytes.insert(bytes.end(), p, p + arr.Size() * dtype_size(arr.Dtype()));
+        if (WithMesh) {
+            for (int which = 0; which < 2; ++which)
+                for (const VwGroup& g : mGroups) {
+                    const std::uint32_t value = static_cast<std::uint32_t>(
+                        which == 0 ? (g.mAllPoints ? mN : g.mPoints.size()) : g.Rows());
+                    const char* name = which == 0 ? "NumberOfNodes" : "NumberOfEntities";
+                    if (mShared)
+                        Put<std::uint32_t>(rIo, rEngine, name, &value, {1}, false);
+                    else
+                        PutGlobal(rIo, rEngine, name, value);
                 }
-                std::vector<std::size_t> dims = Shape(first, mCells);
-                PutArray(rIo, rEngine, a.mName, first.Dtype(), bytes.data(), dims);
+            for (const VwGroup& g : mGroups) {
+                if (g.mAllPoints) {
+                    Put<double>(rIo, rEngine, "geometry", mGeometry.data(), {mN, 3}, false);
+                } else {
+                    std::vector<double> block;
+                    block.reserve(g.mPoints.size() * 3);
+                    for (const std::int64_t p : g.mPoints)
+                        block.insert(block.end(), mGeometry.begin() + p * 3,
+                                     mGeometry.begin() + p * 3 + 3);
+                    Put<double>(rIo, rEngine, "geometry", block.data(), {g.mPoints.size(), 3},
+                                false);
+                }
+            }
+            for (const VwGroup& g : mGroups)
+                Put<std::int64_t>(rIo, rEngine, "connectivity", g.mConn.data(),
+                                  {g.Rows(), g.mWidth}, false);
+            for (const VwGroup& g : mGroups) {
+                const std::uint32_t type = static_cast<std::uint32_t>(g.mVtkType);
+                Put<std::uint32_t>(rIo, rEngine, "types", &type, {1}, !mShared);
+            }
+        }
+        for (const VwArray& a : mArrays) {
+            if (a.mCell)
+                continue;
+            const bool ghost_array =
+                mShared && (a.mName == kVwGhostType || a.mName == kVwOriginalIds);
+            if (!WithMesh && ghost_array)
+                continue;
+            for (const VwGroup& g : mGroups) {
+                if (a.mName == kVwGhostType && mShared) {
+                    Put<std::uint8_t>(rIo, rEngine, a.mName, g.mGhost.data(), {g.mPoints.size()},
+                                      false);
+                } else if (a.mName == kVwOriginalIds && mShared) {
+                    Put<std::int64_t>(rIo, rEngine, a.mName, g.mPoints.data(), {g.mPoints.size()},
+                                      false);
+                } else {
+                    const NDArray& arr = rMesh.PointData(a.mName);
+                    if (g.mAllPoints) {
+                        PutArray(rIo, rEngine, a.mName, arr.Dtype(), arr.Data(), Shape(arr, mN));
+                    } else {
+                        std::vector<std::size_t> index(g.mPoints.begin(), g.mPoints.end());
+                        const std::vector<std::byte> bytes = vw_take_rows(arr, mN, index);
+                        PutArray(rIo, rEngine, a.mName, arr.Dtype(), bytes.data(),
+                                 Shape(arr, mN, index.size()));
+                    }
+                }
+            }
+        }
+        for (const VwArray& a : mArrays) {
+            if (!a.mCell)
+                continue;
+            // The blocks' values one after the other, in cell order.
+            const NDArray& first = rMesh.CellData(a.mName, 0);
+            std::vector<std::byte> bytes;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& arr = rMesh.CellData(a.mName, b);
+                const std::byte* p = static_cast<const std::byte*>(arr.Data());
+                bytes.insert(bytes.end(), p, p + arr.Size() * dtype_size(arr.Dtype()));
+            }
+            const std::size_t row_bytes = bytes.size() / mCells;
+            for (const VwGroup& g : mGroups) {
+                if (g.mAllCells) {
+                    PutArray(rIo, rEngine, a.mName, first.Dtype(), bytes.data(),
+                             Shape(first, mCells, mCells));
+                } else {
+                    std::vector<std::byte> block;
+                    block.reserve(g.mCells.size() * row_bytes);
+                    for (const std::size_t c : g.mCells)
+                        block.insert(block.end(), bytes.begin() + c * row_bytes,
+                                     bytes.begin() + (c + 1) * row_bytes);
+                    PutArray(rIo, rEngine, a.mName, first.Dtype(), block.data(),
+                             Shape(first, mCells, g.mCells.size()));
+                }
             }
         }
         rEngine.EndStep();
     }
 
 private:
+    // Give every block the points it uses: the first block to use a point owns it, the others
+    // hold a ghost copy; the points no cell uses go to the first.
+    void SharePoints() {
+        std::vector<std::int64_t> owner(mN, -1);
+        std::vector<std::vector<std::int64_t>> used(mGroups.size());
+        for (std::size_t g = 0; g < mGroups.size(); ++g) {
+            std::set<std::int64_t> nodes;
+            const VwGroup& grp = mGroups[g];
+            for (std::size_t r = 0; r < grp.Rows(); ++r)
+                for (std::size_t j = 1; j < grp.mWidth; ++j)
+                    nodes.insert(grp.mConn[r * grp.mWidth + j]);
+            used[g].assign(nodes.begin(), nodes.end());
+            for (const std::int64_t p : used[g])
+                if (owner[p] < 0)
+                    owner[p] = static_cast<std::int64_t>(g);
+        }
+        for (std::int64_t& rO : owner)
+            if (rO < 0)
+                rO = 0;
+        for (std::size_t g = 0; g < mGroups.size(); ++g) {
+            VwGroup& grp = mGroups[g];
+            std::set<std::int64_t> points(used[g].begin(), used[g].end());
+            for (std::size_t p = 0; p < mN; ++p)
+                if (owner[p] == static_cast<std::int64_t>(g))
+                    points.insert(static_cast<std::int64_t>(p));
+            grp.mAllPoints = false;
+            grp.mPoints.assign(points.begin(), points.end());
+            grp.mGhost.clear();
+            std::unordered_map<std::int64_t, std::int64_t> local;
+            local.reserve(grp.mPoints.size());
+            for (std::size_t k = 0; k < grp.mPoints.size(); ++k) {
+                local[grp.mPoints[k]] = static_cast<std::int64_t>(k);
+                grp.mGhost.push_back(owner[grp.mPoints[k]] != static_cast<std::int64_t>(g) ? 1 : 0);
+            }
+            for (std::size_t r = 0; r < grp.Rows(); ++r)
+                for (std::size_t j = 1; j < grp.mWidth; ++j) {
+                    std::int64_t& rV = grp.mConn[r * grp.mWidth + j];
+                    rV = local[rV];
+                }
+        }
+    }
+
     static std::vector<std::size_t> Shape(const NDArray& rArray, std::size_t Rows) {
+        return Shape(rArray, Rows, Rows);
+    }
+
+    // The block's shape: `Count` rows of the array's `Rows`, with its trailing width.
+    static std::vector<std::size_t> Shape(const NDArray& rArray, std::size_t Rows,
+                                          std::size_t Count) {
         if (rArray.Shape().size() <= 1)
-            return {Rows};
-        return {Rows, rArray.Size() / Rows};
+            return {Count};
+        return {Count, rArray.Size() / Rows};
     }
 
     bool Usable(const std::string& rName, const NDArray& rArray, std::size_t Rows,
                 const char* pWhat) const {
         if (vw_reserved(rName)) {
-            log::warn("VTX (.bp): {} data '{}' is a reserved name and is not written", pWhat, rName);
+            log::warn("VTX (.bp): {} data '{}' is a reserved name and is not written", pWhat,
+                      rName);
             return false;
         }
         if (rArray.Shape().size() > 2 || rArray.Shape().empty() || Rows == 0 ||
@@ -168815,13 +169344,17 @@ private:
         return true;
     }
 
+    // A single value (`Value`) or a rank-local array of `rCount`; a variable written again in
+    // the same step is a further block.
     template <class T>
-    static void Put(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName, const T* pData,
-                    const std::vector<std::size_t>& rCount, bool Value) {
+    static void Put(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName,
+                    const T* pData, const std::vector<std::size_t>& rCount, bool Value) {
         adios2::Variable<T> var = rIo.InquireVariable<T>(rName);
         if (!var)
-            var = Value ? rIo.DefineVariable<T>(rName)
-                        : rIo.DefineVariable<T>(rName, {}, {}, rCount);
+            var =
+                Value ? rIo.DefineVariable<T>(rName) : rIo.DefineVariable<T>(rName, {}, {}, rCount);
+        else if (!Value)
+            var.SetSelection({{}, rCount});
         rEngine.Put(var, pData, adios2::Mode::Sync);
     }
 
@@ -168837,32 +169370,42 @@ private:
                          DType Type, const void* pData, const std::vector<std::size_t>& rCount) {
         switch (Type) {
             case DType::Float32:
-                return Put<float>(rIo, rEngine, rName, static_cast<const float*>(pData), rCount, false);
+                return Put<float>(rIo, rEngine, rName, static_cast<const float*>(pData), rCount,
+                                  false);
             case DType::Float64:
-                return Put<double>(rIo, rEngine, rName, static_cast<const double*>(pData), rCount, false);
+                return Put<double>(rIo, rEngine, rName, static_cast<const double*>(pData), rCount,
+                                   false);
             case DType::Int8:
-                return Put<std::int8_t>(rIo, rEngine, rName, static_cast<const std::int8_t*>(pData), rCount, false);
+                return Put<std::int8_t>(rIo, rEngine, rName, static_cast<const std::int8_t*>(pData),
+                                        rCount, false);
             case DType::Int16:
-                return Put<std::int16_t>(rIo, rEngine, rName, static_cast<const std::int16_t*>(pData), rCount, false);
+                return Put<std::int16_t>(rIo, rEngine, rName,
+                                         static_cast<const std::int16_t*>(pData), rCount, false);
             case DType::Int32:
-                return Put<std::int32_t>(rIo, rEngine, rName, static_cast<const std::int32_t*>(pData), rCount, false);
+                return Put<std::int32_t>(rIo, rEngine, rName,
+                                         static_cast<const std::int32_t*>(pData), rCount, false);
             case DType::Int64:
-                return Put<std::int64_t>(rIo, rEngine, rName, static_cast<const std::int64_t*>(pData), rCount, false);
+                return Put<std::int64_t>(rIo, rEngine, rName,
+                                         static_cast<const std::int64_t*>(pData), rCount, false);
             case DType::UInt8:
-                return Put<std::uint8_t>(rIo, rEngine, rName, static_cast<const std::uint8_t*>(pData), rCount, false);
+                return Put<std::uint8_t>(rIo, rEngine, rName,
+                                         static_cast<const std::uint8_t*>(pData), rCount, false);
             case DType::UInt16:
-                return Put<std::uint16_t>(rIo, rEngine, rName, static_cast<const std::uint16_t*>(pData), rCount, false);
+                return Put<std::uint16_t>(rIo, rEngine, rName,
+                                          static_cast<const std::uint16_t*>(pData), rCount, false);
             case DType::UInt32:
-                return Put<std::uint32_t>(rIo, rEngine, rName, static_cast<const std::uint32_t*>(pData), rCount, false);
+                return Put<std::uint32_t>(rIo, rEngine, rName,
+                                          static_cast<const std::uint32_t*>(pData), rCount, false);
             case DType::UInt64:
-                return Put<std::uint64_t>(rIo, rEngine, rName, static_cast<const std::uint64_t*>(pData), rCount, false);
+                return Put<std::uint64_t>(rIo, rEngine, rName,
+                                          static_cast<const std::uint64_t*>(pData), rCount, false);
         }
     }
 
-    std::size_t mN = 0, mCells = 0, mWidth = 0;
-    int mVtkType = 0;
+    std::size_t mN = 0, mCells = 0;
+    bool mShared = false;
     std::vector<double> mGeometry;
-    std::vector<std::int64_t> mConn;
+    std::vector<VwGroup> mGroups;
     std::vector<VwArray> mArrays;
     std::string mSignature;
 };
@@ -168884,7 +169427,7 @@ void write_vtx(const std::string& rPath, const Mesh& rMesh) {
         adios2::IO io = adios.DeclareIO("meshioplusplus_vtx_write");
         io.SetEngine("BP5");
         adios2::Engine engine = io.Open(rPath, adios2::Mode::Write);
-        io.DefineAttribute<std::string>("vtk.xml", model.Schema());
+        model.DefineAttributes(io);
         model.PutStep(io, engine, rMesh, vw_time_of(rMesh));
         engine.Close();
     } catch (const WriteError&) {
@@ -168896,6 +169439,7 @@ void write_vtx(const std::string& rPath, const Mesh& rMesh) {
 
 struct VtxSeriesWriter::Impl {
     std::string mPath;
+    VtxMeshPolicy mPolicy = VtxMeshPolicy::Update;
     std::unique_ptr<adios2::ADIOS> mAdios;
     adios2::IO mIo;
     adios2::Engine mEngine;
@@ -168904,9 +169448,14 @@ struct VtxSeriesWriter::Impl {
     bool mDone = false;
 };
 
-VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath)
+    : VtxSeriesWriter(rPath, VtxMeshPolicy::Update) {}
+
+VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath, VtxMeshPolicy Policy)
+    : mpImpl(std::make_unique<Impl>()) {
     detail::LibraryLock lock;
     mpImpl->mPath = rPath;
+    mpImpl->mPolicy = Policy;
 }
 
 VtxSeriesWriter::~VtxSeriesWriter() {
@@ -168930,20 +169479,25 @@ void VtxSeriesWriter::Write(double Time, const Mesh& rMesh) {
     detail::LibraryLock lock;
     Impl& s = *mpImpl;
     auto model = std::make_unique<VwModel>(rMesh);
+    const bool reuse = s.mPolicy == VtxMeshPolicy::Reuse;
     try {
         if (!s.mModel) {
             s.mAdios = std::make_unique<adios2::ADIOS>();
             s.mIo = s.mAdios->DeclareIO("meshioplusplus_vtx_series");
             s.mIo.SetEngine("BP5");
             s.mEngine = s.mIo.Open(s.mPath, adios2::Mode::Write);
-            s.mIo.DefineAttribute<std::string>("vtk.xml", model->Schema());
+            model->DefineAttributes(s.mIo);
             s.mModel = std::move(model);
         } else if (model->Signature() != s.mModel->Signature()) {
             vw_fail("series: step " + std::to_string(s.mSteps) +
                     "'s points, cells or arrays differ from the first step's; write one file per "
                     "step with '{step}'");
+        } else if (reuse && !s.mModel->SameMesh(*model)) {
+            vw_fail("series: step " + std::to_string(s.mSteps) +
+                    "'s points or cells differ from the first step's, which the reuse policy "
+                    "cannot write; use the update policy");
         }
-        s.mModel->PutStep(s.mIo, s.mEngine, rMesh, Time);
+        s.mModel->PutStep(s.mIo, s.mEngine, rMesh, Time, !(reuse && s.mSteps > 0));
         ++s.mSteps;
     } catch (const WriteError&) {
         throw;

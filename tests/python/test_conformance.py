@@ -74,9 +74,11 @@ def test_every_write_only_format_is_declared_with_its_item():
 
 def test_every_gap_names_a_roadmap_item():
     for fmt, reason in {**cs.READ_ONLY, **cs.WRITE_ONLY}.items():
-        assert "roadmap §" in reason, f"{fmt}: name the roadmap item in its reason"
-        if not reason.startswith("Exempt, not a gap"):
-            assert "roadmap §3." in reason, f"{fmt}: a gap is closed by a §3 item"
+        assert "roadmap" in reason, f"{fmt}: name the roadmap item in its reason"
+        if reason.startswith("Exempt, not a gap"):
+            assert "roadmap non-goals" in reason, f"{fmt}: an exemption is a decision"
+        else:
+            assert "roadmap §" in reason, f"{fmt}: a gap is closed by a roadmap item"
 
 
 def test_the_native_registry_agrees():
@@ -224,7 +226,7 @@ def test_every_format_has_both_engines_or_a_recorded_exemption():
 
 def test_engine_exemptions_name_their_roadmap_item():
     for key, reason in cs.ENGINE_EXEMPT.items():
-        assert "roadmap §" in reason and reason.startswith("Exempt"), key
+        assert "roadmap non-goals" in reason and reason.startswith("Exempt"), key
     for fmt, reason in cs.PARTIAL_ENGINE_EXEMPT.items():
-        assert "roadmap §3.4." in reason, fmt
+        assert "roadmap non-goals" in reason, fmt
         assert (REPO / "doc/formats" / f"{fmt}.md").exists(), fmt

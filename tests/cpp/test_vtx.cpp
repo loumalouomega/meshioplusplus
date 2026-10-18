@@ -296,16 +296,19 @@ TEST(Vtx, RegistrySniffAndSequenceGlob) {
 
 }  // namespace
 
-TEST(VtxWriter, StepsRoundTripAndOneCellTypeIsEnforced) {
+TEST(VtxWriter, StepsRoundTripAndAnEmptyMeshIsRefused) {
     VtxTempDir dir;
     meshioplusplus::Mesh mesh;
     {
         // Two P2 triangles' worth of nodes: one triangle6 with a vector and a cell array.
-        meshioplusplus::NDArray pts(meshioplusplus::DType::Float64, {std::size_t{6}, std::size_t{3}});
-        const double x[6][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0.5, 0, 0}, {0.5, 0.5, 0}, {0, 0.5, 0}};
+        meshioplusplus::NDArray pts(meshioplusplus::DType::Float64,
+                                    {std::size_t{6}, std::size_t{3}});
+        const double x[6][3] = {{0, 0, 0},   {1, 0, 0},     {0, 1, 0},
+                                {0.5, 0, 0}, {0.5, 0.5, 0}, {0, 0.5, 0}};
         std::memcpy(pts.As<double>(), x, sizeof(x));
         mesh.AssignPoints(std::move(pts));
-        meshioplusplus::NDArray conn(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{6}});
+        meshioplusplus::NDArray conn(meshioplusplus::DType::Int64,
+                                     {std::size_t{1}, std::size_t{6}});
         for (int k = 0; k < 6; ++k)
             conn.As<std::int64_t>()[k] = k;
         mesh.AddCellBlock("triangle6", std::move(conn));
@@ -338,12 +341,114 @@ TEST(VtxWriter, StepsRoundTripAndOneCellTypeIsEnforced) {
     meshioplusplus::write_vtx(one, mesh);
     EXPECT_EQ(meshioplusplus::read_vtx(one).Cells(0).Type(), "triangle6");
 
-    // A second cell type is refused: a VTX file holds one, as DOLFINx's does.
-    meshioplusplus::NDArray tri(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{3}});
-    for (int k = 0; k < 3; ++k)
-        tri.As<std::int64_t>()[k] = k;
-    mesh.AddCellBlock("triangle", std::move(tri));
-    EXPECT_THROW(meshioplusplus::write_vtx(dir / "mixed.bp", mesh), meshioplusplus::WriteError);
+    // A mesh with no cells has nothing to write.
+    Mesh empty;
+    empty.AssignPoints(
+        meshioplusplus::NDArray(meshioplusplus::DType::Float64, {std::size_t{2}, std::size_t{3}}));
+    EXPECT_THROW(meshioplusplus::write_vtx(dir / "empty.bp", empty), meshioplusplus::WriteError);
+}
+
+namespace {
+
+Mesh mixed_mesh(double U0 = 0.0, double X0 = 0.0) {
+    Mesh mesh;
+    meshioplusplus::NDArray pts(meshioplusplus::DType::Float64, {std::size_t{7}, std::size_t{3}});
+    const double x[7][3] = {{X0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                            {2, 0, 0},  {2, 1, 0}, {5, 5, 5}};
+    std::memcpy(pts.As<double>(), x, sizeof(x));
+    mesh.AssignPoints(std::move(pts));
+    const auto block = [&](const char* type, std::vector<std::int64_t> nodes) {
+        meshioplusplus::NDArray c(meshioplusplus::DType::Int64, {std::size_t{1}, nodes.size()});
+        std::copy(nodes.begin(), nodes.end(), c.As<std::int64_t>());
+        mesh.AddCellBlock(type, std::move(c));
+    };
+    block("triangle", {0, 1, 2});
+    block("quad", {1, 4, 5, 2});
+    block("triangle", {0, 2, 3});
+    meshioplusplus::NDArray u(meshioplusplus::DType::Float64, {std::size_t{7}});
+    for (int k = 0; k < 7; ++k)
+        u.As<double>()[k] = k;
+    u.As<double>()[0] = U0;
+    mesh.AddPointData("u", std::move(u));
+    std::vector<meshioplusplus::NDArray> rho;
+    for (int k = 0; k < 3; ++k) {
+        meshioplusplus::NDArray a(meshioplusplus::DType::Float64, {std::size_t{1}});
+        a.As<double>()[0] = k + 1;
+        rho.push_back(std::move(a));
+    }
+    mesh.AddCellData("rho", std::move(rho));
+    return mesh;
+}
+
+}  // namespace
+
+TEST(VtxWriter, SeveralCellTypesAreOneBlockEachAndReadBackWelded) {
+    VtxTempDir dir;
+    const Mesh mesh = mixed_mesh();
+    const std::string path = dir / "mixed.bp";
+    meshioplusplus::write_vtx(path, mesh);
+    const Mesh back = meshioplusplus::read_vtx(path);
+    // The shared points are one mesh again, in the mesh's order, the unused one included.
+    ASSERT_EQ(back.NumPoints(), 7u);
+    EXPECT_EQ(back.Points().As<double>()[6 * 3], 5.0);
+    ASSERT_EQ(back.NumCellBlocks(), 3u);
+    EXPECT_EQ(back.Cells(0).Type(), "triangle");
+    EXPECT_EQ(back.Cells(1).Type(), "quad");
+    EXPECT_EQ(back.Cells(2).Type(), "triangle");
+    const std::int64_t* quad = back.Cells(1).Conn().As<std::int64_t>();
+    EXPECT_EQ(quad[0], 1);
+    EXPECT_EQ(quad[1], 4);
+    EXPECT_EQ(quad[2], 5);
+    EXPECT_EQ(quad[3], 2);
+    for (int k = 0; k < 7; ++k)
+        EXPECT_EQ(back.PointData("u").As<double>()[k], k);
+    for (std::size_t b = 0; b < 3; ++b)
+        EXPECT_EQ(back.CellData("rho", b).As<double>()[0], static_cast<double>(b + 1));
+    EXPECT_FALSE(back.HasPointData("vtkGhostType"));
+    EXPECT_FALSE(back.HasPointData("vtkOriginalPointIds"));
+}
+
+TEST(VtxWriter, PartsAreOneBlockEach) {
+    VtxTempDir dir;
+    Mesh mesh = mixed_mesh();
+    std::vector<meshioplusplus::NDArray> part;
+    for (int k = 0; k < 3; ++k) {
+        meshioplusplus::NDArray a(meshioplusplus::DType::Int32, {std::size_t{1}});
+        a.As<std::int32_t>()[0] = k == 1 ? 1 : 0;
+        part.push_back(std::move(a));
+    }
+    mesh.AddCellData("partition:part", std::move(part));
+    const std::string path = dir / "parts.bp";
+    meshioplusplus::write_vtx(path, mesh);
+    // Part 0 holds the two triangles, part 1 the quad: the cells come back grouped by part.
+    const Mesh back = meshioplusplus::read_vtx(path);
+    ASSERT_EQ(back.NumPoints(), 7u);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    EXPECT_EQ(back.Cells(0).Type(), "triangle");
+    EXPECT_EQ(back.Cells(0).NumCells(), 2u);
+    EXPECT_EQ(back.Cells(1).Type(), "quad");
+    EXPECT_EQ(back.CellData("partition:part", 0).As<std::int32_t>()[1], 0);
+    EXPECT_EQ(back.CellData("partition:part", 1).As<std::int32_t>()[0], 1);
+}
+
+TEST(VtxWriter, TheReusePolicyWritesTheMeshOnce) {
+    VtxTempDir dir;
+    const std::string path = dir / "reuse.bp";
+    {
+        meshioplusplus::VtxSeriesWriter writer(path, meshioplusplus::VtxMeshPolicy::Reuse);
+        writer.Write(0.0, mixed_mesh());
+        writer.Write(1.0, mixed_mesh(42.0));
+        // A moved point cannot be written: the mesh is not written again.
+        EXPECT_THROW(writer.Write(2.0, mixed_mesh(0.0, 9.0)), meshioplusplus::WriteError);
+        writer.Finalize();
+    }
+    ReadOptions opts;
+    opts.mTimeStep = 1;
+    const Mesh back = meshioplusplus::read_vtx(path, opts);
+    ASSERT_EQ(back.NumPoints(), 7u);
+    ASSERT_EQ(back.NumCellBlocks(), 3u);
+    EXPECT_EQ(back.PointData("u").As<double>()[0], 42.0);
+    EXPECT_EQ(back.FieldData("meshio:time").As<double>()[0], 1.0);
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_ADIOS2

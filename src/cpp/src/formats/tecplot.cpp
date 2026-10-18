@@ -2467,7 +2467,30 @@ struct TecplotWritePlan {
     std::size_t mNumShared = 0;
     std::vector<CellVarComp> mCellVars;
     std::vector<std::int64_t> mBases;
+    /// Per variable, TecIO's data type for it: the narrowest of float (1), double (2), int32
+    /// (3), int16 (4) and byte (5) that holds the array's dtype exactly. Only SZL files keep it.
+    std::vector<std::int32_t> mVarTypes;
 };
+
+/// TecIO's variable type for a dtype: single precision stays single, small integers stay
+/// small, and what no TecIO type holds exactly (64-bit integers, unsigned 32- and 64-bit)
+/// is a double, as before.
+std::int32_t tecplot_szl_type(DType Type) {
+    switch (Type) {
+        case DType::Float32:
+            return 1;
+        case DType::Int32:
+        case DType::UInt16:
+            return 3;
+        case DType::Int16:
+        case DType::Int8:
+            return 4;
+        case DType::UInt8:
+            return 5;
+        default:
+            return 2;
+    }
+}
 
 TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
     TecplotWritePlan plan;
@@ -2481,7 +2504,6 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
     }
     if (blocks.empty())
         throw WriteError("Tecplot writer found no supported cell blocks");
-
 
     const std::size_t dim = rMesh.PointDim();
     const std::size_t num_nodes = rMesh.NumPoints();
@@ -2499,6 +2521,7 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
         for (std::size_t r = 0; r < num_nodes; ++r)
             col[r] = point_values[r * dim + comp];
         shared_data.push_back(std::move(col));
+        plan.mVarTypes.push_back(tecplot_szl_type(points.Dtype()));
     };
     push_point_col(0);
     push_point_col(1);
@@ -2517,6 +2540,7 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
             for (std::size_t r = 0; r < num_nodes; ++r)
                 col[r] = v_values[r * ncomp + c];
             shared_data.push_back(std::move(col));
+            plan.mVarTypes.push_back(tecplot_szl_type(v.Dtype()));
         }
     }
     plan.mNumShared = variables.size();
@@ -2531,16 +2555,22 @@ TecplotWritePlan tecplot_write_plan(const Mesh& rMesh) {
         if (rMesh.CellDataNumBlocks(k) == 0)
             continue;
         std::size_t ncomp = 1;
+        std::int32_t type = 0;  // the blocks' common type, a double when they disagree
+        bool first = true;
         for (std::size_t b : plan.mBlocks) {
             if (b < rMesh.CellDataNumBlocks(k)) {
                 const NDArray& vv = rMesh.CellData(k, b);
-                ncomp = vv.Shape().size() >= 2 ? vv.Shape()[1] : 1;
-                break;
+                if (first)
+                    ncomp = vv.Shape().size() >= 2 ? vv.Shape()[1] : 1;
+                const std::int32_t t = tecplot_szl_type(vv.Dtype());
+                type = first || type == t ? t : 2;
+                first = false;
             }
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
             cell_vars.push_back({k, c, ncomp});
+            plan.mVarTypes.push_back(type == 0 ? 2 : type);
         }
     }
 
@@ -2578,7 +2608,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     std::string lower_path = rPath;
     std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    const bool plt = lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
+    const bool plt =
+        lower_path.size() >= 4 && lower_path.compare(lower_path.size() - 4, 4, ".plt") == 0;
 
     auto os = plt ? detail::make_classic_ofstream(rPath, std::ios::binary)
                   : detail::make_classic_ofstream(rPath);
@@ -2615,8 +2646,8 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             i32(0);
         };
         static const std::map<std::string, int> zone_codes = {
-            {"FELINESEG", 1},      {"FETRIANGLE", 2}, {"FEQUADRILATERAL", 3}, {"FETETRAHEDRON", 4},
-            {"FEBRICK", 5},        {"FEPOLYGON", 6},  {"FEPOLYHEDRON", 7}};
+            {"FELINESEG", 1}, {"FETRIANGLE", 2}, {"FEQUADRILATERAL", 3}, {"FETETRAHEDRON", 4},
+            {"FEBRICK", 5},   {"FEPOLYGON", 6},  {"FEPOLYHEDRON", 7}};
         const std::size_t nvar = variables.size();
 
         raw("#!TDV112", 8);
@@ -2890,11 +2921,16 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     }
 }
 
-
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // --- SZL (.szplt) writer, through a user-installed TecIO ---------------------------
 // The twin of `szplt/_write.py`: the zones of the ASCII and `.plt` writers (one per
-// cell block, cell-centred variables passive where a block has none), in doubles.
+// cell block, cell-centred variables passive where a block has none), each variable in
+// the TecIO type that holds its array's dtype (single precision stays single, 16-bit and
+// byte integers stay small, the rest is double). A static file's tetrahedron and brick
+// zones whose cells carry `partition:part` values of several parts are written as
+// partitioned zones, one partition per part (TecIO takes partitions of 3D FE zones only,
+// and a zone sharing its connectivity from a partitioned one needs the partitions
+// again, so a series is written whole).
 // TecIO shares a variable between zones only together with their connectivity, so a
 // mesh of one block is one zone with every point and a mesh of several gives each zone
 // the points its cells use. A series is a strand of zones per step; the later steps
@@ -2924,6 +2960,127 @@ int szw_zone_code(const std::string& rType) {
     return 0;
 }
 
+/// One variable's values written in TecIO's type for it, to a zone's partition (0: the
+/// whole zone).
+void szw_write_values(void* pHandle, std::int32_t Zone, std::int32_t Var, std::int32_t Partition,
+                      std::int32_t Type, const std::vector<double>& rValues) {
+    if (rValues.empty())
+        return;
+    const auto n = static_cast<int64_t>(rValues.size());
+    switch (Type) {
+        case 1: {
+            const std::vector<float> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteFloatValues(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteFloatValues");
+        }
+        case 3: {
+            const std::vector<std::int32_t> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteInt32Values(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteInt32Values");
+        }
+        case 4: {
+            const std::vector<std::int16_t> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteInt16Values(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteInt16Values");
+        }
+        case 5: {
+            const std::vector<std::uint8_t> v(rValues.begin(), rValues.end());
+            return szw_check(tecZoneVarWriteUInt8Values(pHandle, Zone, Var, Partition, n, v.data()),
+                             "tecZoneVarWriteUInt8Values");
+        }
+        default:
+            return szw_check(
+                tecZoneVarWriteDoubleValues(pHandle, Zone, Var, Partition, n, rValues.data()),
+                "tecZoneVarWriteDoubleValues");
+    }
+}
+
+/// The parts of a block's cells (`partition:part`, an integer value per cell), or empty.
+std::vector<std::int64_t> szw_parts(const Mesh& rMesh, std::size_t Block) {
+    if (!rMesh.HasCellData("partition:part") || Block >= rMesh.CellDataNumBlocks("partition:part"))
+        return {};
+    const NDArray& a = rMesh.CellData("partition:part", Block);
+    if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
+        a.Size() != rMesh.Cells(Block).NumCells())
+        return {};
+    const detail::Int64View view(a);
+    return std::vector<std::int64_t>(view.Data(), view.Data() + a.Size());
+}
+
+/// How a 3D FE zone splits into one partition per part. A node belongs to the lowest
+/// partition that uses it (so a ghost node always names an earlier partition), a node no cell
+/// uses to the first. A partition lists the nodes it owns, then its ghost nodes, each in node
+/// order. TecIO refuses a partition that owns no node: such a zone is not partitioned.
+struct SzPartitions {
+    std::vector<std::vector<std::size_t>> mCells;   // per partition, the block's cell rows
+    std::vector<std::vector<std::int64_t>> mNodes;  // per partition, its zone-local nodes, sorted
+    std::vector<std::vector<std::int64_t>> mOwn;    // the nodes it owns
+    std::vector<std::vector<std::int64_t>> mGhost;  // and the ones it holds as ghosts
+    std::vector<std::int32_t> mOwner;               // per zone-local node, its partition from 1
+
+    /// The 1-based number of a node in a partition's list.
+    std::int64_t Locate(std::size_t Partition, std::int64_t Node) const {
+        const auto& own = mOwn[Partition];
+        if (mOwner[static_cast<std::size_t>(Node)] == static_cast<std::int32_t>(Partition + 1))
+            return static_cast<std::int64_t>(std::lower_bound(own.begin(), own.end(), Node) -
+                                             own.begin()) +
+                   1;
+        const auto& ghost = mGhost[Partition];
+        return static_cast<std::int64_t>(
+                   own.size() +
+                   static_cast<std::size_t>(std::lower_bound(ghost.begin(), ghost.end(), Node) -
+                                            ghost.begin())) +
+               1;
+    }
+};
+
+/// The split of a zone's cells by `rParts`/`rLabels` (the sorted distinct parts), or nothing
+/// when TecIO could not take it. `rLocal` is the zone-local node of each cell's `Width` slots.
+bool szw_partition_plan(const std::vector<std::int64_t>& rParts,
+                        const std::vector<std::int64_t>& rLabels, std::size_t NumNodes,
+                        const std::vector<std::int64_t>& rLocal, std::size_t Width,
+                        SzPartitions& rPlan) {
+    const std::size_t count = rLabels.size();
+    rPlan = SzPartitions();
+    rPlan.mCells.resize(count);
+    rPlan.mNodes.resize(count);
+    rPlan.mOwn.resize(count);
+    rPlan.mGhost.resize(count);
+    for (std::size_t r = 0; r < rParts.size(); ++r)
+        rPlan
+            .mCells[static_cast<std::size_t>(
+                std::lower_bound(rLabels.begin(), rLabels.end(), rParts[r]) - rLabels.begin())]
+            .push_back(r);
+    rPlan.mOwner.assign(NumNodes, 0);
+    for (std::size_t p = 0; p < count; ++p) {
+        for (const std::size_t r : rPlan.mCells[p])
+            for (std::size_t j = 0; j < Width; ++j)
+                rPlan.mNodes[p].push_back(rLocal[r * Width + j]);
+        std::sort(rPlan.mNodes[p].begin(), rPlan.mNodes[p].end());
+        rPlan.mNodes[p].erase(std::unique(rPlan.mNodes[p].begin(), rPlan.mNodes[p].end()),
+                              rPlan.mNodes[p].end());
+    }
+    for (std::size_t p = count; p-- > 0;)
+        for (const std::int64_t n : rPlan.mNodes[p])
+            rPlan.mOwner[static_cast<std::size_t>(n)] = static_cast<std::int32_t>(p + 1);
+    for (std::size_t n = 0; n < NumNodes; ++n)
+        if (rPlan.mOwner[n] == 0) {
+            rPlan.mOwner[n] = 1;
+            rPlan.mNodes[0].push_back(static_cast<std::int64_t>(n));
+        }
+    std::sort(rPlan.mNodes[0].begin(), rPlan.mNodes[0].end());
+    for (std::size_t p = 0; p < count; ++p) {
+        for (const std::int64_t n : rPlan.mNodes[p])
+            (rPlan.mOwner[static_cast<std::size_t>(n)] == static_cast<std::int32_t>(p + 1)
+                 ? rPlan.mOwn[p]
+                 : rPlan.mGhost[p])
+                .push_back(n);
+        if (rPlan.mOwn[p].empty())
+            return false;
+    }
+    return true;
+}
+
 class SzWriter {
 public:
     explicit SzWriter(std::string Path) : mPath(std::move(Path)) {}
@@ -2938,9 +3095,10 @@ public:
             if (szw_zone_code(meshio_to_tecplot(rMesh.Cells(block).Type())) != 0)
                 usable.push_back(block);
             else
-                log::warn("Tecplot .szplt: skipping '{}' cells (SZL files are written without "
-                          "face-based zones)",
-                          rMesh.Cells(block).Type());
+                log::warn(
+                    "Tecplot .szplt: skipping '{}' cells (TecIO 2018.3 refuses polygon and "
+                    "polyhedral zones in SZL files)",
+                    rMesh.Cells(block).Type());
         }
         if (usable.empty())
             szw_fail("no cell type SZL can hold in the mesh");
@@ -2956,8 +3114,8 @@ public:
         }
         // The first plan column of each coordinate is the step's point array.
         const std::size_t ncoord = rMesh.PointDim() == 3 ? 3 : 2;
-        std::vector<std::vector<double>> coords(plan.mShared.begin(),
-                                                plan.mShared.begin() + static_cast<std::ptrdiff_t>(ncoord));
+        std::vector<std::vector<double>> coords(
+            plan.mShared.begin(), plan.mShared.begin() + static_cast<std::ptrdiff_t>(ncoord));
         if (!mOpen) {
             mSignature = signature;
             mFirstCoords = coords;
@@ -3001,38 +3159,74 @@ public:
                 if (block < rMesh.CellDataNumBlocks(plan.mCellVars[j].mKey))
                     present.push_back(j);
             std::vector<std::int32_t> share(nvar, 0), location(nvar, 0), passive(nvar, 0),
-                types(nvar, 2);
+                types(plan.mVarTypes.begin(), plan.mVarTypes.end());
             for (std::size_t v = 0; v < num_shared; ++v)
                 location[v] = 1;
             for (std::size_t j = 0; j < plan.mCellVars.size(); ++j)
                 if (std::find(present.begin(), present.end(), j) == present.end())
                     passive[num_shared + j] = 1;
+            SzPartitions partitions;
+            bool partitioned = false;
+            if (!Unsteady && (ztype == 4 || ztype == 5)) {
+                std::vector<std::int64_t> labels = szw_parts(rMesh, block);
+                std::sort(labels.begin(), labels.end());
+                labels.erase(std::unique(labels.begin(), labels.end()), labels.end());
+                if (labels.size() > 1) {
+                    partitioned = szw_partition_plan(szw_parts(rMesh, block), labels, used.size(),
+                                                     local, k, partitions);
+                    if (!partitioned)
+                        log::warn(
+                            "Tecplot .szplt: a part owns no node of its own, which TecIO "
+                            "cannot partition; the zone is written whole");
+                }
+            }
             const std::int32_t conn_share =
                 mSteps > 0 && mFirstStepZone.count(bi) ? mFirstStepZone.at(bi) : 0;
             if (conn_share != 0)
                 for (std::size_t v = 0; v < ncoord; ++v)
                     share[v] = conn_share;
             std::int32_t zone = 0;
-            szw_check(tecZoneCreateFE(mHandle, tecplot_zone_title(rMesh, plan.mBases, block).c_str(),
-                                      ztype, static_cast<int64_t>(used.size()),
-                                      static_cast<int64_t>(cb.NumCells()), types.data(),
-                                      share.data(), location.data(), passive.data(), conn_share, 0,
-                                      0, &zone),
-                      "tecZoneCreateFE");
+            szw_check(
+                tecZoneCreateFE(mHandle, tecplot_zone_title(rMesh, plan.mBases, block).c_str(),
+                                ztype, static_cast<int64_t>(used.size()),
+                                static_cast<int64_t>(cb.NumCells()), types.data(), share.data(),
+                                location.data(), passive.data(), conn_share, 0, 0, &zone),
+                "tecZoneCreateFE");
             if (mSteps == 0)
                 mFirstStepZone[bi] = zone;
             if (Unsteady)
                 szw_check(tecZoneSetUnsteadyOptions(mHandle, zone, Time, 1),
                           "tecZoneSetUnsteadyOptions");
-            auto write_values = [&](std::size_t Var, const std::vector<double>& rValues) {
-                if (rValues.empty())
-                    return;
-                szw_check(tecZoneVarWriteDoubleValues(mHandle, zone,
-                                                      static_cast<std::int32_t>(Var + 1), 0,
-                                                      static_cast<int64_t>(rValues.size()),
-                                                      rValues.data()),
-                          "tecZoneVarWriteDoubleValues");
+            auto write_values = [&](std::size_t Var, const std::vector<double>& rValues,
+                                    std::int32_t Partition = 0) {
+                szw_write_values(mHandle, zone, static_cast<std::int32_t>(Var + 1), Partition,
+                                 types[Var], rValues);
             };
+            // The block's cell-centred columns, and its cells' nodes in TecIO's order.
+            std::vector<std::pair<std::size_t, std::vector<double>>> cell_columns;
+            for (const std::size_t j : present) {
+                const auto& cv = plan.mCellVars[j];
+                const NDArray& vv = rMesh.CellData(cv.mKey, block);
+                const detail::DoubleView values(vv);
+                std::vector<double> col(vv.Shape()[0]);
+                for (std::size_t r = 0; r < col.size(); ++r)
+                    col[r] = values[r * cv.mNumComp + cv.mComp];
+                cell_columns.emplace_back(num_shared + j, std::move(col));
+            }
+            const std::vector<int>& order = tecplot_order(cb.Type());
+            auto cell_nodes = [&](std::size_t Row, std::size_t Slot) {
+                std::size_t src = static_cast<std::size_t>(order[Slot]);
+                if (src >= k)
+                    src = k - 1;
+                return local[Row * k + src];
+            };
+
+            if (partitioned) {
+                WritePartitions(zone, partitions, num_shared, plan.mShared, used, types,
+                                cell_columns, order.size(), cell_nodes);
+                continue;
+            }
+
             for (std::size_t v = 0; v < num_shared; ++v) {
                 if (share[v] != 0)
                     continue;
@@ -3041,31 +3235,78 @@ public:
                     col[i] = plan.mShared[v][static_cast<std::size_t>(used[i])];
                 write_values(v, col);
             }
-            for (const std::size_t j : present) {
-                const auto& cv = plan.mCellVars[j];
-                const NDArray& vv = rMesh.CellData(cv.mKey, block);
-                const detail::DoubleView values(vv);
-                std::vector<double> col(vv.Shape()[0]);
-                for (std::size_t r = 0; r < col.size(); ++r)
-                    col[r] = values[r * cv.mNumComp + cv.mComp];
-                write_values(num_shared + j, col);
-            }
+            for (const auto& [var, col] : cell_columns)
+                write_values(var, col);
             if (conn_share == 0) {
-                const std::vector<int>& order = tecplot_order(cb.Type());
                 std::vector<std::int32_t> nodes;
                 for (std::size_t r = 0; r < cb.NumCells(); ++r)
-                    for (const int o : order) {
-                        std::size_t src = static_cast<std::size_t>(o);
-                        if (src >= k)
-                            src = k - 1;
-                        nodes.push_back(static_cast<std::int32_t>(local[r * k + src] + 1));
-                    }
+                    for (std::size_t slot = 0; slot < order.size(); ++slot)
+                        nodes.push_back(static_cast<std::int32_t>(cell_nodes(r, slot) + 1));
                 szw_check(tecZoneNodeMapWrite32(mHandle, zone, 0, 1,
                                                 static_cast<int64_t>(nodes.size()), nodes.data()),
                           "tecZoneNodeMapWrite32");
             }
         }
         ++mSteps;
+    }
+
+    /// A 3D FE zone written as one partition per part (see `SzPartitions`).
+    template <class TCellNodes>
+    void WritePartitions(
+        std::int32_t Zone, const SzPartitions& rPlan, std::size_t NumShared,
+        const std::vector<std::vector<double>>& rShared, const std::vector<std::int64_t>& rUsed,
+        const std::vector<std::int32_t>& rTypes,
+        const std::vector<std::pair<std::size_t, std::vector<double>>>& rCellColumns,
+        std::size_t Slots, const TCellNodes& rCellNodes) {
+        const std::size_t count = rPlan.mCells.size();
+        for (std::size_t p = 0; p < count; ++p) {
+            std::vector<std::int64_t> ghost_local, neighbor_node;
+            std::vector<std::int32_t> neighbor;
+            for (std::size_t g = 0; g < rPlan.mGhost[p].size(); ++g) {
+                const std::int64_t node = rPlan.mGhost[p][g];
+                const std::int32_t o = rPlan.mOwner[static_cast<std::size_t>(node)];
+                ghost_local.push_back(static_cast<std::int64_t>(rPlan.mOwn[p].size() + g + 1));
+                neighbor.push_back(o);
+                neighbor_node.push_back(rPlan.Locate(static_cast<std::size_t>(o - 1), node));
+            }
+            szw_check(tecFEPartitionCreate64(mHandle, Zone, static_cast<std::int32_t>(p + 1),
+                                             static_cast<int64_t>(rPlan.mNodes[p].size()),
+                                             static_cast<int64_t>(rPlan.mCells[p].size()),
+                                             static_cast<int64_t>(ghost_local.size()),
+                                             ghost_local.empty() ? nullptr : ghost_local.data(),
+                                             neighbor.empty() ? nullptr : neighbor.data(),
+                                             neighbor_node.empty() ? nullptr : neighbor_node.data(),
+                                             0, nullptr),
+                      "tecFEPartitionCreate64");
+        }
+        for (std::size_t p = 0; p < count; ++p) {
+            const auto partition = static_cast<std::int32_t>(p + 1);
+            std::vector<std::int64_t> listed = rPlan.mOwn[p];
+            listed.insert(listed.end(), rPlan.mGhost[p].begin(), rPlan.mGhost[p].end());
+            for (std::size_t v = 0; v < NumShared; ++v) {
+                std::vector<double> col(listed.size());
+                for (std::size_t i = 0; i < col.size(); ++i)
+                    col[i] = rShared[v][static_cast<std::size_t>(
+                        rUsed[static_cast<std::size_t>(listed[i])])];
+                szw_write_values(mHandle, Zone, static_cast<std::int32_t>(v + 1), partition,
+                                 rTypes[v], col);
+            }
+            for (const auto& [var, column] : rCellColumns) {
+                std::vector<double> col;
+                col.reserve(rPlan.mCells[p].size());
+                for (const std::size_t r : rPlan.mCells[p])
+                    col.push_back(column[r]);
+                szw_write_values(mHandle, Zone, static_cast<std::int32_t>(var + 1), partition,
+                                 rTypes[var], col);
+            }
+            std::vector<std::int32_t> map;
+            for (const std::size_t r : rPlan.mCells[p])
+                for (std::size_t slot = 0; slot < Slots; ++slot)
+                    map.push_back(static_cast<std::int32_t>(rPlan.Locate(p, rCellNodes(r, slot))));
+            szw_check(tecZoneNodeMapWrite32(mHandle, Zone, partition, 1,
+                                            static_cast<int64_t>(map.size()), map.data()),
+                      "tecZoneNodeMapWrite32");
+        }
     }
 
     std::size_t NumSteps() const { return mSteps; }
@@ -3086,9 +3327,9 @@ private:
             std::replace(name.begin(), name.end(), ',', '_');
             names += (v ? "," : "") + name;
         }
-        szw_check(tecFileWriterOpen(mPath.c_str(), "meshio++", names.c_str(), 1, 0, 2, nullptr,
-                                    &mHandle),
-                  "tecFileWriterOpen");
+        szw_check(
+            tecFileWriterOpen(mPath.c_str(), "meshio++", names.c_str(), 1, 0, 2, nullptr, &mHandle),
+            "tecFileWriterOpen");
         mOpen = true;
     }
 

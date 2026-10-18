@@ -188,3 +188,162 @@ def test_a_series_refuses_a_different_mesh(tmp_path):
         with py_write.SeriesWriter(tmp_path / "bad.szplt") as w:
             w.write(0.0, mesh)
             w.write(1.0, other)
+
+
+# ---------------------------------------------------------------------------
+# Variable types and partitioned zones.
+# ---------------------------------------------------------------------------
+
+
+def _variable_types(path):
+    """TecIO's type of every variable of the first zone (1 float, 2 double, 3 int32,
+    4 int16, 5 byte), asked through the shared TecIO."""
+    import ctypes
+
+    lib = _szplt.library()
+    handle = ctypes.c_void_p()
+    assert lib.tecFileReaderOpen(str(path).encode(), ctypes.byref(handle)) == 0
+    try:
+        count = ctypes.c_int32()
+        assert lib.tecDataSetGetNumVars(handle, ctypes.byref(count)) == 0
+        out = []
+        for var in range(1, count.value + 1):
+            kind = ctypes.c_int32()
+            assert lib.tecZoneVarGetType(handle, 1, var, ctypes.byref(kind)) == 0
+            out.append(kind.value)
+        return out
+    finally:
+        lib.tecFileReaderClose(ctypes.byref(handle))
+
+
+def _typed_mesh():
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32
+    )
+    mesh = meshioplusplus.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3], [1, 2, 3, 4]]))])
+    mesh.point_data["f32"] = np.arange(5, dtype=np.float32) + 0.25
+    mesh.point_data["i16"] = np.array([-3, 0, 7, 100, 30000], dtype=np.int16)
+    mesh.point_data["i8"] = np.array([-3, 0, 7, 100, 127], dtype=np.int8)
+    mesh.point_data["u8"] = np.array([0, 1, 2, 3, 255], dtype=np.uint8)
+    mesh.point_data["i32"] = np.array([-1, 0, 1, 2, 2**30], dtype=np.int32)
+    mesh.point_data["i64"] = np.arange(5, dtype=np.int64)
+    mesh.cell_data["c32"] = [np.array([1.5, 2.5], dtype=np.float32)]
+    return mesh
+
+
+def test_variables_keep_the_type_that_holds_their_dtype(writer, tmp_path):
+    if not os.environ.get("MESHIOPLUSPLUS_TECIO_LIBRARY"):
+        pytest.skip("MESHIOPLUSPLUS_TECIO_LIBRARY names no shared TecIO")
+    mesh = _typed_mesh()
+    out = tmp_path / "typed.szplt"
+    writer(out, mesh)
+    names = ["X", "Y", "Z"] + sorted(mesh.point_data) + ["c32"]
+    assert dict(zip(names, _variable_types(out))) == {
+        "X": 1,
+        "Y": 1,
+        "Z": 1,
+        "f32": 1,
+        "i16": 4,
+        "i8": 4,
+        "u8": 5,
+        "i32": 3,
+        "i64": 2,
+        "c32": 1,
+    }
+    again = _any_reader()(out)
+    np.testing.assert_array_equal(again.points, mesh.points.astype(float))
+    for name in mesh.point_data:
+        np.testing.assert_array_equal(
+            again.point_data[name], mesh.point_data[name].astype(float)
+        )
+    np.testing.assert_array_equal(again.cell_data["c32"][0], [1.5, 2.5])
+
+
+def _partitioned_mesh(kind, parts=(0, 0, 1, 1)):
+    # a row of cubes along x, two parts: the first two cubes, the last two
+    pts, cells = [], []
+    for i in range(5):
+        for corner in ([0, 0, 0], [0, 1, 0], [0, 1, 1], [0, 0, 1]):
+            pts.append([i, corner[1], corner[2]])
+    for i in range(4):
+        a, b = i * 4, (i + 1) * 4
+        cells.append(list(range(a, a + 4)) + list(range(b, b + 4)))
+    mesh = meshioplusplus.Mesh(
+        np.array(pts, dtype=float), [("hexahedron", np.array(cells))]
+    )
+    mesh.point_data["xx"] = np.array(pts, dtype=float)[:, 0] * 10
+    mesh.cell_data["partition:part"] = [np.array(parts)]
+    mesh.cell_data["rho"] = [np.array([1.0, 2.0, 3.0, 4.0])]
+    return mesh
+
+
+def _cell_fingerprints(mesh):
+    """Each cell as its sorted node coordinates with its data, in any order."""
+    out = []
+    for block in mesh.cells:
+        for row in range(len(block.data)):
+            pts = tuple(sorted(map(tuple, mesh.points[block.data[row]].tolist())))
+            out.append((pts, float(mesh.cell_data["rho"][0][row])))
+    return sorted(out)
+
+
+@pytest.mark.parametrize("parts", [(0, 0, 1, 1), (1, 0, 1, 0), (0, 1, 2, 2)])
+def test_cells_with_parts_are_written_as_partitions(writer, parts, tmp_path):
+    mesh = _partitioned_mesh("hexahedron", parts)
+    out = tmp_path / "parts.szplt"
+    writer(out, mesh)
+    again = _any_reader()(out)
+    # the partitions come back as one zone: the nodes numbered partition by partition (each
+    # one's owned nodes in order), the cells grouped by part, every cell's geometry intact
+    assert len(again.points) == len(mesh.points)
+    assert _cell_fingerprints(again) == _cell_fingerprints(mesh)
+    np.testing.assert_array_equal(again.cell_data["partition:part"][0], sorted(parts))
+    by_point = {
+        tuple(p): v for p, v in zip(again.points.tolist(), again.point_data["xx"])
+    }
+    for p, v in zip(mesh.points.tolist(), mesh.point_data["xx"]):
+        assert by_point[tuple(p)] == v
+
+
+def test_a_part_without_a_node_of_its_own_is_written_whole(writer, tmp_path, capfd):
+    # parts 0 1 2 1: the third part's nodes all belong to lower parts, which TecIO refuses
+    mesh = _partitioned_mesh("hexahedron", (0, 1, 2, 1))
+    out = tmp_path / "whole.szplt"
+    writer(out, mesh)
+    assert "owns no node of its own" in capfd.readouterr().err
+    again = _any_reader()(out)
+    np.testing.assert_array_equal(again.points, mesh.points)
+    np.testing.assert_array_equal(again.cell_data["partition:part"][0], [0, 1, 2, 1])
+    assert _cell_fingerprints(again) == _cell_fingerprints(mesh)
+
+
+def test_the_partitions_of_two_engines_agree(tmp_path):
+    if not (
+        getattr(_core, "__has_tecio__", False)
+        and os.environ.get("MESHIOPLUSPLUS_TECIO_LIBRARY")
+    ):
+        pytest.skip("needs both engines")
+    mesh = _partitioned_mesh("hexahedron")
+    a, b = tmp_path / "core.szplt", tmp_path / "twin.szplt"
+    _core.szplt_write(str(a), mesh)
+    py_write.write(b, mesh)
+    x, y = _szplt.read(a), _szplt.read(b)
+    np.testing.assert_array_equal(x.points, y.points)
+    assert [c.data.tolist() for c in x.cells] == [c.data.tolist() for c in y.cells]
+    assert a.read_bytes() == b.read_bytes()
+
+
+def test_a_series_is_written_whole_even_with_parts(tmp_path):
+    if not (
+        getattr(_core, "__has_tecio__", False)
+        or os.environ.get("MESHIOPLUSPLUS_TECIO_LIBRARY")
+    ):
+        pytest.skip("no TecIO")
+    steps = [
+        (0.0, _partitioned_mesh("hexahedron")),
+        (1.0, _partitioned_mesh("hexahedron")),
+    ]
+    out = tmp_path / "series.szplt"
+    meshioplusplus.write_sequence(out, iter(steps), file_format="szplt")
+    again = _any_reader()(out, time_step=1)
+    np.testing.assert_array_equal(again.points, steps[1][1].points)

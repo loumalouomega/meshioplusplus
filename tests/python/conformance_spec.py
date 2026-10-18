@@ -85,8 +85,8 @@ DATA_NAMES = {
 
 _PLANAR = ("vertex", "line", "triangle", "quad")
 
-# The formats that draw a mesh rather than store it (roadmap §4, "The one
-# exception: pure 2-D drawings"): their readers return the drawing as planar
+# The formats that draw a mesh rather than store it (roadmap non-goals, "Pure
+# 2-D drawings"): their readers return the drawing as planar
 # (z = 0), so they are observed on the planar part of the canonical mesh.
 DRAWINGS = ("svg", "tikz")
 
@@ -983,18 +983,25 @@ SPEC: dict[str, dict] = {
     },
     "vtx": {
         "cells": {
-            "vertex": "?",
-            "line": "?",
-            "triangle": "?",
-            "quad": "?",
-            "tetra": "?",
-            "hexahedron": "?",
-            "wedge": "?",
-            "pyramid": "?",
+            "vertex": "exact",
+            "line": "exact",
+            "triangle": "exact",
+            "quad": "exact",
+            "tetra": "exact",
+            "hexahedron": "exact",
+            "wedge": "exact",
+            "pyramid": "exact",
         },
-        "error": "WriteError",
-        "note": "A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical "
-        "mesh is refused; each type alone round-trips.",
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "int32"},
+        "field_data": False,
+        "regions": [],
+        "note": "A mesh of several cell types is one block per type, each with the points it "
+        "uses and the ghost arrays that let the reader weld the shared points back, so the "
+        "mixed canonical mesh round-trips exactly (DOLFINx and ParaView read a single type "
+        "only); the file holds the mesh and its arrays, with no regions or field data other "
+        "than the time.",
     },
     "mphbin": {
         "cells": {
@@ -1851,12 +1858,12 @@ _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing hal
 READ_ONLY = {
     "iges": (
         "Exempt, not a gap: a CAD exchange format read through the optional "
-        "OpenCASCADE backend (roadmap §6.2.1); STEP is the CAD format meshio++ writes."
+        "OpenCASCADE backend (roadmap non-goals: every format reads and writes); STEP is the CAD format meshio++ writes."
     ),
     "ansys_rst_cyclic": (
         "Exempt, not a gap: not a file of its own but the full rotor that a static "
         "cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write "
-        "side is `ansys_rst`'s cyclic option (roadmap §3.2.5)."
+        "side is `ansys_rst`'s cyclic option (roadmap non-goals: every format reads and writes)."
     ),
 }
 
@@ -1900,28 +1907,28 @@ def write_only_drift(readable, writable, declared=None):
 # declaration whose gap has closed. Formats the core does not serve at all (the
 # Python-only layers `pmsh`, `zarr`, `cae`, `usd`) have no pair to compare, and
 # the read-only result files are the READ_ONLY gaps above, whose Python writer
-# lands with the native one (roadmap section 3, "Landing an item", step 1).
+# lands with the native one (see AGENTS.md, "Adding a new format or operation").
 ENGINE_EXEMPT = {
     ("gid", "read"): (
-        "Exempt, not a gap (roadmap §3.4.2): GiD is served by the core alone -- "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): GiD is served by the core alone -- "
         "gidpost, Gauss points and result groups are implemented once, and the "
         "Python entry points raise naming the missing core rather than guess."
     ),
     ("gid", "write"): (
-        "Exempt, not a gap (roadmap §3.4.2): written through the vendored gidpost "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): written through the vendored gidpost "
         "C library, whose node-ordering permutations a second implementation would "
         "risk silently contradicting; the HDF5 flavour is core-only by nature."
     ),
     ("iges", "read"): (
-        "Exempt, not a gap (roadmap §6.2.1): reading a CAD model needs the "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): reading a CAD model needs the "
         "optional OpenCASCADE kernel, which only the core links."
     ),
     ("step", "read"): (
-        "Exempt, not a gap (roadmap §6.2.1): reading a CAD model needs the "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): reading a CAD model needs the "
         "optional OpenCASCADE kernel, which only the core links."
     ),
     ("openfoam", "write"): (
-        "Exempt, not a gap (roadmap §3.4.1): the OpenFOAM case writer (polyMesh, "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): the OpenFOAM case writer (polyMesh, "
         "zones, fields, multi-region and decomposed layouts) is implemented once, "
         "in the core; the Python reader is the portable subset."
     ),
@@ -1931,13 +1938,13 @@ ENGINE_EXEMPT = {
 # short of a whole direction. Each names the page that explains it.
 PARTIAL_ENGINE_EXEMPT = {
     "cgns": (
-        "Exempt, not a gap (roadmap §3.4.3): the face-based NGON_n/NFACE_n sections "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): the face-based NGON_n/NFACE_n sections "
         "are core-only; the h5py twin raises naming the core, because the writer's "
         "winding repair is a discrete branch two implementations could resolve "
         "differently (doc/formats/cgns.md)."
     ),
     "openfoam": (
-        "Exempt, not a gap (roadmap §3.4.1): zone, field and multi-region reading "
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): zone, field and multi-region reading "
         "are core-only; the Python reader covers the single-region polyMesh "
         "(doc/formats/openfoam.md)."
     ),

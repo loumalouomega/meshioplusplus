@@ -6,9 +6,15 @@ the layout ``dolfinx.io.VTXWriter`` does and ``_vtx.py`` (and ParaView's
 step, ``step`` (the time), ``geometry`` (points x 3), ``connectivity`` (cells x
 (1 + nodes), each row prefixed with its node count), ``types``, the sizes
 ``NumberOfNodes`` and ``NumberOfEntities`` and one variable per point or cell
-array. The mesh is written at every step (``VTXMeshPolicy.update``).
+array. The mesh is written at every step (``VTXMeshPolicy.update``), or at the
+first only (``VTXMeshPolicy.reuse``, ``SeriesWriter(mesh_policy="reuse")``).
 
-A VTX file holds one cell type, as DOLFINx's does: a mesh with several raises.
+A VTX file written by DOLFINx holds one cell type on one block per MPI rank. A mesh
+with several cell types, or one whose cells carry ``partition:part`` values of
+several parts, is written as one block per cell type (and part), every block with
+its own points: a point used by several blocks is a ghost copy in all but the first,
+marked by ``vtkGhostType`` and ``vtkOriginalPointIds`` and by the ``meshio.shared_points``
+attribute, which tells the reader to weld the copies back into the one mesh.
 """
 
 from __future__ import annotations
@@ -25,6 +31,10 @@ from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type
 __all__ = ["write", "SeriesWriter"]
 
 TIME_KEY = "meshio:time"
+PARTITION_KEY = "partition:part"
+GHOST_TYPE = "vtkGhostType"
+ORIGINAL_IDS = "vtkOriginalPointIds"
+SHARED_ATTRIBUTE = "meshio.shared_points"
 # (VTK type, node count) -> VTK_LAGRANGE_* type, the inverse of the reader's
 # lowering: DOLFINx writes Lagrange cells of every degree.
 _LAGRANGE = {
@@ -61,6 +71,17 @@ def _fail(message):
     raise WriteError(f"VTX (.bp): {message}")
 
 
+class _Group:
+    """One block of the file: a cell type (of one part) and the points it uses."""
+
+    def __init__(self, vtk_type, connectivity, cells):
+        self.vtk_type = vtk_type
+        self.connectivity = connectivity  # (cells, 1 + nodes), global point numbers
+        self.cells = cells  # the cells' numbers in the mesh, None for all in order
+        self.points = None  # the mesh points the block holds, None for all
+        self.ghost = None  # uint8 per block point: 1 where another block owns it
+
+
 class _Model:
     """The mesh, as VTXWriter lays it out, and the layout of its arrays."""
 
@@ -70,16 +91,8 @@ class _Model:
         points = points.reshape(n, -1)
         self.geometry = np.zeros((n, 3))
         self.geometry[:, : min(3, points.shape[1])] = points[:, :3]
-        types = {block.type for block in mesh.cells if len(block.data)}
-        if len(types) > 1:
-            _fail(
-                "a VTX file holds one cell type, as DOLFINx's does; this mesh has "
-                + ", ".join(sorted(types))
-                + " (write each type to its own file)"
-            )
-        self.rows = []
-        self.vtk_type = 0
-        for block in mesh.cells:
+        blocks, offset = [], 0
+        for k, block in enumerate(mesh.cells):
             data = np.asarray(block.data, dtype=np.int64)
             if not len(data):
                 continue
@@ -91,33 +104,115 @@ class _Model:
             if order is not None and data.shape[1] == len(order):
                 data = data[:, order]
             vtk = meshio_to_vtk_type[block.type]
-            self.vtk_type = _LAGRANGE.get((vtk, data.shape[1]), vtk)
-            self.rows.append(
-                np.hstack(
-                    [np.full((len(data), 1), data.shape[1], dtype=np.int64), data]
-                )
+            rows = np.hstack(
+                [np.full((len(data), 1), data.shape[1], dtype=np.int64), data]
             )
-        self.connectivity = (
-            np.concatenate(self.rows) if self.rows else np.zeros((0, 1), np.int64)
-        )
-        self.ncells = len(self.connectivity)
+            blocks.append(
+                (k, block.type, _LAGRANGE.get((vtk, data.shape[1]), vtk), rows, offset)
+            )
+            offset += len(data)
+        self.ncells = offset
         if not self.ncells:
             _fail("the mesh has no cells")
+        parts = self._parts(mesh, [b[0] for b in blocks])
+        labels = sorted({int(v) for p in (parts or []) for v in np.unique(p)})
+        if len(labels) > 1:
+            # one block per part and cell block: a rank's cells, as DOLFINx writes them
+            self.groups = []
+            for label in labels:
+                for (_k, _t, vtk, rows, first), part in zip(blocks, parts):
+                    mask = part == label
+                    if mask.any():
+                        self.groups.append(
+                            _Group(vtk, rows[mask], first + np.flatnonzero(mask))
+                        )
+        elif len({b[1] for b in blocks}) > 1:
+            self.groups = [
+                _Group(vtk, rows, first + np.arange(len(rows)))
+                for (_k, _t, vtk, rows, first) in blocks
+            ]
+        else:
+            self.groups = [
+                _Group(
+                    blocks[-1][2],
+                    np.concatenate([b[3] for b in blocks]),
+                    None,
+                )
+            ]
+        self.shared = len(self.groups) > 1
+        if self.shared:
+            self._share_points(n)
+        reserved = (GHOST_TYPE, ORIGINAL_IDS)
         self.point_names, self.cell_names = [], []
-        self.signature = (
-            n,
-            tuple((b.type, np.asarray(b.data).shape) for b in mesh.cells),
-        )
         for name in sorted(mesh.point_data):
-            if self._usable(name, mesh.point_data[name], n, "point"):
+            if self.shared and name in reserved:
+                warn(
+                    f"VTX (.bp): point data '{name}' is replaced by the ghost array of "
+                    "the blocks"
+                )
+            elif self._usable(name, mesh.point_data[name], n, "point"):
                 self.point_names.append(name)
+        if self.shared:
+            self.point_names = sorted(self.point_names + list(reserved))
         for name in sorted(mesh.cell_data):
-            parts = [np.asarray(a) for a in mesh.cell_data[name]]
+            arrays = [np.asarray(a) for a in mesh.cell_data[name]]
             if self._usable(
-                name, np.concatenate(parts) if parts else None, self.ncells, "cell"
+                name,
+                np.concatenate(arrays) if arrays else None,
+                self.ncells,
+                "cell",
             ):
                 self.cell_names.append(name)
-        self.signature += (tuple(self.point_names), tuple(self.cell_names))
+        self.signature = (
+            n,
+            tuple(
+                (
+                    g.vtk_type,
+                    g.connectivity.shape,
+                    None if g.cells is None else len(g.cells),
+                )
+                for g in self.groups
+            ),
+            tuple(self.point_names),
+            tuple(self.cell_names),
+        )
+
+    @staticmethod
+    def _parts(mesh, indices):
+        """The ``partition:part`` values of every non-empty cell block, or None."""
+        data = getattr(mesh, "cell_data", {}) or {}
+        if PARTITION_KEY not in data:
+            return None
+        arrays = list(data[PARTITION_KEY])
+        out = []
+        for k in indices:
+            rows = len(mesh.cells[k].data)
+            if k >= len(arrays):
+                return None
+            a = np.asarray(arrays[k])
+            if a.ndim != 1 or len(a) != rows or a.dtype.kind not in "iub":
+                return None
+            out.append(a)
+        return out
+
+    def _share_points(self, n):
+        """Give every block the points it uses: the first block to use a point owns
+        it, the others hold a ghost copy; points no cell uses go to the first."""
+        owner = np.full(n, -1, dtype=np.int64)
+        used = []
+        for g, group in enumerate(self.groups):
+            nodes = np.unique(group.connectivity[:, 1:])
+            used.append(nodes)
+            fresh = nodes[owner[nodes] < 0]
+            owner[fresh] = g
+        owner[owner < 0] = 0
+        for g, group in enumerate(self.groups):
+            points = np.union1d(used[g], np.flatnonzero(owner == g))
+            group.points = points.astype(np.int64)
+            group.ghost = (owner[points] != g).astype(np.uint8)
+            rows = group.connectivity.copy()
+            rows[:, 1:] = np.searchsorted(points, rows[:, 1:])
+            group.connectivity = rows
 
     @staticmethod
     def _usable(name, values, rows, what):
@@ -136,6 +231,19 @@ class _Model:
             warn(f"VTX (.bp): {what} data '{name}' is not written")
             return False
         return True
+
+    def same_mesh(self, other):
+        """True when ``other`` has this model's points and cells exactly."""
+        return (
+            np.array_equal(self.geometry, other.geometry)
+            and len(self.groups) == len(other.groups)
+            and all(
+                a.vtk_type == b.vtk_type
+                and np.array_equal(a.connectivity, b.connectivity)
+                and np.array_equal(a.points, b.points)
+                for a, b in zip(self.groups, other.groups)
+            )
+        )
 
     def schema(self):
         def arrays(names):
@@ -170,32 +278,84 @@ class _Model:
             "</VTKFile>\n"
         )
 
-    def put_step(self, stream, mesh, time):
+    def write_attributes(self, stream):
+        stream.write_attribute("vtk.xml", self.schema())
+        if self.shared:
+            stream.write_attribute(SHARED_ATTRIBUTE, ORIGINAL_IDS)
+
+    def _point_block(self, mesh, name, group):
+        if name == GHOST_TYPE and self.shared:
+            return group.ghost
+        if name == ORIGINAL_IDS and self.shared:
+            return group.points
+        values = _storable(mesh.point_data[name])
+        return values if group.points is None else values[group.points]
+
+    def put_step(self, stream, mesh, time, with_mesh=True):
+        """One step. ``with_mesh=False`` is the step of a ``reuse`` file after the
+        first: the time and the arrays only."""
         stream.begin_step()
         stream.write("step", float(time))
-        stream.write(
-            "NumberOfNodes", np.array([len(self.geometry)], np.uint32), [1], [0], [1]
-        )
-        stream.write(
-            "NumberOfEntities", np.array([self.ncells], np.uint32), [1], [0], [1]
-        )
-        _local(stream, "geometry", self.geometry)
-        _local(stream, "connectivity", self.connectivity)
-        stream.write("types", np.array(self.vtk_type, dtype=np.uint32))
+        if with_mesh:
+            for name, count in (
+                (
+                    "NumberOfNodes",
+                    [
+                        len(g.points) if g.points is not None else len(self.geometry)
+                        for g in self.groups
+                    ],
+                ),
+                ("NumberOfEntities", [len(g.connectivity) for g in self.groups]),
+            ):
+                for value in count:
+                    array = np.array([value], np.uint32)
+                    if self.shared:
+                        _local(stream, name, array)
+                    else:
+                        stream.write(name, array, [1], [0], [1])
+            for group in self.groups:
+                geometry = (
+                    self.geometry
+                    if group.points is None
+                    else self.geometry[group.points]
+                )
+                _local(stream, "geometry", geometry)
+            for group in self.groups:
+                _local(stream, "connectivity", group.connectivity)
+            if self.shared:
+                for group in self.groups:
+                    _local(stream, "types", np.array([group.vtk_type], np.uint32))
+            else:
+                stream.write(
+                    "types", np.array(self.groups[0].vtk_type, dtype=np.uint32)
+                )
         for name in self.point_names:
-            _local(stream, name, _storable(mesh.point_data[name]))
+            if not with_mesh and name in (GHOST_TYPE, ORIGINAL_IDS) and self.shared:
+                continue
+            for group in self.groups:
+                _local(stream, name, self._point_block(mesh, name, group))
         for name in self.cell_names:
-            values = np.concatenate([np.asarray(a) for a in mesh.cell_data[name]])
-            _local(stream, name, _storable(values))
+            values = _storable(
+                np.concatenate([np.asarray(a) for a in mesh.cell_data[name]])
+            )
+            for group in self.groups:
+                _local(
+                    stream,
+                    name,
+                    values if group.cells is None else values[group.cells],
+                )
         stream.end_step()
 
 
 def _local(stream, name, values):
-    """Write a rank-local array (no global shape), as VTXWriter does."""
+    """Write a rank-local array (no global shape), as VTXWriter does; a variable
+    written again in the same step is a further block."""
     io = stream._io
     variable = io.inquire_variable(name)
     if not variable:
         variable = io.define_variable(name, values, [], [], list(values.shape))
+    else:
+        variable.set_selection([[], list(values.shape)])
     stream.write(variable, values)
 
 
@@ -224,17 +384,26 @@ def write(filename, mesh):
         _fail("cannot be written to a stream")
     model = _Model(mesh)
     with _open(filename) as stream:
-        stream.write_attribute("vtk.xml", model.schema())
+        model.write_attributes(stream)
         model.put_step(stream, mesh, _time_of(mesh))
 
 
 class SeriesWriter:
     """A VTX file with a step per mesh; every step must have the first step's
-    points, cells and array names."""
+    points, cells and array names.
 
-    def __init__(self, filename):
+    ``mesh_policy="update"`` (the default) writes the mesh at every step;
+    ``"reuse"`` writes it at the first step only (DOLFINx's ``VTXMeshPolicy.reuse``),
+    so every step must also have the first step's points and connectivity."""
+
+    def __init__(self, filename, mesh_policy="update"):
+        if mesh_policy not in ("update", "reuse"):
+            raise ValueError(
+                f"meshio++: mesh_policy must be 'update' or 'reuse', got '{mesh_policy}'"
+            )
         if is_buffer(filename, "w"):
             _fail("cannot be written to a stream")
+        self._reuse = mesh_policy == "reuse"
         self._stream = _open(filename)
         self._model = None
         self._steps = 0
@@ -243,13 +412,23 @@ class SeriesWriter:
         model = _Model(mesh)
         if self._model is None:
             self._model = model
-            self._stream.write_attribute("vtk.xml", model.schema())
+            model.write_attributes(self._stream)
         elif model.signature != self._model.signature:
             _fail(
                 f"series: step {self._steps}'s points, cells or arrays differ from "
                 "the first step's; write one file per step with '{step}'"
             )
-        model.put_step(self._stream, mesh, float(time))
+        elif self._reuse and not self._model.same_mesh(model):
+            _fail(
+                f"series: step {self._steps}'s points or cells differ from the first "
+                "step's, which the reuse policy cannot write; use mesh_policy='update'"
+            )
+        model.put_step(
+            self._stream,
+            mesh,
+            float(time),
+            with_mesh=not (self._reuse and self._steps > 0),
+        )
         self._steps += 1
 
     def close(self):

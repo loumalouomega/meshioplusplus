@@ -34,11 +34,13 @@
  * - Every step is one mesh; `ReadOptions::mTimeStep` selects it and its time is
  *   attached as `field_data["meshio:time"]`. A step without mesh variables (a
  *   `VTXMeshPolicy.reuse` file writes the mesh in step 0 only) takes the mesh of
- *   the last step that has one.
+ *   the last step that has one, and so does a ghost array the first step wrote.
  * - The rank blocks are concatenated in block order, as ParaView merges them.
  *   `ReadOptions::mGhosts == GhostPolicy::Drop` instead welds every ghost point
  *   onto its owner through `vtkOriginalPointIds`, which gives the serial mesh,
- *   and removes the two ghost arrays.
+ *   and removes the two ghost arrays. A file with the `meshio.shared_points` attribute
+ *   (this library's writer sets it on a mesh of several cell types or parts) is always welded,
+ *   the points ordered by `vtkOriginalPointIds`.
  * - `VTK_LAGRANGE_*` cells whose node count is a linear or quadratic VTK cell's
  *   with the same node order (every degree-1 cell, and the 3-node curve,
  *   6-node triangle, 9-node quadrilateral and 10-node tetrahedron) are read as
@@ -56,6 +58,7 @@
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -95,19 +98,31 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtx_metadata(const std::string& rPath,
  *        variable per point or cell array). The time is `meshio:time` (0 when
  *        absent). Cells are written as the `VTK_LAGRANGE_*` types DOLFINx uses
  *        where the node order allows. The Python twin writes the same variables.
- * @throws WriteError when the mesh has several cell types (as DOLFINx's files
- *         hold one), no cells, or the file cannot be written.
+ *        A mesh of several cell types, or whose cells carry `partition:part` values of
+ *        several parts, is one block per cell type (and part), each holding the points
+ *        it uses: a point several blocks use is a ghost copy in all but the first
+ *        (`vtkGhostType`, `vtkOriginalPointIds`), and the `meshio.shared_points`
+ *        attribute makes the reader weld the copies back into one mesh.
+ * @throws WriteError when the mesh has no cells, or the file cannot be written.
  */
 MESHIOPLUSPLUS_API void write_vtx(const std::string& rPath, const Mesh& rMesh);
 
+/// When a VTX series writes its mesh: DOLFINx's `VTXMeshPolicy`.
+enum class VtxMeshPolicy : std::uint8_t {
+    Update = 0,  ///< at every step
+    Reuse = 1,   ///< at the first step only; every step must then have the first step's mesh
+};
+
 /**
  * @brief A VTX file with a step per mesh, the mesh written at every step
- *        (`VTXMeshPolicy.update`). Every step must have the first step's points,
+ *        (`VtxMeshPolicy::Update`, the default) or at the first only
+ *        (`VtxMeshPolicy::Reuse`). Every step must have the first step's points,
  *        cells and array names. The Python twin is `meshioplusplus.vtx.SeriesWriter`.
  */
 class MESHIOPLUSPLUS_API VtxSeriesWriter {
 public:
     explicit VtxSeriesWriter(const std::string& rPath);
+    VtxSeriesWriter(const std::string& rPath, VtxMeshPolicy Policy);
     ~VtxSeriesWriter();
 
     VtxSeriesWriter(const VtxSeriesWriter&) = delete;
