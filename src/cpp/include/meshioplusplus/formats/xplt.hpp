@@ -92,7 +92,7 @@ struct XpltWriteOptions {
 
 /**
  * @brief Write an FEBio plot file holding one state (plot version 0x35,
- *        little-endian, uncompressed): the mesh and its data at
+ *        little-endian; uncompressed unless XpltWriteOptions::mCompress is set): the mesh and its data at
  *        `field_data["meshio:time"]` (0 when absent), status `"xplt:status"`.
  *        Cell blocks become domains (a region that is exactly one block names
  *        it and tags its part), point regions node sets and cell regions
