@@ -365,6 +365,42 @@ def test_a_mode_is_a_1980_record(engine, binary, tmp_path):
     np.testing.assert_allclose(back.field_data["abaqus:effective_mass"], [0.01, 0.04])
 
 
+def _modal_mesh():
+    mesh = meshioplusplus.Mesh(UNIT, [("hexahedron", np.arange(8)[None, :])])
+    mesh.point_data["U"] = np.ones((8, 3))
+    mesh.field_data["meshio:time"] = np.array([0.0])
+    mesh.field_data["abaqus:GU"] = np.array([[1.5, 2.5, 3.5], [4.5, 5.5, np.nan]])
+    mesh.field_data["abaqus:GV"] = np.array([0.25, -1.0])
+    mesh.field_data["abaqus:BM"] = np.array(
+        [[1, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6], [2, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+    )
+    mesh.field_data["abaqus:KE"] = np.array([7.0])
+    return mesh
+
+
+def test_modal_dynamics_records_round_trip(engine, binary, tmp_path):
+    path = tmp_path / "modal.fil"
+    write_with(engine, path, _modal_mesh(), binary)
+    back = py_fil.read(path)
+    np.testing.assert_array_equal(
+        back.field_data["abaqus:GU"], [[1.5, 2.5, 3.5], [4.5, 5.5, np.nan]]
+    )
+    np.testing.assert_array_equal(back.field_data["abaqus:GV"], [0.25, -1.0])
+    np.testing.assert_array_equal(
+        back.field_data["abaqus:BM"],
+        _modal_mesh().field_data["abaqus:BM"],
+    )
+    np.testing.assert_array_equal(back.field_data["abaqus:KE"], [7.0])
+    assert "abaqus:GPU" not in back.field_data
+
+
+def test_the_engines_write_the_same_modal_bytes(binary, tmp_path):
+    a, b = tmp_path / "a.fil", tmp_path / "b.fil"
+    write_with("python", a, _modal_mesh(), binary)
+    write_with("core", b, _modal_mesh(), binary)
+    assert a.read_bytes() == b.read_bytes()
+
+
 # -- sets ---------------------------------------------------------------------------------
 
 

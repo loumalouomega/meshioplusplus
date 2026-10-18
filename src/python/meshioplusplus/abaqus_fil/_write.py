@@ -63,6 +63,14 @@ _MODE_FIELDS = {
     "abaqus:participation_factor",
     "abaqus:effective_mass",
 }
+# Records 301-310 of a mode-based dynamic step: one record per row of the field.
+_MODAL_KEYS = tuple(
+    (key, "abaqus:" + name)
+    for key, name in zip(
+        range(301, 311),
+        ("GU", "GV", "GA", "BM", "GPU", "GPV", "GPA", "SNE", "KE", "T"),
+    )
+)
 # meshio++ cell type -> Abaqus element type (a results file names the exact element; these
 # are the reduced-integration ones for solids and quadrilaterals)
 _TYPES = {
@@ -481,6 +489,7 @@ class _Increment:
         )
         self._mode(fd)
         self._energies(fd, procedure)
+        self._modal(fd)
         element = self._element(model, mesh)
         nodal = self._nodal(model, mesh)
         contact = self._contact(model, mesh)
@@ -493,6 +502,7 @@ class _Increment:
         self.records += contact
         self.records.append(_rec(2001))
         handled = {"abaqus:" + n for n in _ENERGY_NAMES + _EXPLICIT_ENERGY_NAMES if n}
+        handled |= {name for _, name in _MODAL_KEYS}
         for kind, _, _ in _MATRIX_KINDS:
             handled |= {"abaqus:" + kind, "abaqus:" + kind + ":index"}
         for name in sorted(fd):
@@ -518,6 +528,33 @@ class _Increment:
         for k in present:
             values[k] = float(np.asarray(fd["abaqus:" + names[k]]).ravel()[0])
         self.records.append(_rec(1999, *map(_D, values)))
+
+    def _modal(self, fd):
+        """Records 301-310, the generalized quantities of a mode-based dynamic
+        step: one record per row of ``abaqus:GU`` and the like (trailing NaN
+        trimmed, an inner NaN written as 0). BM's row is the motion type and
+        six components, followed by the base name (blank)."""
+        for key, name in _MODAL_KEYS:
+            if name not in fd:
+                continue
+            array = np.asarray(fd[name], dtype=float)
+            if array.ndim > 2:
+                _wfail(f"'{name}' must be one row or a matrix of rows")
+            for row in np.atleast_2d(array):
+                values = list(row)
+                while values and values[-1] != values[-1]:
+                    values.pop()
+                if not values:
+                    continue
+                values = [0.0 if v != v else float(v) for v in values]
+                if key == 304:
+                    values = values[:7]
+                    items = [_I(values[0]), *map(_D, values[1:])]
+                    if len(values) == 7:
+                        items.append(_A(""))
+                else:
+                    items = [_D(v) for v in values]
+                self.records.append(_rec(key, *items))
 
     def _mode(self, fd):
         if "abaqus:mode" not in fd:

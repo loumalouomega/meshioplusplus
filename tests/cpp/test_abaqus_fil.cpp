@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -547,4 +548,29 @@ TEST(AbaqusFilWriter, ContactOutputNeedsASurfacePair) {
     Mesh bad = contact_hex();
     bad.AddFieldData("abaqus:contact_pair", ints({0, 7}));
     EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), bad), WriteError);
+}
+
+TEST(AbaqusFilWriter, ModalDynamicsRecordsComeBackInBothLayouts) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (const bool binary : {false, true}) {
+        Mesh m = unit_hex();
+        m.AddFieldData("abaqus:GU", reals({1.5, 2.5, 3.5, 4.5, 5.5, nan}, {2, 3}));
+        m.AddFieldData("abaqus:GV", reals({0.25, -1.0}, {2}));
+        m.AddFieldData("abaqus:BM", reals({2, 1.0, 0.5, 0.0, 0.0, 0.0, 0.25}, {1, 7}));
+        m.AddFieldData("abaqus:KE", reals({7.0}, {1}));
+        const std::string path = temp_fil();
+        meshioplusplus::write_abaqus_fil(path, m, binary);
+        const Mesh back = meshioplusplus::read_abaqus_fil(path);
+        const NDArray& gu = back.FieldData("abaqus:GU");
+        ASSERT_EQ(gu.Size(), 6u);
+        EXPECT_EQ(gu.As<double>()[4], 5.5);
+        EXPECT_TRUE(std::isnan(gu.As<double>()[5]));
+        EXPECT_EQ(back.FieldData("abaqus:GV").As<double>()[1], -1.0);
+        const NDArray& bm = back.FieldData("abaqus:BM");
+        ASSERT_EQ(bm.Size(), 7u);
+        EXPECT_EQ(bm.As<double>()[0], 2.0);
+        EXPECT_EQ(bm.As<double>()[6], 0.25);
+        EXPECT_EQ(back.FieldData("abaqus:KE").As<double>()[0], 7.0);
+        EXPECT_FALSE(back.HasFieldData("abaqus:GPU"));
+    }
 }
