@@ -539,6 +539,32 @@ void rst_rotate(double* pV, const double* pAngles) {
     pV[2] = z;
 }
 
+// The inverse of rst_rotate: a global vector in the node's own axes.
+void rst_unrotate(double* pV, const double* pAngles) {
+    const double xy = pAngles[0], yz = pAngles[1], zx = pAngles[2];
+    if (xy == 0.0 && yz == 0.0 && zx == 0.0)
+        return;
+    const double deg = std::acos(-1.0) / 180.0;
+    double x = pV[0], y = pV[1], z = pV[2];
+    double c = std::cos(xy * deg), s = std::sin(xy * deg);
+    double nx = c * x + s * y, ny = -s * x + c * y;
+    x = nx;
+    y = ny;
+    c = std::cos(yz * deg);
+    s = std::sin(yz * deg);
+    ny = c * y + s * z;
+    double nz = -s * y + c * z;
+    y = ny;
+    z = nz;
+    c = std::cos(zx * deg);
+    s = std::sin(zx * deg);
+    nx = c * x - s * z;
+    nz = s * x + c * z;
+    pV[0] = nx;
+    pV[1] = y;
+    pV[2] = nz;
+}
+
 const char* rst_scalar_name(std::int64_t Code) {
     switch (Code) {
         case 16:
@@ -606,8 +632,8 @@ struct RstRawRecord {
     std::size_t mEntry;
 };
 constexpr RstRawRecord kRstRawRecords[] = {
-    {"EMS", 0},  {"ENG", 3},  {"EGR", 4},  {"EFX", 10}, {"EMN", 12},
-    {"ENL", 14}, {"EPT", 16}, {"ECT", 20}, {"ESV", 23},
+    {"EMS", 0},  {"ENG", 3},  {"EGR", 4},  {"EUL", 9},  {"EFX", 10},
+    {"EMN", 12}, {"ENL", 14}, {"EPT", 16}, {"ECT", 20}, {"ESV", 23},
 };
 
 bool rst_is_tensor(const std::string& rName, bool* pStress) {
@@ -1700,6 +1726,14 @@ Mesh rst_read(const std::string& rPath, const ReadOptions& rOptions, bool Cyclic
     }
     RstModel model = rst_model(std::move(parts), rOptions.mLenient);
     const RstResults& results = model.mParts[0]->mResults;
+    // Nodes with their own coordinate system: the angles, so a writer can rotate vectors back.
+    if (!Cyclic && rOptions.WantsArray("ansys:node_angles") &&
+        std::any_of(model.mAngles.begin(), model.mAngles.end(),
+                    [](double A) { return A != 0.0; })) {
+        NDArray angles(DType::Float64, {model.mAngles.size() / 3, 3});
+        std::copy(model.mAngles.begin(), model.mAngles.end(), angles.As<double>());
+        model.mMesh.AddPointData("ansys:node_angles", std::move(angles));
+    }
     if (!Cyclic && results.mNumSectors > 1) {
         NDArray sectors(DType::Int64, {1});
         sectors.As<std::int64_t>()[0] = results.mNumSectors;
@@ -1916,6 +1950,18 @@ public:
             }
         }
         mNelm = mElements.size();
+        if (rMesh.HasPointData("ansys:node_angles")) {
+            const NDArray& a = rMesh.PointData("ansys:node_angles");
+            if (a.Size() == mNnod * 3) {
+                const detail::DoubleView angles(a);
+                mAngles.assign(angles.Data(), angles.Data() + a.Size());
+                for (double& v : mAngles)
+                    if (!std::isfinite(v))
+                        v = 0.0;
+            } else {
+                log::warn("Ansys .rst writer: 'ansys:node_angles' is not (points, 3); dropped");
+            }
+        }
         for (const RstwElement& e : mElements) {
             RstwSlotInfo& info = mSlots[e.mSlot];
             info.mRoutine = e.mRoutine;
@@ -1968,6 +2014,7 @@ public:
     std::size_t mNnod = 0, mNelm = 0;
     std::int64_t mSectors = 1;  // a cyclic-symmetry sector: the model's sector count
     std::vector<double> mPoints;
+    std::vector<double> mAngles;  // THXY, THYZ, THZX per node (degrees), or empty
     std::vector<RstwElement> mElements;
     std::vector<bool> mHasResults;
     std::map<int, RstwSlotInfo> mSlots;
@@ -2032,7 +2079,13 @@ RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
             log::warn("Ansys .rst writer: point data '{}' is not (points, 3); dropped", name);
             continue;
         }
-        const std::vector<double> a = values_of(name);
+        std::vector<double> a = values_of(name);
+        // The mesh holds global vectors; the file holds them in the nodes' own axes.
+        if (!rModel.mAngles.empty())
+            for (std::size_t i = 0; i < n; ++i)
+                if (std::isfinite(a[i * 3]) && std::isfinite(a[i * 3 + 1]) &&
+                    std::isfinite(a[i * 3 + 2]))
+                    rst_unrotate(&a[i * 3], &rModel.mAngles[i * 3]);
         for (std::int64_t d = 0; d < 3; ++d) {
             std::vector<double> col(n);
             for (std::size_t i = 0; i < n; ++i)
@@ -2058,7 +2111,12 @@ RstwSet rstw_set(const Mesh& rMesh, const RstwModel& rModel, double Time,
             log::warn("Ansys .rst writer: point data '{}' is not (points, 3); dropped", name);
             continue;
         }
-        const std::vector<double> a = values_of(name);
+        std::vector<double> a = values_of(name);
+        if (!rModel.mAngles.empty())
+            for (std::size_t p = 0; p < n; ++p)
+                if (std::isfinite(a[p * 3]) && std::isfinite(a[p * 3 + 1]) &&
+                    std::isfinite(a[p * 3 + 2]))
+                    rst_unrotate(&a[p * 3], &rModel.mAngles[p * 3]);
         for (std::int64_t d = 0; d < 3; ++d)
             for (std::size_t p = 0; p < n; ++p)
                 if (std::isfinite(a[p * 3 + static_cast<std::size_t>(d)]))
@@ -2193,6 +2251,22 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
             const std::size_t nodstr = info.mNodstr;
             const std::size_t layers =
                 (e.mRoutine == 181 || e.mRoutine == 281) && rModel.mLayered ? 2 : 1;
+            // The element's rotation (EUL), one set or one per node: the mesh holds global
+            // tensors and the file the element's own, so each is turned back.
+            std::vector<double> rotation;
+            if (rMesh.HasCellData("EUL") && e.mBlock < rMesh.CellDataNumBlocks("EUL")) {
+                const NDArray& a = rMesh.CellData("EUL", e.mBlock);
+                if (a.Shape().size() == 2 && rMesh.Cells(e.mBlock).NumCells() > e.mRow) {
+                    const detail::DoubleView view(a);
+                    const std::size_t width = a.Shape()[1];
+                    for (std::size_t c = 0; c < width; ++c) {
+                        if (!std::isfinite(view.Data()[e.mRow * width + c]))
+                            break;
+                        rotation.push_back(view.Data()[e.mRow * width + c]);
+                    }
+                    rotation.resize(rotation.size() - rotation.size() % 3);
+                }
+            }
             for (const Surfaces& surfaces : entries) {
                 const std::size_t items = kRstTensors[surfaces.mTensor].mItems;
                 std::vector<double> values(nodstr * layers * items, kRstUndefined);
@@ -2216,6 +2290,19 @@ std::size_t rstw_element_solution(RstwWords& rF, const Mesh& rMesh, const RstwMo
                             continue;
                         for (std::size_t c = 0; c < 6; ++c)
                             values[(layer * nodstr + slot) * items + c] = data[j * 6 + c];
+                        if (rotation.size() >= 3) {
+                            const std::size_t at = layer * nodstr + slot;
+                            const std::size_t per_node = rotation.size() / 3;
+                            const double* angles =
+                                &rotation[3 * (per_node == 1 ? 0 : at % per_node)];
+                            if (angles[0] != 0.0 || angles[1] != 0.0 || angles[2] != 0.0) {
+                                const auto q = rst_euler_to_global(angles);
+                                const double qt[9] = {q[0], q[3], q[6], q[1], q[4],
+                                                      q[7], q[2], q[5], q[8]};
+                                rst_rotate_tensor(&values[at * items], qt,
+                                                  kRstTensors[surfaces.mTensor].mStress);
+                            }
+                        }
                         any = true;
                     }
                 }
@@ -2374,9 +2461,11 @@ std::vector<std::int32_t> rstw_file(const RstwModel& rModel, const std::vector<R
     }
     std::size_t first_node = 0;
     for (std::size_t k = 0; k < rModel.mNnod; ++k) {
-        const std::size_t ptr =
-            f.Doubles({static_cast<double>(k + 1), rModel.mPoints[3 * k], rModel.mPoints[3 * k + 1],
-                       rModel.mPoints[3 * k + 2], 0.0, 0.0, 0.0});
+        const std::size_t ptr = f.Doubles(
+            {static_cast<double>(k + 1), rModel.mPoints[3 * k], rModel.mPoints[3 * k + 1],
+             rModel.mPoints[3 * k + 2], rModel.mAngles.empty() ? 0.0 : rModel.mAngles[3 * k],
+             rModel.mAngles.empty() ? 0.0 : rModel.mAngles[3 * k + 1],
+             rModel.mAngles.empty() ? 0.0 : rModel.mAngles[3 * k + 2]});
         if (k == 0)
             first_node = ptr;
     }

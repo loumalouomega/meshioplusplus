@@ -15,10 +15,12 @@ routine and ``ansys:type`` slot where they fit, nodes are numbered ``1..n`` in
 point order and elements ``1..m`` in cell order, point and cell regions are
 components.
 
-Not written: element nodal forces, the raw element records (``EMS``, ``ENG``...),
-element rotation angles (the results are in the global axes), nodal coordinate
-system angles, coordinate systems, materials, and the modal cyclic-symmetry records
-(``field_data["ansys:cyclic_sectors"]`` writes a static sector).
+Element nodal forces and the raw element records (``EMS``, ``ENG``... and the
+rotation ``EUL``) are written as the reader returns them; the stresses and
+strains of an element with an ``EUL`` row are turned back into its own axes, and
+the vectors of a node with ``ansys:node_angles`` into the node's own axes (the
+mesh holds global values). ``field_data["ansys:cyclic_sectors"]`` writes a static
+sector. Not written: coordinate systems, materials, and complex results.
 """
 
 from __future__ import annotations
@@ -40,6 +42,9 @@ from ._ansys_rst import (
     _TOP,
     _UNDEFINED,
     _VECTORS,
+    _euler_to_global,
+    _rotate_tensor,
+    _unrotate,
 )
 
 __all__ = ["write", "SeriesWriter"]
@@ -54,6 +59,8 @@ _ITEMS = {"S": 6, "EPEL": 7, "EPPL": 7, "EPCR": 7, "EPTH": 8}
 _AVAIL = {"S": 3, "EPEL": 6, "EPPL": 7, "EPCR": 8, "EPTH": 9, "NSL": 27, "RF": 30}
 _ENF = 1
 _AVAIL["ENF"] = _ENF + 1
+# Whether a tensor is a stress (else a strain, whose shears are engineering shears)
+_STRESS = {"S": True, "EPEL": False, "EPPL": False, "EPCR": False, "EPTH": False}
 _AVAIL.update({name: entry + 1 for name, entry in _RAW_RECORDS})
 _CODE_OF = {name: code for code, name in _SCALARS.items()}
 # RF_AX ... RF_TEMP: the DOFs that are not in an RF or RMOM triple.
@@ -119,6 +126,17 @@ class _Model:
         points = points.reshape(n, -1)
         self.points[:, : min(3, points.shape[1])] = points[:, :3]
         self.nnod = n
+        # Nodes with their own coordinate system (THXY, THYZ, THZX in degrees)
+        self.angles = None
+        angles = (getattr(mesh, "point_data", None) or {}).get("ansys:node_angles")
+        if angles is not None:
+            angles = np.asarray(angles, dtype=np.float64)
+            if angles.shape == (n, 3):
+                self.angles = np.where(np.isfinite(angles), angles, 0.0)
+            else:
+                warn(
+                    "Ansys .rst writer: 'ansys:node_angles' is not (points, 3); dropped"
+                )
         # A cyclic-symmetry sector: the base sector of a model of this many sectors.
         sectors = (getattr(mesh, "field_data", None) or {}).get("ansys:cyclic_sectors")
         self.sectors = 1 if sectors is None else int(np.asarray(sectors).reshape(-1)[0])
@@ -189,6 +207,17 @@ class _Model:
         )
 
 
+def _in_node_axes(values, angles):
+    """The global vectors ``values`` (n, 3) in the nodes' own axes: rows with a
+    non-finite component stay as they are."""
+    if angles is None:
+        return values
+    out = np.array(values, dtype=np.float64)
+    for i in np.nonzero(np.isfinite(out).all(axis=1))[0].tolist():
+        _unrotate(out[i : i + 1], angles[i : i + 1])
+    return out
+
+
 class _Set:
     """One result set: its nodal solution, reactions and element results."""
 
@@ -205,6 +234,7 @@ class _Set:
             if name in mesh.point_data:
                 a = np.asarray(mesh.point_data[name], dtype=np.float64)
                 if a.ndim == 2 and a.shape == (n, 3):
+                    a = _in_node_axes(a, model.angles)
                     for d, code in enumerate(codes):
                         columns[code] = a[:, d]
                 else:
@@ -229,6 +259,7 @@ class _Set:
                         f"Ansys .rst writer: point data '{name}' is not (points, 3); dropped"
                     )
                     continue
+                a = _in_node_axes(a, model.angles)
                 for d, code in enumerate(codes):
                     for p in np.nonzero(np.isfinite(a[:, d]))[0].tolist():
                         self.reactions.append((p, code, float(a[p, d])))
@@ -259,6 +290,7 @@ class _Set:
             for name, entry in _RAW_RECORDS
             if name in mesh.cell_data
         ]
+        self.mesh_cell_data = mesh.cell_data
         self.enf = None
         if "ENF" in mesh.cell_data:
             layout = mesh.field_data.get("ansys:layout:ENF")
@@ -342,7 +374,8 @@ def _file_words(model, sets):
         f.patch(ety, slot - 1, ptr - ety)
     first_node = None
     for k, (x, y, z) in enumerate(model.points.tolist(), start=1):
-        ptr = f.doubles([float(k), x, y, z, 0.0, 0.0, 0.0])
+        xy, yz, zx = (0.0, 0.0, 0.0) if model.angles is None else model.angles[k - 1]
+        ptr = f.doubles([float(k), x, y, z, float(xy), float(yz), float(zx)])
         first_node = ptr if first_node is None else first_node
     f.patch64(geometry, 26, 27, first_node)
     eid = f.ints([0] * (2 * nelm))
@@ -468,6 +501,15 @@ def _element_solution(f, model, s, base):
                 entries.setdefault(base_name, {})[top] = row.reshape(npc, width)
             nodstr = info["nodstr"]
             layers = 2 if (routine in (181, 281) and model.layered) else 1
+            # The element's rotation (EUL), one set or one per node: the mesh holds
+            # global tensors and the file the element's own, so each is turned back.
+            rotation = []
+            if "EUL" in s.mesh_cell_data:
+                arr = np.asarray(s.mesh_cell_data["EUL"][b], dtype=np.float64)
+                if arr.ndim == 2 and len(arr) > r:
+                    finite = np.isfinite(arr[r])
+                    count = int(finite.argmin()) if not finite.all() else len(finite)
+                    rotation = arr[r, : count - count % 3].tolist()
             for base_name, surfaces in entries.items():
                 items = _ITEMS[base_name]
                 values = np.full((nodstr * layers, items), _UNDEFINED)
@@ -482,7 +524,28 @@ def _element_solution(f, model, s, base):
                             continue
                         row6 = data[j]
                         if np.isfinite(row6).all():
-                            values[layer * nodstr + slot_j, :6] = row6
+                            at = layer * nodstr + slot_j
+                            values[at, :6] = row6
+                            if len(rotation) >= 3:
+                                per_node = len(rotation) // 3
+                                n_at = 0 if per_node == 1 else at % per_node
+                                angles = rotation[3 * n_at : 3 * n_at + 3]
+                                if any(angles):
+                                    q = _euler_to_global(angles)
+                                    qt = [
+                                        q[0],
+                                        q[3],
+                                        q[6],
+                                        q[1],
+                                        q[4],
+                                        q[7],
+                                        q[2],
+                                        q[5],
+                                        q[8],
+                                    ]
+                                    _rotate_tensor(
+                                        values[at, :6], qt, _STRESS[base_name]
+                                    )
                             any_value = True
                 if any_value:
                     pending.append((_TABLE_ENTRIES[base_name], values.reshape(-1)))
