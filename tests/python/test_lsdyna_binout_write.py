@@ -544,3 +544,90 @@ def test_lasso_reads_the_other_layouts(tmp_path, word_size, big_endian):
     np.testing.assert_allclose(
         binout.read("nodout", "x_coordinate")[0], step_mesh(0.5).points[:, 0], rtol=1e-6
     )
+
+
+# -- links -------------------------------------------------------------------------------
+
+LINK = "/glstat/d000001/kinetic_energy"
+
+
+def _link(f, directory, name, target):
+    """A type 11 variable: the path it points to, one byte per character."""
+    raw = target.encode()
+    offset = len(f.data)
+    f.data += struct.pack("<QBBB", 8 + 3 + len(name) + len(raw), 3, 11, len(name))
+    f.data += name.encode() + raw
+    f.entries.append((directory, name, 11, offset, len(raw)))
+
+
+def linked_oracle_bytes():
+    f = Lsda()
+    f.var("/nodout/metadata", "ids", 3, [11, 12])
+    f.var("/nodout/d000001", "time", 9, [1.0])
+    f.var("/nodout/d000001", "x_coordinate", 9, [0.0, 1.0])
+    f.var("/nodout/d000001", "y_coordinate", 9, [0.0, 0.0])
+    f.var("/nodout/d000001", "z_coordinate", 9, [0.0, 0.0])
+    f.var("/nodout/d000001", "x_displacement", 9, [0.5, 0.5])
+    f.var("/nodout/d000001", "y_displacement", 9, [0.0, 0.0])
+    f.var("/nodout/d000001", "z_displacement", 9, [0.0, 0.0])
+    f.var("/nodout/d000001", "cycle", 3, [100])
+    f.var("/glstat/d000001", "time", 9, [0.5])
+    f.var("/glstat/d000001", "kinetic_energy", 9, [7.5])
+    _link(f, "/glstat/d000001", "total_energy", LINK)
+    return f.finish()
+
+
+def linked_mesh():
+    mesh = oracle_mesh()
+    mesh.field_data["binout:glstat:total_energy"] = np.array([7.5])
+    mesh.field_data["binout:glstat:@link=total_energy"] = np.frombuffer(
+        LINK.encode(), dtype=np.uint8
+    )
+    return mesh
+
+
+def test_a_link_is_written_as_a_link_record(engine, tmp_path):
+    path = tmp_path / "binout"
+    write_with(engine, path, linked_mesh())
+    assert path.read_bytes() == linked_oracle_bytes()
+
+
+def test_a_link_reads_as_its_targets_values_and_leaves_a_marker(tmp_path):
+    path = tmp_path / "oracle"
+    path.write_bytes(linked_oracle_bytes())
+    for reader in (meshioplusplus.lsdyna_binout.read, py_binout.read):
+        mesh = reader(path)
+        assert mesh.field_data["binout:glstat:total_energy"].tolist() == [7.5]
+        marker = mesh.field_data["binout:glstat:@link=total_energy"]
+        assert marker.dtype == np.uint8
+        assert bytes(marker).decode() == LINK
+
+
+def test_a_link_survives_a_rewrite(engine, tmp_path):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_bytes(linked_oracle_bytes())
+    mesh = meshioplusplus.lsdyna_binout.read(first)
+    write_with(engine, second, mesh)
+    assert second.read_bytes() == linked_oracle_bytes()
+
+
+def test_the_engines_write_the_same_bytes_with_a_link(tmp_path):
+    mesh = linked_mesh()
+    core, python = tmp_path / "core", tmp_path / "python"
+    _core.lsdyna_binout_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_link_to_a_variable_the_file_lacks_is_refused(engine, tmp_path):
+    mesh = linked_mesh()
+    mesh.field_data["binout:glstat:@link=total_energy"] = np.frombuffer(
+        b"/glstat/d000001/nothing", dtype=np.uint8
+    )
+    with pytest.raises(meshioplusplus.WriteError, match="not a variable"):
+        write_with(engine, tmp_path / "binout", mesh)
+    mesh.field_data["binout:glstat:@link=total_energy"] = np.frombuffer(
+        b"glstat/relative", dtype=np.uint8
+    )
+    with pytest.raises(meshioplusplus.WriteError, match="absolute"):
+        write_with(engine, tmp_path / "binout", mesh)

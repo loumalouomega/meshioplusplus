@@ -25,7 +25,7 @@ TIME_KEY = "meshio:time"
 
 # LSDA commands and the two data types written.
 _CD, _DATA, _VARIABLE, _BEGIN, _END, _OFFSET = 2, 3, 4, 5, 6, 7
-_INT8, _INT32, _FLOAT32 = 1, 3, 9
+_INT8, _INT32, _FLOAT32, _LINK = 1, 3, 9, 11
 
 
 # nodout's per-node variables: (point data name, its x, y, z variables)
@@ -76,11 +76,15 @@ class _Lsda:
         self.data += struct.pack(self.o + self.L, 0)
         self.entries = []  # (directory, name, type, offset, count)
 
-    def var(self, directory, name, values, text=False):
-        """One variable: float32 for reals, int32 for integers, or (``text``) the
-        1-byte integers LS-DYNA writes titles and dates as."""
+    def var(self, directory, name, values, text=False, link=None):
+        """One variable: float32 for reals, int32 for integers, (``text``) the
+        1-byte integers LS-DYNA writes titles and dates as, or (``link``) a link
+        to the variable at that absolute path."""
         values = np.asarray(values)
-        if text:
+        if link is not None:
+            code, raw = _LINK, link.encode("latin-1")
+            values = np.zeros(len(raw))
+        elif text:
             code, raw = _INT8, (values.astype(np.int64) & 0xFF).astype("u1").tobytes()
         elif values.dtype.kind == "f":
             code, raw = _FLOAT32, _f32(values, self.o)
@@ -94,6 +98,9 @@ class _Lsda:
         )
         self.data += encoded + raw
         self.entries.append((directory, name, code, offset, values.size))
+
+    def has(self, directory, name):
+        return any(d == directory and n == name for d, n, *_ in self.entries)
 
     def finish(self):
         w, o, L = self.word, self.o, self.L
@@ -144,11 +151,12 @@ def _flat(array):
 class _Output:
     """One database's variables of one step: ``(name, array)`` in file order."""
 
-    def __init__(self, time, variables, ids=None, text=()):
+    def __init__(self, time, variables, ids=None, text=(), links=None):
         self.time = time
         self.variables = variables
         self.ids = ids
         self.text = list(text)  # (name, bytes) of the database's metadata
+        self.links = links or {}  # variable -> the absolute path it is a link to
 
     def layout(self):
         return [(n, "f" if a.dtype.kind == "f" else "i") for n, a in self.variables]
@@ -218,10 +226,11 @@ class _Step:
             used.add(name)
             variables.append((name, _flat(array)))
         text = []
+        links = {}
         for variable in sorted(items):
             name, array = items[variable]
             if variable.startswith("@"):
-                self._text(text, variable, name, array)
+                self._text(text, variable, name, array, links)
                 continue
             _check_name(variable, "variable")
             if variable in ("time", "ids") or not _numeric(array):
@@ -230,11 +239,24 @@ class _Step:
             if any(variable == v for v, _ in variables):
                 _wfail(f"'{name}' repeats a variable of nodout")
             variables.append((variable, _flat(array).ravel()))
-        return _Output(self.time, variables, ids.astype(np.int64), text)
+        return _Output(self.time, variables, ids.astype(np.int64), text, links)
 
-    def _text(self, text, variable, name, array):
-        """``@<name>``: a metadata text variable (bytes), kept in ``text``."""
+    def _text(self, text, variable, name, array, links):
+        """``@<name>``: a metadata text variable (bytes), kept in ``text``;
+        ``@link=<variable>``: the path that variable links to, kept in ``links``."""
         label = variable[1:]
+        if label.startswith("link="):
+            _check_name(label[5:], "linked variable")
+            if array.dtype.kind not in "iu":
+                self.dropped.append(name)
+                return
+            target = bytes(
+                int(v) & 0xFF for v in array.astype(np.int64).ravel()
+            ).decode("latin-1")
+            if not target.startswith("/"):
+                _wfail(f"the link '{name}' must hold an absolute path")
+            links[label[5:]] = target
+            return
         _check_name(label, "text variable")
         if label == "ids" or array.dtype.kind not in "iu":
             self.dropped.append(name)
@@ -257,10 +279,11 @@ class _Step:
         ids = None
         variables = []
         text = []
+        links = {}
         for variable in sorted(items):
             name, array = items[variable]
             if variable.startswith("@"):
-                self._text(text, variable, name, array)
+                self._text(text, variable, name, array, links)
                 continue
             _check_name(variable, "variable")
             if variable == "time":
@@ -278,7 +301,7 @@ class _Step:
                 self.dropped.append(name)
                 continue
             variables.append((variable, _flat(array).ravel()))
-        self.databases[database] = _Output(time, variables, ids, text)
+        self.databases[database] = _Output(time, variables, ids, text, links)
 
 
 # -- the file ----------------------------------------------------------------------------
@@ -301,6 +324,7 @@ class _Archive:
         self.ids = None
         self.npoints = None
         self.steps = 0
+        self.link_targets = []  # every link written, to check it resolves
 
     def add(self, step):
         index = self.steps
@@ -367,7 +391,11 @@ class _Archive:
         self.folders += 1
         self.lsda.var(directory, "time", time)
         for name, array in out.variables:
-            self.lsda.var(directory, name, array)
+            if name in out.links:
+                self.lsda.var(directory, name, array, link=out.links[name])
+                self.link_targets.append(out.links[name])
+            else:
+                self.lsda.var(directory, name, array)
 
     @property
     def lsda(self):
@@ -376,6 +404,13 @@ class _Archive:
     def finish(self):
         if not self.counts:
             _wfail("the mesh holds no database: no points and no binout:* field data")
+        # A link whose target is not in the file could not be read back.
+        for target in self.link_targets:
+            directory, _, name = target.rpartition("/")
+            if not any(f.has(directory or "/", name) for f in self.files):
+                _wfail(
+                    f"a link points to '{target}', which is not a variable of the file"
+                )
         return [f.finish() for f in self.files]
 
 

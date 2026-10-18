@@ -221,6 +221,11 @@ public:
         return out;
     }
 
+    /// The path a link variable points to (as stored), or empty when @p rVar is not a link.
+    std::string LinkTarget(const LbVar& rVar) const {
+        return rVar.mType == kLbLink ? Raw(rVar) : std::string();
+    }
+
     LbDir mRoot;
 
 private:
@@ -487,6 +492,22 @@ void lb_metadata_text(Mesh& rMesh, const LbArchive& rA, const std::vector<std::s
     }
 }
 
+// A step folder's links as `<prefix>@link=<variable>`, the path each points to (bytes). The
+// variable itself reads as its target's values; the marker lets a writer link it again.
+void lb_links(Mesh& rMesh, const LbArchive& rA, const LbDir& rFolder, const std::string& rPrefix,
+              const ReadOptions& rOpts) {
+    for (const auto& [name, var] : rFolder.mVars) {
+        const std::string target = rA.LinkTarget(var);
+        const std::string key = rPrefix + "@link=" + name;
+        if (target.empty() || !rOpts.WantsArray(key))
+            continue;
+        NDArray a(DType::UInt8, {target.size()});
+        for (std::size_t i = 0; i < target.size(); ++i)
+            a.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(target[i]);
+        rMesh.AddFieldData(key, std::move(a));
+    }
+}
+
 void lb_field_data(Mesh& rMesh, const LbArchive& rA, const std::vector<std::string>& rDb,
                    const std::string& rStep, const ReadOptions& rOpts, const double* pTime) {
     const std::string prefix = "binout:" + lb_join(rDb) + ":";
@@ -510,6 +531,7 @@ void lb_field_data(Mesh& rMesh, const LbArchive& rA, const std::vector<std::stri
     const LbDir* d = rA.Dir(folder);
     if (d == nullptr)
         return;
+    lb_links(rMesh, rA, *d, prefix, rOpts);
     for (const auto& [name, var] : d->mVars) {
         if (name == "time" || !rOpts.WantsArray(prefix + name))
             continue;
@@ -644,6 +666,7 @@ Mesh read_lsdyna_binout(const std::string& rPath, const ReadOptions& rOpts) {
             }
         }
         lb_metadata_text(mesh, a, b.mMain, "binout:nodout:", rOpts);
+        lb_links(mesh, a, *d, "binout:nodout:", rOpts);
     } else {
         lb_field_data(mesh, a, b.mMain, step, rOpts, nullptr);
     }
@@ -681,7 +704,7 @@ namespace {
 
 constexpr std::int32_t kLbwCd = 2, kLbwData = 3, kLbwVariable = 4, kLbwBegin = 5, kLbwEnd = 6,
                        kLbwOffset = 7;
-constexpr std::uint8_t kLbwInt8 = 1, kLbwInt32 = 3, kLbwFloat32 = 9;
+constexpr std::uint8_t kLbwInt8 = 1, kLbwInt32 = 3, kLbwFloat32 = 9, kLbwLink = 11;
 
 [[noreturn]] void lbw_fail(const std::string& rMessage) {
     throw WriteError("LS-DYNA binout: " + rMessage);
@@ -710,6 +733,7 @@ struct LbwArray {
     std::vector<double> mReals;
     std::vector<std::int64_t> mInts;
     bool mText = false;  // mInts are bytes: 1-byte integers, as LS-DYNA writes titles and dates
+    std::string mLink;   // non-empty: a link to this path instead of values
 };
 
 /// A `binout:<database>:@<name>` item as a metadata text variable.
@@ -760,6 +784,8 @@ void lbw_check_name(const std::string& rName, const char* pWhat) {
 
 /// The bytes of one DATA record of a variable.
 std::size_t lbw_record_size(const LbwArray& rArray) {
+    if (!rArray.mLink.empty())
+        return 8 + 1 + 1 + 1 + rArray.mName.size() + rArray.mLink.size();
     const std::size_t count = rArray.mFloat ? rArray.mReals.size() : rArray.mInts.size();
     return 8 + 1 + 1 + 1 + rArray.mName.size() + count * (rArray.mText ? 1 : 4);
 }
@@ -789,7 +815,11 @@ public:
         std::string raw;
         std::size_t count;
         std::uint8_t code;
-        if (rArray.mText) {
+        if (!rArray.mLink.empty()) {
+            code = kLbwLink;
+            count = rArray.mLink.size();
+            raw = rArray.mLink;
+        } else if (rArray.mText) {
             code = kLbwInt8;
             count = rArray.mInts.size();
             for (const std::int64_t v : rArray.mInts)
@@ -823,6 +853,12 @@ public:
     }
 
     std::size_t DataSize() const { return mData.size(); }
+
+    /// Whether the variable @p rName was written into the folder @p rDir.
+    bool Has(const std::string& rDir, const std::string& rName) const {
+        return std::any_of(mEntries.begin(), mEntries.end(),
+                           [&](const Entry& E) { return E.mDir == rDir && E.mName == rName; });
+    }
 
     std::string Finish() const {
         std::string out = mData;
@@ -881,7 +917,8 @@ private:
 struct LbwOutput {
     double mTime = 0.0;
     std::vector<LbwArray> mVars;
-    std::vector<LbwArray> mText;  // the database's metadata text (title, date ...)
+    std::vector<LbwArray> mText;                // the database's metadata text (title, date ...)
+    std::map<std::string, std::string> mLinks;  // variable -> the path it is a link to
     std::optional<std::vector<std::int64_t>> mIds;
 
     std::vector<std::pair<std::string, bool>> Layout() const {
@@ -963,6 +1000,21 @@ private:
     bool Text(LbwOutput& rOut, const std::string& rVariable,
               const std::pair<std::string, const NDArray*>& rItem) {
         const std::string name = rVariable.substr(1);
+        if (name.rfind("link=", 0) == 0) {  // `@link=<variable>`: the path the variable links to
+            lbw_check_name(name.substr(5), "linked variable");
+            if (detail::is_float_dtype(rItem.second->Dtype())) {
+                mDropped.insert(rItem.first);
+                return false;
+            }
+            const detail::Int64View v(*rItem.second);
+            std::string target;
+            for (std::size_t i = 0; i < rItem.second->Size(); ++i)
+                target.push_back(static_cast<char>(v.Data()[i]));
+            if (target.empty() || target[0] != '/')
+                lbw_fail("the link '" + rItem.first + "' must hold an absolute path");
+            rOut.mLinks[name.substr(5)] = target;
+            return true;
+        }
         lbw_check_name(name, "text variable");
         if (name == "ids" || detail::is_float_dtype(rItem.second->Dtype())) {
             mDropped.insert(rItem.first);
@@ -1128,6 +1180,16 @@ public:
     std::vector<std::string> Finish() const {
         if (mCounts.empty())
             lbw_fail("the mesh holds no database: no points and no binout:* field data");
+        // A link whose target is not in the file could not be read back.
+        for (const std::string& target : mLinkTargets) {
+            const std::size_t slash = target.rfind('/');
+            const std::string dir = target.substr(0, slash == 0 ? 1 : slash);
+            const std::string name = target.substr(slash + 1);
+            const bool found = std::any_of(mFiles.begin(), mFiles.end(),
+                                           [&](const LbwLsda& F) { return F.Has(dir, name); });
+            if (!found)
+                lbw_fail("a link points to '" + target + "', which is not a variable of the file");
+        }
         std::vector<std::string> files;
         for (const LbwLsda& f : mFiles)
             files.push_back(f.Finish());
@@ -1198,11 +1260,21 @@ private:
         }
         ++mFolders;
         mFiles.back().Var(dir, time);
-        for (const LbwArray& a : rOut.mVars)
-            mFiles.back().Var(dir, a);
+        for (const LbwArray& a : rOut.mVars) {
+            const auto link = rOut.mLinks.find(a.mName);
+            if (link == rOut.mLinks.end()) {
+                mFiles.back().Var(dir, a);
+                continue;
+            }
+            LbwArray linked = a;
+            linked.mLink = link->second;
+            mFiles.back().Var(dir, linked);
+            mLinkTargets.push_back(link->second);
+        }
     }
 
     std::vector<LbwLsda> mFiles;
+    std::vector<std::string> mLinkTargets;  // every link written, to check it resolves
     std::size_t mSplit = 0;
     int mWord = 8;
     bool mBig = false;
