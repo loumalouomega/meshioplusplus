@@ -813,7 +813,7 @@ def test_grid_id_array_follows_the_read_options(
 def _spring_mesh():
     """Springs CELAS1 30 and 31 between GRIDs 1-2 and 2-3 (PELAS 5), one grounded at
     GRID 4 (its second component is 0), a CDAMP1 50 between 2 and 4 (PDAMP 6), and a
-    CVISC 40 the writer does not hold yet."""
+    card 99 (40) the writer does not know."""
     points = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
     )
@@ -842,7 +842,7 @@ def _spring_mesh():
         np.array([6, 6]),
         np.array([6]),
         np.array([2]),
-        np.array([39]),
+        np.array([99]),
     ]
     mesh.cell_data["nastran:c1"] = [
         np.array([1, 1]),
@@ -917,7 +917,8 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     engine, tmp_path, capfd
 ):
     mesh = _spring_mesh()
-    mesh.cells.append(meshioplusplus.CellBlock("quad", np.array([[0, 1, 2, 3]])))
+    # A CSHEAR is a quad: on a triangle its number names a card that is left out.
+    mesh.cells.append(meshioplusplus.CellBlock("triangle", np.array([[0, 1, 2]])))
     mesh.cell_data["nastran:eid"].append(np.array([60]))
     mesh.cell_data["nastran:pid"].append(np.array([8]))
     mesh.cell_data["nastran:card"].append(np.array([31]))  # CSHEAR
@@ -927,7 +928,7 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())
     assert "element cards not written yet" in err
-    assert "CVISC" in err and "CSHEAR" in err
+    assert "card 99" in err and "CSHEAR" in err
     back = py_op2.read(path)
     assert sorted(_elements(back)) == [30, 31, 32, 50]
 
@@ -1385,16 +1386,64 @@ def test_the_engines_write_the_same_bytes_with_beams(tmp_path):
 
 def test_a_cbeam_needs_its_orientation(engine, tmp_path):
     mesh = _beam_mesh()
-    del mesh.cell_data["nastran:x"]
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
     with pytest.raises(Exception, match="orientation"):
         write_with(engine, tmp_path / "x.op2", mesh)
 
 
-def test_a_cbeam_oriented_by_a_grid_is_refused(engine, tmp_path):
+def _g0_beam_mesh():
+    """The beam mesh with a fourth point, GRID 4, as the G0 of its second CBEAM."""
     mesh = _beam_mesh()
-    mesh.cell_data["nastran:g0"] = [np.array([3, 0])]
-    with pytest.raises(Exception, match="G0"):
-        write_with(engine, tmp_path / "g0.op2", mesh)
+    mesh.points = np.vstack([mesh.points, [0.0, 1.0, 0.0]])
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 4])]
+    return mesh
+
+
+def test_a_cbeam_oriented_by_a_grid_round_trips(engine, tmp_path):
+    path = tmp_path / "cbeam_g0.op2"
+    write_with(engine, path, _g0_beam_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_array_equal(
+            np.concatenate(back.cell_data["nastran:g0"]), [0, 4]
+        )
+        np.testing.assert_allclose(
+            np.concatenate(back.cell_data["nastran:x"]), [[0, 0, 1], [0, 0, 0]]
+        )
+
+
+def test_the_engines_write_the_same_bytes_with_g0_beams(tmp_path):
+    mesh = _g0_beam_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cbeam_with_only_a_g0_is_written(engine, tmp_path):
+    mesh = _g0_beam_mesh()
+    del mesh.cell_data["nastran:x"]
+    mesh.cell_data["nastran:g0"] = [np.array([4, 4])]
+    write_with(engine, tmp_path / "only.op2", mesh)
+
+
+def test_pynastran_reads_the_g0_cbeams(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cbeam_g0.op2"
+    mesh = _g0_beam_mesh()
+    # pyNastran takes a CBEAM's orientation flag from the low bits of word 10 (PA), not
+    # word 9 where the record holds it, so it reads a G0 only when PA is 2.
+    mesh.cell_data["nastran:pin"] = [np.array([[0, 0], [2, 0]])]
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[40], model.elements[41]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    assert first.g0 is None
+    assert second.g0 == 4 and second.x is None
+    assert second.node_ids == [2, 3] and second.pa == 2
 
 
 def test_a_pbeam_needs_a_segment(engine, tmp_path):
@@ -1544,3 +1593,452 @@ def test_the_engines_write_the_same_bytes_with_default_bushes(tmp_path):
     _core.nastran_op2_write(str(core), mesh)
     py_write.write(str(python), mesh)
     assert core.read_bytes() == python.read_bytes()
+
+
+# -- CVISC viscous dampers and PVISC properties -------------------------------------------
+
+
+def _visc_mesh(values=True):
+    """Two CVISCs of PVISC 8 between GRIDs 1-2 and 2-3."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([60, 61])]
+    mesh.cell_data["nastran:pid"] = [np.array([8, 8])]
+    mesh.cell_data["nastran:card"] = [np.array([39, 39])]
+    if values:
+        mesh.field_data["nastran:PVISC_8:CE"] = np.array([2.5])
+        mesh.field_data["nastran:PVISC_8:CR"] = np.array([0.75])
+    return mesh
+
+
+def test_cviscs_and_their_pviscs_round_trip(engine, tmp_path):
+    path = tmp_path / "cvisc.op2"
+    write_with(engine, path, _visc_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.cells[0].type == "line"
+        np.testing.assert_array_equal(back.cells[0].data, [[0, 1], [1, 2]])
+        np.testing.assert_array_equal(back.cell_data["nastran:eid"][0], [60, 61])
+        np.testing.assert_array_equal(back.cell_data["nastran:pid"][0], [8, 8])
+        np.testing.assert_array_equal(back.cell_data["nastran:card"][0], [39, 39])
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CE"], [2.5])
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CR"], [0.75])
+
+
+def test_a_pvisc_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _visc_mesh(values=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CE"], [1.0])
+        np.testing.assert_allclose(back.field_data["nastran:PVISC_8:CR"], [0.0])
+
+
+@pytest.mark.parametrize("values", [True, False])
+def test_the_engines_write_the_same_bytes_with_viscous_dampers(tmp_path, values):
+    mesh = _visc_mesh(values)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_cviscs_and_pviscs(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cvisc.op2"
+    _core.nastran_op2_write(str(path), _visc_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[60], model.elements[61]
+    assert first.type == second.type == "CVISC" and first.pid == 8
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    prop = model.properties[8]
+    assert prop.type == "PVISC"
+    assert (prop.ce, prop.cr) == pytest.approx((2.5, 0.75))
+
+
+# -- PLOTEL plot elements ---------------------------------------------------------------------
+
+
+def _plotel_mesh():
+    """Two PLOTELs between GRIDs 1-2 and 2-3 (they have no property)."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([70, 71])]
+    mesh.cell_data["nastran:card"] = [np.array([52, 52])]
+    return mesh
+
+
+def test_plotels_round_trip(engine, tmp_path):
+    path = tmp_path / "plotel.op2"
+    write_with(engine, path, _plotel_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.cells[0].type == "line"
+        np.testing.assert_array_equal(back.cells[0].data, [[0, 1], [1, 2]])
+        np.testing.assert_array_equal(back.cell_data["nastran:eid"][0], [70, 71])
+        np.testing.assert_array_equal(back.cell_data["nastran:pid"][0], [-1, -1])
+        np.testing.assert_array_equal(back.cell_data["nastran:card"][0], [52, 52])
+
+
+def test_the_engines_write_the_same_bytes_with_plotels(tmp_path):
+    mesh = _plotel_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_plotel_cannot_sit_in_a_vertex_block(engine, tmp_path):
+    mesh = _plotel_mesh()
+    mesh.cells[0] = meshioplusplus.CellBlock("vertex", np.array([[0], [1]]))
+    with pytest.raises(Exception, match="cannot hold PLOTEL"):
+        write_with(engine, tmp_path / "bad.op2", mesh)
+
+
+def test_pynastran_reads_the_plotels(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_plotel.op2"
+    _core.nastran_op2_write(str(path), _plotel_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    assert sorted(model.plotels) == [70, 71]
+    assert model.plotels[70].node_ids == [1, 2]
+    assert model.plotels[71].node_ids == [2, 3]
+
+
+# -- CSHEAR shear panels and PSHEAR properties -----------------------------------------------
+
+
+def _shear_mesh(values=True):
+    """A CQUAD4 (PSHELL 1) and a CSHEAR (PSHEAR 4) in one quad block, GRIDs 1 to 6."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        + [[2.0, 0.0, 0.0], [2.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points, [("quad", np.array([[0, 1, 2, 3], [1, 4, 5, 2]]))]
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([80, 81])]
+    mesh.cell_data["nastran:pid"] = [np.array([1, 4])]
+    mesh.cell_data["nastran:card"] = [np.array([51, 31])]
+    if values:
+        mesh.field_data["nastran:PSHEAR_4:MID"] = np.array([3], dtype=np.int64)
+        mesh.field_data["nastran:PSHEAR_4:T"] = np.array([0.25])
+        mesh.field_data["nastran:PSHEAR_4:NSM"] = np.array([0.5])
+        mesh.field_data["nastran:PSHEAR_4:F1"] = np.array([0.75])
+        mesh.field_data["nastran:PSHEAR_4:F2"] = np.array([1.5])
+    return mesh
+
+
+def _by_eid(mesh):
+    """``{eid: (nodes, pid, card)}`` of a mesh read from an OP2."""
+    out = {}
+    for block, eids, pids, cards in zip(
+        mesh.cells,
+        mesh.cell_data["nastran:eid"],
+        mesh.cell_data["nastran:pid"],
+        mesh.cell_data["nastran:card"],
+    ):
+        for row, eid in enumerate(eids):
+            out[int(eid)] = (block.data[row].tolist(), int(pids[row]), int(cards[row]))
+    return out
+
+
+def test_cshears_and_pshears_round_trip(engine, tmp_path):
+    path = tmp_path / "shear.op2"
+    write_with(engine, path, _shear_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert _by_eid(back) == {
+            80: ([0, 1, 2, 3], 1, 51),
+            81: ([1, 4, 5, 2], 4, 31),
+        }
+        assert back.field_data["nastran:PSHEAR_4:MID"][0] == 3
+        for member, value in (("T", 0.25), ("NSM", 0.5), ("F1", 0.75), ("F2", 1.5)):
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:PSHEAR_4:{member}"], [value]
+            )
+        # the PSHEAR's material is written as a MAT1
+        assert "nastran:MAT1_3:E" in back.field_data
+
+
+def test_a_pshear_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _shear_mesh(values=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.field_data["nastran:PSHEAR_4:MID"][0] == 1
+        np.testing.assert_allclose(back.field_data["nastran:PSHEAR_4:T"], [1.0])
+        np.testing.assert_allclose(back.field_data["nastran:PSHEAR_4:F1"], [0.0])
+
+
+@pytest.mark.parametrize("values", [True, False])
+def test_the_engines_write_the_same_bytes_with_shear_panels(tmp_path, values):
+    mesh = _shear_mesh(values)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_pshear_cannot_share_an_id_with_a_pshell(engine, tmp_path):
+    mesh = _shear_mesh()
+    mesh.cell_data["nastran:pid"] = [np.array([4, 4])]
+    with pytest.raises(Exception, match="PSHELL and PSHEAR|PSHEAR and PSHELL"):
+        write_with(engine, tmp_path / "shared.op2", mesh)
+
+
+def test_pynastran_reads_the_cshears_and_pshears(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_shear.op2"
+    _core.nastran_op2_write(str(path), _shear_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    assert model.elements[80].type == "CQUAD4"
+    shear = model.elements[81]
+    assert shear.type == "CSHEAR" and shear.pid == 4
+    assert shear.node_ids == [2, 5, 6, 3]
+    prop = model.properties[4]
+    assert prop.type == "PSHEAR" and prop.mid == 3
+    assert (prop.t, prop.nsm, prop.f1, prop.f2) == pytest.approx((0.25, 0.5, 0.75, 1.5))
+
+
+# -- MAT2 and MAT8 materials -----------------------------------------------------------------
+
+_MAT2_5 = {
+    "G11": 4.0e4,
+    "G12": 1.0e4,
+    "G13": 0.5e4,
+    "G22": 3.0e4,
+    "G23": 0.25e4,
+    "G33": 2.0e4,
+    "RHO": 7.8e-9,
+    "A1": 1.0e-5,
+    "A2": 2.0e-5,
+    "A3": 3.0e-5,
+    "TREF": 20.0,
+    "GE": 0.02,
+    "ST": 100.0,
+    "SC": 200.0,
+    "SS": 50.0,
+}
+_MAT8_2 = {
+    "E1": 1.5e5,
+    "E2": 9.0e3,
+    "NU12": 0.28,
+    "G12": 5.0e3,
+    "G1Z": 4.0e3,
+    "G2Z": 3.0e3,
+    "RHO": 1.6e-9,
+    "A1": 1.0e-6,
+    "A2": 3.0e-5,
+    "TREF": 25.0,
+    "XT": 1500.0,
+    "XC": 1200.0,
+    "YT": 50.0,
+    "YC": 250.0,
+    "S": 70.0,
+    "GE": 0.01,
+    "F12": -0.5,
+    "STRN": 1.0,
+}
+
+
+def _anisotropic_mesh(mat1=True, mat2=True, mat8=True):
+    """A PCOMP quad (CQUAD4 7, PCOMP 9, plies of materials 1, 2 and 1) and a PSHELL
+    triangle (CTRIA3 8, PSHELL 1 on material 5), with material 2 a MAT8 and material 5 a
+    MAT2 when asked, and material 1 a MAT1 of its own."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        + [[2.0, 0.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("quad", np.array([[0, 1, 2, 3]])), ("triangle", np.array([[1, 4, 2]]))],
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([7]), np.array([8])]
+    mesh.cell_data["nastran:pid"] = [np.array([9]), np.array([1])]
+    mesh.field_data["nastran:PCOMP_9:PLY"] = np.array(
+        [[1, 0.1, 0.0, 1], [2, 0.2, 45.0, 0], [1, 0.1, -45.0, 1]], dtype=float
+    )
+    mesh.field_data["nastran:PSHELL_1:MID1"] = np.array([5], dtype=np.int64)
+    if mat1:
+        mesh.field_data["nastran:MAT1_1:E"] = np.array([70000.0])
+    if mat2:
+        for member, value in _MAT2_5.items():
+            mesh.field_data[f"nastran:MAT2_5:{member}"] = np.array([value])
+        mesh.field_data["nastran:MAT2_5:MCSID"] = np.array([3], dtype=np.int64)
+    if mat8:
+        for member, value in _MAT8_2.items():
+            mesh.field_data[f"nastran:MAT8_2:{member}"] = np.array([value])
+    return mesh
+
+
+def test_mat2_and_mat8_materials_round_trip(engine, tmp_path):
+    path = tmp_path / "anisotropic.op2"
+    write_with(engine, path, _anisotropic_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        for member, value in _MAT2_5.items():
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:MAT2_5:{member}"], [value], rtol=1e-6
+            )
+        assert back.field_data["nastran:MAT2_5:MCSID"].tolist() == [3]
+        for member, value in _MAT8_2.items():
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:MAT8_2:{member}"], [value], rtol=1e-6
+            )
+        # a material is the one card it was given as: no MAT1 twin of the others
+        assert "nastran:MAT1_1:E" in back.field_data
+        assert "nastran:MAT1_2:E" not in back.field_data
+        assert "nastran:MAT1_5:E" not in back.field_data
+
+
+def test_materials_without_values_stay_mat1(engine, tmp_path):
+    path = tmp_path / "plain.op2"
+    write_with(engine, path, _anisotropic_mesh(mat1=False, mat2=False, mat8=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        for mid in (1, 2, 5):
+            assert back.field_data[f"nastran:MAT1_{mid}:E"][0] == 1.0
+        assert not any(":MAT2_" in name or ":MAT8_" in name for name in back.field_data)
+
+
+@pytest.mark.parametrize(
+    "flags", [(True, True, True), (False, True, False), (False, False, True)]
+)
+def test_the_engines_write_the_same_bytes_with_mat2_and_mat8(tmp_path, flags):
+    mesh = _anisotropic_mesh(*flags)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_material_id_given_as_two_cards_is_refused(engine, tmp_path):
+    mesh = _anisotropic_mesh()
+    mesh.field_data["nastran:MAT1_2:E"] = np.array([1.0e5])  # 2 is also a MAT8
+    with pytest.raises(Exception, match="material id 2 is given as both MAT1 and MAT8"):
+        write_with(engine, tmp_path / "conflict.op2", mesh)
+
+
+def test_pynastran_reads_the_mat2_and_mat8(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_anisotropic.op2"
+    _core.nastran_op2_write(str(path), _anisotropic_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    assert sorted(model.materials) == [1, 2, 5]
+    ply = model.materials[2]
+    assert ply.type == "MAT8"
+    assert (ply.e11, ply.e22, ply.nu12) == pytest.approx((1.5e5, 9.0e3, 0.28))
+    assert (ply.g12, ply.Xt, ply.F12) == pytest.approx((5.0e3, 1500.0, -0.5))
+    shell = model.materials[5]
+    assert shell.type == "MAT2"
+    assert (shell.G11, shell.G12, shell.G22, shell.G33) == pytest.approx(
+        (4.0e4, 1.0e4, 3.0e4, 2.0e4)
+    )
+    assert shell.mcsid == 3
+    assert model.materials[1].type == "MAT1"
+    assert model.properties[1].mid1 == 5
+
+
+# -- CGAP gaps and PGAP properties ------------------------------------------------------------
+
+
+def _gap_mesh(values=True):
+    """Two CGAPs of PGAP 12 between GRIDs 1-2 and 2-3: the first oriented by X = (0, 0, 1),
+    the second by GRID 4 as its G0."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([80, 81])]
+    mesh.cell_data["nastran:pid"] = [np.array([12, 12])]
+    mesh.cell_data["nastran:card"] = [np.array([19, 19])]
+    mesh.cell_data["nastran:x"] = [np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])]
+    mesh.cell_data["nastran:g0"] = [np.array([0, 4])]
+    if values:
+        for member, value in (
+            ("U0", 0.01),
+            ("F0", 2.0),
+            ("KA", 5.0e6),
+            ("KB", 0.5),
+            ("KT", 1.5e3),
+            ("MU1", 0.3),
+            ("MU2", 0.2),
+            ("TMAX", 4.0),
+            ("MAR", 50.0),
+            ("TRMIN", 0.01),
+        ):
+            mesh.field_data[f"nastran:PGAP_12:{member}"] = np.array([value])
+    return mesh
+
+
+def test_cgaps_and_their_pgaps_round_trip(engine, tmp_path):
+    path = tmp_path / "cgap.op2"
+    write_with(engine, path, _gap_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.cells[0].type == "line"
+        np.testing.assert_array_equal(back.cells[0].data, [[0, 1], [1, 2]])
+        np.testing.assert_array_equal(back.cell_data["nastran:eid"][0], [80, 81])
+        np.testing.assert_array_equal(back.cell_data["nastran:pid"][0], [12, 12])
+        np.testing.assert_array_equal(back.cell_data["nastran:card"][0], [19, 19])
+        np.testing.assert_array_equal(back.cell_data["nastran:g0"][0], [0, 4])
+        np.testing.assert_allclose(
+            back.cell_data["nastran:x"][0], [[0, 0, 1], [0, 0, 0]]
+        )
+        assert [r.name for r in back.regions] == ["PGAP_12"]
+        for member, value in (("U0", 0.01), ("KA", 5.0e6), ("MU1", 0.3), ("MAR", 50.0)):
+            np.testing.assert_allclose(
+                back.field_data[f"nastran:PGAP_12:{member}"], [value], rtol=1e-6
+            )
+
+
+def test_a_pgap_without_values_writes_the_defaults(engine, tmp_path):
+    path = tmp_path / "defaults.op2"
+    write_with(engine, path, _gap_mesh(values=False))
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_allclose(back.field_data["nastran:PGAP_12:KA"], [1.0e8])
+        np.testing.assert_allclose(back.field_data["nastran:PGAP_12:MAR"], [100.0])
+
+
+@pytest.mark.parametrize("values", [True, False])
+def test_the_engines_write_the_same_bytes_with_gaps(tmp_path, values):
+    mesh = _gap_mesh(values)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cgap_needs_its_orientation(engine, tmp_path):
+    mesh = _gap_mesh()
+    for name in ("nastran:x", "nastran:g0"):
+        del mesh.cell_data[name]
+    with pytest.raises(Exception, match="orientation"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_pynastran_reads_the_cgaps_and_pgaps(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cgap.op2"
+    _core.nastran_op2_write(str(path), _gap_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    first, second = model.elements[80], model.elements[81]
+    assert first.type == second.type == "CGAP" and first.pid == 12
+    assert first.node_ids == [1, 2] and second.node_ids == [2, 3]
+    np.testing.assert_allclose(first.x, [0, 0, 1])
+    assert first.g0 is None and second.g0 == 4
+    prop = model.properties[12]
+    assert prop.type == "PGAP"
+    assert (prop.u0, prop.f0, prop.ka, prop.kb, prop.kt) == pytest.approx(
+        (0.01, 2.0, 5.0e6, 0.5, 1.5e3), rel=1e-6
+    )
+    assert (prop.mu1, prop.mu2, prop.tmax, prop.mar, prop.trmin) == pytest.approx(
+        (0.3, 0.2, 4.0, 50.0, 0.01), rel=1e-6
+    )

@@ -17,11 +17,14 @@
 
 // System includes
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -1412,6 +1415,431 @@ TEST(OpenFoamWriter, DecomposedCaseReassemblesAndRegionsAndSeriesWrite) {
     series.Finalize();
     EXPECT_EQ(series.NumSteps(), 2u);
     EXPECT_THROW(series.Write(1.0, foam_test_grid(2)), meshioplusplus::WriteError);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+// Roadmap 3.3.3: zones in a decomposed case. Each processor writes every zone in its own ids; the
+// reader merges them back through the `*ProcAddressing` lists, so the reconstruction names the same
+// cells, points and faces as the serial case does.
+namespace {
+
+// A zone's entries as sorted rows (pairs for a side zone), so two meshes compare by content.
+std::map<std::string, std::vector<std::int64_t>> zone_entries(const meshioplusplus::Mesh& rMesh) {
+    std::map<std::string, std::vector<std::int64_t>> out;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        const std::size_t width = r.mKind == meshioplusplus::RegionKind::Side ? 2 : 1;
+        std::vector<std::int64_t> rows;
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            std::int64_t key = 0;
+            for (std::size_t w = 0; w < width; ++w)
+                key = key * 1000 + r.Entries()[k * width + w];
+            rows.push_back(key);
+        }
+        std::sort(rows.begin(), rows.end());
+        out[r.mName + ":" + std::to_string(static_cast<int>(r.mKind))] = std::move(rows);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(OpenFoamWriter, DecomposedZonesComeBackAsInTheSerialCase) {
+    for (const bool binary : {false, true}) {
+        meshioplusplus::Mesh mesh = foam_test_grid(3);
+        meshioplusplus::NDArray part(meshioplusplus::DType::Int64, {std::size_t{27}});
+        for (std::size_t c = 0; c < 27; ++c)
+            part.As<std::int64_t>()[c] = static_cast<std::int64_t>(c / 9);
+        mesh.AddCellData("partition:part", {std::move(part)});
+        mesh.AddRegion(
+            meshioplusplus::Region("core", meshioplusplus::RegionKind::Cell, i64({2, 11, 20})));
+        mesh.AddRegion(meshioplusplus::Region("none", meshioplusplus::RegionKind::Cell, i64({})));
+        mesh.AddRegion(
+            meshioplusplus::Region("rim", meshioplusplus::RegionKind::Point, i64({0, 5, 17, 40})));
+        // facets 0 and 5 of cells on either side of both processor boundaries
+        mesh.AddRegion(
+            meshioplusplus::Region("baffle", meshioplusplus::RegionKind::Side,
+                                   i64_pairs({0, 0, 0, 5, 8, 5, 9, 0, 17, 5, 18, 0, 26, 5})));
+
+        const fs::path base = temp_case_dir();
+        meshioplusplus::OpenFoamInfo info;
+        meshioplusplus::OpenFoamWriteOptions options;
+        options.mBinary = binary;
+        meshioplusplus::write_openfoam_decomposed((base / "dec" / "case.foam").string(), mesh, info,
+                                                  options);
+        meshioplusplus::write_openfoam((base / "ser" / "case.foam").string(), mesh, info, options);
+        for (int p = 0; p < 3; ++p) {
+            const fs::path poly =
+                base / "dec" / ("processor" + std::to_string(p)) / "constant" / "polyMesh";
+            EXPECT_TRUE(fs::exists(poly / "cellZones"));
+            EXPECT_TRUE(fs::exists(poly / "faceZones"));
+            EXPECT_TRUE(fs::exists(poly / "pointZones"));
+        }
+        meshioplusplus::OpenFoamInfo dec_info, ser_info;
+        const meshioplusplus::Mesh dec =
+            meshioplusplus::read_openfoam((base / "dec" / "case.foam").string(), dec_info);
+        const meshioplusplus::Mesh ser =
+            meshioplusplus::read_openfoam((base / "ser" / "case.foam").string(), ser_info);
+        const auto got = zone_entries(dec);
+        const auto want = zone_entries(ser);
+        EXPECT_EQ(got.size(), 4u);
+        EXPECT_EQ(got, want);
+        EXPECT_EQ(
+            got.at("core:" + std::to_string(static_cast<int>(meshioplusplus::RegionKind::Cell))),
+            (std::vector<std::int64_t>{2, 11, 20}));
+        EXPECT_EQ(
+            got.at("baffle:" + std::to_string(static_cast<int>(meshioplusplus::RegionKind::Side)))
+                .size(),
+            7u);
+
+        // Dropping the zones drops the files with them.
+        meshioplusplus::Mesh plain = foam_test_grid(3);
+        meshioplusplus::NDArray part2(meshioplusplus::DType::Int64, {std::size_t{27}});
+        for (std::size_t c = 0; c < 27; ++c)
+            part2.As<std::int64_t>()[c] = static_cast<std::int64_t>(c / 9);
+        plain.AddCellData("partition:part", {std::move(part2)});
+        meshioplusplus::write_openfoam_decomposed((base / "dec" / "case.foam").string(), plain,
+                                                  info, options);
+        EXPECT_FALSE(
+            fs::exists(base / "dec" / "processor0" / "constant" / "polyMesh" / "cellZones"));
+        std::error_code ec;
+        fs::remove_all(base, ec);
+    }
+}
+
+// Roadmap 3.3.3: boundary-patch values. The values of the boundary-face cell blocks are written
+// as per-patch `boundaryField` entries and read back onto those blocks.
+namespace {
+
+// The rows of every 2D block of @p rMesh's cell-data array @p rName, keyed by the sorted corner
+// coordinates of the face (so the comparison does not depend on the row or corner order).
+std::map<std::string, std::vector<double>> boundary_face_values(const meshioplusplus::Mesh& rMesh,
+                                                                const std::string& rName,
+                                                                std::size_t Cols) {
+    std::map<std::string, std::vector<double>> out;
+    const double* pts = rMesh.Points().As<double>();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::string type(rMesh.Cells(b).Type());
+        if (type != "triangle" && type != "quad")
+            continue;
+        const meshioplusplus::NDArray& conn = rMesh.Cells(b).Conn();
+        const std::size_t npc = rMesh.Cells(b).NodesPerCell();
+        const meshioplusplus::NDArray& vals = rMesh.CellData(rName, b);
+        for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
+            std::vector<std::string> corners;
+            for (std::size_t k = 0; k < npc; ++k) {
+                const double* x =
+                    pts + 3 * static_cast<std::size_t>(conn.As<std::int64_t>()[r * npc + k]);
+                corners.push_back(std::to_string(x[0]) + "," + std::to_string(x[1]) + "," +
+                                  std::to_string(x[2]));
+            }
+            std::sort(corners.begin(), corners.end());
+            std::string key;
+            for (const std::string& c : corners)
+                key += c + ";";
+            out[key].assign(vals.As<double>() + r * Cols, vals.As<double>() + (r + 1) * Cols);
+        }
+    }
+    return out;
+}
+
+// A unit hex with its six faces as quads: tags -1 (y-min, x-min, z-min) and -2 (the rest), and
+// scalar p / vector U values per quad that tell the faces apart (NaN without @p WithValues).
+meshioplusplus::Mesh single_hex_with_boundary(bool WithValues, meshioplusplus::OpenFoamInfo& rInfo,
+                                              double Offset = 0.0) {
+    meshioplusplus::Mesh m = hex_grid(1);
+    m.AddCellBlock("quad", mt::conn_from({{0, 4, 5, 1},  // y = 0
+                                          {0, 2, 6, 4},  // z = 0
+                                          {0, 1, 3, 2},
+                                          {1, 5, 7, 3},
+                                          {2, 3, 7, 6},
+                                          {4, 6, 7, 5}}));
+    m.AddCellData("cell_tags",
+                  {mt::int_data_array({0}), mt::int_data_array({-1, -1, -1, -2, -2, -2})});
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> p_quad(6, nan), u_quad(18, nan);
+    if (WithValues)
+        for (std::size_t i = 0; i < 6; ++i) {
+            p_quad[i] = 10.0 + Offset + static_cast<double>(i);
+            u_quad[3 * i] = static_cast<double>(i);
+            u_quad[3 * i + 1] = 2.0 * static_cast<double>(i);
+            u_quad[3 * i + 2] = 3.0 * static_cast<double>(i) + 0.5;
+        }
+    m.AddCellData("p", {mt::data_array({1.5}), mt::data_array(p_quad)});
+    m.AddCellData("U", {mt::data_array({1.0, 2.0, 3.0}, 3), mt::data_array(u_quad, 3)});
+    rInfo.mCellTags[-1] = {"alpha"};
+    rInfo.mCellTags[-2] = {"beta"};
+    rInfo.mPatchTypes[-1] = "wall";
+    return m;
+}
+
+std::string slurp(const fs::path& rPath) {
+    std::ifstream f(rPath, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+meshioplusplus::Mesh read_case(const fs::path& rCase, meshioplusplus::OpenFoamInfo& rInfo,
+                               const meshioplusplus::ReadOptions& rOptions = {}) {
+    return meshioplusplus::read_openfoam(rCase.string(), rOptions, rInfo);
+}
+
+}  // namespace
+
+class OpenFoamPatchValues : public ::testing::TestWithParam<bool> {};
+
+TEST_P(OpenFoamPatchValues, WrittenPerPatchAndReadBackOntoTheBoundaryBlocks) {
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh m = single_hex_with_boundary(true, info);
+    meshioplusplus::OpenFoamWriteOptions opts;
+    opts.mBinary = GetParam();
+    const fs::path base = temp_case_dir();
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, info, opts);
+
+    // Both patches get explicit entries ahead of the catch-all.
+    const std::string text = slurp(base / "0" / "p");
+    EXPECT_NE(text.find("    alpha\n    {\n        type            calculated;\n"
+                        "        value           nonuniform List<scalar>\n3\n("),
+              std::string::npos);
+    EXPECT_NE(text.find("    beta\n    {"), std::string::npos);
+    EXPECT_LT(text.find("    beta\n"), text.find("\".*\""));
+
+    meshioplusplus::OpenFoamInfo read_info;
+    const meshioplusplus::Mesh back = read_case(base / "case.foam", read_info);
+    EXPECT_EQ(boundary_face_values(back, "p", 1), boundary_face_values(m, "p", 1));
+    EXPECT_EQ(boundary_face_values(back, "U", 3), boundary_face_values(m, "U", 3));
+    ASSERT_EQ(boundary_face_values(back, "p", 1).size(), 6u);
+    EXPECT_DOUBLE_EQ(back.CellData("p", 0).As<double>()[0], 1.5);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+INSTANTIATE_TEST_SUITE_P(Formats, OpenFoamPatchValues, ::testing::Values(false, true));
+
+TEST(OpenFoamPatchValuesOutput, NoBoundaryValuesLeavesTheCatchAllAlone) {
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh m = single_hex_with_boundary(false, info);  // NaN on the quads
+    const fs::path base = temp_case_dir();
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, info);
+    const std::string text = slurp(base / "0" / "p");
+    EXPECT_EQ(text.find("alpha"), std::string::npos);
+    EXPECT_EQ(text.find("nonuniform", text.find("boundaryField")), std::string::npos);
+    EXPECT_NE(text.find("boundaryField\n{\n    \".*\"\n"), std::string::npos);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamPatchValuesOutput, ConstraintPatchesGetNoValues) {
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh m = single_hex_with_boundary(true, info);
+    info.mPatchTypes[-2] = "symmetry";
+    const fs::path base = temp_case_dir();
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, info);
+    const std::string text = slurp(base / "0" / "p");
+    EXPECT_NE(text.find("    alpha\n"), std::string::npos);
+    EXPECT_EQ(text.find("    beta\n"), std::string::npos);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamPatchValuesOutput, SeriesStepsKeepTheirOwnPatchValues) {
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh step0 = single_hex_with_boundary(true, info);
+    const meshioplusplus::Mesh step1 = single_hex_with_boundary(true, info, 100.0);
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamSeriesWriter series((base / "case.foam").string(), info);
+    series.Write(0.0, step0);
+    series.Write(1.0, step1);
+    series.Finalize();
+    meshioplusplus::ReadOptions opts;
+    opts.mTimeStep = 1;
+    meshioplusplus::OpenFoamInfo read_info;
+    const meshioplusplus::Mesh back = read_case(base / "case.foam", read_info, opts);
+    EXPECT_EQ(boundary_face_values(back, "p", 1), boundary_face_values(step1, "p", 1));
+    EXPECT_NE(boundary_face_values(back, "p", 1), boundary_face_values(step0, "p", 1));
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamPatchValuesOutput, RegionAndDecomposedCasesCarryPatchValues) {
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh m = single_hex_with_boundary(true, info);
+    const fs::path base = temp_case_dir();
+    meshioplusplus::write_openfoam_region((base / "case.foam").string(), m, info, {}, "fluid");
+    EXPECT_NE(slurp(base / "0" / "fluid" / "p").find("    alpha\n"), std::string::npos);
+    meshioplusplus::OpenFoamInfo read_info;
+    read_info.mRegion = "fluid";
+    const meshioplusplus::Mesh back = read_case(base / "case.foam", read_info);
+    EXPECT_EQ(boundary_face_values(back, "p", 1), boundary_face_values(m, "p", 1));
+
+    // 2x2x2 grid in two processors: the faces between them become `processor` patches with no
+    // values, every outer face keeps its own.
+    meshioplusplus::OpenFoamInfo dinfo;
+    meshioplusplus::Mesh grid = hex_grid(2);
+    {
+        const fs::path tmp = temp_case_dir();
+        meshioplusplus::write_openfoam((tmp / "case.foam").string(), grid, dinfo);
+        grid = read_case(tmp / "case.foam", dinfo);
+        std::error_code rc;
+        fs::remove_all(tmp, rc);
+    }
+    ASSERT_EQ(grid.NumCellBlocks(), 2u);  // 8 hexahedra, then the 24 boundary quads
+    std::vector<double> pv(8), pq(24);
+    for (std::size_t i = 0; i < 8; ++i)
+        pv[i] = static_cast<double>(i);
+    for (std::size_t i = 0; i < 24; ++i)
+        pq[i] = 100.0 + static_cast<double>(i);
+    grid.AddCellData("p", {mt::data_array(pv), mt::data_array(pq)});
+    meshioplusplus::NDArray part(meshioplusplus::DType::Int64, {std::size_t{8}});
+    for (std::size_t c = 0; c < 8; ++c)
+        part.As<std::int64_t>()[c] = c < 4 ? 0 : 1;
+    grid.AddCellData("partition:part",
+                     {std::move(part), mt::int_data_array(std::vector<std::int32_t>(24, 0))});
+    const fs::path dbase = temp_case_dir();
+    meshioplusplus::write_openfoam_decomposed((dbase / "case.foam").string(), grid, dinfo, {});
+    const std::string proc0 = slurp(dbase / "processor0" / "0" / "p");
+    EXPECT_NE(proc0.find("defaultFaces"), std::string::npos);
+    EXPECT_EQ(proc0.find("procBoundary"), std::string::npos);
+    meshioplusplus::OpenFoamInfo dread;
+    const meshioplusplus::Mesh dback = read_case(dbase / "case.foam", dread);
+    EXPECT_EQ(boundary_face_values(dback, "p", 1), boundary_face_values(grid, "p", 1));
+    ASSERT_EQ(boundary_face_values(dback, "p", 1).size(), 24u);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    fs::remove_all(dbase, ec);
+}
+
+TEST(OpenFoamFields, ReadsBoundaryFieldValuesInEveryFormOpenFoamWritesThem) {
+    // make_hex_case: bottom 1 face, top 1 face, sides 4 faces.
+    const fs::path hand = make_hex_case();
+    const fs::path zero = hand / "0";
+    fs::create_directories(zero);
+    std::ofstream(zero / "p")
+        << "FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n"
+           "dimensions [0 0 0 0 0 0 0];\ninternalField uniform 42;\n"
+           "boundaryField\n{\n"
+           "    // a comment { with ( stray ) braces\n"
+           "    bottom { type fixedValue; value uniform 7; }\n"
+           "    top\n    {\n        type fixedValue;\n"
+           "        value nonuniform List<scalar> 1(5);\n    }\n"
+           "    sides\n    {\n        type mixed;\n"
+           "        refGradient nonuniform List<scalar> 4(9 9 9 9);\n"
+           "        valueFraction { type table; table ((0 1) (1 2)); }\n"
+           "        value nonuniform List<scalar>\n4\n(\n1\n2\n3\n4\n)\n;\n    }\n"
+           "    \".*\" { type calculated; value uniform 0; }\n}\n";
+    std::ofstream(zero / "U")
+        << "FoamFile\n{\n format ascii;\n class volVectorField;\n object U;\n}\n"
+           "internalField uniform (1 0 0);\n"
+           "boundaryField\n{\n"
+           "    bottom { type zeroGradient; }\n"
+           "    top { type fixedValue; value $internalField; }\n"
+           "    sides { type fixedValue; value nonuniform List<vector> 4{(0 0 1)}; }\n}\n";
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh mesh = read_case(hand / "case.foam", info);
+    std::size_t quad = static_cast<std::size_t>(-1);
+    for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
+        if (mesh.Cells(b).Type() == "quad")
+            quad = b;
+    ASSERT_NE(quad, static_cast<std::size_t>(-1));
+    const double* p = mesh.CellData("p", quad).As<double>();
+    const double expect_p[6] = {7, 5, 1, 2, 3, 4};
+    for (int i = 0; i < 6; ++i)
+        EXPECT_DOUBLE_EQ(p[i], expect_p[i]) << "row " << i;
+    const double* u = mesh.CellData("U", quad).As<double>();
+    for (int i = 0; i < 2; ++i)
+        for (int c = 0; c < 3; ++c)
+            EXPECT_TRUE(std::isnan(u[3 * i + c])) << "row " << i;
+    for (int i = 2; i < 6; ++i) {
+        EXPECT_DOUBLE_EQ(u[3 * i], 0.0);
+        EXPECT_DOUBLE_EQ(u[3 * i + 1], 0.0);
+        EXPECT_DOUBLE_EQ(u[3 * i + 2], 1.0);
+    }
+    std::error_code ec;
+    fs::remove_all(hand, ec);
+}
+
+// A field file whose `arch` names a width the decoders do not implement is refused, not divided by.
+TEST(OpenFoamFields, AnUnsupportedArchWidthInAFieldFileIsRefused) {
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh m = single_hex_with_boundary(true, info);
+    meshioplusplus::OpenFoamWriteOptions opts;
+    opts.mBinary = true;
+    const fs::path base = temp_case_dir();
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, info, opts);
+    std::string text = slurp(base / "0" / "p");
+    const std::size_t at = text.find("scalar=64");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 9, "scalar=6G");
+    std::ofstream(base / "0" / "p", std::ios::binary) << text;
+    meshioplusplus::OpenFoamInfo read_info;
+    EXPECT_THROW(read_case(base / "case.foam", read_info), meshioplusplus::ReadError);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+// Roadmap 3.3.3: `constant/regionProperties`, written only on request and read back in order.
+TEST(OpenFoamRegionProperties, WrittenOnRequestAndReadBackInOrder) {
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamInfo info;
+    meshioplusplus::write_openfoam_region((base / "case.foam").string(), foam_test_grid(1), info,
+                                          {}, "water");
+    EXPECT_FALSE(fs::exists(base / "constant" / "regionProperties"));
+
+    const std::vector<meshioplusplus::OpenFoamRegionGroup> groups = {{"fluid", {"water", "air"}},
+                                                                     {"solid", {"heater"}}};
+    meshioplusplus::write_openfoam_region_properties((base / "case.foam").string(), groups);
+    std::ifstream in(base / "constant" / "regionProperties");
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("regions\n(\n    fluid (water air)\n    solid (heater)\n);"),
+              std::string::npos);
+    EXPECT_NE(text.find("object      regionProperties;"), std::string::npos);
+
+    for (const std::string& path : {(base / "case.foam").string(), base.string()}) {
+        const auto back = meshioplusplus::read_openfoam_region_properties(path);
+        ASSERT_EQ(back.size(), 2u);
+        EXPECT_EQ(back[0].mFamily, "fluid");
+        EXPECT_EQ(back[0].mRegions, (std::vector<std::string>{"water", "air"}));
+        EXPECT_EQ(back[1].mFamily, "solid");
+        EXPECT_EQ(back[1].mRegions, (std::vector<std::string>{"heater"}));
+    }
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamRegionProperties, RefusesWhatASolverCouldNotReadAndMalformedFiles) {
+    const fs::path base = temp_case_dir();
+    const std::string path = (base / "case.foam").string();
+    using Groups = std::vector<meshioplusplus::OpenFoamRegionGroup>;
+    EXPECT_THROW(meshioplusplus::write_openfoam_region_properties(path, Groups{}),
+                 meshioplusplus::WriteError);
+    for (const Groups& bad :
+         {Groups{{"fluid", {}}}, Groups{{"fluid", {"a b"}}}, Groups{{"fluid", {".hidden"}}},
+          Groups{{"fluid", {"a/b"}}}, Groups{{"", {"a"}}},
+          Groups{{"fluid", {"a"}}, {"fluid", {"b"}}}, Groups{{"fluid", {"a"}}, {"solid", {"a"}}}})
+        EXPECT_THROW(meshioplusplus::write_openfoam_region_properties(path, bad),
+                     meshioplusplus::WriteError);
+    EXPECT_FALSE(fs::exists(base / "constant" / "regionProperties"));
+    EXPECT_THROW(meshioplusplus::write_openfoam_region_properties(
+                     (base / "constant" / "polyMesh").string(), Groups{{"fluid", {"a"}}}),
+                 meshioplusplus::WriteError);
+
+    EXPECT_THROW(meshioplusplus::read_openfoam_region_properties(path), meshioplusplus::ReadError);
+    fs::create_directories(base / "constant");
+    for (const char* body : {"regions ( fluid water );", "regions ( fluid (water );", "x 1;"}) {
+        std::ofstream(base / "constant" / "regionProperties") << body;
+        EXPECT_THROW(meshioplusplus::read_openfoam_region_properties(path),
+                     meshioplusplus::ReadError)
+            << body;
+    }
+    // the multi-region error names the regions the file lists when no directory exists yet
+    std::ofstream(base / "constant" / "regionProperties") << "regions ( fluid (a b) );";
+    meshioplusplus::OpenFoamInfo info;
+    try {
+        meshioplusplus::read_openfoam(path, info);
+        FAIL() << "expected a ReadError";
+    } catch (const meshioplusplus::ReadError& rException) {
+        EXPECT_NE(std::string(rException.what()).find("a, b"), std::string::npos);
+    }
     std::error_code ec;
     fs::remove_all(base, ec);
 }

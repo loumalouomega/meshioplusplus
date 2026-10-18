@@ -25,6 +25,9 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -409,4 +412,147 @@ TEST(XpltWriter, StateAndSeriesRoundTrip) {
     mismatch.Write(0.0, original);
     other.AddPointData("extra", original.PointData("displacement"));
     EXPECT_THROW(mismatch.Write(1.0, other), WriteError);
+}
+
+// The mesh of a plot file with a surface "lid" (one triangle) and an edge "rim"
+// (two line segments), as the reader builds it: blocks tetra, triangle, line.
+static Mesh surface_edge_mesh() {
+    const Plt p;
+    auto chunks = plot_chunks(p, 0x35, false);
+    const std::string surface =
+        p.Chunk(0x01043000,
+                p.Chunk(0x01043100,
+                        p.Chunk(0x01043101, p.Chunk(0x01043104, p.U32(3) + "lid")) +
+                            p.Chunk(0x01043200, p.Chunk(0x01043201, p.U32(1) + p.U32(3) + p.U32(0) +
+                                                                        p.U32(1) + p.U32(2)))));
+    const auto segment = [&](int Id, int A, int B) {
+        return p.Chunk(0x01048201, p.U32(Id) + p.U32(2) + p.U32(A) + p.U32(B) + p.U32(0));
+    };
+    const std::string edge =
+        p.Chunk(0x01048000,
+                p.Chunk(0x01048100,
+                        p.Chunk(0x01048101, p.Chunk(0x01048104, p.U32(3) + "rim")) +
+                            p.Chunk(0x01048200, segment(1, 0, 1) + segment(2, 1, 4))));
+    chunks[1] = p.Chunk(0x01040000, chunks[1].substr(8) + surface + edge);
+    const std::string path = write_plot(chunks, p, false);
+    return read_xplt(path);
+}
+
+// The surface "lid" (a triangle block carrying xplt:surface), an edge "rim" (two
+// line segments) and a facet set "walls" (a side region, tet 0's face 1) are
+// written as the sections the reader builds them from.
+TEST(XpltWriter, SurfacesEdgesAndFacetSetsRoundTrip) {
+    Mesh original = surface_edge_mesh();
+    ASSERT_EQ(original.NumCellBlocks(), 3u);
+    NDArray walls(DType::Int64, {1, 2});
+    walls.As<std::int64_t>()[0] = 0;
+    walls.As<std::int64_t>()[1] = 1;
+    original.AddRegion(Region("walls", RegionKind::Side, 2, -1, std::move(walls)));
+
+    const std::string out = temp_path(".xplt");
+    write_xplt(out, original);
+    const Mesh again = read_xplt(out);
+    ASSERT_EQ(again.NumCellBlocks(), 3u);
+    EXPECT_EQ(again.Cells(0).Type(), "tetra");
+    EXPECT_EQ(again.Cells(1).Type(), "triangle");
+    EXPECT_EQ(again.Cells(2).Type(), "line");
+    EXPECT_EQ(again.Cells(2).NumCells(), 2u);
+    EXPECT_EQ(detail::read_int(again.CellData("xplt:surface", 1), 0), 1);
+    EXPECT_EQ(detail::read_int(again.CellData("xplt:edge", 2), 1), 1);
+    EXPECT_EQ(detail::read_int(again.CellData("xplt:surface", 0), 0), 0);
+    std::size_t lid_cells = 0, lid_sides = 0, rim = 0, walls_sides = 0, domain_sets = 0;
+    for (std::size_t r = 0; r < again.NumRegions(); ++r) {
+        const auto& reg = again.Region(r);
+        if (reg.mName == "lid" && reg.mKind == RegionKind::Cell && reg.mDim == 2)
+            lid_cells = reg.NumEntries();
+        if (reg.mName == "lid" && reg.mKind == RegionKind::Side)
+            lid_sides = reg.NumEntries();
+        if (reg.mName == "rim" && reg.mKind == RegionKind::Cell && reg.mDim == 1)
+            rim = reg.NumEntries();
+        if (reg.mName == "walls" && reg.mKind == RegionKind::Side) {
+            walls_sides = reg.NumEntries();
+            EXPECT_EQ(detail::read_int(reg.mEntries, 0), 0);
+            EXPECT_EQ(detail::read_int(reg.mEntries, 1), 1);
+        }
+        if ((reg.mName == "lid" || reg.mName == "rim") && reg.mKind == RegionKind::Cell &&
+            reg.mDim < 0)
+            ++domain_sets;
+    }
+    EXPECT_EQ(lid_cells, 1u);
+    EXPECT_EQ(lid_sides, 1u);
+    EXPECT_EQ(rim, 2u);
+    EXPECT_EQ(walls_sides, 1u);
+    EXPECT_EQ(domain_sets, 0u);
+}
+
+namespace {
+
+NDArray xw_test_doubles(std::initializer_list<double> Values, std::size_t Width = 1) {
+    NDArray a(DType::Float64, {Values.size() / Width, Width});
+    std::size_t i = 0;
+    for (const double v : Values)
+        a.As<double>()[i++] = v;
+    return a;
+}
+
+}  // namespace
+
+// Cell data with finite values only on the lid (a vector) or the rim (a scalar)
+// are surface and edge variables: NaN comes back off their surface or edge.
+TEST(XpltWriter, SurfaceAndEdgeVariablesRoundTrip) {
+    Mesh original = surface_edge_mesh();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<NDArray> traction, gap;
+    traction.push_back(xw_test_doubles({nan, nan, nan, nan, nan, nan}, 3));
+    traction.push_back(xw_test_doubles({1.0, 2.0, 3.0}, 3));
+    traction.push_back(xw_test_doubles({nan, nan, nan, nan, nan, nan}, 3));
+    gap.push_back(xw_test_doubles({nan, nan}));
+    gap.push_back(xw_test_doubles({nan}));
+    gap.push_back(xw_test_doubles({0.5, 0.25}));
+    original.AddCellData("traction", std::move(traction));
+    original.AddCellData("gap", std::move(gap));
+    const std::string out = temp_path(".xplt");
+    write_xplt(out, original);
+    const Mesh again = read_xplt(out);
+    ASSERT_EQ(again.NumCellBlocks(), 3u);
+    EXPECT_EQ(again.CellData("traction", 1).Shape(), (std::vector<std::size_t>{1, 3}));
+    EXPECT_EQ(detail::read_double(again.CellData("traction", 1), 2), 3.0);
+    EXPECT_TRUE(std::isnan(detail::read_double(again.CellData("traction", 0), 0)));
+    EXPECT_TRUE(std::isnan(detail::read_double(again.CellData("traction", 2), 1)));
+    EXPECT_EQ(detail::read_double(again.CellData("gap", 2), 0), 0.5);
+    EXPECT_EQ(detail::read_double(again.CellData("gap", 2), 1), 0.25);
+    EXPECT_TRUE(std::isnan(detail::read_double(again.CellData("gap", 1), 0)));
+    EXPECT_TRUE(std::isnan(detail::read_double(again.CellData("gap", 0), 1)));
+}
+
+// Compression stores each state as a zlib stream and is off by default.
+TEST(XpltWriter, CompressionIsOptIn) {
+    const Mesh original = surface_edge_mesh();
+    XpltWriteOptions packed;
+    packed.mCompress = true;
+    const std::string plain_path = temp_path(".xplt"), packed_path = temp_path(".xplt");
+    write_xplt(plain_path, original);
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    write_xplt(packed_path, original, packed);
+    const Mesh a = read_xplt(plain_path);
+    const Mesh b = read_xplt(packed_path);
+    EXPECT_EQ(a.NumCellBlocks(), b.NumCellBlocks());
+    EXPECT_EQ(a.NumPoints(), b.NumPoints());
+    const std::string series = temp_path(".xplt");
+    XpltSeriesWriter writer(series, packed);
+    writer.Write(0.25, original);
+    writer.Write(0.75, original);
+    writer.Finalize();
+    EXPECT_EQ(read_xplt_metadata(series).mTimeValues, (std::vector<double>{0.25, 0.75}));
+    // The header's compression field: plain files carry 0, packed ones 1.
+    const auto flag = [](const std::string& rPath) {
+        std::ifstream in(rPath, std::ios::binary);
+        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        return static_cast<int>(bytes[40]);
+    };
+    EXPECT_EQ(flag(plain_path), 0);
+    EXPECT_EQ(flag(packed_path), 1);
+#else
+    EXPECT_THROW(write_xplt(packed_path, original, packed), Unsupported);
+#endif
 }

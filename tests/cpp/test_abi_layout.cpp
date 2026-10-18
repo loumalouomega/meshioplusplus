@@ -76,6 +76,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/frd.hpp"
+#include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
@@ -251,6 +252,9 @@ MIO_ABI_LAYOUT(meshioplusplus::MdpaRawBlock, 96, 8);
 // above. Three POD fields, no pointer/std::string member, so it is 4-aligned
 // rather than the 8 most options structs here get.
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamWriteOptions, 12, 4);
+// `OpenFoamRegionGroup` (a `regionProperties` line) is a pure addition, pinned from the release
+// that introduces it: a `std::string` family and a `std::vector<std::string>` of regions.
+MIO_ABI_LAYOUT(meshioplusplus::OpenFoamRegionGroup, 56, 8);
 // `PatranResultFile` (v16.12.0) is a pure addition, pinned from the release
 // that introduces it: two `std::string`s (the data name and the file), passed
 // in a vector to the new `read_patran` overload.
@@ -464,6 +468,8 @@ static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
 MIO_ABI_LAYOUT(meshioplusplus::FrdReadOptions, 1, 1);
 // The CalculiX writer's option struct (v16.39.0, an addition, ABI unchanged): two `bool`s.
 MIO_ABI_LAYOUT(meshioplusplus::FrdWriteOptions, 2, 1);
+// The FEBio plot writer's option struct (v17.4.0, an addition, ABI unchanged): one `bool`.
+MIO_ABI_LAYOUT(meshioplusplus::XpltWriteOptions, 1, 1);
 
 // The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
 // and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a
@@ -571,6 +577,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::MeshMetadata>("MeshMetadata");
     report<meshioplusplus::OpenFoamInfo>("OpenFoamInfo");
     report<meshioplusplus::OpenFoamWriteOptions>("OpenFoamWriteOptions");
+    report<meshioplusplus::OpenFoamRegionGroup>("OpenFoamRegionGroup");
     report<meshioplusplus::PatranResultFile>("PatranResultFile");
     report<meshioplusplus::GmshInfo>("GmshInfo");
     report<meshioplusplus::NurbsPatch>("NurbsPatch");
@@ -597,6 +604,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::detail::CardField>("CardField");
     report<meshioplusplus::FrdReadOptions>("FrdReadOptions");
     report<meshioplusplus::FrdWriteOptions>("FrdWriteOptions");
+    report<meshioplusplus::XpltWriteOptions>("XpltWriteOptions");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

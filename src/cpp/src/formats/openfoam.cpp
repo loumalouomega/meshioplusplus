@@ -21,6 +21,7 @@
 #include <charconv>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -149,6 +150,14 @@ FoamFormat detect_format(std::string_view rRaw) {
                 if (bits)
                     fmt.mScalarBytes = bits / 8;
             }
+            // Only the widths the binary decoders implement: any other value would size a list
+            // by a width it is not decoded with (a zero width divides by zero in the extent check).
+            if ((fmt.mLabelBytes != 4 && fmt.mLabelBytes != 8) ||
+                (fmt.mScalarBytes != 4 && fmt.mScalarBytes != 8))
+                throw ReadError(
+                    "OpenFOAM: unsupported 'arch' widths (label and scalar must be 32 "
+                    "or 64 bits): " +
+                    arch);
         }
         if (s == "}")
             break;
@@ -722,6 +731,14 @@ struct RawPolyMesh {
     std::vector<std::int64_t> mOwner;
     std::vector<std::int64_t> mNeighbour;  ///< only the internal faces
     std::vector<Patch> mBoundary;
+    /// Decomposed cases only: per patch, per face, the processor (index into the processor list)
+    /// and the face's offset within that processor's copy of the patch -- where a field's patch
+    /// values live.
+    std::vector<std::vector<std::pair<std::size_t, std::int64_t>>> mBoundarySource;
+    /// Decomposed cases only: the decomposed case's global face id (the `faceProcAddressing`
+    /// number, minus one) -> this reconstruction's face index; -1 for a face not reconstructed
+    /// (a `processor` patch face).
+    std::vector<std::int64_t> mFaceOfGlobal;
 };
 
 /// Refuse a polyMesh whose lists disagree, before anything indexes one list
@@ -887,12 +904,14 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
     }
 
     std::vector<Face> internal_faces;
-    std::vector<std::int64_t> internal_owner, internal_neighbour;
+    std::vector<std::int64_t> internal_owner, internal_neighbour, internal_gids;
+    std::map<std::int64_t, std::vector<std::int64_t>> patch_gids;
     // Global patch id -> its (name, type) plus the member faces' node rings
     // and owner cells, in the order they are found.
     std::map<std::int64_t, Patch> patch_table;
     std::map<std::int64_t, std::vector<Face>> patch_faces;
     std::map<std::int64_t, std::vector<std::int64_t>> patch_owners;
+    std::map<std::int64_t, std::vector<std::pair<std::size_t, std::int64_t>>> patch_sources;
     std::size_t n_dropped_processor_faces = 0, n_dropped_unclaimed = 0;
 
     for (std::size_t g = 0; g < n_faces; ++g) {
@@ -924,6 +943,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
             internal_faces.push_back(std::move(gf));
             internal_owner.push_back(owner_cell);
             internal_neighbour.push_back(neigh_cell);
+            internal_gids.push_back(static_cast<std::int64_t>(g));
             continue;
         }
 
@@ -936,6 +956,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
                 internal_faces.push_back(std::move(gf));
                 internal_owner.push_back(owner_cell);
                 internal_neighbour.push_back(op.mCellAddr[static_cast<std::size_t>(local_neigh)]);
+                internal_gids.push_back(static_cast<std::int64_t>(g));
                 continue;
             }
         }
@@ -962,6 +983,10 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         }
         patch_faces[global_patch].push_back(std::move(gf));
         patch_owners[global_patch].push_back(owner_cell);
+        patch_gids[global_patch].push_back(static_cast<std::int64_t>(g));
+        patch_sources[global_patch].emplace_back(
+            static_cast<std::size_t>(owner_claim->mProc),
+            owner_claim->mLocalFace - op.mRaw.mBoundary[local_patch].mStartFace);
     }
     if (n_dropped_processor_faces > 0)
         log::info("OpenFOAM: reconstructed case drops {} inter-processor patch face(s)",
@@ -975,16 +1000,84 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
     out.mFaces = std::move(internal_faces);
     out.mOwner = internal_owner;
     out.mNeighbour = std::move(internal_neighbour);
+    out.mFaceOfGlobal.assign(n_faces, -1);
+    for (std::size_t i = 0; i < internal_gids.size(); ++i)
+        out.mFaceOfGlobal[static_cast<std::size_t>(internal_gids[i])] =
+            static_cast<std::int64_t>(i);
     for (auto& kv : patch_table) {
         kv.second.mStartFace = static_cast<std::int64_t>(out.mFaces.size());
+        for (std::size_t j = 0; j < patch_gids[kv.first].size(); ++j)
+            out.mFaceOfGlobal[static_cast<std::size_t>(patch_gids[kv.first][j])] =
+                kv.second.mStartFace + static_cast<std::int64_t>(j);
         for (Face& f : patch_faces[kv.first])
             out.mFaces.push_back(std::move(f));
         for (std::int64_t c : patch_owners[kv.first])
             out.mOwner.push_back(c);
         kv.second.mNFaces = static_cast<std::int64_t>(out.mFaces.size()) - kv.second.mStartFace;
         out.mBoundary.push_back(kv.second);
+        out.mBoundarySource.push_back(std::move(patch_sources[kv.first]));
     }
     return out;
+}
+
+/// One `cellZones`/`faceZones`/`pointZones` file; empty when the file is absent.
+std::vector<Zone> foam_read_zone_file(const fs::path& rPath, const char* pKey) {
+    if (!fs::exists(rPath))
+        return {};
+    const detail::FileSource source = read_whole(rPath.string());
+    const FoamFormat fmt = detect_format(source.View());
+    // strip_comments_and_header's comment-removal pass scans the whole body and is unsafe over
+    // raw id bytes -- see parse_zone_file_binary's own doc comment.
+    if (fmt.mBinary)
+        return parse_zone_file_binary(source.View(), pKey, fmt.mLabelBytes);
+    return parse_zone_file(strip_comments_and_header(source.View()), pKey);
+}
+
+/// A decomposed case's zones of one kind, back in the global numbering: each processor's
+/// `<file>` ids go through that processor's `<kind>ProcAddressing` (a face's, through the signed
+/// `faceProcAddressing` and then @p pFaceOfGlobal), and a zone's members from every processor are
+/// merged, sorted and made unique -- a face on a processor boundary is listed by both. Zones keep
+/// the order they first appear in. An id no addressing entry covers is dropped, as is a face that
+/// the reconstruction did not keep (a `processor` patch face).
+std::vector<Zone> foam_read_decomposed_zones(const fs::path& rCaseRoot,
+                                             const std::vector<std::size_t>& rProcIds,
+                                             const char* pFile, const char* pKey,
+                                             const char* pAddressing,
+                                             const std::vector<std::int64_t>* pFaceOfGlobal) {
+    std::vector<std::string> order;
+    std::map<std::string, std::set<std::int64_t>> merged;
+    for (const std::size_t proc : rProcIds) {
+        const fs::path poly =
+            rCaseRoot / ("processor" + std::to_string(proc)) / "constant" / "polyMesh";
+        const std::vector<Zone> zones = foam_read_zone_file(poly / pFile, pKey);
+        if (zones.empty())
+            continue;
+        const std::vector<std::int64_t> addr = read_int_list(poly / pAddressing);
+        for (const Zone& z : zones) {
+            if (!merged.count(z.mName))
+                order.push_back(z.mName);
+            std::set<std::int64_t>& out = merged[z.mName];
+            for (const std::int64_t local : z.mIds) {
+                if (local < 0 || static_cast<std::size_t>(local) >= addr.size())
+                    continue;
+                std::int64_t id = addr[static_cast<std::size_t>(local)];
+                if (pFaceOfGlobal) {
+                    const std::int64_t g = std::abs(id) - 1;
+                    if (g < 0 || static_cast<std::size_t>(g) >= pFaceOfGlobal->size())
+                        continue;
+                    id = (*pFaceOfGlobal)[static_cast<std::size_t>(g)];
+                    if (id < 0)
+                        continue;
+                }
+                out.insert(id);
+            }
+        }
+    }
+    std::vector<Zone> result;
+    for (const std::string& name : order)
+        result.push_back(
+            {name, std::vector<std::int64_t>(merged[name].begin(), merged[name].end())});
+    return result;
 }
 
 // ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
@@ -1143,6 +1236,364 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
                                       : read_le<double>(base + off);
         }
     return out;
+}
+
+/// One patch's `value` entry from a field's `boundaryField`: empty (`mFlat`) when the patch has no
+/// value of its own (`zeroGradient`, `empty`, `$internalField`, ...).
+struct FoamPatchField {
+    std::string mName;
+    FoamField mValue;
+};
+
+/**
+ * @brief Read the per-patch `value` entries of a field file's `boundaryField`.
+ *
+ * A small dictionary scanner rather than the line scan `internalField` gets: patch values are
+ * short lists OpenFOAM writes inline (`4(1 2 3 4)`), as `N{value}`, or as packed binary, and any
+ * other entry of a patch (`inletValue`, `uniformValue`, nested dictionaries) has to be skipped
+ * without mistaking its bytes or braces for structure. It never throws: a file it cannot follow
+ * ends the scan and the patches read up to there are returned.
+ */
+class FoamBoundaryScanner {
+public:
+    FoamBoundaryScanner(std::string_view Raw, const FoamFormat& rFormat, int Components)
+        : mRaw(Raw), mFormat(rFormat), mComponents(Components) {}
+
+    std::vector<FoamPatchField> Scan() {
+        std::vector<FoamPatchField> out;
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size())
+                break;
+            const std::string key = ReadToken();
+            if (key.empty()) {
+                mFailed = true;
+                break;
+            }
+            SkipSpace();
+            if (mPos < mRaw.size() && mRaw[mPos] == '{') {
+                if (key == "boundaryField")
+                    ScanPatches(out);
+                else
+                    ScanBody(1, nullptr);
+            } else {
+                SkipValue();
+            }
+        }
+        return out;
+    }
+
+private:
+    static constexpr int kMaxDepth = 32;
+
+    static bool IsSpace(char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; }
+    static bool IsStop(char c) {
+        return IsSpace(c) || c == ';' || c == '{' || c == '}' || c == '(' || c == ')';
+    }
+
+    void SkipSpace() {
+        while (mPos < mRaw.size()) {
+            if (IsSpace(mRaw[mPos])) {
+                ++mPos;
+            } else if (mRaw.compare(mPos, 2, "//") == 0) {
+                while (mPos < mRaw.size() && mRaw[mPos] != '\n')
+                    ++mPos;
+            } else if (mRaw.compare(mPos, 2, "/*") == 0) {
+                const std::size_t end = mRaw.find("*/", mPos + 2);
+                mPos = end == std::string_view::npos ? mRaw.size() : end + 2;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// A word or a quoted string (quotes dropped); empty at punctuation or the end.
+    std::string ReadToken() {
+        SkipSpace();
+        std::string tok;
+        if (mPos < mRaw.size() && mRaw[mPos] == '"') {
+            ++mPos;
+            while (mPos < mRaw.size() && mRaw[mPos] != '"') {
+                if (mRaw[mPos] == '\\' && mPos + 1 < mRaw.size())
+                    ++mPos;
+                tok += mRaw[mPos++];
+            }
+            if (mPos < mRaw.size())
+                ++mPos;
+            else
+                mFailed = true;
+            return tok;
+        }
+        while (mPos < mRaw.size() && !IsStop(mRaw[mPos]))
+            tok += mRaw[mPos++];
+        return tok;
+    }
+
+    /// Past a `( ... )` group (the current character is the `(`), parentheses balanced.
+    void SkipParens() {
+        int depth = 0;
+        while (mPos < mRaw.size()) {
+            const char c = mRaw[mPos];
+            if (c == '"') {
+                ReadToken();
+                continue;
+            }
+            ++mPos;
+            if (c == '(')
+                ++depth;
+            else if (c == ')' && --depth == 0)
+                return;
+        }
+        mFailed = true;
+    }
+
+    /// The entries of a dictionary, from its `{` to its `}`; @p pValue receives a `value` entry.
+    void ScanBody(int Depth, FoamField* pValue) {
+        if (Depth > kMaxDepth) {
+            mFailed = true;
+            return;
+        }
+        ++mPos;  // the '{'
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size()) {
+                mFailed = true;
+                return;
+            }
+            if (mRaw[mPos] == '}') {
+                ++mPos;
+                return;
+            }
+            const std::string key = ReadToken();
+            if (key.empty()) {
+                mFailed = true;
+                return;
+            }
+            SkipSpace();
+            if (mPos < mRaw.size() && mRaw[mPos] == '{')
+                ScanBody(Depth + 1, nullptr);
+            else if (pValue != nullptr && key == "value")
+                ReadValue(*pValue);
+            else
+                SkipValue();
+        }
+    }
+
+    void ScanPatches(std::vector<FoamPatchField>& rOut) {
+        ++mPos;  // the '{'
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size()) {
+                mFailed = true;
+                return;
+            }
+            if (mRaw[mPos] == '}') {
+                ++mPos;
+                return;
+            }
+            FoamPatchField pf;
+            pf.mName = ReadToken();
+            if (pf.mName.empty()) {
+                mFailed = true;
+                return;
+            }
+            SkipSpace();
+            if (mPos < mRaw.size() && mRaw[mPos] == '{') {
+                ScanBody(2, &pf.mValue);
+                if (!mFailed)
+                    rOut.push_back(std::move(pf));
+            } else {
+                SkipValue();
+            }
+        }
+    }
+
+    /// The rest of an entry, through its `;` (or up to a closing `}`).
+    void SkipValue() {
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size()) {
+                mFailed = true;
+                return;
+            }
+            const char c = mRaw[mPos];
+            if (c == ';') {
+                ++mPos;
+                return;
+            }
+            if (c == '}')
+                return;
+            if (c == '{') {
+                ScanBody(kMaxDepth, nullptr);  // an entry never holds a bare dictionary
+                return;
+            }
+            if (c == '(') {
+                SkipParens();
+                continue;
+            }
+            const std::string tok = ReadToken();
+            if (tok.empty()) {
+                mFailed = true;
+                return;
+            }
+            if (tok == "nonuniform")
+                ReadNonuniform(nullptr);
+        }
+    }
+
+    /// Entries per list element for a `List<T>` type name, -1 for a label, 0 when unknown.
+    static int TypeComponents(const std::string& rType) {
+        if (rType == "scalar" || rType == "sphericalTensor")
+            return 1;
+        if (rType == "vector")
+            return 3;
+        if (rType == "symmTensor")
+            return 6;
+        if (rType == "tensor")
+            return 9;
+        if (rType == "label")
+            return -1;
+        return 0;
+    }
+
+    /// Numbers of an ASCII list body, the opening `(` or `{` already consumed, through its
+    /// closing @p Close.
+    void ReadAsciiNumbers(char Close, std::vector<double>* pOut) {
+        int depth = 0;
+        while (mPos < mRaw.size()) {
+            SkipSpace();
+            if (mPos >= mRaw.size())
+                break;
+            const char c = mRaw[mPos];
+            if (c == Close && depth == 0) {
+                ++mPos;
+                return;
+            }
+            if (c == '(') {
+                ++depth;
+                ++mPos;
+            } else if (c == ')') {
+                if (--depth < 0)
+                    break;
+                ++mPos;
+            } else if (c == ';' || c == '{' || c == '}') {
+                break;
+            } else {
+                const std::size_t start = mPos;
+                while (mPos < mRaw.size() && !IsStop(mRaw[mPos]))
+                    ++mPos;
+                if (pOut != nullptr)
+                    pOut->push_back(detail::parse_double_prefix(mRaw.substr(start, mPos - start)));
+            }
+        }
+        mFailed = true;
+    }
+
+    /// After the `nonuniform` keyword: past the list; into @p pOut when it holds the field's own
+    /// type.
+    void ReadNonuniform(FoamField* pOut) {
+        std::string tok = ReadToken();
+        int comps = mComponents;  // `nonuniform 0()` names no type
+        if (tok.rfind("List<", 0) == 0) {
+            const std::size_t gt = tok.find('>');
+            comps = TypeComponents(tok.substr(5, gt == std::string::npos ? gt : gt - 5));
+            tok = ReadToken();
+        }
+        if (tok.empty() || tok.find_first_not_of("0123456789") != std::string::npos) {
+            mFailed = true;
+            return;
+        }
+        const std::int64_t count = detail::strtoll_token(tok);
+        SkipSpace();
+        const bool want = pOut != nullptr && comps == mComponents;
+        if (mPos < mRaw.size() && mRaw[mPos] == '{') {  // N{value}: one entry repeated
+            ++mPos;
+            std::vector<double> one;
+            ReadAsciiNumbers('}', &one);
+            if (!mFailed && want && one.size() == static_cast<std::size_t>(mComponents)) {
+                pOut->mUniform = true;
+                pOut->mCount = count;
+                pOut->mFlat = std::move(one);
+            }
+            return;
+        }
+        if (mPos >= mRaw.size() || mRaw[mPos] != '(') {
+            mFailed = true;
+            return;
+        }
+        ++mPos;
+        if (!mFormat.mBinary || count == 0) {
+            std::vector<double> flat;
+            ReadAsciiNumbers(')', want ? &flat : nullptr);
+            if (!mFailed && want) {
+                pOut->mUniform = false;
+                pOut->mCount = count;
+                pOut->mFlat = std::move(flat);
+            }
+            return;
+        }
+        if (comps == 0) {  // a binary list of a type this scanner cannot size
+            mFailed = true;
+            return;
+        }
+        const std::size_t entry = comps < 0 ? static_cast<std::size_t>(mFormat.mLabelBytes)
+                                            : static_cast<std::size_t>(comps) *
+                                                  static_cast<std::size_t>(mFormat.mScalarBytes);
+        if (static_cast<std::uint64_t>(count) > (mRaw.size() - mPos) / entry) {
+            mFailed = true;
+            return;
+        }
+        if (want) {
+            pOut->mUniform = false;
+            pOut->mCount = count;
+            pOut->mFlat.resize(static_cast<std::size_t>(count) * static_cast<std::size_t>(comps));
+            const char* base = mRaw.data() + mPos;
+            for (std::size_t i = 0; i < pOut->mFlat.size(); ++i)
+                pOut->mFlat[i] = mFormat.mScalarBytes == 4
+                                     ? static_cast<double>(read_le<float>(base + i * 4))
+                                     : read_le<double>(base + i * 8);
+        }
+        mPos += static_cast<std::size_t>(count) * entry;
+        if (mPos < mRaw.size() && mRaw[mPos] == ')')
+            ++mPos;
+        else
+            mFailed = true;
+    }
+
+    /// A patch's `value` entry, through its `;`.
+    void ReadValue(FoamField& rOut) {
+        const std::string tok = ReadToken();
+        if (tok == "uniform") {
+            SkipSpace();
+            std::vector<double> flat;
+            if (mComponents == 1) {
+                flat.push_back(detail::parse_double_prefix(ReadToken()));
+            } else if (mPos < mRaw.size() && mRaw[mPos] == '(') {
+                ++mPos;
+                ReadAsciiNumbers(')', &flat);
+            }
+            if (!mFailed && flat.size() == static_cast<std::size_t>(mComponents)) {
+                rOut.mUniform = true;
+                rOut.mFlat = std::move(flat);
+            }
+        } else if (tok == "nonuniform") {
+            ReadNonuniform(&rOut);
+        }
+        SkipValue();
+    }
+
+    std::string_view mRaw;
+    FoamFormat mFormat;
+    int mComponents;
+    std::size_t mPos = 0;
+    bool mFailed = false;
+};
+
+/// The per-patch values of a field file's `boundaryField` (see `FoamBoundaryScanner`).
+std::vector<FoamPatchField> foam_read_boundary_field(const fs::path& rPath, int Components) {
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
+    return FoamBoundaryScanner(raw, detect_format(raw), Components).Scan();
 }
 
 /// Parse a time directory's name as an OpenFOAM time value, requiring the
@@ -1305,7 +1756,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     }
     if (poly.empty()) {
         // Regions are the `constant/<name>/polyMesh` directories; `regionProperties` (the solver's
-        // region types) is not needed to find them, and this writer does not make one.
+        // region families) is not needed to find them.
         std::vector<std::string> regions;
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(case_root / "constant", ec)) {
@@ -1313,6 +1764,15 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                 regions.push_back(entry.path().filename().string());
         }
         if (!regions.empty() || fs::exists(case_root / "constant" / "regionProperties")) {
+            if (regions.empty()) {
+                // regionProperties without region directories: name the regions it lists
+                try {
+                    for (const OpenFoamRegionGroup& group :
+                         read_openfoam_region_properties(case_root.string()))
+                        regions.insert(regions.end(), group.mRegions.begin(), group.mRegions.end());
+                } catch (const ReadError&) {
+                }
+            }
             std::sort(regions.begin(), regions.end());
             std::string joined;
             for (std::size_t i = 0; i < regions.size(); ++i)
@@ -1352,6 +1812,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     std::vector<std::int64_t> owner = std::move(raw.mOwner);
     std::vector<std::int64_t> neighbour = std::move(raw.mNeighbour);
     std::vector<Patch> boundary = std::move(raw.mBoundary);
+    const std::vector<std::int64_t> raw_face_of_global = std::move(raw.mFaceOfGlobal);
 
     std::int64_t owner_max = -1, neigh_max = -1;
     for (std::int64_t v : owner)
@@ -1549,22 +2010,16 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
             return -1;
         };
 
+        // A decomposed case keeps its zones per processor, in processor-local ids.
         auto read_zone_file = [&](const char* pFile, const char* pKey) {
-            std::vector<Zone> zones;
-            const fs::path zone_path = poly / pFile;
-            if (!fs::exists(zone_path))
-                return zones;
-            const detail::FileSource source = read_whole(zone_path.string());
-            const FoamFormat zone_fmt = detect_format(source.View());
-            if (zone_fmt.mBinary) {
-                // strip_comments_and_header's comment-removal pass scans the
-                // whole body and is unsafe over raw id bytes -- see
-                // parse_zone_file_binary's own doc comment.
-                zones = parse_zone_file_binary(source.View(), pKey, zone_fmt.mLabelBytes);
-            } else {
-                zones = parse_zone_file(strip_comments_and_header(source.View()), pKey);
-            }
-            return zones;
+            if (!decomposed)
+                return foam_read_zone_file(poly / pFile, pKey);
+            const std::string file = pFile;
+            return foam_read_decomposed_zones(case_root, proc_ids, pFile, pKey,
+                                              file == "cellZones"    ? "cellProcAddressing"
+                                              : file == "pointZones" ? "pointProcAddressing"
+                                                                     : "faceProcAddressing",
+                                              file == "faceZones" ? &raw_face_of_global : nullptr);
         };
 
         for (const Zone& z : read_zone_file("cellZones", "cellLabels")) {
@@ -1631,16 +2086,32 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     std::map<int, std::vector<std::int64_t>> tagsize;
     std::vector<Face> poly_faces;
     std::vector<std::int64_t> poly_tags;
+    // Where each boundary-file face went: its vertex count (which names its block) and its row
+    // in that block, so a field's per-patch values can be attached to the right cell.
+    struct BoundaryFaceDest {
+        std::size_t mSize = 0;
+        // Not `npos`: MSVC rejects a local class whose initializer names a local of the
+        // enclosing function (C2672 on `std::construct_at`).
+        std::size_t mRow = static_cast<std::size_t>(-1);
+    };
+    std::vector<std::vector<BoundaryFaceDest>> patch_dest(boundary.size());
+    std::map<std::size_t, std::size_t> dest_rows;  // vertex count -> rows handed out so far
     for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx) {
         std::int64_t fam = -(static_cast<std::int64_t>(pidx) + 1);
         rInfo.mCellTags[fam] = {boundary[pidx].mName};
         if (!boundary[pidx].mType.empty())
             rInfo.mPatchTypes[fam] = boundary[pidx].mType;
+        if (boundary[pidx].mNFaces > 0)
+            patch_dest[pidx].resize(
+                std::min(static_cast<std::size_t>(boundary[pidx].mNFaces), faces.size()));
         for (std::int64_t fid = boundary[pidx].mStartFace;
              fid < boundary[pidx].mStartFace + boundary[pidx].mNFaces; ++fid) {
             if (fid < 0 || static_cast<std::size_t>(fid) >= faces.size())
                 continue;
             const Face& f = faces[static_cast<std::size_t>(fid)];
+            const auto offset = static_cast<std::size_t>(fid - boundary[pidx].mStartFace);
+            if (offset < patch_dest[pidx].size())
+                patch_dest[pidx][offset] = {f.size(), dest_rows[f.size()]++};
             if (f.size() == 3) {
                 bysize[3].push_back(f);
                 tagsize[3].push_back(fam);
@@ -1687,6 +2158,18 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
 
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
+
+    // Boundary-face block of each vertex count, and each patch by name (first wins).
+    std::map<std::size_t, std::size_t> size_block;
+    for (std::size_t b = vol_order.size() + poly_order.size(); b < mesh.NumCellBlocks(); ++b) {
+        const std::string type(mesh.Cells(b).Type());
+        size_block[type == "triangle" ? 3
+                   : type == "quad"   ? 4
+                                      : static_cast<std::size_t>(std::atoll(type.c_str() + 7))] = b;
+    }
+    std::unordered_map<std::string, std::size_t> patch_by_name;
+    for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx)
+        patch_by_name.emplace(boundary[pidx].mName, pidx);
 
     // ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
     if (rOptions.WantsAnyData()) {
@@ -1785,6 +2268,76 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                                 ? values.mFlat[static_cast<std::size_t>(c)]
                                 : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
                                                static_cast<std::size_t>(c)];
+                }
+
+                // Boundary-face blocks: the `value` of each patch's `boundaryField` entry (a patch
+                // without one, or a processor patch, keeps the NaN). A decomposed case reads each
+                // processor's copy of the patch face by face.
+                auto set_face = [&](std::size_t pidx, std::size_t face, const FoamField& rValue,
+                                    std::size_t index) {
+                    const BoundaryFaceDest& d = patch_dest[pidx][face];
+                    if (d.mRow == npos)
+                        return;
+                    double* dst = blocks[size_block.at(d.mSize)].As<double>();
+                    for (std::size_t c = 0; c < ncomp; ++c)
+                        dst[d.mRow * ncomp + c] =
+                            rValue.mUniform ? rValue.mFlat[c] : rValue.mFlat[index * ncomp + c];
+                };
+                auto usable = [&](const FoamField& rValue) {
+                    return rValue.mUniform ? rValue.mFlat.size() == ncomp
+                                           : rValue.mFlat.size() ==
+                                                 static_cast<std::size_t>(rValue.mCount) * ncomp;
+                };
+                if (!patch_dest.empty() && !size_block.empty()) {
+                    if (!decomposed) {
+                        for (const FoamPatchField& pf :
+                             foam_read_boundary_field(field_path, fc.mComponents)) {
+                            const auto it = patch_by_name.find(pf.mName);
+                            if (it == patch_by_name.end() || pf.mValue.mFlat.empty() ||
+                                !usable(pf.mValue))
+                                continue;
+                            const std::size_t pidx = it->second;
+                            if (!pf.mValue.mUniform && pf.mValue.mCount != boundary[pidx].mNFaces) {
+                                log::warn(
+                                    "OpenFOAM: field '{}' patch '{}' has {} value(s), expected {} "
+                                    "face(s); skipped",
+                                    field_name, pf.mName, pf.mValue.mCount, boundary[pidx].mNFaces);
+                                continue;
+                            }
+                            for (std::size_t j = 0; j < patch_dest[pidx].size(); ++j)
+                                set_face(pidx, j, pf.mValue, j);
+                        }
+                    } else {
+                        std::vector<std::vector<FoamPatchField>> per_proc(proc_ids.size());
+                        for (std::size_t k = 0; k < proc_ids.size(); ++k) {
+                            const fs::path file = case_root /
+                                                  ("processor" + std::to_string(proc_ids[k])) /
+                                                  time_dirs[step].mName / field_name;
+                            if (fs::exists(file))
+                                per_proc[k] = foam_read_boundary_field(file, fc.mComponents);
+                        }
+                        for (std::size_t pidx = 0;
+                             pidx < boundary.size() && pidx < raw.mBoundarySource.size(); ++pidx) {
+                            std::vector<const FoamPatchField*> local(proc_ids.size(), nullptr);
+                            for (std::size_t k = 0; k < proc_ids.size(); ++k)
+                                for (const FoamPatchField& pf : per_proc[k])
+                                    if (pf.mName == boundary[pidx].mName && usable(pf.mValue) &&
+                                        !pf.mValue.mFlat.empty()) {
+                                        local[k] = &pf;
+                                        break;
+                                    }
+                            const auto& sources = raw.mBoundarySource[pidx];
+                            for (std::size_t j = 0;
+                                 j < sources.size() && j < patch_dest[pidx].size(); ++j) {
+                                const FoamPatchField* pf = local[sources[j].first];
+                                const std::int64_t at = sources[j].second;
+                                if (pf == nullptr || at < 0 ||
+                                    (!pf->mValue.mUniform && at >= pf->mValue.mCount))
+                                    continue;
+                                set_face(pidx, j, pf->mValue, static_cast<std::size_t>(at));
+                            }
+                        }
+                    }
                 }
                 mesh.AddCellData(field_name, std::move(blocks));
             }
@@ -1939,6 +2492,9 @@ void foam_write_binary_scalar(std::ostream& rOs, double v, int ScalarBits) {
  */
 struct FoamPatchAssignment {
     std::vector<std::int64_t> mFacePatch;
+    /// per face, the global (block-major) index of the boundary-face cell that claimed it, or -1
+    /// -- where a patch face's cell-data values come from
+    std::vector<std::int64_t> mFaceSource;
     std::vector<FoamPatchOut> mPatches;
     std::int64_t mNumOrphan = 0;          ///< 2D cell matching no face at all
     std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
@@ -1948,6 +2504,8 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
                                         const OpenFoamInfo& rInfo) {
     FoamPatchAssignment out;
     out.mFacePatch.assign(rFaces.NumFaces(), -1);
+    out.mFaceSource.assign(rFaces.NumFaces(), -1);
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
 
     // Family ids in the reader's own order (ascending -fam == ascending patch
     // index), so an OpenFOAM round trip preserves the boundary file's order.
@@ -2025,13 +2583,20 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
             }
             if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
                 continue;  // first claim wins
+            // A claim by a cell the patch table cannot place (no tag) still carries its values
+            // to `defaultFaces`; a tagged claim below replaces it.
+            std::int64_t& rSource = out.mFaceSource[static_cast<std::size_t>(fid)];
+            if (rSource < 0)
+                rSource = detail::block_row_to_global(bases, block, static_cast<std::int64_t>(i));
             std::int64_t fam = 0;
             if (tag_values && i < tags->Shape()[0])
                 fam = (*tag_values)[i];
             const auto it = fam_to_patch.find(fam);
-            if (fam < 0 && it != fam_to_patch.end())
+            if (fam < 0 && it != fam_to_patch.end()) {
                 out.mFacePatch[static_cast<std::size_t>(fid)] =
                     static_cast<std::int64_t>(it->second);
+                rSource = detail::block_row_to_global(bases, block, static_cast<std::int64_t>(i));
+            }
         }
     }
 
@@ -2385,6 +2950,12 @@ struct FoamFieldOut {
     std::size_t mComponents;
     bool mIsPoint;
     std::vector<double> mValues;  // entries x components
+    /// A boundary patch's face values, taken from the boundary-face cell blocks.
+    struct PatchValues {
+        std::size_t mPatch;           ///< index into the written patch table
+        std::vector<double> mValues;  ///< the patch's faces in written order x components
+    };
+    std::vector<PatchValues> mPatches;  ///< only patches whose every face carries a finite value
 };
 
 const char* foam_field_class_name(std::size_t Components, bool IsPoint, const char** pListType) {
@@ -2406,11 +2977,22 @@ const char* foam_field_class_name(std::size_t Components, bool IsPoint, const ch
     }
 }
 
+/// Patch types whose field patches are fixed by OpenFOAM (`empty`, `wedge`, `symmetry`,
+/// `symmetryPlane`): a `calculated` entry with values there is refused, so they get none.
+bool foam_is_constraint_patch(const std::string& rType) {
+    return rType == "empty" || rType == "wedge" || rType == "symmetry" || rType == "symmetryPlane";
+}
+
 /// `point_data` and `cell_data` as OpenFOAM fields, the inverse of the reader: volume cell data
-/// in OpenFOAM's compact cell order (a block of boundary faces has no cell to carry a value),
-/// point data in point order. Arrays with no OpenFOAM field class (component counts other than
-/// 1/3/6/9, vectors-only on points) are skipped with a warning.
-std::vector<FoamFieldOut> foam_collect_fields(const Mesh& rMesh, const detail::GlobalFaces& rFaces) {
+/// in OpenFOAM's compact cell order, point data in point order. The values of the
+/// boundary-face cell blocks become per-patch `boundaryField` values, for every patch whose
+/// faces all carry a finite value (so the NaN the reader fills a field without patch values
+/// with writes nothing) and that is not a constraint patch. Arrays with no OpenFOAM field
+/// class (component counts other than 1/3/6/9, vectors-only on points) are skipped with a
+/// warning.
+std::vector<FoamFieldOut> foam_collect_fields(const Mesh& rMesh, const detail::GlobalFaces& rFaces,
+                                              const FoamFaceOrder& rOrder,
+                                              const FoamPatchAssignment& rAssign) {
     std::vector<FoamFieldOut> out;
     auto usable_name = [](const std::string& rName) {
         return !rName.empty() && rName != "cell_tags" &&
@@ -2463,14 +3045,72 @@ std::vector<FoamFieldOut> foam_collect_fields(const Mesh& rMesh, const detail::G
             for (std::size_t c = 0; c < nc; ++c)
                 f.mValues[cell * nc + c] = views[block][row * nc + c];
         }
+        for (std::size_t pi = 0; pi < rOrder.mPatches.size(); ++pi) {
+            const FoamPatchOut& patch = rOrder.mPatches[pi];
+            if (patch.mNFaces <= 0 || foam_is_constraint_patch(patch.mType))
+                continue;
+            FoamFieldOut::PatchValues pv{pi, {}};
+            pv.mValues.reserve(static_cast<std::size_t>(patch.mNFaces) * nc);
+            bool complete = true;
+            for (std::int64_t k = 0; k < patch.mNFaces && complete; ++k) {
+                const auto gf = static_cast<std::size_t>(
+                    rOrder.mNewToOld[static_cast<std::size_t>(patch.mStartFace + k)]);
+                const std::int64_t source =
+                    gf < rAssign.mFaceSource.size() ? rAssign.mFaceSource[gf] : -1;
+                if (source < 0) {
+                    complete = false;
+                    break;
+                }
+                const auto [block, row] = detail::global_to_block_row(bases, source);
+                for (std::size_t c = 0; c < nc; ++c) {
+                    const double v = views[block][row * nc + c];
+                    if (!std::isfinite(v))
+                        complete = false;
+                    pv.mValues.push_back(v);
+                }
+            }
+            if (complete)
+                f.mPatches.push_back(std::move(pv));
+        }
         out.push_back(std::move(f));
     }
     return out;
 }
 
 /// Write fields into `<rDir>` (a time directory); `rLocation` is the header's `location`.
+/// A `nonuniform List<T>` value, from the type keyword to the closing `)` plus @p pClose: the
+/// count on a line of its own, then the entries (binary: packed scalars, ASCII: one per line).
+void foam_write_value_list(std::ostream& rOs, const FoamFieldOut& rField,
+                           const std::vector<double>& rValues, const OpenFoamWriteOptions& rOpts,
+                           const char* pClose) {
+    const std::size_t entries = rValues.size() / rField.mComponents;
+    rOs << "nonuniform List<" << rField.mListType << ">\n" << entries << "\n(";
+    if (rOpts.mBinary) {
+        for (const double v : rValues)
+            foam_write_binary_scalar(rOs, v, rOpts.mScalarBits);
+        rOs << ")" << pClose;
+        return;
+    }
+    rOs << "\n";
+    const detail::CNumber num;
+    std::string buf;
+    for (std::size_t i = 0; i < entries; ++i) {
+        if (rField.mComponents > 1)
+            buf += '(';
+        for (std::size_t c = 0; c < rField.mComponents; ++c) {
+            if (c)
+                buf += ' ';
+            num.Append(buf, "%.16g", rValues[i * rField.mComponents + c]);
+        }
+        buf += rField.mComponents > 1 ? ")\n" : "\n";
+    }
+    rOs << buf << ")" << pClose;
+}
+
 void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
-                      const std::vector<FoamFieldOut>& rFields, const OpenFoamWriteOptions& rOpts) {
+                      const std::vector<FoamFieldOut>& rFields,
+                      const std::vector<FoamPatchOut>& rPatches,
+                      const OpenFoamWriteOptions& rOpts) {
     if (rFields.empty())
         return;
     const std::vector<FoamFieldOut>& out = rFields;
@@ -2485,31 +3125,19 @@ void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
         auto f = foam_open(dir / field.mName);
         foam_write_header(f, field.mClass, field.mName, rOpts, location.c_str());
         f << "dimensions      [0 0 0 0 0 0 0];\n\n";
-        const std::size_t entries = field.mValues.size() / field.mComponents;
-        f << "internalField   nonuniform List<" << field.mListType << ">\n" << entries << "\n(";
-        if (rOpts.mBinary) {
-            for (const double v : field.mValues)
-                foam_write_binary_scalar(f, v, rOpts.mScalarBits);
-            f << ")\n;\n";
-        } else {
-            f << "\n";
-            const detail::CNumber num;
-            std::string buf;
-            for (std::size_t i = 0; i < entries; ++i) {
-                if (field.mComponents > 1)
-                    buf += '(';
-                for (std::size_t c = 0; c < field.mComponents; ++c) {
-                    if (c)
-                        buf += ' ';
-                    num.Append(buf, "%.16g", field.mValues[i * field.mComponents + c]);
-                }
-                buf += field.mComponents > 1 ? ")\n" : "\n";
-            }
-            f << buf << ")\n;\n";
+        f << "internalField   ";
+        foam_write_value_list(f, field, field.mValues, rOpts, "\n;\n");
+        // Patches whose boundary-face blocks carry values get them as explicit entries; a
+        // catch-all patch value keeps the case loadable for every other patch, and a solver
+        // replaces these with its real conditions.
+        f << "\nboundaryField\n{\n";
+        for (const FoamFieldOut::PatchValues& pv : field.mPatches) {
+            f << "    " << rPatches[pv.mPatch].mName
+              << "\n    {\n        type            calculated;\n        value           ";
+            foam_write_value_list(f, field, pv.mValues, rOpts, "\n        ;\n");
+            f << "    }\n";
         }
-        // A catch-all patch value keeps the case loadable; the reader takes only
-        // internalField, and a solver replaces these with its real conditions.
-        f << "\nboundaryField\n{\n    \".*\"\n    {\n        type            calculated;\n"
+        f << "    \".*\"\n    {\n        type            calculated;\n"
              "        value           uniform ";
         if (field.mComponents == 1) {
             f << "0";
@@ -2523,13 +3151,14 @@ void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
     }
 }
 
-
 void foam_write_fields(const fs::path& rCaseRoot, const Mesh& rMesh,
-                       const detail::GlobalFaces& rFaces, const OpenFoamWriteOptions& rOpts,
+                       const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
+                       const FoamPatchAssignment& rAssign, const OpenFoamWriteOptions& rOpts,
                        const std::string& rTime = "0", const std::string& rRegion = {}) {
-    const std::vector<FoamFieldOut> out = foam_collect_fields(rMesh, rFaces);
+    const std::vector<FoamFieldOut> out = foam_collect_fields(rMesh, rFaces, rOrder, rAssign);
     const fs::path dir = rRegion.empty() ? rCaseRoot / rTime : rCaseRoot / rTime / rRegion;
-    foam_emit_fields(dir, rRegion.empty() ? rTime : rTime + "/" + rRegion, out, rOpts);
+    foam_emit_fields(dir, rRegion.empty() ? rTime : rTime + "/" + rRegion, out, rOrder.mPatches,
+                     rOpts);
 }
 
 }  // namespace
@@ -2574,6 +3203,12 @@ struct FoamLocalFace {
     bool mFlipped = false;
 };
 
+/// The zones of a mesh in the serial case's numbering (compact cell ids, point ids, written face
+/// ids), which a decomposed write splits per processor.
+struct FoamZonesOut {
+    std::vector<FoamZoneOut> mCell, mPoint, mFace;
+};
+
 void foam_emit_label_list(const fs::path& rFile, const char* pObject,
                           const std::vector<std::int64_t>& rValues,
                           const OpenFoamWriteOptions& rOpts) {
@@ -2598,8 +3233,9 @@ void foam_emit_label_list(const fs::path& rFile, const char* pObject,
 /// its share of the fields in `processorN/<time>/`.
 void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                            const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
-                           const OpenFoamWriteOptions& rOpts, const std::vector<std::int64_t>& rParts,
-                           const std::string& rTime) {
+                           const FoamPatchAssignment& rAssign, const OpenFoamWriteOptions& rOpts,
+                           const std::vector<std::int64_t>& rParts, const std::string& rTime,
+                           const FoamZonesOut& rZones) {
     const fs::path given(rPath);
     const fs::path root = given.extension() == ".foam" ? given.parent_path() : given;
     if (fs::exists(root / "constant" / "polyMesh"))
@@ -2625,7 +3261,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         for (std::int64_t k = 0; k < rOrder.mPatches[pi].mNFaces; ++k)
             face_patch[static_cast<std::size_t>(rOrder.mPatches[pi].mStartFace + k)] =
                 static_cast<std::int64_t>(pi);
-    const std::vector<FoamFieldOut> fields = foam_collect_fields(rMesh, rFaces);
+    const std::vector<FoamFieldOut> fields = foam_collect_fields(rMesh, rFaces, rOrder, rAssign);
     const NDArray& pts = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
 
@@ -2793,6 +3429,45 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         foam_emit_label_list(poly / "boundaryProcAddressing", "boundaryProcAddressing",
                              boundary_addr, rOpts);
 
+        // This processor's zones, as decomposePar writes them: every zone on every processor
+        // (an empty list where it has no member), with processor-local ids. A face on a
+        // processor boundary is in both processors' zones.
+        {
+            std::vector<std::int64_t> face_local(nfaces, -1);
+            for (std::size_t li = 0; li < all.size(); ++li)
+                face_local[static_cast<std::size_t>(all[li].mSerial)] =
+                    static_cast<std::int64_t>(li);
+            auto localize = [&](const std::vector<FoamZoneOut>& rGlobal,
+                                const std::vector<std::int64_t>& rMap) {
+                std::vector<FoamZoneOut> local;
+                for (const auto& [name, ids] : rGlobal) {
+                    FoamZoneOut z{name, {}};
+                    for (const std::int64_t g : ids) {
+                        const std::int64_t l = rMap[static_cast<std::size_t>(g)];
+                        if (l >= 0)
+                            z.second.push_back(l);
+                    }
+                    local.push_back(std::move(z));
+                }
+                return local;
+            };
+            auto emit = [&](const char* pFile, const std::vector<FoamZoneOut>& rLocal,
+                            const char* pClass, const char* pType, const char* pKey) {
+                if (rLocal.empty()) {
+                    std::error_code rc;
+                    fs::remove(poly / pFile, rc);
+                    return;
+                }
+                foam_write_zone_file(poly / pFile, pClass, pFile, pType, pKey, rLocal, rOpts);
+            };
+            emit("cellZones", localize(rZones.mCell, cell_local), "cellZoneList", "cellZone",
+                 "cellLabels");
+            emit("pointZones", localize(rZones.mPoint, point_local), "pointZoneList", "pointZone",
+                 "pointLabels");
+            emit("faceZones", localize(rZones.mFace, face_local), "faceZoneList", "faceZone",
+                 "faceLabels");
+        }
+
         // this processor's share of the fields
         std::vector<FoamFieldOut> local;
         for (const FoamFieldOut& field : fields) {
@@ -2803,9 +3478,23 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                 for (std::size_t c = 0; c < field.mComponents; ++c)
                     part.mValues.push_back(
                         field.mValues[static_cast<std::size_t>(g) * field.mComponents + c]);
+            // A processor keeps the values of the faces of each original patch it holds; the
+            // `processor` patches that follow them (index >= the original count) get none.
+            for (const FoamFieldOut::PatchValues& pv : field.mPatches) {
+                if (by_patch[pv.mPatch].empty())
+                    continue;
+                FoamFieldOut::PatchValues lpv{pv.mPatch, {}};
+                for (const FoamLocalFace& lf : by_patch[pv.mPatch]) {
+                    const auto at = static_cast<std::size_t>(lf.mSerial -
+                                                             rOrder.mPatches[pv.mPatch].mStartFace);
+                    for (std::size_t c = 0; c < field.mComponents; ++c)
+                        lpv.mValues.push_back(pv.mValues[at * field.mComponents + c]);
+                }
+                part.mPatches.push_back(std::move(lpv));
+            }
             local.push_back(std::move(part));
         }
-        foam_emit_fields(pdir / rTime, rTime, local, rOpts);
+        foam_emit_fields(pdir / rTime, rTime, local, patches, rOpts);
     }
     log::info("Wrote {} processor directories under {}", proc_set.size(), root.string());
 }
@@ -2826,9 +3515,17 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
     const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
 
     if (Mode == FoamWriteMode::FieldsOnly) {
+        // The mesh is already on disk; its patch table is rebuilt (quietly: the first step
+        // reported any dropped cell) only to know which patch each boundary face went to.
+        FoamPatchAssignment assign;
+        FoamFaceOrder order;
+        if (!faces.mNonCellBlocks.empty() && faces.NumCells() > 0) {
+            assign = foam_assign_patches(rMesh, faces, rInfo);
+            order = foam_order_faces(faces, assign);
+        }
         const fs::path only = foam_region_polymesh_dir(fs::path(rPath), rTarget.mRegion);
-        foam_write_fields(foam_case_root(only, rTarget.mRegion), rMesh, faces, rOpts, rTarget.mTime,
-                          rTarget.mRegion);
+        foam_write_fields(foam_case_root(only, rTarget.mRegion), rMesh, faces, order, assign, rOpts,
+                          rTarget.mTime, rTarget.mRegion);
         return;
     }
 
@@ -2886,7 +3583,18 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         throw WriteError("OpenFOAM: internal error, the written face order violates " + bad);
 
     if (Mode == FoamWriteMode::Decomposed) {
-        foam_write_decomposed(rPath, rMesh, faces, order, rOpts, *rTarget.mParts, rTarget.mTime);
+        std::unordered_map<std::int64_t, std::int64_t> global_to_compact;
+        for (std::size_t c = 0; c < faces.mCellToGlobal.size(); ++c)
+            global_to_compact[faces.mCellToGlobal[c]] = static_cast<std::int64_t>(c);
+        std::vector<std::int64_t> old_to_new(faces.NumFaces());
+        for (std::size_t i = 0; i < order.mNewToOld.size(); ++i)
+            old_to_new[static_cast<std::size_t>(order.mNewToOld[i])] = static_cast<std::int64_t>(i);
+        FoamZonesOut zones;
+        zones.mCell = foam_collect_cell_zones(rMesh, global_to_compact);
+        zones.mPoint = foam_collect_point_zones(rMesh);
+        zones.mFace = foam_collect_face_zones(rMesh, faces, global_to_compact, old_to_new);
+        foam_write_decomposed(rPath, rMesh, faces, order, assign, rOpts, *rTarget.mParts,
+                              rTarget.mTime, zones);
         return;
     }
 
@@ -3071,8 +3779,8 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
                         "faceZoneList", "faceZone", "faceLabels");
     }
 
-    foam_write_fields(foam_case_root(poly, rTarget.mRegion), rMesh, faces, rOpts, rTarget.mTime,
-                      rTarget.mRegion);
+    foam_write_fields(foam_case_root(poly, rTarget.mRegion), rMesh, faces, order, assign, rOpts,
+                      rTarget.mTime, rTarget.mRegion);
 
     log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
               faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());
@@ -3122,6 +3830,134 @@ void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
     FoamTarget target;
     target.mParts = &parts;
     foam_write_impl(rPath, rMesh, rInfo, rOptions, target, FoamWriteMode::Decomposed);
+}
+
+namespace {
+
+/// `constant/regionProperties` of the case @p rPath names (a `.foam` file or a case directory).
+fs::path foam_region_properties_path(const std::string& rPath) {
+    const fs::path given(rPath);
+    const fs::path root = given.extension() == ".foam" ? given.parent_path() : given;
+    return root / "constant" / "regionProperties";
+}
+
+/// A name that can sit in a `regionProperties` list unquoted: one OpenFOAM word.
+bool foam_region_properties_word_ok(const std::string& rWord) {
+    if (rWord.empty())
+        return false;
+    for (const char c : rWord)
+        if (static_cast<unsigned char>(c) <= ' ' || static_cast<unsigned char>(c) >= 127 ||
+            std::strchr("(){};\"'#$/\\", c) != nullptr)
+            return false;
+    return true;
+}
+
+/// The words of @p rText, with `(`, `)` and `;` as words of their own.
+std::vector<std::string> foam_region_properties_tokens(const std::string& rText) {
+    std::vector<std::string> tokens;
+    std::string word;
+    const auto flush = [&] {
+        if (!word.empty())
+            tokens.push_back(std::move(word));
+        word.clear();
+    };
+    for (const char c : rText) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            flush();
+        } else if (c == '(' || c == ')' || c == ';') {
+            flush();
+            tokens.emplace_back(1, c);
+        } else {
+            word.push_back(c);
+        }
+    }
+    flush();
+    return tokens;
+}
+
+}  // namespace
+
+void write_openfoam_region_properties(const std::string& rPath,
+                                      const std::vector<OpenFoamRegionGroup>& rGroups) {
+    if (rGroups.empty())
+        throw WriteError("OpenFOAM: regionProperties needs at least one family of regions");
+    if (fs::path(rPath).filename() == "polyMesh")
+        throw WriteError(
+            "OpenFOAM: regionProperties belongs to a case (a .foam file or a case directory), not "
+            "a polyMesh directory");
+    std::set<std::string> families, regions;
+    for (const OpenFoamRegionGroup& group : rGroups) {
+        if (!foam_region_properties_word_ok(group.mFamily))
+            throw WriteError("OpenFOAM: invalid regionProperties family name '" + group.mFamily +
+                             "'");
+        if (!families.insert(group.mFamily).second)
+            throw WriteError("OpenFOAM: regionProperties lists the family '" + group.mFamily +
+                             "' twice");
+        if (group.mRegions.empty())
+            throw WriteError("OpenFOAM: regionProperties family '" + group.mFamily +
+                             "' has no region");
+        for (const std::string& region : group.mRegions) {
+            if (!foam_region_properties_word_ok(region) || region[0] == '.')
+                throw WriteError("OpenFOAM: invalid region name '" + region + "'");
+            if (!regions.insert(region).second)
+                throw WriteError("OpenFOAM: regionProperties lists the region '" + region +
+                                 "' twice");
+        }
+    }
+    const fs::path file = foam_region_properties_path(rPath);
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    if (ec && !fs::is_directory(file.parent_path()))
+        throw WriteError("OpenFOAM: could not create directory " + file.parent_path().string() +
+                         ": " + ec.message());
+    auto f = foam_open(file);
+    foam_write_header(f, "dictionary", "regionProperties", OpenFoamWriteOptions{}, "constant");
+    f << "regions\n(\n";
+    for (const OpenFoamRegionGroup& group : rGroups) {
+        f << "    " << group.mFamily << " (";
+        for (std::size_t i = 0; i < group.mRegions.size(); ++i)
+            f << (i ? " " : "") << group.mRegions[i];
+        f << ")\n";
+    }
+    f << ");\n";
+}
+
+std::vector<OpenFoamRegionGroup> read_openfoam_region_properties(const std::string& rPath) {
+    const fs::path file = foam_region_properties_path(rPath);
+    if (!fs::exists(file))
+        throw ReadError("OpenFOAM: no " + file.string());
+    const std::vector<std::string> tokens =
+        foam_region_properties_tokens(strip_comments_and_header(read_whole(file.string()).View()));
+    const auto bad = [&](const std::string& rWhy) {
+        return ReadError("OpenFOAM: " + file.string() + ": " + rWhy);
+    };
+    std::size_t i = 0;
+    while (i < tokens.size() && tokens[i] != "regions")
+        ++i;
+    if (i + 1 >= tokens.size() || tokens[i + 1] != "(")
+        throw bad("no `regions ( family (names) ... )` list");
+    std::vector<OpenFoamRegionGroup> groups;
+    for (i += 2;;) {
+        if (i >= tokens.size())
+            throw bad("the `regions` list is not closed");
+        if (tokens[i] == ")")
+            break;
+        OpenFoamRegionGroup group;
+        group.mFamily = tokens[i++];
+        if (group.mFamily == "(" || group.mFamily == ";" || i >= tokens.size() || tokens[i] != "(")
+            throw bad("expected `family (regions)`, found '" + group.mFamily + "'");
+        for (++i;; ++i) {
+            if (i >= tokens.size() || tokens[i] == "(" || tokens[i] == ";")
+                throw bad("the region list of '" + group.mFamily + "' is not closed");
+            if (tokens[i] == ")") {
+                ++i;
+                break;
+            }
+            group.mRegions.push_back(tokens[i]);
+        }
+        groups.push_back(std::move(group));
+    }
+    return groups;
 }
 
 struct OpenFoamSeriesWriter::Impl {

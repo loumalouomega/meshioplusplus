@@ -16,8 +16,8 @@ def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
     (negative counts from the end); its time is ``field_data["meshio:time"]``.
     Nodal variables are point data, per-element ones cell data (NaN on domains
     without them), per-element-node ones point data averaged over the elements
-    sharing a node, global ones field data. Surface and edge variables are not
-    read. A compressed file needs zlib, which the Python fallback always has.
+    sharing a node, global ones field data. Surface and edge variables are cell
+    data on the facet and segment cells (NaN elsewhere). A compressed file needs zlib, which the Python fallback always has.
     """
     if not is_buffer(filename, "r"):
         try:
@@ -50,20 +50,24 @@ def time_values(filename):
     return _py_time_values(filename)
 
 
-def write(filename, mesh):
+def write(filename, mesh, compress=False):
     """Write an FEBio plot file holding one state: the mesh and its data, at
     ``field_data["meshio:time"]``. Cell blocks become domains (one element type
     each), point regions node sets and cell regions element sets; point data
     are nodal variables, cell data per-element variables and numeric field data
-    global ones. Vertices, side regions and surfaces are not written. The file
-    is little-endian and uncompressed, plot version 0x35."""
+    global ones. Surfaces, edges and facet sets are written from their markers
+    and side regions, and cell data with finite values on a surface's or edge's
+    cells is a surface or edge variable. Vertices are not written. The file is
+    little-endian, plot version 0x35; ``compress=True`` stores each state as a
+    zlib stream (as FEBio's ``compression`` option does), which needs zlib in the
+    C++ core or falls back to the Python writer."""
     if not is_buffer(filename, "w"):
         try:
-            return _core.xplt_write(str(filename), mesh)
+            return _core.xplt_write(str(filename), mesh, bool(compress))
         except Exception as exc:
             if not core_declined(exc, "xplt", "write", filename):
                 raise
-    return _py_write(filename, mesh)
+    return _py_write(filename, mesh, compress)
 
 
 class SeriesWriter:
@@ -75,16 +79,16 @@ class SeriesWriter:
     ...         w.write(time, mesh)
     """
 
-    def __init__(self, filename):
+    def __init__(self, filename, compress=False):
         self._core = self._py = None
         if not is_buffer(filename, "w"):
             try:
-                self._core = _core.XpltSeriesWriter(str(filename))
+                self._core = _core.XpltSeriesWriter(str(filename), bool(compress))
             except Exception as exc:
                 if not core_declined(exc, "xplt", "write", filename):
                     raise
         if self._core is None:
-            self._py = _PySeriesWriter(filename)
+            self._py = _PySeriesWriter(filename, compress)
 
     def write(self, time, mesh):
         if self._core is not None:

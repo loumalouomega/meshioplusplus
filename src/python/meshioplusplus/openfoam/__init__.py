@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from .. import _core
 from .._fallback import core_declined
 from .._helpers import register_format
@@ -49,6 +51,7 @@ def write(
     scalar_bits=64,
     region="",
     decomposed=False,
+    region_family="",
 ):
     """Write an OpenFOAM polyMesh case.
 
@@ -72,9 +75,13 @@ def write(
     binary request on a big-endian host raises by name.
 
     ``region`` writes one region of a multi-region case: ``<case>/constant/<region>/
-    polyMesh`` and the fields under ``<time>/<region>/``; call it once per region
-    (``regionProperties`` is left to the solver setup, the reader finds the regions
-    under ``constant/``).
+    polyMesh`` and the fields under ``<time>/<region>/``; call it once per region.
+    ``constant/regionProperties`` is made only when asked: ``region_family="fluid"``
+    lists ``region`` under that family in it (an existing file is read, the region
+    added to the family, and the file written again), see
+    :func:`write_region_properties`. meshio++ cannot know the family names a solver
+    expects, so it never invents them; without ``region_family`` the reader still
+    finds the regions under ``constant/``.
 
     ``decomposed=True`` writes a decomposed case instead (``decomposePar``'s layout):
     ``processorN/constant/polyMesh`` for every processor in
@@ -92,6 +99,11 @@ def write(
             "(meshioplusplus._core.openfoam_write), which this installation "
             "does not provide"
         )
+    properties = None
+    if region_family:
+        if not region or decomposed:
+            raise ValueError("region_family needs region= (and not decomposed=True)")
+        properties = _region_properties_with(filename, region_family, region)
     _core.openfoam_write(
         str(filename),
         mesh,
@@ -103,6 +115,62 @@ def write(
         region,
         decomposed,
     )
+    if properties is not None:
+        write_region_properties(filename, properties)
+
+
+def _region_properties_with(filename, family, region):
+    """The case's ``regionProperties`` families with ``region`` added to ``family``."""
+    root = Path(filename)
+    root = root.parent if root.suffix == ".foam" else root
+    families = {}
+    if (root / "constant" / "regionProperties").exists():
+        families = read_region_properties(filename)
+    for other, names in families.items():
+        if region in names and other != family:
+            raise ValueError(
+                f"region {region!r} is already listed under {other!r} in "
+                "regionProperties"
+            )
+    names = families.setdefault(family, [])
+    if region not in names:
+        names.append(region)
+    return families
+
+
+def write_region_properties(filename, regions):
+    """Write ``constant/regionProperties`` of a multi-region case.
+
+    ``regions`` maps a solver family to its region names, in order, e.g.
+    ``{"fluid": ["water", "air"], "solid": ["heater"]}``, written as the
+    ``regions ( fluid (water air) solid (heater) );`` list that
+    ``chtMultiRegionFoam``-style solvers read. The family names are the solver's
+    own and are written verbatim; meshio++ does not guess them. The file is
+    replaced, not merged. ``filename`` is the case (a ``.foam`` file or a case
+    directory). Compiled core only, like :func:`write`.
+    """
+    if not hasattr(_core, "openfoam_write_region_properties"):
+        raise RuntimeError(
+            "meshio++: writing regionProperties requires the compiled core "
+            "(meshioplusplus._core.openfoam_write_region_properties), which this "
+            "installation does not provide"
+        )
+    _core.openfoam_write_region_properties(
+        str(filename), {k: list(v) for k, v in dict(regions).items()}
+    )
+
+
+def read_region_properties(filename):
+    """Read ``constant/regionProperties`` of a multi-region case as
+    ``{family: [region, ...]}``, in file order. Raises when the file is missing or
+    has no ``regions ( family (names) ... )`` list. Compiled core only."""
+    if not hasattr(_core, "openfoam_read_region_properties"):
+        raise RuntimeError(
+            "meshio++: reading regionProperties requires the compiled core "
+            "(meshioplusplus._core.openfoam_read_region_properties), which this "
+            "installation does not provide"
+        )
+    return _core.openfoam_read_region_properties(str(filename))
 
 
 class SeriesWriter:
@@ -165,4 +233,10 @@ class SeriesWriter:
 # does not offer a format that always raises.
 register_format("openfoam", [".foam"], read, {"openfoam": write} if _HAS_WRITE else {})
 
-__all__ = ["read", "write", "SeriesWriter"]
+__all__ = [
+    "read",
+    "write",
+    "SeriesWriter",
+    "read_region_properties",
+    "write_region_properties",
+]

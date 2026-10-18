@@ -7,18 +7,37 @@ and the dictionary of variables, the mesh (nodes with ids, one domain per cell
 block, node sets, element sets, parts) and one state per step.
 
 Variables: point data are nodal variables, cell data are per-element domain
-variables (``FMT_ITEM``) and numeric field data are global variables. Facet
-surfaces, edges, side regions and vertices are not written.
+variables (``FMT_ITEM``) and numeric field data are global variables.
+
+Surfaces, edges and facet sets are the inverse of what the reader builds. A
+block of ``triangle``/``quad``-family (``line``/``line3``) cells carrying a
+positive ``xplt:surface`` (``xplt:edge``) cell-data id is not a domain: the
+blocks of one id are one surface (edge) named after the cell region holding
+exactly its cells, and the id is not a variable. Every ``side`` region that no
+written surface is named after becomes a facet set of the faces it names.
+
+Surface and edge variables are the cell data that has finite values on the cells
+of a surface (edge): one per-facet (``FMT_ITEM``) variable of that name, whose
+region ``k`` is surface (edge) ``k`` and which is left out of a surface holding
+only NaN. An array with a finite value on a domain cell is a domain variable
+instead (a name is one or the other, as on reading). Point-valued surface
+variables the reader averages onto the points come back as nodal variables, not
+as these.
+
+Compression (``compress=True``) writes every state as its own zlib stream, as
+FEBio does, and sets the header's compression flag. Vertices are not written.
 """
 
 from __future__ import annotations
 
 import struct
+import zlib
 
 import numpy as np
 
 from .._common import warn
 from .._exceptions import WriteError
+from .._facets import facet_nodes
 from .._files import is_buffer
 from .._node_order import from_meshio
 from .._regions import canonical_regions
@@ -27,6 +46,7 @@ from ._xplt import MAGIC
 __all__ = ["write", "SeriesWriter"]
 
 _VERSION = 0x35
+_LEVEL = 6  # zlib's default; the C++ twin deflates at the same level
 _SOFTWARE = "meshio++"
 # meshio++ cell type -> (plot element type, nodes); FEBioPlotFile.h's Elem_Type.
 _ELEM = {
@@ -48,11 +68,27 @@ _ELEM = {
     "pyramid13": 18,
     "line3": 19,
 }
+# Facet node counts FEBio's surfaces take, and the cell types that hold them.
+_SURFACE_NODES = {
+    "triangle": 3,
+    "quad": 4,
+    "triangle6": 6,
+    "triangle7": 7,
+    "quad8": 8,
+    "quad9": 9,
+    "triangle10": 10,
+}
+_EDGE_NODES = {"line": 2, "line3": 3}
+_FACET_WIDTH = {3, 4, 6, 7, 8, 9, 10}
+_FACETSET_PAD = 10  # a facet set's leaves are padded to this many nodes
+_EDGE_PAD = 3
 _GROUPS = (
     # (dictionary tag, state tag, storage format)
     ("global", 0x01021000, 0x02020100, 3),
     ("node", 0x01023000, 0x02020300, 0),
     ("domain", 0x01024000, 0x02020400, 1),
+    ("surface", 0x01025000, 0x02020500, 1),
+    ("edge", 0x01026000, 0x02020600, 1),
 )
 # values per entry -> Var_Type; anything else is an ARRAY of that size (6).
 _TYPE_OF_WIDTH = {1: 0, 3: 1, 6: 2, 9: 5}
@@ -84,6 +120,18 @@ def _i32(values):
     return np.asarray(values, dtype="<i4").tobytes()
 
 
+def _marker(mesh, key, b, count):
+    """The surface (edge) id of block ``b``: its ``key`` cell data when every
+    cell of the block carries the same positive integer, else 0."""
+    arrays = mesh.cell_data.get(key)
+    if arrays is None or b >= len(arrays) or not count:
+        return 0
+    a = np.asarray(arrays[b]).reshape(-1)
+    if a.dtype.kind not in "iu" or len(a) != count or (a != a[0]).any():
+        return 0
+    return max(int(a[0]), 0)
+
+
 class _Var:
     def __init__(self, name, width):
         self.name = name
@@ -96,7 +144,8 @@ class _Var:
 class _Model:
     """The mesh part of a plot file and the layout of its variables."""
 
-    def __init__(self, mesh):
+    def __init__(self, mesh, compress=False):
+        self.compress = bool(compress)
         points = np.asarray(mesh.points, dtype=np.float64)
         n = len(points)
         points = points.reshape(n, -1)
@@ -106,10 +155,29 @@ class _Model:
         self.blocks = []  # (block index, cell type, conn in file order, first cell)
         skipped = {}
         self.new_index = {}  # global cell number -> element id (1-based)
+        carriers = {"surface": {}, "edge": {}}  # id -> [(first cell, rows)]
+        self.carrier_cells = set()
         base = 0
         eid = 1
         for b, block in enumerate(mesh.cells):
             data = np.asarray(block.data, dtype=np.int64)
+            carrier = None
+            if block.type in _SURFACE_NODES:
+                ident = _marker(mesh, "xplt:surface", b, len(data))
+                carrier = ("surface", ident) if ident else None
+            elif block.type in _EDGE_NODES:
+                ident = _marker(mesh, "xplt:edge", b, len(data))
+                carrier = ("edge", ident) if ident else None
+            if carrier is not None:
+                if data.min() < 0 or data.max() >= n:
+                    raise WriteError(
+                        f"FEBio .xplt: a '{block.type}' cell refers to a point the "
+                        "mesh does not have"
+                    )
+                carriers[carrier[0]].setdefault(carrier[1], []).append((base, data, b))
+                self.carrier_cells.update(range(base, base + len(data)))
+                base += len(data)
+                continue
             if block.type not in _ELEM:
                 if len(data):
                     skipped[block.type] = skipped.get(block.type, 0) + len(data)
@@ -127,17 +195,66 @@ class _Model:
             self.blocks.append((b, block.type, conn, base))
             base += len(data)
         self.ncells = base
+        self.regions = canonical_regions(mesh)
+        self.surfaces = self._carriers(carriers["surface"], "Surface")
+        self.edges = self._carriers(carriers["edge"], "Edge")
+        # per surface (edge), in id order: the cell blocks that hold its facets
+        self.sources = {
+            kind: [[b for _, _, b in carriers[kind][i]] for i in sorted(carriers[kind])]
+            for kind in ("surface", "edge")
+        }
+        self.facetsets = self._facetsets(mesh)
         for ctype, count in skipped.items():
             warn(f"FEBio .xplt: {count} '{ctype}' cell(s) are not written")
-        self.regions = canonical_regions(mesh)
         self._names(mesh)
-        self.vars = {"global": [], "node": [], "domain": []}
+        self.vars = {g: [] for g, _, _, _ in _GROUPS}
         self._variables(mesh)
         self.signature = (
             n,
             [(t, c.shape, s) for _, t, c, s in self.blocks],
+            [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.surfaces],
+            [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.edges],
+            [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.facetsets],
             {g: [v.key() for v in vs] for g, vs in self.vars.items()},
         )
+
+    def _carriers(self, by_id, fallback):
+        """Per surface (edge), in id order: (name, [(nodes per facet, nodes)])."""
+        by_cells = {}
+        for r in self.regions:
+            if r.kind == "cell":
+                by_cells.setdefault(tuple(sorted(np.asarray(r.entries).tolist())), r)
+        out = []
+        for k, ident in enumerate(sorted(by_id), start=1):
+            cells, facets = [], []
+            for first, data, _ in by_id[ident]:
+                cells.extend(range(first, first + len(data)))
+                facets.extend((data.shape[1], row) for row in data.tolist())
+            match = by_cells.get(tuple(sorted(cells)))
+            out.append((match.name if match else f"{fallback}{k}", facets))
+        return out
+
+    def _facetsets(self, mesh):
+        """Per side region no written surface is named after: its faces."""
+        taken = {name for name, _ in self.surfaces}
+        out = []
+        for r in self.regions:
+            if r.kind != "side" or r.name in taken:
+                continue
+            facets, dropped = [], 0
+            for cell, facet in np.asarray(r.entries).reshape(-1, 2).tolist():
+                found = facet_nodes(mesh, cell, facet)
+                if found is None or len(found[1]) not in _FACET_WIDTH:
+                    dropped += 1
+                    continue
+                facets.append((len(found[1]), found[1]))
+            if dropped:
+                warn(
+                    f"FEBio .xplt: {dropped} edge or missing facet(s) of the side "
+                    f"region '{r.name}' are not written"
+                )
+            out.append((r.name, facets))
+        return out
 
     def _names(self, mesh):
         """Per domain: (name, part id)."""
@@ -164,19 +281,32 @@ class _Model:
         for name in sorted(mesh.cell_data):
             if name.startswith("xplt:"):
                 continue
+            arrays = mesh.cell_data[name]
+            has_domain = self._has_values(arrays, [b for b, _, _, _ in self.blocks])
+            # a variable with a value on a domain is a domain variable
+            carrier = {
+                g: 0 if has_domain else self._carrier_width(mesh, name, g)
+                for g in ("surface", "edge")
+            }
+            written = False
+            for group, width in carrier.items():
+                if width:
+                    self.vars[group].append(_Var(name, width))
+                    written = True
             width = None
             for b, _, conn, _ in self.blocks:
-                a = np.asarray(mesh.cell_data[name][b])
-                w = self._width(a, len(conn), f"cell data '{name}'")
+                a = np.asarray(arrays[b])
+                w = self._width(a, len(conn), f"cell data '{name}'", not written)
                 if w is None or (width is not None and w != width):
                     width = None
                     break
                 width = w
             else:
-                if width:
+                if width and not written:
                     self.vars["domain"].append(_Var(name, width))
                 continue
-            warn(f"FEBio .xplt: cell data '{name}' is not written")
+            if not written:
+                warn(f"FEBio .xplt: cell data '{name}' is not written")
         for name in sorted(mesh.field_data):
             if name == "meshio:time" or name.startswith("xplt:"):
                 continue
@@ -187,14 +317,51 @@ class _Model:
                 warn(f"FEBio .xplt: field data '{name}' is not written")
 
     @staticmethod
-    def _width(a, rows, what):
+    def _has_values(arrays, blocks):
+        """Whether any of the given blocks holds a finite (or non-float) value."""
+        for b in blocks:
+            if b >= len(arrays):
+                continue
+            a = np.asarray(arrays[b])
+            if a.dtype.kind == "f":
+                if np.isfinite(a).any():
+                    return True
+            elif a.dtype.kind in "iub" and a.size:
+                return True
+        return False
+
+    def _carrier_width(self, mesh, name, group):
+        """Values per facet of the cell data ``name`` on the surfaces (edges), or
+        0 when no facet has a finite value or the blocks disagree."""
+        arrays = mesh.cell_data[name]
+        blocks = [b for srcs in self.sources[group] for b in srcs]
+        if not blocks or not self._has_values(arrays, blocks):
+            return 0
+        width = None
+        for b in blocks:
+            if b >= len(arrays):
+                return 0
+            count = len(mesh.cells[b].data)
+            a = np.asarray(arrays[b])
+            if a.dtype.kind not in "fiub" or a.ndim > 2 or a.size % count:
+                return 0
+            w = a.size // count
+            if width not in (None, w):
+                return 0
+            width = w
+        return width or 0
+
+    @staticmethod
+    def _width(a, rows, what, loud=True):
         if a.dtype.kind not in "fiub":
-            warn(f"FEBio .xplt: {what} is not written")
+            if loud:
+                warn(f"FEBio .xplt: {what} is not written")
             return None
         if rows == 0:
             return 1 if a.ndim <= 1 else int(a.shape[1]) if a.ndim == 2 else None
         if a.size % rows or a.ndim > 2:
-            warn(f"FEBio .xplt: {what} is not written")
+            if loud:
+                warn(f"FEBio .xplt: {what} is not written")
             return None
         return int(a.size // rows)
 
@@ -203,7 +370,7 @@ class _Model:
         header = _chunk(
             0x01010000,
             _chunk(0x01010001, _u32(_VERSION))
-            + _chunk(0x01010004, _u32(0))
+            + _chunk(0x01010004, _u32(1 if self.compress else 0))
             + _chunk(0x01010006, _string(_SOFTWARE)),
         )
         dictionary = b""
@@ -257,7 +424,11 @@ class _Model:
             for r in self.regions:
                 if r.kind != kind:
                     continue
-                ids = members(np.asarray(r.entries).tolist())
+                entries = np.asarray(r.entries).tolist()
+                ids = members(entries)
+                if kind == "cell" and entries and not ids:
+                    if all(i in self.carrier_cells for i in entries):
+                        continue  # a surface or edge, written as one
                 count += 1
                 out += _chunk(
                     item,
@@ -302,7 +473,51 @@ class _Model:
         )
         if parts:
             body += _chunk(0x01045000, parts)
+        # (section, item, header, id, size, name), (widest, list, leaf), padding
+        body += self._facet_section(
+            self.surfaces,
+            (0x01043000, 0x01043100, 0x01043101, 0x01043102, 0x01043103, 0x01043104),
+            (0x01043105, 0x01043200, 0x01043201),
+            None,
+        )
+        body += self._facet_section(
+            self.facetsets,
+            (0x01047000, 0x01047100, 0x01047101, 0x01047102, 0x01047104, 0x01047103),
+            (0x01047105, 0x01047200, 0x01047201),
+            _FACETSET_PAD,
+        )
+        body += self._facet_section(
+            self.edges,
+            (0x01048000, 0x01048100, 0x01048101, 0x01048102, 0x01048103, 0x01048104),
+            (0x01048105, 0x01048200, 0x01048201),
+            _EDGE_PAD,
+        )
         return _chunk(0x01040000, body)
+
+    @staticmethod
+    def _facet_section(items, head_tags, list_tags, pad):
+        """A section of surfaces, facet sets or edges: FEBio's header (id, size,
+        name, widest facet) and a list of ``[facet id, node count, nodes]``
+        leaves, padded to ``pad`` nodes (the widest facet when ``None``)."""
+        if not items:
+            return b""
+        section, item, header, t_id, t_size, t_name = head_tags
+        t_widest, t_list, t_leaf = list_tags
+        out = b""
+        for k, (name, facets) in enumerate(items, start=1):
+            width = pad or max((nn for nn, _ in facets), default=0)
+            head = (
+                _chunk(t_id, _u32(k))
+                + _chunk(t_size, _u32(len(facets)))
+                + _chunk(t_name, _string(name))
+                + _chunk(t_widest, _u32(width))
+            )
+            leaves = b"".join(
+                _chunk(t_leaf, _i32([f + 1, nn] + list(nodes) + [0] * (width - nn)))
+                for f, (nn, nodes) in enumerate(facets)
+            )
+            out += _chunk(item, _chunk(header, head) + _chunk(t_list, leaves))
+        return _chunk(section, out)
 
     # -- one state -------------------------------------------------------------------
     def state_chunk(self, mesh, time, status=0):
@@ -318,11 +533,26 @@ class _Model:
                     regions = [(0, np.asarray(mesh.field_data[v.name]).reshape(-1))]
                 elif group == "node":
                     regions = [(0, np.asarray(mesh.point_data[v.name]).reshape(-1))]
-                else:
+                elif group == "domain":
                     regions = [
                         (d + 1, np.asarray(mesh.cell_data[v.name][b]).reshape(-1))
                         for d, (b, _, _, _) in enumerate(self.blocks)
                     ]
+                else:
+                    # region k is surface (edge) k: its facets' values in order,
+                    # none for a surface that has no value
+                    regions = []
+                    for s, srcs in enumerate(self.sources[group]):
+                        values = np.concatenate(
+                            [
+                                np.asarray(
+                                    mesh.cell_data[v.name][b], dtype=np.float64
+                                ).reshape(-1)
+                                for b in srcs
+                            ]
+                        )
+                        if not np.isnan(values).all():
+                            regions.append((s + 1, values))
                 payload = b"".join(
                     _chunk(rid, _f32(values.astype(np.float64)))
                     for rid, values in regions
@@ -350,6 +580,11 @@ def _status_of(mesh):
     return 0
 
 
+def _pack(model, state):
+    """A state as the file stores it: with compression, its own zlib stream."""
+    return zlib.compress(state, _LEVEL) if model.compress else state
+
+
 def _assemble(model, states):
     return (
         _u32(MAGIC)
@@ -359,13 +594,14 @@ def _assemble(model, states):
     )
 
 
-def write(filename, mesh):
+def write(filename, mesh, compress=False):
     """Write one FEBio plot file holding one state: the mesh and its data at
-    ``field_data["meshio:time"]`` (0 when absent)."""
+    ``field_data["meshio:time"]`` (0 when absent). ``compress=True`` stores the
+    state as a zlib stream."""
     if is_buffer(filename, "w"):
         raise WriteError("FEBio .xplt: cannot be written to a stream")
-    model = _Model(mesh)
-    state = model.state_chunk(mesh, _time_of(mesh), _status_of(mesh))
+    model = _Model(mesh, compress)
+    state = _pack(model, model.state_chunk(mesh, _time_of(mesh), _status_of(mesh)))
     with open(filename, "wb") as fh:
         fh.write(_assemble(model, [state]))
 
@@ -374,8 +610,9 @@ class SeriesWriter:
     """One plot file with a state per step; the mesh and the variables are those
     of the first step, which every later step must share."""
 
-    def __init__(self, filename):
+    def __init__(self, filename, compress=False):
         self._path = filename
+        self._compress = bool(compress)
         if is_buffer(filename, "w"):
             raise WriteError("FEBio .xplt: cannot be written to a stream")
         self._model = None
@@ -384,18 +621,17 @@ class SeriesWriter:
 
     def write(self, time, mesh):
         if self._model is None:
-            self._model = _Model(mesh)
+            self._model = _Model(mesh, self._compress)
         else:
-            other = _Model(mesh)
+            other = _Model(mesh, self._compress)
             if other.signature != self._model.signature:
                 raise WriteError(
                     f"FEBio .xplt: series: step {len(self._states)}'s points, cells "
                     "or variables differ from the first step's; a plot file holds "
                     "one mesh -- write one file per step with '{step}'"
                 )
-        self._states.append(
-            self._model.state_chunk(mesh, float(time), _status_of(mesh))
-        )
+        state = self._model.state_chunk(mesh, float(time), _status_of(mesh))
+        self._states.append(_pack(self._model, state))
 
     def close(self):
         if self._closed or self._model is None:

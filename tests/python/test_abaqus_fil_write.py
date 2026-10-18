@@ -365,6 +365,42 @@ def test_a_mode_is_a_1980_record(engine, binary, tmp_path):
     np.testing.assert_allclose(back.field_data["abaqus:effective_mass"], [0.01, 0.04])
 
 
+def _modal_mesh():
+    mesh = meshioplusplus.Mesh(UNIT, [("hexahedron", np.arange(8)[None, :])])
+    mesh.point_data["U"] = np.ones((8, 3))
+    mesh.field_data["meshio:time"] = np.array([0.0])
+    mesh.field_data["abaqus:GU"] = np.array([[1.5, 2.5, 3.5], [4.5, 5.5, np.nan]])
+    mesh.field_data["abaqus:GV"] = np.array([0.25, -1.0])
+    mesh.field_data["abaqus:BM"] = np.array(
+        [[1, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6], [2, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+    )
+    mesh.field_data["abaqus:KE"] = np.array([7.0])
+    return mesh
+
+
+def test_modal_dynamics_records_round_trip(engine, binary, tmp_path):
+    path = tmp_path / "modal.fil"
+    write_with(engine, path, _modal_mesh(), binary)
+    back = py_fil.read(path)
+    np.testing.assert_array_equal(
+        back.field_data["abaqus:GU"], [[1.5, 2.5, 3.5], [4.5, 5.5, np.nan]]
+    )
+    np.testing.assert_array_equal(back.field_data["abaqus:GV"], [0.25, -1.0])
+    np.testing.assert_array_equal(
+        back.field_data["abaqus:BM"],
+        _modal_mesh().field_data["abaqus:BM"],
+    )
+    np.testing.assert_array_equal(back.field_data["abaqus:KE"], [7.0])
+    assert "abaqus:GPU" not in back.field_data
+
+
+def test_the_engines_write_the_same_modal_bytes(binary, tmp_path):
+    a, b = tmp_path / "a.fil", tmp_path / "b.fil"
+    write_with("python", a, _modal_mesh(), binary)
+    write_with("core", b, _modal_mesh(), binary)
+    assert a.read_bytes() == b.read_bytes()
+
+
 # -- sets ---------------------------------------------------------------------------------
 
 
@@ -629,3 +665,105 @@ def test_a_bad_marker_size_is_refused(engine, tmp_path):
             )
         else:
             py_write.write(str(tmp_path / "x.fil"), results_mesh(), True, False, 2)
+
+
+# -- contact output (1503, 1504, 1511-1592) ---------------------------------------------
+
+
+LONG_SURFACE = "master_surface_long"
+CONTACT_NAMES = ("CSTRESS", "CDISP", "CAREA", "key_1593")
+
+
+def contact_mesh():
+    """One C3D8R with a slave and a master surface and contact output at some nodes."""
+    mesh = meshioplusplus.Mesh(UNIT, [("hexahedron", np.arange(8)[None, :])])
+    mesh.point_data["abaqus:id"] = np.arange(101, 109)
+    mesh.regions = [
+        meshioplusplus.Region("SLAVE", "side", np.array([[0, 0]])),
+        meshioplusplus.Region(LONG_SURFACE, "side", np.array([[0, 1]])),
+    ]
+    cstress = np.full((8, 3), np.nan)
+    cstress[[4, 5, 6, 7]] = np.arange(12, dtype=float).reshape(4, 3) + 0.5
+    cdisp = np.full((8, 3), np.nan)
+    cdisp[5] = [-1.0, 0.25, 2.0]
+    cdisp[6, :2] = [3.0, 4.0]
+    mesh.point_data["CSTRESS"] = cstress
+    mesh.point_data["CDISP"] = cdisp
+    mesh.point_data["CAREA"] = np.where(np.arange(8) >= 4, 1.5, np.nan)
+    mesh.point_data["key_1593"] = np.where(np.arange(8) == 4, 9.0, np.nan)
+    return mesh
+
+
+def test_contact_output_round_trips(engine, binary, tmp_path):
+    mesh = contact_mesh()
+    path = tmp_path / "contact.fil"
+    write_with(engine, path, mesh, binary)
+    for read in (meshioplusplus.abaqus_fil.read, py_fil.read):
+        back = read(path)
+        for name in CONTACT_NAMES:
+            np.testing.assert_allclose(
+                back.point_data[name], mesh.point_data[name], equal_nan=True
+            )
+        assert {(r.name, r.kind) for r in back.regions} == {
+            ("SLAVE", "side"),
+            (LONG_SURFACE, "side"),
+        }
+
+
+def test_the_engines_write_the_same_contact_bytes(binary, tmp_path):
+    mesh = contact_mesh()
+    mesh.field_data["abaqus:contact_pair"] = np.array([1, 0])
+    core, python = tmp_path / "c.fil", tmp_path / "p.fil"
+    write_with("core", core, mesh, binary)
+    write_with("python", python, mesh, binary)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_contact_pair_is_named_by_field_data(engine, tmp_path):
+    mesh = contact_mesh()
+    default, swapped = tmp_path / "a.fil", tmp_path / "b.fil"
+    write_with(engine, default, mesh)
+    mesh.field_data["abaqus:contact_pair"] = np.array([1, 0])
+    write_with(engine, swapped, mesh)
+    assert default.read_bytes() != swapped.read_bytes()
+    for path in (default, swapped):
+        back = py_fil.read(path)
+        np.testing.assert_allclose(
+            back.point_data["CSTRESS"], mesh.point_data["CSTRESS"], equal_nan=True
+        )
+
+
+def test_a_bad_contact_pair_is_refused(engine, tmp_path):
+    for pair in ([0, 5], [0], [0, 1, 0]):
+        mesh = contact_mesh()
+        mesh.field_data["abaqus:contact_pair"] = np.array(pair)
+        with pytest.raises(Exception, match="contact_pair"):
+            write_with(engine, tmp_path / "x.fil", mesh)
+
+
+def test_contact_output_without_a_pair_is_dropped(engine, tmp_path, capfd):
+    mesh = contact_mesh()
+    mesh.regions = mesh.regions[:1]
+    path = tmp_path / "nopair.fil"
+    write_with(engine, path, mesh)
+    err = " ".join(capfd.readouterr().err.split())
+    assert "not written" in err and "CSTRESS" in err and "key_1593" in err
+    back = py_fil.read(path)
+    assert not set(CONTACT_NAMES) & set(back.point_data)
+
+
+def test_pybaqus_reads_the_written_contact_stress(tmp_path):
+    pybaqus = pytest.importorskip("pybaqus", exc_type=ImportError)
+    mesh = contact_mesh()
+    mesh.point_data = {
+        k: v for k, v in mesh.point_data.items() if k in ("abaqus:id", "CSTRESS")
+    }
+    path = tmp_path / "pybaqus_contact.fil"
+    meshioplusplus.write(path, mesh, file_format="abaqus_fil")
+    model = pybaqus.open_fil(str(path))
+    assert model.contact_pairs == [{"master": LONG_SURFACE, "slave": "SLAVE"}]
+    (step,) = model.nodal_output.values()
+    (inc,) = step.values()
+    for c, var in enumerate(("CPRESS", "CSHEAR1", "CSHEAR2")):
+        got = [inc[var][node] for node in range(105, 109)]
+        np.testing.assert_allclose(got, mesh.point_data["CSTRESS"][4:, c])

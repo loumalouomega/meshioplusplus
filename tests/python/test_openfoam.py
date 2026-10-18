@@ -1752,3 +1752,408 @@ def test_decomposed_case_reassembles_to_the_serial_mesh(tmp_path, binary):
 def test_decomposed_case_needs_partition_labels(tmp_path):
     with pytest.raises(Exception, match="partition:part"):
         meshioplusplus.openfoam.write(tmp_path / "case.foam", _grid(2), decomposed=True)
+
+
+# -- roadmap 3.3.3: boundary-patch values --------------------------------------
+
+
+def _boundary_mesh(tmp_path, types=None):
+    """A 2x2x2 grid with its 24 boundary faces split over two patches (x-min /
+    x-max faces vs the rest), carrying a scalar, a vector and a symmTensor
+    cell array whose boundary-face rows tell the faces apart."""
+    src = tmp_path / "src" / "case.foam"
+    meshioplusplus.openfoam.write(src, _grid(2))
+    mesh = meshioplusplus.openfoam.read(src)
+    quad = next(i for i, c in enumerate(mesh.cells) if c.type == "quad")
+    nq = len(mesh.cells[quad].data)
+    centre = mesh.points[mesh.cells[quad].data].mean(axis=1)
+    tags = np.where(np.isclose(centre[:, 0], 0) | np.isclose(centre[:, 0], 2), -1, -2)
+    mesh.cell_data["cell_tags"][quad] = tags.astype(np.int64)
+    mesh.cell_tags = {-1: ["ends"], -2: ["sides"]}
+    mesh.openfoam_patch_types = {-1: "wall", -2: "patch", **(types or {})}
+    n = len(mesh.cells[0].data)
+    rows = [np.arange(n, dtype=float), 100.0 + np.arange(nq)]
+    mesh.cell_data["p"] = [r.copy() for r in rows]
+    mesh.cell_data["U"] = [np.stack([r, 2 * r, 3 * r + 0.5], axis=1) for r in rows]
+    mesh.cell_data["S"] = [np.stack([r + k for k in range(6)], axis=1) for r in rows]
+    return mesh
+
+
+def _face_values(mesh, name):
+    """Boundary-face rows keyed by the face's centroid (independent of the
+    row order the reader gives them)."""
+    out = {}
+    for i, block in enumerate(mesh.cells):
+        if block.type not in ("triangle", "quad"):
+            continue
+        centre = mesh.points[block.data].mean(axis=1).round(9)
+        values = np.asarray(mesh.cell_data[name][i]).reshape(len(centre), -1)
+        for c, v in zip(centre, values):
+            out[tuple(c)] = tuple(v)
+    return out
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_boundary_patch_values_round_trip(binary, tmp_path):
+    """Roadmap 3.3.3: the boundary-face blocks of a cell array become per-patch
+    boundaryField values and come back on those blocks."""
+    mesh = _boundary_mesh(tmp_path)
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, binary=binary)
+    text = (tmp_path / "0" / "p").read_bytes()
+    assert b"    ends\n    {\n        type            calculated;" in text
+    assert b"    sides\n    {" in text
+    assert text.index(b"    sides\n") < text.index(b'".*"')
+    back = meshioplusplus.openfoam.read(case)
+    for name in ("p", "U", "S"):
+        assert _face_values(back, name) == _face_values(mesh, name)
+        assert len(_face_values(back, name)) == 24
+    np.testing.assert_array_equal(
+        back.cell_data["p"][0], mesh.cell_data["p"][0].reshape(-1, 1)
+    )
+
+
+def test_boundary_patch_values_parse_with_foamlib(tmp_path):
+    foamlib = pytest.importorskip("foamlib")
+    mesh = _boundary_mesh(tmp_path)
+    meshioplusplus.openfoam.write(tmp_path / "case.foam", mesh)
+    field = foamlib.FoamFile(tmp_path / "0" / "p")
+    boundary = field["boundaryField"]
+    nends = 8  # x-min and x-max faces: 2 x 4
+    assert np.asarray(boundary["ends"]["value"]).shape == (nends,)
+    assert np.asarray(boundary["sides"]["value"]).shape == (16,)
+    assert boundary["ends"]["type"] == "calculated"
+    vec = foamlib.FoamFile(tmp_path / "0" / "U")["boundaryField"]["ends"]["value"]
+    assert np.asarray(vec).shape == (nends, 3)
+    # the values are the quads' own, matched to the written face order
+    got = sorted(np.asarray(boundary["ends"]["value"]).tolist())
+    ends = [v[0] for k, v in _face_values(mesh, "p").items() if k[0] in (0.0, 2.0)]
+    assert got == sorted(ends)
+
+
+def test_no_boundary_values_keeps_the_catch_all_only(tmp_path):
+    mesh = _grid(2)
+    mesh.cell_data["p"] = [np.arange(8.0)]
+    meshioplusplus.openfoam.write(tmp_path / "a" / "case.foam", mesh)
+    first = (tmp_path / "a" / "0" / "p").read_bytes()
+    assert first.count(b"nonuniform") == 1  # internalField only
+    # read it back (NaN on the boundary faces) and write it again: still no patch entries
+    back = meshioplusplus.openfoam.read(tmp_path / "a" / "case.foam")
+    assert np.isnan(back.cell_data["p"][1]).all()
+    meshioplusplus.openfoam.write(tmp_path / "b" / "case.foam", back)
+    assert (tmp_path / "b" / "0" / "p").read_bytes() == first
+
+
+def test_constraint_patches_get_no_values(tmp_path):
+    mesh = _boundary_mesh(tmp_path, types={-2: "symmetry"})
+    meshioplusplus.openfoam.write(tmp_path / "case.foam", mesh)
+    text = (tmp_path / "0" / "p").read_text()
+    assert "    ends\n" in text
+    assert "    sides\n" not in text
+
+
+def test_partially_missing_boundary_values_write_no_patch_entry(tmp_path):
+    mesh = _boundary_mesh(tmp_path)
+    quad = next(i for i, c in enumerate(mesh.cells) if c.type == "quad")
+    p = mesh.cell_data["p"][quad].copy()
+    ends = mesh.cell_data["cell_tags"][quad] == -1
+    p[np.flatnonzero(ends)[0]] = np.nan
+    mesh.cell_data["p"][quad] = p
+    meshioplusplus.openfoam.write(tmp_path / "case.foam", mesh)
+    text = (tmp_path / "0" / "p").read_text()
+    assert "    ends\n" not in text
+    assert "    sides\n" in text
+
+
+def test_boundary_patch_values_with_region_and_series(tmp_path):
+    mesh = _boundary_mesh(tmp_path)
+    case = tmp_path / "region" / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, region="fluid")
+    assert b"    ends\n" in (case.parent / "0" / "fluid" / "p").read_bytes()
+    back = meshioplusplus.openfoam.read(case, region="fluid")
+    assert _face_values(back, "p") == _face_values(mesh, "p")
+
+    later = _boundary_mesh(tmp_path)
+    quad = next(i for i, c in enumerate(later.cells) if c.type == "quad")
+    later.cell_data["p"][quad] = later.cell_data["p"][quad] + 1000.0
+    series = tmp_path / "series" / "case.foam"
+    meshioplusplus.write_sequence(
+        series, [(0.0, mesh), (1.0, later)], file_format="openfoam"
+    )
+    step1 = meshioplusplus.read(series, time_step=1, arrays=["p"])
+    assert _face_values(step1, "p") == _face_values(later, "p")
+    step0 = meshioplusplus.read(series, time_step=0, arrays=["p"])
+    assert _face_values(step0, "p") == _face_values(mesh, "p")
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_boundary_patch_values_in_a_decomposed_case(binary, tmp_path):
+    mesh = _boundary_mesh(tmp_path)
+    nvol = len(mesh.cells[0].data)
+    nquad = len(mesh.cells[1].data)
+    part = meshioplusplus.partition_labels(_grid(2), 3, method="sfc")
+    mesh.cell_data["partition:part"] = [
+        np.asarray(part[0]),
+        np.zeros(nquad, dtype=part[0].dtype),
+    ]
+    assert len(part[0]) == nvol
+    case = tmp_path / "dec" / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True, binary=binary)
+    for k in range(3):
+        text = (case.parent / f"processor{k}" / "0" / "p").read_bytes()
+        assert b"procBoundary" not in text
+        assert b"    ends\n" in text or b"    sides\n" in text
+    back = meshioplusplus.openfoam.read(case, arrays=["p", "U"])
+    assert _face_values(back, "p") == _face_values(mesh, "p")
+    assert _face_values(back, "U") == _face_values(mesh, "U")
+
+
+def test_reader_takes_boundary_values_in_the_forms_openfoam_writes(tmp_path):
+    """Inline short lists, `N{value}`, uniform values, patches without a value,
+    nested dictionaries and the regex catch-all."""
+    case = tmp_path / "case"
+    meshioplusplus.openfoam.write(case, _grid(1))
+    # one hex: six boundary faces on the writer's single defaultFaces patch;
+    # rewrite the boundary file into three named patches
+    poly = case / "constant" / "polyMesh"
+    text = (poly / "boundary").read_text()
+    head = text[: text.index("(") + 1]
+    nstart = int(
+        [ln for ln in text.splitlines() if "startFace" in ln][0].split()[1].strip(";")
+    )
+    (poly / "boundary").write_text(
+        head + f"\n    low {{ type wall; nFaces 1; startFace {nstart}; }}\n"
+        f"    mid {{ type patch; nFaces 2; startFace {nstart + 1}; }}\n"
+        f"    high {{ type patch; nFaces 3; startFace {nstart + 3}; }}\n)\n"
+    )
+    zero = case / "0"
+    zero.mkdir(exist_ok=True)
+    (zero / "p").write_text(
+        "FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n"
+        "dimensions [0 0 0 0 0 0 0];\ninternalField uniform 42;\n"
+        "boundaryField\n{\n"
+        "    // comment { ( \n"
+        "    low { type fixedValue; value uniform 7; }\n"
+        "    mid { type mixed; valueFraction { type table; table ((0 1) (1 2)); }\n"
+        "          refGradient nonuniform List<scalar> 2(9 9);\n"
+        "          value nonuniform List<scalar> 2(1 2); }\n"
+        "    high { type fixedValue; value nonuniform List<scalar> 3{4}; }\n"
+        '    ".*" { type calculated; value uniform 0; }\n}\n'
+    )
+    (zero / "U").write_text(
+        "FoamFile\n{\n format ascii;\n class volVectorField;\n object U;\n}\n"
+        "internalField uniform (1 0 0);\n"
+        "boundaryField\n{\n    low { type zeroGradient; }\n"
+        "    mid { type fixedValue; value $internalField; }\n"
+        "    high { type fixedValue; value nonuniform List<vector> 3((0 0 1)(0 0 2)(0 0 3)); }\n}\n"
+    )
+    mesh = meshioplusplus.openfoam.read(case)
+    quad = next(i for i, c in enumerate(mesh.cells) if c.type == "quad")
+    np.testing.assert_array_equal(mesh.cell_data["p"][quad].ravel(), [7, 1, 2, 4, 4, 4])
+    u = mesh.cell_data["U"][quad]
+    assert np.isnan(u[:3]).all()
+    np.testing.assert_array_equal(u[3:], [[0, 0, 1], [0, 0, 2], [0, 0, 3]])
+
+
+# -- roadmap 3.3.3: zones in a decomposed case ---------------------------------
+
+
+def _zoned_grid(n=3, parts=3):
+    mesh = _grid(n)
+    mesh.cell_data["partition:part"] = meshioplusplus.partition_labels(
+        mesh, parts, method="sfc"
+    )
+    ncells = len(mesh.cells[0].data)
+    mesh.regions.append(meshioplusplus.Region("core", "cell", np.arange(2, ncells, 3)))
+    mesh.regions.append(meshioplusplus.Region("none", "cell", np.array([], np.int64)))
+    mesh.regions.append(meshioplusplus.Region("rim", "point", np.array([0, 5, 17, 40])))
+    # a local facet of every other cell: the faces inside one processor, on a processor
+    # boundary and on the outer boundary all land in the zone
+    sides = [(c, f) for c in range(0, ncells, 2) for f in (0, 5)]
+    mesh.regions.append(
+        meshioplusplus.Region("baffle", "side", np.array(sides, dtype=np.int64))
+    )
+    return mesh
+
+
+def _region_entries(mesh):
+    out = {}
+    for r in mesh.regions:
+        entries = np.asarray(r.entries)
+        rows = entries.tolist() if entries.ndim == 1 else map(tuple, entries.tolist())
+        out[(r.name, r.kind)] = sorted(rows)
+    return out
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_zones_in_a_decomposed_case_come_back_as_in_the_serial_case(tmp_path, binary):
+    mesh = _zoned_grid()
+    case = tmp_path / "dec" / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True, binary=binary)
+    serial = tmp_path / "ser" / "case.foam"
+    meshioplusplus.openfoam.write(serial, mesh, binary=binary)
+    for k in range(3):
+        poly = case.parent / f"processor{k}" / "constant" / "polyMesh"
+        assert {"cellZones", "faceZones", "pointZones"} <= {
+            p.name for p in poly.iterdir()
+        }
+    got = _region_entries(meshioplusplus.openfoam.read(case))
+    want = _region_entries(meshioplusplus.openfoam.read(serial))
+    assert got == want
+    assert got[("core", "cell")] == list(range(2, 27, 3))
+    assert got[("none", "cell")] == []
+    assert len(got[("baffle", "side")]) > 0
+
+
+def _zone_labels(path, zone, key):
+    """One zone's label list, read through foamlib."""
+    foamlib = pytest.importorskip("foamlib")
+    entry = dict(foamlib.FoamFile(path)[None])[zone]
+    return np.asarray(entry[key][1], dtype=int)
+
+
+def test_decomposed_zones_use_processor_local_ids(tmp_path):
+    foamlib = pytest.importorskip("foamlib")
+    mesh = _zoned_grid()
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True)
+    parts = np.asarray(mesh.cell_data["partition:part"][0])
+    seen = []
+    for k in range(3):
+        poly = tmp_path / f"processor{k}" / "constant" / "polyMesh"
+        cell_addr = np.asarray(foamlib.FoamFile(poly / "cellProcAddressing")[None])
+        labels = _zone_labels(poly / "cellZones", "core", "cellLabels")
+        # local ids, naming this processor's own cells
+        assert labels.max(initial=-1) < len(cell_addr)
+        assert all(parts[c] == k for c in cell_addr[labels])
+        seen.extend(cell_addr[labels].tolist())
+        n_faces = len(np.asarray(foamlib.FoamFile(poly / "owner")[None]))
+        faces = _zone_labels(poly / "faceZones", "baffle", "faceLabels")
+        assert 0 < len(faces) and faces.max() < n_faces
+        points = _zone_labels(poly / "pointZones", "rim", "pointLabels")
+        n_points = len(np.asarray(foamlib.FoamFile(poly / "points")[None]))
+        assert points.max(initial=-1) < n_points
+    assert sorted(seen) == list(range(2, 27, 3))
+
+
+def test_decomposed_zone_files_follow_the_regions(tmp_path):
+    mesh = _zoned_grid()
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, decomposed=True)
+    plain = _grid(3)
+    plain.cell_data["partition:part"] = mesh.cell_data["partition:part"]
+    meshioplusplus.openfoam.write(case, plain, decomposed=True)
+    for k in range(3):
+        poly = tmp_path / f"processor{k}" / "constant" / "polyMesh"
+        assert not (poly / "cellZones").exists()
+    assert not meshioplusplus.openfoam.read(case).regions
+
+
+# -- roadmap 3.3.3: constant/regionProperties ----------------------------------
+
+
+def test_region_properties_is_written_only_when_asked(tmp_path):
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, _grid(1), region="fluid")
+    assert not (tmp_path / "constant" / "regionProperties").exists()
+
+
+def test_region_properties_round_trip_and_text(tmp_path):
+    case = tmp_path / "case.foam"
+    families = {"fluid": ["water", "air"], "solid": ["heater"]}
+    meshioplusplus.openfoam.write_region_properties(case, families)
+    text = (tmp_path / "constant" / "regionProperties").read_text()
+    assert "class       dictionary;" in text
+    assert "object      regionProperties;" in text
+    assert "regions\n(\n    fluid (water air)\n    solid (heater)\n);" in text
+    assert meshioplusplus.openfoam.read_region_properties(case) == families
+    # a case directory names the same file; the order of the families is kept
+    assert list(meshioplusplus.openfoam.read_region_properties(tmp_path)) == [
+        "fluid",
+        "solid",
+    ]
+    meshioplusplus.openfoam.write_region_properties(tmp_path, {"b": ["x"], "a": ["y"]})
+    assert list(meshioplusplus.openfoam.read_region_properties(case)) == ["b", "a"]
+
+
+def test_foamlib_reads_our_region_properties(tmp_path):
+    foamlib = pytest.importorskip("foamlib")
+    meshioplusplus.openfoam.write_region_properties(
+        tmp_path, {"fluid": ["water", "air"], "solid": ["heater"]}
+    )
+    regions = foamlib.FoamFile(tmp_path / "constant" / "regionProperties")["regions"]
+    assert list(regions) == ["fluid", ["water", "air"], "solid", ["heater"]]
+
+
+def test_region_properties_reader_takes_what_a_solver_setup_holds(tmp_path):
+    (tmp_path / "constant").mkdir()
+    (tmp_path / "constant" / "regionProperties").write_text(
+        "FoamFile { version 2.0; format ascii; class dictionary; "
+        "object regionProperties; }\n"
+        "// the regions\n"
+        "regions\n(\n  fluid ( bottomAir topAir ) /* two */\n  solid (heater)\n);\n"
+    )
+    assert meshioplusplus.openfoam.read_region_properties(tmp_path) == {
+        "fluid": ["bottomAir", "topAir"],
+        "solid": ["heater"],
+    }
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        {},
+        {"fluid": []},
+        {"fluid": ["a b"]},
+        {"fluid": [".hidden"]},
+        {"fluid": ["a/b"]},
+        {"fluid": ["a;"]},
+        {"": ["a"]},
+        {"fluid": ["a"], "solid": ["a"]},
+        {"fluid": ["a", "a"]},
+    ],
+)
+def test_region_properties_refuses_what_a_solver_could_not_read(tmp_path, regions):
+    with pytest.raises(Exception, match="OpenFOAM"):
+        meshioplusplus.openfoam.write_region_properties(tmp_path, regions)
+    assert not (tmp_path / "constant" / "regionProperties").exists()
+
+
+def test_region_properties_reader_refuses_a_missing_or_malformed_file(tmp_path):
+    with pytest.raises(Exception, match="no .*regionProperties"):
+        meshioplusplus.openfoam.read_region_properties(tmp_path)
+    (tmp_path / "constant").mkdir()
+    for body in ("regions ( fluid water );", "regions ( fluid (water );", "x 1;"):
+        (tmp_path / "constant" / "regionProperties").write_text(body)
+        with pytest.raises(Exception, match="regionProperties"):
+            meshioplusplus.openfoam.read_region_properties(tmp_path)
+
+
+def test_write_region_family_builds_the_file_region_by_region(tmp_path):
+    case = tmp_path / "case.foam"
+    for region, family in (("water", "fluid"), ("air", "fluid"), ("heater", "solid")):
+        meshioplusplus.openfoam.write(
+            case, _grid(1), region=region, region_family=family
+        )
+    # writing a region again does not repeat it
+    meshioplusplus.openfoam.write(case, _grid(1), region="air", region_family="fluid")
+    assert meshioplusplus.openfoam.read_region_properties(case) == {
+        "fluid": ["water", "air"],
+        "solid": ["heater"],
+    }
+    with pytest.raises(ValueError, match="already listed under 'fluid'"):
+        meshioplusplus.openfoam.write(
+            case, _grid(1), region="air", region_family="solid"
+        )
+    with pytest.raises(ValueError, match="region_family needs region"):
+        meshioplusplus.openfoam.write(case, _grid(1), region_family="fluid")
+    # every region reads back through the regions the file names
+    for names in meshioplusplus.openfoam.read_region_properties(case).values():
+        for name in names:
+            assert len(meshioplusplus.openfoam.read(case, region=name).points) == 8
+
+
+def test_multi_region_error_names_the_regions_of_region_properties(tmp_path):
+    meshioplusplus.openfoam.write_region_properties(tmp_path, {"fluid": ["a", "b"]})
+    with pytest.raises(Exception, match="multi-region case.*a, b"):
+        meshioplusplus.openfoam.read(tmp_path / "case.foam")

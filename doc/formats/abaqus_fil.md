@@ -43,7 +43,7 @@ A `.fil` file is a sequence of records `[length, key, attributes…]` of 8-byte 
 | 1999 | total energies: `field_data["abaqus:ALLKE"]`, `ALLSE`, `ALLWK`, … in the increment (Explicit's layout when the procedure is Explicit) |
 | 301–310 | a mode-based dynamic step's generalized displacements, velocities, accelerations, base motions, phases and energies per mode: `field_data["abaqus:GU"]`, `GV`, `GA`, `BM` (the motion type and six components; the base name is dropped), `GPU`, `GPV`, `GPA`, `SNE`, `KE`, `T` |
 | 1501 / 1502 | a contact surface and its facets: a `side` region (facets of rigid surfaces and unknown elements are left out, with a warning) |
-| 1503 / 1504 / 1511–1592 | contact output: the node header, then `point_data["CSTRESS"]`, `CDSTRESS`, `CDISP`, `CFN`, `CFS`, `CAREA`, `CMN`, … at the slave nodes |
+| 1503 / 1504 / 1511–1592 | contact output: the node header, then `point_data["CSTRESS"]`, `CDSTRESS`, `CDISP`, `CFN`, `CFS`, `CAREA`, `CMN`, … at the slave nodes (written back; see below) |
 | 1001 / 1002 / 1011 / 1012 / 1021 / 1022 / 1031 | element matrices (see below) |
 | substructure, contour integrals, cavity radiation, section output | skipped with a warning |
 
@@ -93,14 +93,16 @@ meshioplusplus.write_sequence("job.fil", steps, binary=True)   # the same
 - **Total energies** (record 1999) are the `abaqus:ALLKE`, `ALLSE`, `ALLWK`, `ALLPD`, `ALLIE`, `ETOTAL` ... field data of the step, positional by its procedure (Explicit's names for procedures 17, 21 and 74): those present up to the last one, an absent one in between written as 0.
 - **Element matrices** (1001, 1002, 1011/1012, 1021/1022, 1031): per row of each `abaqus:matrix_dofs`, `stiffness`, `mass` and `load` array's `:index` table (element, offset, length, flag) a 1001 record and the values; the flag picks the symmetric or the full record.
 - **Contact surfaces**: a `side` region is a 1501 surface with a 1502 record per (element, face number), the face number from the cell's Abaqus face order.
-- **Not written**, and named in one warning: arrays and regions with no place in the file, contact output (1503 to 1592) and the mode-based dynamics records (301 to 310).
+- **Contact output** (1503, 1504, 1511 to 1592): the point arrays the reader names `CSTRESS`, `CDSTRESS`, `CDISP`, `CFN`, … (and `key_<n>` for a key from 1505 to 1599 without a name) are written as one 1503 request that names the slave and master surface by their 1940 labels, then per node holding data a 1504 header (node, component count) and a record per array; a NaN row is left out. The surface pair is `field_data["abaqus:contact_pair"]`, two indices into `mesh.regions` (slave, master; both `side` regions, else a `WriteError`), and defaults to the first two `side` regions. Both surfaces are written with a 1940 label even when their names are short, so a reader that resolves the 1503 labels (pybaqus does) finds them. The reader leaves the 1503 pair out of the mesh, so the pair is not read back. With no pair the arrays are dropped with the warning below.
+- **Mode-based dynamics**: `abaqus:GU`, `GV`, `GA`, `BM`, `GPU`, `GPV`, `GPA`, `SNE`, `KE` and `T` become records 301 to 310, one record per row (a 1-D array is one row, an `(n, m)` array is `n` rows; trailing NaN is trimmed, an inner NaN is written as 0). `BM`'s row is the motion type and six components, followed by a blank base name. These are checked by a reader round trip only: pybaqus reads neither binary files nor these records.
+- **Not written**, and named in one warning: arrays and regions with no place in the file and contact output without a surface pair.
 - **ASCII** puts each record on 80-column lines starting with `*` (`I`, `D` with a `D` exponent, `A`, a blank line after 2001); **binary** writes 512-word blocks with 4-byte Fortran markers and pads the 2001 record to the block end.
 
 A series writes the model from the first step and an increment per step; a step whose points or cells differ from the first step's is a `WriteError` (`{step}` in the path writes one file per step instead). The step's time is the argument of `write` (or the pair's first item in `write_sequence`). One step is `write`'s bytes.
 
 pybaqus 0.2.17 reads the ASCII files (it does not read binary `.fil` files); this reader reads both layouts back. They were not opened in Abaqus/CAE.
 
-**Byte order and markers.** `big_endian=True` writes the binary layout big-endian and `marker_size=8` 8-byte record markers (both go through `write`, `SeriesWriter`, `write_sequence` and the C++ `AbaqusFilWriteOptions`); the readers read every combination. Not yet: contact output, the mode-based dynamics records and 4-byte words (the rest of [roadmap 3.2.6](../roadmap.md#_3-reader-and-writer-parity)).
+**Byte order and markers.** `big_endian=True` writes the binary layout big-endian and `marker_size=8` 8-byte record markers (both go through `write`, `SeriesWriter`, `write_sequence` and the C++ `AbaqusFilWriteOptions`); the readers read every combination. The words are always 8 bytes wide, as the reader reads them; 4-byte words (a single-precision build's) are not supported by either (the rest of [roadmap 3.2.6](../roadmap.md#_3-reader-and-writer-parity)).
 
 ## Validation
 

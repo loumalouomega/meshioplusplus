@@ -46,6 +46,7 @@ _CARDS = {
     "CBUSH": ((2608, 26, 60), 14, 2, 2, None),
     "CDAMP2": ((301, 3, 70), 6, 2, 2, None),
     "CELAS2": ((701, 7, 74), 8, 2, 2, None),
+    "CGAP": ((1908, 19, 104), 9, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
     "CELAS1": ((601, 6, 73), 6, 2, 2, None),
     "CONM2": ((1501, 15, 64), 13, 1, 1, None),
@@ -57,10 +58,13 @@ _CARDS = {
     "CQUAD4": ((2958, 51, 177), 14, 4, 2, None),
     "CQUAD8": ((4701, 47, 326), 17, 4, 2, None),
     "CROD": ((3001, 30, 48), 4, 2, 2, None),
+    "CSHEAR": ((3101, 31, 61), 6, 4, 2, None),
     "CTETRA": ((5508, 55, 217), 12, 4, 2, None),
     "CTRIA3": ((5959, 59, 282), 13, 3, 2, None),
     "CTRIA6": ((4801, 48, 327), 14, 3, 2, None),
     "CTUBE": ((3701, 37, 49), 4, 2, 2, None),
+    "CVISC": ((3901, 39, 50), 4, 2, 2, None),
+    "PLOTEL": ((5201, 52, 11), 3, 2, 1, None),
 }
 
 # meshio++ cell type -> (card, nodes written); a line takes CROD, CTUBE or
@@ -121,12 +125,14 @@ _BEAM_STATION_MEMBERS = ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM")
 _BEAM_POINT_MEMBERS = ("C1", "C2", "D1", "D2")
 _PELAS = ((302, 3, 46), 4)
 _PDAMP = ((202, 2, 45), 2)
+_PVISC = ((1802, 18, 31), 3)
+_PGAP = ((2102, 21, 121), 11)
+_PSHEAR = ((1002, 10, 42), 6)
 _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
-# write yet (CBUSH, CVISC, PLOTEL, CSHEAR): their rows are left out rather than
-# written as another card.
+# write yet: their rows are left out rather than written as another card.
 _LINE_CARDS = {
     30: "CROD",
     16: "CONROD",
@@ -139,6 +145,9 @@ _LINE_CARDS = {
     26: "CBUSH",
     3: "CDAMP2",
     7: "CELAS2",
+    39: "CVISC",
+    52: "PLOTEL",
+    19: "CGAP",
 }
 _BLOCK_CARDS = {
     "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
@@ -153,11 +162,14 @@ _BLOCK_CARDS = {
         "CBUSH",
         "CELAS2",
         "CDAMP2",
+        "CVISC",
+        "PLOTEL",
+        "CGAP",
     ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
-# A cell of another type whose card this writer leaves out: CSHEAR is a quad.
-_UNWRITTEN_CELLS = {31: "CSHEAR"}
+# The element type number of a CSHEAR, which only a quad holds.
+_CSHEAR = 31
 
 # The property and material values the field data can set, as
 # ``field_data["nastran:<CARD>_<id>:<MEMBER>"]``: card -> {member: (word, default)}.
@@ -195,6 +207,26 @@ PROPERTY_VALUES = {
     },
     "PELAS": {"K": (1, 1.0), "GE": (2, 0.0), "S": (3, 0.0)},
     "PDAMP": {"B": (1, 1.0)},
+    "PVISC": {"CE": (1, 1.0), "CR": (2, 0.0)},
+    "PGAP": {
+        "U0": (1, 0.0),
+        "F0": (2, 0.0),
+        "KA": (3, 1.0e8),
+        "KB": (4, 1.0e-6),
+        "KT": (5, 0.0),
+        "MU1": (6, 0.0),
+        "MU2": (7, 0.0),
+        "TMAX": (8, 0.0),
+        "MAR": (9, 100.0),
+        "TRMIN": (10, 0.001),
+    },
+    "PSHEAR": {
+        "MID": (1, 1),
+        "T": (2, 1.0),
+        "NSM": (3, 0.0),
+        "F1": (4, 0.0),
+        "F2": (5, 0.0),
+    },
     # The header words of a PCOMP (its layer count is negative for a symmetric layup,
     # ``SYM``), and ``PLY``: the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT.
     "PCOMP": {
@@ -216,10 +248,62 @@ PROPERTY_VALUES = {
         "TREF": (6, 0.0),
         "GE": (7, 0.0),
     },
+    # The anisotropic shell material (17 words): the stiffness matrix, the thermal
+    # expansion and the stress limits; MCSID is an integer.
+    "MAT2": {
+        "G11": (1, 1.0),
+        "G12": (2, 0.0),
+        "G13": (3, 0.0),
+        "G22": (4, 1.0),
+        "G23": (5, 0.0),
+        "G33": (6, 1.0),
+        "RHO": (7, 0.0),
+        "A1": (8, 0.0),
+        "A2": (9, 0.0),
+        "A3": (10, 0.0),
+        "TREF": (11, 0.0),
+        "GE": (12, 0.0),
+        "ST": (13, 0.0),
+        "SC": (14, 0.0),
+        "SS": (15, 0.0),
+        "MCSID": (16, 0),
+    },
+    # The orthotropic ply material (19 words).
+    "MAT8": {
+        "E1": (1, 1.0),
+        "E2": (2, 1.0),
+        "NU12": (3, 0.3),
+        "G12": (4, 0.0),
+        "G1Z": (5, 0.0),
+        "G2Z": (6, 0.0),
+        "RHO": (7, 0.0),
+        "A1": (8, 0.0),
+        "A2": (9, 0.0),
+        "TREF": (10, 0.0),
+        "XT": (11, 0.0),
+        "XC": (12, 0.0),
+        "YT": (13, 0.0),
+        "YC": (14, 0.0),
+        "S": (15, 0.0),
+        "GE": (16, 0.0),
+        "F12": (17, 0.0),
+        "STRN": (18, 0.0),
+    },
 }
+# The material cards, with their MPT keys and record words.
+_MATERIALS = (
+    ("MAT1", (103, 1, 77), 12),
+    ("MAT2", (203, 2, 78), 17),
+    ("MAT8", (2503, 25, 288), 19),
+)
 _VALUE_KEY = re.compile(r"^nastran:([A-Z0-9]+)_([0-9]+):([A-Z0-9]+)$")
 # The members that are integers besides the ``MID`` ones.
-_INT_MEMBERS = ("FT", "SYM")
+_INT_MEMBERS = ("FT", "SYM", "MCSID")
+
+
+def is_int_member(member):
+    """Whether a property or material member holds an integer."""
+    return member.startswith("MID") or member in _INT_MEMBERS
 
 
 def property_values(mesh):
@@ -242,9 +326,8 @@ def property_values(mesh):
         values = np.asarray(array).ravel()
         if values.size != 1:
             _wfail(f"'{name}' must hold one value")
-        is_int = member.startswith("MID") or member in _INT_MEMBERS
         out.setdefault((card, ident), {})[member] = (
-            int(values[0]) if is_int else float(values[0])
+            int(values[0]) if is_int_member(member) else float(values[0])
         )
     return out
 
@@ -253,7 +336,14 @@ def material_ids(properties, values, beams=None):
     """The MAT1 ids: those the properties name (MID default 1) and those given. A PBEAM's
     MID is in the beams' field data (``{pid: {member: array}}``), not in the values."""
     ids = set()
-    for ptype in ("PSHELL", "PSOLID", "PROD", "PTUBE", "PBAR"):  # with a material
+    for ptype in (
+        "PSHELL",
+        "PSOLID",
+        "PROD",
+        "PTUBE",
+        "PBAR",
+        "PSHEAR",
+    ):  # with a material
         for pid in properties.get(ptype, ()):
             given = values.get((ptype, pid), {})
             ids.add(given.get("MID", given.get("MID1", 1)))
@@ -263,8 +353,23 @@ def material_ids(properties, values, beams=None):
     for pid in properties.get("PCOMP", ()):
         plies = np.asarray(values[("PCOMP", pid)]["PLY"]).reshape(-1, 4)
         ids.update(int(mid) for mid in plies[:, 0])
-    ids.update(i for (card, i) in values if card == "MAT1")
+    ids.update(material_cards(values))
     return sorted(ids) or []
+
+
+def material_cards(values):
+    """``{id: card}`` of the materials the field data gives (``nastran:MAT1_<id>:*``,
+    ``MAT2`` or ``MAT8``); an id given as two cards is an error."""
+    cards = {}
+    for card, ident in sorted(values):
+        if card not in ("MAT1", "MAT2", "MAT8"):
+            continue
+        if cards.setdefault(ident, card) != card:
+            _wfail(
+                f"material id {ident} is given as both {cards[ident]} and {card} "
+                "field data"
+            )
+    return cards
 
 
 # Nodal tables in file order: (array, table, table code, thermal flag)
@@ -508,7 +613,7 @@ def _bar_matrix(raw, cards):
     takes only its own card's."""
     n = len(cards)
     out = np.zeros((n, 12))
-    oriented = np.isin(cards, ["CBAR", "CBEAM", "CBUSH"])
+    oriented = np.isin(cards, ["CBAR", "CBEAM", "CBUSH", "CGAP"])
     if oriented.any():
         for key, lo, hi in (("x", 0, 3), ("g0", 3, 4)):
             if raw[key] is not None:
@@ -547,9 +652,11 @@ def _written(codes, ctype, card):
                 _wfail(f"a '{ctype}' block cannot hold {name} cards")
             else:
                 cards[i] = name
-        elif code in _UNWRITTEN_CELLS:
+        elif code == _CSHEAR and ctype == "quad":
+            cards[i] = "CSHEAR"
+        elif code == _CSHEAR:
             keep[i] = False
-            left.add(_UNWRITTEN_CELLS[code])
+            left.add("CSHEAR")
         else:
             cards[i] = card
     return cards, keep, left
@@ -739,19 +846,19 @@ class _Model:
                 if np.any(cards == card) and key not in mesh.cell_data:
                     _wfail(f"a {card} needs its value: {key}")
             if np.any(cards == "CBEAM"):
-                if raw_bar["x"] is None:
-                    _wfail("a CBEAM needs its orientation: nastran:x")
-                g0 = raw_bar["g0"]
-                if g0 is not None and np.any((cards == "CBEAM") & (g0[:, 0] != 0)):
-                    _wfail("a CBEAM oriented by a G0 is not written yet")
-            if (
-                np.any(cards == "CBUSH")
-                and raw_bar["x"] is None
-                and raw_bar["g0"] is None
-            ):
-                _wfail(
-                    "a CBUSH needs its orientation: nastran:x, or nastran:g0 for a G0"
-                )
+                if raw_bar["x"] is None and raw_bar["g0"] is None:
+                    _wfail(
+                        "a CBEAM needs its orientation: nastran:x, or nastran:g0 for a G0"
+                    )
+            for card in ("CBUSH", "CGAP"):
+                if (
+                    np.any(cards == card)
+                    and raw_bar["x"] is None
+                    and raw_bar["g0"] is None
+                ):
+                    _wfail(
+                        f"a {card} needs its orientation: nastran:x, or nastran:g0 for a G0"
+                    )
             self.blocks.append(
                 {
                     "index": b,
@@ -808,6 +915,9 @@ class _Model:
             "PBUSH": set(),
             "PELAS": set(),
             "PDAMP": set(),
+            "PVISC": set(),
+            "PGAP": set(),
+            "PSHEAR": set(),
             "PCOMP": set(),
         }
         for blk in self.blocks:
@@ -828,6 +938,9 @@ class _Model:
                 ("CBUSH", "PBUSH"),
                 ("CELAS1", "PELAS"),
                 ("CDAMP1", "PDAMP"),
+                ("CVISC", "PVISC"),
+                ("CGAP", "PGAP"),
+                ("CSHEAR", "PSHEAR"),
             ):
                 rows = blk["cards"] == name
                 if rows.any():
@@ -848,6 +961,7 @@ class _Model:
         for p in used:
             if p <= 0:
                 _wfail("property ids must be positive")
+        material_cards(self.values)  # refuses a material id given as two cards
 
     def element_rows(self, name):
         """(eids, pids, [(block, rows)], order) of a card; the first two by id."""
@@ -914,6 +1028,20 @@ class _Model:
             words[:, 0] = _i32(eid)
             if name == "CONM2":
                 words[:, 1] = _i32(nodes[:, 0])
+            elif name == "CGAP":
+                # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7 (1 for a
+                # vector); the coordinate system CID (8) stays 0.
+                g0 = bar[:, 3].astype(np.int64)
+                flag = np.where(g0 != 0, 2, 1)
+                words[:, 1] = _i32(pid)
+                words[:, 2:4] = _i32(nodes)
+                words[:, 4:7] = _f32(bar[:, 0:3])
+                words[flag == 2, 4] = _i32(g0[flag == 2])
+                words[flag == 2, 5:7] = 0
+                words[:, 7] = _i32(flag)
+            elif name == "PLOTEL":
+                words[:, 1] = _i32(nodes[:, 0])  # no property: the nodes at 1 and 2
+                words[:, 2] = _i32(nodes[:, 1])
             elif name == "CONROD":
                 words[:, 1] = _i32(nodes[:, 0])
                 words[:, 2] = _i32(nodes[:, 1])
@@ -953,10 +1081,15 @@ class _Model:
                     words[:, 9] = _f32(np.full(len(eid), 0.5))
                     words[:, 10] = _i32(np.full(len(eid), -1, dtype=np.int64))
                 if name == "CBEAM":
-                    # X1..X3 at 6 to 8, the flag at 9 (1: global), PA and PB at 10 and
-                    # 11, the offsets at 12 to 17; the scalar ends SA and SB stay zero.
+                    # X1..X3 at 6 to 8 (flag 1: global) or the G0 at 6 with zero 7 and 8
+                    # (flag 2), the flag at 9, PA and PB at 10 and 11, the offsets at 12
+                    # to 17; the scalar ends SA and SB stay zero.
+                    g0 = bar[:, 3].astype(np.int64)
+                    flag = np.where(g0 != 0, 2, 1)
                     words[:, 6:9] = _f32(bar[:, 0:3])
-                    words[:, 9] = _i32(np.ones(len(eid), dtype=np.int64))
+                    words[flag == 2, 6] = _i32(g0[flag == 2])
+                    words[flag == 2, 7:9] = 0
+                    words[:, 9] = _i32(flag)
                     words[:, 10:12] = _i32(bar[:, 4:6].astype(np.int64))
                     words[:, 12:18] = _f32(bar[:, 6:12])
             records.append(_key(*key) + _bytes(words))
@@ -973,6 +1106,9 @@ class _Model:
             ("PBAR", _PBAR),
             ("PELAS", _PELAS),
             ("PDAMP", _PDAMP),
+            ("PVISC", _PVISC),
+            ("PGAP", _PGAP),
+            ("PSHEAR", _PSHEAR),
         ):
             pids = sorted(self.properties[ptype])
             if not pids:
@@ -1098,17 +1234,27 @@ class _Model:
 
     def mpt(self):
         """A MAT1 per material the properties name: unit modulus unless the field
-        data gives its values."""
+        data gives its values. A material given as ``nastran:MAT2_<id>:*`` or
+        ``nastran:MAT8_<id>:*`` is written as that card instead."""
         ids = material_ids(self.properties, self.values, self.beams) or [1]
-        words = np.zeros((len(ids), 12), dtype="<u4")
-        for k, mid in enumerate(ids):
-            words[k, 0] = _i32(np.array([mid]))[0]
-            given = self.values.get(("MAT1", mid), {})
-            for member, (word, default) in PROPERTY_VALUES["MAT1"].items():
-                words[k, word] = _f32(np.array([given.get(member, default)]))[0]
-        return _table(
-            "MPT", [_key(103, 1, 77) + _bytes(words), _key(65535, 65535, 65535)]
-        )
+        given_cards = material_cards(self.values)
+        records = []
+        for card, key, size in _MATERIALS:
+            mids = [mid for mid in ids if given_cards.get(mid, "MAT1") == card]
+            if not mids:
+                continue
+            words = np.zeros((len(mids), size), dtype="<u4")
+            for k, mid in enumerate(mids):
+                words[k, 0] = _i32(np.array([mid]))[0]
+                given = self.values.get((card, mid), {})
+                for member, (word, default) in PROPERTY_VALUES[card].items():
+                    value = np.array([given.get(member, default)])
+                    words[k, word] = (
+                        _i32(value)[0] if is_int_member(member) else _f32(value)[0]
+                    )
+            records.append(_key(*key) + _bytes(words))
+        records.append(_key(65535, 65535, 65535))
+        return _table("MPT", records)
 
 
 # -- steps -----------------------------------------------------------------------------

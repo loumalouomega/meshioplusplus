@@ -1340,10 +1340,10 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "float64", "p_i32": "float64", "p_vec": "float64"},
         "cell_data": {"c_f64": "float64", "c_i32": "float64"},
         "field_data": True,
-        "regions": ["cell", "point"],
+        "regions": ["cell", "point", "side"],
         "note": "Everything is stored as 32-bit floats and comes back as float64 (the "
         "probe's coordinates are exact in float32, general ones are not); a plot file "
-        "has no vertex element, and side regions and surfaces are not written.",
+        "has no vertex element. A side region is a facet set.",
     },
     "radioss_anim": {
         "cells": {
