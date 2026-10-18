@@ -307,9 +307,7 @@ TEST(NastranH5, OtherVendorsAndOtherFilesAreRefused) {
     std::filesystem::remove(nx);
 
     const std::string other = mt::temp_path(".h5");
-    {
-        h5::Hid file(H5Fcreate(other.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose);
-    }
+    { h5::Hid file(H5Fcreate(other.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT), H5Fclose); }
     EXPECT_THROW(meshioplusplus::read_nastran_h5(other), ReadError);
     std::filesystem::remove(other);
 
@@ -359,6 +357,49 @@ TEST(NastranH5Writer, ModelAndNodalResultsRoundTrip) {
     const double* got = back.PointData("DISPLACEMENT").As<double>();
     for (std::size_t i = 0; i < disp.size(); ++i)
         EXPECT_DOUBLE_EQ(got[i], disp[i]);
+    std::filesystem::remove(path);
+}
+
+TEST(NastranH5Writer, PliesStationsAndMscColumnsRoundTrip) {
+    Mesh mesh = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}}, "quad",
+                              {{0, 1, 2, 3}});
+    mesh.AddCellBlock("line", mt::conn_from({{1, 4}}));
+    const auto ints = [](std::vector<std::int32_t> v) { return mt::int_data_array(v); };
+    mesh.AddCellData("nastran:eid", {ints({1}), ints({2})});
+    mesh.AddCellData("nastran:pid", {ints({5}), ints({6})});
+    mesh.AddCellData("nastran:card", {ints({48}), ints({24})});
+    mesh.AddCellData("nastran:x", {mt::data_array({0, 0, 0}, 3), mt::data_array({0, 1, 0}, 3)});
+    const double nan = std::nan("");
+    mesh.AddCellData("STRESS:X", {mt::data_array({1.0}), mt::data_array({2.0})});
+    mesh.AddCellData("STRESS:X@ply",
+                     {mt::data_array({1.0, 2.0, 3.0}, 3), mt::data_array({nan, nan, nan}, 3)});
+    mesh.AddCellData("FORCE:AXIAL@station",
+                     {mt::data_array({0.0, 0.0}, 2), mt::data_array({1.0, 2.0}, 2)});
+    const std::string path = mt::temp_path(".h5");
+    meshioplusplus::write_nastran_h5(path, mesh);
+    const Mesh back = meshioplusplus::read_nastran_h5(path);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    ASSERT_TRUE(back.HasCellData("STRESS:X@ply"));
+    // the blocks come in card-name order: CBAR before CQUAD4
+    const std::size_t quad = back.Cells(0).Type() == "quad" ? 0 : 1;
+    const double* ply = back.CellData("STRESS:X@ply", quad).As<double>();
+    EXPECT_DOUBLE_EQ(ply[0], 1.0);
+    EXPECT_DOUBLE_EQ(ply[1], 2.0);
+    EXPECT_DOUBLE_EQ(ply[2], 3.0);
+    ASSERT_TRUE(back.HasCellData("FORCE:AXIAL@station"));
+    const meshioplusplus::NDArray& station = back.CellData("FORCE:AXIAL@station", 1 - quad);
+    double sum = 0.0;
+    for (std::size_t i = 0; i < station.Size(); ++i)
+        if (!std::isnan(station.As<double>()[i]))
+            sum += station.As<double>()[i];
+    EXPECT_DOUBLE_EQ(sum, 3.0);
+    // the tables MSC names, with the columns MSC lists
+    h5::Hid file(H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT), H5Fclose);
+    ASSERT_TRUE(file.Valid());
+    for (const char* name :
+         {"/NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD_CN", "/NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD4_COMP",
+          "/NASTRAN/RESULT/ELEMENTAL/STRESS/BARS", "/NASTRAN/INPUT/PROPERTY/PBAR"})
+        EXPECT_GT(H5Lexists(file, name, H5P_DEFAULT), 0) << name;
     std::filesystem::remove(path);
 }
 

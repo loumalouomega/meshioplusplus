@@ -21,11 +21,18 @@ from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
 from ..nastran_op2._write import _CARDS as _OP2_CARDS
-from ..nastran_op2._write import _Model, material_ids
+from ..nastran_op2._write import PROPERTY_VALUES, _Model, material_ids
+from ._schema import SCHEMA as _SCHEMA
 
 TIME_KEY = "meshio:time"
 SCHEMA = 20200
 
+# The cards the writer holds a table for. Any other card of ``nastran:card`` (CBUSH, CGAP,
+# CMASS1, CMASS2, CONM1: no MSC sample here) is left out, with a warning.
+_CARDS = frozenset(
+    "CBAR CBEAM CDAMP1 CDAMP2 CELAS1 CELAS2 CHEXA CONM2 CONROD CPENTA CPYRAM CQUAD CQUAD4 "
+    "CQUAD8 CROD CSHEAR CTETRA CTRIA3 CTRIA6 CTUBE CVISC PLOTEL".split()
+)
 # card -> (width of its G column, the family name its result tables take). A
 # solid's G holds the quadratic node count, zero-padded for a linear element.
 _CARD_WIDTH = {
@@ -42,8 +49,16 @@ _CARD_WIDTH = {
     "CTRIA3": 3,
     "CTRIA6": 6,
     "CTUBE": 2,
+    "CSHEAR": 4,
+    "CVISC": 2,
+    "PLOTEL": 2,
 }
 _FAMILY = {
+    "CBAR": "BARS",
+    "CBEAM": "BEAM",
+    "CELAS1": "ELAS1",
+    "CELAS2": "ELAS2",
+    "CSHEAR": "SHEAR",
     "CHEXA": "HEXA",
     "CONROD": "CONROD",
     "CPENTA": "PENTA",
@@ -63,7 +78,108 @@ _PROPERTY_MEMBER = {"PSHELL": "MID1", "PSOLID": "MID", "PROD": "MID", "PTUBE": "
 
 _GROUP = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _QUIET_POINT = ("nastran:cp", "nastran:cd", "nastran:nid")
-_QUIET_CELL = ("nastran:eid", "nastran:pid")
+_QUIET_CELL = (
+    "nastran:eid",
+    "nastran:pid",
+    "nastran:card",
+    "nastran:c1",
+    "nastran:c2",
+    "nastran:x",
+    "nastran:g0",
+    "nastran:pin",
+    "nastran:w",
+    "nastran:k",
+    "nastran:ge",
+    "nastran:s",
+    "nastran:b",
+)
+
+_KIND_DTYPE = {"i8": "<i8", "f8": "<f8", "S4": "S4", "S8": "S8"}
+_schema_cache = {}
+
+
+def _spec(path):
+    """MSC's columns of the table at ``path`` (below ``/NASTRAN``) as ``[(name, kind,
+    arity)]``, or ``None`` for a table the fixtures do not hold."""
+    if path not in _schema_cache:
+        text = _SCHEMA.get(path)
+        columns = None
+        if text is not None:
+            columns = []
+            for item in text.split():
+                name, kind = item.split(":")
+                arity = 1
+                if "[" in kind:
+                    kind, count = kind[:-1].split("[")
+                    arity = int(count)
+                columns.append((name, kind, arity))
+        _schema_cache[path] = columns
+    return _schema_cache[path]
+
+
+def _fit(values, kind, arity, rows):
+    """``values`` as a column of ``kind`` and ``arity`` for ``rows`` rows: the first entries
+    of a wider array, zeros after a narrower one."""
+    dtype = _KIND_DTYPE[kind]
+    array = np.asarray(values)
+    if rows == 0:
+        return np.zeros((0,) if arity == 1 else (0, arity), dtype=dtype)
+    if kind[0] == "S":
+        return np.asarray(array, dtype=dtype).reshape(rows)
+    if arity == 1:
+        return np.asarray(array.reshape(rows, -1)[:, 0], dtype=dtype)
+    wide = array.reshape(rows, -1)
+    out = np.zeros((rows, arity), dtype=dtype)
+    k = min(arity, wide.shape[1])
+    out[:, :k] = wide[:, :k]
+    return out
+
+
+def _default(name, kind, arity, rows, grid_arity):
+    """The value of a column the mesh gives nothing for: zeros, 'CEN/' for a shell's TERM,
+    'GRID' for a solid's CTYPE and its corner count for NODEF."""
+    dtype = _KIND_DTYPE[kind]
+    if name == "TERM":
+        return np.full(rows, b"CEN/", dtype=dtype)
+    if name == "CTYPE":
+        return np.full(rows, b"GRID", dtype=dtype)
+    if name == "NODEF":
+        return np.full(rows, max(grid_arity - 1, 0), dtype=dtype)
+    if name == "DOMAIN_ID":
+        return np.ones(rows, dtype=dtype)
+    return np.zeros(rows if arity == 1 else (rows, arity), dtype=dtype)
+
+
+def _fill(path, provided, rows):
+    """The columns of the table at ``path`` as ``[(name, dtype, values)]``: MSC's columns in
+    MSC's order, each from ``provided`` (``{name: values}``) or its default, then any
+    provided column MSC's table lacks, before ``DOMAIN_ID``. A table the fixtures do not
+    hold is its provided columns."""
+    spec = _spec(path)
+    if spec is None:
+        return [(m, _dtype_of(v), v) for m, v in provided.items()]
+    grid = next((a for n, _k, a in spec if n == "GRID"), 0)
+    out = []
+    names = set()
+    for name, kind, arity in spec:
+        names.add(name)
+        if name in provided:
+            values = _fit(provided[name], kind, arity, rows)
+        else:
+            values = _default(name, kind, arity, rows, grid)
+        out.append((name, _KIND_DTYPE[kind], values))
+    extras = [(m, _dtype_of(v), v) for m, v in provided.items() if m not in names]
+    if extras:
+        last = out.pop() if out and out[-1][0] == "DOMAIN_ID" else None
+        out += extras
+        if last is not None:
+            out.append(last)
+    return out
+
+
+def _dtype_of(values):
+    kind = np.asarray(values).dtype.kind
+    return "<i8" if kind in "iu" else "S4" if kind == "S" else "<f8"
 
 
 def _wfail(message):
@@ -195,14 +311,14 @@ def _corner_members(model, mesh, taken, out):
         if not _GROUP.match(group) or not member:
             continue
         for card in sorted(model.cards):
-            if card not in _FAMILY:
+            if card not in _FAMILY or card in _STATION_CARDS:
                 continue
-            _eid, parts, order = _family_rows(model, card)
+            eid, parts, order = _family_rows(model, card)
             width = 1 + max(blk["conn"].shape[1] for blk, _ in parts)
             wide = _gather_wide(mesh, name, parts, order, width)
             if wide is None:
                 continue
-            columns = out.setdefault((group, card), [])
+            columns = out.setdefault((group, card, ""), ([], eid))[0]
             if not any(m == "GRID" for m, _ in columns):
                 grid = np.zeros((wide.shape[0], width), dtype=np.int64)
                 at = 0
@@ -218,36 +334,204 @@ def _corner_members(model, mesh, taken, out):
                     break
             columns.append((member, wide))
             taken.add(name)
-    for key in [k for k, v in out.items() if not v]:
+    for key in [k for k, v in out.items() if not v[0]]:
         del out[key]
 
 
-def _element_members(model, mesh, taken):
-    """``{(group, card): [(member, column)]}`` of the centre values, and of the
-    corner values as array members."""
-    groups = {}
+_STATION_CARDS = ("CBAR", "CBEAM")
+# the shells a composite's plies are results of, and the family their ply tables take
+_PLY_FAMILY = {
+    "CQUAD4": "QUAD4",
+    "CTRIA3": "TRIA3",
+    "CQUAD": "QUADR",
+    "CQUAD8": "QUAD8",
+    "CTRIA6": "TRIA6",
+}
+
+
+def _gather_columns(mesh, name, parts, order):
+    """A ``(cells, columns)`` array of the cells of a card, in the card's row order, NaN
+    where a block lacks columns; ``None`` when no block of the card has it."""
+    arrays = mesh.cell_data.get(name)
+    if arrays is None:
+        return None
+    width = 0
+    shaped = []
+    for blk, rows in parts:
+        a = np.asarray(arrays[blk["index"]], dtype=np.float64)
+        n = len(blk["eids"])
+        if n and (a.size < n or a.size % n):
+            _wfail(f"'{name}' must have one value per cell and column")
+        a = a.reshape(n, -1)
+        width = max(width, a.shape[1])
+        shaped.append((a, rows))
+    out = np.full((sum(len(rows) for _, rows in parts), max(width, 1)), np.nan)
+    at = 0
+    for a, rows in shaped:
+        out[at : at + len(rows), : a.shape[1]] = a[rows]
+        at += len(rows)
+    return out[order]
+
+
+def _split_names(mesh, suffix):
+    """``{group: {member: name}}`` of the arrays ``<G>:<M><suffix>`` ('' for the plain ones,
+    which have no ``@``)."""
+    found = {}
     for name in sorted(mesh.cell_data):
         if name in _QUIET_CELL or ":" not in name:
             continue
-        group, member = name.split(":", 1)
-        if not _GROUP.match(group) or "@" in member:
+        base = name[: -len(suffix)] if suffix and name.endswith(suffix) else name
+        if suffix and base == name:
             continue
-        groups.setdefault(group, []).append((member, name))
-    out = {}
-    for group, members in groups.items():
+        group, member = base.split(":", 1)
+        if not _GROUP.match(group) or not member or "@" in member:
+            continue
+        found.setdefault(group, {})[member] = name
+    return found
+
+
+def _ply_members(model, mesh, taken, out):
+    """``<G>:<M>@ply`` of the shells as rows of a ``<FAMILY>_COMP`` table: one per ply with
+    any value, ``PLY`` (from 1) and the members."""
+    for group, members in _split_names(mesh, "@ply").items():
         for card in sorted(model.cards):
-            if card not in _FAMILY:
+            if card not in _PLY_FAMILY:
                 continue
-            _eid, parts, order = _family_rows(model, card)
+            eid, parts, order = _family_rows(model, card)
+            arrays = {}
+            for member, name in members.items():
+                wide = _gather_columns(mesh, name, parts, order)
+                if wide is not None:
+                    arrays[member] = wide
+                    taken.add(name)
+            if not arrays:
+                continue
+            width = max(a.shape[1] for a in arrays.values())
+            shown = np.zeros((len(eid), width), dtype=bool)
+            for a in arrays.values():
+                shown[:, : a.shape[1]] |= ~np.isnan(a)
+            rr, cc = np.nonzero(shown)
+            columns = [("PLY", cc + 1)]
+            for member, a in arrays.items():
+                column = np.full(len(rr), np.nan)
+                ok = cc < a.shape[1]
+                column[ok] = a[rr[ok], cc[ok]]
+                columns.append((member, column))
+            out[(group, card, "ply")] = (columns, eid[rr])
+
+
+def _station_members(model, mesh, taken, out):
+    """The bars' and beams' values: a ``BEAM`` row per beam with 11-slot arrays (``GRID``
+    names its two ends, ``SD`` the station along it) and a ``BARS`` row per station of a
+    bar, from ``<G>:<M>@station`` (entry 0 is end A) and the plain ``<G>:<M>`` (end A).
+    """
+    plain = _split_names(mesh, "")
+    stations = _split_names(mesh, "@station")
+    for group in sorted(set(plain) | set(stations)):
+        for card in _STATION_CARDS:
+            if card not in model.cards:
+                continue
+            eid, parts, order = _family_rows(model, card)
+            arrays = {}
+            for member in sorted(
+                set(plain.get(group, {})) | set(stations.get(group, {}))
+            ):
+                wide = None
+                if member in stations.get(group, {}):
+                    name = stations[group][member]
+                    wide = _gather_columns(mesh, name, parts, order)
+                    taken.add(name)
+                if member in plain.get(group, {}):
+                    name = plain[group][member]
+                    single = _gather(mesh, name, parts, order)
+                    if single is not None:
+                        taken.add(name)
+                        if wide is None:
+                            wide = single.reshape(-1, 1)
+                        else:
+                            wide = wide.copy()
+                            wide[:, 0] = np.where(
+                                np.isnan(wide[:, 0]), single, wide[:, 0]
+                            )
+                if wide is not None:
+                    arrays[member] = wide
+            if not arrays:
+                continue
+            if card == "CBEAM":
+                out[(group, card, "")] = (
+                    _beam_columns(model, parts, order, arrays),
+                    eid,
+                )
+            else:
+                out[(group, card, "")] = _bar_columns(eid, arrays)
+
+
+def _beam_columns(model, parts, order, arrays):
+    """The columns of a ``BEAM`` table: ``GRID`` and the members as 11-slot arrays."""
+    n = len(order)
+    members = []
+    shown = np.zeros((n, 11), dtype=bool)
+    for member, a in arrays.items():
+        full = np.full((n, 11), np.nan)
+        k = min(11, a.shape[1])
+        full[:, :k] = a[:, :k]
+        members.append((member, full))
+        shown |= ~np.isnan(full)
+    grid = np.zeros((n, 11), dtype=np.int64)
+    at = 0
+    for blk, rows in parts:
+        conn = model.node_ids[blk["conn"][rows]]
+        grid[at : at + len(rows), 0] = conn[:, 0]
+        grid[at : at + len(rows), 10] = conn[:, 1]
+        at += len(rows)
+    grid = grid[order]
+    columns = [("GRID", grid)]
+    if "SD" not in arrays:  # the station along the beam: 0 to 1 over the 11 slots
+        columns.append(("SD", np.where(shown, np.arange(11) / 10.0, 0.0)))
+    return columns + members
+
+
+def _bar_columns(eid, arrays):
+    """The rows of a ``BARS`` table: one per station of each bar with any value, and ``SD``
+    (the station along the bar, 0 to 1) unless the mesh gives it."""
+    width = max(a.shape[1] for a in arrays.values())
+    shown = np.zeros((len(eid), width), dtype=bool)
+    for a in arrays.values():
+        shown[:, : a.shape[1]] |= ~np.isnan(a)
+    rr, cc = np.nonzero(shown)
+    columns = []
+    if "SD" not in arrays:
+        columns.append(("SD", cc / max(width - 1, 1)))
+    for member, a in arrays.items():
+        column = np.full(len(rr), np.nan)
+        ok = cc < a.shape[1]
+        column[ok] = a[rr[ok], cc[ok]]
+        columns.append((member, column))
+    return columns, eid[rr]
+
+
+def _element_members(model, mesh, taken):
+    """``{(group, card, variant): (columns, eid)}`` of the centre values, of the corner
+    values as array members (variant ''), of the composite plies ('ply') and of the bars'
+    and beams' stations: ``columns`` is ``[(member, values)]`` and ``eid`` the element id
+    of each row."""
+    out = {}
+    for group, members in _split_names(mesh, "").items():
+        for card in sorted(model.cards):
+            if card not in _FAMILY or card in _STATION_CARDS:
+                continue
+            eid, parts, order = _family_rows(model, card)
             columns = []
-            for member, name in members:
+            for member, name in members.items():
                 column = _gather(mesh, name, parts, order)
                 if column is not None:
                     taken.add(name)
                     columns.append((member, column))
             if columns:
-                out[(group, card)] = columns
+                out[(group, card, "")] = (columns, eid)
     _corner_members(model, mesh, taken, out)
+    _ply_members(model, mesh, taken, out)
+    _station_members(model, mesh, taken, out)
     return out
 
 
@@ -276,7 +560,7 @@ class _Step:
         self.elemental = _element_members(model, mesh, taken)
         self.signature = (
             sorted((t, tuple(m)) for t, m in self.nodal.items()),
-            sorted((k, tuple(m for m, _ in v)) for k, v in self.elemental.items()),
+            sorted((k, tuple(m for m, _ in v[0])) for k, v in self.elemental.items()),
         )
 
 
@@ -305,6 +589,11 @@ def _warn_dropped(model, mesh, taken):
         warn(
             "Nastran HDF5: cell blocks with no element card are not written: "
             + ", ".join(sorted(set(model.skipped)))
+        )
+    if model.unwritten:
+        warn(
+            "Nastran HDF5: element cards with no table here are left out: "
+            + ", ".join(sorted(model.unwritten))
         )
 
 
@@ -366,6 +655,77 @@ def _filled(rows, spec):
     return out
 
 
+def _card_rows(model, card):
+    """A card's rows in element order: ``(eid, pid, nodes, comp, bar)`` with the node ids
+    in Nastran's order, zero-padded to the card's width, the spring components and the
+    21 columns of card fields."""
+    spec = _OP2_CARDS[card]
+    linear, perm = spec[2], spec[4]
+    width = _CARD_WIDTH.get(card, 2)
+    eid, pid, parts, order = model.element_rows(card)
+    nodes = np.zeros((len(eid), width), dtype=np.int64)
+    at = 0
+    for blk, rows in parts:
+        conn = model.node_ids[blk["conn"][rows]]
+        if blk["nodes"] > linear and perm is not None:
+            placed = np.zeros_like(conn)
+            for i, p in enumerate(perm):
+                placed[:, p] = conn[:, i]
+            conn = placed
+        k = min(conn.shape[1], width)
+        nodes[at : at + len(rows), :k] = conn[:, :k]
+        at += len(rows)
+    comp = np.concatenate([blk["comps"][r] for blk, r in parts])[order]
+    bar = np.concatenate([blk["bar"][r] for blk, r in parts])[order]
+    return eid, pid, nodes[order], comp, bar
+
+
+def _bar_card(card, eid, pid, nodes, comp, bar):
+    """The provided columns of a card the writer fills from the schema (see ``_fill``)."""
+    g0 = bar[:, 3].astype(np.int64)
+    pins = bar[:, 4:6].astype(np.int64)
+    if card == "CBAR":
+        out = {"EID": eid, "PID": pid, "GA": nodes[:, 0], "GB": nodes[:, 1]}
+        out["FLAG"] = np.where(g0 != 0, 2, 1)
+        for k in range(3):
+            out[f"X{k + 1}"] = bar[:, k]
+        out.update({"GO": g0, "PA": pins[:, 0], "PB": pins[:, 1]})
+        for k, name in enumerate(("W1A", "W2A", "W3A", "W1B", "W2B", "W3B")):
+            out[name] = bar[:, 6 + k]
+        return out
+    if card == "CBEAM":
+        return {
+            "EID": eid,
+            "PID": pid,
+            "GA": nodes[:, 0],
+            "GB": nodes[:, 1],
+            "X": bar[:, 0:3],
+            "G0": g0,
+            "F": np.where(g0 != 0, 2, 1),
+            "PA": pins[:, 0],
+            "PB": pins[:, 1],
+            "WA": bar[:, 6:9],
+            "WB": bar[:, 9:12],
+        }
+    ends = {"G1": nodes[:, 0], "G2": nodes[:, 1], "C1": comp[:, 0], "C2": comp[:, 1]}
+    if card in ("CELAS1", "CDAMP1"):
+        return {"EID": eid, "PID": pid, **ends}
+    if card == "CELAS2":
+        return {"EID": eid, "K": bar[:, 0], **ends, "GE": bar[:, 1], "S": bar[:, 2]}
+    if card == "CDAMP2":
+        return {"EID": eid, "B": bar[:, 0], **ends}
+    if card in ("CSHEAR", "CVISC"):
+        return {"EID": eid, "PID": pid, "G": nodes}
+    return {"EID": eid, "G": nodes}  # PLOTEL
+
+
+_SCHEMA_CARDS = "CBAR CBEAM CDAMP1 CDAMP2 CELAS1 CELAS2 CSHEAR CVISC PLOTEL".split()
+# the properties filled from the schema, with the members the field data gives
+_SCHEMA_PROPERTIES = ("PBAR", "PELAS", "PDAMP", "PVISC", "PSHEAR")
+# the OP2 name of a MAT2 member called otherwise in MSC's table
+_MAT2_COLUMN = {"A3": "A12"}
+
+
 def _write_model(f, model):
     nas = f.create_group("NASTRAN")
     n = model.npoints
@@ -394,23 +754,16 @@ def _write_model(f, model):
     )
     element = nas.create_group("INPUT/ELEMENT")
     for card in sorted(model.cards):
-        spec = _OP2_CARDS[card]
-        linear, perm = spec[2], spec[4]
-        width = _CARD_WIDTH[card]
-        eid, pid, parts, order = model.element_rows(card)
-        nodes = np.zeros((len(eid), width), dtype=np.int64)
-        at = 0
-        for blk, rows in parts:
-            conn = model.node_ids[blk["conn"][rows]]
-            if blk["nodes"] > linear and perm is not None:
-                placed = np.zeros_like(conn)
-                for i, p in enumerate(perm):
-                    placed[:, p] = conn[:, i]
-                conn = placed
-            nodes[at : at + len(rows), : conn.shape[1]] = conn
-            at += len(rows)
-        nodes = nodes[order]
+        eid, pid, nodes, comp, bar = _card_rows(model, card)
         count = len(eid)
+        if card in _SCHEMA_CARDS:
+            columns = _fill(
+                f"INPUT/ELEMENT/{card}",
+                _bar_card(card, eid, pid, nodes, comp, bar),
+                count,
+            )
+            _table(element, card, columns)
+            continue
         if card == "CONROD":
             columns = [("EID", "<i8", eid), ("G1", "<i8", nodes[:, 0])]
             columns += [("G2", "<i8", nodes[:, 1])]
@@ -445,17 +798,101 @@ def _write_model(f, model):
                     if c[0] == member:
                         c[2][k] = value
         _table(prop, ptype, [("PID", "<i8", pids)] + columns + [one(len(pids))])
-    mids = material_ids(model.properties, model.values)
-    if mids:
-        mat = nas.create_group("INPUT/MATERIAL")
-        columns = _filled(len(mids), _MATERIAL_COLUMNS)
-        for k, mid in enumerate(mids):
-            columns[0][2][k] = mid
-            for member, value in model.values.get(("MAT1", mid), {}).items():
-                for c in columns:
-                    if c[0] == member:
-                        c[2][k] = value
-        _table(mat, "MAT1", columns + [one(len(mids))])
+    for ptype in _SCHEMA_PROPERTIES:
+        pids = sorted(model.properties[ptype])
+        if not pids:
+            continue
+        provided = {"PID": pids}
+        for member, (_word, default) in PROPERTY_VALUES[ptype].items():
+            given = [
+                model.values.get((ptype, pid), {}).get(member, default) for pid in pids
+            ]
+            provided[member] = given
+        _table(prop, ptype, _fill(f"INPUT/PROPERTY/{ptype}", provided, len(pids)))
+    pids = sorted(model.properties["PBEAM"])
+    if pids:
+        provided = {"PID": pids, **{m: [] for m in ("MID", "NSEGS", "CCF")}}
+        names = "SO XXB A I1 I2 I12 J NSM C1 C2 D1 D2 E1 E2 F1 F2".split()
+        for name in names:
+            provided[name] = []
+        for pid in pids:
+            mid, nseg, ccf, slots = model.pbeam_slots(pid)
+            provided["MID"].append(mid)
+            provided["NSEGS"].append(nseg)
+            provided["CCF"].append(ccf)
+            for column, name in enumerate(names):
+                provided[name].append(slots[:, column])
+        _table(prop, "PBEAM", _fill("INPUT/PROPERTY/PBEAM", provided, len(pids)))
+    pids = sorted(model.properties["PCOMP"])
+    if pids:
+        group = prop.create_group("PCOMP")
+        head = {"PID": pids, "NPLIES": [], "PLY_POS": [], "PLY_LEN": []}
+        for member in ("Z0", "NSM", "SB", "FT", "TREF", "GE"):
+            head[member] = []
+        plies, position = [], 0
+        for pid in pids:
+            given = model.values[("PCOMP", pid)]
+            rows = np.asarray(given["PLY"], dtype=np.float64)
+            head["NPLIES"].append(len(rows))
+            head["PLY_POS"].append(position)
+            head["PLY_LEN"].append(len(rows))
+            for member in ("Z0", "NSM", "SB", "FT", "TREF", "GE"):
+                head[member].append(
+                    given.get(member, PROPERTY_VALUES["PCOMP"][member][1])
+                )
+            plies.append(rows)
+            position += len(rows)
+        _table(
+            group, "IDENTITY", _fill("INPUT/PROPERTY/PCOMP/IDENTITY", head, len(pids))
+        )
+        rows = np.concatenate(plies)
+        ply = {
+            "MID": rows[:, 0],
+            "T": rows[:, 1],
+            "THETA": rows[:, 2],
+            "SOUT": rows[:, 3],
+        }
+        _table(group, "PLY", _fill("INPUT/PROPERTY/PCOMP/PLY", ply, len(rows)))
+    _write_materials(nas, model)
+
+
+def _write_materials(nas, model):
+    """The MAT1 table of every material id the properties name, the MAT2 and MAT4 tables of
+    those whose field data gives a MAT2 or MAT4 (any other card's values are not written:
+    the id is a MAT1)."""
+    from ..nastran_op2._write import material_cards
+
+    mids = material_ids(model.properties, model.values, model.beams, model.lines)
+    if not mids:
+        return
+    cards = material_cards(model.values)
+    mat = nas.create_group("INPUT/MATERIAL")
+    by_card = {"MAT1": [], "MAT2": [], "MAT4": []}
+    for mid in mids:
+        card = cards.get(mid, "MAT1")
+        by_card[card if card in by_card else "MAT1"].append(mid)
+    for card, ids in by_card.items():
+        if not ids:
+            continue
+        if card == "MAT1":
+            columns = _filled(len(ids), _MATERIAL_COLUMNS)
+            for k, mid in enumerate(ids):
+                columns[0][2][k] = mid
+                for member, value in model.values.get(("MAT1", mid), {}).items():
+                    for c in columns:
+                        if c[0] == member:
+                            c[2][k] = value
+            _table(
+                mat, "MAT1", columns + [("DOMAIN_ID", "<i8", np.ones(len(ids), "<i8"))]
+            )
+            continue
+        provided = {"MID": ids}
+        for member, (_word, default) in PROPERTY_VALUES[card].items():
+            column = _MAT2_COLUMN.get(member, member) if card == "MAT2" else member
+            provided[column] = [
+                model.values.get((card, mid), {}).get(member, default) for mid in ids
+            ]
+        _table(mat, card, _fill(f"INPUT/MATERIAL/{card}", provided, len(ids)))
 
 
 def _write_results(f, model, steps):
@@ -481,7 +918,7 @@ def _write_results(f, model, steps):
     )
     index = f.create_group("INDEX/NASTRAN/RESULT")
 
-    def emit(parent_path, name, per_step, columns_of):
+    def emit(parent_path, name, per_step, columns_of, path=None):
         """One table over every step that has rows for it, and its INDEX twin."""
         chunks, idx, position = [], [], 0
         for step, payload in per_step:
@@ -494,11 +931,13 @@ def _write_results(f, model, steps):
             position += count
         if not chunks:
             return
-        members = [(m, d) for m, d, _ in chunks[0][1]]
+        # DOMAIN_ID is the table's last column: every row's step
+        names = [m for m, _d, _ in chunks[0][1] if m != "DOMAIN_ID"]
         merged = []
-        for k, (m, d) in enumerate(members):
+        for k, m in enumerate(names):
+            dtype = chunks[0][1][k][1]
             merged.append(
-                (m, d, np.concatenate([np.asarray(c[1][k][2]) for c in chunks]))
+                (m, dtype, np.concatenate([np.asarray(c[1][k][2]) for c in chunks]))
             )
         merged.append(
             (
@@ -530,42 +969,53 @@ def _write_results(f, model, steps):
             keep = np.nonzero(
                 ~np.all(np.isnan(np.stack(list(members.values()))), axis=0)
             )[0]
-            cols = [("ID", "<i8", model.node_ids[keep])]
-            cols += [(m, "<f8", v[keep]) for m, v in members.items()]
-            return cols
+            provided = {"ID": model.node_ids[keep]}
+            provided.update({m: v[keep] for m, v in members.items()})
+            return _fill(f"RESULT/NODAL/{table}", provided, len(keep))
 
         emit(
             "NODAL",
             table,
             [(s, s.nodal) for s in steps if table in s.nodal],
             nodal_columns,
+            f"RESULT/NODAL/{table}",
         )
     elemental_keys = sorted({k for s in steps for k in s.elemental})
-    for group, card in elemental_keys:
+    for group, card, variant in elemental_keys:
+        name = _table_name(group, card, variant)
 
-        def element_columns(payload, group=group, card=card):
+        def element_columns(payload, group=group, name=name):
             columns, eid = payload
             empty = np.ones(len(eid), dtype=bool)
             for m, c in columns:
-                if m != "GRID":
+                if m not in ("GRID", "PLY"):
                     empty &= np.isnan(c).reshape(len(c), -1).all(axis=1)
             keep = np.nonzero(~empty)[0]
-            key = "ID" if group == "ENERGY" else "EID"
-            cols = [(key, "<i8", eid[keep])]
-            cols += [(m, "<i8" if m == "GRID" else "<f8", c[keep]) for m, c in columns]
-            return cols
+            provided = {"ID" if group == "ENERGY" else "EID": eid[keep]}
+            provided.update({m: c[keep] for m, c in columns})
+            return _fill(f"RESULT/ELEMENTAL/{group}/{name}", provided, len(keep))
 
-        eid = model.element_rows(card)[0]
         emit(
             f"ELEMENTAL/{group}",
-            _FAMILY[card],
+            name,
             [
-                (s, (s.elemental[(group, card)], eid))
+                (s, s.elemental[(group, card, variant)])
                 for s in steps
-                if (group, card) in s.elemental
+                if (group, card, variant) in s.elemental
             ],
             element_columns,
+            f"RESULT/ELEMENTAL/{group}/{name}",
         )
+
+
+def _table_name(group, card, variant):
+    """The name of a result table: the card's family (MSC calls a CQUAD4's stresses and
+    strains ``QUAD_CN`` and its forces ``QUAD4_CN``), ``_COMP`` for plies."""
+    if variant == "ply":
+        return _PLY_FAMILY[card] + "_COMP"
+    if card == "CQUAD4":
+        return "QUAD4_CN" if group == "ELEMENT_FORCE" else "QUAD_CN"
+    return _FAMILY[card]
 
 
 def _assemble(filename, model, steps):
@@ -579,16 +1029,26 @@ def _assemble(filename, model, steps):
         _write_results(f, model, steps)
 
 
+_LINE_PROPERTY = re.compile(r"^nastran:(PBARL|PBEAML|PCOMPG)_[0-9]+:")
+
+
 def _build_model(mesh):
-    # The HDF5 writer picks a card from the cell type and property alone, as the C++
-    # one does: ``nastran:card`` names OP2 cards (CVISC, CSHEAR, ...) it has no table for.
-    if "nastran:card" in mesh.cell_data:
+    # PBARL, PBEAML and PCOMPG values have no table here: their bars, beams and shells
+    # are written on the plain PBAR, PBEAM and PSHELL cards, with a warning.
+    lines = sorted(
+        {m.group(1) for n in mesh.field_data if (m := _LINE_PROPERTY.match(n))}
+    )
+    if lines:
         mesh = copy.copy(mesh)
-        mesh.cell_data = {
-            k: v for k, v in mesh.cell_data.items() if k != "nastran:card"
+        mesh.field_data = {
+            k: v for k, v in mesh.field_data.items() if not _LINE_PROPERTY.match(k)
         }
+        warn(
+            "Nastran HDF5: the " + ", ".join(lines) + " values have no table here; the "
+            "elements are written on the plain property cards"
+        )
     try:
-        return _Model(mesh, per_card_ids=True)
+        return _Model(mesh, per_card_ids=True, allowed=_CARDS)
     except WriteError as exc:
         raise WriteError(str(exc).replace("Nastran OP2:", "Nastran HDF5:")) from None
 

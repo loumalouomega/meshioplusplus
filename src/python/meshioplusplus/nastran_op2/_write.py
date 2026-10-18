@@ -752,7 +752,7 @@ def _bar_matrix(raw, cards):
     return out
 
 
-def _written(codes, ctype, card):
+def _written(codes, ctype, card, allowed=None):
     """The card of each row of a block that carries ``nastran:card``, the rows to
     keep, and the names of the cards left out. A line or vertex takes the card its
     number names, and a mismatch with its cell type is an error; any other cell
@@ -768,6 +768,9 @@ def _written(codes, ctype, card):
                 left.add(_CARD_OF_TYPE.get(code, f"card {code}"))
             elif name not in _BLOCK_CARDS[ctype]:
                 _wfail(f"a '{ctype}' block cannot hold {name} cards")
+            elif allowed is not None and name not in allowed:
+                keep[i] = False
+                left.add(name)
             else:
                 cards[i] = name
         elif code == _CSHEAR and ctype == "quad":
@@ -916,7 +919,7 @@ def _beam_values(mesh):
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
-    def __init__(self, mesh, per_card_ids=False):
+    def __init__(self, mesh, per_card_ids=False, allowed=None):
         self.npoints = len(mesh.points)
         points = np.asarray(mesh.points, dtype=np.float64).reshape(self.npoints, -1)
         self.points = np.zeros((self.npoints, 3))
@@ -975,7 +978,7 @@ class _Model:
             raw_bar = _raw_bar_fields(mesh, b, n)
             if have_card:
                 cards, keep, left = _written(
-                    mesh.cell_data["nastran:card"][b], block.type, card
+                    mesh.cell_data["nastran:card"][b], block.type, card, allowed
                 )
                 self.unwritten.update(left)
             else:
@@ -1465,49 +1468,55 @@ class _Model:
             out.append(np.concatenate([head, body.ravel()]))
         return np.concatenate(out)
 
+    def pbeam_slots(self, pid):
+        """``(MID, segments, CCF, slots)`` of a PBEAM: its 11 station slots as ``(11, 16)``
+        rows of SO, XXB, A, I1, I2, I12, J, NSM and the outline points C, D, E and F, from
+        the id's field data. An id with none gets placeholders: one segment of constant
+        section, with A, I1, I2 and J of 1."""
+        given = self.beams.get(pid, {})
+        mid = int(np.asarray(given.get("MID", [1])).ravel()[0])
+        nseg = int(np.asarray(given.get("NSEG", [1])).ravel()[0])
+        ccf = int(np.asarray(given.get("CCF", [1])).ravel()[0])
+        n = nseg + 1
+        if not 1 <= nseg <= 10:
+            _wfail(f"PBEAM {pid} has {nseg} segments; a PBEAM holds 1 to 10")
+        defaults = {
+            "SO": np.ones(n),
+            "XXB": np.linspace(0.0, 1.0, n),
+            "A": np.ones(n),
+            "I1": np.ones(n),
+            "I2": np.ones(n),
+            "I12": np.zeros(n),
+            "J": np.ones(n),
+            "NSM": np.zeros(n),
+        }
+        stations = np.zeros((n, 16))
+        for column, member in enumerate(_BEAM_STATION_MEMBERS):
+            values = np.asarray(
+                given.get(member, defaults[member]), dtype=np.float64
+            ).ravel()
+            if values.size != n:
+                _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} value(s)")
+            stations[:, column] = values
+        for first, member in zip((8, 10, 12, 14), _BEAM_POINT_MEMBERS):
+            values = np.asarray(
+                given.get(member, np.zeros((n, 2))), dtype=np.float64
+            ).reshape(-1, 2)
+            if values.shape != (n, 2):
+                _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} x 2 value(s)")
+            stations[:, first : first + 2] = values
+        slots = np.zeros((11, 16))
+        slots[pbeam_station_slots(n)] = stations
+        return mid, nseg, ccf, slots
+
     def _pbeam_words(self):
         """The PBEAM records, one per id: the header (pid, MID, segments, CCF and a zero),
-        then the stations in slots of 16 words, from the id's field data. An id with none
-        gets placeholders: one segment of constant section, with A, I1, I2 and J of 1.
-        """
+        then the stations in slots of 16 words (see :meth:`pbeam_slots`)."""
         out = []
         for pid in sorted(self.properties["PBEAM"]):
-            given = self.beams.get(pid, {})
-            mid = int(np.asarray(given.get("MID", [1])).ravel()[0])
-            nseg = int(np.asarray(given.get("NSEG", [1])).ravel()[0])
-            ccf = int(np.asarray(given.get("CCF", [1])).ravel()[0])
-            n = nseg + 1
-            if not 1 <= nseg <= 10:
-                _wfail(f"PBEAM {pid} has {nseg} segments; a PBEAM holds 1 to 10")
-            defaults = {
-                "SO": np.ones(n),
-                "XXB": np.linspace(0.0, 1.0, n),
-                "A": np.ones(n),
-                "I1": np.ones(n),
-                "I2": np.ones(n),
-                "I12": np.zeros(n),
-                "J": np.ones(n),
-                "NSM": np.zeros(n),
-            }
-            stations = np.zeros((n, 16))
-            for column, member in enumerate(_BEAM_STATION_MEMBERS):
-                values = np.asarray(
-                    given.get(member, defaults[member]), dtype=np.float64
-                ).ravel()
-                if values.size != n:
-                    _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} value(s)")
-                stations[:, column] = values
-            for first, member in zip((8, 10, 12, 14), _BEAM_POINT_MEMBERS):
-                values = np.asarray(
-                    given.get(member, np.zeros((n, 2))), dtype=np.float64
-                ).reshape(-1, 2)
-                if values.shape != (n, 2):
-                    _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} x 2 value(s)")
-                stations[:, first : first + 2] = values
+            mid, nseg, ccf, slots = self.pbeam_slots(pid)
             words = np.zeros(_PBEAM[1], dtype="<u4")
             words[:4] = _i32([pid, mid, nseg, ccf])
-            slots = np.zeros((11, 16))
-            slots[pbeam_station_slots(n)] = stations
             words[5 : 5 + 16 * 11] = _f32(slots).ravel()
             out.append(words)
         return np.concatenate(out)
