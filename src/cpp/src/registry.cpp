@@ -743,14 +743,15 @@ bool registry_is_marc_dat(const std::string& rPath) {
     return is_marc_deck(head);
 }
 
-// `d3plot01`, `d3plot02`... beside an existing `d3plot`.
+// `d3plot01`, `d3plot02`... beside an existing `d3plot` (or `d3part01`... beside a `d3part`).
 bool registry_is_d3plot_member(const std::string& rPath) {
     namespace fs = std::filesystem;
     const fs::path path(rPath);
     std::string name = path.filename().string();
     for (char& c : name)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (name.size() <= 6 || name.compare(0, 6, "d3plot") != 0)
+    if (name.size() <= 6 ||
+        (name.compare(0, 6, "d3plot") != 0 && name.compare(0, 6, "d3part") != 0))
         return false;
     for (std::size_t i = 6; i < name.size(); ++i)
         if (name[i] < '0' || name[i] > '9')

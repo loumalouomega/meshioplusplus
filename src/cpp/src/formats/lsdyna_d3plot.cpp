@@ -1227,6 +1227,16 @@ Mesh d3_build_mesh(const D3File& rF, D3Cells& rCells) {
     }
     mesh.AddCellData("lsdyna:eid", std::move(eids));
     mesh.AddCellData("lsdyna:part", std::move(parts));
+    if (h.mTshells > 0) {  // thick shells read as bricks: mark them, so a writer can tell
+        std::vector<NDArray> thick;
+        for (const D3Block& b : rCells.mBlocks) {
+            NDArray a(DType::Int8, {b.mElems.size()});
+            std::fill(a.As<std::int8_t>(), a.As<std::int8_t>() + a.Size(),
+                      static_cast<std::int8_t>(b.mFamily == kD3Tshell ? 1 : 0));
+            thick.push_back(std::move(a));
+        }
+        mesh.AddCellData("lsdyna:thick_shell", std::move(thick));
+    }
     for (const D3Key& key : part_order) {
         auto& [dim, members] = by_part[key];
         const std::int64_t pid = key.second;
@@ -1867,7 +1877,17 @@ namespace {
 
 constexpr std::size_t kD3wDefaultFileBytes = std::size_t{1} << 30;
 constexpr double kD3wVersion = 971.0;
-enum D3wFamily : int { kD3wSolid = 0, kD3wBeam = 1, kD3wShell = 2, kD3wSph = 3 };
+
+/// The file type word of the family a path starts: 5 for a `d3part`, else 1 (`d3plot`). The
+/// database manual gives a `d3part` the layout of a `d3plot`, whose header differs by this word.
+int d3w_file_type(const std::string& rPath) {
+    std::string name = fs::path(rPath).filename().string();
+    for (char& c : name)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return name.compare(0, 6, "d3part") == 0 ? 5 : 1;
+}
+enum D3wFamily : int { kD3wSolid = 0, kD3wBeam = 1, kD3wShell = 2, kD3wSph = 3, kD3wTshell = 4 };
+constexpr int kD3wFamilies = 5;
 
 [[noreturn]] void d3w_fail(const std::string& rMessage) {
     throw WriteError("LS-DYNA d3plot: " + rMessage);
@@ -2014,22 +2034,128 @@ struct D3wRange {
 class D3wModel {
 public:
     explicit D3wModel(const Mesh& rMesh) {
-        mN = rMesh.NumPoints();
-        if (mN == 0)
+        mNmesh = rMesh.NumPoints();
+        if (mNmesh == 0)
             d3w_fail("the mesh has no points");
         const NDArray& pts = rMesh.Points();
-        const std::size_t width = pts.Size() / mN;
-        mPoints.assign(mN * 3, 0.0);
-        for (std::size_t i = 0; i < mN; ++i)
+        const std::size_t width = pts.Size() / mNmesh;
+        std::vector<double> all_points(mNmesh * 3, 0.0);
+        for (std::size_t i = 0; i < mNmesh; ++i)
             for (std::size_t k = 0; k < 3 && k < width; ++k)
-                mPoints[i * 3 + k] = detail::read_double(pts, i * width + k);
-        mNid.resize(mN);
-        if (rMesh.HasPointData("lsdyna:nid") && rMesh.PointData("lsdyna:nid").Size() == mN)
-            for (std::size_t i = 0; i < mN; ++i)
-                mNid[i] = detail::read_int(rMesh.PointData("lsdyna:nid"), i);
+                all_points[i * 3 + k] = detail::read_double(pts, i * width + k);
+        std::vector<std::int64_t> all_nid(mNmesh);
+        if (rMesh.HasPointData("lsdyna:nid") && rMesh.PointData("lsdyna:nid").Size() == mNmesh)
+            for (std::size_t i = 0; i < mNmesh; ++i)
+                all_nid[i] = detail::read_int(rMesh.PointData("lsdyna:nid"), i);
         else
-            for (std::size_t i = 0; i < mN; ++i)
-                mNid[i] = static_cast<std::int64_t>(i) + 1;
+            for (std::size_t i = 0; i < mNmesh; ++i)
+                all_nid[i] = static_cast<std::int64_t>(i) + 1;
+
+        // Airbag particles and rigid road segments are the cells of the regions the reader names
+        // `Airbag <id>` and `Rigid road <id>`; a block that is wholly one of them is not a
+        // solid, shell or SPH family, and its points are not nodes unless a cell of another kind
+        // also uses them.
+        std::vector<int> block_kind(rMesh.NumCellBlocks(), 0);
+        std::vector<std::int64_t> cell_ident;
+        {
+            std::size_t total = 0;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                total += rMesh.Cells(b).NumCells();
+            std::vector<int> cell_kind(total, 0);
+            cell_ident.assign(total, 0);
+            for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+                const Region& r = rMesh.Region(i);
+                if (r.mKind != RegionKind::Cell)
+                    continue;
+                int kind = 0;
+                std::string tail;
+                if (r.mName.rfind("Airbag ", 0) == 0) {
+                    kind = 1;
+                    tail = r.mName.substr(7);
+                } else if (r.mName.rfind("Rigid road ", 0) == 0) {
+                    kind = 2;
+                    tail = r.mName.substr(11);
+                }
+                if (!kind)
+                    continue;
+                std::int64_t ident = r.mTag;
+                if (ident < 0 && !tail.empty() && std::all_of(tail.begin(), tail.end(), [](char C) {
+                        return C >= '0' && C <= '9';
+                    }))
+                    ident = std::stoll(tail);
+                for (std::size_t q = 0; q < r.NumEntries(); ++q) {
+                    const std::int64_t e = r.Entries()[q];
+                    if (e >= 0 && static_cast<std::size_t>(e) < total && cell_kind[e] == 0) {
+                        cell_kind[e] = kind;
+                        cell_ident[e] = ident;
+                    }
+                }
+            }
+            std::size_t first_cell = 0;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const std::size_t count = rMesh.Cells(b).NumCells();
+                const std::string type(rMesh.Cells(b).Type());
+                int kind = count ? cell_kind[first_cell] : 0;
+                for (std::size_t r = 0; r < count && kind; ++r)
+                    if (cell_kind[first_cell + r] != kind)
+                        kind = 0;
+                if ((kind == 1 && type != "vertex") || (kind == 2 && type != "quad") ||
+                    (kind && cell_ident[first_cell] < 0))
+                    kind = 0;
+                block_kind[b] = kind;
+                first_cell += count;
+            }
+        }
+        // a block of bricks whose every cell carries `lsdyna:thick_shell` (the reader sets it when
+        // the file has thick shells) is the thick-shell family, not the solids
+        std::vector<char> block_tshell(rMesh.NumCellBlocks(), 0);
+        if (rMesh.HasCellData("lsdyna:thick_shell"))
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const std::string type(rMesh.Cells(b).Type());
+                const std::size_t count = rMesh.Cells(b).NumCells();
+                if (b >= rMesh.CellDataNumBlocks("lsdyna:thick_shell") || count == 0 ||
+                    (type != "hexahedron" && type != "wedge" && type != "pyramid" &&
+                     type != "tetra"))
+                    continue;
+                const NDArray& a = rMesh.CellData("lsdyna:thick_shell", b);
+                bool all = a.Size() == count;
+                for (std::size_t r = 0; all && r < count; ++r)
+                    all = detail::read_int(a, r) != 0;
+                block_tshell[b] = all ? 1 : 0;
+            }
+        std::vector<char> is_node(mNmesh, 0);
+        std::vector<char> used(mNmesh, 0);
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const detail::Int64View conn(cb.Conn());
+            for (std::size_t i = 0; i < cb.NumCells() * cb.NodesPerCell(); ++i) {
+                const std::int64_t v = conn.Data()[i];
+                if (v < 0 || static_cast<std::size_t>(v) >= mNmesh)
+                    d3w_fail("a '" + std::string(cb.Type()) +
+                             "' cell refers to a point the mesh does not have");
+                used[static_cast<std::size_t>(v)] = 1;
+                if (!block_kind[b])
+                    is_node[static_cast<std::size_t>(v)] = 1;
+            }
+        }
+        // a point no cell uses is a node of its own
+        mNewOf.assign(mNmesh, -1);
+        for (std::size_t i = 0; i < mNmesh; ++i)
+            if (is_node[i] || !used[i]) {
+                mNewOf[i] = static_cast<std::int64_t>(mKeep.size());
+                mKeep.push_back(i);
+            }
+        mAllPoints = all_points;
+        mN = mKeep.size();
+        if (mN == 0)
+            d3w_fail("the mesh has no nodes");
+        mPoints.resize(mN * 3);
+        mNid.resize(mN);
+        for (std::size_t i = 0; i < mN; ++i) {
+            for (std::size_t k = 0; k < 3; ++k)
+                mPoints[i * 3 + k] = all_points[mKeep[i] * 3 + k];
+            mNid[i] = all_nid[mKeep[i]];
+        }
 
         std::size_t ncells = 0;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
@@ -2039,6 +2165,7 @@ public:
         std::map<std::string, std::size_t> skipped;
         std::size_t airbag = 0;
         std::size_t base = 0;
+        std::unordered_map<std::size_t, std::int64_t> road_node;  // old point -> 1-based road node
         const bool has_eid = rMesh.HasCellData("lsdyna:eid");
         const bool has_part = rMesh.HasCellData("lsdyna:part");
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -2046,7 +2173,9 @@ public:
             const std::string type(cb.Type());
             const std::size_t count = cb.NumCells();
             const std::size_t k = cb.NodesPerCell();
-            const int family = d3w_family(type);
+            int family = d3w_family(type);
+            if (family == kD3wSolid && block_tshell[b])
+                family = kD3wTshell;
             if (family < 0) {
                 if (count)
                     skipped[type] += count;
@@ -2054,9 +2183,30 @@ public:
                 continue;
             }
             const detail::Int64View conn(cb.Conn());
-            for (std::size_t i = 0; i < count * k; ++i)
-                if (conn.Data()[i] < 0 || static_cast<std::size_t>(conn.Data()[i]) >= mN)
-                    d3w_fail("a '" + type + "' cell refers to a point the mesh does not have");
+            if (block_kind[b] == 1) {  // airbag particles: grouped by bag below
+                for (std::size_t r = 0; r < count; ++r)
+                    mParticles.push_back(
+                        {static_cast<std::size_t>(conn.Data()[r]), b, r, cell_ident[base + r]});
+                base += count;
+                continue;
+            }
+            if (block_kind[b] == 2) {  // rigid road segments, on the road's own nodes
+                for (std::size_t r = 0; r < count; ++r) {
+                    std::array<std::int64_t, 4> seg{};
+                    for (std::size_t j = 0; j < 4; ++j) {
+                        const auto old = static_cast<std::size_t>(conn.Data()[r * 4 + j]);
+                        auto [it, fresh] = road_node.try_emplace(old, 0);
+                        if (fresh) {
+                            mRoadPoints.push_back(old);
+                            it->second = static_cast<std::int64_t>(mRoadPoints.size());
+                        }
+                        seg[j] = it->second;
+                    }
+                    mRoadSegments.push_back({seg, cell_ident[base + r]});
+                }
+                base += count;
+                continue;
+            }
             if (family == kD3wSph) {
                 // an airbag particle reads back on a point with no coordinates yet
                 bool airbag_block = false;
@@ -2064,7 +2214,8 @@ public:
                     for (std::size_t c = 0; c < 3; ++c)
                         airbag_block =
                             airbag_block ||
-                            std::isnan(mPoints[static_cast<std::size_t>(conn.Data()[i]) * 3 + c]);
+                            std::isnan(
+                                all_points[static_cast<std::size_t>(conn.Data()[i]) * 3 + c]);
                 if (airbag_block) {
                     airbag += count;
                     base += count;
@@ -2073,7 +2224,13 @@ public:
             }
             const std::size_t first = mRows[family].size();
             for (std::size_t r = 0; r < count; ++r) {
-                const std::int64_t* row = conn.Data() + r * k;
+                std::vector<std::int64_t> mapped(conn.Data() + r * k, conn.Data() + (r + 1) * k);
+                for (std::int64_t& v : mapped) {
+                    v = mNewOf[static_cast<std::size_t>(v)];
+                    if (v < 0)  // only airbag or road cells use the point: a cell of its own kind
+                        d3w_fail("a '" + type + "' cell uses a point of an airbag or a road");
+                }
+                const std::int64_t* row = mapped.data();
                 std::vector<std::int64_t> nodes;
                 if (family == kD3wSolid && type == "tetra10") {
                     nodes.assign(row, row + 8);
@@ -2086,7 +2243,7 @@ public:
                     nodes.assign(row, row + 8);
                     mExtra27.push_back(
                         {mRows[family].size(), std::vector<std::int64_t>(row + 8, row + 27)});
-                } else if (family == kD3wSolid) {
+                } else if (family == kD3wSolid || family == kD3wTshell) {
                     const auto eight = detail::expand_brick(type, row);
                     nodes.assign(eight.begin(), eight.end());
                 } else {
@@ -2118,9 +2275,44 @@ public:
             log::warn("LS-DYNA d3plot: {} '{}' cell(s) are not written", count, type);
         if (airbag)
             log::warn("LS-DYNA d3plot: {} airbag particle(s) are not written", airbag);
-        for (int f = 0; f < 4; ++f)
+        {  // bags and roads in the order each id first appears, their members together
+            std::vector<std::int64_t> order;
+            for (const Particle& p : mParticles)
+                if (std::find(order.begin(), order.end(), p.mBag) == order.end())
+                    order.push_back(p.mBag);
+            std::vector<Particle> grouped;
+            for (const std::int64_t id : order) {
+                mBagFirst.push_back(static_cast<std::int64_t>(grouped.size()) + 1);
+                std::int64_t count = 0;
+                for (const Particle& p : mParticles)
+                    if (p.mBag == id) {
+                        grouped.push_back(p);
+                        ++count;
+                    }
+                mBagCount.push_back(count);
+            }
+            mBagIds = std::move(order);
+            mParticles = std::move(grouped);
+            std::vector<std::int64_t> roads;
+            for (const Segment& sgm : mRoadSegments)
+                if (std::find(roads.begin(), roads.end(), sgm.mRoad) == roads.end())
+                    roads.push_back(sgm.mRoad);
+            std::vector<Segment> segments;
+            for (const std::int64_t id : roads) {
+                std::int64_t count = 0;
+                for (const Segment& sgm : mRoadSegments)
+                    if (sgm.mRoad == id) {
+                        segments.push_back(sgm);
+                        ++count;
+                    }
+                mRoadCount.push_back(count);
+            }
+            mRoadIds = std::move(roads);
+            mRoadSegments = std::move(segments);
+        }
+        for (int f = 0; f < kD3wFamilies; ++f)
             mCounts[f] = mRows[f].size();
-        if (!mCounts[0] && !mCounts[1] && !mCounts[2] && !mCounts[3])
+        if (!mCounts[0] && !mCounts[1] && !mCounts[2] && !mCounts[3] && !mCounts[4])
             d3w_fail("the mesh has no solid, beam, shell or SPH cells");
         // rigid bodies: their parts (user ids) from the reader's field data
         if (rMesh.HasFieldData("lsdyna:rigid_body_part")) {
@@ -2132,7 +2324,7 @@ public:
         // every part, sorted; each family's number of distinct parts (SPH particles count with
         // the solids, as LS-DYNA counts them)
         std::set<std::int64_t> all(mRigidParts.begin(), mRigidParts.end());
-        for (int f = 0; f < 4; ++f)
+        for (int f = 0; f < kD3wFamilies; ++f)
             all.insert(mPartsOf[f].begin(), mPartsOf[f].end());
         {
             std::set<std::int64_t> solid_sph(mPartsOf[kD3wSolid].begin(),
@@ -2144,15 +2336,18 @@ public:
             mNummat[kD3wShell] =
                 std::set<std::int64_t>(mPartsOf[kD3wShell].begin(), mPartsOf[kD3wShell].end())
                     .size();
+            mNummatT =
+                std::set<std::int64_t>(mPartsOf[kD3wTshell].begin(), mPartsOf[kD3wTshell].end())
+                    .size();
         }
-        mNparts = mNummat[0] + mNummat[1] + mNummat[2] + mNrigid;
+        mNparts = mNummat[0] + mNummat[1] + mNummat[2] + mNummatT + mNrigid;
         mPartIds.assign(all.begin(), all.end());
         for (std::size_t i = 0; i < mPartIds.size(); ++i)
             mPartIndex[mPartIds[i]] = static_cast<std::int64_t>(i) + 1;
         mSignature = std::to_string(mN);
         for (const std::int64_t part : mRigidParts)
             mSignature += "r" + std::to_string(part);
-        for (int f = 0; f < 4; ++f) {
+        for (int f = 0; f < kD3wFamilies; ++f) {
             mSignature += "|" + std::to_string(f);
             for (const auto& row : mRows[f]) {
                 mSignature += ";";
@@ -2160,6 +2355,15 @@ public:
                     mSignature += std::to_string(v) + ",";
             }
         }
+        for (const Particle& p : mParticles)
+            mSignature += "|p" + std::to_string(p.mPoint) + "," + std::to_string(p.mBag);
+        for (const Segment& sgm : mRoadSegments) {
+            mSignature += "|s" + std::to_string(sgm.mRoad);
+            for (const std::int64_t v : sgm.mNodes)
+                mSignature += "," + std::to_string(v);
+        }
+        for (const std::size_t v : mRoadPoints)
+            mSignature += "|r" + std::to_string(v);
         for (const auto& [e, nodes] : mExtra) {
             mSignature += "|t" + std::to_string(e);
             for (const std::int64_t v : nodes)
@@ -2173,17 +2377,35 @@ public:
             }
     }
 
-    std::size_t mN = 0;
+    struct Particle {
+        std::size_t mPoint, mBlock, mRow;  ///< its point in the mesh, and its cell
+        std::int64_t mBag;
+    };
+    struct Segment {
+        std::array<std::int64_t, 4> mNodes;  ///< 1-based road node ids
+        std::int64_t mRoad;
+    };
+    std::size_t mN = 0;      ///< nodes written (the mesh's points but the airbag and road ones)
+    std::size_t mNmesh = 0;  ///< the mesh's points
+    std::vector<std::size_t> mKeep;    ///< each node's point in the mesh
+    std::vector<double> mAllPoints;    ///< every point of the mesh (airbag and road ones too)
+    std::vector<std::int64_t> mNewOf;  ///< each point's node, -1 for an airbag or road point
     std::vector<double> mPoints;
     std::vector<std::int64_t> mNid;
-    std::array<std::vector<D3wRange>, 4> mRanges;
-    std::array<std::vector<std::vector<std::int64_t>>, 4> mRows;
+    std::vector<Particle> mParticles;                         ///< airbag particles, grouped by bag
+    std::vector<std::int64_t> mBagIds, mBagFirst, mBagCount;  ///< first is 1-based
+    std::vector<std::size_t> mRoadPoints;                     ///< road nodes: points of the mesh
+    std::vector<Segment> mRoadSegments;                       ///< grouped by road
+    std::vector<std::int64_t> mRoadIds, mRoadCount;           ///< each road, its segments
+    std::array<std::vector<D3wRange>, kD3wFamilies> mRanges;
+    std::array<std::vector<std::vector<std::int64_t>>, kD3wFamilies> mRows;
     std::vector<std::pair<std::size_t, std::array<std::int64_t, 2>>> mExtra;
     /// hexahedron20 / hexahedron27 / quad8: the element and its nodes past the corners.
     std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mExtra20, mExtra27, mExtra8;
-    std::array<std::vector<std::int64_t>, 4> mPartsOf, mEid;
-    std::array<std::size_t, 4> mCounts{};
+    std::array<std::vector<std::int64_t>, kD3wFamilies> mPartsOf, mEid;
+    std::array<std::size_t, kD3wFamilies> mCounts{};
     std::array<std::size_t, 3> mNummat{};
+    std::size_t mNummatT = 0;               ///< the thick shells' parts
     std::vector<std::int64_t> mRigidParts;  ///< each rigid body's part (user id)
     std::size_t mNrigid = 0, mNparts = 0;
     std::vector<std::int64_t> mPartIds;
@@ -2193,17 +2415,20 @@ public:
 
 private:
     std::vector<std::int64_t> PartAssignment(const Mesh& rMesh, std::size_t NumCells) {
+        const auto own = [](const Region& R) {  // an airbag's or a road's, not a part
+            return R.mName.rfind("Airbag ", 0) == 0 || R.mName.rfind("Rigid road ", 0) == 0;
+        };
         std::set<std::int64_t> taken;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
             const Region& r = rMesh.Region(i);
-            if (r.mKind == RegionKind::Cell && r.mTag > 0)
+            if (r.mKind == RegionKind::Cell && r.mTag > 0 && !own(r))
                 taken.insert(r.mTag);
         }
         std::int64_t fresh = 1;
         std::vector<std::int64_t> part(NumCells, -1);
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
             const Region& r = rMesh.Region(i);
-            if (r.mKind != RegionKind::Cell)
+            if (r.mKind != RegionKind::Cell || own(r))
                 continue;
             std::int64_t pid = r.mTag;
             if (pid <= 0) {
@@ -2325,23 +2550,48 @@ const std::vector<D3wSphVar>& d3w_sph_vars() {
     return v;
 }
 
+/// An airbag variable's name in the file: its snake_case array name as capitalised words
+/// ("bag_vol" -> "Bag Vol"), cut to the eight characters the file holds.
+std::string d3w_airbag_title(const std::string& rSnake) {
+    std::string out;
+    bool start = true;
+    for (const char c : rSnake) {
+        if (c == '_') {
+            out.push_back(' ');
+            start = true;
+            continue;
+        }
+        out.push_back(start ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c);
+        start = false;
+    }
+    return out.substr(0, 8);
+}
+
+/// One airbag variable: its name in the file and where its values come from (a cell array of
+/// the airbag blocks, or `""` for a particle's position; `velocity` has three axes).
+struct D3wAirbagColumn {
+    std::string mFile, mSource;
+    int mAxis;
+};
+
 /// The header: what the states of all steps need.
 class D3wPlan {
 public:
-    D3wPlan(const D3wModel& rModel, const std::vector<const Mesh*>& rMeshes, bool Double)
-        : mModel(rModel), mWs(Double ? 8 : 4) {
+    D3wPlan(const D3wModel& rModel, const std::vector<const Mesh*>& rMeshes, bool Double,
+            int FileType = 1)
+        : mModel(rModel), mWs(Double ? 8 : 4), mFileType(FileType) {
         const std::size_t nparts = rModel.mNparts;
         static const char* kNodal[] = {
             "displacement",         "velocity",        "acceleration",
             "temperature",          "heat_flux",       "mass_scaling",
             "temperature_gradient", "residual_forces", "residual_moments"};
-        std::array<D3wSeen, 4> seen;
+        std::array<D3wSeen, kD3wFamilies> seen;
         for (const Mesh* pMesh : rMeshes) {
             const Mesh& mesh = *pMesh;
             for (const char* name : kNodal)
                 if (mesh.HasPointData(name)) {
                     const std::size_t comps =
-                        mesh.PointData(name).Size() / std::max<std::size_t>(rModel.mN, 1);
+                        mesh.PointData(name).Size() / std::max<std::size_t>(rModel.mNmesh, 1);
                     mNode[name] = std::max(mNode[name], comps);
                 }
             mAlive = mAlive || mesh.HasCellData("lsdyna:alive");
@@ -2374,7 +2624,7 @@ public:
                 const auto arrays = d3w_cell_array(mesh, name, present);
                 if (!present)
                     continue;
-                for (const int family : {kD3wSolid, kD3wBeam, kD3wShell, kD3wSph})
+                for (const int family : {kD3wSolid, kD3wBeam, kD3wShell, kD3wSph, kD3wTshell})
                     for (const D3wRange& range : rModel.mRanges[family]) {
                         const D3wBlockArray& a = arrays[range.mBlock];
                         if (a.mPoints == 0)
@@ -2389,6 +2639,16 @@ public:
             }
         }
         mSeen = std::move(seen);
+        if (Roads())
+            for (const auto& [name, width] : mRigid)
+                if (name != "coordinates" && name != "rotation") {
+                    log::warn(
+                        "LS-DYNA d3plot: with rigid roads (NDIM 9) a rigid body holds its "
+                        "coordinates and rotation only; its velocities and accelerations are "
+                        "not written");
+                    break;
+                }
+        AirbagColumns(rMeshes);
         mGlobals = mGlobals || mPartGlobals;
         // the header's material counts add up to the parts the arrays cover
         mNummat = rModel.mNummat;
@@ -2402,6 +2662,58 @@ public:
             mDisp = true;
             mWords = StateWords();
         }
+    }
+
+    /// The airbag particle variables (position, velocity and the `airbag_*` arrays the airbag
+    /// blocks carry) and the bag state variables (`lsdyna:airbag:*` field data, one value per bag)
+    /// that any step holds.
+    void AirbagColumns(const std::vector<const Mesh*>& rMeshes) {
+        const D3wModel& m = mModel;
+        if (m.mParticles.empty())
+            return;
+        std::set<std::string> particle_arrays, bag_arrays;
+        bool velocity = false;
+        for (const Mesh* pMesh : rMeshes) {
+            const Mesh& mesh = *pMesh;
+            for (const std::string& name : mesh.CellDataNames()) {
+                if (name != "velocity" && name.rfind("airbag_", 0) != 0)
+                    continue;
+                for (const auto& p : m.mParticles) {
+                    if (p.mBlock >= mesh.CellDataNumBlocks(name))
+                        continue;
+                    const NDArray& a = mesh.CellData(name, p.mBlock);
+                    const std::size_t cells = mesh.Cells(p.mBlock).NumCells();
+                    if (cells == 0 || a.Size() % cells != 0)
+                        continue;
+                    if (name == "velocity" && a.Size() == 3 * cells)
+                        velocity = true;
+                    else if (name != "velocity" && a.Size() == cells)
+                        particle_arrays.insert(name);
+                    break;
+                }
+            }
+            for (const std::string& name : mesh.FieldDataNames())
+                if (name.rfind("lsdyna:airbag:", 0) == 0 &&
+                    mesh.FieldData(name).Size() == m.mBagIds.size())
+                    bag_arrays.insert(name);
+        }
+        std::set<std::string> taken;
+        const auto add = [&](std::vector<D3wAirbagColumn>& rOut, const std::string& rFile,
+                             const std::string& rSource, int Axis) {
+            if (!taken.insert(rFile).second)
+                d3w_fail("two airbag variables are called '" + rFile + "' in the file");
+            rOut.push_back({rFile, rSource, Axis});
+        };
+        for (int axis = 0; axis < 3; ++axis)
+            add(mParticleCols, std::string("Pos ") + "xyz"[axis], "", axis);
+        if (velocity)
+            for (int axis = 0; axis < 3; ++axis)
+                add(mParticleCols, std::string("Vel ") + "xyz"[axis], "velocity", axis);
+        for (const std::string& name : particle_arrays)
+            add(mParticleCols, d3w_airbag_title(name.substr(7)), name, 0);
+        taken.clear();
+        for (const std::string& name : bag_arrays)
+            add(mBagCols, d3w_airbag_title(name.substr(14)), name, 0);
     }
 
     static const std::vector<const char*>& kElementNames() {
@@ -2454,14 +2766,17 @@ public:
 
     void ElementLayouts() {
         const D3wModel& m = mModel;
-        mStress = Has(kD3wSolid, {"stress"}) || Has(kD3wShell, {"stress"});
+        mStress =
+            Has(kD3wSolid, {"stress"}) || Has(kD3wShell, {"stress"}) || Has(kD3wTshell, {"stress"});
         mPstrain = Has(kD3wSolid, {"effective_plastic_strain"}) ||
-                   Has(kD3wShell, {"effective_plastic_strain"});
+                   Has(kD3wShell, {"effective_plastic_strain"}) ||
+                   Has(kD3wTshell, {"effective_plastic_strain"});
         mPlasticTensor =
             Has(kD3wSolid, {"plastic_strain_tensor"}) || Has(kD3wShell, {"plastic_strain_tensor"});
         mThermalTensor =
             Has(kD3wSolid, {"thermal_strain_tensor"}) || Has(kD3wShell, {"thermal_strain_tensor"});
-        mStrain = Has(kD3wSolid, {"strain"}) || Has(kD3wShell, {"strain_inner", "strain_outer"});
+        mStrain = Has(kD3wSolid, {"strain"}) || Has(kD3wShell, {"strain_inner", "strain_outer"}) ||
+                  Has(kD3wTshell, {"strain_inner", "strain_outer"});
         mForces = false;
         for (const auto& f : d3w_shell_forces())
             mForces = mForces || Has(kD3wShell, {f.first});
@@ -2493,21 +2808,42 @@ public:
                 mNeiph += slot.second;
         mNt3d = SeenComps(kD3wSolid, "thermal_variables");
 
-        mShell = D3wLayout{};
-        mNeips = 0;
-        if (m.mCounts[kD3wShell]) {
-            std::size_t layers = 0;
+        // the shells and the thick shells share the layer count and the history width
+        std::size_t shared_layers = 0;
+        for (const int family : {kD3wShell, kD3wTshell})
             for (const char* n : {"stress", "effective_plastic_strain", "history_variables"})
-                layers = std::max(layers, SeenPoints(kD3wShell, n, 0));
-            mShell.mLayers = layers ? layers : 1;
-            const std::size_t hist = SeenComps(kD3wShell, "history_variables");
+                shared_layers = std::max(shared_layers, SeenPoints(family, n, 0));
+        mLayers = shared_layers ? shared_layers : 1;
+        const std::size_t shared_history = std::max(SeenComps(kD3wShell, "history_variables"),
+                                                    SeenComps(kD3wTshell, "history_variables"));
+        mTshell = D3wLayout{};
+        mNv3dt = 0;
+        if (m.mCounts[kD3wTshell]) {
+            mTshell.mLayers = mLayers;
+            if (mStress)
+                mTshell.mLayer.push_back({"stress", 6});
+            if (mPstrain)
+                mTshell.mLayer.push_back({"effective_plastic_strain", 1});
+            if (shared_history)
+                mTshell.mLayer.push_back({"history_variables", shared_history});
+            if (mStrain) {
+                mTshell.mTail.push_back({"strain_inner", 6, 1});
+                mTshell.mTail.push_back({"strain_outer", 6, 1});
+            }
+            mNv3dt = mTshell.Width();
+        }
+
+        mShell = D3wLayout{};
+        mNeips = shared_history;
+        if (m.mCounts[kD3wShell]) {
+            mShell.mLayers = mLayers;
+            const std::size_t hist = shared_history;
             if (mStress)
                 mShell.mLayer.push_back({"stress", 6});
             if (mPstrain)
                 mShell.mLayer.push_back({"effective_plastic_strain", 1});
             if (hist)
                 mShell.mLayer.push_back({"history_variables", hist});
-            mNeips = hist;
             if (mForces)
                 for (const auto& f : d3w_shell_forces())
                     mShell.mTail.push_back({f.first, f.second, 1});
@@ -2617,17 +2953,20 @@ public:
         std::size_t n = 1 + mNglbv + m.mN * NodeWidth();
         n += m.mCounts[kD3wSolid] * (mNv3d + mNt3d);
         n += m.mCounts[kD3wBeam] * mNv1d + m.mCounts[kD3wShell] * mNv2d;
+        n += m.mCounts[kD3wTshell] * mNv3dt;
         if (mAlive)
-            n += m.mCounts[0] + m.mCounts[1] + m.mCounts[2];
+            n += m.mCounts[0] + m.mCounts[1] + m.mCounts[2] + m.mCounts[kD3wTshell];
         else if (mAliveNodes)
             n += m.mN;
-        n += m.mCounts[kD3wSph] * mNsphVars + m.mNrigid * 24;
+        n += m.mCounts[kD3wSph] * mNsphVars + m.mNrigid * RigidWords();
+        n += m.mBagIds.size() * mBagCols.size() + m.mParticles.size() * mParticleCols.size();
+        n += 6 * m.mRoadIds.size();
         return n;
     }
 
     std::int64_t MaxInt() const {
-        const auto layers = static_cast<std::int64_t>(
-            std::max<std::size_t>(mModel.mCounts[kD3wShell] ? mShell.mLayers : 1, 1));
+        const auto layers = static_cast<std::int64_t>(std::max<std::size_t>(
+            mModel.mCounts[kD3wShell] || mModel.mCounts[kD3wTshell] ? mLayers : 1, 1));
         if (mAlive)
             return -(10000 + layers);
         if (mAliveNodes)
@@ -2648,8 +2987,9 @@ public:
 
     const D3wModel& mModel;
     int mWs;
+    int mFileType;  ///< 1 d3plot, 5 d3part
     std::map<std::string, std::size_t> mNode;
-    std::array<D3wSeen, 4> mSeen;
+    std::array<D3wSeen, kD3wFamilies> mSeen;
     std::map<std::string, std::size_t> mRigid;  ///< reader name -> components, over all steps
     std::array<std::size_t, 3> mNummat{};
     std::size_t mPartCount = 0;
@@ -2660,17 +3000,23 @@ public:
     bool mStrain = false, mForces = false, mExtra = false, mBeam = false;
     bool mDisp = false, mVel = false, mAcc = false, mTgrad = false, mResid = false;
     std::int64_t mIt0 = 0, mIt1 = 0;
-    D3wLayout mSolid, mShell;
+    D3wLayout mSolid, mShell, mTshell;
+    std::size_t mLayers = 1, mNv3dt = 0;  ///< integration layers (shells, thick shells); NV3DT
     std::size_t mNeiph = 0, mNeips = 0, mNeipb = 0, mNt3d = 0, mBeamLayers = 0;
     std::size_t mNglbv = 0, mNv3d = 0, mNv2d = 0, mNv1d = 0, mWords = 0;
+    std::vector<D3wAirbagColumn> mParticleCols, mBagCols;
+
+    /// Whether the family has rigid roads (NDIM 6 or 9) and the words a rigid body takes.
+    bool Roads() const { return !mModel.mRoadIds.empty(); }
+    std::size_t RigidWords() const { return Roads() ? 12 : 24; }
 };
 
 std::string d3w_geometry(const D3wPlan& rPlan) {
     const D3wModel& m = rPlan.mModel;
     const int ws = rPlan.mWs;
     std::vector<std::int64_t> words(64 + rPlan.ExtraWords(), 0);
-    words[11] = 1;
-    words[15] = m.mNrigid ? 8 : 4;
+    words[11] = rPlan.mFileType;
+    words[15] = rPlan.Roads() ? (m.mNrigid ? 9 : 6) : (m.mNrigid ? 8 : 4);
     words[16] = static_cast<std::int64_t>(m.mN);
     words[17] = 6;
     words[18] = static_cast<std::int64_t>(rPlan.mNglbv);
@@ -2693,11 +3039,15 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     words[36] = rPlan.MaxInt();
     words[37] = static_cast<std::int64_t>(m.mCounts[kD3wSph]);
     words[38] = m.mCounts[kD3wSph] ? 1 : 0;
+    words[40] = static_cast<std::int64_t>(m.mCounts[kD3wTshell]);
+    words[41] = static_cast<std::int64_t>(m.mNummatT);
+    words[42] = static_cast<std::int64_t>(rPlan.mNv3dt);
     words[43] = rPlan.mStress ? 1000 : 0;
     words[44] = rPlan.mPstrain ? 1000 : 0;
     words[45] = rPlan.mForces ? 1000 : 0;
     words[46] = rPlan.mExtra ? 1000 : 0;
     words[51] = static_cast<std::int64_t>(m.mPartIds.size());
+    words[54] = static_cast<std::int64_t>(m.mBagIds.size());
     words[55] = static_cast<std::int64_t>(m.mExtra8.size());
     words[56] = rPlan.Idtdt();
     if (rPlan.ExtraWords()) {
@@ -2707,7 +3057,7 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
         words[66] = static_cast<std::int64_t>(m.mExtra27.size());
         words[67] = static_cast<std::int64_t>(rPlan.mNeipb);
     }
-    const std::size_t ids = m.mCounts[0] + m.mCounts[1] + m.mCounts[2];
+    const std::size_t ids = m.mCounts[0] + m.mCounts[1] + m.mCounts[2] + m.mCounts[kD3wTshell];
     words[39] = static_cast<std::int64_t>(16 + m.mN + ids + 3 * m.mPartIds.size());
     std::string out;
     for (const std::int64_t w : words)
@@ -2720,6 +3070,28 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     if (m.mCounts[kD3wSph])
         for (const std::int64_t f : rPlan.mSphFlags)
             d3w_i32(out, f, ws);
+    // airbags: counts, type codes (1 integer, 2 real) and 8-word names, geometry data first,
+    // then the particle variables, then the bag state variables
+    if (!m.mBagIds.empty()) {
+        static const char* kGeometryNames[] = {"Start", "Npart", "Bag ID", "NGas"};
+        const std::size_t nvar = rPlan.mParticleCols.size(), nst = rPlan.mBagCols.size();
+        for (const std::int64_t v :
+             {std::int64_t{4}, static_cast<std::int64_t>(nvar),
+              static_cast<std::int64_t>(m.mParticles.size()), static_cast<std::int64_t>(nst)})
+            d3w_i32(out, v, ws);
+        for (std::size_t j = 0; j < 4 + nvar + nst; ++j)
+            d3w_i32(out, j < 4 ? 1 : 2, ws);
+        const auto name = [&](const std::string& rName) {
+            for (std::size_t c = 0; c < 8; ++c)
+                d3w_i32(out, c < rName.size() ? static_cast<unsigned char>(rName[c]) : ' ', ws);
+        };
+        for (const char* n : kGeometryNames)
+            name(n);
+        for (const D3wAirbagColumn& c : rPlan.mParticleCols)
+            name(c.mFile);
+        for (const D3wAirbagColumn& c : rPlan.mBagCols)
+            name(c.mFile);
+    }
     for (const double v : m.mPoints)
         d3w_f32(out, v, ws);
     for (std::size_t e = 0; e < m.mCounts[kD3wSolid]; ++e) {
@@ -2735,6 +3107,11 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
             d3w_i32(out, row[0], ws);
             d3w_i32(out, row[1], ws);
         }
+    }
+    for (std::size_t e = 0; e < m.mCounts[kD3wTshell]; ++e) {
+        for (const std::int64_t v : m.mRows[kD3wTshell][e])
+            d3w_i32(out, v + 1, ws);
+        d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wTshell][e]), ws);
     }
     for (std::size_t e = 0; e < m.mCounts[kD3wBeam]; ++e) {
         d3w_i32(out, m.mRows[kD3wBeam][e][0] + 1, ws);
@@ -2752,18 +3129,19 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     const auto solids_at = static_cast<std::int64_t>(17 + m.mN);
     const auto beams_at = solids_at + static_cast<std::int64_t>(m.mCounts[kD3wSolid]);
     const auto shells_at = beams_at + static_cast<std::int64_t>(m.mCounts[kD3wBeam]);
-    const auto parts_at = shells_at + static_cast<std::int64_t>(m.mCounts[kD3wShell]);
+    const auto tshells_at = shells_at + static_cast<std::int64_t>(m.mCounts[kD3wShell]);
+    const auto parts_at = tshells_at + static_cast<std::int64_t>(m.mCounts[kD3wTshell]);
     for (const std::int64_t v :
-         {std::int64_t{-17}, solids_at, beams_at, shells_at, parts_at,
+         {std::int64_t{-17}, solids_at, beams_at, shells_at, tshells_at,
           static_cast<std::int64_t>(m.mN), static_cast<std::int64_t>(m.mCounts[kD3wSolid]),
           static_cast<std::int64_t>(m.mCounts[kD3wBeam]),
-          static_cast<std::int64_t>(m.mCounts[kD3wShell]), std::int64_t{0}, parts_at,
-          parts_at + nparts, parts_at + 2 * nparts, nparts, static_cast<std::int64_t>(m.mNrigid),
-          nparts})
+          static_cast<std::int64_t>(m.mCounts[kD3wShell]),
+          static_cast<std::int64_t>(m.mCounts[kD3wTshell]), parts_at, parts_at + nparts,
+          parts_at + 2 * nparts, nparts, static_cast<std::int64_t>(m.mNrigid), nparts})
         d3w_i32(out, v, ws);
     for (const std::int64_t v : m.mNid)
         d3w_i32(out, v, ws);
-    for (const int family : {kD3wSolid, kD3wBeam, kD3wShell})
+    for (const int family : {kD3wSolid, kD3wBeam, kD3wShell, kD3wTshell})
         for (const std::int64_t v : m.mEid[family])
             d3w_i32(out, v, ws);
     for (int copy = 0; copy < 2; ++copy)
@@ -2783,6 +3161,31 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     for (std::size_t e = 0; e < m.mCounts[kD3wSph]; ++e) {
         d3w_i32(out, m.mRows[kD3wSph][e][0] + 1, ws);
         d3w_i32(out, m.mPartIndex.at(m.mPartsOf[kD3wSph][e]), ws);
+    }
+    // airbags: per bag its first particle, particle count, id and gas mixtures
+    for (std::size_t b = 0; b < m.mBagIds.size(); ++b)
+        for (const std::int64_t v : {m.mBagFirst[b], m.mBagCount[b], m.mBagIds[b], std::int64_t{1}})
+            d3w_i32(out, v, ws);
+    // rigid roads: the nodes (count, segments, roads, 1), their ids and coordinates, then per
+    // road its id, segment count and the segments' four road nodes
+    if (rPlan.Roads()) {
+        for (const std::int64_t v : {static_cast<std::int64_t>(m.mRoadPoints.size()),
+                                     static_cast<std::int64_t>(m.mRoadSegments.size()),
+                                     static_cast<std::int64_t>(m.mRoadIds.size()), std::int64_t{1}})
+            d3w_i32(out, v, ws);
+        for (std::size_t i = 0; i < m.mRoadPoints.size(); ++i)
+            d3w_i32(out, static_cast<std::int64_t>(i) + 1, ws);
+        for (const std::size_t old : m.mRoadPoints)
+            for (std::size_t c = 0; c < 3; ++c)
+                d3w_f32(out, m.mAllPoints[old * 3 + c], ws);
+        std::size_t at = 0;
+        for (std::size_t r = 0; r < m.mRoadIds.size(); ++r) {
+            d3w_i32(out, m.mRoadIds[r], ws);
+            d3w_i32(out, m.mRoadCount[r], ws);
+            for (std::int64_t k = 0; k < m.mRoadCount[r]; ++k, ++at)
+                for (const std::int64_t v : m.mRoadSegments[at].mNodes)
+                    d3w_i32(out, v, ws);
+        }
     }
     // the higher-order tables: eight-node shells, then 20- and 27-node solids
     for (const auto* table : {&m.mExtra8, &m.mExtra20, &m.mExtra27})
@@ -2806,17 +3209,19 @@ std::string d3w_geometry(const D3wPlan& rPlan) {
     return out;
 }
 
-/// A point array as (n, comps) doubles: missing components and arrays are NaN.
-std::vector<double> d3w_node_array(const Mesh& rMesh, const char* pName, std::size_t N,
+/// A point array as (nodes, comps) doubles: missing components and arrays are NaN. The mesh's
+/// airbag and road points are not nodes and are left out.
+std::vector<double> d3w_node_array(const D3wModel& rModel, const Mesh& rMesh, const char* pName,
                                    std::size_t Comps = 3) {
-    std::vector<double> out(N * Comps, kD3Nan);
+    const std::size_t n = rModel.mN;
+    std::vector<double> out(n * Comps, kD3Nan);
     if (!rMesh.HasPointData(pName))
         return out;
     const NDArray& a = rMesh.PointData(pName);
-    const std::size_t width = a.Size() / N;
-    for (std::size_t i = 0; i < N; ++i)
+    const std::size_t width = a.Size() / rModel.mNmesh;
+    for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < Comps && k < width; ++k)
-            out[i * Comps + k] = detail::read_double(a, i * width + k);
+            out[i * Comps + k] = detail::read_double(a, rModel.mKeep[i] * width + k);
     return out;
 }
 
@@ -3011,34 +3416,34 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
     }
     // nodal variables, in the reader's order
     if (rPlan.mDisp) {
-        const std::vector<double> d = d3w_node_array(rMesh, "displacement", n);
+        const std::vector<double> d = d3w_node_array(m, rMesh, "displacement");
         for (std::size_t i = 0; i < 3 * n; ++i)
             d3w_f32(out, m.mPoints[i] + (std::isnan(d[i]) ? 0.0 : d[i]), ws);
     }
     if (rPlan.mIt0) {
-        for (const double v : d3w_node_array(rMesh, "temperature", n, rPlan.mIt0 == 3 ? 3 : 1))
+        for (const double v : d3w_node_array(m, rMesh, "temperature", rPlan.mIt0 == 3 ? 3 : 1))
             d3w_f32(out, v, ws);
         if (rPlan.mIt0 >= 2)
-            for (const double v : d3w_node_array(rMesh, "heat_flux", n))
+            for (const double v : d3w_node_array(m, rMesh, "heat_flux"))
                 d3w_f32(out, v, ws);
     }
     if (rPlan.mIt1)
-        for (const double v : d3w_node_array(rMesh, "mass_scaling", n, 1))
+        for (const double v : d3w_node_array(m, rMesh, "mass_scaling", 1))
             d3w_f32(out, v, ws);
     if (rPlan.mTgrad)
-        for (const double v : d3w_node_array(rMesh, "temperature_gradient", n, 1))
+        for (const double v : d3w_node_array(m, rMesh, "temperature_gradient", 1))
             d3w_f32(out, v, ws);
     if (rPlan.mResid) {
-        for (const double v : d3w_node_array(rMesh, "residual_forces", n))
+        for (const double v : d3w_node_array(m, rMesh, "residual_forces"))
             d3w_f32(out, v, ws);
-        for (const double v : d3w_node_array(rMesh, "residual_moments", n))
+        for (const double v : d3w_node_array(m, rMesh, "residual_moments"))
             d3w_f32(out, v, ws);
     }
     if (rPlan.mVel)
-        for (const double v : d3w_node_array(rMesh, "velocity", n))
+        for (const double v : d3w_node_array(m, rMesh, "velocity"))
             d3w_f32(out, v, ws);
     if (rPlan.mAcc)
-        for (const double v : d3w_node_array(rMesh, "acceleration", n))
+        for (const double v : d3w_node_array(m, rMesh, "acceleration"))
             d3w_f32(out, v, ws);
     if (rPlan.mNt3d) {
         std::vector<double> thermal(m.mCounts[kD3wSolid] * rPlan.mNt3d, kD3Nan);
@@ -3061,6 +3466,9 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
     if (rPlan.mNv3d)
         for (const double v : d3w_family_matrix(rPlan, rMesh, kD3wSolid, rPlan.mSolid))
             d3w_f32(out, v, ws);
+    if (rPlan.mNv3dt)
+        for (const double v : d3w_family_matrix(rPlan, rMesh, kD3wTshell, rPlan.mTshell))
+            d3w_f32(out, v, ws);
     if (rPlan.mNv1d)
         for (const double v : d3w_beam_matrix(rPlan, rMesh))
             d3w_f32(out, v, ws);
@@ -3069,7 +3477,7 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
             d3w_f32(out, v, ws);
     if (rPlan.mAlive) {
         const bool has = rMesh.HasCellData("lsdyna:alive");
-        for (const int family : {kD3wSolid, kD3wShell, kD3wBeam}) {
+        for (const int family : {kD3wSolid, kD3wTshell, kD3wShell, kD3wBeam}) {
             std::vector<double> flags(m.mCounts[family], 1.0);
             if (has)
                 for (const D3wRange& range : m.mRanges[family]) {
@@ -3086,8 +3494,8 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
         std::vector<double> flags(n, 1.0);
         if (rMesh.HasPointData("lsdyna:alive")) {
             const NDArray& a = rMesh.PointData("lsdyna:alive");
-            for (std::size_t i = 0; i < n && i < a.Size(); ++i)
-                flags[i] = detail::read_double(a, i) != 0.0 ? 1.0 : 0.0;
+            for (std::size_t i = 0; i < n && m.mKeep[i] < a.Size(); ++i)
+                flags[i] = detail::read_double(a, m.mKeep[i]) != 0.0 ? 1.0 : 0.0;
         }
         for (const double v : flags)
             d3w_f32(out, v, ws);
@@ -3095,6 +3503,50 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
     if (m.mCounts[kD3wSph])
         for (const double v : d3w_sph_matrix(rPlan, rMesh))
             d3w_f32(out, v, ws);
+    // airbags: per bag its state variables, then per particle its variables
+    if (!m.mBagIds.empty()) {
+        for (std::size_t b = 0; b < m.mBagIds.size(); ++b)
+            for (const D3wAirbagColumn& c : rPlan.mBagCols) {
+                const bool have = rMesh.HasFieldData(c.mSource) &&
+                                  rMesh.FieldData(c.mSource).Size() == m.mBagIds.size();
+                d3w_f32(out, have ? detail::read_double(rMesh.FieldData(c.mSource), b) : 0.0, ws);
+            }
+        const NDArray& pts = rMesh.Points();
+        const std::size_t pwidth = pts.Size() / m.mNmesh;
+        for (const D3wModel::Particle& p : m.mParticles)
+            for (const D3wAirbagColumn& c : rPlan.mParticleCols) {
+                double v = kD3Nan;
+                if (c.mSource.empty()) {
+                    v = static_cast<std::size_t>(c.mAxis) < pwidth
+                            ? detail::read_double(
+                                  pts, p.mPoint * pwidth + static_cast<std::size_t>(c.mAxis))
+                            : 0.0;
+                } else if (rMesh.HasCellData(c.mSource) &&
+                           p.mBlock < rMesh.CellDataNumBlocks(c.mSource)) {
+                    const NDArray& a = rMesh.CellData(c.mSource, p.mBlock);
+                    const std::size_t per = c.mSource == "velocity" ? 3 : 1;
+                    const std::size_t at = p.mRow * per + static_cast<std::size_t>(c.mAxis);
+                    if (at < a.Size())
+                        v = detail::read_double(a, at);
+                }
+                d3w_f32(out, v, ws);
+            }
+    }
+    // rigid roads: per road its displacement and velocity
+    if (rPlan.Roads()) {
+        const auto field = [&](const char* pName, std::size_t Road, std::size_t C) {
+            return rMesh.HasFieldData(pName) &&
+                           rMesh.FieldData(pName).Size() == 3 * m.mRoadIds.size()
+                       ? detail::read_double(rMesh.FieldData(pName), 3 * Road + C)
+                       : 0.0;
+        };
+        for (std::size_t r = 0; r < m.mRoadIds.size(); ++r) {
+            for (std::size_t c = 0; c < 3; ++c)
+                d3w_f32(out, field("lsdyna:road_displacement", r, c), ws);
+            for (std::size_t c = 0; c < 3; ++c)
+                d3w_f32(out, field("lsdyna:road_velocity", r, c), ws);
+        }
+    }
     if (m.mNrigid) {
         std::vector<double> rigid(m.mNrigid * 24, kD3Nan);
         std::size_t at = 0;
@@ -3107,8 +3559,10 @@ std::string d3w_state(const D3wPlan& rPlan, const Mesh& rMesh, double Time) {
                             detail::read_double(rMesh.FieldData(key), r * width + c);
             at += width;
         }
-        for (const double v : rigid)
-            d3w_f32(out, v, ws);
+        // with roads (NDIM 9) a rigid body keeps its coordinates and rotation only
+        for (std::size_t r = 0; r < m.mNrigid; ++r)
+            for (std::size_t c = 0; c < rPlan.RigidWords(); ++c)
+                d3w_f32(out, rigid[r * 24 + c], ws);
     }
     return out;
 }
@@ -3162,7 +3616,7 @@ void d3w_store(const std::string& rPath, const std::vector<std::string>& rFiles)
 void write_lsdyna_d3plot(const std::string& rPath, const Mesh& rMesh, std::size_t MaxFileBytes,
                          bool DoublePrecision) {
     const D3wModel model(rMesh);
-    const D3wPlan plan(model, {&rMesh}, DoublePrecision);
+    const D3wPlan plan(model, {&rMesh}, DoublePrecision, d3w_file_type(rPath));
     d3w_store(rPath, d3w_assemble(plan, {{d3w_time_of(rMesh), &rMesh}}, MaxFileBytes));
 }
 
@@ -3221,7 +3675,7 @@ void LsdynaD3plotSeriesWriter::Finalize() {
         meshes.push_back(s.mMeshes[i].get());
         steps.push_back({s.mTimes[i], s.mMeshes[i].get()});
     }
-    const D3wPlan plan(*s.mModel, meshes, s.mDouble);
+    const D3wPlan plan(*s.mModel, meshes, s.mDouble, d3w_file_type(s.mPath));
     d3w_store(s.mPath, d3w_assemble(plan, steps, s.mMaxBytes));
 }
 

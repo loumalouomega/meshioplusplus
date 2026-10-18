@@ -435,3 +435,78 @@ TEST(LsdynaD3plotWriter, StateSeriesAndSplitRoundTrip) {
     EXPECT_THROW(meshioplusplus::write_lsdyna_d3plot(dir + "/none", Mesh{}),
                  meshioplusplus::WriteError);
 }
+
+// The airbag particles (`Airbag <id>` vertices) and rigid road segments (`Rigid road <id>` quads)
+// of a read family are written back into their own sections, not as nodes and SPH particles.
+TEST(LsdynaD3plotWriter, AirbagsAndRoadsRoundTrip) {
+    const std::filesystem::path dir(
+        mt::temp_path("_d3plot_airbag_" + std::to_string(std::random_device{}())));
+    std::filesystem::create_directories(dir);
+    const std::string source = (dir / "d3plot").string();
+    std::ofstream(source, std::ios::binary) << particles_family();
+    const Mesh mesh = meshioplusplus::read_lsdyna_d3plot(source, step(1));
+    ASSERT_EQ(mesh.NumPoints(), 12u);
+
+    std::filesystem::create_directories(dir / "out");
+    const std::string out = (dir / "out" / "d3plot").string();
+    meshioplusplus::write_lsdyna_d3plot(out, mesh);
+    const Mesh back = meshioplusplus::read_lsdyna_d3plot(out);
+    ASSERT_EQ(back.NumCellBlocks(), 4u);
+    EXPECT_EQ(back.Cells(2).Type(), "vertex");  // the airbag particles
+    EXPECT_EQ(back.Cells(3).Type(), "quad");    // the road
+    ASSERT_EQ(back.NumPoints(), 12u);
+    for (std::size_t i = 0; i < 12 * 3; ++i)
+        EXPECT_NEAR(back.Points().As<double>()[i], mesh.Points().As<double>()[i], 1e-6);
+    EXPECT_EQ(back.PointData("lsdyna:nid").As<std::int64_t>()[8], -1);
+    EXPECT_EQ(back.CellData("lsdyna:part", 2).As<std::int64_t>()[0], 77);
+    EXPECT_EQ(back.CellData("lsdyna:part", 3).As<std::int64_t>()[0], 9);
+    EXPECT_NEAR(back.CellData("airbag_mass", 2).As<double>()[1], 1.5, 1e-6);
+    EXPECT_NEAR(back.FieldData("lsdyna:airbag:bag_vol").As<double>()[0], 4.0, 1e-6);
+    EXPECT_NEAR(back.FieldData("lsdyna:road_velocity").As<double>()[2], -1.0, 1e-6);
+    EXPECT_FALSE(back.HasFieldData("lsdyna:rigid_body_velocity"));  // NDIM 9: reduced
+    EXPECT_TRUE(back.HasFieldData("lsdyna:rigid_body_coordinates"));
+}
+
+// The name decides the file type: a `d3part` is file type 5.
+TEST(LsdynaD3plotWriter, ADpartCarriesItsFileType) {
+    const Mesh mesh = mt::hex_mesh();
+    const std::string dir = mt::temp_path("_d3part_writer");
+    std::filesystem::create_directories(dir);
+    meshioplusplus::write_lsdyna_d3plot(dir + "/d3part", mesh);
+    meshioplusplus::write_lsdyna_d3plot(dir + "/d3plot", mesh);
+    const auto file_type = [](const std::string& rPath) {
+        std::ifstream in(rPath, std::ios::binary);
+        char word[4];
+        in.seekg(4 * 11);
+        in.read(word, 4);
+        std::int32_t v;
+        std::memcpy(&v, word, 4);
+        return v;
+    };
+    EXPECT_EQ(file_type(dir + "/d3part"), 5);
+    EXPECT_EQ(file_type(dir + "/d3plot"), 1);
+    EXPECT_EQ(meshioplusplus::read_lsdyna_d3plot(dir + "/d3part").NumCellBlocks(), 1u);
+}
+
+// Bricks the reader marks `lsdyna:thick_shell` are written as the thick-shell family.
+TEST(LsdynaD3plotWriter, ThickShellsAreAFamilyOfTheirOwn) {
+    Mesh mesh = mt::hex_mesh();
+    meshioplusplus::NDArray mark(meshioplusplus::DType::Int8, {std::size_t{1}});
+    mark.As<std::int8_t>()[0] = 1;
+    mesh.AddCellData("lsdyna:thick_shell", {std::move(mark)});
+    meshioplusplus::NDArray stress(meshioplusplus::DType::Float64,
+                                   {std::size_t{1}, std::size_t{6}});
+    for (std::size_t i = 0; i < 6; ++i)
+        stress.As<double>()[i] = 0.5 * static_cast<double>(i + 1);
+    mesh.AddCellData("stress", {std::move(stress)});
+    const std::string dir = mt::temp_path("_d3plot_tshell");
+    std::filesystem::create_directories(dir);
+    meshioplusplus::write_lsdyna_d3plot(dir + "/d3plot", mesh);
+    const Mesh back = meshioplusplus::read_lsdyna_d3plot(dir + "/d3plot");
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "hexahedron");
+    ASSERT_TRUE(back.HasCellData("lsdyna:thick_shell"));
+    EXPECT_EQ(back.CellData("lsdyna:thick_shell", 0).As<std::int8_t>()[0], 1);
+    for (int c = 0; c < 6; ++c)
+        EXPECT_NEAR(back.CellData("stress", 0).As<double>()[c], 0.5 * (c + 1), 1e-5);
+}

@@ -52,15 +52,19 @@ def is_binout_filename(path) -> bool:
 
 
 def is_d3plot_member(path) -> bool:
-    """Whether ``path`` is a numbered member (``d3plot01``...) of a d3plot family
-    whose base file sits beside it."""
+    """Whether ``path`` is a numbered member (``d3plot01``... or ``d3part01``...)
+    of a d3plot family whose base file sits beside it."""
     try:
         text = os.fspath(path)
     except TypeError:
         return False
     name = os.path.basename(text)
     lower = name.lower()
-    if len(lower) <= 6 or not lower.startswith("d3plot") or not lower[6:].isdigit():
+    if (
+        len(lower) <= 6
+        or lower[:6] not in ("d3plot", "d3part")
+        or not lower[6:].isdigit()
+    ):
         return False
     if not lower[6:].isascii():
         return False
