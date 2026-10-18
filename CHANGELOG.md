@@ -10,7 +10,11 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- `nastran_op2` writes `PLOTEL` plot elements, `CSHEAR` shear panels with their `PSHEAR` properties (`nastran:PSHEAR_<id>:MID`, `T`, `NSM`, `F1`, `F2`) and `MAT2` and `MAT8` materials (`nastran:MAT2_<id>:*`, `nastran:MAT8_<id>:*`, written in place of the `MAT1` placeholder; an id given as two cards is a `WriteError`), in both engines with identical bytes; the reader returns the `PSHEAR`, `MAT2` and `MAT8` values as field data.
+- `xplt` writes surfaces, edges and facet sets: blocks marked by `xplt:surface` / `xplt:edge` cell data become surface and edge sections, and `side` regions become facet sets, so a read file round-trips.
+- `abaqus_fil` writes contact output (records 1503, 1504 and 1511 to 1592) from the point arrays the reader names `CSTRESS`, `CDISP`, `CAREA`, … and `key_<n>`, in both engines and both layouts; the surface pair is `field_data["abaqus:contact_pair"]` (two side-region indices), defaulting to the first two side regions. Contact surfaces (1501) now carry their dimension, facet count and slave count, so pybaqus reads them.
 - `nastran_op2` writes `CVISC` viscous dampers with their `PVISC` properties (`nastran:PVISC_<id>:CE` and `CR` field data, which the reader now returns too), in both engines; pyNastran reads them back.
+- `nastran_h5` (Python engine) no longer fails with a `KeyError` on a mesh whose `nastran:card` names an OP2 card it has no table for (`CVISC`, `CSHEAR`, `PLOTEL`, `CBAR`, ...); like the C++ engine it picks the card from the cell type and property.
 
 ## v17.4.0 (2026-10-17)
 

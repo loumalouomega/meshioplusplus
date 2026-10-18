@@ -851,6 +851,22 @@ def _same_tables(a, b):
 
 
 class TestWriter:
+    @pytest.mark.parametrize("code", [24, 31, 39, 52])
+    def test_op2_only_cards_are_written_by_type_and_property(self, code, tmp_path):
+        """``nastran:card`` names OP2 cards this writer has no table for; both engines
+        ignore it and write the line as a CROD, as they did before the OP2 writer
+        learnt them."""
+        points = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+        mesh.cell_data["nastran:eid"] = [np.array([60, 61])]
+        mesh.cell_data["nastran:pid"] = [np.array([8, 8])]
+        mesh.cell_data["nastran:card"] = [np.array([code, code])]
+        a, b = tmp_path / "core.h5", tmp_path / "py.h5"
+        _core.nastran_h5_write(str(a), mesh)
+        py_write(b, mesh)
+        _same_tables(_tables(a), _tables(b))
+        assert "ELEMENT/CROD" in "/".join(_tables(b))
+
     def test_engines_write_the_same_tables(self, tmp_path):
         mesh = _write_mesh()
         a, b = tmp_path / "core.h5", tmp_path / "py.h5"

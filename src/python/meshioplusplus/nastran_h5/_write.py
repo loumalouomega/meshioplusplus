@@ -12,6 +12,7 @@ The file is not an MSC Nastran product: it has the ``SCHEMA`` attribute but no
 ``VERSION`` one, which the reader accepts and an MSC reader may not.
 """
 
+import copy
 import re
 
 import numpy as np
@@ -579,6 +580,13 @@ def _assemble(filename, model, steps):
 
 
 def _build_model(mesh):
+    # The HDF5 writer picks a card from the cell type and property alone, as the C++
+    # one does: ``nastran:card`` names OP2 cards (CVISC, CSHEAR, ...) it has no table for.
+    if "nastran:card" in mesh.cell_data:
+        mesh = copy.copy(mesh)
+        mesh.cell_data = {
+            k: v for k, v in mesh.cell_data.items() if k != "nastran:card"
+        }
     try:
         return _Model(mesh, per_card_ids=True)
     except WriteError as exc:
