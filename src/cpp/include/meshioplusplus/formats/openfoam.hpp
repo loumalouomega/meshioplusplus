@@ -198,8 +198,8 @@ MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rI
  * `uniform` expands to one row per cell/point. A cell field's `internalField`
  * only ever covers volume cells (OpenFOAM's own numbering): the matching
  * `cell_data` blocks are the volume/polyhedron ones; the boundary-face
- * blocks get `NaN` for that field, since attaching `boundaryField`'s
- * per-patch values is a documented follow-up, not read here. Binary field
+ * blocks get the `value` of each patch's `boundaryField` entry (matched by
+ * exact patch name), and `NaN` where a patch has none. Binary field
  * files use the same `arch`-driven reader as the polyMesh binary path.
  *
  * @param rPath a `.foam` file, case directory, or polyMesh directory
