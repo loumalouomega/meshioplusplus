@@ -65,7 +65,7 @@ Some libraries are in neither pair, each for a reason, and each still answers by
 - **TecIO** (`szplt`): its redistribution terms; absent, and named, the same way.
 - **The Kokkos parallel backend**: CMake refuses it under Emscripten; `parallelBackend()` is `seq` or `openmp`.
 - **Memory mapping**: there is nothing to map inside MEMFS; the option is accepted and ignored.
-- **MMG**: there is no native MMG backend yet ([roadmap §4.3](./roadmap.md#_4-operations)); bringing it to the browser through the full pair is roadmap §6.2.3.
+- **MMG**: there is no native MMG backend yet ([roadmap §3.3](./roadmap.md#_3-operations)); bringing it to the browser through the full pair is roadmap §5.2.3.
 
 The smoke suite asserts this set exactly on each artifact (`MESHIOPLUSPLUS_WASM_VARIANT=full` and `full-seq` run it on the full pair).
 

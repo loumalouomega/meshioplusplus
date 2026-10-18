@@ -1017,7 +1017,7 @@ def roadmap_map():
             [
                 ("route runs (.odb · .t16 · DPF)", "S"),
                 ("reader checks awaiting a licence", "S"),
-                ("writer checks (Marc · Femap)", "S"),
+                ("written files in vendor tools", "S"),
             ],
             [],
         ),
@@ -1029,18 +1029,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§3 reader/writer parity",
-            [
-                ("guard: both directions", "S"),
-                ("svg · tikz readers (2-D)", "S"),
-                ("glTF reader", "M"),
-                ("result writers (open validator)", "L"),
-                ("partial writers · engine gaps", "M"),
-            ],
-            [(0, 1)],
-        ),
-        (
-            "§4 operations",
+            "§3 operations",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
@@ -1052,7 +1041,7 @@ def roadmap_map():
             [(0, 1), (2, 3)],
         ),
         (
-            "§5 ecosystem reach",
+            "§4 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -1064,9 +1053,9 @@ def roadmap_map():
             [],
         ),
         (
-            "§6 full WASM build",
+            "§5 full WASM build",
             [
-                ("MMG under Emscripten (after §4.3)", "M"),
+                ("MMG under Emscripten (after §3.3)", "M"),
             ],
             [],
         ),
