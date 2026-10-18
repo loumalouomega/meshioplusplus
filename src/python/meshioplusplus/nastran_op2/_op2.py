@@ -177,6 +177,9 @@ _ELEMENTS = {
     (301, 3): ("CDAMP2", (6,), 2, 2, None),
     (601, 6): ("CELAS1", (6,), 2, 2, 1),
     (701, 7): ("CELAS2", (8,), 2, 2, None),
+    (1001, 10): ("CMASS1", (6,), 2, 2, 1),
+    (1101, 11): ("CMASS2", (6,), 2, 2, None),
+    (1401, 14): ("CONM1", (24,), 1, 1, None),
     (1501, 15): ("CONM2", (13,), 1, 1, None),
     (1601, 16): ("CONROD", (8,), 1, 2, None),
     (4108, 41): ("CPENTA", (17,), 2, 15, 1),
@@ -207,11 +210,8 @@ _NAMED_ELEMENT_KEYS = {
     (901, 9): "CELAS4",
     (401, 4): "CDAMP3",
     (501, 5): "CDAMP4",
-    (1001, 10): "CMASS1",
-    (1101, 11): "CMASS2",
     (1201, 12): "CMASS3",
     (1301, 13): "CMASS4",
-    (1401, 14): "CONM1",
     (5608, 56): "CBUSH1D",
     (6108, 61): "CTRIAX6",
     (9008, 90): "CQUADX",
@@ -498,7 +498,7 @@ def _read_elements(s, tables, grids):
         card, sizes, first, count, pid_word = spec
         words = _ints(s, raw)[3:]
         # A spring or damper's ends may be scalar points, or 0 (grounded).
-        scalar_ends = card.startswith(("CELAS", "CDAMP"))
+        scalar_ends = card.startswith(("CELAS", "CDAMP", "CMASS"))
         corners = 0 if scalar_ends else CARDS[card][1]
         rows = None
         for size in sizes:
@@ -532,11 +532,22 @@ def _read_elements(s, tables, grids):
             entry[4].append(_bush_payload(s, raw, rows))
         elif card == "CGAP":
             entry[4].append(_gap_payload(s, raw, rows))
-        elif card in ("CELAS2", "CDAMP2"):
-            # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 at word 1.
+        elif card in ("CELAS2", "CDAMP2", "CMASS2"):
+            # K, GE and S of a CELAS2 at words 1, 6 and 7; B of a CDAMP2 or M of a CMASS2
+            # at word 1.
             floats = _floats(s, raw)[3:].reshape(rows.shape)
             columns = [1, 6, 7] if card == "CELAS2" else [1]
             entry[4].append(floats[:, columns])
+        elif card == "CONM1":
+            # The mass matrix M11, M21, M22, M31, ... M66 at words 3 to 23.
+            floats = _floats(s, raw)[3:].reshape(rows.shape)
+            if (rows[:, 2] > 0).any():
+                warn(
+                    f"{WHO}: {int((rows[:, 2] > 0).sum())} CONM1 element(s) have their "
+                    "mass matrix in a coordinate system other than the basic one; it is "
+                    "read as given"
+                )
+            entry[4].append(floats[:, 3:24])
     if skipped:
         warn(f"{WHO}: skipped element records with no cell type: " + ", ".join(skipped))
     out = []
@@ -716,7 +727,7 @@ def _read_properties(s, tables):
 
 def _read_property_values(s, tables):
     """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PSHELL, PROD, PTUBE, PSOLID,
-    PELAS, PDAMP, PVISC, PGAP, PSHEAR, MAT1, MAT2 and MAT8 records (the members
+    PELAS, PDAMP, PVISC, PGAP, PSHEAR, MAT1, MAT2, MAT4, MAT5, MAT8 and MAT9 records (the members
     ``nastran_op2._write.PROPERTY_VALUES``
     lists)."""
     from ._write import PROPERTY_VALUES, is_int_member
@@ -753,6 +764,7 @@ def _read_property_values(s, tables):
             "PVISC",
             "PGAP",
             "PSHEAR",
+            "PMASS",
         ):
             take(spec[0], raw, spec[1])
     for (k1, k2, _k3), raw in _geometry_records(s, tables, ("MPT", "MAT")):
@@ -760,8 +772,14 @@ def _read_property_values(s, tables):
             take("MAT1", raw, 12)
         elif (k1, k2) == (203, 2):
             take("MAT2", raw, 17)
+        elif (k1, k2) == (2103, 21):
+            take("MAT4", raw, 11)
+        elif (k1, k2) == (2203, 22):
+            take("MAT5", raw, 10)
         elif (k1, k2) == (2503, 25):
             take("MAT8", raw, 19)
+        elif (k1, k2) == (2603, 26):
+            take("MAT9", raw, 35)
     return out
 
 
@@ -872,6 +890,109 @@ def _read_pcomp_values(s, tables):
             ).astype(np.float64)
             out.setdefault(f"{prefix}:PLY", plies)
             k = stop
+    return out
+
+
+def _read_line_values(s, tables):
+    """``nastran:<CARD>_<id>:<MEMBER>`` field data of the PBARL, PBEAML and PCOMPG records.
+
+    A PBARL or PBEAML is the id, MID, GROUP and TYPE (two words each, text) and the
+    values up to a -1: a PBARL's dimensions then NSM, a PBEAML's stations as SO, X/XB,
+    the dimensions and NSM. They give ``MID`` (int64), ``GROUP`` and ``TYPE`` (``uint8``
+    text) and ``DIM`` (``(n,)``, or ``(stations, n)``), ``NSM``, and a PBEAML's ``SO`` and
+    ``XXB`` (``(stations,)``). A PCOMPG is pid, LAMOPT, Z0, NSM, SB, FT, TREF and GE, then
+    the plies as GPLYID, MID, T, THETA and SOUT up to five -1: ``LAMOPT`` and ``FT``
+    (int64), the scalars, and ``PLY``, ``(n, 5)`` rows. A file of 8-byte words gives none
+    (its texts are four characters a word)."""
+    from ._write import SECTION_DIMS
+
+    out = {}
+    if s.ws != 4:
+        return out
+    for (k1, k2, _k3), raw in _geometry_records(s, tables, ("EPT",)):
+        if (k1, k2) not in ((9102, 91), (9202, 92), (15006, 150)):
+            continue
+        body = raw[3 * s.ws :]
+        if len(body) == 0 or len(body) % s.ws:
+            continue
+        ints = _ints(s, body)
+        floats = _floats(s, body)
+        k = 0
+        if (k1, k2) == (15006, 150):
+            while k + 8 <= len(ints) and ints[k] > 0:
+                pid = int(ints[k])
+                start = k + 8
+                at = start
+                while at + 5 <= len(ints) and not np.all(ints[at : at + 5] == -1):
+                    at += 5
+                if at + 5 > len(ints):
+                    break
+                prefix = f"nastran:PCOMPG_{pid}:"
+                if prefix + "PLY" not in out:
+                    plies = np.column_stack(
+                        [
+                            ints[start:at:5],
+                            ints[start + 1 : at : 5],
+                            floats[start + 2 : at : 5],
+                            floats[start + 3 : at : 5],
+                            ints[start + 4 : at : 5],
+                        ]
+                    ).astype(np.float64)
+                    out[prefix + "PLY"] = plies
+                    out[prefix + "LAMOPT"] = np.array([ints[k + 1]], dtype=np.int64)
+                    out[prefix + "FT"] = np.array([ints[k + 5]], dtype=np.int64)
+                    for member, word in (
+                        ("Z0", 2),
+                        ("NSM", 3),
+                        ("SB", 4),
+                        ("TREF", 6),
+                        ("GE", 7),
+                    ):
+                        out[prefix + member] = np.array([floats[k + word]])
+                k = at + 5
+            continue
+        card = "PBARL" if k1 == 9102 else "PBEAML"
+        while k + 6 <= len(ints) and ints[k] > 0:
+            end = _entries_terminated(ints, k + 6)
+            if end is None:
+                break
+            pid, mid = int(ints[k]), int(ints[k + 1])
+            prefix = f"nastran:{card}_{pid}:"
+            values = floats[k + 6 : end - 1]
+            texts = [
+                body[(k + 2 + 2 * j) * s.ws : (k + 4 + 2 * j) * s.ws]
+                .decode("latin-1")
+                .strip(" \x00")
+                for j in range(2)
+            ]
+            section = texts[1].upper()
+            k = end
+            if prefix + "TYPE" in out:
+                continue
+            fields = {}
+            if card == "PBARL":
+                if len(values) < 1:
+                    continue
+                fields["DIM"] = values[:-1].copy()
+                fields["NSM"] = np.array([values[-1]])
+            else:
+                ndim = SECTION_DIMS.get(section)
+                if ndim is None or len(values) == 0 or len(values) % (ndim + 3):
+                    continue
+                stations = values.reshape(-1, ndim + 3)
+                fields["SO"] = stations[:, 0].copy()
+                fields["XXB"] = stations[:, 1].copy()
+                fields["DIM"] = stations[:, 2 : 2 + ndim].copy()
+                fields["NSM"] = stations[:, -1].copy()
+            out[prefix + "MID"] = np.array([mid], dtype=np.int64)
+            out[prefix + "GROUP"] = np.frombuffer(
+                texts[0].encode("latin-1"), np.uint8
+            ).copy()
+            out[prefix + "TYPE"] = np.frombuffer(
+                section.encode("latin-1"), np.uint8
+            ).copy()
+            for member, value in fields.items():
+                out[prefix + member] = value
     return out
 
 
@@ -1576,6 +1697,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     mesh.field_data.update(_read_pcomp_values(nf.stream, nf.tables))
     mesh.field_data.update(_read_pbeam_values(nf.stream, nf.tables))
     mesh.field_data.update(_read_bush_values(nf.stream, nf.tables))
+    mesh.field_data.update(_read_line_values(nf.stream, nf.tables))
     mesh.field_data.update(_cord_fields(systems))
     mesh.time_values = [st["time"] for st in nf.steps]
     n = len(nf.steps)

@@ -613,6 +613,70 @@ TEST(NastranOp2Writer, ComplexRandomCornerAndFluxResultsComeBack) {
         EXPECT_EQ(c[k], 10.0 + k);
 }
 
+TEST(NastranOp2Writer, PointMassesSectionsAndOutputSystemsComeBack) {
+    // A CMASS2 (a line) and a CONM1 (a vertex) with their values, a CBAR on a PBARL, and a
+    // GRID whose results are in a cylindrical output system.
+    Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 2, 0}, {3, 0, 0}}, "line", {{0, 1}});
+    m.AddCellBlock("line", mt::conn_from({{1, 2}}));
+    m.AddCellBlock("vertex", mt::conn_from({{3}}));
+    m.AddCellData("nastran:eid", {ints({20}), ints({21}), ints({22})});
+    m.AddCellData("nastran:pid", {ints({-1}), ints({9}), ints({-1})});
+    m.AddCellData("nastran:card", {ints({11}), ints({24}), ints({14})});
+    m.AddCellData("nastran:c1", {ints({1}), ints({0}), ints({0})});
+    m.AddCellData("nastran:c2", {ints({1}), ints({0}), ints({0})});
+    m.AddCellData("nastran:m", {doubles({2.5}, {1}), doubles({0.0}, {1}), doubles({0.0}, {1})});
+    std::vector<NDArray> matrix;
+    matrix.push_back(
+        doubles({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {1, 21}));
+    matrix.push_back(
+        doubles({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {1, 21}));
+    matrix.push_back(doubles(
+        {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}, {1, 21}));
+    m.AddCellData("nastran:conm1", std::move(matrix));
+    m.AddCellData("nastran:x", {doubles({0, 0, 1}, {1, 3}), doubles({0, 0, 1}, {1, 3}),
+                                doubles({0, 0, 0}, {1, 3})});
+    NDArray type(meshioplusplus::DType::UInt8, {std::size_t{3}});
+    std::copy_n("BAR", 3, type.As<std::uint8_t>());
+    m.AddFieldData("nastran:PBARL_9:TYPE", std::move(type));
+    m.AddFieldData("nastran:PBARL_9:DIM", doubles({2.0, 3.0}, {2}));
+    m.AddFieldData("nastran:PBARL_9:NSM", doubles({0.5}, {1}));
+    m.AddPointData("nastran:cd", ints({0, 0, 5, 0}));
+    m.AddFieldData("nastran:CORD2_5:TYPE", ints({2}));
+    m.AddFieldData("nastran:CORD2_5:A", doubles({0, 0, 0}, {3}));
+    m.AddFieldData("nastran:CORD2_5:X", doubles({1, 0, 0}, {3}));
+    m.AddFieldData("nastran:CORD2_5:Y", doubles({0, 1, 0}, {3}));
+    m.AddFieldData("nastran:CORD2_5:Z", doubles({0, 0, 1}, {3}));
+    NDArray d(meshioplusplus::DType::Float64, {std::size_t{4}, std::size_t{3}});
+    const double basic[12] = {1, 0, 0, 0, 0, 0,
+                              1, 0, 0, 0, 0, 0};  // GRID 3 at (0, 2, 0): +x is -theta
+    std::copy(basic, basic + 12, d.As<double>());
+    m.AddPointData("DISPLACEMENT", std::move(d));
+    const std::string path = temp_op2();
+    meshioplusplus::write_nastran_op2(path, m);
+    const Mesh back = meshioplusplus::read_nastran_op2(path);
+    std::size_t line = back.NumCellBlocks(), vertex = back.NumCellBlocks();
+    for (std::size_t b = 0; b < back.NumCellBlocks(); ++b) {
+        const auto card = back.CellData("nastran:card", b).As<std::int64_t>()[0];
+        if (card == 11)
+            line = b;
+        if (card == 14)
+            vertex = b;
+    }
+    ASSERT_LT(line, back.NumCellBlocks());
+    ASSERT_LT(vertex, back.NumCellBlocks());
+    EXPECT_EQ(back.CellData("nastran:m", line).As<double>()[0], 2.5);
+    const double* terms = back.CellData("nastran:conm1", vertex).As<double>();
+    for (int k = 0; k < 21; ++k)
+        EXPECT_EQ(terms[k], k + 1.0);
+    ASSERT_TRUE(back.HasFieldData("nastran:PBARL_9:DIM"));
+    EXPECT_EQ(back.FieldData("nastran:PBARL_9:DIM").As<double>()[1], 3.0);
+    EXPECT_EQ(back.FieldData("nastran:PBARL_9:TYPE").As<std::uint8_t>()[0], 'B');
+    EXPECT_EQ(back.PointData("nastran:cd").As<std::int64_t>()[2], 5);
+    const double* shown = back.PointData("DISPLACEMENT").As<double>();
+    for (int k = 0; k < 12; ++k)
+        EXPECT_NEAR(shown[k], basic[k], 2e-6) << k;  // the reader rotates them back to basic
+}
+
 TEST(NastranOp2Writer, ASeriesIsTheModelOnceThenABlockPerStep) {
     const std::string path = temp_op2();
     meshioplusplus::NastranOp2SeriesWriter writer(path);

@@ -1285,14 +1285,13 @@ def test_a_grid_in_an_undefined_system_is_refused(engine, tmp_path):
         write_with(engine, tmp_path / "x.op2", mesh)
 
 
-def test_an_output_system_is_not_written_and_is_reported(engine, tmp_path, capfd):
+def test_an_output_system_is_written_as_the_grids_cd(engine, tmp_path):
     mesh = _cord_mesh()
     mesh.point_data["nastran:cd"] = np.array([0, 3, 0, 0])
     path = tmp_path / "cd.op2"
     write_with(engine, path, mesh)
-    err = " ".join(capfd.readouterr().err.split())
-    assert "output system (nastran:cd) that is not written" in err
-    assert "nastran:cd" not in meshioplusplus.nastran_op2.read(path).point_data
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        np.testing.assert_array_equal(read(path).point_data["nastran:cd"], [0, 3, 0, 0])
 
 
 def test_pynastran_reads_the_coordinate_systems(tmp_path):
@@ -2308,3 +2307,461 @@ def test_the_engines_write_the_same_bytes_with_energies_and_grid_forces(tmp_path
     _core.nastran_op2_write(str(core), mesh)
     py_write.write(str(python), mesh)
     assert core.read_bytes() == python.read_bytes()
+
+
+# -- thermal and anisotropic solid materials ----------------------------------------------
+
+_MAT4_6 = {
+    "K": 45.0,
+    "CP": 460.0,
+    "RHO": 7800.0,
+    "H": 12.0,
+    "MU": 0.5,
+    "HGEN": 2.0,
+    "REFENTH": 3.0,
+    "TCH": 4.0,
+    "TDELTA": 5.0,
+    "QLAT": 6.0,
+}
+_MAT5_7 = {
+    "K1": 10.0,
+    "K2": 1.0,
+    "K3": 2.0,
+    "K4": 20.0,
+    "K5": 3.0,
+    "K6": 30.0,
+    "CP": 400.0,
+    "RHO": 7000.0,
+    "HGEN": 1.5,
+}
+_MAT9_8 = {
+    f"G{i}{j}": 1000.0 * (10 * i + j) for i in range(1, 7) for j in range(i, 7)
+} | {
+    "RHO": 2.5,
+    "A1": 1e-6,
+    "A2": 2e-6,
+    "A3": 3e-6,
+    "A4": 4e-6,
+    "A5": 5e-6,
+    "A6": 6e-6,
+    "TREF": 20.0,
+    "GE": 0.01,
+}
+
+
+def _thermal_mesh():
+    """A tetra whose property 2 is on MAT9 8, plus a MAT4 6 and a MAT5 7."""
+    mesh = oracle_mesh()
+    mesh.field_data["nastran:PSHELL_7:MID1"] = np.array([8], dtype=np.int64)
+    for card, ident, values in (
+        ("MAT4", 6, _MAT4_6),
+        ("MAT5", 7, _MAT5_7),
+        ("MAT9", 8, _MAT9_8),
+    ):
+        for member, value in values.items():
+            mesh.field_data[f"nastran:{card}_{ident}:{member}"] = np.array([value])
+    return mesh
+
+
+def test_thermal_and_solid_materials_round_trip(engine, tmp_path):
+    path = tmp_path / "thermal.op2"
+    write_with(engine, path, _thermal_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        for card, ident, values in (
+            ("MAT4", 6, _MAT4_6),
+            ("MAT5", 7, _MAT5_7),
+            ("MAT9", 8, _MAT9_8),
+        ):
+            for member, value in values.items():
+                np.testing.assert_allclose(
+                    back.field_data[f"nastran:{card}_{ident}:{member}"],
+                    [value],
+                    rtol=1e-6,
+                )
+        assert "nastran:MAT1_8:E" not in back.field_data  # MAT9 8 is not also a MAT1
+
+
+def test_the_engines_write_the_same_bytes_with_thermal_materials(tmp_path):
+    mesh = _thermal_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_thermal_and_solid_materials(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_thermal.op2"
+    _core.nastran_op2_write(str(path), _thermal_mesh())
+    model = op2.read_op2_geom(str(path), debug=False)
+    assert model.thermal_materials[6].type == "MAT4"
+    assert model.thermal_materials[6].k == pytest.approx(45.0)
+    assert model.thermal_materials[7].type == "MAT5"
+    assert model.thermal_materials[7].kyy == pytest.approx(20.0)
+    mat9 = model.materials[8]
+    assert mat9.type == "MAT9"
+    assert mat9.rho == pytest.approx(2.5)
+    assert mat9.G11 == pytest.approx(11000.0) and mat9.G66 == pytest.approx(66000.0)
+
+
+# -- point masses: CMASS1 with its PMASS, CMASS2 and CONM1 --------------------------------
+
+_CONM1_TERMS = np.arange(1.0, 22.0)
+
+
+def _mass_mesh():
+    """A CMASS1 (PMASS 5) between GRIDs 1 and 2 and one grounded at GRID 3, a CMASS2
+    between GRIDs 2 and 3 and a CONM1 at GRID 4."""
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [
+            ("line", np.array([[0, 1]])),
+            ("vertex", np.array([[2]])),
+            ("line", np.array([[1, 2]])),
+            ("vertex", np.array([[3]])),
+        ],
+    )
+    mesh.cell_data["nastran:eid"] = [
+        np.array([20]),
+        np.array([21]),
+        np.array([22]),
+        np.array([23]),
+    ]
+    mesh.cell_data["nastran:pid"] = [
+        np.array([5]),
+        np.array([5]),
+        np.array([-1]),
+        np.array([-1]),
+    ]
+    mesh.cell_data["nastran:card"] = [
+        np.array([10]),
+        np.array([10]),
+        np.array([11]),
+        np.array([14]),
+    ]
+    mesh.cell_data["nastran:c1"] = [
+        np.array([1]),
+        np.array([2]),
+        np.array([3]),
+        np.array([0]),
+    ]
+    mesh.cell_data["nastran:c2"] = [
+        np.array([1]),
+        np.array([0]),
+        np.array([3]),
+        np.array([0]),
+    ]
+    mesh.cell_data["nastran:m"] = [
+        np.array([0.0]),
+        np.array([0.0]),
+        np.array([2.5]),
+        np.array([0.0]),
+    ]
+    mesh.cell_data["nastran:conm1"] = [
+        np.zeros((1, 21)),
+        np.zeros((1, 21)),
+        np.zeros((1, 21)),
+        _CONM1_TERMS[None, :],
+    ]
+    mesh.field_data["nastran:PMASS_5:M"] = np.array([0.75])
+    return mesh
+
+
+def test_point_masses_round_trip(engine, tmp_path):
+    path = tmp_path / "masses.op2"
+    write_with(engine, path, _mass_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        by_eid = {}
+        for block, eids in zip(back.cells, back.cell_data["nastran:eid"]):
+            for row, eid in enumerate(eids.tolist()):
+                by_eid[eid] = (block.type, block.data[row].tolist())
+        assert by_eid[20] == ("line", [0, 1])
+        assert by_eid[21] == ("vertex", [2])
+        assert by_eid[22] == ("line", [1, 2])
+        assert by_eid[23] == ("vertex", [3])
+        cards = {}
+        for ids, card in zip(
+            back.cell_data["nastran:eid"], back.cell_data["nastran:card"]
+        ):
+            cards.update(zip(ids.tolist(), card.tolist()))
+        assert cards == {20: 10, 21: 10, 22: 11, 23: 14}
+        m = {}
+        for ids, values in zip(
+            back.cell_data["nastran:eid"], back.cell_data["nastran:m"]
+        ):
+            m.update(zip(ids.tolist(), values.tolist()))
+        assert m[22] == 2.5
+        conm1 = {}
+        for ids, values in zip(
+            back.cell_data["nastran:eid"], back.cell_data["nastran:conm1"]
+        ):
+            conm1.update(zip(ids.tolist(), values))
+        np.testing.assert_allclose(conm1[23], _CONM1_TERMS)
+        assert back.field_data["nastran:PMASS_5:M"][0] == pytest.approx(0.75)
+        assert [r.name for r in back.regions] == ["PMASS_5"]
+
+
+def test_the_engines_write_the_same_bytes_with_point_masses(tmp_path):
+    mesh = _mass_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_cmass2_and_a_conm1_need_their_values(engine, tmp_path):
+    for name, card in (("nastran:m", "CMASS2"), ("nastran:conm1", "CONM1")):
+        mesh = _mass_mesh()
+        del mesh.cell_data[name]
+        with pytest.raises(Exception, match=f"a {card} needs its value"):
+            write_with(engine, tmp_path / "x.op2", mesh)
+
+
+def test_pynastran_reads_the_point_masses(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_masses.op2"
+    _core.nastran_op2_write(str(path), _mass_mesh())
+    model = op2.read_op2_geom(str(path), debug=False)
+    assert model.masses[20].type == "CMASS1" and model.masses[20].nodes == [1, 2]
+    assert model.masses[20].pid == 5 and model.masses[20].c1 == 1
+    assert model.masses[21].nodes == [3, None]
+    assert model.masses[22].type == "CMASS2" and model.masses[22].mass == 2.5
+    assert model.masses[22].nodes == [2, 3] and model.masses[22].c1 == 3
+    conm1 = model.masses[23]
+    assert conm1.type == "CONM1" and conm1.nid == 4
+    assert conm1.mass_matrix[0, 0] == 1.0 and conm1.mass_matrix[5, 5] == 21.0
+    assert model.properties_mass[5].mass == pytest.approx(0.75)
+
+
+# -- PBARL and PBEAML library sections, PCOMPG composites ---------------------------------
+
+
+def _text(value):
+    return np.frombuffer(value.encode(), dtype=np.uint8)
+
+
+_BEAML_DIMS = np.array(
+    [[10.0, 4.0, 2.0, 1.0, 1.5, 0.5], [10.0, 4.0, 2.5, 1.2, 1.5, 0.5]]
+)
+
+
+def _section_mesh():
+    """A CBAR on a PBARL (11), a CBEAM on a PBEAML (12) and a quad on a PCOMPG (13)."""
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [
+            ("line", np.array([[0, 1]])),
+            ("line", np.array([[1, 2]])),
+            ("quad", np.array([[0, 1, 4, 3]])),
+        ],
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([40]), np.array([41]), np.array([42])]
+    mesh.cell_data["nastran:pid"] = [np.array([11]), np.array([12]), np.array([13])]
+    mesh.cell_data["nastran:card"] = [np.array([24]), np.array([54]), np.array([51])]
+    mesh.cell_data["nastran:x"] = [
+        np.array([[0.0, 0.0, 1.0]]),
+        np.array([[0.0, 0.0, 1.0]]),
+        np.zeros((1, 3)),
+    ]
+    fields = mesh.field_data
+    fields["nastran:PBARL_11:MID"] = np.array([3], dtype=np.int64)
+    fields["nastran:PBARL_11:GROUP"] = _text("MSCBML0")
+    fields["nastran:PBARL_11:TYPE"] = _text("BAR")
+    fields["nastran:PBARL_11:DIM"] = np.array([2.0, 3.0])
+    fields["nastran:PBARL_11:NSM"] = np.array([0.5])
+    fields["nastran:PBEAML_12:MID"] = np.array([3], dtype=np.int64)
+    fields["nastran:PBEAML_12:TYPE"] = _text("I")
+    fields["nastran:PBEAML_12:SO"] = np.array([0.0, 0.0])
+    fields["nastran:PBEAML_12:XXB"] = np.array([0.0, 1.0])
+    fields["nastran:PBEAML_12:DIM"] = _BEAML_DIMS
+    fields["nastran:PBEAML_12:NSM"] = np.array([0.1, 0.2])
+    fields["nastran:PCOMPG_13:LAMOPT"] = np.array([0], dtype=np.int64)
+    fields["nastran:PCOMPG_13:Z0"] = np.array([0.5])
+    fields["nastran:PCOMPG_13:NSM"] = np.array([0.1])
+    fields["nastran:PCOMPG_13:SB"] = np.array([2.0])
+    fields["nastran:PCOMPG_13:FT"] = np.array([3], dtype=np.int64)
+    fields["nastran:PCOMPG_13:TREF"] = np.array([20.0])
+    fields["nastran:PCOMPG_13:GE"] = np.array([0.02])
+    fields["nastran:PCOMPG_13:PLY"] = np.array(
+        [[1, 4, 0.1, 0.0, 1], [2, 4, 0.2, 45.0, 0], [3, 4, 0.1, -45.0, 1]]
+    )
+    return mesh
+
+
+def test_library_sections_and_global_plies_round_trip(engine, tmp_path):
+    path = tmp_path / "sections.op2"
+    write_with(engine, path, _section_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        fields = back.field_data
+        assert bytes(fields["nastran:PBARL_11:TYPE"]) == b"BAR"
+        assert bytes(fields["nastran:PBARL_11:GROUP"]) == b"MSCBML0"
+        assert fields["nastran:PBARL_11:MID"][0] == 3
+        np.testing.assert_allclose(fields["nastran:PBARL_11:DIM"], [2.0, 3.0])
+        np.testing.assert_allclose(fields["nastran:PBARL_11:NSM"], [0.5])
+        assert bytes(fields["nastran:PBEAML_12:TYPE"]) == b"I"
+        np.testing.assert_allclose(
+            fields["nastran:PBEAML_12:DIM"], _BEAML_DIMS, rtol=1e-6
+        )
+        np.testing.assert_allclose(fields["nastran:PBEAML_12:XXB"], [0.0, 1.0])
+        np.testing.assert_allclose(
+            fields["nastran:PBEAML_12:NSM"], [0.1, 0.2], rtol=1e-6
+        )
+        np.testing.assert_allclose(
+            fields["nastran:PCOMPG_13:PLY"],
+            np.asarray(_section_mesh().field_data["nastran:PCOMPG_13:PLY"]),
+            rtol=1e-6,
+        )
+        assert fields["nastran:PCOMPG_13:FT"][0] == 3
+        assert fields["nastran:PCOMPG_13:Z0"][0] == pytest.approx(0.5)
+        assert sorted(r.name for r in back.regions) == [
+            "PBARL_11",
+            "PBEAML_12",
+            "PCOMPG_13",
+        ]
+        # no PBAR, PBEAM or PCOMP twin, and the plies' material is a MAT1 of its own
+        assert not any(
+            ":PBAR_" in n or ":PBEAM_" in n or ":PCOMP_" in n for n in fields
+        )
+        assert "nastran:MAT1_4:E" in fields and "nastran:MAT1_3:E" in fields
+
+
+def test_the_engines_write_the_same_bytes_with_sections(tmp_path):
+    mesh = _section_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_section_needs_its_dimensions(engine, tmp_path):
+    mesh = _section_mesh()
+    mesh.field_data["nastran:PBARL_11:DIM"] = np.array([2.0])
+    with pytest.raises(Exception, match="PBARL_11:DIM' must have 2 value"):
+        write_with(engine, tmp_path / "x.op2", mesh)
+    mesh = _section_mesh()
+    mesh.field_data["nastran:PBEAML_12:TYPE"] = _text("NOSUCH")
+    with pytest.raises(Exception, match="section type 'NOSUCH'"):
+        write_with(engine, tmp_path / "y.op2", mesh)
+
+
+def test_pynastran_reads_the_sections_and_global_plies(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_sections.op2"
+    _core.nastran_op2_write(str(path), _section_mesh())
+    model = op2.read_op2_geom(str(path), debug=False)
+    bar = model.properties[11]
+    assert bar.type == "PBARL" and bar.beam_type == "BAR" and bar.mid == 3
+    np.testing.assert_allclose(bar.dim, [2.0, 3.0])
+    beam = model.properties[12]
+    assert beam.type == "PBEAML" and beam.beam_type == "I"
+    np.testing.assert_allclose(beam.dim, _BEAML_DIMS, rtol=1e-6)
+    comp = model.properties[13]
+    assert comp.type == "PCOMPG"
+    assert comp.global_ply_ids == [1, 2, 3]
+    np.testing.assert_allclose(comp.thicknesses, [0.1, 0.2, 0.1], rtol=1e-6)
+    np.testing.assert_allclose(comp.thetas, [0.0, 45.0, -45.0])
+
+
+# -- output coordinate systems (CD) -----------------------------------------------------
+
+
+def _output_system_mesh():
+    """A triangle whose GRIDs 1 and 2 are in cylindrical system 5 and GRID 3 in spherical
+    system 6, with a displacement, a complex displacement and totals of grid point forces.
+    """
+    points = np.array([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 1.0, 1.0]])
+    mesh = meshioplusplus.Mesh(points, [("triangle", np.array([[0, 1, 2]]))])
+    mesh.point_data["nastran:cd"] = np.array([5, 5, 6], dtype=np.int64)
+    axes = {"A": [0.0, 0.0, 0.0], "X": [1.0, 0.0, 0.0], "Y": [0.0, 1.0, 0.0]}
+    for cid, kind in ((5, 2), (6, 3)):
+        mesh.field_data[f"nastran:CORD2_{cid}:TYPE"] = np.array([kind], dtype=np.int64)
+        mesh.field_data[f"nastran:CORD2_{cid}:Z"] = np.array([0.0, 0.0, 1.0])
+        for member, vector in axes.items():
+            mesh.field_data[f"nastran:CORD2_{cid}:{member}"] = np.array(vector)
+    mesh.point_data["DISPLACEMENT"] = np.array(
+        [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.3, -0.2, 0.5]]
+    )
+    mesh.point_data["DISPLACEMENT_ROT"] = np.array(
+        [[0.0, 1.0, 0.0], [0.0, 0.0, 2.0], [0.1, 0.2, 0.3]]
+    )
+    mesh.point_data["VELOCITY_real"] = mesh.point_data["DISPLACEMENT"] * 2.0
+    mesh.point_data["VELOCITY_imag"] = mesh.point_data["DISPLACEMENT"] * -1.0
+    mesh.cell_data["nastran:eid"] = [np.array([7])]
+    for k, member in enumerate(("F1", "F2", "F3", "M1", "M2", "M3")):
+        mesh.point_data[f"GRID_FORCE:TOTALS:{member}"] = np.array([1.0, 2.0, 3.0]) * (
+            k + 1
+        )
+    return mesh
+
+
+def test_results_are_written_in_the_output_systems(engine, tmp_path):
+    path = tmp_path / "cd.op2"
+    mesh = _output_system_mesh()
+    mesh.field_data["nastran:analysis"] = np.array([5], dtype=np.int64)
+    mesh.field_data["meshio:time"] = np.array([1.0])
+    write_with(engine, path, mesh)
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        np.testing.assert_array_equal(back.point_data["nastran:cd"], [5, 5, 6])
+        for name in (
+            "DISPLACEMENT",
+            "DISPLACEMENT_ROT",
+            "VELOCITY_real",
+            "VELOCITY_imag",
+        ):
+            np.testing.assert_allclose(
+                back.point_data[name], mesh.point_data[name], atol=2e-6, err_msg=name
+            )
+        for member in ("F1", "F2", "F3", "M1", "M2", "M3"):
+            name = f"GRID_FORCE:TOTALS:{member}"
+            np.testing.assert_allclose(
+                back.point_data[name].ravel(), mesh.point_data[name], atol=2e-6
+            )
+
+
+def test_the_engines_write_the_same_bytes_with_output_systems(tmp_path):
+    mesh = _output_system_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_pynastran_reads_the_output_systems(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_cd.op2"
+    mesh = _output_system_mesh()
+    for name in ("VELOCITY_real", "VELOCITY_imag"):
+        del mesh.point_data[name]
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.read_op2_geom(str(path), debug=False)
+    assert [model.nodes[n].cd for n in (1, 2, 3)] == [5, 5, 6]
+    assert model.coords[5].type == "CORD2C" and model.coords[6].type == "CORD2S"
+    shown = model.displacements[1].data[
+        0
+    ]  # the output components, per node in id order
+    # GRID 2 at (0, 2, 0): basic +x is -theta; GRID 1 at (1, 0, 0): +x is +r
+    np.testing.assert_allclose(shown[0, :3], [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(shown[1, :3], [0.0, -1.0, 0.0], atol=1e-6)
+
+
+def test_an_output_system_needs_its_definition(engine, tmp_path):
+    mesh = _output_system_mesh()
+    del mesh.field_data["nastran:CORD2_6:TYPE"]
+    with pytest.raises(Exception, match="coordinate system 6"):
+        write_with(engine, tmp_path / "x.op2", mesh)
