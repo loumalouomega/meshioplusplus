@@ -22,6 +22,7 @@ from .._exceptions import WriteError
 from .._files import is_buffer
 from ..abaqus._abaqus import _face_name
 from ._abaqus_fil import (
+    _CONTACT_NAMES,
     _ELEMENT_NAMES,
     _ENERGY_NAMES,
     _EXPLICIT_ENERGY_NAMES,
@@ -35,6 +36,8 @@ _NODAL_KEYS = {name: key for key, name in _NODAL_NAMES.items()}
 _ELEMENT_KEYS = {name: key for key, name in _ELEMENT_NAMES.items()}
 _ELEMENT_KEYS["RATIO"] = 79
 _ELEMENT_KEYS["ERV"] = 79
+_CONTACT_KEYS = {name: key for key, name in _CONTACT_NAMES.items()}
+PAIR_KEY = "abaqus:contact_pair"
 
 # The field data a step is made of (and the layout notes the reader adds).
 _STEP_FIELDS = {
@@ -43,6 +46,7 @@ _STEP_FIELDS = {
     "abaqus:increment",
     "abaqus:step_time",
     "abaqus:procedure",
+    PAIR_KEY,
 }
 # Total energies (record 1999) and the element matrices (1001-1031) are field data too.
 _MATRIX_KINDS = (
@@ -209,6 +213,13 @@ class _Model:
     def __init__(self, mesh):
         self.signature = _signature(mesh)
         self.dropped = set()
+        # contact output refers to its surface pair by a 1940 label
+        self.surface_labels = {}
+        self.contact_names = set()
+        if any(_contact_key(n) for n in mesh.point_data):
+            pair = _contact_pair(mesh)
+            if pair is not None:
+                self.contact_names = {pair[0].name, pair[1].name}
         n = len(mesh.points)
         ids = mesh.point_data.get("abaqus:id")
         self.node_labels = _labels(mesh, ids, n, "node")
@@ -308,11 +319,15 @@ class _Model:
             name = _ascii_text(region.name)
             if len(name) > 80:
                 _wfail(f"region name '{name[:20]}...' is longer than 80 characters")
-            if len(name) > 8:
+            if len(name) > 8 or (
+                region.kind == "side" and region.name in self.contact_names
+            ):
                 label += 1
                 while label in used_digits:
                     label += 1
                 refs.append(_rec(1940, _I(label), *_text_items(name)))
+                if region.kind == "side":
+                    self.surface_labels[region.name] = label
                 name = str(label)
             if region.kind == "side":
                 out += self._surface(mesh, region, name)
@@ -352,7 +367,8 @@ class _Model:
             faces.append((self.cell_labels[cell], number))
         if dropped:
             self.dropped.add(f"{dropped} facet(s) of surface '{region.name}'")
-        out = [_rec(1501, _A(name), _I(0), _I(1))]
+        # name, dimension, type (deformable), facet count, slave count
+        out = [_rec(1501, _A(name), _I(self.dim), _I(1), _I(len(faces)), _I(0))]
         out += [_rec(1502, _I(label), _I(number)) for label, number in faces]
         return out
 
@@ -386,6 +402,35 @@ def _split_name(name):
         else:
             return name, None, None, None
     return base, section, rebar, collision
+
+
+def _contact_key(name):
+    """The contact output record (1505-1599) a point array is, or None: the
+    reader's contact names, and ``key_<n>`` for a key it has no name for."""
+    if name in _CONTACT_KEYS:
+        return _CONTACT_KEYS[name]
+    if name.startswith("key_") and name[4:].isdigit():
+        key = int(name[4:])
+        if 1505 <= key <= 1599 and key not in _CONTACT_NAMES:
+            return key
+    return None
+
+
+def _contact_pair(mesh):
+    """The (slave, master) side regions contact output is written for: the two
+    indices of ``abaqus:contact_pair`` into ``mesh.regions``, else the first two
+    side regions. None when the mesh has no pair."""
+    regions = list(getattr(mesh, "regions", None) or [])
+    given = mesh.field_data.get(PAIR_KEY)
+    if given is not None:
+        pair = [int(v) for v in np.asarray(given).ravel()]
+        if len(pair) != 2 or any(
+            not 0 <= v < len(regions) or regions[v].kind != "side" for v in pair
+        ):
+            _wfail(f"'{PAIR_KEY}' must hold the indices of two side regions")
+        return regions[pair[0]], regions[pair[1]]
+    sides = [r for r in regions if r.kind == "side"]
+    return (sides[0], sides[1]) if len(sides) > 1 else None
 
 
 def _key_of(table, base):
@@ -438,12 +483,14 @@ class _Increment:
         self._energies(fd, procedure)
         element = self._element(model, mesh)
         nodal = self._nodal(model, mesh)
+        contact = self._contact(model, mesh)
         if element:
             self.records.append(_rec(1911, _I(0), _A(""), _A("")))
             self.records += element
         if nodal:
             self.records.append(_rec(1911, _I(1), _A("")))
             self.records += nodal
+        self.records += contact
         self.records.append(_rec(2001))
         handled = {"abaqus:" + n for n in _ENERGY_NAMES + _EXPLICIT_ENERGY_NAMES if n}
         for kind, _, _ in _MATRIX_KINDS:
@@ -504,6 +551,8 @@ class _Increment:
                 continue
             if name.endswith("@avg"):
                 continue  # written with the element records
+            if _contact_key(name) is not None:
+                continue  # contact output, written by _contact
             key = _key_of(_NODAL_KEYS, name)
             if key is None:
                 if _key_of(_ELEMENT_KEYS, name) is None:
@@ -519,6 +568,45 @@ class _Increment:
                 values = _trim(row)
                 if values:
                     out.append(_rec(key, _I(label), *[_D(v) for v in values]))
+        return out
+
+    def _contact(self, model, mesh):
+        """Contact output: a 1503 request naming the slave and master surface
+        by their 1940 labels, then per node holding data a 1504 header and a
+        record per array (the reader's contact names, ``key_<n>``)."""
+        names = sorted(
+            (n for n in mesh.point_data if _contact_key(n) is not None),
+            key=lambda n: (_contact_key(n), n),
+        )
+        if not names:
+            return []
+        pair = _contact_pair(mesh)
+        labels = [model.surface_labels.get(r.name) for r in pair or ()]
+        if len(labels) != 2 or None in labels:
+            self.dropped.update(names)
+            return []
+        n = len(model.node_labels)
+        rows = {}
+        for name in names:
+            array = np.asarray(mesh.point_data[name], dtype=np.float64)
+            if array.size == 0 or array.shape[0] != n:
+                self.dropped.add(name)
+                continue
+            rows[name] = array.reshape(n, -1)
+        out = []
+        for i, label in enumerate(model.node_labels):
+            items = []
+            for name in names:
+                values = _trim(rows[name][i]) if name in rows else []
+                if values:
+                    items.append(_rec(_contact_key(name), *[_D(v) for v in values]))
+            if items:
+                out.append(_rec(1504, _I(label), _I(len(items[0]) - 1)))
+                out += items
+        if out:
+            out.insert(
+                0, _rec(1503, _I(0), _A(str(labels[0])), _A(str(labels[1])), _A(""))
+            )
         return out
 
     def _element(self, model, mesh):
@@ -613,6 +701,8 @@ class _Increment:
                 base = base[: -len("@avg")]
             if base == "abaqus:id":
                 continue
+            if base == name and _contact_key(base) is not None:
+                continue  # contact output
             if base == name and _key_of(_NODAL_KEYS, base) is not None:
                 continue  # a nodal result
             key = _key_of(_ELEMENT_KEYS, base)

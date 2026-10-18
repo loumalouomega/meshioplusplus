@@ -1385,6 +1385,52 @@ std::optional<std::int64_t> filw_key_of(const std::string& rName, bool Nodal) {
     return std::nullopt;
 }
 
+/// The contact output record (1505-1599) a point array is: the reader's contact names, and
+/// `key_<n>` for a key it has no name for.
+std::optional<std::int64_t> filw_contact_key(const std::string& rName) {
+    static const std::unordered_map<std::string, std::int64_t> named = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1505; k <= 1599; ++k)
+            if (const char* n = fil_contact_name(k))
+                m.emplace(n, k);
+        return m;
+    }();
+    const auto it = named.find(rName);
+    if (it != named.end())
+        return it->second;
+    if (rName.size() > 4 && rName.compare(0, 4, "key_") == 0 && rName.size() < 12 &&
+        std::all_of(rName.begin() + 4, rName.end(), [](char C) { return C >= '0' && C <= '9'; })) {
+        const std::int64_t key = std::stoll(rName.substr(4));
+        if (key >= 1505 && key <= 1599 && fil_contact_name(key) == nullptr)
+            return key;
+    }
+    return std::nullopt;
+}
+
+/// The (slave, master) side regions contact output is written for, as region indices: the two
+/// indices of `abaqus:contact_pair`, else the first two side regions; none without a pair.
+std::optional<std::pair<std::size_t, std::size_t>> filw_contact_pair(const Mesh& rMesh) {
+    if (rMesh.HasFieldData("abaqus:contact_pair")) {
+        const NDArray& a = rMesh.FieldData("abaqus:contact_pair");
+        const detail::Int64View v(a);
+        bool ok = a.Size() == 2;
+        for (std::size_t k = 0; ok && k < 2; ++k)
+            ok = v.Data()[k] >= 0 && static_cast<std::size_t>(v.Data()[k]) < rMesh.NumRegions() &&
+                 rMesh.Region(static_cast<std::size_t>(v.Data()[k])).mKind == RegionKind::Side;
+        if (!ok)
+            filw_fail("'abaqus:contact_pair' must hold the indices of two side regions");
+        return std::make_pair(static_cast<std::size_t>(v.Data()[0]),
+                              static_cast<std::size_t>(v.Data()[1]));
+    }
+    std::vector<std::size_t> sides;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Side)
+            sides.push_back(i);
+    if (sides.size() < 2)
+        return std::nullopt;
+    return std::make_pair(sides[0], sides[1]);
+}
+
 std::vector<std::int64_t> filw_labels(const std::vector<std::int64_t>* pGiven, std::size_t Count,
                                       const char* pWhat) {
     std::vector<std::int64_t> labels;
@@ -1423,6 +1469,15 @@ class FilwModel {
 public:
     explicit FilwModel(const Mesh& rMesh) {
         mSignature = filw_signature(rMesh);
+        // contact output refers to its surface pair by a 1940 label
+        for (const std::string& name : rMesh.PointDataNames())
+            if (filw_contact_key(name)) {
+                if (const auto pair = filw_contact_pair(rMesh)) {
+                    mContactNames.insert(rMesh.Region(pair->first).mName);
+                    mContactNames.insert(rMesh.Region(pair->second).mName);
+                }
+                break;
+            }
         const std::size_t n = rMesh.NumPoints();
         const std::size_t pdim = rMesh.PointDim();
         mDim = pdim == 2 ? 2 : 3;
@@ -1480,8 +1535,12 @@ public:
     const std::vector<Cell>& Cells() const { return mCells; }
     const std::map<std::string, std::size_t>& Skipped() const { return mSkipped; }
     std::set<std::string> mDropped;
+    /// The 1940 label of each surface (side region) the contact pair names.
+    std::map<std::string, std::int64_t> mSurfaceLabels;
 
 private:
+    std::set<std::string> mContactNames;
+
     void BuildRecords(const Mesh& rMesh, const std::vector<double>& rPoints) {
         FilwRecord head = filw_rec(1921);
         for (int k = 0; k < 4; ++k)
@@ -1563,7 +1622,8 @@ private:
             if (name.size() > 80)
                 filw_fail("region name '" + name.substr(0, 20) +
                           "...' is longer than 80 characters");
-            if (name.size() > 8) {
+            const bool side = region.mKind == RegionKind::Side;
+            if (name.size() > 8 || (side && mContactNames.count(region.mName) != 0)) {
                 ++label;
                 while (used_digits.count(label) != 0)
                     ++label;
@@ -1571,6 +1631,8 @@ private:
                 r.push_back(filw_i(label));
                 filw_text_items(r, name);
                 refs.push_back(std::move(r));
+                if (side)
+                    mSurfaceLabels[region.mName] = label;
                 name = std::to_string(label);
             }
             if (region.mKind == RegionKind::Side) {
@@ -1613,9 +1675,9 @@ private:
             block_of[c.mGlobal] = c.mBlock;
         FilwRecord head = filw_rec(1501);
         head.push_back(filw_a(rName));
-        head.push_back(filw_i(0));
+        head.push_back(filw_i(static_cast<std::int64_t>(mDim)));
         head.push_back(filw_i(1));
-        std::vector<FilwRecord> faces;
+        std::vector<FilwRecord> faces;  // the facet count and slave count follow the type
         std::size_t dropped = 0;
         const detail::Int64View entries(rRegion.mEntries);
         for (std::size_t k = 0; k + 1 < rRegion.mEntries.Size(); k += 2) {
@@ -1640,6 +1702,8 @@ private:
         if (dropped)
             mDropped.insert(std::to_string(dropped) + " facet(s) of surface '" + rRegion.mName +
                             "'");
+        head.push_back(filw_i(static_cast<std::int64_t>(faces.size())));
+        head.push_back(filw_i(0));
         mRecords.push_back(std::move(head));
         mRecords.insert(mRecords.end(), faces.begin(), faces.end());
     }
@@ -1810,6 +1874,7 @@ struct FilwIncrement {
         Energies(rMesh, procedure);
         const std::vector<FilwRecord> element = Element(rModel, rMesh);
         const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
+        const std::vector<FilwRecord> contact = Contact(rModel, rMesh);
         if (!element.empty()) {
             FilwRecord request = filw_rec(1911);
             request.push_back(filw_i(0));
@@ -1825,6 +1890,7 @@ struct FilwIncrement {
             mRecords.push_back(std::move(request));
             mRecords.insert(mRecords.end(), nodal.begin(), nodal.end());
         }
+        mRecords.insert(mRecords.end(), contact.begin(), contact.end());
         mRecords.push_back(filw_rec(2001));
         static const std::set<std::string> known = {
             kSequenceTimeKey,           "abaqus:step",
@@ -1832,7 +1898,7 @@ struct FilwIncrement {
             "abaqus:procedure",         "abaqus:mode",
             "abaqus:eigenvalue",        "abaqus:generalized_mass",
             "abaqus:composite_damping", "abaqus:participation_factor",
-            "abaqus:effective_mass"};
+            "abaqus:effective_mass",    "abaqus:contact_pair"};
         std::set<std::string> handled;
         for (const bool explicit_names : {false, true})
             for (std::size_t k = 0; k < 18; ++k)
@@ -1908,6 +1974,8 @@ private:
         for (const std::string& name : rMesh.PointDataNames()) {
             if (name == "abaqus:id" || filw_ends_with(name, "@avg"))
                 continue;
+            if (filw_contact_key(name))
+                continue;  // contact output, written by Contact
             const auto key = filw_key_of(name, true);
             if (!key) {
                 if (!filw_key_of(name, false))
@@ -1931,6 +1999,76 @@ private:
                     r.push_back(filw_d(x));
                 out.push_back(std::move(r));
             }
+        }
+        return out;
+    }
+
+    /// Contact output: a 1503 request naming the slave and master surface by their 1940 labels,
+    /// then per node holding data a 1504 header and a record per array.
+    std::vector<FilwRecord> Contact(const FilwModel& rModel, const Mesh& rMesh) {
+        std::vector<std::pair<std::int64_t, std::string>> arrays;
+        for (const std::string& name : rMesh.PointDataNames())
+            if (const auto key = filw_contact_key(name))
+                arrays.emplace_back(*key, name);
+        std::vector<FilwRecord> out;
+        if (arrays.empty())
+            return out;
+        std::sort(arrays.begin(), arrays.end());
+        std::int64_t labels[2] = {0, 0};
+        if (const auto pair = filw_contact_pair(rMesh)) {
+            const auto a = rModel.mSurfaceLabels.find(rMesh.Region(pair->first).mName);
+            const auto b = rModel.mSurfaceLabels.find(rMesh.Region(pair->second).mName);
+            if (a != rModel.mSurfaceLabels.end() && b != rModel.mSurfaceLabels.end()) {
+                labels[0] = a->second;
+                labels[1] = b->second;
+            }
+        }
+        if (labels[0] == 0) {
+            for (const auto& entry : arrays)
+                mDropped.insert(entry.second);
+            return out;
+        }
+        const std::size_t n = rModel.NodeLabels().size();
+        std::vector<const NDArray*> data;
+        std::vector<std::int64_t> keys;
+        for (const auto& [key, name] : arrays) {
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n) {
+                mDropped.insert(name);
+                continue;
+            }
+            data.push_back(&a);
+            keys.push_back(key);
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            std::vector<FilwRecord> items;
+            for (std::size_t k = 0; k < data.size(); ++k) {
+                const std::size_t cols = data[k]->Size() / n;
+                const detail::DoubleView v(*data[k]);
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord r = filw_rec(keys[k]);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                items.push_back(std::move(r));
+            }
+            if (items.empty())
+                continue;
+            FilwRecord h = filw_rec(1504);
+            h.push_back(filw_i(rModel.NodeLabels()[i]));
+            h.push_back(filw_i(static_cast<std::int64_t>(items.front().size()) - 1));
+            out.push_back(std::move(h));
+            for (FilwRecord& r : items)
+                out.push_back(std::move(r));
+        }
+        if (!out.empty()) {
+            FilwRecord request = filw_rec(1503);
+            request.push_back(filw_i(0));
+            request.push_back(filw_a(std::to_string(labels[0])));
+            request.push_back(filw_a(std::to_string(labels[1])));
+            request.push_back(filw_a(""));
+            out.insert(out.begin(), std::move(request));
         }
         return out;
     }
@@ -2052,6 +2190,8 @@ private:
                 base.erase(base.size() - 4);
             if (base == "abaqus:id")
                 continue;
+            if (base == name && filw_contact_key(base))
+                continue;  // contact output
             if (base == name && filw_key_of(base, true))
                 continue;  // a nodal result
             const auto key = filw_key_of(base, false);
