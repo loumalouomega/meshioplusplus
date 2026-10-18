@@ -1872,6 +1872,7 @@ struct FilwIncrement {
         mRecords.push_back(std::move(head));
         Mode(rMesh);
         Energies(rMesh, procedure);
+        Modal(rMesh);
         const std::vector<FilwRecord> element = Element(rModel, rMesh);
         const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
         const std::vector<FilwRecord> contact = Contact(rModel, rMesh);
@@ -1904,6 +1905,8 @@ struct FilwIncrement {
             for (std::size_t k = 0; k < 18; ++k)
                 if (const char* n = fil_energy_name(k, explicit_names))
                     handled.insert(std::string("abaqus:") + n);
+        for (std::int64_t key = 301; key <= 310; ++key)
+            handled.insert(std::string("abaqus:") + fil_modal_name(key));
         for (const char* kind : {"matrix_dofs", "stiffness", "mass", "load"}) {
             handled.insert(std::string("abaqus:") + kind);
             handled.insert(std::string("abaqus:") + kind + ":index");
@@ -1937,6 +1940,41 @@ private:
         for (const double v : values)
             r.push_back(filw_d(v));
         mRecords.push_back(std::move(r));
+    }
+
+    /// Records 301-310, the generalized quantities of a mode-based dynamic step: one record per
+    /// row of `abaqus:GU` and the like (trailing NaN trimmed, an inner NaN written as 0). BM's
+    /// row is the motion type and six components, followed by the base name (blank).
+    void Modal(const Mesh& rMesh) {
+        for (std::int64_t key = 301; key <= 310; ++key) {
+            const std::string name = std::string("abaqus:") + fil_modal_name(key);
+            if (!rMesh.HasFieldData(name))
+                continue;
+            const NDArray& a = rMesh.FieldData(name);
+            if (a.Shape().size() > 2)
+                filw_fail("'" + name + "' must be one row or a matrix of rows");
+            const std::size_t width = a.Shape().empty() ? 1 : a.Shape().back();
+            const std::size_t rows = width == 0 ? 0 : a.Size() / width;
+            const detail::DoubleView v(a);
+            for (std::size_t row = 0; row < rows; ++row) {
+                std::vector<double> values = filw_trim(v.Data() + row * width, width);
+                if (values.empty())
+                    continue;
+                FilwRecord r = filw_rec(key);
+                if (key == 304) {
+                    values.resize(std::min<std::size_t>(values.size(), 7));
+                    r.push_back(filw_i(static_cast<std::int64_t>(values[0])));
+                    for (std::size_t k = 1; k < values.size(); ++k)
+                        r.push_back(filw_d(values[k]));
+                    if (values.size() == 7)
+                        r.push_back(filw_a(""));
+                } else {
+                    for (const double x : values)
+                        r.push_back(filw_d(x));
+                }
+                mRecords.push_back(std::move(r));
+            }
+        }
     }
 
     void Mode(const Mesh& rMesh) {
