@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -419,4 +420,32 @@ TEST(MarcT19Writer, IncrementsRoundTripAndTheSeriesNumbersThem) {
     meshioplusplus::NDArray extra(meshioplusplus::DType::Float64, {other.NumPoints()});
     other.AddPointData("extra", std::move(extra));
     EXPECT_THROW(bad.Write(1.0, other), meshioplusplus::WriteError);
+
+    // A step on a different mesh is a remeshing increment of its own model.
+    meshioplusplus::Mesh moved = mt::hex_mesh();
+    {
+        meshioplusplus::NDArray shifted(meshioplusplus::DType::Float64,
+                                        {moved.NumPoints(), moved.PointDim()});
+        for (std::size_t i = 0; i < shifted.Size(); ++i)
+            shifted.As<double>()[i] = moved.Points().As<double>()[i];
+        shifted.As<double>()[0] += 0.25;
+        moved.AssignPoints(std::move(shifted));
+        meshioplusplus::NDArray u(meshioplusplus::DType::Float64,
+                                  {moved.NumPoints(), std::size_t{3}});
+        moved.AddPointData("Displacement", std::move(u));
+    }
+    const std::string remeshed = dir + "/remeshed.t19";
+    meshioplusplus::MarcT19SeriesWriter remesher(remeshed);
+    remesher.Write(0.5, mesh);
+    remesher.Write(1.0, moved);
+    remesher.Finalize();
+    std::ifstream in(remeshed);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("=beg=51900"), std::string::npos);
+    meshioplusplus::ReadOptions second;
+    second.mTimeStep = 1;
+    EXPECT_NEAR(meshioplusplus::read_marc_t19(remeshed, second).Points().As<double>()[0],
+                mesh.Points().As<double>()[0] + 0.25, 1e-5);
+    EXPECT_NEAR(meshioplusplus::read_marc_t19(remeshed).Points().As<double>()[0],
+                mesh.Points().As<double>()[0], 1e-5);
 }

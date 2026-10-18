@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- `marc_t19` series writers (`marc.SeriesWriter`, `write_sequence`, `MarcT19SeriesWriter`) write remeshing increments: a step whose mesh differs from the previous step's no longer raises but repeats the model blocks under block 519 with `newmo` set, byte for byte in both engines, and the reader takes each step's own mesh back. Series whose model never changes are byte-identical to before. This closes roadmap §3.2.11 and with it the vendor-only tier of §3.2; the binary `.t16`, side-region sets and a Mentat run, which need Marc material that is not available, are listed under §1.2.11.
+
 ## v17.5.0 (2026-10-18)
 
 - `nastran_op2` writes `PLOTEL` plot elements, `CSHEAR` shear panels with their `PSHEAR` properties (`nastran:PSHEAR_<id>:MID`, `T`, `NSM`, `F1`, `F2`) and `MAT2` and `MAT8` materials (`nastran:MAT2_<id>:*`, `nastran:MAT8_<id>:*`, written in place of the `MAT1` placeholder; an id given as two cards is a `WriteError`), in both engines with identical bytes; the reader returns the `PSHEAR`, `MAT2` and `MAT8` values as field data.
