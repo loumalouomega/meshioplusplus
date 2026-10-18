@@ -491,3 +491,60 @@ TEST(AbaqusFilWriter, TheRegistryAndTheSequenceDriverWriteIt) {
     meshioplusplus::registry_write_ex(bin, unit_hex(), "abaqus_fil", options);
     EXPECT_NE(read_all(bin)[0], '*');
 }
+
+namespace {
+
+Mesh contact_hex(bool Pair = true) {
+    Mesh m = unit_hex();
+    NDArray slave(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{2}});
+    slave.As<std::int64_t>()[0] = 0;
+    slave.As<std::int64_t>()[1] = 0;
+    NDArray master(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{2}});
+    master.As<std::int64_t>()[0] = 0;
+    master.As<std::int64_t>()[1] = 1;
+    m.AddRegion(meshioplusplus::Region("SLAVE", RegionKind::Side, std::move(slave)));
+    if (Pair)
+        m.AddRegion(
+            meshioplusplus::Region("master_surface_long", RegionKind::Side, std::move(master)));
+    NDArray cs(meshioplusplus::DType::Float64, {std::size_t{8}, std::size_t{3}});
+    for (int i = 0; i < 24; ++i)
+        cs.As<double>()[i] = i < 12 ? std::nan("") : i + 0.5;
+    m.AddPointData("CSTRESS", std::move(cs));
+    NDArray ar(meshioplusplus::DType::Float64, {std::size_t{8}});
+    for (int i = 0; i < 8; ++i)
+        ar.As<double>()[i] = i == 5 ? 2.5 : std::nan("");
+    m.AddPointData("key_1593", std::move(ar));
+    return m;
+}
+
+}  // namespace
+
+TEST(AbaqusFilWriter, ContactOutputComesBackInBothLayouts) {
+    for (const bool binary : {false, true}) {
+        const std::string path = temp_fil();
+        meshioplusplus::write_abaqus_fil(path, contact_hex(), binary);
+        const Mesh back = meshioplusplus::read_abaqus_fil(path);
+        ASSERT_TRUE(back.HasPointData("CSTRESS"));
+        ASSERT_TRUE(back.HasPointData("key_1593"));
+        for (int i = 0; i < 24; ++i) {
+            const double got = back.PointData("CSTRESS").As<double>()[i];
+            if (i < 12)
+                EXPECT_TRUE(std::isnan(got));
+            else
+                EXPECT_EQ(got, i + 0.5);
+        }
+        EXPECT_EQ(back.PointData("key_1593").As<double>()[5], 2.5);
+        EXPECT_TRUE(std::isnan(back.PointData("key_1593").As<double>()[4]));
+        EXPECT_EQ(back.NumRegions(), 2u);
+    }
+}
+
+TEST(AbaqusFilWriter, ContactOutputNeedsASurfacePair) {
+    const Mesh lone = contact_hex(false);
+    const std::string path = temp_fil();
+    meshioplusplus::write_abaqus_fil(path, lone);
+    EXPECT_FALSE(meshioplusplus::read_abaqus_fil(path).HasPointData("CSTRESS"));
+    Mesh bad = contact_hex();
+    bad.AddFieldData("abaqus:contact_pair", ints({0, 7}));
+    EXPECT_THROW(meshioplusplus::write_abaqus_fil(temp_fil(), bad), WriteError);
+}
