@@ -20765,8 +20765,8 @@ MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rI
  * `uniform` expands to one row per cell/point. A cell field's `internalField`
  * only ever covers volume cells (OpenFOAM's own numbering): the matching
  * `cell_data` blocks are the volume/polyhedron ones; the boundary-face
- * blocks get `NaN` for that field, since attaching `boundaryField`'s
- * per-patch values is a documented follow-up, not read here. Binary field
+ * blocks get the `value` of each patch's `boundaryField` entry (matched by
+ * exact patch name), and `NaN` where a patch has none. Binary field
  * files use the same `arch`-driven reader as the polyMesh binary path.
  *
  * @param rPath a `.foam` file, case directory, or polyMesh directory
@@ -77456,6 +77456,52 @@ std::optional<std::int64_t> filw_key_of(const std::string& rName, bool Nodal) {
     return std::nullopt;
 }
 
+/// The contact output record (1505-1599) a point array is: the reader's contact names, and
+/// `key_<n>` for a key it has no name for.
+std::optional<std::int64_t> filw_contact_key(const std::string& rName) {
+    static const std::unordered_map<std::string, std::int64_t> named = [] {
+        std::unordered_map<std::string, std::int64_t> m;
+        for (std::int64_t k = 1505; k <= 1599; ++k)
+            if (const char* n = fil_contact_name(k))
+                m.emplace(n, k);
+        return m;
+    }();
+    const auto it = named.find(rName);
+    if (it != named.end())
+        return it->second;
+    if (rName.size() > 4 && rName.compare(0, 4, "key_") == 0 && rName.size() < 12 &&
+        std::all_of(rName.begin() + 4, rName.end(), [](char C) { return C >= '0' && C <= '9'; })) {
+        const std::int64_t key = std::stoll(rName.substr(4));
+        if (key >= 1505 && key <= 1599 && fil_contact_name(key) == nullptr)
+            return key;
+    }
+    return std::nullopt;
+}
+
+/// The (slave, master) side regions contact output is written for, as region indices: the two
+/// indices of `abaqus:contact_pair`, else the first two side regions; none without a pair.
+std::optional<std::pair<std::size_t, std::size_t>> filw_contact_pair(const Mesh& rMesh) {
+    if (rMesh.HasFieldData("abaqus:contact_pair")) {
+        const NDArray& a = rMesh.FieldData("abaqus:contact_pair");
+        const detail::Int64View v(a);
+        bool ok = a.Size() == 2;
+        for (std::size_t k = 0; ok && k < 2; ++k)
+            ok = v.Data()[k] >= 0 && static_cast<std::size_t>(v.Data()[k]) < rMesh.NumRegions() &&
+                 rMesh.Region(static_cast<std::size_t>(v.Data()[k])).mKind == RegionKind::Side;
+        if (!ok)
+            filw_fail("'abaqus:contact_pair' must hold the indices of two side regions");
+        return std::make_pair(static_cast<std::size_t>(v.Data()[0]),
+                              static_cast<std::size_t>(v.Data()[1]));
+    }
+    std::vector<std::size_t> sides;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Side)
+            sides.push_back(i);
+    if (sides.size() < 2)
+        return std::nullopt;
+    return std::make_pair(sides[0], sides[1]);
+}
+
 std::vector<std::int64_t> filw_labels(const std::vector<std::int64_t>* pGiven, std::size_t Count,
                                       const char* pWhat) {
     std::vector<std::int64_t> labels;
@@ -77494,6 +77540,15 @@ class FilwModel {
 public:
     explicit FilwModel(const Mesh& rMesh) {
         mSignature = filw_signature(rMesh);
+        // contact output refers to its surface pair by a 1940 label
+        for (const std::string& name : rMesh.PointDataNames())
+            if (filw_contact_key(name)) {
+                if (const auto pair = filw_contact_pair(rMesh)) {
+                    mContactNames.insert(rMesh.Region(pair->first).mName);
+                    mContactNames.insert(rMesh.Region(pair->second).mName);
+                }
+                break;
+            }
         const std::size_t n = rMesh.NumPoints();
         const std::size_t pdim = rMesh.PointDim();
         mDim = pdim == 2 ? 2 : 3;
@@ -77551,8 +77606,12 @@ public:
     const std::vector<Cell>& Cells() const { return mCells; }
     const std::map<std::string, std::size_t>& Skipped() const { return mSkipped; }
     std::set<std::string> mDropped;
+    /// The 1940 label of each surface (side region) the contact pair names.
+    std::map<std::string, std::int64_t> mSurfaceLabels;
 
 private:
+    std::set<std::string> mContactNames;
+
     void BuildRecords(const Mesh& rMesh, const std::vector<double>& rPoints) {
         FilwRecord head = filw_rec(1921);
         for (int k = 0; k < 4; ++k)
@@ -77634,7 +77693,8 @@ private:
             if (name.size() > 80)
                 filw_fail("region name '" + name.substr(0, 20) +
                           "...' is longer than 80 characters");
-            if (name.size() > 8) {
+            const bool side = region.mKind == RegionKind::Side;
+            if (name.size() > 8 || (side && mContactNames.count(region.mName) != 0)) {
                 ++label;
                 while (used_digits.count(label) != 0)
                     ++label;
@@ -77642,6 +77702,8 @@ private:
                 r.push_back(filw_i(label));
                 filw_text_items(r, name);
                 refs.push_back(std::move(r));
+                if (side)
+                    mSurfaceLabels[region.mName] = label;
                 name = std::to_string(label);
             }
             if (region.mKind == RegionKind::Side) {
@@ -77684,9 +77746,9 @@ private:
             block_of[c.mGlobal] = c.mBlock;
         FilwRecord head = filw_rec(1501);
         head.push_back(filw_a(rName));
-        head.push_back(filw_i(0));
+        head.push_back(filw_i(static_cast<std::int64_t>(mDim)));
         head.push_back(filw_i(1));
-        std::vector<FilwRecord> faces;
+        std::vector<FilwRecord> faces;  // the facet count and slave count follow the type
         std::size_t dropped = 0;
         const detail::Int64View entries(rRegion.mEntries);
         for (std::size_t k = 0; k + 1 < rRegion.mEntries.Size(); k += 2) {
@@ -77711,6 +77773,8 @@ private:
         if (dropped)
             mDropped.insert(std::to_string(dropped) + " facet(s) of surface '" + rRegion.mName +
                             "'");
+        head.push_back(filw_i(static_cast<std::int64_t>(faces.size())));
+        head.push_back(filw_i(0));
         mRecords.push_back(std::move(head));
         mRecords.insert(mRecords.end(), faces.begin(), faces.end());
     }
@@ -77881,6 +77945,7 @@ struct FilwIncrement {
         Energies(rMesh, procedure);
         const std::vector<FilwRecord> element = Element(rModel, rMesh);
         const std::vector<FilwRecord> nodal = Nodal(rModel, rMesh);
+        const std::vector<FilwRecord> contact = Contact(rModel, rMesh);
         if (!element.empty()) {
             FilwRecord request = filw_rec(1911);
             request.push_back(filw_i(0));
@@ -77896,6 +77961,7 @@ struct FilwIncrement {
             mRecords.push_back(std::move(request));
             mRecords.insert(mRecords.end(), nodal.begin(), nodal.end());
         }
+        mRecords.insert(mRecords.end(), contact.begin(), contact.end());
         mRecords.push_back(filw_rec(2001));
         static const std::set<std::string> known = {
             kSequenceTimeKey,           "abaqus:step",
@@ -77903,7 +77969,7 @@ struct FilwIncrement {
             "abaqus:procedure",         "abaqus:mode",
             "abaqus:eigenvalue",        "abaqus:generalized_mass",
             "abaqus:composite_damping", "abaqus:participation_factor",
-            "abaqus:effective_mass"};
+            "abaqus:effective_mass",    "abaqus:contact_pair"};
         std::set<std::string> handled;
         for (const bool explicit_names : {false, true})
             for (std::size_t k = 0; k < 18; ++k)
@@ -77979,6 +78045,8 @@ private:
         for (const std::string& name : rMesh.PointDataNames()) {
             if (name == "abaqus:id" || filw_ends_with(name, "@avg"))
                 continue;
+            if (filw_contact_key(name))
+                continue;  // contact output, written by Contact
             const auto key = filw_key_of(name, true);
             if (!key) {
                 if (!filw_key_of(name, false))
@@ -78002,6 +78070,76 @@ private:
                     r.push_back(filw_d(x));
                 out.push_back(std::move(r));
             }
+        }
+        return out;
+    }
+
+    /// Contact output: a 1503 request naming the slave and master surface by their 1940 labels,
+    /// then per node holding data a 1504 header and a record per array.
+    std::vector<FilwRecord> Contact(const FilwModel& rModel, const Mesh& rMesh) {
+        std::vector<std::pair<std::int64_t, std::string>> arrays;
+        for (const std::string& name : rMesh.PointDataNames())
+            if (const auto key = filw_contact_key(name))
+                arrays.emplace_back(*key, name);
+        std::vector<FilwRecord> out;
+        if (arrays.empty())
+            return out;
+        std::sort(arrays.begin(), arrays.end());
+        std::int64_t labels[2] = {0, 0};
+        if (const auto pair = filw_contact_pair(rMesh)) {
+            const auto a = rModel.mSurfaceLabels.find(rMesh.Region(pair->first).mName);
+            const auto b = rModel.mSurfaceLabels.find(rMesh.Region(pair->second).mName);
+            if (a != rModel.mSurfaceLabels.end() && b != rModel.mSurfaceLabels.end()) {
+                labels[0] = a->second;
+                labels[1] = b->second;
+            }
+        }
+        if (labels[0] == 0) {
+            for (const auto& entry : arrays)
+                mDropped.insert(entry.second);
+            return out;
+        }
+        const std::size_t n = rModel.NodeLabels().size();
+        std::vector<const NDArray*> data;
+        std::vector<std::int64_t> keys;
+        for (const auto& [key, name] : arrays) {
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() == 0 || a.Shape().empty() || a.Shape()[0] != n) {
+                mDropped.insert(name);
+                continue;
+            }
+            data.push_back(&a);
+            keys.push_back(key);
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            std::vector<FilwRecord> items;
+            for (std::size_t k = 0; k < data.size(); ++k) {
+                const std::size_t cols = data[k]->Size() / n;
+                const detail::DoubleView v(*data[k]);
+                const std::vector<double> values = filw_trim(v.Data() + i * cols, cols);
+                if (values.empty())
+                    continue;
+                FilwRecord r = filw_rec(keys[k]);
+                for (const double x : values)
+                    r.push_back(filw_d(x));
+                items.push_back(std::move(r));
+            }
+            if (items.empty())
+                continue;
+            FilwRecord h = filw_rec(1504);
+            h.push_back(filw_i(rModel.NodeLabels()[i]));
+            h.push_back(filw_i(static_cast<std::int64_t>(items.front().size()) - 1));
+            out.push_back(std::move(h));
+            for (FilwRecord& r : items)
+                out.push_back(std::move(r));
+        }
+        if (!out.empty()) {
+            FilwRecord request = filw_rec(1503);
+            request.push_back(filw_i(0));
+            request.push_back(filw_a(std::to_string(labels[0])));
+            request.push_back(filw_a(std::to_string(labels[1])));
+            request.push_back(filw_a(""));
+            out.insert(out.begin(), std::move(request));
         }
         return out;
     }
@@ -78123,6 +78261,8 @@ private:
                 base.erase(base.size() - 4);
             if (base == "abaqus:id")
                 continue;
+            if (base == name && filw_contact_key(base))
+                continue;  // contact output
             if (base == name && filw_key_of(base, true))
                 continue;  // a nodal result
             const auto key = filw_key_of(base, false);
@@ -131396,6 +131536,7 @@ void NastranH5SeriesWriter::Finalize() {
 #include <numeric>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -131967,7 +132108,7 @@ std::vector<detail::NastranCardRows> op2_read_elements(
     // Per CBAR, twelve doubles per element: its orientation, G0, pins and offsets.
     std::map<std::string, std::vector<double>> bars;
     std::vector<std::string> skipped;
-    std::size_t grid_oriented = 0;  // CBEAMs whose X vector is not read
+    std::size_t grid_oriented = 0;     // CBEAMs whose X vector is not read
     std::size_t element_oriented = 0;  // CBUSHes oriented by their element system
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2"})) {
         if ((r.mK1 == 65535 && r.mK2 == 65535) || (r.mK1 == 5551 && r.mK2 == 49) ||
@@ -132169,6 +132310,12 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
         {"PELAS", {{"K", 1, 1.0, false}, {"GE", 2, 0.0, false}, {"S", 3, 0.0, false}}},
         {"PDAMP", {{"B", 1, 1.0, false}}},
         {"PVISC", {{"CE", 1, 1.0, false}, {"CR", 2, 0.0, false}}},
+        {"PSHEAR",
+         {{"MID", 1, 1, true},
+          {"T", 2, 1.0, false},
+          {"NSM", 3, 0.0, false},
+          {"F1", 4, 0.0, false},
+          {"F2", 5, 0.0, false}}},
         {"MAT1",
          {{"E", 1, 1.0, false},
           {"G", 2, 0.0, false},
@@ -132177,8 +132324,55 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
           {"A", 5, 0.0, false},
           {"TREF", 6, 0.0, false},
           {"GE", 7, 0.0, false}}},
+        // The anisotropic shell material: the stiffness matrix, the thermal expansion and the
+        // stress limits (the MAT2 record is 17 words).
+        {"MAT2",
+         {{"G11", 1, 1.0, false},
+          {"G12", 2, 0.0, false},
+          {"G13", 3, 0.0, false},
+          {"G22", 4, 1.0, false},
+          {"G23", 5, 0.0, false},
+          {"G33", 6, 1.0, false},
+          {"RHO", 7, 0.0, false},
+          {"A1", 8, 0.0, false},
+          {"A2", 9, 0.0, false},
+          {"A3", 10, 0.0, false},
+          {"TREF", 11, 0.0, false},
+          {"GE", 12, 0.0, false},
+          {"ST", 13, 0.0, false},
+          {"SC", 14, 0.0, false},
+          {"SS", 15, 0.0, false},
+          {"MCSID", 16, 0, true}}},
+        // The orthotropic ply material (the MAT8 record is 19 words).
+        {"MAT8",
+         {{"E1", 1, 1.0, false},
+          {"E2", 2, 1.0, false},
+          {"NU12", 3, 0.3, false},
+          {"G12", 4, 0.0, false},
+          {"G1Z", 5, 0.0, false},
+          {"G2Z", 6, 0.0, false},
+          {"RHO", 7, 0.0, false},
+          {"A1", 8, 0.0, false},
+          {"A2", 9, 0.0, false},
+          {"TREF", 10, 0.0, false},
+          {"XT", 11, 0.0, false},
+          {"XC", 12, 0.0, false},
+          {"YT", 13, 0.0, false},
+          {"YC", 14, 0.0, false},
+          {"S", 15, 0.0, false},
+          {"GE", 16, 0.0, false},
+          {"F12", 17, 0.0, false},
+          {"STRN", 18, 0.0, false}}},
     };
     return cards;
+}
+
+/// The members of the value card named @p pCard.
+const Op2wValueCard& op2w_value_card(const char* pCard) {
+    for (const Op2wValueCard& c : op2w_value_cards())
+        if (std::string_view(c.mCard) == pCard)
+            return c;
+    throw std::logic_error(std::string("no value card ") + pCard);
 }
 
 /// `nastran:<CARD>_<id>:<MEMBER>` field data of the PSHELL, PROD, PTUBE, PSOLID and MAT1
@@ -132357,8 +132551,8 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
                 if (rCard == "PSHELL" && w.Int(row + ws) >= 100000000)
                     continue;  // NX's PSHELL twin of a PCOMP
                 for (const Op2wValueMember& m : c.mMembers) {
-                    const std::string name = "nastran:" + rCard + "_" + std::to_string(ident) +
-                                             ":" + m.mName;
+                    const std::string name =
+                        "nastran:" + rCard + "_" + std::to_string(ident) + ":" + m.mName;
                     if (rMesh.HasFieldData(name))
                         continue;  // the first record wins
                     const char* at = row + m.mWord * ws;
@@ -132377,7 +132571,8 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
             if (p.mK1 == r.mK1 && p.mK2 == r.mK2) {
                 const std::string card = p.mCard;
                 if (card == "PSHELL" || card == "PROD" || card == "PTUBE" || card == "PSOLID" ||
-                    card == "PBAR" || card == "PELAS" || card == "PDAMP" || card == "PVISC")
+                    card == "PBAR" || card == "PELAS" || card == "PDAMP" || card == "PVISC" ||
+                    card == "PSHEAR")
                     take(card, r.mRaw, static_cast<std::size_t>(p.mSizes[0]));
                 break;
             }
@@ -132385,6 +132580,10 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"MPT", "MAT"}))
         if (r.mK1 == 103 && r.mK2 == 1)
             take("MAT1", r.mRaw, 12);
+        else if (r.mK1 == 203 && r.mK2 == 2)
+            take("MAT2", r.mRaw, 17);
+        else if (r.mK1 == 2503 && r.mK2 == 25)
+            take("MAT8", r.mRaw, 19);
 }
 
 // NX also writes each PCOMP as a PSHELL whose material ids are 100000000 and
@@ -133312,7 +133511,7 @@ std::pair<std::string, std::vector<std::string>> op2_sibling_deck(const std::str
 struct Op2Model {
     Mesh mMesh;
     detail::NastranCoordSystems mSystems;
-    std::vector<std::int64_t> mCd;  // per point; empty for a deck-built model
+    std::vector<std::int64_t> mCd;       // per point; empty for a deck-built model
     std::vector<std::int64_t> mCordIds;  // the id of every coordinate system card the file holds
     std::unordered_map<std::int64_t, std::size_t> mGridIndex;
     std::unordered_map<std::int64_t, std::size_t> mCellIndex;
@@ -133967,8 +134166,12 @@ enum Op2wProp {
     kOp2wPcomp,
     kOp2wPbeam,
     kOp2wPbush,
-    kOp2wPvisc
+    kOp2wPvisc,
+    kOp2wPshear
 };
+// The property cards' names, in the order of `Op2wProp`.
+constexpr const char* kOp2wPropNames[] = {"PROD", "PSHELL", "PSOLID", "PTUBE", "PELAS", "PDAMP",
+                                          "PBAR", "PCOMP",  "PBEAM",  "PBUSH", "PVISC", "PSHEAR"};
 enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
 constexpr int kOp2wHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
@@ -134004,11 +134207,13 @@ constexpr Op2wCard kOp2wCards[] = {
     {"CQUAD4", 2958, 51, 177, 14, 4, 2, nullptr, kOp2wPshell, 0},
     {"CQUAD8", 4701, 47, 326, 17, 4, 2, nullptr, kOp2wPshell, 0},
     {"CROD", 3001, 30, 48, 4, 2, 2, nullptr, kOp2wProd, 0},
+    {"CSHEAR", 3101, 31, 61, 6, 4, 2, nullptr, kOp2wPshear, 0},
     {"CTETRA", 5508, 55, 217, 12, 4, 2, nullptr, kOp2wPsolid, 4},
     {"CTRIA3", 5959, 59, 282, 13, 3, 2, nullptr, kOp2wPshell, 0},
     {"CTRIA6", 4801, 48, 327, 14, 3, 2, nullptr, kOp2wPshell, 0},
     {"CTUBE", 3701, 37, 49, 4, 2, 2, nullptr, kOp2wPtube, 0},
     {"CVISC", 3901, 39, 50, 4, 2, 2, nullptr, kOp2wPvisc, 0},
+    {"PLOTEL", 5201, 52, 11, 3, 2, 1, nullptr, kOp2wNoProp, 0},
 };
 constexpr std::size_t kOp2wNumCards = sizeof(kOp2wCards) / sizeof(kOp2wCards[0]);
 
@@ -134047,6 +134252,8 @@ const char* op2w_line_card(std::int64_t Code) {
             return "CELAS2";
         case 39:
             return "CVISC";
+        case 52:
+            return "PLOTEL";
         default:
             return nullptr;
     }
@@ -134060,7 +134267,7 @@ bool op2w_block_holds(const std::string& rType, std::string_view Card) {
     if (rType == "line")
         return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
                Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC";
+               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL";
     return false;
 }
 
@@ -134120,7 +134327,7 @@ struct Op2wBlock {
     std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
     std::vector<std::int64_t> mEids;
     std::vector<std::int64_t> mPids;
-    std::vector<std::size_t> mCards;  // card index per cell
+    std::vector<std::size_t> mCards;   // card index per cell
     std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
     std::vector<double> mBar;          // twelve per cell: a CBAR's fields, a CELAS2's K, GE
                                        // and S, or a CDAMP2's B (the card's first columns)
@@ -134614,9 +134821,14 @@ public:
                     } else {
                         blk.mCards[i] = op2w_card_index(name);
                     }
-                } else if (have_card && codes[i] == 31) {  // CSHEAR: no card here yet
-                    keep[i] = false;
-                    mUnwritten.insert("CSHEAR");
+                } else if (have_card && codes[i] == 31) {
+                    // A quad is a CSHEAR; no other cell type holds one.
+                    if (cb.Type() == "quad") {
+                        blk.mCards[i] = op2w_card_index("CSHEAR");
+                    } else {
+                        keep[i] = false;
+                        mUnwritten.insert("CSHEAR");
+                    }
                 } else if (spec->mCard != nullptr) {
                     blk.mCards[i] = op2w_card_index(spec->mCard);
                 } else {
@@ -134748,8 +134960,7 @@ public:
                 if (prop != kOp2wNoProp)
                     mProps[prop].insert(blk.mPids[r]);
             }
-        static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE", "PELAS",
-                                            "PDAMP", "PBAR",   "PCOMP",  "PBEAM", "PBUSH", "PVISC"};
+        const char* const* const names = kOp2wPropNames;
         // A shell whose property has plies is a PCOMP, not a PSHELL.
         for (auto it = mProps[kOp2wPshell].begin(); it != mProps[kOp2wPshell].end();) {
             if (mPlies.count(*it) != 0) {
@@ -134760,9 +134971,9 @@ public:
             }
         }
         std::map<std::int64_t, int> used;
-        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar,
-                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp, kOp2wPbeam, kOp2wPbush,
-                               kOp2wPvisc})
+        for (const int prop :
+             {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPelas, kOp2wPdamp,
+              kOp2wPcomp, kOp2wPbeam, kOp2wPbush, kOp2wPvisc, kOp2wPshear})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -134774,6 +134985,7 @@ public:
         for (const auto& [pid, prop] : used)
             if (pid <= 0)
                 op2w_fail("property ids must be positive");
+        MaterialCards();  // refuses a material id given as two cards
     }
 
     const Op2wSignature& Signature() const { return mSignature; }
@@ -134856,6 +135068,9 @@ public:
                 }
                 if (std::string_view(card.mName) == "CONM2") {
                     w.I(1, nodes[0]);
+                } else if (std::string_view(card.mName) == "PLOTEL") {
+                    w.I(1, nodes[0]);  // no property: the two nodes at words 1 and 2
+                    w.I(2, nodes[1]);
                 } else if (std::string_view(card.mName) == "CONROD") {
                     w.I(1, nodes[0]);
                     w.I(2, nodes[1]);
@@ -134947,7 +135162,8 @@ public:
             {kOp2wProd, "PROD", 902, 9, 29, 6},        {kOp2wPshell, "PSHELL", 2302, 23, 283, 11},
             {kOp2wPsolid, "PSOLID", 2402, 24, 281, 7}, {kOp2wPtube, "PTUBE", 1602, 16, 30, 5},
             {kOp2wPbar, "PBAR", 52, 20, 181, 19},      {kOp2wPelas, "PELAS", 302, 3, 46, 4},
-            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},       {kOp2wPvisc, "PVISC", 1802, 18, 31, 3}};
+            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},      {kOp2wPvisc, "PVISC", 1802, 18, 31, 3},
+            {kOp2wPshear, "PSHEAR", 1002, 10, 42, 6}};
         std::vector<std::string> records;
         for (const Prop& p : props) {
             if (mProps[p.mProp].empty())
@@ -135026,20 +135242,36 @@ public:
         return op2w_table("EPT", records);
     }
 
+    /// The card of each material id the field data gives (`nastran:MAT1_<id>:*`, `MAT2` or
+    /// `MAT8`); an id given as two cards is an error. An id with none is a MAT1.
+    std::map<std::int64_t, std::string> MaterialCards() const {
+        std::map<std::int64_t, std::string> cards;
+        for (const auto& [key, members] : mValues) {
+            if (key.first != "MAT1" && key.first != "MAT2" && key.first != "MAT8")
+                continue;
+            const auto [it, added] = cards.emplace(key.second, key.first);
+            if (!added)
+                op2w_fail("material id " + std::to_string(key.second) + " is given as both " +
+                          it->second + " and " + key.first + " field data");
+        }
+        return cards;
+    }
+
     /// A MAT1 per material the properties name (unit modulus unless the field data gives
-    /// its values), and per `nastran:MAT1_<id>:*` given.
+    /// its values), and per `nastran:MAT1_<id>:*` given; a material given as `nastran:MAT2_<id>:*`
+    /// or `nastran:MAT8_<id>:*` is written as that card instead.
     std::string Mpt() const {
+        const std::map<std::int64_t, std::string> given_cards = MaterialCards();
         std::set<std::int64_t> ids;
         for (const auto& [pid, plies] : mPlies)
             if (mProps[kOp2wPcomp].count(pid) != 0)
                 for (const std::array<double, 4>& ply : plies)
                     ids.insert(static_cast<std::int64_t>(ply[0]));
-        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar}) {
-            static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE",
-                                                "PELAS", "PDAMP",  "PBAR"};
+        for (const int prop :
+             {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPshear}) {
             for (const std::int64_t pid : mProps[prop]) {
                 std::int64_t mid = 1;
-                const auto given = mValues.find({names[prop], pid});
+                const auto given = mValues.find({kOp2wPropNames[prop], pid});
                 if (given != mValues.end()) {
                     const auto it = given->second.find(prop == kOp2wPshell ? "MID1" : "MID");
                     if (it != given->second.end())
@@ -135050,28 +135282,45 @@ public:
         }
         for (const std::int64_t pid : mProps[kOp2wPbeam])
             ids.insert(static_cast<std::int64_t>(op2w_array_scalar(mArrays, pid, "MID", 1)));
-        for (const auto& [key, members] : mValues)
-            if (key.first == "MAT1")
-                ids.insert(key.second);
+        for (const auto& [mid, card] : given_cards)
+            ids.insert(mid);
         if (ids.empty())
             ids.insert(1);
-        std::string rows;
-        for (const std::int64_t mid : ids) {
-            Op2wRowBuf w(12);
-            w.I(0, mid);
-            const auto given = mValues.find({"MAT1", mid});
-            for (const Op2wValueMember& m : op2w_value_cards().back().mMembers) {
-                double v = m.mDefault;
-                if (given != mValues.end()) {
-                    const auto it = given->second.find(m.mName);
-                    if (it != given->second.end())
-                        v = it->second;
+        static const struct {
+            const char* mCard;
+            std::int32_t mK1, mK2, mK3;
+            std::size_t mSize;
+        } kMaterials[] = {
+            {"MAT1", 103, 1, 77, 12}, {"MAT2", 203, 2, 78, 17}, {"MAT8", 2503, 25, 288, 19}};
+        std::vector<std::string> records;
+        for (const auto& k : kMaterials) {
+            std::string rows;
+            for (const std::int64_t mid : ids) {
+                const auto at = given_cards.find(mid);
+                if ((at == given_cards.end() ? "MAT1" : at->second) != k.mCard)
+                    continue;
+                Op2wRowBuf w(k.mSize);
+                w.I(0, mid);
+                const auto given = mValues.find({k.mCard, mid});
+                for (const Op2wValueMember& m : op2w_value_card(k.mCard).mMembers) {
+                    double v = m.mDefault;
+                    if (given != mValues.end()) {
+                        const auto it = given->second.find(m.mName);
+                        if (it != given->second.end())
+                            v = it->second;
+                    }
+                    if (m.mInt)
+                        w.I(m.mWord, static_cast<std::int64_t>(v));
+                    else
+                        w.F(m.mWord, v);
                 }
-                w.F(m.mWord, v);
+                w.Append(rows);
             }
-            w.Append(rows);
+            if (!rows.empty())
+                records.push_back(op2w_key(k.mK1, k.mK2, k.mK3) + rows);
         }
-        return op2w_table("MPT", {op2w_key(103, 1, 77) + rows, op2w_key(65535, 65535, 65535)});
+        records.push_back(op2w_key(65535, 65535, 65535));
+        return op2w_table("MPT", records);
     }
 
 private:
@@ -135084,7 +135333,7 @@ private:
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
-    std::set<std::int64_t> mProps[11];
+    std::set<std::int64_t> mProps[12];
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;
@@ -135180,8 +135429,8 @@ constexpr Op2wNodal kOp2wNodal[] = {
     {"TEMPERATURE", "OUGV1", 1, true},   {"SPC_FORCE", "OQG1", 3, false},
     {"MPC_FORCE", "OQMG1", 3, false},    {"APPLIED_LOAD", "OPG1", 2, false},
 };
-constexpr const char* kOp2wTables[] = {"OUGV1",  "OQG1",   "OQMG1",  "OPG1",
-                                       "OEF1X",  "OES1X1", "OSTR1X"};
+constexpr const char* kOp2wTables[] = {"OUGV1", "OQG1",   "OQMG1", "OPG1",
+                                       "OEF1X", "OES1X1", "OSTR1X"};
 
 // Element force families (OEF1X, table code 4): the rods' axial force and torque and the
 // plates' eight membrane and bending forces, as `ELEMENT_FORCE:<member>` cell data.
@@ -135191,10 +135440,11 @@ struct Op2wForceFamily {
     std::vector<const char*> mMembers;
 };
 const std::vector<Op2wForceFamily>& op2w_force_families() {
-    static const std::vector<const char*> shell = {"MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"};
+    static const std::vector<const char*> shell = {"MX",  "MY",   "MXY", "BMX",
+                                                   "BMY", "BMXY", "TX",  "TY"};
     static const std::vector<Op2wForceFamily> families = {
-        {1, "CROD", {"AF", "TRQ"}},   {3, "CTUBE", {"AF", "TRQ"}}, {10, "CONROD", {"AF", "TRQ"}},
-        {33, "CQUAD4", shell},        {74, "CTRIA3", shell},
+        {1, "CROD", {"AF", "TRQ"}}, {3, "CTUBE", {"AF", "TRQ"}}, {10, "CONROD", {"AF", "TRQ"}},
+        {33, "CQUAD4", shell},      {74, "CTRIA3", shell},
     };
     return families;
 }
@@ -136841,6 +137091,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <charconv>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -136951,6 +137202,14 @@ FoamFormat detect_format(std::string_view rRaw) {
                 if (bits)
                     fmt.mScalarBytes = bits / 8;
             }
+            // Only the widths the binary decoders implement: any other value would size a list
+            // by a width it is not decoded with (a zero width divides by zero in the extent check).
+            if ((fmt.mLabelBytes != 4 && fmt.mLabelBytes != 8) ||
+                (fmt.mScalarBytes != 4 && fmt.mScalarBytes != 8))
+                throw ReadError(
+                    "OpenFOAM: unsupported 'arch' widths (label and scalar must be 32 "
+                    "or 64 bits): " +
+                    arch);
         }
         if (s == "}")
             break;
@@ -137524,6 +137783,10 @@ struct RawPolyMesh {
     std::vector<std::int64_t> mOwner;
     std::vector<std::int64_t> mNeighbour;  ///< only the internal faces
     std::vector<Patch> mBoundary;
+    /// Decomposed cases only: per patch, per face, the processor (index into the processor list)
+    /// and the face's offset within that processor's copy of the patch -- where a field's patch
+    /// values live.
+    std::vector<std::vector<std::pair<std::size_t, std::int64_t>>> mBoundarySource;
 };
 
 /// Refuse a polyMesh whose lists disagree, before anything indexes one list
@@ -137695,6 +137958,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
     std::map<std::int64_t, Patch> patch_table;
     std::map<std::int64_t, std::vector<Face>> patch_faces;
     std::map<std::int64_t, std::vector<std::int64_t>> patch_owners;
+    std::map<std::int64_t, std::vector<std::pair<std::size_t, std::int64_t>>> patch_sources;
     std::size_t n_dropped_processor_faces = 0, n_dropped_unclaimed = 0;
 
     for (std::size_t g = 0; g < n_faces; ++g) {
@@ -137764,6 +138028,9 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         }
         patch_faces[global_patch].push_back(std::move(gf));
         patch_owners[global_patch].push_back(owner_cell);
+        patch_sources[global_patch].emplace_back(
+            static_cast<std::size_t>(owner_claim->mProc),
+            owner_claim->mLocalFace - op.mRaw.mBoundary[local_patch].mStartFace);
     }
     if (n_dropped_processor_faces > 0)
         log::info("OpenFOAM: reconstructed case drops {} inter-processor patch face(s)",
@@ -137785,6 +138052,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
             out.mOwner.push_back(c);
         kv.second.mNFaces = static_cast<std::int64_t>(out.mFaces.size()) - kv.second.mStartFace;
         out.mBoundary.push_back(kv.second);
+        out.mBoundarySource.push_back(std::move(patch_sources[kv.first]));
     }
     return out;
 }
@@ -137945,6 +138213,364 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
                                       : read_le<double>(base + off);
         }
     return out;
+}
+
+/// One patch's `value` entry from a field's `boundaryField`: empty (`mFlat`) when the patch has no
+/// value of its own (`zeroGradient`, `empty`, `$internalField`, ...).
+struct FoamPatchField {
+    std::string mName;
+    FoamField mValue;
+};
+
+/**
+ * @brief Read the per-patch `value` entries of a field file's `boundaryField`.
+ *
+ * A small dictionary scanner rather than the line scan `internalField` gets: patch values are
+ * short lists OpenFOAM writes inline (`4(1 2 3 4)`), as `N{value}`, or as packed binary, and any
+ * other entry of a patch (`inletValue`, `uniformValue`, nested dictionaries) has to be skipped
+ * without mistaking its bytes or braces for structure. It never throws: a file it cannot follow
+ * ends the scan and the patches read up to there are returned.
+ */
+class FoamBoundaryScanner {
+public:
+    FoamBoundaryScanner(std::string_view Raw, const FoamFormat& rFormat, int Components)
+        : mRaw(Raw), mFormat(rFormat), mComponents(Components) {}
+
+    std::vector<FoamPatchField> Scan() {
+        std::vector<FoamPatchField> out;
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size())
+                break;
+            const std::string key = ReadToken();
+            if (key.empty()) {
+                mFailed = true;
+                break;
+            }
+            SkipSpace();
+            if (mPos < mRaw.size() && mRaw[mPos] == '{') {
+                if (key == "boundaryField")
+                    ScanPatches(out);
+                else
+                    ScanBody(1, nullptr);
+            } else {
+                SkipValue();
+            }
+        }
+        return out;
+    }
+
+private:
+    static constexpr int kMaxDepth = 32;
+
+    static bool IsSpace(char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; }
+    static bool IsStop(char c) {
+        return IsSpace(c) || c == ';' || c == '{' || c == '}' || c == '(' || c == ')';
+    }
+
+    void SkipSpace() {
+        while (mPos < mRaw.size()) {
+            if (IsSpace(mRaw[mPos])) {
+                ++mPos;
+            } else if (mRaw.compare(mPos, 2, "//") == 0) {
+                while (mPos < mRaw.size() && mRaw[mPos] != '\n')
+                    ++mPos;
+            } else if (mRaw.compare(mPos, 2, "/*") == 0) {
+                const std::size_t end = mRaw.find("*/", mPos + 2);
+                mPos = end == std::string_view::npos ? mRaw.size() : end + 2;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// A word or a quoted string (quotes dropped); empty at punctuation or the end.
+    std::string ReadToken() {
+        SkipSpace();
+        std::string tok;
+        if (mPos < mRaw.size() && mRaw[mPos] == '"') {
+            ++mPos;
+            while (mPos < mRaw.size() && mRaw[mPos] != '"') {
+                if (mRaw[mPos] == '\\' && mPos + 1 < mRaw.size())
+                    ++mPos;
+                tok += mRaw[mPos++];
+            }
+            if (mPos < mRaw.size())
+                ++mPos;
+            else
+                mFailed = true;
+            return tok;
+        }
+        while (mPos < mRaw.size() && !IsStop(mRaw[mPos]))
+            tok += mRaw[mPos++];
+        return tok;
+    }
+
+    /// Past a `( ... )` group (the current character is the `(`), parentheses balanced.
+    void SkipParens() {
+        int depth = 0;
+        while (mPos < mRaw.size()) {
+            const char c = mRaw[mPos];
+            if (c == '"') {
+                ReadToken();
+                continue;
+            }
+            ++mPos;
+            if (c == '(')
+                ++depth;
+            else if (c == ')' && --depth == 0)
+                return;
+        }
+        mFailed = true;
+    }
+
+    /// The entries of a dictionary, from its `{` to its `}`; @p pValue receives a `value` entry.
+    void ScanBody(int Depth, FoamField* pValue) {
+        if (Depth > kMaxDepth) {
+            mFailed = true;
+            return;
+        }
+        ++mPos;  // the '{'
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size()) {
+                mFailed = true;
+                return;
+            }
+            if (mRaw[mPos] == '}') {
+                ++mPos;
+                return;
+            }
+            const std::string key = ReadToken();
+            if (key.empty()) {
+                mFailed = true;
+                return;
+            }
+            SkipSpace();
+            if (mPos < mRaw.size() && mRaw[mPos] == '{')
+                ScanBody(Depth + 1, nullptr);
+            else if (pValue != nullptr && key == "value")
+                ReadValue(*pValue);
+            else
+                SkipValue();
+        }
+    }
+
+    void ScanPatches(std::vector<FoamPatchField>& rOut) {
+        ++mPos;  // the '{'
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size()) {
+                mFailed = true;
+                return;
+            }
+            if (mRaw[mPos] == '}') {
+                ++mPos;
+                return;
+            }
+            FoamPatchField pf;
+            pf.mName = ReadToken();
+            if (pf.mName.empty()) {
+                mFailed = true;
+                return;
+            }
+            SkipSpace();
+            if (mPos < mRaw.size() && mRaw[mPos] == '{') {
+                ScanBody(2, &pf.mValue);
+                if (!mFailed)
+                    rOut.push_back(std::move(pf));
+            } else {
+                SkipValue();
+            }
+        }
+    }
+
+    /// The rest of an entry, through its `;` (or up to a closing `}`).
+    void SkipValue() {
+        while (!mFailed) {
+            SkipSpace();
+            if (mPos >= mRaw.size()) {
+                mFailed = true;
+                return;
+            }
+            const char c = mRaw[mPos];
+            if (c == ';') {
+                ++mPos;
+                return;
+            }
+            if (c == '}')
+                return;
+            if (c == '{') {
+                ScanBody(kMaxDepth, nullptr);  // an entry never holds a bare dictionary
+                return;
+            }
+            if (c == '(') {
+                SkipParens();
+                continue;
+            }
+            const std::string tok = ReadToken();
+            if (tok.empty()) {
+                mFailed = true;
+                return;
+            }
+            if (tok == "nonuniform")
+                ReadNonuniform(nullptr);
+        }
+    }
+
+    /// Entries per list element for a `List<T>` type name, -1 for a label, 0 when unknown.
+    static int TypeComponents(const std::string& rType) {
+        if (rType == "scalar" || rType == "sphericalTensor")
+            return 1;
+        if (rType == "vector")
+            return 3;
+        if (rType == "symmTensor")
+            return 6;
+        if (rType == "tensor")
+            return 9;
+        if (rType == "label")
+            return -1;
+        return 0;
+    }
+
+    /// Numbers of an ASCII list body, the opening `(` or `{` already consumed, through its
+    /// closing @p Close.
+    void ReadAsciiNumbers(char Close, std::vector<double>* pOut) {
+        int depth = 0;
+        while (mPos < mRaw.size()) {
+            SkipSpace();
+            if (mPos >= mRaw.size())
+                break;
+            const char c = mRaw[mPos];
+            if (c == Close && depth == 0) {
+                ++mPos;
+                return;
+            }
+            if (c == '(') {
+                ++depth;
+                ++mPos;
+            } else if (c == ')') {
+                if (--depth < 0)
+                    break;
+                ++mPos;
+            } else if (c == ';' || c == '{' || c == '}') {
+                break;
+            } else {
+                const std::size_t start = mPos;
+                while (mPos < mRaw.size() && !IsStop(mRaw[mPos]))
+                    ++mPos;
+                if (pOut != nullptr)
+                    pOut->push_back(detail::parse_double_prefix(mRaw.substr(start, mPos - start)));
+            }
+        }
+        mFailed = true;
+    }
+
+    /// After the `nonuniform` keyword: past the list; into @p pOut when it holds the field's own
+    /// type.
+    void ReadNonuniform(FoamField* pOut) {
+        std::string tok = ReadToken();
+        int comps = mComponents;  // `nonuniform 0()` names no type
+        if (tok.rfind("List<", 0) == 0) {
+            const std::size_t gt = tok.find('>');
+            comps = TypeComponents(tok.substr(5, gt == std::string::npos ? gt : gt - 5));
+            tok = ReadToken();
+        }
+        if (tok.empty() || tok.find_first_not_of("0123456789") != std::string::npos) {
+            mFailed = true;
+            return;
+        }
+        const std::int64_t count = detail::strtoll_token(tok);
+        SkipSpace();
+        const bool want = pOut != nullptr && comps == mComponents;
+        if (mPos < mRaw.size() && mRaw[mPos] == '{') {  // N{value}: one entry repeated
+            ++mPos;
+            std::vector<double> one;
+            ReadAsciiNumbers('}', &one);
+            if (!mFailed && want && one.size() == static_cast<std::size_t>(mComponents)) {
+                pOut->mUniform = true;
+                pOut->mCount = count;
+                pOut->mFlat = std::move(one);
+            }
+            return;
+        }
+        if (mPos >= mRaw.size() || mRaw[mPos] != '(') {
+            mFailed = true;
+            return;
+        }
+        ++mPos;
+        if (!mFormat.mBinary || count == 0) {
+            std::vector<double> flat;
+            ReadAsciiNumbers(')', want ? &flat : nullptr);
+            if (!mFailed && want) {
+                pOut->mUniform = false;
+                pOut->mCount = count;
+                pOut->mFlat = std::move(flat);
+            }
+            return;
+        }
+        if (comps == 0) {  // a binary list of a type this scanner cannot size
+            mFailed = true;
+            return;
+        }
+        const std::size_t entry = comps < 0 ? static_cast<std::size_t>(mFormat.mLabelBytes)
+                                            : static_cast<std::size_t>(comps) *
+                                                  static_cast<std::size_t>(mFormat.mScalarBytes);
+        if (static_cast<std::uint64_t>(count) > (mRaw.size() - mPos) / entry) {
+            mFailed = true;
+            return;
+        }
+        if (want) {
+            pOut->mUniform = false;
+            pOut->mCount = count;
+            pOut->mFlat.resize(static_cast<std::size_t>(count) * static_cast<std::size_t>(comps));
+            const char* base = mRaw.data() + mPos;
+            for (std::size_t i = 0; i < pOut->mFlat.size(); ++i)
+                pOut->mFlat[i] = mFormat.mScalarBytes == 4
+                                     ? static_cast<double>(read_le<float>(base + i * 4))
+                                     : read_le<double>(base + i * 8);
+        }
+        mPos += static_cast<std::size_t>(count) * entry;
+        if (mPos < mRaw.size() && mRaw[mPos] == ')')
+            ++mPos;
+        else
+            mFailed = true;
+    }
+
+    /// A patch's `value` entry, through its `;`.
+    void ReadValue(FoamField& rOut) {
+        const std::string tok = ReadToken();
+        if (tok == "uniform") {
+            SkipSpace();
+            std::vector<double> flat;
+            if (mComponents == 1) {
+                flat.push_back(detail::parse_double_prefix(ReadToken()));
+            } else if (mPos < mRaw.size() && mRaw[mPos] == '(') {
+                ++mPos;
+                ReadAsciiNumbers(')', &flat);
+            }
+            if (!mFailed && flat.size() == static_cast<std::size_t>(mComponents)) {
+                rOut.mUniform = true;
+                rOut.mFlat = std::move(flat);
+            }
+        } else if (tok == "nonuniform") {
+            ReadNonuniform(&rOut);
+        }
+        SkipValue();
+    }
+
+    std::string_view mRaw;
+    FoamFormat mFormat;
+    int mComponents;
+    std::size_t mPos = 0;
+    bool mFailed = false;
+};
+
+/// The per-patch values of a field file's `boundaryField` (see `FoamBoundaryScanner`).
+std::vector<FoamPatchField> foam_read_boundary_field(const fs::path& rPath, int Components) {
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
+    return FoamBoundaryScanner(raw, detect_format(raw), Components).Scan();
 }
 
 /// Parse a time directory's name as an OpenFOAM time value, requiring the
@@ -138433,16 +139059,30 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
     std::map<int, std::vector<std::int64_t>> tagsize;
     std::vector<Face> poly_faces;
     std::vector<std::int64_t> poly_tags;
+    // Where each boundary-file face went: its vertex count (which names its block) and its row
+    // in that block, so a field's per-patch values can be attached to the right cell.
+    struct BoundaryFaceDest {
+        std::size_t mSize = 0;
+        std::size_t mRow = npos;
+    };
+    std::vector<std::vector<BoundaryFaceDest>> patch_dest(boundary.size());
+    std::map<std::size_t, std::size_t> dest_rows;  // vertex count -> rows handed out so far
     for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx) {
         std::int64_t fam = -(static_cast<std::int64_t>(pidx) + 1);
         rInfo.mCellTags[fam] = {boundary[pidx].mName};
         if (!boundary[pidx].mType.empty())
             rInfo.mPatchTypes[fam] = boundary[pidx].mType;
+        if (boundary[pidx].mNFaces > 0)
+            patch_dest[pidx].resize(
+                std::min(static_cast<std::size_t>(boundary[pidx].mNFaces), faces.size()));
         for (std::int64_t fid = boundary[pidx].mStartFace;
              fid < boundary[pidx].mStartFace + boundary[pidx].mNFaces; ++fid) {
             if (fid < 0 || static_cast<std::size_t>(fid) >= faces.size())
                 continue;
             const Face& f = faces[static_cast<std::size_t>(fid)];
+            const auto offset = static_cast<std::size_t>(fid - boundary[pidx].mStartFace);
+            if (offset < patch_dest[pidx].size())
+                patch_dest[pidx][offset] = {f.size(), dest_rows[f.size()]++};
             if (f.size() == 3) {
                 bysize[3].push_back(f);
                 tagsize[3].push_back(fam);
@@ -138489,6 +139129,18 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
 
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
+
+    // Boundary-face block of each vertex count, and each patch by name (first wins).
+    std::map<std::size_t, std::size_t> size_block;
+    for (std::size_t b = vol_order.size() + poly_order.size(); b < mesh.NumCellBlocks(); ++b) {
+        const std::string type(mesh.Cells(b).Type());
+        size_block[type == "triangle" ? 3
+                   : type == "quad"   ? 4
+                                      : static_cast<std::size_t>(std::atoll(type.c_str() + 7))] = b;
+    }
+    std::unordered_map<std::string, std::size_t> patch_by_name;
+    for (std::size_t pidx = 0; pidx < boundary.size(); ++pidx)
+        patch_by_name.emplace(boundary[pidx].mName, pidx);
 
     // ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
     if (rOptions.WantsAnyData()) {
@@ -138587,6 +139239,76 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                                 ? values.mFlat[static_cast<std::size_t>(c)]
                                 : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
                                                static_cast<std::size_t>(c)];
+                }
+
+                // Boundary-face blocks: the `value` of each patch's `boundaryField` entry (a patch
+                // without one, or a processor patch, keeps the NaN). A decomposed case reads each
+                // processor's copy of the patch face by face.
+                auto set_face = [&](std::size_t pidx, std::size_t face, const FoamField& rValue,
+                                    std::size_t index) {
+                    const BoundaryFaceDest& d = patch_dest[pidx][face];
+                    if (d.mRow == npos)
+                        return;
+                    double* dst = blocks[size_block.at(d.mSize)].As<double>();
+                    for (std::size_t c = 0; c < ncomp; ++c)
+                        dst[d.mRow * ncomp + c] =
+                            rValue.mUniform ? rValue.mFlat[c] : rValue.mFlat[index * ncomp + c];
+                };
+                auto usable = [&](const FoamField& rValue) {
+                    return rValue.mUniform ? rValue.mFlat.size() == ncomp
+                                           : rValue.mFlat.size() ==
+                                                 static_cast<std::size_t>(rValue.mCount) * ncomp;
+                };
+                if (!patch_dest.empty() && !size_block.empty()) {
+                    if (!decomposed) {
+                        for (const FoamPatchField& pf :
+                             foam_read_boundary_field(field_path, fc.mComponents)) {
+                            const auto it = patch_by_name.find(pf.mName);
+                            if (it == patch_by_name.end() || pf.mValue.mFlat.empty() ||
+                                !usable(pf.mValue))
+                                continue;
+                            const std::size_t pidx = it->second;
+                            if (!pf.mValue.mUniform && pf.mValue.mCount != boundary[pidx].mNFaces) {
+                                log::warn(
+                                    "OpenFOAM: field '{}' patch '{}' has {} value(s), expected {} "
+                                    "face(s); skipped",
+                                    field_name, pf.mName, pf.mValue.mCount, boundary[pidx].mNFaces);
+                                continue;
+                            }
+                            for (std::size_t j = 0; j < patch_dest[pidx].size(); ++j)
+                                set_face(pidx, j, pf.mValue, j);
+                        }
+                    } else {
+                        std::vector<std::vector<FoamPatchField>> per_proc(proc_ids.size());
+                        for (std::size_t k = 0; k < proc_ids.size(); ++k) {
+                            const fs::path file = case_root /
+                                                  ("processor" + std::to_string(proc_ids[k])) /
+                                                  time_dirs[step].mName / field_name;
+                            if (fs::exists(file))
+                                per_proc[k] = foam_read_boundary_field(file, fc.mComponents);
+                        }
+                        for (std::size_t pidx = 0;
+                             pidx < boundary.size() && pidx < raw.mBoundarySource.size(); ++pidx) {
+                            std::vector<const FoamPatchField*> local(proc_ids.size(), nullptr);
+                            for (std::size_t k = 0; k < proc_ids.size(); ++k)
+                                for (const FoamPatchField& pf : per_proc[k])
+                                    if (pf.mName == boundary[pidx].mName && usable(pf.mValue) &&
+                                        !pf.mValue.mFlat.empty()) {
+                                        local[k] = &pf;
+                                        break;
+                                    }
+                            const auto& sources = raw.mBoundarySource[pidx];
+                            for (std::size_t j = 0;
+                                 j < sources.size() && j < patch_dest[pidx].size(); ++j) {
+                                const FoamPatchField* pf = local[sources[j].first];
+                                const std::int64_t at = sources[j].second;
+                                if (pf == nullptr || at < 0 ||
+                                    (!pf->mValue.mUniform && at >= pf->mValue.mCount))
+                                    continue;
+                                set_face(pidx, j, pf->mValue, static_cast<std::size_t>(at));
+                            }
+                        }
+                    }
                 }
                 mesh.AddCellData(field_name, std::move(blocks));
             }
@@ -138741,6 +139463,9 @@ void foam_write_binary_scalar(std::ostream& rOs, double v, int ScalarBits) {
  */
 struct FoamPatchAssignment {
     std::vector<std::int64_t> mFacePatch;
+    /// per face, the global (block-major) index of the boundary-face cell that claimed it, or -1
+    /// -- where a patch face's cell-data values come from
+    std::vector<std::int64_t> mFaceSource;
     std::vector<FoamPatchOut> mPatches;
     std::int64_t mNumOrphan = 0;          ///< 2D cell matching no face at all
     std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
@@ -138750,6 +139475,8 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
                                         const OpenFoamInfo& rInfo) {
     FoamPatchAssignment out;
     out.mFacePatch.assign(rFaces.NumFaces(), -1);
+    out.mFaceSource.assign(rFaces.NumFaces(), -1);
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
 
     // Family ids in the reader's own order (ascending -fam == ascending patch
     // index), so an OpenFOAM round trip preserves the boundary file's order.
@@ -138827,13 +139554,20 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
             }
             if (out.mFacePatch[static_cast<std::size_t>(fid)] >= 0)
                 continue;  // first claim wins
+            // A claim by a cell the patch table cannot place (no tag) still carries its values
+            // to `defaultFaces`; a tagged claim below replaces it.
+            std::int64_t& rSource = out.mFaceSource[static_cast<std::size_t>(fid)];
+            if (rSource < 0)
+                rSource = detail::block_row_to_global(bases, block, static_cast<std::int64_t>(i));
             std::int64_t fam = 0;
             if (tag_values && i < tags->Shape()[0])
                 fam = (*tag_values)[i];
             const auto it = fam_to_patch.find(fam);
-            if (fam < 0 && it != fam_to_patch.end())
+            if (fam < 0 && it != fam_to_patch.end()) {
                 out.mFacePatch[static_cast<std::size_t>(fid)] =
                     static_cast<std::int64_t>(it->second);
+                rSource = detail::block_row_to_global(bases, block, static_cast<std::int64_t>(i));
+            }
         }
     }
 
@@ -139187,6 +139921,12 @@ struct FoamFieldOut {
     std::size_t mComponents;
     bool mIsPoint;
     std::vector<double> mValues;  // entries x components
+    /// A boundary patch's face values, taken from the boundary-face cell blocks.
+    struct PatchValues {
+        std::size_t mPatch;           ///< index into the written patch table
+        std::vector<double> mValues;  ///< the patch's faces in written order x components
+    };
+    std::vector<PatchValues> mPatches;  ///< only patches whose every face carries a finite value
 };
 
 const char* foam_field_class_name(std::size_t Components, bool IsPoint, const char** pListType) {
@@ -139208,11 +139948,22 @@ const char* foam_field_class_name(std::size_t Components, bool IsPoint, const ch
     }
 }
 
+/// Patch types whose field patches are fixed by OpenFOAM (`empty`, `wedge`, `symmetry`,
+/// `symmetryPlane`): a `calculated` entry with values there is refused, so they get none.
+bool foam_is_constraint_patch(const std::string& rType) {
+    return rType == "empty" || rType == "wedge" || rType == "symmetry" || rType == "symmetryPlane";
+}
+
 /// `point_data` and `cell_data` as OpenFOAM fields, the inverse of the reader: volume cell data
-/// in OpenFOAM's compact cell order (a block of boundary faces has no cell to carry a value),
-/// point data in point order. Arrays with no OpenFOAM field class (component counts other than
-/// 1/3/6/9, vectors-only on points) are skipped with a warning.
-std::vector<FoamFieldOut> foam_collect_fields(const Mesh& rMesh, const detail::GlobalFaces& rFaces) {
+/// in OpenFOAM's compact cell order, point data in point order. The values of the
+/// boundary-face cell blocks become per-patch `boundaryField` values, for every patch whose
+/// faces all carry a finite value (so the NaN the reader fills a field without patch values
+/// with writes nothing) and that is not a constraint patch. Arrays with no OpenFOAM field
+/// class (component counts other than 1/3/6/9, vectors-only on points) are skipped with a
+/// warning.
+std::vector<FoamFieldOut> foam_collect_fields(const Mesh& rMesh, const detail::GlobalFaces& rFaces,
+                                              const FoamFaceOrder& rOrder,
+                                              const FoamPatchAssignment& rAssign) {
     std::vector<FoamFieldOut> out;
     auto usable_name = [](const std::string& rName) {
         return !rName.empty() && rName != "cell_tags" &&
@@ -139265,14 +140016,72 @@ std::vector<FoamFieldOut> foam_collect_fields(const Mesh& rMesh, const detail::G
             for (std::size_t c = 0; c < nc; ++c)
                 f.mValues[cell * nc + c] = views[block][row * nc + c];
         }
+        for (std::size_t pi = 0; pi < rOrder.mPatches.size(); ++pi) {
+            const FoamPatchOut& patch = rOrder.mPatches[pi];
+            if (patch.mNFaces <= 0 || foam_is_constraint_patch(patch.mType))
+                continue;
+            FoamFieldOut::PatchValues pv{pi, {}};
+            pv.mValues.reserve(static_cast<std::size_t>(patch.mNFaces) * nc);
+            bool complete = true;
+            for (std::int64_t k = 0; k < patch.mNFaces && complete; ++k) {
+                const auto gf = static_cast<std::size_t>(
+                    rOrder.mNewToOld[static_cast<std::size_t>(patch.mStartFace + k)]);
+                const std::int64_t source =
+                    gf < rAssign.mFaceSource.size() ? rAssign.mFaceSource[gf] : -1;
+                if (source < 0) {
+                    complete = false;
+                    break;
+                }
+                const auto [block, row] = detail::global_to_block_row(bases, source);
+                for (std::size_t c = 0; c < nc; ++c) {
+                    const double v = views[block][row * nc + c];
+                    if (!std::isfinite(v))
+                        complete = false;
+                    pv.mValues.push_back(v);
+                }
+            }
+            if (complete)
+                f.mPatches.push_back(std::move(pv));
+        }
         out.push_back(std::move(f));
     }
     return out;
 }
 
 /// Write fields into `<rDir>` (a time directory); `rLocation` is the header's `location`.
+/// A `nonuniform List<T>` value, from the type keyword to the closing `)` plus @p pClose: the
+/// count on a line of its own, then the entries (binary: packed scalars, ASCII: one per line).
+void foam_write_value_list(std::ostream& rOs, const FoamFieldOut& rField,
+                           const std::vector<double>& rValues, const OpenFoamWriteOptions& rOpts,
+                           const char* pClose) {
+    const std::size_t entries = rValues.size() / rField.mComponents;
+    rOs << "nonuniform List<" << rField.mListType << ">\n" << entries << "\n(";
+    if (rOpts.mBinary) {
+        for (const double v : rValues)
+            foam_write_binary_scalar(rOs, v, rOpts.mScalarBits);
+        rOs << ")" << pClose;
+        return;
+    }
+    rOs << "\n";
+    const detail::CNumber num;
+    std::string buf;
+    for (std::size_t i = 0; i < entries; ++i) {
+        if (rField.mComponents > 1)
+            buf += '(';
+        for (std::size_t c = 0; c < rField.mComponents; ++c) {
+            if (c)
+                buf += ' ';
+            num.Append(buf, "%.16g", rValues[i * rField.mComponents + c]);
+        }
+        buf += rField.mComponents > 1 ? ")\n" : "\n";
+    }
+    rOs << buf << ")" << pClose;
+}
+
 void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
-                      const std::vector<FoamFieldOut>& rFields, const OpenFoamWriteOptions& rOpts) {
+                      const std::vector<FoamFieldOut>& rFields,
+                      const std::vector<FoamPatchOut>& rPatches,
+                      const OpenFoamWriteOptions& rOpts) {
     if (rFields.empty())
         return;
     const std::vector<FoamFieldOut>& out = rFields;
@@ -139287,31 +140096,19 @@ void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
         auto f = foam_open(dir / field.mName);
         foam_write_header(f, field.mClass, field.mName, rOpts, location.c_str());
         f << "dimensions      [0 0 0 0 0 0 0];\n\n";
-        const std::size_t entries = field.mValues.size() / field.mComponents;
-        f << "internalField   nonuniform List<" << field.mListType << ">\n" << entries << "\n(";
-        if (rOpts.mBinary) {
-            for (const double v : field.mValues)
-                foam_write_binary_scalar(f, v, rOpts.mScalarBits);
-            f << ")\n;\n";
-        } else {
-            f << "\n";
-            const detail::CNumber num;
-            std::string buf;
-            for (std::size_t i = 0; i < entries; ++i) {
-                if (field.mComponents > 1)
-                    buf += '(';
-                for (std::size_t c = 0; c < field.mComponents; ++c) {
-                    if (c)
-                        buf += ' ';
-                    num.Append(buf, "%.16g", field.mValues[i * field.mComponents + c]);
-                }
-                buf += field.mComponents > 1 ? ")\n" : "\n";
-            }
-            f << buf << ")\n;\n";
+        f << "internalField   ";
+        foam_write_value_list(f, field, field.mValues, rOpts, "\n;\n");
+        // Patches whose boundary-face blocks carry values get them as explicit entries; a
+        // catch-all patch value keeps the case loadable for every other patch, and a solver
+        // replaces these with its real conditions.
+        f << "\nboundaryField\n{\n";
+        for (const FoamFieldOut::PatchValues& pv : field.mPatches) {
+            f << "    " << rPatches[pv.mPatch].mName
+              << "\n    {\n        type            calculated;\n        value           ";
+            foam_write_value_list(f, field, pv.mValues, rOpts, "\n        ;\n");
+            f << "    }\n";
         }
-        // A catch-all patch value keeps the case loadable; the reader takes only
-        // internalField, and a solver replaces these with its real conditions.
-        f << "\nboundaryField\n{\n    \".*\"\n    {\n        type            calculated;\n"
+        f << "    \".*\"\n    {\n        type            calculated;\n"
              "        value           uniform ";
         if (field.mComponents == 1) {
             f << "0";
@@ -139325,13 +140122,14 @@ void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
     }
 }
 
-
 void foam_write_fields(const fs::path& rCaseRoot, const Mesh& rMesh,
-                       const detail::GlobalFaces& rFaces, const OpenFoamWriteOptions& rOpts,
+                       const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
+                       const FoamPatchAssignment& rAssign, const OpenFoamWriteOptions& rOpts,
                        const std::string& rTime = "0", const std::string& rRegion = {}) {
-    const std::vector<FoamFieldOut> out = foam_collect_fields(rMesh, rFaces);
+    const std::vector<FoamFieldOut> out = foam_collect_fields(rMesh, rFaces, rOrder, rAssign);
     const fs::path dir = rRegion.empty() ? rCaseRoot / rTime : rCaseRoot / rTime / rRegion;
-    foam_emit_fields(dir, rRegion.empty() ? rTime : rTime + "/" + rRegion, out, rOpts);
+    foam_emit_fields(dir, rRegion.empty() ? rTime : rTime + "/" + rRegion, out, rOrder.mPatches,
+                     rOpts);
 }
 
 }  // namespace
@@ -139400,8 +140198,8 @@ void foam_emit_label_list(const fs::path& rFile, const char* pObject,
 /// its share of the fields in `processorN/<time>/`.
 void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                            const detail::GlobalFaces& rFaces, const FoamFaceOrder& rOrder,
-                           const OpenFoamWriteOptions& rOpts, const std::vector<std::int64_t>& rParts,
-                           const std::string& rTime) {
+                           const FoamPatchAssignment& rAssign, const OpenFoamWriteOptions& rOpts,
+                           const std::vector<std::int64_t>& rParts, const std::string& rTime) {
     const fs::path given(rPath);
     const fs::path root = given.extension() == ".foam" ? given.parent_path() : given;
     if (fs::exists(root / "constant" / "polyMesh"))
@@ -139427,7 +140225,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         for (std::int64_t k = 0; k < rOrder.mPatches[pi].mNFaces; ++k)
             face_patch[static_cast<std::size_t>(rOrder.mPatches[pi].mStartFace + k)] =
                 static_cast<std::int64_t>(pi);
-    const std::vector<FoamFieldOut> fields = foam_collect_fields(rMesh, rFaces);
+    const std::vector<FoamFieldOut> fields = foam_collect_fields(rMesh, rFaces, rOrder, rAssign);
     const NDArray& pts = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
 
@@ -139605,9 +140403,23 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                 for (std::size_t c = 0; c < field.mComponents; ++c)
                     part.mValues.push_back(
                         field.mValues[static_cast<std::size_t>(g) * field.mComponents + c]);
+            // A processor keeps the values of the faces of each original patch it holds; the
+            // `processor` patches that follow them (index >= the original count) get none.
+            for (const FoamFieldOut::PatchValues& pv : field.mPatches) {
+                if (by_patch[pv.mPatch].empty())
+                    continue;
+                FoamFieldOut::PatchValues lpv{pv.mPatch, {}};
+                for (const FoamLocalFace& lf : by_patch[pv.mPatch]) {
+                    const auto at = static_cast<std::size_t>(lf.mSerial -
+                                                             rOrder.mPatches[pv.mPatch].mStartFace);
+                    for (std::size_t c = 0; c < field.mComponents; ++c)
+                        lpv.mValues.push_back(pv.mValues[at * field.mComponents + c]);
+                }
+                part.mPatches.push_back(std::move(lpv));
+            }
             local.push_back(std::move(part));
         }
-        foam_emit_fields(pdir / rTime, rTime, local, rOpts);
+        foam_emit_fields(pdir / rTime, rTime, local, patches, rOpts);
     }
     log::info("Wrote {} processor directories under {}", proc_set.size(), root.string());
 }
@@ -139628,9 +140440,17 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
     const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
 
     if (Mode == FoamWriteMode::FieldsOnly) {
+        // The mesh is already on disk; its patch table is rebuilt (quietly: the first step
+        // reported any dropped cell) only to know which patch each boundary face went to.
+        FoamPatchAssignment assign;
+        FoamFaceOrder order;
+        if (!faces.mNonCellBlocks.empty() && faces.NumCells() > 0) {
+            assign = foam_assign_patches(rMesh, faces, rInfo);
+            order = foam_order_faces(faces, assign);
+        }
         const fs::path only = foam_region_polymesh_dir(fs::path(rPath), rTarget.mRegion);
-        foam_write_fields(foam_case_root(only, rTarget.mRegion), rMesh, faces, rOpts, rTarget.mTime,
-                          rTarget.mRegion);
+        foam_write_fields(foam_case_root(only, rTarget.mRegion), rMesh, faces, order, assign, rOpts,
+                          rTarget.mTime, rTarget.mRegion);
         return;
     }
 
@@ -139688,7 +140508,8 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         throw WriteError("OpenFOAM: internal error, the written face order violates " + bad);
 
     if (Mode == FoamWriteMode::Decomposed) {
-        foam_write_decomposed(rPath, rMesh, faces, order, rOpts, *rTarget.mParts, rTarget.mTime);
+        foam_write_decomposed(rPath, rMesh, faces, order, assign, rOpts, *rTarget.mParts,
+                              rTarget.mTime);
         return;
     }
 
@@ -139873,8 +140694,8 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
                         "faceZoneList", "faceZone", "faceLabels");
     }
 
-    foam_write_fields(foam_case_root(poly, rTarget.mRegion), rMesh, faces, rOpts, rTarget.mTime,
-                      rTarget.mRegion);
+    foam_write_fields(foam_case_root(poly, rTarget.mRegion), rMesh, faces, order, assign, rOpts,
+                      rTarget.mTime, rTarget.mRegion);
 
     log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
               faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());
@@ -166963,6 +167784,88 @@ struct XwBlock {
     std::vector<std::int64_t> mConn;  // file order
 };
 
+/// A surface, facet set or edge to write: its name and facets (node count, nodes).
+struct XwFacets {
+    std::string mName;
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mFacets;
+};
+
+/// The id of block @p Block when every cell carries one positive integer in the
+/// cell data @p pKey, else 0.
+std::int64_t xw_marker(const Mesh& rMesh, const char* pKey, std::size_t Block, std::size_t Count) {
+    if (Count == 0 || !rMesh.HasCellData(pKey) || Block >= rMesh.NumCellBlocks())
+        return 0;
+    const NDArray& a = rMesh.CellData(pKey, Block);
+    if (a.Size() != Count ||
+        a.Dtype() == DType::Float32 || a.Dtype() == DType::Float64)
+        return 0;
+    const detail::Int64View view(a);
+    for (std::size_t i = 1; i < Count; ++i)
+        if (view.Data()[i] != view.Data()[0])
+            return 0;
+    return std::max<std::int64_t>(view.Data()[0], 0);
+}
+
+int xw_surface_nodes(const std::string& rType) {
+    static const std::map<std::string, int> kMap = {{"triangle", 3},  {"quad", 4},
+                                                    {"triangle6", 6}, {"triangle7", 7},
+                                                    {"quad8", 8},     {"quad9", 9},
+                                                    {"triangle10", 10}};
+    const auto it = kMap.find(rType);
+    return it == kMap.end() ? 0 : it->second;
+}
+
+int xw_edge_nodes(const std::string& rType) {
+    return rType == "line" ? 2 : rType == "line3" ? 3 : 0;
+}
+
+/// The chunk ids of one facet section: section, item, header, id, size, name,
+/// widest facet, list and leaf.
+struct XwFacetTags {
+    std::uint32_t mSection, mItem, mHeader, mId, mSize, mName, mWidest, mList, mLeaf;
+};
+constexpr XwFacetTags kXwSurfaceTags = {0x01043000, 0x01043100, 0x01043101, 0x01043102, 0x01043103,
+                                        0x01043104, 0x01043105, 0x01043200, 0x01043201};
+constexpr XwFacetTags kXwFacetsetTags = {0x01047000, 0x01047100, 0x01047101, 0x01047102, 0x01047104,
+                                         0x01047103, 0x01047105, 0x01047200, 0x01047201};
+constexpr XwFacetTags kXwEdgeTags = {0x01048000, 0x01048100, 0x01048101, 0x01048102, 0x01048103,
+                                     0x01048104, 0x01048105, 0x01048200, 0x01048201};
+constexpr std::size_t kXwFacetsetPad = 10;  // a facet set's leaves are padded to this many nodes
+constexpr std::size_t kXwEdgePad = 3;
+
+/// A section of surfaces, facet sets or edges: FEBio's header (id, size, name,
+/// widest facet) and a list of [facet id, node count, nodes] leaves, padded to
+/// @p Pad nodes (the widest facet when 0).
+std::string xw_facet_section(const std::vector<XwFacets>& rItems, const XwFacetTags& rTags,
+                             std::size_t Pad) {
+    if (rItems.empty())
+        return {};
+    std::string out;
+    std::uint32_t k = 0;
+    for (const XwFacets& item : rItems) {
+        ++k;
+        std::size_t width = Pad;
+        if (width == 0)
+            for (const auto& facet : item.mFacets)
+                width = std::max(width, facet.first);
+        const std::string head = xw_u32_chunk(rTags.mId, k) +
+                                 xw_u32_chunk(rTags.mSize,
+                                              static_cast<std::uint32_t>(item.mFacets.size())) +
+                                 xw_chunk(rTags.mName, xw_string(item.mName)) +
+                                 xw_u32_chunk(rTags.mWidest, static_cast<std::uint32_t>(width));
+        std::string leaves;
+        std::int64_t f = 0;
+        for (const auto& [nn, nodes] : item.mFacets) {
+            std::vector<std::int64_t> row = {++f, static_cast<std::int64_t>(nn)};
+            row.insert(row.end(), nodes.begin(), nodes.end());
+            row.resize(2 + width, 0);
+            leaves += xw_chunk(rTags.mLeaf, xw_ints(row));
+        }
+        out += xw_chunk(rTags.mItem, xw_chunk(rTags.mHeader, head) + xw_chunk(rTags.mList, leaves));
+    }
+    return xw_chunk(rTags.mSection, out);
+}
+
 struct XwDomain {
     std::string mName;
     std::int64_t mPart = 0;
@@ -167025,12 +167928,27 @@ public:
                     mPoints[i * 3 + k] = view.Data()[i * width + k];
         }
         std::map<std::string, std::size_t> skipped;
+        // Surface and edge ids -> their blocks (first cell, block index).
+        std::map<std::int64_t, std::vector<std::pair<std::size_t, std::size_t>>> surface_blocks,
+            edge_blocks;
         std::size_t base = 0;
         std::int64_t eid = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
             const std::size_t count = cb.NumCells();
             const std::string type = cb.Type();
+            const bool is_surface = xw_surface_nodes(type) > 0;
+            const std::int64_t carrier =
+                is_surface ? xw_marker(rMesh, "xplt:surface", b, count)
+                           : (xw_edge_nodes(type) > 0 ? xw_marker(rMesh, "xplt:edge", b, count)
+                                                      : 0);
+            if (carrier > 0) {
+                (is_surface ? surface_blocks : edge_blocks)[carrier].emplace_back(base, b);
+                for (std::size_t r = 0; r < count; ++r)
+                    mCarrierCells.insert(base + r);
+                base += count;
+                continue;
+            }
             if (xw_element_type(type) < 0) {
                 if (count > 0)
                     skipped[type] += count;
@@ -167067,12 +167985,27 @@ public:
             log::warn("FEBio .xplt: {} '{}' cell(s) are not written", count, type);
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
             mRegions.push_back(i);
+        Carriers(rMesh, surface_blocks, "Surface", mSurfaces);
+        Carriers(rMesh, edge_blocks, "Edge", mEdges);
+        FacetSets(rMesh);
         Names(rMesh);
         Variables(rMesh);
         mSignature = std::to_string(mN);
         for (const XwBlock& blk : mBlocks)
             mSignature += "|" + blk.mType + ":" + std::to_string(blk.mCount) + ":" +
                           std::to_string(blk.mNodes) + ":" + std::to_string(blk.mFirst);
+        for (const auto* list : {&mSurfaces, &mEdges, &mFacetSets}) {
+            mSignature += "@";
+            for (const XwFacets& item : *list) {
+                mSignature += item.mName + ":";
+                for (const auto& [nn, nodes] : item.mFacets) {
+                    mSignature += std::to_string(nn) + "(";
+                    for (const std::int64_t v : nodes)
+                        mSignature += std::to_string(v) + ",";
+                    mSignature += ")";
+                }
+            }
+        }
         for (const auto& group : mVars) {
             mSignature += "#";
             for (const XwVar& v : group)
@@ -167150,7 +168083,10 @@ public:
                     continue;
                 std::vector<std::int64_t> ids;
                 const detail::Int64View entries(reg.mEntries);
+                bool all_carriers = reg.mEntries.Size() > 0;
                 for (std::size_t e = 0; e < reg.mEntries.Size(); ++e) {
+                    if (mCarrierCells.count(static_cast<std::size_t>(entries.Data()[e])) == 0)
+                        all_carriers = false;
                     const std::int64_t v = entries.Data()[e];
                     if (Kind == RegionKind::Point) {
                         if (v >= 0 && static_cast<std::size_t>(v) < mN)
@@ -167161,6 +168097,9 @@ public:
                             ids.push_back(it->second);
                     }
                 }
+                // A surface or edge is written as one, not as an element set.
+                if (Kind == RegionKind::Cell && ids.empty() && all_carriers)
+                    continue;
                 ++count;
                 out += xw_chunk(Item, xw_chunk(Hdr, xw_u32_chunk(Ident, count) +
                                                         xw_u32_chunk(Size, static_cast<std::uint32_t>(
@@ -167181,6 +168120,9 @@ public:
                                   xw_chunk(0x01045102, xw_name64(dom.mPartName)));
         if (!parts.empty())
             body += xw_chunk(0x01045000, parts);
+        body += xw_facet_section(mSurfaces, kXwSurfaceTags, 0);
+        body += xw_facet_section(mFacetSets, kXwFacetsetTags, kXwFacetsetPad);
+        body += xw_facet_section(mEdges, kXwEdgeTags, kXwEdgePad);
         return xw_chunk(0x01040000, body);
     }
 
@@ -167222,6 +168164,86 @@ public:
     }
 
 private:
+    /// Per surface (edge), in id order: its name -- the cell region holding
+    /// exactly its cells -- and facets.
+    void Carriers(const Mesh& rMesh,
+                  const std::map<std::int64_t, std::vector<std::pair<std::size_t, std::size_t>>>&
+                      rById,
+                  const char* pFallback, std::vector<XwFacets>& rOut) const {
+        std::size_t k = 0;
+        for (const auto& [id, blocks] : rById) {
+            ++k;
+            XwFacets item;
+            std::vector<std::int64_t> cells;
+            for (const auto& [first, b] : blocks) {
+                const auto cb = rMesh.Cells(b);
+                const std::size_t nn = cb.NodesPerCell();
+                const detail::Int64View conn(cb.Conn());
+                for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                    cells.push_back(static_cast<std::int64_t>(first + r));
+                    std::vector<std::int64_t> nodes(conn.Data() + r * nn, conn.Data() + (r + 1) * nn);
+                    for (const std::int64_t v : nodes)
+                        if (v < 0 || static_cast<std::size_t>(v) >= mN)
+                            throw WriteError("FEBio .xplt: a '" + cb.Type() +
+                                             "' cell refers to a point the mesh does not have");
+                    item.mFacets.emplace_back(nn, std::move(nodes));
+                }
+            }
+            std::sort(cells.begin(), cells.end());
+            item.mName = std::string(pFallback) + std::to_string(k);
+            for (const std::size_t i : mRegions) {
+                const auto& reg = rMesh.Region(i);
+                if (reg.mKind != RegionKind::Cell || reg.mEntries.Size() != cells.size())
+                    continue;
+                const detail::Int64View entries(reg.mEntries);
+                std::vector<std::int64_t> mine(entries.Data(), entries.Data() + cells.size());
+                std::sort(mine.begin(), mine.end());
+                if (mine == cells) {
+                    item.mName = reg.mName;
+                    break;
+                }
+            }
+            rOut.push_back(std::move(item));
+        }
+    }
+
+    /// Per side region no written surface is named after: the faces it names.
+    void FacetSets(const Mesh& rMesh) {
+        std::set<std::string> taken;
+        for (const XwFacets& item : mSurfaces)
+            taken.insert(item.mName);
+        for (const std::size_t i : mRegions) {
+            const auto& reg = rMesh.Region(i);
+            if (reg.mKind != RegionKind::Side || taken.count(reg.mName))
+                continue;
+            XwFacets item;
+            item.mName = reg.mName;
+            const detail::Int64View entries(reg.mEntries);
+            std::size_t dropped = 0;
+            for (std::size_t e = 0; e + 1 < reg.mEntries.Size(); e += 2) {
+                CellType type;
+                std::vector<std::int64_t> nodes;
+                if (!detail::facet_nodes(rMesh, entries.Data()[e], entries.Data()[e + 1], type,
+                                         nodes)) {
+                    ++dropped;
+                    continue;
+                }
+                const std::size_t nn = nodes.size();
+                if (nn != 3 && nn != 4 && (nn < 6 || nn > 10)) {
+                    ++dropped;
+                    continue;
+                }
+                item.mFacets.emplace_back(nn, std::move(nodes));
+            }
+            if (dropped)
+                log::warn(
+                    "FEBio .xplt: {} edge or missing facet(s) of the side region '{}' are not "
+                    "written",
+                    dropped, reg.mName);
+            mFacetSets.push_back(std::move(item));
+        }
+    }
+
     void Names(const Mesh& rMesh) {
         for (std::size_t k = 0; k < mBlocks.size(); ++k) {
             const XwBlock& blk = mBlocks[k];
@@ -167288,6 +168310,8 @@ private:
     std::vector<XwBlock> mBlocks;
     std::vector<XwDomain> mDomains;
     std::vector<std::size_t> mRegions;
+    std::vector<XwFacets> mSurfaces, mEdges, mFacetSets;
+    std::set<std::size_t> mCarrierCells;  // global cells written as a surface or edge facet
     std::map<std::size_t, std::int64_t> mNewIndex;
     std::array<std::vector<XwVar>, 3> mVars;
     std::string mSignature;
