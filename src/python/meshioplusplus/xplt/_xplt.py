@@ -648,6 +648,9 @@ def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=(), edges=(
     sizes = [len(c.data) for c in mesh.cells]
     skipped = []
     point_sums = {}
+    # where a nodal average came from: "surface" or "edge" when only from those
+    # groups' node values, None when mixed or from element nodes
+    origins = {}
     for gid, c, d in reader.chunks(*found):
         group = DATA_GROUPS.get(gid)
         if group is None:
@@ -715,6 +718,9 @@ def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=(), edges=(
                             total, count = point_sums.setdefault(
                                 name, (np.zeros((n_points, width)), np.zeros(n_points))
                             )
+                            origins[name] = (
+                                group if origins.get(name, group) == group else None
+                            )
                             rows = values[: len(nodes) * width].reshape(
                                 len(nodes), width
                             )
@@ -752,6 +758,7 @@ def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=(), edges=(
                 total, count = point_sums.setdefault(
                     name, (np.zeros((n_points, width)), np.zeros(n_points))
                 )
+                origins[name] = None
                 for rid, values in regions:
                     k = rid - 1
                     if not 0 <= k < len(file_conn):
@@ -783,6 +790,9 @@ def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=(), edges=(
         with np.errstate(invalid="ignore", divide="ignore"):
             values = total / count[:, None]
         mesh.point_data[name] = values[:, 0] if values.shape[1] == 1 else values
+        if origins.get(name):
+            # the writer returns the array to that group's node values
+            mesh.field_data[f"xplt:{origins[name]}_node:{name}"] = np.array([1])
     if skipped:
         warn(
             "FEBio .xplt: material-point variables are not read: " + ", ".join(skipped)

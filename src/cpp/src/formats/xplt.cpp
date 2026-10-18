@@ -936,6 +936,9 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
     std::vector<std::string> sum_order;
     std::map<std::string, std::pair<std::vector<double>, std::vector<double>>> sums;
     std::map<std::string, std::size_t> sum_width;
+    // Where a nodal average came from: 1 = surface nodes only, 2 = edge nodes only, -1 = mixed
+    // or element nodes. The first two get a marker, so the writer returns them to their group.
+    std::map<std::string, int> sum_origin;
     const auto f32s = [&](std::size_t A, std::size_t B) {
         std::vector<double> v((B - A) / 4);
         for (std::size_t i = 0; i < v.size(); ++i)
@@ -1029,6 +1032,10 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                         sum_order.push_back(item.mName);
                         sum_width[item.mName] = width;
                     }
+                    const int origin = on_edge ? 2 : 1;
+                    const auto [o, first] = sum_origin.try_emplace(item.mName, origin);
+                    if (!first && o->second != origin)
+                        o->second = -1;
                     return it->second;
                 };
                 std::size_t data_surface = 0;
@@ -1098,6 +1105,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                     sum_order.push_back(item.mName);
                     sum_width[item.mName] = width;
                 }
+                sum_origin[item.mName] = -1;
                 auto& [total, count] = it->second;
                 for (const auto& [rid, values] : regions) {
                     const std::size_t k = static_cast<std::size_t>(rid) - 1;
@@ -1147,6 +1155,13 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                                : NDArray(DType::Float64, {n_points, width});
         std::copy(total.begin(), total.end(), a.As<double>());
         mesh.AddPointData(name, std::move(a));
+        if (const int origin = sum_origin[name]; origin > 0) {
+            NDArray marker(DType::Int64, {1});
+            marker.As<std::int64_t>()[0] = 1;
+            mesh.AddFieldData(
+                std::string(origin == 1 ? "xplt:surface_node:" : "xplt:edge_node:") + name,
+                std::move(marker));
+        }
     }
     if (!skipped.empty()) {
         std::string list;
@@ -1226,6 +1241,7 @@ std::string xw_ints(const std::vector<std::int64_t>& rValues) {
 struct XwVar {
     std::string mName;
     std::size_t mWidth = 1;
+    bool mNodal = false;  // a surface or edge variable stored per node (FMT_NODE), not per facet
 };
 
 struct XwBlock {
@@ -1488,9 +1504,17 @@ public:
         Names(rMesh);
         Variables(rMesh);
         mSignature = std::to_string(mN);
-        for (const XwBlock& blk : mBlocks)
+        for (const XwBlock& blk : mBlocks) {
+            // FNV-1a over the connectivity: a remesh that keeps the counts still differs.
+            std::uint64_t hash = 1469598103934665603ULL;
+            for (const std::int64_t v : blk.mConn) {
+                hash ^= static_cast<std::uint64_t>(v);
+                hash *= 1099511628211ULL;
+            }
             mSignature += "|" + blk.mType + ":" + std::to_string(blk.mCount) + ":" +
-                          std::to_string(blk.mNodes) + ":" + std::to_string(blk.mFirst);
+                          std::to_string(blk.mNodes) + ":" + std::to_string(blk.mFirst) + ":" +
+                          std::to_string(hash);
+        }
         for (const auto* list : {&mSurfaces, &mEdges, &mFacetSets}) {
             mSignature += "@";
             for (const XwFacets& item : *list) {
@@ -1504,13 +1528,17 @@ public:
             }
         }
         for (const auto& group : mVars) {
-            mSignature += "#";
+            mDictionarySignature += "#";
             for (const XwVar& v : group)
-                mSignature += v.mName + "=" + std::to_string(v.mWidth) + ",";
+                mDictionarySignature +=
+                    v.mName + (v.mNodal ? "@" : "=") + std::to_string(v.mWidth) + ",";
         }
     }
 
-    const std::string& Signature() const { return mSignature; }
+    /// Points, cells, facets and sets: a change writes a new mesh section into a series.
+    const std::string& MeshSignature() const { return mSignature; }
+    /// Variable names and widths: the dictionary, which a series cannot change.
+    const std::string& DictionarySignature() const { return mDictionarySignature; }
 
     std::string HeaderAndDictionary() const {
         std::string header = xw_chunk(
@@ -1525,10 +1553,11 @@ public:
                 const auto t = kType.find(v.mWidth);
                 const std::uint32_t vtype = t == kType.end() ? 6 : t->second;
                 const std::uint32_t asize = vtype == 6 ? static_cast<std::uint32_t>(v.mWidth) : 0;
-                items += xw_chunk(0x01020001, xw_u32_chunk(0x01020002, vtype) +
-                                                  xw_u32_chunk(0x01020003, kXwGroups[g].mFormat) +
-                                                  xw_u32_chunk(0x01020005, asize) +
-                                                  xw_chunk(0x01020004, xw_name64(v.mName)));
+                items += xw_chunk(
+                    0x01020001, xw_u32_chunk(0x01020002, vtype) +
+                                    xw_u32_chunk(0x01020003, v.mNodal ? 0u : kXwGroups[g].mFormat) +
+                                    xw_u32_chunk(0x01020005, asize) +
+                                    xw_chunk(0x01020004, xw_name64(v.mName)));
             }
             if (!items.empty())
                 dictionary += xw_chunk(kXwGroups[g].mDictTag, items);
@@ -1649,6 +1678,30 @@ public:
                     for (std::size_t d = 0; d < mBlocks.size(); ++d)
                         region(static_cast<std::uint32_t>(d + 1),
                                rMesh.CellData(v.mName, mBlocks[d].mIndex));
+                } else if (v.mNodal) {
+                    // Region k is surface (edge) k: the point values at its nodes, each node
+                    // once, in the order its facets first list them (the reader's order).
+                    const auto& facets = g == 3 ? mSurfaces : mEdges;
+                    const std::vector<double> all = xw_values(rMesh.PointData(v.mName));
+                    for (std::size_t k = 0; k < facets.size(); ++k) {
+                        std::vector<double> values;
+                        std::set<std::int64_t> seen;
+                        for (const auto& facet : facets[k].mFacets)
+                            for (const std::int64_t node : facet.second)
+                                if (seen.insert(node).second)
+                                    values.insert(
+                                        values.end(),
+                                        all.begin() + static_cast<std::ptrdiff_t>(node * v.mWidth),
+                                        all.begin() +
+                                            static_cast<std::ptrdiff_t>((node + 1) * v.mWidth));
+                        if (values.empty() || std::all_of(values.begin(), values.end(),
+                                                          [](double D) { return std::isnan(D); }))
+                            continue;
+                        std::string bytes;
+                        for (const double d : values)
+                            xw_f32(bytes, d);
+                        payload += xw_chunk(static_cast<std::uint32_t>(k + 1), bytes);
+                    }
                 } else {
                     // Region k is surface (edge) k: its facets' values in order; none
                     // for a surface that holds nothing but NaN.
@@ -1792,7 +1845,20 @@ private:
     void Variables(const Mesh& rMesh) {
         for (const std::string& name : rMesh.PointDataNames()) {
             const std::size_t w = xw_width(rMesh.PointData(name), mN, "point data '" + name + "'");
-            if (w)
+            if (!w)
+                continue;
+            // The reader marks a point array that came from surface (edge) node values; it goes
+            // back to that group when the mesh still has such facets.
+            bool placed = false;
+            for (std::size_t c = 0; c < 2 && !placed; ++c) {
+                const std::string marker =
+                    std::string(c == 0 ? "xplt:surface_node:" : "xplt:edge_node:") + name;
+                if (rMesh.HasFieldData(marker) && !mSources[c].empty()) {
+                    mVars[3 + c].push_back({name, w, true});
+                    placed = true;
+                }
+            }
+            if (!placed)
                 mVars[1].push_back({name, w});
         }
         for (const std::string& name : rMesh.CellDataNames()) {
@@ -1869,6 +1935,7 @@ private:
     std::array<std::vector<std::vector<std::size_t>>, 2> mSources;  // per surface/edge: its blocks
     bool mCompress = false;
     std::string mSignature;
+    std::string mDictionarySignature;
 };
 
 double xw_time_of(const Mesh& rMesh) {
@@ -1920,10 +1987,12 @@ void write_xplt(const std::string& rPath, const Mesh& rMesh, const XpltWriteOpti
 
 struct XpltSeriesWriter::Impl {
     std::string mPath;
-    std::unique_ptr<XwModel> mModel;
+    std::unique_ptr<XwModel> mModel;  // the first step's: it fixes the header and dictionary
     bool mCompress = false;
     std::string mPrefix;  // magic, header, dictionary and mesh, built from the first step
-    std::vector<std::string> mStates;
+    std::string mMeshSignature;
+    std::vector<std::string>
+        mStates;  // per step: a new mesh section (remeshed run), then the state
     bool mDone = false;
 };
 
@@ -1947,16 +2016,25 @@ void XpltSeriesWriter::Write(double Time, const Mesh& rMesh) {
     if (!mpImpl)
         throw WriteError("FEBio .xplt: series: the writer was moved from");
     Impl& s = *mpImpl;
+    const XwModel step(rMesh, s.mCompress);
+    std::string chunks;
     if (!s.mModel) {
         s.mModel = std::make_unique<XwModel>(rMesh, s.mCompress);
         s.mPrefix = xw_prefix(*s.mModel, rMesh);
-    } else if (XwModel(rMesh).Signature() != s.mModel->Signature()) {
-        throw WriteError("FEBio .xplt: series: step " + std::to_string(s.mStates.size()) +
-                         "'s points, cells or variables differ from the first step's; a plot "
-                         "file holds one mesh -- write one file per step with '{step}'");
+        s.mMeshSignature = step.MeshSignature();
+    } else {
+        if (step.DictionarySignature() != s.mModel->DictionarySignature())
+            throw WriteError("FEBio .xplt: series: step " + std::to_string(s.mStates.size()) +
+                             "'s variables differ from the first step's; a plot file holds one "
+                             "variable dictionary -- write one file per step with '{step}'");
+        // A remeshed run: the new mesh goes in before the states that use it.
+        if (step.MeshSignature() != s.mMeshSignature) {
+            chunks += xw_pack(step.MeshChunk(rMesh), s.mCompress);
+            s.mMeshSignature = step.MeshSignature();
+        }
     }
-    s.mStates.push_back(
-        xw_pack(s.mModel->StateChunk(rMesh, Time, xw_status_of(rMesh)), s.mCompress));
+    s.mStates.push_back(chunks +
+                        xw_pack(step.StateChunk(rMesh, Time, xw_status_of(rMesh)), s.mCompress));
 }
 
 std::size_t XpltSeriesWriter::NumSteps() const noexcept {
