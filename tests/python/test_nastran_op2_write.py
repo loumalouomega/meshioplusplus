@@ -813,7 +813,7 @@ def test_grid_id_array_follows_the_read_options(
 def _spring_mesh():
     """Springs CELAS1 30 and 31 between GRIDs 1-2 and 2-3 (PELAS 5), one grounded at
     GRID 4 (its second component is 0), a CDAMP1 50 between 2 and 4 (PDAMP 6), and a
-    PLOTEL 40 the writer does not hold yet."""
+    card 99 (40) the writer does not know."""
     points = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
     )
@@ -842,7 +842,7 @@ def _spring_mesh():
         np.array([6, 6]),
         np.array([6]),
         np.array([2]),
-        np.array([52]),
+        np.array([99]),
     ]
     mesh.cell_data["nastran:c1"] = [
         np.array([1, 1]),
@@ -927,7 +927,7 @@ def test_cards_the_writer_does_not_hold_are_left_out_with_a_warning(
     write_with(engine, path, mesh)
     err = " ".join(capfd.readouterr().err.split())
     assert "element cards not written yet" in err
-    assert "PLOTEL" in err and "CSHEAR" in err
+    assert "card 99" in err and "CSHEAR" in err
     back = py_op2.read(path)
     assert sorted(_elements(back)) == [30, 31, 32, 50]
 
@@ -1606,3 +1606,53 @@ def test_pynastran_reads_the_cviscs_and_pviscs(tmp_path):
     prop = model.properties[8]
     assert prop.type == "PVISC"
     assert (prop.ce, prop.cr) == pytest.approx((2.5, 0.75))
+
+
+# -- PLOTEL plot elements ---------------------------------------------------------------------
+
+
+def _plotel_mesh():
+    """Two PLOTELs between GRIDs 1-2 and 2-3 (they have no property)."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
+    mesh.cell_data["nastran:eid"] = [np.array([70, 71])]
+    mesh.cell_data["nastran:card"] = [np.array([52, 52])]
+    return mesh
+
+
+def test_plotels_round_trip(engine, tmp_path):
+    path = tmp_path / "plotel.op2"
+    write_with(engine, path, _plotel_mesh())
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        assert back.cells[0].type == "line"
+        np.testing.assert_array_equal(back.cells[0].data, [[0, 1], [1, 2]])
+        np.testing.assert_array_equal(back.cell_data["nastran:eid"][0], [70, 71])
+        np.testing.assert_array_equal(back.cell_data["nastran:pid"][0], [-1, -1])
+        np.testing.assert_array_equal(back.cell_data["nastran:card"][0], [52, 52])
+
+
+def test_the_engines_write_the_same_bytes_with_plotels(tmp_path):
+    mesh = _plotel_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+
+
+def test_a_plotel_cannot_sit_in_a_vertex_block(engine, tmp_path):
+    mesh = _plotel_mesh()
+    mesh.cells[0] = meshioplusplus.CellBlock("vertex", np.array([[0], [1]]))
+    with pytest.raises(Exception, match="cannot hold PLOTEL"):
+        write_with(engine, tmp_path / "bad.op2", mesh)
+
+
+def test_pynastran_reads_the_plotels(tmp_path):
+    op2 = pytest.importorskip("pyNastran.op2.op2_geom", exc_type=ImportError)
+    path = tmp_path / "pn_plotel.op2"
+    _core.nastran_op2_write(str(path), _plotel_mesh())
+    model = op2.OP2Geom(make_geom=True, debug=False)
+    model.read_op2(str(path))
+    assert sorted(model.plotels) == [70, 71]
+    assert model.plotels[70].node_ids == [1, 2]
+    assert model.plotels[71].node_ids == [2, 3]

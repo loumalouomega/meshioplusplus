@@ -614,7 +614,7 @@ std::vector<detail::NastranCardRows> op2_read_elements(
     // Per CBAR, twelve doubles per element: its orientation, G0, pins and offsets.
     std::map<std::string, std::vector<double>> bars;
     std::vector<std::string> skipped;
-    std::size_t grid_oriented = 0;  // CBEAMs whose X vector is not read
+    std::size_t grid_oriented = 0;     // CBEAMs whose X vector is not read
     std::size_t element_oriented = 0;  // CBUSHes oriented by their element system
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2"})) {
         if ((r.mK1 == 65535 && r.mK2 == 65535) || (r.mK1 == 5551 && r.mK2 == 49) ||
@@ -1004,8 +1004,8 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
                 if (rCard == "PSHELL" && w.Int(row + ws) >= 100000000)
                     continue;  // NX's PSHELL twin of a PCOMP
                 for (const Op2wValueMember& m : c.mMembers) {
-                    const std::string name = "nastran:" + rCard + "_" + std::to_string(ident) +
-                                             ":" + m.mName;
+                    const std::string name =
+                        "nastran:" + rCard + "_" + std::to_string(ident) + ":" + m.mName;
                     if (rMesh.HasFieldData(name))
                         continue;  // the first record wins
                     const char* at = row + m.mWord * ws;
@@ -1959,7 +1959,7 @@ std::pair<std::string, std::vector<std::string>> op2_sibling_deck(const std::str
 struct Op2Model {
     Mesh mMesh;
     detail::NastranCoordSystems mSystems;
-    std::vector<std::int64_t> mCd;  // per point; empty for a deck-built model
+    std::vector<std::int64_t> mCd;       // per point; empty for a deck-built model
     std::vector<std::int64_t> mCordIds;  // the id of every coordinate system card the file holds
     std::unordered_map<std::int64_t, std::size_t> mGridIndex;
     std::unordered_map<std::int64_t, std::size_t> mCellIndex;
@@ -2656,6 +2656,7 @@ constexpr Op2wCard kOp2wCards[] = {
     {"CTRIA6", 4801, 48, 327, 14, 3, 2, nullptr, kOp2wPshell, 0},
     {"CTUBE", 3701, 37, 49, 4, 2, 2, nullptr, kOp2wPtube, 0},
     {"CVISC", 3901, 39, 50, 4, 2, 2, nullptr, kOp2wPvisc, 0},
+    {"PLOTEL", 5201, 52, 11, 3, 2, 1, nullptr, kOp2wNoProp, 0},
 };
 constexpr std::size_t kOp2wNumCards = sizeof(kOp2wCards) / sizeof(kOp2wCards[0]);
 
@@ -2694,6 +2695,8 @@ const char* op2w_line_card(std::int64_t Code) {
             return "CELAS2";
         case 39:
             return "CVISC";
+        case 52:
+            return "PLOTEL";
         default:
             return nullptr;
     }
@@ -2707,7 +2710,7 @@ bool op2w_block_holds(const std::string& rType, std::string_view Card) {
     if (rType == "line")
         return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
                Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC";
+               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL";
     return false;
 }
 
@@ -2767,7 +2770,7 @@ struct Op2wBlock {
     std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
     std::vector<std::int64_t> mEids;
     std::vector<std::int64_t> mPids;
-    std::vector<std::size_t> mCards;  // card index per cell
+    std::vector<std::size_t> mCards;   // card index per cell
     std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
     std::vector<double> mBar;          // twelve per cell: a CBAR's fields, a CELAS2's K, GE
                                        // and S, or a CDAMP2's B (the card's first columns)
@@ -3395,8 +3398,8 @@ public:
                 if (prop != kOp2wNoProp)
                     mProps[prop].insert(blk.mPids[r]);
             }
-        static const char* const names[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE", "PELAS",
-                                            "PDAMP", "PBAR",   "PCOMP",  "PBEAM", "PBUSH", "PVISC"};
+        static const char* const names[] = {"PROD", "PSHELL", "PSOLID", "PTUBE", "PELAS", "PDAMP",
+                                            "PBAR", "PCOMP",  "PBEAM",  "PBUSH", "PVISC"};
         // A shell whose property has plies is a PCOMP, not a PSHELL.
         for (auto it = mProps[kOp2wPshell].begin(); it != mProps[kOp2wPshell].end();) {
             if (mPlies.count(*it) != 0) {
@@ -3407,9 +3410,9 @@ public:
             }
         }
         std::map<std::int64_t, int> used;
-        for (const int prop : {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar,
-                               kOp2wPelas, kOp2wPdamp, kOp2wPcomp, kOp2wPbeam, kOp2wPbush,
-                               kOp2wPvisc})
+        for (const int prop :
+             {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPelas, kOp2wPdamp,
+              kOp2wPcomp, kOp2wPbeam, kOp2wPbush, kOp2wPvisc})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -3503,6 +3506,9 @@ public:
                 }
                 if (std::string_view(card.mName) == "CONM2") {
                     w.I(1, nodes[0]);
+                } else if (std::string_view(card.mName) == "PLOTEL") {
+                    w.I(1, nodes[0]);  // no property: the two nodes at words 1 and 2
+                    w.I(2, nodes[1]);
                 } else if (std::string_view(card.mName) == "CONROD") {
                     w.I(1, nodes[0]);
                     w.I(2, nodes[1]);
@@ -3594,7 +3600,7 @@ public:
             {kOp2wProd, "PROD", 902, 9, 29, 6},        {kOp2wPshell, "PSHELL", 2302, 23, 283, 11},
             {kOp2wPsolid, "PSOLID", 2402, 24, 281, 7}, {kOp2wPtube, "PTUBE", 1602, 16, 30, 5},
             {kOp2wPbar, "PBAR", 52, 20, 181, 19},      {kOp2wPelas, "PELAS", 302, 3, 46, 4},
-            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},       {kOp2wPvisc, "PVISC", 1802, 18, 31, 3}};
+            {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},      {kOp2wPvisc, "PVISC", 1802, 18, 31, 3}};
         std::vector<std::string> records;
         for (const Prop& p : props) {
             if (mProps[p.mProp].empty())
@@ -3827,8 +3833,8 @@ constexpr Op2wNodal kOp2wNodal[] = {
     {"TEMPERATURE", "OUGV1", 1, true},   {"SPC_FORCE", "OQG1", 3, false},
     {"MPC_FORCE", "OQMG1", 3, false},    {"APPLIED_LOAD", "OPG1", 2, false},
 };
-constexpr const char* kOp2wTables[] = {"OUGV1",  "OQG1",   "OQMG1",  "OPG1",
-                                       "OEF1X",  "OES1X1", "OSTR1X"};
+constexpr const char* kOp2wTables[] = {"OUGV1", "OQG1",   "OQMG1", "OPG1",
+                                       "OEF1X", "OES1X1", "OSTR1X"};
 
 // Element force families (OEF1X, table code 4): the rods' axial force and torque and the
 // plates' eight membrane and bending forces, as `ELEMENT_FORCE:<member>` cell data.
@@ -3838,10 +3844,11 @@ struct Op2wForceFamily {
     std::vector<const char*> mMembers;
 };
 const std::vector<Op2wForceFamily>& op2w_force_families() {
-    static const std::vector<const char*> shell = {"MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"};
+    static const std::vector<const char*> shell = {"MX",  "MY",   "MXY", "BMX",
+                                                   "BMY", "BMXY", "TX",  "TY"};
     static const std::vector<Op2wForceFamily> families = {
-        {1, "CROD", {"AF", "TRQ"}},   {3, "CTUBE", {"AF", "TRQ"}}, {10, "CONROD", {"AF", "TRQ"}},
-        {33, "CQUAD4", shell},        {74, "CTRIA3", shell},
+        {1, "CROD", {"AF", "TRQ"}}, {3, "CTUBE", {"AF", "TRQ"}}, {10, "CONROD", {"AF", "TRQ"}},
+        {33, "CQUAD4", shell},      {74, "CTRIA3", shell},
     };
     return families;
 }

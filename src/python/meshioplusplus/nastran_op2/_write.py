@@ -62,6 +62,7 @@ _CARDS = {
     "CTRIA6": ((4801, 48, 327), 14, 3, 2, None),
     "CTUBE": ((3701, 37, 49), 4, 2, 2, None),
     "CVISC": ((3901, 39, 50), 4, 2, 2, None),
+    "PLOTEL": ((5201, 52, 11), 3, 2, 1, None),
 }
 
 # meshio++ cell type -> (card, nodes written); a line takes CROD, CTUBE or
@@ -127,8 +128,7 @@ _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
 # vertex, the cards each of those cell types may hold, and the cards it does not
-# write yet (PLOTEL, CSHEAR): their rows are left out rather than
-# written as another card.
+# write yet (CSHEAR): their rows are left out rather than written as another card.
 _LINE_CARDS = {
     30: "CROD",
     16: "CONROD",
@@ -142,6 +142,7 @@ _LINE_CARDS = {
     3: "CDAMP2",
     7: "CELAS2",
     39: "CVISC",
+    52: "PLOTEL",
 }
 _BLOCK_CARDS = {
     "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
@@ -157,6 +158,7 @@ _BLOCK_CARDS = {
         "CELAS2",
         "CDAMP2",
         "CVISC",
+        "PLOTEL",
     ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
@@ -921,6 +923,9 @@ class _Model:
             words[:, 0] = _i32(eid)
             if name == "CONM2":
                 words[:, 1] = _i32(nodes[:, 0])
+            elif name == "PLOTEL":
+                words[:, 1] = _i32(nodes[:, 0])  # no property: the nodes at 1 and 2
+                words[:, 2] = _i32(nodes[:, 1])
             elif name == "CONROD":
                 words[:, 1] = _i32(nodes[:, 0])
                 words[:, 2] = _i32(nodes[:, 1])
