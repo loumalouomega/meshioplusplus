@@ -18,9 +18,11 @@ from .._mesh import Mesh
 from .._regions import Region
 from ..lsdyna._lsdyna import _collapse_solid
 
-__all__ = ["read", "MAGIC"]
+__all__ = ["read", "MAGIC", "TH_PREFIX"]
 
 MAGIC = 0x542C
+# region names of the time-history items: the file's label behind this prefix
+TH_PREFIX = "radioss_th:"
 
 
 class _Cursor:
@@ -176,11 +178,14 @@ def _parse(data, path):
         c.ints(nmat)
         c.texts(nprop, 50)
         c.ints(nprop)
+    # time-history items: per category (nodes, 2-D, 3-D, 1-D elements) the
+    # 0-based index of a node or of an element of that family, each with a label
+    f["th"] = [[], [], [], []]
     if flags[5]:
-        counts = c.ints(4).tolist()  # nodes, 2-D, 3-D, 1-D elements
-        for count in counts:
-            c.ints(count)
-            c.texts(count, 50)
+        counts = c.ints(4).tolist()
+        for slot, count in enumerate(counts):
+            ids = c.ints(count).tolist()
+            f["th"][slot] = list(zip(ids, c.texts(count, 50)))
     if flags[7]:
         ns, ps, efs, ts = c.ints(4).tolist()
         conn = c.ints(ns) if ns else np.zeros(0, dtype=np.int64)
@@ -273,6 +278,44 @@ def read(filename):
     mesh.field_data["meshio:time"] = np.array([f["time"]])
     # The one step's time, for `read_metadata` (and so a sequence) to report.
     mesh.time_values = [f["time"]]
+    dims = {"vertex": 0, "line": 1, "triangle": 2, "quad": 2}
+    cell_dim = []
+    for t in block_types:
+        cell_dim += [dims.get(t, 3)] * len(members[t])
+
+    def th_regions():
+        """The time-history items as regions named after their label: a point
+        region for the nodes, cell regions for the elements (a label can name
+        elements of several families)."""
+        found = []
+        nodes = {}
+        for index, text in f["th"][0]:
+            if 0 <= index < nn:
+                nodes.setdefault(TH_PREFIX + text.strip(), set()).add(index)
+        found += [
+            Region(name, "point", np.array(sorted(ids), dtype=np.int64))
+            for name, ids in nodes.items()
+        ]
+        elements = {}
+        for slot, key in ((1, "2d"), (2, "3d"), (3, "1d")):
+            for fi, fam in enumerate(families):
+                if fam[0] != key:
+                    continue
+                for index, text in f["th"][slot]:
+                    if (fi, index) in cell_of:
+                        elements.setdefault(TH_PREFIX + text.strip(), set()).add(
+                            cell_of[(fi, index)]
+                        )
+        found += [
+            Region(
+                name,
+                "cell",
+                np.array(sorted(ids), dtype=np.int64),
+                max((cell_dim[c] for c in ids), default=-1),
+            )
+            for name, ids in elements.items()
+        ]
+        return found
 
     for name, values in f["point_scalars"]:
         mesh.point_data[name] = values
@@ -283,6 +326,7 @@ def read(filename):
     if f["point_mass"] is not None:
         mesh.point_data["radioss:mass"] = f["point_mass"]
     if not cells:
+        mesh.regions = th_regions()
         return mesh
 
     def per_block(get, width, fill, dtype):
@@ -372,10 +416,6 @@ def read(filename):
                 cell_of[(fi, e)] for e in range(start, end) if (fi, e) in cell_of
             ]
             regions.setdefault(key, []).extend(cells_in)
-    dims = {"vertex": 0, "line": 1, "triangle": 2, "quad": 2}
-    cell_dim = []
-    for t in block_types:
-        cell_dim += [dims.get(t, 3)] * len(members[t])
     mesh.regions = [
         Region(
             name,
@@ -385,5 +425,5 @@ def read(filename):
             pid,
         )
         for (name, pid), ids in regions.items()
-    ]
+    ] + th_regions()
     return mesh

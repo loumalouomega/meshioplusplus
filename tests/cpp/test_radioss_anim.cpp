@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <random>
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/radioss_anim.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
 
 namespace {
@@ -189,4 +191,45 @@ TEST(RadiossAnimWriter, StateRoundTripsAndSeriesNumbersFiles) {
         (std::filesystem::path(path).parent_path() / "plain").string());
     stem.Write(0.0, original);
     EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(path).parent_path() / "plainA001"));
+}
+
+// A mesh of a brick, a quad and a beam with a point region and two time-history cell regions,
+// one of which names elements of two families: the lists come back as the same regions.
+TEST(RadiossAnimWriter, TimeHistoryRegionsRoundTrip) {
+    const std::string path = write(state(), "thA001");
+    Mesh mesh = meshioplusplus::read_radioss_anim(path);
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);  // quad (cell 0) and tetra (cell 1)
+    const auto indices = [](std::initializer_list<std::int64_t> Values) {
+        meshioplusplus::NDArray a(meshioplusplus::DType::Int64, {Values.size()});
+        std::copy(Values.begin(), Values.end(), a.As<std::int64_t>());
+        return a;
+    };
+    using meshioplusplus::Region;
+    using meshioplusplus::RegionKind;
+    mesh.AddRegion(Region("radioss_th:probe", RegionKind::Point, -1, -1, indices({0, 3})));
+    mesh.AddRegion(Region("radioss_th:watch", RegionKind::Cell, 3, -1, indices({0, 1})));
+
+    const std::string out = (std::filesystem::path(path).parent_path() / "thoutA001").string();
+    meshioplusplus::write_radioss_anim(out, mesh);
+    const Mesh again = meshioplusplus::read_radioss_anim(out);
+    bool probe = false, watch = false;
+    for (std::size_t r = 0; r < again.NumRegions(); ++r) {
+        const auto& reg = again.Region(r);
+        if (reg.mName == "radioss_th:probe") {
+            probe = reg.mKind == RegionKind::Point && reg.NumEntries() == 2 &&
+                    detail::read_int(reg.mEntries, 0) == 0 &&
+                    detail::read_int(reg.mEntries, 1) == 3;
+        } else if (reg.mName == "radioss_th:watch") {
+            watch = reg.mKind == RegionKind::Cell && reg.NumEntries() == 2;
+        } else {
+            EXPECT_NE(reg.mName.rfind("radioss_th:", 0), 0u) << reg.mName;
+        }
+    }
+    EXPECT_TRUE(probe);
+    EXPECT_TRUE(watch);
+    // The time-history lists are not mistaken for parts: the two parts survive.
+    std::size_t parts = 0;
+    for (std::size_t r = 0; r < again.NumRegions(); ++r)
+        parts += again.Region(r).mName.rfind("radioss_th:", 0) != 0 ? 1 : 0;
+    EXPECT_EQ(parts, 2u);
 }

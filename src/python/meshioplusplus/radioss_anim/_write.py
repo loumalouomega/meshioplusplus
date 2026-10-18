@@ -25,7 +25,7 @@ from .._exceptions import WriteError
 from .._files import is_buffer
 from .._regions import canonical_regions
 from ..lsdyna._lsdyna import _expand_solid
-from ._anim import MAGIC
+from ._anim import MAGIC, TH_PREFIX
 
 __all__ = ["write", "SeriesWriter"]
 
@@ -116,7 +116,11 @@ def _classify(mesh):
 
 def _region_parts(mesh, ncells):
     """(part id, name) per cell from the cell regions, or None."""
-    regions = [r for r in canonical_regions(mesh) if r.kind == "cell"]
+    regions = [
+        r
+        for r in canonical_regions(mesh)
+        if r.kind == "cell" and not r.name.startswith(TH_PREFIX)
+    ]
     if not regions:
         return None
     ids = np.full(ncells, -1, dtype=np.int64)
@@ -149,7 +153,7 @@ def _bytes_state(mesh, time):
     names_by_pid = region_parts[1] if region_parts else {}
     if part_arr is not None:
         for r in canonical_regions(mesh):
-            if r.kind == "cell" and r.tag >= 0:
+            if r.kind == "cell" and r.tag >= 0 and not r.name.startswith(TH_PREFIX):
                 names_by_pid.setdefault(r.tag, r.name)
     alive = _concat(mesh, "radioss:alive")
     eids = _concat(mesh, "radioss:element_id")
@@ -171,6 +175,26 @@ def _bytes_state(mesh, time):
         fam.index = [fam.index[k] for k in order]
         fam.rows = [fam.rows[k] for k in order]
         fam.parts = [pid_of(c) for c in fam.index]
+
+    # Time-history items: each entry of a `radioss_th:<label>` region, as the index
+    # of a node or of an element in its family (the order just sorted into).
+    position = {}
+    for key, fam in families.items():
+        for k, c in enumerate(fam.index):
+            position[c] = (key, k)
+    th_items = [[], [], [], []]
+    for region in canonical_regions(mesh):
+        if not region.name.startswith(TH_PREFIX):
+            continue
+        label = region.name[len(TH_PREFIX) :]
+        for v in region.entries.tolist():
+            if region.kind == "point":
+                if 0 <= v < nn:
+                    th_items[0].append((v, label))
+            elif region.kind == "cell" and v in position:
+                key, k = position[v]
+                if key != "sph":
+                    th_items[{"2d": 1, "3d": 2, "1d": 3}[key]].append((k, label))
 
     # Nodal and element results.
     scalars, vectors = [], []
@@ -213,7 +237,7 @@ def _bytes_state(mesh, time):
         1 if len(families["3d"]) else 0,
         1 if len(families["1d"]) else 0,
         1 if have_hier else 0,
-        0,
+        1 if any(th_items) else 0,
         0,
         1 if len(families["sph"]) else 0,
         0,
@@ -350,6 +374,12 @@ def _bytes_state(mesh, time):
         )
     if flags[4]:
         out += _hierarchy(families, hierarchy, part_table)
+    if flags[5]:
+        out += _i4([len(items) for items in th_items])
+        for items in th_items:
+            out += _i4([i for i, _ in items])
+            for _, label in items:
+                out += _text(label, 50)
     fs = families["sph"]
     if flags[7]:
         out += section(
