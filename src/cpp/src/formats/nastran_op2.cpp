@@ -327,6 +327,7 @@ constexpr Op2ElementSpec kOp2Elements[] = {
     {9200, 92, "CTRIAR", {13, 14}, 2, 2, 3, 1},
     {3701, 37, "CTUBE", {4}, 1, 2, 2, 1},
     {3901, 39, "CVISC", {4}, 1, 2, 2, 1},
+    {1908, 19, "CGAP", {9}, 1, 2, 2, 1},
     {5201, 52, "PLOTEL", {3}, 1, 1, 2, -1},
     // NX 2019 and later write CQUAD4/CTRIA3 as these (pyNastran's CQUADRN/CTRIARN)
     {15401, 154, "CQUAD4", {14, 15}, 2, 2, 4, 1},
@@ -335,10 +336,10 @@ constexpr Op2ElementSpec kOp2Elements[] = {
 
 // Element records without a cell type, named in the warning.
 constexpr std::tuple<int, int, const char*> kOp2NamedElements[] = {
-    {801, 8, "CELAS3"},   {901, 9, "CELAS4"},     {401, 4, "CDAMP3"},    {501, 5, "CDAMP4"},
-    {1001, 10, "CMASS1"}, {1101, 11, "CMASS2"},   {1201, 12, "CMASS3"},  {1301, 13, "CMASS4"},
-    {1401, 14, "CONM1"},  {1908, 19, "CGAP"},     {5608, 56, "CBUSH1D"}, {6108, 61, "CTRIAX6"},
-    {9008, 90, "CQUADX"}, {10108, 101, "CTRIAX"},
+    {801, 8, "CELAS3"},     {901, 9, "CELAS4"},    {401, 4, "CDAMP3"},    {501, 5, "CDAMP4"},
+    {1001, 10, "CMASS1"},   {1101, 11, "CMASS2"},  {1201, 12, "CMASS3"},  {1301, 13, "CMASS4"},
+    {1401, 14, "CONM1"},    {5608, 56, "CBUSH1D"}, {6108, 61, "CTRIAX6"}, {9008, 90, "CQUADX"},
+    {10108, 101, "CTRIAX"},
 };
 
 enum class Op2PropLayout { Fixed, Sizes, Pcomp, Pcompg, Terminated };
@@ -710,6 +711,13 @@ std::vector<detail::NastranCardRows> op2_read_elements(
                 card_bars.push_back(static_cast<double>(row[11]));
                 for (std::size_t k = 0; k < 6; ++k)
                     card_bars.push_back(fword(12 + k));
+            } else if (std::strcmp(spec->mCard, "CGAP") == 0) {
+                // X1..X3 at words 4 to 6 when the flag at 7 is not 2, the G0 at word 4 when it is.
+                const bool g0 = row[7] == 2;
+                for (std::size_t k = 0; k < 3; ++k)
+                    card_bars.push_back(g0 ? 0.0 : fword(4 + k));
+                card_bars.push_back(g0 ? static_cast<double>(row[4]) : 0.0);
+                card_bars.insert(card_bars.end(), 8, 0.0);
             } else if (std::strcmp(spec->mCard, "CBUSH") == 0) {
                 // X1..X3 at words 4 to 6 when the flag at 7 is 0 or 1, the G0 at word 4 when it
                 // is 2; a flag of -1 orients the bush by its element system, which is not read.
@@ -818,6 +826,17 @@ const std::vector<Op2wValueCard>& op2w_value_cards() {
         {"PELAS", {{"K", 1, 1.0, false}, {"GE", 2, 0.0, false}, {"S", 3, 0.0, false}}},
         {"PDAMP", {{"B", 1, 1.0, false}}},
         {"PVISC", {{"CE", 1, 1.0, false}, {"CR", 2, 0.0, false}}},
+        {"PGAP",
+         {{"U0", 1, 0.0, false},
+          {"F0", 2, 0.0, false},
+          {"KA", 3, 1.0e8, false},
+          {"KB", 4, 1.0e-6, false},
+          {"KT", 5, 0.0, false},
+          {"MU1", 6, 0.0, false},
+          {"MU2", 7, 0.0, false},
+          {"TMAX", 8, 0.0, false},
+          {"MAR", 9, 100.0, false},
+          {"TRMIN", 10, 0.001, false}}},
         {"PSHEAR",
          {{"MID", 1, 1, true},
           {"T", 2, 1.0, false},
@@ -1080,7 +1099,7 @@ void op2_add_property_values(Mesh& rMesh, const Op2Stream& rS,
                 const std::string card = p.mCard;
                 if (card == "PSHELL" || card == "PROD" || card == "PTUBE" || card == "PSOLID" ||
                     card == "PBAR" || card == "PELAS" || card == "PDAMP" || card == "PVISC" ||
-                    card == "PSHEAR")
+                    card == "PGAP" || card == "PSHEAR")
                     take(card, r.mRaw, static_cast<std::size_t>(p.mSizes[0]));
                 break;
             }
@@ -2675,11 +2694,13 @@ enum Op2wProp {
     kOp2wPbeam,
     kOp2wPbush,
     kOp2wPvisc,
-    kOp2wPshear
+    kOp2wPshear,
+    kOp2wPgap
 };
 // The property cards' names, in the order of `Op2wProp`.
-constexpr const char* kOp2wPropNames[] = {"PROD", "PSHELL", "PSOLID", "PTUBE", "PELAS", "PDAMP",
-                                          "PBAR", "PCOMP",  "PBEAM",  "PBUSH", "PVISC", "PSHEAR"};
+constexpr const char* kOp2wPropNames[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE", "PELAS",
+                                          "PDAMP", "PBAR",   "PCOMP",  "PBEAM", "PBUSH",
+                                          "PVISC", "PSHEAR", "PGAP"};
 enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
 constexpr int kOp2wHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
@@ -2706,6 +2727,7 @@ constexpr Op2wCard kOp2wCards[] = {
     {"CDAMP2", 301, 3, 70, 6, 2, 2, nullptr, kOp2wNoProp, 0},
     {"CELAS1", 601, 6, 73, 6, 2, 2, nullptr, kOp2wPelas, 0},
     {"CELAS2", 701, 7, 74, 8, 2, 2, nullptr, kOp2wNoProp, 0},
+    {"CGAP", 1908, 19, 104, 9, 2, 2, nullptr, kOp2wPgap, 0},
     {"CHEXA", 7308, 73, 253, 22, 8, 2, kOp2wHexa20, kOp2wPsolid, 8},
     {"CONM2", 1501, 15, 64, 13, 1, 1, nullptr, kOp2wNoProp, 0},
     {"CONROD", 1601, 16, 47, 8, 2, 1, nullptr, kOp2wNoProp, 0},
@@ -2762,6 +2784,8 @@ const char* op2w_line_card(std::int64_t Code) {
             return "CVISC";
         case 52:
             return "PLOTEL";
+        case 19:
+            return "CGAP";
         default:
             return nullptr;
     }
@@ -2775,18 +2799,20 @@ bool op2w_block_holds(const std::string& rType, std::string_view Card) {
     if (rType == "line")
         return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
                Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL";
+               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL" ||
+               Card == "CGAP";
     return false;
 }
 
 /// The card a `nastran:card` number names (its GEOM2 type), for the warnings.
 std::string op2w_card_name(std::int64_t Code) {
     static const std::pair<const char*, std::int64_t> kTypes[] = {
-        {"CBAR", 24},   {"CBEAM", 54},   {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
-        {"CELAS1", 6},  {"CELAS2", 7},   {"CHEXA", 73},  {"CONM2", 15},  {"CONROD", 16},
-        {"CPENTA", 41}, {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47},
-        {"CQUADR", 80}, {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59},
-        {"CTRIA6", 48}, {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
+        {"CBAR", 24},   {"CBEAM", 54},  {"CBUSH", 26},   {"CDAMP1", 2},  {"CDAMP2", 3},
+        {"CELAS1", 6},  {"CELAS2", 7},  {"CGAP", 19},    {"CHEXA", 73},  {"CONM2", 15},
+        {"CONROD", 16}, {"CPENTA", 41}, {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51},
+        {"CQUAD8", 47}, {"CQUADR", 80}, {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55},
+        {"CTRIA3", 59}, {"CTRIA6", 48}, {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},
+        {"PLOTEL", 52},
     };
     for (const auto& [name, number] : kTypes)
         if (number == Code)
@@ -3361,6 +3387,11 @@ public:
                 if (keep[i] && blk.mCards[i] == cbush && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CBUSH needs its orientation: nastran:x, or nastran:g0 for a G0");
+            const std::size_t cgap = op2w_card_index("CGAP");
+            for (std::size_t i = 0; i < blk.mCount; ++i)
+                if (keep[i] && blk.mCards[i] == cgap && !rMesh.HasCellData("nastran:x") &&
+                    !rMesh.HasCellData("nastran:g0"))
+                    op2w_fail("a CGAP needs its orientation: nastran:x, or nastran:g0 for a G0");
             const std::size_t celas2 = op2w_card_index("CELAS2");
             const std::size_t cdamp2 = op2w_card_index("CDAMP2");
             for (std::size_t i = 0; i < blk.mCount; ++i) {
@@ -3408,8 +3439,8 @@ public:
                             blk.mBar[i * 12 + Lo + k] = view.Data()[i * Width + k];
             };
             // A CBAR and a CBEAM share the orientation, G0, pin and offset fields.
-            read_field("nastran:x", {cbar, cbeam, cbush}, 0, 3);
-            read_field("nastran:g0", {cbar, cbeam, cbush}, 3, 1);
+            read_field("nastran:x", {cbar, cbeam, cbush, cgap}, 0, 3);
+            read_field("nastran:g0", {cbar, cbeam, cbush, cgap}, 3, 1);
             read_field("nastran:pin", {cbar, cbeam}, 4, 2);
             read_field("nastran:w", {cbar, cbeam}, 6, 6);
             read_field("nastran:k", {celas2}, 0, 1);
@@ -3479,7 +3510,7 @@ public:
         std::map<std::int64_t, int> used;
         for (const int prop :
              {kOp2wPshell, kOp2wPsolid, kOp2wProd, kOp2wPtube, kOp2wPbar, kOp2wPelas, kOp2wPdamp,
-              kOp2wPcomp, kOp2wPbeam, kOp2wPbush, kOp2wPvisc, kOp2wPshear})
+              kOp2wPcomp, kOp2wPbeam, kOp2wPbush, kOp2wPvisc, kOp2wPshear, kOp2wPgap})
             for (const std::int64_t p : mProps[prop]) {
                 const auto it = used.find(p);
                 if (it != used.end())
@@ -3638,6 +3669,20 @@ public:
                         w.F(9, 0.5);
                         w.I(10, -1);
                     }
+                    if (std::string_view(card.mName) == "CGAP") {
+                        // X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7 (1 for a
+                        // vector); the coordinate system CID (8) stays 0.
+                        const double* f = blk.mBar.data() + row.mRow * 12;
+                        const auto g0 = static_cast<std::int64_t>(f[3]);
+                        if (g0 != 0) {
+                            w.I(4, g0);
+                        } else {
+                            w.F(4, f[0]);
+                            w.F(5, f[1]);
+                            w.F(6, f[2]);
+                        }
+                        w.I(7, g0 != 0 ? 2 : 1);
+                    }
                     if (std::string_view(card.mName) == "CELAS1" ||
                         std::string_view(card.mName) == "CDAMP1" ||
                         std::string_view(card.mName) == "CELAS2" ||
@@ -3675,7 +3720,7 @@ public:
             {kOp2wPsolid, "PSOLID", 2402, 24, 281, 7}, {kOp2wPtube, "PTUBE", 1602, 16, 30, 5},
             {kOp2wPbar, "PBAR", 52, 20, 181, 19},      {kOp2wPelas, "PELAS", 302, 3, 46, 4},
             {kOp2wPdamp, "PDAMP", 202, 2, 45, 2},      {kOp2wPvisc, "PVISC", 1802, 18, 31, 3},
-            {kOp2wPshear, "PSHEAR", 1002, 10, 42, 6}};
+            {kOp2wPgap, "PGAP", 2102, 21, 121, 11},    {kOp2wPshear, "PSHEAR", 1002, 10, 42, 6}};
         std::vector<std::string> records;
         for (const Prop& p : props) {
             if (mProps[p.mProp].empty())
@@ -3845,7 +3890,7 @@ private:
     std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
-    std::set<std::int64_t> mProps[12];
+    std::set<std::int64_t> mProps[13];
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;

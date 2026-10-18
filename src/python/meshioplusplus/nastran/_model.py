@@ -36,6 +36,7 @@ CARDS = {
     "CDAMP2": ("vertex", 1, "line", 2, None),
     "CELAS1": ("vertex", 1, "line", 2, None),
     "CELAS2": ("vertex", 1, "line", 2, None),
+    "CGAP": ("line", 2, None, 0, None),
     "CHEXA": ("hexahedron", 8, "hexahedron20", 20, _HEXA20),
     "CONM2": ("vertex", 1, None, 0, None),
     "CONROD": ("line", 2, None, 0, None),
@@ -67,6 +68,7 @@ CARD_TYPE = {
     "CDAMP2": 3,
     "CELAS1": 6,
     "CELAS2": 7,
+    "CGAP": 19,
     "CHEXA": 73,
     "CONM2": 15,
     "CONROD": 16,
@@ -134,7 +136,7 @@ def _bar_arrays(block):
     """The CBAR (or CBEAM) fields of one cell block as ``(x, g0, pin, w)`` arrays, zeros
     for the rows that are neither."""
     rows = _payload_matrix(
-        block, block[4] if block[4] in ("CBEAM", "CBUSH") else "CBAR"
+        block, block[4] if block[4] in ("CBEAM", "CBUSH", "CGAP") else "CBAR"
     )
     return (
         rows[:, 0:3].copy(),
@@ -263,7 +265,7 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
         extras["nastran:c2"] = [
             np.asarray([c[1] for c in b[5]], dtype=np.int64) for b in blocks
         ]
-        if any(b[4] in ("CBAR", "CBEAM", "CBUSH") for b in blocks):
+        if any(b[4] in ("CBAR", "CBEAM", "CBUSH", "CGAP") for b in blocks):
             bars = [_bar_arrays(b) for b in blocks]
             extras["nastran:x"] = [bar[0] for bar in bars]
             extras["nastran:g0"] = [bar[1] for bar in bars]
