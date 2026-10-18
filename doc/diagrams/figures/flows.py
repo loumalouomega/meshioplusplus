@@ -1036,7 +1036,6 @@ def roadmap_map():
                 ("glTF reader", "M"),
                 ("result writers (open validator)", "L"),
                 ("partial writers · engine gaps", "M"),
-                ("Marc .t19 writer", "M"),
             ],
             [(0, 1)],
         ),

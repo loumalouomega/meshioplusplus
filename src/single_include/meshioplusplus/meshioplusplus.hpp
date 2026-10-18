@@ -116905,15 +116905,18 @@ std::vector<std::string> marct_model(const Mesh& rMesh, const MarcwModel& rModel
     return out;
 }
 
+// `pNewModel` (blocks 502 to 515 of a remeshed mesh) makes the increment a
+// remeshing one: newmo is set and the model follows block 518 under block 519.
 std::vector<std::string> marct_increment(std::size_t Index, double Time, const MarcwModel& rModel,
                                          const MarctCodes& rCodes,
-                                         const std::vector<MarctNodal>& rNodal) {
+                                         const std::vector<MarctNodal>& rNodal,
+                                         const std::vector<std::string>* pNewModel) {
     std::vector<std::string> out = {"****"};
     std::vector<std::string> body = {marct_ljust("          meshio++", 70)};
     marct_block(out, 51600, "Loadcase Title", body);
     body.clear();
-    marct_ints(body, {0, static_cast<std::int64_t>(Index + 1), 0, rCodes.Columns() ? 102 : 1, 2, 0, 0,
-                      1, 0, 0, 0, 0});
+    marct_ints(body, {pNewModel ? 1 : 0, static_cast<std::int64_t>(Index + 1), 0,
+                      rCodes.Columns() ? 102 : 1, 2, 0, 0, 1, 0, 0, 0, 0});
     marct_block(out, 51701, "Integer Increment Verification Data", body);
     body.clear();
     marct_ints(body, {24});
@@ -116921,6 +116924,10 @@ std::vector<std::string> marct_increment(std::size_t Index, double Time, const M
     xlm[0] = Time;
     marct_reals(body, xlm);
     marct_block(out, 51801, "Real Increment Verification Data", body);
+    if (pNewModel) {
+        marct_block(out, 51900, "New Model", {});
+        out.insert(out.end(), pNewModel->begin(), pNewModel->end());
+    }
     if (rCodes.Columns()) {
         body.clear();
         for (std::size_t e = 0; e < rModel.mWritten.size(); ++e)
@@ -116970,8 +116977,8 @@ struct MarctWriter {
     std::string mPath;
     bool mHave = false;
     std::vector<std::string> mHeader;
-    std::string mSignature;
-    std::vector<double> mPoints;
+    std::vector<std::string> mModel;  // the latest step's model blocks
+    std::string mNodalSignature;
     std::vector<std::vector<std::string>> mIncrements;
 
     void Add(const Mesh& rMesh, double Time) {
@@ -116980,29 +116987,25 @@ struct MarctWriter {
             throw WriteError("Marc .t19: the mesh has no cell with a Marc element type");
         const MarctCodes codes = marct_codes(rMesh, model);
         const std::vector<MarctNodal> nodal = marct_nodal(rMesh, model.mNpts);
-        std::string signature = std::to_string(model.mNpts) + "|" + std::to_string(codes.mNstres);
-        for (const std::size_t c : model.mWritten)
-            signature += "|" + std::to_string(model.mElemId.at(c)) + ":" +
-                         std::to_string(model.mCells[c].mType);
-        signature += "#";
-        for (const auto& [code, label] : codes.mEntries)
-            signature += std::to_string(code) + label + ",";
-        signature += "#";
+        std::string nodal_signature;
         for (const MarctNodal& n : nodal)
-            signature += n.mName + "=" + std::to_string(n.mComps) + ",";
-        const detail::DoubleView pv(rMesh.Points());
-        std::vector<double> points(pv.Data(), pv.Data() + rMesh.Points().Size());
+            nodal_signature += n.mName + "=" + std::to_string(n.mComps) + ",";
+        std::vector<std::string> blocks = marct_model(rMesh, model, codes);
+        const std::vector<std::string>* p_new_model = nullptr;
         if (!mHave) {
-            mHeader = marct_model(rMesh, model, codes);
-            mSignature = signature;
-            mPoints = points;
+            mHeader = blocks;
+            mNodalSignature = nodal_signature;
             mHave = true;
-        } else if (signature != mSignature || points != mPoints) {
+        } else if (nodal_signature != mNodalSignature) {
             throw WriteError("Marc .t19: series: step " + std::to_string(mIncrements.size()) +
-                             "'s points, cells or arrays differ from the first step's; a post "
-                             "file holds one model -- write one file per step with '{step}'");
+                             "'s point arrays differ from the first step's");
+        } else if (blocks != mModel) {
+            // A different mesh is a remeshing increment: it repeats the model.
+            p_new_model = &blocks;
         }
-        mIncrements.push_back(marct_increment(mIncrements.size(), Time, model, codes, nodal));
+        mIncrements.push_back(
+            marct_increment(mIncrements.size(), Time, model, codes, nodal, p_new_model));
+        mModel = std::move(blocks);
     }
 
     void Save() const {

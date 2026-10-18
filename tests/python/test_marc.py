@@ -529,6 +529,51 @@ def test_a_t19_series_is_an_increment_per_mesh(tmp_path):
                 w.write(1.0, other)
 
 
+def test_a_t19_series_remeshes_when_the_mesh_changes(tmp_path):
+    """The two models of remesh.t19 as a series: the second step is written as
+    a remeshing increment, in both engines and byte for byte."""
+    steps = [
+        (0.5 * (k + 1), py_marc.read_t19(MARC / "remesh.t19", time_step=k))
+        for k in (0, 1)
+    ]
+    written = {}
+    for key, make in (
+        ("core", meshioplusplus.marc.SeriesWriter),
+        ("python", py_t19.SeriesWriter),
+    ):
+        out = tmp_path / f"{key}.t19"
+        with make(out) as w:
+            for time, mesh in steps:
+                w.write(time, mesh)
+        written[key] = out.read_bytes()
+    assert written["core"] == written["python"]
+    assert written["core"].count(b"=beg=51900") == 1
+    for read in (py_marc.read_t19, meshioplusplus.marc.read_t19):
+        out = tmp_path / "core.t19"
+        for k, (_, mesh) in enumerate(steps):
+            back = read(out, time_step=k)
+            assert back.points.shape == mesh.points.shape
+            np.testing.assert_allclose(back.points, mesh.points)
+            assert [len(b.data) for b in back.cells] == [
+                len(b.data) for b in mesh.cells
+            ]
+            np.testing.assert_allclose(
+                back.point_data["Displacement"],
+                mesh.point_data["Displacement"],
+                rtol=1e-5,
+            )
+            assert _set_members(back) == _set_members(mesh)
+            assert sorted(n for n in back.field_data if "_set:" in n) == sorted(
+                n for n in mesh.field_data if "_set:" in n
+            )
+    # An unchanged model is not repeated.
+    same = tmp_path / "same.t19"
+    with py_t19.SeriesWriter(same) as w:
+        w.write(0.0, steps[0][1])
+        w.write(1.0, steps[0][1])
+    assert b"=beg=51900" not in same.read_bytes()
+
+
 def test_layers_custom_names_and_nan(tmp_path):
     mesh = py_marc.read_t19(MARC / "results.t19")
     stress = mesh.cell_data["Stress"]

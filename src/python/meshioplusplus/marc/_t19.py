@@ -277,7 +277,11 @@ def _nodal_results(mesh, npts):
     return out
 
 
-def _increment(index, time, mesh, model, codes, nodal, newmo=0):
+def _increment(index, time, mesh, model, codes, nodal, new_model=None):
+    """One increment; ``new_model`` (blocks 502 to 515 of a remeshed mesh)
+    makes it a remeshing increment: ``newmo`` is set and the model follows
+    block 518 under block 519."""
+    newmo = 0 if new_model is None else 1
     out = ["****"]
     out += _block(51600, "Loadcase Title", ["          meshio++".ljust(70)])
     out += _block(
@@ -292,6 +296,9 @@ def _increment(index, time, mesh, model, codes, nodal, newmo=0):
         "Real Increment Verification Data",
         _ints([24]) + _reals([time] + [0.0] * 23),
     )
+    if new_model is not None:
+        out += _block(51900, "New Model", [])
+        out += new_model
     if codes.columns:
         body = []
         for e in range(len(model.written)):
@@ -317,14 +324,17 @@ def _time_of(mesh):
 
 
 class _Writer:
-    """One post file: the model of the first mesh and an increment per mesh."""
+    """One post file: the model of the first mesh and an increment per mesh; a
+    mesh that differs from the previous one repeats the model (a remeshing
+    increment)."""
 
     def __init__(self, filename):
         if is_buffer(filename, "w"):
             raise WriteError("Marc .t19: cannot be written to a stream")
         self.path = filename
         self.header = None
-        self.signature = None
+        self.model = None
+        self.nodal_signature = None
         self.increments = []
 
     def add(self, mesh, time):
@@ -333,29 +343,23 @@ class _Writer:
             raise WriteError("Marc .t19: the mesh has no cell with a Marc element type")
         codes = _Codes(mesh, model)
         nodal = _nodal_results(mesh, model.npts)
-        signature = (
-            model.npts,
-            [(model.elem_id[c], model.cells[c][2]) for c in model.written],
-            codes.entries,
-            codes.nstres,
-            [(n, a.shape[1]) for n, a in nodal],
-        )
+        nodal_signature = [(n, a.shape[1]) for n, a in nodal]
+        blocks = _model(mesh, model, codes)
+        new_model = None
         if self.header is None:
-            if model.dropped_data and not (codes.arrays or nodal):
-                pass
-            self.header = _model(mesh, model, codes)
-            self.signature = signature
-            self.points = np.asarray(model.points)
-        elif signature != self.signature or not np.array_equal(
-            np.asarray(model.points), self.points
-        ):
+            self.header = blocks
+            self.nodal_signature = nodal_signature
+        elif nodal_signature != self.nodal_signature:
             raise WriteError(
-                f"Marc .t19: series: step {len(self.increments)}'s points, cells or "
-                "arrays differ from the first step's; a post file holds one model -- "
-                "write one file per step with '{step}'"
+                f"Marc .t19: series: step {len(self.increments)}'s point arrays "
+                "differ from the first step's"
             )
+        elif blocks != self.model:
+            # A different mesh is a remeshing increment: it repeats the model.
+            new_model = blocks
+        self.model = blocks
         self.increments.append(
-            _increment(len(self.increments), time, mesh, model, codes, nodal)
+            _increment(len(self.increments), time, mesh, model, codes, nodal, new_model)
         )
 
     def close(self):
@@ -379,7 +383,8 @@ def write(filename, mesh):
 
 class SeriesWriter:
     """An increment per mesh, written when the writer closes; every mesh must
-    have the first one's points, cells and arrays."""
+    have the first one's point arrays. A mesh whose points, cells or cell
+    arrays differ from the previous one's is written as a remeshing increment."""
 
     def __init__(self, filename):
         self._writer = _Writer(filename)
