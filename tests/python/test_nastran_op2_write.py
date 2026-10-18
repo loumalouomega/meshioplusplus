@@ -2042,3 +2042,269 @@ def test_pynastran_reads_the_cgaps_and_pgaps(tmp_path):
     assert (prop.mu1, prop.mu2, prop.tmax, prop.mar, prop.trmin) == pytest.approx(
         (0.3, 0.2, 4.0, 50.0, 0.01), rel=1e-6
     )
+
+
+# -- element results of every card, in every layout the reader decodes --------------------
+#
+# The writer inverts the reader's layout table, so for every card, element type, result
+# group and complex/random variant: fill the arrays of the first layout the reader has for
+# it, write through both engines (the same bytes), and read every value back.
+
+
+def _rod_mesh(code):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+        [("line", np.array([[0, 1], [1, 2]]))],
+    )
+    mesh.cell_data["nastran:eid"] = [np.array([5, 6])]
+    mesh.cell_data["nastran:pid"] = [np.array([4, 4])]
+    mesh.cell_data["nastran:card"] = [np.array([code, code])]
+    return mesh
+
+
+_RESULT_MESHES = {
+    "CROD": lambda: _rod_mesh(30),
+    "CTUBE": lambda: _rod_mesh(37),
+    "CONROD": lambda: _rod_mesh(16),
+    "CQUAD4": _shear_mesh,
+    "CTRIA3": every_card,
+    "CQUAD8": every_card,
+    "CTRIA6": every_card,
+    "CTETRA": every_card,
+    "CHEXA": every_card,
+    "CPENTA": every_card,
+    "CPYRAM": every_card,
+    "CBAR": _bar_mesh,
+    "CBEAM": _beam_mesh,
+    "CBUSH": _bush_mesh,
+    "CSHEAR": _shear_mesh,
+    "CELAS1": _spring_mesh,
+    "CDAMP1": _spring_mesh,
+    "CELAS2": _inline_spring_mesh,
+    "CDAMP2": _inline_spring_mesh,
+    "CVISC": _visc_mesh,
+}
+
+
+def _result_cases():
+    cases = []
+    for group, family, _base, _table, _thermal in py_write._RESULT_GROUPS:
+        variants = [("", False, False), ("", True, False)]
+        if family in ("stress", "force"):
+            variants += [(s, False, True) for s in py_write._RANDOM_KINDS]
+        for suffix, complex_, random in variants:
+            for card, alternatives in py_write._RESULT_CARDS:
+                for etype, strict in alternatives:
+                    layouts = py_write._candidates(
+                        family, etype, complex_, random and family == "stress"
+                    )
+                    if layouts:
+                        label = f"{group}-{card}-{etype}-{suffix or 'c' * complex_ or 'real'}"
+                        cases.append(
+                            pytest.param(
+                                (group, family, card, etype, strict),
+                                (suffix, complex_, random),
+                                id=label,
+                            )
+                        )
+    return cases
+
+
+def _result_mesh(card_info, variant):
+    """A mesh whose ``card`` elements carry random values for every member of the
+    first layout of the element type; the values by element id, per array name."""
+    group, family, card, etype, _strict = card_info
+    suffix, complex_, random = variant
+    mesh = _RESULT_MESHES[card]()
+    model = py_write._Model(mesh)
+    eid, _pid, parts, order = model.element_rows(card)
+    lay, _wide, _s_code = py_write._candidates(
+        family, etype, complex_, random and family == "stress"
+    )[0]
+    loc = py_write._location(lay)
+    rng = np.random.default_rng(etype)
+    if lay["kind"] == "blocks" and lay["stations"]:
+        width = lay["blocks"]
+    elif lay["kind"] == "blocks":
+        width = lay["blocks"] - 1
+    else:
+        width = 3
+    shapes = {}
+    for member in lay["members"]:
+        for name, _word in py_write._names_of(member, suffix):
+            if lay["kind"] == "row" or (
+                lay["kind"] == "blocks" and not lay["stations"]
+            ):
+                shapes[name] = ()
+            if loc is not None:
+                shapes[name + loc] = (width,)
+    # the values by element id, laid into the blocks' cell data
+    positions = {}
+    at = 0
+    for blk, rows in parts:
+        positions[blk["index"]] = (np.asarray(rows), at)
+        at += len(rows)
+    sorted_at = np.empty(len(eid), dtype=np.int64)
+    sorted_at[order] = np.arange(len(eid))
+    expected = {}
+    for key, shape in shapes.items():
+        values = rng.random((len(eid),) + shape) + 1.0
+        values = values.astype(np.float32).astype(np.float64)
+        expected[key] = dict(zip(eid.tolist(), values))
+        blocks = []
+        for bi, block in enumerate(mesh.cells):
+            array = np.full((len(block.data),) + shape, np.nan)
+            if bi in positions:
+                rows, start = positions[bi]
+                for j, r in enumerate(rows.tolist()):
+                    array[r] = values[sorted_at[start + j]]
+            blocks.append(array)
+        mesh.cell_data[f"{group}:{key}"] = blocks
+    return mesh, expected
+
+
+@pytest.mark.parametrize("card_info, variant", _result_cases())
+def test_element_results_of_every_layout(card_info, variant, tmp_path):
+    group = card_info[0]
+    mesh, expected = _result_mesh(card_info, variant)
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(core)
+        got = {}
+        for bi, eids in enumerate(back.cell_data["nastran:eid"]):
+            for name in expected:
+                array = back.cell_data.get(f"{group}:{name}")
+                if array is None:
+                    continue
+                for row, eid in enumerate(eids.tolist()):
+                    value = np.asarray(array[bi][row])
+                    if not np.isnan(value).all():
+                        got.setdefault(name, {})[eid] = value
+        for name, wanted in expected.items():
+            assert name in got, f"{name} was not read back"
+            for eid, value in wanted.items():
+                assert eid in got[name], f"{name} of element {eid} was not read back"
+                width = np.shape(value)[-1] if np.ndim(value) else None
+                have = got[name][eid]
+                if width is not None:
+                    have = have[:width]
+                np.testing.assert_allclose(have, value, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "card_info, variant, where, shape",
+    [
+        (("STRESS", "stress", "CROD", 1, False), ("", True, False), "stress.crod_stress", (1, 2, 2)),
+        (("STRESS", "stress", "CROD", 1, False), ("_RMS", False, True), "rms.crod_stress", (1, 2, 2)),
+        (("STRESS", "stress", "CROD", 1, False), ("_NO", False, True), "no.crod_stress", (1, 2, 2)),
+        (("ELEMENT_FORCE", "force", "CROD", 1, False), ("_RMS", False, True), "rms.crod_force", (1, 2, 2)),
+        (("STRESS", "stress", "CBAR", 34, False), ("", False, False), "stress.cbar_stress", (1, 2, 15)),
+        (("STRESS", "stress", "CBAR", 100, True), ("", False, False), "stress.cbar_stress_10nodes", (1, 6, 9)),
+        (("STRESS", "stress", "CQUAD4", 95, True), ("", False, False), "stress.cquad4_composite_stress", (1, 3, 9)),
+        (("STRESS", "stress", "CQUAD4", 144, True), ("", False, False), "stress.cquad4_stress", (1, 10, 8)),
+        (("STRESS", "stress", "CQUAD8", 96, True), ("", False, False), "stress.cquad8_composite_stress", (1, 3, 9)),
+        (("STRESS", "stress", "CBEAM", 2, False), ("", False, False), "stress.cbeam_stress", (1, 22, 8)),
+        (("ELEMENT_FORCE", "force", "CBUSH", 102, False), ("", False, False), "force.cbush_force", (1, 2, 6)),
+        (("ELEMENT_FORCE", "force", "CSHEAR", 4, False), ("", False, False), "force.cshear_force", (1, 1, 16)),
+        (("ELEMENT_FORCE", "force", "CELAS1", 11, False), ("", False, False), "force.celas1_force", (1, 3, 1)),
+    ],
+)  # fmt: skip
+def test_pynastran_reads_the_element_results(
+    card_info, variant, where, shape, tmp_path
+):
+    op2 = pytest.importorskip("pyNastran.op2.op2", exc_type=ImportError)
+    mesh, _expected = _result_mesh(card_info, variant)
+    if variant[1] or variant[2]:  # complex and random tables are a frequency response's
+        mesh.field_data["nastran:analysis"] = np.array([5])
+        mesh.field_data["meshio:time"] = np.array([1.0])
+    path = tmp_path / "pn_results.op2"
+    _core.nastran_op2_write(str(path), mesh)
+    model = op2.OP2(debug=False)
+    model.read_op2(str(path), build_dataframe=False)
+    group, name = where.split(".")
+    found = getattr(getattr(model.op2_results, group), name)
+    assert {k: v.data.shape for k, v in found.items()} == {1: shape}
+    assert np.isfinite(np.abs(next(iter(found.values())).data)).all()
+
+
+def test_the_engines_write_the_same_bytes_with_every_kind_of_result(tmp_path):
+    mesh = _rod_mesh(30)
+    for name in (
+        "STRESS:A",
+        "STRESS:A_real",
+        "STRESS:A_imag",
+        "STRESS:A_RMS",
+        "STRESS:A_PSD",
+        "STRAIN:A",
+        "ELEMENT_FORCE:AF",
+        "ELEMENT_FORCE:AF_NO",
+        "ELEMENT_FORCE:AF_real",
+        "ELEMENT_FORCE:AF_imag",
+        "HEAT_FLUX:XFLUX",
+    ):
+        mesh.cell_data[name] = [np.array([1.5, 2.5]) + len(name)]
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()
+    back = meshioplusplus.nastran_op2.read(core)
+    assert "STRESS:A_PSD" in back.cell_data and "HEAT_FLUX:XFLUX" in back.cell_data
+
+
+def _energy_and_grid_force_mesh():
+    """Two CROD/CQUAD4 cells with strain and kinetic energies, grid point forces at
+    their nodes and the totals at every point."""
+    mesh = _shear_mesh()  # a CQUAD4 and a CSHEAR
+    mesh.point_data["DISPLACEMENT"] = np.zeros((len(mesh.points), 3))
+    mesh.cell_data["ENERGY:ENERGY"] = [np.array([1.5, 2.5])]
+    mesh.cell_data["ENERGY:PCT"] = [np.array([37.5, 62.5])]
+    mesh.cell_data["KINETIC_ENERGY:ENERGY"] = [np.array([0.5, 0.25])]
+    for k, member in enumerate(("F1", "F2", "F3", "M1", "M2", "M3")):
+        forces = np.arange(8, dtype=float).reshape(2, 4) + k
+        forces[1, 2] = np.nan  # no force at one node
+        mesh.cell_data["GRID_FORCE:" + member] = [forces]
+        mesh.point_data[f"GRID_FORCE:TOTALS:{member}"] = (
+            np.arange(len(mesh.points), dtype=float) + k
+        )
+    return mesh
+
+
+def test_energies_and_grid_point_forces_round_trip(engine, tmp_path):
+    mesh = _energy_and_grid_force_mesh()
+    path = tmp_path / "energy.op2"
+    write_with(engine, path, mesh)
+    for read in (meshioplusplus.nastran_op2.read, py_op2.read):
+        back = read(path)
+        eids = {}
+        for block, ids in enumerate(back.cell_data["nastran:eid"]):
+            for row, eid in enumerate(ids.tolist()):
+                eids[eid] = (block, row)
+        energy = {
+            eid: back.cell_data["ENERGY:ENERGY"][b][r] for eid, (b, r) in eids.items()
+        }
+        assert sorted(energy.values()) == [1.5, 2.5]
+        kinetic = sorted(
+            back.cell_data["KINETIC_ENERGY:ENERGY"][b][r] for b, r in eids.values()
+        )
+        assert kinetic == [0.25, 0.5]
+        total = sum(
+            np.nansum(back.cell_data["GRID_FORCE:F1"][b][r]) for b, r in eids.values()
+        )
+        assert total == pytest.approx(
+            0 + 1 + 2 + 3 + 4 + 5 + 6 + 7 - 6
+        )  # one node unset
+        np.testing.assert_allclose(
+            back.point_data["GRID_FORCE:TOTALS:M3"].ravel(),
+            np.arange(len(mesh.points)) + 5.0,
+        )
+
+
+def test_the_engines_write_the_same_bytes_with_energies_and_grid_forces(tmp_path):
+    mesh = _energy_and_grid_force_mesh()
+    core, python = tmp_path / "core.op2", tmp_path / "python.op2"
+    _core.nastran_op2_write(str(core), mesh)
+    py_write.write(str(python), mesh)
+    assert core.read_bytes() == python.read_bytes()

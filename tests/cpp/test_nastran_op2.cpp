@@ -562,6 +562,57 @@ TEST(NastranOp2Writer, ResultsComeBackByElementAndPoint) {
         EXPECT_NEAR(d[i], 2.0 * i / 4.0, 1e-6);
 }
 
+TEST(NastranOp2Writer, ComplexRandomCornerAndFluxResultsComeBack) {
+    // A rod (complex stress, a random RMS force, a heat flux), a quad8 with corner stresses
+    // and a tetra with corner heat fluxes, each read back through the reader's layouts.
+    Mesh m = mt::make_mesh({{0, 0, 0},
+                            {1, 0, 0},
+                            {1, 1, 0},
+                            {0, 1, 0},
+                            {0.5, 0, 0},
+                            {1, 0.5, 0},
+                            {0.5, 1, 0},
+                            {0, 0.5, 0},
+                            {0, 0, 1}},
+                           "line", {{0, 1}});
+    m.AddCellBlock("quad8", mt::conn_from({{0, 1, 2, 3, 4, 5, 6, 7}}));
+    m.AddCellData("nastran:pid", {ints({4}), ints({1})});
+    const auto only = [](double Rod, double Quad) {
+        return std::vector<NDArray>{doubles({Rod}, {1}), doubles({Quad}, {1})};
+    };
+    const double nan = std::nan("");
+    m.AddCellData("STRESS:A_real", only(1.5, nan));
+    m.AddCellData("STRESS:A_imag", only(-2.5, nan));
+    m.AddCellData("ELEMENT_FORCE:AF_RMS", only(3.25, nan));
+    m.AddCellData("HEAT_FLUX:XFLUX", only(6.5, nan));
+    m.AddCellData("STRESS:X1", only(nan, 4.0));
+    std::vector<NDArray> corners = {doubles({nan, nan, nan, nan}, {1, 4}),
+                                    doubles({10.0, 11.0, 12.0, 13.0}, {1, 4})};
+    m.AddCellData("STRESS:X1@corner", std::move(corners));
+    m.AddFieldData("nastran:analysis", ints({5}));
+    m.AddFieldData("meshio:time", doubles({1.0}, {1}));
+    const std::string path = temp_op2();
+    meshioplusplus::write_nastran_op2(path, m);
+    const Mesh back = meshioplusplus::read_nastran_op2(path);
+    std::size_t rod = back.NumCellBlocks(), quad = back.NumCellBlocks();
+    for (std::size_t b = 0; b < back.NumCellBlocks(); ++b) {
+        if (back.Cells(b).Type() == "line")
+            rod = b;
+        if (back.Cells(b).Type() == "quad8")
+            quad = b;
+    }
+    ASSERT_LT(rod, back.NumCellBlocks());
+    ASSERT_LT(quad, back.NumCellBlocks());
+    EXPECT_EQ(back.CellData("STRESS:A_real", rod).As<double>()[0], 1.5);
+    EXPECT_EQ(back.CellData("STRESS:A_imag", rod).As<double>()[0], -2.5);
+    EXPECT_EQ(back.CellData("ELEMENT_FORCE:AF_RMS", rod).As<double>()[0], 3.25);
+    EXPECT_EQ(back.CellData("HEAT_FLUX:XFLUX", rod).As<double>()[0], 6.5);
+    EXPECT_EQ(back.CellData("STRESS:X1", quad).As<double>()[0], 4.0);
+    const double* c = back.CellData("STRESS:X1@corner", quad).As<double>();
+    for (int k = 0; k < 4; ++k)
+        EXPECT_EQ(c[k], 10.0 + k);
+}
+
 TEST(NastranOp2Writer, ASeriesIsTheModelOnceThenABlockPerStep) {
     const std::string path = temp_op2();
     meshioplusplus::NastranOp2SeriesWriter writer(path);

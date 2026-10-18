@@ -132251,6 +132251,7 @@ void NastranH5SeriesWriter::Finalize() {
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -133579,6 +133580,37 @@ Op2Layout op2_join(Op2Layout A, const Op2Layout& rB) {
     return A;
 }
 
+// The node blocks (the centre, then the corners) of a plate type that reports its
+// corners and of a solid type; 0 for any other type.
+std::int64_t op2_corner_nodes(std::int64_t Type) {
+    switch (Type) {
+        case 64:
+        case 82:
+        case 144:
+            return 5;
+        case 70:
+        case 75:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+std::int64_t op2_solid_nodes(std::int64_t Type) {
+    switch (Type) {
+        case 39:
+            return 5;
+        case 67:
+            return 9;
+        case 68:
+            return 7;
+        case 255:
+            return 6;
+        default:
+            return 0;
+    }
+}
+
 std::optional<Op2ElementLayout> op2_element_layout(Op2Family Family, std::int64_t Type,
                                                    std::int64_t NumWide, std::int64_t SCode,
                                                    bool Complex, bool Random) {
@@ -133592,33 +133624,6 @@ std::optional<Op2ElementLayout> op2_element_layout(Op2Family Family, std::int64_
         {8, nullptr}, {9, "Y"},    {10, "TYZ"},        {11, "PRINCIPAL_B"},
         {15, "Z"},    {16, "TZX"}, {17, "PRINCIPAL_C"}};
     const std::string vm = (SCode & 1) ? "VON_MISES" : "MAX_SHEAR";
-    const auto corner_nodes = [](std::int64_t T) -> std::int64_t {
-        switch (T) {
-            case 64:
-            case 82:
-            case 144:
-                return 5;
-            case 70:
-            case 75:
-                return 4;
-            default:
-                return 0;
-        }
-    };
-    const auto solid_nodes = [](std::int64_t T) -> std::int64_t {
-        switch (T) {
-            case 39:
-                return 5;
-            case 67:
-                return 9;
-            case 68:
-                return 7;
-            case 255:
-                return 6;
-            default:
-                return 0;
-        }
-    };
     const auto is = [&](std::initializer_list<std::int64_t> Types) {
         return std::find(Types.begin(), Types.end(), Type) != Types.end();
     };
@@ -133636,7 +133641,7 @@ std::optional<Op2ElementLayout> op2_element_layout(Op2Family Family, std::int64_
         out.mMembers = std::move(Members);
         return out;
     };
-    const std::int64_t cn = corner_nodes(Type), sn = solid_nodes(Type);
+    const std::int64_t cn = op2_corner_nodes(Type), sn = op2_solid_nodes(Type);
     const std::vector<std::string> shell_force = {"MX",  "MY",   "MXY", "BMX",
                                                   "BMY", "BMXY", "TX",  "TY"};
     const std::vector<std::string> bush = {"FX", "FY", "FZ", "MX", "MY", "MZ"};
@@ -134912,7 +134917,6 @@ enum Op2wProp {
 constexpr const char* kOp2wPropNames[] = {"PROD",  "PSHELL", "PSOLID", "PTUBE", "PELAS",
                                           "PDAMP", "PBAR",   "PCOMP",  "PBEAM", "PBUSH",
                                           "PVISC", "PSHEAR", "PGAP"};
-enum Op2wKind { kOp2wRod, kOp2wPlate, kOp2wSolid };
 
 constexpr int kOp2wHexa20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
@@ -135030,18 +135034,6 @@ std::string op2w_card_name(std::int64_t Code) {
             return name;
     return "card " + std::to_string(Code);
 }
-
-/// Result families in file order: element type, card, kind.
-struct Op2wFamily {
-    std::int32_t mEtype;
-    const char* mCard;
-    Op2wKind mKind;
-};
-constexpr Op2wFamily kOp2wFamilies[] = {
-    {1, "CROD", kOp2wRod},      {3, "CTUBE", kOp2wRod},     {10, "CONROD", kOp2wRod},
-    {33, "CQUAD4", kOp2wPlate}, {39, "CTETRA", kOp2wSolid}, {67, "CHEXA", kOp2wSolid},
-    {68, "CPENTA", kOp2wSolid}, {74, "CTRIA3", kOp2wPlate}, {255, "CPYRAM", kOp2wSolid},
-};
 
 struct Op2wTypeSpec {
     const char* mType;
@@ -136197,47 +136189,9 @@ constexpr Op2wNodal kOp2wNodal[] = {
     {"TEMPERATURE", "OUGV1", 1, true},   {"SPC_FORCE", "OQG1", 3, false},
     {"MPC_FORCE", "OQMG1", 3, false},    {"APPLIED_LOAD", "OPG1", 2, false},
 };
-constexpr const char* kOp2wTables[] = {"OUGV1", "OQG1",   "OQMG1", "OPG1",
-                                       "OEF1X", "OES1X1", "OSTR1X"};
-
-// Element force families (OEF1X, table code 4): the rods' axial force and torque and the
-// plates' eight membrane and bending forces, as `ELEMENT_FORCE:<member>` cell data.
-struct Op2wForceFamily {
-    std::int32_t mEtype;
-    const char* mCard;
-    std::vector<const char*> mMembers;
-};
-const std::vector<Op2wForceFamily>& op2w_force_families() {
-    static const std::vector<const char*> shell = {"MX",  "MY",   "MXY", "BMX",
-                                                   "BMY", "BMXY", "TX",  "TY"};
-    static const std::vector<Op2wForceFamily> families = {
-        {1, "CROD", {"AF", "TRQ"}}, {3, "CTUBE", {"AF", "TRQ"}}, {10, "CONROD", {"AF", "TRQ"}},
-        {33, "CQUAD4", shell},      {74, "CTRIA3", shell},
-    };
-    return families;
-}
-
-const char* const kOp2wRodMembers[] = {"A", "MSA", "T", "MST"};
-const char* const kOp2wTubeMembers[] = {"AS", "MSA", "TS", "MST"};
-const char* const kOp2wPlateMembers[] = {"FD1",    "X1",     "Y1",     "TXY1", "ANGLE1", "MAJOR1",
-                                         "MINOR1", "VM1",    "FD2",    "X2",   "Y2",     "TXY2",
-                                         "ANGLE2", "MAJOR2", "MINOR2", "VM2"};
-
-/// The word of a solid's 21-word node block that holds a member.
-std::size_t op2w_solid_word(const std::string& rMember) {
-    static const std::pair<const char*, std::size_t> words[] = {
-        {"X", 1},        {"TXY", 2},       {"PRINCIPAL_A", 3},
-        {"PRESSURE", 7}, {"VON_MISES", 8}, {"OCT_SHEAR", 8},
-        {"Y", 9},        {"TYZ", 10},      {"PRINCIPAL_B", 11},
-        {"Z", 15},       {"TZX", 16},      {"PRINCIPAL_C", 17}};
-    for (const auto& [name, word] : words)
-        if (rMember == name)
-            return word;
-    return 0;
-}
 
 /// A cell-data array of the cells of a card, in the card's row order: one value per
-/// row (the first column of a wider array), or @p Width per row for a per-corner
+/// row (the first column of a wider array), or @p Width per row for a per-location
 /// array. Empty when no block has it.
 std::vector<double> op2w_gather(const Mesh& rMesh, const Op2wModel& rModel,
                                 const std::string& rName, const std::vector<Op2wRow>& rRows,
@@ -136246,11 +136200,14 @@ std::vector<double> op2w_gather(const Mesh& rMesh, const Op2wModel& rModel,
         return {};
     const std::size_t stride = Width == 0 ? 1 : Width;
     std::vector<double> out(rRows.size() * stride, std::numeric_limits<double>::quiet_NaN());
+    std::vector<char> used(rModel.Blocks().size(), 0);
+    for (const Op2wRow& row : rRows)
+        used[row.mBlock] = 1;
     std::vector<std::unique_ptr<detail::DoubleView>> views(rModel.Blocks().size());
     std::vector<std::size_t> columns(rModel.Blocks().size(), 0);
     for (std::size_t bi = 0; bi < rModel.Blocks().size(); ++bi) {
         const Op2wBlock& blk = rModel.Blocks()[bi];
-        if (blk.mCount == 0)
+        if (blk.mCount == 0 || !used[bi])
             continue;
         const NDArray& a = rMesh.CellData(rName, blk.mIndex);
         const auto& shape = a.Shape();
@@ -136276,177 +136233,540 @@ std::vector<double> op2w_gather(const Mesh& rMesh, const Op2wModel& rModel,
     return out;
 }
 
-/// `ELEMENT_FORCE:<member>` of the rods and plates, one OEF1X block each.
-void op2w_force_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
-                       Op2wStep& rStep, std::set<std::string>& rTaken) {
-    for (const Op2wForceFamily& family : op2w_force_families()) {
-        const std::size_t card = op2w_card_index(family.mCard);
-        const std::vector<Op2wRow>& rows = rModel.Rows(card);
-        if (rows.empty())
-            continue;
-        std::vector<std::vector<double>> columns(family.mMembers.size());
-        bool any = false;
-        for (std::size_t j = 0; j < family.mMembers.size(); ++j) {
-            const std::string name = std::string("ELEMENT_FORCE:") + family.mMembers[j];
-            columns[j] = op2w_gather(rMesh, rModel, name, rows, 0);
-            if (!columns[j].empty()) {
-                rTaken.insert(name);
-                any = true;
-            }
-        }
-        if (!any)
-            continue;
-        const std::size_t wide = 1 + family.mMembers.size();
-        std::string data;
-        std::size_t kept = 0;
-        for (std::size_t r = 0; r < rows.size(); ++r) {
-            bool shown = false;
-            for (const auto& c : columns)
-                shown = shown || (!c.empty() && !std::isnan(c[r]));
-            if (!shown)
-                continue;
-            ++kept;
-            Op2wRowBuf w(wide);
-            w.I(0, rows[r].mEid * 10 + kOp2wDevice);
-            for (std::size_t j = 0; j < columns.size(); ++j)
-                if (!columns[j].empty() && !std::isnan(columns[j][r]))
-                    w.F(1 + j, columns[j][r]);
-            w.Append(data);
-        }
-        if (kept == 0)
-            continue;
-        rStep.mLayout.emplace_back("OEF1X", 4, family.mEtype);
-        auto& records = rStep.mTables["OEF1X"];
-        records.push_back(rHeader.Words(4, family.mEtype, wide, 0));
-        records.push_back(std::move(data));
-    }
+// -- element result tables, driven by the reader's layouts --------------------------
+//
+// The reader decodes an element table through `op2_element_layout` (which words hold
+// which member, per element type, word count and complex/random flag); the writer uses
+// the same table the other way round, so what one reads the other writes. An element
+// type is chosen from the arrays the mesh has: for a card, the first of its alternatives
+// (element type, whether its location arrays are required) the mesh has data for.
+
+constexpr std::uint32_t kOp2wCen = 0x2F4E4543u;   // 'CEN/'
+constexpr std::uint32_t kOp2wGrid = 0x44495247u;  // 'GRID'
+
+struct Op2wResultAlt {
+    std::int32_t mEtype;
+    bool mStrict;  // needs its location arrays (`@corner`, `@station`, `@ply`)
+};
+
+struct Op2wResultCard {
+    const char* mCard;
+    std::vector<Op2wResultAlt> mAlts;
+};
+
+/// The cards that have element results, in file order, with the element types of their
+/// tables.
+const std::vector<Op2wResultCard>& op2w_result_cards() {
+    static const std::vector<Op2wResultCard> cards = {
+        {"CROD", {{1, false}}},
+        {"CTUBE", {{3, false}}},
+        {"CONROD", {{10, false}}},
+        {"CQUAD4", {{95, true}, {144, true}, {33, false}}},
+        {"CTETRA", {{39, false}}},
+        {"CHEXA", {{67, false}}},
+        {"CPENTA", {{68, false}}},
+        {"CTRIA3", {{97, true}, {74, false}}},
+        {"CPYRAM", {{255, false}}},
+        {"CQUAD8", {{96, true}, {64, false}}},
+        {"CTRIA6", {{98, true}, {75, false}}},
+        {"CBAR", {{100, true}, {34, false}}},
+        {"CBEAM", {{2, false}}},
+        {"CBUSH", {{102, false}}},
+        {"CSHEAR", {{4, false}}},
+        {"CELAS1", {{11, false}}},
+        {"CELAS2", {{12, false}}},
+        {"CDAMP1", {{20, false}}},
+        {"CDAMP2", {{21, false}}},
+        {"CVISC", {{24, false}}},
+    };
+    return cards;
 }
 
-void op2w_element_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
-                         const std::string& rGroup, const char* pTable, Op2wStep& rStep,
-                         std::set<std::string>& rTaken) {
-    const std::string prefix = rGroup + ":";
-    for (const Op2wFamily& family : kOp2wFamilies) {
-        const std::size_t card = op2w_card_index(family.mCard);
-        const std::vector<Op2wRow>& rows = rModel.Rows(card);
-        if (rows.empty())
+struct Op2wResultGroup {
+    const char* mName;  // the cell-data prefix
+    Op2Family mFamily;
+    std::int32_t mBase;  // the table code
+    const char* mTable;
+    const char* mRandomPrefix;  // a random table's name starts with it
+    std::int32_t mThermal;
+};
+constexpr Op2wResultGroup kOp2wResultGroups[] = {
+    {"ELEMENT_FORCE", Op2Family::Force, 4, "OEF1X", "OEF", 0},
+    {"STRESS", Op2Family::Stress, 5, "OES1X1", "OES", 0},
+    {"STRAIN", Op2Family::Stress, 5, "OSTR1X", "OSTR", 0},
+    {"HEAT_FLUX", Op2Family::Flux, 4, "HOEF1", "", 1},
+    {"ENERGY", Op2Family::Energy, 18, "ONRGY1", "", 0},
+    {"KINETIC_ENERGY", Op2Family::Energy, 36, "OEKE1", "", 0},
+};
+
+// The random tables' suffixes and the hundreds of their table codes, in file order.
+constexpr std::pair<const char*, std::int32_t> kOp2wRandomKinds[] = {
+    {"_CRM", 5}, {"_PSD", 6}, {"_ATO", 7}, {"_RMS", 8}, {"_NO", 9}};
+
+/// The result tables in file order: the model's, then the random ones.
+const std::vector<std::string>& op2w_table_order() {
+    static const std::vector<std::string> tables = [] {
+        std::vector<std::string> out = {"OUGV1",  "OQG1",   "OQMG1",  "OPG1",  "OEF1X", "HOEF1",
+                                        "OES1X1", "OSTR1X", "ONRGY1", "OEKE1", "OGPFB1"};
+        for (const char* prefix : {"OES", "OSTR", "OEF"})
+            for (const auto& kind : kOp2wRandomKinds)
+                out.push_back(std::string(prefix) + (kind.first + 1) + "1");
+        return out;
+    }();
+    return tables;
+}
+
+struct Op2wCandidate {
+    Op2ElementLayout mLayout;
+    std::size_t mNumWide;
+    std::int32_t mSCode;
+};
+
+/// The layouts a (family, element type, complex, random) can take, scanned once from
+/// the reader's table: the stress code with von Mises first, so that it wins a tie.
+const std::vector<Op2wCandidate>& op2w_candidates(Op2Family Family, std::int32_t Etype,
+                                                  bool Complex, bool Random) {
+    static std::mutex lock;
+    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache;
+    const std::lock_guard<std::mutex> guard(lock);
+    const auto key = std::make_tuple(static_cast<int>(Family), Etype, Complex, Random);
+    auto it = cache.find(key);
+    if (it != cache.end())
+        return it->second;
+    std::vector<Op2wCandidate> found;
+    for (const std::int32_t s_code : {1, 0})
+        for (std::size_t wide = 2; wide < 400; ++wide) {
+            auto layout = op2_element_layout(Family, Etype, static_cast<std::int64_t>(wide), s_code,
+                                             Complex, Random);
+            if (layout)
+                found.push_back({std::move(*layout), wide, s_code});
+        }
+    return cache.emplace(key, std::move(found)).first->second;
+}
+
+/// The suffix of a layout's location arrays, or nullptr for plain rows.
+const char* op2w_location(const Op2ElementLayout& rLayout) {
+    if (rLayout.mKind == Op2Values::Ply)
+        return "@ply";
+    if (rLayout.mKind == Op2Values::Station || rLayout.mStations)
+        return "@station";
+    if (rLayout.mKind == Op2Values::Blocks)
+        return "@corner";
+    return nullptr;
+}
+
+/// The array names of a layout member and the word of each: itself (with a random
+/// table's suffix) or its real and imaginary parts.
+std::vector<std::pair<std::string, std::size_t>> op2w_names_of(const Op2Member& rMember,
+                                                               const std::string& rSuffix) {
+    if (rMember.mImag == kOp2Npos)
+        return {{rMember.mName + rSuffix, rMember.mWord}};
+    return {{rMember.mName + "_real", rMember.mWord}, {rMember.mName + "_imag", rMember.mImag}};
+}
+
+/// A per-location array, `mWidth` columns per row; zero columns: the mesh has none.
+struct Op2wWide {
+    std::vector<double> mData;
+    std::size_t mWidth = 0;
+    double At(std::size_t Row, std::size_t Col) const { return mData[Row * mWidth + Col]; }
+};
+
+Op2wWide op2w_wide_gather(const Mesh& rMesh, const Op2wModel& rModel, const std::string& rName,
+                          const std::vector<Op2wRow>& rRows) {
+    Op2wWide out;
+    if (!rMesh.HasCellData(rName))
+        return out;
+    std::vector<char> used(rModel.Blocks().size(), 0);
+    for (const Op2wRow& row : rRows)
+        used[row.mBlock] = 1;
+    for (std::size_t bi = 0; bi < rModel.Blocks().size(); ++bi) {
+        if (!used[bi])
             continue;
-        std::vector<std::string> members;
-        switch (family.mKind) {
-            case kOp2wRod:
-                if (std::string_view(family.mCard) == "CTUBE")
-                    members.assign(std::begin(kOp2wTubeMembers), std::end(kOp2wTubeMembers));
-                else
-                    members.assign(std::begin(kOp2wRodMembers), std::end(kOp2wRodMembers));
-                break;
-            case kOp2wPlate: {
-                bool shear = false;
-                for (const char* k : {"1", "2"})
-                    shear = shear || (rMesh.HasCellData(prefix + "MAX_SHEAR" + k) &&
-                                      !rMesh.HasCellData(prefix + "VON_MISES" + k));
-                for (const char* m : kOp2wPlateMembers) {
-                    std::string name = m;
-                    if (name.compare(0, 2, "VM") == 0)
-                        name = std::string(shear ? "MAX_SHEAR" : "VON_MISES") + name.substr(2);
-                    members.push_back(name);
+        const NDArray& a = rMesh.CellData(rName, rModel.Blocks()[bi].mIndex);
+        const auto& shape = a.Shape();
+        const std::size_t width = shape.size() == 2 ? shape[1] : (a.Size() ? 1 : 0);
+        out.mWidth = std::max(out.mWidth, width);
+    }
+    if (out.mWidth == 0)
+        return out;
+    out.mData = op2w_gather(rMesh, rModel, rName, rRows, out.mWidth);
+    return out;
+}
+
+double op2w_zero_nan(double V) {
+    return std::isnan(V) ? 0.0 : V;
+}
+
+/// One table block of a card in one element type; false when the mesh holds none of
+/// its arrays.
+bool op2w_card_table(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
+                     Op2wStep& rStep, std::set<std::string>& rTaken, const Op2wResultGroup& rGroup,
+                     const char* pCard, std::int32_t Etype, bool Strict, const std::string& rSuffix,
+                     bool Complex, bool Random) {
+    const std::size_t card = op2w_card_index(pCard);
+    const std::vector<Op2wRow>& rows = rModel.Rows(card);
+    if (rows.empty())
+        return false;
+    const bool stress_like = rGroup.mFamily == Op2Family::Stress;
+    const std::vector<Op2wCandidate>& candidates =
+        op2w_candidates(rGroup.mFamily, Etype, Complex, Random && stress_like);
+    if (candidates.empty())
+        return false;
+    const std::string prefix = std::string(rGroup.mName) + ":";
+    std::map<std::string, std::vector<double>> plain_cache;
+    std::map<std::string, Op2wWide> wide_cache;
+    const auto plain = [&](const std::string& rName) -> const std::vector<double>& {
+        auto it = plain_cache.find(rName);
+        if (it == plain_cache.end())
+            it = plain_cache.emplace(rName, op2w_gather(rMesh, rModel, prefix + rName, rows, 0))
+                     .first;
+        return it->second;
+    };
+    const auto wide = [&](const std::string& rName) -> const Op2wWide& {
+        auto it = wide_cache.find(rName);
+        if (it == wide_cache.end())
+            it = wide_cache.emplace(rName, op2w_wide_gather(rMesh, rModel, prefix + rName, rows))
+                     .first;
+        return it->second;
+    };
+
+    const Op2wCandidate* best = nullptr;
+    int best_score = 0;
+    for (const Op2wCandidate& cand : candidates) {
+        const Op2ElementLayout& lay = cand.mLayout;
+        const char* loc = op2w_location(lay);
+        const bool is_plain = !loc || (lay.mKind == Op2Values::Blocks && !lay.mStations);
+        int score = 0, own = 0;
+        bool have_loc = false;
+        for (const Op2Member& member : lay.mMembers)
+            for (const auto& [name, word] : op2w_names_of(member, rSuffix)) {
+                // a complex or random table needs an array of its own: the real-only
+                // members of a complex layout (the fibre distances) are shared
+                const bool is_own =
+                    !(Complex || Random) || name != member.mName || !rSuffix.empty();
+                if (is_plain && !plain(name).empty()) {
+                    ++score;
+                    own += is_own;
                 }
-                break;
-            }
-            case kOp2wSolid: {
-                const bool octa = rMesh.HasCellData(prefix + "OCT_SHEAR") &&
-                                  !rMesh.HasCellData(prefix + "VON_MISES");
-                members = {"X",
-                           "Y",
-                           "Z",
-                           "TXY",
-                           "TYZ",
-                           "TZX",
-                           "PRINCIPAL_A",
-                           "PRINCIPAL_B",
-                           "PRINCIPAL_C",
-                           "PRESSURE",
-                           octa ? "OCT_SHEAR" : "VON_MISES"};
-                break;
-            }
-        }
-        const std::size_t count = rows.size();
-        std::map<std::string, std::vector<double>> columns;
-        for (const std::string& m : members) {
-            std::vector<double> column = op2w_gather(rMesh, rModel, prefix + m, rows, 0);
-            if (!column.empty()) {
-                rTaken.insert(prefix + m);
-                columns[m] = std::move(column);
-            }
-        }
-        std::map<std::string, std::vector<double>> corners;
-        const std::size_t ncorner = kOp2wCards[card].mCorners;
-        if (family.mKind == kOp2wSolid) {
-            for (const std::string& m : members) {
-                std::vector<double> matrix =
-                    op2w_gather(rMesh, rModel, prefix + m + "@corner", rows, ncorner);
-                if (!matrix.empty()) {
-                    rTaken.insert(prefix + m + "@corner");
-                    corners[m] = std::move(matrix);
+                if (loc && wide(name + loc).mWidth != 0) {
+                    ++score;
+                    own += is_own;
+                    have_loc = true;
                 }
             }
+        if ((Strict && !have_loc) || !score || !own)
+            continue;
+        if (!best || score > best_score) {
+            best = &cand;
+            best_score = score;
         }
+    }
+    if (!best)
+        return false;
+    const Op2ElementLayout& lay = best->mLayout;
+    const std::size_t num_wide = best->mNumWide;
+    const char* loc = op2w_location(lay);
+    const bool by_entry = lay.mKind == Op2Values::Station || lay.mKind == Op2Values::Ply;
+    std::vector<std::pair<std::string, std::size_t>> members;
+    for (const Op2Member& member : lay.mMembers)
+        for (auto& pair : op2w_names_of(member, rSuffix))
+            members.push_back(std::move(pair));
+    std::map<std::string, const std::vector<double>*> plain_values;
+    std::map<std::string, const Op2wWide*> loc_values;
+    for (const auto& [name, word] : members) {
+        const std::vector<double>& a = plain(name);
+        if (!a.empty() &&
+            (lay.mKind == Op2Values::Row || (lay.mKind == Op2Values::Blocks && !lay.mStations))) {
+            plain_values[name] = &a;
+            rTaken.insert(prefix + name);
+        }
+        if (loc) {
+            const Op2wWide& b = wide(name + loc);
+            if (b.mWidth != 0) {
+                loc_values[name] = &b;
+                rTaken.insert(prefix + name + loc);
+            }
+        }
+    }
+
+    const std::size_t count = rows.size();
+    std::string data;
+    double energy_total = 0.0;  // an energy table's header holds the sum of its energies
+    if (by_entry) {
+        // one entry per station or ply with any value, in element order
+        std::size_t most = 0;
+        for (const auto& [name, b] : loc_values)
+            most = std::max(most, b->mWidth);
+        std::size_t kept = 0;
+        for (std::size_t r = 0; r < count; ++r)
+            for (std::size_t c = 0; c < most; ++c) {
+                bool any = false;
+                for (const auto& [name, b] : loc_values)
+                    any = any || (c < b->mWidth && !std::isnan(b->At(r, c)));
+                if (!any)
+                    continue;
+                ++kept;
+                Op2wRowBuf w(num_wide);
+                w.I(0, rows[r].mEid * 10 + kOp2wDevice);
+                if (lay.mKind == Op2Values::Ply)
+                    w.I(1, static_cast<std::int64_t>(c) + 1);
+                for (const auto& [name, word] : members) {
+                    const auto it = loc_values.find(name);
+                    if (it == loc_values.end() || c >= it->second->mWidth)
+                        continue;
+                    w.F(word, op2w_zero_nan(it->second->At(r, c)));
+                }
+                w.Append(data);
+            }
+        if (kept == 0)
+            return false;
+    } else {
         std::vector<std::size_t> keep;
         for (std::size_t r = 0; r < count; ++r) {
             bool shown = false;
-            for (const auto& [name, column] : columns)
-                shown = shown || !std::isnan(column[r]);
+            for (const auto& [name, a] : plain_values)
+                shown = shown || !std::isnan((*a)[r]);
+            for (const auto& [name, b] : loc_values)
+                for (std::size_t c = 0; c < b->mWidth; ++c)
+                    shown = shown || !std::isnan(b->At(r, c));
             if (shown)
                 keep.push_back(r);
         }
         if (keep.empty())
-            continue;
-        const auto value = [&](const std::string& rMember, std::size_t Row) {
-            const auto it = columns.find(rMember);
-            if (it == columns.end() || std::isnan(it->second[Row]))
-                return 0.0;
-            return it->second[Row];
-        };
-        const std::int32_t bit0 =
-            (members.back() == "OCT_SHEAR" || members.back() == "MAX_SHEAR2") ? 0 : 1;
-        const std::int32_t s_code = (rGroup == "STRAIN" ? 10 : 0) | bit0;
-        const std::size_t wide =
-            family.mKind == kOp2wSolid ? 4 + 21 * (1 + ncorner) : 1 + members.size();
-        std::string data;
+            return false;
+        const std::int64_t solid_nodes = op2_solid_nodes(Etype);
+        const std::int64_t plate_nodes = op2_corner_nodes(Etype);
+        const std::size_t ncorner =
+            lay.mStations ? 0
+                          : static_cast<std::size_t>((solid_nodes ? solid_nodes : plate_nodes) - 1);
         for (const std::size_t r : keep) {
-            Op2wRowBuf w(wide);
+            Op2wRowBuf w(num_wide);
             w.I(0, rows[r].mEid * 10 + kOp2wDevice);
-            if (family.mKind != kOp2wSolid) {
-                for (std::size_t j = 0; j < members.size(); ++j)
-                    w.F(1 + j, value(members[j], r));
-            } else {
-                const Op2wBlock& blk = rModel.Blocks()[rows[r].mBlock];
-                const std::int64_t* conn = blk.mConn.data() + rows[r].mRow * blk.mNodes;
-                w.mWords[2] = 0x44495247u;  // 'GRID'
+            if (lay.mKind == Op2Values::Row) {
+                for (const auto& [name, word] : members) {
+                    const auto it = plain_values.find(name);
+                    if (it != plain_values.end())
+                        w.F(word, op2w_zero_nan((*it->second)[r]));
+                }
+                if (rGroup.mFamily == Op2Family::Energy) {
+                    const auto it = plain_values.find(members[0].first);
+                    if (it != plain_values.end())
+                        energy_total += op2w_zero_nan((*it->second)[r]);
+                }
+                w.Append(data);
+                continue;
+            }
+            const Op2wBlock& blk = rModel.Blocks()[rows[r].mBlock];
+            const std::int64_t* conn = blk.mConn.data() + rows[r].mRow * blk.mNodes;
+            const auto node_id = [&](std::size_t K) {
+                return rModel.NodeIds()[static_cast<std::size_t>(conn[K])];
+            };
+            if (plate_nodes)
+                w.mWords[1] = kOp2wCen;
+            if (solid_nodes) {
+                w.mWords[2] = kOp2wGrid;
                 w.I(3, static_cast<std::int64_t>(ncorner));
-                for (std::size_t k = 0; k < 1 + ncorner; ++k) {
-                    const std::size_t base = 4 + 21 * k;
-                    w.mWords[base] =
-                        k == 0 ? 0x2F4E4543u
-                               : static_cast<std::uint32_t>(
-                                     rModel.NodeIds()[static_cast<std::size_t>(conn[k - 1])]);
-                    for (const std::string& m : members) {
-                        double v = value(m, r);
-                        if (k > 0) {
-                            const auto it = corners.find(m);
-                            if (it != corners.end() && !std::isnan(it->second[r * ncorner + k - 1]))
-                                v = it->second[r * ncorner + k - 1];
-                        }
-                        w.F(base + op2w_solid_word(m), v);
+            }
+            for (std::size_t k = 0; k < lay.mBlocks; ++k) {
+                const std::size_t base = lay.mFirst + k * lay.mBlock;
+                if (lay.mStations) {
+                    // the ends carry their GRIDs, the stations between them none
+                    if (k == 0)
+                        w.I(base, node_id(0));
+                    else if (k == lay.mBlocks - 1)
+                        w.I(base, node_id(1));
+                } else if (k == 0) {  // the centre
+                    w.mWords[base] = solid_nodes ? kOp2wCen : 0u;
+                } else {
+                    w.I(base, node_id(k - 1));
+                }
+                for (const auto& [name, word] : members) {
+                    if (lay.mStations) {
+                        const auto it = loc_values.find(name);
+                        if (it != loc_values.end() && k < it->second->mWidth)
+                            w.F(base + word, op2w_zero_nan(it->second->At(r, k)));
+                        continue;
                     }
+                    double v = 0.0;
+                    const auto pit = plain_values.find(name);
+                    if (pit != plain_values.end())
+                        v = op2w_zero_nan((*pit->second)[r]);
+                    if (k > 0) {
+                        const auto lit = loc_values.find(name);
+                        if (lit != loc_values.end() && k - 1 < lit->second->mWidth) {
+                            const double c = lit->second->At(r, k - 1);
+                            if (!std::isnan(c))
+                                v = c;
+                        }
+                    }
+                    w.F(base + word, v);
                 }
             }
             w.Append(data);
         }
-        rStep.mLayout.emplace_back(pTable, 5, family.mEtype);
-        auto& records = rStep.mTables[pTable];
-        records.push_back(rHeader.Words(5, family.mEtype, wide, s_code));
-        records.push_back(std::move(data));
     }
+    std::int32_t tcode = rGroup.mBase;
+    std::string name = rGroup.mTable;
+    if (Random) {
+        for (const auto& kind : kOp2wRandomKinds)
+            if (rSuffix == kind.first) {
+                tcode += 4000 + 100 * kind.second;
+                name = std::string(rGroup.mRandomPrefix) + (kind.first + 1) + "1";
+            }
+    } else if (Complex) {
+        tcode += 1000;
+    }
+    const std::int32_t s_out =
+        stress_like ? ((std::string_view(rGroup.mName) == "STRAIN" ? 10 : 0) | (best->mSCode & 1))
+                    : 0;
+    rStep.mLayout.emplace_back(name, tcode, Etype);
+    auto& records = rStep.mTables[name];
+    const std::int32_t header_type = rGroup.mFamily == Op2Family::Energy
+                                         ? std::bit_cast<std::int32_t>(op2w_float(energy_total))
+                                         : Etype;
+    records.push_back(
+        rHeader.Words(tcode, header_type, num_wide, s_out, rGroup.mThermal, Complex ? 2 : 1));
+    records.push_back(std::move(data));
+    return true;
+}
+
+/// Every element result table of the step: the forces, stresses, strains and heat
+/// fluxes of the cards that have results, in the reader's layouts.
+void op2w_result_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
+                        Op2wStep& rStep, std::set<std::string>& rTaken) {
+    for (const Op2wResultGroup& group : kOp2wResultGroups) {
+        struct Variant {
+            std::string mSuffix;
+            bool mComplex, mRandom;
+        };
+        std::vector<Variant> variants = {{"", false, false}, {"", true, false}};
+        if (group.mFamily == Op2Family::Stress || group.mFamily == Op2Family::Force)
+            for (const auto& kind : kOp2wRandomKinds)
+                variants.push_back({kind.first, false, true});
+        for (const Variant& variant : variants)
+            for (const Op2wResultCard& card : op2w_result_cards()) {
+                // an energy table holds any element
+                static const std::vector<Op2wResultAlt> any = {{0, false}};
+                for (const Op2wResultAlt& alt :
+                     group.mFamily == Op2Family::Energy ? any : card.mAlts)
+                    if (op2w_card_table(rMesh, rModel, rHeader, rStep, rTaken, group, card.mCard,
+                                        alt.mEtype, alt.mStrict, variant.mSuffix, variant.mComplex,
+                                        variant.mRandom))
+                        break;
+            }
+    }
+}
+
+constexpr const char* kOp2wGpfMembers[6] = {"F1", "F2", "F3", "M1", "M2", "M3"};
+
+/// Word @p K (0 or 1) of an 8-character text, blank padded.
+std::uint32_t op2w_text_word(const std::string& rText, std::size_t K) {
+    std::string t = rText.substr(0, 8);
+    t.resize(8, ' ');
+    std::uint32_t w = 0;
+    std::memcpy(&w, t.data() + 4 * K, 4);
+    return w;
+}
+
+/// Grid point forces, one `OGPFB1` record: a row per node of each element with
+/// `GRID_FORCE:F1`...`M3` cell data (`(cells, nodes)` per block, a column per node of
+/// the connectivity), then a row per point of each `GRID_FORCE:<label>:<M>` point data
+/// (label `TOTALS`, `APP-LOAD`, `F-OF-SPC`...) with element 0.
+void op2w_grid_force_tables(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeader& rHeader,
+                            Op2wStep& rStep, std::set<std::string>& rTaken) {
+    std::string data;
+    std::size_t kept = 0;
+    for (std::size_t card = 0; card < kOp2wNumCards; ++card) {
+        const std::vector<Op2wRow>& rows = rModel.Rows(card);
+        if (rows.empty())
+            continue;
+        std::array<Op2wWide, 6> arrays;
+        std::size_t width = 0;
+        for (std::size_t k = 0; k < 6; ++k) {
+            arrays[k] = op2w_wide_gather(rMesh, rModel,
+                                         std::string("GRID_FORCE:") + kOp2wGpfMembers[k], rows);
+            if (arrays[k].mWidth != 0) {
+                rTaken.insert(std::string("GRID_FORCE:") + kOp2wGpfMembers[k]);
+                width = std::max(width, arrays[k].mWidth);
+            }
+        }
+        if (width == 0)
+            continue;
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            const Op2wBlock& blk = rModel.Blocks()[rows[r].mBlock];
+            const std::int64_t* conn = blk.mConn.data() + rows[r].mRow * blk.mNodes;
+            for (std::size_t c = 0; c < std::min(width, blk.mNodes); ++c) {
+                bool shown = false;
+                for (const Op2wWide& a : arrays)
+                    shown = shown || (c < a.mWidth && !std::isnan(a.At(r, c)));
+                if (!shown)
+                    continue;
+                ++kept;
+                Op2wRowBuf w(10);
+                w.I(0, rModel.NodeIds()[static_cast<std::size_t>(conn[c])] * 10 + kOp2wDevice);
+                w.I(1, rows[r].mEid);
+                w.mWords[2] = op2w_text_word(kOp2wCards[card].mName, 0);
+                w.mWords[3] = op2w_text_word(kOp2wCards[card].mName, 1);
+                for (std::size_t k = 0; k < 6; ++k)
+                    w.F(4 + k, c < arrays[k].mWidth ? op2w_zero_nan(arrays[k].At(r, c)) : 0.0);
+                w.Append(data);
+            }
+        }
+    }
+    std::set<std::string> labels;
+    for (const std::string& n : rMesh.PointDataNames()) {
+        if (n.rfind("GRID_FORCE:", 0) != 0)
+            continue;
+        const std::size_t last = n.rfind(':');
+        const std::size_t first = n.find(':');
+        if (last == first || n.find(':', first + 1) != last)
+            continue;
+        const std::string member = n.substr(last + 1);
+        if (std::find(std::begin(kOp2wGpfMembers), std::end(kOp2wGpfMembers), member) !=
+            std::end(kOp2wGpfMembers))
+            labels.insert(n.substr(first + 1, last - first - 1));
+    }
+    const std::size_t npts = rModel.NumPoints();
+    std::vector<std::size_t> by_id(npts);  // the rows are by GRID id
+    std::iota(by_id.begin(), by_id.end(), std::size_t{0});
+    std::stable_sort(by_id.begin(), by_id.end(), [&rModel](std::size_t A, std::size_t B) {
+        return rModel.NodeIds()[A] < rModel.NodeIds()[B];
+    });
+    for (const std::string& label : labels) {
+        std::array<std::optional<detail::DoubleView>, 6> columns;
+        for (std::size_t k = 0; k < 6; ++k) {
+            const std::string name = "GRID_FORCE:" + label + ":" + kOp2wGpfMembers[k];
+            if (!rMesh.HasPointData(name))
+                continue;
+            rTaken.insert(name);
+            const NDArray& a = rMesh.PointData(name);
+            if (a.Size() != npts)
+                op2w_fail("'" + name + "' must have one value per point");
+            columns[k].emplace(a);
+        }
+        const std::string text = label == "TOTALS" ? "*TOTALS*" : label;
+        for (const std::size_t i : by_id) {
+            bool shown = false;
+            for (const auto& c : columns)
+                shown = shown || (c && !std::isnan(c->Data()[i]));
+            if (!shown)
+                continue;
+            ++kept;
+            Op2wRowBuf w(10);
+            w.I(0, rModel.NodeIds()[i] * 10 + kOp2wDevice);
+            w.mWords[2] = op2w_text_word(text, 0);
+            w.mWords[3] = op2w_text_word(text, 1);
+            for (std::size_t k = 0; k < 6; ++k)
+                w.F(4 + k, columns[k] ? op2w_zero_nan(columns[k]->Data()[i]) : 0.0);
+            w.Append(data);
+        }
+    }
+    if (kept == 0)
+        return;
+    rStep.mLayout.emplace_back("OGPFB1", 19, 0);
+    auto& records = rStep.mTables["OGPFB1"];
+    records.push_back(rHeader.Words(19, 0, 10));
+    records.push_back(std::move(data));
 }
 
 Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Time,
@@ -136560,9 +136880,8 @@ Op2wStep op2w_step_tables(const Mesh& rMesh, const Op2wModel& rModel, double Tim
         records.push_back(header.Words(1000 + nodal.mTCode, 0, 14, 0, 0, 2));
         records.push_back(std::move(data));
     }
-    op2w_force_tables(rMesh, rModel, header, step, rTaken);
-    op2w_element_tables(rMesh, rModel, header, "STRESS", "OES1X1", step, rTaken);
-    op2w_element_tables(rMesh, rModel, header, "STRAIN", "OSTR1X", step, rTaken);
+    op2w_result_tables(rMesh, rModel, header, step, rTaken);
+    op2w_grid_force_tables(rMesh, rModel, header, step, rTaken);
     return step;
 }
 
@@ -136611,7 +136930,7 @@ std::string op2w_assemble(const Op2wModel& rModel, const std::vector<Op2wStep>& 
     out += rModel.Ept();
     if (rModel.HasProperties())
         out += rModel.Mpt();
-    for (const char* table : kOp2wTables) {
+    for (const std::string& table : op2w_table_order()) {
         std::vector<std::string> records;
         for (const Op2wStep& step : rSteps) {
             const auto it = step.mTables.find(table);
