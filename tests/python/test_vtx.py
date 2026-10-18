@@ -451,7 +451,8 @@ def test_the_python_twin_writes_what_the_core_does(tmp_path):
     ADIOS2 libraries, which this process (holding the core's) must not."""
     pytest.importorskip("adios2")
     meshioplusplus.write(tmp_path / "core.bp", _tri6_mesh(), file_format="vtx")
-    script = textwrap.dedent("""
+    script = textwrap.dedent(
+        """
         import sys, numpy as np
         import meshioplusplus
         from meshioplusplus.vtx import _write
@@ -462,7 +463,8 @@ def test_the_python_twin_writes_what_the_core_does(tmp_path):
         mesh.cell_data["rho"] = [np.array([2.5])]
         mesh.field_data["meshio:time"] = np.array([0.25])
         _write.write(sys.argv[1], mesh)
-        """)
+        """
+    )
     subprocess.run(
         [sys.executable, "-c", script, str(tmp_path / "twin.bp")], check=True
     )
@@ -482,7 +484,8 @@ def test_the_twin_writes_the_blocks_and_the_reuse_policy_the_core_reads(tmp_path
     """Several cell types, parts and ``mesh_policy="reuse"``: the twin (in a child
     process) writes them, the core reads them as the mesh went in."""
     pytest.importorskip("adios2")
-    script = textwrap.dedent("""
+    script = textwrap.dedent(
+        """
         import sys, numpy as np
         import meshioplusplus
         from meshioplusplus.vtx import _write
@@ -500,7 +503,8 @@ def test_the_twin_writes_the_blocks_and_the_reuse_policy_the_core_reads(tmp_path
         for k in range(3):
             w.write(0.5 * k, make(10.0 * k))
         w.close()
-        """)
+        """
+    )
     subprocess.run([sys.executable, "-c", script, str(tmp_path)], check=True)
     mixed = meshioplusplus.read(tmp_path / "mixed.bp")
     assert len(mixed.points) == 7
@@ -515,12 +519,14 @@ def test_the_twin_writes_the_blocks_and_the_reuse_policy_the_core_reads(tmp_path
     # and the other way: the core's files read by the twin, in a child process
     core = _mixed_mesh()
     meshioplusplus.write(tmp_path / "core.bp", core, file_format="vtx")
-    check = textwrap.dedent("""
+    check = textwrap.dedent(
+        """
         import sys, numpy as np
         from meshioplusplus.vtx import _vtx
         mesh = _vtx.read(sys.argv[1] + "/core.bp")
         assert len(mesh.points) == 7, len(mesh.points)
         assert [c.type for c in mesh.cells] == ["triangle", "quad", "triangle"]
         assert mesh.cells[1].data.tolist() == [[1, 4, 5, 2]]
-        """)
+        """
+    )
     subprocess.run([sys.executable, "-c", check, str(tmp_path)], check=True)
