@@ -101,7 +101,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="vtx">`vtx`</span> | ? | ? | ? | ? | ? | ? | ? | ? | fails: `WriteError` | | | | |
 | <span id="wkt">`wkt`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="xdmf">`xdmf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point, side |
-| <span id="xplt">`xplt`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell, point |
+| <span id="xplt">`xplt`</span> | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell, point, side |
 | <span id="xyz">`xyz`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | exact | `p_f64` float64, `p_i32` float64 | — | — | — |
 | <span id="z88">`z88`</span> |  | ✓ |  |  | ✓ | ✓ |  |  | exact | — | — | — | cell, point |
 | <span id="zarr">`zarr`</span> | ✗ | ✗ | ✗ | ✗ | ✓ | → tet | → tet | → tet | approx | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
@@ -150,7 +150,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`vtr`**: RectilinearGrid holds one axis-aligned lattice; the canonical mesh is not one.
 - **`vts`**: StructuredGrid holds one curvilinear lattice; the canonical mesh is not one.
 - **`vtx`**: A VTX file holds one cell type, as DOLFINx's does, so the mixed canonical mesh is refused; each type alone round-trips.
-- **`xplt`**: Everything is stored as 32-bit floats and comes back as float64 (the probe's coordinates are exact in float32, general ones are not); a plot file has no vertex element, and side regions and surfaces are not written.
+- **`xplt`**: Everything is stored as 32-bit floats and comes back as float64 (the probe's coordinates are exact in float32, general ones are not); a plot file has no vertex element. A side region is a facet set.
 - **`xyz`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`z88`**: A deck has no slot for an arbitrary array, and `z88o2`/`z88o3`/`z88o4` are what Z88R writes from the deck, so none is written; Aurora's sets hold elements and nodes only, so `side` regions are dropped.
 - **`zarr`**: As `pmsh`: tetrahedra only, other volume cells simplexified.

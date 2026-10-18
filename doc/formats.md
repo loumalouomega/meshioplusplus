@@ -101,7 +101,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | ✓ | ADIOS2 (a core built with it, or `adios2`) | [fails](./conformance.md#vtx) |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#wkt) |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) | [8/8 cells · data PC · regions CPS](./conformance.md#xdmf) |
-| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | ✓ | — (zlib for compressed files) | [7/8 cells · data PCF · regions CP](./conformance.md#xplt) |
+| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | ✓ | — (zlib for compressed files) | [7/8 cells · data PCF · regions CPS](./conformance.md#xplt) |
 | [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#xyz) |
 | [`z88`](./formats/z88.md) | `z88i1.txt`, `z88structure.txt` (by file name), results `z88o2.txt`/`z88o3.txt` | ✓ | ✓ (structure file) | — | [3/8 cells · no data · regions CP](./conformance.md#z88) |
 | [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) | [1/8 cells · data PCF](./conformance.md#zarr) |

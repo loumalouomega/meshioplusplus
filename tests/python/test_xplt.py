@@ -6,10 +6,9 @@ import pathlib
 import struct
 import zlib
 
+import meshioplusplus
 import numpy as np
 import pytest
-
-import meshioplusplus
 from meshioplusplus import _core
 from meshioplusplus.xplt import _xplt as py_xplt
 
@@ -520,3 +519,144 @@ def test_a_series_refuses_a_different_mesh(tmp_path):
             with make(tmp_path / "bad.xplt") as w:
                 w.write(0.0, _scratch_mesh())
                 w.write(1.0, other)
+
+
+# ---------------------------------------------------------------------------
+# Surfaces, edges and facet sets: the inverse of what the reader builds.
+# ---------------------------------------------------------------------------
+
+SURFACE_FIXTURES = [XPLT / "xplt_surface.xplt", XPLT / "xplt_edge.xplt"]
+
+
+def _lfs_pointer(path):
+    return path.read_bytes()[:20].startswith(b"version https://git")
+
+
+def _regions_of(mesh):
+    return sorted(
+        (r.kind, r.name, r.dim, r.tag, np.asarray(r.entries).tolist())
+        for r in mesh.regions
+    )
+
+
+def _chunk_ids(path):
+    """The top-level chunk ids and the mesh chunk's sections."""
+    data = path.read_bytes()
+    found = set()
+
+    def walk(a, b):
+        while a + 8 <= b:
+            ident, size = struct.unpack_from("<II", data, a)
+            found.add(ident)
+            if ident == 0x01040000:
+                walk(a + 8, a + 8 + size)
+            a += 8 + size
+
+    walk(4, len(data))
+    return found
+
+
+@pytest.mark.parametrize(
+    "path", SURFACE_FIXTURES, ids=[p.name for p in SURFACE_FIXTURES]
+)
+def test_febio_surfaces_and_edges_survive_a_round_trip(path, writer, engine, tmp_path):
+    if _lfs_pointer(path):
+        pytest.skip("the FEBio fixture is a Git-LFS pointer")
+    original = engine.read(path)
+    assert "xplt:surface" in original.cell_data or "xplt:edge" in original.cell_data
+    out = tmp_path / "again.xplt"
+    writer(out, original)
+    again = engine.read(out)
+    np.testing.assert_array_equal(again.points, original.points)
+    assert [(c.type, c.data.tolist()) for c in again.cells] == [
+        (c.type, c.data.tolist()) for c in original.cells
+    ]
+    assert _regions_of(again) == _regions_of(original)
+    for key in ("xplt:surface", "xplt:edge"):
+        assert (key in again.cell_data) == (key in original.cell_data)
+        for got, want in zip(
+            again.cell_data.get(key, []), original.cell_data.get(key, [])
+        ):
+            np.testing.assert_array_equal(got, want)
+    # The sections are really there, not folded into domains.
+    ids = _chunk_ids(out)
+    assert (0x01043000 in ids) == ("xplt:surface" in original.cell_data)
+    assert (0x01048000 in ids) == ("xplt:edge" in original.cell_data)
+
+
+def _surface_mesh():
+    mesh = _scratch_mesh()
+    mesh.cells[2] = meshioplusplus.CellBlock("triangle", np.array([[1, 8, 9]]))
+    # block 2 (the triangle) is a data surface, block 3 (the lines) an edge
+    mesh.cell_data["xplt:surface"] = [
+        np.zeros(1, dtype=np.int64),
+        np.zeros(1, dtype=np.int64),
+        np.full(1, 7, dtype=np.int64),
+        np.zeros(2, dtype=np.int64),
+    ]
+    mesh.cell_data["xplt:edge"] = [
+        np.zeros(1, dtype=np.int64),
+        np.zeros(1, dtype=np.int64),
+        np.zeros(1, dtype=np.int64),
+        np.full(2, 4, dtype=np.int64),
+    ]
+    del mesh.cell_data["pressure"], mesh.cell_data["stress"]
+    mesh.regions += [
+        meshioplusplus.Region("skin", "cell", np.array([2]), 2),
+        meshioplusplus.Region("rim", "cell", np.array([3, 4]), 1),
+        # the -x face of the hexahedron and the bottom face of the tetra
+        meshioplusplus.Region("walls", "side", np.array([[0, 0], [0, 4], [1, 3]]), 2),
+    ]
+    return mesh
+
+
+def test_a_surface_an_edge_and_a_facet_set_are_written(writer, engine, tmp_path):
+    mesh = _surface_mesh()
+    out = tmp_path / "facets.xplt"
+    writer(out, mesh)
+    ids = _chunk_ids(out)
+    assert {0x01043000, 0x01047000, 0x01048000} <= ids
+    again = engine.read(out)
+    assert [(c.type, c.data.tolist()) for c in again.cells] == [
+        (c.type, c.data.tolist()) for c in mesh.cells
+    ]
+    regions = {(r.kind, r.name): r for r in again.regions}
+    assert regions[("cell", "skin")].entries.tolist() == [2]
+    assert regions[("cell", "rim")].entries.tolist() == [3, 4]
+    assert regions[("cell", "rim")].dim == 1
+    # the surface "skin" lies on the tetra's face 3, which a side
+    # region of the same name stands for; the facet set is its own region
+    assert regions[("side", "skin")].entries.tolist() == [[1, 3]]
+    assert sorted(regions[("side", "walls")].entries.tolist()) == sorted(
+        mesh.regions[-1].entries.tolist()
+    )
+    assert again.cell_data["xplt:surface"][2].tolist() == [1]
+    assert again.cell_data["xplt:edge"][3].tolist() == [1, 1]
+    # neither marker is a variable, and the surface block is not a domain
+    assert not any("xplt" in name for name in again.point_data)
+    assert [r.name for r in again.regions if r.kind == "cell"].count("skin") == 1
+
+
+def test_surfaces_need_the_marker_to_be_surfaces(writer, engine, tmp_path):
+    mesh = _surface_mesh()
+    del mesh.cell_data["xplt:surface"], mesh.cell_data["xplt:edge"]
+    out = tmp_path / "plain.xplt"
+    writer(out, mesh)
+    assert not {0x01043000, 0x01048000} & _chunk_ids(out)
+    assert 0x01047000 in _chunk_ids(out)
+    again = engine.read(out)
+    assert "xplt:surface" not in again.cell_data
+
+
+def test_the_engines_write_the_same_surface_bytes(tmp_path):
+    mesh = _surface_mesh()
+    _core.xplt_write(str(tmp_path / "c.xplt"), mesh)
+    py_write.write(tmp_path / "p.xplt", mesh)
+    assert (tmp_path / "c.xplt").read_bytes() == (tmp_path / "p.xplt").read_bytes()
+    with py_write.SeriesWriter(tmp_path / "ps.xplt") as w:
+        w.write(0.0, mesh)
+        w.write(1.0, mesh)
+    meshioplusplus.write_sequence(
+        tmp_path / "cs.xplt", iter([(0.0, mesh), (1.0, mesh)])
+    )
+    assert (tmp_path / "ps.xplt").read_bytes() == (tmp_path / "cs.xplt").read_bytes()

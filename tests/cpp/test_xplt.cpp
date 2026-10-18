@@ -410,3 +410,68 @@ TEST(XpltWriter, StateAndSeriesRoundTrip) {
     other.AddPointData("extra", original.PointData("displacement"));
     EXPECT_THROW(mismatch.Write(1.0, other), WriteError);
 }
+
+// The surface "lid" (a triangle block carrying xplt:surface), an edge "rim" (two
+// line segments) and a facet set "walls" (a side region, tet 0's face 1) are
+// written as the sections the reader builds them from.
+TEST(XpltWriter, SurfacesEdgesAndFacetSetsRoundTrip) {
+    const Plt p;
+    auto chunks = plot_chunks(p, 0x35, false);
+    const std::string surface =
+        p.Chunk(0x01043000,
+                p.Chunk(0x01043100,
+                        p.Chunk(0x01043101, p.Chunk(0x01043104, p.U32(3) + "lid")) +
+                            p.Chunk(0x01043200, p.Chunk(0x01043201, p.U32(1) + p.U32(3) + p.U32(0) +
+                                                                        p.U32(1) + p.U32(2)))));
+    const auto segment = [&](int Id, int A, int B) {
+        return p.Chunk(0x01048201, p.U32(Id) + p.U32(2) + p.U32(A) + p.U32(B) + p.U32(0));
+    };
+    const std::string edge =
+        p.Chunk(0x01048000,
+                p.Chunk(0x01048100,
+                        p.Chunk(0x01048101, p.Chunk(0x01048104, p.U32(3) + "rim")) +
+                            p.Chunk(0x01048200, segment(1, 0, 1) + segment(2, 1, 4))));
+    chunks[1] = p.Chunk(0x01040000, chunks[1].substr(8) + surface + edge);
+    const std::string path = write_plot(chunks, p, false);
+    Mesh original = read_xplt(path);
+    ASSERT_EQ(original.NumCellBlocks(), 3u);
+    NDArray walls(DType::Int64, {1, 2});
+    walls.As<std::int64_t>()[0] = 0;
+    walls.As<std::int64_t>()[1] = 1;
+    original.AddRegion(Region("walls", RegionKind::Side, 2, -1, std::move(walls)));
+
+    const std::string out = temp_path(".xplt");
+    write_xplt(out, original);
+    const Mesh again = read_xplt(out);
+    ASSERT_EQ(again.NumCellBlocks(), 3u);
+    EXPECT_EQ(again.Cells(0).Type(), "tetra");
+    EXPECT_EQ(again.Cells(1).Type(), "triangle");
+    EXPECT_EQ(again.Cells(2).Type(), "line");
+    EXPECT_EQ(again.Cells(2).NumCells(), 2u);
+    EXPECT_EQ(detail::read_int(again.CellData("xplt:surface", 1), 0), 1);
+    EXPECT_EQ(detail::read_int(again.CellData("xplt:edge", 2), 1), 1);
+    EXPECT_EQ(detail::read_int(again.CellData("xplt:surface", 0), 0), 0);
+    std::size_t lid_cells = 0, lid_sides = 0, rim = 0, walls_sides = 0, domain_sets = 0;
+    for (std::size_t r = 0; r < again.NumRegions(); ++r) {
+        const auto& reg = again.Region(r);
+        if (reg.mName == "lid" && reg.mKind == RegionKind::Cell && reg.mDim == 2)
+            lid_cells = reg.NumEntries();
+        if (reg.mName == "lid" && reg.mKind == RegionKind::Side)
+            lid_sides = reg.NumEntries();
+        if (reg.mName == "rim" && reg.mKind == RegionKind::Cell && reg.mDim == 1)
+            rim = reg.NumEntries();
+        if (reg.mName == "walls" && reg.mKind == RegionKind::Side) {
+            walls_sides = reg.NumEntries();
+            EXPECT_EQ(detail::read_int(reg.mEntries, 0), 0);
+            EXPECT_EQ(detail::read_int(reg.mEntries, 1), 1);
+        }
+        if ((reg.mName == "lid" || reg.mName == "rim") && reg.mKind == RegionKind::Cell &&
+            reg.mDim < 0)
+            ++domain_sets;
+    }
+    EXPECT_EQ(lid_cells, 1u);
+    EXPECT_EQ(lid_sides, 1u);
+    EXPECT_EQ(rim, 2u);
+    EXPECT_EQ(walls_sides, 1u);
+    EXPECT_EQ(domain_sets, 0u);
+}
