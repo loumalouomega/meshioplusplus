@@ -6269,6 +6269,8 @@ void mio_segment_opts_init(mio_segment_opts* opts) {
     *opts = mio_segment_opts{};
     opts->feature_angle = 30.0;
     opts->min_patch_cells = 1;
+    opts->method = MIO_SEGMENT_ANGLE;
+    opts->tolerance = 1e-3;
 }
 
 mio_mesh* mio_segment(const mio_mesh* mesh, const mio_segment_opts* opts,
@@ -6286,6 +6288,15 @@ mio_mesh* mio_segment(const mio_mesh* mesh, const mio_segment_opts* opts,
                 options.mRegion = opts->region;
             if (opts->prefix && opts->prefix[0] != '\0')
                 options.mPrefix = opts->prefix;
+            if (opts->method != MIO_SEGMENT_ANGLE && opts->method != MIO_SEGMENT_PRIMITIVE) {
+                fail(MIO_ERR_INVALID_ARG, "meshio++: segment: method must be MIO_SEGMENT_ANGLE or "
+                                          "MIO_SEGMENT_PRIMITIVE");
+                return nullptr;
+            }
+            options.mMethod = static_cast<meshioplusplus::SegmentMethod>(opts->method);
+            // A struct zero-filled before the field existed takes the default.
+            if (opts->tolerance > 0.0)
+                options.mTolerance = opts->tolerance;
         }
         meshioplusplus::SegmentResult r = meshioplusplus::segment(mesh->mMesh, options);
         if (report) {
@@ -6355,6 +6366,8 @@ void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     opts->freeform_split = 1;
     opts->fillets = 1;
     opts->threads = 1;
+    opts->merge_faces = 1;
+    opts->backend = MIO_FIT_CAD_AUTO;
 }
 
 void mio_iga_opts_init(mio_iga_opts* opts) {
@@ -6580,6 +6593,14 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
             options.mFreeformSplit = opts->freeform_split != 0;
             options.mFillets = opts->fillets != 0;
             options.mThreads = opts->threads != 0;
+            options.mMergeFaces = opts->merge_faces != 0;
+            if (opts->backend != MIO_FIT_CAD_AUTO && opts->backend != MIO_FIT_CAD_OCCT &&
+                opts->backend != MIO_FIT_CAD_NATIVE) {
+                fail(MIO_ERR_INVALID_ARG, "meshio++: fit_cad: backend must be MIO_FIT_CAD_AUTO, "
+                                          "MIO_FIT_CAD_OCCT or MIO_FIT_CAD_NATIVE");
+                return nullptr;
+            }
+            options.mBackend = static_cast<meshioplusplus::FitCadBackend>(opts->backend);
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -6619,6 +6640,9 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
             report_ex->num_conic_blend = r.mNumConicBlend;
             report_ex->num_tapered_thread = r.mNumTaperedThread;
             report_ex->num_variable_pitch_thread = r.mNumVariablePitchThread;
+            report_ex->backend = r.mBackend == meshioplusplus::FitCadBackend::Native
+                                     ? MIO_FIT_CAD_NATIVE
+                                     : MIO_FIT_CAD_OCCT;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

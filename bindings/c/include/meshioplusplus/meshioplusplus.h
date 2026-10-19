@@ -4560,10 +4560,30 @@ typedef struct mio_segment_opts {
     double curvature_tolerance;
     /** Patches with fewer cells merge into a neighbour; >= 1. */
     int64_t min_patch_cells;
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    /** How a patch ends (v17.9.0, was reserved): a mio_segment_method; 0
+     *  (MIO_SEGMENT_ANGLE) is the behaviour before the field existed. */
+    int32_t method;
+    int32_t reserved32; /**< must be zero */
+    /** MIO_SEGMENT_PRIMITIVE only (v17.9.0, was reserved): how far a point
+     *  may lie from its patch's primitive, relative to the bounding-box
+     *  diagonal; <= 0 takes 1e-3. */
+    double tolerance;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_segment_opts;
 
-/** Initialize segment options: 30 degrees, no tolerances, min_patch_cells 1. */
+/** mio_segment_opts.method (v17.9.0). */
+typedef enum mio_segment_method {
+    /** By angles alone: a patch grows across every smooth edge. */
+    MIO_SEGMENT_ANGLE = 0,
+    /** By the surfaces the facets lie on: a smooth area one plane, sphere,
+     *  cylinder, cone or torus explains is one patch, any other is split into
+     *  the regions primitives explain (a fillet apart from its tangent
+     *  planes); see doc/segment.md. */
+    MIO_SEGMENT_PRIMITIVE = 1
+} mio_segment_method;
+
+/** Initialize segment options: 30 degrees, no tolerances, min_patch_cells 1,
+ *  the angle method, a primitive tolerance of 1e-3. */
 MIO_API void mio_segment_opts_init(mio_segment_opts* opts);
 
 /** What mio_segment found. */
@@ -4694,13 +4714,35 @@ typedef struct mio_fit_cad_opts {
      *  tried as a straight-flank thread face ("fit_cad:type" 8). On after
      *  mio_fit_cad_opts_init; a zero-filled struct keeps it off. */
     int32_t threads;
-    int32_t reserved1;   /**< must be zero */
-    int64_t reserved[2]; /**< must be zero; room for additive growth */
+    /** Nonzero: faces on one surface are merged and collinear edges joined
+     *  once the solid is built, kept only when it stays valid (v17.9.0, was
+     *  reserved). On after mio_fit_cad_opts_init; a zero-filled struct keeps
+     *  it off. */
+    int32_t merge_faces;
+    /** The engine, a mio_fit_cad_backend (v17.9.0, was reserved); 0
+     *  (MIO_FIT_CAD_AUTO) is OpenCASCADE when the library carries it, else
+     *  the kernel-free native backend. */
+    int32_t backend;
+    int32_t reserved32;  /**< must be zero */
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts;
+
+/** mio_fit_cad_opts.backend (v17.9.0). */
+typedef enum mio_fit_cad_backend {
+    /** OpenCASCADE when this library carries it, else MIO_FIT_CAD_NATIVE. */
+    MIO_FIT_CAD_AUTO = 0,
+    /** OpenCASCADE: trimmed, sewn and checked faces, freeform, fillet and
+     *  thread faces; fails in a build without it. */
+    MIO_FIT_CAD_OCCT = 1,
+    /** No CAD kernel: the fitted patches become analytic STEP faces and the
+     *  rest coplanar polygons; the returned mesh is the skin itself. */
+    MIO_FIT_CAD_NATIVE = 2
+} mio_fit_cad_backend;
 
 /** Initialize fit_cad options: automatic tolerance and deflection, 8 rounds,
  *  exact edges, every type, freeform faces of degree 3 on up to 64 x 64,
- *  freeform splitting, fillet faces and thread faces. */
+ *  freeform splitting, fillet faces, thread faces, merged faces and the
+ *  automatic backend. */
 MIO_API void mio_fit_cad_opts_init(mio_fit_cad_opts* opts);
 
 /** What mio_fit_cad built. */
@@ -4745,11 +4787,15 @@ typedef struct mio_fit_cad_report_ex {
     int64_t num_conic_blend;  /**< of the fillet faces, the conic blends */
     int64_t num_tapered_thread;        /**< of the helical faces, those cut on a taper */
     int64_t num_variable_pitch_thread; /**< of the helical faces, those of varying pitch */
-    int64_t reserved[11];              /**< zero; room for additive growth */
+    /** The engine that built the solid: MIO_FIT_CAD_OCCT or MIO_FIT_CAD_NATIVE
+     *  (v17.9.0, was reserved). */
+    int64_t backend;
+    int64_t reserved[10]; /**< zero; room for additive growth */
 } mio_fit_cad_report_ex;
 
 /** Nonzero when this library was built with the OpenCASCADE backend
- *  (-DMESHIOPLUSPLUS_WITH_OCCT=ON) that mio_fit_cad needs. */
+ *  (-DMESHIOPLUSPLUS_WITH_OCCT=ON) that mio_fit_cad's MIO_FIT_CAD_OCCT
+ *  backend needs. */
 MIO_API int mio_has_occt(void);
 
 /**
@@ -4758,14 +4804,19 @@ MIO_API int mio_has_occt(void);
  * 1 to 5, as mio_fit_type), a patch no primitive explains a rolling-ball
  * fillet or conic blend (7), thread flank (8), chamfer (10) or freeform
  * B-spline (6) face where one fits, a corner where three or more blends meet
- * a vertex blend (9), the rest planar facets (0), sewn and checked by
+ * a vertex blend (9), the rest coplanar polygons (0), sewn and checked by
  * OpenCASCADE; a face that fails the check or
- * strays beyond the tolerance is demoted to facets. Without "segment:patch" or
- * the "fit:patch_*" table, segment and fit_primitives run first with their
+ * strays beyond the tolerance is demoted to facets. Without "segment:patch",
+ * segment runs first with the primitive method and fit_primitives at its
+ * tolerance; without the "fit:patch_*" table, fit_primitives with its
  * defaults. See doc/fit_cad.md.
  *
- * Fails (NULL, with mio_last_error() naming -DMESHIOPLUSPLUS_WITH_OCCT=ON) in
- * a build without OpenCASCADE; mio_has_occt() tells in advance.
+ * Without OpenCASCADE (or with MIO_FIT_CAD_NATIVE), the native backend writes
+ * the fitted patches as analytic STEP faces and the rest as coplanar polygons,
+ * and returns the skin itself with the "fit_cad:*" cell data; its volumes
+ * are NaN. MIO_FIT_CAD_OCCT fails (NULL, with mio_last_error() naming
+ * -DMESHIOPLUSPLUS_WITH_OCCT=ON) in a build without it; mio_has_occt() tells
+ * in advance.
  *
  * @param mesh      a closed, consistently wound surface mesh.
  * @param step_path write the solid here as AP214 STEP; NULL or "" writes nothing.

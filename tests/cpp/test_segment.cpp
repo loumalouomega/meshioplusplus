@@ -234,3 +234,52 @@ TEST(Segment, PolygonsAndInconsistentWinding) {
     EXPECT_EQ(r.mNumPatches, 1);
     EXPECT_EQ(patches(r.mMesh), (std::vector<std::int64_t>{0, 0}));
 }
+
+namespace {
+
+std::size_t distinct(const std::vector<std::int64_t>& rLabels) {
+    return std::set<std::int64_t>(rLabels.begin(), rLabels.end()).size();
+}
+
+SegmentOptions primitive_method(double Tol = 1e-3) {
+    SegmentOptions o;
+    o.mMethod = SegmentMethod::Primitive;
+    o.mTolerance = Tol;
+    return o;
+}
+
+}  // namespace
+
+TEST(Segment, PrimitiveMethodSplitsATangentFillet) {
+    // The fillet meets its two sides at smooth edges: angles alone give one
+    // patch for the three, the primitive method a plane, a cylinder, a plane.
+    const Mesh plate = analytic::filleted_plate();
+    const SegmentResult by_angle = segment(plate);
+    const SegmentResult by_surface = segment(plate, primitive_method());
+    EXPECT_EQ(by_surface.mNumPatches, 8);  // six planes, the bore and the fillet
+    EXPECT_LT(by_angle.mNumPatches, by_surface.mNumPatches);
+    EXPECT_EQ(distinct(patches(by_surface.mMesh)), 8u);
+    // Every face of the input is labelled, and the output is reproducible.
+    for (std::int64_t p : patches(by_surface.mMesh))
+        EXPECT_GE(p, 0);
+    EXPECT_EQ(patches(segment(plate, primitive_method()).mMesh), patches(by_surface.mMesh));
+}
+
+TEST(Segment, PrimitiveMethodLeavesWhatNoPrimitiveExplains) {
+    // A freeform wall fits small spheres and tori anywhere; the primitive
+    // method keeps it whole, as the angle method does.
+    const Mesh wavy = analytic::wavy_capped();
+    EXPECT_EQ(segment(wavy, primitive_method()).mNumPatches, segment(wavy).mNumPatches);
+    // An analytic shape is one patch per surface either way.
+    EXPECT_EQ(segment(analytic::box_skin(3), primitive_method()).mNumPatches, 6);
+}
+
+TEST(Segment, PrimitiveMethodRefusesBadOptions) {
+    SegmentOptions o = primitive_method(0.0);
+    EXPECT_THROW(segment(analytic::box_skin(1), o), std::invalid_argument);
+    o = primitive_method(std::nan(""));
+    EXPECT_THROW(segment(analytic::box_skin(1), o), std::invalid_argument);
+    o = {};
+    o.mMethod = static_cast<SegmentMethod>(7);
+    EXPECT_THROW(segment(analytic::box_skin(1), o), std::invalid_argument);
+}

@@ -209,3 +209,17 @@ TEST(FitPrimitives, ResultIsStableAcrossRuns) {
     ASSERT_EQ(pa.Size(), pb.Size());
     EXPECT_EQ(std::memcmp(pa.Data(), pb.Data(), pa.Nbytes()), 0);
 }
+
+TEST(FitPrimitives, ATwoRimBoreIsACylinderNotASphere) {
+    // One ring of quads: every point lies on the two rims, and two coaxial
+    // circles lie on a sphere as well as on the cylinder.
+    const FpRow band = fit_whole(analytic::cylinder(1.6, 0.5, 1));
+    EXPECT_EQ(band.mType, 3);
+    EXPECT_NEAR(band.mParams[6], 1.6, 1e-9);
+    // A band of two rims of unequal radius is the cone, not a sphere either.
+    const FpRow cone_band = fit_whole(analytic::cone(30.0, 1));
+    EXPECT_EQ(cone_band.mType, 4);
+    EXPECT_NEAR(cone_band.mParams[8], 30.0, 1e-6);
+    // A real sphere band keeps its type.
+    EXPECT_EQ(fit_whole(analytic::sphere_band(1.5)).mType, 2);
+}

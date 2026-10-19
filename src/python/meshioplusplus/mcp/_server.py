@@ -1528,6 +1528,8 @@ def _register_operations(server: FastMCP) -> None:
         min_patch_cells: int = 1,
         region: str = "",
         prefix: str = "patch",
+        method: str = "angle",
+        tolerance: float = 1e-3,
     ) -> dict:
         """Split a surface into smooth patches -- the first step of turning a
         triangle skin (an STL, a scan) into a CAD model.
@@ -1543,7 +1545,12 @@ def _register_operations(server: FastMCP) -> None:
         segment:adjacency (rows a, b, shared edges) and one cell region per
         patch named <prefix>:<k>. Reports num_patches, num_merged,
         num_feature_edges, num_boundary_edges and num_non_manifold_edges.
-        Feed the output to fit_primitives."""
+        method="primitive" ends a patch where the surface its facets lie on
+        changes instead: a smooth area one plane, sphere, cylinder, cone or
+        torus explains is one patch, any other is split into the regions
+        primitives explain within tolerance (relative to the diagonal), so a
+        fillet comes apart from the planes it is tangent to -- what a
+        CAD-exported STL wants. Feed the output to fit_primitives."""
         return _guard(
             _tools.tool_segment,
             input_path=input_path,
@@ -1556,6 +1563,8 @@ def _register_operations(server: FastMCP) -> None:
             min_patch_cells=min_patch_cells,
             region=region,
             prefix=prefix,
+            method=method,
+            tolerance=tolerance,
         )
 
     @server.tool()
@@ -3395,7 +3404,7 @@ def _register_gated(server: FastMCP) -> None:
         mesh_output_path: Optional[str] = None,
         curvature_tolerance: float = 0.0,
         min_patch_cells: int = 1,
-        fit_tolerance: float = 1e-3,
+        fit_tolerance: Optional[float] = None,
         tolerance: Optional[float] = None,
         exact_edges: bool = True,
         types: Optional[List[str]] = None,
@@ -3408,13 +3417,20 @@ def _register_gated(server: FastMCP) -> None:
         freeform_split: bool = True,
         fillets: bool = True,
         threads: bool = True,
+        segment_method: str = "primitive",
+        segment_tolerance: float = 1e-3,
+        merge_faces: bool = True,
+        backend: str = "auto",
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
-        after segment and fit_primitives (run here first, with
-        curvature_tolerance, min_patch_cells and fit_tolerance, when the skin
-        has no segment:patch / fit:patch_* data; a noisy scan wants
-        min_patch_cells in the tens).
+        after segment and fit_primitives (run here first when the skin has no
+        segment:patch: segment_method "primitive" (the default) ends a patch
+        where the plane, sphere, cylinder, cone or torus its facets lie on
+        changes, at segment_tolerance of the diagonal, and fits at that
+        tolerance unless fit_tolerance (relative) is given; "angle" segments
+        by angles with curvature_tolerance and min_patch_cells, which a noisy
+        scan wants in the tens).
 
         Each accepted fit becomes a plane, sphere, cylinder, cone or torus face
         (types narrows which); a patch no primitive explains becomes, with
@@ -3431,19 +3447,24 @@ def _register_gated(server: FastMCP) -> None:
         between two analytic faces becomes a chamfer or a conic blend, and a
         corner where three or more blends meet a vertex blend; with threads, a
         flank of varying pitch or cut on a taper is a helical face too; the
-        rest planar facets;
-        OpenCASCADE sews and checks the solid, and a face that fails or lies
-        further than tolerance from the skin is demoted to facets. The report
-        gives valid, the volume ratio against the skin, max_deviation
+        rest coplanar polygons;
+        OpenCASCADE sews and checks the solid, a face that fails or lies
+        further than tolerance from the skin is demoted to facets, and with
+        merge_faces faces on one surface merge. The report
+        gives backend, valid, the volume ratio against the skin, max_deviation
         (Hausdorff), faces by type (num_bspline the freeform ones, num_fillet,
         num_helical, num_chamfer, num_vertex_blend; of those num_variable_fillet,
         num_blend, num_conic_blend, num_rounded_thread, num_tapered_thread and
         num_variable_pitch_thread), num_split_patches, num_demoted and exact/approximated
         edges; mesh_output_path also writes the
         re-meshed solid and cad_json_output_path the solid as Kratos CAD JSON
-        (NURBS faces, trimming loops, edges). Needs a core built with OpenCASCADE
-        (-DMESHIOPLUSPLUS_WITH_OCCT=ON); without it the error names the flag
-        and occt_available is false."""
+        (NURBS faces, trimming loops, edges). backend "occt" needs a core
+        built with OpenCASCADE (-DMESHIOPLUSPLUS_WITH_OCCT=ON; without it the
+        error names the flag); "native" needs no CAD kernel: the fitted
+        patches become analytic STEP faces bounded by line, circle and
+        polyline edges, the rest coplanar polygons, no freeform or feature
+        faces, NaN volumes; "auto" (the default) is "occt" when the core
+        carries it (occt_available), else "native"."""
         return _guard(
             _tools.tool_fit_cad,
             input_path=input_path,
@@ -3465,6 +3486,10 @@ def _register_gated(server: FastMCP) -> None:
             freeform_split=freeform_split,
             fillets=fillets,
             threads=threads,
+            segment_method=segment_method,
+            segment_tolerance=segment_tolerance,
+            merge_faces=merge_faces,
+            backend=backend,
         )
 
     @server.tool()

@@ -1472,12 +1472,26 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
         )
     )
     assert out["occt_available"] is has_occt()
-    if not has_occt():
-        assert out["error_type"] == "NotImplementedError"
-        assert "MESHIOPLUSPLUS_WITH_OCCT" in out["error"]
-        return
+    # Without OpenCASCADE the native backend builds the analytic solid.
+    assert out["backend"] == ("occt" if has_occt() else "native")
     assert out["valid"] is True
     assert out["num_plane"] == 6
+    assert out["num_faceted_faces"] == 0
+    if not has_occt():
+        bad = _dump(
+            _tools.call_tool(
+                "fit_cad",
+                {
+                    "input_path": src,
+                    "output_path": str(tmp_path / "x.step"),
+                    "backend": "occt",
+                },
+            )
+        )
+        assert bad["error_type"] == "NotImplementedError"
+        assert "MESHIOPLUSPLUS_WITH_OCCT" in bad["error"]
+        assert bad["occt_available"] is False
+        return
     assert out["num_split_patches"] == 0
     assert out["num_fillet"] == 0 and out["num_helical"] == 0
     assert out["num_variable_fillet"] == out["num_blend"] == 0

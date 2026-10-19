@@ -32,7 +32,7 @@
 //
 // Beside that lean pair the package ships the FULL pair (roadmap 6.2),
 // meshioplusplus_wasm_full and meshioplusplus_wasm_full_mt: the same API, with
-// OpenCASCADE (STEP/IGES reading, fitCad), zstd, lz4 and bzip2 linked in, and
+// OpenCASCADE (STEP/IGES reading, fitCad's OpenCASCADE backend), zstd, lz4 and bzip2 linked in, and
 // a mixed licence (OpenCASCADE is LGPL-2.1 with its exception; see
 // THIRD_PARTY_NOTICES.md). `{ full: true }` loads it, with the same variant
 // choice. Its import() is deliberately NOT literal: a bundler that saw it would
@@ -291,12 +291,12 @@ export class MeshioPlusPlusLoadError extends Error {
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
- *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
+ *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string, method?: 'angle' | 'primitive', tolerance?: number) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
  *   igaRefine: (info: object, options?: {subdivisions?: number | number[], elevate?: number | number[], sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1, trimSamples?: number}) => object,
  *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
- *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean}) => object,
+ *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean, mergeFaces?: boolean, backend?: 'auto' | 'occt' | 'native'}) => object,
  *   tessellate: (mesh: Mesh, levels?: number, curved?: boolean, fields?: boolean, recordStencil?: boolean) => {mesh: Mesh, numSourcePoints: number, numSourceCells: number, numCurvedSourceCells: number, numPassThroughSourceCells: number, numPoints: number, numCells: number, numBoundaryFacets: number, numInteriorFacets: number, numFacetsWithBadCount: number},
  *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
@@ -962,9 +962,11 @@ export async function loadMeshioPlusPlus(
             minPatchCells = 1,
             region = '',
             prefix = 'patch',
+            method = 'angle',
+            tolerance = 1e-3,
         ) =>
             Module.segment(mesh, featureAngle, normalTolerance, curvatureTolerance,
-                minPatchCells, region, prefix),
+                minPatchCells, region, prefix, method, tolerance),
         fitPrimitives: (
             mesh,
             patchData = 'segment:patch',

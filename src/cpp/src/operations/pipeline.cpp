@@ -299,13 +299,13 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
         {"Segment",
          {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
-          "Prefix"}},
+          "Prefix", "Method", "Tolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
           "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
-          "Threads"}},
+          "Threads", "MergeFaces", "Backend"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -970,6 +970,12 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 1.0));
         opts.mRegion = pipe_text(rStep, "Region", "");
         opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        const std::string method = pipe_text(rStep, "Method", "angle");
+        if (method == "primitive")
+            opts.mMethod = SegmentMethod::Primitive;
+        else if (method != "angle")
+            throw std::invalid_argument(pipe_err(rStep, "'Method' must be 'angle' or 'primitive'"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
         SegmentResult sr = segment(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(sr.mNumPatches)},
@@ -1016,9 +1022,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mFreeformSplit = pipe_flag(rStep, "FreeformSplit", true);
         opts.mFillets = pipe_flag(rStep, "Fillets", true);
         opts.mThreads = pipe_flag(rStep, "Threads", true);
+        opts.mMergeFaces = pipe_flag(rStep, "MergeFaces", true);
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "occt")
+            opts.mBackend = FitCadBackend::Occt;
+        else if (backend == "native")
+            opts.mBackend = FitCadBackend::Native;
+        else if (backend != "auto")
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto', 'occt' or 'native'"));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         pipe_push_step(rReport, rStep,
                        {{"Valid", cr.mValid ? 1.0 : 0.0},
+                        {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
                         {"VolumeRatio", cr.mVolumeRatio},
                         {"MaxDeviation", cr.mMaxDeviation},
                         {"NumFaces", static_cast<double>(cr.mNumFaces)},

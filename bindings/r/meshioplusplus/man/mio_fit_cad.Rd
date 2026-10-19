@@ -17,7 +17,9 @@ mio_fit_cad(
   freeform_max_control = 64,
   freeform_split = TRUE,
   fillets = TRUE,
-  threads = TRUE
+  threads = TRUE,
+  merge_faces = TRUE,
+  backend = "auto"
 )
 }
 \arguments{
@@ -58,6 +60,11 @@ vertex blend.}
 \item{threads}{Whether a patch is tried as a helical thread face, about a
 neighbouring cylinder's or cone's axis or the screw it fits, of constant
 or varying pitch and cut on a taper.}
+
+\item{merge_faces}{Whether faces on one surface are merged once the solid
+is built (v17.9.0).}
+
+\item{backend}{`"auto"`, `"occt"` or `"native"` (v17.9.0).}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -68,16 +75,20 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
-  `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`.
+  `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`
+  and `backend` (the engine that ran).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
 cone or torus face, a patch no primitive explains a rolling-ball fillet or
 blend, helical thread face or freeform B-spline face where one fits (`fit_cad:type` 7, 8
-and 6), the rest planar facets, and a face that fails the B-rep
+and 6), the rest coplanar polygons, and a face that fails the B-rep
 check or strays beyond `tolerance` is demoted to facets. Without
-`segment:patch` or the `fit:patch_*` table, segment and fit_primitives run
-first with their defaults. Fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in
-a build without OpenCASCADE (see `mio_has_occt()`). See `doc/fit_cad.md`.
+`segment:patch`, segment runs first with the primitive method and
+fit_primitives at its tolerance. Without OpenCASCADE (see `mio_has_occt()`)
+or with `backend = "native"`, the kernel-free backend writes the fitted
+patches as analytic STEP faces and returns the skin itself; `backend =
+"occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
+`doc/fit_cad.md`.
 }

@@ -113,7 +113,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
-| `to-cad` | `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
+| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1037,10 +1037,13 @@ meshioplusplus segment [options] INFILE OUTFILE
 | `--min-patch-cells N` | Merge smaller patches into a neighbour (default `1`) |
 | `--region NAME` | Restrict to a named cell region |
 | `--prefix NAME` | Patch regions are named `NAME:k` (default `patch`) |
+| `--method angle\|primitive` | How a patch ends: at creases and the tests above (`angle`, the default), or where the [primitive](/segment#primitive-method) its facets lie on changes |
+| `--tolerance T` | `primitive` only: how far a point may lie from its primitive, relative to the diagonal (default `1e-3`) |
 | `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
 
 ```sh
 meshioplusplus segment part.stl part_patches.vtu --curvature-tolerance 1.0 --min-patch-cells 20
+meshioplusplus segment bracket.stl bracket_patches.vtu --method primitive
 ```
 
 ---
@@ -1128,7 +1131,7 @@ meshioplusplus iga-evaluate plate.cad.json -p 0.5,0.5 -p 2,2 --derivatives 1
 
 ## meshioplusplus to-cad
 
-Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Needs a build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; elsewhere both CLIs fail naming the flag, and the release binaries are such a build. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails OpenCASCADE's B-rep check.
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). A build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON` builds it with OpenCASCADE; any other, the release binaries and the wheels among them, through the kernel-free [native backend](/fit_cad#the-native-backend), which writes the fitted planes, cylinders, cones, spheres and tori as analytic faces and the rest as planar faces. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails the B-rep check.
 
 ```text
 meshioplusplus to-cad [options] INFILE OUTFILE.step
@@ -1137,9 +1140,11 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | Option | Description |
 |---|---|
 | `-i/--input-format` | Explicit input format |
-| `--curvature-tolerance C` | `segment`'s curvature test, for an unsegmented skin (default off) |
+| `--segment-method primitive\|angle` | How an unsegmented skin is segmented (default `primitive`: [one patch per surface](/segment#primitive-method)) |
+| `--segment-tolerance T` | The primitive segmentation's tolerance, relative to the diagonal (default `1e-3`) |
+| `--curvature-tolerance C` | `segment`'s curvature test, for an unsegmented skin, angle method (default off) |
 | `--min-patch-cells N` | `segment`'s smallest patch, for an unsegmented skin (default `1`; a noisy scan wants tens) |
-| `--fit-tolerance T` | `fit_primitives`' relative tolerance, for an unfitted skin (default `1e-3`) |
+| `--fit-tolerance T` | `fit_primitives`' relative tolerance, for an unfitted skin (default: the primitive segmentation's own tolerance as a length; `1e-3` after the angle method) |
 | `--tolerance T` | The largest distance a face may lie from the skin (default three times the largest accepted patch tolerance) |
 | `--no-exact-edges` | Approximate every edge between analytic faces with a B-spline |
 | `--types LIST` | Fitted types kept as analytic faces, from `plane,sphere,cylinder,cone,torus` (default all) |
@@ -1151,12 +1156,15 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--no-freeform-split` | Leave a freeform patch that folds over every flattening faceted instead of [splitting it into pieces](/fit_cad#splitting-curled-patches) |
 | `--no-fillets` | Do not try a patch between two fitted faces as a [rolling-ball fillet or blend](/fit_cad#fillets-blends-and-threads) |
 | `--no-threads` | Do not try a patch as a [helical thread face](/fit_cad#fillets-blends-and-threads) |
+| `--no-merge-faces` | Keep faces on one surface apart once the solid is built |
+| `--backend auto\|occt\|native` | The engine (default `auto`: OpenCASCADE when the build carries it, else native) |
 | `--mesh-out FILE` | Also write the re-meshed solid |
 | `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |
 
 ```sh
-meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
+meshioplusplus to-cad bracket.stl bracket.step
+meshioplusplus to-cad scan.stl scan.step --segment-method angle --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
 ```
 
 ---

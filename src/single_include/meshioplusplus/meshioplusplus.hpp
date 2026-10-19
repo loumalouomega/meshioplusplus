@@ -122,7 +122,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 30
+#define MESHIOPLUSPLUS_ABI_VERSION 31
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -22036,24 +22036,73 @@ private:
  *    STEP requires) and the header time stamp is fixed, so a file is
  *    reproducible and the numpy twin writes the same bytes.
  *
- * One face per facet: merging coplanar facets into one face is not done.
+ * ### Faces (since v17.9.0)
+ *
+ * `StepWriteOptions::mFaces` chooses how the facets become faces:
+ *
+ *  - `Facet`: one face per facet, as described above (the only behaviour
+ *    before v17.9.0, and the only one of the numpy twin);
+ *  - `Planar`: edge-connected coplanar facets merge into one `PLANE` face,
+ *    holes as inner bounds, and the chains between two planes are cut at
+ *    their corners into `LINE`s -- a CAD-exported STL's flat faces come back
+ *    as the faces they were;
+ *  - `Fitted`: the patches `segment` and `fit_primitives` annotated become
+ *    `PLANE`, `SPHERICAL_SURFACE`, `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`
+ *    and `TOROIDAL_SURFACE` faces, bounded by `LINE`, `CIRCLE` and polyline
+ *    B-spline edges, and the rest coplanar groups as with `Planar`;
+ *  - `Auto` (the default): `Fitted` when the mesh carries `segment:patch` and
+ *    the `fit:patch_*` table, else `Planar`.
+ *
+ * No CAD kernel is involved: see `detail/step_brep.hpp` for how the faces,
+ * edges and loops are built, and `fit_cad` for the OpenCASCADE route.
  */
 
 // System includes
+#include <cstdint>
 #include <string>
 
 // Project includes
 
 namespace meshioplusplus {
 
+/// How the STEP writer turns facets into faces (since v17.9.0).
+enum class StepFaces : std::int32_t {
+    /// `Fitted` when the mesh carries fitted patches, else `Planar`.
+    Auto = 0,
+    /// Edge-connected coplanar facets merge into one planar face.
+    Planar = 1,
+    /// Fitted patches become analytic faces; the rest as with `Planar`.
+    Fitted = 2,
+    /// One planar face per facet.
+    Facet = 3,
+};
+
+/// Options of `write_step` (since v17.9.0).
+struct StepWriteOptions {
+    /// How facets become faces.
+    StepFaces mFaces = StepFaces::Auto;
+    /// `Fitted` only: how far, as a length, a patch's points may lie from its
+    /// surface for it to be written on it; at most 0 takes three times the
+    /// largest accepted `fit:patch_tolerance`, else `1e-3` of the diagonal.
+    double mTolerance = 0.0;
+};
+
 /**
- * @brief Write a closed surface (or a volume mesh's skin) as a STEP faceted solid.
+ * @brief Write a closed surface (or a volume mesh's skin) as a STEP solid,
+ * one face per surface (`StepFaces::Auto`).
  * @param rPath the `.step` / `.stp` file to create.
  * @param rMesh the mesh to write.
  * @throws WriteError on an open, non-manifold or inconsistently wound surface,
  *         a degenerate facet, a non-finite coordinate, or no facets at all.
  */
 MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief Write a closed surface as a STEP solid with @p rOptions (since v17.9.0).
+ * @throws WriteError as `write_step`, and on an option out of range.
+ */
+MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh,
+                                   const StepWriteOptions& rOptions);
 
 /// Read a STEP file as its triangulation (see "Reading" above).
 /// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
@@ -27791,13 +27840,18 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  * @brief Turn the fitted patches of a closed triangle skin into a CAD solid --
  * plane, sphere, cylinder, cone and torus faces trimmed by the patch
  * boundaries, sewn, checked and optionally written as STEP -- through the
- * optional OpenCASCADE backend.
+ * optional OpenCASCADE backend, or, without it, through the kernel-free
+ * native backend.
  *
  * The last step of the skin-to-CAD chain `segment` -> `fit_primitives` ->
  * `fit_cad`. The input is the closed, consistently wound skin those two
- * annotated: `segment:patch` per cell and the `fit:patch_*` field data. When
- * either is missing, both run first with their default options (a curvature
- * test or a tolerance of your own means running them yourself).
+ * annotated: `segment:patch` per cell and the `fit:patch_*` field data.
+ * Without `segment:patch`, `segment` runs first with `SegmentMethod::Primitive`
+ * (so a fillet comes apart from the planes it is tangent to) and
+ * `fit_primitives` at the same absolute tolerance, `1e-3` of the
+ * bounding-box diagonal; with the patches but without the fit table,
+ * `fit_primitives` runs with its default options (a curvature test or a
+ * tolerance of your own means running them yourself).
  *
  * ### How the solid is built
  *
@@ -27805,8 +27859,8 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  *    `mTypes`, becomes one analytic face on its fitted surface. A patch no
  *    primitive explains becomes, with `mFreeform`, a B-spline face (roadmap
  *    6.3.2, below). Every other surface cell (a patch neither explains, a
- *    type left out, a cell with no patch) becomes planar faces, one per
- *    facet, as the faceted `step` writer writes them.
+ *    type left out, a cell with no patch) becomes planar faces: each group of
+ *    edge-connected coplanar facets one face, its holes inner loops.
  *  - **Freeform faces.** The patch is flattened over its best-fit plane, or,
  *    when that folds it, unrolled around the axis its normals are most
  *    perpendicular to (a cylinder of the circle its points fit). A patch both
@@ -27862,10 +27916,18 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  *  - **Checks, and demotion.** A face that the B-rep check rejects, or that
  *    lies further than the tolerance from the skin (or leaves part of its
  *    patch further than that from the solid), is not kept: its patch is
- *    demoted to facets and the solid is rebuilt, for at most
- *    `mMaxDemotionRounds` rounds, after which every patch is faceted. So a
- *    feature the fitter cannot explain comes back faceted, never silently
- *    wrong.
+ *    demoted to facets and the solid is rebuilt. A failure is blamed on the
+ *    faces the B-rep check names, or that a free edge after sewing touches,
+ *    never on every patch at once; past `mMaxDemotionRounds` rounds each
+ *    round demotes those patches and their neighbours, so the loop ends with
+ *    the patches nothing blames still analytic. A face's distance allowance
+ *    is the tolerance or, when larger, the skin's own chordal sag over its
+ *    patch. So a feature the fitter cannot explain comes back faceted, never
+ *    silently wrong.
+ *  - **Merging.** With `mMergeFaces`, faces on one surface are merged and
+ *    collinear edges joined (`ShapeUpgrade_UnifySameDomain`), kept only when
+ *    the solid stays valid with the same volume, so the faceted remainder
+ *    comes out as polygons rather than triangles.
  *
  * ### Output
  *
@@ -27884,9 +27946,25 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  * millimetres, with the header timestamp pinned so the bytes are
  * reproducible.
  *
- * Built only with `-DMESHIOPLUSPLUS_WITH_OCCT=ON` (OpenCASCADE 7.6 or later,
- * LGPL-2.1 with the OCCT exception, linked dynamically); elsewhere `fit_cad`
- * throws `Unsupported` naming that flag, and `fit_cad_has_occt` is false.
+ * The OpenCASCADE backend is built only with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`
+ * (OpenCASCADE 7.6 or later, LGPL-2.1 with the OCCT exception, linked
+ * dynamically); elsewhere `FitCadBackend::Occt` throws `Unsupported` naming
+ * that flag, `fit_cad_has_occt` is false, and `Auto` runs the native backend.
+ *
+ * ### The native backend
+ *
+ * `FitCadBackend::Native` needs no CAD kernel: every accepted plane, sphere,
+ * cylinder, cone and torus patch whose type is in `mTypes` becomes one
+ * analytic STEP face, bounded by line, circle and polyline edges, and the
+ * rest coplanar polygons -- the kernel-free `step` writer with
+ * `StepFaces::Fitted`. A patch whose corners cannot be moved onto its
+ * surface within the tolerance is demoted to polygons. There are no
+ * freeform, fillet or thread faces and no re-meshing: the returned mesh is
+ * the skin itself with the `fit_cad:*` cell data, `mBrep` is empty,
+ * `mVolume` and `mVolumeRatio` are NaN (`mSkinVolume` is the skin's), and
+ * `mValid` is the writer's topological check (a closed shell, every edge
+ * used twice in opposite senses).
+ *
  * The work is serial, so the output does not depend on the thread count.
  */
 
@@ -27919,6 +27997,19 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
+
+/// Which engine `fit_cad` builds the solid with (since v17.9.0).
+enum class FitCadBackend : std::int32_t {
+    /// OpenCASCADE when the build carries it, else `Native`.
+    Auto = 0,
+    /// OpenCASCADE: analytic, freeform and feature faces, sewn and checked;
+    /// throws `Unsupported` in a build without it.
+    Occt = 1,
+    /// No CAD kernel: the patches `fit_primitives` explains become analytic
+    /// faces and the rest coplanar polygons, written by the kernel-free B-rep
+    /// `step` writer (`StepFaces::Fitted`); no freeform or feature faces.
+    Native = 2,
+};
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -27959,6 +28050,12 @@ struct FitCadOptions {
     /// the patch itself fits, with a straight or a rounded profile, of
     /// constant or varying pitch, and cut on a taper.
     bool mThreads = true;
+    /// Whether faces on one surface are merged and collinear edges joined
+    /// once the solid is built (`ShapeUpgrade_UnifySameDomain`), kept only
+    /// when the solid stays valid with the same volume (since v17.9.0).
+    bool mMergeFaces = true;
+    /// The engine (since v17.9.0).
+    FitCadBackend mBackend = FitCadBackend::Auto;
 };
 
 /// The re-meshed solid and what was built.
@@ -28021,8 +28118,10 @@ struct FitCadResult {
     std::int64_t mNumTaperedThread = 0;
     /// Of the thread faces, those whose pitch varies along them (v17.2.0).
     std::int64_t mNumVariablePitchThread = 0;
-    /// The solid as NURBS faces, loops and edges.
+    /// The solid as NURBS faces, loops and edges (empty from `Native`).
     BrepInfo mBrep;
+    /// The engine that built the solid: `Occt` or `Native` (since v17.9.0).
+    FitCadBackend mBackend = FitCadBackend::Occt;
 };
 
 /**
@@ -32133,6 +32232,9 @@ MESHIOPLUSPLUS_API RepairResult repair(const Mesh& rMesh, const RepairOptions& r
  *    cells the patch holds so far (taken in walk order, so it is
  *    deterministic, and robust to one noisy seed).
  *
+ * With `SegmentMethod::Primitive` the patches follow the surfaces instead of
+ * the angles (see "Primitive method" below).
+ *
  * Open, non-manifold and sharp edges are never crossed. A patch smaller than
  * `mMinPatchCells` is then merged, in one ascending pass, into the neighbouring
  * patch it shares the most edges with (ties to the lowest patch id); a patch
@@ -32143,6 +32245,39 @@ MESHIOPLUSPLUS_API RepairResult repair(const Mesh& rMesh, const RepairOptions& r
  * between the two cells' centroids: an estimate of the larger principal
  * curvature -- `1/r` on a cylinder or sphere of radius `r`, `0` on a plane.
  * It is in inverse length units, so `mCurvatureTolerance` is too.
+ *
+ * ### Primitive method
+ *
+ * A triangle skin exported from CAD meets a fillet's tangent planes at
+ * smooth edges, so angles alone give one patch for both; and a fine
+ * tessellation of a cylinder is smooth everywhere. With
+ * `SegmentMethod::Primitive` (the tolerance `t` is `mTolerance` times the
+ * bounding-box diagonal):
+ *
+ *  1. each **smooth area** (cells connected across smooth edges) that one
+ *     primitive explains -- `fit_primitives`' fit with every point within
+ *     `t` -- is one patch;
+ *  2. any other is **grown** from seeds, largest cell first: from each seed
+ *     a plane grows across smooth edges while every corner of the next cell
+ *     lies within 2% of `t` of it (refitted as it doubles), and a sphere,
+ *     cylinder, cone or torus fitted within `t` to the seed's neighbourhood
+ *     grows the same way;
+ *     the curved region wins when it covers more than 1.5 times the plane's
+ *     area. A plane must hold two cells and 2% of its smooth area, a curved
+ *     region 1% of it and three points per parameter of its primitive (12
+ *     for a sphere, 21 for a torus), and a curved fit's radius must not
+ *     exceed the surface's diagonal. A region is then trimmed to the cells
+ *     its own refit explains within 2% of `t`, and kept when that refit's RMS
+ *     is too. The strict bound is what a CAD tessellation meets, its points
+ *     on its surfaces exactly, and what keeps a plane from taking the first
+ *     strip of a fillet tangent to it; a scan wants a tolerance some fifty
+ *     times its noise. And as a freeform surface fits small spheres and tori
+ *     anywhere, an area the regions explain less than half of is not split
+ *     at all;
+ *  3. cells no primitive claims are grown by angles as above.
+ *
+ * `mNormalToleranceDeg` and `mCurvatureTolerance` apply to step 3 only. The
+ * method has no numpy twin: the Python entry point raises naming the core.
  *
  * ### Output
  *
@@ -32179,6 +32314,19 @@ inline constexpr const char* kSegmentPatchName = "segment:patch";
 /// Field data (Int64, `(m, 3)`): `(a, b, shared edges)` per adjacent patch pair.
 inline constexpr const char* kSegmentAdjacencyName = "segment:adjacency";
 
+/// How `segment` decides where a patch ends.
+enum class SegmentMethod : std::int32_t {
+    /// By angles alone: a patch grows across every smooth edge (the feature,
+    /// normal and curvature tests).
+    Angle = 0,
+    /// By the surfaces the facets lie on: a smooth area one plane, sphere,
+    /// cylinder, cone or torus explains is one patch; any other is split into
+    /// regions grown while one primitive explains their points within the
+    /// tolerance (a fillet apart from the planes it is tangent to), and what
+    /// none explains is grown by angles.
+    Primitive = 1,
+};
+
 /// How `segment` grows its patches.
 struct SegmentOptions {
     /// The largest dihedral angle, in degrees, still crossed; in `[0, 180]`.
@@ -32195,6 +32343,11 @@ struct SegmentOptions {
     std::string mRegion;
     /// The name prefix of the patch regions: `<prefix>:<k>`. Must not be empty.
     std::string mPrefix = "patch";
+    /// How a patch ends (since v17.9.0); `Angle` is the original behaviour.
+    SegmentMethod mMethod = SegmentMethod::Angle;
+    /// `Primitive` only: how far a point may lie from its patch's primitive,
+    /// relative to the bounding-box diagonal of the surface; > 0.
+    double mTolerance = 1e-3;
 };
 
 /// The segmented mesh and what the segmentation found.
@@ -38085,6 +38238,77 @@ inline std::vector<PolyhedronGroup> group_polyhedra_by_node_count(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/polyhedron_groups.hpp =====
+// ===== begin src/cpp/src/detail/primitive_geom.hpp =====
+/**
+ * @file detail/primitive_geom.hpp
+ * @brief Point queries against a fitted primitive -- the distance, the
+ * closest point and the surface normal of a plane, sphere, cylinder, cone or
+ * torus given by its ten `fit:patch_params` entries -- and the per-patch fit
+ * `fit_primitives` runs, for the operations that grow and build on patches
+ * (`segment`'s primitive method, the kernel-free B-rep `step` writer and
+ * `fit_cad`).
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. Every query is
+ * closed-form and serial.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The `fit:patch_params` row length.
+inline constexpr int kPrimitiveParams = 10;
+
+/**
+ * @brief The unsigned distance from @p pP to a primitive.
+ * @param Type 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus.
+ * @return the distance, or +inf for any other type.
+ */
+double primitive_point_distance(std::int64_t Type, const double* pParams, const double* pP);
+
+/// The point of the primitive nearest @p pP (a cone's apex for a point behind
+/// it); false, leaving @p pOut as @p pP, for an unknown type or a point on the
+/// axis of a surface of revolution, where the nearest point is not unique.
+bool primitive_project(std::int64_t Type, const double* pParams, const double* pP, double* pOut);
+
+/// The unit normal at the point of the primitive nearest @p pP, pointing away
+/// from the centre or axis (a plane's: its own normal); false where it is not
+/// defined (see `primitive_project`).
+bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP, double* pOut);
+
+/// One patch fitted the way `fit_primitives` fits it.
+struct PrimitiveFit {
+    std::int64_t mType = 0;  ///< 0 when no type is accepted
+    double mParams[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double mRms = 0.0;
+    double mMax = 0.0;
+};
+
+/**
+ * @brief Fit a primitive to a patch's samples, exactly as `fit_primitives`
+ * fits one patch: the first type of @p Types (bits `1 << type`) in the order
+ * plane, sphere, cylinder, cone, torus whose RMS distance is within @p Tol and
+ * whose share of points within @p Tol is at least @p MinInlierFraction (a
+ * sphere giving way to a later type whose normals agree with the facets').
+ *
+ * @param rPts the patch's points, three per point.
+ * @param rNormals its facets' unit normals, three per facet.
+ * @param rCentres its facets' centroids, three per facet.
+ * @param Tol the absolute tolerance.
+ * (Implemented in `operations/fit_primitives.cpp`.)
+ */
+PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
+                                   const std::vector<double>& rNormals,
+                                   const std::vector<double>& rCentres, double Tol,
+                                   std::uint32_t Types, double MinInlierFraction, int MaxIt);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/primitive_geom.hpp =====
 // ===== begin src/cpp/src/detail/raster.hpp =====
 /**
  * @file detail/raster.hpp
@@ -38938,6 +39162,173 @@ inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/slot_runs.hpp =====
+// ===== begin src/cpp/src/detail/step_brep.hpp =====
+/**
+ * @file detail/step_brep.hpp
+ * @brief The kernel-free STEP B-rep writer behind `StepFaces::Planar` and
+ * `StepFaces::Fitted`: a closed skin as one face per surface instead of one
+ * per facet, with no CAD kernel in the loop.
+ *
+ *  - **Faces.** With fitted patches (`segment:patch` and the `fit:patch_*`
+ *    table of `fit_primitives`), every accepted plane, sphere, cylinder, cone
+ *    or torus patch whose points all lie within the tolerance of its surface
+ *    is one `ADVANCED_FACE` on a `PLANE`, `SPHERICAL_SURFACE`,
+ *    `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE` or `TOROIDAL_SURFACE`. Every
+ *    other facet joins an edge-connected coplanar group (largest facet
+ *    first, every corner within `1e-6` of the diagonal of the seed's plane),
+ *    one `PLANE` face each, holes included; a group whose points all lie
+ *    within the tolerance of an analytic neighbour's surface joins that face.
+ *  - **Edges.** The mesh edges between two faces form chains from corner to
+ *    corner (a point three faces meet at, or where a boundary branches). A
+ *    chain between two planes is split at its corners (Douglas-Peucker) into
+ *    `LINE`s; one beside a curved analytic face is a `CIRCLE` when its points
+ *    lie within the tolerance of a circle about a shared axis (a bore's rim),
+ *    a `LINE` when they lie on a segment, and otherwise a degree-1
+ *    `B_SPLINE_CURVE_WITH_KNOTS` through them; one between a curved face and
+ *    a coplanar group keeps the mesh's straight edges. A closed chain with no
+ *    corner is one closed edge.
+ *  - **Vertices.** A point among analytic faces only is moved onto all their
+ *    surfaces (alternating projections), when that moves it no further than
+ *    the tolerance; any other keeps the mesh position.
+ *  - **Loops.** Each face's boundary is walked through the facet fan around
+ *    every point, so a loop touching itself stays two loops; a planar face's
+ *    loop of largest area is its outer bound. A periodic face has no seam
+ *    edge: STEP allows its bounds without one, and CAD readers add it.
+ *
+ * A patch whose loops do not close is written as coplanar groups instead,
+ * and counted demoted. Deterministic and serial.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// How the B-rep writer builds its faces.
+struct StepBrepOptions {
+    /// Use the fitted patches of `rSurface` (else coplanar groups only).
+    bool mFitted = false;
+    /// The largest distance, as a length, a point may lie from its face's
+    /// surface. At most 0 takes three times the largest accepted
+    /// `fit:patch_tolerance`, else `1e-3` of the bounding-box diagonal.
+    double mTolerance = 0.0;
+};
+
+/// What the B-rep writer wrote.
+struct StepBrepResult {
+    std::vector<std::int64_t> mFaceOfFacet;   ///< per facet: its face (writing order)
+    std::vector<std::int64_t> mTypeOfFacet;   ///< per facet: 0 a coplanar group, else 1..5
+    std::vector<std::int64_t> mPatchOfFacet;  ///< per facet: its `segment:patch`, or -1
+    double mTolerance = 0.0;
+    double mMaxDeviation = 0.0;  ///< the largest distance of a point from its face's surface
+    double mVolume = 0.0;        ///< the skin's enclosed volume
+    bool mValid = false;         ///< every face's loops closed, every edge used twice
+    std::int64_t mNumFaces = 0;
+    std::int64_t mNumPlane = 0;
+    std::int64_t mNumSphere = 0;
+    std::int64_t mNumCylinder = 0;
+    std::int64_t mNumCone = 0;
+    std::int64_t mNumTorus = 0;
+    std::int64_t mNumFacetedFaces = 0;  ///< coplanar-group faces
+    std::int64_t mNumPatches = 0;       ///< rows of the fit table
+    std::int64_t mNumDemoted = 0;       ///< accepted patches written as coplanar groups
+    std::int64_t mNumSolids = 0;
+    std::int64_t mNumLineEdges = 0;
+    std::int64_t mNumCircleEdges = 0;
+    std::int64_t mNumSplineEdges = 0;
+};
+
+/**
+ * @brief Write @p rShell (the facets of @p rSurface) as a STEP B-rep.
+ * @param rSurface the surface the facets came from; its `segment:patch` and
+ *        `fit:patch_*` data are read when `mFitted`.
+ * @throws WriteError on a skin whose faces cannot be closed into loops, or
+ *         when the file cannot be written.
+ */
+StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
+                               const ClosedFacets& rShell, const StepBrepOptions& rOptions);
+
+/// `write_step` with options, also handing back the B-rep writer's report
+/// (left as constructed for `StepFaces::Facet`). Implemented in
+/// `formats/step.cpp`; `fit_cad`'s native backend reads the report.
+void write_step_report(const std::string& rPath, const Mesh& rMesh,
+                       const StepWriteOptions& rOptions, StepBrepResult* pReport);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/step_brep.hpp =====
+// ===== begin src/cpp/src/detail/step_stream.hpp =====
+/**
+ * @file detail/step_stream.hpp
+ * @brief The AP214 file around a STEP B-rep: the header, the product
+ * structure, the units and the geometric context, then the entities a writer
+ * adds one by one (sequential ids), and the shape representation that
+ * collects its solids. Shared by the faceted `step` writer and the
+ * kernel-free B-rep writer (`step_brep`), so both write the same frame.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A STEP REAL: `%.17g`, with the decimal point the grammar requires and an
+/// upper-case exponent ("3" -> "3.", "1e-05" -> "1.E-05").
+std::string step_real(double V);
+
+/// A STEP string body: printable ASCII, apostrophes doubled.
+std::string step_string(const std::string& rText);
+
+/// The entities of one STEP file, written to memory and then to disk.
+class StepStream {
+public:
+    /**
+     * @brief Start a file: the header (with the provenance comment), the
+     * product named after @p rPath's basename, millimetres and radians, and
+     * the world placement.
+     * @param rDescription the `FILE_DESCRIPTION` text.
+     */
+    StepStream(const std::string& rPath, const std::string& rDescription);
+
+    /// Add an entity; returns its id.
+    std::int64_t Ent(const std::string& rBody);
+    /// `#id`.
+    static std::string Ref(std::int64_t Id);
+    /// `(x,y,z)` of three REALs.
+    static std::string Triple(const double* pV);
+    /// Close the representation over @p rSolids (MANIFOLD_SOLID_BREP ids) and
+    /// write the file (nothing, for an empty path).
+    /// @throws WriteError when the file cannot be opened.
+    void Finish(const std::vector<std::int64_t>& rSolids);
+
+private:
+    std::string mPath;
+    std::string mOut;
+    std::int64_t mNext = 1;
+    std::int64_t mShape = 0;    // PRODUCT_DEFINITION_SHAPE
+    std::int64_t mContext = 0;  // the geometric representation context
+    std::int64_t mOrigin = 0;   // the world AXIS2_PLACEMENT_3D
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/step_stream.hpp =====
 // ===== begin src/cpp/src/detail/streamlines.hpp =====
 /**
  * @file detail/streamlines.hpp
@@ -68402,6 +68793,190 @@ std::size_t FacetKeyHash::operator()(const FacetKey& rKey) const {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/polyhedron.cpp =====
+// ===== begin src/cpp/src/detail/primitive_geom.cpp =====
+#include <cmath>
+#include <cstdint>
+#include <limits>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+constexpr double kPgPi = 3.14159265358979323846;
+
+double pg_dot(const double* pA, const double* pB) {
+    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+}
+
+// The radial unit vector of pP about the axis (pX, pD), its height along the
+// axis and its distance from it; false on the axis.
+bool pg_radial(const double* pX, const double* pD, const double* pP, double* pR, double& rH,
+               double& rRho) {
+    const double v[3] = {pP[0] - pX[0], pP[1] - pX[1], pP[2] - pX[2]};
+    rH = pg_dot(v, pD);
+    for (int k = 0; k < 3; ++k)
+        pR[k] = v[k] - rH * pD[k];
+    rRho = std::sqrt(pg_dot(pR, pR));
+    if (!(rRho > 0.0))
+        return false;
+    for (int k = 0; k < 3; ++k)
+        pR[k] /= rRho;
+    return true;
+}
+
+}  // namespace
+
+double primitive_point_distance(std::int64_t Type, const double* pParams, const double* pP) {
+    const double* x = pParams;
+    const double* d = pParams + 3;
+    const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
+    switch (Type) {
+        case 1:
+            return std::fabs(pg_dot(v, d));
+        case 2:
+            return std::fabs(std::sqrt(pg_dot(v, v)) - pParams[6]);
+        case 3:
+        case 4:
+        case 5: {
+            const double h = pg_dot(v, d);
+            const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
+            const double rho = std::sqrt(pg_dot(r, r));
+            if (Type == 3)
+                return std::fabs(rho - pParams[6]);
+            if (Type == 4) {
+                const double a = pParams[8] * kPgPi / 180.0;
+                if (h * std::cos(a) + rho * std::sin(a) < 0.0)
+                    return std::sqrt(pg_dot(v, v));  // behind the apex
+                return std::fabs(rho * std::cos(a) - h * std::sin(a));
+            }
+            const double radial = rho - pParams[6];
+            return std::fabs(std::sqrt(radial * radial + h * h) - pParams[7]);
+        }
+        default:
+            return std::numeric_limits<double>::infinity();
+    }
+}
+
+bool primitive_project(std::int64_t Type, const double* pParams, const double* pP, double* pOut) {
+    for (int k = 0; k < 3; ++k)
+        pOut[k] = pP[k];
+    const double* x = pParams;
+    const double* d = pParams + 3;
+    switch (Type) {
+        case 1: {
+            const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
+            const double h = pg_dot(v, d);
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = pP[k] - h * d[k];
+            return true;
+        }
+        case 2: {
+            const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
+            const double len = std::sqrt(pg_dot(v, v));
+            if (!(len > 0.0))
+                return false;
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = x[k] + pParams[6] * v[k] / len;
+            return true;
+        }
+        case 3: {
+            double r[3], h, rho;
+            if (!pg_radial(x, d, pP, r, h, rho))
+                return false;
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = x[k] + h * d[k] + pParams[6] * r[k];
+            return true;
+        }
+        case 4: {
+            double r[3], h, rho;
+            if (!pg_radial(x, d, pP, r, h, rho))
+                return false;
+            const double a = pParams[8] * kPgPi / 180.0;
+            const double t = h * std::cos(a) + rho * std::sin(a);
+            if (t <= 0.0) {
+                for (int k = 0; k < 3; ++k)
+                    pOut[k] = x[k];
+                return true;
+            }
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = x[k] + t * (std::cos(a) * d[k] + std::sin(a) * r[k]);
+            return true;
+        }
+        case 5: {
+            double r[3], h, rho;
+            if (!pg_radial(x, d, pP, r, h, rho))
+                return false;
+            double q[3], w[3];
+            for (int k = 0; k < 3; ++k) {
+                q[k] = x[k] + pParams[6] * r[k];
+                w[k] = pP[k] - q[k];
+            }
+            const double len = std::sqrt(pg_dot(w, w));
+            if (!(len > 0.0))
+                return false;
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = q[k] + pParams[7] * w[k] / len;
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP, double* pOut) {
+    const double* x = pParams;
+    const double* d = pParams + 3;
+    switch (Type) {
+        case 1:
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = d[k];
+            return true;
+        case 2: {
+            const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
+            const double len = std::sqrt(pg_dot(v, v));
+            if (!(len > 0.0))
+                return false;
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = v[k] / len;
+            return true;
+        }
+        case 3: {
+            double h, rho;
+            return pg_radial(x, d, pP, pOut, h, rho);
+        }
+        case 4: {
+            double r[3], h, rho;
+            if (!pg_radial(x, d, pP, r, h, rho))
+                return false;
+            const double a = pParams[8] * kPgPi / 180.0;
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = std::cos(a) * r[k] - std::sin(a) * d[k];
+            return true;
+        }
+        case 5: {
+            double r[3], h, rho;
+            if (!pg_radial(x, d, pP, r, h, rho))
+                return false;
+            double w[3];
+            for (int k = 0; k < 3; ++k)
+                w[k] = pP[k] - (x[k] + pParams[6] * r[k]);
+            const double len = std::sqrt(pg_dot(w, w));
+            if (!(len > 0.0))
+                return false;
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = w[k] / len;
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/primitive_geom.cpp =====
 // ===== begin src/cpp/src/detail/projection.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -70891,6 +71466,1272 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/render_field.cpp =====
+// ===== begin src/cpp/src/detail/step_brep.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+constexpr const char* kSbPrefix = "meshio++: step: ";
+constexpr double kSbPi = 3.14159265358979323846;
+constexpr int kSbParams = kPrimitiveParams;
+
+double sb_dot(const double* pA, const double* pB) {
+    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+}
+
+double sb_dist(const double* pA, const double* pB) {
+    const double d[3] = {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
+    return std::sqrt(sb_dot(d, d));
+}
+
+// A unit direction perpendicular to unit pA: the axis least aligned with it,
+// made orthogonal.
+void sb_perpendicular(const double* pA, double* pOut) {
+    int k = 0;
+    for (int j = 1; j < 3; ++j)
+        if (std::fabs(pA[j]) < std::fabs(pA[k]))
+            k = j;
+    double e[3] = {0.0, 0.0, 0.0};
+    e[k] = 1.0;
+    const double h = sb_dot(e, pA);
+    for (int j = 0; j < 3; ++j)
+        pOut[j] = e[j] - h * pA[j];
+    const double len = std::sqrt(sb_dot(pOut, pOut));
+    for (int j = 0; j < 3; ++j)
+        pOut[j] /= len;
+}
+
+// Distance from pP to the segment pA-pB.
+double sb_segment_distance(const double* pP, const double* pA, const double* pB) {
+    const double ab[3] = {pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]};
+    const double ap[3] = {pP[0] - pA[0], pP[1] - pA[1], pP[2] - pA[2]};
+    const double len2 = sb_dot(ab, ab);
+    double t = len2 > 0.0 ? sb_dot(ap, ab) / len2 : 0.0;
+    t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+    const double q[3] = {pA[0] + t * ab[0], pA[1] + t * ab[1], pA[2] + t * ab[2]};
+    return sb_dist(pP, q);
+}
+
+std::uint64_t sb_key(std::int64_t U, std::int64_t V) {
+    const std::uint64_t lo = static_cast<std::uint64_t>(std::min(U, V));
+    const std::uint64_t hi = static_cast<std::uint64_t>(std::max(U, V));
+    return (lo << 32) ^ hi ^ (hi >> 32 << 48);
+}
+
+// One row of the fit table.
+struct SbRow {
+    std::int64_t mLabel = -1;
+    std::int64_t mType = 0;
+    double mParams[kSbParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double mTolerance = 0.0;
+    bool mAccepted = false;  // a finite primitive of type 1..5
+    bool mAnalytic = false;  // written on its surface (this round)
+    bool mSense = true;      // its surface's normal agrees with the facets'
+    // A closed sphere or torus patch with no boundary has no STEP face: it is
+    // split in two by a plane through its centre, the far half going to its
+    // twin row.
+    std::int64_t mTwin = -1;  // this row's twin (on an input row)
+    bool mSplit = false;
+    double mSplitNormal[3] = {1.0, 0.0, 0.0};
+};
+
+// A chain of boundary mesh edges between two faces.
+struct SbChain {
+    std::vector<std::int64_t> mVerts;
+    std::int64_t mFwd = -1;  // the group whose facets walk mVerts forwards
+    std::int64_t mBwd = -1;
+};
+
+// An EDGE_CURVE: verts [mFrom, mTo] of a chain, its kind and geometry.
+struct SbSegment {
+    std::size_t mChain = 0;
+    std::size_t mFrom = 0;
+    std::size_t mTo = 0;
+    int mKind = 0;  // 0 line, 1 circle, 2 polyline B-spline
+    double mCentre[3] = {0, 0, 0};
+    double mAxis[3] = {0, 0, 1};
+    double mRadius = 0.0;
+    std::int64_t mId = 0;
+};
+
+// Douglas-Peucker breakpoints of verts [I0, I1] (both kept).
+void sb_split(const std::vector<std::int64_t>& rV, const std::vector<double>& rPos, std::size_t I0,
+              std::size_t I1, double Tol, std::vector<std::size_t>& rOut) {
+    double worst = -1.0;
+    std::size_t at = I0;
+    for (std::size_t i = I0 + 1; i < I1; ++i) {
+        const double d = sb_segment_distance(&rPos[static_cast<std::size_t>(rV[i]) * 3],
+                                             &rPos[static_cast<std::size_t>(rV[I0]) * 3],
+                                             &rPos[static_cast<std::size_t>(rV[I1]) * 3]);
+        if (d > worst) {
+            worst = d;
+            at = i;
+        }
+    }
+    if (worst > Tol) {
+        sb_split(rV, rPos, I0, at, Tol, rOut);
+        rOut.push_back(at);
+        sb_split(rV, rPos, at, I1, Tol, rOut);
+    }
+}
+
+}  // namespace
+
+StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
+                               const ClosedFacets& rShell, const StepBrepOptions& rOptions) {
+    StepBrepResult res;
+    const std::size_t nf = rShell.NumFacets();
+    const std::size_t npts = rShell.mXyz.size() / 3;
+    const std::vector<double>& xyz = rShell.mXyz;
+    std::vector<std::int64_t> start = rShell.mStart;
+    std::vector<std::int64_t> nodes = rShell.mNodes;
+    std::vector<double> normals = rShell.mNormals;
+
+    // Pieces, and the ones wound inwards turned outwards.
+    std::vector<std::size_t> parent(nf);
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    auto find = [&](std::size_t X) {
+        while (parent[X] != X) {
+            parent[X] = parent[parent[X]];
+            X = parent[X];
+        }
+        return X;
+    };
+    {
+        std::unordered_map<std::uint64_t, std::size_t> owner;
+        owner.reserve(nodes.size());
+        for (std::size_t f = 0; f < nf; ++f) {
+            const std::int64_t b = start[f], s = start[f + 1] - b;
+            for (std::int64_t k = 0; k < s; ++k) {
+                const std::uint64_t key = sb_key(nodes[static_cast<std::size_t>(b + k)],
+                                                 nodes[static_cast<std::size_t>(b + (k + 1) % s)]);
+                auto ins = owner.emplace(key, f);
+                if (!ins.second) {
+                    const std::size_t ra = find(f), rb = find(ins.first->second);
+                    if (ra != rb)
+                        parent[std::max(ra, rb)] = std::min(ra, rb);
+                }
+            }
+        }
+    }
+    std::vector<std::size_t> piece(nf);
+    std::vector<std::size_t> roots;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t r = find(f);
+        if (r == f)
+            roots.push_back(f);
+        piece[f] = static_cast<std::size_t>(std::lower_bound(roots.begin(), roots.end(), r) -
+                                            roots.begin());
+    }
+    const std::size_t npieces = roots.size();
+    std::vector<double> volume(npieces, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = start[f], s = start[f + 1] - b;
+        const double* p0 = &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b)]) * 3];
+        for (std::int64_t k = 1; k + 1 < s; ++k) {
+            const double* p1 =
+                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
+            const double* p2 =
+                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k + 1)]) * 3];
+            volume[piece[f]] +=
+                (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) - p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
+                 p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
+                6.0;
+        }
+    }
+    for (std::size_t f = 0; f < nf; ++f)
+        if (volume[piece[f]] < 0.0) {
+            std::reverse(nodes.begin() + start[f], nodes.begin() + start[f + 1]);
+            for (int k = 0; k < 3; ++k)
+                normals[f * 3 + static_cast<std::size_t>(k)] =
+                    -normals[f * 3 + static_cast<std::size_t>(k)];
+        }
+    for (double v : volume)
+        res.mVolume += std::fabs(v);
+
+    // Per undirected edge, the facets walking it lo -> hi and hi -> lo.
+    std::unordered_map<std::uint64_t, std::array<std::int64_t, 2>> walkers;
+    walkers.reserve(nodes.size());
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = start[f], s = start[f + 1] - b;
+        for (std::int64_t k = 0; k < s; ++k) {
+            const std::int64_t u = nodes[static_cast<std::size_t>(b + k)];
+            const std::int64_t v = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
+            auto ins = walkers.emplace(sb_key(u, v), std::array<std::int64_t, 2>{-1, -1});
+            ins.first->second[u < v ? 0 : 1] = static_cast<std::int64_t>(f);
+        }
+    }
+    auto walker = [&](std::int64_t U, std::int64_t V) -> std::int64_t {
+        auto it = walkers.find(sb_key(U, V));
+        if (it == walkers.end())
+            return -1;
+        return U < V ? it->second[0] : it->second[1];
+    };
+    auto ring_next = [&](std::size_t F, std::int64_t V) -> std::int64_t {
+        const std::int64_t b = start[F], n = start[F + 1] - b;
+        for (std::int64_t k = 0; k < n; ++k)
+            if (nodes[static_cast<std::size_t>(b + k)] == V)
+                return nodes[static_cast<std::size_t>(b + (k + 1) % n)];
+        return -1;
+    };
+
+    double lo[3], hi[3];
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = std::numeric_limits<double>::infinity();
+        hi[k] = -lo[k];
+    }
+    for (std::int64_t v : nodes)
+        for (int k = 0; k < 3; ++k) {
+            lo[k] =
+                std::min(lo[k], xyz[static_cast<std::size_t>(v) * 3 + static_cast<std::size_t>(k)]);
+            hi[k] =
+                std::max(hi[k], xyz[static_cast<std::size_t>(v) * 3 + static_cast<std::size_t>(k)]);
+        }
+    const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    const double diag = std::sqrt(sb_dot(ext, ext));
+    const double eps = 1e-6 * diag;
+
+    // The fit table and each facet's row.
+    std::vector<SbRow> rows;
+    std::vector<std::int64_t> row_of(nf, -1);
+    std::vector<std::int64_t> label_of(nf, -1);
+    const bool has_patches = rSurface.HasCellData("segment:patch");
+    if (has_patches) {
+        const std::vector<std::int64_t> bases = block_bases(rSurface);
+        std::vector<std::int64_t> label(static_cast<std::size_t>(total_cells(bases)), -1);
+        for (std::size_t b = 0; b < rSurface.NumCellBlocks(); ++b) {
+            const NDArray& a = rSurface.CellData("segment:patch", b);
+            const std::size_t nc = rSurface.Cells(b).NumCells();
+            for (std::size_t c = 0; c < nc && c < a.Size(); ++c)
+                label[static_cast<std::size_t>(bases[b]) + c] = read_int(a, c);
+        }
+        for (std::size_t f = 0; f < nf; ++f)
+            label_of[f] = label[static_cast<std::size_t>(rShell.mCell[f])];
+    }
+    const bool has_table =
+        rSurface.HasFieldData("fit:patch_id") && rSurface.HasFieldData("fit:patch_type") &&
+        rSurface.HasFieldData("fit:patch_params") && rSurface.HasFieldData("fit:patch_tolerance");
+    if (rOptions.mFitted && has_patches && has_table) {
+        const NDArray& ids = rSurface.FieldData("fit:patch_id");
+        const NDArray& types = rSurface.FieldData("fit:patch_type");
+        const NDArray& params = rSurface.FieldData("fit:patch_params");
+        const NDArray& tols = rSurface.FieldData("fit:patch_tolerance");
+        const std::size_t m = ids.Size();
+        if (types.Size() != m || tols.Size() != m ||
+            params.Size() != m * static_cast<std::size_t>(kSbParams))
+            throw WriteError(std::string(kSbPrefix) +
+                             "the fit:patch_* arrays disagree on the number of patches");
+        rows.resize(m);
+        std::unordered_map<std::int64_t, std::int64_t> by_label;
+        for (std::size_t r = 0; r < m; ++r) {
+            SbRow& row = rows[r];
+            row.mLabel = read_int(ids, r);
+            row.mType = read_int(types, r);
+            bool finite = true;
+            for (int k = 0; k < kSbParams; ++k) {
+                row.mParams[k] = read_double(params, r * kSbParams + static_cast<std::size_t>(k));
+                finite = finite && std::isfinite(row.mParams[k]);
+            }
+            row.mTolerance = read_double(tols, r);
+            row.mAccepted = row.mType >= 1 && row.mType <= 5 && finite;
+            by_label.emplace(row.mLabel, static_cast<std::int64_t>(r));
+        }
+        for (std::size_t f = 0; f < nf; ++f) {
+            auto it = by_label.find(label_of[f]);
+            if (it != by_label.end())
+                row_of[f] = it->second;
+        }
+    }
+    res.mNumPatches = static_cast<std::int64_t>(rows.size());
+    const std::size_t num_input_rows = rows.size();
+    for (std::size_t r = 0; r < num_input_rows; ++r) {
+        if (!rows[r].mAccepted || (rows[r].mType != 2 && rows[r].mType != 5))
+            continue;
+        SbRow twin = rows[r];
+        twin.mAccepted = false;
+        rows[r].mTwin = static_cast<std::int64_t>(rows.size());
+        if (rows[r].mType == 5)
+            sb_perpendicular(rows[r].mParams + 3, rows[r].mSplitNormal);
+        rows.push_back(twin);
+    }
+    double tol = rOptions.mTolerance;
+    if (!(tol > 0.0)) {
+        double largest = 0.0;
+        for (const SbRow& r : rows)
+            if (r.mAccepted && std::isfinite(r.mTolerance))
+                largest = std::max(largest, r.mTolerance);
+        tol = largest > 0.0 ? 3.0 * largest : 1e-3 * diag;
+    }
+    res.mTolerance = tol;
+    const std::int64_t m = static_cast<std::int64_t>(rows.size());
+
+    // A row is analytic when every point of its facets lies within the
+    // tolerance; its sense from the facets' normals.
+    {
+        std::vector<double> worst(rows.size(), 0.0), agree(rows.size(), 0.0);
+        std::vector<std::uint8_t> present(rows.size(), 0);
+        for (std::size_t f = 0; f < nf; ++f) {
+            const std::int64_t r = row_of[f];
+            if (r < 0 || !rows[static_cast<std::size_t>(r)].mAccepted)
+                continue;
+            const SbRow& row = rows[static_cast<std::size_t>(r)];
+            present[static_cast<std::size_t>(r)] = 1;
+            double c[3] = {0.0, 0.0, 0.0};
+            const std::int64_t b = start[f], s = start[f + 1] - b;
+            for (std::int64_t k = 0; k < s; ++k) {
+                const double* p =
+                    &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
+                worst[static_cast<std::size_t>(r)] =
+                    std::max(worst[static_cast<std::size_t>(r)],
+                             primitive_point_distance(row.mType, row.mParams, p));
+                for (int j = 0; j < 3; ++j)
+                    c[j] += p[j] / static_cast<double>(s);
+            }
+            double n[3];
+            if (primitive_normal(row.mType, row.mParams, c, n))
+                agree[static_cast<std::size_t>(r)] += sb_dot(n, &normals[f * 3]);
+        }
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            rows[r].mAnalytic = rows[r].mAccepted && present[r] && worst[r] <= tol;
+            rows[r].mSense = agree[r] >= 0.0;
+            if (rows[r].mAccepted && present[r] && !rows[r].mAnalytic)
+                ++res.mNumDemoted;
+        }
+    }
+
+    // Build rounds: a row whose loops fail is demoted and the faces rebuilt.
+    for (;;) {
+        // Groups: analytic rows, then coplanar groups `m + seed`.
+        std::vector<std::int64_t> group(nf, -1);
+        for (std::size_t f = 0; f < nf; ++f) {
+            if (row_of[f] < 0 || !rows[static_cast<std::size_t>(row_of[f])].mAnalytic)
+                continue;
+            const SbRow& row = rows[static_cast<std::size_t>(row_of[f])];
+            group[f] = row_of[f];
+            if (row.mSplit) {
+                double side = 0.0;
+                for (std::int64_t k = start[f]; k < start[f + 1]; ++k)
+                    for (int j = 0; j < 3; ++j)
+                        side +=
+                            (xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(k)]) * 3 +
+                                 static_cast<std::size_t>(j)] -
+                             row.mParams[j]) *
+                            row.mSplitNormal[j];
+                if (side < 0.0)
+                    group[f] = row.mTwin;
+            }
+        }
+        {
+            std::vector<double> area(nf, 0.0);
+            for (std::size_t f = 0; f < nf; ++f) {
+                const std::int64_t b = start[f], s = start[f + 1] - b;
+                double twice[3] = {0.0, 0.0, 0.0};
+                for (std::int64_t k = 0; k < s; ++k) {
+                    const double* a =
+                        &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
+                    const double* e = &xyz[static_cast<std::size_t>(
+                                               nodes[static_cast<std::size_t>(b + (k + 1) % s)]) *
+                                           3];
+                    twice[0] += a[1] * e[2] - a[2] * e[1];
+                    twice[1] += a[2] * e[0] - a[0] * e[2];
+                    twice[2] += a[0] * e[1] - a[1] * e[0];
+                }
+                area[f] = 0.5 * std::sqrt(sb_dot(twice, twice));
+            }
+            std::vector<std::size_t> order(nf);
+            std::iota(order.begin(), order.end(), std::size_t{0});
+            std::stable_sort(order.begin(), order.end(),
+                             [&](std::size_t A, std::size_t B) { return area[A] > area[B]; });
+            std::vector<std::size_t> queue;
+            for (std::size_t seed : order) {
+                if (group[seed] != -1)
+                    continue;
+                const std::int64_t id = m + static_cast<std::int64_t>(seed);
+                const double* p0 =
+                    &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(start[seed])]) *
+                         3];
+                const double* n0 = &normals[seed * 3];
+                group[seed] = id;
+                queue.assign(1, seed);
+                for (std::size_t q = 0; q < queue.size(); ++q) {
+                    const std::size_t f = queue[q];
+                    const std::int64_t b = start[f], s = start[f + 1] - b;
+                    for (std::int64_t k = 0; k < s; ++k) {
+                        const std::int64_t u = nodes[static_cast<std::size_t>(b + k)];
+                        const std::int64_t v = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
+                        const std::int64_t other = walker(v, u);
+                        if (other < 0)
+                            continue;
+                        const std::size_t o = static_cast<std::size_t>(other);
+                        if (group[o] != -1 || sb_dot(&normals[o * 3], n0) <= 0.0)
+                            continue;
+                        bool flat = true;
+                        for (std::int64_t j = start[o]; j < start[o + 1] && flat; ++j) {
+                            const double* p =
+                                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(j)]) *
+                                     3];
+                            const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
+                            flat = std::fabs(sb_dot(d, n0)) <= eps;
+                        }
+                        if (!flat)
+                            continue;
+                        group[o] = id;
+                        queue.push_back(o);
+                    }
+                }
+            }
+        }
+        auto analytic_group = [&](std::int64_t G) { return G >= 0 && G < m; };
+        // A coplanar group every point of which lies on an analytic
+        // neighbour's surface joins that face (the lowest such row).
+        {
+            std::map<std::int64_t, std::vector<std::size_t>> members;
+            for (std::size_t f = 0; f < nf; ++f)
+                if (!analytic_group(group[f]))
+                    members[group[f]].push_back(f);
+            for (const auto& kv : members) {
+                std::int64_t best = -1;
+                for (std::size_t f : kv.second) {
+                    const std::int64_t b = start[f], s = start[f + 1] - b;
+                    for (std::int64_t k = 0; k < s; ++k) {
+                        const std::int64_t u = nodes[static_cast<std::size_t>(b + k)];
+                        const std::int64_t v = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
+                        const std::int64_t o = walker(v, u);
+                        if (o < 0 || !analytic_group(group[static_cast<std::size_t>(o)]))
+                            continue;
+                        const std::int64_t g = group[static_cast<std::size_t>(o)];
+                        if (best >= 0 && g >= best)
+                            continue;
+                        const SbRow& row = rows[static_cast<std::size_t>(g)];
+                        bool on = true;
+                        for (std::size_t h : kv.second)
+                            for (std::int64_t j = start[h]; j < start[h + 1] && on; ++j)
+                                on = primitive_point_distance(
+                                         row.mType, row.mParams,
+                                         &xyz[static_cast<std::size_t>(
+                                                  nodes[static_cast<std::size_t>(j)]) *
+                                              3]) <= tol;
+                        if (on)
+                            best = g;
+                    }
+                }
+                if (best >= 0)
+                    for (std::size_t f : kv.second)
+                        group[f] = best;
+            }
+        }
+
+        // The groups around each point, and the point positions.
+        std::vector<std::vector<std::int64_t>> groups_at(npts);
+        for (std::size_t f = 0; f < nf; ++f)
+            for (std::int64_t k = start[f]; k < start[f + 1]; ++k) {
+                std::vector<std::int64_t>& g =
+                    groups_at[static_cast<std::size_t>(nodes[static_cast<std::size_t>(k)])];
+                if (std::find(g.begin(), g.end(), group[f]) == g.end())
+                    g.push_back(group[f]);
+            }
+        for (auto& g : groups_at)
+            std::sort(g.begin(), g.end());
+        std::vector<double> pos = xyz;
+        for (std::size_t v = 0; v < npts; ++v) {
+            const std::vector<std::int64_t>& g = groups_at[v];
+            if (g.empty() || !std::all_of(g.begin(), g.end(), analytic_group))
+                continue;
+            double q[3] = {xyz[v * 3], xyz[v * 3 + 1], xyz[v * 3 + 2]};
+            for (int it = 0; it < (g.size() > 1 ? 8 : 1); ++it)
+                for (std::int64_t r : g) {
+                    double out[3];
+                    if (primitive_project(rows[static_cast<std::size_t>(r)].mType,
+                                          rows[static_cast<std::size_t>(r)].mParams, q, out))
+                        for (int j = 0; j < 3; ++j)
+                            q[j] = out[j];
+                }
+            if (sb_dist(q, &xyz[v * 3]) <= tol)
+                for (int j = 0; j < 3; ++j)
+                    pos[v * 3 + static_cast<std::size_t>(j)] = q[j];
+        }
+
+        // Boundary edges and their chains.
+        std::vector<std::pair<std::int64_t, std::int64_t>> bedges;
+        for (const auto& kv : walkers) {
+            const std::int64_t fa = kv.second[0], fb = kv.second[1];
+            if (fa < 0 || fb < 0)
+                throw WriteError(std::string(kSbPrefix) + "the surface is not closed");
+            if (group[static_cast<std::size_t>(fa)] == group[static_cast<std::size_t>(fb)])
+                continue;
+            std::int64_t u = -1, v = -1;
+            // Recover the endpoints from the facet that walks lo -> hi.
+            const std::int64_t b = start[static_cast<std::size_t>(fa)],
+                               s = start[static_cast<std::size_t>(fa) + 1] - b;
+            for (std::int64_t k = 0; k < s; ++k) {
+                const std::int64_t x = nodes[static_cast<std::size_t>(b + k)];
+                const std::int64_t y = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
+                if (x < y && sb_key(x, y) == kv.first) {
+                    u = x;
+                    v = y;
+                    break;
+                }
+            }
+            bedges.emplace_back(u, v);
+        }
+        std::sort(bedges.begin(), bedges.end());
+        std::vector<std::vector<std::int64_t>> nbr(npts);
+        for (const auto& e : bedges) {
+            nbr[static_cast<std::size_t>(e.first)].push_back(e.second);
+            nbr[static_cast<std::size_t>(e.second)].push_back(e.first);
+        }
+        for (auto& n : nbr)
+            std::sort(n.begin(), n.end());
+        auto corner = [&](std::int64_t V) {
+            const std::size_t v = static_cast<std::size_t>(V);
+            return nbr[v].size() != 2 || groups_at[v].size() >= 3;
+        };
+        std::unordered_map<std::uint64_t, std::uint8_t> taken;
+        taken.reserve(bedges.size());
+        for (const auto& e : bedges)
+            taken.emplace(sb_key(e.first, e.second), 0);
+        auto take = [&](std::int64_t U, std::int64_t V) {
+            auto it = taken.find(sb_key(U, V));
+            if (it == taken.end() || it->second)
+                return false;
+            it->second = 1;
+            return true;
+        };
+        std::vector<SbChain> chains;
+        auto walk = [&](std::int64_t Start, std::int64_t First, bool Loop) {
+            SbChain c;
+            c.mVerts = {Start, First};
+            std::int64_t prev = Start, cur = First;
+            while (!(Loop ? cur == Start : corner(cur))) {
+                std::int64_t next = -1;
+                for (std::int64_t n : nbr[static_cast<std::size_t>(cur)])
+                    if (n != prev && take(cur, n)) {
+                        next = n;
+                        break;
+                    }
+                if (next < 0) {
+                    if (Loop && take(cur, Start))
+                        c.mVerts.push_back(Start);
+                    break;
+                }
+                c.mVerts.push_back(next);
+                prev = cur;
+                cur = next;
+            }
+            const std::int64_t f = walker(c.mVerts[0], c.mVerts[1]);
+            const std::int64_t g = walker(c.mVerts[1], c.mVerts[0]);
+            c.mFwd = group[static_cast<std::size_t>(f)];
+            c.mBwd = group[static_cast<std::size_t>(g)];
+            chains.push_back(std::move(c));
+        };
+        for (std::int64_t v = 0; v < static_cast<std::int64_t>(npts); ++v) {
+            if (nbr[static_cast<std::size_t>(v)].empty() || !corner(v))
+                continue;
+            for (std::int64_t n : nbr[static_cast<std::size_t>(v)])
+                if (take(v, n))
+                    walk(v, n, false);
+        }
+        for (const auto& e : bedges)
+            if (take(e.first, e.second))
+                walk(e.first, e.second, true);
+
+        // Segments: the EDGE_CURVEs each chain is cut into.
+        auto planar_group = [&](std::int64_t G) {
+            return !analytic_group(G) || rows[static_cast<std::size_t>(G)].mType == 1;
+        };
+        std::vector<SbSegment> segs;
+        for (std::size_t ci = 0; ci < chains.size(); ++ci) {
+            const SbChain& c = chains[ci];
+            const std::vector<std::int64_t>& vs = c.mVerts;
+            const bool closed = vs.front() == vs.back();
+            const std::size_t last = vs.size() - 1;
+            auto add = [&](std::size_t A, std::size_t B, int Kind) {
+                SbSegment s;
+                s.mChain = ci;
+                s.mFrom = A;
+                s.mTo = B;
+                s.mKind = Kind;
+                segs.push_back(s);
+                return segs.size() - 1;
+            };
+            auto lines = [&](double LineTol) {
+                std::vector<std::size_t> cut{0};
+                if (closed) {
+                    // Split a closed chain at its point farthest from the start.
+                    std::size_t far = 1;
+                    double best = -1.0;
+                    for (std::size_t i = 1; i < last; ++i) {
+                        const double d = sb_dist(&pos[static_cast<std::size_t>(vs[i]) * 3],
+                                                 &pos[static_cast<std::size_t>(vs[0]) * 3]);
+                        if (d > best) {
+                            best = d;
+                            far = i;
+                        }
+                    }
+                    sb_split(vs, pos, 0, far, LineTol, cut);
+                    cut.push_back(far);
+                    sb_split(vs, pos, far, last, LineTol, cut);
+                } else {
+                    sb_split(vs, pos, 0, last, LineTol, cut);
+                }
+                cut.push_back(last);
+                for (std::size_t i = 0; i + 1 < cut.size(); ++i)
+                    add(cut[i], cut[i + 1], 0);
+            };
+            const bool flat_side = !analytic_group(c.mFwd) || !analytic_group(c.mBwd);
+            if (planar_group(c.mFwd) && planar_group(c.mBwd)) {
+                lines(flat_side ? eps : tol);
+                continue;
+            }
+            if (flat_side) {
+                for (std::size_t i = 0; i < last; ++i)
+                    add(i, i + 1, 0);
+                continue;
+            }
+            // Two analytic faces, one of them curved: a circle about a shared
+            // axis, a straight line, or a polyline B-spline.
+            bool done = false;
+            std::vector<std::array<double, 6>> axes;
+            for (std::int64_t g : {c.mFwd, c.mBwd}) {
+                const SbRow& r = rows[static_cast<std::size_t>(g)];
+                if (r.mType >= 3)
+                    axes.push_back({r.mParams[0], r.mParams[1], r.mParams[2], r.mParams[3],
+                                    r.mParams[4], r.mParams[5]});
+            }
+            {
+                const SbRow& a = rows[static_cast<std::size_t>(c.mFwd)];
+                const SbRow& b = rows[static_cast<std::size_t>(c.mBwd)];
+                const SbRow* sphere = a.mType == 2 ? &a : (b.mType == 2 ? &b : nullptr);
+                const SbRow* other = sphere == &a ? &b : &a;
+                if (sphere != nullptr && other->mType == 1)
+                    axes.push_back({sphere->mParams[0], sphere->mParams[1], sphere->mParams[2],
+                                    other->mParams[3], other->mParams[4], other->mParams[5]});
+                if (a.mType == 2 && b.mType == 2) {
+                    double d[3] = {b.mParams[0] - a.mParams[0], b.mParams[1] - a.mParams[1],
+                                   b.mParams[2] - a.mParams[2]};
+                    const double len = std::sqrt(sb_dot(d, d));
+                    if (len > 0.0)
+                        axes.push_back({a.mParams[0], a.mParams[1], a.mParams[2], d[0] / len,
+                                        d[1] / len, d[2] / len});
+                }
+            }
+            for (const auto& ax : axes) {
+                const double* x = ax.data();
+                const double* d = ax.data() + 3;
+                std::vector<double> h(vs.size()), rho(vs.size());
+                double hm = 0.0, rm = 0.0;
+                for (std::size_t i = 0; i < vs.size(); ++i) {
+                    const double* p = &pos[static_cast<std::size_t>(vs[i]) * 3];
+                    const double v[3] = {p[0] - x[0], p[1] - x[1], p[2] - x[2]};
+                    h[i] = sb_dot(v, d);
+                    const double r[3] = {v[0] - h[i] * d[0], v[1] - h[i] * d[1],
+                                         v[2] - h[i] * d[2]};
+                    rho[i] = std::sqrt(sb_dot(r, r));
+                    hm += h[i];
+                    rm += rho[i];
+                }
+                hm /= static_cast<double>(vs.size());
+                rm /= static_cast<double>(vs.size());
+                bool fits = rm > tol;
+                for (std::size_t i = 0; i < vs.size() && fits; ++i)
+                    fits = std::fabs(h[i] - hm) <= tol && std::fabs(rho[i] - rm) <= tol;
+                if (!fits)
+                    continue;
+                const std::size_t k = add(0, last, 1);
+                SbSegment& s = segs[k];
+                for (int j = 0; j < 3; ++j) {
+                    s.mCentre[j] = x[j] + hm * d[j];
+                    s.mAxis[j] = d[j];
+                }
+                s.mRadius = rm;
+                done = true;
+                break;
+            }
+            if (done)
+                continue;
+            if (!closed) {
+                bool straight = true;
+                for (std::size_t i = 1; i < last && straight; ++i)
+                    straight =
+                        sb_segment_distance(&pos[static_cast<std::size_t>(vs[i]) * 3],
+                                            &pos[static_cast<std::size_t>(vs[0]) * 3],
+                                            &pos[static_cast<std::size_t>(vs[last]) * 3]) <= tol;
+                if (straight) {
+                    add(0, last, 0);
+                    continue;
+                }
+            }
+            add(0, last, 2);
+        }
+
+        // Each boundary edge's segment, and whether the segment runs lo -> hi.
+        std::unordered_map<std::uint64_t, std::pair<std::size_t, bool>> seg_of;
+        seg_of.reserve(bedges.size());
+        for (std::size_t si = 0; si < segs.size(); ++si) {
+            const SbSegment& s = segs[si];
+            const std::vector<std::int64_t>& vs = chains[s.mChain].mVerts;
+            for (std::size_t i = s.mFrom; i < s.mTo; ++i)
+                seg_of[sb_key(vs[i], vs[i + 1])] = {si, vs[i] < vs[i + 1]};
+        }
+
+        // Loops: each group's boundary half-edges walked through the fans.
+        std::map<std::int64_t, std::vector<std::pair<std::int64_t, std::int64_t>>> half;
+        for (const auto& e : bedges) {
+            half[group[static_cast<std::size_t>(walker(e.first, e.second))]].push_back(e);
+            half[group[static_cast<std::size_t>(walker(e.second, e.first))]].emplace_back(e.second,
+                                                                                          e.first);
+        }
+        auto fan_next = [&](std::int64_t G, std::int64_t X, std::int64_t V) -> std::int64_t {
+            std::int64_t f = walker(X, V);
+            for (std::size_t guard = 0; f >= 0 && guard <= nf; ++guard) {
+                const std::int64_t w = ring_next(static_cast<std::size_t>(f), V);
+                if (w < 0)
+                    return -1;
+                const std::int64_t across = walker(w, V);
+                if (across < 0 || group[static_cast<std::size_t>(across)] != G)
+                    return w;
+                f = across;
+            }
+            return -1;
+        };
+        // Per group, its loops as (segment, along) lists.
+        std::map<std::int64_t, std::vector<std::vector<std::pair<std::size_t, bool>>>> loops;
+        std::vector<std::int64_t> broken;
+        for (auto& kv : half) {
+            const std::int64_t g = kv.first;
+            std::vector<std::pair<std::int64_t, std::int64_t>>& hs = kv.second;
+            std::sort(hs.begin(), hs.end());
+            std::map<std::pair<std::int64_t, std::int64_t>, std::uint8_t> used;
+            for (const auto& h : hs)
+                used.emplace(h, 0);
+            bool bad = false;
+            for (const auto& h0 : hs) {
+                if (used[h0])
+                    continue;
+                std::vector<std::pair<std::int64_t, std::int64_t>> loop;
+                std::pair<std::int64_t, std::int64_t> h = h0;
+                for (std::size_t guard = 0; guard <= hs.size(); ++guard) {
+                    auto it = used.find(h);
+                    if (it == used.end() || it->second) {
+                        bad = true;
+                        break;
+                    }
+                    it->second = 1;
+                    loop.push_back(h);
+                    const std::int64_t w = fan_next(g, h.first, h.second);
+                    if (w < 0) {
+                        bad = true;
+                        break;
+                    }
+                    h = {h.second, w};
+                    if (h == h0)
+                        break;
+                }
+                if (bad || h != h0) {
+                    bad = true;
+                    break;
+                }
+                // Rotate to a segment start, then emit one entry per segment.
+                auto starts = [&](const std::pair<std::int64_t, std::int64_t>& rH) {
+                    const auto& so = seg_of.at(sb_key(rH.first, rH.second));
+                    const SbSegment& s = segs[so.first];
+                    const std::vector<std::int64_t>& vs = chains[s.mChain].mVerts;
+                    const bool along = (rH.first < rH.second) == so.second;
+                    return rH.first == (along ? vs[s.mFrom] : vs[s.mTo]);
+                };
+                std::size_t at = loop.size();
+                for (std::size_t i = 0; i < loop.size(); ++i)
+                    if (starts(loop[i])) {
+                        at = i;
+                        break;
+                    }
+                if (at == loop.size()) {
+                    bad = true;
+                    break;
+                }
+                std::rotate(loop.begin(), loop.begin() + static_cast<std::ptrdiff_t>(at),
+                            loop.end());
+                std::vector<std::pair<std::size_t, bool>> entry;
+                for (std::size_t i = 0; i < loop.size(); ++i) {
+                    if (!starts(loop[i]))
+                        continue;
+                    const auto& so = seg_of.at(sb_key(loop[i].first, loop[i].second));
+                    entry.emplace_back(so.first, (loop[i].first < loop[i].second) == so.second);
+                }
+                loops[g].push_back(std::move(entry));
+            }
+            if (bad)
+                broken.push_back(g);
+        }
+        bool retry = false;
+        for (std::int64_t g : broken) {
+            if (!analytic_group(g))
+                throw WriteError(std::string(kSbPrefix) +
+                                 "a coplanar face's boundary does not close into loops");
+            for (std::size_t r = 0; r < rows.size(); ++r)
+                if (static_cast<std::int64_t>(r) == g || rows[r].mTwin == g)
+                    rows[r].mAnalytic = false;
+            if (rows[static_cast<std::size_t>(g)].mTwin >= 0)
+                rows[static_cast<std::size_t>(rows[static_cast<std::size_t>(g)].mTwin)].mAnalytic =
+                    false;
+            ++res.mNumDemoted;
+            retry = true;
+        }
+        // A face with no boundary at all (a whole sphere or torus) has no STEP
+        // face: split it in two, else write it as coplanar groups.
+        std::vector<std::int64_t> unbounded;
+        for (std::size_t f = 0; f < nf; ++f)
+            if (analytic_group(group[f]) && loops.find(group[f]) == loops.end())
+                unbounded.push_back(group[f]);
+        std::sort(unbounded.begin(), unbounded.end());
+        unbounded.erase(std::unique(unbounded.begin(), unbounded.end()), unbounded.end());
+        for (std::int64_t g : unbounded) {
+            if (!rows[static_cast<std::size_t>(g)].mAnalytic)
+                continue;
+            SbRow& row = rows[static_cast<std::size_t>(g)];
+            if (row.mTwin >= 0 && !row.mSplit) {
+                row.mSplit = true;
+                rows[static_cast<std::size_t>(row.mTwin)].mAnalytic = true;
+                rows[static_cast<std::size_t>(row.mTwin)].mSense = row.mSense;
+            } else {
+                row.mAnalytic = false;
+                if (row.mTwin >= 0)
+                    rows[static_cast<std::size_t>(row.mTwin)].mAnalytic = false;
+                ++res.mNumDemoted;
+            }
+            retry = true;
+        }
+        if (retry)
+            continue;
+
+        // Write.
+        StepStream st(rPath, "meshio++ B-rep");
+        std::map<std::int64_t, std::int64_t> vertex_id;
+        auto vertex = [&](std::int64_t V) {
+            auto it = vertex_id.find(V);
+            if (it != vertex_id.end())
+                return it->second;
+            const std::int64_t p =
+                st.Ent("CARTESIAN_POINT(''," +
+                       StepStream::Triple(&pos[static_cast<std::size_t>(V) * 3]) + ")");
+            const std::int64_t id = st.Ent("VERTEX_POINT(''," + StepStream::Ref(p) + ")");
+            vertex_id.emplace(V, id);
+            return id;
+        };
+        auto direction = [&](const double* pD) {
+            return st.Ent("DIRECTION(''," + StepStream::Triple(pD) + ")");
+        };
+        auto placement = [&](const double* pAt, const double* pZ) {
+            double x[3];
+            sb_perpendicular(pZ, x);
+            const std::int64_t p = st.Ent("CARTESIAN_POINT(''," + StepStream::Triple(pAt) + ")");
+            const std::int64_t z = direction(pZ);
+            const std::int64_t xd = direction(x);
+            return st.Ent("AXIS2_PLACEMENT_3D(''," + StepStream::Ref(p) + "," + StepStream::Ref(z) +
+                          "," + StepStream::Ref(xd) + ")");
+        };
+        for (SbSegment& s : segs) {
+            const std::vector<std::int64_t>& vs = chains[s.mChain].mVerts;
+            const std::int64_t a = vs[s.mFrom], b = vs[s.mTo];
+            const std::int64_t va = vertex(a), vb = vertex(b);
+            std::int64_t curve = 0;
+            bool sense = true;
+            if (s.mKind == 0) {
+                const double* pa = &pos[static_cast<std::size_t>(a) * 3];
+                const double* pb = &pos[static_cast<std::size_t>(b) * 3];
+                double d[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+                const double len = std::sqrt(sb_dot(d, d));
+                if (!(len > 0.0))
+                    throw WriteError(std::string(kSbPrefix) +
+                                     "an edge has zero length (coincident "
+                                     "points; run clean first)");
+                for (double& x : d)
+                    x /= len;
+                const std::int64_t p = st.Ent("CARTESIAN_POINT(''," + StepStream::Triple(pa) + ")");
+                const std::int64_t vec = st.Ent("VECTOR(''," + StepStream::Ref(direction(d)) + "," +
+                                                step_real(len) + ")");
+                curve = st.Ent("LINE(''," + StepStream::Ref(p) + "," + StepStream::Ref(vec) + ")");
+                ++res.mNumLineEdges;
+            } else if (s.mKind == 1) {
+                curve = st.Ent("CIRCLE(''," + StepStream::Ref(placement(s.mCentre, s.mAxis)) + "," +
+                               step_real(s.mRadius) + ")");
+                double turn = 0.0;
+                for (std::size_t i = s.mFrom; i < s.mTo; ++i) {
+                    const double* p = &pos[static_cast<std::size_t>(vs[i]) * 3];
+                    const double* q = &pos[static_cast<std::size_t>(vs[i + 1]) * 3];
+                    const double u[3] = {p[0] - s.mCentre[0], p[1] - s.mCentre[1],
+                                         p[2] - s.mCentre[2]};
+                    const double w[3] = {q[0] - s.mCentre[0], q[1] - s.mCentre[1],
+                                         q[2] - s.mCentre[2]};
+                    const double x[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
+                                         u[0] * w[1] - u[1] * w[0]};
+                    turn += sb_dot(x, s.mAxis);
+                }
+                sense = turn >= 0.0;
+                ++res.mNumCircleEdges;
+            } else {
+                std::string pts, mults, knots;
+                const std::size_t n = s.mTo - s.mFrom + 1;
+                for (std::size_t i = s.mFrom; i <= s.mTo; ++i) {
+                    const std::int64_t p =
+                        st.Ent("CARTESIAN_POINT(''," +
+                               StepStream::Triple(&pos[static_cast<std::size_t>(vs[i]) * 3]) + ")");
+                    pts += (i == s.mFrom ? "" : ",") + StepStream::Ref(p);
+                }
+                for (std::size_t i = 0; i < n; ++i) {
+                    mults += (i == 0 ? "" : ",") + std::string(i == 0 || i + 1 == n ? "2" : "1");
+                    knots += (i == 0 ? "" : ",") + step_real(static_cast<double>(i));
+                }
+                curve = st.Ent("B_SPLINE_CURVE_WITH_KNOTS('',1,(" + pts +
+                               "),.POLYLINE_FORM.,.F.,.F.,(" + mults + "),(" + knots +
+                               "),.UNSPECIFIED.)");
+                ++res.mNumSplineEdges;
+            }
+            s.mId = st.Ent("EDGE_CURVE(''," + StepStream::Ref(va) + "," + StepStream::Ref(vb) +
+                           "," + StepStream::Ref(curve) + (sense ? ",.T.)" : ",.F.)"));
+        }
+
+        // Faces, numbered in group order.
+        std::map<std::int64_t, std::int64_t> face_index;
+        std::vector<std::vector<std::int64_t>> shell_faces(npieces);
+        std::map<std::int64_t, std::size_t> seed_of;  // group -> a facet of it
+        for (std::size_t f = 0; f < nf; ++f)
+            seed_of.emplace(group[f], f);
+        for (const auto& kv : loops) {
+            const std::int64_t g = kv.first;
+            const std::size_t f0 = seed_of.at(g);
+            const bool analytic = analytic_group(g);
+            const SbRow* row = analytic ? &rows[static_cast<std::size_t>(g)] : nullptr;
+            // The surface.
+            std::int64_t surface = 0;
+            bool same_sense = true;
+            double plane_n[3] = {0.0, 0.0, 0.0};
+            const bool planar = !analytic || row->mType == 1;
+            if (!analytic) {
+                const std::size_t seed = static_cast<std::size_t>(g - m);
+                for (int j = 0; j < 3; ++j)
+                    plane_n[j] = normals[seed * 3 + static_cast<std::size_t>(j)];
+                surface = st.Ent("PLANE(''," +
+                                 StepStream::Ref(placement(
+                                     &xyz[static_cast<std::size_t>(
+                                              nodes[static_cast<std::size_t>(start[seed])]) *
+                                          3],
+                                     plane_n)) +
+                                 ")");
+            } else {
+                const double* p = row->mParams;
+                same_sense = row->mSense;
+                switch (row->mType) {
+                    case 1:
+                        for (int j = 0; j < 3; ++j)
+                            plane_n[j] = (same_sense ? 1.0 : -1.0) * p[3 + j];
+                        surface = st.Ent("PLANE(''," + StepStream::Ref(placement(p, p + 3)) + ")");
+                        break;
+                    case 2: {
+                        const double z[3] = {0.0, 0.0, 1.0};
+                        surface =
+                            st.Ent("SPHERICAL_SURFACE(''," + StepStream::Ref(placement(p, z)) +
+                                   "," + step_real(p[6]) + ")");
+                        break;
+                    }
+                    case 3:
+                        surface = st.Ent("CYLINDRICAL_SURFACE(''," +
+                                         StepStream::Ref(placement(p, p + 3)) + "," +
+                                         step_real(p[6]) + ")");
+                        break;
+                    case 4: {
+                        // Placed at the mean height of the patch's points, where
+                        // its radius is positive.
+                        double hm = 0.0;
+                        std::size_t count = 0;
+                        for (std::size_t f = 0; f < nf; ++f) {
+                            if (group[f] != g)
+                                continue;
+                            for (std::int64_t k = start[f]; k < start[f + 1]; ++k) {
+                                const double* q = &xyz[static_cast<std::size_t>(
+                                                           nodes[static_cast<std::size_t>(k)]) *
+                                                       3];
+                                const double v[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
+                                hm += sb_dot(v, p + 3);
+                                ++count;
+                            }
+                        }
+                        hm /= static_cast<double>(std::max<std::size_t>(count, 1));
+                        const double a = p[8] * kSbPi / 180.0;
+                        const double at[3] = {p[0] + hm * p[3], p[1] + hm * p[4], p[2] + hm * p[5]};
+                        surface =
+                            st.Ent("CONICAL_SURFACE(''," + StepStream::Ref(placement(at, p + 3)) +
+                                   "," + step_real(hm * std::tan(a)) + "," + step_real(a) + ")");
+                        break;
+                    }
+                    default:
+                        surface =
+                            st.Ent("TOROIDAL_SURFACE(''," + StepStream::Ref(placement(p, p + 3)) +
+                                   "," + step_real(p[6]) + "," + step_real(p[7]) + ")");
+                        break;
+                }
+            }
+            // The bounds: on a plane, the loop of largest area is the outer one.
+            std::size_t outer = kv.second.size();
+            if (planar) {
+                double best = -std::numeric_limits<double>::infinity();
+                for (std::size_t li = 0; li < kv.second.size(); ++li) {
+                    double twice[3] = {0.0, 0.0, 0.0};
+                    std::vector<std::int64_t> ring;
+                    for (const auto& e : kv.second[li]) {
+                        const SbSegment& s = segs[e.first];
+                        const std::vector<std::int64_t>& vs = chains[s.mChain].mVerts;
+                        if (e.second)
+                            for (std::size_t i = s.mFrom; i < s.mTo; ++i)
+                                ring.push_back(vs[i]);
+                        else
+                            for (std::size_t i = s.mTo; i > s.mFrom; --i)
+                                ring.push_back(vs[i]);
+                    }
+                    for (std::size_t i = 0; i < ring.size(); ++i) {
+                        const double* a = &pos[static_cast<std::size_t>(ring[i]) * 3];
+                        const double* b =
+                            &pos[static_cast<std::size_t>(ring[(i + 1) % ring.size()]) * 3];
+                        twice[0] += a[1] * b[2] - a[2] * b[1];
+                        twice[1] += a[2] * b[0] - a[0] * b[2];
+                        twice[2] += a[0] * b[1] - a[1] * b[0];
+                    }
+                    const double area = sb_dot(twice, plane_n);
+                    if (area > best) {
+                        best = area;
+                        outer = li;
+                    }
+                }
+            }
+            std::string bounds;
+            for (std::size_t li = 0; li < kv.second.size(); ++li) {
+                std::string list;
+                for (const auto& e : kv.second[li]) {
+                    const std::int64_t oe =
+                        st.Ent("ORIENTED_EDGE('',*,*," + StepStream::Ref(segs[e.first].mId) +
+                               (e.second ? ",.T.)" : ",.F.)"));
+                    list += (list.empty() ? "" : ",") + StepStream::Ref(oe);
+                }
+                const std::int64_t el = st.Ent("EDGE_LOOP('',(" + list + "))");
+                const std::int64_t bound =
+                    st.Ent(std::string(li == outer ? "FACE_OUTER_BOUND" : "FACE_BOUND") + "(''," +
+                           StepStream::Ref(el) + ",.T.)");
+                bounds += (bounds.empty() ? "" : ",") + StepStream::Ref(bound);
+            }
+            const std::int64_t face =
+                st.Ent("ADVANCED_FACE('',(" + bounds + ")," + StepStream::Ref(surface) +
+                       (same_sense ? ",.T.)" : ",.F.)"));
+            face_index.emplace(g, res.mNumFaces++);
+            shell_faces[piece[f0]].push_back(face);
+            if (!analytic) {
+                ++res.mNumFacetedFaces;
+            } else {
+                switch (row->mType) {
+                    case 1:
+                        ++res.mNumPlane;
+                        break;
+                    case 2:
+                        ++res.mNumSphere;
+                        break;
+                    case 3:
+                        ++res.mNumCylinder;
+                        break;
+                    case 4:
+                        ++res.mNumCone;
+                        break;
+                    default:
+                        ++res.mNumTorus;
+                        break;
+                }
+            }
+        }
+        std::vector<std::int64_t> solids;
+        for (std::size_t c = 0; c < npieces; ++c) {
+            if (shell_faces[c].empty())
+                continue;
+            std::string list;
+            for (std::int64_t f : shell_faces[c])
+                list += (list.empty() ? "" : ",") + StepStream::Ref(f);
+            const std::int64_t shell = st.Ent("CLOSED_SHELL('',(" + list + "))");
+            solids.push_back(st.Ent("MANIFOLD_SOLID_BREP('solid" + std::to_string(c + 1) + "'," +
+                                    StepStream::Ref(shell) + ")"));
+        }
+        res.mNumSolids = static_cast<std::int64_t>(solids.size());
+        st.Finish(solids);
+
+        // Per facet: its face, type and patch; the largest deviation.
+        res.mFaceOfFacet.assign(nf, -1);
+        res.mTypeOfFacet.assign(nf, 0);
+        res.mPatchOfFacet.assign(nf, -1);
+        for (std::size_t f = 0; f < nf; ++f) {
+            const std::int64_t g = group[f];
+            auto it = face_index.find(g);
+            res.mFaceOfFacet[f] = it == face_index.end() ? -1 : it->second;
+            res.mPatchOfFacet[f] = label_of[f];
+            if (analytic_group(g)) {
+                const SbRow& row = rows[static_cast<std::size_t>(g)];
+                res.mTypeOfFacet[f] = row.mType;
+                for (std::int64_t k = start[f]; k < start[f + 1]; ++k)
+                    res.mMaxDeviation = std::max(
+                        res.mMaxDeviation,
+                        primitive_point_distance(
+                            row.mType, row.mParams,
+                            &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(k)]) *
+                                 3]));
+            }
+        }
+        res.mValid = true;
+        return res;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/step_brep.cpp =====
+// ===== begin src/cpp/src/detail/step_stream.cpp =====
+#include <cstdint>
+#include <ios>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+std::string ss_basename(const std::string& rPath) {
+    const std::size_t slash = rPath.find_last_of("/\\");
+    return slash == std::string::npos ? rPath : rPath.substr(slash + 1);
+}
+
+}  // namespace
+
+std::string step_real(double V) {
+    char buf[64];
+    snprintf_c(buf, sizeof(buf), "%.17g", V);
+    std::string s(buf);
+    const std::size_t e = s.find('e');
+    std::string mant = e == std::string::npos ? s : s.substr(0, e);
+    std::string expo = e == std::string::npos ? "" : "E" + s.substr(e + 1);
+    if (mant.find('.') == std::string::npos)
+        mant += '.';
+    return mant + expo;
+}
+
+std::string step_string(const std::string& rText) {
+    std::string out;
+    for (unsigned char c : rText) {
+        if (c == '\'')
+            out += "''";
+        else if (c >= 0x20 && c < 0x7f)
+            out += static_cast<char>(c);
+        else
+            out += '_';
+    }
+    return out;
+}
+
+StepStream::StepStream(const std::string& rPath, const std::string& rDescription) : mPath(rPath) {
+    const std::string name = step_string(ss_basename(rPath));
+    mOut += "ISO-10303-21;\n/*\n";
+    for (std::string line : provenance_lines(SlotTier::Block)) {
+        for (std::size_t at = line.find("*/"); at != std::string::npos; at = line.find("*/", at))
+            line.replace(at, 2, "* /");
+        mOut += line + "\n";
+    }
+    mOut += "*/\nHEADER;\n";
+    mOut += "FILE_DESCRIPTION(('" + step_string(rDescription) + "'),'2;1');\n";
+    mOut += "FILE_NAME('" + name + "','1970-01-01T00:00:00',(''),(''),'meshio++','meshio++','');\n";
+    mOut += "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
+
+    const std::int64_t app =
+        Ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
+    Ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000," +
+        Ref(app) + ")");
+    const std::int64_t pctx = Ent("PRODUCT_CONTEXT(''," + Ref(app) + ",'mechanical')");
+    const std::int64_t pdctx =
+        Ent("PRODUCT_DEFINITION_CONTEXT('part definition'," + Ref(app) + ",'design')");
+    const std::int64_t prod =
+        Ent("PRODUCT('" + name + "','" + name + "',''," + "(" + Ref(pctx) + "))");
+    Ent("PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(" + Ref(prod) + "))");
+    const std::int64_t form = Ent("PRODUCT_DEFINITION_FORMATION('',''," + Ref(prod) + ")");
+    const std::int64_t pdef =
+        Ent("PRODUCT_DEFINITION('design',''," + Ref(form) + "," + Ref(pdctx) + ")");
+    mShape = Ent("PRODUCT_DEFINITION_SHAPE('',''," + Ref(pdef) + ")");
+    const std::int64_t len_unit = Ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    const std::int64_t ang_unit = Ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
+    const std::int64_t sol_unit = Ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
+    const std::int64_t unc =
+        Ent("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)," + Ref(len_unit) +
+            ",'distance_accuracy_value','confusion accuracy')");
+    mContext =
+        Ent("(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((" + Ref(unc) +
+            "))GLOBAL_UNIT_ASSIGNED_CONTEXT((" + Ref(len_unit) + "," + Ref(ang_unit) + "," +
+            Ref(sol_unit) +
+            "))REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))");
+    const std::int64_t o_pt = Ent("CARTESIAN_POINT('',(0.,0.,0.))");
+    const std::int64_t o_z = Ent("DIRECTION('',(0.,0.,1.))");
+    const std::int64_t o_x = Ent("DIRECTION('',(1.,0.,0.))");
+    mOrigin = Ent("AXIS2_PLACEMENT_3D(''," + Ref(o_pt) + "," + Ref(o_z) + "," + Ref(o_x) + ")");
+}
+
+std::int64_t StepStream::Ent(const std::string& rBody) {
+    const std::int64_t id = mNext++;
+    mOut += '#';
+    mOut += std::to_string(id);
+    mOut += '=';
+    mOut += rBody;
+    mOut += ";\n";
+    return id;
+}
+
+std::string StepStream::Ref(std::int64_t Id) {
+    return "#" + std::to_string(Id);
+}
+
+std::string StepStream::Triple(const double* pV) {
+    return "(" + step_real(pV[0]) + "," + step_real(pV[1]) + "," + step_real(pV[2]) + ")";
+}
+
+void StepStream::Finish(const std::vector<std::int64_t>& rSolids) {
+    std::string solids;
+    for (std::int64_t s : rSolids)
+        solids += "," + Ref(s);
+    const std::int64_t rep = Ent("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + Ref(mOrigin) + solids +
+                                 ")," + Ref(mContext) + ")");
+    Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(rep) + ")");
+    mOut += "ENDSEC;\nEND-ISO-10303-21;\n";
+    if (mPath.empty())
+        return;  // built for its report only
+    auto os = make_classic_ofstream(mPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + mPath);
+    os << mOut;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/step_stream.cpp =====
 // ===== begin src/cpp/src/detail/streamlines.cpp =====
 #include <algorithm>
 #include <array>
@@ -153467,39 +155308,6 @@ namespace {
 
 constexpr const char* kStepPrefix = "meshio++: step: ";
 
-// A STEP REAL: `%.17g`, with the decimal point the grammar requires and an
-// upper-case exponent ("3" -> "3.", "1e-05" -> "1.E-05").
-std::string step_real(double V) {
-    char buf[64];
-    detail::snprintf_c(buf, sizeof(buf), "%.17g", V);
-    std::string s(buf);
-    const std::size_t e = s.find('e');
-    std::string mant = e == std::string::npos ? s : s.substr(0, e);
-    std::string expo = e == std::string::npos ? "" : "E" + s.substr(e + 1);
-    if (mant.find('.') == std::string::npos)
-        mant += '.';
-    return mant + expo;
-}
-
-// A STEP string body: printable ASCII, apostrophes doubled.
-std::string step_string(const std::string& rText) {
-    std::string out;
-    for (unsigned char c : rText) {
-        if (c == '\'')
-            out += "''";
-        else if (c >= 0x20 && c < 0x7f)
-            out += static_cast<char>(c);
-        else
-            out += '_';
-    }
-    return out;
-}
-
-std::string step_basename(const std::string& rPath) {
-    const std::size_t slash = rPath.find_last_of("/\\");
-    return slash == std::string::npos ? rPath : rPath.substr(slash + 1);
-}
-
 std::int64_t step_find(const std::vector<std::int64_t>& rSorted, std::int64_t Key) {
     return static_cast<std::int64_t>(std::lower_bound(rSorted.begin(), rSorted.end(), Key) -
                                      rSorted.begin());
@@ -153522,6 +155330,21 @@ void step_unit3(const double* pV, double* pOut) {
 }  // namespace
 
 void write_step(const std::string& rPath, const Mesh& rMesh) {
+    write_step(rPath, rMesh, StepWriteOptions{});
+}
+
+void write_step(const std::string& rPath, const Mesh& rMesh, const StepWriteOptions& rOptions) {
+    detail::write_step_report(rPath, rMesh, rOptions, nullptr);
+}
+
+void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
+                               const StepWriteOptions& rOptions, StepBrepResult* pReport) {
+    if (rOptions.mFaces != StepFaces::Auto && rOptions.mFaces != StepFaces::Planar &&
+        rOptions.mFaces != StepFaces::Fitted && rOptions.mFaces != StepFaces::Facet)
+        throw WriteError(std::string(kStepPrefix) +
+                         "faces must be 'auto', 'planar', 'fitted' or 'facet'");
+    if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
+        throw WriteError(std::string(kStepPrefix) + "the tolerance must be finite");
     // The facets: the skin of the volume cells when there are any.
     Mesh skin;
     const bool volume = has_skinnable_cells(rMesh);
@@ -153541,6 +155364,22 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
     }
     if (shell.NumFacets() == 0)
         throw WriteError(std::string(kStepPrefix) + "no surface facets to write");
+
+    // One face per surface: coplanar groups, and the fitted patches.
+    const bool fitted_data =
+        surface.HasCellData("segment:patch") && surface.HasFieldData("fit:patch_id");
+    StepFaces faces = rOptions.mFaces;
+    if (faces == StepFaces::Auto)
+        faces = fitted_data ? StepFaces::Fitted : StepFaces::Planar;
+    if (faces != StepFaces::Facet) {
+        detail::StepBrepOptions brep;
+        brep.mFitted = faces == StepFaces::Fitted;
+        brep.mTolerance = rOptions.mTolerance;
+        detail::StepBrepResult r = detail::step_brep_write(rPath, surface, shell, brep);
+        if (pReport != nullptr)
+            *pReport = std::move(r);
+        return;
+    }
     const std::vector<double>& xyz = shell.mXyz;
     const std::vector<std::int64_t>& start = shell.mStart;
     const std::vector<std::int64_t>& nodes = shell.mNodes;
@@ -153623,65 +155462,10 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
     std::sort(used.begin(), used.end());
     used.erase(std::unique(used.begin(), used.end()), used.end());
 
-    std::string out;
-    out.reserve(256 * (used.size() + edges.size() + nf) + 4096);
-    std::int64_t next = 1;
-    auto ent = [&](const std::string& rBody) {
-        const std::int64_t id = next++;
-        out += '#';
-        out += std::to_string(id);
-        out += '=';
-        out += rBody;
-        out += ";\n";
-        return id;
-    };
-    auto ref = [](std::int64_t Id) { return "#" + std::to_string(Id); };
-    auto triple = [](const double* pV) {
-        return "(" + step_real(pV[0]) + "," + step_real(pV[1]) + "," + step_real(pV[2]) + ")";
-    };
-
-    const std::string name = step_string(step_basename(rPath));
-    out += "ISO-10303-21;\n/*\n";
-    for (std::string line : detail::provenance_lines(detail::SlotTier::Block)) {
-        for (std::size_t at = line.find("*/"); at != std::string::npos; at = line.find("*/", at))
-            line.replace(at, 2, "* /");
-        out += line + "\n";
-    }
-    out += "*/\nHEADER;\n";
-    out += "FILE_DESCRIPTION(('meshio++ faceted B-rep'),'2;1');\n";
-    out += "FILE_NAME('" + name + "','1970-01-01T00:00:00',(''),(''),'meshio++','meshio++','');\n";
-    out += "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
-
-    const std::int64_t app =
-        ent("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
-    ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000," +
-        ref(app) + ")");
-    const std::int64_t pctx = ent("PRODUCT_CONTEXT(''," + ref(app) + ",'mechanical')");
-    const std::int64_t pdctx =
-        ent("PRODUCT_DEFINITION_CONTEXT('part definition'," + ref(app) + ",'design')");
-    const std::int64_t prod =
-        ent("PRODUCT('" + name + "','" + name + "',''," + "(" + ref(pctx) + "))");
-    ent("PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(" + ref(prod) + "))");
-    const std::int64_t form = ent("PRODUCT_DEFINITION_FORMATION('',''," + ref(prod) + ")");
-    const std::int64_t pdef =
-        ent("PRODUCT_DEFINITION('design',''," + ref(form) + "," + ref(pdctx) + ")");
-    const std::int64_t pshape = ent("PRODUCT_DEFINITION_SHAPE('',''," + ref(pdef) + ")");
-    const std::int64_t len_unit = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
-    const std::int64_t ang_unit = ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
-    const std::int64_t sol_unit = ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
-    const std::int64_t unc =
-        ent("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)," + ref(len_unit) +
-            ",'distance_accuracy_value','confusion accuracy')");
-    const std::int64_t gctx =
-        ent("(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((" + ref(unc) +
-            "))GLOBAL_UNIT_ASSIGNED_CONTEXT((" + ref(len_unit) + "," + ref(ang_unit) + "," +
-            ref(sol_unit) +
-            "))REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))");
-    const std::int64_t o_pt = ent("CARTESIAN_POINT('',(0.,0.,0.))");
-    const std::int64_t o_z = ent("DIRECTION('',(0.,0.,1.))");
-    const std::int64_t o_x = ent("DIRECTION('',(1.,0.,0.))");
-    const std::int64_t origin =
-        ent("AXIS2_PLACEMENT_3D(''," + ref(o_pt) + "," + ref(o_z) + "," + ref(o_x) + ")");
+    detail::StepStream st(rPath, "meshio++ faceted B-rep");
+    auto ent = [&](const std::string& rBody) { return st.Ent(rBody); };
+    auto ref = [](std::int64_t Id) { return detail::StepStream::Ref(Id); };
+    auto triple = [](const double* pV) { return detail::StepStream::Triple(pV); };
 
     // Vertices: a point and a vertex per used point id.
     std::vector<std::int64_t> point_id(used.size()), vertex_id(used.size());
@@ -153706,7 +155490,7 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
         const std::size_t ia = static_cast<std::size_t>(step_find(used, edges[e].first));
         const std::size_t ib = static_cast<std::size_t>(step_find(used, edges[e].second));
         const std::int64_t dir = ent("DIRECTION(''," + triple(u) + ")");
-        const std::int64_t vec = ent("VECTOR(''," + ref(dir) + "," + step_real(len) + ")");
+        const std::int64_t vec = ent("VECTOR(''," + ref(dir) + "," + detail::step_real(len) + ")");
         const std::int64_t line = ent("LINE(''," + ref(point_id[ia]) + "," + ref(vec) + ")");
         edge_id[e] = ent("EDGE_CURVE(''," + ref(vertex_id[ia]) + "," + ref(vertex_id[ib]) + "," +
                          ref(line) + ",.T.)");
@@ -153746,26 +155530,17 @@ void write_step(const std::string& rPath, const Mesh& rMesh) {
         face_id[f] = ent("ADVANCED_FACE('',(" + ref(bound) + ")," + ref(plane) + ",.T.)");
     }
     // One closed shell and one solid per piece.
-    std::string solids;
+    std::vector<std::int64_t> solids;
     for (std::size_t c = 0; c < npieces; ++c) {
         std::string list;
         for (std::size_t f = 0; f < nf; ++f)
             if (piece_of[f] == c)
                 list += (list.empty() ? "" : ",") + ref(face_id[f]);
-        const std::int64_t shell = ent("CLOSED_SHELL('',(" + list + "))");
-        const std::int64_t solid =
-            ent("MANIFOLD_SOLID_BREP('solid" + std::to_string(c + 1) + "'," + ref(shell) + ")");
-        solids += "," + ref(solid);
+        const std::int64_t shell_id = ent("CLOSED_SHELL('',(" + list + "))");
+        solids.push_back(
+            ent("MANIFOLD_SOLID_BREP('solid" + std::to_string(c + 1) + "'," + ref(shell_id) + ")"));
     }
-    const std::int64_t rep = ent("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + ref(origin) + solids +
-                                 ")," + ref(gctx) + ")");
-    ent("SHAPE_DEFINITION_REPRESENTATION(" + ref(pshape) + "," + ref(rep) + ")");
-    out += "ENDSEC;\nEND-ISO-10303-21;\n";
-
-    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!os)
-        throw WriteError("Could not open file for writing: " + rPath);
-    os << out;
+    st.Finish(solids);
 }
 
 }  // namespace meshioplusplus
@@ -184137,7 +185912,17 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 // ===== begin src/cpp/src/operations/fit_cad.cpp =====
 #include <string>
 
+// System includes
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <vector>
+
 // Project includes
+
+// Project includes (private, not installed)
 
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 // System includes
@@ -184169,6 +185954,8 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <BRepCheck_ListOfStatus.hxx>
 #include <BRepCheck_Result.hxx>
 #include <BRepGProp.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_History.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
@@ -184213,6 +186000,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <StepBasic_Product.hxx>
 #include <StepData_StepModel.hxx>
 #include <ShapeFix_Face.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
 #include <TColgp_Array1OfPnt.hxx>
@@ -184249,15 +186037,148 @@ bool fit_cad_has_occt() noexcept {
 #endif
 }
 
-#ifndef MESHIOPLUSPLUS_HAS_OCCT
+namespace {
 
-FitCadResult fit_cad(const Mesh&, const std::string&, const FitCadOptions&) {
-    throw Unsupported(
-        "fit_cad: this build has no OpenCASCADE backend; rebuild with "
-        "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)");
+constexpr const char* kFcnPrefix = "fit_cad: ";
+
+// The annotated skin: segmented by the surfaces its facets lie on and fitted
+// when `segment:patch` is missing, fitted when the `fit:patch_*` table is.
+// Returns a pointer to the mesh to work on, owned by rOwned or the input.
+const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
+    if (rMesh.HasCellData(kSegmentPatchName)) {
+        if (rMesh.HasFieldData("fit:patch_id"))
+            return &rMesh;
+        log::info("fit_cad: no fit:patch_* table; running fit_primitives");
+        rOwned = fit_primitives(rMesh).mMesh;
+        return &rOwned;
+    }
+    log::info(
+        "fit_cad: no segment:patch labels; running segment (method 'primitive') and "
+        "fit_primitives");
+    SegmentOptions seg;
+    seg.mMethod = SegmentMethod::Primitive;
+    Mesh segmented = segment(rMesh, seg).mMesh;
+    // Fit at the tolerance the patches were grown at: an absolute one, the
+    // segmentation's share of the diagonal.
+    double lo[3], hi[3];
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = std::numeric_limits<double>::infinity();
+        hi[k] = -lo[k];
+    }
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
+    for (std::size_t i = 0; i + 2 < xyz.size(); i += 3)
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], xyz[i + k]);
+            hi[k] = std::max(hi[k], xyz[i + k]);
+        }
+    double diag = 0.0;
+    for (int k = 0; k < 3; ++k)
+        diag += hi[k] > lo[k] ? (hi[k] - lo[k]) * (hi[k] - lo[k]) : 0.0;
+    diag = std::sqrt(diag);
+    FitPrimitivesOptions fit;
+    if (diag > 0.0) {
+        fit.mTolerance = seg.mTolerance * diag;
+        fit.mRelative = false;
+    }
+    rOwned = fit_primitives(segmented, fit).mMesh;
+    return &rOwned;
 }
 
-#else
+// The kernel-free backend: the fitted patches as analytic faces and the rest
+// as coplanar polygons, written by the B-rep `step` writer.
+FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                                const FitCadOptions& rOptions) {
+    Mesh owned;
+    const Mesh& work = *fcn_annotate(rMesh, owned);
+    const detail::ClosedFacets fc = detail::closed_facets(work, kFcnPrefix);
+    if (fc.NumFacets() == 0)
+        throw std::invalid_argument(std::string(kFcnPrefix) + "no surface facets");
+    if (fc.mNumSkipped > 0)
+        log::warn("fit_cad: {} cell(s) that are not surface facets (lines, vertices) are ignored",
+                  fc.mNumSkipped);
+
+    // The patches whose type is left out are written as coplanar groups.
+    Mesh typed;
+    const Mesh* pSource = &work;
+    if ((rOptions.mTypes & kFitAllTypes) != kFitAllTypes && work.HasFieldData("fit:patch_type")) {
+        typed = detail::clone_mesh(
+            work, [](DataLocation, const std::string&, std::string&) { return true; });
+        const NDArray& types = work.FieldData("fit:patch_type");
+        NDArray kept = NDArray::Uninit(DType::Int64, {types.Size()});
+        for (std::size_t r = 0; r < types.Size(); ++r) {
+            const std::int64_t t = detail::read_int(types, r);
+            kept.As<std::int64_t>()[r] =
+                t >= 1 && t <= 5 && !(rOptions.mTypes & (1u << static_cast<unsigned>(t))) ? 0 : t;
+        }
+        typed.AddFieldData("fit:patch_type", std::move(kept));
+        pSource = &typed;
+    }
+    StepWriteOptions opts;
+    opts.mFaces = StepFaces::Fitted;
+    opts.mTolerance = rOptions.mTolerance;
+    detail::StepBrepResult brep;
+    detail::write_step_report(rStepPath, *pSource, opts, &brep);
+
+    FitCadResult result;
+    result.mBackend = FitCadBackend::Native;
+    result.mValid = brep.mValid;
+    result.mTolerance = brep.mTolerance;
+    result.mSkinVolume = brep.mVolume;
+    result.mVolume = std::numeric_limits<double>::quiet_NaN();
+    result.mVolumeRatio = std::numeric_limits<double>::quiet_NaN();
+    result.mMaxDeviation = brep.mMaxDeviation;
+    result.mNumFaces = brep.mNumFaces;
+    result.mNumPlane = brep.mNumPlane;
+    result.mNumSphere = brep.mNumSphere;
+    result.mNumCylinder = brep.mNumCylinder;
+    result.mNumCone = brep.mNumCone;
+    result.mNumTorus = brep.mNumTorus;
+    result.mNumFacetedFaces = brep.mNumFacetedFaces;
+    result.mNumPatches = brep.mNumPatches;
+    result.mNumDemoted = brep.mNumDemoted;
+    result.mNumExactEdges = brep.mNumLineEdges + brep.mNumCircleEdges;
+    result.mNumApproxEdges = brep.mNumSplineEdges;
+    result.mNumSolids = brep.mNumSolids;
+
+    // The skin itself, each cell with the face it was written into.
+    result.mMesh = detail::clone_mesh(
+        work, [](DataLocation, const std::string&, std::string&) { return true; });
+    const std::vector<std::int64_t> bases = detail::block_bases(work);
+    const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
+    std::vector<std::int64_t> face(ncells, -1), type(ncells, 0), patch(ncells, -1);
+    for (std::size_t f = fc.NumFacets(); f-- > 0;) {
+        const std::size_t c = static_cast<std::size_t>(fc.mCell[f]);
+        face[c] = brep.mFaceOfFacet[f];
+        type[c] = brep.mTypeOfFacet[f];
+        patch[c] = brep.mPatchOfFacet[f];
+    }
+    std::vector<NDArray> fb, tb, pb;
+    for (std::size_t b = 0; b < work.NumCellBlocks(); ++b) {
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        const std::size_t nc = work.Cells(b).NumCells();
+        NDArray a = NDArray::Uninit(DType::Int64, {nc});
+        NDArray t = NDArray::Uninit(DType::Int64, {nc});
+        NDArray q = NDArray::Uninit(DType::Int64, {nc});
+        for (std::size_t c = 0; c < nc; ++c) {
+            a.As<std::int64_t>()[c] = face[base + c];
+            t.As<std::int64_t>()[c] = type[base + c];
+            q.As<std::int64_t>()[c] = patch[base + c];
+        }
+        fb.push_back(std::move(a));
+        tb.push_back(std::move(t));
+        pb.push_back(std::move(q));
+    }
+    result.mMesh.AddCellData(kFitCadFaceName, std::move(fb));
+    result.mMesh.AddCellData(kFitCadTypeName, std::move(tb));
+    result.mMesh.AddCellData(kFitCadPatchName, std::move(pb));
+    if (result.mNumDemoted > 0)
+        log::info("fit_cad: {} fitted patch(es) written as coplanar facets", result.mNumDemoted);
+    return result;
+}
+
+}  // namespace
+
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
 
 namespace {
 
@@ -184576,6 +186497,8 @@ struct FcBuild {
     std::vector<std::int64_t> mFaceGroup;  // per final face (explorer order): its group
     std::vector<TopoDS_Face> mFaces;       // final faces, explorer order
     std::vector<std::uint8_t> mBadRow;     // per patch row: demote it
+    // Facets of coplanar groups whose faces failed: one face each next time.
+    std::vector<std::size_t> mUnmerge;
     std::int64_t mNumExact = 0;
     std::int64_t mNumApprox = 0;
     bool mValid = false;
@@ -184594,8 +186517,9 @@ struct FcChain {
 
 // Build the solid for one choice of analytic patches. Every failure is
 // recorded against the patch rows it touches in `mBadRow`, never thrown.
-FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >& rSurface,
-                 const std::vector<std::uint8_t>& rAnalytic, double Tol, bool ExactEdges) {
+FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>& rSurface,
+                 const std::vector<std::uint8_t>& rAnalytic, double Tol, bool ExactEdges,
+                 bool MergeFaces, const std::vector<std::uint8_t>& rNoMerge) {
     const detail::ClosedFacets& fc = rSkin.mFacets;
     const std::vector<double>& xyz = fc.mXyz;
     const std::size_t nf = fc.NumFacets();
@@ -184604,10 +186528,87 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
     FcBuild out;
     out.mBadRow.assign(rSkin.mPatches.size(), 0);
 
+    // The facets outside every analytic face, gathered into edge-connected
+    // coplanar groups -- largest facet first, every corner within 1e-6 of the
+    // skin's diagonal of that facet's plane -- each one planar face named
+    // `np + its seed facet`, so a demoted or unexplained flat patch is one
+    // polygon (holes and all), not a face per triangle.
+    std::vector<std::int64_t> flat_group(nf, -1);
+    {
+        auto analytic_facet = [&](std::size_t F) {
+            const std::int64_t r = rSkin.mRow[F];
+            return r >= 0 && rAnalytic[static_cast<std::size_t>(r)];
+        };
+        std::vector<double> area(nf, 0.0);
+        for (std::size_t f = 0; f < nf; ++f) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            gp_XYZ twice(0.0, 0.0, 0.0);
+            for (std::int64_t k = 0; k < n; ++k)
+                twice +=
+                    fc_point(xyz, fc.mNodes[static_cast<std::size_t>(b + k)])
+                        .XYZ()
+                        .Crossed(fc_point(xyz, fc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)])
+                                     .XYZ());
+            area[f] = 0.5 * twice.Modulus();
+        }
+        std::vector<std::size_t> order(nf);
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::stable_sort(order.begin(), order.end(),
+                         [&](std::size_t A, std::size_t B) { return area[A] > area[B]; });
+        const double eps = 1e-6 * rSkin.mScale;
+        std::vector<std::size_t> queue;
+        for (std::size_t seed : order) {
+            if (flat_group[seed] != -1 || analytic_facet(seed))
+                continue;
+            const std::int64_t id = np + static_cast<std::int64_t>(seed);
+            if (rNoMerge[seed]) {
+                flat_group[seed] = id;
+                continue;
+            }
+            const gp_XYZ p0 =
+                fc_point(xyz, fc.mNodes[static_cast<std::size_t>(fc.mStart[seed])]).XYZ();
+            const gp_XYZ n0(fc.mNormals[seed * 3], fc.mNormals[seed * 3 + 1],
+                            fc.mNormals[seed * 3 + 2]);
+            flat_group[seed] = id;
+            queue.assign(1, seed);
+            for (std::size_t q = 0; q < queue.size(); ++q) {
+                const std::size_t f = queue[q];
+                const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+                for (std::int64_t k = 0; k < n; ++k) {
+                    const std::int64_t u = fc.mNodes[static_cast<std::size_t>(b + k)];
+                    const std::int64_t v = fc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
+                    auto it = rSkin.mEdgeFacets.find({std::min(u, v), std::max(u, v)});
+                    if (it == rSkin.mEdgeFacets.end())
+                        continue;
+                    const std::int64_t other = it->second[0] == static_cast<std::int64_t>(f)
+                                                   ? it->second[1]
+                                                   : it->second[0];
+                    if (other < 0)
+                        continue;
+                    const std::size_t o = static_cast<std::size_t>(other);
+                    if (flat_group[o] != -1 || analytic_facet(o) || rNoMerge[o])
+                        continue;
+                    if (gp_XYZ(fc.mNormals[o * 3], fc.mNormals[o * 3 + 1], fc.mNormals[o * 3 + 2])
+                            .Dot(n0) <= 0.0)
+                        continue;
+                    bool flat = true;
+                    for (std::int64_t j = fc.mStart[o]; j < fc.mStart[o + 1] && flat; ++j)
+                        flat =
+                            std::fabs(
+                                (fc_point(xyz, fc.mNodes[static_cast<std::size_t>(j)]).XYZ() - p0)
+                                    .Dot(n0)) <= eps;
+                    if (!flat)
+                        continue;
+                    flat_group[o] = id;
+                    queue.push_back(o);
+                }
+            }
+        }
+    }
+
     auto group_of = [&](std::size_t F) -> std::int64_t {
         const std::int64_t r = rSkin.mRow[F];
-        return r >= 0 && rAnalytic[static_cast<std::size_t>(r)] ? r
-                                                                : np + static_cast<std::int64_t>(F);
+        return r >= 0 && rAnalytic[static_cast<std::size_t>(r)] ? r : flat_group[F];
     };
     auto is_analytic = [&](std::int64_t G) { return G >= 0 && G < np; };
     auto mark_bad = [&](std::int64_t G, const char* pWhy) {
@@ -184620,7 +186621,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
     };
 
     // The groups around every point, and whether a facet group is among them.
-    std::vector<std::pair<std::int64_t, std::int64_t> > vg;
+    std::vector<std::pair<std::int64_t, std::int64_t>> vg;
     vg.reserve(fc.mNodes.size());
     for (std::size_t f = 0; f < nf; ++f)
         for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
@@ -184638,7 +186639,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             touches_facet[static_cast<std::size_t>(p.first)] = 1;
 
     // Boundary edges between groups, deterministic: ascending (lo, hi).
-    std::vector<std::pair<std::int64_t, std::int64_t> > bedges;
+    std::vector<std::pair<std::int64_t, std::int64_t>> bedges;
     for (const auto& kv : rSkin.mEdgeFacets) {
         const std::int64_t ga = group_of(static_cast<std::size_t>(kv.second[0]));
         const std::int64_t gb = group_of(static_cast<std::size_t>(kv.second[1]));
@@ -184646,7 +186647,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             bedges.push_back(kv.first);
     }
     std::sort(bedges.begin(), bedges.end());
-    std::vector<std::vector<std::int64_t> > nbr(npts);
+    std::vector<std::vector<std::int64_t>> nbr(npts);
     for (const auto& e : bedges) {
         nbr[static_cast<std::size_t>(e.first)].push_back(e.second);
         nbr[static_cast<std::size_t>(e.second)].push_back(e.first);
@@ -184750,7 +186751,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             gp_Pnt p = fc_point(xyz, v);
             double vtol = Precision::Confusion();
             if (!touches_facet[static_cast<std::size_t>(v)]) {
-                std::vector<FcHandle<Geom_Surface> > surfs;
+                std::vector<FcHandle<Geom_Surface>> surfs;
                 for (std::int64_t g : groups_at(v))
                     surfs.push_back(rSurface[static_cast<std::size_t>(g)]);
                 gp_Pnt q = p;
@@ -184895,7 +186896,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             // the chain first (the binomial filter cancels an alternating
             // zigzag), move it onto both surfaces, fit a low-degree B-spline
             // and keep it only if it stays within the tolerance of both.
-            const std::vector<FcHandle<Geom_Surface> > both{s1, s2};
+            const std::vector<FcHandle<Geom_Surface>> both{s1, s2};
             std::vector<gp_Pnt> q = pts;
             q.front() = pa;
             q.back() = pb;
@@ -184990,13 +186991,13 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
     };
 
     // Wires and faces: each group's oriented chains, linked into loops.
-    std::map<std::int64_t, std::vector<std::pair<std::size_t, bool> > >
+    std::map<std::int64_t, std::vector<std::pair<std::size_t, bool>>>
         uses;  // group -> (chain, fwd)
     for (std::size_t i = 0; i < chains.size(); ++i) {
         uses[chains[i].mGroupFwd].emplace_back(i, true);
         uses[chains[i].mGroupBwd].emplace_back(i, false);
     }
-    std::vector<std::pair<TopoDS_Face, std::int64_t> > faces;  // with their group
+    std::vector<std::pair<TopoDS_Face, std::int64_t>> faces;  // with their group
     for (const auto& kv : uses) {
         const std::int64_t g = kv.first;
         bool broken = false;
@@ -185007,7 +187008,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             continue;
         }
         // start vertex -> unused oriented chains
-        std::map<std::int64_t, std::vector<std::size_t> > from;
+        std::map<std::int64_t, std::vector<std::size_t>> from;
         auto head = [&](std::size_t K) {
             const auto& u = kv.second[K];
             const FcChain& c = chains[u.first];
@@ -185093,21 +187094,46 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
                 fix.FixAddNaturalBoundMode() = 0;
                 fix.FixMissingSeamMode() = 1;
                 fix.FixOrientationMode() = 1;
+                // OpenCASCADE 7.6 can crash fixing the degenerated edge at a
+                // cone's apex; a cone face here is trimmed away from it.
+                if (type == 4)
+                    fix.FixPeriodicDegeneratedMode() = 0;
                 fix.Perform();
                 faces.emplace_back(fix.Face(), g);
             } else {
+                // A coplanar facet group: a plane through its seed facet,
+                // bounded by every loop of the group (holes included).
                 const std::size_t facet = static_cast<std::size_t>(g - np);
                 const gp_Pnt p0 =
                     fc_point(xyz, fc.mNodes[static_cast<std::size_t>(fc.mStart[facet])]);
                 const gp_Dir n(fc.mNormals[facet * 3], fc.mNormals[facet * 3 + 1],
                                fc.mNormals[facet * 3 + 2]);
-                BRepBuilderAPI_MakeFace mf(gp_Pln(p0, n), wires.front(), Standard_True);
-                if (!mf.IsDone())
-                    throw Standard_Failure("no planar facet face");
-                faces.emplace_back(mf.Face(), g);
+                if (wires.size() == 1) {
+                    BRepBuilderAPI_MakeFace mf(gp_Pln(p0, n), wires.front(), Standard_True);
+                    if (!mf.IsDone())
+                        throw Standard_Failure("no planar facet face");
+                    faces.emplace_back(mf.Face(), g);
+                } else {
+                    TopoDS_Face f;
+                    builder.MakeFace(f, new Geom_Plane(p0, n), Precision::Confusion());
+                    for (const TopoDS_Wire& w : wires)
+                        builder.Add(f, w);
+                    ShapeFix_Face fix(f);
+                    fix.SetPrecision(Precision::Confusion());
+                    fix.SetMaxTolerance(Tol);
+                    fix.FixAddNaturalBoundMode() = 0;
+                    fix.FixOrientationMode() = 1;
+                    fix.Perform();
+                    faces.emplace_back(fix.Face(), g);
+                }
             }
         } catch (const Standard_Failure&) {
-            mark_bad(g, "OpenCASCADE could not make its face");
+            if (is_analytic(g))
+                mark_bad(g, "OpenCASCADE could not make its face");
+            else
+                for (std::size_t f = 0; f < nf; ++f)
+                    if (flat_group[f] == g)
+                        out.mUnmerge.push_back(f);
         }
     }
     // A patch with no boundary at all (a whole sphere or torus) is its
@@ -185141,6 +187167,8 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
     for (std::uint8_t b : out.mBadRow)
         if (b)
             return out;
+    if (!out.mUnmerge.empty())
+        return out;
 
     // Sew the faces (their edges are shared already; sewing closes what the
     // face repair re-made) and close each shell into a solid.
@@ -185181,6 +187209,31 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
             blame(sew.FreeEdge(i));
         for (int i = 1; i <= sew.NbMultipleEdges(); ++i)
             blame(sew.MultipleEdge(i));
+        if (!any) {
+            // Free edges among facets only: blame the analytic faces that
+            // touch their ends, whose trimming moved those vertices.
+            TopTools_IndexedDataMapOfShapeListOfShape vanc;
+            TopExp::MapShapesAndAncestors(sewed, TopAbs_VERTEX, TopAbs_FACE, vanc);
+            auto blame_ends = [&](const TopoDS_Shape& rEdge) {
+                for (TopExp_Explorer vx(rEdge, TopAbs_VERTEX); vx.More(); vx.Next()) {
+                    const int i = vanc.FindIndex(vx.Current());
+                    if (i == 0)
+                        continue;
+                    for (TopTools_ListOfShape::Iterator it(vanc.FindFromIndex(i)); it.More();
+                         it.Next()) {
+                        const std::int64_t g = face_group(it.Value());
+                        if (is_analytic(g)) {
+                            mark_bad(g, "sewing left a free edge beside it");
+                            any = true;
+                        }
+                    }
+                }
+            };
+            for (int i = 1; i <= sew.NbFreeEdges(); ++i)
+                blame_ends(sew.FreeEdge(i));
+            for (int i = 1; i <= sew.NbMultipleEdges(); ++i)
+                blame_ends(sew.MultipleEdge(i));
+        }
         if (!any)
             for (std::int64_t r = 0; r < np; ++r)
                 if (rAnalytic[static_cast<std::size_t>(r)])
@@ -185223,23 +187276,116 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface> >
         out.mShape = cmp;
     }
 
-    // Per face, the group: by the face's own shape, else by the nearest facet.
+    // Faces on one surface merge (a coplanar facet group into the analytic
+    // plane beside it, two patches of one cylinder) and collinear edges join:
+    // kept only when the solid stays valid with the same volume. A merged
+    // face takes an analytic group over a facet group.
+    std::unordered_map<const void*, std::int64_t> merged_group;
+    bool merged = false;
+    if (MergeFaces && !out.mShape.IsNull()) {
+        try {
+            ShapeUpgrade_UnifySameDomain usd(out.mShape, Standard_True, Standard_True,
+                                             Standard_False);
+            usd.Build();
+            const TopoDS_Shape shape = usd.Shape();
+            GProp_GProps before, after;
+            BRepGProp::VolumeProperties(out.mShape, before);
+            BRepGProp::VolumeProperties(shape, after);
+            const double v0 = std::fabs(before.Mass());
+            if (!shape.IsNull() && BRepCheck_Analyzer(shape).IsValid() &&
+                std::fabs(std::fabs(after.Mass()) - v0) <= 1e-6 * std::max(v0, 1e-300)) {
+                const FcHandle<BRepTools_History> history = usd.History();
+                auto take = [&](const TopoDS_Shape& rFace, std::int64_t G) {
+                    auto ins = merged_group.emplace(rFace.TShape().get(), G);
+                    if (!ins.second && !is_analytic(ins.first->second) && is_analytic(G))
+                        ins.first->second = G;
+                };
+                for (TopExp_Explorer ex(out.mShape, TopAbs_FACE); ex.More(); ex.Next()) {
+                    const std::int64_t g = face_group(ex.Current());
+                    const TopTools_ListOfShape& mods = history->Modified(ex.Current());
+                    if (mods.IsEmpty() && !history->IsRemoved(ex.Current()))
+                        take(ex.Current(), g);
+                    for (TopTools_ListOfShape::Iterator it(mods); it.More(); it.Next())
+                        take(it.Value(), g);
+                }
+                out.mShape = shape;
+                merged = true;
+            }
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: merging faces on one surface failed: {}", rErr.GetMessageString());
+        }
+    }
+
+    // Per face, the group: by the face's own shape, else (a face a repair
+    // rebuilt) by the facet nearest a point inside it.
+    auto nearest_group = [&](const TopoDS_Face& rFace) -> std::int64_t {
+        double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+        BRepTools::UVBounds(rFace, u0, u1, v0, v1);
+        const FcHandle<Geom_Surface> srf = BRep_Tool::Surface(rFace);
+        if (srf.IsNull())
+            return -1;
+        const gp_Pnt at = srf->Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+        double best = std::numeric_limits<double>::infinity();
+        std::int64_t g = -1;
+        for (std::size_t f = 0; f < nf; ++f) {
+            gp_XYZ c(0.0, 0.0, 0.0);
+            for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k)
+                c += fc_point(xyz, fc.mNodes[static_cast<std::size_t>(k)]).XYZ();
+            c /= static_cast<double>(fc.mStart[f + 1] - fc.mStart[f]);
+            const double d = (c - at.XYZ()).SquareModulus();
+            if (d < best) {
+                best = d;
+                g = group_of(f);
+            }
+        }
+        return g;
+    };
     for (TopExp_Explorer ex(out.mShape, TopAbs_FACE); ex.More(); ex.Next()) {
-        out.mFaces.push_back(TopoDS::Face(ex.Current()));
-        out.mFaceGroup.push_back(face_group(ex.Current()));
+        const TopoDS_Face face = TopoDS::Face(ex.Current());
+        out.mFaces.push_back(face);
+        std::int64_t g = -1;
+        if (merged) {
+            auto it = merged_group.find(face.TShape().get());
+            g = it == merged_group.end() ? -1 : it->second;
+        } else {
+            g = face_group(face);
+        }
+        out.mFaceGroup.push_back(g >= 0 ? g : nearest_group(face));
     }
 
     BRepCheck_Analyzer check(out.mShape);
     out.mValid = check.IsValid() && !solids.empty();
     if (!out.mValid) {
         bool any = false;
-        for (std::size_t i = 0; i < out.mFaces.size(); ++i)
-            if (is_analytic(out.mFaceGroup[i]) && !BRepCheck_Analyzer(out.mFaces[i]).IsValid()) {
-                log::debug("fit_cad: face {} fails the B-rep check (shape kind:status){}", i,
-                           fc_check_report(out.mFaces[i]));
-                mark_bad(out.mFaceGroup[i], "its face fails the B-rep check");
-                any = true;
+        // A face can pass the check alone and fail it in the solid (its wires
+        // unorientable there): ask the solid's own analysis first.
+        auto fails = [&](const TopoDS_Face& rFace) {
+            const FcHandle<BRepCheck_Result> res = check.Result(rFace);
+            if (!res.IsNull())
+                for (BRepCheck_ListIteratorOfListOfStatus it(res->Status()); it.More(); it.Next())
+                    if (it.Value() != BRepCheck_NoError)
+                        return true;
+            return !BRepCheck_Analyzer(rFace).IsValid();
+        };
+        for (std::size_t i = 0; i < out.mFaces.size(); ++i) {
+            const std::int64_t g = out.mFaceGroup[i];
+            if (g < 0 || !fails(out.mFaces[i]))
+                continue;
+            log::debug("fit_cad: face {} fails the B-rep check (shape kind:status){}", i,
+                       fc_check_report(out.mFaces[i]));
+            if (is_analytic(g)) {
+                mark_bad(g, "its face fails the B-rep check");
+            } else {
+                // A coplanar group's polygon: its facets become faces of
+                // their own, as the faceted writer writes them.
+                for (std::size_t f = 0; f < nf; ++f)
+                    if (flat_group[f] == g)
+                        out.mUnmerge.push_back(f);
             }
+            any = true;
+        }
+        if (!out.mUnmerge.empty())
+            return out;
         if (!any)
             for (std::int64_t r = 0; r < np; ++r)
                 if (rAnalytic[static_cast<std::size_t>(r)])
@@ -185375,8 +187521,8 @@ gp_Pnt fc_pnt(const detail::PatchVec& rV) { return gp_Pnt(rV[0], rV[1], rV[2]); 
 // A B-spline face surface for a patch no primitive explains, or a null handle.
 // @p rTris: the patch's triangles as local vertex indices; @p rPts: its points.
 FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
-                                   const std::vector<std::array<std::size_t, 3> >& rTris,
-                                   double Tol, int Degree, std::int64_t MaxControl) {
+                                   const std::vector<std::array<std::size_t, 3>>& rTris, double Tol,
+                                   int Degree, std::int64_t MaxControl) {
     const std::size_t nt = rTris.size();
     if (rPts.size() < 4 || nt < 2)
         return {};
@@ -185394,7 +187540,7 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
             ++edge_count[{std::min(a, b), std::max(a, b)}];
         }
-    std::vector<std::pair<std::size_t, std::size_t> > boundary;
+    std::vector<std::pair<std::size_t, std::size_t>> boundary;
     for (const auto& kv : edge_count)
         if (kv.second == 1)
             boundary.push_back(kv.first);
@@ -185421,7 +187567,7 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
         // Bins over the triangles in (s, t), for locating grid points.
         const std::size_t nb = std::max<std::size_t>(
             1, static_cast<std::size_t>(std::sqrt(static_cast<double>(nt))));
-        std::vector<std::vector<std::size_t> > bins(nb * nb);
+        std::vector<std::vector<std::size_t>> bins(nb * nb);
         auto bin = [&](double S, double T, std::size_t& rI, std::size_t& rJ) {
             rI = std::min(nb - 1, static_cast<std::size_t>(std::max(0.0, (S - s0) / (s1 - s0) * nb)));
             rJ = std::min(nb - 1, static_cast<std::size_t>(std::max(0.0, (T - t0) / (t1 - t0) * nb)));
@@ -185561,7 +187707,7 @@ FcHandle<Geom_Surface> fc_freeform(const std::vector<gp_Pnt>& rPts,
 // surface's cached projector, which a long helical face needs: building a
 // projector samples the whole surface.
 bool fc_surface_fits(const FcHandle<Geom_Surface>& rS, const std::vector<gp_Pnt>& rPts,
-                     const std::vector<std::array<std::size_t, 3> >& rTris, double Tol,
+                     const std::vector<std::array<std::size_t, 3>>& rTris, double Tol,
                      bool LooseBoundary = false, bool Cached = false) {
     auto within = [&](const gp_Pnt& rP, double Allowance) {
         if (Cached) {
@@ -185823,7 +187969,7 @@ FcHandle<Geom_Surface> fc_vertex_blend_surface(const std::vector<gp_Pnt>& rPts,
                                                const std::vector<std::size_t>& rLoop,
                                                const std::vector<std::int64_t>& rAcross,
                                                const std::vector<std::uint8_t>& rOnLoop,
-                                               const std::vector<FcHandle<Geom_Surface> >& rSurface,
+                                               const std::vector<FcHandle<Geom_Surface>>& rSurface,
                                                double Tol) {
     GeomPlate_BuildPlateSurface plate(3, 15, 2, 1e-5, 0.1 * Tol, 0.01, 0.1);
     const std::size_t loop_step = std::max<std::size_t>(1, rLoop.size() / 96);
@@ -186027,10 +188173,8 @@ FcHandle<Geom_Surface> fc_helical_surface(const detail::HelicalFit& rH, double T
     return FcHandle<Geom_Surface>(fit.Surface());
 }
 
-}  // namespace
-
-FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
-                     const FitCadOptions& rOptions) {
+FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                             const FitCadOptions& rOptions) {
     const FcProjectorScope projectors;
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFcPrefix) + "tolerance must be finite");
@@ -186051,18 +188195,8 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     FcQuietMessenger quiet;
 
     // The annotated skin: segment and fit first when the labels are missing.
-    const Mesh* pWork = &rMesh;
     Mesh owned;
-    if (!rMesh.HasCellData("segment:patch")) {
-        log::info("fit_cad: no segment:patch labels; running segment and fit_primitives");
-        owned = fit_primitives(segment(rMesh).mMesh).mMesh;
-        pWork = &owned;
-    } else if (!rMesh.HasFieldData("fit:patch_id")) {
-        log::info("fit_cad: no fit:patch_* table; running fit_primitives");
-        owned = fit_primitives(rMesh).mMesh;
-        pWork = &owned;
-    }
-    const Mesh& work = *pWork;
+    const Mesh& work = *fcn_annotate(rMesh, owned);
 
     FcSkin skin;
     skin.mFacets = detail::closed_facets(work, kFcPrefix);
@@ -186213,14 +188347,14 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mTolerance = tol;
 
     // The fitted surfaces, each oriented so its normal points out of the skin.
-    std::vector<std::vector<std::size_t> > facets_of(m);
+    std::vector<std::vector<std::size_t>> facets_of(m);
     for (std::size_t f = 0; f < nf; ++f)
         if (skin.mRow[f] >= 0)
             facets_of[static_cast<std::size_t>(skin.mRow[f])].push_back(f);
     for (std::size_t r = 0; r < m; ++r)
         log::debug("fit_cad: patch {}: fitted type {}, {} facet(s)", skin.mPatches[r].mLabel,
                    skin.mPatches[r].mType, facets_of[r].size());
-    std::vector<FcHandle<Geom_Surface> > surface(m);
+    std::vector<FcHandle<Geom_Surface>> surface(m);
     std::vector<std::uint8_t> analytic(m, 0);
     for (std::size_t r = 0; r < m; ++r) {
         if (!skin.mPatches[r].mAccepted || facets_of[r].empty())
@@ -186265,7 +188399,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // beside it, then as a helical face of any profile about that axis or the
     // screw it fits itself, before the freeform fallback.
     auto patch_mesh = [&](std::size_t R, std::vector<gp_Pnt>& rPts,
-                          std::vector<std::array<std::size_t, 3> >& rTris,
+                          std::vector<std::array<std::size_t, 3>>& rTris,
                           std::vector<detail::PatchVec>& rFlat) {
         std::unordered_map<std::int64_t, std::size_t> local;
         rPts.clear();
@@ -186367,7 +188501,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         shared[q] += len;
                 }
             }
-        std::vector<std::pair<double, std::int64_t> > by_length;
+        std::vector<std::pair<double, std::int64_t>> by_length;
         for (const auto& kv : shared)
             by_length.emplace_back(-kv.second, kv.first);
         std::sort(by_length.begin(), by_length.end());
@@ -186395,9 +188529,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 continue;
         }
         double perimeter = 0.0;
-        const std::vector<std::pair<double, std::int64_t> > by_length = neighbours(r, perimeter);
+        const std::vector<std::pair<double, std::int64_t>> by_length = neighbours(r, perimeter);
         std::vector<gp_Pnt> pts;
-        std::vector<std::array<std::size_t, 3> > tris;
+        std::vector<std::array<std::size_t, 3>> tris;
         std::vector<detail::PatchVec> flat;
         patch_mesh(r, pts, tris, flat);
         try {
@@ -186448,18 +188582,26 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 }
             }
             if (rOptions.mThreads) {
-                // The axis of the neighbouring cylinder or cone sharing the most boundary.
+                // The axis of a neighbouring cylinder or cone, the one sharing
+                // the most boundary first: the first whose axis the flank
+                // winds about wins (a neighbour can be a cone of the end cap).
                 const double* seed = nullptr;
                 std::int32_t seed_type = 0;
                 bool threaded = false;
+                std::vector<std::pair<const double*, std::int32_t>> axes;
                 for (const auto& nb : by_length) {
                     const std::size_t q = static_cast<std::size_t>(nb.second);
                     const std::int32_t t = skin.mPatches[q].mType;
                     if (!is_primitive(q) || (t != 3 && t != 4))
                         continue;
                     const double* pp = skin.mPatches[q].mParams.data();
-                    seed = pp;
-                    seed_type = t;
+                    axes.emplace_back(pp, t);
+                    if (threaded)
+                        continue;
+                    if (seed == nullptr) {
+                        seed = pp;
+                        seed_type = t;
+                    }
                     const detail::HelicoidFit hf =
                         detail::helicoid_fit(flat, tris, {pp[0], pp[1], pp[2]}, {pp[3], pp[4], pp[5]});
                     if (hf.mOk && hf.mMax <= 0.5 * tol) {
@@ -186476,18 +188618,27 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         log::debug("fit_cad: patch {} is not a thread flank (max {})",
                                    skin.mPatches[r].mLabel, hf.mMax);
                     }
-                    break;
+                    if (threaded) {
+                        seed = pp;
+                        seed_type = t;
+                    }
                 }
-                // Any profile, about that axis or the screw the patch fits.
+                // Any profile, about one of those axes or the screw the patch fits.
                 if (!threaded) {
                     detail::HelicalFit hf;
-                    if (seed != nullptr) {
-                        const detail::PatchVec o{seed[0], seed[1], seed[2]};
-                        const detail::PatchVec a{seed[3], seed[4], seed[5]};
+                    for (const auto& ax : axes) {
+                        const double* pp = ax.first;
+                        const detail::PatchVec o{pp[0], pp[1], pp[2]};
+                        const detail::PatchVec a{pp[3], pp[4], pp[5]};
                         hf = detail::helical_fit(flat, tris, &o, &a, tol);
-                    } else {
-                        hf = detail::helical_fit(flat, tris, nullptr, nullptr, tol);
+                        if (hf.mOk) {
+                            seed = pp;
+                            seed_type = ax.second;
+                            break;
+                        }
                     }
+                    if (!hf.mOk)
+                        hf = detail::helical_fit(flat, tris, nullptr, nullptr, tol);
                     if (hf.mOk) {
                         FcHandle<Geom_Surface> hs = fc_helical_surface(hf, tol);
                         if (!hs.IsNull() && fc_surface_fits(hs, pts, tris, tol, false, true)) {
@@ -186625,7 +188776,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         ++num_freeform_tried;
         std::unordered_map<std::int64_t, std::size_t> local;
         std::vector<gp_Pnt> pts;
-        std::vector<std::array<std::size_t, 3> > tris;
+        std::vector<std::array<std::size_t, 3>> tris;
         std::vector<std::size_t> tri_facet;
         auto vid = [&](std::int64_t V) {
             auto ins = local.emplace(V, pts.size());
@@ -186659,7 +188810,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 if (num_pieces == 0)
                     continue;
                 // A facet goes with its first triangle's piece.
-                std::vector<std::vector<std::size_t> > piece_facets(num_pieces);
+                std::vector<std::vector<std::size_t>> piece_facets(num_pieces);
                 std::vector<std::size_t> kept;
                 for (std::size_t t = 0; t < tris.size(); ++t) {
                     if (t > 0 && tri_facet[t] == tri_facet[t - 1])
@@ -186724,7 +188875,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // radius. The neighbours are taken as the freeform stage left them, so
     // the result does not depend on the order the patches are tried in.
     if (rOptions.mFillets) {
-        const std::vector<FcHandle<Geom_Surface> > before = surface;
+        const std::vector<FcHandle<Geom_Surface>> before = surface;
         const std::vector<std::uint8_t> analytic_before = analytic;
         std::vector<std::int32_t> type_before(m);
         for (std::size_t r = 0; r < m; ++r)
@@ -186744,8 +188895,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             if (facets_of[r].empty() || (!freeform && !unexplained))
                 continue;
             double perimeter = 0.0;
-            const std::vector<std::pair<double, std::int64_t> > by_length =
-                neighbours(r, perimeter);
+            const std::vector<std::pair<double, std::int64_t>> by_length = neighbours(r, perimeter);
             if (by_length.size() < 2)
                 continue;
             const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
@@ -186756,7 +188906,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 (type_before[q1] != bs && type_before[q2] != bs))
                 continue;
             std::vector<gp_Pnt> pts;
-            std::vector<std::array<std::size_t, 3> > tris;
+            std::vector<std::array<std::size_t, 3>> tris;
             std::vector<detail::PatchVec> flat;
             patch_mesh(r, pts, tris, flat);
             try {
@@ -186806,7 +188956,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             if (facets_of[r].empty() || (!freeform && !unexplained))
                 continue;
             std::vector<gp_Pnt> pts;
-            std::vector<std::array<std::size_t, 3> > tris;
+            std::vector<std::array<std::size_t, 3>> tris;
             std::vector<detail::PatchVec> flat;
             patch_mesh(r, pts, tris, flat);
             const std::vector<std::int64_t> global = patch_globals(r);
@@ -186874,15 +189024,52 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         }
     }
 
+    // How far each face may lie from the skin: the tolerance, or further
+    // where the skin's own facets lie further from the fitted surface (a
+    // coarse tessellation's chords sag away from its cylinder by their
+    // sagitta, measured at each facet's centre and edge midpoints).
+    std::vector<double> allowance(m, tol);
+    for (std::size_t r = 0; r < m; ++r) {
+        const FcPatch& p = skin.mPatches[r];
+        if (!p.mAccepted || p.mType < 1 || p.mType > 5 ||
+            static_cast<std::size_t>(r) >= facets_of.size())
+            continue;
+        double sag = 0.0;
+        for (std::size_t f : facets_of[r]) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            double c[3] = {0.0, 0.0, 0.0};
+            for (std::int64_t k = 0; k < n; ++k) {
+                const double* a =
+                    &fc.mXyz[static_cast<std::size_t>(fc.mNodes[static_cast<std::size_t>(b + k)]) *
+                             3];
+                const double* e =
+                    &fc.mXyz[static_cast<std::size_t>(
+                                 fc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)]) *
+                             3];
+                const double mid[3] = {0.5 * (a[0] + e[0]), 0.5 * (a[1] + e[1]),
+                                       0.5 * (a[2] + e[2])};
+                sag =
+                    std::max(sag, detail::primitive_point_distance(p.mType, p.mParams.data(), mid));
+                for (int j = 0; j < 3; ++j)
+                    c[j] += a[j] / static_cast<double>(n);
+            }
+            sag = std::max(sag, detail::primitive_point_distance(p.mType, p.mParams.data(), c));
+        }
+        if (std::isfinite(sag))
+            allowance[r] = std::max(tol, 1.05 * sag);
+    }
+
     // Build, check, demote and rebuild.
     FcBuild build;
     FcTriangulation tri;
+    std::vector<std::uint8_t> no_merge(nf, 0);
     for (std::int64_t round = 0;; ++round) {
         bool any = false;
         for (std::uint8_t a : analytic)
             any = any || a;
         try {
-            build = fc_build(skin, surface, analytic, tol, rOptions.mExactEdges);
+            build = fc_build(skin, surface, analytic, tol, rOptions.mExactEdges,
+                             rOptions.mMergeFaces, no_merge);
         } catch (const Standard_Failure& rErr) {
             build = FcBuild{};
             build.mBadRow.assign(m, 0);
@@ -186894,6 +189081,19 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         bool bad = false;
         for (std::uint8_t b : build.mBadRow)
             bad = bad || b;
+        if (!build.mUnmerge.empty()) {
+            // Rebuild with those coplanar groups split into their facets;
+            // not a demotion round, and it ends as each pass splits a group.
+            bool split = false;
+            for (std::size_t f : build.mUnmerge) {
+                split = split || !no_merge[f];
+                no_merge[f] = 1;
+            }
+            if (split) {
+                --round;
+                continue;
+            }
+        }
         if (!bad && !build.mShape.IsNull()) {
             BRepMesh_IncrementalMesh mesher(build.mShape, deflection, Standard_False, 0.5,
                                             Standard_False);
@@ -186920,7 +189120,8 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     for (int k = 0; k < 3; ++k) {
                         const double d = to_skin[static_cast<std::size_t>(
                             tri.mTri[t * 3 + static_cast<std::size_t>(k)])];
-                        if (d > tol && !build.mBadRow[static_cast<std::size_t>(g)]) {
+                        if (d > allowance[static_cast<std::size_t>(g)] &&
+                            !build.mBadRow[static_cast<std::size_t>(g)]) {
                             const std::size_t v = tri.mTri[t * 3 + static_cast<std::size_t>(k)];
                             log::debug(
                                 "fit_cad: demoting patch {}: its face lies {} from the "
@@ -186960,13 +189161,26 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         }
         if (!bad || !any)
             break;
-        if (round >= rOptions.mMaxDemotionRounds) {
-            std::fill(analytic.begin(), analytic.end(), std::uint8_t{0});
-        } else {
-            for (std::size_t r = 0; r < m; ++r)
-                if (build.mBadRow[r])
-                    analytic[r] = 0;
-        }
+        // Each round demotes at least one patch, so the loop ends. Past
+        // `max_demotion_rounds` a failing patch takes its analytic neighbours
+        // with it, which converges faster than one at a time and still keeps
+        // the faces far from any failure.
+        const bool widen = round >= rOptions.mMaxDemotionRounds;
+        std::vector<std::uint8_t> drop(build.mBadRow.begin(), build.mBadRow.end());
+        if (widen)
+            for (const auto& kv : skin.mEdgeFacets) {
+                const std::int64_t ra = skin.mRow[static_cast<std::size_t>(kv.second[0])];
+                const std::int64_t rb = skin.mRow[static_cast<std::size_t>(kv.second[1])];
+                if (ra < 0 || rb < 0 || ra == rb)
+                    continue;
+                if (build.mBadRow[static_cast<std::size_t>(ra)])
+                    drop[static_cast<std::size_t>(rb)] = 1;
+                if (build.mBadRow[static_cast<std::size_t>(rb)])
+                    drop[static_cast<std::size_t>(ra)] = 1;
+            }
+        for (std::size_t r = 0; r < m; ++r)
+            if (drop[r])
+                analytic[r] = 0;
     }
     if (build.mShape.IsNull())
         throw std::runtime_error(std::string(kFcPrefix) +
@@ -187090,7 +189304,33 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     return result;
 }
 
+}  // namespace
+
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
+
+FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                     const FitCadOptions& rOptions) {
+    if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kFcnPrefix) + "tolerance must be finite");
+    if ((rOptions.mTypes & ~kFitAllTypes) != 0)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "types may name only plane, sphere, cylinder, cone and torus");
+    if (rOptions.mBackend != FitCadBackend::Auto && rOptions.mBackend != FitCadBackend::Occt &&
+        rOptions.mBackend != FitCadBackend::Native)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "backend must be 'auto', 'occt' or 'native'");
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    if (rOptions.mBackend != FitCadBackend::Native)
+        return fc_occt_fit_cad(rMesh, rStepPath, rOptions);
+#else
+    if (rOptions.mBackend == FitCadBackend::Occt)
+        throw Unsupported(
+            "fit_cad: this build has no OpenCASCADE backend; rebuild with "
+            "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later), or use the native "
+            "backend");
+#endif
+    return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+}
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/fit_cad.cpp =====
@@ -187561,6 +189801,20 @@ struct FpOutcome {
     double mTol = 0.0;
 };
 
+// How far the facets' centres lie from a fitted surface (the parameters in
+// the patch's shifted frame), as an RMS. It tells apart the surfaces two rims
+// of mesh points lie on alike: any two coaxial circles lie on a sphere, but
+// the sphere bulges between the rims, away from the chords of a bore.
+double fp_centre_misfit(std::int64_t Type, const double* pParams, const FpPatch& rP) {
+    const std::size_t nf = rP.NumFaces();
+    double sum = 0.0;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const double d = detail::primitive_point_distance(Type, pParams, &rP.mCentres[f * 3]);
+        sum += d * d;
+    }
+    return nf > 0 ? std::sqrt(sum / static_cast<double>(nf)) : 0.0;
+}
+
 FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) {
     FpOutcome out;
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -187596,7 +189850,31 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
         if (!fit.mOk || !std::isfinite(fit.mRms))
             continue;
         if (fit.mRms <= tol && fit.mFraction >= rOptions.mMinInlierFraction) {
-            out.mType = t;
+            // A sphere through two rims of points may as well be a cylinder,
+            // cone or torus: a cylinder or cone the facets' centres lie nearer
+            // to wins, and a torus (with a parameter to spare) when they lie
+            // under half as far from it.
+            int best_t = t;
+            if (t == 2) {
+                double best_misfit = fp_centre_misfit(2, fit.mParams, rP);
+                for (int u = 3; u <= 5; ++u) {
+                    if (!(rOptions.mTypes & (1u << u)))
+                        continue;
+                    const FpFit other = u == 3   ? fp_cylinder(rP, tol, max_it)
+                                        : u == 4 ? fp_cone(rP, tol, max_it)
+                                                 : fp_torus(rP, tol, max_it);
+                    if (!other.mOk || !std::isfinite(other.mRms) || !(other.mRms <= tol) ||
+                        other.mFraction < rOptions.mMinInlierFraction)
+                        continue;
+                    const double misfit = fp_centre_misfit(u, other.mParams, rP);
+                    if (misfit < (u == 5 ? 0.5 : 1.0) * best_misfit) {
+                        best_misfit = misfit;
+                        best_t = u;
+                        fit = other;
+                    }
+                }
+            }
+            out.mType = best_t;
             for (std::size_t k = 0; k < kFpParams; ++k)
                 out.mParams[k] = fit.mParams[k];
             for (int k = 0; k < 3; ++k)
@@ -187617,6 +189895,53 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
 }
 
 }  // namespace
+
+namespace detail {
+
+PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
+                                   const std::vector<double>& rNormals,
+                                   const std::vector<double>& rCentres, double Tol,
+                                   std::uint32_t Types, double MinInlierFraction, int MaxIt) {
+    PrimitiveFit out;
+    const std::size_t n = rPts.size() / 3;
+    if (n == 0 || !(Tol > 0.0))
+        return out;
+    FpPatch patch;
+    patch.mPts = rPts;
+    fp_mean(patch.mPts, patch.mShift);
+    double lo[3], hi[3];
+    for (int k = 0; k < 3; ++k)
+        lo[k] = hi[k] = patch.mPts[static_cast<std::size_t>(k)];
+    for (std::size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 3; ++k) {
+            double& v = patch.mPts[i * 3 + static_cast<std::size_t>(k)];
+            lo[k] = v < lo[k] ? v : lo[k];
+            hi[k] = v > hi[k] ? v : hi[k];
+            v -= patch.mShift[k];
+        }
+    const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    patch.mDiag = std::sqrt(fp_dot(ext, ext));
+    patch.mNormals = rNormals;
+    patch.mCentres = rCentres;
+    for (std::size_t f = 0; f < patch.mCentres.size() / 3; ++f)
+        for (int k = 0; k < 3; ++k)
+            patch.mCentres[f * 3 + static_cast<std::size_t>(k)] -= patch.mShift[k];
+    FitPrimitivesOptions options;
+    options.mTolerance = Tol;
+    options.mRelative = false;
+    options.mMinInlierFraction = MinInlierFraction;
+    options.mTypes = Types;
+    options.mMaxIterations = MaxIt;
+    const FpOutcome o = fp_fit_patch(patch, options);
+    out.mType = o.mType;
+    for (std::size_t k = 0; k < kFpParams; ++k)
+        out.mParams[k] = o.mParams[k];
+    out.mRms = o.mRms;
+    out.mMax = o.mMax;
+    return out;
+}
+
+}  // namespace detail
 
 FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
     if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
@@ -196405,13 +198730,13 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
         {"Segment",
          {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
-          "Prefix"}},
+          "Prefix", "Method", "Tolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
           "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
-          "Threads"}},
+          "Threads", "MergeFaces", "Backend"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -197076,6 +199401,12 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 1.0));
         opts.mRegion = pipe_text(rStep, "Region", "");
         opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        const std::string method = pipe_text(rStep, "Method", "angle");
+        if (method == "primitive")
+            opts.mMethod = SegmentMethod::Primitive;
+        else if (method != "angle")
+            throw std::invalid_argument(pipe_err(rStep, "'Method' must be 'angle' or 'primitive'"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
         SegmentResult sr = segment(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(sr.mNumPatches)},
@@ -197122,9 +199453,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mFreeformSplit = pipe_flag(rStep, "FreeformSplit", true);
         opts.mFillets = pipe_flag(rStep, "Fillets", true);
         opts.mThreads = pipe_flag(rStep, "Threads", true);
+        opts.mMergeFaces = pipe_flag(rStep, "MergeFaces", true);
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "occt")
+            opts.mBackend = FitCadBackend::Occt;
+        else if (backend == "native")
+            opts.mBackend = FitCadBackend::Native;
+        else if (backend != "auto")
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto', 'occt' or 'native'"));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         pipe_push_step(rReport, rStep,
                        {{"Valid", cr.mValid ? 1.0 : 0.0},
+                        {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
                         {"VolumeRatio", cr.mVolumeRatio},
                         {"MaxDeviation", cr.mMaxDeviation},
                         {"NumFaces", static_cast<double>(cr.mNumFaces)},
@@ -208570,6 +210911,9 @@ namespace meshioplusplus {
 namespace {
 
 constexpr const char* kSegPrefix = "meshio++: segment: ";
+// The primitive method's largest RMS of a grown region, as a share of the
+// tolerance.
+constexpr double kSegExactShare = 0.02;
 constexpr double kSegPi = 3.14159265358979323846;
 
 // Per global cell, whether the region selects it (all cells when unnamed).
@@ -208622,6 +210966,357 @@ struct SegPair {
     double mAngleRad;  // NaN when either face is degenerate
 };
 
+// The primitive method's view of the surface: per face its ring, area,
+// normal and centroid, its smooth neighbours, and the smooth area it lies in.
+struct SegPrimitiveInput {
+    const std::vector<std::int64_t>* mStart;
+    const std::vector<std::int64_t>* mNodes;
+    const std::vector<double>* mXyz;
+    const std::vector<double>* mNormals;
+    const std::vector<double>* mCentroid;
+    const std::vector<std::int64_t>* mAdjStart;
+    const std::vector<std::pair<std::int64_t, std::int64_t>>* mAdj;
+    const std::vector<SegPair>* mPairs;
+    std::vector<double> mArea;
+    std::vector<std::int64_t> mSmoothArea;
+    double mTol = 0.0;
+    double mGrowTol = 0.0;  // how far a corner may lie from a growing region's primitive
+    double mDiag = 0.0;
+};
+
+// The samples fit_primitives fits for a set of faces: their distinct corners,
+// normals and centroids.
+void seg_samples(const SegPrimitiveInput& rIn, const std::vector<std::int64_t>& rFaces,
+                 std::vector<double>& rPts, std::vector<double>& rNormals,
+                 std::vector<double>& rCentres) {
+    std::vector<std::int64_t> verts;
+    for (std::int64_t f : rFaces)
+        for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(f)];
+             k < (*rIn.mStart)[static_cast<std::size_t>(f) + 1]; ++k)
+            verts.push_back((*rIn.mNodes)[static_cast<std::size_t>(k)]);
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    rPts.resize(verts.size() * 3);
+    for (std::size_t i = 0; i < verts.size(); ++i)
+        for (std::size_t d = 0; d < 3; ++d)
+            rPts[i * 3 + d] = (*rIn.mXyz)[static_cast<std::size_t>(verts[i]) * 3 + d];
+    rNormals.clear();
+    rCentres.clear();
+    for (std::int64_t f : rFaces)
+        for (std::size_t d = 0; d < 3; ++d) {
+            rNormals.push_back((*rIn.mNormals)[static_cast<std::size_t>(f) * 3 + d]);
+            rCentres.push_back((*rIn.mCentroid)[static_cast<std::size_t>(f) * 3 + d]);
+        }
+}
+
+// A fit accepted with every point within the tolerance, and not a curved
+// surface so flat it stands in for a plane.
+detail::PrimitiveFit seg_fit(const SegPrimitiveInput& rIn, const std::vector<std::int64_t>& rFaces,
+                             std::uint32_t Types) {
+    std::vector<double> pts, nrm, ctr;
+    seg_samples(rIn, rFaces, pts, nrm, ctr);
+    detail::PrimitiveFit fit =
+        detail::fit_primitive_samples(pts, nrm, ctr, rIn.mTol, Types, 1.0, 50);
+    if (fit.mType >= 2) {
+        bool sane = true;
+        for (int k = 0; k < detail::kPrimitiveParams; ++k)
+            sane = sane && std::isfinite(fit.mParams[k]);
+        if (fit.mType == 4)
+            sane = sane && fit.mParams[8] < 85.0;
+        else
+            sane = sane && fit.mParams[6] <= rIn.mDiag && fit.mParams[7] <= rIn.mDiag;
+        if (!sane)
+            fit.mType = 0;
+    }
+    return fit;
+}
+
+bool seg_face_fits(const SegPrimitiveInput& rIn, std::int64_t F, const detail::PrimitiveFit& rFit,
+                   double Within) {
+    for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(F)];
+         k < (*rIn.mStart)[static_cast<std::size_t>(F) + 1]; ++k) {
+        const double* p =
+            &(*rIn.mXyz)[static_cast<std::size_t>((*rIn.mNodes)[static_cast<std::size_t>(k)]) * 3];
+        if (!(detail::primitive_point_distance(rFit.mType, rFit.mParams, p) <= Within))
+            return false;
+    }
+    return true;
+}
+
+// Grow a region from rFaces across smooth edges, within the faces' smooth
+// area, over faces not yet claimed, while every corner lies within the
+// growth tolerance of the primitive. The primitive was fitted to FittedOn faces; it
+// is refitted (same type) each time the region doubles past that, never on
+// fewer faces, where a curved fit is ill-conditioned.
+std::vector<std::int64_t> seg_grow(const SegPrimitiveInput& rIn, std::vector<std::int64_t> Faces,
+                                   detail::PrimitiveFit Fit, std::size_t FittedOn,
+                                   const std::vector<std::int64_t>& rPatch,
+                                   std::vector<std::uint8_t>& rMark) {
+    for (std::int64_t f : Faces)
+        rMark[static_cast<std::size_t>(f)] = 1;
+    const std::int64_t area = rIn.mSmoothArea[static_cast<std::size_t>(Faces.front())];
+    std::size_t fitted_at = std::max(Faces.size(), FittedOn);
+    for (std::size_t q = 0; q < Faces.size(); ++q) {
+        const std::size_t g = static_cast<std::size_t>(Faces[q]);
+        for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
+            const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
+            const std::size_t nb = static_cast<std::size_t>(a.first);
+            if (rMark[nb] || rPatch[nb] != -1 ||
+                !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth ||
+                rIn.mSmoothArea[nb] != area || !seg_face_fits(rIn, a.first, Fit, rIn.mGrowTol))
+                continue;
+            rMark[nb] = 1;
+            Faces.push_back(a.first);
+        }
+        if (Faces.size() >= 2 * fitted_at) {
+            fitted_at = Faces.size();
+            const detail::PrimitiveFit refit =
+                seg_fit(rIn, Faces, 1u << static_cast<unsigned>(Fit.mType));
+            if (refit.mType == Fit.mType)
+                Fit = refit;
+        }
+    }
+    for (std::int64_t f : Faces)
+        rMark[static_cast<std::size_t>(f)] = 0;
+    return Faces;
+}
+
+// Trim a grown region to the cells its own refit explains within Within,
+// keeping the part edge-connected to its first cell, three times over: a
+// plane grown to the tolerance takes the first strip of a fillet tangent to
+// it, which tilts its fit; the refit without it leaves that strip out.
+void seg_trim(const SegPrimitiveInput& rIn, std::vector<std::int64_t>& rRegion, std::uint32_t Types,
+              double Within, std::vector<std::uint8_t>& rMark) {
+    for (int pass = 0; pass < 3 && !rRegion.empty(); ++pass) {
+        const detail::PrimitiveFit fit = seg_fit(rIn, rRegion, Types);
+        if (fit.mType == 0) {
+            rRegion.clear();
+            return;
+        }
+        std::size_t kept = 0;
+        for (std::int64_t f : rRegion) {
+            bool on = true;
+            for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(f)];
+                 k < (*rIn.mStart)[static_cast<std::size_t>(f) + 1] && on; ++k)
+                on = detail::primitive_point_distance(
+                         fit.mType, fit.mParams,
+                         &(*rIn.mXyz)[static_cast<std::size_t>(
+                                          (*rIn.mNodes)[static_cast<std::size_t>(k)]) *
+                                      3]) <= Within;
+            rMark[static_cast<std::size_t>(f)] = on ? 1 : 0;
+            kept += on ? 1 : 0;
+        }
+        if (kept == rRegion.size()) {
+            for (std::int64_t f : rRegion)
+                rMark[static_cast<std::size_t>(f)] = 0;
+            return;
+        }
+        // The part connected to the seed (the first cell), walk order kept.
+        std::vector<std::int64_t> part;
+        if (rMark[static_cast<std::size_t>(rRegion.front())]) {
+            part.push_back(rRegion.front());
+            rMark[static_cast<std::size_t>(rRegion.front())] = 2;
+            for (std::size_t q = 0; q < part.size(); ++q) {
+                const std::size_t g = static_cast<std::size_t>(part[q]);
+                for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
+                    const std::size_t nb =
+                        static_cast<std::size_t>((*rIn.mAdj)[static_cast<std::size_t>(k)].first);
+                    if (rMark[nb] != 1)
+                        continue;
+                    rMark[nb] = 2;
+                    part.push_back(static_cast<std::int64_t>(nb));
+                }
+            }
+        }
+        for (std::int64_t f : rRegion)
+            rMark[static_cast<std::size_t>(f)] = 0;
+        rRegion.swap(part);
+    }
+}
+
+double seg_area_of(const SegPrimitiveInput& rIn, const std::vector<std::int64_t>& rFaces) {
+    double a = 0.0;
+    for (std::int64_t f : rFaces)
+        a += rIn.mArea[static_cast<std::size_t>(f)];
+    return a;
+}
+
+// The primitive method's patches (steps 1 and 2 of segment.hpp's "Primitive
+// method"): sets rPatch for the faces a primitive claims, returns the count.
+std::int64_t seg_primitive_patches(SegPrimitiveInput& rIn, std::size_t NumFaces,
+                                   std::vector<std::int64_t>& rPatch) {
+    const std::size_t nf = NumFaces;
+    // Smooth areas, numbered in the order of their lowest face.
+    rIn.mSmoothArea.assign(nf, -1);
+    std::vector<std::vector<std::int64_t>> areas;
+    for (std::size_t seed = 0; seed < nf; ++seed) {
+        if (rIn.mSmoothArea[seed] != -1)
+            continue;
+        const std::int64_t id = static_cast<std::int64_t>(areas.size());
+        std::vector<std::int64_t> faces{static_cast<std::int64_t>(seed)};
+        rIn.mSmoothArea[seed] = id;
+        for (std::size_t q = 0; q < faces.size(); ++q) {
+            const std::size_t g = static_cast<std::size_t>(faces[q]);
+            for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
+                const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
+                const std::size_t nb = static_cast<std::size_t>(a.first);
+                if (rIn.mSmoothArea[nb] != -1 ||
+                    !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth)
+                    continue;
+                rIn.mSmoothArea[nb] = id;
+                faces.push_back(a.first);
+            }
+        }
+        std::sort(faces.begin(), faces.end());
+        areas.push_back(std::move(faces));
+    }
+
+    std::int64_t npatches = 0;
+    std::vector<std::uint8_t> mark(nf, 0), tried(nf, 0);
+    constexpr std::uint32_t kAll = (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
+    constexpr std::uint32_t kCurved = (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
+    for (const std::vector<std::int64_t>& area : areas) {
+        // 1. One primitive for the whole smooth area.
+        const detail::PrimitiveFit whole = seg_fit(rIn, area, kAll);
+        if (whole.mType > 0) {
+            for (std::int64_t f : area)
+                rPatch[static_cast<std::size_t>(f)] = npatches;
+            ++npatches;
+            continue;
+        }
+        // 2. Grown regions, largest seed first; claimed for the area only once
+        // it is clear the primitives explain it (below).
+        const double area_total = seg_area_of(rIn, area);
+        const std::int64_t first_patch = npatches;
+        std::vector<std::pair<std::vector<std::int64_t>, bool>> grown;  // faces, curved
+        std::vector<std::int64_t> seeds = area;
+        std::stable_sort(seeds.begin(), seeds.end(), [&](std::int64_t A, std::int64_t B) {
+            return rIn.mArea[static_cast<std::size_t>(A)] > rIn.mArea[static_cast<std::size_t>(B)];
+        });
+        for (std::int64_t s : seeds) {
+            const std::size_t ss = static_cast<std::size_t>(s);
+            if (rPatch[ss] != -1 || tried[ss])
+                continue;
+            // A plane through the seed.
+            std::vector<std::int64_t> plane_region;
+            {
+                detail::PrimitiveFit plane;
+                plane.mType = 1;
+                for (std::size_t d = 0; d < 3; ++d) {
+                    plane.mParams[d] = (*rIn.mCentroid)[ss * 3 + d];
+                    plane.mParams[3 + d] = (*rIn.mNormals)[ss * 3 + d];
+                }
+                if (seg_face_fits(rIn, s, plane, rIn.mGrowTol))
+                    plane_region = seg_grow(rIn, {s}, plane, 1, rPatch, mark);
+            }
+            // A curved surface through the seed's neighbourhood.
+            std::vector<std::int64_t> curved_region;
+            std::vector<std::int64_t> hood{s};
+            {
+                mark[ss] = 1;
+                std::size_t ring_end = 1;
+                for (int ring = 0; ring < 2 && hood.size() < 32; ++ring) {
+                    const std::size_t from = ring == 0 ? 0 : ring_end;
+                    ring_end = hood.size();
+                    for (std::size_t q = from; q < ring_end && hood.size() < 32; ++q) {
+                        const std::size_t g = static_cast<std::size_t>(hood[q]);
+                        for (std::int64_t k = (*rIn.mAdjStart)[g];
+                             k < (*rIn.mAdjStart)[g + 1] && hood.size() < 32; ++k) {
+                            const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
+                            const std::size_t nb = static_cast<std::size_t>(a.first);
+                            if (mark[nb] || rPatch[nb] != -1 ||
+                                !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth ||
+                                rIn.mSmoothArea[nb] != rIn.mSmoothArea[ss])
+                                continue;
+                            mark[nb] = 1;
+                            hood.push_back(a.first);
+                        }
+                    }
+                }
+                for (std::int64_t f : hood)
+                    mark[static_cast<std::size_t>(f)] = 0;
+                if (hood.size() >= 3) {
+                    const detail::PrimitiveFit fit = seg_fit(rIn, hood, kCurved);
+                    if (fit.mType >= 2)
+                        curved_region = seg_grow(rIn, {s}, fit, hood.size(), rPatch, mark);
+                }
+            }
+            // A region grown to the tolerance is kept only when its refit
+            // leaves an RMS under 2% of it: a CAD tessellation lies on its
+            // surfaces exactly, while a sphere or cone fitted to a patch of a
+            // freeform or helical surface grows until it strays the tolerance.
+            auto exact = [&](std::vector<std::int64_t>& rRegion, std::uint32_t Types) {
+                if (rRegion.empty())
+                    return;
+                seg_trim(rIn, rRegion, Types, kSegExactShare * rIn.mTol, mark);
+                if (rRegion.empty())
+                    return;
+                const detail::PrimitiveFit refit = seg_fit(rIn, rRegion, Types);
+                if (refit.mType == 0 || !(refit.mRms <= kSegExactShare * rIn.mTol)) {
+                    rRegion.clear();
+                    return;
+                }
+                // A curved surface needs three points per parameter (4 for a
+                // sphere up to 7 for a torus): a handful of points lies
+                // exactly on some sphere or cylinder whatever the surface.
+                if (refit.mType >= 2) {
+                    std::vector<double> pts, nrm, ctr;
+                    seg_samples(rIn, rRegion, pts, nrm, ctr);
+                    if (pts.size() / 3 < static_cast<std::size_t>(3 * (refit.mType + 2)))
+                        rRegion.clear();
+                }
+            };
+            exact(plane_region, 1u << 1);
+            exact(curved_region, kCurved);
+            const double plane_area = seg_area_of(rIn, plane_region);
+            const double curved_area = seg_area_of(rIn, curved_region);
+            const std::vector<std::int64_t>* chosen = nullptr;
+            if (curved_region.size() >= 3 && curved_area > 1.5 * plane_area)
+                chosen = &curved_region;
+            else if (plane_region.size() >= 2 && plane_area >= 0.02 * area_total)
+                chosen = &plane_region;
+            else if (curved_region.size() >= 3)
+                chosen = &curved_region;
+            if (chosen == nullptr) {
+                // Neither surface holds here: no cell of this neighbourhood
+                // seeds again (a freeform area would cost a fit per cell);
+                // another seed's region may still grow over them.
+                for (std::int64_t f : hood)
+                    tried[static_cast<std::size_t>(f)] = 1;
+                continue;
+            }
+            // Claim the faces now, so later seeds grow around them.
+            for (std::int64_t f : *chosen)
+                rPatch[static_cast<std::size_t>(f)] = npatches;
+            ++npatches;
+            grown.emplace_back(*chosen, chosen == &curved_region);
+        }
+        // A freeform surface fits small spheres and tori anywhere: a curved
+        // region under 1% of its smooth area is dropped, and an area the kept
+        // regions explain less than half of is left whole to the angle
+        // growth, as the angle method segments it.
+        double explained = 0.0;
+        std::vector<std::uint8_t> keep(grown.size(), 1);
+        for (std::size_t i = 0; i < grown.size(); ++i) {
+            const double a = seg_area_of(rIn, grown[i].first);
+            if (grown[i].second && a < 0.01 * area_total)
+                keep[i] = 0;
+            else
+                explained += a;
+        }
+        const bool trusted = explained >= 0.5 * area_total;
+        npatches = first_patch;
+        for (std::size_t i = 0; i < grown.size(); ++i) {
+            const bool kept = trusted && keep[i];
+            for (std::int64_t f : grown[i].first)
+                rPatch[static_cast<std::size_t>(f)] = kept ? npatches : -1;
+            if (kept)
+                ++npatches;
+        }
+    }
+    return npatches;
+}
+
 }  // namespace
 
 SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
@@ -208639,6 +211334,12 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     if (rOptions.mPrefix.empty())
         throw std::invalid_argument(std::string(kSegPrefix) +
                                     "the region prefix must not be empty");
+    if (rOptions.mMethod != SegmentMethod::Angle && rOptions.mMethod != SegmentMethod::Primitive)
+        throw std::invalid_argument(std::string(kSegPrefix) +
+                                    "the method must be 'angle' or 'primitive'");
+    if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kSegPrefix) +
+                                    "the tolerance must be finite and > 0");
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
@@ -208790,6 +211491,47 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     std::vector<std::int64_t> queue;
     queue.reserve(nf);
     std::int64_t npatches = 0;
+    if (rOptions.mMethod == SegmentMethod::Primitive && nf > 0) {
+        SegPrimitiveInput in;
+        in.mStart = &start;
+        in.mNodes = &nodes;
+        in.mXyz = &xyz;
+        in.mNormals = &normals;
+        in.mCentroid = &centroid;
+        in.mAdjStart = &adj_start;
+        in.mAdj = &adj;
+        in.mPairs = &pairs;
+        in.mArea.assign(nf, 0.0);
+        double lo[3], hi[3];
+        for (int d = 0; d < 3; ++d) {
+            lo[d] = std::numeric_limits<double>::infinity();
+            hi[d] = -lo[d];
+        }
+        for (std::size_t f = 0; f < nf; ++f) {
+            const std::int64_t* ring = nodes.data() + start[f];
+            const std::size_t size = static_cast<std::size_t>(start[f + 1] - start[f]);
+            double twice[3] = {0.0, 0.0, 0.0};
+            for (std::size_t k = 0; k < size; ++k) {
+                const double* a = &xyz[static_cast<std::size_t>(ring[k]) * 3];
+                const double* b = &xyz[static_cast<std::size_t>(ring[(k + 1) % size]) * 3];
+                twice[0] += a[1] * b[2] - a[2] * b[1];
+                twice[1] += a[2] * b[0] - a[0] * b[2];
+                twice[2] += a[0] * b[1] - a[1] * b[0];
+                for (int d = 0; d < 3; ++d) {
+                    lo[d] = std::min(lo[d], a[d]);
+                    hi[d] = std::max(hi[d], a[d]);
+                }
+            }
+            in.mArea[f] =
+                0.5 * std::sqrt(twice[0] * twice[0] + twice[1] * twice[1] + twice[2] * twice[2]);
+        }
+        in.mDiag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                             (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        in.mTol = rOptions.mTolerance * in.mDiag;
+        in.mGrowTol = kSegExactShare * in.mTol;
+        if (in.mTol > 0.0)
+            npatches = seg_primitive_patches(in, nf, patch);
+    }
     for (std::size_t seed = 0; seed < nf; ++seed) {
         if (patch[seed] != -1)
             continue;
@@ -217695,8 +220437,9 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
         // STEP is read through the optional OpenCASCADE backend (roadmap
-        // §6.2.1) and written as a faceted solid without it.
-        {"step", meshioplusplus::write_step},
+        // §6.2.1) and written without it, one face per surface by default
+        // (StepFaces::Auto: coplanar facets merged, fitted patches analytic).
+        {"step", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_step(p, mm); }},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
         // writes); the flat bindings emit them with the fixed default styling

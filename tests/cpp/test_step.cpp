@@ -15,6 +15,7 @@
 //
 //
 #include <algorithm>
+#include <cmath>
 #include <clocale>
 #include <cstdint>
 #include <filesystem>
@@ -29,6 +30,8 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/step.hpp"
+#include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/segment.hpp"
 #include "analytic_surfaces.hpp"
 #include "mesh_fixtures.hpp"
 
@@ -36,9 +39,16 @@ using namespace meshioplusplus;
 
 namespace {
 
-std::string step_text(const Mesh& rMesh, const std::string& rName = "part.step") {
+StepWriteOptions faces(StepFaces Faces) {
+    StepWriteOptions o;
+    o.mFaces = Faces;
+    return o;
+}
+
+std::string step_text(const Mesh& rMesh, const std::string& rName = "part.step",
+                      const StepWriteOptions& rOptions = faces(StepFaces::Facet)) {
     const std::string path = (std::filesystem::temp_directory_path() / rName).string();
-    write_step(path, rMesh);
+    write_step(path, rMesh, rOptions);
     std::ifstream in(path);
     std::stringstream ss;
     ss << in.rdbuf();
@@ -114,4 +124,106 @@ TEST(Step, OutputDoesNotDependOnTheLocale) {
     const std::string after = step_text(analytic::torus(3.0, 1.0, 8, 6));
     std::setlocale(LC_NUMERIC, saved.c_str());
     EXPECT_EQ(before, after);
+}
+
+namespace {
+
+// Every EDGE_CURVE is used by exactly two ORIENTED_EDGEs, once each way: the
+// shell closes without sewing.
+void expect_closed_shell(const std::string& rText) {
+    std::vector<std::string> ids;
+    const std::string key = "=EDGE_CURVE(";
+    for (std::size_t at = rText.find(key); at != std::string::npos; at = rText.find(key, at + 1)) {
+        const std::size_t hash = rText.rfind('#', at);
+        ids.push_back(rText.substr(hash + 1, at - hash - 1));
+    }
+    ASSERT_FALSE(ids.empty());
+    for (const std::string& id : ids) {
+        const std::size_t fwd = [&] {
+            std::size_t n = 0;
+            const std::string k = ",*,*,#" + id + ",.T.)";
+            for (std::size_t at = rText.find(k); at != std::string::npos; at = rText.find(k, at + 1))
+                ++n;
+            return n;
+        }();
+        const std::size_t bwd = [&] {
+            std::size_t n = 0;
+            const std::string k = ",*,*,#" + id + ",.F.)";
+            for (std::size_t at = rText.find(k); at != std::string::npos; at = rText.find(k, at + 1))
+                ++n;
+            return n;
+        }();
+        EXPECT_EQ(fwd, 1u) << "edge #" << id;
+        EXPECT_EQ(bwd, 1u) << "edge #" << id;
+    }
+}
+
+Mesh fitted_primitive(const Mesh& rSkin) {
+    SegmentOptions so;
+    so.mMethod = SegmentMethod::Primitive;
+    return fit_primitives(segment(rSkin, so).mMesh).mMesh;
+}
+
+}  // namespace
+
+TEST(Step, DefaultMergesCoplanarFacets) {
+    // StepFaces::Auto on a skin without fitted patches is Planar.
+    const Mesh box = analytic::box_skin(3);
+    const std::string merged = step_text(box, "merged.step", StepWriteOptions{});
+    EXPECT_EQ(count(merged, "ADVANCED_FACE"), 6u);
+    EXPECT_EQ(count(merged, "EDGE_CURVE"), 12u);  // collinear mesh edges joined
+    EXPECT_EQ(count(merged, "VERTEX_POINT"), 8u);
+    expect_closed_shell(merged);
+    EXPECT_EQ(count(step_text(box, "facets.step"), "ADVANCED_FACE"), 54u);
+    // A coplanar group with a hole: the plate's top and bottom are one face
+    // each, with an outer and an inner bound.
+    const std::string plate =
+        step_text(analytic::filleted_plate(), "plate.step", faces(StepFaces::Planar));
+    EXPECT_EQ(count(plate, "FACE_BOUND"), 2u);
+    expect_closed_shell(plate);
+}
+
+TEST(Step, FittedPatchesBecomeAnalyticFaces) {
+    const Mesh fit = fitted_primitive(analytic::filleted_plate());
+    const std::string t = step_text(fit, "fitted.step", StepWriteOptions{});  // Auto: Fitted
+    EXPECT_EQ(count(t, "ADVANCED_FACE"), 8u);
+    EXPECT_EQ(count(t, "PLANE"), 6u);
+    EXPECT_EQ(count(t, "CYLINDRICAL_SURFACE"), 2u);
+    // The bore's rims are circles on the plate's top and bottom.
+    EXPECT_GE(count(t, "CIRCLE"), 2u);
+    expect_closed_shell(t);
+    // The same patches with faces forced planar are coplanar polygons only.
+    EXPECT_EQ(count(step_text(fit, "planar.step", faces(StepFaces::Planar)),
+                    "CYLINDRICAL_SURFACE"),
+              0u);
+}
+
+TEST(Step, ClosedAnalyticSurfaceIsSplitInTwo) {
+    // A whole torus has no boundary, and a STEP face needs one: it is cut in
+    // two faces on the same surface.
+    const std::string t = step_text(fitted_primitive(analytic::torus()), "torus.step",
+                                    faces(StepFaces::Fitted));
+    EXPECT_EQ(count(t, "TOROIDAL_SURFACE"), 2u);
+    EXPECT_EQ(count(t, "ADVANCED_FACE"), 2u);
+    expect_closed_shell(t);
+}
+
+TEST(Step, TurnedPartWritesEveryPrimitive) {
+    const std::string t =
+        step_text(fitted_primitive(analytic::turned_part()), "turned.step", StepWriteOptions{});
+    EXPECT_EQ(count(t, "ADVANCED_FACE"), 6u);
+    EXPECT_EQ(count(t, "SPHERICAL_SURFACE"), 1u);
+    EXPECT_EQ(count(t, "CYLINDRICAL_SURFACE"), 1u);
+    EXPECT_EQ(count(t, "CONICAL_SURFACE"), 1u);
+    EXPECT_EQ(count(t, "TOROIDAL_SURFACE"), 1u);
+    expect_closed_shell(t);
+}
+
+TEST(Step, BadFacesOptionIsRefused) {
+    StepWriteOptions o;
+    o.mFaces = static_cast<StepFaces>(9);
+    EXPECT_THROW(step_text(analytic::box_skin(1), "bad.step", o), WriteError);
+    o = StepWriteOptions{};
+    o.mTolerance = std::nan("");
+    EXPECT_THROW(step_text(analytic::box_skin(1), "bad.step", o), WriteError);
 }

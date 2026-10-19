@@ -90,6 +90,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
@@ -386,8 +387,9 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 
 // The skin-to-CAD options (roadmap §6.3), passed by const-ref through the
 // exported `segment()` and `fit_primitives()`, pinned from the release that
-// introduces them. Their results embed a Mesh and are not pinned.
-MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 96, 8);
+// introduces them. Their results embed a Mesh and are not pinned. ABI 31 added
+// SegmentOptions::mMethod and mTolerance (primitive segmentation): 96 -> 112.
+MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TessellateOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
@@ -395,7 +397,15 @@ MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // added mFreeformSplit, mFillets and mThreads (roadmap 6.3.1, 6.3.2): 48 -> 56.
 // ABI 29 grew FitCadResult only (three counts), so the options are unchanged;
 // ABI 30 grew it by five more (roadmap 6.3, v17.2.0), the options again unchanged.
+// ABI 31 put mMergeFaces and mBackend in the tail padding (same size, new
+// members) and grew FitCadResult by mBackend.
 MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 56, 8);
+static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
+              "FitCadOptions::mMergeFaces moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mBackend) == 52,
+              "FitCadOptions::mBackend moved");
+// The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.
+MIO_ABI_LAYOUT(meshioplusplus::StepWriteOptions, 16, 8);
 // The isogeometric layer (roadmap 6.2.2, operations/iga.hpp): the options are passed by
 // const-ref through the exported `iga_refine()` and `iga_sample()`, pinned from
 // the release that introduces them. IgaEvaluation embeds NDArrays and is not pinned.

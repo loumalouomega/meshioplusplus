@@ -1978,18 +1978,25 @@ end
 
 """
     segment(m; feature_angle=30.0, normal_tolerance=0.0, curvature_tolerance=0.0,
-            min_patch_cells=1, region="", prefix="patch")
+            min_patch_cells=1, region="", prefix="patch", method="angle",
+            tolerance=1e-3)
         -> (; mesh, num_patches, num_merged, num_feature_edges, num_boundary_edges,
              num_non_manifold_edges)
 
 Split a surface into smooth patches by region growing, bounded by its feature
 edges. The mesh comes back unchanged plus cell data `segment:patch` (-1 off the
 surface), field data `segment:adjacency` (rows `(a, b, shared edges)`) and one
-cell region per patch, `<prefix>:<k>`. See `doc/segment.md`.
+cell region per patch, `<prefix>:<k>`. `method="primitive"` (v17.9.0) ends a
+patch where the surface its facets lie on changes, at `tolerance` (relative to
+the diagonal), so a fillet comes apart from its tangent planes. See
+`doc/segment.md`.
 """
 function segment(m::Mesh; feature_angle::Real=30.0, normal_tolerance::Real=0.0,
                  curvature_tolerance::Real=0.0, min_patch_cells::Integer=1,
-                 region::AbstractString="", prefix::AbstractString="patch")
+                 region::AbstractString="", prefix::AbstractString="patch",
+                 method::AbstractString="angle", tolerance::Real=1e-3)
+    method_c = method == "angle" ? Int32(0) : method == "primitive" ? Int32(1) :
+               throw(ArgumentError("meshio++: segment: method must be \"angle\" or \"primitive\""))
     report = Ref{_CSegmentReport}()
     region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
     prefix_c = Vector{UInt8}(codeunits(String(prefix) * "\0"))
@@ -1997,7 +2004,7 @@ function segment(m::Mesh; feature_angle::Real=30.0, normal_tolerance::Real=0.0,
         opts = _CSegmentOpts(Cstring(pointer(region_c)), Cstring(pointer(prefix_c)),
                              Float64(feature_angle), Float64(normal_tolerance),
                              Float64(curvature_tolerance), Int64(min_patch_cells),
-                             ntuple(_ -> Int64(0), 6))
+                             method_c, Int32(0), Float64(tolerance), ntuple(_ -> Int64(0), 4))
         ccall(_sym(:mio_segment), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CSegmentOpts}, Ptr{_CSegmentReport}),
               _handle(m), Ref(opts), report)
@@ -2067,8 +2074,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             types=("plane", "sphere", "cylinder", "cone", "torus"),
             mesh_deflection=0.0, max_demotion_rounds=8, freeform=true,
             freeform_degree=3, freeform_max_control=64, freeform_split=true,
-            fillets=true, threads=true)
-        -> (; mesh, valid, tolerance, volume, skin_volume, volume_ratio,
+            fillets=true, threads=true, merge_faces=true, backend="auto")
+        -> (; mesh, backend, valid, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
              num_exact_edges, num_approx_edges, num_solids, num_bspline,
@@ -2092,9 +2099,13 @@ meet is a vertex blend (type 9); the
 rest planar facets, and a face that fails the B-rep check or
 strays beyond `tolerance` is demoted to facets. `step_path` also writes the solid as STEP; the mesh is the
 solid re-meshed with cell data `fit_cad:face`, `fit_cad:type` and
-`fit_cad:patch`. A tolerance or deflection of 0 is automatic. Throws a
-`MeshioError` naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in a build without
-OpenCASCADE ([`has_occt`](@ref)). See `doc/fit_cad.md`.
+`fit_cad:patch`. A tolerance or deflection of 0 is automatic. Since v17.9.0,
+`merge_faces` merges faces on one surface, and `backend` (`"auto"`, `"occt"`
+or `"native"`) picks the engine: `"native"` needs no CAD kernel and writes the
+fitted patches as analytic STEP faces, returning the skin itself; `"auto"` is
+`"occt"` when the library carries it ([`has_occt`](@ref)), and `"occt"` throws
+a `MeshioError` naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
+`doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  exact_edges::Bool=true,
@@ -2102,7 +2113,11 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  mesh_deflection::Real=0.0, max_demotion_rounds::Integer=8,
                  freeform::Bool=true, freeform_degree::Integer=3,
                  freeform_max_control::Integer=64, freeform_split::Bool=true,
-                 fillets::Bool=true, threads::Bool=true)
+                 fillets::Bool=true, threads::Bool=true, merge_faces::Bool=true,
+                 backend::AbstractString="auto")
+    backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
+                backend == "native" ? Int32(2) :
+                throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
     mask = UInt32(0)
     for t in types
         k = findfirst(==(String(t)), _FIT_TYPES)
@@ -2114,8 +2129,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
                         Int64(max_demotion_rounds), Int32(exact_edges), mask,
                         Int32(freeform), Int32(freeform_degree), Int64(freeform_max_control),
-                        Int32(freeform_split), Int32(fillets), Int32(threads), Int32(0),
-                        ntuple(_ -> Int64(0), 2))
+                        Int32(freeform_split), Int32(fillets), Int32(threads),
+                        Int32(merge_faces), backend_c, Int32(0), ntuple(_ -> Int64(0), 1))
     ptr = ccall(_sym(:mio_fit_cad_ex), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ptr{_CFitCadReport},
                  Ptr{_CFitCadReportEx}),
@@ -2123,7 +2138,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     r = _check_ptr(ptr)
     rep = report[]
     ex = report_ex[]
-    (mesh=Mesh(r), valid=rep.valid != 0, tolerance=rep.tolerance, volume=rep.volume,
+    (mesh=Mesh(r), backend=ex.backend == 2 ? "native" : "occt", valid=rep.valid != 0,
+     tolerance=rep.tolerance, volume=rep.volume,
      skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
      max_deviation=rep.max_deviation, num_faces=Int(rep.num_faces),
      num_plane=Int(rep.num_plane), num_sphere=Int(rep.num_sphere),

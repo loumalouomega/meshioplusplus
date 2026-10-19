@@ -4584,9 +4584,15 @@ val feature_edges_js(const val& rMeshObj, double featureAngle, bool feature, boo
  */
 val segment_js(const val& rMeshObj, double featureAngle, double normalTolerance,
                double curvatureTolerance, double minPatchCells, const std::string& rRegion,
-               const std::string& rPrefix) {
+               const std::string& rPrefix, const std::string& rMethod, double tolerance) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SegmentOptions options;
+        if (rMethod == "primitive")
+            options.mMethod = meshioplusplus::SegmentMethod::Primitive;
+        else if (rMethod != "angle")
+            throw std::invalid_argument(
+                "meshio++: segment: the method must be 'angle' or 'primitive'");
+        options.mTolerance = tolerance;
         options.mFeatureAngleDeg = featureAngle;
         options.mNormalToleranceDeg = normalTolerance;
         options.mCurvatureTolerance = curvatureTolerance;
@@ -4651,30 +4657,29 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
 
 /**
  * @brief A CAD solid from the fitted patches of a closed skin: `fit_cad`. See
- * operations/fit_cad.hpp and doc/fit_cad.md. Needs OpenCASCADE, so only the
- * full artifact runs it; the lean one throws by name.
+ * operations/fit_cad.hpp and doc/fit_cad.md. The full artifact links
+ * OpenCASCADE; the lean one runs the kernel-free native backend (v17.9.0),
+ * and `backend: 'occt'` throws there by name.
  *
  * @param rOptions `{stepPath, tolerance, exactEdges, types, meshDeflection,
  *   maxDemotionRounds, freeform, freeformDegree, freeformMaxControl,
- *   freeformSplit, fillets, threads}`, every key optional; `types` is an
- *   array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`, `'torus'`.
+ *   freeformSplit, fillets, threads, mergeFaces, backend}`, every key
+ *   optional; `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`,
+ *   `'cone'`, `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`.
  * @return every `FitCadResult` counter in camelCase, `mesh` (the solid
  *   re-meshed, with the `fit_cad:*` cell data) and `info` (its B-rep, in CAD
  *   JSON's shape, for `writeMesh(path, mesh, 'cad_json', {info})`).
  */
 val fit_cad_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
-        if (!meshioplusplus::fit_cad_has_occt())
-            throw meshioplusplus::Unsupported(
-                "meshio++: fitCad needs OpenCASCADE, which only the full artifact links: "
-                "loadMeshioPlusPlus({}, {full: true})");
         meshioplusplus::FitCadOptions options;
         std::string step_path;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             check_settings_keys(rOptions, "the fitCad options",
                                 {"stepPath", "tolerance", "exactEdges", "types", "meshDeflection",
                                  "maxDemotionRounds", "freeform", "freeformDegree",
-                                 "freeformMaxControl", "freeformSplit", "fillets", "threads"});
+                                 "freeformMaxControl", "freeformSplit", "fillets", "threads",
+                                 "mergeFaces", "backend"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -4703,6 +4708,20 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                 options.mFillets = rOptions["fillets"].as<bool>();
             if (has("threads"))
                 options.mThreads = rOptions["threads"].as<bool>();
+            if (has("mergeFaces"))
+                options.mMergeFaces = rOptions["mergeFaces"].as<bool>();
+            if (has("backend")) {
+                const std::string backend = rOptions["backend"].as<std::string>();
+                if (backend == "auto")
+                    options.mBackend = meshioplusplus::FitCadBackend::Auto;
+                else if (backend == "occt")
+                    options.mBackend = meshioplusplus::FitCadBackend::Occt;
+                else if (backend == "native")
+                    options.mBackend = meshioplusplus::FitCadBackend::Native;
+                else
+                    throw std::invalid_argument(
+                        "meshio++: fit_cad: backend must be 'auto', 'occt' or 'native'");
+            }
             if (has("types")) {
                 static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone",
                                                      "torus"};
@@ -4723,6 +4742,11 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                 }
             }
         }
+        if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
+            !meshioplusplus::fit_cad_has_occt())
+            throw meshioplusplus::Unsupported(
+                "meshio++: fitCad's OpenCASCADE backend needs the full artifact: "
+                "loadMeshioPlusPlus({}, {full: true})");
         const meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(val_to_mesh(rMeshObj), step_path, options);
         val out = val::object();
@@ -4762,6 +4786,9 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
         out.set("info", brep_info_to_val(r.mBrep));
+        out.set("backend",
+                std::string(r.mBackend == meshioplusplus::FitCadBackend::Native ? "native"
+                                                                                : "occt"));
         return out;
     });
 }

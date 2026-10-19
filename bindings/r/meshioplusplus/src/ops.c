@@ -450,7 +450,8 @@ SEXP R_mio_feature_edges(SEXP mesh, SEXP feature_angle, SEXP feature, SEXP bound
 }
 
 SEXP R_mio_segment(SEXP mesh, SEXP feature_angle, SEXP normal_tolerance,
-                   SEXP curvature_tolerance, SEXP min_patch_cells, SEXP region, SEXP prefix) {
+                   SEXP curvature_tolerance, SEXP min_patch_cells, SEXP region, SEXP prefix,
+                   SEXP method, SEXP tolerance) {
     mio_segment_opts opts;
     mio_segment_report report;
     mio_mesh *out;
@@ -462,6 +463,16 @@ SEXP R_mio_segment(SEXP mesh, SEXP feature_angle, SEXP normal_tolerance,
     opts.min_patch_cells = (int64_t)mio_r_int(min_patch_cells, "min_patch_cells");
     opts.region = mio_r_opt_string(region);
     opts.prefix = mio_r_opt_string(prefix);
+    {
+        const char *m = mio_r_string(method, "method");
+        if (strcmp(m, "angle") == 0)
+            opts.method = MIO_SEGMENT_ANGLE;
+        else if (strcmp(m, "primitive") == 0)
+            opts.method = MIO_SEGMENT_PRIMITIVE;
+        else
+            Rf_error("meshio++: segment: method must be \"angle\" or \"primitive\"");
+    }
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
 
     out = mio_segment(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("segment");
@@ -517,7 +528,7 @@ SEXP R_mio_has_occt(void) {
 SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, SEXP types,
                    SEXP mesh_deflection, SEXP max_demotion_rounds, SEXP freeform,
                    SEXP freeform_degree, SEXP freeform_max_control, SEXP freeform_split,
-                   SEXP fillets, SEXP threads) {
+                   SEXP fillets, SEXP threads, SEXP merge_faces, SEXP backend) {
     mio_fit_cad_opts opts;
     mio_fit_cad_report report;
     mio_fit_cad_report_ex report_ex;
@@ -535,6 +546,18 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     opts.freeform_split = mio_r_bool(freeform_split, "freeform_split") ? 1 : 0;
     opts.fillets = mio_r_bool(fillets, "fillets") ? 1 : 0;
     opts.threads = mio_r_bool(threads, "threads") ? 1 : 0;
+    opts.merge_faces = mio_r_bool(merge_faces, "merge_faces") ? 1 : 0;
+    {
+        const char *b = mio_r_string(backend, "backend");
+        if (strcmp(b, "auto") == 0)
+            opts.backend = MIO_FIT_CAD_AUTO;
+        else if (strcmp(b, "occt") == 0)
+            opts.backend = MIO_FIT_CAD_OCCT;
+        else if (strcmp(b, "native") == 0)
+            opts.backend = MIO_FIT_CAD_NATIVE;
+        else
+            Rf_error("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\"");
+    }
 
     out = mio_fit_cad_ex(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &report,
                          &report_ex);
@@ -570,6 +593,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP nconic = PROTECT(Rf_ScalarReal((double)report_ex.num_conic_blend));
     SEXP ntapered = PROTECT(Rf_ScalarReal((double)report_ex.num_tapered_thread));
     SEXP nvarpitch = PROTECT(Rf_ScalarReal((double)report_ex.num_variable_pitch_thread));
+    SEXP engine = PROTECT(
+        Rf_mkString(report_ex.backend == MIO_FIT_CAD_NATIVE ? "native" : "occt"));
     const char *names[] = {"mesh",          "valid",         "tolerance",
                            "volume",        "skin_volume",   "volume_ratio",
                            "max_deviation", "num_faces",     "num_plane",
@@ -580,14 +605,14 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "num_fillet",    "num_helical",   "num_variable_fillet",
                            "num_blend",     "num_rounded_thread", "num_vertex_blend",
                            "num_chamfer",   "num_conic_blend", "num_tapered_thread",
-                           "num_variable_pitch_thread"};
+                           "num_variable_pitch_thread", "backend"};
     SEXP values[] = {mo,      valid,   tol,      vol,      svol,    ratio,   dev,
                      nfaces,  nplane,  nsphere,  ncyl,     ncone,   ntorus,  nfacet,
                      npatch,  ndem,    nexact,   napprox,  nsolid,  nbspline, nsplit,
                      nfillet, nhelical, nvariable, nblend, nrounded, nvertex,
-                     nchamfer, nconic, ntapered, nvarpitch};
-    SEXP res = PROTECT(mio_r_named_list(31, names, values));
-    UNPROTECT(32);
+                     nchamfer, nconic, ntapered, nvarpitch, engine};
+    SEXP res = PROTECT(mio_r_named_list(32, names, values));
+    UNPROTECT(33);
     return res;
 }
 

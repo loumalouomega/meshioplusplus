@@ -1,3 +1,5 @@
+import numpy as np
+
 from .._fit_cad import fit_cad
 from .._fit_primitives import TYPES, fit_primitives
 from .._helpers import read, reader_map, write
@@ -17,11 +19,26 @@ def add_args(parser):
         default=None,
     )
     parser.add_argument(
+        "--segment-method",
+        type=str,
+        choices=["primitive", "angle"],
+        default="primitive",
+        help="how a skin without segment:patch is segmented: where the surface "
+        "its facets lie on changes, or by angles alone (default: primitive)",
+    )
+    parser.add_argument(
+        "--segment-tolerance",
+        type=float,
+        default=1e-3,
+        help="the primitive segmentation's tolerance, relative to the diagonal "
+        "(default: 1e-3)",
+    )
+    parser.add_argument(
         "--curvature-tolerance",
         type=float,
         default=0.0,
-        help="segment's curvature test, for a skin without segment:patch "
-        "(default: 0, off)",
+        help="segment's curvature test, for a skin without segment:patch, angle "
+        "method (default: 0, off)",
     )
     parser.add_argument(
         "--min-patch-cells",
@@ -33,9 +50,10 @@ def add_args(parser):
     parser.add_argument(
         "--fit-tolerance",
         type=float,
-        default=1e-3,
+        default=None,
         help="fit_primitives' relative tolerance, for a skin without the "
-        "fit:patch_* table (default: 1e-3)",
+        "fit:patch_* table (default: the primitive segmentation's own, as a "
+        "length; 1e-3 after the angle method)",
     )
     parser.add_argument(
         "--tolerance",
@@ -102,6 +120,20 @@ def add_args(parser):
         help="do not try a patch as a helical thread face",
     )
     parser.add_argument(
+        "--no-merge-faces",
+        action="store_true",
+        help="keep faces on one surface apart once the solid is built",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["auto", "occt", "native"],
+        default="auto",
+        help="the engine: OpenCASCADE, or the kernel-free native backend that "
+        "writes the fitted patches as analytic STEP faces (default: auto, "
+        "OpenCASCADE when the core carries it)",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
     )
     parser.add_argument(
@@ -118,14 +150,29 @@ def add_args(parser):
 
 def to_cad_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
+    fit_kwargs = {}
+    if args.fit_tolerance is not None:
+        fit_kwargs["tolerance"] = args.fit_tolerance
     if "segment:patch" not in mesh.cell_data:
+        primitive = args.segment_method == "primitive"
         mesh = segment(
             mesh,
             curvature_tolerance=args.curvature_tolerance,
             min_patch_cells=args.min_patch_cells,
+            method=args.segment_method,
+            tolerance=args.segment_tolerance,
         )
+        if primitive and args.fit_tolerance is None:
+            # Fit at the tolerance the patches were grown at, as a length.
+            pts = np.asarray(mesh.points, dtype=np.float64)
+            diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+            if diag > 0.0:
+                fit_kwargs = {
+                    "tolerance": args.segment_tolerance * diag,
+                    "relative": False,
+                }
     if "fit:patch_id" not in mesh.field_data:
-        mesh = fit_primitives(mesh, tolerance=args.fit_tolerance)
+        mesh = fit_primitives(mesh, **fit_kwargs)
     out, report = fit_cad(
         mesh,
         args.outfile,
@@ -141,6 +188,8 @@ def to_cad_cmd(args):
         fillets=not args.no_fillets,
         threads=not args.no_threads,
         return_report=True,
+        merge_faces=not args.no_merge_faces,
+        backend=args.backend,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -150,8 +199,9 @@ def to_cad_cmd(args):
         emit_json(report)
     elif not args.quiet:
         print(
-            f"to-cad: {report['num_faces']} face(s) in {report['num_solids']} "
-            f"solid(s), {'valid' if report['valid'] else 'NOT valid'}"
+            f"to-cad ({report['backend']}): {report['num_faces']} face(s) in "
+            f"{report['num_solids']} solid(s), "
+            f"{'valid' if report['valid'] else 'NOT valid'}"
         )
         for t in TYPES[1:]:
             print(f"  {t + ':':10s} {report['num_' + t]}")
