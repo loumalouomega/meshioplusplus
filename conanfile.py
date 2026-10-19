@@ -92,9 +92,13 @@ class MeshioplusplusConan(ConanFile):
         "with_adios2": False,
         "with_tecio": False,
         # OpenCASCADE (fit_cad's kernel, STEP/IGES reading; LGPL-2.1 with the
-        # OCCT exception) is assumed for the best result, as in the CMake build
-        # and the wheels: on by default, from ConanCenter's opencascade recipe.
-        # with_occt=False gives fit_cad's kernel-free native fallback.
+        # OCCT exception) is on by default and auto-detected, as in the CMake
+        # build: the option only flips the CMake flag, and the consumer supplies
+        # OpenCASCADE_DIR (or a prefix) -- ConanCenter's opencascade recipe, 7.9
+        # and later with a tcl/tk/OpenGL/X11 tree, is not required, so the
+        # package never builds one unasked. Where none is found, fit_cad falls
+        # back to its kernel-free native backend (with_occt=False skips the
+        # probe). build/build-occt.sh builds the pinned static one.
         "with_occt": True,
         # Unlike with_eigen/with_json (submodules, off by default), gidpost is
         # a vendored hardcopy that IS in exports_sources, so this defaults True
@@ -150,8 +154,6 @@ class MeshioplusplusConan(ConanFile):
             self.requires("xz_utils/[>=5.4 <6]")
         if self.options.with_bzip2:
             self.requires("bzip2/[>=1.0.8 <2]")
-        if self.options.with_occt:
-            self.requires("opencascade/[>=7.6 <8]")
         if self.options.with_netcdf:
             self.requires("netcdf/[>=4.8 <5]")
         if self.options.with_hdf5:

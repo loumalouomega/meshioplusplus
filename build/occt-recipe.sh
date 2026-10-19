@@ -53,6 +53,9 @@ occt_source() {
 # command run (default `cmake`; the wasm build sets `emcmake cmake`); the
 # extra arguments come last, so they win.
 #
+# CMAKE_POLICY_VERSION_MINIMUM lets CMake 4 and later (the CI runners') accept
+# OCCT 7.6's `cmake_minimum_required (VERSION 2.8.12)`, which they removed.
+#
 # BUILD_RELEASE_DISABLE_EXCEPTIONS=OFF keeps OCCT's range and domain checks in
 # a release build (upstream's default compiles them out with -DNo_Exception, as
 # Debian's packages do not): fit_cad relies on a degenerate surface or curve
@@ -78,6 +81,7 @@ occt_configure() {
         -DBUILD_DOC_Overview=OFF \
         -DBUILD_RESOURCES=OFF \
         -DBUILD_USE_PCH=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DBUILD_RELEASE_DISABLE_EXCEPTIONS=OFF \
         -DUSE_FREETYPE=OFF -DUSE_FREEIMAGE=OFF -DUSE_OPENGL=OFF -DUSE_GLES2=OFF \
         -DUSE_TK=OFF -DUSE_TCL=OFF -DUSE_TBB=OFF -DUSE_VTK=OFF -DUSE_RAPIDJSON=OFF \
