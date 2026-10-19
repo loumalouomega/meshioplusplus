@@ -52,6 +52,13 @@ occt_source() {
 # configure the toolkits above into <prefix> (Unix layout). $OCCT_CMAKE is the
 # command run (default `cmake`; the wasm build sets `emcmake cmake`); the
 # extra arguments come last, so they win.
+#
+# BUILD_RELEASE_DISABLE_EXCEPTIONS=OFF keeps OCCT's range and domain checks in
+# a release build (upstream's default compiles them out with -DNo_Exception, as
+# Debian's packages do not): fit_cad relies on a degenerate surface or curve
+# throwing Standard_Failure, which demotes that one face, where the unchecked
+# build reads out of bounds and crashes (BSplSLib::Resolution on a fillet's
+# B-spline face, seen with 7.6.3).
 occt_configure() {
     _occt_src="$1"; _occt_build="$2"; _occt_prefix="$3"; _occt_type="$4"
     shift 4
@@ -71,6 +78,7 @@ occt_configure() {
         -DBUILD_DOC_Overview=OFF \
         -DBUILD_RESOURCES=OFF \
         -DBUILD_USE_PCH=OFF \
+        -DBUILD_RELEASE_DISABLE_EXCEPTIONS=OFF \
         -DUSE_FREETYPE=OFF -DUSE_FREEIMAGE=OFF -DUSE_OPENGL=OFF -DUSE_GLES2=OFF \
         -DUSE_TK=OFF -DUSE_TCL=OFF -DUSE_TBB=OFF -DUSE_VTK=OFF -DUSE_RAPIDJSON=OFF \
         -DUSE_DRACO=OFF -DUSE_FFMPEG=OFF -DUSE_OPENVR=OFF -DUSE_EIGEN=OFF \
