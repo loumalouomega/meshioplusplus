@@ -249,6 +249,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   parallelBackend: () => string,
  *   hasCgnslib: () => boolean,
  *   hasOcct: () => boolean,
+ *   hasKahip: () => boolean,
  *   hasZstd: () => boolean,
  *   hasLz4: () => boolean,
  *   hasBzip2: () => boolean,
@@ -601,9 +602,10 @@ export async function loadMeshioPlusPlus(
         // meshioplusplus_wasm_mt one -- which of the two this instance loaded.
         parallelBackend: () => Module.parallelBackend(),
         hasCgnslib: () => Module.hasCgnslib(),
-        // The full artifact's libraries (roadmap 6.2): all four are true there
+        // The full artifact's libraries (roadmap 6.2): all five are true there
         // and false in the lean one. buildFlavour() names which loaded.
         hasOcct: () => Module.hasOcct(),
+        hasKahip: () => Module.hasKahip(),
         hasZstd: () => Module.hasZstd(),
         hasLz4: () => Module.hasLz4(),
         hasBzip2: () => Module.hasBzip2(),

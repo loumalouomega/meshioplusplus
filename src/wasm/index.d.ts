@@ -1144,8 +1144,9 @@ export type InterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
  *  exists on the target: throw, replace, or write to `name + '_interp'`. */
 export type ConservativeInterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
 
-/** Partitioning backend: SFC is always available; KaHIP is never compiled
- *  into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`. */
+/** Partitioning backend: SFC is always available; KaHIP is linked only in
+ *  the full artifact, so `'kahip'` throws there outside it and `'auto'`
+ *  resolves to SFC. */
 export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
 
 /** KaHIP preconfiguration (ignored by the SFC method). */
@@ -1747,6 +1748,13 @@ export interface MeshioPlusPlusModule {
    * false in the lean one (where `fitCad` runs the native backend).
    */
   hasOcct(): boolean;
+
+  /**
+   * Whether the KaHIP kaffpa partitioner is linked in, so `partition` with
+   * `method: 'kahip'` runs: true in the full artifact (`{full: true}`),
+   * false in the lean one.
+   */
+  hasKahip(): boolean;
 
   /** Whether the VTK XML zstd block codec is linked in (the full artifact). */
   hasZstd(): boolean;
@@ -3137,9 +3145,9 @@ export interface MeshioPlusPlusModule {
    * scalar `cell_data` array of per-cell weights. `ghostLayers > 0` grows
    * each piece by that many shared-node BFS layers of other parts' cells (a
    * halo), tagged `partition:ghost`.
-   * @throws {Error} on `method: 'kahip'` (KaHIP is never part of the WASM
-   *   build; the message names `MESHIOPLUSPLUS_WITH_KAHIP`), `nparts < 1`,
-   *   `ghostLayers < 0`, or a bad weights array.
+   * @throws {Error} on `method: 'kahip'` outside the full artifact (KaHIP
+   *   is linked only there; the message names `MESHIOPLUSPLUS_WITH_KAHIP`),
+   *   `nparts < 1`, `ghostLayers < 0`, or a bad weights array.
    */
   partition(
     mesh: Mesh,
