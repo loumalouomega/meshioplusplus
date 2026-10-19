@@ -154,6 +154,19 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
 
+/// Which engine `fit_cad` builds the solid with (since v17.9.0).
+enum class FitCadBackend : std::int32_t {
+    /// OpenCASCADE when the build carries it, else `Native`.
+    Auto = 0,
+    /// OpenCASCADE: analytic, freeform and feature faces, sewn and checked;
+    /// throws `Unsupported` in a build without it.
+    Occt = 1,
+    /// No CAD kernel: the patches `fit_primitives` explains become analytic
+    /// faces and the rest coplanar polygons, written by the kernel-free B-rep
+    /// `step` writer (`StepFaces::Fitted`); no freeform or feature faces.
+    Native = 2,
+};
+
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
     /// The largest distance, as a length, a face may lie from the skin. At most
@@ -193,6 +206,12 @@ struct FitCadOptions {
     /// the patch itself fits, with a straight or a rounded profile, of
     /// constant or varying pitch, and cut on a taper.
     bool mThreads = true;
+    /// Whether faces on one surface are merged and collinear edges joined
+    /// once the solid is built (`ShapeUpgrade_UnifySameDomain`), kept only
+    /// when the solid stays valid with the same volume (since v17.9.0).
+    bool mMergeFaces = true;
+    /// The engine (since v17.9.0).
+    FitCadBackend mBackend = FitCadBackend::Auto;
 };
 
 /// The re-meshed solid and what was built.
@@ -255,8 +274,10 @@ struct FitCadResult {
     std::int64_t mNumTaperedThread = 0;
     /// Of the thread faces, those whose pitch varies along them (v17.2.0).
     std::int64_t mNumVariablePitchThread = 0;
-    /// The solid as NURBS faces, loops and edges.
+    /// The solid as NURBS faces, loops and edges (empty from `Native`).
     BrepInfo mBrep;
+    /// The engine that built the solid: `Occt` or `Native` (since v17.9.0).
+    FitCadBackend mBackend = FitCadBackend::Occt;
 };
 
 /**

@@ -114,7 +114,8 @@ def test_types_mask_and_empty_types_facet_the_rest():
     _out, report = mio.fit_cad(fit, types=[], return_report=True)
     assert report["valid"]
     assert report["num_plane"] == 0
-    assert report["num_faceted_faces"] == report["num_faces"] > 6
+    # The facets left out merge into one planar face per coplanar group.
+    assert report["num_faceted_faces"] == report["num_faces"] == 6
     assert report["num_demoted"] == 0
 
 
