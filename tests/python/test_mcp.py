@@ -2068,6 +2068,26 @@ def test_every_tool_function_is_callable():
         assert inspect.signature(fn) is not None
 
 
+def test_octree_tool(tmp_path):
+    skin = tmp_path / "skin.vtu"
+    meshioplusplus.write(
+        skin,
+        meshioplusplus.convert_cells(
+            meshioplusplus.extract_surface(meshioplusplus.grid([2, 2, 2])),
+            mode="simplexify",
+        ),
+    )
+    out = tmp_path / "tree.vtu"
+    report = _tools.tool_octree(str(skin), str(out), max_level=3, fill="inside")
+    assert out.exists()
+    assert report["dimension"] == 3
+    assert report["num_leaves"] > 0
+    assert "num_hanging" in report
+
+    with pytest.raises(ValueError, match="balance"):
+        _tools.tool_octree(str(skin), str(out), balance="bogus")
+
+
 def test_compute_sdf_tool(tmp_path):
     # A *surface*: distance is measured to a skin, not to a volume.
     skin = tmp_path / "skin.vtu"

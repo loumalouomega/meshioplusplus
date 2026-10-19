@@ -79,6 +79,7 @@ from ._tensor_invariants import tensor_invariants
 from ._tessellation import tessellate
 from ._transform import transform
 from ._undo_green import undo_green
+from ._octree import octree
 from ._voxelize import voxelize
 
 __all__ = ["run_pipeline"]
@@ -325,6 +326,22 @@ _OP_TABLE = {
         "PaddingRelative",
         "Fill",
         "AttachOccupancy",
+        "MaxCells",
+        "Sign",
+    ),
+    "Octree": (
+        "RootCells",
+        "MinLevel",
+        "MaxLevel",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "Dimension",
+        "SampleDistance",
+        "Balance",
+        "Fill",
+        "AttachDistance",
+        "EvenOdd",
         "MaxCells",
         "Sign",
     ),
@@ -1342,6 +1359,32 @@ def _apply_step(mesh, step, steps, warnings):
             return_report=True,
         )
         entry["NumOccupied"] = float(rep["num_occupied"])
+
+    elif op == "Octree":
+        # Voxelize's adaptive sibling: it likewise REPLACES the input's geometry.
+        roots = _dvec(step, "RootCells")
+        bounds = _dvec(step, "Bounds")
+        mesh, rep = octree(
+            mesh,
+            root_cells=[int(v) for v in roots] if roots else (1, 1, 1),
+            min_level=int(_number(step, "MinLevel", 0.0)),
+            max_level=int(_number(step, "MaxLevel", 4.0)),
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.0),
+            dimension=int(_number(step, "Dimension", 0.0)),
+            sample_distance=_number(step, "SampleDistance", 0.0),
+            balance=_text(step, "Balance", "face"),
+            fill=_text(step, "Fill", "all"),
+            attach_distance=_flag(step, "AttachDistance", False),
+            even_odd=_flag(step, "EvenOdd", False),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            sign=_text(step, "Sign", "pseudonormal"),
+            watertight_check="off",
+            return_report=True,
+        )
+        entry["NumLeaves"] = float(rep["num_leaves"])
+        entry["NumHanging"] = float(rep["num_hanging"])
 
     elif op == "ComputeSdf":
         # Voxelize's sibling: it likewise REPLACES the input's geometry, taking a

@@ -239,6 +239,7 @@ if TYPE_CHECKING:
     from ._undo_green import undo_green
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
+    from ._octree import octree
 
 # Operations, classes and helpers are loaded on first attribute access (PEP 562)
 # rather than with the package: importing all of them costs more than the three
@@ -390,6 +391,7 @@ _LAZY_ATTRS = {
     "screenshot": "_viewer",
     "view": "_viewer",
     "voxelize": "_voxelize",
+    "octree": "_octree",
 }
 
 __all__ = [
@@ -543,6 +545,7 @@ __all__ = [
     "optimize_volume",
     "grid",
     "voxelize",
+    "octree",
     "sample_distance",
     "distance_to_surface",
     "surface_watertight_check",

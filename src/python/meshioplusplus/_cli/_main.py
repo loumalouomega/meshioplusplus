@@ -34,6 +34,7 @@ from . import (
     _isosurface,
     _merge,
     _normals,
+    _octree,
     _optimize_volume,
     _partition,
     _periodic,
@@ -317,6 +318,13 @@ def main(argv=None):
     )
     _voxelize.add_args(parser)
     parser.set_defaults(func=_voxelize.voxelize_cmd)
+
+    parser = subparsers.add_parser(
+        "octree",
+        help="Octree / quadtree around a skin, fine only where the skin is",
+    )
+    _octree.add_args(parser)
+    parser.set_defaults(func=_octree.octree_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

@@ -73,6 +73,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -344,6 +345,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
           "AttachOccupancy", "MaxCells", "Sign"}},
+        {"Octree",
+         {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
+          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -1374,6 +1378,35 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
         VoxelResult r = voxelize(mesh, opts);
         pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Octree") {
+        // Voxelize's adaptive sibling: it likewise replaces its input's geometry.
+        OctreeOptions opts;
+        const std::vector<std::int64_t> roots = pipe_ivec(rStep, "RootCells");
+        if (roots.size() == 3)
+            opts.mRootCells = std::array<std::int64_t, 3>{{roots[0], roots[1], roots[2]}};
+        opts.mMinLevel = static_cast<std::int64_t>(pipe_number(rStep, "MinLevel", 0.0));
+        opts.mMaxLevel = static_cast<std::int64_t>(pipe_number(rStep, "MaxLevel", 4.0));
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.0);
+        opts.mDimension = static_cast<std::int64_t>(pipe_number(rStep, "Dimension", 0.0));
+        opts.mSampleDistance = pipe_number(rStep, "SampleDistance", 0.0);
+        opts.mBalance = octree_balance_from_name(pipe_text(rStep, "Balance", "face"));
+        opts.mFill = voxel_fill_from_name(pipe_text(rStep, "Fill", "all"));
+        opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", false);
+        opts.mEvenOdd = pipe_flag(rStep, "EvenOdd", false);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        OctreeResult r = octree(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLeaves", static_cast<double>(r.mNumLeaves)},
+                        {"NumHanging", static_cast<double>(r.mNumHanging)}});
         return std::move(r.mMesh);
     }
 

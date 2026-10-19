@@ -693,6 +693,57 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def octree(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        root_cells: List[int] = [1, 1, 1],
+        min_level: int = 0,
+        max_level: int = 4,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.0,
+        dimension: int = 0,
+        sample_distance: float = 0.0,
+        balance: str = "face",
+        fill: str = "all",
+        attach_distance: bool = False,
+        even_odd: bool = False,
+        max_cells: int = 20000000,
+        sign: str = "pseudonormal",
+    ) -> dict:
+        """Build an octree (3-D, hexahedra) or quadtree (2-D, quads) around a mesh
+        skin: leaves are fine only where the skin is. A closed polyline of line
+        cells (or the boundary of a 2-D surface mesh) gives a quadtree, a surface
+        an octree. Leaves are split while the skin cuts them (or lies within
+        sample_distance) down to max_level; balance 'none'/'face'/'full' enforces
+        2:1 size ratios. fill='all'/'surface'/'inside' keeps as for voxelize.
+        Writes octree:level and octree:cut cell data and octree:hanging point
+        data, and reports leaf counts, hanging nodes and the root lattice."""
+        return _guard(
+            _tools.tool_octree,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            root_cells=root_cells,
+            min_level=min_level,
+            max_level=max_level,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            dimension=dimension,
+            sample_distance=sample_distance,
+            balance=balance,
+            fill=fill,
+            attach_distance=attach_distance,
+            even_odd=even_odd,
+            max_cells=max_cells,
+            sign=sign,
+        )
+
+    @server.tool()
     def voxelize(
         input_path: str,
         output_path: str,
