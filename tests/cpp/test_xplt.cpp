@@ -556,3 +556,96 @@ TEST(XpltWriter, CompressionIsOptIn) {
     EXPECT_THROW(write_xplt(packed_path, original, packed), Unsupported);
 #endif
 }
+
+// A remeshed run: a step whose mesh differs from the previous step's carries its own mesh
+// section, and the variables of every step are the first step's.
+TEST(XpltWriter, RemeshedSeriesWritesAMeshSectionWhereTheMeshChanges) {
+    const auto make = [](bool Refined) {
+        Mesh mesh;
+        const std::size_t n = Refined ? 5 : 4;
+        NDArray points(DType::Float64, {n, 3});
+        for (std::size_t i = 0; i < n; ++i) {
+            points.As<double>()[i * 3 + 0] = static_cast<double>(i % 2);
+            points.As<double>()[i * 3 + 1] = static_cast<double>((i / 2) % 2);
+            points.As<double>()[i * 3 + 2] = static_cast<double>(i == 3 || i == 4);
+        }
+        mesh.AssignPoints(std::move(points));
+        const std::size_t cells = Refined ? 2 : 1;
+        NDArray conn(DType::Int64, {cells, 4});
+        const std::int64_t rows[2][4] = {{0, 1, 2, 3}, {1, 2, 3, 4}};
+        for (std::size_t c = 0; c < cells; ++c)
+            for (std::size_t j = 0; j < 4; ++j)
+                conn.As<std::int64_t>()[c * 4 + j] = rows[c][j];
+        mesh.AddCellBlock("tetra", std::move(conn));
+        NDArray u(DType::Float64, {n});
+        for (std::size_t i = 0; i < n; ++i)
+            u.As<double>()[i] = Refined ? 100.0 + static_cast<double>(i) : static_cast<double>(i);
+        mesh.AddPointData("u", std::move(u));
+        return mesh;
+    };
+    for (const bool pack : {false, true}) {
+#ifndef MESHIOPLUSPLUS_HAS_ZLIB
+        if (pack)
+            continue;
+#endif
+        XpltWriteOptions options;
+        options.mCompress = pack;
+        const std::string path = temp_path(".xplt");
+        XpltSeriesWriter writer(path, options);
+        writer.Write(0.0, make(false));
+        writer.Write(1.0, make(true));
+        writer.Write(2.0, make(true));
+        writer.Finalize();
+        ASSERT_EQ(read_xplt_metadata(path).mTimeValues, (std::vector<double>{0.0, 1.0, 2.0}));
+        ReadOptions step;
+        std::size_t expected_points[3] = {4, 5, 5};
+        for (int k = 0; k < 3; ++k) {
+            step.mTimeStep = k;
+            const Mesh got = read_xplt(path, step);
+            EXPECT_EQ(got.NumPoints(), expected_points[k]) << "pack " << pack << " step " << k;
+            EXPECT_EQ(detail::read_double(got.PointData("u"), got.NumPoints() - 1),
+                      k == 0 ? 3.0 : 104.0);
+        }
+        // The dictionary is fixed: another variable in a later step is refused.
+        Mesh other = make(true);
+        other.AddPointData("extra", make(true).PointData("u"));
+        XpltSeriesWriter refused(temp_path(".xplt"), options);
+        refused.Write(0.0, make(false));
+        EXPECT_THROW(refused.Write(1.0, other), WriteError);
+    }
+}
+
+// Point arrays the reader marks as surface-node variables are written in the surface group
+// again, and the reader hands them back, marker included.
+TEST(XpltWriter, SurfaceNodeVariablesReturnToTheirGroup) {
+    Mesh original = surface_edge_mesh();
+    const std::size_t n = original.NumPoints();
+    NDArray contact(DType::Float64, {n});
+    for (std::size_t i = 0; i < n; ++i)
+        contact.As<double>()[i] = std::numeric_limits<double>::quiet_NaN();
+    // the "lid" triangle is the first tet's face 0 1 2
+    contact.As<double>()[0] = 0.5;
+    contact.As<double>()[1] = 1.5;
+    contact.As<double>()[2] = 2.5;
+    original.AddPointData("contact", std::move(contact));
+    NDArray marker(DType::Int64, {1});
+    marker.As<std::int64_t>()[0] = 1;
+    original.AddFieldData("xplt:surface_node:contact", std::move(marker));
+
+    const std::string out = temp_path(".xplt");
+    write_xplt(out, original);
+    const Mesh again = read_xplt(out);
+    ASSERT_TRUE(again.HasPointData("contact"));
+    EXPECT_EQ(detail::read_double(again.PointData("contact"), 1), 1.5);
+    EXPECT_TRUE(std::isnan(detail::read_double(again.PointData("contact"), n - 1)));
+    EXPECT_TRUE(again.HasFieldData("xplt:surface_node:contact"));
+    // A second round trip is stable.
+    const std::string out2 = temp_path(".xplt");
+    write_xplt(out2, again);
+    std::ifstream a(out, std::ios::binary), b(out2, std::ios::binary);
+    const std::string bytes_a((std::istreambuf_iterator<char>(a)),
+                              std::istreambuf_iterator<char>());
+    const std::string bytes_b((std::istreambuf_iterator<char>(b)),
+                              std::istreambuf_iterator<char>());
+    EXPECT_EQ(bytes_a, bytes_b);
+}

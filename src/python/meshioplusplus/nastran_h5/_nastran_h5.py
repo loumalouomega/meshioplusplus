@@ -235,6 +235,74 @@ def _nodal_outputs(table, ds):
     return out
 
 
+def _ints_of(data, names, name, n):
+    if name in names:
+        return np.asarray(data[name], dtype=np.int64).reshape(n)
+    return np.zeros(n, dtype=np.int64)
+
+
+def _floats_of(data, names, name, n, width=1):
+    if name in names:
+        return np.asarray(data[name], dtype=np.float64).reshape(n, width)
+    return np.zeros((n, width))
+
+
+def _card_fields(card, data, names, n):
+    """A card's components (a spring's or damper's ends) and the values the cell data
+    keep: a CBAR's and CBEAM's orientation, G0, pins and offsets (the CBAR layout of the
+    shared model), a CELAS2's K, GE and S, a CDAMP2's B."""
+    comps = np.zeros((n, 2), dtype=np.int64)
+    payload = None
+    if card in ("CELAS1", "CDAMP1", "CELAS2", "CDAMP2"):
+        comps = np.stack(
+            [_ints_of(data, names, "C1", n), _ints_of(data, names, "C2", n)], axis=1
+        )
+    if card == "CELAS2":
+        payload = np.column_stack(
+            [
+                _floats_of(data, names, "K", n),
+                _floats_of(data, names, "GE", n),
+                _floats_of(data, names, "S", n),
+            ]
+        )
+    elif card == "CDAMP2":
+        payload = _floats_of(data, names, "B", n)
+    elif card == "CBAR":
+        g0 = _ints_of(data, names, "FLAG", n) == 2
+        x = np.column_stack([_floats_of(data, names, f"X{k}", n) for k in (1, 2, 3)])
+        payload = np.column_stack(
+            [
+                np.where(g0[:, None], 0.0, x),
+                np.where(g0, _ints_of(data, names, "GO", n), 0).astype(np.float64),
+                _ints_of(data, names, "PA", n).astype(np.float64),
+                _ints_of(data, names, "PB", n).astype(np.float64),
+                np.column_stack(
+                    [
+                        _floats_of(data, names, f"W{k}{e}", n)
+                        for e in "AB"
+                        for k in (1, 2, 3)
+                    ]
+                ),
+            ]
+        )
+    elif card == "CBEAM":
+        low = _ints_of(data, names, "F", n) & 3
+        x = _floats_of(data, names, "X", n, 3)
+        payload = np.column_stack(
+            [
+                np.where((low <= 1)[:, None], x, 0.0),
+                np.where(low == 2, _ints_of(data, names, "G0", n), 0).astype(
+                    np.float64
+                ),
+                _ints_of(data, names, "PA", n).astype(np.float64),
+                _ints_of(data, names, "PB", n).astype(np.float64),
+                _floats_of(data, names, "WA", n, 3),
+                _floats_of(data, names, "WB", n, 3),
+            ]
+        )
+    return comps, payload
+
+
 def _read_cards(nf):
     """Every element table with a cell type, as ``(card, eid, pid, g)`` rows."""
     f = nf.f
@@ -274,7 +342,8 @@ def _read_cards(nf):
         width = g.shape[1]
         if width < lin_n:
             _fail(f"{path} has {width} node columns, {card} needs {lin_n}")
-        cards.append((card, eid, pid, g))
+        comps, payload = _card_fields(card, data, names, n)
+        cards.append((card, eid, pid, g, comps, payload))
     if skipped_cards:
         warn(
             "MSC Nastran HDF5: skipped element tables with no cell type: "
@@ -299,36 +368,138 @@ def _property_types(f):
     return ptype
 
 
-# The property and material members read as ``nastran:<CARD>_<id>:<MEMBER>`` field data.
+# The property and material members read as ``nastran:<CARD>_<id>:<MEMBER>`` field data,
+# with the MSC column of a member that is called otherwise.
 _VALUE_MEMBERS = {
     "PSHELL": ("MID1", "T", "NSM"),
     "PROD": ("MID", "A", "J", "C", "NSM"),
     "PTUBE": ("MID", "OD", "T", "NSM"),
     "PSOLID": ("MID",),
+    "PBAR": ("MID A I1 I2 J NSM C1 C2 D1 D2 E1 E2 F1 F2 K1 K2 I12".split()),
+    "PELAS": ("K", "GE", "S"),
+    "PDAMP": ("B",),
+    "PVISC": ("CE", "CR"),
+    "PSHEAR": ("MID", "T", "NSM", "F1", "F2"),
     "MAT1": ("E", "G", "NU", "RHO", "A", "TREF", "GE"),
+    "MAT2": ("G11 G12 G13 G22 G23 G33 RHO A1 A2 A3 TREF GE ST SC SS MCSID".split()),
+    "MAT4": ("K CP RHO H MU HGEN REFENTH TCH TDELTA QLAT".split()),
 }
+_MATERIAL_CARDS = ("MAT1", "MAT2", "MAT4")
+_MEMBER_COLUMN = {("MAT2", "A3"): "A12"}
+
+
+def _is_int_member(member):
+    return member.startswith("MID") or member == "MCSID"
 
 
 def _property_values(f):
     out = {}
     for card, members in _VALUE_MEMBERS.items():
-        path = f"{_PROPERTIES}/{card}" if card != "MAT1" else f"{_MATERIALS}/MAT1"
+        material = card in _MATERIAL_CARDS
+        path = f"{_MATERIALS if material else _PROPERTIES}/{card}"
         if not _is_dataset(f, path):
             continue
         ds = f[path]
-        key = "PID" if card != "MAT1" else "MID"
+        key = "MID" if material else "PID"
         if key not in _names(ds):
             continue
         ids = np.asarray(ds[key], dtype=np.int64).tolist()
         for member in members:
-            if member not in _names(ds):
+            column_name = _MEMBER_COLUMN.get((card, member), member)
+            if column_name not in _names(ds):
                 continue
-            column = np.asarray(ds[member])
-            dtype = np.int64 if member.startswith("MID") else np.float64
+            column = np.asarray(ds[column_name])
+            dtype = np.int64 if _is_int_member(member) else np.float64
             for ident, value in zip(ids, column.tolist()):
                 out.setdefault(
                     f"nastran:{card}_{ident}:{member}", np.array([value], dtype)
                 )
+    out.update(_pbeam_values(f))
+    out.update(_pcomp_values(f))
+    return out
+
+
+def _pbeam_values(f):
+    """``nastran:PBEAM_<id>:*`` field data of the PBEAM table, as the OP2 reader gives it:
+    MID, NSEG and CCF, then SO, XXB, A, I1, I2, I12, J and NSM per station, and the outline
+    points C1, C2, D1 and D2 as ``(n, 2)`` rows (the columns C1/C2, D1/D2, E1/E2, F1/F2).
+    The stations are NSEGS + 1: the first in slot 0, the last in slot 10, any between them
+    in the slots after the first."""
+    from ..nastran._model import pbeam_station_slots
+
+    path = f"{_PROPERTIES}/PBEAM"
+    out = {}
+    if not _is_dataset(f, path):
+        return out
+    ds = f[path]
+    names = _names(ds)
+    if not {"PID", "MID", "NSEGS"} <= set(names):
+        return out
+    data = ds[()]
+    for row in data:
+        pid, nseg = int(row["PID"]), int(row["NSEGS"])
+        prefix = f"nastran:PBEAM_{pid}:"
+        if not 1 <= nseg <= 10 or prefix + "MID" in out:
+            continue
+        slots = pbeam_station_slots(nseg + 1)
+        out[prefix + "MID"] = np.array([row["MID"]], dtype=np.int64)
+        out[prefix + "NSEG"] = np.array([nseg], dtype=np.int64)
+        out[prefix + "CCF"] = np.array(
+            [row["CCF"] if "CCF" in names else 0], dtype=np.int64
+        )
+        for member in ("SO", "XXB", "A", "I1", "I2", "I12", "J", "NSM"):
+            if member in names:
+                out[prefix + member] = np.asarray(row[member], dtype=np.float64)[slots]
+        for point, (u, v) in zip(
+            ("C1", "C2", "D1", "D2"),
+            (("C1", "C2"), ("D1", "D2"), ("E1", "E2"), ("F1", "F2")),
+        ):
+            if u in names and v in names:
+                out[prefix + point] = np.column_stack(
+                    [
+                        np.asarray(row[u], dtype=np.float64)[slots],
+                        np.asarray(row[v], dtype=np.float64)[slots],
+                    ]
+                )
+    return out
+
+
+def _pcomp_values(f):
+    """``nastran:PCOMP_<id>:*`` field data of the grouped PCOMP tables: Z0, NSM, SB, TREF,
+    GE, FT and SYM (0), and PLY, the plies as ``(n, 4)`` rows of MID, T, THETA and SOUT.
+    """
+    out = {}
+    ident = f"{_PROPERTIES}/PCOMP/IDENTITY"
+    plies = f"{_PROPERTIES}/PCOMP/PLY"
+    if not (_is_dataset(f, ident) and _is_dataset(f, plies)):
+        return out
+    head = f[ident][()]
+    ply = f[plies][()]
+    names = _names(f[ident])
+    if not {"PID", "PLY_POS", "PLY_LEN"} <= set(names) or not {
+        "MID",
+        "T",
+        "THETA",
+        "SOUT",
+    } <= set(_names(f[plies])):
+        return out
+    for row in head:
+        pid = int(row["PID"])
+        prefix = f"nastran:PCOMP_{pid}:"
+        start, count = int(row["PLY_POS"]), int(row["PLY_LEN"])
+        if prefix + "PLY" in out or count <= 0 or start < 0 or start + count > len(ply):
+            continue
+        block = ply[start : start + count]
+        out[prefix + "PLY"] = np.column_stack(
+            [block["MID"], block["T"], block["THETA"], block["SOUT"]]
+        ).astype(np.float64)
+        for member in ("Z0", "NSM", "SB", "TREF", "GE"):
+            if member in names:
+                out[prefix + member] = np.array([row[member]], dtype=np.float64)
+        out[prefix + "FT"] = np.array(
+            [row["FT"] if "FT" in names else 0], dtype=np.int64
+        )
+        out[prefix + "SYM"] = np.array([0], dtype=np.int64)
     return out
 
 
@@ -418,13 +589,16 @@ def _read(nf, points_only, arrays, time_step):
     )
     cdl = cd.tolist()
 
+    extras = {}
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
         _read_cards(nf),
         nf.grid_index,
         nf.scalar_points,
         _property_types(f),
         "MSC Nastran HDF5",
+        extras,
     )
+    cell_data.update(extras)
     ncells = sum(sizes)
 
     # GRID ids that are not 1 to n, as point data: only when point data is wanted

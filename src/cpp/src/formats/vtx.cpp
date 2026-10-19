@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/typed_view.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -126,7 +127,12 @@ struct VtxLayout {
     VtxSchema mSchema;
     std::vector<std::set<std::string>> mPresent;
     std::vector<double> mTimes;
+    bool mShared = false;  // the blocks hold the points they use (see kVtxSharedAttribute)
 };
+
+// Set by this library's writer on a file whose blocks each hold the points they use (several
+// cell types, or the parts of a partition): the ghost copies are one mesh and are welded on read.
+constexpr const char* kVtxSharedAttribute = "meshio.shared_points";
 
 // A single value of the current step. A value several ranks wrote has one
 // instance per writer, so it is taken from the block list: a Get would deliver
@@ -173,6 +179,8 @@ VtxLayout vtx_scan(const std::string& rPath) {
             for (const std::string& rPart : attr.Data())
                 xml += rPart;
             layout.mSchema = vtx_parse_schema(xml);
+            layout.mShared =
+                static_cast<bool>(io.InquireAttribute<std::string>(kVtxSharedAttribute));
             have_schema = true;
         }
         std::set<std::string> names;
@@ -506,7 +514,7 @@ struct VtxStep {
 // GhostPolicy::Drop: weld every point onto the owned copy sharing its
 // vtkOriginalPointIds (the first with vtkGhostType 0, else the first seen), keep
 // the surviving points in their first-seen order, and drop both ghost arrays.
-void vtx_weld_ghosts(VtxStep& rStep) {
+void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
     auto ids_it = rStep.mPointData.find("vtkOriginalPointIds");
     auto ghost_it = rStep.mPointData.find("vtkGhostType");
     if (ids_it == rStep.mPointData.end()) {
@@ -527,10 +535,15 @@ void vtx_weld_ghosts(VtxStep& rStep) {
     std::vector<std::size_t> keep;
     std::vector<std::int64_t> new_index(n, -1);
     for (std::size_t i = 0; i < n; ++i)
-        if (owner[vtx_int_at(rIds, i)] == i) {
-            new_index[i] = static_cast<std::int64_t>(keep.size());
+        if (owner[vtx_int_at(rIds, i)] == i)
             keep.push_back(i);
-        }
+    // A shared-points file lists the points in the mesh's order, whatever block holds them.
+    if (SortById)
+        std::stable_sort(keep.begin(), keep.end(), [&](std::size_t A, std::size_t B) {
+            return vtx_int_at(rIds, A) < vtx_int_at(rIds, B);
+        });
+    for (std::size_t k = 0; k < keep.size(); ++k)
+        new_index[keep[k]] = static_cast<std::int64_t>(k);
     for (std::int64_t& rV : rStep.mConn)
         rV = new_index[owner[vtx_int_at(rIds, static_cast<std::size_t>(rV))]];
     rStep.mPoints = vtx_take_rows(rStep.mPoints, keep);
@@ -616,14 +629,20 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
     }
 
     // Data arrays of the requested step itself.
-    const bool drop = rOpts.mGhosts == GhostPolicy::Drop;
+    const bool drop = rOpts.mGhosts == GhostPolicy::Drop || layout.mShared;
     for (const VtxArray& rA : rS.mArrays) {
         const bool ghost_array = rA.mName == "vtkGhostType" || rA.mName == "vtkOriginalPointIds";
         const bool wanted = !rOpts.mPointsOnly && rOpts.WantsArray(rA.mName);
         if (!wanted && !(drop && ghost_array && !rA.mCell))
             continue;
-        if (!layout.mPresent[step].count(rA.mVariable))
-            continue;
+        // The ghost arrays of a `reuse` file are written with the mesh only.
+        constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+        std::size_t start = step;
+        if (!layout.mPresent[step].count(rA.mVariable)) {
+            start = ghost_array ? vtx_last_with(layout, rA.mVariable, step) : kNone;
+            if (start == kNone)
+                continue;
+        }
         const std::vector<std::size_t>& rRows = rA.mCell ? cell_counts : point_counts;
         // DOLFINx 0.11 writes the ghost arrays twice in the first step of a
         // `reuse` file, the second time as one-value blocks whose payload is not
@@ -631,23 +650,22 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
         // block too. An array whose blocks do not match the rank blocks one to
         // one is taken from the nearest step where they do (DOLFINx rewrites
         // the ghost arrays, unchanged, every step).
-        std::size_t source = step;
+        std::size_t source = start;
         auto clean = [&](std::size_t S) {
             return layout.mPresent[S].count(rA.mVariable) &&
                    vtx_block_rows(io, engine, rA.mVariable,
                                   vtx_relative_step(layout, rA.mVariable, S)) == rRows;
         };
-        if (!clean(step)) {
-            constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+        if (!clean(start)) {
             source = kNone;
             // Only the ghost arrays are constant over the steps; any other array
             // is dropped rather than replaced by another step's values.
             for (std::size_t d = 1; ghost_array && d < layout.mPresent.size() && source == kNone;
                  ++d) {
-                if (step + d < layout.mPresent.size() && clean(step + d))
-                    source = step + d;
-                else if (d <= step && clean(step - d))
-                    source = step - d;
+                if (start + d < layout.mPresent.size() && clean(start + d))
+                    source = start + d;
+                else if (d <= start && clean(start - d))
+                    source = start - d;
             }
             if (source == kNone) {
                 log::warn("VTX: the blocks of '{}' match no rank's {} count and it is not read",
@@ -672,7 +690,7 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
     engine.Close();
 
     if (drop)
-        vtx_weld_ghosts(out);
+        vtx_weld_ghosts(out, layout.mShared);
     return out;
 }
 
@@ -799,12 +817,17 @@ MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpt
     return meta;
 }
 
-
 // ---------------------------------------------------------------------------
-// The writer: VTXWriter's layout for one rank. The Python twin
-// (`vtx/_write.py`) writes the same variables, attribute and values.
+// The writer: VTXWriter's layout. One block for a mesh of one cell type, as for one rank;
+// a mesh of several cell types, or one whose cells carry `partition:part` values of several
+// parts, is one block per cell type (and part), every block holding the points it uses. The
+// Python twin (`vtx/_write.py`) writes the same variables, attributes and values.
 // ---------------------------------------------------------------------------
 namespace {
+
+constexpr const char* kVwPartition = "partition:part";
+constexpr const char* kVwGhostType = "vtkGhostType";
+constexpr const char* kVwOriginalIds = "vtkOriginalPointIds";
 
 [[noreturn]] void vw_fail(const std::string& rMessage) {
     throw WriteError("VTX (.bp): " + rMessage);
@@ -813,7 +836,7 @@ namespace {
 // (VTK type, node count) -> VTK_LAGRANGE_* type, the inverse of the reader's lowering.
 int vw_lagrange(int VtkType, std::size_t Nodes) {
     static const std::map<std::pair<int, std::size_t>, int> kMap = {
-        {{3, 2}, 68},  {{21, 3}, 68}, {{5, 3}, 69},  {{22, 6}, 69}, {{9, 4}, 70},  {{28, 9}, 70},
+        {{3, 2}, 68},  {{21, 3}, 68},  {{5, 3}, 69},  {{22, 6}, 69}, {{9, 4}, 70}, {{28, 9}, 70},
         {{10, 4}, 71}, {{24, 10}, 71}, {{12, 8}, 72}, {{13, 6}, 73}, {{14, 5}, 74}};
     const auto it = kMap.find({VtkType, Nodes});
     return it == kMap.end() ? VtkType : it->second;
@@ -862,6 +885,31 @@ struct VwArray {
     bool mCell = false;
 };
 
+// One block of the file: a cell type (of one part) and the points it uses.
+struct VwGroup {
+    int mVtkType = 0;
+    std::size_t mWidth = 0;             // 1 + nodes
+    std::vector<std::int64_t> mConn;    // rows x mWidth, each row led by its node count
+    bool mAllCells = true;              // the block's cells are the mesh's, in order
+    std::vector<std::size_t> mCells;    // else their numbers in the mesh
+    bool mAllPoints = true;             // the block's points are the mesh's
+    std::vector<std::int64_t> mPoints;  // else the mesh points it holds
+    std::vector<std::uint8_t> mGhost;   // 1 where another block owns the point
+    std::size_t Rows() const { return mWidth == 0 ? 0 : mConn.size() / mWidth; }
+};
+
+// The rows `rIndex` of an array of `Rows` rows, as bytes.
+std::vector<std::byte> vw_take_rows(const NDArray& rArray, std::size_t Rows,
+                                    const std::vector<std::size_t>& rIndex) {
+    const std::size_t row_bytes = Rows == 0 ? 0 : rArray.Size() / Rows * dtype_size(rArray.Dtype());
+    const std::byte* p = static_cast<const std::byte*>(rArray.Data());
+    std::vector<std::byte> out;
+    out.reserve(rIndex.size() * row_bytes);
+    for (const std::size_t i : rIndex)
+        out.insert(out.end(), p + i * row_bytes, p + (i + 1) * row_bytes);
+    return out;
+}
+
 class VwModel {
 public:
     explicit VwModel(const Mesh& rMesh) {
@@ -875,17 +923,14 @@ public:
                 for (std::size_t k = 0; k < 3 && k < width; ++k)
                     mGeometry[i * 3 + k] = view.Data()[i * width + k];
         }
-        std::set<std::string> types;
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            if (rMesh.Cells(b).NumCells() > 0)
-                types.insert(rMesh.Cells(b).Type());
-        if (types.size() > 1) {
-            std::string list;
-            for (const std::string& t : types)
-                list += (list.empty() ? "" : ", ") + t;
-            vw_fail("a VTX file holds one cell type, as DOLFINx's does; this mesh has " + list +
-                    " (write each type to its own file)");
-        }
+        struct Block {
+            std::size_t mIndex = 0;
+            std::string mType;
+            int mVtk = 0;
+            std::size_t mWidth = 0, mFirst = 0, mCount = 0;
+            std::vector<std::int64_t> mRows;
+        };
+        std::vector<Block> blocks;
         const auto& vtk_types = meshio_to_vtk_type();
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
@@ -899,26 +944,118 @@ public:
             std::vector<int> order = meshio_to_vtk_order(cb.Type());
             if (order.size() != w)
                 order.clear();
+            Block blk;
+            blk.mIndex = b;
+            blk.mType = cb.Type();
+            blk.mVtk = vw_lagrange(found->second, w);
+            blk.mWidth = w + 1;
+            blk.mFirst = mCells;
+            blk.mCount = count;
             const detail::Int64View conn(cb.Conn());
+            blk.mRows.reserve(count * (w + 1));
             for (std::size_t r = 0; r < count; ++r) {
-                mConn.push_back(static_cast<std::int64_t>(w));
+                blk.mRows.push_back(static_cast<std::int64_t>(w));
                 for (std::size_t j = 0; j < w; ++j) {
                     const std::int64_t node =
-                        conn.Data()[r * w + (order.empty() ? j : static_cast<std::size_t>(order[j]))];
+                        conn.Data()[r * w +
+                                    (order.empty() ? j : static_cast<std::size_t>(order[j]))];
                     if (node < 0 || static_cast<std::size_t>(node) >= mN)
-                        vw_fail("a '" + cb.Type() + "' cell refers to a point the mesh does not have");
-                    mConn.push_back(node);
+                        vw_fail("a '" + cb.Type() +
+                                "' cell refers to a point the mesh does not have");
+                    blk.mRows.push_back(node);
                 }
             }
-            mWidth = w + 1;
-            mVtkType = vw_lagrange(found->second, w);
             mCells += count;
+            blocks.push_back(std::move(blk));
         }
         if (mCells == 0)
             vw_fail("the mesh has no cells");
-        for (const std::string& name : rMesh.PointDataNames())
-            if (Usable(name, rMesh.PointData(name), mN, "point"))
-                mArrays.push_back({name, false});
+
+        // The parts, when every cell block says which one each cell belongs to.
+        std::vector<std::vector<std::int64_t>> parts;
+        if (rMesh.HasCellData(kVwPartition) &&
+            rMesh.CellDataNumBlocks(kVwPartition) == rMesh.NumCellBlocks()) {
+            bool ok = true;
+            for (const Block& blk : blocks) {
+                const NDArray& a = rMesh.CellData(kVwPartition, blk.mIndex);
+                if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
+                    a.Size() != blk.mCount) {
+                    ok = false;
+                    break;
+                }
+                const detail::Int64View view(a);
+                parts.emplace_back(view.Data(), view.Data() + blk.mCount);
+            }
+            if (!ok)
+                parts.clear();
+        }
+        std::set<std::int64_t> labels;
+        for (const auto& rPart : parts)
+            labels.insert(rPart.begin(), rPart.end());
+        std::set<std::string> types;
+        for (const Block& blk : blocks)
+            types.insert(blk.mType);
+
+        auto from_rows = [](const Block& rBlk, const std::vector<std::size_t>* pKeep) {
+            VwGroup g;
+            g.mVtkType = rBlk.mVtk;
+            g.mWidth = rBlk.mWidth;
+            if (pKeep == nullptr) {
+                g.mConn = rBlk.mRows;
+                return g;
+            }
+            g.mAllCells = false;
+            for (const std::size_t r : *pKeep) {
+                g.mConn.insert(g.mConn.end(), rBlk.mRows.begin() + r * rBlk.mWidth,
+                               rBlk.mRows.begin() + (r + 1) * rBlk.mWidth);
+                g.mCells.push_back(rBlk.mFirst + r);
+            }
+            return g;
+        };
+        if (labels.size() > 1) {
+            // One block per part and cell block: a rank's cells, as DOLFINx writes them.
+            for (const std::int64_t label : labels)
+                for (std::size_t k = 0; k < blocks.size(); ++k) {
+                    std::vector<std::size_t> keep;
+                    for (std::size_t r = 0; r < blocks[k].mCount; ++r)
+                        if (parts[k][r] == label)
+                            keep.push_back(r);
+                    if (!keep.empty())
+                        mGroups.push_back(from_rows(blocks[k], &keep));
+                }
+        } else if (types.size() > 1) {
+            for (const Block& blk : blocks) {
+                std::vector<std::size_t> all(blk.mCount);
+                for (std::size_t r = 0; r < all.size(); ++r)
+                    all[r] = r;
+                mGroups.push_back(from_rows(blk, &all));
+            }
+        } else {
+            VwGroup g;
+            g.mVtkType = blocks.back().mVtk;
+            g.mWidth = blocks.back().mWidth;
+            for (const Block& blk : blocks)
+                g.mConn.insert(g.mConn.end(), blk.mRows.begin(), blk.mRows.end());
+            mGroups.push_back(std::move(g));
+        }
+        mShared = mGroups.size() > 1;
+        if (mShared)
+            SharePoints();
+
+        std::set<std::string> point_names;
+        for (const std::string& name : rMesh.PointDataNames()) {
+            if (mShared && (name == kVwGhostType || name == kVwOriginalIds))
+                log::warn("VTX (.bp): point data '{}' is replaced by the ghost array of the blocks",
+                          name);
+            else if (Usable(name, rMesh.PointData(name), mN, "point"))
+                point_names.insert(name);
+        }
+        if (mShared) {
+            point_names.insert(kVwGhostType);
+            point_names.insert(kVwOriginalIds);
+        }
+        for (const std::string& name : point_names)
+            mArrays.push_back({name, false});
         for (const std::string& name : rMesh.CellDataNames()) {
             std::size_t total = 0;
             bool ok = true;
@@ -933,13 +1070,31 @@ public:
             if (ok && total % mCells == 0)
                 mArrays.push_back({name, true});
         }
-        mSignature = std::to_string(mN) + "|" + std::to_string(mCells) + "|" +
-                     std::to_string(mVtkType);
+        mSignature = std::to_string(mN) + "|" + std::to_string(mCells);
+        for (const VwGroup& g : mGroups)
+            mSignature += "|" + std::to_string(g.mVtkType) + "," + std::to_string(g.mWidth) + "," +
+                          std::to_string(g.Rows()) + "," + std::to_string(g.mCells.size());
         for (const VwArray& a : mArrays)
             mSignature += "|" + a.mName + (a.mCell ? "c" : "p");
     }
 
     const std::string& Signature() const { return mSignature; }
+
+    bool Shared() const { return mShared; }
+
+    // True when `rOther` has this model's points and cells exactly.
+    bool SameMesh(const VwModel& rOther) const {
+        if (mGeometry != rOther.mGeometry || mGroups.size() != rOther.mGroups.size())
+            return false;
+        for (std::size_t g = 0; g < mGroups.size(); ++g) {
+            const VwGroup& a = mGroups[g];
+            const VwGroup& b = rOther.mGroups[g];
+            if (a.mVtkType != b.mVtkType || a.mConn != b.mConn || a.mAllPoints != b.mAllPoints ||
+                a.mPoints != b.mPoints)
+                return false;
+        }
+        return true;
+    }
 
     std::string Schema() const {
         auto arrays = [&](bool Cell) {
@@ -973,48 +1128,167 @@ public:
         return xml;
     }
 
-    void PutStep(adios2::IO& rIo, adios2::Engine& rEngine, const Mesh& rMesh, double Time) const {
+    void DefineAttributes(adios2::IO& rIo) const {
+        rIo.DefineAttribute<std::string>("vtk.xml", Schema());
+        if (mShared)
+            rIo.DefineAttribute<std::string>(kVtxSharedAttribute, kVwOriginalIds);
+    }
+
+    // One step. `WithMesh` false is the step of a `reuse` file after the first: the time and
+    // the arrays only.
+    void PutStep(adios2::IO& rIo, adios2::Engine& rEngine, const Mesh& rMesh, double Time,
+                 bool WithMesh = true) const {
         rEngine.BeginStep();
         Put<double>(rIo, rEngine, "step", &Time, {}, true);
-        const std::uint32_t nodes = static_cast<std::uint32_t>(mN);
-        const std::uint32_t cells = static_cast<std::uint32_t>(mCells);
-        PutGlobal(rIo, rEngine, "NumberOfNodes", nodes);
-        PutGlobal(rIo, rEngine, "NumberOfEntities", cells);
-        Put<double>(rIo, rEngine, "geometry", mGeometry.data(), {mN, 3}, false);
-        Put<std::int64_t>(rIo, rEngine, "connectivity", mConn.data(), {mCells, mWidth}, false);
-        const std::uint32_t type = static_cast<std::uint32_t>(mVtkType);
-        Put<std::uint32_t>(rIo, rEngine, "types", &type, {}, true);
-        for (const VwArray& a : mArrays) {
-            if (!a.mCell) {
-                const NDArray& arr = rMesh.PointData(a.mName);
-                PutArray(rIo, rEngine, a.mName, arr.Dtype(), arr.Data(), Shape(arr, mN));
-            } else {
-                // The blocks' values one after the other, in cell order.
-                const NDArray& first = rMesh.CellData(a.mName, 0);
-                std::vector<std::byte> bytes;
-                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-                    const NDArray& arr = rMesh.CellData(a.mName, b);
-                    const std::byte* p = static_cast<const std::byte*>(arr.Data());
-                    bytes.insert(bytes.end(), p, p + arr.Size() * dtype_size(arr.Dtype()));
+        if (WithMesh) {
+            for (int which = 0; which < 2; ++which)
+                for (const VwGroup& g : mGroups) {
+                    const std::uint32_t value = static_cast<std::uint32_t>(
+                        which == 0 ? (g.mAllPoints ? mN : g.mPoints.size()) : g.Rows());
+                    const char* name = which == 0 ? "NumberOfNodes" : "NumberOfEntities";
+                    if (mShared)
+                        Put<std::uint32_t>(rIo, rEngine, name, &value, {1}, false);
+                    else
+                        PutGlobal(rIo, rEngine, name, value);
                 }
-                std::vector<std::size_t> dims = Shape(first, mCells);
-                PutArray(rIo, rEngine, a.mName, first.Dtype(), bytes.data(), dims);
+            for (const VwGroup& g : mGroups) {
+                if (g.mAllPoints) {
+                    Put<double>(rIo, rEngine, "geometry", mGeometry.data(), {mN, 3}, false);
+                } else {
+                    std::vector<double> block;
+                    block.reserve(g.mPoints.size() * 3);
+                    for (const std::int64_t p : g.mPoints)
+                        block.insert(block.end(), mGeometry.begin() + p * 3,
+                                     mGeometry.begin() + p * 3 + 3);
+                    Put<double>(rIo, rEngine, "geometry", block.data(), {g.mPoints.size(), 3},
+                                false);
+                }
+            }
+            for (const VwGroup& g : mGroups)
+                Put<std::int64_t>(rIo, rEngine, "connectivity", g.mConn.data(),
+                                  {g.Rows(), g.mWidth}, false);
+            for (const VwGroup& g : mGroups) {
+                const std::uint32_t type = static_cast<std::uint32_t>(g.mVtkType);
+                Put<std::uint32_t>(rIo, rEngine, "types", &type, {1}, !mShared);
+            }
+        }
+        for (const VwArray& a : mArrays) {
+            if (a.mCell)
+                continue;
+            const bool ghost_array =
+                mShared && (a.mName == kVwGhostType || a.mName == kVwOriginalIds);
+            if (!WithMesh && ghost_array)
+                continue;
+            for (const VwGroup& g : mGroups) {
+                if (a.mName == kVwGhostType && mShared) {
+                    Put<std::uint8_t>(rIo, rEngine, a.mName, g.mGhost.data(), {g.mPoints.size()},
+                                      false);
+                } else if (a.mName == kVwOriginalIds && mShared) {
+                    Put<std::int64_t>(rIo, rEngine, a.mName, g.mPoints.data(), {g.mPoints.size()},
+                                      false);
+                } else {
+                    const NDArray& arr = rMesh.PointData(a.mName);
+                    if (g.mAllPoints) {
+                        PutArray(rIo, rEngine, a.mName, arr.Dtype(), arr.Data(), Shape(arr, mN));
+                    } else {
+                        std::vector<std::size_t> index(g.mPoints.begin(), g.mPoints.end());
+                        const std::vector<std::byte> bytes = vw_take_rows(arr, mN, index);
+                        PutArray(rIo, rEngine, a.mName, arr.Dtype(), bytes.data(),
+                                 Shape(arr, mN, index.size()));
+                    }
+                }
+            }
+        }
+        for (const VwArray& a : mArrays) {
+            if (!a.mCell)
+                continue;
+            // The blocks' values one after the other, in cell order.
+            const NDArray& first = rMesh.CellData(a.mName, 0);
+            std::vector<std::byte> bytes;
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& arr = rMesh.CellData(a.mName, b);
+                const std::byte* p = static_cast<const std::byte*>(arr.Data());
+                bytes.insert(bytes.end(), p, p + arr.Size() * dtype_size(arr.Dtype()));
+            }
+            const std::size_t row_bytes = bytes.size() / mCells;
+            for (const VwGroup& g : mGroups) {
+                if (g.mAllCells) {
+                    PutArray(rIo, rEngine, a.mName, first.Dtype(), bytes.data(),
+                             Shape(first, mCells, mCells));
+                } else {
+                    std::vector<std::byte> block;
+                    block.reserve(g.mCells.size() * row_bytes);
+                    for (const std::size_t c : g.mCells)
+                        block.insert(block.end(), bytes.begin() + c * row_bytes,
+                                     bytes.begin() + (c + 1) * row_bytes);
+                    PutArray(rIo, rEngine, a.mName, first.Dtype(), block.data(),
+                             Shape(first, mCells, g.mCells.size()));
+                }
             }
         }
         rEngine.EndStep();
     }
 
 private:
+    // Give every block the points it uses: the first block to use a point owns it, the others
+    // hold a ghost copy; the points no cell uses go to the first.
+    void SharePoints() {
+        std::vector<std::int64_t> owner(mN, -1);
+        std::vector<std::vector<std::int64_t>> used(mGroups.size());
+        for (std::size_t g = 0; g < mGroups.size(); ++g) {
+            std::set<std::int64_t> nodes;
+            const VwGroup& grp = mGroups[g];
+            for (std::size_t r = 0; r < grp.Rows(); ++r)
+                for (std::size_t j = 1; j < grp.mWidth; ++j)
+                    nodes.insert(grp.mConn[r * grp.mWidth + j]);
+            used[g].assign(nodes.begin(), nodes.end());
+            for (const std::int64_t p : used[g])
+                if (owner[p] < 0)
+                    owner[p] = static_cast<std::int64_t>(g);
+        }
+        for (std::int64_t& rO : owner)
+            if (rO < 0)
+                rO = 0;
+        for (std::size_t g = 0; g < mGroups.size(); ++g) {
+            VwGroup& grp = mGroups[g];
+            std::set<std::int64_t> points(used[g].begin(), used[g].end());
+            for (std::size_t p = 0; p < mN; ++p)
+                if (owner[p] == static_cast<std::int64_t>(g))
+                    points.insert(static_cast<std::int64_t>(p));
+            grp.mAllPoints = false;
+            grp.mPoints.assign(points.begin(), points.end());
+            grp.mGhost.clear();
+            std::unordered_map<std::int64_t, std::int64_t> local;
+            local.reserve(grp.mPoints.size());
+            for (std::size_t k = 0; k < grp.mPoints.size(); ++k) {
+                local[grp.mPoints[k]] = static_cast<std::int64_t>(k);
+                grp.mGhost.push_back(owner[grp.mPoints[k]] != static_cast<std::int64_t>(g) ? 1 : 0);
+            }
+            for (std::size_t r = 0; r < grp.Rows(); ++r)
+                for (std::size_t j = 1; j < grp.mWidth; ++j) {
+                    std::int64_t& rV = grp.mConn[r * grp.mWidth + j];
+                    rV = local[rV];
+                }
+        }
+    }
+
     static std::vector<std::size_t> Shape(const NDArray& rArray, std::size_t Rows) {
+        return Shape(rArray, Rows, Rows);
+    }
+
+    // The block's shape: `Count` rows of the array's `Rows`, with its trailing width.
+    static std::vector<std::size_t> Shape(const NDArray& rArray, std::size_t Rows,
+                                          std::size_t Count) {
         if (rArray.Shape().size() <= 1)
-            return {Rows};
-        return {Rows, rArray.Size() / Rows};
+            return {Count};
+        return {Count, rArray.Size() / Rows};
     }
 
     bool Usable(const std::string& rName, const NDArray& rArray, std::size_t Rows,
                 const char* pWhat) const {
         if (vw_reserved(rName)) {
-            log::warn("VTX (.bp): {} data '{}' is a reserved name and is not written", pWhat, rName);
+            log::warn("VTX (.bp): {} data '{}' is a reserved name and is not written", pWhat,
+                      rName);
             return false;
         }
         if (rArray.Shape().size() > 2 || rArray.Shape().empty() || Rows == 0 ||
@@ -1025,13 +1299,17 @@ private:
         return true;
     }
 
+    // A single value (`Value`) or a rank-local array of `rCount`; a variable written again in
+    // the same step is a further block.
     template <class T>
-    static void Put(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName, const T* pData,
-                    const std::vector<std::size_t>& rCount, bool Value) {
+    static void Put(adios2::IO& rIo, adios2::Engine& rEngine, const std::string& rName,
+                    const T* pData, const std::vector<std::size_t>& rCount, bool Value) {
         adios2::Variable<T> var = rIo.InquireVariable<T>(rName);
         if (!var)
-            var = Value ? rIo.DefineVariable<T>(rName)
-                        : rIo.DefineVariable<T>(rName, {}, {}, rCount);
+            var =
+                Value ? rIo.DefineVariable<T>(rName) : rIo.DefineVariable<T>(rName, {}, {}, rCount);
+        else if (!Value)
+            var.SetSelection({{}, rCount});
         rEngine.Put(var, pData, adios2::Mode::Sync);
     }
 
@@ -1047,32 +1325,42 @@ private:
                          DType Type, const void* pData, const std::vector<std::size_t>& rCount) {
         switch (Type) {
             case DType::Float32:
-                return Put<float>(rIo, rEngine, rName, static_cast<const float*>(pData), rCount, false);
+                return Put<float>(rIo, rEngine, rName, static_cast<const float*>(pData), rCount,
+                                  false);
             case DType::Float64:
-                return Put<double>(rIo, rEngine, rName, static_cast<const double*>(pData), rCount, false);
+                return Put<double>(rIo, rEngine, rName, static_cast<const double*>(pData), rCount,
+                                   false);
             case DType::Int8:
-                return Put<std::int8_t>(rIo, rEngine, rName, static_cast<const std::int8_t*>(pData), rCount, false);
+                return Put<std::int8_t>(rIo, rEngine, rName, static_cast<const std::int8_t*>(pData),
+                                        rCount, false);
             case DType::Int16:
-                return Put<std::int16_t>(rIo, rEngine, rName, static_cast<const std::int16_t*>(pData), rCount, false);
+                return Put<std::int16_t>(rIo, rEngine, rName,
+                                         static_cast<const std::int16_t*>(pData), rCount, false);
             case DType::Int32:
-                return Put<std::int32_t>(rIo, rEngine, rName, static_cast<const std::int32_t*>(pData), rCount, false);
+                return Put<std::int32_t>(rIo, rEngine, rName,
+                                         static_cast<const std::int32_t*>(pData), rCount, false);
             case DType::Int64:
-                return Put<std::int64_t>(rIo, rEngine, rName, static_cast<const std::int64_t*>(pData), rCount, false);
+                return Put<std::int64_t>(rIo, rEngine, rName,
+                                         static_cast<const std::int64_t*>(pData), rCount, false);
             case DType::UInt8:
-                return Put<std::uint8_t>(rIo, rEngine, rName, static_cast<const std::uint8_t*>(pData), rCount, false);
+                return Put<std::uint8_t>(rIo, rEngine, rName,
+                                         static_cast<const std::uint8_t*>(pData), rCount, false);
             case DType::UInt16:
-                return Put<std::uint16_t>(rIo, rEngine, rName, static_cast<const std::uint16_t*>(pData), rCount, false);
+                return Put<std::uint16_t>(rIo, rEngine, rName,
+                                          static_cast<const std::uint16_t*>(pData), rCount, false);
             case DType::UInt32:
-                return Put<std::uint32_t>(rIo, rEngine, rName, static_cast<const std::uint32_t*>(pData), rCount, false);
+                return Put<std::uint32_t>(rIo, rEngine, rName,
+                                          static_cast<const std::uint32_t*>(pData), rCount, false);
             case DType::UInt64:
-                return Put<std::uint64_t>(rIo, rEngine, rName, static_cast<const std::uint64_t*>(pData), rCount, false);
+                return Put<std::uint64_t>(rIo, rEngine, rName,
+                                          static_cast<const std::uint64_t*>(pData), rCount, false);
         }
     }
 
-    std::size_t mN = 0, mCells = 0, mWidth = 0;
-    int mVtkType = 0;
+    std::size_t mN = 0, mCells = 0;
+    bool mShared = false;
     std::vector<double> mGeometry;
-    std::vector<std::int64_t> mConn;
+    std::vector<VwGroup> mGroups;
     std::vector<VwArray> mArrays;
     std::string mSignature;
 };
@@ -1094,7 +1382,7 @@ void write_vtx(const std::string& rPath, const Mesh& rMesh) {
         adios2::IO io = adios.DeclareIO("meshioplusplus_vtx_write");
         io.SetEngine("BP5");
         adios2::Engine engine = io.Open(rPath, adios2::Mode::Write);
-        io.DefineAttribute<std::string>("vtk.xml", model.Schema());
+        model.DefineAttributes(io);
         model.PutStep(io, engine, rMesh, vw_time_of(rMesh));
         engine.Close();
     } catch (const WriteError&) {
@@ -1106,6 +1394,7 @@ void write_vtx(const std::string& rPath, const Mesh& rMesh) {
 
 struct VtxSeriesWriter::Impl {
     std::string mPath;
+    VtxMeshPolicy mPolicy = VtxMeshPolicy::Update;
     std::unique_ptr<adios2::ADIOS> mAdios;
     adios2::IO mIo;
     adios2::Engine mEngine;
@@ -1114,9 +1403,14 @@ struct VtxSeriesWriter::Impl {
     bool mDone = false;
 };
 
-VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath)
+    : VtxSeriesWriter(rPath, VtxMeshPolicy::Update) {}
+
+VtxSeriesWriter::VtxSeriesWriter(const std::string& rPath, VtxMeshPolicy Policy)
+    : mpImpl(std::make_unique<Impl>()) {
     detail::LibraryLock lock;
     mpImpl->mPath = rPath;
+    mpImpl->mPolicy = Policy;
 }
 
 VtxSeriesWriter::~VtxSeriesWriter() {
@@ -1140,20 +1434,25 @@ void VtxSeriesWriter::Write(double Time, const Mesh& rMesh) {
     detail::LibraryLock lock;
     Impl& s = *mpImpl;
     auto model = std::make_unique<VwModel>(rMesh);
+    const bool reuse = s.mPolicy == VtxMeshPolicy::Reuse;
     try {
         if (!s.mModel) {
             s.mAdios = std::make_unique<adios2::ADIOS>();
             s.mIo = s.mAdios->DeclareIO("meshioplusplus_vtx_series");
             s.mIo.SetEngine("BP5");
             s.mEngine = s.mIo.Open(s.mPath, adios2::Mode::Write);
-            s.mIo.DefineAttribute<std::string>("vtk.xml", model->Schema());
+            model->DefineAttributes(s.mIo);
             s.mModel = std::move(model);
         } else if (model->Signature() != s.mModel->Signature()) {
             vw_fail("series: step " + std::to_string(s.mSteps) +
                     "'s points, cells or arrays differ from the first step's; write one file per "
                     "step with '{step}'");
+        } else if (reuse && !s.mModel->SameMesh(*model)) {
+            vw_fail("series: step " + std::to_string(s.mSteps) +
+                    "'s points or cells differ from the first step's, which the reuse policy "
+                    "cannot write; use the update policy");
         }
-        s.mModel->PutStep(s.mIo, s.mEngine, rMesh, Time);
+        s.mModel->PutStep(s.mIo, s.mEngine, rMesh, Time, !(reuse && s.mSteps > 0));
         ++s.mSteps;
     } catch (const WriteError&) {
         throw;

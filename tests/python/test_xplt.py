@@ -862,3 +862,123 @@ def test_compression_is_off_by_default(tmp_path):
     meshioplusplus.write(tmp_path / "a.xplt", _scratch_mesh())
     data = (tmp_path / "a.xplt").read_bytes()
     assert struct.unpack_from("<I", data, 40)[0] == 0
+
+
+def _small_mesh():
+    """A remesh of `_scratch_mesh`: fewer points and cells, the same variables."""
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        dtype=float,
+    )
+    mesh = meshioplusplus.Mesh(
+        pts, [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]]))]
+    )
+    mesh.point_data["displacement"] = np.arange(24.0).reshape(8, 3)
+    mesh.point_data["temperature"] = np.arange(8.0)
+    mesh.cell_data["pressure"] = [np.array([9.0])]
+    mesh.cell_data["stress"] = [np.arange(6.0)[None]]
+    mesh.field_data["energy"] = np.array([7.5])
+    return mesh
+
+
+@pytest.mark.parametrize("compress", [False, True])
+def test_a_remeshed_series_writes_a_mesh_section_where_the_mesh_changes(
+    tmp_path, compress
+):
+    if compress and not meshioplusplus._core.__has_zlib__:
+        pytest.skip("no zlib")
+    steps = [(0.0, _scratch_mesh()), (1.0, _small_mesh()), (2.0, _small_mesh())]
+    kwargs = {"compress": compress}
+    with meshioplusplus.xplt.SeriesWriter(tmp_path / "core.xplt", **kwargs) as w:
+        for time, mesh in steps:
+            w.write(time, mesh)
+    with py_write.SeriesWriter(tmp_path / "py.xplt", **kwargs) as w:
+        for time, mesh in steps:
+            w.write(time, mesh)
+    assert (tmp_path / "core.xplt").read_bytes() == (tmp_path / "py.xplt").read_bytes()
+    for engine_read in (meshioplusplus.xplt.read, py_xplt.read):
+        for k, (_, mesh) in enumerate(steps):
+            got = engine_read(tmp_path / "core.xplt", time_step=k)
+            assert len(got.points) == len(mesh.points)
+            assert [c.type for c in got.cells][0] == "hexahedron"
+            np.testing.assert_allclose(
+                got.point_data["temperature"], mesh.point_data["temperature"]
+            )
+    # The mesh section appears once per change: the third step reuses the second.
+    plain = (tmp_path / "core.xplt").read_bytes()
+    if not compress:
+        assert plain.count(bytes.fromhex("00000401")) == 2
+
+
+def test_a_remesh_with_the_same_counts_but_new_connectivity_is_a_new_mesh(tmp_path):
+    first = _small_mesh()
+    second = _small_mesh()
+    second.cells[0].data[0] = [1, 0, 3, 2, 5, 4, 7, 6]
+    for make in (meshioplusplus.xplt.SeriesWriter, py_write.SeriesWriter):
+        out = tmp_path / f"{make.__module__}.xplt"
+        with make(out) as w:
+            w.write(0.0, first)
+            w.write(1.0, second)
+        got = py_xplt.read(out, time_step=1)
+        assert got.cells[0].data[0].tolist() == [1, 0, 3, 2, 5, 4, 7, 6]
+
+
+def _surface_node_mesh():
+    """The surface mesh with a point array that only the triangle surface's nodes
+    carry and one that only the edge's nodes carry, marked as the reader marks them."""
+    mesh = _surface_mesh()
+    contact = np.full(11, np.nan)
+    contact[[1, 8, 9]] = [0.5, 1.5, 2.5]
+    rim = np.full((11, 3), np.nan)
+    rim[[0, 1, 2]] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    mesh.point_data["contact"] = contact
+    mesh.point_data["rim"] = rim
+    mesh.field_data["xplt:surface_node:contact"] = np.array([1])
+    mesh.field_data["xplt:edge_node:rim"] = np.array([1])
+    return mesh
+
+
+def test_surface_node_variables_return_to_their_group(writer, engine, tmp_path):
+    mesh = _surface_node_mesh()
+    out = tmp_path / "nodal.xplt"
+    writer(out, mesh)
+    groups = _dictionary_groups(out)
+    assert groups[0x01025000] == ["contact"]
+    assert groups[0x01026000] == ["rim"]
+    # not nodal variables
+    assert "contact" not in groups.get(0x01023000, [])
+    again = engine.read(out)
+    for name in ("contact", "rim"):
+        np.testing.assert_allclose(
+            again.point_data[name], mesh.point_data[name], equal_nan=True
+        )
+    # the markers come back, so a second round trip keeps the groups
+    assert "xplt:surface_node:contact" in again.field_data
+    assert "xplt:edge_node:rim" in again.field_data
+    out2 = tmp_path / "nodal2.xplt"
+    writer(out2, again)
+    assert _dictionary_groups(out2) == groups
+
+
+def test_the_engines_write_the_same_bytes_with_surface_node_variables(tmp_path):
+    mesh = _surface_node_mesh()
+    _core.xplt_write(str(tmp_path / "c.xplt"), mesh)
+    py_write.write(tmp_path / "p.xplt", mesh)
+    assert (tmp_path / "c.xplt").read_bytes() == (tmp_path / "p.xplt").read_bytes()
+
+
+def test_a_marked_array_without_facets_stays_nodal(writer, engine, tmp_path):
+    mesh = _scratch_mesh()
+    mesh.field_data["xplt:surface_node:temperature"] = np.array([1])
+    out = tmp_path / "plain.xplt"
+    writer(out, mesh)
+    assert "temperature" in _dictionary_groups(out)[0x01023000]

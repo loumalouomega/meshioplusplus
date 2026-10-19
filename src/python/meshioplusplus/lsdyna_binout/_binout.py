@@ -303,6 +303,18 @@ def _metadata_text(mesh, archive, database, want):
             )
 
 
+def _links(mesh, archive, folder, prefix, want):
+    """A step folder's links as ``<prefix>@link=<variable>``, the path each
+    points to (bytes). The variable itself reads as its target's values; the
+    marker lets a writer link it again."""
+    for name, var in sorted(folder.items()):
+        key = f"{prefix}@link={name}"
+        if isinstance(var, _Var) and var.type == _LINK and want(key):
+            mesh.field_data[key] = np.frombuffer(
+                bytes(archive._raw(var)), dtype=np.uint8
+            ).copy()
+
+
 def read(filename, points_only=False, arrays=None, time_step=0):
     b = _Binout(filename)
     a = b.archive
@@ -365,6 +377,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                     np.float64 if v.dtype.kind == "f" else np.int64
                 )
         _metadata_text(mesh, a, b.main, want)
+        _links(mesh, a, folder, "binout:nodout:", want)
     else:
         _field_data(mesh, a, b.main, step, want)
     # every other database's latest output at or before this time
@@ -389,6 +402,7 @@ def _field_data(mesh, archive, database, step, want, time=None):
     if time is not None and want(prefix + "time"):
         mesh.field_data[prefix + "time"] = np.array([time], dtype=np.float64)
     _metadata_text(mesh, archive, database, want)
+    _links(mesh, archive, folder, prefix, want)
     meta = archive.get(list(database) + ["metadata"])
     if isinstance(meta, dict) and isinstance(meta.get("ids"), _Var):
         ids = archive.values(meta["ids"])

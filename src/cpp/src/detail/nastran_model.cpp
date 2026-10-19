@@ -58,6 +58,10 @@ constexpr NastranCardSpec kNmCards[] = {
     {"CELAS2", "vertex", 1, "line", 2, nullptr},
     {"CGAP", "line", 2, nullptr, 0, nullptr},
     {"CHEXA", "hexahedron", 8, "hexahedron20", 20, kNmHexa20},
+    // Point masses between two points, or grounded, and a 6x6 mass at one point.
+    {"CMASS1", "vertex", 1, "line", 2, nullptr},
+    {"CMASS2", "vertex", 1, "line", 2, nullptr},
+    {"CONM1", "vertex", 1, nullptr, 0, nullptr},
     {"CONM2", "vertex", 1, nullptr, 0, nullptr},
     {"CONROD", "line", 2, nullptr, 0, nullptr},
     {"CPENTA", "wedge", 6, "wedge15", 15, kNmPenta15},
@@ -93,12 +97,12 @@ NDArray nm_double_array(const std::vector<double>& rV) {
 // the Python twin). Zero for a card it does not name.
 std::int64_t nm_card_type(const std::string& rCard) {
     static const std::pair<const char*, std::int64_t> kTypes[] = {
-        {"CBAR", 24},   {"CBEAM", 54},  {"CBUSH", 26},   {"CDAMP1", 2},  {"CDAMP2", 3},
-        {"CELAS1", 6},  {"CELAS2", 7},  {"CGAP", 19},    {"CHEXA", 73},  {"CONM2", 15},
-        {"CONROD", 16}, {"CPENTA", 41}, {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51},
-        {"CQUAD8", 47}, {"CQUADR", 80}, {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55},
-        {"CTRIA3", 59}, {"CTRIA6", 48}, {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},
-        {"PLOTEL", 52},
+        {"CBAR", 24},    {"CBEAM", 54},  {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
+        {"CELAS1", 6},   {"CELAS2", 7},  {"CGAP", 19},   {"CHEXA", 73},  {"CMASS1", 10},
+        {"CMASS2", 11},  {"CONM1", 14},  {"CONM2", 15},  {"CONROD", 16}, {"CPENTA", 41},
+        {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47}, {"CQUADR", 80},
+        {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59}, {"CTRIA6", 48},
+        {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
     };
     for (const auto& [name, number] : kTypes)
         if (rCard == name)
@@ -106,7 +110,7 @@ std::int64_t nm_card_type(const std::string& rCard) {
     return 0;
 }
 
-constexpr std::size_t kNmBarWidth = 12;
+constexpr std::size_t kNmBarWidth = 21;  // a CONM1's 21 mass terms; the rest use 12
 
 struct NmBlock {
     std::string mCard;
@@ -117,7 +121,8 @@ struct NmBlock {
     std::vector<std::int64_t> mPid;
     std::vector<std::int64_t> mComp;  // two per cell: the components at each end
     std::vector<double> mBar;         // kNmBarWidth per cell: a CBAR's fields, a CELAS2's K,
-                                      // GE and S, or a CDAMP2's B (the card's first columns)
+                                      // GE and S, a CDAMP2's B or a CMASS2's M (the card's
+                                      // first columns), or a CONM1's mass matrix
 };
 
 }  // namespace
@@ -177,7 +182,7 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                 comp[0] = (*comps)[2 * i];
                 comp[1] = (*comps)[2 * i + 1];
             }
-            double fields[kNmBarWidth] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+            double fields[kNmBarWidth] = {};
             if (bar != nullptr)
                 std::copy(bar + i * kNmBarWidth, bar + (i + 1) * kNmBarWidth, fields);
             const std::int64_t swapped[2] = {grounded_first ? row[1] : 0, 0};
@@ -329,6 +334,39 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
             pIds->mGe.push_back(nm_double_array(ge));
             pIds->mS.push_back(nm_double_array(s));
             pIds->mB.push_back(nm_double_array(damping));
+        }
+        // The point masses' values go to the mesh itself, beside the arrays above: a CMASS2's
+        // mass `nastran:m` and a CONM1's mass matrix `nastran:conm1`, `(n, 21)` rows of M11,
+        // M21, M22, M31, ... M66 (the record's order, the lower triangle by rows).
+        bool any_mass = false;
+        bool any_matrix = false;
+        for (const NmBlock& b : blocks) {
+            any_mass = any_mass || b.mCard == "CMASS2";
+            any_matrix = any_matrix || b.mCard == "CONM1";
+        }
+        if (any_mass) {
+            std::vector<NDArray> arrays;
+            for (const NmBlock& b : blocks) {
+                std::vector<double> m(b.mEid.size());
+                if (b.mCard == "CMASS2")
+                    for (std::size_t i = 0; i < m.size(); ++i)
+                        m[i] = b.mBar[i * kNmBarWidth];
+                arrays.push_back(nm_double_array(m));
+            }
+            rMesh.AddCellData("nastran:m", std::move(arrays));
+        }
+        if (any_matrix) {
+            std::vector<NDArray> arrays;
+            for (const NmBlock& b : blocks) {
+                NDArray a(DType::Float64, {b.mEid.size(), std::size_t{21}});
+                std::fill(a.As<double>(), a.As<double>() + b.mEid.size() * 21, 0.0);
+                if (b.mCard == "CONM1")
+                    for (std::size_t i = 0; i < b.mEid.size(); ++i)
+                        std::copy(b.mBar.data() + i * kNmBarWidth,
+                                  b.mBar.data() + i * kNmBarWidth + 21, a.As<double>() + i * 21);
+                arrays.push_back(std::move(a));
+            }
+            rMesh.AddCellData("nastran:conm1", std::move(arrays));
         }
     }
 

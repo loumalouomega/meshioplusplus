@@ -98,7 +98,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — | [8/8 cells · data PC · regions C](./conformance.md#vtm) |
 | [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#vtp) |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#vtu) |
-| [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | ✓ | ADIOS2 (a core built with it, or `adios2`) | [fails](./conformance.md#vtx) |
+| [`vtx`](./formats/vtx.md) | `.bp` (DOLFINx VTX: an ADIOS2 directory, also by content) | ✓ | ✓ | ADIOS2 (a core built with it, or `adios2`) | [8/8 cells · data PC](./conformance.md#vtx) |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#wkt) |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) | [8/8 cells · data PC · regions CPS](./conformance.md#xdmf) |
 | [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | ✓ | — (zlib for compressed files) | [7/8 cells · data PCF · regions CPS](./conformance.md#xplt) |

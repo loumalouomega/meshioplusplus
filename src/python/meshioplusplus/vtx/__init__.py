@@ -46,9 +46,12 @@ def write(filename, mesh):
     """Write a DOLFINx VTX file (an ADIOS2 ``.bp`` directory) holding one step:
     the mesh at ``field_data["meshio:time"]`` in ``VTXWriter``'s layout (a
     ``vtk.xml`` schema, ``geometry``, ``connectivity``, ``types``, one variable
-    per point or cell array). The file holds one cell type, as DOLFINx's does;
-    cells are written as the ``VTK_LAGRANGE_*`` types DOLFINx uses where the
-    node order allows. Needs a core built with ``MESHIOPLUSPLUS_WITH_ADIOS2=ON``
+    per point or cell array). Cells are written as the ``VTK_LAGRANGE_*`` types
+    DOLFINx uses where the node order allows. A mesh of several cell types, or
+    whose cells carry ``partition:part`` values of several parts, is one block per
+    cell type (and part), each holding the points it uses, with the ghost arrays
+    and the ``meshio.shared_points`` attribute that make the reader weld them
+    back into one mesh. Needs a core built with ``MESHIOPLUSPLUS_WITH_ADIOS2=ON``
     or the ``adios2`` Python package (``pip install meshioplusplus[adios2]``).
     """
     if _HAS_ADIOS2:
@@ -58,18 +61,22 @@ def write(filename, mesh):
 
 class SeriesWriter:
     """Write a time series into one VTX file, a step per mesh;
-    ``write_sequence(path, steps, file_format="vtx")`` uses it.
+    ``write_sequence(path, steps, file_format="vtx")`` uses it. ``mesh_policy``
+    is DOLFINx's ``VTXMeshPolicy``: ``"update"`` (the default) writes the mesh at
+    every step, ``"reuse"`` at the first only, which needs the same points and
+    cells at every step (``write_sequence(..., mesh_policy="reuse")`` passes it on).
 
     >>> with meshioplusplus.vtx.SeriesWriter("u.bp") as w:
     ...     for time, mesh in steps:
     ...         w.write(time, mesh)
     """
 
-    def __init__(self, filename):
+    def __init__(self, filename, mesh_policy="update"):
         if _HAS_ADIOS2:
-            self._core, self._py = _core.VtxSeriesWriter(str(filename)), None
+            self._core = _core.VtxSeriesWriter(str(filename), mesh_policy)
+            self._py = None
         else:
-            self._core, self._py = None, _PySeriesWriter(filename)
+            self._core, self._py = None, _PySeriesWriter(filename, mesh_policy)
 
     def write(self, time, mesh):
         if self._core is not None:

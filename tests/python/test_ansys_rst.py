@@ -952,6 +952,7 @@ def test_element_results_are_writable(tmp_path, ext):
 
 # -- writing -----------------------------------------------------------------
 
+from meshioplusplus.ansys_rst import _ansys_rst as py_ansys  # noqa: E402
 from meshioplusplus.ansys_rst import _write as py_write  # noqa: E402
 
 _WRITTEN = [
@@ -1023,7 +1024,8 @@ def test_written_model_reads_in_pymapdl_reader(tmp_path):
     assert result.nsets == 1
     _, nodal = result.nodal_solution(0)
     np.testing.assert_allclose(nodal[:, :3], mesh.point_data["U"], atol=1e-12)
-    np.testing.assert_allclose(result.nodal_temperature(0)[1], mesh.point_data["TEMP"])
+    # (pymapdl-reader's nodal_temperature reads the element temperatures of a
+    # structural file, not the nodal TEMP degree of freedom)
 
 
 def test_written_set_carries_time_and_results(tmp_path):
@@ -1035,6 +1037,86 @@ def test_written_set_carries_time_and_results(tmp_path):
     np.testing.assert_allclose(back.point_data["U"], mesh.point_data["U"])
     np.testing.assert_allclose(back.point_data["RF"], mesh.point_data["RF"])
     np.testing.assert_allclose(back.cell_data["S"][0], mesh.cell_data["S"][0])
+
+
+def test_nodal_coordinate_systems_are_written_and_vectors_rotated_back(tmp_path):
+    """The mesh holds global vectors; the file holds them in each node's own axes
+    (its three angles), and the reader turns them out again."""
+    mesh = _brick()
+    mesh.point_data["ansys:node_angles"] = np.array(
+        [[30.0, 45.0, 60.0]] * 4 + [[0.0, 0.0, 0.0]] * 2 + [[10.0, -20.0, 5.0]] * 2
+    )
+    mesh.point_data["A"] = np.arange(24.0).reshape(8, 3) * 0.3 + 1
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    for engine in (meshioplusplus.ansys_rst.read, lambda p: py_ansys.read(str(p))):
+        back = engine(core)
+        np.testing.assert_allclose(
+            back.point_data["ansys:node_angles"], mesh.point_data["ansys:node_angles"]
+        )
+        for name in ("U", "A", "RF"):
+            np.testing.assert_allclose(
+                back.point_data[name], mesh.point_data[name], atol=1e-12
+            )
+    # the stored (nodal) values differ from the global ones where a node is rotated
+    plain = tmp_path / "plain.rst"
+    flat = _brick()
+    flat.point_data["A"] = mesh.point_data["A"]
+    meshioplusplus.write(plain, flat, file_format="ansys_rst")
+    assert core.read_bytes() != plain.read_bytes()
+
+
+def test_a_single_axis_nodal_system_reads_alike_in_pymapdl_reader(tmp_path):
+    pymapdl = pytest.importorskip("ansys.mapdl.reader")
+    mesh = _brick()
+    mesh.point_data["ansys:node_angles"] = np.array([[0.0, 0.0, 40.0]] * 8)
+    path = tmp_path / "rotated.rst"
+    meshioplusplus.write(path, mesh, file_format="ansys_rst")
+    result = pymapdl.read_binary(str(path))
+    # pymapdl-reader rotates the stored nodal values to the global axes
+    _, nodal = result.nodal_solution(0)
+    np.testing.assert_allclose(nodal[:, :3], mesh.point_data["U"], atol=1e-10)
+
+
+def test_element_rotations_are_written_and_tensors_turned_back(tmp_path):
+    """``EUL`` is a raw record the reader returns; the stresses in the mesh are
+    global, the file holds them in the element's axes."""
+    mesh = _brick()
+    mesh.cell_data["EUL"] = [np.array([[30.0, 45.0, 60.0]])]
+    mesh.cell_data["EPEL"] = [np.arange(56.0).reshape(1, 56)[:, :48] * 0.01]
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    for engine in (meshioplusplus.ansys_rst.read, lambda p: py_ansys.read(str(p))):
+        back = engine(core)
+        np.testing.assert_allclose(back.cell_data["EUL"][0], [[30.0, 45.0, 60.0]])
+        for name in ("S", "EPEL"):
+            np.testing.assert_allclose(
+                back.cell_data[name][0], mesh.cell_data[name][0], atol=1e-10
+            )
+    # without EUL the file holds the global values, so the bytes differ
+    flat = _brick()
+    flat.cell_data["EPEL"] = mesh.cell_data["EPEL"]
+    plain = tmp_path / "plain.rst"
+    meshioplusplus.write(plain, flat, file_format="ansys_rst")
+    assert core.read_bytes() != plain.read_bytes()
+
+
+def test_one_rotation_per_node_is_honoured(tmp_path):
+    mesh = _brick()
+    angles = np.array([[10.0 * k, 5.0 * k, -3.0 * k] for k in range(8)]).reshape(1, 24)
+    mesh.cell_data["EUL"] = [angles]
+    core, twin = tmp_path / "core.rst", tmp_path / "twin.rst"
+    _core.ansys_rst_write(str(core), mesh)
+    py_write.write(str(twin), mesh)
+    assert core.read_bytes() == twin.read_bytes()
+    back = meshioplusplus.ansys_rst.read(core)
+    np.testing.assert_allclose(
+        back.cell_data["S"][0], mesh.cell_data["S"][0], atol=1e-10
+    )
 
 
 def test_written_cyclic_sector_expands_to_the_rotor(tmp_path):

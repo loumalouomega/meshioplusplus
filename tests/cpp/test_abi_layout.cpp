@@ -77,6 +77,9 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+#include "meshioplusplus/formats/vtx.hpp"
+#endif
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/lsdyna_binout.hpp"
@@ -470,6 +473,10 @@ MIO_ABI_LAYOUT(meshioplusplus::FrdReadOptions, 1, 1);
 MIO_ABI_LAYOUT(meshioplusplus::FrdWriteOptions, 2, 1);
 // The FEBio plot writer's option struct (v17.4.0, an addition, ABI unchanged): one `bool`.
 MIO_ABI_LAYOUT(meshioplusplus::XpltWriteOptions, 1, 1);
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+// The VTX series writer's mesh policy (v17.6.0, an addition, ABI unchanged): a `std::uint8_t` enum.
+MIO_ABI_LAYOUT(meshioplusplus::VtxMeshPolicy, 1, 1);
+#endif
 
 // The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
 // and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a

@@ -38,6 +38,10 @@ CARDS = {
     "CELAS2": ("vertex", 1, "line", 2, None),
     "CGAP": ("line", 2, None, 0, None),
     "CHEXA": ("hexahedron", 8, "hexahedron20", 20, _HEXA20),
+    # Point masses between two points, or grounded, and a 6x6 mass at one point.
+    "CMASS1": ("vertex", 1, "line", 2, None),
+    "CMASS2": ("vertex", 1, "line", 2, None),
+    "CONM1": ("vertex", 1, None, 0, None),
     "CONM2": ("vertex", 1, None, 0, None),
     "CONROD": ("line", 2, None, 0, None),
     "CPENTA": ("wedge", 6, "wedge15", 15, _PENTA15),
@@ -70,6 +74,9 @@ CARD_TYPE = {
     "CELAS2": 7,
     "CGAP": 19,
     "CHEXA": 73,
+    "CMASS1": 10,
+    "CMASS2": 11,
+    "CONM1": 14,
     "CONM2": 15,
     "CONROD": 16,
     "CPENTA": 41,
@@ -110,7 +117,7 @@ _DIM = {
 
 # A CBAR row's payload: its orientation vector (X1..X3; zeros with a G0), its G0,
 # its pin flags PA and PB, and its end offsets W1A..W3A and W1B..W3B.
-_BAR_WIDTH = 12
+_BAR_WIDTH = 21  # a CONM1's 21 mass terms; the other cards use 12
 
 
 def pbeam_station_slots(n):
@@ -121,9 +128,10 @@ def pbeam_station_slots(n):
 
 
 def _payload_matrix(block, card=None):
-    """The ``(n, 12)`` payload of one cell block, zeros for the rows that carry none (and
+    """The ``(n, 21)`` payload of one cell block, zeros for the rows that carry none (and
     for a block that is not of ``card``, when one is named). A CELAS2 carries its K, GE
-    and S in the first three columns and a CDAMP2 its B in the first column."""
+    and S in the first three columns, a CDAMP2 its B and a CMASS2 its M in the first column,
+    and a CONM1 its 21 mass terms."""
     n = len(block[2])
     rows = np.zeros((n, _BAR_WIDTH))
     if block[6] and (card is None or block[4] == card):
@@ -279,6 +287,15 @@ def add_cells(cards, grid_index, scalar_points, ptype, who, extras=None):
         if any(b[4] == "CDAMP2" for b in blocks):
             extras["nastran:b"] = [
                 _payload_matrix(b, "CDAMP2")[:, 0].copy() for b in blocks
+            ]
+        if any(b[4] == "CMASS2" for b in blocks):
+            extras["nastran:m"] = [
+                _payload_matrix(b, "CMASS2")[:, 0].copy() for b in blocks
+            ]
+        if any(b[4] == "CONM1" for b in blocks):
+            # (n, 21) rows of M11, M21, M22, M31, ... M66, the record's order
+            extras["nastran:conm1"] = [
+                _payload_matrix(b, "CONM1")[:, :21].copy() for b in blocks
             ]
 
     by_pid = {}

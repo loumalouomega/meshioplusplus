@@ -133,12 +133,14 @@ def _marker(mesh, key, b, count):
 
 
 class _Var:
-    def __init__(self, name, width):
+    def __init__(self, name, width, nodal=False):
         self.name = name
         self.width = width
+        # a surface or edge variable stored per node (FMT_NODE), not per facet
+        self.nodal = nodal
 
     def key(self):
-        return (self.name, self.width)
+        return (self.name, self.width, self.nodal)
 
 
 class _Model:
@@ -209,14 +211,18 @@ class _Model:
         self._names(mesh)
         self.vars = {g: [] for g, _, _, _ in _GROUPS}
         self._variables(mesh)
-        self.signature = (
+        # Points, cells, facets and sets: a change writes a new mesh section
+        # into a series. The dictionary (variable names and widths) cannot change.
+        self.mesh_signature = (
             n,
-            [(t, c.shape, s) for _, t, c, s in self.blocks],
+            [(t, c.shape, s, c.tobytes()) for _, t, c, s in self.blocks],
             [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.surfaces],
             [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.edges],
             [(nm, [(nn, tuple(f)) for nn, f in fs]) for nm, fs in self.facetsets],
-            {g: [v.key() for v in vs] for g, vs in self.vars.items()},
         )
+        self.dictionary_signature = {
+            g: [v.key() for v in vs] for g, vs in self.vars.items()
+        }
 
     def _carriers(self, by_id, fallback):
         """Per surface (edge), in id order: (name, [(nodes per facet, nodes)])."""
@@ -276,8 +282,19 @@ class _Model:
         for name in sorted(mesh.point_data):
             a = np.asarray(mesh.point_data[name])
             width = self._width(a, self.n, f"point data '{name}'")
-            if width:
-                self.vars["node"].append(_Var(name, width))
+            if not width:
+                continue
+            # The reader marks a point array that came from surface (edge) node
+            # values; it goes back to that group when the mesh still has such facets.
+            group = next(
+                (
+                    g
+                    for g in ("surface", "edge")
+                    if f"xplt:{g}_node:{name}" in mesh.field_data and self.sources[g]
+                ),
+                "node",
+            )
+            self.vars[group].append(_Var(name, width, group != "node"))
         for name in sorted(mesh.cell_data):
             if name.startswith("xplt:"):
                 continue
@@ -382,7 +399,7 @@ class _Model:
                 items += _chunk(
                     0x01020001,
                     _chunk(0x01020002, _u32(vtype))
-                    + _chunk(0x01020003, _u32(fmt))
+                    + _chunk(0x01020003, _u32(0 if v.nodal else fmt))
                     + _chunk(0x01020005, _u32(asize))
                     + _chunk(0x01020004, _name64(v.name)),
                 )
@@ -538,6 +555,21 @@ class _Model:
                         (d + 1, np.asarray(mesh.cell_data[v.name][b]).reshape(-1))
                         for d, (b, _, _, _) in enumerate(self.blocks)
                     ]
+                elif v.nodal:
+                    # region k is surface (edge) k: the point values at its nodes,
+                    # each node once, in the order its facets first list them
+                    all_values = np.asarray(
+                        mesh.point_data[v.name], dtype=np.float64
+                    ).reshape(self.n, v.width)
+                    facets = self.surfaces if group == "surface" else self.edges
+                    regions = []
+                    for s, (_, items) in enumerate(facets):
+                        nodes = list(dict.fromkeys(p for _, f in items for p in f))
+                        if not nodes:
+                            continue
+                        values = all_values[nodes].reshape(-1)
+                        if not np.isnan(values).all():
+                            regions.append((s + 1, values))
                 else:
                     # region k is surface (edge) k: its facets' values in order,
                     # none for a surface that has no value
@@ -585,11 +617,11 @@ def _pack(model, state):
     return zlib.compress(state, _LEVEL) if model.compress else state
 
 
-def _assemble(model, states):
+def _assemble(model, states, mesh=None):
     return (
         _u32(MAGIC)
         + model.header_and_dictionary()
-        + model.mesh_chunk()
+        + (model.mesh_chunk() if mesh is None else mesh)
         + b"".join(states)
     )
 
@@ -607,31 +639,40 @@ def write(filename, mesh, compress=False):
 
 
 class SeriesWriter:
-    """One plot file with a state per step; the mesh and the variables are those
-    of the first step, which every later step must share."""
+    """One plot file with a state per step. The variables are those of the first
+    step, which every later step must share; a step whose mesh differs from the
+    previous one (a remeshed run) writes a new mesh section before its state."""
 
     def __init__(self, filename, compress=False):
         self._path = filename
         self._compress = bool(compress)
         if is_buffer(filename, "w"):
             raise WriteError("FEBio .xplt: cannot be written to a stream")
-        self._model = None
+        self._model = None  # the first step's: it fixes the header and dictionary
+        self._mesh_signature = None
+        self._first_mesh = b""
         self._states = []
         self._closed = False
 
     def write(self, time, mesh):
+        step = _Model(mesh, self._compress)
+        chunks = b""
         if self._model is None:
-            self._model = _Model(mesh, self._compress)
+            self._model = step
+            self._first_mesh = step.mesh_chunk()
+            self._mesh_signature = step.mesh_signature
         else:
-            other = _Model(mesh, self._compress)
-            if other.signature != self._model.signature:
+            if step.dictionary_signature != self._model.dictionary_signature:
                 raise WriteError(
-                    f"FEBio .xplt: series: step {len(self._states)}'s points, cells "
-                    "or variables differ from the first step's; a plot file holds "
-                    "one mesh -- write one file per step with '{step}'"
+                    f"FEBio .xplt: series: step {len(self._states)}'s variables "
+                    "differ from the first step's; a plot file holds one variable "
+                    "dictionary -- write one file per step with '{step}'"
                 )
-        state = self._model.state_chunk(mesh, float(time), _status_of(mesh))
-        self._states.append(_pack(self._model, state))
+            if step.mesh_signature != self._mesh_signature:
+                chunks = _pack(step, step.mesh_chunk())
+                self._mesh_signature = step.mesh_signature
+        state = step.state_chunk(mesh, float(time), _status_of(mesh))
+        self._states.append(chunks + _pack(step, state))
 
     def close(self):
         if self._closed or self._model is None:
@@ -639,7 +680,7 @@ class SeriesWriter:
             return
         self._closed = True
         with open(self._path, "wb") as fh:
-            fh.write(_assemble(self._model, self._states))
+            fh.write(_assemble(self._model, self._states, self._first_mesh))
 
     def __enter__(self):
         return self

@@ -200,6 +200,9 @@ def test_cells_data_and_regions(read):
     assert sorted(regions) == [
         ("block", 21),
         ("frame", 31),
+        ("radioss_th:beam", -1),
+        ("radioss_th:shell", -1),
+        ("radioss_th:tip", -1),
         ("side tria", 12),
         ("top shell", 11),
         ("water", 41),
@@ -431,3 +434,66 @@ def test_the_name_decides_the_format_and_a_plain_name_is_a_stem(tmp_path):
     with py_write.SeriesWriter(tmp_path / "stem") as w:
         w.write(0.0, _all_families_mesh())
     assert (tmp_path / "stemA001").exists()
+
+
+def _th(mesh, name):
+    """A time-history region's members: node indices, or (type, nodes) of its cells."""
+    (region,) = [r for r in mesh.regions if r.name == "radioss_th:" + name]
+    if region.kind == "point":
+        return region.kind, sorted(np.asarray(region.entries).tolist())
+    flat = [(b.type, tuple(row)) for b in mesh.cells for row in b.data.tolist()]
+    return region.kind, sorted(flat[c] for c in np.asarray(region.entries).tolist())
+
+
+def test_the_time_history_lists_of_a_file_are_regions(read):
+    mesh = read(MESHES / "cubeA001")
+    # one node, one facet and one beam, each with a label (generator: tip, shell, beam)
+    assert _th(mesh, "tip") == ("point", [3])
+    kind, shell = _th(mesh, "shell")
+    assert kind == "cell" and [t for t, _ in shell][0] in ("quad", "triangle")
+    kind, beam = _th(mesh, "beam")
+    assert kind == "cell" and [t for t, _ in beam] == ["line"]
+    dims = {r.name: r.dim for r in mesh.regions}
+    assert dims["radioss_th:shell"] == 2 and dims["radioss_th:beam"] == 1
+
+
+def _th_mesh():
+    mesh = _all_families_mesh()
+    mesh.regions += [
+        meshioplusplus.Region("radioss_th:probe", "point", np.array([0, 5, 11])),
+        # a hexahedron, a quad and both beams: three families under one label
+        meshioplusplus.Region("radioss_th:watch", "cell", np.array([0, 4, 6, 7])),
+        meshioplusplus.Region("radioss_th:shell", "cell", np.array([5])),
+    ]
+    return mesh
+
+
+def test_time_history_regions_are_written_and_read_back(write_engine, read, tmp_path):
+    mesh = _th_mesh()
+    out = tmp_path / "thA001"
+    write_engine(out, mesh)
+    again = read(out)
+    for name in ("probe", "watch", "shell"):
+        assert _th(again, name) == _th(mesh, name), name
+    # the parts are not confused with them
+    assert all(not r.name.startswith("radioss_th:") for r in again.regions if r.tag > 0)
+    # and the lists are in the file: flag 5 set
+    assert int.from_bytes(out.read_bytes()[4 + 4 + 3 * 81 + 5 * 4 :][:4], "big") == 1
+
+
+def test_the_engines_write_the_same_bytes_with_time_history(tmp_path):
+    mesh = _th_mesh()
+    _core.radioss_anim_write(str(tmp_path / "cA001"), mesh)
+    py_write.write(tmp_path / "pA001", mesh)
+    assert (tmp_path / "cA001").read_bytes() == (tmp_path / "pA001").read_bytes()
+
+
+def test_a_file_with_time_history_rewrites_to_the_same_lists(
+    write_engine, read, tmp_path
+):
+    original = read(MESHES / "cubeA001")
+    out = tmp_path / "againA001"
+    write_engine(out, original)
+    again = read(out)
+    for name in ("tip", "shell", "beam"):
+        assert _th(again, name) == _th(original, name)

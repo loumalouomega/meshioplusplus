@@ -51,6 +51,8 @@ namespace meshioplusplus {
 namespace {
 
 constexpr std::int32_t kAnimMagic = 0x542C;
+/// Region names of the time-history items: the file's label behind this prefix.
+constexpr const char* kAnimThPrefix = "radioss_th:";
 
 // Big-endian reads with a bounds check.
 class AnimCursor {
@@ -340,11 +342,16 @@ Mesh read_radioss_anim(const std::string& rPath) {
         c.Texts(nprop, 50);
         c.Ints(nprop);
     }
+    // Time-history items: per category (nodes, 2-D, 3-D, 1-D elements) the 0-based index of a
+    // node or of an element of that family, each with a label.
+    std::array<std::vector<std::pair<std::int64_t, std::string>>, 4> th_items;
     if (flags[5]) {
-        const std::vector<std::int64_t> th = c.Ints(4);  // nodes, 2-D, 3-D, 1-D elements
-        for (std::int64_t count : th) {
-            c.Ints(count);
-            c.Texts(count, 50);
+        const std::vector<std::int64_t> th = c.Ints(4);
+        for (std::size_t slot = 0; slot < 4; ++slot) {
+            const std::vector<std::int64_t> ids = c.Ints(th[slot]);
+            const std::vector<std::string> texts = c.Texts(th[slot], 50);
+            for (std::size_t k = 0; k < ids.size(); ++k)
+                th_items[slot].emplace_back(ids[k], texts[k]);
         }
     }
     if (flags[7]) {
@@ -499,8 +506,61 @@ Mesh read_radioss_anim(const std::string& rPath) {
     }
     if (flags[0] == 1)
         mesh.AddPointData("radioss:mass", vec(point_mass, {n_points}));
-    if (block_types.empty())
+    // The time-history items become regions named after their label: a point region for the
+    // nodes, cell regions for the elements (a label can name elements of several families).
+    const auto add_th_regions = [&]() {
+        const auto label = [](const std::string& rText) {
+            const std::size_t b = rText.find_first_not_of(" \t");
+            return std::string(kAnimThPrefix) +
+                   (b == std::string::npos
+                        ? std::string()
+                        : rText.substr(b, rText.find_last_not_of(" \t") - b + 1));
+        };
+        std::map<std::string, std::set<std::int64_t>> nodes, cells;
+        std::vector<std::string> node_order, cell_order;
+        for (const auto& [index, text] : th_items[0]) {
+            if (index < 0 || index >= nn)
+                continue;
+            const std::string name = label(text);
+            if (nodes.try_emplace(name).second)
+                node_order.push_back(name);
+            nodes[name].insert(index);
+        }
+        static constexpr const char* kKeys[3] = {"2d", "3d", "1d"};
+        for (std::size_t slot = 1; slot < 4; ++slot) {
+            for (std::size_t fi = 0; fi < families.size(); ++fi) {
+                if (families[fi].mKey != kKeys[slot - 1])
+                    continue;
+                for (const auto& [index, text] : th_items[slot]) {
+                    const auto c = cell_of.find({fi, static_cast<std::size_t>(index)});
+                    if (index < 0 || c == cell_of.end())
+                        continue;
+                    const std::string name = label(text);
+                    if (cells.try_emplace(name).second)
+                        cell_order.push_back(name);
+                    cells[name].insert(c->second);
+                }
+            }
+        }
+        const auto region = [&](const std::string& rName, RegionKind Kind,
+                                const std::set<std::int64_t>& rIds, int Dim) {
+            NDArray a(DType::Int64, {rIds.size()});
+            std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+            mesh.AddRegion(Region(rName, Kind, Dim, -1, std::move(a)));
+        };
+        for (const std::string& name : node_order)
+            region(name, RegionKind::Point, nodes[name], -1);
+        for (const std::string& name : cell_order) {
+            int dim = -1;
+            for (const std::int64_t c : cells[name])
+                dim = std::max(dim, cell_dim[static_cast<std::size_t>(c)]);
+            region(name, RegionKind::Cell, cells[name], dim);
+        }
+    };
+    if (block_types.empty()) {
+        add_th_regions();
         return mesh;
+    }
 
     // One array per block from `rGet(family, element, out)`.
     auto per_block = [&](std::size_t Width, double Fill, DType Type, auto&& rGet) {
@@ -674,6 +734,7 @@ Mesh read_radioss_anim(const std::string& rPath) {
         std::copy(ids.begin(), ids.end(), a.As<std::int64_t>());
         mesh.AddRegion(Region(key.first, RegionKind::Cell, dim, key.second, std::move(a)));
     }
+    add_th_regions();
     return mesh;
 }
 
@@ -893,7 +954,8 @@ std::string aw_state_bytes(const Mesh& rMesh, double Time) {
         std::size_t k = 0;
         for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
             const auto& reg = rMesh.Region(i);
-            if (reg.mKind != RegionKind::Cell)
+            if (reg.mKind != RegionKind::Cell ||
+                reg.mName.rfind(kAnimThPrefix, 0) == 0)  // time-history items are not parts
                 continue;
             have_regions = true;
             const std::int64_t pid = reg.mTag >= 0 ? reg.mTag : static_cast<std::int64_t>(k + 1);
@@ -932,6 +994,43 @@ std::string aw_state_bytes(const Mesh& rMesh, double Time) {
         }
         f = std::move(sorted);
     }
+
+    // Time-history items: each entry of a `radioss_th:<label>` region, as the index of a node or
+    // of an element in its family (the order the sections above were just sorted into).
+    std::array<std::vector<std::pair<std::int64_t, std::string>>, 4> th_items;
+    {
+        std::map<std::size_t, std::pair<std::size_t, std::size_t>> position;  // cell -> family, row
+        for (std::size_t key = 0; key < fam.size(); ++key)
+            for (std::size_t k = 0; k < fam[key].Size(); ++k)
+                position[fam[key].mIndex[k]] = {key, k};
+        const std::string prefix(kAnimThPrefix);
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const auto& reg = rMesh.Region(i);
+            if (reg.mName.rfind(prefix, 0) != 0)
+                continue;
+            const std::string label = reg.mName.substr(prefix.size());
+            const detail::Int64View entries(reg.mEntries);
+            for (std::size_t e = 0; e < reg.mEntries.Size(); ++e) {
+                const std::int64_t v = entries.Data()[e];
+                if (reg.mKind == RegionKind::Point) {
+                    if (v >= 0 && static_cast<std::size_t>(v) < nn)
+                        th_items[0].emplace_back(v, label);
+                } else if (reg.mKind == RegionKind::Cell) {
+                    const auto at = position.find(static_cast<std::size_t>(v));
+                    if (v < 0 || at == position.end() || at->second.first == kAwSph)
+                        continue;
+                    const std::size_t slot = at->second.first == kAw2d   ? 1
+                                             : at->second.first == kAw3d ? 2
+                                                                         : 3;
+                    th_items[slot].emplace_back(static_cast<std::int64_t>(at->second.second),
+                                                label);
+                }
+            }
+        }
+    }
+    bool have_th = false;
+    for (const auto& items : th_items)
+        have_th = have_th || !items.empty();
 
     // Nodal and element results.
     std::vector<AwColumn> scalars, vectors, escalars, tensors, forces;
@@ -977,7 +1076,7 @@ std::string aw_state_bytes(const Mesh& rMesh, double Time) {
                                              fam[kAw3d].Size() ? 1 : 0,
                                              fam[kAw1d].Size() ? 1 : 0,
                                              have_hier ? 1 : 0,
-                                             0,
+                                             have_th ? 1 : 0,
                                              0,
                                              fam[kAwSph].Size() ? 1 : 0,
                                              0,
@@ -1184,6 +1283,20 @@ std::string aw_state_bytes(const Mesh& rMesh, double Time) {
         for (const std::int64_t p : props)
             out.Text("Property " + std::to_string(p), 50);
         out.Ints(std::vector<std::int64_t>(props.begin(), props.end()));
+    }
+    if (flags[5]) {
+        out.Ints({static_cast<std::int64_t>(th_items[0].size()),
+                  static_cast<std::int64_t>(th_items[1].size()),
+                  static_cast<std::int64_t>(th_items[2].size()),
+                  static_cast<std::int64_t>(th_items[3].size())});
+        for (const auto& items : th_items) {
+            std::vector<std::int64_t> ids;
+            for (const auto& item : items)
+                ids.push_back(item.first);
+            out.Ints(ids);
+            for (const auto& item : items)
+                out.Text(item.second, 50);
+        }
     }
     const AwFamily& fs = fam[kAwSph];
     if (flags[7])

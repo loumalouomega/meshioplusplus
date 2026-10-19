@@ -20,6 +20,7 @@
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -128,8 +129,7 @@ TEST(SzpltWriter, StaticFileAndSeriesReadBack) {
     // its cells use.
     Mesh mesh = mt::tet_mesh();
     {
-        meshioplusplus::NDArray tri(meshioplusplus::DType::Int64,
-                                    {std::size_t{1}, std::size_t{3}});
+        meshioplusplus::NDArray tri(meshioplusplus::DType::Int64, {std::size_t{1}, std::size_t{3}});
         tri.As<std::int64_t>()[0] = 0;
         tri.As<std::int64_t>()[1] = 1;
         tri.As<std::int64_t>()[2] = 2;
@@ -178,6 +178,104 @@ TEST(SzpltWriter, StaticFileAndSeriesReadBack) {
         moved.AssignPoints(std::move(pts));
     }
     EXPECT_THROW(bad.Write(1.0, moved), meshioplusplus::WriteError);
+}
+
+// The type TecIO stores a variable in, read through its own reader.
+std::vector<int32_t> szplt_variable_types(const std::string& rPath) {
+    void* h = nullptr;
+    EXPECT_EQ(tecFileReaderOpen(rPath.c_str(), &h), 0);
+    int32_t count = 0;
+    EXPECT_EQ(tecDataSetGetNumVars(h, &count), 0);
+    std::vector<int32_t> out;
+    for (int32_t v = 1; v <= count; ++v) {
+        int32_t type = 0;
+        EXPECT_EQ(tecZoneVarGetType(h, 1, v, &type), 0);
+        out.push_back(type);
+    }
+    tecFileReaderClose(&h);
+    return out;
+}
+
+TEST(SzpltWriter, VariablesKeepTheTypeThatHoldsTheirDType) {
+    Mesh mesh = mt::tet_mesh();
+    const std::size_t n = mesh.NumPoints();
+    meshioplusplus::NDArray f32(meshioplusplus::DType::Float32, {n});
+    meshioplusplus::NDArray i16(meshioplusplus::DType::Int16, {n});
+    meshioplusplus::NDArray u8(meshioplusplus::DType::UInt8, {n});
+    meshioplusplus::NDArray i64(meshioplusplus::DType::Int64, {n});
+    for (std::size_t i = 0; i < n; ++i) {
+        f32.As<float>()[i] = 0.25f * static_cast<float>(i);
+        i16.As<std::int16_t>()[i] = static_cast<std::int16_t>(-3 * static_cast<int>(i));
+        u8.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(200 + i);
+        i64.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+    }
+    mesh.AddPointData("a_f32", std::move(f32));
+    mesh.AddPointData("b_i16", std::move(i16));
+    mesh.AddPointData("c_u8", std::move(u8));
+    mesh.AddPointData("d_i64", std::move(i64));
+    const std::string path = mt::temp_path(".szplt");
+    meshioplusplus::write_szplt(path, mesh);
+    // X, Y, Z in the points' double precision, then the four arrays in their own types
+    EXPECT_EQ(szplt_variable_types(path), (std::vector<int32_t>{2, 2, 2, 1, 4, 5, 2}));
+    const Mesh back = meshioplusplus::read_szplt(path);
+    for (std::size_t i = 0; i < n; ++i) {
+        EXPECT_EQ(back.PointData("a_f32").As<double>()[i], 0.25 * static_cast<double>(i));
+        EXPECT_EQ(back.PointData("b_i16").As<double>()[i], -3.0 * static_cast<double>(i));
+        EXPECT_EQ(back.PointData("c_u8").As<double>()[i], 200.0 + static_cast<double>(i));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(SzpltWriter, CellsWithPartsAreWrittenAsPartitions) {
+    // A row of four cubes along x, in parts 0 1 0 1: every cell keeps its geometry.
+    Mesh mesh;
+    meshioplusplus::NDArray pts(meshioplusplus::DType::Float64, {std::size_t{20}, std::size_t{3}});
+    const double yz[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (std::size_t i = 0; i < 5; ++i)
+        for (std::size_t c = 0; c < 4; ++c) {
+            double* row = pts.As<double>() + (i * 4 + c) * 3;
+            row[0] = static_cast<double>(i);
+            row[1] = yz[c][0];
+            row[2] = yz[c][1];
+        }
+    mesh.AssignPoints(std::move(pts));
+    meshioplusplus::NDArray conn(meshioplusplus::DType::Int64, {std::size_t{4}, std::size_t{8}});
+    for (std::size_t i = 0; i < 4; ++i)
+        for (std::size_t c = 0; c < 8; ++c)
+            conn.As<std::int64_t>()[i * 8 + c] = static_cast<std::int64_t>(i * 4 + c);
+    mesh.AddCellBlock("hexahedron", std::move(conn));
+    meshioplusplus::NDArray part(meshioplusplus::DType::Int32, {std::size_t{4}});
+    meshioplusplus::NDArray rho(meshioplusplus::DType::Float64, {std::size_t{4}});
+    for (std::size_t i = 0; i < 4; ++i) {
+        part.As<std::int32_t>()[i] = static_cast<std::int32_t>(i % 2);
+        rho.As<double>()[i] = 1.0 + static_cast<double>(i);
+    }
+    mesh.AddCellData("partition:part", {std::move(part)});
+    mesh.AddCellData("rho", {std::move(rho)});
+    const std::string path = mt::temp_path(".szplt");
+    meshioplusplus::write_szplt(path, mesh);
+    const Mesh back = meshioplusplus::read_szplt(path);
+    ASSERT_EQ(back.NumPoints(), 20u);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    ASSERT_EQ(back.Cells(0).NumCells(), 4u);
+    // The cells come back grouped by part (0 2 | 1 3), each one a cube at x = i .. i + 1.
+    const std::int64_t* cells = back.Cells(0).Conn().As<std::int64_t>();
+    const double* rho_back = back.CellData("rho", 0).As<double>();
+    const double expected[4] = {1.0, 3.0, 2.0, 4.0};
+    for (std::size_t c = 0; c < 4; ++c) {
+        EXPECT_EQ(rho_back[c], expected[c]);
+        const double x0 = expected[c] - 1.0;
+        double lo = 1e9, hi = -1e9;
+        for (std::size_t j = 0; j < 8; ++j) {
+            const double x =
+                back.Points().As<double>()[static_cast<std::size_t>(cells[c * 8 + j]) * 3];
+            lo = std::min(lo, x);
+            hi = std::max(hi, x);
+        }
+        EXPECT_EQ(lo, x0);
+        EXPECT_EQ(hi, x0 + 1.0);
+    }
+    std::filesystem::remove(path);
 }
 
 TEST(Szplt, MissingFileIsAReadError) {

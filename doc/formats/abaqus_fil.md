@@ -6,7 +6,7 @@ The results file Abaqus/Standard (and Explicit, with `*FILE OUTPUT`) writes on r
 |---|---|
 | **Format name** | `abaqus_fil` |
 | **Extensions** | `.fil` (also recognised by content, ASCII and binary) |
-| **Read / Write** | ✓ / ✓ ([writing](#writing); the remaining gaps are in the [roadmap](../roadmap.md#_3-reader-and-writer-parity), §3.2.6) |
+| **Read / Write** | ✓ / ✓ ([writing](#writing); what it leaves out is under [Writing](#writing) |
 | **Extra dependencies** | — |
 
 ## Reading

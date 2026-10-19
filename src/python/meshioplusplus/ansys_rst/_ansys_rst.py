@@ -225,6 +225,7 @@ _RAW_RECORDS = (
     ("EMS", 0),
     ("ENG", 3),
     ("EGR", 4),
+    ("EUL", 9),
     ("EFX", 10),
     ("EMN", 12),
     ("ENL", 14),
@@ -841,6 +842,21 @@ class _Model:
             mesh.cell_data[name] = arrays
 
 
+def _unrotate(vec, angles):
+    """The inverse of ``_rotate``: global vectors in the nodes' own axes."""
+    for row, (xy, yz, zx) in zip(vec, angles):
+        if xy == 0.0 and yz == 0.0 and zx == 0.0:
+            continue
+        x, y, z = row
+        c, s = math.cos(math.radians(xy)), math.sin(math.radians(xy))
+        x, y = c * x + s * y, -s * x + c * y
+        c, s = math.cos(math.radians(yz)), math.sin(math.radians(yz))
+        y, z = c * y + s * z, -s * y + c * z
+        c, s = math.cos(math.radians(zx)), math.sin(math.radians(zx))
+        x, z = c * x - s * z, s * x + c * z
+        row[:] = (x, y, z)
+
+
 def _rotate(vec, angles):
     """Nodal to global: a node's axes are the global ones turned about Z by
     THXY, then about the new X by THYZ, then about the newest Y by THZX, so
@@ -1167,6 +1183,14 @@ def read(
         )
     model = _Model(files, lenient)
     mesh = model.mesh
+    # Nodes with their own coordinate system: the angles, so a writer can rotate
+    # vectors back.
+    if (
+        not cyclic
+        and (arrays is None or "ansys:node_angles" in arrays)
+        and np.any(model.angles)
+    ):
+        mesh.point_data["ansys:node_angles"] = model.angles.copy()
     if main.n_sectors > 1 and not cyclic:
         mesh.field_data["ansys:cyclic_sectors"] = np.array(
             [main.n_sectors], dtype=np.int64

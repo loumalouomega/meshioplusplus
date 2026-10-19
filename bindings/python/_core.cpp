@@ -5870,7 +5870,16 @@ PYBIND11_MODULE(_core, m) {
         });
     });
     py::class_<meshioplusplus::VtxSeriesWriter>(m, "VtxSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(py::init([](const std::string& path, const std::string& mesh_policy) {
+                 if (mesh_policy != "update" && mesh_policy != "reuse")
+                     throw py::value_error(
+                         "meshio++: mesh_policy must be 'update' or 'reuse', got '" + mesh_policy +
+                         "'");
+                 return std::make_unique<meshioplusplus::VtxSeriesWriter>(
+                     path, mesh_policy == "reuse" ? meshioplusplus::VtxMeshPolicy::Reuse
+                                                  : meshioplusplus::VtxMeshPolicy::Update);
+             }),
+             py::arg("path"), py::arg("mesh_policy") = "update")
         .def(
             "write",
             [](meshioplusplus::VtxSeriesWriter& rSelf, double time, py::object pymesh) {

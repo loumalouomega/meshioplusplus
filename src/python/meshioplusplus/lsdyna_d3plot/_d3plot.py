@@ -885,6 +885,13 @@ def _build_mesh(f):
         mesh.cell_data["lsdyna:part"] = [
             np.array([user_part(b[2], p) for p in b[4]], dtype=np.int64) for b in blocks
         ]
+        if (
+            hdr.ntshells > 0
+        ):  # thick shells read as bricks: mark them, so a writer can tell
+            mesh.cell_data["lsdyna:thick_shell"] = [
+                np.full(len(b[1]), 1 if b[2] == _TSHELL else 0, dtype=np.int8)
+                for b in blocks
+            ]
         by_part = {}
         base = 0
         for b in blocks:

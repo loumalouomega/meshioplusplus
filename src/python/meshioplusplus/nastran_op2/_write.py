@@ -21,6 +21,7 @@ from .._exceptions import WriteError
 from .._files import is_buffer
 from .._fortran_records import fortran_record
 from ..nastran._model import CARD_TYPE, pbeam_station_slots
+from ._op2 import _CORNER_PLATE_NODES, _SOLID_NODES, _element_layout
 
 TIME_KEY = "meshio:time"
 
@@ -49,6 +50,9 @@ _CARDS = {
     "CGAP": ((1908, 19, 104), 9, 2, 2, None),
     "CDAMP1": ((201, 2, 69), 6, 2, 2, None),
     "CELAS1": ((601, 6, 73), 6, 2, 2, None),
+    "CMASS1": ((1001, 10, 65), 6, 2, 2, None),
+    "CMASS2": ((1101, 11, 66), 6, 2, 2, None),
+    "CONM1": ((1401, 14, 63), 24, 1, 1, None),
     "CONM2": ((1501, 15, 64), 13, 1, 1, None),
     "CONROD": ((1601, 16, 47), 8, 2, 1, None),
     "CHEXA": ((7308, 73, 253), 22, 8, 2, _HEXA20),
@@ -128,6 +132,7 @@ _PDAMP = ((202, 2, 45), 2)
 _PVISC = ((1802, 18, 31), 3)
 _PGAP = ((2102, 21, 121), 11)
 _PSHEAR = ((1002, 10, 42), 6)
+_PMASS = ((402, 4, 44), 2)
 _PCOMP = ((2706, 27, 287), 8)
 
 # The writer's card for each element type number of ``nastran:card`` on a line or a
@@ -140,6 +145,9 @@ _LINE_CARDS = {
     6: "CELAS1",
     2: "CDAMP1",
     15: "CONM2",
+    10: "CMASS1",
+    11: "CMASS2",
+    14: "CONM1",
     24: "CBAR",
     54: "CBEAM",
     26: "CBUSH",
@@ -150,7 +158,16 @@ _LINE_CARDS = {
     19: "CGAP",
 }
 _BLOCK_CARDS = {
-    "vertex": ("CONM2", "CELAS1", "CDAMP1", "CELAS2", "CDAMP2"),
+    "vertex": (
+        "CONM2",
+        "CELAS1",
+        "CDAMP1",
+        "CELAS2",
+        "CDAMP2",
+        "CMASS1",
+        "CMASS2",
+        "CONM1",
+    ),
     "line": (
         "CROD",
         "CONROD",
@@ -165,6 +182,8 @@ _BLOCK_CARDS = {
         "CVISC",
         "PLOTEL",
         "CGAP",
+        "CMASS1",
+        "CMASS2",
     ),
 }
 _CARD_OF_TYPE = {number: name for name, number in CARD_TYPE.items()}
@@ -220,6 +239,7 @@ PROPERTY_VALUES = {
         "MAR": (9, 100.0),
         "TRMIN": (10, 0.001),
     },
+    "PMASS": {"M": (1, 1.0)},
     "PSHEAR": {
         "MID": (1, 1),
         "T": (2, 1.0),
@@ -268,6 +288,65 @@ PROPERTY_VALUES = {
         "SS": (15, 0.0),
         "MCSID": (16, 0),
     },
+    # The thermal conductivity material (11 words).
+    "MAT4": {
+        "K": (1, 1.0),
+        "CP": (2, 0.0),
+        "RHO": (3, 1.0),
+        "H": (4, 0.0),
+        "MU": (5, 0.0),
+        "HGEN": (6, 1.0),
+        "REFENTH": (7, 0.0),
+        "TCH": (8, 0.0),
+        "TDELTA": (9, 0.0),
+        "QLAT": (10, 0.0),
+    },
+    # The anisotropic thermal conductivity material (10 words).
+    "MAT5": {
+        "K1": (1, 1.0),
+        "K2": (2, 0.0),
+        "K3": (3, 0.0),
+        "K4": (4, 1.0),
+        "K5": (5, 0.0),
+        "K6": (6, 1.0),
+        "CP": (7, 0.0),
+        "RHO": (8, 1.0),
+        "HGEN": (9, 1.0),
+    },
+    # The anisotropic solid material (35 words): the upper triangle of the stiffness
+    # matrix by rows, the density, the thermal expansion, TREF and GE.
+    "MAT9": {
+        "G11": (1, 1.0),
+        "G12": (2, 0.0),
+        "G13": (3, 0.0),
+        "G14": (4, 0.0),
+        "G15": (5, 0.0),
+        "G16": (6, 0.0),
+        "G22": (7, 1.0),
+        "G23": (8, 0.0),
+        "G24": (9, 0.0),
+        "G25": (10, 0.0),
+        "G26": (11, 0.0),
+        "G33": (12, 1.0),
+        "G34": (13, 0.0),
+        "G35": (14, 0.0),
+        "G36": (15, 0.0),
+        "G44": (16, 1.0),
+        "G45": (17, 0.0),
+        "G46": (18, 0.0),
+        "G55": (19, 1.0),
+        "G56": (20, 0.0),
+        "G66": (21, 1.0),
+        "RHO": (22, 0.0),
+        "A1": (23, 0.0),
+        "A2": (24, 0.0),
+        "A3": (25, 0.0),
+        "A4": (26, 0.0),
+        "A5": (27, 0.0),
+        "A6": (28, 0.0),
+        "TREF": (29, 0.0),
+        "GE": (30, 0.0),
+    },
     # The orthotropic ply material (19 words).
     "MAT8": {
         "E1": (1, 1.0),
@@ -294,8 +373,38 @@ PROPERTY_VALUES = {
 _MATERIALS = (
     ("MAT1", (103, 1, 77), 12),
     ("MAT2", (203, 2, 78), 17),
+    ("MAT4", (2103, 21, 234), 11),
+    ("MAT5", (2203, 22, 235), 10),
     ("MAT8", (2503, 25, 288), 19),
+    ("MAT9", (2603, 26, 300), 35),
 )
+# The cross-section types of PBARL and PBEAML and their dimensions per section.
+SECTION_DIMS = {
+    "ROD": 1,
+    "TUBE": 2,
+    "TUBE2": 2,
+    "L": 4,
+    "I": 6,
+    "CHAN": 4,
+    "T": 4,
+    "BOX": 4,
+    "BAR": 2,
+    "CROSS": 4,
+    "H": 4,
+    "T1": 4,
+    "I1": 4,
+    "CHAN1": 4,
+    "Z": 4,
+    "CHAN2": 4,
+    "T2": 4,
+    "BOX1": 6,
+    "HEXA": 3,
+    "HAT": 4,
+    "HAT1": 5,
+    "DBOX": 10,
+}
+# The cards whose values are arrays, text included: ``nastran:<CARD>_<id>:<MEMBER>``.
+_LINE_CARD_KEY = re.compile(r"^nastran:(PBARL|PBEAML|PCOMPG)_([0-9]+):([A-Z0-9]+)$")
 _VALUE_KEY = re.compile(r"^nastran:([A-Z0-9]+)_([0-9]+):([A-Z0-9]+)$")
 # The members that are integers besides the ``MID`` ones.
 _INT_MEMBERS = ("FT", "SYM", "MCSID")
@@ -332,7 +441,39 @@ def property_values(mesh):
     return out
 
 
-def material_ids(properties, values, beams=None):
+def text_of(array):
+    """A text member (``GROUP``, ``TYPE``) of the field data, a ``uint8`` array of
+    characters or a string, without its padding."""
+    if isinstance(array, str):
+        return array.strip()
+    return (
+        bytes(np.asarray(array, dtype=np.uint8).ravel())
+        .decode("latin-1")
+        .strip(" \x00")
+    )
+
+
+def line_property_values(mesh):
+    """``{(card, id): {member: array}}`` from the ``nastran:PBARL_<id>:*``, ``PBEAML`` and
+    ``PCOMPG`` field data (texts as given, numbers as float64 arrays, ``MID`` and the
+    other integers as int64)."""
+    out = {}
+    for name, array in mesh.field_data.items():
+        m = _LINE_CARD_KEY.match(name)
+        if m is None:
+            continue
+        card, ident, member = m.group(1), int(m.group(2)), m.group(3)
+        if member in ("GROUP", "TYPE"):
+            value = text_of(array)
+        elif member in ("MID", "LAMOPT", "FT"):
+            value = int(np.asarray(array).ravel()[0])
+        else:
+            value = np.asarray(array, dtype=np.float64)
+        out.setdefault((card, ident), {})[member] = value
+    return out
+
+
+def material_ids(properties, values, beams=None, lines=None):
     """The MAT1 ids: those the properties name (MID default 1) and those given. A PBEAM's
     MID is in the beams' field data (``{pid: {member: array}}``), not in the values."""
     ids = set()
@@ -353,6 +494,13 @@ def material_ids(properties, values, beams=None):
     for pid in properties.get("PCOMP", ()):
         plies = np.asarray(values[("PCOMP", pid)]["PLY"]).reshape(-1, 4)
         ids.update(int(mid) for mid in plies[:, 0])
+    for (card, _pid), given in (lines or {}).items():
+        if card == "PCOMPG":
+            ids.update(
+                int(mid) for mid in np.asarray(given["PLY"]).reshape(-1, 5)[:, 1]
+            )
+        else:
+            ids.add(int(given.get("MID", 1)))
     ids.update(material_cards(values))
     return sorted(ids) or []
 
@@ -362,7 +510,7 @@ def material_cards(values):
     ``MAT2`` or ``MAT8``); an id given as two cards is an error."""
     cards = {}
     for card, ident in sorted(values):
-        if card not in ("MAT1", "MAT2", "MAT8"):
+        if card not in ("MAT1", "MAT2", "MAT4", "MAT5", "MAT8", "MAT9"):
             continue
         if cards.setdefault(ident, card) != card:
             _wfail(
@@ -384,66 +532,14 @@ _NODAL = (
     ("APPLIED_LOAD", "OPG1", 2, 0),
 )
 _NODAL_TABLES = ("OUGV1", "OQG1", "OQMG1", "OPG1")
-_RESULT_TABLES = _NODAL_TABLES + ("OEF1X", "OES1X1", "OSTR1X")
-
-# Element result families in file order: (element type, card, members). The
-# members are the words after the element id of a row (rods, shells), or the
-# values of the centre block (solids).
-_ROD = ["A", "MSA", "T", "MST"]
-_TUBE = ["AS", "MSA", "TS", "MST"]
-_SOLID = [
-    "X",
-    "Y",
-    "Z",
-    "TXY",
-    "TYZ",
-    "TZX",
-    "PRINCIPAL_A",
-    "PRINCIPAL_B",
-    "PRINCIPAL_C",
-]
-_SOLID_WORD = {
-    # member -> word of the 21-word node block (word 0 is the GRID)
-    "X": 1,
-    "TXY": 2,
-    "PRINCIPAL_A": 3,
-    "PRESSURE": 7,
-    "VON_MISES": 8,
-    "OCT_SHEAR": 8,
-    "Y": 9,
-    "TYZ": 10,
-    "PRINCIPAL_B": 11,
-    "Z": 15,
-    "TZX": 16,
-    "PRINCIPAL_C": 17,
-}
-_PLATE = [
-    "FD1", "X1", "Y1", "TXY1", "ANGLE1", "MAJOR1", "MINOR1", "VM1",
-    "FD2", "X2", "Y2", "TXY2", "ANGLE2", "MAJOR2", "MINOR2", "VM2",
-]  # fmt: skip
-_FAMILIES = (
-    (1, "CROD", "rod"),
-    (3, "CTUBE", "rod"),
-    (10, "CONROD", "rod"),
-    (33, "CQUAD4", "plate"),
-    (39, "CTETRA", "solid"),
-    (67, "CHEXA", "solid"),
-    (68, "CPENTA", "solid"),
-    (74, "CTRIA3", "plate"),
-    (255, "CPYRAM", "solid"),
-)
-_CORNERS = {"CTETRA": 4, "CHEXA": 8, "CPENTA": 6, "CPYRAM": 5}
-
-# Element force families (``OEF1X``, table code 4): (element type, card, members) of
-# the rods (axial force and torque) and the plates (the eight membrane and bending
-# forces), as ``ELEMENT_FORCE:<member>`` cell data.
-_SHELL_FORCE = ["MX", "MY", "MXY", "BMX", "BMY", "BMXY", "TX", "TY"]
-_FORCE_FAMILIES = (
-    (1, "CROD", ["AF", "TRQ"]),
-    (3, "CTUBE", ["AF", "TRQ"]),
-    (10, "CONROD", ["AF", "TRQ"]),
-    (33, "CQUAD4", _SHELL_FORCE),
-    (74, "CTRIA3", _SHELL_FORCE),
+_RESULT_TABLES = _NODAL_TABLES + (
+    "OEF1X",
+    "HOEF1",
+    "OES1X1",
+    "OSTR1X",
+    "ONRGY1",
+    "OEKE1",
+    "OGPFB1",
 )
 
 # Arrays and field data that mean something without being results.
@@ -462,6 +558,8 @@ _QUIET_CELL = (
     "nastran:ge",
     "nastran:s",
     "nastran:b",
+    "nastran:m",
+    "nastran:conm1",
 )
 
 _PTYPE = re.compile(r"^([A-Z][A-Z0-9]*)_([0-9]+)$")
@@ -582,8 +680,20 @@ def _components(mesh, b, n, ctype):
 def _raw_bar_fields(mesh, b, n):
     """The per-cell values of block ``b`` that the card fields are made of, as a dict
     of arrays (``None`` where the mesh has none): ``x`` ``(n, 3)``, ``g0``, ``pin``
-    ``(n, 2)``, ``w`` ``(n, 6)``, ``k``, ``ge``, ``s`` and ``b``."""
-    widths = {"x": 3, "g0": 1, "pin": 2, "w": 6, "k": 1, "ge": 1, "s": 1, "b": 1}
+    ``(n, 2)``, ``w`` ``(n, 6)``, ``k``, ``ge``, ``s``, ``b``, ``m`` and ``conm1``
+    ``(n, 21)``."""
+    widths = {
+        "x": 3,
+        "g0": 1,
+        "pin": 2,
+        "w": 6,
+        "k": 1,
+        "ge": 1,
+        "s": 1,
+        "b": 1,
+        "m": 1,
+        "conm1": 21,
+    }
     names = {
         "x": "nastran:x",
         "g0": "nastran:g0",
@@ -593,6 +703,8 @@ def _raw_bar_fields(mesh, b, n):
         "ge": "nastran:ge",
         "s": "nastran:s",
         "b": "nastran:b",
+        "m": "nastran:m",
+        "conm1": "nastran:conm1",
     }
     out = {}
     for key, name in names.items():
@@ -607,12 +719,12 @@ def _raw_bar_fields(mesh, b, n):
 
 
 def _bar_matrix(raw, cards):
-    """The ``(n, 12)`` card fields of the rows, by their cards: a CBAR's orientation
+    """The ``(n, 21)`` card fields of the rows, by their cards: a CBAR's orientation
     X1..X3, G0, pins PA and PB and offsets W1A..W3A and W1B..W3B, and a CBUSH's X1..X3
-    and G0; a CELAS2's K, GE and S in columns 0 to 2; a CDAMP2's B in column 0. Each row
-    takes only its own card's."""
+    and G0; a CELAS2's K, GE and S in columns 0 to 2; a CDAMP2's B and a CMASS2's M in
+    column 0; a CONM1's 21 mass terms. Each row takes only its own card's."""
     n = len(cards)
-    out = np.zeros((n, 12))
+    out = np.zeros((n, 21))
     oriented = np.isin(cards, ["CBAR", "CBEAM", "CBUSH", "CGAP"])
     if oriented.any():
         for key, lo, hi in (("x", 0, 3), ("g0", 3, 4)):
@@ -631,10 +743,16 @@ def _bar_matrix(raw, cards):
     dampers = np.asarray(cards == "CDAMP2")
     if dampers.any() and raw["b"] is not None:
         out[dampers, 0] = raw["b"][dampers, 0]
+    masses = np.asarray(cards == "CMASS2")
+    if masses.any() and raw["m"] is not None:
+        out[masses, 0] = raw["m"][masses, 0]
+    matrices = np.asarray(cards == "CONM1")
+    if matrices.any() and raw["conm1"] is not None:
+        out[matrices, :21] = raw["conm1"][matrices]
     return out
 
 
-def _written(codes, ctype, card):
+def _written(codes, ctype, card, allowed=None):
     """The card of each row of a block that carries ``nastran:card``, the rows to
     keep, and the names of the cards left out. A line or vertex takes the card its
     number names, and a mismatch with its cell type is an error; any other cell
@@ -650,6 +768,9 @@ def _written(codes, ctype, card):
                 left.add(_CARD_OF_TYPE.get(code, f"card {code}"))
             elif name not in _BLOCK_CARDS[ctype]:
                 _wfail(f"a '{ctype}' block cannot hold {name} cards")
+            elif allowed is not None and name not in allowed:
+                keep[i] = False
+                left.add(name)
             else:
                 cards[i] = name
         elif code == _CSHEAR and ctype == "quad":
@@ -707,10 +828,57 @@ def _to_local(system, point):
     return [r, theta, math.atan2(yl, xl) / _DEGREE]
 
 
+def _vector_to_local(system, point, v):
+    """The basic vector ``v`` at the basic ``point`` in ``system``'s components: the
+    inverse of the reader's rotation, in the operation order of the C++ core."""
+    ctype, o, x, y, z = system
+    w = [
+        x[0] * v[0] + x[1] * v[1] + x[2] * v[2],
+        y[0] * v[0] + y[1] * v[1] + y[2] * v[2],
+        z[0] * v[0] + z[1] * v[1] + z[2] * v[2],
+    ]
+    if ctype == 1:
+        return w
+    d0, d1, d2 = point[0] - o[0], point[1] - o[1], point[2] - o[2]
+    l0 = x[0] * d0 + x[1] * d1 + x[2] * d2
+    l1 = y[0] * d0 + y[1] * d1 + y[2] * d2
+    l2 = z[0] * d0 + z[1] * d1 + z[2] * d2
+    ph = math.atan2(l1, l0)
+    cp = math.cos(ph)
+    sp = math.sin(ph)
+    if ctype == 2:
+        return [w[0] * cp + w[1] * sp, -w[0] * sp + w[1] * cp, w[2]]
+    th = math.atan2(math.sqrt(l0 * l0 + l1 * l1), l2)
+    ct = math.cos(th)
+    st = math.sin(th)
+    er = [st * cp, st * sp, ct]
+    et = [ct * cp, ct * sp, -st]
+    ep = [-sp, cp, 0.0]
+    return [
+        w[0] * er[0] + w[1] * er[1] + w[2] * er[2],
+        w[0] * et[0] + w[1] * et[1] + w[2] * et[2],
+        w[0] * ep[0] + w[1] * ep[1] + w[2] * ep[2],
+    ]
+
+
+def _output_systems(mesh, npoints):
+    """Each point's output system CD (``nastran:cd``, 0 for basic) and the systems it names,
+    by id."""
+    cd = np.zeros(npoints, dtype=np.int64)
+    if "nastran:cd" in mesh.point_data:
+        cd = np.asarray(mesh.point_data["nastran:cd"], dtype=np.int64).reshape(-1)
+        if cd.size != npoints:
+            _wfail("'nastran:cd' must hold one integer per point")
+    if np.any(cd < 0):
+        _wfail("coordinate system ids must be positive")
+    return cd, {
+        cid: _cord_system(mesh, cid) for cid in sorted(set(cd[cd != 0].tolist()))
+    }
+
+
 def _local_points(mesh, points):
     """Each point's coordinates in its own system (basic for CP 0), each point's CP and
-    the systems the CPs name, by id: what GEOM1 holds. Output systems (CD) are not
-    written, so a non-zero CD is reported."""
+    the systems the CPs name, by id: what GEOM1 holds."""
     n = len(points)
     cp = np.zeros(n, dtype=np.int64)
     if "nastran:cp" in mesh.point_data:
@@ -725,13 +893,6 @@ def _local_points(mesh, points):
     local = np.array(points, dtype=np.float64)
     for i in np.flatnonzero(cp):
         local[i] = _to_local(cords[int(cp[i])], points[i])
-    if "nastran:cd" in mesh.point_data:
-        named = int(np.count_nonzero(np.asarray(mesh.point_data["nastran:cd"]) > 0))
-        if named:
-            warn(
-                f"Nastran OP2: {named} GRID(s) have an output system (nastran:cd) that is "
-                "not written: their CD stays 0 and their results stay in basic coordinates"
-            )
     return cp, local, cords
 
 
@@ -758,13 +919,17 @@ def _beam_values(mesh):
 class _Model:
     """The mesh as the file holds it: GRIDs, element cards and properties."""
 
-    def __init__(self, mesh, per_card_ids=False):
+    def __init__(self, mesh, per_card_ids=False, allowed=None):
         self.npoints = len(mesh.points)
         points = np.asarray(mesh.points, dtype=np.float64).reshape(self.npoints, -1)
         self.points = np.zeros((self.npoints, 3))
         self.points[:, : min(3, points.shape[1])] = points[:, :3]
         self.node_ids = _node_ids(mesh, self.npoints)
         self.cp, self.local, self.cords = _local_points(mesh, self.points)
+        # The output systems CD: the GRIDs' results are written in them.
+        self.cd, self.output_cords = _output_systems(mesh, self.npoints)
+        for cid, system in self.output_cords.items():
+            self.cords.setdefault(cid, system)
         self.signature = _signature(mesh)
         self.values = property_values(mesh)
         self.beams = _beam_values(mesh)
@@ -813,7 +978,7 @@ class _Model:
             raw_bar = _raw_bar_fields(mesh, b, n)
             if have_card:
                 cards, keep, left = _written(
-                    mesh.cell_data["nastran:card"][b], block.type, card
+                    mesh.cell_data["nastran:card"][b], block.type, card, allowed
                 )
                 self.unwritten.update(left)
             else:
@@ -842,7 +1007,12 @@ class _Model:
                 _wfail(
                     "a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0"
                 )
-            for card, key in (("CELAS2", "nastran:k"), ("CDAMP2", "nastran:b")):
+            for card, key in (
+                ("CELAS2", "nastran:k"),
+                ("CDAMP2", "nastran:b"),
+                ("CMASS2", "nastran:m"),
+                ("CONM1", "nastran:conm1"),
+            ):
                 if np.any(cards == card) and key not in mesh.cell_data:
                     _wfail(f"a {card} needs its value: {key}")
             if np.any(cards == "CBEAM"):
@@ -919,6 +1089,10 @@ class _Model:
             "PGAP": set(),
             "PSHEAR": set(),
             "PCOMP": set(),
+            "PMASS": set(),
+            "PBARL": set(),
+            "PBEAML": set(),
+            "PCOMPG": set(),
         }
         for blk in self.blocks:
             for name, ptype in (
@@ -941,6 +1115,7 @@ class _Model:
                 ("CVISC", "PVISC"),
                 ("CGAP", "PGAP"),
                 ("CSHEAR", "PSHEAR"),
+                ("CMASS1", "PMASS"),
             ):
                 rows = blk["cards"] == name
                 if rows.any():
@@ -949,6 +1124,22 @@ class _Model:
             if "PLY" in self.values.get(("PCOMP", pid), {}):
                 self.properties["PSHELL"].discard(pid)
                 self.properties["PCOMP"].add(pid)
+        # A bar, beam or shell whose id has the line-property field data is a PBARL, PBEAML
+        # or PCOMPG, not a PBAR, PBEAM, PCOMP or PSHELL.
+        self.lines = {}
+        for (card, pid), given in line_property_values(mesh).items():
+            replaced = {
+                "PBARL": ("PBAR",),
+                "PBEAML": ("PBEAM",),
+                "PCOMPG": ("PSHELL", "PCOMP"),
+            }[card]
+            key = "PLY" if card == "PCOMPG" else "TYPE"
+            if key not in given or not any(pid in self.properties[r] for r in replaced):
+                continue
+            for r in replaced:
+                self.properties[r].discard(pid)
+            self.properties[card].add(pid)
+            self.lines[(card, pid)] = given
         used = {}
         for ptype, pids in self.properties.items():
             for p in pids:
@@ -962,6 +1153,17 @@ class _Model:
             if p <= 0:
                 _wfail("property ids must be positive")
         material_cards(self.values)  # refuses a material id given as two cards
+
+    def to_output(self, values):
+        """The ``(points, 3)`` basic vectors in each point's output system CD (the values
+        themselves when no point has one)."""
+        if not self.output_cords:
+            return values
+        out = np.array(values, dtype=np.float64)
+        for i in np.flatnonzero(self.cd):
+            system = self.output_cords[int(self.cd[i])]
+            out[i] = _vector_to_local(system, self.points[i].tolist(), out[i].tolist())
+        return out
 
     def element_rows(self, name):
         """(eids, pids, [(block, rows)], order) of a card; the first two by id."""
@@ -998,6 +1200,7 @@ class _Model:
         words[:, 0] = _i32(self.node_ids[order])
         words[:, 1] = _i32(self.cp[order])  # CP: the system the coordinates are in
         words[:, 2:5] = _f32(self.local[order])
+        words[:, 5] = _i32(self.cd[order])  # CD: the system the results are in
         records += [_key(4501, 45, 1) + _bytes(words), _key(65535, 65535, 65535)]
         return _table("GEOM1", records)
 
@@ -1026,7 +1229,11 @@ class _Model:
             comp, bar = comp[order], bar[order]
             words = np.zeros((len(eid), size), dtype="<u4")
             words[:, 0] = _i32(eid)
-            if name == "CONM2":
+            if name == "CONM1":
+                # the GRID, the coordinate system CID (0) and the 21 mass terms
+                words[:, 1] = _i32(nodes[:, 0])
+                words[:, 3:24] = _f32(bar[:, :21])
+            elif name == "CONM2":
                 words[:, 1] = _i32(nodes[:, 0])
             elif name == "CGAP":
                 # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7 (1 for a
@@ -1050,14 +1257,14 @@ class _Model:
             else:
                 words[:, 1] = _i32(pid)
                 words[:, 2 : 2 + nodes.shape[1]] = _i32(nodes)
-                if name in ("CELAS1", "CDAMP1", "CELAS2", "CDAMP2"):
+                if name in ("CELAS1", "CDAMP1", "CELAS2", "CDAMP2", "CMASS1", "CMASS2"):
                     words[:, 4:6] = _i32(comp)
                 if name == "CELAS2":
                     # K at 1, GE at 6 and S at 7 (the reader's "bar" columns 0 to 2)
                     words[:, 1] = _f32(bar[:, 0])
                     words[:, 6] = _f32(bar[:, 1])
                     words[:, 7] = _f32(bar[:, 2])
-                if name == "CDAMP2":
+                if name in ("CDAMP2", "CMASS2"):
                     words[:, 1] = _f32(bar[:, 0])
                 if name == "CBAR":
                     # X1..X3 at 4 to 6, or the G0 at 4 (flag 2); the flag at 7
@@ -1109,6 +1316,7 @@ class _Model:
             ("PVISC", _PVISC),
             ("PGAP", _PGAP),
             ("PSHEAR", _PSHEAR),
+            ("PMASS", _PMASS),
         ):
             pids = sorted(self.properties[ptype])
             if not pids:
@@ -1132,8 +1340,111 @@ class _Model:
             records.append(_key(*_PBEAM[0]) + _bytes(self._pbeam_words()))
         if self.properties["PBUSH"]:
             records.append(_key(*_PBUSH[0]) + _bytes(self._pbush_words()))
+        for card, key, words in (
+            ("PBARL", (9102, 91, 52), self._pbarl_words),
+            ("PBEAML", (9202, 92, 53), self._pbeaml_words),
+            ("PCOMPG", (15006, 150, 604), self._pcompg_words),
+        ):
+            if self.properties[card]:
+                records.append(_key(*key) + _bytes(words()))
         records.append(_key(65535, 65535, 65535))
         return _table("EPT", records)
+
+    def _section_header(self, card, pid):
+        """The six header words of a PBARL or PBEAML: the id, MID, GROUP and TYPE."""
+        given = self.lines[(card, pid)]
+        section = given["TYPE"].upper()
+        if section not in SECTION_DIMS:
+            _wfail(
+                f"{card} {pid}: the section type '{section}' is not one of the cards'"
+            )
+        head = np.zeros(6, dtype="<u4")
+        head[0] = _i32(np.array([pid]))[0]
+        head[1] = _i32(np.array([int(given.get("MID", 1))]))[0]
+        for k, text in ((2, given.get("GROUP", "MSCBML0")), (4, section)):
+            head[k : k + 2] = np.frombuffer(text.ljust(8)[:8].encode("latin-1"), "<u4")
+        return head, SECTION_DIMS[section]
+
+    def _pbarl_words(self):
+        """The PBARL records: the header, the section's dimensions, NSM and a -1."""
+        out = []
+        for pid in sorted(self.properties["PBARL"]):
+            head, ndim = self._section_header("PBARL", pid)
+            given = self.lines[("PBARL", pid)]
+            dims = np.asarray(given.get("DIM", np.zeros(0)), dtype=np.float64).ravel()
+            if len(dims) != ndim:
+                _wfail(
+                    f"'nastran:PBARL_{pid}:DIM' must have {ndim} value(s) for a "
+                    f"'{given['TYPE']}' section"
+                )
+            nsm = np.asarray(given.get("NSM", [0.0]), dtype=np.float64).ravel()
+            tail = np.concatenate([dims, nsm[:1] if len(nsm) else [0.0]])
+            body = np.concatenate([_f32(tail), _i32(np.array([-1]))])
+            out.append(np.concatenate([head, body]))
+        return np.concatenate(out)
+
+    def _pbeaml_words(self):
+        """The PBEAML records: the header, then per station SO, X/XB, the section's
+        dimensions and NSM, and a -1."""
+        out = []
+        for pid in sorted(self.properties["PBEAML"]):
+            head, ndim = self._section_header("PBEAML", pid)
+            given = self.lines[("PBEAML", pid)]
+            flat = np.asarray(given.get("DIM", np.zeros(0)), dtype=np.float64).ravel()
+            if not len(flat) or len(flat) % ndim:
+                _wfail(
+                    f"'nastran:PBEAML_{pid}:DIM' must hold (stations, {ndim}) rows for "
+                    f"a '{given['TYPE']}' section"
+                )
+            dims = flat.reshape(-1, ndim)
+            n = len(dims)
+            columns = []
+            for member, default in (
+                ("SO", np.zeros(n)),
+                ("XXB", np.linspace(0.0, 1.0, n)),
+                ("NSM", np.zeros(n)),
+            ):
+                value = given.get(member)
+                value = (
+                    default if value is None else np.asarray(value, dtype=np.float64)
+                )
+                if value.size != n:
+                    _wfail(f"'nastran:PBEAML_{pid}:{member}' must have {n} value(s)")
+                columns.append(value.reshape(n))
+            stations = np.column_stack([columns[0], columns[1], dims, columns[2]])
+            body = np.concatenate([_f32(stations.ravel()), _i32(np.array([-1]))])
+            out.append(np.concatenate([head, body]))
+        return np.concatenate(out)
+
+    def _pcompg_words(self):
+        """The PCOMPG records: the header (pid, LAMOPT, Z0, NSM, SB, FT, TREF, GE), the
+        plies (GPLYID, MID, T, THETA, SOUT) and five -1."""
+        out = []
+        for pid in sorted(self.properties["PCOMPG"]):
+            given = self.lines[("PCOMPG", pid)]
+            flat = np.asarray(given["PLY"], dtype=np.float64).ravel()
+            if not len(flat) or len(flat) % 5:
+                _wfail(
+                    f"'nastran:PCOMPG_{pid}:PLY' must hold (plies, 5) rows of GPLYID, "
+                    "MID, T, THETA and SOUT"
+                )
+            plies = flat.reshape(-1, 5)
+            head = np.zeros(8, dtype="<u4")
+            head[0] = _i32(np.array([pid]))[0]
+            head[1] = _i32(np.array([int(given.get("LAMOPT", 0))]))[0]
+            for k, member in ((2, "Z0"), (3, "NSM"), (4, "SB"), (6, "TREF"), (7, "GE")):
+                value = np.asarray(given.get(member, [0.0]), dtype=np.float64).ravel()
+                head[k] = _f32(value[:1] if len(value) else [0.0])[0]
+            head[5] = _i32(np.array([int(given.get("FT", 0))]))[0]
+            body = np.zeros((len(plies), 5), dtype="<u4")
+            body[:, 0] = _i32(plies[:, 0].astype(np.int64))
+            body[:, 1] = _i32(plies[:, 1].astype(np.int64))
+            body[:, 2] = _f32(plies[:, 2])
+            body[:, 3] = _f32(plies[:, 3])
+            body[:, 4] = _i32(plies[:, 4].astype(np.int64))
+            end = _i32(np.full(5, -1))
+            out.append(np.concatenate([head, body.ravel(), end]))
+        return np.concatenate(out)
 
     def _pcomp_words(self):
         """The PCOMP records: the header words (pid, layer count, Z0, NSM, SB, FT, TREF,
@@ -1157,49 +1468,55 @@ class _Model:
             out.append(np.concatenate([head, body.ravel()]))
         return np.concatenate(out)
 
+    def pbeam_slots(self, pid):
+        """``(MID, segments, CCF, slots)`` of a PBEAM: its 11 station slots as ``(11, 16)``
+        rows of SO, XXB, A, I1, I2, I12, J, NSM and the outline points C, D, E and F, from
+        the id's field data. An id with none gets placeholders: one segment of constant
+        section, with A, I1, I2 and J of 1."""
+        given = self.beams.get(pid, {})
+        mid = int(np.asarray(given.get("MID", [1])).ravel()[0])
+        nseg = int(np.asarray(given.get("NSEG", [1])).ravel()[0])
+        ccf = int(np.asarray(given.get("CCF", [1])).ravel()[0])
+        n = nseg + 1
+        if not 1 <= nseg <= 10:
+            _wfail(f"PBEAM {pid} has {nseg} segments; a PBEAM holds 1 to 10")
+        defaults = {
+            "SO": np.ones(n),
+            "XXB": np.linspace(0.0, 1.0, n),
+            "A": np.ones(n),
+            "I1": np.ones(n),
+            "I2": np.ones(n),
+            "I12": np.zeros(n),
+            "J": np.ones(n),
+            "NSM": np.zeros(n),
+        }
+        stations = np.zeros((n, 16))
+        for column, member in enumerate(_BEAM_STATION_MEMBERS):
+            values = np.asarray(
+                given.get(member, defaults[member]), dtype=np.float64
+            ).ravel()
+            if values.size != n:
+                _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} value(s)")
+            stations[:, column] = values
+        for first, member in zip((8, 10, 12, 14), _BEAM_POINT_MEMBERS):
+            values = np.asarray(
+                given.get(member, np.zeros((n, 2))), dtype=np.float64
+            ).reshape(-1, 2)
+            if values.shape != (n, 2):
+                _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} x 2 value(s)")
+            stations[:, first : first + 2] = values
+        slots = np.zeros((11, 16))
+        slots[pbeam_station_slots(n)] = stations
+        return mid, nseg, ccf, slots
+
     def _pbeam_words(self):
         """The PBEAM records, one per id: the header (pid, MID, segments, CCF and a zero),
-        then the stations in slots of 16 words, from the id's field data. An id with none
-        gets placeholders: one segment of constant section, with A, I1, I2 and J of 1.
-        """
+        then the stations in slots of 16 words (see :meth:`pbeam_slots`)."""
         out = []
         for pid in sorted(self.properties["PBEAM"]):
-            given = self.beams.get(pid, {})
-            mid = int(np.asarray(given.get("MID", [1])).ravel()[0])
-            nseg = int(np.asarray(given.get("NSEG", [1])).ravel()[0])
-            ccf = int(np.asarray(given.get("CCF", [1])).ravel()[0])
-            n = nseg + 1
-            if not 1 <= nseg <= 10:
-                _wfail(f"PBEAM {pid} has {nseg} segments; a PBEAM holds 1 to 10")
-            defaults = {
-                "SO": np.ones(n),
-                "XXB": np.linspace(0.0, 1.0, n),
-                "A": np.ones(n),
-                "I1": np.ones(n),
-                "I2": np.ones(n),
-                "I12": np.zeros(n),
-                "J": np.ones(n),
-                "NSM": np.zeros(n),
-            }
-            stations = np.zeros((n, 16))
-            for column, member in enumerate(_BEAM_STATION_MEMBERS):
-                values = np.asarray(
-                    given.get(member, defaults[member]), dtype=np.float64
-                ).ravel()
-                if values.size != n:
-                    _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} value(s)")
-                stations[:, column] = values
-            for first, member in zip((8, 10, 12, 14), _BEAM_POINT_MEMBERS):
-                values = np.asarray(
-                    given.get(member, np.zeros((n, 2))), dtype=np.float64
-                ).reshape(-1, 2)
-                if values.shape != (n, 2):
-                    _wfail(f"'nastran:PBEAM_{pid}:{member}' must have {n} x 2 value(s)")
-                stations[:, first : first + 2] = values
+            mid, nseg, ccf, slots = self.pbeam_slots(pid)
             words = np.zeros(_PBEAM[1], dtype="<u4")
             words[:4] = _i32([pid, mid, nseg, ccf])
-            slots = np.zeros((11, 16))
-            slots[pbeam_station_slots(n)] = stations
             words[5 : 5 + 16 * 11] = _f32(slots).ravel()
             out.append(words)
         return np.concatenate(out)
@@ -1236,7 +1553,7 @@ class _Model:
         """A MAT1 per material the properties name: unit modulus unless the field
         data gives its values. A material given as ``nastran:MAT2_<id>:*`` or
         ``nastran:MAT8_<id>:*`` is written as that card instead."""
-        ids = material_ids(self.properties, self.values, self.beams) or [1]
+        ids = material_ids(self.properties, self.values, self.beams, self.lines) or [1]
         given_cards = material_cards(self.values)
         records = []
         for card, key, size in _MATERIALS:
@@ -1328,6 +1645,8 @@ def _step_tables(model, mesh, time, taken):
         if base.size != model.npoints * ncomp:
             _wfail(f"'{name}' must have {ncomp} component(s) per point")
         base = base.reshape(model.npoints, ncomp)
+        if not thermal:
+            base = model.to_output(base)
         rot = None
         if not thermal:
             rot = mesh.point_data.get(name + "_ROT")
@@ -1336,7 +1655,7 @@ def _step_tables(model, mesh, time, taken):
                 rot = np.asarray(rot, dtype=np.float64)
                 if rot.size != model.npoints * 3:
                     _wfail(f"'{name}_ROT' must have 3 components per point")
-                rot = rot.reshape(model.npoints, 3)
+                rot = model.to_output(rot.reshape(model.npoints, 3))
         keep = np.nonzero(~np.all(np.isnan(base), axis=1))[0]
         if not len(keep):
             continue
@@ -1368,7 +1687,7 @@ def _step_tables(model, mesh, time, taken):
             array = np.asarray(array, dtype=np.float64)
             if array.size != model.npoints * 3:
                 _wfail(f"'{name}{suffix}' must have 3 components per point")
-            parts.append(array.reshape(model.npoints, 3))
+            parts.append(model.to_output(array.reshape(model.npoints, 3)))
         real, imag, rot_real, rot_imag = parts
         shown = np.isnan(real).all(axis=1) & np.isnan(imag).all(axis=1)
         keep = np.nonzero(~shown)[0]
@@ -1389,9 +1708,8 @@ def _step_tables(model, mesh, time, taken):
             [header.words(1000 + tcode, 0, 14, 0, 0, 2), _bytes(words)]
         )
     # Element tables.
-    _force_tables(model, mesh, header, tables, taken, layout)
-    for group, table in (("STRESS", "OES1X1"), ("STRAIN", "OSTR1X")):
-        _element_tables(model, mesh, header, group, table, tables, taken, layout)
+    _result_tables(model, mesh, header, tables, taken, layout)
+    _grid_force_tables(model, mesh, header, tables, taken, layout)
     return header, tables, layout
 
 
@@ -1419,120 +1737,422 @@ def _gather(mesh, name, parts, order, width=None):
     return out[order]
 
 
-def _force_tables(model, mesh, header, tables, taken, layout):
-    """``ELEMENT_FORCE:<member>`` of the rods and plates, one ``OEF1X`` block each."""
-    for etype, card, members in _FORCE_FAMILIES:
-        if card not in model.cards:
-            continue
-        eid, _pid, parts, order = model.element_rows(card)
-        columns = {}
-        for m in members:
-            column = _gather(mesh, "ELEMENT_FORCE:" + m, parts, order)
-            if column is not None:
-                taken.add("ELEMENT_FORCE:" + m)
-                columns[m] = column
-        if not columns:
-            continue
-        shown = np.zeros(len(eid), dtype=bool)
-        for column in columns.values():
-            shown |= ~np.isnan(column)
-        keep = np.nonzero(shown)[0]
-        if not len(keep):
-            continue
-        wide = 1 + len(members)
-        words = np.zeros((len(keep), wide), dtype="<u4")
-        words[:, 0] = _i32(eid[keep] * 10 + _DEVICE)
-        for j, m in enumerate(members):
-            if m in columns:
-                words[:, 1 + j] = _f32(np.nan_to_num(columns[m][keep], nan=0.0))
-        layout.append(("OEF1X", 4, etype))
-        tables.setdefault("OEF1X", []).extend(
-            [header.words(4, etype, wide, 0), _bytes(words)]
-        )
+# -- element result tables, driven by the reader's layouts -------------------------------
+#
+# The reader decodes an element table through ``_element_layout`` (which words hold
+# which member, per element type, word count and complex/random flag); the writer uses
+# the same table the other way round, so what one reads the other writes. An element
+# type is chosen from the arrays the mesh has: for a card, the first of its
+# alternatives (element type, whether its location arrays are required) the mesh has
+# data for.
+
+_CEN = 0x2F4E4543  # 'CEN/'
+_GRID = 0x44495247  # 'GRID'
+
+# The cards that have element results, in file order, and the element types of their
+# tables: (type, strict). A strict alternative needs its location arrays (``@corner``,
+# ``@station``, ``@ply``); the others read the plain arrays.
+_RESULT_CARDS = (
+    ("CROD", ((1, False),)),
+    ("CTUBE", ((3, False),)),
+    ("CONROD", ((10, False),)),
+    ("CQUAD4", ((95, True), (144, True), (33, False))),
+    ("CTETRA", ((39, False),)),
+    ("CHEXA", ((67, False),)),
+    ("CPENTA", ((68, False),)),
+    ("CTRIA3", ((97, True), (74, False))),
+    ("CPYRAM", ((255, False),)),
+    ("CQUAD8", ((96, True), (64, False))),
+    ("CTRIA6", ((98, True), (75, False))),
+    ("CBAR", ((100, True), (34, False))),
+    ("CBEAM", ((2, False),)),
+    ("CBUSH", ((102, False),)),
+    ("CSHEAR", ((4, False),)),
+    ("CELAS1", ((11, False),)),
+    ("CELAS2", ((12, False),)),
+    ("CDAMP1", ((20, False),)),
+    ("CDAMP2", ((21, False),)),
+    ("CVISC", ((24, False),)),
+)
+# group -> (layout family, table code, table name, thermal flag)
+_RESULT_GROUPS = (
+    ("ELEMENT_FORCE", "force", 4, "OEF1X", 0),
+    ("STRESS", "stress", 5, "OES1X1", 0),
+    ("STRAIN", "stress", 5, "OSTR1X", 0),
+    ("HEAT_FLUX", "flux", 4, "HOEF1", 1),
+    ("ENERGY", "energy", 18, "ONRGY1", 0),
+    ("KINETIC_ENERGY", "energy", 36, "OEKE1", 0),
+)
+# random tables: suffix -> the hundreds of the table code
+_RANDOM_KINDS = {"_CRM": 5, "_PSD": 6, "_ATO": 7, "_RMS": 8, "_NO": 9}
+_RANDOM_PREFIX = {"OEF1X": "OEF", "OES1X1": "OES", "OSTR1X": "OSTR"}
+_RANDOM_TABLES = tuple(
+    prefix + kind[1:] + "1"
+    for prefix in ("OES", "OSTR", "OEF")
+    for kind in _RANDOM_KINDS
+)
+
+_layout_cache = {}
 
 
-def _element_tables(model, mesh, header, group, table, tables, taken, layout):
-    prefix = group + ":"
-    for etype, card, kind in _FAMILIES:
-        if card not in model.cards:
+def _candidates(family, etype, complex_, random):
+    """The layouts a (family, element type, complex, random) can take as ``(layout,
+    word count, stress code)``, scanned once from the reader's table: the stress code
+    with von Mises first, so that it wins a tie."""
+    key = (family, etype, complex_, random)
+    found = _layout_cache.get(key)
+    if found is None:
+        found = []
+        for s_code in (1, 0):
+            for num_wide in range(2, 400):
+                lay = _element_layout(family, etype, num_wide, s_code, complex_, random)
+                if lay is not None:
+                    found.append((lay, num_wide, s_code))
+        _layout_cache[key] = found
+    return found
+
+
+def _location(layout):
+    """The suffix of a layout's location arrays, or ``None`` for plain rows."""
+    if layout["kind"] == "ply":
+        return "@ply"
+    if layout["kind"] == "station" or layout["stations"]:
+        return "@station"
+    if layout["kind"] == "blocks":
+        return "@corner"
+    return None
+
+
+def _names_of(member, suffix):
+    """The array names of a layout member and the word of each: itself (with a random
+    table's suffix) or its real and imaginary parts."""
+    word, imag, name = member
+    if imag is None:
+        return [(name + suffix, word)]
+    return [(name + "_real", word), (name + "_imag", imag)]
+
+
+def _wide_gather(mesh, group, name, parts, order):
+    """A per-location cell array of the cells of a card, ``(n, width)``, or ``None``."""
+    arrays = mesh.cell_data.get(group + ":" + name)
+    if arrays is None:
+        return None
+    width = 0
+    for blk, _rows in parts:
+        a = np.asarray(arrays[blk["index"]])
+        width = max(width, a.shape[1] if a.ndim == 2 else (1 if a.size else 0))
+    if width == 0:
+        return None
+    return _gather(mesh, group + ":" + name, parts, order, width)
+
+
+def _result_tables(model, mesh, header, tables, taken, layout_list):
+    """Every element result table of the step: the forces, stresses, strains and heat
+    fluxes of the cards that have results, in the reader's layouts."""
+    for group, family, base_code, table, thermal in _RESULT_GROUPS:
+        variants = [("", False, False), ("", True, False)]
+        if family in ("stress", "force"):
+            variants += [(suffix, False, True) for suffix in _RANDOM_KINDS]
+        for suffix, complex_, random in variants:
+            for card, alternatives in _RESULT_CARDS:
+                if card not in model.cards:
+                    continue
+                rows = model.element_rows(card)
+                if family == "energy":  # an energy table holds any element
+                    alternatives = ((0, False),)
+                for etype, strict in alternatives:
+                    if _card_table(
+                        model, mesh, header, tables, taken, layout_list,
+                        (group, family, base_code, table, thermal),
+                        (card, etype, strict), (suffix, complex_, random), rows,
+                    ):  # fmt: skip
+                        break
+
+
+def _card_table(
+    model,
+    mesh,
+    header,
+    tables,
+    taken,
+    layout_list,
+    group_info,
+    card_info,
+    variant,
+    rows,
+):
+    """One table block of a card in one element type, or ``False`` when the mesh holds
+    none of its arrays."""
+    group, family, base_code, table, thermal = group_info
+    _card, etype, strict = card_info
+    suffix, complex_, random = variant
+    eid, _pid, parts, order = rows
+    stress_like = family == "stress"
+    candidates = _candidates(family, etype, complex_, random and stress_like)
+    if not candidates:
+        return False
+    cache = {}
+
+    def array(name, wide):
+        if (name, wide) not in cache:
+            cache[(name, wide)] = (
+                _wide_gather(mesh, group, name, parts, order)
+                if wide
+                else _gather(mesh, group + ":" + name, parts, order)
+            )
+        return cache[(name, wide)]
+
+    best = None
+    for lay, num_wide, s_code in candidates:
+        loc = _location(lay)
+        plain = loc is None or (lay["kind"] == "blocks" and not lay["stations"])
+        score, own, have_loc = 0, 0, False
+        for member in lay["members"]:
+            for name, _word in _names_of(member, suffix):
+                # a complex or random table needs an array of its own: the real-only
+                # members of a complex layout (the fibre distances) are shared
+                is_own = not (complex_ or random) or name != member[2] or bool(suffix)
+                if plain and array(name, False) is not None:
+                    score += 1
+                    own += is_own
+                if loc is not None and array(name + loc, True) is not None:
+                    score += 1
+                    own += is_own
+                    have_loc = True
+        if (strict and not have_loc) or not score or not own:
             continue
-        eid, _pid, parts, order = model.element_rows(card)
-        count = len(eid)
-        if kind == "rod":
-            members = _TUBE if card == "CTUBE" else _ROD
-        elif kind == "plate":
-            shear = any(
-                prefix + f"MAX_SHEAR{k}" in mesh.cell_data
-                and prefix + f"VON_MISES{k}" not in mesh.cell_data
-                for k in (1, 2)
+        if best is None or score > best[0]:
+            best = (score, lay, num_wide, s_code)
+    if best is None:
+        return False
+    _score, lay, num_wide, s_code = best
+    loc, kind = _location(lay), lay["kind"]
+    members = [nw for member in lay["members"] for nw in _names_of(member, suffix)]
+    plain_values, loc_values = {}, {}
+    for name, _word in members:
+        a = array(name, False)
+        if a is not None and (
+            kind == "row" or (kind == "blocks" and not lay["stations"])
+        ):
+            plain_values[name] = a
+            taken.add(group + ":" + name)
+        if loc is not None:
+            b = array(name + loc, True)
+            if b is not None:
+                loc_values[name] = b
+                taken.add(group + ":" + name + loc)
+    count = len(eid)
+    if kind in ("station", "ply"):
+        # one entry per station or ply with any value, in element order
+        entries = [
+            (r, c)
+            for r in range(count)
+            for c in range(max((a.shape[1] for a in loc_values.values()), default=0))
+            if any(
+                c < a.shape[1] and not np.isnan(a[r, c]) for a in loc_values.values()
             )
-            vm = "MAX_SHEAR" if shear else "VON_MISES"
-            members = [m.replace("VM", vm) for m in _PLATE]
-        else:
-            octa = (
-                prefix + "OCT_SHEAR" in mesh.cell_data
-                and prefix + "VON_MISES" not in mesh.cell_data
-            )
-            members = _SOLID + ["PRESSURE", "OCT_SHEAR" if octa else "VON_MISES"]
-        columns = {}  # member -> (count,) values; absent members are not here
-        for m in members:
-            column = _gather(mesh, prefix + m, parts, order)
-            if column is not None:
-                taken.add(prefix + m)
-                columns[m] = column
-        if kind == "solid":
-            ncorner = _CORNERS[card]
-            corners = {}
-            for m in members:
-                matrix = _gather(mesh, prefix + m + "@corner", parts, order, ncorner)
-                if matrix is not None:
-                    taken.add(prefix + m + "@corner")
-                    corners[m] = matrix
+        ]
+        if not entries:
+            return False
+        rr = np.array([e[0] for e in entries])
+        cc = np.array([e[1] for e in entries])
+        words = np.zeros((len(entries), num_wide), dtype="<u4")
+        words[:, 0] = _i32(eid[rr] * 10 + _DEVICE)
+        if kind == "ply":
+            words[:, 1] = cc + 1
+        for name, word in members:
+            a = loc_values.get(name)
+            if a is None:
+                continue
+            ok = cc < a.shape[1]
+            v = np.zeros(len(entries))
+            v[ok] = a[rr[ok], cc[ok]]
+            words[:, word] = _f32(np.nan_to_num(v, nan=0.0))
+    else:
         shown = np.zeros(count, dtype=bool)
-        for column in columns.values():
-            shown |= ~np.isnan(column)
+        for a in plain_values.values():
+            shown |= ~np.isnan(a)
+        for a in loc_values.values():
+            shown |= ~np.isnan(a).all(axis=1)
         keep = np.nonzero(shown)[0]
         if not len(keep):
-            continue
-
-        def value(m, rows=keep):
-            """The member's values at the kept rows: 0 where absent or NaN."""
-            if m not in columns:
-                return np.zeros(len(rows))
-            return np.nan_to_num(columns[m][rows], nan=0.0)
-
-        bit0 = 0 if members[-1] in ("OCT_SHEAR", "MAX_SHEAR2") else 1
-        s_code = (10 if group == "STRAIN" else 0) | bit0  # strain: bits 8 and 2
-        if kind == "solid":
-            wide = 4 + 21 * (1 + _CORNERS[card])
-        else:
-            wide = 1 + len(members)
-        words = np.zeros((len(keep), wide), dtype="<u4")
+            return False
+        words = np.zeros((len(keep), num_wide), dtype="<u4")
         words[:, 0] = _i32(eid[keep] * 10 + _DEVICE)
-        if kind != "solid":
-            for j, m in enumerate(members):
-                words[:, 1 + j] = _f32(value(m))
+        if kind == "row":
+            for name, word in members:
+                a = plain_values.get(name)
+                if a is not None:
+                    words[:, word] = _f32(np.nan_to_num(a[keep], nan=0.0))
         else:
-            ncorner = _CORNERS[card]
-            ids = np.concatenate(
-                [model.node_ids[blk["conn"][r][:, :ncorner]] for blk, r in parts]
+            ncorner = (
+                0
+                if lay["stations"]
+                else _SOLID_NODES.get(etype, _CORNER_PLATE_NODES.get(etype, 0)) - 1
             )
-            ids = ids[order][keep]
-            words[:, 2] = 0x44495247  # 'GRID'
-            words[:, 3] = ncorner
-            for k in range(1 + ncorner):
-                base = 4 + 21 * k
-                words[:, base] = 0x2F4E4543 if k == 0 else _i32(ids[:, k - 1])
-                for m in members:
-                    v = value(m)
-                    if k and m in corners:
-                        c = corners[m][keep, k - 1]
-                        v = np.where(np.isnan(c), v, c)
-                    words[:, base + _SOLID_WORD[m]] = _f32(v)
-        layout.append((table, 5, etype))
-        tables.setdefault(table, []).extend(
-            [header.words(5, etype, wide, s_code), _bytes(words)]
-        )
+            ids = np.concatenate(
+                [
+                    model.node_ids[blk["conn"][r][:, : max(2, ncorner)]]
+                    for blk, r in parts
+                ]
+            )[order][keep]
+            if etype in _CORNER_PLATE_NODES:
+                words[:, 1] = _CEN
+            if etype in _SOLID_NODES:
+                words[:, 2] = _GRID
+                words[:, 3] = ncorner
+            first, block, nblocks = lay["first"], lay["block"], lay["blocks"]
+            for k in range(nblocks):
+                base = first + k * block
+                if lay["stations"]:
+                    # the ends carry their GRIDs, the stations between them none
+                    if k == 0:
+                        words[:, base] = _i32(ids[:, 0])
+                    elif k == nblocks - 1 and ids.shape[1] > 1:
+                        words[:, base] = _i32(ids[:, 1])
+                elif k == 0:  # the centre
+                    words[:, base] = _CEN if etype in _SOLID_NODES else 0
+                else:
+                    words[:, base] = _i32(ids[:, k - 1])
+                for name, word in members:
+                    if lay["stations"]:
+                        a = loc_values.get(name)
+                        if a is not None and k < a.shape[1]:
+                            words[:, base + word] = _f32(
+                                np.nan_to_num(a[keep, k], nan=0.0)
+                            )
+                        continue
+                    v = np.zeros(len(keep))
+                    plain = plain_values.get(name)
+                    if plain is not None:
+                        v = np.nan_to_num(plain[keep], nan=0.0)
+                    if k:
+                        a = loc_values.get(name)
+                        if a is not None and k - 1 < a.shape[1]:
+                            c = a[keep, k - 1]
+                            v = np.where(np.isnan(c), v, c)
+                    words[:, base + word] = _f32(v)
+    tcode = base_code + (
+        4000 + 100 * _RANDOM_KINDS[suffix] if random else 1000 if complex_ else 0
+    )
+    name = _RANDOM_PREFIX[table] + suffix[1:] + "1" if random else table
+    s_out = ((10 if group == "STRAIN" else 0) | (s_code & 1)) if stress_like else 0
+    layout_list.append((name, tcode, etype))
+    if family == "energy":
+        # word 3 of an energy table's header is the record's total energy
+        total = 0.0
+        column = plain_values.get(members[0][0])
+        if column is not None:
+            for v in np.nan_to_num(column[keep], nan=0.0).tolist():
+                total += v
+        etype = int(_f32(np.array([total]))[0])
+    tables.setdefault(name, []).extend(
+        [
+            header.words(tcode, etype, num_wide, s_out, thermal, 2 if complex_ else 1),
+            _bytes(words),
+        ]
+    )
+    return True
+
+
+_GPF_MEMBERS = ("F1", "F2", "F3", "M1", "M2", "M3")
+
+
+def _text_words(text):
+    """An 8-character text as two words."""
+    return np.frombuffer(text.ljust(8)[:8].encode("latin-1"), dtype="<u4")
+
+
+def _grid_force_tables(model, mesh, header, tables, taken, layout_list):
+    """Grid point forces, one ``OGPFB1`` record: a row per node of each element with
+    ``GRID_FORCE:F1``...``M3`` cell data (``(cells, nodes)`` per block, a column per
+    node of the connectivity), then a row per point of each ``GRID_FORCE:<label>:<M>``
+    point data (label ``TOTALS``, ``APP-LOAD``, ``F-OF-SPC``...) with element 0. The
+    forces and moments are written in the GRID's output system."""
+
+    def output(points, values):
+        """``values`` (rows of F1..M3 in basic) in the output system of each row's point."""
+        if not model.output_cords:
+            return values
+        values = np.array(values, dtype=np.float64)
+        for r in np.flatnonzero(model.cd[points]):
+            system = model.output_cords[int(model.cd[points[r]])]
+            at = model.points[points[r]].tolist()
+            values[r, 0:3] = _vector_to_local(system, at, values[r, 0:3].tolist())
+            values[r, 3:6] = _vector_to_local(system, at, values[r, 3:6].tolist())
+        return values
+
+    chunks = []
+    for card in sorted(model.cards):
+        eid, _pid, parts, order = model.element_rows(card)
+        arrays = [
+            _wide_gather(mesh, "GRID_FORCE", m, parts, order) for m in _GPF_MEMBERS
+        ]
+        if all(a is None for a in arrays):
+            continue
+        count = len(eid)
+        width = max(a.shape[1] for a in arrays if a is not None)
+        values = np.full((count, width, 6), np.nan)
+        for k, (m, a) in enumerate(zip(_GPF_MEMBERS, arrays)):
+            if a is not None:
+                taken.add("GRID_FORCE:" + m)
+                values[:, : a.shape[1], k] = a
+        gathered = np.full(
+            (count, width), -1, dtype=np.int64
+        )  # the points of each node
+        at = 0
+        for blk, rows in parts:
+            conn = blk["conn"][rows][:, :width]
+            gathered[at : at + len(rows), : conn.shape[1]] = conn
+            at += len(rows)
+        points = gathered[order]
+        shown = ~np.isnan(values).all(axis=2) & (points >= 0)
+        rr, cc = np.nonzero(shown)
+        if not len(rr):
+            continue
+        at_point = points[rr, cc]
+        words = np.zeros((len(rr), 10), dtype="<u4")
+        words[:, 0] = _i32(model.node_ids[at_point] * 10 + _DEVICE)
+        words[:, 1] = _i32(eid[rr])
+        words[:, 2:4] = _text_words(card)
+        words[:, 4:10] = _f32(output(at_point, np.nan_to_num(values[rr, cc], nan=0.0)))
+        chunks.append(words)
+    labels = sorted(
+        {
+            name.split(":")[1]
+            for name in mesh.point_data
+            if name.startswith("GRID_FORCE:")
+            and name.count(":") == 2
+            and name.rsplit(":", 1)[1] in _GPF_MEMBERS
+        }
+    )
+    order = np.argsort(model.node_ids, kind="stable")
+    for label in labels:
+        values = np.full((model.npoints, 6), np.nan)
+        for k, m in enumerate(_GPF_MEMBERS):
+            name = f"GRID_FORCE:{label}:{m}"
+            array = mesh.point_data.get(name)
+            if array is None:
+                continue
+            taken.add(name)
+            array = np.asarray(array, dtype=np.float64)
+            if array.size != model.npoints:
+                _wfail(f"'{name}' must have one value per point")
+            values[:, k] = array.reshape(-1)
+        keep = order[~np.isnan(values[order]).all(axis=1)]
+        if not len(keep):
+            continue
+        words = np.zeros((len(keep), 10), dtype="<u4")
+        words[:, 0] = _i32(model.node_ids[keep] * 10 + _DEVICE)
+        words[:, 2:4] = _text_words("*TOTALS*" if label == "TOTALS" else label)
+        words[:, 4:10] = _f32(output(keep, np.nan_to_num(values[keep], nan=0.0)))
+        chunks.append(words)
+    if not chunks:
+        return
+    layout_list.append(("OGPFB1", 19, 0))
+    tables.setdefault("OGPFB1", []).extend(
+        [header.words(19, 0, 10), _bytes(np.concatenate(chunks))]
+    )
 
 
 def _dropped(model, mesh, taken):
@@ -1583,7 +2203,7 @@ def _assemble(model, steps):
     out = [_file_header(), model.geom1(), model.geom2(), model.ept()]
     if any(model.properties.values()):
         out.append(model.mpt())
-    for table in _RESULT_TABLES:
+    for table in _RESULT_TABLES + _RANDOM_TABLES:
         records = []
         for tables in steps:
             records.extend(tables.get(table, []))

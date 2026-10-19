@@ -473,12 +473,16 @@ class TestRealFiles:
         mesh = engine(path_of("modes_elements"), points_only=True, time_step=1)
         assert mesh.field_data["nastran:mode"].tolist() == [2]
         assert not mesh.point_data
-        assert sorted(mesh.cell_data) == ["nastran:eid", "nastran:pid"]
+        assert all(name.startswith("nastran:") for name in mesh.cell_data)
+        assert {"nastran:eid", "nastran:pid", "nastran:card"} <= set(mesh.cell_data)
 
     def test_arrays_narrows_to_the_names_asked_for(self, engine):
         mesh = engine(path_of("static_elements"), arrays=["DISPLACEMENT", "STRESS:X"])
         assert list(mesh.point_data) == ["DISPLACEMENT"]
-        assert sorted(mesh.cell_data) == ["STRESS:X", "nastran:eid", "nastran:pid"]
+        assert [n for n in mesh.cell_data if not n.startswith("nastran:")] == [
+            "STRESS:X"
+        ]
+        assert {"nastran:eid", "nastran:pid", "nastran:card"} <= set(mesh.cell_data)
 
     def test_out_of_range_step_is_an_error_not_a_clamp(self, engine):
         with pytest.raises(ReadError, match="out of range"):
@@ -851,21 +855,49 @@ def _same_tables(a, b):
 
 
 class TestWriter:
-    @pytest.mark.parametrize("code", [24, 31, 39, 52])
-    def test_op2_only_cards_are_written_by_type_and_property(self, code, tmp_path):
-        """``nastran:card`` names OP2 cards this writer has no table for; both engines
-        ignore it and write the line as a CROD, as they did before the OP2 writer
-        learnt them."""
+    @pytest.mark.parametrize(
+        "code, card", [(24, "CBAR"), (39, "CVISC"), (52, "PLOTEL")]
+    )
+    def test_op2_cards_are_written_as_their_own_tables(self, code, card, tmp_path):
+        """``nastran:card`` names the card of a line; the cards MSC's tables hold are
+        written as their own."""
         points = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0]])
         mesh = meshioplusplus.Mesh(points, [("line", np.array([[0, 1], [1, 2]]))])
         mesh.cell_data["nastran:eid"] = [np.array([60, 61])]
         mesh.cell_data["nastran:pid"] = [np.array([8, 8])]
         mesh.cell_data["nastran:card"] = [np.array([code, code])]
+        mesh.cell_data["nastran:x"] = [np.array([[0.0, 1, 0], [0.0, 1, 0]])]
         a, b = tmp_path / "core.h5", tmp_path / "py.h5"
         _core.nastran_h5_write(str(a), mesh)
         py_write(b, mesh)
         _same_tables(_tables(a), _tables(b))
-        assert "ELEMENT/CROD" in "/".join(_tables(b))
+        assert f"ELEMENT/{card}" in "/".join(_tables(b))
+
+    @pytest.mark.parametrize("code", [10, 11, 14, 19, 26])
+    def test_cards_with_no_table_are_left_out(self, code, tmp_path, capfd):
+        """MSC's tables for CBUSH, CGAP, CMASS and CONM1 are not in the fixtures: those
+        elements are left out, with one warning, and the rest is written."""
+        points = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0]])
+        first = (
+            ("vertex", np.array([[0]])) if code == 14 else ("line", np.array([[0, 1]]))
+        )
+        mesh = meshioplusplus.Mesh(points, [first, ("line", np.array([[1, 2]]))])
+        mesh.cell_data["nastran:eid"] = [np.array([60]), np.array([61])]
+        mesh.cell_data["nastran:pid"] = [np.array([8]), np.array([3])]
+        mesh.cell_data["nastran:card"] = [np.array([code]), np.array([30])]
+        mesh.cell_data["nastran:m"] = [np.array([1.0]), np.array([0.0])]
+        mesh.cell_data["nastran:conm1"] = [np.zeros((1, 21)), np.zeros((1, 21))]
+        mesh.cell_data["nastran:x"] = [np.zeros((1, 3)), np.zeros((1, 3))]
+        a, b = tmp_path / "core.h5", tmp_path / "py.h5"
+        _core.nastran_h5_write(str(a), mesh)
+        err_core = " ".join(capfd.readouterr().err.split())
+        py_write(b, mesh)
+        err_py = " ".join(capfd.readouterr().err.split())
+        for err in (err_core, err_py):
+            assert "element cards with no table here are left out" in err
+        _same_tables(_tables(a), _tables(b))
+        tables = "/".join(_tables(b))
+        assert "ELEMENT/CROD" in tables and tables.count("ELEMENT/") == 1
 
     def test_engines_write_the_same_tables(self, tmp_path):
         mesh = _write_mesh()
@@ -939,17 +971,17 @@ class TestWriter:
                 real.setdefault(key, table.dtype)
         compared = 0
         for key, table in ours.items():
-            if key.startswith("INDEX") or "/RESULT/ELEMENTAL/" in key:
-                continue
-            if "/RESULT/" in key:  # MSC's result columns: roadmap 3.2.4
+            if key.startswith("INDEX"):
                 continue
             if key in real:
-                assert table.dtype.names == real[key].names, key
-                assert [table.dtype[n] for n in table.dtype.names] == [
-                    real[key][n] for n in real[key].names
+                # members MSC has no column for sit before DOMAIN_ID, after its columns
+                names = tuple(n for n in table.dtype.names if n in real[key].names)
+                assert names == real[key].names, key
+                assert [table.dtype[n] for n in names] == [
+                    real[key][n] for n in names
                 ], key
                 compared += 1
-        assert compared >= 6  # GRID, the cards, properties, MAT1, DOMAINS
+        assert compared >= 8  # GRID, the cards, properties, MAT1, DOMAINS, results
 
     @pytest.mark.parametrize("writer", ["core", "python"])
     def test_corner_values_round_trip(self, writer, engine, tmp_path):
@@ -1047,7 +1079,12 @@ class TestWriter:
         else:
             py_write(path, mesh)
         table = _tables(path)["NASTRAN/RESULT/NODAL/EIGENVECTOR_CPLX"]
-        assert table.dtype.names[:7] == ("ID", "XR", "YR", "ZR", "XI", "YI", "ZI")
+        assert table.dtype.names == (
+            "ID",
+            *("XR", "YR", "ZR", "RXR", "RYR", "RZR"),
+            *("XI", "YI", "ZI", "RXI", "RYI", "RZI"),
+            "DOMAIN_ID",
+        )
 
     @pytest.mark.parametrize("writer", ["core", "python"])
     def test_series_writer_is_one_domain_per_step(self, writer, engine, tmp_path):
@@ -1141,3 +1178,181 @@ class TestPropertyValues:
         _core.nastran_h5_write(str(a), self._mesh())
         py_write(b, self._mesh())
         _same_tables(_tables(a), _tables(b))
+
+
+class TestElementIdentity:
+    """The element identity and values the OP2 reader returns, read from MSC's tables."""
+
+    def test_cards_values_and_components(self, engine):
+        mesh = engine(path_of("static_elements"))
+        by_eid = {}
+        for block, eids in enumerate(mesh.cell_data["nastran:eid"]):
+            for row, eid in enumerate(eids.tolist()):
+                by_eid[(block, eid)] = row
+        by_card = {}
+        for block, cards in enumerate(mesh.cell_data["nastran:card"]):
+            for row, card in enumerate(cards.tolist()):
+                by_card.setdefault(card, []).append((block, row))
+        # CELAS2 34 (K 100, GE 0, S 0, components 6 and 6) and CDAMP2 44 (B 12)
+        k = {
+            int(mesh.cell_data["nastran:eid"][b][r]): (
+                mesh.cell_data["nastran:k"][b][r],
+                mesh.cell_data["nastran:c1"][b][r],
+                mesh.cell_data["nastran:c2"][b][r],
+            )
+            for b, r in by_card[7]
+        }
+        assert k[34] == (100.0, 6, 6)
+        b44 = {
+            int(mesh.cell_data["nastran:eid"][b][r]): mesh.cell_data["nastran:b"][b][r]
+            for b, r in by_card[3]
+        }
+        assert b44[44] == 12.0
+        # CBAR 13 has the orientation vector (0, 1, 0)
+        ((block, row),) = by_card[24]
+        np.testing.assert_allclose(mesh.cell_data["nastran:x"][block][row], [0, 1, 0])
+        assert mesh.cell_data["nastran:g0"][block][row] == 0
+        ((block, row),) = by_card[54]
+        np.testing.assert_allclose(mesh.cell_data["nastran:x"][block][row], [0, 1, 0])
+        assert sorted(by_card) == sorted(set(by_card))
+        assert {
+            2,
+            3,
+            6,
+            7,
+            15,
+            16,
+            24,
+            30,
+            31,
+            37,
+            39,
+            41,
+            47,
+            48,
+            51,
+            52,
+            54,
+            55,
+            59,
+            73,
+            80,
+            92,
+        } == set(by_card)
+
+    def test_the_engines_agree(self):
+        a = _core.nastran_h5_read(path_of("static_elements"), False, None, 0)
+        b = py_nh5.read(path_of("static_elements"))
+        for name in (
+            "nastran:card",
+            "nastran:c1",
+            "nastran:c2",
+            "nastran:x",
+            "nastran:g0",
+        ):
+            for x, y in zip(a.cell_data[name], b.cell_data[name]):
+                np.testing.assert_array_equal(x, y, err_msg=name)
+        for name in ("nastran:k", "nastran:ge", "nastran:s", "nastran:b", "nastran:w"):
+            for x, y in zip(a.cell_data[name], b.cell_data[name]):
+                np.testing.assert_array_equal(x, y, err_msg=name)
+
+
+class TestMscFidelity:
+    """Plies, stations, composite and beam properties, other materials and the tables
+    completed to MSC's column set, in both engines."""
+
+    @staticmethod
+    def _mesh():
+        pts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0.0]])
+        mesh = meshioplusplus.Mesh(
+            pts,
+            [("quad", [[0, 1, 2, 3]]), ("line", [[1, 4]]), ("line", [[0, 4]])],
+            cell_data={
+                "nastran:eid": [np.array([1]), np.array([2]), np.array([3])],
+                "nastran:pid": [np.array([5]), np.array([6]), np.array([7])],
+                "nastran:card": [np.array([48]), np.array([24]), np.array([24])],
+                "nastran:x": [
+                    np.zeros((1, 3)),
+                    np.array([[0, 1.0, 0]]),
+                    np.array([[0, 1.0, 0]]),
+                ],
+                "STRESS:X": [np.array([1.0]), np.array([2.0]), np.array([3.0])],
+                "STRESS:X@ply": [
+                    np.array([[1.0, 2.0, 3.0]]),
+                    np.full((1, 3), np.nan),
+                    np.full((1, 3), np.nan),
+                ],
+                "FORCE:AXIAL@station": [
+                    np.zeros((1, 2)),
+                    np.array([[1.0, 2.0]]),
+                    np.zeros((1, 2)),
+                ],
+            },
+        )
+        mesh.field_data.update(
+            {
+                "nastran:PCOMP_5:PLY": np.array([[1, 0.1, 0.0, 1], [1, 0.2, 90.0, 1]]),
+                "nastran:PCOMP_5:Z0": np.array([-0.15]),
+                "nastran:MAT2_9:G11": np.array([1.2e5]),
+                "nastran:MAT2_9:RHO": np.array([0.3]),
+            }
+        )
+        return mesh
+
+    def _written(self, writer, tmp_path):
+        path = tmp_path / f"{writer}.h5"
+        mesh = self._mesh()
+        if writer == "core":
+            _core.nastran_h5_write(str(path), mesh)
+        else:
+            py_write(path, mesh)
+        return path
+
+    def test_engines_write_the_same_tables(self, tmp_path):
+        a, b = self._written("core", tmp_path), self._written("python", tmp_path)
+        _same_tables(_tables(a), _tables(b))
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_tables_are_named_as_msc_names_them(self, writer, tmp_path):
+        tables = _tables(self._written(writer, tmp_path))
+        for name in (
+            "NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD_CN",
+            "NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD4_COMP",
+            "NASTRAN/RESULT/ELEMENTAL/STRESS/BARS",
+            "NASTRAN/RESULT/ELEMENTAL/FORCE/BARS",
+            "NASTRAN/INPUT/PROPERTY/PCOMP/IDENTITY",
+            "NASTRAN/INPUT/PROPERTY/PCOMP/PLY",
+            "NASTRAN/INPUT/MATERIAL/MAT2",
+        ):
+            assert name in tables, name
+        assert len(tables["NASTRAN/INPUT/PROPERTY/PCOMP/PLY"]) == 2
+        # a station row per bar end, with the stations in the SD column
+        bars = tables["NASTRAN/RESULT/ELEMENTAL/STRESS/BARS"]
+        assert len(bars) == 2 and "SD" in bars.dtype.names
+
+    @pytest.mark.parametrize("writer", ["core", "python"])
+    def test_values_round_trip_in_both_readers(self, writer, engine, tmp_path):
+        back = engine(self._written(writer, tmp_path))
+        data = back.field_data
+        np.testing.assert_array_equal(data["nastran:PCOMP_5:PLY"][:, 1], [0.1, 0.2])
+        np.testing.assert_array_equal(data["nastran:PCOMP_5:Z0"], [-0.15])
+        assert data["nastran:MAT2_9:G11"][0] == 1.2e5
+        assert data["nastran:MAT2_9:RHO"][0] == 0.3
+        by_type = {c.type: i for i, c in enumerate(back.cells)}
+        ply = back.cell_data["STRESS:X@ply"][by_type["quad"]]
+        np.testing.assert_array_equal(ply[0], [1.0, 2.0, 3.0])
+        station = back.cell_data["FORCE:AXIAL@station"][by_type["line"]]
+        assert 1.0 in station and 2.0 in station
+
+    def test_tables_are_completed_to_the_msc_columns(self, tmp_path):
+        """Columns the mesh has no values for are written as MSC lists them."""
+        tables = _tables(self._written("core", tmp_path))
+        real = {}
+        for fixture in NAMES:
+            for key, table in _tables(path_of(fixture)).items():
+                real.setdefault(key, table.dtype)
+        grid = tables["NASTRAN/INPUT/NODE/GRID"]
+        assert grid.dtype == real["NASTRAN/INPUT/NODE/GRID"]
+        quad = tables["NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD_CN"]
+        for name in real["NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD_CN"].names:
+            assert name in quad.dtype.names
