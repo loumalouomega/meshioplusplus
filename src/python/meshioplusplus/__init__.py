@@ -186,6 +186,7 @@ if TYPE_CHECKING:
     from ._merge import merge
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._normals import compute_normals
+    from ._octree import octree
     from ._optimize_volume import optimize_volume
     from ._partition import partition, partition_labels
     from ._periodic import match_periodic_nodes
@@ -239,7 +240,6 @@ if TYPE_CHECKING:
     from ._undo_green import undo_green
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
-    from ._octree import octree
 
 # Operations, classes and helpers are loaded on first attribute access (PEP 562)
 # rather than with the package: importing all of them costs more than the three

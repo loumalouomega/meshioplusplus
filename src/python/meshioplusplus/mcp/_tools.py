@@ -90,6 +90,7 @@ from .. import (
     isosurface,
     match_periodic_nodes,
     merge,
+    octree,
     optimize_volume,
     partition,
     point_data_to_cell_data,
@@ -128,7 +129,6 @@ from .. import (
     transform,
     undo_green,
     voxelize,
-    octree,
     write,
 )
 from .. import write_parquet as _write_parquet_fn

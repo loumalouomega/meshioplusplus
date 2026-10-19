@@ -52,6 +52,7 @@ from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
 from ._normals import compute_normals
+from ._octree import octree
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._provenance import add_operation as _prov_add_operation
@@ -79,7 +80,6 @@ from ._tensor_invariants import tensor_invariants
 from ._tessellation import tessellate
 from ._transform import transform
 from ._undo_green import undo_green
-from ._octree import octree
 from ._voxelize import voxelize
 
 __all__ = ["run_pipeline"]
