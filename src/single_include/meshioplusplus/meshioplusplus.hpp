@@ -35954,13 +35954,13 @@ private:
         while (last < mBuf.size() && !text_is_blank(mBuf[last]))
             ++last;
         const auto token = mBuf.substr(first, last - first);
-        char small[64];
+        char text_buf[64];
         std::string large;
         const char* start;
-        if (token.size() < sizeof small) {
-            token.copy(small, token.size());
-            small[token.size()] = '\0';
-            start = small;
+        if (token.size() < sizeof text_buf) {
+            token.copy(text_buf, token.size());
+            text_buf[token.size()] = '\0';
+            start = text_buf;
         } else {
             large.assign(token);
             start = large.c_str();
@@ -36045,13 +36045,13 @@ inline bool parse_double_token(std::string_view Token, double& rOut) {
         return false;
     // parse_double reads a NUL-terminated string; a token is copied into one.
     // Tokens are short, so this costs little next to the parse itself.
-    char small[64];
+    char text_buf[64];
     std::string large;
     const char* first;
-    if (Token.size() < sizeof small) {
-        Token.copy(small, Token.size());
-        small[Token.size()] = '\0';
-        first = small;
+    if (Token.size() < sizeof text_buf) {
+        Token.copy(text_buf, Token.size());
+        text_buf[Token.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Token);
         first = large.c_str();
@@ -36157,13 +36157,13 @@ inline std::uint64_t strtoull_token(std::string_view Token) {
  * when there is none -- the lenient parse, which ignores what follows.
  */
 inline double parse_double_prefix(std::string_view Token) {
-    char small[64];
+    char text_buf[64];
     std::string large;
     const char* first;
-    if (Token.size() < sizeof small) {
-        Token.copy(small, Token.size());
-        small[Token.size()] = '\0';
-        first = small;
+    if (Token.size() < sizeof text_buf) {
+        Token.copy(text_buf, Token.size());
+        text_buf[Token.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Token);
         first = large.c_str();
@@ -61235,14 +61235,14 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     auto along = [&](const std::vector<PatchVec>& rLine, const std::vector<double>& rAt,
                      bool Closed, double Total, const PatchVec& rP) {
         const std::size_t nseg = Closed ? rLine.size() : rLine.size() - 1;
-        double near = inf, at = 0.0;
+        double nearest = inf, at = 0.0;
         for (std::size_t s = 0; s < nseg; ++s) {
             const PatchVec& a = rLine[s];
             const PatchVec& b = rLine[(s + 1) % rLine.size()];
             const double f = ff_segment_fraction(rP, a, b);
             const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
-            if (d < near) {
-                near = d;
+            if (d < nearest) {
+                nearest = d;
                 const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Total;
                 at = rAt[s] + f * (t1 - rAt[s]);
             }
@@ -61354,7 +61354,7 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
     if (!(r > 0.0))
         return out;
     // The guess: the vertex centre nearest along the rail, moved with it.
-    std::size_t near = 0;
+    std::size_t nearest = 0;
     double gap = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < rFit.mT.size(); ++i) {
         double d = std::fabs(rFit.mT[i] - T);
@@ -61364,11 +61364,12 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
         }
         if (d < gap) {
             gap = d;
-            near = i;
+            nearest = i;
         }
     }
     const PatchVec on_rail = rFit.RailAt(T);
-    PatchVec c = ff_axpy(rFit.mCentres[near], 1.0, ff_sub(on_rail, rFit.RailAt(rFit.mT[near])));
+    PatchVec c =
+        ff_axpy(rFit.mCentres[nearest], 1.0, ff_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
     // The section's plane goes through the rail point, so consecutive balls
     // advance along the spine as the rail does.
     const PatchVec t = ff_unit(rTangent);
@@ -61871,14 +61872,14 @@ PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<d
 double ff_line_along(const std::vector<PatchVec>& rLine, const std::vector<double>& rAt,
                      bool Closed, double Length, const PatchVec& rP) {
     const std::size_t nseg = Closed ? rLine.size() : rLine.size() - 1;
-    double near = std::numeric_limits<double>::infinity(), at = 0.0;
+    double nearest = std::numeric_limits<double>::infinity(), at = 0.0;
     for (std::size_t s = 0; s < nseg; ++s) {
         const PatchVec& a = rLine[s];
         const PatchVec& b = rLine[(s + 1) % rLine.size()];
         const double f = ff_segment_fraction(rP, a, b);
         const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
-        if (d < near) {
-            near = d;
+        if (d < nearest) {
+            nearest = d;
             const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Length;
             at = rAt[s] + f * (t1 - rAt[s]);
         }
@@ -64713,13 +64714,13 @@ std::int64_t card_to_int_view(std::string_view Text, const std::string& rWhere,
                               const std::string& rFormat) {
     if (Text.empty())
         return 0;
-    char small[64];
+    char text_buf[64];
     std::string large;
     const char* first;
-    if (Text.size() < sizeof small) {
-        Text.copy(small, Text.size());
-        small[Text.size()] = '\0';
-        first = small;
+    if (Text.size() < sizeof text_buf) {
+        Text.copy(text_buf, Text.size());
+        text_buf[Text.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Text);
         first = large.c_str();
@@ -64736,27 +64737,27 @@ double card_to_real_view(std::string_view Text, const std::string& rWhere,
                          const std::string& rFormat) {
     if (Text.empty())
         return 0.0;
-    char small[96];
+    char text_buf[96];
     std::string large;
     const char* first;
-    if (Text.size() < sizeof small - 1) {
-        Text.copy(small, Text.size());
+    if (Text.size() < sizeof text_buf - 1) {
+        Text.copy(text_buf, Text.size());
         for (std::size_t i = 0; i < Text.size(); ++i) {
-            if (small[i] == 'D')
-                small[i] = 'E';
-            else if (small[i] == 'd')
-                small[i] = 'e';
+            if (text_buf[i] == 'D')
+                text_buf[i] = 'E';
+            else if (text_buf[i] == 'd')
+                text_buf[i] = 'e';
         }
-        const auto at = kwc_exponent_offset(std::string_view(small, Text.size()));
+        const auto at = kwc_exponent_offset(std::string_view(text_buf, Text.size()));
         std::size_t size = Text.size();
         if (at != std::string_view::npos) {
             for (std::size_t i = size; i > at; --i)
-                small[i] = small[i - 1];
-            small[at] = 'e';
+                text_buf[i] = text_buf[i - 1];
+            text_buf[at] = 'e';
             ++size;
         }
-        small[size] = '\0';
-        first = small;
+        text_buf[size] = '\0';
+        first = text_buf;
     } else {
         large.assign(Text);
         for (char& c : large) {
@@ -72088,19 +72089,19 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 std::vector<std::size_t> cut{0};
                 if (closed) {
                     // Split a closed chain at its point farthest from the start.
-                    std::size_t far = 1;
+                    std::size_t far_index = 1;
                     double best = -1.0;
                     for (std::size_t i = 1; i < last; ++i) {
                         const double d = sb_dist(&pos[static_cast<std::size_t>(vs[i]) * 3],
                                                  &pos[static_cast<std::size_t>(vs[0]) * 3]);
                         if (d > best) {
                             best = d;
-                            far = i;
+                            far_index = i;
                         }
                     }
-                    sb_split(vs, pos, 0, far, LineTol, cut);
-                    cut.push_back(far);
-                    sb_split(vs, pos, far, last, LineTol, cut);
+                    sb_split(vs, pos, 0, far_index, LineTol, cut);
+                    cut.push_back(far_index);
+                    sb_split(vs, pos, far_index, last, LineTol, cut);
                 } else {
                     sb_split(vs, pos, 0, last, LineTol, cut);
                 }
@@ -90457,13 +90458,13 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
 double dex_real_token(std::string_view Text) {
     if (Text.find_first_of("Dd") == std::string_view::npos)
         return detail::parse_double_prefix(Text);
-    char small[96];
+    char text_buf[96];
     std::string large;
     char* first;
-    if (Text.size() < sizeof small) {
-        Text.copy(small, Text.size());
-        small[Text.size()] = '\0';
-        first = small;
+    if (Text.size() < sizeof text_buf) {
+        Text.copy(text_buf, Text.size());
+        text_buf[Text.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Text);
         first = large.data();
@@ -127594,7 +127595,7 @@ std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
                                           const std::vector<MfPos>& rTargets) {
     const auto p = static_cast<std::size_t>(P);
     const std::size_t e = p - 1;
-    const auto near = [](double A, double B) { return std::abs(A - B) < 1e-12; };
+    const auto is_close = [](double A, double B) { return std::abs(A - B) < 1e-12; };
     std::vector<std::size_t> local;
     for (const MfPos& n : rNodes) {
         const double x = n[0], y = n[1];
@@ -127602,7 +127603,8 @@ std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
             local.push_back(4 + 4 * e + static_cast<std::size_t>(std::lround(-1.0 - x)));
             continue;
         }
-        const bool x0 = near(x, 0), x1 = near(x, 1), y0 = near(y, 0), y1 = near(y, 1);
+        const bool x0 = is_close(x, 0), x1 = is_close(x, 1), y0 = is_close(y, 0),
+                   y1 = is_close(y, 1);
         if ((x0 || x1) && (y0 || y1)) {
             local.push_back(x0 ? (y0 ? 0 : 3) : (y0 ? 1 : 2));
             continue;
@@ -127610,7 +127612,7 @@ std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
         const double t = (y0 || y1) ? x : y;
         std::size_t i = 0;
         for (std::size_t k = 1; k < p; ++k)
-            if (near(rCp[k], t))
+            if (is_close(rCp[k], t))
                 i = k - 1;
         if (y0)
             local.push_back(4 + i);
@@ -163042,13 +163044,13 @@ std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTo
 
 double unv_real(std::string_view t) {
     // Normalize short Fortran fields on the stack, retaining a bounded terminator.
-    char small[64];
+    char text_buf[64];
     std::string large;
     char* first;
-    if (t.size() < sizeof small) {
-        t.copy(small, t.size());
-        small[t.size()] = '\0';
-        first = small;
+    if (t.size() < sizeof text_buf) {
+        t.copy(text_buf, t.size());
+        text_buf[t.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(t);
         first = large.data();
@@ -186307,15 +186309,15 @@ double fc_onto_all(const std::vector<FcHandle<Geom_Surface> >& rSurfaces, gp_Pnt
         return 0.0;
     for (int it = 0; it < 200; ++it) {
         gp_XYZ sum(0.0, 0.0, 0.0);
-        double far = 0.0;
+        double max_dist = 0.0;
         for (const auto& s : rSurfaces) {
             gp_Pnt q;
             if (!fc_project(s, rP, q))
                 return inf;
             sum += q.XYZ();
-            far = std::max(far, q.Distance(rP));
+            max_dist = std::max(max_dist, q.Distance(rP));
         }
-        if (Close > 0.0 && far <= Close)
+        if (Close > 0.0 && max_dist <= Close)
             break;
         const gp_Pnt next(sum / static_cast<double>(rSurfaces.size()));
         const double moved = next.Distance(rP);
@@ -186424,7 +186426,7 @@ void fc_set_pcurves(const TopoDS_Face& rFace, const std::vector<TopoDS_Wire>& rW
                     const FcHandle<Geom_Surface>& rS, double Tol) {
     const double uper = rS->IsUPeriodic() ? rS->UPeriod() : 0.0;
     const double vper = rS->IsVPeriodic() ? rS->VPeriod() : 0.0;
-    auto near = [](double X, double Ref, double Per) {
+    auto nearest_copy = [](double X, double Ref, double Per) {
         return Per > 0.0 ? X + Per * std::round((Ref - X) / Per) : X;
     };
     constexpr int kSamples = 33;
@@ -186449,8 +186451,8 @@ void fc_set_pcurves(const TopoDS_Face& rFace, const std::vector<TopoDS_Wire>& rW
                 double u = 0.0, v = 0.0;
                 proj.LowerDistanceParameters(u, v);
                 if (have_prev) {
-                    u = near(u, pu, uper);
-                    v = near(v, pv, vper);
+                    u = nearest_copy(u, pu, uper);
+                    v = nearest_copy(v, pv, vper);
                 }
                 pu = u;
                 pv = v;
@@ -205287,17 +205289,18 @@ RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
         return c;
 
     // The candidates in ascending id: flags, then a scan.
-    std::vector<std::uint64_t> near(n);
-    parallel_for_bw(
-        n, [&](std::size_t i) { near[i] = std::fabs(c.mDistance[i]) <= WarpThreshold ? 1 : 0; });
+    std::vector<std::uint64_t> near_band(n);
+    parallel_for_bw(n, [&](std::size_t i) {
+        near_band[i] = std::fabs(c.mDistance[i]) <= WarpThreshold ? 1 : 0;
+    });
     std::vector<std::uint64_t> at(n);
     const std::uint64_t ncand =
-        parallel_exclusive_scan(near.data(), n, at.data(), std::uint64_t{0});
+        parallel_exclusive_scan(near_band.data(), n, at.data(), std::uint64_t{0});
     if (ncand == 0)
         return c;
     std::vector<std::size_t> candidates(ncand);
     parallel_for_bw(n, [&](std::size_t i) {
-        if (near[i])
+        if (near_band[i])
             candidates[at[i]] = i;
     });
 

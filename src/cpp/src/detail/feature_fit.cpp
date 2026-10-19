@@ -730,14 +730,14 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     auto along = [&](const std::vector<PatchVec>& rLine, const std::vector<double>& rAt,
                      bool Closed, double Total, const PatchVec& rP) {
         const std::size_t nseg = Closed ? rLine.size() : rLine.size() - 1;
-        double near = inf, at = 0.0;
+        double nearest = inf, at = 0.0;
         for (std::size_t s = 0; s < nseg; ++s) {
             const PatchVec& a = rLine[s];
             const PatchVec& b = rLine[(s + 1) % rLine.size()];
             const double f = ff_segment_fraction(rP, a, b);
             const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
-            if (d < near) {
-                near = d;
+            if (d < nearest) {
+                nearest = d;
                 const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Total;
                 at = rAt[s] + f * (t1 - rAt[s]);
             }
@@ -849,7 +849,7 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
     if (!(r > 0.0))
         return out;
     // The guess: the vertex centre nearest along the rail, moved with it.
-    std::size_t near = 0;
+    std::size_t nearest = 0;
     double gap = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < rFit.mT.size(); ++i) {
         double d = std::fabs(rFit.mT[i] - T);
@@ -859,11 +859,12 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
         }
         if (d < gap) {
             gap = d;
-            near = i;
+            nearest = i;
         }
     }
     const PatchVec on_rail = rFit.RailAt(T);
-    PatchVec c = ff_axpy(rFit.mCentres[near], 1.0, ff_sub(on_rail, rFit.RailAt(rFit.mT[near])));
+    PatchVec c =
+        ff_axpy(rFit.mCentres[nearest], 1.0, ff_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
     // The section's plane goes through the rail point, so consecutive balls
     // advance along the spine as the rail does.
     const PatchVec t = ff_unit(rTangent);
@@ -1366,14 +1367,14 @@ PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<d
 double ff_line_along(const std::vector<PatchVec>& rLine, const std::vector<double>& rAt,
                      bool Closed, double Length, const PatchVec& rP) {
     const std::size_t nseg = Closed ? rLine.size() : rLine.size() - 1;
-    double near = std::numeric_limits<double>::infinity(), at = 0.0;
+    double nearest = std::numeric_limits<double>::infinity(), at = 0.0;
     for (std::size_t s = 0; s < nseg; ++s) {
         const PatchVec& a = rLine[s];
         const PatchVec& b = rLine[(s + 1) % rLine.size()];
         const double f = ff_segment_fraction(rP, a, b);
         const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
-        if (d < near) {
-            near = d;
+        if (d < nearest) {
+            nearest = d;
             const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Length;
             at = rAt[s] + f * (t1 - rAt[s]);
         }

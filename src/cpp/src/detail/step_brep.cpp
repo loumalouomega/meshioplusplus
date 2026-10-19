@@ -633,19 +633,19 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 std::vector<std::size_t> cut{0};
                 if (closed) {
                     // Split a closed chain at its point farthest from the start.
-                    std::size_t far = 1;
+                    std::size_t far_index = 1;
                     double best = -1.0;
                     for (std::size_t i = 1; i < last; ++i) {
                         const double d = sb_dist(&pos[static_cast<std::size_t>(vs[i]) * 3],
                                                  &pos[static_cast<std::size_t>(vs[0]) * 3]);
                         if (d > best) {
                             best = d;
-                            far = i;
+                            far_index = i;
                         }
                     }
-                    sb_split(vs, pos, 0, far, LineTol, cut);
-                    cut.push_back(far);
-                    sb_split(vs, pos, far, last, LineTol, cut);
+                    sb_split(vs, pos, 0, far_index, LineTol, cut);
+                    cut.push_back(far_index);
+                    sb_split(vs, pos, far_index, last, LineTol, cut);
                 } else {
                     sb_split(vs, pos, 0, last, LineTol, cut);
                 }

@@ -428,15 +428,15 @@ double fc_onto_all(const std::vector<FcHandle<Geom_Surface> >& rSurfaces, gp_Pnt
         return 0.0;
     for (int it = 0; it < 200; ++it) {
         gp_XYZ sum(0.0, 0.0, 0.0);
-        double far = 0.0;
+        double max_dist = 0.0;
         for (const auto& s : rSurfaces) {
             gp_Pnt q;
             if (!fc_project(s, rP, q))
                 return inf;
             sum += q.XYZ();
-            far = std::max(far, q.Distance(rP));
+            max_dist = std::max(max_dist, q.Distance(rP));
         }
-        if (Close > 0.0 && far <= Close)
+        if (Close > 0.0 && max_dist <= Close)
             break;
         const gp_Pnt next(sum / static_cast<double>(rSurfaces.size()));
         const double moved = next.Distance(rP);
@@ -545,7 +545,7 @@ void fc_set_pcurves(const TopoDS_Face& rFace, const std::vector<TopoDS_Wire>& rW
                     const FcHandle<Geom_Surface>& rS, double Tol) {
     const double uper = rS->IsUPeriodic() ? rS->UPeriod() : 0.0;
     const double vper = rS->IsVPeriodic() ? rS->VPeriod() : 0.0;
-    auto near = [](double X, double Ref, double Per) {
+    auto nearest_copy = [](double X, double Ref, double Per) {
         return Per > 0.0 ? X + Per * std::round((Ref - X) / Per) : X;
     };
     constexpr int kSamples = 33;
@@ -570,8 +570,8 @@ void fc_set_pcurves(const TopoDS_Face& rFace, const std::vector<TopoDS_Wire>& rW
                 double u = 0.0, v = 0.0;
                 proj.LowerDistanceParameters(u, v);
                 if (have_prev) {
-                    u = near(u, pu, uper);
-                    v = near(v, pv, vper);
+                    u = nearest_copy(u, pu, uper);
+                    v = nearest_copy(v, pv, vper);
                 }
                 pu = u;
                 pv = v;

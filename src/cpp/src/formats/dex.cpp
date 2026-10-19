@@ -62,13 +62,13 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
 double dex_real_token(std::string_view Text) {
     if (Text.find_first_of("Dd") == std::string_view::npos)
         return detail::parse_double_prefix(Text);
-    char small[96];
+    char text_buf[96];
     std::string large;
     char* first;
-    if (Text.size() < sizeof small) {
-        Text.copy(small, Text.size());
-        small[Text.size()] = '\0';
-        first = small;
+    if (Text.size() < sizeof text_buf) {
+        Text.copy(text_buf, Text.size());
+        text_buf[Text.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Text);
         first = large.data();
