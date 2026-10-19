@@ -27,7 +27,7 @@ set "WITH_ZLIB=OFF"
 set "WITH_GIDPOST=ON"
 set "WITH_BZIP2=OFF"
 set "WITH_ADIOS2=OFF"
-set "WITH_OCCT=OFF"
+set "WITH_OCCT=ON"
 set "WITH_TECIO=OFF"
 set "TECIO_ROOT_DIR="
 set "TESTS=OFF"
@@ -56,6 +56,7 @@ if /I "%~1"=="--without-gidpost" set "WITH_GIDPOST=OFF" & shift & goto parse
 if /I "%~1"=="--with-bzip2"     set "WITH_BZIP2=ON" & shift & goto parse
 if /I "%~1"=="--with-adios2"    set "WITH_ADIOS2=ON" & shift & goto parse
 if /I "%~1"=="--with-occt"      set "WITH_OCCT=ON" & shift & goto parse
+if /I "%~1"=="--without-occt"   set "WITH_OCCT=OFF" & shift & goto parse
 if /I "%~1"=="--with-tecio"     set "WITH_TECIO=ON" & set "TECIO_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
 if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
@@ -185,7 +186,8 @@ echo   --with-zlib / --without-zlib
 echo   --with-gidpost / --without-gidpost  GiD postprocess writer (default: on; needs zlib)
 echo   --with-bzip2                     native bzip2 (libMesh .bz2 meshes; default: off)
 echo   --with-adios2                    ADIOS2-backed DOLFINx VTX .bp reader (default: off)
-echo   --with-occt                      OpenCASCADE-backed fit_cad (default: off; LGPL-2.1)
+echo   --with-occt / --without-occt     OpenCASCADE-backed fit_cad and STEP/IGES reading
+echo                                    (default: on, auto-detected; LGPL-2.1)
 echo   --with-tecio ^<dir^>               TecIO-backed Tecplot .szplt reader (default: off;
 echo                                    ^<dir^> holds TECIO.h and tecio.lib)
 echo   --tests                          also build the GoogleTest suite (CTest)

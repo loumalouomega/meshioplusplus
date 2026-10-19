@@ -63,14 +63,12 @@ CGNS_SHA256="95075e1fd0b51d97b1b96b73ebe03b1a551fbcc9cd2b2b6f487ccccedcff5964"
 NETCDF_COMMIT="3a6b1debf1557f07b606ce3653e44f0d711203be"
 CGNS_COMMIT="3a972d92559787a49c5f9a54974ea1946ecb9d21"
 
-# The full artifact's libraries. OCCT 7.6 is the floor the native backend
-# already sets (Ubuntu 24.04's packages); it publishes no source tarball, so
-# it is always a shallow clone of the tag, verified against its commit. zstd
-# and lz4 are their release tarballs, whose checksums match the .sha256 files
-# published beside them.
-OCCT_VERSION="7.6.3"
-OCCT_TAG="V7_6_3"
-OCCT_COMMIT="b079fb9877ef64d4a8158a60fa157f59b096debb"
+# The full artifact's libraries. OpenCASCADE's pin, source and toolkit list are
+# build/occt-recipe.sh's, shared with the native static build the wheels and
+# CLI binaries link (build/build-occt.sh). zstd and lz4 are their release
+# tarballs, whose checksums match the .sha256 files published beside them.
+OCCT_RECIPE_DIR="$SCRIPT_DIR"
+. "$SCRIPT_DIR/occt-recipe.sh"
 ZSTD_VERSION="1.5.7"
 ZSTD_SHA256="eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
 LZ4_VERSION="1.10.0"
@@ -635,13 +633,8 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
         return 0
     fi
     echo "== OpenCASCADE $OCCT_VERSION ($flavour) =="
-    fetch_git "https://github.com/Open-Cascade-SAS/OCCT.git" "$OCCT_TAG" "$OCCT_COMMIT" \
-              "occt-$OCCT_VERSION.git"
-    rm -rf "$WORK_DIR/occt-$OCCT_VERSION" "$WORK_DIR/build-occt-$flavour"
-    mkdir -p "$WORK_DIR/occt-$OCCT_VERSION"
-    (cd "$DL_DIR/occt-$OCCT_VERSION.git" && git archive --format=tar HEAD) |
-        tar -xf - -C "$WORK_DIR/occt-$OCCT_VERSION"
-    apply_patches "OCCT-$OCCT_VERSION" "$WORK_DIR/occt-$OCCT_VERSION"
+    rm -rf "$WORK_DIR/build-occt-$flavour"
+    occt_source "$DL_DIR" "$WORK_DIR/occt-$OCCT_VERSION"
     # OCCT defines OCC_CONVERT_SIGNALS on every non-MSVC build: OCC_CATCH_SIGNALS
     # then setjmp()s so a signal handler can longjmp a SIGSEGV or SIGFPE into a
     # C++ exception. WebAssembly raises no signals, and the setjmp/longjmp it
@@ -649,31 +642,8 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
     # wasm-opt fails to parse at link ("popping from empty stack"). The
     # flags' -U follows CMake's -D on every compile line, so OCC_CATCH_SIGNALS
     # is empty and Standard_Failure is a plain C++ exception throughout.
-    #
-    # Only the toolkits the core links (CMakeLists.txt's _mio_occt_libs):
-    # every module is off and the STEP, IGES and mesher toolkits are named,
-    # which pulls in their dependency closure (modelling data and algorithms,
-    # shape healing, booleans, primitives) and nothing else -- no
-    # visualisation, OCAF, Draw, or third-party library.
-    CFLAGS="$pt" CXXFLAGS="$pt" emcmake cmake -S "$WORK_DIR/occt-$OCCT_VERSION" \
-        -B "$WORK_DIR/build-occt-$flavour" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DINSTALL_DIR="$fprefix" \
-        -DINSTALL_DIR_LAYOUT=Unix \
-        -DBUILD_LIBRARY_TYPE=Static \
-        -DBUILD_MODULE_FoundationClasses=OFF \
-        -DBUILD_MODULE_ModelingData=OFF \
-        -DBUILD_MODULE_ModelingAlgorithms=OFF \
-        -DBUILD_MODULE_Visualization=OFF \
-        -DBUILD_MODULE_ApplicationFramework=OFF \
-        -DBUILD_MODULE_DataExchange=OFF \
-        -DBUILD_MODULE_Draw=OFF \
-        -DBUILD_ADDITIONAL_TOOLKITS="TKSTEP TKIGES TKMesh" \
-        -DBUILD_DOC_Overview=OFF \
-        -DBUILD_RESOURCES=OFF \
-        -DUSE_FREETYPE=OFF -DUSE_FREEIMAGE=OFF -DUSE_OPENGL=OFF -DUSE_GLES2=OFF \
-        -DUSE_TK=OFF -DUSE_TCL=OFF -DUSE_TBB=OFF -DUSE_VTK=OFF -DUSE_RAPIDJSON=OFF \
-        -DUSE_DRACO=OFF -DUSE_FFMPEG=OFF -DUSE_OPENVR=OFF -DUSE_EIGEN=OFF \
+    CFLAGS="$pt" CXXFLAGS="$pt" OCCT_CMAKE="emcmake cmake" occt_configure \
+        "$WORK_DIR/occt-$OCCT_VERSION" "$WORK_DIR/build-occt-$flavour" "$fprefix" Static \
         -DCMAKE_CXX_FLAGS="-fwasm-exceptions -UOCC_CONVERT_SIGNALS $pt" \
         -DCMAKE_C_FLAGS="-UOCC_CONVERT_SIGNALS $pt"
     cmake --build "$WORK_DIR/build-occt-$flavour" -j "$JOBS"

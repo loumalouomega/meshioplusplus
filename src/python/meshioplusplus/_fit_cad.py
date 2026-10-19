@@ -224,8 +224,9 @@ def fit_cad(
         ) from exc
     if opts["backend"] == "occt" and not getattr(_core, "__has_occt__", False):
         raise NotImplementedError(
-            f"{_PREFIX}this build has no OpenCASCADE backend; rebuild with {_FLAG} "
-            "(OpenCASCADE 7.6 or later), or use backend='native'"
+            f"{_PREFIX}this build has no OpenCASCADE backend (the PyPI wheels carry "
+            f"it); rebuild with {_FLAG} (OpenCASCADE 7.6 or later), or use "
+            "backend='native'"
         )
     res = _core.fit_cad(
         mesh,

@@ -2214,9 +2214,9 @@ def tool_fit_cad(
     if backend == "occt" and not occt:
         # The guarded error shape, plus the capability itself.
         return {
-            "error": "meshio++: fit_cad: this build has no OpenCASCADE backend; "
-            "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later), "
-            "or use backend='native'",
+            "error": "meshio++: fit_cad: this build has no OpenCASCADE backend "
+            "(the PyPI wheels carry it); rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON "
+            "(OpenCASCADE 7.6 or later), or use backend='native'",
             "error_type": "NotImplementedError",
             "occt_available": False,
         }

@@ -129,7 +129,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/wasm-deps/full-*
-          key: wasm-full-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
+          key: wasm-full-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/occt-recipe.sh', 'build/patches/*.patch') }}
 
       - name: Build the wasm dependencies, lean and full
         run: ./build/build-wasm-deps.sh --full

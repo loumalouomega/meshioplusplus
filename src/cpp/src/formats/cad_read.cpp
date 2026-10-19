@@ -58,8 +58,9 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
 #else
 [[noreturn]] void cad_read_unsupported(const char* pFormat) {
     throw Unsupported(std::string("meshio++: ") + pFormat +
-                      ": reading needs the OpenCASCADE backend; rebuild with "
-                      "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)");
+                      ": reading needs the OpenCASCADE backend, which the PyPI wheels and "
+                      "the release binaries carry; rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON "
+                      "(OpenCASCADE 7.6 or later, build/build-occt.sh builds one)");
 }
 #endif
 

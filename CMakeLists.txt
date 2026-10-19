@@ -297,16 +297,21 @@ elseif(TARGET adios2::cxx11)
 endif()
 
 # OpenCASCADE Technology (LGPL-2.1 with the OCCT exception), the CAD kernel of
-# the fit_cad operation (analytic faces trimmed, sewn into a solid, checked and
-# written as STEP). OFF by default and bring-your-own through OCCT's own CMake
-# config (OpenCASCADE_DIR) -- never vendored, never auto-downloaded, linked
-# dynamically natively, and absent from the wheels, the lean WASM build and the
-# release CLI binaries; fit_cad throws Unsupported naming this flag where it is
-# absent. The full WASM artifact links it statically, from the wasm32 build
-# build-wasm-deps.sh --full makes (roadmap 6.2.1).
+# the fit_cad operation (analytic, freeform, fillet and thread faces trimmed,
+# sewn into a solid, checked and written as STEP) and of STEP/IGES reading.
+# ON by default and found through OCCT's own CMake config (OpenCASCADE_DIR,
+# CMAKE_PREFIX_PATH) -- never auto-downloaded: a system install (7.6 or later)
+# links dynamically, and the static one build/build-occt.sh makes is linked
+# into the PyPI wheels and the release CLI binaries (THIRD_PARTY_NOTICES.md).
+# Where none is found, fit_cad falls back to its kernel-free native backend
+# and STEP/IGES reading throws Unsupported naming this flag;
+# MESHIOPLUSPLUS_REQUIRE_OCCT turns that into a configure error for the
+# artifacts that must carry the kernel. The lean WASM build never probes; the
+# full one links the wasm32 build of build-wasm-deps.sh --full (roadmap 6.2.1).
 # 7.6 is the floor (Ubuntu 24.04's packages); 7.8 renamed the STEP toolkits
 # into TKDESTEP, so the target list is picked by what exists.
-option(MESHIOPLUSPLUS_WITH_OCCT "Build the OpenCASCADE-backed fit_cad operation and STEP/IGES reading" OFF)
+option(MESHIOPLUSPLUS_WITH_OCCT "Build the OpenCASCADE-backed fit_cad operation and STEP/IGES reading" ON)
+option(MESHIOPLUSPLUS_REQUIRE_OCCT "Fail the configure when OpenCASCADE is not found" OFF)
 if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_probe_optional)
   find_package(OpenCASCADE CONFIG QUIET)
   if(OpenCASCADE_FOUND AND OpenCASCADE_VERSION VERSION_LESS 7.6)
@@ -339,6 +344,31 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND OpenCASCADE_FOUND)
       break()
     endif()
   endforeach()
+endif()
+# A static install (build/build-occt.sh, the wheels and CLI binaries) records
+# no dependencies on its targets: the toolkits reference one another in both
+# directions, which GNU ld resolves only inside a link group, and the system
+# libraries TKernel uses are named here. On Windows its headers must also be
+# told not to expect DLL imports.
+set(_mio_occt_link ${_mio_occt_libs})
+set(_mio_occt_defs "")
+if(_mio_occt_libs)
+  get_target_property(_mio_occt_type TKernel TYPE)
+  if(_mio_occt_type STREQUAL "STATIC_LIBRARY" AND NOT EMSCRIPTEN)
+    if(WIN32)
+      list(APPEND _mio_occt_link advapi32 gdi32 user32 wsock32 psapi)
+      set(_mio_occt_defs OCCT_STATIC_BUILD)
+    else()
+      if(NOT APPLE)
+        set(_mio_occt_link "-Wl,--start-group" ${_mio_occt_libs} "-Wl,--end-group")
+      endif()
+      find_package(Threads REQUIRED)
+      list(APPEND _mio_occt_link Threads::Threads ${CMAKE_DL_LIBS})
+      if(NOT APPLE)
+        list(APPEND _mio_occt_link m)
+      endif()
+    endif()
+  endif()
 endif()
 
 # TecIO (v16.13.0): Tecplot's own library, the only reader of `.szplt` (SZL)
@@ -822,10 +852,14 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
   # export toolkit targets without include directories: add them privately,
   # as system headers so their deprecation warnings stay theirs.
   list(APPEND _mio_core_sys_incs ${OpenCASCADE_INCLUDE_DIR})
-  list(APPEND _mio_core_libs ${_mio_occt_libs})
-elseif(MESHIOPLUSPLUS_WITH_OCCT)
-  message(STATUS "meshio++: OpenCASCADE requested but not found (set OpenCASCADE_DIR) - "
-                 "fit_cad and STEP/IGES reading will raise")
+  list(APPEND _mio_core_defs ${_mio_occt_defs})
+  list(APPEND _mio_core_libs ${_mio_occt_link})
+elseif(MESHIOPLUSPLUS_REQUIRE_OCCT)
+  message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_REQUIRE_OCCT is set but OpenCASCADE 7.6 or later "
+                      "was not found (build one with build/build-occt.sh and set OpenCASCADE_DIR)")
+elseif(MESHIOPLUSPLUS_WITH_OCCT AND _mio_probe_optional)
+  message(STATUS "meshio++: OpenCASCADE not found (set OpenCASCADE_DIR) - fit_cad falls back to "
+                 "its kernel-free native backend and STEP/IGES reading will raise")
 endif()
 
 # The full wasm artifact never drops a library it was asked for: a name in

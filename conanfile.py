@@ -91,11 +91,11 @@ class MeshioplusplusConan(ConanFile):
         # flip the CMake flag (ADIOS2_DIR / TECIO_ROOT). Off by default.
         "with_adios2": False,
         "with_tecio": False,
-        # OpenCASCADE (fit_cad) is LGPL-2.1 and bring-your-own like KaHIP: the
-        # option only flips the CMake flag and the consumer supplies
-        # OpenCASCADE_DIR (ConanCenter's opencascade recipe is not required, so
-        # the package never pulls an LGPL dependency unasked). Off by default.
-        "with_occt": False,
+        # OpenCASCADE (fit_cad's kernel, STEP/IGES reading; LGPL-2.1 with the
+        # OCCT exception) is assumed for the best result, as in the CMake build
+        # and the wheels: on by default, from ConanCenter's opencascade recipe.
+        # with_occt=False gives fit_cad's kernel-free native fallback.
+        "with_occt": True,
         # Unlike with_eigen/with_json (submodules, off by default), gidpost is
         # a vendored hardcopy that IS in exports_sources, so this defaults True
         # like with_hdf5/with_netcdf/with_zlib -- consistent with the CMake
@@ -150,6 +150,8 @@ class MeshioplusplusConan(ConanFile):
             self.requires("xz_utils/[>=5.4 <6]")
         if self.options.with_bzip2:
             self.requires("bzip2/[>=1.0.8 <2]")
+        if self.options.with_occt:
+            self.requires("opencascade/[>=7.6 <8]")
         if self.options.with_netcdf:
             self.requires("netcdf/[>=4.8 <5]")
         if self.options.with_hdf5:

@@ -1,17 +1,17 @@
 # STEP (`.step`, `.stp`)
 
-[ISO 10303-21](https://en.wikipedia.org/wiki/ISO_10303-21), read through the optional OpenCASCADE backend and written without it. The writer is a hand-off of a closed surface to CAD: a B-rep solid in the AP214 (`AUTOMOTIVE_DESIGN`) schema that FreeCAD, OpenCASCADE-based tools and commercial CAD systems open as a solid body. By default each flat region is one planar face with its holes as inner loops, and, on a skin [`segment`](/segment) and [`fit_primitives`](/fit_primitives) annotated, each fitted cylinder, cone, sphere and torus is one analytic face — the clean body a CAD user can select, measure, section and boolean against, where an STL import gives only an unconnected triangle soup. No CAD kernel is involved. It is the CAD end of the [skin-to-CAD workflow](/cad_fit).
+[ISO 10303-21](https://en.wikipedia.org/wiki/ISO_10303-21), read through OpenCASCADE (included in the PyPI wheels and the release binaries) and written without it. The writer is a hand-off of a closed surface to CAD: a B-rep solid in the AP214 (`AUTOMOTIVE_DESIGN`) schema that FreeCAD, OpenCASCADE-based tools and commercial CAD systems open as a solid body. By default each flat region is one planar face with its holes as inner loops, and, on a skin [`segment`](/segment) and [`fit_primitives`](/fit_primitives) annotated, each fitted cylinder, cone, sphere and torus is one analytic face — the clean body a CAD user can select, measure, section and boolean against, where an STL import gives only an unconnected triangle soup. No CAD kernel is involved. It is the CAD end of the [skin-to-CAD workflow](/cad_fit).
 
 | | |
 |---|---|
 | **Format name** | `step` |
 | **Extensions** | `.step`, `.stp` |
 | **Read / Write** | ✓ (with OpenCASCADE) / ✓ |
-| **Extra dependencies** | reading: OpenCASCADE 7.6 or later (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) |
+| **Extra dependencies** | reading: OpenCASCADE 7.6 or later (in the wheels and release binaries; on by default from source) |
 
 ## Reading
 
-Reading STEP means evaluating its curves and surfaces, which is a CAD kernel's job: the reader runs on the optional OpenCASCADE backend that [`fit_cad`](/fit_cad) introduced (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`, LGPL-2.1 with the OCCT exception, bring your own, absent from the wheels, the lean WASM build and the release CLI binaries; see the [OpenCASCADE decision](/spikes#the-opencascade-dependency)). The [full WASM artifact](/wasm#lean-and-full-builds) (v17.2.0) links it, so STEP and IGES read in the browser and in Node there, `readMeshSelective(path, {info: true})` returning the B-rep as CAD JSON's shape. Without it, reading raises `NotImplementedError` (C++ `Unsupported`) naming the flag, and the round trip on the [conformance page](/conformance#step) is checked only in a build with it. [IGES](/formats/iges) is read the same way.
+Reading STEP means evaluating its curves and surfaces, which is a CAD kernel's job: the reader runs on the OpenCASCADE backend that [`fit_cad`](/fit_cad) introduced (LGPL-2.1 with the OCCT exception, included in the PyPI wheels and the release CLI binaries, on by default and auto-detected in a build from source, absent from the lean WASM build; see [getting OpenCASCADE](/fit_cad#getting-opencascade) and the [OpenCASCADE decision](/spikes#the-opencascade-dependency)). The [full WASM artifact](/wasm#lean-and-full-builds) (v17.2.0) links it, so STEP and IGES read in the browser and in Node there, `readMeshSelective(path, {info: true})` returning the B-rep as CAD JSON's shape. Without it, reading raises `NotImplementedError` (C++ `Unsupported`) naming the flag, and the round trip on the [conformance page](/conformance#step) is checked only in a build with it. [IGES](/formats/iges) is read the same way.
 
 ```python
 import meshioplusplus as mp
@@ -88,7 +88,7 @@ Checked with OpenCASCADE 8.0.1 (the `cadquery-ocp` 8.0.1.1 wheels): `STEPControl
 ## Not supported
 
 - Reading without the OpenCASCADE backend (see above), and a reader's vertices (STEP's `VERTEX_POINT`s are carried as edge ends only).
-- Trimmed freeform, fillet and thread faces: what no plane, sphere, cylinder, cone or torus explains stays planar faces here. [`fit_cad`](/fit_cad) builds B-spline, fillet and thread faces through the optional OpenCASCADE backend, and its kernel-free `backend="native"` is this writer.
+- Trimmed freeform, fillet and thread faces: what no plane, sphere, cylinder, cone or torus explains stays planar faces here. [`fit_cad`](/fit_cad) builds B-spline, fillet and thread faces through OpenCASCADE, and its kernel-free `backend="native"` is this writer.
 - Colours, layers, assemblies, and AP242 product manufacturing information.
 
 The NURBS B-rep a STEP file reads into `mesh.info["brep"]` can be refined, evaluated and sampled exactly with the [isogeometric layer](../iga.md) (`iga_refine`, `iga_evaluate`, `iga_sample`); STEP files themselves are not written from a refined B-rep, but `mp.write("refined.cad.json", refined)` is.

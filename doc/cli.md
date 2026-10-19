@@ -31,7 +31,7 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
 | `--json` | | Print a JSON summary of what was written (see [JSON output](#json-output)) |
 
-**CAD geometry** — a [Kratos CAD JSON](formats/cad_json.md), STEP or IGES input converted to a `.cad.json` output carries its B-rep (the NURBS faces, trimming loops and edges) rather than its sampling, in both CLIs: `meshioplusplus convert part.step part.cad.json` turns a CAD model into Kratos IGA geometry (STEP and IGES reading needs the OpenCASCADE backend).
+**CAD geometry** — a [Kratos CAD JSON](formats/cad_json.md), STEP or IGES input converted to a `.cad.json` output carries its B-rep (the NURBS faces, trimming loops and edges) rather than its sampling, in both CLIs: `meshioplusplus convert part.step part.cad.json` turns a CAD model into Kratos IGA geometry (STEP and IGES reading needs the OpenCASCADE backend, which the release binaries and the wheels include).
 
 **Transient sequences** — treat a set of files, or the steps inside one file, as one dataset (see [sequences](sequences.md)):
 
@@ -1131,7 +1131,7 @@ meshioplusplus iga-evaluate plate.cad.json -p 0.5,0.5 -p 2,2 --derivatives 1
 
 ## meshioplusplus to-cad
 
-Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). A build with `-DMESHIOPLUSPLUS_WITH_OCCT=ON` builds it with OpenCASCADE; any other, the release binaries and the wheels among them, through the kernel-free [native backend](/fit_cad#the-native-backend), which writes the fitted planes, cylinders, cones, spheres and tori as analytic faces and the rest as planar faces. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails the B-rep check.
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Builds with OpenCASCADE, which the release binaries and the wheels include; a source build that found no OpenCASCADE falls back, with a warning, to the kernel-free [native backend](/fit_cad#the-native-backend), which writes the fitted planes, cylinders, cones, spheres and tori as analytic faces and the rest as planar faces. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails the B-rep check.
 
 ```text
 meshioplusplus to-cad [options] INFILE OUTFILE.step

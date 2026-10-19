@@ -49,8 +49,12 @@ def _fitted(skin, curvature_tolerance=0.0, tolerance=1e-3, min_patch_cells=1):
 
 @pytest.mark.skipif(HAS_OCCT, reason="checks the build without OpenCASCADE")
 def test_absent_backend_is_named():
+    # The automatic backend falls back to the native one; asking for
+    # OpenCASCADE by name is what raises.
+    _, report = mio.fit_cad(box_skin(2), return_report=True)
+    assert report["backend"] == "native"
     with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_OCCT"):
-        mio.fit_cad(box_skin(2))
+        mio.fit_cad(box_skin(2), backend="occt")
 
 
 def test_bad_arguments_are_refused_before_the_core():

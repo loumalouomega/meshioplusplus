@@ -14,8 +14,9 @@ from .._helpers import register_format
 from ._step import write as _py_write
 
 _NEEDS_OCCT = (
-    "reading needs the OpenCASCADE backend; rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON "
-    "(OpenCASCADE 7.6 or later)"
+    "reading needs the OpenCASCADE backend, which the PyPI wheels carry; rebuild with "
+    "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later, build/build-occt.sh "
+    "builds one)"
 )
 
 

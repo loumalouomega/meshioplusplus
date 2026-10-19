@@ -189,6 +189,28 @@ TEST(FitCad, AbsentBackendIsNamed) {
     EXPECT_EQ(fit_cad(analytic::box_skin(2)).mBackend, FitCadBackend::Native);
 }
 
+// The automatic fallback says so once per process (an earlier test may have
+// used it already); asking for the native backend by name never warns.
+TEST(FitCad, FallbackIsAnnouncedOnce) {
+    const std::string notice = "kernel-free native backend is used";
+    auto count = [&](const std::string& rText) {
+        std::size_t n = 0;
+        for (std::size_t at = rText.find(notice); at != std::string::npos;
+             at = rText.find(notice, at + 1))
+            ++n;
+        return n;
+    };
+    testing::internal::CaptureStderr();
+    fit_cad(analytic::box_skin(2));
+    fit_cad(analytic::box_skin(2));
+    EXPECT_LE(count(testing::internal::GetCapturedStderr()), 1u);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    testing::internal::CaptureStderr();
+    fit_cad(analytic::box_skin(2), "", o);
+    EXPECT_EQ(count(testing::internal::GetCapturedStderr()), 0u);
+}
+
 #else
 
 TEST(FitCad, FilletedPlateIsEightExactFaces) {
