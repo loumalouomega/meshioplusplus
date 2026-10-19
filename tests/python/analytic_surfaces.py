@@ -696,3 +696,55 @@ def wavy_bar(
         for j in range(count):
             b.tri(mid, ring[j], ring[(j + 1) % count], np.array([sign, 0.0, 0.0]))
     return b.mesh()
+
+
+def filleted_plate(a=2.0, h=0.5, r=0.6, rc=0.8, n=48, k=8):
+    """The plate ``[-a, a]^2 x [0, h]`` with a through-hole of radius ``r`` at
+    its centre and its corner ``(a, a)`` rounded by a quarter circle of radius
+    ``rc`` tangent to both sides: a CAD part tessellated as CAD exporters do,
+    rings of vertices on the hole and on the outline (``k`` segments along the
+    fillet) joined by strips, every vertex on its surfaces, the fillet meeting
+    its sides at smooth edges. Six planes and two cylinders
+    (``analytic::filleted_plate``)."""
+    c = a - rc
+    angles = {2.0 * np.pi * i / n for i in range(n)}
+    angles |= {np.pi * (0.75 + 0.5 * j) for j in range(3)}  # the sharp corners
+    for j in range(k + 1):  # along the fillet, from tangent point to tangent point
+        phi = 0.5 * np.pi * j / k
+        angles.add(np.arctan2(c + rc * np.sin(phi), c + rc * np.cos(phi)))
+    angles = sorted(angles)
+    lo_t, hi_t = np.arctan2(c, a), np.arctan2(a, c)
+
+    def outline(th):
+        d = np.array([np.cos(th), np.sin(th)])
+        if lo_t <= th <= hi_t:
+            dc = d @ np.array([c, c])
+            return (dc + np.sqrt(dc * dc - 2.0 * c * c + rc * rc)) * d
+        return a / max(abs(d[0]), abs(d[1])) * d
+
+    b = _Skin()
+    rings = []
+    for th in angles:
+        d = np.array([np.cos(th), np.sin(th)])
+        o = outline(th)
+        rings.append(
+            (
+                b.add([r * d[0], r * d[1], 0.0]),
+                b.add([r * d[0], r * d[1], h]),
+                b.add([o[0], o[1], 0.0]),
+                b.add([o[0], o[1], h]),
+            )
+        )
+    m = len(rings)
+    for i in range(m):
+        hb, ht, ob, ot = rings[i]
+        hb2, ht2, ob2, ot2 = rings[(i + 1) % m]
+        mid = 0.5 * (
+            angles[i] + (angles[(i + 1) % m] + (2.0 * np.pi if i + 1 == m else 0.0))
+        )
+        d = np.array([np.cos(mid), np.sin(mid), 0.0])
+        b.quad(ht, ot, ot2, ht2, [0.0, 0.0, 1.0])
+        b.quad(hb, ob, ob2, hb2, [0.0, 0.0, -1.0])
+        b.quad(ob, ob2, ot2, ot, d)
+        b.quad(hb, hb2, ht2, ht, -d)
+    return b.mesh()

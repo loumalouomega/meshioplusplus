@@ -1744,7 +1744,8 @@ export interface MeshioPlusPlusModule {
 
   /**
    * Whether OpenCASCADE is linked in, so `step` and `iges` read and `fitCad`
-   * runs: true in the full artifact (`{full: true}`), false in the lean one.
+   * has its OpenCASCADE backend: true in the full artifact (`{full: true}`),
+   * false in the lean one (where `fitCad` runs the native backend).
    */
   hasOcct(): boolean;
 
@@ -2591,7 +2592,10 @@ export interface MeshioPlusPlusModule {
    * feature edges. The mesh comes back unchanged plus cell data
    * `segment:patch` (-1 off the surface), field data `segment:adjacency`
    * (rows `[a, b, sharedEdges]`) and one cell region per patch,
-   * `<prefix>:<k>`. See doc/segment.md.
+   * `<prefix>:<k>`. `method: 'primitive'` (v17.9.0) ends a patch where the
+   * surface its facets lie on changes, at `tolerance` (relative to the
+   * diagonal), so a fillet comes apart from its tangent planes. See
+   * doc/segment.md.
    * @throws {Error} on an option out of range, an unknown region or a volume block.
    */
   segment(
@@ -2602,6 +2606,8 @@ export interface MeshioPlusPlusModule {
     minPatchCells?: number,
     region?: string,
     prefix?: string,
+    method?: 'angle' | 'primitive',
+    tolerance?: number,
   ): {
     mesh: Mesh;
     numPatches: number;
@@ -2643,10 +2649,12 @@ export interface MeshioPlusPlusModule {
    * output of `segment` then `fitPrimitives`): planes, spheres, cylinders,
    * cones and tori, fillets and blends, threads and freeform B-spline faces,
    * sewn and checked by OpenCASCADE, optionally written as STEP to
-   * `stepPath` on the virtual FS. Needs OpenCASCADE: the full artifact only.
-   * See doc/fit_cad.md.
-   * @throws {Error} in the lean artifact (naming `{full: true}`), on a bad
-   *   option, or on a skin that is not closed.
+   * `stepPath` on the virtual FS. The lean artifact (and `backend: 'native'`)
+   * runs the kernel-free backend instead (v17.9.0): the fitted patches become
+   * analytic STEP faces, the rest coplanar polygons, and `mesh` is the skin
+   * itself. See doc/fit_cad.md.
+   * @throws {Error} with `backend: 'occt'` in the lean artifact (naming
+   *   `{full: true}`), on a bad option, or on a skin that is not closed.
    */
   fitCad(mesh: Mesh, options?: FitCadOptions): FitCadResult;
 
@@ -3382,6 +3390,10 @@ export interface FitCadOptions {
   fillets?: boolean;
   /** Try thread faces, tapered and of varying pitch included (default true). */
   threads?: boolean;
+  /** Merge faces on one surface once the solid is built (default true; v17.9.0). */
+  mergeFaces?: boolean;
+  /** The engine: OpenCASCADE when linked in (`'auto'`, the default), or none (v17.9.0). */
+  backend?: 'auto' | 'occt' | 'native';
 }
 
 /** What {@link MeshioPlusPlusModule.fitCad} built. */
@@ -3425,6 +3437,8 @@ export interface FitCadResult {
   numTaperedThread: number;
   /** Thread flanks whose pitch varies along the axis. */
   numVariablePitchThread: number;
+  /** The engine that built the solid (v17.9.0). */
+  backend: 'occt' | 'native';
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */
   info: CadJsonInfo;
 }

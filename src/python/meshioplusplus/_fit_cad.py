@@ -1,11 +1,12 @@
 """Turn the fitted patches of a closed skin into a CAD solid.
 
 The last step of the skin-to-CAD chain :func:`segment` -> :func:`fit_primitives`
--> :func:`fit_cad`, through the optional OpenCASCADE backend of the core
-(``operations/fit_cad.hpp``). Trimming, sewing and checking analytic surfaces
-is a CAD kernel's work, so there is no numpy twin: without a core built with
-``-DMESHIOPLUSPLUS_WITH_OCCT=ON`` the function raises ``NotImplementedError``
-naming that flag.
+-> :func:`fit_cad`, in the core (``operations/fit_cad.hpp``): through the
+optional OpenCASCADE backend when the core was built with
+``-DMESHIOPLUSPLUS_WITH_OCCT=ON``, else through the kernel-free native backend,
+which writes the fitted patches as analytic STEP faces without trimming them.
+There is no numpy twin of either: without the compiled core the function
+raises ``NotImplementedError``.
 """
 
 from __future__ import annotations
@@ -94,6 +95,8 @@ def fit_cad(
     fillets: bool = True,
     threads: bool = True,
     return_report: bool = False,
+    merge_faces: bool = True,
+    backend: str = "auto",
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -116,9 +119,11 @@ def fit_cad(
     cannot explain comes back faceted, never silently wrong.
 
     :param mesh: a closed, consistently wound surface mesh, normally the
-        output of :func:`fit_primitives`. Without ``segment:patch`` or the
-        ``fit:patch_*`` table, :func:`segment` and :func:`fit_primitives` run
-        first with their default options.
+        output of :func:`fit_primitives`. Without ``segment:patch``,
+        :func:`segment` runs first with ``method="primitive"`` (so a fillet
+        comes apart from the planes it is tangent to) and :func:`fit_primitives`
+        at the same absolute tolerance; without the ``fit:patch_*`` table,
+        :func:`fit_primitives` runs with its default options.
     :param path: write the solid here as AP214 STEP (millimetres, a pinned
         header timestamp); ``None`` writes nothing.
     :param tolerance: the largest distance a face may lie from the skin; by
@@ -145,6 +150,17 @@ def fit_cad(
     :param threads: try a patch as a helical thread face, of constant or
         varying pitch and cut on a taper.
     :param return_report: also return the report.
+    :param merge_faces: once the solid is built, merge faces on one surface
+        and join collinear edges (``ShapeUpgrade_UnifySameDomain``), kept only
+        when the solid stays valid with the same volume.
+    :param backend: ``"occt"`` builds with OpenCASCADE (trimmed, sewn and
+        checked faces, freeform, fillet and thread faces, the re-meshed solid);
+        ``"native"`` needs no CAD kernel: every fitted plane, sphere, cylinder,
+        cone and torus patch becomes one analytic STEP face, bounded by line,
+        circle and polyline edges, and the rest coplanar polygons (the
+        returned mesh is the skin itself with the ``fit_cad:*`` cell data, its
+        volumes NaN and ``brep`` empty); ``"auto"`` (the default) is
+        ``"occt"`` when the core carries it, else ``"native"``.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -164,7 +180,8 @@ def fit_cad(
         (``num_tapered_thread``, ``num_variable_pitch_thread``),
         ``num_split_patches``, the demoted patches and the exact and
         approximated edges.
-    :raises NotImplementedError: when the core was built without OpenCASCADE.
+    :raises NotImplementedError: without the compiled core, or with
+        ``backend="occt"`` when the core was built without OpenCASCADE.
     """
     opts = {
         "path": "" if path is None else os.fspath(path),
@@ -179,7 +196,11 @@ def fit_cad(
         "freeform_split": bool(freeform_split),
         "fillets": bool(fillets),
         "threads": bool(threads),
+        "merge_faces": bool(merge_faces),
+        "backend": str(backend),
     }
+    if opts["backend"] not in ("auto", "occt", "native"):
+        raise ValueError(f"{_PREFIX}backend must be 'auto', 'occt' or 'native'")
     if tolerance is not None and not (
         opts["tolerance"] > 0.0 and math.isfinite(opts["tolerance"])
     ):
@@ -199,13 +220,13 @@ def fit_cad(
         from . import _core
     except ImportError as exc:
         raise NotImplementedError(
-            f"{_PREFIX}needs the compiled core built with {_FLAG}; "
-            "there is no pure-Python CAD kernel"
+            f"{_PREFIX}needs the compiled core; there is no pure-Python CAD kernel"
         ) from exc
-    if not getattr(_core, "__has_occt__", False):
+    if opts["backend"] == "occt" and not getattr(_core, "__has_occt__", False):
         raise NotImplementedError(
-            f"{_PREFIX}this build has no OpenCASCADE backend; rebuild with {_FLAG} "
-            "(OpenCASCADE 7.6 or later)"
+            f"{_PREFIX}this build has no OpenCASCADE backend (the PyPI wheels carry "
+            f"it); rebuild with {_FLAG} (OpenCASCADE 7.6 or later), or use "
+            "backend='native'"
         )
     res = _core.fit_cad(
         mesh,
@@ -221,6 +242,8 @@ def fit_cad(
         opts["freeform_split"],
         opts["fillets"],
         opts["threads"],
+        opts["merge_faces"],
+        opts["backend"],
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -228,7 +251,7 @@ def fit_cad(
     out.info = info
     if not return_report:
         return out
-    report = {"valid": bool(res["valid"])}
+    report = {"valid": bool(res["valid"]), "backend": str(res["backend"])}
     report.update({k: float(res[k]) for k in _REPORT_FLOATS})
     report.update({k: int(res[k]) for k in _REPORT_INTS})
     return out, report

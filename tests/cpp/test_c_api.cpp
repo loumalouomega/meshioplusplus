@@ -4938,6 +4938,26 @@ TEST(CApi, SegmentAndFitACube) {
     mio_segment_opts_init(&sopts);
     EXPECT_DOUBLE_EQ(sopts.feature_angle, 30.0);
     EXPECT_EQ(sopts.min_patch_cells, 1);  // an all-zero struct is NOT the default
+    EXPECT_EQ(sopts.method, MIO_SEGMENT_ANGLE);
+    EXPECT_DOUBLE_EQ(sopts.tolerance, 1e-3);
+    {
+        // The primitive method (v17.9.0) finds the cube's six planes too.
+        mio_segment_opts popts = sopts;
+        popts.method = MIO_SEGMENT_PRIMITIVE;
+        mio_segment_report preport;
+        mio_mesh* pseg = mio_segment(m, &popts, &preport);
+        ASSERT_NE(pseg, nullptr) << mio_last_error();
+        EXPECT_EQ(preport.num_patches, 6);
+        mio_mesh_free(pseg);
+        popts.method = 4;
+        EXPECT_EQ(mio_segment(m, &popts, nullptr), nullptr);
+        // A struct zero-filled before the fields existed is the angle method.
+        popts.method = MIO_SEGMENT_ANGLE;
+        popts.tolerance = 0.0;
+        pseg = mio_segment(m, &popts, nullptr);
+        ASSERT_NE(pseg, nullptr) << mio_last_error();
+        mio_mesh_free(pseg);
+    }
     mio_segment_report sreport;
     mio_mesh* seg = mio_segment(m, &sopts, &sreport);
     ASSERT_NE(seg, nullptr) << mio_last_error();
@@ -4981,9 +5001,28 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
     EXPECT_EQ(opts.freeform_split, 1);
     EXPECT_EQ(opts.fillets, 1);
     EXPECT_EQ(opts.threads, 1);
-    EXPECT_EQ(opts.reserved1, 0);
+    EXPECT_EQ(opts.merge_faces, 1);
+    EXPECT_EQ(opts.backend, MIO_FIT_CAD_AUTO);
+    EXPECT_EQ(opts.reserved32, 0);
     mio_fit_cad_report report;
     mio_mesh* solid = mio_fit_cad(m, nullptr, &opts, &report);
+    {
+        // The native backend runs in every build (v17.9.0).
+        mio_fit_cad_opts native = opts;
+        native.backend = MIO_FIT_CAD_NATIVE;
+        mio_fit_cad_report nr;
+        mio_fit_cad_report_ex nex;
+        mio_mesh* skin = mio_fit_cad_ex(m, nullptr, &native, &nr, &nex);
+        ASSERT_NE(skin, nullptr) << mio_last_error();
+        EXPECT_EQ(nex.backend, MIO_FIT_CAD_NATIVE);
+        EXPECT_EQ(nr.valid, 1);
+        EXPECT_EQ(nr.num_plane, 6);
+        EXPECT_EQ(nr.num_faceted_faces, 0);
+        mio_mesh_free(skin);
+        native.backend = 9;
+        EXPECT_EQ(mio_fit_cad(m, nullptr, &native, nullptr), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("backend"), std::string::npos);
+    }
     if (mio_has_occt()) {
         ASSERT_NE(solid, nullptr) << mio_last_error();
         EXPECT_EQ(report.valid, 1);
@@ -5010,6 +5049,7 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
         EXPECT_EQ(ex.num_conic_blend, 0);
         EXPECT_EQ(ex.num_tapered_thread, 0);
         EXPECT_EQ(ex.num_variable_pitch_thread, 0);
+        EXPECT_EQ(ex.backend, MIO_FIT_CAD_OCCT);
         for (int64_t r : ex.reserved)
             EXPECT_EQ(r, 0);
         mio_mesh_free(solid);
@@ -5024,7 +5064,13 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
         opts.max_demotion_rounds = -1;
         EXPECT_EQ(mio_fit_cad(m, nullptr, &opts, nullptr), nullptr);
     } else {
-        EXPECT_EQ(solid, nullptr);
+        // Without OpenCASCADE the automatic backend is the native one, and
+        // asking for OpenCASCADE names the flag.
+        ASSERT_NE(solid, nullptr) << mio_last_error();
+        EXPECT_EQ(report.num_plane, 6);
+        mio_mesh_free(solid);
+        opts.backend = MIO_FIT_CAD_OCCT;
+        EXPECT_EQ(mio_fit_cad(m, nullptr, &opts, nullptr), nullptr);
         EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_OCCT"),
                   std::string::npos);
     }

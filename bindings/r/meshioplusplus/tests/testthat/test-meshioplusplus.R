@@ -1413,7 +1413,10 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
     on.exit(mio_release(bare$mesh), add = TRUE)
     expect_equal(bare$num_plane, 6)
   } else {
-    expect_error(mio_fit_cad(m), "MESHIOPLUSPLUS_WITH_OCCT")
+    fallback <- mio_fit_cad(m)
+    on.exit(mio_release(fallback$mesh), add = TRUE)
+    expect_equal(fallback$backend, "native")
+    expect_error(mio_fit_cad(m, backend = "occt"), "MESHIOPLUSPLUS_WITH_OCCT")
   }
   expect_error(mio_fit_cad(m, types = "blob"))
 

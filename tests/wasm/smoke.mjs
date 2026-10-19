@@ -2668,7 +2668,13 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
         // The lean artifact names the full one rather than a CMake flag.
         m.FS.writeFile('/lean.step', 'ISO-10303-21;\nEND-ISO-10303-21;\n');
         assert.throws(() => m.readMesh('/lean.step'), /full: true/);
-        assert.throws(() => m.fitCad(cubeSurface), /full: true/);
+        assert.throws(() => m.fitCad(cubeSurface, { backend: 'occt' }), /full: true/);
+        // Without OpenCASCADE, fitCad runs the kernel-free native backend.
+        const native = m.fitCad(cubeSurface, { stepPath: '/lean_cube.step' });
+        assert.equal(native.backend, 'native');
+        assert.equal(native.valid, true);
+        assert.equal(native.numPlane, 6);
+        assert.ok(m.FS.readFile('/lean_cube.step', { encoding: 'utf8' }).includes('PLANE('));
     }
 });
 

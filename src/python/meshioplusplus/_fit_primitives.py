@@ -439,6 +439,39 @@ def _fit_torus(patch, tol, max_it):
 _FITTERS = (None, _fit_plane, _fit_sphere, _fit_cylinder, _fit_cone, _fit_torus)
 
 
+def _primitive_distance(t, p, q):
+    """Unsigned distance of one point to a fitted primitive (``fit:patch_params``)."""
+    x = [float(p[0]), float(p[1]), float(p[2])]
+    d = [float(p[3]), float(p[4]), float(p[5])]
+    v = [float(q[k]) - x[k] for k in range(3)]
+    if t == 1:
+        return abs(v[0] * d[0] + v[1] * d[1] + v[2] * d[2])
+    if t == 2:
+        return abs(math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) - float(p[6]))
+    h = v[0] * d[0] + v[1] * d[1] + v[2] * d[2]
+    r = [v[k] - h * d[k] for k in range(3)]
+    rho = math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
+    if t == 3:
+        return abs(rho - float(p[6]))
+    if t == 4:
+        a = float(p[8]) * math.pi / 180.0
+        if h * math.cos(a) + rho * math.sin(a) < 0.0:
+            return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        return abs(rho * math.cos(a) - h * math.sin(a))
+    radial = rho - float(p[6])
+    return abs(math.sqrt(radial * radial + h * h) - float(p[7]))
+
+
+def _centre_misfit(t, p, patch):
+    """RMS distance of the facets' centres to a fitted primitive."""
+    total = 0.0
+    centres = patch["centres"]
+    for c in centres:
+        dd = _primitive_distance(t, p, c)
+        total += dd * dd
+    return math.sqrt(total / len(centres)) if len(centres) else 0.0
+
+
 def _fit_patch(patch, opts):
     params = np.full(10, np.nan)
     tol = opts["tolerance"] * patch["diag"] if opts["relative"] else opts["tolerance"]
@@ -459,9 +492,36 @@ def _fit_patch(patch, opts):
         if not math.isfinite(rms):
             continue
         if rms <= tol and frac >= opts["min_inlier_fraction"]:
+            # A sphere through two rims of points may as well be a cylinder,
+            # cone or torus: a cylinder or cone the facets' centres lie nearer
+            # to wins, and a torus (with a parameter to spare) when they lie
+            # under half as far from it.
+            best_t = t
+            if t == 2:
+                best_misfit = _centre_misfit(2, p, patch)
+                for u in (3, 4, 5):
+                    if not opts["types"] & (1 << u):
+                        continue
+                    other = _FITTERS[u](patch, tol, max_it)
+                    if other is None:
+                        continue
+                    o_rms, o_mx, o_frac = _stats(
+                        np.asarray(other[1], dtype=np.float64), tol
+                    )
+                    if not (
+                        math.isfinite(o_rms)
+                        and o_rms <= tol
+                        and o_frac >= opts["min_inlier_fraction"]
+                    ):
+                        continue
+                    misfit = _centre_misfit(u, other[0], patch)
+                    if misfit < (0.5 if u == 5 else 1.0) * best_misfit:
+                        best_misfit = misfit
+                        best_t = u
+                        p, rms, mx, frac = other[0], o_rms, o_mx, o_frac
             p = np.array(p, dtype=np.float64)
             p[0:3] += patch["shift"]
-            out.update(type=t, params=p, rms=rms, max=mx, fraction=frac)
+            out.update(type=best_t, params=p, rms=rms, max=mx, fraction=frac)
             return out
         if not have_best or rms < out["rms"]:
             have_best = True

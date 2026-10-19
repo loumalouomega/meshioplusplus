@@ -136,7 +136,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
 - **`radioss_anim`**: Everything is stored as 32-bit floats, so coordinates and data are approximate and integers come back as float64; the animation holds one state, so the data are the state's and field data other than the time are not kept.
 - **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
-- **`step`**: A faceted B-rep solid for CAD tools, read back through the optional OpenCASCADE backend as its triangulation: volume cells come back as their skin, and data is not kept. Checked only in a build with the backend.
+- **`step`**: A B-rep solid for CAD tools (coplanar facets merged into one face), read back through OpenCASCADE as its triangulation: volume cells come back as their skin, and data is not kept. Checked only in a build with OpenCASCADE (the wheels carry it).
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
 - **`su2`**: SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.
 - **`svg`**: A 2-D drawing, read back as planar (z = 0) from the scale and offset meshio++ records in a comment. Observed with `float_fmt=".17g"`: the default `.3f` keeps three decimals of a drawing 100 units wide, so corners come back to about 1.5e-5 of its width. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `svg:fill`.
@@ -162,4 +162,4 @@ Every registered format is meant to read and write, in both engines ([roadmap de
 | Format | Missing | Why, and the item that closes it |
 |---|---|---|
 | <span id="ansys-rst-cyclic">`ansys_rst_cyclic`</span> | writer | Exempt, not a gap: not a file of its own but the full rotor that a static cyclic-symmetry `.rst` expands to, read from `ansys_rst`'s file. Its write side is `ansys_rst`'s cyclic option (roadmap non-goals: every format reads and writes). |
-| <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through the optional OpenCASCADE backend (roadmap non-goals: every format reads and writes); STEP is the CAD format meshio++ writes. |
+| <span id="iges">`iges`</span> | writer | Exempt, not a gap: a CAD exchange format read through OpenCASCADE (roadmap non-goals: every format reads and writes); STEP is the CAD format meshio++ writes. |

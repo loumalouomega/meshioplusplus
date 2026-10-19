@@ -26,6 +26,7 @@ classifiers = [
   "Programming Language :: Python",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: GNU Lesser General Public License v2 (LGPLv2)",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -138,6 +139,13 @@ meshioplusplus-mcp = "meshioplusplus.mcp:main"
 minimum-version = "0.8"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/python/meshioplusplus"]
+# The wheels link OpenCASCADE statically (LGPL-2.1 with the OCCT exception;
+# build/build-occt.sh): its notice and licence texts ship in .dist-info.
+wheel.license-files = [
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+  "build/occt/share/licenses/opencascade/*.txt",
+]
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
 

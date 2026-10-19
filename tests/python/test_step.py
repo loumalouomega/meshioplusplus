@@ -1,8 +1,10 @@
-"""Tests for the write-only ``step`` format (roadmap §6.3.5.1): a closed
-surface as an AP214 faceted B-rep. The engines write the same bytes; an
-OpenCASCADE check (skipped without ``OCP``, from ``pip install cadquery-ocp``)
-reads each file back as a valid solid of the right volume. The C++ behaviour
-is pinned in ``tests/cpp/test_step.cpp``."""
+"""Tests for the ``step`` writer (roadmap §6.3.5.1): a closed surface as an
+AP214 B-rep, one face per facet (``faces="facet"``), per coplanar group
+(``"planar"``, the default without fitted patches) or per fitted patch
+(``"fitted"``). The engines write the same faceted bytes; an OpenCASCADE check
+(skipped without ``OCP``, from ``pip install cadquery-ocp``) reads each file
+back as a valid solid of the right volume. The C++ behaviour is pinned in
+``tests/cpp/test_step.cpp``."""
 
 import re
 
@@ -56,14 +58,15 @@ def _polygons():
     return mio.Mesh(b.points, [("polygon", [row for row in b.cells[0].data])])
 
 
+# mesh, solids, faces with faces="facet", faces with "planar", volume
 CASES = {
-    "box": (box_skin(3), 1, 54, 1.0),
-    "torus": (torus(n=16, m=12), 1, 192, None),
-    "inward": (_inward(), 1, 24, 1.0),
-    "two": (_two_boxes(), 2, 48, 2.0),
-    "tet": (_tet(), 1, 4, 1.0 / 6.0),
-    "warped": (_warped(), 1, 7, None),
-    "polygons": (_polygons(), 1, 6, 1.0),
+    "box": (box_skin(3), 1, 54, 6, 1.0),
+    "torus": (torus(n=16, m=12), 1, 192, 192, None),
+    "inward": (_inward(), 1, 24, 6, 1.0),
+    "two": (_two_boxes(), 2, 48, 12, 2.0),
+    "tet": (_tet(), 1, 4, 4, 1.0 / 6.0),
+    "warped": (_warped(), 1, 7, 7, None),
+    "polygons": (_polygons(), 1, 6, 6, 1.0),
 }
 
 
@@ -99,7 +102,7 @@ def test_reading_without_opencascade_is_named(tmp_path, fmt):
 )
 def test_opencascade_reads_back_the_faceted_solid(tmp_path):
     path = tmp_path / "box.step"
-    mio.write(path, box_skin(2))
+    mio.write(path, box_skin(2), faces="facet")
     mesh = mio.read(path)
     assert mesh.cells[0].type == "triangle"
     brep = mesh.info["brep"]
@@ -141,11 +144,26 @@ def test_deflection_controls_the_triangulation(tmp_path):
         mio.read(bad)
 
 
+@pytest.mark.skipif(
+    not HAS_OCCT, reason="core built without -DMESHIOPLUSPLUS_WITH_OCCT=ON"
+)
+def test_coplanar_facets_read_back_as_one_face(tmp_path):
+    path = tmp_path / "box.step"
+    mio.write(path, box_skin(2))
+    brep = mio.read(path).info["brep"]
+    assert len(brep["faces"]) == 6
+    assert all(f["trimmed"] and len(f["loops"]) == 1 for f in brep["faces"])
+
+
+@pytest.mark.parametrize("faces", ["facet", "planar"])
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_topology_is_closed_and_counted(tmp_path, name):
-    mesh, solids, faces, _volume = CASES[name]
+def test_topology_is_closed_and_counted(tmp_path, name, faces):
+    if faces != "facet" and _core is None:
+        pytest.skip("needs the compiled core")
+    mesh, solids, n_facet, n_planar, _volume = CASES[name]
     path = tmp_path / "part.stp"
-    mio.write(path, mesh)
+    mio.write(path, mesh, faces=faces)
+    faces = n_facet if faces == "facet" else n_planar
     text = path.read_text()
     assert text.startswith("ISO-10303-21;\n") and text.endswith("END-ISO-10303-21;\n")
     assert _count(text, "MANIFOLD_SOLID_BREP") == solids
@@ -176,7 +194,7 @@ def test_the_core_and_the_reference_write_the_same_bytes(tmp_path, name):
     mesh = CASES[name][0]
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    _core.step_write(str(tmp_path / "a" / "x.step"), mesh)
+    _core.step_write(str(tmp_path / "a" / "x.step"), mesh, "facet")
     _step.write(str(tmp_path / "b" / "x.step"), mesh)
     assert (tmp_path / "a" / "x.step").read_bytes() == (
         tmp_path / "b" / "x.step"
@@ -221,8 +239,11 @@ def test_lines_are_dropped_and_no_facets_is_refused(tmp_path):
         mio.write(tmp_path / "b.step", line)
 
 
+@pytest.mark.parametrize("faces", ["facet", "planar"])
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_opencascade_reads_a_valid_solid(tmp_path, name):
+def test_opencascade_reads_a_valid_solid(tmp_path, name, faces):
+    if faces != "facet" and _core is None:
+        pytest.skip("needs the compiled core")
     pytest.importorskip("OCP")
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp
@@ -232,9 +253,9 @@ def test_opencascade_reads_a_valid_solid(tmp_path, name):
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
 
-    mesh, solids, _faces, volume = CASES[name]
+    mesh, solids, _n_facet, _n_planar, volume = CASES[name]
     path = tmp_path / "x.step"
-    mio.write(path, mesh)
+    mio.write(path, mesh, faces=faces)
     reader = STEPControl_Reader()
     assert reader.ReadFile(str(path)) == IFSelect_RetDone
     reader.TransferRoots()

@@ -21,13 +21,18 @@
  * @brief Turn the fitted patches of a closed triangle skin into a CAD solid --
  * plane, sphere, cylinder, cone and torus faces trimmed by the patch
  * boundaries, sewn, checked and optionally written as STEP -- through the
- * optional OpenCASCADE backend.
+ * optional OpenCASCADE backend, or, without it, through the kernel-free
+ * native backend.
  *
  * The last step of the skin-to-CAD chain `segment` -> `fit_primitives` ->
  * `fit_cad`. The input is the closed, consistently wound skin those two
- * annotated: `segment:patch` per cell and the `fit:patch_*` field data. When
- * either is missing, both run first with their default options (a curvature
- * test or a tolerance of your own means running them yourself).
+ * annotated: `segment:patch` per cell and the `fit:patch_*` field data.
+ * Without `segment:patch`, `segment` runs first with `SegmentMethod::Primitive`
+ * (so a fillet comes apart from the planes it is tangent to) and
+ * `fit_primitives` at the same absolute tolerance, `1e-3` of the
+ * bounding-box diagonal; with the patches but without the fit table,
+ * `fit_primitives` runs with its default options (a curvature test or a
+ * tolerance of your own means running them yourself).
  *
  * ### How the solid is built
  *
@@ -35,8 +40,8 @@
  *    `mTypes`, becomes one analytic face on its fitted surface. A patch no
  *    primitive explains becomes, with `mFreeform`, a B-spline face (roadmap
  *    6.3.2, below). Every other surface cell (a patch neither explains, a
- *    type left out, a cell with no patch) becomes planar faces, one per
- *    facet, as the faceted `step` writer writes them.
+ *    type left out, a cell with no patch) becomes planar faces: each group of
+ *    edge-connected coplanar facets one face, its holes inner loops.
  *  - **Freeform faces.** The patch is flattened over its best-fit plane, or,
  *    when that folds it, unrolled around the axis its normals are most
  *    perpendicular to (a cylinder of the circle its points fit). A patch both
@@ -92,10 +97,18 @@
  *  - **Checks, and demotion.** A face that the B-rep check rejects, or that
  *    lies further than the tolerance from the skin (or leaves part of its
  *    patch further than that from the solid), is not kept: its patch is
- *    demoted to facets and the solid is rebuilt, for at most
- *    `mMaxDemotionRounds` rounds, after which every patch is faceted. So a
- *    feature the fitter cannot explain comes back faceted, never silently
- *    wrong.
+ *    demoted to facets and the solid is rebuilt. A failure is blamed on the
+ *    faces the B-rep check names, or that a free edge after sewing touches,
+ *    never on every patch at once; past `mMaxDemotionRounds` rounds each
+ *    round demotes those patches and their neighbours, so the loop ends with
+ *    the patches nothing blames still analytic. A face's distance allowance
+ *    is the tolerance or, when larger, the skin's own chordal sag over its
+ *    patch. So a feature the fitter cannot explain comes back faceted, never
+ *    silently wrong.
+ *  - **Merging.** With `mMergeFaces`, faces on one surface are merged and
+ *    collinear edges joined (`ShapeUpgrade_UnifySameDomain`), kept only when
+ *    the solid stays valid with the same volume, so the faceted remainder
+ *    comes out as polygons rather than triangles.
  *
  * ### Output
  *
@@ -114,9 +127,25 @@
  * millimetres, with the header timestamp pinned so the bytes are
  * reproducible.
  *
- * Built only with `-DMESHIOPLUSPLUS_WITH_OCCT=ON` (OpenCASCADE 7.6 or later,
- * LGPL-2.1 with the OCCT exception, linked dynamically); elsewhere `fit_cad`
- * throws `Unsupported` naming that flag, and `fit_cad_has_occt` is false.
+ * The OpenCASCADE backend is built only with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`
+ * (OpenCASCADE 7.6 or later, LGPL-2.1 with the OCCT exception, linked
+ * dynamically); elsewhere `FitCadBackend::Occt` throws `Unsupported` naming
+ * that flag, `fit_cad_has_occt` is false, and `Auto` runs the native backend.
+ *
+ * ### The native backend
+ *
+ * `FitCadBackend::Native` needs no CAD kernel: every accepted plane, sphere,
+ * cylinder, cone and torus patch whose type is in `mTypes` becomes one
+ * analytic STEP face, bounded by line, circle and polyline edges, and the
+ * rest coplanar polygons -- the kernel-free `step` writer with
+ * `StepFaces::Fitted`. A patch whose corners cannot be moved onto its
+ * surface within the tolerance is demoted to polygons. There are no
+ * freeform, fillet or thread faces and no re-meshing: the returned mesh is
+ * the skin itself with the `fit_cad:*` cell data, `mBrep` is empty,
+ * `mVolume` and `mVolumeRatio` are NaN (`mSkinVolume` is the skin's), and
+ * `mValid` is the writer's topological check (a closed shell, every edge
+ * used twice in opposite senses).
+ *
  * The work is serial, so the output does not depend on the thread count.
  */
 
@@ -153,6 +182,19 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
+
+/// Which engine `fit_cad` builds the solid with (since v17.9.0).
+enum class FitCadBackend : std::int32_t {
+    /// OpenCASCADE when the build carries it, else `Native`.
+    Auto = 0,
+    /// OpenCASCADE: analytic, freeform and feature faces, sewn and checked;
+    /// throws `Unsupported` in a build without it.
+    Occt = 1,
+    /// No CAD kernel: the patches `fit_primitives` explains become analytic
+    /// faces and the rest coplanar polygons, written by the kernel-free B-rep
+    /// `step` writer (`StepFaces::Fitted`); no freeform or feature faces.
+    Native = 2,
+};
 
 /// What `fit_cad` builds and how strictly it checks it.
 struct FitCadOptions {
@@ -193,6 +235,12 @@ struct FitCadOptions {
     /// the patch itself fits, with a straight or a rounded profile, of
     /// constant or varying pitch, and cut on a taper.
     bool mThreads = true;
+    /// Whether faces on one surface are merged and collinear edges joined
+    /// once the solid is built (`ShapeUpgrade_UnifySameDomain`), kept only
+    /// when the solid stays valid with the same volume (since v17.9.0).
+    bool mMergeFaces = true;
+    /// The engine (since v17.9.0).
+    FitCadBackend mBackend = FitCadBackend::Auto;
 };
 
 /// The re-meshed solid and what was built.
@@ -255,8 +303,10 @@ struct FitCadResult {
     std::int64_t mNumTaperedThread = 0;
     /// Of the thread faces, those whose pitch varies along them (v17.2.0).
     std::int64_t mNumVariablePitchThread = 0;
-    /// The solid as NURBS faces, loops and edges.
+    /// The solid as NURBS faces, loops and edges (empty from `Native`).
     BrepInfo mBrep;
+    /// The engine that built the solid: `Occt` or `Native` (since v17.9.0).
+    FitCadBackend mBackend = FitCadBackend::Occt;
 };
 
 /**

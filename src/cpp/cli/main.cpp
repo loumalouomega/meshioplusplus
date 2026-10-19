@@ -409,8 +409,8 @@ void print_usage(std::ostream& os) {
           "  iga-evaluate            Evaluate a NURBS patch at parametric coordinates (JSON)\n"
           "  to-cad                  Fitted patches as a STEP solid with analytic and\n"
           "                            freeform B-spline, fillet and thread faces (--cad-json: as\n"
-          "                            Kratos CAD JSON too)\n"
-          "                            (needs a build with -DMESHIOPLUSPLUS_WITH_OCCT=ON)\n"
+          "                            Kratos CAD JSON too; without OpenCASCADE, analytic\n"
+          "                            faces only)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
           "  contact-pairs          Project slave Point regions onto master facets\n"
@@ -1753,6 +1753,15 @@ int cmd_feature_edges(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// A segment method by name.
+meshioplusplus::SegmentMethod cli_segment_method(const std::string& rName, const char* pCommand) {
+    if (rName == "angle")
+        return meshioplusplus::SegmentMethod::Angle;
+    if (rName == "primitive")
+        return meshioplusplus::SegmentMethod::Primitive;
+    throw std::runtime_error(std::string(pCommand) + ": the method must be 'angle' or 'primitive'");
+}
+
 int cmd_segment(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -1763,6 +1772,8 @@ int cmd_segment(const std::vector<std::string>& rArgs) {
                                   {"min-patch-cells", {}, true},
                                   {"region", {}, true},
                                   {"prefix", {}, true},
+                                  {"method", {}, true},
+                                  {"tolerance", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -1783,6 +1794,10 @@ int cmd_segment(const std::vector<std::string>& rArgs) {
     options.mRegion = opt_value(p, "region");
     if (has_opt(p, "prefix"))
         options.mPrefix = opt_value(p, "prefix");
+    if (has_opt(p, "method"))
+        options.mMethod = cli_segment_method(opt_value(p, "method"), "segment");
+    if (has_opt(p, "tolerance"))
+        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
     meshioplusplus::SegmentResult r = meshioplusplus::segment(mesh, options);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
@@ -1797,7 +1812,11 @@ int cmd_segment(const std::vector<std::string>& rArgs) {
     } else if (!has_flag(p, "quiet")) {
         char deg[32];
         meshioplusplus::detail::snprintf_c(deg, sizeof(deg), "%g", options.mFeatureAngleDeg);
-        std::cout << "segment (" << deg << " degrees): " << r.mNumPatches << " patch(es)\n";
+        std::cout << "segment ("
+                  << (options.mMethod == meshioplusplus::SegmentMethod::Primitive
+                          ? std::string("primitive")
+                          : std::string(deg) + " degrees")
+                  << "): " << r.mNumPatches << " patch(es)\n";
         std::cout << "  merged:        " << r.mNumMerged << "\n";
         std::cout << "  feature edges: " << r.mNumFeatureEdges << "\n";
         std::cout << "  open edges:    " << r.mNumBoundaryEdges << "\n";
@@ -2138,6 +2157,8 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
 int cmd_to_cad(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
+                                  {"segment-method", {}, true},
+                                  {"segment-tolerance", {}, true},
                                   {"curvature-tolerance", {}, true},
                                   {"min-patch-cells", {}, true},
                                   {"fit-tolerance", {}, true},
@@ -2152,6 +2173,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"no-freeform-split", {}, false},
                                   {"no-fillets", {}, false},
                                   {"no-threads", {}, false},
+                                  {"no-merge-faces", {}, false},
+                                  {"backend", {}, true},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -2160,21 +2183,46 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("to-cad requires exactly INFILE and OUTFILE.step");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
-    // An unlabelled skin is segmented and fitted here, so the two tolerances
-    // that matter most for a scan are reachable from the command line.
+    // An unlabelled skin is segmented and fitted here, so the tolerances that
+    // matter most for a scan are reachable from the command line. The
+    // primitive method (the default) fits at its own tolerance, as a length.
+    meshioplusplus::FitPrimitivesOptions fo;
     if (!mesh.HasCellData("segment:patch")) {
         meshioplusplus::SegmentOptions so;
+        so.mMethod = cli_segment_method(
+            has_opt(p, "segment-method") ? opt_value(p, "segment-method") : "primitive", "to-cad");
+        if (has_opt(p, "segment-tolerance"))
+            so.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "segment-tolerance"));
         if (has_opt(p, "curvature-tolerance"))
             so.mCurvatureTolerance =
                 meshioplusplus::detail::stod_c(opt_value(p, "curvature-tolerance"));
         if (has_opt(p, "min-patch-cells"))
             so.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
         mesh = meshioplusplus::segment(mesh, so).mMesh;
+        if (so.mMethod == meshioplusplus::SegmentMethod::Primitive) {
+            double lo[3] = {0.0, 0.0, 0.0}, hi[3] = {0.0, 0.0, 0.0};
+            const NDArray& pts = mesh.Points();
+            const std::size_t dim = mesh.PointDim();
+            for (std::size_t i = 0; i < mesh.NumPoints(); ++i)
+                for (std::size_t k = 0; k < dim && k < 3; ++k) {
+                    const double v = meshioplusplus::detail::read_double(pts, i * dim + k);
+                    lo[k] = i == 0 ? v : std::min(lo[k], v);
+                    hi[k] = i == 0 ? v : std::max(hi[k], v);
+                }
+            const double diag =
+                std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
+            if (diag > 0.0) {
+                fo.mTolerance = so.mTolerance * diag;
+                fo.mRelative = false;
+            }
+        }
     }
     if (!mesh.HasFieldData("fit:patch_id")) {
-        meshioplusplus::FitPrimitivesOptions fo;
-        if (has_opt(p, "fit-tolerance"))
+        if (has_opt(p, "fit-tolerance")) {
             fo.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "fit-tolerance"));
+            fo.mRelative = true;
+        }
         mesh = meshioplusplus::fit_primitives(mesh, fo).mMesh;
     }
     meshioplusplus::FitCadOptions options;
@@ -2195,7 +2243,20 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     options.mFreeformSplit = !has_flag(p, "no-freeform-split");
     options.mFillets = !has_flag(p, "no-fillets");
     options.mThreads = !has_flag(p, "no-threads");
+    options.mMergeFaces = !has_flag(p, "no-merge-faces");
+    if (has_opt(p, "backend")) {
+        const std::string backend = opt_value(p, "backend");
+        if (backend == "auto")
+            options.mBackend = meshioplusplus::FitCadBackend::Auto;
+        else if (backend == "occt")
+            options.mBackend = meshioplusplus::FitCadBackend::Occt;
+        else if (backend == "native")
+            options.mBackend = meshioplusplus::FitCadBackend::Native;
+        else
+            throw std::runtime_error("to-cad: the backend must be 'auto', 'occt' or 'native'");
+    }
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
+    const char* engine = r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
     if (has_opt(p, "mesh-out"))
         write_mesh_cli(opt_value(p, "mesh-out"), r.mMesh, "");
     if (has_opt(p, "cad-json"))
@@ -2204,6 +2265,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         meshioplusplus::cli::JsonOut json(std::cout);
         json.BeginObject();
         json.Field("valid", r.mValid);
+        json.Field("backend", std::string(engine));
         json.Field("tolerance", r.mTolerance);
         json.Field("volume", r.mVolume);
         json.Field("skin_volume", r.mSkinVolume);
@@ -2235,8 +2297,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_variable_pitch_thread", r.mNumVariablePitchThread);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
-        std::cout << "to-cad: " << r.mNumFaces << " face(s) in " << r.mNumSolids << " solid(s), "
-                  << (r.mValid ? "valid" : "NOT valid") << "\n";
+        std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in "
+                  << r.mNumSolids << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << "\n";
         std::cout << "  plane:     " << r.mNumPlane << "\n";
         std::cout << "  sphere:    " << r.mNumSphere << "\n";
         std::cout << "  cylinder:  " << r.mNumCylinder << "\n";

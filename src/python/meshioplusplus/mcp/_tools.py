@@ -1998,10 +1998,14 @@ def tool_segment(
     min_patch_cells=1,
     region="",
     prefix="patch",
+    method="angle",
+    tolerance=1e-3,
 ):
     """Split a surface into smooth patches by region growing, bounded by its
-    feature edges; written with cell data segment:patch, field data
-    segment:adjacency and one cell region per patch (<prefix>:<k>)."""
+    feature edges (method="angle") or where the plane, sphere, cylinder, cone
+    or torus its facets lie on changes (method="primitive"); written with cell
+    data segment:patch, field data segment:adjacency and one cell region per
+    patch (<prefix>:<k>)."""
     mesh = _load(input_path, input_format)
     out, report = segment(
         mesh,
@@ -2012,6 +2016,8 @@ def tool_segment(
         region=region,
         prefix=prefix,
         return_report=True,
+        method=method,
+        tolerance=tolerance,
     )
     return _result(
         _store(out, output_path, output_format),
@@ -2176,7 +2182,7 @@ def tool_fit_cad(
     mesh_output_path=None,
     curvature_tolerance=0.0,
     min_patch_cells=1,
-    fit_tolerance=1e-3,
+    fit_tolerance=None,
     tolerance=None,
     exact_edges=True,
     types=None,
@@ -2189,32 +2195,49 @@ def tool_fit_cad(
     freeform_split=True,
     fillets=True,
     threads=True,
+    segment_method="primitive",
+    segment_tolerance=1e-3,
+    merge_faces=True,
+    backend="auto",
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
-    faces (and, for what no primitive explains, rolling-ball fillet, thread
-    flank and freeform B-spline ones), written to output_path as STEP (needs a
-    core built with OpenCASCADE), and to cad_json_output_path as Kratos CAD
-    JSON. A skin without segment:patch / fit:patch_* is segmented
-    (curvature_tolerance, min_patch_cells) and fitted (fit_tolerance) first."""
+    faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
+    freeform B-spline ones for what no primitive explains), written to
+    output_path as STEP, and to cad_json_output_path as Kratos CAD JSON. A skin
+    without segment:patch is segmented (segment_method, segment_tolerance,
+    curvature_tolerance, min_patch_cells) and fitted (fit_tolerance, by
+    default the primitive segmentation's own as a length) first. backend
+    "native" (and "auto" without OpenCASCADE) needs no CAD kernel."""
     from .._fit_cad import has_occt
 
-    if not has_occt():
+    occt = has_occt()
+    if backend == "occt" and not occt:
         # The guarded error shape, plus the capability itself.
         return {
-            "error": "meshio++: fit_cad: this build has no OpenCASCADE backend; "
-            "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)",
+            "error": "meshio++: fit_cad: this build has no OpenCASCADE backend "
+            "(the PyPI wheels carry it); rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON "
+            "(OpenCASCADE 7.6 or later), or use backend='native'",
             "error_type": "NotImplementedError",
             "occt_available": False,
         }
     mesh = _load(input_path, input_format)
+    fit_kwargs = {} if fit_tolerance is None else {"tolerance": fit_tolerance}
     if "segment:patch" not in mesh.cell_data:
         mesh = segment(
             mesh,
             curvature_tolerance=curvature_tolerance,
             min_patch_cells=min_patch_cells,
+            method=segment_method,
+            tolerance=segment_tolerance,
         )
+        if segment_method == "primitive" and fit_tolerance is None:
+            # Fit at the tolerance the patches were grown at, as a length.
+            pts = np.asarray(mesh.points, dtype=np.float64)
+            diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+            if diag > 0.0:
+                fit_kwargs = {"tolerance": segment_tolerance * diag, "relative": False}
     if "fit:patch_id" not in mesh.field_data:
-        mesh = fit_primitives(mesh, tolerance=fit_tolerance)
+        mesh = fit_primitives(mesh, **fit_kwargs)
     step_path = _resolve(output_path, for_write=True)
     out, report = fit_cad(
         mesh,
@@ -2231,9 +2254,11 @@ def tool_fit_cad(
         fillets=fillets,
         threads=threads,
         return_report=True,
+        merge_faces=merge_faces,
+        backend=backend,
     )
     _cache_invalidate(step_path)
-    extra = {"step_path": step_path, "occt_available": True, **report}
+    extra = {"step_path": step_path, "occt_available": occt, **report}
     if cad_json_output_path:
         cad_path = _resolve(cad_json_output_path, for_write=True)
         write(cad_path, out, file_format="cad_json")
@@ -4680,7 +4705,7 @@ TOOL_REGISTRY = OrderedDict(
         ),
         (
             "fit_cad",
-            {"fn": tool_fit_cad, "wraps": ("fit_cad",), "gated": "occt"},
+            {"fn": tool_fit_cad, "wraps": ("fit_cad",), "gated": None},
         ),
         (
             "iga_refine",

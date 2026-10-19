@@ -183,7 +183,8 @@ def main(argv=None):
 
     parser = subparsers.add_parser(
         "to-cad",
-        help="Fitted patches as a STEP solid with analytic faces (needs OpenCASCADE)",
+        help="Fitted patches as a STEP solid with analytic, freeform, fillet and thread "
+        "faces (analytic only without OpenCASCADE)",
     )
     _to_cad.add_args(parser)
     parser.set_defaults(func=_to_cad.to_cad_cmd)

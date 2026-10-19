@@ -91,11 +91,15 @@ class MeshioplusplusConan(ConanFile):
         # flip the CMake flag (ADIOS2_DIR / TECIO_ROOT). Off by default.
         "with_adios2": False,
         "with_tecio": False,
-        # OpenCASCADE (fit_cad) is LGPL-2.1 and bring-your-own like KaHIP: the
-        # option only flips the CMake flag and the consumer supplies
-        # OpenCASCADE_DIR (ConanCenter's opencascade recipe is not required, so
-        # the package never pulls an LGPL dependency unasked). Off by default.
-        "with_occt": False,
+        # OpenCASCADE (fit_cad's kernel, STEP/IGES reading; LGPL-2.1 with the
+        # OCCT exception) is on by default and auto-detected, as in the CMake
+        # build: the option only flips the CMake flag, and the consumer supplies
+        # OpenCASCADE_DIR (or a prefix) -- ConanCenter's opencascade recipe, 7.9
+        # and later with a tcl/tk/OpenGL/X11 tree, is not required, so the
+        # package never builds one unasked. Where none is found, fit_cad falls
+        # back to its kernel-free native backend (with_occt=False skips the
+        # probe). build/build-occt.sh builds the pinned static one.
+        "with_occt": True,
         # Unlike with_eigen/with_json (submodules, off by default), gidpost is
         # a vendored hardcopy that IS in exports_sources, so this defaults True
         # like with_hdf5/with_netcdf/with_zlib -- consistent with the CMake

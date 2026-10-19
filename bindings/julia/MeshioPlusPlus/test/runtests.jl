@@ -1565,8 +1565,11 @@ end
         @test bare.num_plane == 6
         close(bare.mesh)
     else
+        fallback = fit_cad(cube)
+        @test fallback.backend == "native"
+        close(fallback.mesh)
         err = try
-            fit_cad(cube)
+            fit_cad(cube; backend="occt")
             nothing
         catch e
             e

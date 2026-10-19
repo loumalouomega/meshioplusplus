@@ -176,13 +176,13 @@ private:
         while (last < mBuf.size() && !text_is_blank(mBuf[last]))
             ++last;
         const auto token = mBuf.substr(first, last - first);
-        char small[64];
+        char text_buf[64];
         std::string large;
         const char* start;
-        if (token.size() < sizeof small) {
-            token.copy(small, token.size());
-            small[token.size()] = '\0';
-            start = small;
+        if (token.size() < sizeof text_buf) {
+            token.copy(text_buf, token.size());
+            text_buf[token.size()] = '\0';
+            start = text_buf;
         } else {
             large.assign(token);
             start = large.c_str();
@@ -267,13 +267,13 @@ inline bool parse_double_token(std::string_view Token, double& rOut) {
         return false;
     // parse_double reads a NUL-terminated string; a token is copied into one.
     // Tokens are short, so this costs little next to the parse itself.
-    char small[64];
+    char text_buf[64];
     std::string large;
     const char* first;
-    if (Token.size() < sizeof small) {
-        Token.copy(small, Token.size());
-        small[Token.size()] = '\0';
-        first = small;
+    if (Token.size() < sizeof text_buf) {
+        Token.copy(text_buf, Token.size());
+        text_buf[Token.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Token);
         first = large.c_str();
@@ -379,13 +379,13 @@ inline std::uint64_t strtoull_token(std::string_view Token) {
  * when there is none -- the lenient parse, which ignores what follows.
  */
 inline double parse_double_prefix(std::string_view Token) {
-    char small[64];
+    char text_buf[64];
     std::string large;
     const char* first;
-    if (Token.size() < sizeof small) {
-        Token.copy(small, Token.size());
-        small[Token.size()] = '\0';
-        first = small;
+    if (Token.size() < sizeof text_buf) {
+        Token.copy(text_buf, Token.size());
+        text_buf[Token.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Token);
         first = large.c_str();

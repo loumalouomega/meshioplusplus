@@ -249,17 +249,18 @@ RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
         return c;
 
     // The candidates in ascending id: flags, then a scan.
-    std::vector<std::uint64_t> near(n);
-    parallel_for_bw(
-        n, [&](std::size_t i) { near[i] = std::fabs(c.mDistance[i]) <= WarpThreshold ? 1 : 0; });
+    std::vector<std::uint64_t> near_band(n);
+    parallel_for_bw(n, [&](std::size_t i) {
+        near_band[i] = std::fabs(c.mDistance[i]) <= WarpThreshold ? 1 : 0;
+    });
     std::vector<std::uint64_t> at(n);
     const std::uint64_t ncand =
-        parallel_exclusive_scan(near.data(), n, at.data(), std::uint64_t{0});
+        parallel_exclusive_scan(near_band.data(), n, at.data(), std::uint64_t{0});
     if (ncand == 0)
         return c;
     std::vector<std::size_t> candidates(ncand);
     parallel_for_bw(n, [&](std::size_t i) {
-        if (near[i])
+        if (near_band[i])
             candidates[at[i]] = i;
     });
 

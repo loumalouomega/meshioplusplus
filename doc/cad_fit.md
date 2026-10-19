@@ -1,11 +1,11 @@
 # Skin to CAD
 
-A triangle skin — an STL from a scan or a 3-D-printing download, the output of [`extract_skin`](/extract_skin) or [`isosurface`](/isosurface) — is thousands of flat facets nobody can select, dimension or edit in a CAD tool. Reverse engineering it means recovering the surfaces it was made of: planes, cylinders, cones, spheres and tori, then freeform patches, sewn into a solid. meshio++ does the mesh-side half of that work with no CAD kernel in the loop, and the CAD half through an optional OpenCASCADE backend:
+A triangle skin — an STL from a scan or a 3-D-printing download, the output of [`extract_skin`](/extract_skin) or [`isosurface`](/isosurface) — is thousands of flat facets nobody can select, dimension or edit in a CAD tool. Reverse engineering it means recovering the surfaces it was made of: planes, cylinders, cones, spheres and tori, then freeform patches, sewn into a solid. meshio++ does the mesh-side half of that work with no CAD kernel in the loop, writes the fitted primitives as a clean STEP solid without one too, and does the rest of the CAD half through OpenCASCADE, which the PyPI wheels and the release binaries include:
 
-1. [**`segment`**](/segment) groups the facets into smooth patches bounded by the feature edges, with a curvature test that separates a fillet from its tangent planes;
+1. [**`segment`**](/segment) groups the facets into patches: with [`method="primitive"`](/segment#primitive-method), one per plane, cylinder, cone, sphere or torus the facets lie on (a fillet apart from its tangent planes, a bore whole), or by feature edges and a curvature test;
 2. [**`fit_primitives`**](/fit_primitives) fits a plane, sphere, cylinder, cone or torus to each patch and reports the residual, refusing any fit outside the tolerance;
-3. the [**`step`**](/formats/step) writer hands the closed skin to CAD as a faceted solid;
-4. [**`fit_cad`**](/fit_cad), with OpenCASCADE, turns the fitted patches into analytic CAD faces trimmed by the patch boundaries, and a patch no primitive explains into a [freeform B-spline face](/fit_cad#freeform-faces), sews them into a checked solid and writes STEP a CAD tool can edit, or [Kratos CAD JSON](/formats/cad_json) for isogeometric analysis; a patch it cannot build comes back faceted.
+3. the [**`step`**](/formats/step) writer hands the closed skin to CAD as a B-rep solid with no CAD kernel: each fitted patch one analytic face and each flat region one planar face with its holes, not one face per triangle;
+4. [**`fit_cad`**](/fit_cad) runs the whole chain on a raw skin; with OpenCASCADE it turns the fitted patches into analytic CAD faces trimmed by the patch boundaries, and a patch no primitive explains into a [freeform B-spline face](/fit_cad#freeform-faces), sews them into a checked solid and writes STEP a CAD tool can edit, or [Kratos CAD JSON](/formats/cad_json) for isogeometric analysis; a patch it cannot build comes back faceted.
 
 ```python
 import meshioplusplus as mp
@@ -19,8 +19,10 @@ for pid, t, p in zip(fd["fit:patch_id"], fd["fit:patch_type"], fd["fit:patch_par
     if t == 3:                                          # a cylinder: a hole or a boss
         print(f"patch {pid}: radius {p[6]:.3f} along {p[3:6]}")
 
-mp.write("part.step", skin)                            # opens in CAD as a faceted solid
-solid, rep = mp.fit_cad(fit, "part_cad.step", return_report=True)  # analytic faces (OpenCASCADE)
+mp.write("part.step", fit)                             # analytic faces, no CAD kernel
+solid, rep = mp.fit_cad(fit, "part_cad.step", return_report=True)  # trimmed and checked (OpenCASCADE)
+
+mp.fit_cad(mp.read("bracket.stl"), "bracket.step")     # a CAD-exported STL in one call
 ```
 
 ![A noisy turned part segmented into six patches: base, wall, fillet, shoulder, cone and dome](/images/skin_to_cad_patches.png)
@@ -31,9 +33,17 @@ The part above is a turned part tessellated into 2,240 facets with every point m
 
 The same chain is a [pipeline](/pipeline) — `[{"Op": "Segment"}, {"Op": "FitPrimitives"}]` — and three verbs of both CLIs (`segment`, `fit-primitives`, and `convert` to a `.step` file); every language surface and the MCP server expose it. Notebook [34](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/34_skin_to_cad.ipynb) builds that part, segments it, fits it, writes it as STEP and, where the core carries OpenCASCADE, builds its analytic solid.
 
+## One face per surface
+
+A CAD-exported STL — a bracket, a housing — is tessellated straight from its faces, so every point lies on a plane, cylinder or other primitive and a rounded end meets the flat it is tangent to with no crease at all. Segmenting it by angles merges the two and no primitive fits the result; writing it face by face gives a solid of a thousand triangles. `fit_cad` without patches, or `segment(method="primitive")` followed by `fit_primitives` and the `step` writer, follows the reverse-engineering approach of [stlToSolid](https://github.com/Crypto69/stlToSolid) and [stl2curves](https://github.com/Duvdivan/stl2curves) instead: patches grow while one primitive explains them, so each flat becomes one planar face with its holes as inner loops, each bore and rounded end one cylindrical face, and the edges between them lines and circles. On an L-shaped bracket with a rounded corner, a bore and two screw holes, tessellated by OpenCASCADE as a CAD exporter would, that is sixteen faces — twelve planes and four cylinders — and the solid's exact volume, with or without OpenCASCADE.
+
+![A plate with a through-hole and one rounded corner, segmented with the primitive method: six planes and two cylinders](/images/skin_to_cad_plate_patches.png)
+
+![Its STEP read back through OpenCASCADE: eight faces, the top one with the hole as an inner loop, instead of one face per triangle](/images/skin_to_cad_plate_step.png)
+
 ## Analytic faces
 
-With a core built `-DMESHIOPLUSPLUS_WITH_OCCT=ON`, [`fit_cad`](/fit_cad) writes the fitted surfaces themselves: on the turned part above, the base and the shoulder become planes, the wall a cylinder, the fillet a torus, the cone a cone and the dome a sphere, six faces in one valid solid within `1e-2` of the skin. Where a fillet meets its wall tangentially the edge between them is a B-spline; elsewhere it is the exact circle where the two surfaces meet. The same chain runs as the pipeline step `FitCad` and as the `to-cad` verb of both CLIs, and every surface exposes it, WASM through its [full artifact](/wasm#lean-and-full-builds).
+Every build writes the fitted surfaces as STEP faces (the [`step`](/formats/step) writer, and `fit_cad`'s [native backend](/fit_cad#the-native-backend)). With OpenCASCADE, which the PyPI wheels and the release binaries include, [`fit_cad`](/fit_cad) also trims, sews and checks them: on the turned part above, the base and the shoulder become planes, the wall a cylinder, the fillet a torus, the cone a cone and the dome a sphere, six faces in one valid solid within `1e-2` of the skin. Where a fillet meets its wall tangentially the edge between them is a B-spline; elsewhere it is the exact circle where the two surfaces meet. The same chain runs as the pipeline step `FitCad` and as the `to-cad` verb of both CLIs, and every surface exposes it, WASM through its [full artifact](/wasm#lean-and-full-builds).
 
 ## Fillets, threads and curled patches
 

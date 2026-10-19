@@ -81,10 +81,10 @@ extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, S
 extern SEXP R_mio_compute_curvature(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_normals(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_feature_edges(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_segment(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_segment(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_fit_primitives(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_fit_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                          SEXP);
+                          SEXP, SEXP, SEXP);
 extern SEXP R_mio_has_occt(void);
 extern SEXP R_mio_render(SEXP, SEXP);
 extern SEXP R_mio_render_text(SEXP, SEXP, SEXP);
@@ -274,9 +274,9 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_compute_curvature, 8),
                                               CALLDEF(R_mio_compute_normals, 7),
                                               CALLDEF(R_mio_feature_edges, 7),
-                                              CALLDEF(R_mio_segment, 7),
+                                              CALLDEF(R_mio_segment, 9),
                                               CALLDEF(R_mio_fit_primitives, 7),
-                                              CALLDEF(R_mio_fit_cad, 13),
+                                              CALLDEF(R_mio_fit_cad, 15),
                                               CALLDEF(R_mio_has_occt, 0),
                                               CALLDEF(R_mio_render, 2),
                                               CALLDEF(R_mio_render_text, 3),

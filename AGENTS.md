@@ -22,7 +22,8 @@ Run from the repository root unless specified otherwise.
 | Task | Command / notes |
 | --- | --- |
 | Development environment | `uv venv --python 3.12 .venv` if needed; install build requirements from `pyproject.toml` before using `--no-build-isolation` |
-| Editable native build | `CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON" uv pip install --python .venv --no-build-isolation -e .` |
+| Editable native build | `CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON" uv pip install --python .venv --no-build-isolation -e .`; OpenCASCADE (on by default) is linked when found, e.g. `OpenCASCADE_ROOT=<prefix>` |
+| OpenCASCADE | `build/build-occt.sh <prefix>` builds the pinned static kernel the wheels and CLI binaries link (`build/occt-recipe.sh` holds the pin, shared with the WASM full build); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
 | Standard editable install | `pip install -e ".[all]"` in a virtual environment |
 | Python tests | `.venv/bin/python -m pytest tests/python/`; scope to affected files while developing |
 | Python lint | `isort --check <files>`, `black --check <files>`, `flake8 <files>`; full hooks: `pre-commit run -a` |

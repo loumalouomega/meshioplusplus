@@ -515,7 +515,10 @@ struct _CSegmentOpts
     normal_tolerance::Cdouble
     curvature_tolerance::Cdouble
     min_patch_cells::Int64
-    reserved::NTuple{6,Int64}
+    method::Int32
+    reserved32::Int32
+    tolerance::Cdouble
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_segment_report`."""
@@ -578,8 +581,10 @@ struct _CFitCadOpts
     freeform_split::Int32
     fillets::Int32
     threads::Int32
-    reserved1::Int32
-    reserved::NTuple{2,Int64}
+    merge_faces::Int32
+    backend::Int32
+    reserved32::Int32
+    reserved::NTuple{1,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report`."""
@@ -618,7 +623,8 @@ struct _CFitCadReportEx
     num_conic_blend::Int64
     num_tapered_thread::Int64
     num_variable_pitch_thread::Int64
-    reserved::NTuple{11,Int64}
+    backend::Int64
+    reserved::NTuple{10,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),

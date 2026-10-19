@@ -55,7 +55,7 @@ jobs:
           - arch: arm64
             os: ubuntu-24.04-arm
           - name: fallback
-            opts: "-o meshioplusplus/*:with_hdf5=False -o meshioplusplus/*:with_netcdf=False -o meshioplusplus/*:with_zlib=False"
+            opts: "-o meshioplusplus/*:with_hdf5=False -o meshioplusplus/*:with_netcdf=False -o meshioplusplus/*:with_zlib=False -o meshioplusplus/*:with_occt=False"
           - name: full
             opts: "-o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True -o meshioplusplus/*:with_zlib=True"
     steps:

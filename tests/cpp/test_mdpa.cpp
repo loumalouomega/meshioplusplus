@@ -1346,3 +1346,19 @@ TEST(Mdpa, AnExplicitMdpaInfoStillWinsOverTheMeshChannel) {
     std::remove(path.c_str());
     std::remove(out.c_str());
 }
+
+TEST(Mdpa, CommentedBlockEndsAndLoadConditions) {
+    // Kratos names the entity again after the end of a block (`End Elements //
+    // SmallDisplacementElement3D4N`), and a surface load is a condition on the
+    // same triangle geometry as a surface condition.
+    const Mesh out = mdpa_read_string(
+        "Begin Properties 0\nEnd Properties // 0\n"
+        "Begin Nodes\n1 0.0 0.0 0.0\n2 1.0 0.0 0.0\n3 0.0 1.0 0.0\n4 0.0 0.0 1.0\nEnd Nodes\n"
+        "Begin Elements SmallDisplacementElement3D4N\n1 0 1 2 3 4\n"
+        "End Elements // SmallDisplacementElement3D4N\n"
+        "Begin Conditions SurfaceLoadCondition3D3N\n1 0 1 2 3\n"
+        "End Conditions // SurfaceLoadCondition3D3N\n");
+    ASSERT_EQ(out.NumCellBlocks(), 2u);
+    EXPECT_EQ(std::string(out.Cells(0).Type()), "tetra");
+    EXPECT_EQ(std::string(out.Cells(1).Type()), "triangle");
+}

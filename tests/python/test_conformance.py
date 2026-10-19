@@ -24,8 +24,8 @@ WRITABLE = sorted(meshioplusplus.formats()["writable"])
 # Writers (or the reader of a round trip) with no Python engine that exist only
 # in some native builds, keyed to the core flag that says so. The declaration
 # describes a build that has them; a build without one (the Windows CI job has
-# no zlib, so no gidpost; the wheels have no OpenCASCADE, so STEP does not read
-# back) skips.
+# no zlib, so no gidpost; a source build that found no OpenCASCADE cannot read
+# STEP back) skips.
 _NEEDS_CORE = {"gid": "__has_gidpost__", "step": "__has_occt__"}
 
 

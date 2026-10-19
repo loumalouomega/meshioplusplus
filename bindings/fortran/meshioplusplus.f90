@@ -230,7 +230,10 @@ module meshioplusplus
         real(c_double) :: normal_tolerance = 0.0_c_double
         real(c_double) :: curvature_tolerance = 0.0_c_double
         integer(c_int64_t) :: min_patch_cells = 1
-        integer(c_int64_t) :: reserved(6) = 0
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: tolerance = 1.0e-3_c_double
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_segment_report`.
@@ -281,8 +284,10 @@ module meshioplusplus
         integer(c_int32_t) :: freeform_split = 1
         integer(c_int32_t) :: fillets = 1
         integer(c_int32_t) :: threads = 1
-        integer(c_int32_t) :: reserved1 = 0
-        integer(c_int64_t) :: reserved(2) = 0
+        integer(c_int32_t) :: merge_faces = 1
+        integer(c_int32_t) :: backend = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report`.
@@ -321,7 +326,8 @@ module meshioplusplus
         integer(c_int64_t) :: num_conic_blend = 0
         integer(c_int64_t) :: num_tapered_thread = 0
         integer(c_int64_t) :: num_variable_pitch_thread = 0
-        integer(c_int64_t) :: reserved(11) = 0
+        integer(c_int64_t) :: backend = 0
+        integer(c_int64_t) :: reserved(10) = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -5792,11 +5798,15 @@ contains
     !> Split this surface into smooth patches by region growing, bounded by its
     !> feature edges: the input plus cell data `segment:patch`, field data
     !> `segment:adjacency` and one cell region per patch (`<prefix>:<k>`).
-    !> `feature_angle` defaults to 30; the tolerances default to off. See
+    !> `feature_angle` defaults to 30; the tolerances default to off.
+    !> `method = 'primitive'` (v17.9.0; default 'angle') ends a patch where the
+    !> surface its facets lie on changes, at `tolerance` (default 1e-3 of the
+    !> diagonal), so a fillet comes apart from its tangent planes. See
     !> doc/segment.md.
     function mesh_segment(self, feature_angle, normal_tolerance, curvature_tolerance, &
                           min_patch_cells, region, prefix, num_patches, num_merged, &
-                          num_feature_edges, num_boundary_edges, stat, errmsg) result(out)
+                          num_feature_edges, num_boundary_edges, stat, errmsg, &
+                          method, tolerance) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in), optional :: feature_angle, normal_tolerance
         real(real64), intent(in), optional :: curvature_tolerance
@@ -5806,6 +5816,8 @@ contains
         integer(int64), intent(out), optional :: num_feature_edges, num_boundary_edges
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: method
+        real(real64), intent(in), optional :: tolerance
         type(mio_mesh) :: out
         type(c_ptr) :: res
         type(mio_segment_opts_t) :: opts
@@ -5827,6 +5839,19 @@ contains
             prefix_buf = trim(prefix)//c_null_char
             opts%prefix = c_loc(prefix_buf(1:1))
         end if
+        if (present(method)) then
+            select case (trim(method))
+            case ('angle')
+                opts%method = 0
+            case ('primitive')
+                opts%method = 1
+            case default
+                call handle_failure('segment', "method must be 'angle' or 'primitive'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
         res = c_mio_segment(self%handle, opts, report)
         if (.not. c_associated(res)) then
             call handle_failure('segment', mio_error_message(), stat, errmsg)
@@ -5915,7 +5940,11 @@ contains
     !> (`num_chamfer`) or a conic blend (`num_conic_blend`), a thread flank of
     !> varying pitch or cut on a taper is recognised (`num_variable_pitch_thread`,
     !> `num_tapered_thread`), and a corner where three or more blends meet
-    !> becomes a vertex blend (`num_vertex_blend`). See doc/fit_cad.md.
+    !> becomes a vertex blend (`num_vertex_blend`). Since v17.9.0, `backend`
+    !> ('auto' by default, 'occt' or 'native') picks the engine: 'native' needs
+    !> no CAD kernel and writes the fitted patches as analytic STEP faces
+    !> (`used_native` says which one ran), and `merge_faces` (default on)
+    !> merges faces on one surface. See doc/fit_cad.md.
     function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
                           mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
                           max_deviation, num_faces, num_faceted_faces, num_demoted, &
@@ -5924,7 +5953,8 @@ contains
                           num_split_patches, num_fillet, num_helical, &
                           num_variable_fillet, num_blend, num_rounded_thread, &
                           num_vertex_blend, num_chamfer, num_conic_blend, &
-                          num_tapered_thread, num_variable_pitch_thread) result(out)
+                          num_tapered_thread, num_variable_pitch_thread, &
+                          merge_faces, backend, used_native) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -5945,6 +5975,9 @@ contains
         integer(int64), intent(out), optional :: num_variable_fillet, num_blend, num_rounded_thread
         integer(int64), intent(out), optional :: num_vertex_blend, num_chamfer, num_conic_blend
         integer(int64), intent(out), optional :: num_tapered_thread, num_variable_pitch_thread
+        logical, intent(in), optional :: merge_faces
+        character(*), intent(in), optional :: backend
+        logical, intent(out), optional :: used_native
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -5972,6 +6005,22 @@ contains
             opts%freeform_split = merge(1_c_int32_t, 0_c_int32_t, freeform_split)
         if (present(fillets)) opts%fillets = merge(1_c_int32_t, 0_c_int32_t, fillets)
         if (present(threads)) opts%threads = merge(1_c_int32_t, 0_c_int32_t, threads)
+        if (present(merge_faces)) &
+            opts%merge_faces = merge(1_c_int32_t, 0_c_int32_t, merge_faces)
+        if (present(backend)) then
+            select case (trim(backend))
+            case ('auto')
+                opts%backend = 0
+            case ('occt')
+                opts%backend = 1
+            case ('native')
+                opts%backend = 2
+            case default
+                call handle_failure('fit_cad', "backend must be 'auto', 'occt' or 'native'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
         res = c_mio_fit_cad_ex(self%handle, path_ptr, opts, report, report_ex)
         if (.not. c_associated(res)) then
             call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
@@ -5999,6 +6048,7 @@ contains
             num_tapered_thread = int(report_ex%num_tapered_thread, int64)
         if (present(num_variable_pitch_thread)) &
             num_variable_pitch_thread = int(report_ex%num_variable_pitch_thread, int64)
+        if (present(used_native)) used_native = report_ex%backend == 2
         call clear_status(stat, errmsg)
     end function
 

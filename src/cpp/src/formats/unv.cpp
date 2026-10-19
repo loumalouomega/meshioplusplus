@@ -339,13 +339,13 @@ std::vector<std::int64_t> unv_ints_free(const std::vector<std::string_view>& rTo
 
 double unv_real(std::string_view t) {
     // Normalize short Fortran fields on the stack, retaining a bounded terminator.
-    char small[64];
+    char text_buf[64];
     std::string large;
     char* first;
-    if (t.size() < sizeof small) {
-        t.copy(small, t.size());
-        small[t.size()] = '\0';
-        first = small;
+    if (t.size() < sizeof text_buf) {
+        t.copy(text_buf, t.size());
+        text_buf[t.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(t);
         first = large.data();

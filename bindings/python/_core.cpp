@@ -3551,7 +3551,7 @@ PYBIND11_MODULE(_core, m) {
         "segment",
         [](py::object pymesh, double feature_angle, double normal_tolerance,
            double curvature_tolerance, std::int64_t min_patch_cells, const std::string& region,
-           const std::string& prefix) {
+           const std::string& prefix, const std::string& method, double tolerance) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3562,6 +3562,14 @@ PYBIND11_MODULE(_core, m) {
             options.mMinPatchCells = min_patch_cells;
             options.mRegion = region;
             options.mPrefix = prefix;
+            if (method == "angle")
+                options.mMethod = meshioplusplus::SegmentMethod::Angle;
+            else if (method == "primitive")
+                options.mMethod = meshioplusplus::SegmentMethod::Primitive;
+            else
+                throw py::value_error(
+                    "meshio++: segment: the method must be 'angle' or 'primitive'");
+            options.mTolerance = tolerance;
             meshioplusplus::SegmentResult r =
                 core_nogil([&] { return meshioplusplus::segment(cpp, options); });
             py::dict out;
@@ -3575,7 +3583,8 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("normal_tolerance") = 0.0,
         py::arg("curvature_tolerance") = 0.0, py::arg("min_patch_cells") = 1,
-        py::arg("region") = "", py::arg("prefix") = "patch");
+        py::arg("region") = "", py::arg("prefix") = "patch", py::arg("method") = "angle",
+        py::arg("tolerance") = 1e-3);
 
     // Plane/sphere/cylinder/cone/torus fits per patch. See operations/fit_primitives.hpp.
     m.def(
@@ -3615,7 +3624,8 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& path, double tolerance, bool exact_edges,
            std::uint32_t types, double mesh_deflection, std::int64_t max_demotion_rounds,
            bool freeform, std::int32_t freeform_degree, std::int64_t freeform_max_control,
-           bool freeform_split, bool fillets, bool threads) {
+           bool freeform_split, bool fillets, bool threads, bool merge_faces,
+           const std::string& backend) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3631,6 +3641,16 @@ PYBIND11_MODULE(_core, m) {
             options.mFreeformSplit = freeform_split;
             options.mFillets = fillets;
             options.mThreads = threads;
+            options.mMergeFaces = merge_faces;
+            if (backend == "auto")
+                options.mBackend = meshioplusplus::FitCadBackend::Auto;
+            else if (backend == "occt")
+                options.mBackend = meshioplusplus::FitCadBackend::Occt;
+            else if (backend == "native")
+                options.mBackend = meshioplusplus::FitCadBackend::Native;
+            else
+                throw py::value_error(
+                    "meshio++: fit_cad: backend must be 'auto', 'occt' or 'native'");
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -3666,6 +3686,8 @@ PYBIND11_MODULE(_core, m) {
             out["num_tapered_thread"] = r.mNumTaperedThread;
             out["num_variable_pitch_thread"] = r.mNumVariablePitchThread;
             out["brep"] = core_brep_to_py(std::move(r.mBrep));
+            out["backend"] =
+                r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
             return out;
         },
         py::arg("mesh"), py::arg("path") = "", py::arg("tolerance") = 0.0,
@@ -3673,7 +3695,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh_deflection") = 0.0, py::arg("max_demotion_rounds") = 8,
         py::arg("freeform") = true, py::arg("freeform_degree") = 3,
         py::arg("freeform_max_control") = 64, py::arg("freeform_split") = true,
-        py::arg("fillets") = true, py::arg("threads") = true);
+        py::arg("fillets") = true, py::arg("threads") = true, py::arg("merge_faces") = true,
+        py::arg("backend") = "auto");
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See
@@ -4870,15 +4893,32 @@ PYBIND11_MODULE(_core, m) {
           }));
 
     // OFF writer / reader.
-    // STEP faceted B-rep (write-only); ragged polygon blocks are facets too.
-    m.def("step_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs,
-                                                            /*lenient_field_data=*/true,
-                                                            /*allow_ragged=*/true)] {
-            return meshioplusplus::write_step(path, mesh);
-        });
-    });
+    // STEP B-rep (written without a kernel); ragged polygon blocks are facets too.
+    // `faces`: "auto", "planar", "fitted" or "facet" (StepFaces).
+    m.def(
+        "step_write",
+        [](const std::string& path, py::object pymesh, const std::string& faces, double tolerance) {
+            meshioplusplus::StepWriteOptions options;
+            if (faces == "auto")
+                options.mFaces = meshioplusplus::StepFaces::Auto;
+            else if (faces == "planar")
+                options.mFaces = meshioplusplus::StepFaces::Planar;
+            else if (faces == "fitted")
+                options.mFaces = meshioplusplus::StepFaces::Fitted;
+            else if (faces == "facet")
+                options.mFaces = meshioplusplus::StepFaces::Facet;
+            else
+                throw py::value_error(
+                    "meshio++: step: faces must be 'auto', 'planar', 'fitted' or 'facet'");
+            options.mTolerance = tolerance;
+            meshioplusplus_py::PyMeshRefs refs;
+            core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                /*lenient_field_data=*/true,
+                                                                /*allow_ragged=*/true)] {
+                return meshioplusplus::write_step(path, mesh, options);
+            });
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("faces") = "auto", py::arg("tolerance") = 0.0);
     m.def("off_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
         core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {

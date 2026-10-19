@@ -170,6 +170,8 @@ _OP_TABLE = {
         "MinPatchCells",
         "Region",
         "Prefix",
+        "Method",
+        "Tolerance",
     ),
     "FitPrimitives": (
         "PatchData",
@@ -192,6 +194,8 @@ _OP_TABLE = {
         "FreeformSplit",
         "Fillets",
         "Threads",
+        "MergeFaces",
+        "Backend",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
     "RegionAdjacency": ("Regions",),
@@ -493,6 +497,20 @@ def _flag(step, key, fallback):
     if not isinstance(v, bool):
         raise _err(step["Op"], f"parameter '{key}' must be a boolean")
     return v
+
+
+def _segment_method(step):
+    method = _text(step, "Method", "angle")
+    if method not in ("angle", "primitive"):
+        raise _err(step["Op"], "'Method' must be 'angle' or 'primitive'")
+    return method
+
+
+def _fit_cad_backend(step):
+    backend = _text(step, "Backend", "auto")
+    if backend not in ("auto", "occt", "native"):
+        raise _err(step["Op"], "'Backend' must be 'auto', 'occt' or 'native'")
+    return backend
 
 
 def _text(step, key, fallback):
@@ -1021,6 +1039,8 @@ def _apply_step(mesh, step, steps, warnings):
             region=_text(step, "Region", ""),
             prefix=_text(step, "Prefix", "patch"),
             return_report=True,
+            method=_segment_method(step),
+            tolerance=_number(step, "Tolerance", 1e-3),
         )
         entry["NumPatches"] = report["num_patches"]
         entry["NumMerged"] = report["num_merged"]
@@ -1073,8 +1093,11 @@ def _apply_step(mesh, step, steps, warnings):
             fillets=_flag(step, "Fillets", True),
             threads=_flag(step, "Threads", True),
             return_report=True,
+            merge_faces=_flag(step, "MergeFaces", True),
+            backend=_fit_cad_backend(step),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
+        entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
         entry["VolumeRatio"] = report["volume_ratio"]
         entry["MaxDeviation"] = report["max_deviation"]
         entry["NumFaces"] = report["num_faces"]

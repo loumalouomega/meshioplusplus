@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
@@ -124,18 +125,124 @@ TEST(FitCad, CapabilityMatchesTheBuild) {
 #endif
 }
 
+// The kernel-free backend runs in every build.
+TEST(FitCad, NativeBackendWritesAnalyticFaces) {
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "native_plate.step").string();
+    // A raw skin: segmented by the primitive method and fitted first.
+    const FitCadResult r = fit_cad(analytic::filleted_plate(), path, o);
+    EXPECT_EQ(r.mBackend, FitCadBackend::Native);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumSolids, 1);
+    EXPECT_EQ(r.mNumFaces, 8);
+    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mNumCylinder, 2);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_TRUE(std::isnan(r.mVolume));
+    EXPECT_GT(r.mSkinVolume, 0.0);
+    EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+    // The skin itself comes back, each cell with its face, type and patch.
+    ASSERT_TRUE(r.mMesh.HasCellData(kFitCadFaceName));
+    const NDArray& t = r.mMesh.CellData(kFitCadTypeName, 0);
+    EXPECT_EQ(t.Size(), r.mMesh.Cells(0).NumCells());
+    for (std::size_t i = 0; i < t.Size(); ++i) {
+        const std::int64_t v = t.As<std::int64_t>()[i];
+        EXPECT_TRUE(v == 1 || v == 3) << v;
+    }
+    const std::string text = read_bytes(path);
+    std::remove(path.c_str());
+    EXPECT_NE(text.find("CYLINDRICAL_SURFACE"), std::string::npos);
+}
+
+TEST(FitCad, NativeBackendLeavesTypesOutAsPolygons) {
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTypes = 1u << 1;  // planes only: the bore and the fillet become polygons
+    const FitCadResult r = fit_cad(analytic::filleted_plate(), "", o);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mNumCylinder, 0);
+    EXPECT_GT(r.mNumFacetedFaces, 0);
+}
+
+TEST(FitCad, BadBackendIsRefused) {
+    FitCadOptions o;
+    o.mBackend = static_cast<FitCadBackend>(5);
+    EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
+}
+
 #ifndef MESHIOPLUSPLUS_HAS_OCCT
 
 TEST(FitCad, AbsentBackendIsNamed) {
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Occt;
     try {
-        fit_cad(analytic::box_skin(2));
+        fit_cad(analytic::box_skin(2), "", o);
         FAIL() << "expected Unsupported";
     } catch (const Unsupported& rErr) {
         EXPECT_NE(std::string(rErr.what()).find("MESHIOPLUSPLUS_WITH_OCCT"), std::string::npos);
     }
+    // Without OpenCASCADE, the automatic backend is the native one.
+    EXPECT_EQ(fit_cad(analytic::box_skin(2)).mBackend, FitCadBackend::Native);
+}
+
+// The automatic fallback says so once per process (an earlier test may have
+// used it already); asking for the native backend by name never warns.
+TEST(FitCad, FallbackIsAnnouncedOnce) {
+    const std::string notice = "kernel-free native backend is used";
+    auto count = [&](const std::string& rText) {
+        std::size_t n = 0;
+        for (std::size_t at = rText.find(notice); at != std::string::npos;
+             at = rText.find(notice, at + 1))
+            ++n;
+        return n;
+    };
+    testing::internal::CaptureStderr();
+    fit_cad(analytic::box_skin(2));
+    fit_cad(analytic::box_skin(2));
+    EXPECT_LE(count(testing::internal::GetCapturedStderr()), 1u);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    testing::internal::CaptureStderr();
+    fit_cad(analytic::box_skin(2), "", o);
+    EXPECT_EQ(count(testing::internal::GetCapturedStderr()), 0u);
 }
 
 #else
+
+TEST(FitCad, FilletedPlateIsEightExactFaces) {
+    // A raw skin with a fillet tangent to its sides and a bore: segmented by
+    // the surfaces the facets lie on, so neither is lost to facets.
+    const FitCadResult r = fit_cad(analytic::filleted_plate());
+    EXPECT_EQ(r.mBackend, FitCadBackend::Occt);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumFaces, 8);
+    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mNumCylinder, 2);
+    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mNumDemoted, 0);
+    // The exact solid: the plate less the fillet's corner and the bore.
+    const double rc = 0.8, rb = 0.6;
+    const double exact = (16.0 - (rc * rc - analytic::kPi * rc * rc / 4.0) - analytic::kPi * rb * rb) * 0.5;
+    EXPECT_NEAR(r.mVolume, exact, 1e-6);
+}
+
+TEST(FitCad, FacetsLeftOutMergeIntoCoplanarFaces) {
+    // With every type left out the box is all facets, written as one planar
+    // face per coplanar group rather than one per triangle.
+    FitCadOptions o;
+    o.mTypes = 0;
+    const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)), "", o);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumFaces, 6);
+    EXPECT_EQ(r.mNumFacetedFaces, 6);
+    EXPECT_NEAR(r.mVolume, 1.0, 1e-9);
+    o.mMergeFaces = false;
+    EXPECT_EQ(fit_cad(fitted(analytic::box_skin(3)), "", o).mNumFaces, 6);
+}
 
 TEST(FitCad, BoxIsSixExactPlanes) {
     const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)));

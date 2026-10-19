@@ -11,7 +11,9 @@ mio_segment(
   curvature_tolerance = 0,
   min_patch_cells = 1,
   region = "",
-  prefix = "patch"
+  prefix = "patch",
+  method = "angle",
+  tolerance = 0.001
 )
 }
 \arguments{
@@ -26,6 +28,12 @@ mio_segment(
 \item{region}{Restrict to this named cell region; `""` takes every cell.}
 
 \item{prefix}{The patch regions are named `<prefix>:<k>`.}
+
+\item{method}{`"angle"` grows patches by angles alone; `"primitive"` by the
+plane, sphere, cylinder, cone or torus their facets lie on.}
+
+\item{tolerance}{`"primitive"` only: how far a point may lie from its
+patch's primitive, relative to the bounding-box diagonal.}
 }
 \value{
 A list of `mesh` (the input plus cell data `segment:patch`, field
@@ -39,5 +47,7 @@ share whose dihedral angle is at most `feature_angle`, and -- when set --
 whose cell stays within `normal_tolerance` (degrees) of the seed's normal and
 `curvature_tolerance` (1/length) of the patch's mean curvature estimate. Patches
 smaller than `min_patch_cells` merge into the neighbour they share the most
-edges with. See `doc/segment.md`.
+edges with. `method = "primitive"` (v17.9.0) ends a patch where the surface
+its facets lie on changes instead, so a fillet comes apart from the planes
+it is tangent to. See `doc/segment.md`.
 }

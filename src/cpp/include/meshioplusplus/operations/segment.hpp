@@ -38,6 +38,9 @@
  *    cells the patch holds so far (taken in walk order, so it is
  *    deterministic, and robust to one noisy seed).
  *
+ * With `SegmentMethod::Primitive` the patches follow the surfaces instead of
+ * the angles (see "Primitive method" below).
+ *
  * Open, non-manifold and sharp edges are never crossed. A patch smaller than
  * `mMinPatchCells` is then merged, in one ascending pass, into the neighbouring
  * patch it shares the most edges with (ties to the lowest patch id); a patch
@@ -48,6 +51,39 @@
  * between the two cells' centroids: an estimate of the larger principal
  * curvature -- `1/r` on a cylinder or sphere of radius `r`, `0` on a plane.
  * It is in inverse length units, so `mCurvatureTolerance` is too.
+ *
+ * ### Primitive method
+ *
+ * A triangle skin exported from CAD meets a fillet's tangent planes at
+ * smooth edges, so angles alone give one patch for both; and a fine
+ * tessellation of a cylinder is smooth everywhere. With
+ * `SegmentMethod::Primitive` (the tolerance `t` is `mTolerance` times the
+ * bounding-box diagonal):
+ *
+ *  1. each **smooth area** (cells connected across smooth edges) that one
+ *     primitive explains -- `fit_primitives`' fit with every point within
+ *     `t` -- is one patch;
+ *  2. any other is **grown** from seeds, largest cell first: from each seed
+ *     a plane grows across smooth edges while every corner of the next cell
+ *     lies within 2% of `t` of it (refitted as it doubles), and a sphere,
+ *     cylinder, cone or torus fitted within `t` to the seed's neighbourhood
+ *     grows the same way;
+ *     the curved region wins when it covers more than 1.5 times the plane's
+ *     area. A plane must hold two cells and 2% of its smooth area, a curved
+ *     region 1% of it and three points per parameter of its primitive (12
+ *     for a sphere, 21 for a torus), and a curved fit's radius must not
+ *     exceed the surface's diagonal. A region is then trimmed to the cells
+ *     its own refit explains within 2% of `t`, and kept when that refit's RMS
+ *     is too. The strict bound is what a CAD tessellation meets, its points
+ *     on its surfaces exactly, and what keeps a plane from taking the first
+ *     strip of a fillet tangent to it; a scan wants a tolerance some fifty
+ *     times its noise. And as a freeform surface fits small spheres and tori
+ *     anywhere, an area the regions explain less than half of is not split
+ *     at all;
+ *  3. cells no primitive claims are grown by angles as above.
+ *
+ * `mNormalToleranceDeg` and `mCurvatureTolerance` apply to step 3 only. The
+ * method has no numpy twin: the Python entry point raises naming the core.
  *
  * ### Output
  *
@@ -86,6 +122,19 @@ inline constexpr const char* kSegmentPatchName = "segment:patch";
 /// Field data (Int64, `(m, 3)`): `(a, b, shared edges)` per adjacent patch pair.
 inline constexpr const char* kSegmentAdjacencyName = "segment:adjacency";
 
+/// How `segment` decides where a patch ends.
+enum class SegmentMethod : std::int32_t {
+    /// By angles alone: a patch grows across every smooth edge (the feature,
+    /// normal and curvature tests).
+    Angle = 0,
+    /// By the surfaces the facets lie on: a smooth area one plane, sphere,
+    /// cylinder, cone or torus explains is one patch; any other is split into
+    /// regions grown while one primitive explains their points within the
+    /// tolerance (a fillet apart from the planes it is tangent to), and what
+    /// none explains is grown by angles.
+    Primitive = 1,
+};
+
 /// How `segment` grows its patches.
 struct SegmentOptions {
     /// The largest dihedral angle, in degrees, still crossed; in `[0, 180]`.
@@ -102,6 +151,11 @@ struct SegmentOptions {
     std::string mRegion;
     /// The name prefix of the patch regions: `<prefix>:<k>`. Must not be empty.
     std::string mPrefix = "patch";
+    /// How a patch ends (since v17.9.0); `Angle` is the original behaviour.
+    SegmentMethod mMethod = SegmentMethod::Angle;
+    /// `Primitive` only: how far a point may lie from its patch's primitive,
+    /// relative to the bounding-box diagonal of the surface; > 0.
+    double mTolerance = 1e-3;
 };
 
 /// The segmented mesh and what the segmentation found.

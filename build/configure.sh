@@ -26,7 +26,7 @@ WITH_GIDPOST="ON"
 WITH_POLYSCOPE="OFF"
 WITH_BZIP2="OFF"
 WITH_ADIOS2="OFF"
-WITH_OCCT="OFF"
+WITH_OCCT="ON"
 WITH_TECIO="OFF"
 TECIO_ROOT_DIR=""
 TESTS="OFF"
@@ -58,8 +58,10 @@ Usage: $0 [options]
   --with-bzip2                    native bzip2 (libMesh .bz2 meshes; default: off)
   --with-adios2                   ADIOS2-backed DOLFINx VTX .bp reader (default: off;
                                   set ADIOS2_DIR or CMAKE_PREFIX_PATH if not found)
-  --with-occt                     OpenCASCADE-backed fit_cad (default: off; LGPL-2.1,
-                                  set OpenCASCADE_DIR or CMAKE_PREFIX_PATH if not found)
+  --with-occt / --without-occt    OpenCASCADE-backed fit_cad and STEP/IGES reading
+                                  (default: on, auto-detected; LGPL-2.1; set
+                                  OpenCASCADE_DIR or CMAKE_PREFIX_PATH, or build one
+                                  with build/build-occt.sh)
   --with-tecio <dir>              TecIO-backed Tecplot .szplt reader (default: off;
                                   <dir> holds TECIO.h and libtecio)
   --with-polyscope                native viewer for the CLI's view/screenshot
@@ -100,6 +102,7 @@ while [ $# -gt 0 ]; do
         --with-bzip2) WITH_BZIP2="ON"; shift ;;
         --with-adios2) WITH_ADIOS2="ON"; shift ;;
         --with-occt) WITH_OCCT="ON"; shift ;;
+        --without-occt) WITH_OCCT="OFF"; shift ;;
         --with-tecio) WITH_TECIO="ON"; TECIO_ROOT_DIR="$2"; shift 2 ;;
         --with-polyscope) WITH_POLYSCOPE="ON"; shift ;;
         --without-polyscope) WITH_POLYSCOPE="OFF"; shift ;;
@@ -241,7 +244,7 @@ fi
 echo
 if [ "$MESH_BACKEND" = "MESHIO" ]; then
     echo "Python package (editable) with the same options:"
-    echo "  CMAKE_ARGS=\"-DMESHIOPLUSPLUS_PARALLEL_BACKEND=$BACKEND -DMESHIOPLUSPLUS_WITH_HDF5=$WITH_HDF5 -DMESHIOPLUSPLUS_WITH_NETCDF=$WITH_NETCDF -DMESHIOPLUSPLUS_WITH_ZLIB=$WITH_ZLIB\" \\"
+    echo "  CMAKE_ARGS=\"-DMESHIOPLUSPLUS_PARALLEL_BACKEND=$BACKEND -DMESHIOPLUSPLUS_WITH_HDF5=$WITH_HDF5 -DMESHIOPLUSPLUS_WITH_NETCDF=$WITH_NETCDF -DMESHIOPLUSPLUS_WITH_ZLIB=$WITH_ZLIB -DMESHIOPLUSPLUS_WITH_OCCT=$WITH_OCCT\" \\"
     echo "    pip install --no-build-isolation -e \"$SOURCE_DIR\""
 else
     echo "Note: the $MESH_BACKEND mesh backend is standalone-C++ only; the Python"

@@ -399,8 +399,9 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
          }},
         // STEP is read through the optional OpenCASCADE backend (roadmap
-        // §6.2.1) and written as a faceted solid without it.
-        {"step", meshioplusplus::write_step},
+        // §6.2.1) and written without it, one face per surface by default
+        // (StepFaces::Auto: coplanar facets merged, fitted patches analytic).
+        {"step", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_step(p, mm); }},
         {"su2", meshioplusplus::write_su2},
         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
         // writes); the flat bindings emit them with the fixed default styling

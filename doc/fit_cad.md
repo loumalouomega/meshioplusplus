@@ -1,6 +1,6 @@
 # Fit CAD
 
-`fit_cad(mesh, path)` turns the fitted patches of a closed triangle skin into a CAD solid: every patch that [`fit_primitives`](/fit_primitives) accepted becomes a plane, sphere, cylinder, cone or torus face trimmed by the patch boundary, a rolling-ball fillet or blend (of one radius or a radius varying along it) or a helical thread face its own [feature face](#fillets-blends-and-threads), a chamfer, a conic blend, a tapered or variable-pitch thread or a corner where blends meet its own [face too](#chamfers-conic-blends-vertex-blends-and-tapered-threads), any other patch no primitive explains a [freeform B-spline face](#freeform-faces), the faces are sewn into a solid that OpenCASCADE checks, and the solid is written as STEP. It is the last step of [skin to CAD](/cad_fit), after [`segment`](/segment) and `fit_primitives`, and it needs the optional [OpenCASCADE backend](#getting-opencascade).
+`fit_cad(mesh, path)` turns the fitted patches of a closed triangle skin into a CAD solid: every patch that [`fit_primitives`](/fit_primitives) accepted becomes a plane, sphere, cylinder, cone or torus face trimmed by the patch boundary, a rolling-ball fillet or blend (of one radius or a radius varying along it) or a helical thread face its own [feature face](#fillets-blends-and-threads), a chamfer, a conic blend, a tapered or variable-pitch thread or a corner where blends meet its own [face too](#chamfers-conic-blends-vertex-blends-and-tapered-threads), any other patch no primitive explains a [freeform B-spline face](#freeform-faces), the faces are sewn into a solid that OpenCASCADE checks, and the solid is written as STEP. It is the last step of [skin to CAD](/cad_fit), after [`segment`](/segment) and `fit_primitives`. It runs on [OpenCASCADE](#getting-opencascade), which the PyPI wheels and the release binaries include, and falls back, in a build without it, to a [kernel-free native backend](#the-native-backend) that writes the fitted primitives as analytic STEP faces.
 
 ```python
 import meshioplusplus as mp
@@ -12,15 +12,18 @@ fit = mp.fit_primitives(seg, tolerance=2e-3)
 solid, report = mp.fit_cad(fit, "part.step", return_report=True)
 report["valid"], report["num_cylinder"], report["num_demoted"]
 report["volume_ratio"], report["max_deviation"]   # against the skin
+report["backend"]                                 # "occt" or "native"
+
+mp.fit_cad(mp.read("bracket.stl"), "bracket.step")  # segments and fits it first
 ```
 
 ![The turned part of skin to CAD as a CAD solid: two planes, a cylinder, a torus fillet, a cone and a spherical dome, re-meshed and coloured by face type](/images/fit_cad_solid.png)
 
-Unlike the faceted [`step`](/formats/step) writer, whose solid is one flat face per triangle, the STEP file `fit_cad` writes carries `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`, `SPHERICAL_SURFACE` and `TOROIDAL_SURFACE` faces a CAD tool can select, dimension and edit. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first with the default options; a noisy scan wants a curvature test and a `min_patch_cells` in the tens, so run those two yourself, or pass them to the [CLI](#cli).
+Unlike the faceted [`step`](/formats/step) writer, whose solid is one flat face per triangle, the STEP file `fit_cad` writes carries `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`, `SPHERICAL_SURFACE` and `TOROIDAL_SURFACE` faces a CAD tool can select, dimension and edit. A skin without `segment:patch` is segmented first with [`method="primitive"`](/segment#primitive-method), which ends a patch where the plane, cylinder, cone, sphere or torus its facets lie on changes (so a rounded end comes apart from the flat it is tangent to), and fitted at the same absolute tolerance, `1e-3` of the bounding-box diagonal; a skin with patches but no `fit:patch_*` table is fitted with the default options. A CAD-exported STL, whose points lie exactly on its surfaces, comes out as one face per surface, not a patchwork. A noisy scan wants a curvature test and a `min_patch_cells` in the tens, so segment it yourself, or pass those to the [CLI](#cli) with `--segment-method angle`.
 
 ## How the solid is built
 
-- **Faces.** A patch whose fit was accepted, and whose type is in `types`, becomes one face on its fitted surface. A patch no primitive explains is tried, in order, as a [rolling-ball fillet](#fillets-blends-and-threads) between two analytic faces (`fillets`), as a [helical thread face](#fillets-blends-and-threads) (`threads`; then [of varying pitch or on a taper](#chamfers-conic-blends-vertex-blends-and-tapered-threads)), as a [chamfer or conic blend](#chamfers-conic-blends-vertex-blends-and-tapered-threads) between two analytic faces (`fillets`) and, with `freeform` (the default), as a [B-spline face](#freeform-faces); once the freeform faces exist, a patch between two fitted faces, one of them freeform, is tried as a [rolling-ball blend](#fillets-blends-and-threads) against them, and a corner patch among three or more fitted faces as a [vertex blend](#chamfers-conic-blends-vertex-blends-and-tapered-threads) (`fillets`). Every other surface cell (a type left out, a freeform fit that failed, a cell with no patch) becomes planar facets, one per cell, as the faceted writer writes them.
+- **Faces.** A patch whose fit was accepted, and whose type is in `types`, becomes one face on its fitted surface. A patch no primitive explains is tried, in order, as a [rolling-ball fillet](#fillets-blends-and-threads) between two analytic faces (`fillets`), as a [helical thread face](#fillets-blends-and-threads) (`threads`; then [of varying pitch or on a taper](#chamfers-conic-blends-vertex-blends-and-tapered-threads)), as a [chamfer or conic blend](#chamfers-conic-blends-vertex-blends-and-tapered-threads) between two analytic faces (`fillets`) and, with `freeform` (the default), as a [B-spline face](#freeform-faces); once the freeform faces exist, a patch between two fitted faces, one of them freeform, is tried as a [rolling-ball blend](#fillets-blends-and-threads) against them, and a corner patch among three or more fitted faces as a [vertex blend](#chamfers-conic-blends-vertex-blends-and-tapered-threads) (`fillets`). Every other surface cell (a type left out, a freeform fit that failed, a cell with no patch) becomes planar faces, each edge-connected group of coplanar facets one face with its holes as inner loops.
 - **Edges.** Where two patches meet, the mesh edges between them form chains from one junction (a point where three or more patches meet) to the next; a closed chain is split in two. Between two analytic faces the edge is the branch of the two surfaces' exact intersection that lies within the tolerance of the chain, when `exact_edges` is set and one does (a plane meeting a cylinder gives a circle). Otherwise, notably where a fillet meets its wall tangentially and no intersection is stable, the edge is a B-spline through the chain, smoothed and moved onto both surfaces, kept only if it stays within the tolerance of both. Beside a facet, the edge is the mesh's own straight edge.
 - **Vertices.** A junction among analytic faces only is moved onto all of their surfaces; one beside a facet keeps the mesh position.
 - **Solid.** Each face gets parameter-space curves that are continuous around its loops (so a boundary running along a cylinder's seam or a torus's equator does not fall apart), OpenCASCADE adds the seams and repairs the faces, sews them and closes each shell into a solid, one per edge-connected piece of the skin. A patch with no boundary at all, a whole sphere or torus, is its surface's natural face.
@@ -81,7 +84,9 @@ Segmentation is the condition: a conic blend is tangent to both its faces and it
 
 ## Checks and demotion
 
-A face is not kept when OpenCASCADE's B-rep check rejects it, when sewing leaves an edge of it free, when its boundary cannot be built, or when it strays: the solid is re-meshed and a face with a point further than `tolerance` from the skin, or a patch with a skin point further than that from the solid, fails. A failed patch is **demoted** to facets and the solid is rebuilt; after `max_demotion_rounds` rounds (default 8) every remaining patch is faceted, which is always a valid solid for a closed skin. So a feature the fitter cannot explain, or a face the kernel cannot trim, comes back faceted, never silently wrong, and `num_demoted` counts the features dropped. `MESHIOPLUSPLUS_LOG_LEVEL=debug` logs why each patch was demoted.
+A face is not kept when OpenCASCADE's B-rep check rejects it, when sewing leaves an edge of it free, when its boundary cannot be built, or when it strays: the solid is re-meshed and a face with a point further than `tolerance` from the skin, or a patch with a skin point further than that from the solid, fails. A failed patch is **demoted** to facets and the solid is rebuilt. A failure is blamed on the faces the B-rep check names or that a free edge after sewing touches (a face the kernel cannot map back is matched to the patch of its nearest facet), never on every patch at once; after `max_demotion_rounds` rounds (default 8) each further round demotes the blamed patches together with their neighbours, so the loop ends while the patches nothing blames stay analytic, and an all-facet solid is always valid for a closed skin. A group of coplanar facets whose merged face fails is split back into single facets. A face's distance allowance is `tolerance` or, when larger, the skin's own chordal sag over its patch (1.05 times the largest distance of a facet centre from the fitted surface), so a coarse tessellation of a small bore is not demoted for its own chords. So a feature the fitter cannot explain, or a face the kernel cannot trim, comes back faceted, never silently wrong, and `num_demoted` counts the features dropped. `MESHIOPLUSPLUS_LOG_LEVEL=debug` logs why each patch was demoted.
+
+**Merging.** With `merge_faces` (the default), once the solid is built, faces on one surface are merged and collinear edges joined (`ShapeUpgrade_UnifySameDomain`); the result is kept only when it stays valid with the same volume (to `1e-9`), and the `fit_cad:face` labels follow the merged faces.
 
 `tolerance` defaults to three times the largest `fit:patch_tolerance` of an accepted patch, so it follows the scale `fit_primitives` worked at; with no accepted patch it is `1e-3` of the bounding-box diagonal. The re-meshing uses a chordal deflection of a quarter of the tolerance unless `mesh_deflection` says otherwise.
 
@@ -91,7 +96,8 @@ The return value is the solid re-meshed by OpenCASCADE as one `triangle` block, 
 
 | Key | Meaning |
 | --- | --- |
-| `valid` | the solid passes OpenCASCADE's B-rep check |
+| `backend` | `"occt"` or `"native"`, the engine that built the solid |
+| `valid` | the solid passes OpenCASCADE's B-rep check (native: the writer's closed-shell check) |
 | `tolerance` | the tolerance applied |
 | `volume`, `skin_volume`, `volume_ratio` | the solid's volume, the skin's enclosed volume and their ratio |
 | `max_deviation` | the symmetric Hausdorff distance between the skin and the re-meshed solid |
@@ -114,17 +120,26 @@ The STEP file is AP214 in millimetres. Its header timestamp is pinned and its pr
 
 ## Getting OpenCASCADE
 
-[Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) is licensed under the GNU LGPL 2.1 with the additional exception in its `OCCT_LGPL_EXCEPTION.txt`. meshio++ stays MIT: the backend is **off by default and bring-your-own** (never vendored or downloaded), linked dynamically, and absent from the PyPI wheels, the lean WASM build and the release CLI binaries; the [full WASM artifact](/wasm#lean-and-full-builds) links it statically, under a mixed licence it states. A build that enables it links an LGPL library; distributing that build carries the LGPL's obligations for OpenCASCADE, not for meshio++. OpenCASCADE 7.6 or later is supported (7.6 is Ubuntu 24.04's package; the CI leg tests it).
+`fit_cad` assumes OpenCASCADE for the best result, and **the PyPI wheels and the release CLI binaries include it**: `pip install meshioplusplus` is all it takes. [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) is licensed under the GNU LGPL 2.1 with the additional exception in its `OCCT_LGPL_EXCEPTION.txt`; those binaries link the pinned OpenCASCADE 7.6.3 statically, so they are `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, with [`THIRD_PARTY_NOTICES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/THIRD_PARTY_NOTICES.md), OpenCASCADE's licence texts and the relink recipe shipped beside them. The meshio++ sources stay MIT. The [full WASM artifact](/wasm#lean-and-full-builds) links the same commit; the lean one does not.
+
+A build from source turns `MESHIOPLUSPLUS_WITH_OCCT` on by default and links an OpenCASCADE 7.6 or later when it finds one through its CMake config (`OpenCASCADE_ROOT`, `OpenCASCADE_DIR` or `CMAKE_PREFIX_PATH` for an install outside the default prefixes): a system package, linked dynamically, or the static build `build/build-occt.sh PREFIX` makes from the pinned commit. `-DMESHIOPLUSPLUS_REQUIRE_OCCT=ON` makes a missing kernel a configure error; `-DMESHIOPLUSPLUS_WITH_OCCT=OFF` (`build/configure.sh --without-occt`) leaves it out.
 
 ```bash
 sudo apt-get install libocct-foundation-dev libocct-modeling-data-dev \
-    libocct-modeling-algorithms-dev libocct-data-exchange-dev libtbb-dev
-CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_OCCT=ON" pip install meshioplusplus --no-binary meshioplusplus
+    libocct-modeling-algorithms-dev libocct-data-exchange-dev libtbb-dev   # or:
+build/build-occt.sh ~/occt && export OpenCASCADE_ROOT=~/occt
+pip install --no-binary meshioplusplus meshioplusplus                       # finds it
 ```
 
-From source, `build/configure.sh --with-occt` (or `-DMESHIOPLUSPLUS_WITH_OCCT=ON`) finds OpenCASCADE through its CMake config; point `OpenCASCADE_DIR` or `CMAKE_PREFIX_PATH` at an install outside the default prefixes, and make its libraries findable at run time as for any shared library. Debian's packages export toolkit targets that link TBB, hence `libtbb-dev`.
+Debian's packages export toolkit targets that link TBB, hence `libtbb-dev`. OpenCASCADE 7.6 or later is supported (7.6 is Ubuntu 24.04's package; the CI leg tests it, and the binaries carry 7.6.3).
 
-Without the backend, `fit_cad` raises `NotImplementedError` (C++ `Unsupported`) naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; there is no pure-Python fallback, because trimming, sewing and checking surfaces is a CAD kernel's work. `meshioplusplus._fit_cad.has_occt()`, `fit_cad_has_occt()` in C++, `mio_has_occt()` in C and the language surfaces below say in advance whether a build has it.
+Without the kernel, `fit_cad` falls back to the [native backend](#the-native-backend) and says so once (a warning naming what is lost); `backend="occt"` raises `NotImplementedError` (C++ `Unsupported`) naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON`. There is no pure-Python fallback of either: without the compiled core `fit_cad` raises. `meshioplusplus._fit_cad.has_occt()`, `fit_cad_has_occt()` in C++, `mio_has_occt()` in C and the language surfaces below say in advance whether a build has it.
+
+## The native backend
+
+`backend="native"` (C++ `FitCadBackend::Native`), and `"auto"` (the default) in a build that found no OpenCASCADE, needs no CAD kernel: it segments and fits the skin as above when it has no patches, then writes the [`step`](/formats/step) writer's `faces="fitted"` B-rep. Every accepted plane, sphere, cylinder, cone and torus patch whose type is in `types` is one analytic face on its fitted surface, bounded by `LINE`, `CIRCLE` and polyline edges, its corners moved onto the surfaces they lie on; every other cell is part of a coplanar planar face. A patch with a point further than `tolerance` from its surface, or whose boundary does not close into loops, is written as planar faces and counted in `num_demoted`. On a CAD-exported bracket it gives the same twelve planes and four cylinders as the OpenCASCADE backend, which OpenCASCADE reads back as one valid solid of the exact volume.
+
+What it does not do: freeform, fillet, blend and thread faces (`freeform`, `fillets`, `threads`, `exact_edges`, `mesh_deflection`, `max_demotion_rounds` and `merge_faces` are ignored), sewing and the B-rep check, and re-meshing. The returned mesh is the input skin with the `fit_cad:*` cell data, `info["brep"]` is empty, `volume` and `volume_ratio` are NaN, `max_deviation` is the largest distance of a skin point from its analytic face, and `valid` says the shell was written closed, every edge used once each way. Its STEP bytes do not depend on any library version.
 
 ## CLI
 
@@ -132,13 +147,16 @@ Without the backend, `fit_cad` raises `NotImplementedError` (C++ `Unsupported`) 
 meshioplusplus to-cad IN OUT.step [--curvature-tolerance C] [--min-patch-cells N] \
     [--fit-tolerance T] [--tolerance T] [--no-exact-edges] [--types plane,cylinder,...] \
     [--mesh-deflection D] [--max-demotion-rounds N] [--no-freeform] [--freeform-degree P] \
-    [--freeform-max-control N] [--no-freeform-split] [--no-fillets] [--no-threads] [--mesh-out FILE] [--cad-json FILE] [--json] [--quiet]
+    [--freeform-max-control N] [--no-freeform-split] [--no-fillets] [--no-threads] \
+    [--segment-method primitive|angle] [--segment-tolerance T] [--no-merge-faces] \
+    [--backend auto|occt|native] [--mesh-out FILE] [--cad-json FILE] [--json] [--quiet]
 ```
 
-A skin without `segment:patch` is segmented with `--curvature-tolerance` and `--min-patch-cells`, and fitted with `--fit-tolerance` (relative, as in `fit-primitives`), before the solid is built. `--mesh-out` also writes the re-meshed solid, `--cad-json` the solid as Kratos CAD JSON; `--no-freeform`, `--freeform-degree`, `--freeform-max-control` and `--no-freeform-split` are the [freeform](#freeform-faces) options, `--no-fillets` and `--no-threads` the [feature](#fillets-blends-and-threads) ones. Both CLIs exit with 2 when the solid fails the B-rep check, as `check` does for a failed gate.
+A skin without `segment:patch` is segmented by `--segment-method` (default `primitive`, at `--segment-tolerance` of the diagonal, default `1e-3`; `angle` uses `--curvature-tolerance` and `--min-patch-cells`) and fitted, at the segmentation's own tolerance as a length after the primitive method, or with `--fit-tolerance` (relative, as in `fit-primitives`) when given, before the solid is built. `--backend` picks the engine and `--no-merge-faces` keeps faces on one surface apart; the summary and `--json` name the backend. `--mesh-out` also writes the re-meshed solid, `--cad-json` the solid as Kratos CAD JSON; `--no-freeform`, `--freeform-degree`, `--freeform-max-control` and `--no-freeform-split` are the [freeform](#freeform-faces) options, `--no-fillets` and `--no-threads` the [feature](#fillets-blends-and-threads) ones. Both CLIs exit with 2 when the solid fails the B-rep check, as `check` does for a failed gate.
 
 ```sh
-meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
+meshioplusplus to-cad bracket.stl bracket.step
+meshioplusplus to-cad scan.stl scan.step --segment-method angle --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
 ```
 
 ## Pipeline
@@ -147,10 +165,11 @@ meshioplusplus to-cad part.stl part.step --curvature-tolerance 1 --min-patch-cel
 {"Op": "FitCad", "Path": "part.step", "Tolerance": 0.0, "ExactEdges": true,
  "Types": ["plane", "cylinder"], "MeshDeflection": 0.0, "MaxDemotionRounds": 8,
  "Freeform": true, "FreeformDegree": 3, "FreeformMaxControl": 64,
- "FreeformSplit": true, "Fillets": true, "Threads": true}
+ "FreeformSplit": true, "Fillets": true, "Threads": true, "MergeFaces": true,
+ "Backend": "auto"}
 ```
 
-The step writes the solid to `Path` when given, and the mesh continues as the re-meshed solid; it reports `Valid`, `VolumeRatio`, `MaxDeviation`, `NumFaces`, `NumBspline`, `NumFillet`, `NumHelical`, `NumVariableFillet`, `NumBlend`, `NumRoundedThread`, `NumVertexBlend`, `NumChamfer`, `NumConicBlend`, `NumTaperedThread`, `NumVariablePitchThread`, `NumSplitPatches`, `NumFacetedFaces` and `NumDemoted`. A `Tolerance` or `MeshDeflection` of 0 is automatic; an empty `Types` facets everything.
+The step writes the solid to `Path` when given, and the mesh continues as the re-meshed solid; it reports `Native` (whether the native backend built it), `Valid`, `VolumeRatio`, `MaxDeviation`, `NumFaces`, `NumBspline`, `NumFillet`, `NumHelical`, `NumVariableFillet`, `NumBlend`, `NumRoundedThread`, `NumVertexBlend`, `NumChamfer`, `NumConicBlend`, `NumTaperedThread`, `NumVariablePitchThread`, `NumSplitPatches`, `NumFacetedFaces` and `NumDemoted`. A `Tolerance` or `MeshDeflection` of 0 is automatic; an empty `Types` facets everything.
 
 ## Other languages
 
@@ -159,26 +178,25 @@ mio_fit_cad_opts opts;
 mio_fit_cad_opts_init(&opts);
 opts.types = (1u << MIO_FIT_PLANE) | (1u << MIO_FIT_CYLINDER);
 opts.freeform = 1;             /* the default; freeform_degree, freeform_max_control */
+opts.backend = MIO_FIT_CAD_AUTO;  /* or MIO_FIT_CAD_OCCT, MIO_FIT_CAD_NATIVE */
 mio_fit_cad_report report;
-mio_fit_cad_report_ex report_ex;  /* v17.2.0: num_vertex_blend, num_chamfer, ... */
-if (mio_has_occt()) {
-    mio_mesh* solid = mio_fit_cad_ex(fitted, "part.step", &opts, &report, &report_ex);
-}
+mio_fit_cad_report_ex report_ex;  /* v17.2.0: num_vertex_blend, ...; backend */
+mio_mesh* solid = mio_fit_cad_ex(fitted, "part.step", &opts, &report, &report_ex);
 ```
 
 ```fortran
-solid = fit%fit_cad(step_path='part.step', valid=ok, num_demoted=ndropped, stat=ierr)
+solid = fit%fit_cad(step_path='part.step', valid=ok, num_demoted=ndropped, used_native=native, stat=ierr)
 ```
 
 ```julia
-has_occt() && (r = fit_cad(fit; step_path="part.step"); r.valid)
+r = fit_cad(fit; step_path="part.step"); r.valid, r.backend
 ```
 
 ```r
-if (mio_has_occt()) cad <- mio_fit_cad(fit, step_path = "part.step")
+cad <- mio_fit_cad(fit, step_path = "part.step"); cad$backend
 ```
 
-The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_fillet`, `num_blend`, `num_rounded_thread` and `num_split_patches`, and `mio_fit_cad_ex`'s extended report (`mio_fit_cad_report_ex`, v17.2.0, as `mio_fit_cad_report` has no room left) `num_vertex_blend`, `num_chamfer`, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`; Fortran's, Julia's and R's results carry all of them (`freeform`, `freeform_degree`, `freeform_max_control`, `freeform_split`, `fillets` and `threads` are their options; a zero-filled C struct keeps the last three off, `mio_fit_cad_opts_init` turns them on). The MCP server's `fit_cad` tool takes the same options plus `curvature_tolerance`, `min_patch_cells`, `fit_tolerance` and `cad_json_output_path`, and reports `occt_available`; without the backend it answers with the named error and `occt_available: false`. In the browser, the [full WASM artifact](/wasm#lean-and-full-builds) links OpenCASCADE and runs `fitCad(mesh, {stepPath, ...})`, with the same options and report in camelCase and the solid's B-rep as `info`; the lean artifact throws by name.
+The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_fillet`, `num_blend`, `num_rounded_thread` and `num_split_patches`, and `mio_fit_cad_ex`'s extended report (`mio_fit_cad_report_ex`, v17.2.0, as `mio_fit_cad_report` has no room left) `num_vertex_blend`, `num_chamfer`, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`; Fortran's, Julia's and R's results carry all of them (`freeform`, `freeform_degree`, `freeform_max_control`, `freeform_split`, `fillets`, `threads`, `merge_faces` and `backend` are their options; a zero-filled C struct keeps `freeform_split`, `fillets`, `threads` and `merge_faces` off, `mio_fit_cad_opts_init` turns them on, and `backend` 0 is auto), and `report_ex.backend` (Julia's and R's `backend`, Fortran's `used_native`) names the engine. The MCP server's `fit_cad` tool takes the same options plus `segment_method`, `segment_tolerance`, `curvature_tolerance`, `min_patch_cells`, `fit_tolerance` and `cad_json_output_path`, and reports `backend` and `occt_available`. In the browser, `fitCad(mesh, {stepPath, mergeFaces, backend, ...})` runs the native backend in the lean artifact, and the [full WASM artifact](/wasm#lean-and-full-builds) links OpenCASCADE, with the same options and report in camelCase and the solid's B-rep as `info`; `backend: 'occt'` throws by name in the lean one.
 
 ## Not supported
 
@@ -186,3 +204,4 @@ The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_f
 - **Threads whose depth varies along them**, or whose pitch varies other than linearly, and a tapered or variable-pitch thread with no cylinder or cone beside it that is also too far from one screw for the axis to be found from the patch itself: freeform or faceted, as is a thread patch spanning less than half a turn.
 - **A whole thread as one patch**: a thread surface whose profile spans the full pitch (one patch over root, flanks and crest) has no single trimmed face to be; [`segment`](/segment) it at its creases or with a curvature test first.
 - **Fitting a STEP or IGES model**: those are [read](/formats/step#reading) as their own NURBS B-rep, not refitted.
+- **Freeform and feature faces without OpenCASCADE**: the [native backend](#the-native-backend) writes planes, spheres, cylinders, cones and tori only.

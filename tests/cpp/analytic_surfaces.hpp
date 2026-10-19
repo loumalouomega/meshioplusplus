@@ -916,4 +916,53 @@ inline meshioplusplus::Mesh turned_part(int N = 64) {
     return closed_revolve(prof, 0.0, zc + big_r, N);
 }
 
+// The plate [-a, a]^2 x [0, h] of tests/python/analytic_surfaces.py, with a
+// through-hole of radius r at its centre and its corner (a, a) rounded by a
+// quarter circle of radius rc tangent to both sides: a CAD part tessellated as
+// CAD exporters do, rings of vertices on the hole and the outline (k segments
+// along the fillet) joined by strips, every vertex on its surfaces. Six planes
+// and two cylinders; the fillet meets its sides at smooth edges.
+inline meshioplusplus::Mesh filleted_plate(double A = 2.0, double H = 0.5, double R = 0.6,
+                                           double Rc = 0.8, int N = 48, int K = 8) {
+    const double c = A - Rc;
+    std::vector<double> angles;
+    for (int i = 0; i < N; ++i)
+        angles.push_back(2.0 * kPi * i / N);
+    for (int j = 0; j < 3; ++j)
+        angles.push_back(kPi * (0.75 + 0.5 * j));  // the sharp corners
+    for (int j = 0; j <= K; ++j) {  // along the fillet, from tangent point to tangent point
+        const double phi = 0.5 * kPi * j / K;
+        angles.push_back(std::atan2(c + Rc * std::sin(phi), c + Rc * std::cos(phi)));
+    }
+    std::sort(angles.begin(), angles.end());
+    angles.erase(std::unique(angles.begin(), angles.end()), angles.end());
+    const double lo = std::atan2(c, A), hi = std::atan2(A, c);
+    SkinBuilder b;
+    std::vector<std::array<std::int64_t, 4>> rings;
+    for (double th : angles) {
+        const double d[2] = {std::cos(th), std::sin(th)};
+        double t = A / std::max(std::fabs(d[0]), std::fabs(d[1]));
+        if (lo <= th && th <= hi) {
+            const double dc = d[0] * c + d[1] * c;
+            t = dc + std::sqrt(dc * dc - 2.0 * c * c + Rc * Rc);
+        }
+        rings.push_back({b.Add(R * d[0], R * d[1], 0.0), b.Add(R * d[0], R * d[1], H),
+                         b.Add(t * d[0], t * d[1], 0.0), b.Add(t * d[0], t * d[1], H)});
+    }
+    const std::size_t m = rings.size();
+    for (std::size_t i = 0; i < m; ++i) {
+        const auto& r0 = rings[i];
+        const auto& r1 = rings[(i + 1) % m];
+        const double mid =
+            0.5 * (angles[i] + angles[(i + 1) % m] + (i + 1 == m ? 2.0 * kPi : 0.0));
+        const std::vector<double> out{std::cos(mid), std::sin(mid), 0.0};
+        const std::vector<double> in{-out[0], -out[1], 0.0};
+        b.Quad(r0[1], r0[3], r1[3], r1[1], {0.0, 0.0, 1.0});
+        b.Quad(r0[0], r0[2], r1[2], r1[0], {0.0, 0.0, -1.0});
+        b.Quad(r0[2], r1[2], r1[3], r0[3], out);
+        b.Quad(r0[0], r1[0], r1[1], r0[1], in);
+    }
+    return b.Build();
+}
+
 }  // namespace analytic

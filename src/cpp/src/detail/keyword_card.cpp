@@ -157,13 +157,13 @@ std::int64_t card_to_int_view(std::string_view Text, const std::string& rWhere,
                               const std::string& rFormat) {
     if (Text.empty())
         return 0;
-    char small[64];
+    char text_buf[64];
     std::string large;
     const char* first;
-    if (Text.size() < sizeof small) {
-        Text.copy(small, Text.size());
-        small[Text.size()] = '\0';
-        first = small;
+    if (Text.size() < sizeof text_buf) {
+        Text.copy(text_buf, Text.size());
+        text_buf[Text.size()] = '\0';
+        first = text_buf;
     } else {
         large.assign(Text);
         first = large.c_str();
@@ -180,27 +180,27 @@ double card_to_real_view(std::string_view Text, const std::string& rWhere,
                          const std::string& rFormat) {
     if (Text.empty())
         return 0.0;
-    char small[96];
+    char text_buf[96];
     std::string large;
     const char* first;
-    if (Text.size() < sizeof small - 1) {
-        Text.copy(small, Text.size());
+    if (Text.size() < sizeof text_buf - 1) {
+        Text.copy(text_buf, Text.size());
         for (std::size_t i = 0; i < Text.size(); ++i) {
-            if (small[i] == 'D')
-                small[i] = 'E';
-            else if (small[i] == 'd')
-                small[i] = 'e';
+            if (text_buf[i] == 'D')
+                text_buf[i] = 'E';
+            else if (text_buf[i] == 'd')
+                text_buf[i] = 'e';
         }
-        const auto at = kwc_exponent_offset(std::string_view(small, Text.size()));
+        const auto at = kwc_exponent_offset(std::string_view(text_buf, Text.size()));
         std::size_t size = Text.size();
         if (at != std::string_view::npos) {
             for (std::size_t i = size; i > at; --i)
-                small[i] = small[i - 1];
-            small[at] = 'e';
+                text_buf[i] = text_buf[i - 1];
+            text_buf[at] = 'e';
             ++size;
         }
-        small[size] = '\0';
-        first = small;
+        text_buf[size] = '\0';
+        first = text_buf;
     } else {
         large.assign(Text);
         for (char& c : large) {

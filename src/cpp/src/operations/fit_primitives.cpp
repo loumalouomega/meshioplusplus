@@ -40,6 +40,7 @@
 // Project includes (private, not installed)
 #include "../detail/crease_edges.hpp"
 #include "../detail/lsq_fit.hpp"
+#include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
@@ -493,6 +494,20 @@ struct FpOutcome {
     double mTol = 0.0;
 };
 
+// How far the facets' centres lie from a fitted surface (the parameters in
+// the patch's shifted frame), as an RMS. It tells apart the surfaces two rims
+// of mesh points lie on alike: any two coaxial circles lie on a sphere, but
+// the sphere bulges between the rims, away from the chords of a bore.
+double fp_centre_misfit(std::int64_t Type, const double* pParams, const FpPatch& rP) {
+    const std::size_t nf = rP.NumFaces();
+    double sum = 0.0;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const double d = detail::primitive_point_distance(Type, pParams, &rP.mCentres[f * 3]);
+        sum += d * d;
+    }
+    return nf > 0 ? std::sqrt(sum / static_cast<double>(nf)) : 0.0;
+}
+
 FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) {
     FpOutcome out;
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -528,7 +543,31 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
         if (!fit.mOk || !std::isfinite(fit.mRms))
             continue;
         if (fit.mRms <= tol && fit.mFraction >= rOptions.mMinInlierFraction) {
-            out.mType = t;
+            // A sphere through two rims of points may as well be a cylinder,
+            // cone or torus: a cylinder or cone the facets' centres lie nearer
+            // to wins, and a torus (with a parameter to spare) when they lie
+            // under half as far from it.
+            int best_t = t;
+            if (t == 2) {
+                double best_misfit = fp_centre_misfit(2, fit.mParams, rP);
+                for (int u = 3; u <= 5; ++u) {
+                    if (!(rOptions.mTypes & (1u << u)))
+                        continue;
+                    const FpFit other = u == 3   ? fp_cylinder(rP, tol, max_it)
+                                        : u == 4 ? fp_cone(rP, tol, max_it)
+                                                 : fp_torus(rP, tol, max_it);
+                    if (!other.mOk || !std::isfinite(other.mRms) || !(other.mRms <= tol) ||
+                        other.mFraction < rOptions.mMinInlierFraction)
+                        continue;
+                    const double misfit = fp_centre_misfit(u, other.mParams, rP);
+                    if (misfit < (u == 5 ? 0.5 : 1.0) * best_misfit) {
+                        best_misfit = misfit;
+                        best_t = u;
+                        fit = other;
+                    }
+                }
+            }
+            out.mType = best_t;
             for (std::size_t k = 0; k < kFpParams; ++k)
                 out.mParams[k] = fit.mParams[k];
             for (int k = 0; k < 3; ++k)
@@ -549,6 +588,53 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
 }
 
 }  // namespace
+
+namespace detail {
+
+PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
+                                   const std::vector<double>& rNormals,
+                                   const std::vector<double>& rCentres, double Tol,
+                                   std::uint32_t Types, double MinInlierFraction, int MaxIt) {
+    PrimitiveFit out;
+    const std::size_t n = rPts.size() / 3;
+    if (n == 0 || !(Tol > 0.0))
+        return out;
+    FpPatch patch;
+    patch.mPts = rPts;
+    fp_mean(patch.mPts, patch.mShift);
+    double lo[3], hi[3];
+    for (int k = 0; k < 3; ++k)
+        lo[k] = hi[k] = patch.mPts[static_cast<std::size_t>(k)];
+    for (std::size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 3; ++k) {
+            double& v = patch.mPts[i * 3 + static_cast<std::size_t>(k)];
+            lo[k] = v < lo[k] ? v : lo[k];
+            hi[k] = v > hi[k] ? v : hi[k];
+            v -= patch.mShift[k];
+        }
+    const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    patch.mDiag = std::sqrt(fp_dot(ext, ext));
+    patch.mNormals = rNormals;
+    patch.mCentres = rCentres;
+    for (std::size_t f = 0; f < patch.mCentres.size() / 3; ++f)
+        for (int k = 0; k < 3; ++k)
+            patch.mCentres[f * 3 + static_cast<std::size_t>(k)] -= patch.mShift[k];
+    FitPrimitivesOptions options;
+    options.mTolerance = Tol;
+    options.mRelative = false;
+    options.mMinInlierFraction = MinInlierFraction;
+    options.mTypes = Types;
+    options.mMaxIterations = MaxIt;
+    const FpOutcome o = fp_fit_patch(patch, options);
+    out.mType = o.mType;
+    for (std::size_t k = 0; k < kFpParams; ++k)
+        out.mParams[k] = o.mParams[k];
+    out.mRms = o.mRms;
+    out.mMax = o.mMax;
+    return out;
+}
+
+}  // namespace detail
 
 FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
     if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))

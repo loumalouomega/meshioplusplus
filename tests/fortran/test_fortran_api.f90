@@ -2122,7 +2122,7 @@ contains
         integer(int64) :: nfeat, nbound, nfixed, npatch, nplane, nfaces
         integer(int64) :: nsplit, nfillet, nhelical, nvarfillet, nblend, nrounded
         integer(int64) :: nvertex, nchamfer, nconic, ntapered, nvarpitch
-        logical :: cad_valid
+        logical :: cad_valid, used_native
         character(:), allocatable :: msg
         integer(int64), allocatable :: s_ids(:), m_ids(:)
         integer :: ierr
@@ -2170,12 +2170,15 @@ contains
         call fitted%free()
         call seg%free()
 
-        ! fit_cad: six exact planes with OpenCASCADE, the flag named without.
-        solid = sq%fit_cad(valid=cad_valid, num_faces=nfaces, stat=ierr, errmsg=msg)
+        ! fit_cad: six exact planes with OpenCASCADE. Without it the automatic
+        ! backend is the native one, and backend='occt' names the flag.
+        solid = sq%fit_cad(valid=cad_valid, num_faces=nfaces, used_native=used_native, &
+                           stat=ierr, errmsg=msg)
         if (mio_has_occt()) then
             call check(ierr == 0, 'fit_cad succeeded')
             call check(cad_valid, 'the cube solid is valid')
             call check(nfaces == 6_int64, 'the cube solid has 6 faces')
+            call check(.not. used_native, 'the automatic backend is OCCT')
             call solid%free()
             solid = sq%fit_cad(freeform_split=.false., fillets=.false., threads=.false., &
                                num_faces=nfaces, num_split_patches=nsplit, &
@@ -2196,8 +2199,13 @@ contains
                        'a cube has no vertex blend, chamfer, conic blend or tapered thread')
             call solid%free()
         else
-            call check(ierr /= 0, 'fit_cad fails without OpenCASCADE')
-            call check(index(msg, 'MESHIOPLUSPLUS_WITH_OCCT') > 0, 'fit_cad names the flag')
+            call check(ierr == 0, 'fit_cad falls back to the native backend')
+            call check(used_native, 'the fallback is reported as native')
+            call check(nfaces == 6_int64, 'the native backend still finds six faces')
+            call solid%free()
+            solid = sq%fit_cad(backend='occt', stat=ierr, errmsg=msg)
+            call check(ierr /= 0, 'backend occt fails without OpenCASCADE')
+            call check(index(msg, 'MESHIOPLUSPLUS_WITH_OCCT') > 0, 'backend occt names the flag')
         end if
         bad = sq%segment(feature_angle=200.0_real64, stat=ierr)
         call check(ierr /= 0, 'segment rejects an angle above 180')

@@ -65,6 +65,22 @@ def add_args(parser):
         default="patch",
         help="patch regions are named PREFIX:k (default: patch)",
     )
+    parser.add_argument(
+        "--method",
+        type=str,
+        choices=["angle", "primitive"],
+        default="angle",
+        help="end patches by angles alone, or where the plane, sphere, cylinder, "
+        "cone or torus the facets lie on changes (default: angle)",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=1e-3,
+        metavar="T",
+        help="primitive method: how far a point may lie from its patch's "
+        "primitive, relative to the diagonal (default: 1e-3)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the counts as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -82,12 +98,15 @@ def segment_cmd(args):
         region=args.region,
         prefix=args.prefix,
         return_report=True,
+        method=args.method,
+        tolerance=args.tolerance,
     )
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(report)
     elif not args.quiet:
-        print(f"segment ({args.angle:g} degrees): {report['num_patches']} patch(es)")
+        how = "primitive" if args.method == "primitive" else f"{args.angle:g} degrees"
+        print(f"segment ({how}): {report['num_patches']} patch(es)")
         print(f"  merged:        {report['num_merged']}")
         print(f"  feature edges: {report['num_feature_edges']}")
         print(f"  open edges:    {report['num_boundary_edges']}")

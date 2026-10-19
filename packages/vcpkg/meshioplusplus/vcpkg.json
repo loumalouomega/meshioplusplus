@@ -19,7 +19,8 @@
     "hdf5",
     "netcdf",
     "zlib",
-    "gidpost"
+    "gidpost",
+    "occt"
   ],
   "features": {
     "hdf5": {

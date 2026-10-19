@@ -351,6 +351,8 @@ def segment(
     region: str = "",
     prefix: str = "patch",
     return_report: bool = False,
+    method: str = "angle",
+    tolerance: float = 1e-3,
 ):
     """Split a surface into smooth patches by region growing.
 
@@ -369,6 +371,14 @@ def segment(
     :param region: restrict to the cells of this named cell region.
     :param prefix: the patch regions are named ``<prefix>:<k>``.
     :param return_report: also return the counts.
+    :param method: ``"angle"`` grows patches by angles alone; ``"primitive"``
+        (C++ core only) ends a patch where the surface it lies on changes: a
+        smooth area one plane, sphere, cylinder, cone or torus explains is one
+        patch, any other is split into regions grown while one primitive
+        explains their points, so a fillet comes apart from the planes it is
+        tangent to. See ``doc/segment.md``.
+    :param tolerance: ``"primitive"`` only: how far a point may lie from its
+        patch's primitive, relative to the surface's bounding-box diagonal.
     :returns: the input with cell data ``segment:patch``, field data
         ``segment:adjacency`` (rows ``(a, b, shared edges)``) and one cell
         region per patch. With ``return_report``, ``(mesh, report)``.
@@ -392,6 +402,12 @@ def segment(
         raise ValueError(f"{_PREFIX}min_patch_cells must be >= 1")
     if not opts["prefix"]:
         raise ValueError(f"{_PREFIX}the region prefix must not be empty")
+    method = str(method)
+    if method not in ("angle", "primitive"):
+        raise ValueError(f"{_PREFIX}the method must be 'angle' or 'primitive'")
+    tolerance = float(tolerance)
+    if not (tolerance > 0.0 and np.isfinite(tolerance)):
+        raise ValueError(f"{_PREFIX}the tolerance must be finite and > 0")
 
     out = None
     try:
@@ -405,6 +421,8 @@ def segment(
             opts["min_patch_cells"],
             opts["region"],
             opts["prefix"],
+            method,
+            tolerance,
         )
         out = res["mesh"]
         report = {k: int(res[k]) for k in _REPORT_KEYS}
@@ -413,6 +431,11 @@ def segment(
             raise
         out = None
     if out is None:
+        if method == "primitive":
+            raise NotImplementedError(
+                f"{_PREFIX}the primitive method needs the C++ core "
+                "(meshioplusplus._core); it has no numpy twin"
+            )
         out, report = _segment_py(mesh, opts)
     return (out, report) if return_report else out
 

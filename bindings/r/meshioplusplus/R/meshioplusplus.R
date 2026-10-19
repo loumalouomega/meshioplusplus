@@ -1256,7 +1256,9 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
 #' whose cell stays within `normal_tolerance` (degrees) of the seed's normal and
 #' `curvature_tolerance` (1/length) of the patch's mean curvature estimate. Patches
 #' smaller than `min_patch_cells` merge into the neighbour they share the most
-#' edges with. See `doc/segment.md`.
+#' edges with. `method = "primitive"` (v17.9.0) ends a patch where the surface
+#' its facets lie on changes instead, so a fillet comes apart from the planes
+#' it is tangent to. See `doc/segment.md`.
 #'
 #' @param mesh A surface `mio_mesh`.
 #' @param feature_angle The largest dihedral angle, in degrees, still crossed.
@@ -1264,17 +1266,21 @@ mio_feature_edges <- function(mesh, feature_angle = 30, feature = TRUE, boundary
 #' @param min_patch_cells The smallest patch kept on its own.
 #' @param region Restrict to this named cell region; `""` takes every cell.
 #' @param prefix The patch regions are named `<prefix>:<k>`.
+#' @param method `"angle"` grows patches by angles alone; `"primitive"` by the
+#'   plane, sphere, cylinder, cone or torus their facets lie on.
+#' @param tolerance `"primitive"` only: how far a point may lie from its
+#'   patch's primitive, relative to the bounding-box diagonal.
 #' @return A list of `mesh` (the input plus cell data `segment:patch`, field
 #'   data `segment:adjacency` and one cell region per patch), `num_patches`,
 #'   `num_merged`, `num_feature_edges` and `num_boundary_edges`.
 #' @export
 mio_segment <- function(mesh, feature_angle = 30, normal_tolerance = 0,
                         curvature_tolerance = 0, min_patch_cells = 1, region = "",
-                        prefix = "patch") {
+                        prefix = "patch", method = "angle", tolerance = 1e-3) {
   .Call(
     R_mio_segment, mesh, as.numeric(feature_angle), as.numeric(normal_tolerance),
     as.numeric(curvature_tolerance), as.numeric(min_patch_cells), as.character(region),
-    as.character(prefix)
+    as.character(prefix), as.character(method), as.numeric(tolerance)
   )
 }
 
@@ -1332,11 +1338,14 @@ mio_has_occt <- function() {
 #' OpenCASCADE backend: each accepted fit becomes a plane, sphere, cylinder,
 #' cone or torus face, a patch no primitive explains a rolling-ball fillet or
 #' blend, helical thread face or freeform B-spline face where one fits (`fit_cad:type` 7, 8
-#' and 6), the rest planar facets, and a face that fails the B-rep
+#' and 6), the rest coplanar polygons, and a face that fails the B-rep
 #' check or strays beyond `tolerance` is demoted to facets. Without
-#' `segment:patch` or the `fit:patch_*` table, segment and fit_primitives run
-#' first with their defaults. Fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` in
-#' a build without OpenCASCADE (see `mio_has_occt()`). See `doc/fit_cad.md`.
+#' `segment:patch`, segment runs first with the primitive method and
+#' fit_primitives at its tolerance. Without OpenCASCADE (see `mio_has_occt()`)
+#' or with `backend = "native"`, the kernel-free backend writes the fitted
+#' patches as analytic STEP faces and returns the skin itself; `backend =
+#' "occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
+#' `doc/fit_cad.md`.
 #'
 #' @param mesh A closed, consistently wound surface `mio_mesh`.
 #' @param step_path Write the solid here as AP214 STEP; `""` writes nothing.
@@ -1363,6 +1372,9 @@ mio_has_occt <- function() {
 #' @param threads Whether a patch is tried as a helical thread face, about a
 #'   neighbouring cylinder's or cone's axis or the screw it fits, of constant
 #'   or varying pitch and cut on a taper.
+#' @param merge_faces Whether faces on one surface are merged once the solid
+#'   is built (v17.9.0).
+#' @param backend `"auto"`, `"occt"` or `"native"` (v17.9.0).
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1371,14 +1383,16 @@ mio_has_occt <- function() {
 #'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
 #'   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
 #'   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
-#'   `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`.
+#'   `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`
+#'   and `backend` (the engine that ran).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
                         mesh_deflection = 0, max_demotion_rounds = 8,
                         freeform = TRUE, freeform_degree = 3,
                         freeform_max_control = 64, freeform_split = TRUE,
-                        fillets = TRUE, threads = TRUE) {
+                        fillets = TRUE, threads = TRUE, merge_faces = TRUE,
+                        backend = "auto") {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1390,7 +1404,7 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
     as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
     as.numeric(freeform_max_control), isTRUE(freeform_split), isTRUE(fillets),
-    isTRUE(threads)
+    isTRUE(threads), isTRUE(merge_faces), as.character(backend)
   )
 }
 

@@ -2689,7 +2689,7 @@ std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
                                           const std::vector<MfPos>& rTargets) {
     const auto p = static_cast<std::size_t>(P);
     const std::size_t e = p - 1;
-    const auto near = [](double A, double B) { return std::abs(A - B) < 1e-12; };
+    const auto is_close = [](double A, double B) { return std::abs(A - B) < 1e-12; };
     std::vector<std::size_t> local;
     for (const MfPos& n : rNodes) {
         const double x = n[0], y = n[1];
@@ -2697,7 +2697,8 @@ std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
             local.push_back(4 + 4 * e + static_cast<std::size_t>(std::lround(-1.0 - x)));
             continue;
         }
-        const bool x0 = near(x, 0), x1 = near(x, 1), y0 = near(y, 0), y1 = near(y, 1);
+        const bool x0 = is_close(x, 0), x1 = is_close(x, 1), y0 = is_close(y, 0),
+                   y1 = is_close(y, 1);
         if ((x0 || x1) && (y0 || y1)) {
             local.push_back(x0 ? (y0 ? 0 : 3) : (y0 ? 1 : 2));
             continue;
@@ -2705,7 +2706,7 @@ std::vector<double> mf_serendipity_matrix(int P, const std::vector<double>& rCp,
         const double t = (y0 || y1) ? x : y;
         std::size_t i = 0;
         for (std::size_t k = 1; k < p; ++k)
-            if (near(rCp[k], t))
+            if (is_close(rCp[k], t))
                 i = k - 1;
         if (y0)
             local.push_back(4 + i);
