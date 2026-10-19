@@ -592,3 +592,70 @@ def test_compute_sdf_cpp_matches_python(structure, kwargs):
     fa = np.asarray(got["mesh"].point_data["sdf:distance"])
     fb = np.asarray(want["mesh"].point_data["sdf:distance"])
     assert fa.dtype == fb.dtype and fa.tobytes() == fb.tobytes()
+
+
+# ---- 2-D: pixels around a planar polyline -----------------------------------------
+
+
+def _circle_polyline(radius=1.0, n=128, close=True):
+    t = 2 * np.pi * np.arange(n) / n
+    pts = np.column_stack([radius * np.cos(t), radius * np.sin(t), np.zeros(n)])
+    lines = [[i, i + 1] for i in range(n - 1)] + ([[n - 1, 0]] if close else [])
+    return meshioplusplus.Mesh(pts, [("line", np.array(lines, dtype=np.int64))])
+
+
+def test_pixels_inside_converges_to_the_disk_area():
+    mesh, rep = voxelize(
+        _circle_polyline(),
+        resolution=(64, 64),
+        padding=0.1,
+        fill="inside",
+        return_report=True,
+    )
+    assert mesh.cells[0].type == "quad"
+    assert rep["dims"] == [64, 64, 1]
+    cell = rep["spacing"][0] * rep["spacing"][1]
+    assert abs(rep["num_occupied"] * cell - np.pi) < 0.1
+
+
+def test_pixels_surface_is_a_ring_and_cell_size_selects_2d():
+    mesh, rep = voxelize(
+        _circle_polyline(), cell_size=0.1, fill="surface", return_report=True
+    )
+    assert mesh.cells[0].type == "quad"
+    assert 0 < rep["num_occupied"] < rep["dims"][0] * rep["dims"][1]
+
+
+def test_pixels_refuse_an_open_polyline_for_inside():
+    with pytest.raises(ValueError, match="does not close"):
+        voxelize(_circle_polyline(close=False), resolution=(8, 8), fill="inside")
+
+
+@pytest.mark.parametrize("fill", ["all", "surface", "inside"])
+def test_pixels_cpp_matches_python(fill):
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._voxelize import _voxelize_py
+
+    mesh = _circle_polyline()
+    got = core.voxelize(
+        mesh,
+        [16, 12, 0],
+        None,
+        None,
+        0.05,
+        0.0,
+        fill,
+        True,
+        20000000,
+        "pseudonormal",
+        "off",
+    )
+    want, report = _voxelize_py(
+        mesh, [16, 12, 0], None, None, 0.05, 0.0, fill, True, 20000000, "pseudonormal"
+    )
+    assert got["num_occupied"] == report["num_occupied"]
+    assert np.asarray(got["mesh"].points).tobytes() == np.asarray(want.points).tobytes()
+    assert (
+        np.asarray(got["mesh"].cells[0].data).tobytes()
+        == np.asarray(want.cells[0].data).tobytes()
+    )

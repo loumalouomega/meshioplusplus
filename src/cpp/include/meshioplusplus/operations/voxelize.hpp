@@ -85,7 +85,10 @@ MESHIOPLUSPLUS_API VoxelFill voxel_fill_from_name(const std::string& rName);
 
 /// Options for `voxelize`.
 struct VoxelOptions {
-    /// Cell counts per axis. Exactly one of this and `mCellSize` must be set.
+    /// Cell counts per axis. Exactly one of this and `mCellSize` must be set. A
+    /// zero third entry selects the 2-D variant (`quad` pixels around a planar
+    /// skin; see `detail/planar_skin.hpp`); a cell size on a mesh of nothing but
+    /// `line` cells selects it too.
     std::optional<std::array<std::int64_t, 3>> mResolution;
     /// Cell size (cubic). Exactly one of this and `mResolution` must be set.
     std::optional<double> mCellSize;

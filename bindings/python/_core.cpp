@@ -171,6 +171,7 @@
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -2775,6 +2776,70 @@ PYBIND11_MODULE(_core, m) {
         py::arg("fill") = "all", py::arg("attach_occupancy") = false,
         py::arg("max_cells") = 20000000, py::arg("sign") = "pseudonormal",
         py::arg("watertight_check") = "warn");
+
+    // Octree / quadtree leaves around a skin.
+    m.def(
+        "octree",
+        [](py::object pymesh, std::array<std::int64_t, 3> root_cells, std::int64_t min_level,
+           std::int64_t max_level, py::object bounds, double padding, double padding_relative,
+           std::int64_t dimension, double sample_distance, const std::string& balance,
+           const std::string& fill, bool attach_distance, bool even_odd, std::int64_t max_cells,
+           const std::string& sign, const std::string& watertight_check,
+           const std::string& transition, bool snap, std::int64_t surface_level,
+           double curvature_threshold, double feature_angle, const std::string& size_array,
+           const std::string& plane) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::OctreeOptions options;
+            options.mTransition = meshioplusplus::octree_transition_from_name(transition);
+            options.mSnap = snap;
+            options.mSurfaceLevel = surface_level;
+            options.mCurvatureThreshold = curvature_threshold;
+            options.mFeatureAngle = feature_angle;
+            options.mSizeArray = size_array;
+            options.mPlane = meshioplusplus::detail::planar_plane_from_name(plane);
+            options.mRootCells = root_cells;
+            options.mMinLevel = min_level;
+            options.mMaxLevel = max_level;
+            if (!bounds.is_none())
+                options.mBounds = bounds.cast<std::array<double, 6>>();
+            options.mPadding = padding;
+            options.mPaddingRelative = padding_relative;
+            options.mDimension = dimension;
+            options.mSampleDistance = sample_distance;
+            options.mBalance = meshioplusplus::octree_balance_from_name(balance);
+            options.mFill = meshioplusplus::voxel_fill_from_name(fill);
+            options.mAttachDistance = attach_distance;
+            options.mEvenOdd = even_odd;
+            options.mMaxCells = max_cells;
+            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
+            options.mDistance.mWatertightCheck =
+                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
+            meshioplusplus::OctreeResult r =
+                core_nogil([&] { return meshioplusplus::octree(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["dimension"] = r.mDimension;
+            out["origin"] = r.mOrigin;
+            out["root_size"] = r.mRootSize;
+            out["num_leaves"] = r.mNumLeaves;
+            out["num_hanging"] = r.mNumHanging;
+            out["finest_level"] = r.mFinestLevel;
+            out["num_snapped"] = r.mNumSnapped;
+            out["num_refused"] = r.mNumRefused;
+            return out;
+        },
+        py::arg("mesh"), py::arg("root_cells") = std::array<std::int64_t, 3>{{1, 1, 1}},
+        py::arg("min_level") = 0, py::arg("max_level") = 4, py::arg("bounds") = py::none(),
+        py::arg("padding") = 0.0, py::arg("padding_relative") = 0.0, py::arg("dimension") = 0,
+        py::arg("sample_distance") = 0.0, py::arg("balance") = "face", py::arg("fill") = "all",
+        py::arg("attach_distance") = false, py::arg("even_odd") = false,
+        py::arg("max_cells") = 20000000, py::arg("sign") = "pseudonormal",
+        py::arg("watertight_check") = "warn", py::arg("transition") = "hanging",
+        py::arg("snap") = false, py::arg("surface_level") = -1,
+        py::arg("curvature_threshold") = 0.0, py::arg("feature_angle") = 0.0,
+        py::arg("size_array") = "", py::arg("plane") = "auto");
 
     // Distance to a surface. `sample_distance` takes bare query points;
     // `distance_to_surface` attaches the result to a mesh as ordinary data.

@@ -186,6 +186,7 @@ if TYPE_CHECKING:
     from ._merge import merge
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._normals import compute_normals
+    from ._octree import octree
     from ._optimize_volume import optimize_volume
     from ._partition import partition, partition_labels
     from ._periodic import match_periodic_nodes
@@ -390,6 +391,7 @@ _LAZY_ATTRS = {
     "screenshot": "_viewer",
     "view": "_viewer",
     "voxelize": "_voxelize",
+    "octree": "_octree",
 }
 
 __all__ = [
@@ -543,6 +545,7 @@ __all__ = [
     "optimize_volume",
     "grid",
     "voxelize",
+    "octree",
     "sample_distance",
     "distance_to_surface",
     "surface_watertight_check",

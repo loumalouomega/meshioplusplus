@@ -38,6 +38,7 @@
 // Project includes
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
+#include "meshioplusplus/detail/planar_skin.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/tri_box.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
@@ -259,6 +260,222 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
     return out;
 }
 
+// ---- 2-D: pixels ----------------------------------------------------------------
+//
+// A planar skin (closed `line` polyline, or the boundary of a 2-D surface mesh)
+// voxelized into `quad` pixels with the same numbering as the 3-D lattice (x
+// fastest). Selected by a resolution whose third entry is zero, or by a cell size
+// on a polyline-only mesh.
+
+Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
+                      const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
+                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
+    Mesh out;
+    const std::int64_t nx = rDims[0];
+    const std::int64_t ny = rDims[1];
+    const std::int64_t px = nx + 1;
+    const std::int64_t py = ny + 1;
+    const std::int64_t ncells = nx * ny;
+    const bool all = rOccupied.empty();
+
+    std::vector<char> used(static_cast<std::size_t>(px * py), 0);
+    std::vector<std::int64_t> kept_cells;
+    kept_cells.reserve(static_cast<std::size_t>(Kept));
+    for (std::int64_t c = 0; c < ncells; ++c) {
+        if (!all && !rOccupied[static_cast<std::size_t>(c)])
+            continue;
+        kept_cells.push_back(c);
+        const std::int64_t base = (c / nx) * px + c % nx;
+        for (std::int64_t nd : {base, base + 1, base + px + 1, base + px})
+            used[static_cast<std::size_t>(nd)] = 1;
+    }
+    std::vector<std::int64_t> remap(used.size(), -1);
+    std::int64_t next = 0;
+    for (std::size_t p = 0; p < used.size(); ++p)
+        if (used[p])
+            remap[p] = next++;
+
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(next), std::size_t{3}});
+    double* pdst = points.As<double>();
+    parallel_for_bw(used.size(), [&](std::size_t p) {
+        const std::int64_t slot = remap[p];
+        if (slot < 0)
+            return;
+        const std::int64_t g = static_cast<std::int64_t>(p);
+        const detail::Vec3 world = rFrame.Unpermute(
+            detail::Vec3{{rOrigin[0] + static_cast<double>(g % px) * rSpacing[0],
+                          rOrigin[1] + static_cast<double>(g / px) * rSpacing[1], rOrigin[2]}});
+        pdst[slot * 3 + 0] = world[0];
+        pdst[slot * 3 + 1] = world[1];
+        pdst[slot * 3 + 2] = world[2];
+    });
+    out.AssignPoints(std::move(points));
+
+    if (Kept > 0) {
+        NDArray block =
+            NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(Kept), std::size_t{4}});
+        std::int64_t* cdst = block.As<std::int64_t>();
+        for (std::size_t k = 0; k < kept_cells.size(); ++k) {
+            const std::int64_t c = kept_cells[k];
+            const std::int64_t base = (c / nx) * px + c % nx;
+            const std::int64_t nodes[4] = {base, base + 1, base + px + 1, base + px};
+            for (std::size_t i = 0; i < 4; ++i)
+                cdst[k * 4 + i] = remap[static_cast<std::size_t>(nodes[i])];
+        }
+        out.AddCellBlock("quad", std::move(block));
+    }
+    return out;
+}
+
+VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    // The skin's plane: the axis with zero extent, else z (so an xz or yz
+    // polyline voxelizes in its own plane). Everything below runs in the frame
+    // where that plane is xy, and the points are mapped back on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
+    if (rOptions.mFill == VoxelFill::Inside)
+        detail::require_closed_polyline(skin, kVoxPrefix);
+
+    std::array<double, 3> lo{}, hi{};
+    if (rOptions.mBounds) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = (*rOptions.mBounds)[k];
+            hi[k] = (*rOptions.mBounds)[3 + k];
+            if (!(hi[k] >= lo[k]))
+                throw std::invalid_argument(std::string(kVoxPrefix) + "bounds are inverted on axis " +
+                                            std::to_string(k));
+        }
+    } else if (!detail::point_bbox(rMesh, lo, hi)) {
+        throw std::invalid_argument(std::string(kVoxPrefix) +
+                                    "the mesh has no points, so it has no bounding box to cover "
+                                    "(pass explicit bounds)");
+    }
+    {  // world -> frame
+        const detail::Vec3 flo = frame.Permute(detail::Vec3{{lo[0], lo[1], lo[2]}});
+        const detail::Vec3 fhi = frame.Permute(detail::Vec3{{hi[0], hi[1], hi[2]}});
+        lo = {flo[0], flo[1], flo[2]};
+        hi = {fhi[0], fhi[1], fhi[2]};
+    }
+    double diag2 = 0.0;
+    for (std::size_t k = 0; k < 3; ++k)
+        diag2 += (hi[k] - lo[k]) * (hi[k] - lo[k]);
+    const double pad = rOptions.mPadding + rOptions.mPaddingRelative * std::sqrt(diag2);
+    if (pad < 0.0)
+        throw std::invalid_argument(std::string(kVoxPrefix) + "padding is negative");
+    for (std::size_t k = 0; k < 2; ++k) {  // a planar skin keeps its plane
+        lo[k] -= pad;
+        hi[k] += pad;
+    }
+
+    std::array<std::int64_t, 2> dims{};
+    std::array<double, 3> spacing{{0.0, 0.0, 0.0}};
+    if (rOptions.mResolution) {
+        if (rOptions.mCellSize)
+            throw std::invalid_argument(std::string(kVoxPrefix) +
+                                        "give exactly one of resolution and cell_size");
+        for (std::size_t k = 0; k < 2; ++k) {
+            dims[k] = (*rOptions.mResolution)[k];
+            if (dims[k] <= 0)
+                throw std::invalid_argument(std::string(kVoxPrefix) +
+                                            "resolution must be positive on every axis, got " +
+                                            std::to_string(dims[k]) + " on axis " +
+                                            std::to_string(k));
+            spacing[k] = (hi[k] - lo[k]) / static_cast<double>(dims[k]);
+        }
+    } else {
+        const double cell = *rOptions.mCellSize;
+        if (!(cell > 0.0))
+            throw std::invalid_argument(std::string(kVoxPrefix) + "cell_size must be positive");
+        for (std::size_t k = 0; k < 2; ++k) {
+            const double extent = hi[k] - lo[k];
+            dims[k] = extent > 0.0 ? static_cast<std::int64_t>(std::ceil(extent / cell)) : 0;
+            if (dims[k] <= 0)
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) + "the bounding box is degenerate on axis " +
+                    std::to_string(k) +
+                    ", so a cell size cannot fill it (pass an explicit resolution or bounds)");
+            spacing[k] = cell;
+        }
+    }
+    vox_check_budget(dims[0] * dims[1], rOptions.mMaxCells, kVoxPrefix);
+
+    const std::array<double, 3> origin{{lo[0], lo[1], lo[2]}};
+    const std::int64_t nx = dims[0];
+    const std::int64_t ny = dims[1];
+    const std::int64_t ncells = nx * ny;
+    detail::warn_regions_dropped(rMesh, "voxelize");
+
+    std::vector<char> occupied;
+    if (rOptions.mFill == VoxelFill::Surface) {
+        occupied.assign(static_cast<std::size_t>(ncells), 0);
+        const detail::Vec3 half{{spacing[0] * 0.5, spacing[1] * 0.5, 0.0}};
+        for (const auto& seg : skin.mSegments) {
+            std::array<std::int64_t, 2> ilo{}, ihi{};
+            bool skip = false;
+            for (std::size_t k = 0; k < 2; ++k) {
+                const double tlo = std::min(seg[0][k], seg[1][k]);
+                const double thi = std::max(seg[0][k], seg[1][k]);
+                double flo = std::floor((tlo - origin[k]) / spacing[k]);
+                double fhi = std::floor((thi - origin[k]) / spacing[k]);
+                flo = flo < 0.0 ? 0.0 : flo;
+                const double last = static_cast<double>(dims[k] - 1);
+                fhi = fhi > last ? last : fhi;
+                if (fhi < flo) {
+                    skip = true;
+                    break;
+                }
+                ilo[k] = static_cast<std::int64_t>(flo);
+                ihi[k] = static_cast<std::int64_t>(fhi);
+            }
+            if (skip)
+                continue;
+            for (std::int64_t j = ilo[1]; j <= ihi[1]; ++j)
+                for (std::int64_t i = ilo[0]; i <= ihi[0]; ++i) {
+                    const std::size_t cid = static_cast<std::size_t>(j * nx + i);
+                    if (occupied[cid])
+                        continue;
+                    const detail::Vec3 centre{{origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
+                                               origin[1] + (static_cast<double>(j) + 0.5) * spacing[1],
+                                               origin[2]}};
+                    if (detail::segment_box_overlap_2d(centre, half, seg[0], seg[1]))
+                        occupied[cid] = 1;
+                }
+        }
+    } else if (rOptions.mFill == VoxelFill::Inside) {
+        occupied.assign(static_cast<std::size_t>(ncells), 0);
+        parallel_for_bw(static_cast<std::size_t>(ncells), [&](std::size_t c) {
+            const std::int64_t g = static_cast<std::int64_t>(c);
+            const detail::Vec3 centre{{origin[0] + (static_cast<double>(g % nx) + 0.5) * spacing[0],
+                                       origin[1] + (static_cast<double>(g / nx) + 0.5) * spacing[1],
+                                       origin[2]}};
+            occupied[c] = detail::polyline_signed_distance_2d(skin, centre, false) < 0.0 ? 1 : 0;
+        });
+    }
+
+    std::int64_t kept = ncells;
+    if (!occupied.empty()) {
+        kept = 0;
+        for (char f : occupied)
+            kept += f ? 1 : 0;
+    }
+    VoxelResult result;
+    result.mDims = {dims[0], dims[1], 1};
+    result.mOrigin = origin;
+    result.mSpacing = spacing;
+    result.mNumOccupied = kept;
+    result.mMesh = vox_build_pixels(dims, origin, spacing, occupied, kept, frame);
+    if (rOptions.mAttachOccupancy && kept > 0) {
+        NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(kept)});
+        std::int64_t* dst = occ.As<std::int64_t>();
+        parallel_for_bw(static_cast<std::size_t>(kept), [&](std::size_t c) { dst[c] = 1; });
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(occ));
+        result.mMesh.AddCellData(kVoxelOccupancyName, std::move(blocks));
+    }
+    return result;
+}
+
 }  // namespace
 
 VoxelFill voxel_fill_from_name(const std::string& rName) {
@@ -294,6 +511,12 @@ Mesh grid(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>&
 }
 
 VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions) {
+    // 2-D: a resolution whose third entry is zero, or a cell size on a mesh of
+    // nothing but lines.
+    if ((rOptions.mResolution && (*rOptions.mResolution)[2] == 0) ||
+        (!rOptions.mResolution && rOptions.mCellSize && detail::mesh_is_polyline_only(rMesh)))
+        return vox_voxelize_pixels(rMesh, rOptions);
+
     const detail::LatticeSpec spec = vox_resolve_lattice(rMesh, rOptions);
 
     VoxelResult result;

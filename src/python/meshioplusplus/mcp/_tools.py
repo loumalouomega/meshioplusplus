@@ -90,6 +90,7 @@ from .. import (
     isosurface,
     match_periodic_nodes,
     merge,
+    octree,
     optimize_volume,
     partition,
     point_data_to_cell_data,
@@ -1422,6 +1423,64 @@ def tool_voxelize(
         sign=sign,
         watertight_check="off",
         return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_octree(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    root_cells=(1, 1, 1),
+    min_level=0,
+    max_level=4,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.0,
+    dimension=0,
+    sample_distance=0.0,
+    balance="face",
+    fill="all",
+    attach_distance=False,
+    even_odd=False,
+    max_cells=20000000,
+    sign="pseudonormal",
+    transition="hanging",
+    snap=False,
+    surface_level=None,
+    curvature_threshold=0.0,
+    feature_angle=0.0,
+    size_array=None,
+    plane="auto",
+):
+    """Build an octree (quadtree) around a mesh skin, fine only where the skin is."""
+    mesh = _load(input_path, input_format)
+    out, report = octree(
+        mesh,
+        root_cells=root_cells,
+        min_level=min_level,
+        max_level=max_level,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        dimension=dimension,
+        sample_distance=sample_distance,
+        balance=balance,
+        fill=fill,
+        attach_distance=attach_distance,
+        even_odd=even_odd,
+        max_cells=max_cells,
+        sign=sign,
+        watertight_check="off",
+        return_report=True,
+        transition=transition,
+        snap=snap,
+        surface_level=surface_level,
+        curvature_threshold=curvature_threshold,
+        feature_angle=feature_angle,
+        size_array=size_array,
+        plane=plane,
     )
     return _result(_store(out, output_path, output_format), out, **report)
 
@@ -4698,6 +4757,7 @@ TOOL_REGISTRY = OrderedDict(
         ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
+        ("octree", {"fn": tool_octree, "wraps": ("octree",), "gated": None}),
         (
             "grid_sample",
             {"fn": tool_grid_sample, "wraps": ("sample_grid",), "gated": None},

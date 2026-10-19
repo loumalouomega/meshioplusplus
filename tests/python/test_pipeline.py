@@ -763,6 +763,46 @@ def test_cli_pipeline_verb(settings_env, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["steps"] == [{"op": "Quality"}]
 
 
+def test_octree_step_replaces_the_geometry(tmp_path):
+    """``Octree`` is ``Voxelize``'s adaptive sibling in the single-mesh chain."""
+    surface = meshioplusplus.convert_cells(
+        meshioplusplus.extract_surface(meshioplusplus.grid([2, 2, 2])),
+        mode="simplexify",
+    )
+    src = tmp_path / "in.vtu"
+    out = tmp_path / "out.vtu"
+    meshioplusplus.write(src, surface)
+    report = meshioplusplus.run_pipeline(
+        {
+            "Version": 1,
+            "Input": {"Path": str(src)},
+            "Operations": [{"Op": "Octree", "MaxLevel": 2, "Fill": "surface"}],
+            "Output": {"Path": str(out)},
+        }
+    )
+    assert report["steps"][0]["op"] == "Octree"
+    tree = meshioplusplus.read(out)
+    assert tree.cells[0].type == "hexahedron"
+    assert report["steps"][0]["NumLeaves"] == float(len(tree.cells[0].data))
+
+    report = meshioplusplus.run_pipeline(
+        {
+            "Version": 1,
+            "Input": {"Path": str(src)},
+            "Operations": [
+                {
+                    "Op": "Octree",
+                    "MaxLevel": 2,
+                    "Transition": "templates",
+                    "Plane": "xy",
+                }
+            ],
+            "Output": {"Path": str(out)},
+        }
+    )
+    assert report["steps"][0]["NumHanging"] == 0.0
+
+
 def test_compute_sdf_step_replaces_the_geometry(tmp_path):
     """``ComputeSdf`` is ``Voxelize``'s sibling in the single-mesh chain.
 

@@ -195,6 +195,16 @@ Keys: `Resolution`, `CellSize`, `Bounds`, `Padding`, `PaddingRelative`, `Fill`, 
 
 It and `ComputeSdf` are the only steps that **replace** their input's geometry rather than transforming it — read a skin, voxelize it, write a grid. See [`doc/voxelize.md`](voxelize.md).
 
+## `Octree`
+
+```json
+{ "Op": "Octree", "MaxLevel": 6, "Balance": "face", "Fill": "inside" }
+```
+
+Keys: `RootCells`, `MinLevel`, `MaxLevel`, `Bounds`, `Padding`, `PaddingRelative`, `Dimension`, `SampleDistance`, `Balance`, `Fill`, `AttachDistance`, `EvenOdd`, `MaxCells`, `Sign`, `Transition`, `Snap`, `SurfaceLevel`, `CurvatureThreshold`, `FeatureAngle`, `SizeArray`, `Plane`. Reports `NumLeaves`, `NumHanging`, `NumSnapped` and `NumRefused`.
+
+Like `Voxelize` it **replaces** its input's geometry. See [`doc/octree.md`](octree.md).
+
 ## `ComputeSdf`
 
 ```json

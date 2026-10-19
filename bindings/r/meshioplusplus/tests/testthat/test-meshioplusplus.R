@@ -1082,6 +1082,23 @@ test_that("voxelize builds a grid around a surface", {
   expect_equal(inside$num_occupied, 27)
   mio_release(inside$mesh)
 
+  tree <- mio_octree(cube,
+    max_level = 3, bounds = c(-0.5, -0.5, -0.5, 1.5, 1.5, 1.5),
+    fill = "inside", watertight_check = "off"
+  )
+  expect_equal(tree$dimension, 3)
+  expect_true(tree$num_leaves > 0)
+  expect_equal(tree$finest_level, 3)
+  mio_release(tree$mesh)
+  expect_error(mio_octree(cube, balance = "diagonal"))
+  expect_error(mio_octree(cube, transition = "wedges"))
+  templ <- mio_octree(cube,
+    max_level = 3, bounds = c(-0.5, -0.5, -0.5, 1.5, 1.5, 1.5),
+    transition = "templates"
+  )
+  expect_equal(templ$num_hanging, 0)
+  mio_release(templ$mesh)
+
   # An unknown fill fails by name rather than silently defaulting.
   expect_error(mio_voxelize(cube, resolution = c(2, 2, 2), fill = "solid"))
 })

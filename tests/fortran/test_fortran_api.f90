@@ -1875,6 +1875,25 @@ contains
         call check(occupied == 27_int64, 'voxelize inside kept the 27 interior cells')
         call vox%free()
 
+        ! An octree around the cube: fine only where the cube's skin is.
+        vox = cube%octree(max_level=3_int64, &
+                          bounds=[-0.5d0, -0.5d0, -0.5d0, 1.5d0, 1.5d0, 1.5d0], &
+                          fill='inside', watertight_check='off', &
+                          num_leaves=occupied, finest_level=depth, stat=ierr)
+        call check(ierr == 0, 'octree ran')
+        call check(occupied > 0_int64, 'octree inside kept leaves')
+        call check(depth == 3_int64, 'octree reached its finest level')
+        call vox%free()
+        vox = cube%octree(balance='diagonal', stat=ierr)
+        call check(ierr /= 0, 'an unknown balance is refused')
+        vox = cube%octree(max_level=3_int64, transition='templates', &
+                          bounds=[-0.5d0, -0.5d0, -0.5d0, 1.5d0, 1.5d0, 1.5d0], &
+                          num_leaves=occupied, stat=ierr)
+        call check(ierr == 0, 'octree with the templates transition ran')
+        call vox%free()
+        vox = cube%octree(transition='wedges', stat=ierr)
+        call check(ierr /= 0, 'an unknown transition is refused')
+
         ! An unknown fill fails by name rather than silently defaulting.
         vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)
         call check(ierr /= 0, 'an unknown fill is refused')

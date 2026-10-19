@@ -285,3 +285,39 @@ TEST(TriBox, AnEdgeOnlyCrossingIsDetected) {
     EXPECT_TRUE(d::tri_box_overlap(centre, half, {{0.9, 0.9, -3.0}}, {{0.9, 0.9, 3.0}},
                                    {{3.0, 3.0, 0.0}}));
 }
+
+namespace {
+
+// A closed N-gon polyline of radius R at z = 0.
+Mesh circle_polyline(double R, int N, bool Close = true) {
+    std::vector<std::vector<double>> pts;
+    for (int i = 0; i < N; ++i)
+        pts.push_back({R * std::cos(2.0 * M_PI * i / N), R * std::sin(2.0 * M_PI * i / N), 0.0});
+    std::vector<std::vector<std::int64_t>> lines;
+    for (int i = 0; i + 1 < N; ++i)
+        lines.push_back({i, i + 1});
+    if (Close)
+        lines.push_back({N - 1, 0});
+    return mt::make_mesh(std::move(pts), "line", std::move(lines));
+}
+
+}  // namespace
+
+TEST(Voxelize, PixelsInsideConvergeToTheDiskArea) {
+    VoxelOptions o;
+    o.mResolution = std::array<std::int64_t, 3>{{64, 64, 0}};
+    o.mPadding = 0.1;
+    o.mFill = VoxelFill::Inside;
+    const VoxelResult r = voxelize(circle_polyline(1.0, 128), o);
+    EXPECT_EQ(r.mMesh.Cells(0).Type(), "quad");
+    EXPECT_EQ(r.mDims[2], 1);
+    const double area = static_cast<double>(r.mNumOccupied) * r.mSpacing[0] * r.mSpacing[1];
+    EXPECT_NEAR(area, M_PI, 0.1);
+}
+
+TEST(Voxelize, PixelsRefuseAnOpenPolylineForInside) {
+    VoxelOptions o;
+    o.mResolution = std::array<std::int64_t, 3>{{8, 8, 0}};
+    o.mFill = VoxelFill::Inside;
+    EXPECT_THROW(voxelize(circle_polyline(1.0, 32, false), o), std::invalid_argument);
+}

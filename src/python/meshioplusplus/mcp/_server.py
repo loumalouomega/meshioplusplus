@@ -693,6 +693,76 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def octree(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        root_cells: List[int] = [1, 1, 1],
+        min_level: int = 0,
+        max_level: int = 4,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.0,
+        dimension: int = 0,
+        sample_distance: float = 0.0,
+        balance: str = "face",
+        fill: str = "all",
+        attach_distance: bool = False,
+        even_odd: bool = False,
+        max_cells: int = 20000000,
+        sign: str = "pseudonormal",
+        transition: str = "hanging",
+        snap: bool = False,
+        surface_level: Optional[int] = None,
+        curvature_threshold: float = 0.0,
+        feature_angle: float = 0.0,
+        size_array: Optional[str] = None,
+        plane: str = "auto",
+    ) -> dict:
+        """Build an octree (3-D, hexahedra) or quadtree (2-D, quads) around a mesh
+        skin: leaves are fine only where the skin is. A closed polyline of line
+        cells (or the boundary of a 2-D surface mesh) gives a quadtree, a surface
+        an octree. Leaves are split while the skin cuts them (or lies within
+        sample_distance) down to max_level; balance 'none'/'face'/'full' enforces
+        2:1 size ratios. fill='all'/'surface'/'inside' keeps as for voxelize.
+        Writes octree:level and octree:cut cell data and octree:hanging point
+        data, and reports leaf counts, hanging nodes and the root lattice.
+        transition='polyhedra' or 'templates' makes the output conforming (no
+        hanging nodes); snap=True moves the outer nodes onto the skin (fill must
+        be 'surface' or 'inside') and reports num_snapped/num_refused;
+        surface_level, curvature_threshold, feature_angle and size_array refine
+        beyond the cut leaves; plane chooses the plane of a 2-D skin."""
+        return _guard(
+            _tools.tool_octree,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            root_cells=root_cells,
+            min_level=min_level,
+            max_level=max_level,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            dimension=dimension,
+            sample_distance=sample_distance,
+            balance=balance,
+            fill=fill,
+            attach_distance=attach_distance,
+            even_odd=even_odd,
+            max_cells=max_cells,
+            sign=sign,
+            transition=transition,
+            snap=snap,
+            surface_level=surface_level,
+            curvature_threshold=curvature_threshold,
+            feature_angle=feature_angle,
+            size_array=size_array,
+            plane=plane,
+        )
+
+    @server.tool()
     def voxelize(
         input_path: str,
         output_path: str,
@@ -709,7 +779,8 @@ def _register_operations(server: FastMCP) -> None:
         sign: str = "pseudonormal",
     ) -> dict:
         """Build a regular hexahedron grid around a mesh. Give exactly one of
-        resolution (nx, ny, nz) or cell_size. fill='all' keeps the whole bounding
+        resolution (nx, ny, nz; nx, ny selects 2-D quad pixels around a planar
+        polyline) or cell_size. fill='all' keeps the whole bounding
         box, 'surface' keeps only cells a triangle passes through, and 'inside'
         keeps only cells whose centre is inside the surface. Reports the lattice
         origin/spacing/dims and how many cells were kept."""

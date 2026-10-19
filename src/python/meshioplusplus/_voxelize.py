@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import _planar_skin
 from ._fallback import core_op_declined
 from ._grid import DEFAULT_MAX_CELLS, _lattice_py
 from ._mesh import Mesh
@@ -173,6 +174,155 @@ def _resolve_lattice(
     return lo, spacing, dims
 
 
+def _is_pixels(mesh, resolution, cell_size):
+    """2-D: a resolution whose third entry is zero, or a cell size on a polyline."""
+    if resolution is not None:
+        r = np.asarray(resolution, dtype=np.int64).reshape(-1)
+        return r.size == 3 and int(r[2]) == 0
+    return cell_size is not None and _planar_skin.polyline_only(mesh)
+
+
+def _pixels_py(
+    mesh,
+    resolution,
+    cell_size,
+    bounds,
+    padding,
+    padding_relative,
+    fill,
+    attach_occupancy,
+    max_cells,
+):
+    """The numpy twin of ``vox_voxelize_pixels``: ``quad`` pixels around a planar skin."""
+    axes = _planar_skin.frame(mesh, "auto")
+    prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX, axes)
+    if fill == "inside" and has_lines:
+        _planar_skin.require_closed(seg_ids, _PREFIX)
+
+    lo0, hi0 = _resolve_bounds(mesh, bounds, 0.0, 0.0)
+    lo0, hi0 = (
+        _planar_skin.permute(lo0, axes).copy(),
+        _planar_skin.permute(hi0, axes).copy(),
+    )
+    diag = float(np.sqrt(np.sum((hi0 - lo0) ** 2)))
+    pad = padding + padding_relative * diag
+    if pad < 0.0:
+        raise ValueError(f"{_PREFIX}padding is negative")
+    # A planar skin keeps its plane: padding applies to the two in-plane axes.
+    lo, hi = lo0.copy(), hi0.copy()
+    for k in range(2):
+        lo[k] -= pad
+        hi[k] += pad
+
+    spacing = np.zeros(3)
+    dims = [0, 0]
+    if resolution is not None:
+        if cell_size is not None:
+            raise ValueError(f"{_PREFIX}give exactly one of resolution and cell_size")
+        r = np.asarray(resolution, dtype=np.int64).reshape(-1)
+        for k in range(2):
+            dims[k] = int(r[k])
+            if dims[k] <= 0:
+                raise ValueError(
+                    f"{_PREFIX}resolution must be positive on every axis, got "
+                    f"{dims[k]} on axis {k}"
+                )
+            spacing[k] = (hi[k] - lo[k]) / float(dims[k])
+    else:
+        cell = float(cell_size)
+        if not cell > 0.0:
+            raise ValueError(f"{_PREFIX}cell_size must be positive")
+        for k in range(2):
+            extent = hi[k] - lo[k]
+            dims[k] = int(np.ceil(extent / cell)) if extent > 0.0 else 0
+            if dims[k] <= 0:
+                raise ValueError(
+                    f"{_PREFIX}the bounding box is degenerate on axis {k}, so a cell "
+                    "size cannot fill it (pass an explicit resolution or bounds)"
+                )
+            spacing[k] = cell
+    nx, ny = dims
+    ncells = nx * ny
+    if max_cells > 0 and ncells > max_cells:
+        raise ValueError(
+            f"{_PREFIX}the requested grid has {ncells} cells, above the limit of "
+            f"{max_cells} (raise max_cells, coarsen the resolution, or use a band)"
+        )
+    origin = lo.copy()
+
+    occupied = None
+    if fill == "surface":
+        occupied = np.zeros(ncells, dtype=bool)
+        half = np.array([spacing[0] * 0.5, spacing[1] * 0.5, 0.0])
+        for a, b, _c in prims:
+            ilo, ihi, skip = [0, 0], [0, 0], False
+            for k in range(2):
+                tlo, thi = min(a[k], b[k]), max(a[k], b[k])
+                flo = np.floor((tlo - origin[k]) / spacing[k])
+                fhi = np.floor((thi - origin[k]) / spacing[k])
+                flo = 0.0 if flo < 0.0 else flo
+                last = float(dims[k] - 1)
+                fhi = last if fhi > last else fhi
+                if fhi < flo:
+                    skip = True
+                    break
+                ilo[k], ihi[k] = int(flo), int(fhi)
+            if skip:
+                continue
+            for j in range(ilo[1], ihi[1] + 1):
+                for i in range(ilo[0], ihi[0] + 1):
+                    cid = j * nx + i
+                    if occupied[cid]:
+                        continue
+                    centre = np.array(
+                        [
+                            origin[0] + (float(i) + 0.5) * spacing[0],
+                            origin[1] + (float(j) + 0.5) * spacing[1],
+                            origin[2],
+                        ]
+                    )
+                    if _planar_skin.seg_box(centre, half, a, b):
+                        occupied[cid] = True
+    elif fill == "inside":
+        occupied = np.zeros(ncells, dtype=bool)
+        for c in range(ncells):
+            centre = np.array(
+                [
+                    origin[0] + (float(c % nx) + 0.5) * spacing[0],
+                    origin[1] + (float(c // nx) + 0.5) * spacing[1],
+                    origin[2],
+                ]
+            )
+            occupied[c] = _planar_skin.signed_distance(prims, centre, False) < 0.0
+
+    px = nx + 1
+    cells = (
+        np.arange(ncells, dtype=np.int64)
+        if occupied is None
+        else np.flatnonzero(occupied)
+    )
+    kept = int(cells.size)
+    base = (cells // nx) * px + cells % nx
+    nodes = np.stack([base, base + 1, base + px + 1, base + px], axis=1)
+    used = np.unique(nodes) if kept else np.zeros(0, dtype=np.int64)
+    remap = np.full((nx + 1) * (ny + 1), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used), dtype=np.int64)
+    pts = np.zeros((len(used), 3))
+    pts[:, 0] = origin[0] + (used % px).astype(np.float64) * spacing[0]
+    pts[:, 1] = origin[1] + (used // px).astype(np.float64) * spacing[1]
+    pts[:, 2] = origin[2]
+    pts = _planar_skin.unpermute(pts, axes)
+    out = Mesh(pts, [("quad", remap[nodes])] if kept else [])
+    if attach_occupancy and kept > 0:
+        out.cell_data["voxel:occupancy"] = [np.ones(kept, dtype=np.int64)]
+    return out, {
+        "dims": [nx, ny, 1],
+        "origin": [float(v) for v in origin],
+        "spacing": [float(v) for v in spacing],
+        "num_occupied": kept,
+    }
+
+
 def _voxelize_py(
     mesh,
     resolution,
@@ -185,6 +335,18 @@ def _voxelize_py(
     max_cells,
     sign,
 ):
+    if _is_pixels(mesh, resolution, cell_size):
+        return _pixels_py(
+            mesh,
+            resolution,
+            cell_size,
+            bounds,
+            padding,
+            padding_relative,
+            fill,
+            attach_occupancy,
+            max_cells,
+        )
     origin, spacing, dims = _resolve_lattice(
         mesh, resolution, cell_size, bounds, padding, padding_relative, max_cells
     )
@@ -286,11 +448,20 @@ def voxelize(
     Exactly one of ``resolution`` and ``cell_size`` must be given: defaulting one
     would silently pick a grid the caller did not choose, and the cost is cubic in
     that choice.
+
+    A two-entry ``resolution`` selects 2-D: ``quad`` pixels around a planar skin (a
+    closed ``line`` polyline, or the boundary of a 2-D surface mesh). A
+    ``cell_size`` on a mesh of nothing but ``line`` cells selects it too. ``fill``
+    ``"inside"`` then uses the winding number of the polyline and refuses one that
+    does not close. The report's ``dims`` is ``[nx, ny, 1]``.
     """
     if fill not in _FILLS:
         raise ValueError(
             f"{_PREFIX}unknown fill '{fill}' (expected one of: {', '.join(_FILLS)})"
         )
+
+    if resolution is not None and len(resolution) == 2:
+        resolution = [int(resolution[0]), int(resolution[1]), 0]  # 2-D pixels
 
     out = None
     report = None

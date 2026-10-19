@@ -1912,6 +1912,37 @@ meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
 
 See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
 
+## `octree`
+
+```bash
+meshioplusplus octree bunny.stl tree.vtu --max-level 6
+meshioplusplus octree bunny.stl solid.vtu --max-level 6 --fill inside --balance full
+meshioplusplus octree circle.vtu quadtree.vtu --max-level 7 --fill inside
+```
+
+| flag | meaning |
+|---|---|
+| `--root-cells nx,ny,nz` | root cells per axis (default one) |
+| `--min-level N` / `--max-level N` | split every leaf down to `N` / never beyond `N` (at most 20) |
+| `--bounds=xlo,...,zhi` | explicit bounds; the skin's own by default (negatives need the `=` form) |
+| `--padding` / `--padding-relative` | grow the box on every side |
+| `--dimension 0\|2\|3` | 2 for a planar skin (quadtree), 3 for a surface, 0 to decide from the cells |
+| `--sample-distance D` | refine further within `D` of the skin |
+| `--balance none\|face\|full` | 2:1 neighbour balance |
+| `--fill all\|surface\|inside` | which leaves to keep |
+| `--sign pseudonormal\|winding-number` | how `--fill=inside` decides what is inside (3-D) |
+| `--attach-distance` | attach the signed distance at leaf centres as `sdf:distance` |
+| `--even-odd` | 2-D: even-odd rule instead of the winding number |
+| `--transition hanging\|polyhedra\|templates` | output where a fine leaf meets a coarse one (the last two are conforming) |
+| `--snap` | move the outer nodes onto the skin without inverting a leaf (needs `--fill surface\|inside`) |
+| `--surface-level N` | split cut leaves down to `N` only; the criteria below refine further |
+| `--curvature-threshold K` / `--feature-angle D` | refine to `--max-level` where \|mean curvature\| exceeds `K` / along edges sharper than `D` degrees |
+| `--size-array NAME` | `point_data` array of target edge lengths on the skin |
+| `--plane auto\|xy\|xz\|yz` | plane of a 2-D skin |
+| `--max-cells N` | refuse above this many leaves |
+
+See [`doc/octree.md`](octree.md).
+
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
 
 *(Python only — no native equivalent.)* The mesh-to-grid data path a convolutional or superresolution model needs.
