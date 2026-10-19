@@ -1424,8 +1424,17 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
 
   # LDFLAGS env-var seeding of CMAKE_MODULE_LINKER_FLAGS was tried first and
   # silently didn't apply to this MODULE target, hence targeting it directly.
+  # --exclude-libs keeps the static archives' symbols (libstdc++'s, and the
+  # static OpenCASCADE's of the wheels) out of the extension's dynamic symbol
+  # table: Python has often loaded the system libstdc++.so already (numpy links
+  # it), and exported copies of std::cout or the locale facet ids would be
+  # interposed by it, mixing two runtimes -- OpenCASCADE's first stream write
+  # then crashes in a facet of the other copy.
   if(MESHIOPLUSPLUS_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(_core PRIVATE -static-libgcc -static-libstdc++)
+    if(NOT APPLE)
+      target_link_options(_core PRIVATE -Wl,--exclude-libs,ALL)
+    endif()
   endif()
 
   # Land the extension next to the pure-Python package inside the wheel. The

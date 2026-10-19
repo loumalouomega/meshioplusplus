@@ -86927,8 +86927,9 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
 #else
 [[noreturn]] void cad_read_unsupported(const char* pFormat) {
     throw Unsupported(std::string("meshio++: ") + pFormat +
-                      ": reading needs the OpenCASCADE backend; rebuild with "
-                      "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later)");
+                      ": reading needs the OpenCASCADE backend, which the PyPI wheels and "
+                      "the release binaries carry; rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON "
+                      "(OpenCASCADE 7.6 or later, build/build-occt.sh builds one)");
 }
 #endif
 
@@ -185917,6 +185918,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -189325,9 +189327,21 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #else
     if (rOptions.mBackend == FitCadBackend::Occt)
         throw Unsupported(
-            "fit_cad: this build has no OpenCASCADE backend; rebuild with "
-            "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later), or use the native "
-            "backend");
+            "fit_cad: this build has no OpenCASCADE backend (the PyPI wheels and the release "
+            "binaries carry it); rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or "
+            "later, build/build-occt.sh builds one), or use the native backend");
+    // OpenCASCADE is what the result is meant to be built with: say once that
+    // this build falls back, and what that costs.
+    if (rOptions.mBackend == FitCadBackend::Auto) {
+        static std::once_flag s_fcn_fallback_warned;
+        std::call_once(s_fcn_fallback_warned, [] {
+            log::warn(
+                "fit_cad: this build has no OpenCASCADE, so the kernel-free native backend "
+                "is used: no freeform, fillet or thread faces, no B-rep check and no solid "
+                "volume. The PyPI wheels and the release binaries carry OpenCASCADE; a "
+                "source build finds one with -DMESHIOPLUSPLUS_WITH_OCCT=ON (the default)");
+        });
+    }
 #endif
     return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
 }
