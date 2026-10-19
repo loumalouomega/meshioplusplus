@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.6.0 (2026-10-19)
 
 - `lsdyna_d3plot` writes airbag particles and rigid roads (the cells of the `Airbag <id>` and `Rigid road <id>` regions the reader returns go to their own sections instead of the nodes, SPH particles and shells their points would suggest), thick shells (the reader marks them with `cell_data["lsdyna:thick_shell"]`; marked brick blocks are written as the thick-shell family, `NELT`/`NUMMATT`/`NV3DT`) and `d3part` (the name `d3part` writes file type 5; `d3partNN` members are recognised like `d3plotNN`), in both engines with identical bytes; lasso-python reads the thick shells. With rigid roads a rigid body keeps its coordinates and rotation only (`NDIM` 9).
 - `xplt` series writers (`xplt.SeriesWriter`, `write_sequence`, `XpltSeriesWriter`) write remeshed runs: a step whose mesh differs from the previous step's is preceded by a new mesh section (packed as its own stream when compressed), byte for byte in both engines, where it used to be refused; a step with other variables is still refused. A surface or edge variable the reader read per node (`FMT_NODE`) now leaves `field_data["xplt:surface_node:<name>"]` / `"xplt:edge_node:<name>"` beside its point array, and the writer returns a marked array to the surface (edge) group per node.
