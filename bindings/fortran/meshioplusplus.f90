@@ -557,6 +557,37 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
+    !> Interop mirror of C `mio_octree_opts`. Same ABI rules as above.
+    type, bind(c) :: mio_octree_opts_t
+        type(c_ptr) :: root_cells = c_null_ptr
+        type(c_ptr) :: bounds = c_null_ptr
+        real(c_double) :: padding = 0.0_c_double
+        real(c_double) :: padding_relative = 0.0_c_double
+        real(c_double) :: sample_distance = 0.0_c_double
+        integer(c_int64_t) :: min_level = 0
+        integer(c_int64_t) :: max_level = 4
+        integer(c_int64_t) :: dimension = 0
+        integer(c_int64_t) :: max_cells = 20000000
+        integer(c_int32_t) :: balance = 1
+        integer(c_int32_t) :: fill = 0
+        integer(c_int32_t) :: attach_distance = 0
+        integer(c_int32_t) :: even_odd = 0
+        integer(c_int32_t) :: sign = 1
+        integer(c_int32_t) :: watertight_check = 1
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_octree_report`.
+    type, bind(c) :: mio_octree_report_t
+        integer(c_int64_t) :: dimension = 0
+        integer(c_int64_t) :: num_leaves = 0
+        integer(c_int64_t) :: num_hanging = 0
+        integer(c_int64_t) :: finest_level = 0
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: root_size = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For
     !> `structure = 0` (voxel) exactly one of `resolution` and `cell_size` may be
     !> given; for `structure = 1` (octree) NEITHER may be -- its finest cell is
@@ -1112,6 +1143,7 @@ module meshioplusplus
         procedure :: partition_labels => mesh_partition_labels
         procedure :: stats => mesh_stats
         procedure :: voxelize => mesh_voxelize
+        procedure :: octree => mesh_octree
         procedure :: compute_sdf => mesh_compute_sdf
         procedure :: watertight_check => mesh_watertight_check
         procedure :: sample_distance => mesh_sample_distance
@@ -2704,6 +2736,19 @@ module meshioplusplus
             import :: mio_voxel_opts_t
             type(mio_voxel_opts_t), intent(out) :: opts
         end subroutine
+
+        subroutine c_mio_octree_opts_init(opts) bind(c, name="mio_octree_opts_init")
+            import :: mio_octree_opts_t
+            type(mio_octree_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_octree(h, opts, report) bind(c, name="mio_octree") result(r)
+            import :: c_ptr, mio_octree_opts_t, mio_octree_report_t
+            type(c_ptr), value :: h
+            type(mio_octree_opts_t), intent(in) :: opts
+            type(mio_octree_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
 
         function c_mio_grid(dims, origin, spacing, max_cells) bind(c, name="mio_grid") result(r)
             import :: c_ptr, c_int64_t, c_double
@@ -7246,6 +7291,111 @@ contains
         if (present(origin)) origin = real(corigin, real64)
         if (present(spacing)) spacing = real(cspacing, real64)
         if (present(num_occupied)) num_occupied = int(coccupied, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Build an octree (a quadtree for a planar `line` skin) around the mesh:
+    !> leaves are fine only where the skin is. `root_cells` (default 1,1,1),
+    !> `min_level` (default 0) and `max_level` (default 4) size the tree;
+    !> `balance` is 'none', 'face' (default) or 'full'; `fill` is 'all',
+    !> 'surface' or 'inside' as for voxelize. `dimension` is 2, 3 or 0 (decide
+    !> from the cell types). The result carries `octree:level` and `octree:cut`
+    !> cell data and `octree:hanging` point data. The tree's summary comes back
+    !> through the optional `num_leaves`/`num_hanging`/`finest_level`/`root_size`
+    !> arguments.
+    function mesh_octree(self, root_cells, min_level, max_level, bounds, padding, &
+                         padding_relative, dimension, sample_distance, balance, fill, &
+                         sign, watertight_check, attach_distance, even_odd, max_cells, &
+                         num_leaves, num_hanging, finest_level, root_size, &
+                         stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: root_cells(3)
+        integer(int64), intent(in), optional :: min_level, max_level, dimension, max_cells
+        real(real64), intent(in), optional :: bounds(6)
+        real(real64), intent(in), optional :: padding, padding_relative, sample_distance
+        character(*), intent(in), optional :: balance, fill, sign, watertight_check
+        logical, intent(in), optional :: attach_distance, even_odd
+        integer(int64), intent(out), optional :: num_leaves, num_hanging, finest_level
+        real(real64), intent(out), optional :: root_size
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_octree_opts_t) :: opts
+        type(mio_octree_report_t) :: report
+        integer(c_int64_t), target :: roots_buf(3)
+        real(c_double), target :: bounds_buf(6)
+        integer(c_int32_t) :: code
+
+        call c_mio_octree_opts_init(opts)
+        if (present(root_cells)) then
+            roots_buf = int(root_cells, c_int64_t)
+            opts%root_cells = c_loc(roots_buf(1))
+        end if
+        if (present(bounds)) then
+            bounds_buf = real(bounds, c_double)
+            opts%bounds = c_loc(bounds_buf(1))
+        end if
+        if (present(min_level)) opts%min_level = int(min_level, c_int64_t)
+        if (present(max_level)) opts%max_level = int(max_level, c_int64_t)
+        if (present(dimension)) opts%dimension = int(dimension, c_int64_t)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(padding_relative)) opts%padding_relative = real(padding_relative, c_double)
+        if (present(sample_distance)) opts%sample_distance = real(sample_distance, c_double)
+        if (present(attach_distance)) then
+            if (attach_distance) opts%attach_distance = 1
+        end if
+        if (present(even_odd)) then
+            if (even_odd) opts%even_odd = 1
+        end if
+        if (present(balance)) then
+            select case (trim(balance))
+            case ('none'); opts%balance = 0
+            case ('', 'face'); opts%balance = 1
+            case ('full'); opts%balance = 2
+            case default
+                call handle_failure('octree', 'unknown balance '//trim(balance), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(fill)) then
+            code = voxel_fill_code(fill)
+            if (code < 0) then
+                call handle_failure('octree', 'unknown fill '//trim(fill), stat, errmsg)
+                return
+            end if
+            opts%fill = code
+        end if
+        if (present(sign)) then
+            code = sdf_sign_code(sign)
+            if (code < 0) then
+                call handle_failure('octree', 'unknown sign '//trim(sign), stat, errmsg)
+                return
+            end if
+            opts%sign = code
+        end if
+        if (present(watertight_check)) then
+            select case (trim(watertight_check))
+            case ('off'); opts%watertight_check = 0
+            case ('', 'warn'); opts%watertight_check = 1
+            case ('error'); opts%watertight_check = 2
+            case default
+                call handle_failure('octree', &
+                                    'unknown watertight check '//trim(watertight_check), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+
+        out%handle = c_mio_octree(self%handle, opts, report)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('octree', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_leaves)) num_leaves = int(report%num_leaves, int64)
+        if (present(num_hanging)) num_hanging = int(report%num_hanging, int64)
+        if (present(finest_level)) finest_level = int(report%finest_level, int64)
+        if (present(root_size)) root_size = real(report%root_size, real64)
         call clear_status(stat, errmsg)
     end function
 

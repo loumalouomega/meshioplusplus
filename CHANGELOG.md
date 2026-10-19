@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- `octree` — an octree (quadtree for a planar `line` skin, or the boundary of a 2-D surface) around a skin, fine only where the skin is: `root_cells` forest, `min_level`/`max_level`, a `sample_distance` band, `balance` `none`/`face`/`full` 2:1 rippled to a fixed point, `fill` `all`/`surface`/`inside` as for `voxelize`, optional `sdf:distance`, and `octree:level`/`octree:cut` cell data with `octree:hanging` point data. Leaves come out in Morton order over integer finest-lattice corners, so the C++ core and the numpy twin agree byte for byte. A uniform tree is `voxelize`'s lattice. Exposed in Python, C (`mio_octree`), Fortran, Julia, R, WASM, the native and Python CLIs (`octree`), the `Octree` pipeline step and the `octree` MCP tool; see `doc/octree.md`. Conforming transitions (`polyhedra`/`templates`), snapping and curvature/feature/size-field criteria remain on the roadmap.
+
 ## v17.7.0 (2026-10-19)
 
 - Release housekeeping; no functional change. The v17.6.0 `vtx` mesh-policy work (`VtxMeshPolicy`, the `VtxSeriesWriter` constructor taking it, the multi-block writer and the `meshio.shared_points` attribute) shipped without the additive review row its own release required, so `tools/check-abi-version.sh` failed the lint job on the v17.6.0 release commit; this release records that review (`doc/abi_reviews.md`, ABI 30 / v17.6.0, `formats/vtx.hpp` and `version.hpp`) and performs the routine version bump, `MESHIOPLUSPLUS_ABI_VERSION` staying 30. Every reader and writer behaves as in v17.6.0; the only difference in written files is the provenance line's version string (`Written by meshio++ v17.7.0`).

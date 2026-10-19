@@ -784,6 +784,16 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
 #' @param fill `"all"`, `"surface"` or `"inside"`.
 #' @param sign `"pseudonormal"`, `"winding-number"` or `"unsigned"`.
 #' @param attach_occupancy Attach the `voxel:occupancy` array.
+#' @param root_cells Root cells per axis `c(nx, ny, nz)` for `mio_octree()`;
+#'   `NULL` is a single root cell.
+#' @param min_level,max_level Every octree leaf is split down to at least
+#'   `min_level`; none beyond `max_level` (at most 20).
+#' @param dimension `2` for a planar `line` skin (a quadtree), `3` for a
+#'   surface, `0` to decide from the cell types.
+#' @param sample_distance Refine further within this distance of the skin.
+#' @param balance `"none"`, `"face"` or `"full"` 2:1 neighbour balance.
+#' @param attach_distance Attach the signed distance at leaf centres.
+#' @param even_odd Use the even-odd rule instead of the winding number (2-D).
 #' @param watertight_check `"off"`, `"warn"` or `"error"`.
 #' @param points A `3 x n` matrix of query coordinates.
 #' @param band Clamp distances beyond this; `0` is the full field.
@@ -2773,6 +2783,36 @@ mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
   .Call(
     R_mio_grid, as.numeric(dims), as.numeric(origin), as.numeric(spacing),
     as.numeric(max_cells)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
+                       bounds = NULL, padding = 0, padding_relative = 0,
+                       dimension = 0, sample_distance = 0, balance = "face",
+                       fill = "all", sign = "pseudonormal", attach_distance = FALSE,
+                       even_odd = FALSE, max_cells = 20000000,
+                       watertight_check = "warn") {
+  balances <- c(none = 0L, face = 1L, full = 2L)
+  fills <- c(all = 0L, surface = 1L, inside = 2L)
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!balance %in% names(balances)) stop("unknown balance '", balance, "'")
+  if (!fill %in% names(fills)) stop("unknown fill '", fill, "'")
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_octree, mesh,
+    if (is.null(root_cells)) numeric(0) else as.numeric(root_cells),
+    as.numeric(min_level), as.numeric(max_level),
+    if (is.null(bounds)) numeric(0) else as.numeric(bounds),
+    as.numeric(padding), as.numeric(padding_relative), as.numeric(dimension),
+    as.numeric(sample_distance), balances[[balance]], fills[[fill]],
+    signs[[sign]], isTRUE(attach_distance), isTRUE(even_odd),
+    as.numeric(max_cells), checks[[watertight_check]]
   )
 }
 

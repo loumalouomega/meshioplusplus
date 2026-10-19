@@ -2258,6 +2258,17 @@ step('grid builds a lattice from nothing', () => {
     assert.equal(m.grid([0, 0, 0]).points.length, 0);
 });
 
+step('octree is fine only where the skin is', () => {
+    const tree = m.octree(cubeSurface, null, 0, 3,
+        [-0.5, -0.5, -0.5, 1.5, 1.5, 1.5], 0, 0, 0, 0, 'face', 'inside', 'pseudonormal',
+        false, false, 20000000, 'off');
+    assert.equal(tree.dimension, 3);
+    assert.ok(tree.numLeaves > 0);
+    assert.equal(tree.finestLevel, 3);
+    assert.equal(tree.mesh.cells[0].type, 'hexahedron');
+    assert.throws(() => m.octree(cubeSurface, null, 0, 3, null, 0, 0, 0, 0, 'diagonal'));
+});
+
 step('voxelize keeps the whole box, the shell, or the interior', () => {
     const q = m.surfaceWatertightCheck(cubeSurface);
     assert.equal(q.watertight, true);
@@ -2477,6 +2488,7 @@ step('every binding is reachable through the wrapper', () => {
         // that takes no input mesh: it creates one.
         'grid',
         'voxelize',
+        'octree',
         'surfaceWatertightCheck',
         'sampleDistance',
         'distanceToSurface',

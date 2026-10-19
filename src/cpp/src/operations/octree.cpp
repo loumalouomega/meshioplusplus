@@ -29,8 +29,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
-#include <map>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -41,10 +39,10 @@
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
+#include "meshioplusplus/detail/planar_skin.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/tri_box.hpp"
-#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -98,26 +96,10 @@ std::uint64_t oct_morton(std::int64_t x, std::int64_t y, std::int64_t z) {
            (oct_spread(static_cast<std::uint64_t>(z)) << 2);
 }
 
-// Segment / box overlap in the xy plane, by the separating axis test. Touching
-// counts as overlapping, as for tri_box_overlap.
-bool oct_seg_box(const detail::Vec3& rCentre, const detail::Vec3& rHalf, const detail::Vec3& rA,
-                 const detail::Vec3& rB) {
-    const double ax = rA[0] - rCentre[0], ay = rA[1] - rCentre[1];
-    const double bx = rB[0] - rCentre[0], by = rB[1] - rCentre[1];
-    if (std::min(ax, bx) > rHalf[0] || std::max(ax, bx) < -rHalf[0])
-        return false;
-    if (std::min(ay, by) > rHalf[1] || std::max(ay, by) < -rHalf[1])
-        return false;
-    const double dx = bx - ax, dy = by - ay;
-    const double nx = -dy, ny = dx;
-    const double proj = nx * ax + ny * ay;
-    return std::fabs(proj) <= std::fabs(nx) * rHalf[0] + std::fabs(ny) * rHalf[1];
-}
-
 bool oct_prim_hits(const OctGrid& rGrid, const OctPrim& rPrim, const detail::Vec3& rCentre,
                    const detail::Vec3& rHalf) {
     if (rGrid.mTwoD)
-        return oct_seg_box(rCentre, rHalf, rPrim.mA, rPrim.mB);
+        return detail::segment_box_overlap_2d(rCentre, rHalf, rPrim.mA, rPrim.mB);
     return detail::tri_box_overlap(rCentre, rHalf, rPrim.mA, rPrim.mB, rPrim.mC);
 }
 
@@ -182,117 +164,6 @@ void oct_check_budget(std::size_t Leaves, std::int64_t MaxCells) {
                                     " (raise max_cells, lower max_level, or narrow the band)");
 }
 
-// The skin as primitives. 3-D: the triangle soup. 2-D: `line` cells directly,
-// and the boundary edges of `triangle`/`quad` cells.
-void oct_collect_2d(const Mesh& rMesh, std::vector<OctPrim>& rPrims,
-                    std::vector<std::array<std::int64_t, 2>>& rIds, bool& rHasLines) {
-    const std::size_t dim = rMesh.PointDim();
-    const NDArray& points = rMesh.Points();
-    const std::size_t npts = rMesh.NumPoints();
-    std::map<std::array<std::int64_t, 2>, std::pair<std::int64_t, std::array<std::int64_t, 2>>>
-        boundary;
-    std::vector<std::array<std::int64_t, 2>> order;
-    rHasLines = false;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::string type(cb.Type());
-        const bool line = type == "line";
-        const bool surf = type == "triangle" || type == "quad";
-        if (!line && !surf)
-            continue;
-        const std::size_t n = cb.NodesPerCell();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-            std::array<std::int64_t, 4> v{};
-            for (std::size_t i = 0; i < n; ++i) {
-                v[i] = detail::read_int(cb.Conn(), c * n + i);
-                if (v[i] < 0 || static_cast<std::size_t>(v[i]) >= npts)
-                    throw std::invalid_argument(std::string(kOctPrefix) +
-                                                "a cell references a point the mesh does not have");
-            }
-            if (line) {
-                rHasLines = true;
-                rIds.push_back({v[0], v[1]});
-                continue;
-            }
-            for (std::size_t e = 0; e < n; ++e) {
-                const std::int64_t a = v[e], b = v[(e + 1) % n];
-                const std::array<std::int64_t, 2> key{std::min(a, b), std::max(a, b)};
-                auto it = boundary.find(key);
-                if (it == boundary.end()) {
-                    boundary.emplace(key, std::make_pair(std::int64_t{1},
-                                                         std::array<std::int64_t, 2>{a, b}));
-                    order.push_back(key);
-                } else {
-                    ++it->second.first;
-                }
-            }
-        }
-    }
-    for (const auto& key : order) {
-        const auto& rec = boundary.at(key);
-        if (rec.first == 1)
-            rIds.push_back(rec.second);
-    }
-    for (const auto& id : rIds) {
-        OctPrim p;
-        p.mA = detail::read_point(points, dim, id[0]);
-        p.mB = detail::read_point(points, dim, id[1]);
-        p.mC = p.mB;
-        rPrims.push_back(p);
-    }
-}
-
-// Odd-degree vertices of a polyline are its open ends.
-void oct_require_closed(const std::vector<std::array<std::int64_t, 2>>& rIds) {
-    std::map<std::int64_t, int> degree;
-    for (const auto& id : rIds) {
-        ++degree[id[0]];
-        ++degree[id[1]];
-    }
-    std::string ends;
-    int count = 0;
-    for (const auto& kv : degree)
-        if (kv.second % 2 != 0) {
-            if (count < 8)
-                ends += (ends.empty() ? "" : ", ") + std::to_string(kv.first);
-            ++count;
-        }
-    if (count > 0)
-        throw std::invalid_argument(std::string(kOctPrefix) +
-                                    "the polyline does not close, so it has no inside: open ends at "
-                                    "points " + ends + (count > 8 ? ", ..." : ""));
-}
-
-// Signed distance to a closed polyline in the xy plane: negative inside.
-double oct_signed_distance_2d(const std::vector<OctPrim>& rPrims, const detail::Vec3& rP,
-                              bool EvenOdd) {
-    double best = std::numeric_limits<double>::infinity();
-    int winding = 0;
-    int crossings = 0;
-    for (const OctPrim& s : rPrims) {
-        const double ax = s.mA[0], ay = s.mA[1], bx = s.mB[0], by = s.mB[1];
-        const double dx = bx - ax, dy = by - ay;
-        const double len2 = dx * dx + dy * dy;
-        double t = len2 > 0.0 ? ((rP[0] - ax) * dx + (rP[1] - ay) * dy) / len2 : 0.0;
-        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
-        const double qx = ax + t * dx - rP[0], qy = ay + t * dy - rP[1];
-        const double d = std::sqrt(qx * qx + qy * qy);
-        if (d < best)
-            best = d;
-        const double left = dx * (rP[1] - ay) - (rP[0] - ax) * dy;
-        if (ay <= rP[1]) {
-            if (by > rP[1] && left > 0.0) {
-                ++winding;
-                ++crossings;
-            }
-        } else if (by <= rP[1] && left < 0.0) {
-            --winding;
-            ++crossings;
-        }
-    }
-    const bool inside = EvenOdd ? (crossings % 2 != 0) : (winding != 0);
-    return inside ? -best : best;
-}
-
 }  // namespace
 
 OctreeBalance octree_balance_from_name(const std::string& rName) {
@@ -325,17 +196,8 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
     grid.mRoots = rOptions.mRootCells;
 
     bool two_d = rOptions.mDimension == 2;
-    if (rOptions.mDimension == 0) {
-        bool any_line = false, any_other = false;
-        for (const auto cb : rMesh.CellRange()) {
-            const std::string type(cb.Type());
-            if (type == "line")
-                any_line = true;
-            else if (type != "vertex")
-                any_other = true;
-        }
-        two_d = any_line && !any_other;
-    }
+    if (rOptions.mDimension == 0)
+        two_d = detail::mesh_is_polyline_only(rMesh);
     grid.mTwoD = two_d;
     if (two_d)
         grid.mRoots[2] = 1;
@@ -355,14 +217,15 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
 
     // ---- the skin -------------------------------------------------------------
     std::vector<OctPrim> prims;
-    std::vector<std::array<std::int64_t, 2>> seg_ids;
+    detail::PlanarSkin skin;
     detail::TriangleSoup soup;
     if (two_d) {
-        bool has_lines = false;
-        oct_collect_2d(rMesh, prims, seg_ids, has_lines);
+        skin = detail::collect_planar_skin(rMesh, kOctPrefix);
         if (rOptions.mFill == VoxelFill::Inside || rOptions.mAttachDistance)
-            if (has_lines)
-                oct_require_closed(seg_ids);
+            detail::require_closed_polyline(skin, kOctPrefix);
+        prims.reserve(skin.mSegments.size());
+        for (const auto& seg : skin.mSegments)
+            prims.push_back(OctPrim{seg[0], seg[1], seg[1]});
     } else {
         soup = detail::build_triangle_soup(rMesh, rOptions.mDistance.mSurfaceRegion);
         prims.reserve(soup.NumTriangles());
@@ -536,7 +399,7 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
         distance.assign(nleaves, 0.0);
         if (two_d) {
             parallel_for(nleaves, [&](std::size_t n) {
-                distance[n] = oct_signed_distance_2d(prims, centres[n], rOptions.mEvenOdd);
+                distance[n] = detail::polyline_signed_distance_2d(skin, centres[n], rOptions.mEvenOdd);
             });
         } else {
             SurfaceDistanceOptions dopts = rOptions.mDistance;

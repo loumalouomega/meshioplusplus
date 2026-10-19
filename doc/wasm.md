@@ -603,3 +603,4 @@ seq.close();                  // release the handle; safe to call twice / from a
 The generated grid carries an `sdf:*` numeric `field_data` header describing itself. No file format persists arbitrary `field_data`, so write it as [`.vti`](formats/vti.md), whose `Origin`/`Spacing`/`WholeExtent` attributes are the same information.
 
 See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+`octree(mesh, rootCells, minLevel, maxLevel, bounds, ...)` builds an octree (quadtree for a planar `line` skin) around a mesh, fine only where the skin is, and returns `{mesh, dimension, numLeaves, numHanging, finestLevel, origin, rootSize}`; `{ op: 'octree' }` also works as a pipeline step. See [`doc/octree.md`](octree.md).

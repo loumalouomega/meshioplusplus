@@ -12,6 +12,8 @@ solid = mp.voxelize(mp.read("bunny.stl"), resolution=[64, 64, 64], fill="inside"
 
 ![voxelize's three fill modes around the bracket's surface: all, surface, inside](/images/voxelize_fills.png)
 
+A lattice that is fine only where the surface is, in 3-D and 2-D, is [`octree`](octree.md); a uniform octree is this lattice.
+
 ## The output is an ordinary mesh, and that is the whole design
 
 A voxel grid here is one `hexahedron` cell block over a shared corner lattice — not a bespoke object with its own accessors. Once it *is* a [`Mesh`](mesh_data_model.md), everything already works on it:
@@ -26,8 +28,17 @@ mp.isosurface(field, "sdf:distance", [0.0])             # contouring
 
 None of that needed a line of new code, and none of it would have been available from a dedicated grid type. Two alternatives were considered and rejected:
 
-- **`custom` cells** (for a future adaptive octree). `CellType::Custom` reports −1 nodes and −1 dimension, which makes the block invisible to `stats`, `quality`, `extract_surface`, `gradient` and `refine` and unwritable by most formats — forfeiting exactly the property that motivates the choice.
+- **`custom` cells** (for the adaptive [`octree`](octree.md)). `CellType::Custom` reports −1 nodes and −1 dimension, which makes the block invisible to `stats`, `quality`, `extract_surface`, `gradient` and `refine` and unwritable by most formats — forfeiting exactly the property that motivates the choice.
 - **A new `voxel` cell type.** VTK's type 11 is deliberately unmapped in this codebase; adding it would mean a row in all 79 format tables to buy an implicit node ordering nothing needs.
+
+## 2-D: pixels
+
+A two-entry `resolution` (`nx, ny`) — or a `cell_size` on a mesh of nothing but `line` cells — selects the 2-D variant: `quad` pixels around a planar skin, either a closed polyline of `line` cells or the boundary edges of a 2-D surface mesh (`triangle`/`quad` cells). The numbering is the 3-D one with no `k` (x fastest), the plane is the skin's `z`, and padding applies to the two in-plane axes. `fill="surface"` keeps the pixels a segment passes through (exact segment–box overlap), `fill="inside"` the pixels whose centre has a nonzero winding number, and a polyline that does not close is refused for `inside`, naming its open ends. The report's `dims` is `[nx, ny, 1]`. In the C, Fortran, Julia, R and WASM bindings pass `[nx, ny, 0]`: a zero third entry selects 2-D.
+
+```python
+circle = mp.Mesh(points, [("line", segments)])           # a closed polyline at z = 0
+pixels = mp.voxelize(circle, resolution=[64, 64], fill="inside")
+```
 
 ## Numbering
 

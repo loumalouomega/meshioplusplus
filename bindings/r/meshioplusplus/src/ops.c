@@ -2112,6 +2112,70 @@ SEXP R_mio_voxelize(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds, SEX
     return res_list;
 }
 
+SEXP R_mio_octree(SEXP mesh, SEXP root_cells, SEXP min_level, SEXP max_level, SEXP bounds,
+                  SEXP padding, SEXP padding_relative, SEXP dimension, SEXP sample_distance,
+                  SEXP balance, SEXP fill, SEXP sign, SEXP attach_distance, SEXP even_odd,
+                  SEXP max_cells, SEXP watertight_check) {
+    mio_octree_opts opts;
+    mio_octree_opts_init(&opts);
+
+    /* The buffers the option pointers reference must outlive the call. */
+    int64_t roots[3];
+    double bnd[6];
+    if (Rf_xlength(root_cells) > 0) {
+        SEXP r = PROTECT(Rf_coerceVector(root_cells, REALSXP));
+        if (Rf_xlength(r) != 3) {
+            UNPROTECT(1);
+            Rf_error("`root_cells` must have exactly 3 elements");
+        }
+        for (int i = 0; i < 3; ++i) roots[i] = (int64_t)REAL(r)[i];
+        UNPROTECT(1);
+        opts.root_cells = roots;
+    }
+    if (Rf_xlength(bounds) > 0) {
+        SEXP b = PROTECT(Rf_coerceVector(bounds, REALSXP));
+        if (Rf_xlength(b) != 6) {
+            UNPROTECT(1);
+            Rf_error("`bounds` must have exactly 6 elements");
+        }
+        memcpy(bnd, REAL(b), 6 * sizeof(double));
+        UNPROTECT(1);
+        opts.bounds = bnd;
+    }
+    opts.min_level = mio_r_int64(min_level, "min_level");
+    opts.max_level = mio_r_int64(max_level, "max_level");
+    opts.padding = mio_r_double(padding, "padding");
+    opts.padding_relative = mio_r_double(padding_relative, "padding_relative");
+    opts.dimension = mio_r_int64(dimension, "dimension");
+    opts.sample_distance = mio_r_double(sample_distance, "sample_distance");
+    opts.balance = (int32_t)mio_r_int(balance, "balance");
+    opts.fill = (int32_t)mio_r_int(fill, "fill");
+    opts.sign = (int32_t)mio_r_int(sign, "sign");
+    opts.attach_distance = mio_r_bool(attach_distance, "attach_distance");
+    opts.even_odd = mio_r_bool(even_odd, "even_odd");
+    opts.max_cells = mio_r_int64(max_cells, "max_cells");
+    opts.watertight_check = (int32_t)mio_r_int(watertight_check, "watertight_check");
+
+    mio_octree_report report;
+    mio_mesh *out = mio_octree(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("octree");
+
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP sdim = PROTECT(Rf_ScalarReal((double)report.dimension));
+    SEXP sleaves = PROTECT(Rf_ScalarReal((double)report.num_leaves));
+    SEXP shang = PROTECT(Rf_ScalarReal((double)report.num_hanging));
+    SEXP sfine = PROTECT(Rf_ScalarReal((double)report.finest_level));
+    SEXP so = PROTECT(Rf_allocVector(REALSXP, 3));
+    memcpy(REAL(so), report.origin, 3 * sizeof(double));
+    SEXP sroot = PROTECT(Rf_ScalarReal(report.root_size));
+    const char *names[] = {"mesh", "dimension", "num_leaves", "num_hanging",
+                           "finest_level", "origin", "root_size"};
+    SEXP values[] = {mo, sdim, sleaves, shang, sfine, so, sroot};
+    SEXP res_list = PROTECT(mio_r_named_list(7, names, values));
+    UNPROTECT(8);
+    return res_list;
+}
+
 SEXP R_mio_compute_sdf(SEXP mesh, SEXP structure, SEXP resolution, SEXP cell_size,
                        SEXP bounds, SEXP padding, SEXP padding_relative,
                        SEXP root_resolution, SEXP max_depth, SEXP band_cells,

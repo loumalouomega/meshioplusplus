@@ -760,7 +760,8 @@ def _register_operations(server: FastMCP) -> None:
         sign: str = "pseudonormal",
     ) -> dict:
         """Build a regular hexahedron grid around a mesh. Give exactly one of
-        resolution (nx, ny, nz) or cell_size. fill='all' keeps the whole bounding
+        resolution (nx, ny, nz; nx, ny selects 2-D quad pixels around a planar
+        polyline) or cell_size. fill='all' keeps the whole bounding
         box, 'surface' keeps only cells a triangle passes through, and 'inside'
         keeps only cells whose centre is inside the surface. Reports the lattice
         origin/spacing/dims and how many cells were kept."""

@@ -158,6 +158,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -3995,6 +3996,61 @@ val voxelize_js(const val& rMeshObj, const val& rResolution, double cellSize, co
     });
 }
 
+/**
+ * @brief Build an octree (quadtree for a planar `line` skin) around a mesh.
+ * Returns `{mesh, dimension, numLeaves, numHanging, finestLevel, origin, rootSize}`.
+ * Pass an empty array for `rootCells`/`bounds` to take the defaults.
+ */
+val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, double maxLevel,
+              const val& rBounds, double padding, double paddingRelative, double dimension,
+              double sampleDistance, const std::string& rBalance, const std::string& rFill,
+              const std::string& rSign, bool attachDistance, bool evenOdd, double maxCells,
+              const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::OctreeOptions options;
+        if (!rRootCells.isUndefined() && !rRootCells.isNull() &&
+            rRootCells["length"].as<unsigned>() == 3)
+            options.mRootCells = std::array<std::int64_t, 3>{
+                {static_cast<std::int64_t>(rRootCells[0].as<double>()),
+                 static_cast<std::int64_t>(rRootCells[1].as<double>()),
+                 static_cast<std::int64_t>(rRootCells[2].as<double>())}};
+        options.mMinLevel = static_cast<std::int64_t>(minLevel);
+        options.mMaxLevel = static_cast<std::int64_t>(maxLevel);
+        if (!rBounds.isUndefined() && !rBounds.isNull() && rBounds["length"].as<unsigned>() == 6) {
+            std::array<double, 6> b{};
+            for (unsigned i = 0; i < 6; ++i)
+                b[i] = rBounds[i].as<double>();
+            options.mBounds = b;
+        }
+        options.mPadding = padding;
+        options.mPaddingRelative = paddingRelative;
+        options.mDimension = static_cast<std::int64_t>(dimension);
+        options.mSampleDistance = sampleDistance;
+        options.mBalance = meshioplusplus::octree_balance_from_name(rBalance);
+        options.mFill = meshioplusplus::voxel_fill_from_name(rFill);
+        options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+        options.mAttachDistance = attachDistance;
+        options.mEvenOdd = evenOdd;
+        options.mMaxCells = static_cast<std::int64_t>(maxCells);
+        options.mDistance.mWatertightCheck =
+            meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+
+        meshioplusplus::OctreeResult r = meshioplusplus::octree(val_to_mesh(rMeshObj), options);
+        val origin = val::array();
+        for (int i = 0; i < 3; ++i)
+            origin.call<void>("push", r.mOrigin[static_cast<std::size_t>(i)]);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dimension", static_cast<double>(r.mDimension));
+        out.set("numLeaves", static_cast<double>(r.mNumLeaves));
+        out.set("numHanging", static_cast<double>(r.mNumHanging));
+        out.set("finestLevel", static_cast<double>(r.mFinestLevel));
+        out.set("origin", origin);
+        out.set("rootSize", r.mRootSize);
+        return out;
+    });
+}
+
 /// @brief What is wrong with a surface, in numbers.
 val surface_watertight_check_js(const val& rMeshObj) {
     return with_js_errors([&]() -> val {
@@ -6867,6 +6923,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("voxelize", &voxelize_js);
+    emscripten::function("octree", &octree_js);
     emscripten::function("surfaceWatertightCheck", &surface_watertight_check_js);
     emscripten::function("sampleDistance", &sample_distance_js);
     emscripten::function("distanceToSurface", &distance_to_surface_js);

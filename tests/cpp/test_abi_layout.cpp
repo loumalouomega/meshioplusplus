@@ -106,6 +106,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
@@ -323,6 +324,7 @@ MIO_ABI_LAYOUT(meshioplusplus::SurfaceQuality, 40, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SurfaceDistanceOptions, 80, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
 MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 232, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 
 // RefineOptions is passed by const-ref through the exported `refine()`,

@@ -25,7 +25,8 @@ def add_args(parser):
         "--resolution",
         type=str,
         default=None,
-        help="cell counts 'nx,ny,nz' (exactly one of --resolution/--cell-size)",
+        help="cell counts 'nx,ny,nz', or 'nx,ny' for 2-D pixels around a planar "
+        "polyline (exactly one of --resolution/--cell-size)",
     )
     parser.add_argument(
         "--cell-size",
@@ -86,8 +87,8 @@ def voxelize_cmd(args):
     resolution = None
     if args.resolution is not None:
         resolution = [int(x) for x in args.resolution.split(",")]
-        if len(resolution) != 3:
-            raise ValueError("voxelize: --resolution expects 'nx,ny,nz'")
+        if len(resolution) not in (2, 3):
+            raise ValueError("voxelize: --resolution expects 'nx,ny,nz' (or 'nx,ny')")
     bounds = None
     if args.bounds is not None:
         bounds = [float(x) for x in args.bounds.split(",")]

@@ -89,6 +89,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -431,6 +432,9 @@ void print_usage(std::ostream& os) {
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
           "  voxelize                Regular hexahedron grid around a mesh\n"
           "                            exactly one of --resolution/--cell-size;\n"
+          "                            --fill all|surface|inside\n"
+          "  octree                  Octree / quadtree around a skin, fine only where\n"
+          "                            the skin is: --max-level N --balance none|face|full\n"
           "                            --fill all|surface|inside\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
@@ -3295,8 +3299,10 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
         // parse_doubles rather than the int64 parser, which is defined further
         // down this file; the values are small counts either way.
         auto v = parse_doubles(opt_value(p, "resolution"));
+        if (v.size() == 2)
+            v.push_back(0.0);  // two entries select the 2-D pixels
         if (v.size() != 3)
-            throw std::runtime_error("voxelize: --resolution expects 'nx,ny,nz'");
+            throw std::runtime_error("voxelize: --resolution expects 'nx,ny,nz' (or 'nx,ny')");
         options.mResolution = std::array<std::int64_t, 3>{{static_cast<std::int64_t>(v[0]),
                                                            static_cast<std::int64_t>(v[1]),
                                                            static_cast<std::int64_t>(v[2])}};
@@ -3335,6 +3341,88 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
         std::cout << "  cell size:      " << r.mSpacing[0] << ", " << r.mSpacing[1] << ", "
                   << r.mSpacing[2] << "\n";
         std::cout << "  cells kept:     " << r.mNumOccupied << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_octree(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"root-cells", {}, true},
+                                  {"min-level", {}, true},
+                                  {"max-level", {}, true},
+                                  {"bounds", {}, true},
+                                  {"padding", {}, true},
+                                  {"padding-relative", {}, true},
+                                  {"dimension", {}, true},
+                                  {"sample-distance", {}, true},
+                                  {"balance", {}, true},
+                                  {"fill", {}, true},
+                                  {"sign", {}, true},
+                                  {"attach-distance", {}, false},
+                                  {"even-odd", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("octree requires exactly INFILE and OUTFILE");
+
+    meshioplusplus::OctreeOptions options;
+    if (p.values.count("root-cells")) {
+        auto v = parse_doubles(opt_value(p, "root-cells"));
+        if (v.size() == 1)
+            v = {v[0], v[0], v[0]};
+        else if (v.size() == 2)
+            v.push_back(1.0);
+        if (v.size() != 3)
+            throw std::runtime_error("octree: --root-cells expects 'nx,ny,nz'");
+        options.mRootCells = std::array<std::int64_t, 3>{{static_cast<std::int64_t>(v[0]),
+                                                          static_cast<std::int64_t>(v[1]),
+                                                          static_cast<std::int64_t>(v[2])}};
+    }
+    if (p.values.count("min-level"))
+        options.mMinLevel = std::stoll(opt_value(p, "min-level"));
+    if (p.values.count("max-level"))
+        options.mMaxLevel = std::stoll(opt_value(p, "max-level"));
+    // Negatives need the --bounds= form (the parser rule shared with --bbox).
+    if (p.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(p, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error("octree: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    if (p.values.count("padding"))
+        options.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
+    if (p.values.count("padding-relative"))
+        options.mPaddingRelative = meshioplusplus::detail::stod_c(opt_value(p, "padding-relative"));
+    if (p.values.count("dimension"))
+        options.mDimension = std::stoll(opt_value(p, "dimension"));
+    if (p.values.count("sample-distance"))
+        options.mSampleDistance = meshioplusplus::detail::stod_c(opt_value(p, "sample-distance"));
+    options.mBalance = meshioplusplus::octree_balance_from_name(opt_value(p, "balance", "face"));
+    options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
+    options.mDistance.mSign =
+        meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mAttachDistance = has_flag(p, "attach-distance");
+    options.mEvenOdd = has_flag(p, "even-odd");
+    if (p.values.count("max-cells"))
+        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    options.mDistance.mWatertightCheck = options.mFill == meshioplusplus::VoxelFill::Inside
+                                             ? meshioplusplus::SdfWatertightCheck::Warn
+                                             : meshioplusplus::SdfWatertightCheck::Off;
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::OctreeResult r = meshioplusplus::octree(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << (r.mDimension == 2 ? "quadtree" : "octree") << " (" << opt_value(p, "fill", "all")
+                  << ")\n";
+        std::cout << "  root size:      " << r.mRootSize << "\n";
+        std::cout << "  finest level:   " << r.mFinestLevel << "\n";
+        std::cout << "  leaves kept:    " << r.mNumLeaves << "\n";
+        std::cout << "  hanging nodes:  " << r.mNumHanging << "\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -5964,6 +6052,8 @@ int main(int argc, char** argv) {
             return cmd_isosurface(rest);
         if (cmd == "voxelize")
             return cmd_voxelize(rest);
+        if (cmd == "octree")
+            return cmd_octree(rest);
         if (cmd == "sdf")
             return cmd_sdf(rest);
         if (cmd == "split")

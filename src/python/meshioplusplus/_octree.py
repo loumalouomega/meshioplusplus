@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import _planar_skin
 from ._fallback import core_op_declined
 from ._grid import DEFAULT_MAX_CELLS
 from ._mesh import Mesh
@@ -57,27 +58,13 @@ def _morton(x, y, z):
     return _spread(x) | (_spread(y) << 1) | (_spread(z) << 2)
 
 
-def _seg_box(centre, half, a, b):
-    """Segment / box overlap in the xy plane; touching counts."""
-    ax, ay = float(a[0] - centre[0]), float(a[1] - centre[1])
-    bx, by = float(b[0] - centre[0]), float(b[1] - centre[1])
-    if min(ax, bx) > half[0] or max(ax, bx) < -half[0]:
-        return False
-    if min(ay, by) > half[1] or max(ay, by) < -half[1]:
-        return False
-    dx, dy = bx - ax, by - ay
-    nx, ny = -dy, dx
-    proj = nx * ax + ny * ay
-    return abs(proj) <= abs(nx) * half[0] + abs(ny) * half[1]
-
-
 class _Grid:
     pass
 
 
 def _prim_hits(g, prim, centre, half):
     if g.two_d:
-        return _seg_box(centre, half, prim[0], prim[1])
+        return _planar_skin.seg_box(centre, half, prim[0], prim[1])
     return bool(_tri_box_overlap(centre, half, prim[0], prim[1], prim[2]))
 
 
@@ -137,88 +124,6 @@ def _check_budget(n, max_cells):
         )
 
 
-def _collect_2d(mesh):
-    points = np.asarray(mesh.points, dtype=np.float64)
-    if points.shape[1] == 2:
-        points = np.column_stack([points, np.zeros(len(points))])
-    ids = []
-    boundary = {}
-    order = []
-    has_lines = False
-    for cb in mesh.cells:
-        if cb.type == "line":
-            kind = "line"
-        elif cb.type in ("triangle", "quad"):
-            kind = "surf"
-        else:
-            continue
-        data = np.asarray(cb.data, dtype=np.int64)
-        for row in data:
-            if row.min() < 0 or row.max() >= len(points):
-                raise ValueError(
-                    f"{_PREFIX}a cell references a point the mesh does not have"
-                )
-            if kind == "line":
-                has_lines = True
-                ids.append((int(row[0]), int(row[1])))
-                continue
-            n = len(row)
-            for e in range(n):
-                a, b = int(row[e]), int(row[(e + 1) % n])
-                key = (min(a, b), max(a, b))
-                if key not in boundary:
-                    boundary[key] = [1, (a, b)]
-                    order.append(key)
-                else:
-                    boundary[key][0] += 1
-    for key in order:
-        if boundary[key][0] == 1:
-            ids.append(boundary[key][1])
-    prims = [(points[a], points[b], points[b]) for a, b in ids]
-    return prims, ids, has_lines
-
-
-def _require_closed(ids):
-    degree = {}
-    for a, b in ids:
-        degree[a] = degree.get(a, 0) + 1
-        degree[b] = degree.get(b, 0) + 1
-    odd = sorted(v for v, d in degree.items() if d % 2 != 0)
-    if odd:
-        shown = ", ".join(str(v) for v in odd[:8]) + (", ..." if len(odd) > 8 else "")
-        raise ValueError(
-            f"{_PREFIX}the polyline does not close, so it has no inside: "
-            f"open ends at points {shown}"
-        )
-
-
-def _signed_distance_2d(prims, p, even_odd):
-    best = float("inf")
-    winding = 0
-    crossings = 0
-    for a, b, _c in prims:
-        ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
-        dx, dy = bx - ax, by - ay
-        len2 = dx * dx + dy * dy
-        t = ((p[0] - ax) * dx + (p[1] - ay) * dy) / len2 if len2 > 0.0 else 0.0
-        t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-        qx = ax + t * dx - p[0]
-        qy = ay + t * dy - p[1]
-        d = float(np.sqrt(qx * qx + qy * qy))
-        if d < best:
-            best = d
-        left = dx * (p[1] - ay) - (p[0] - ax) * dy
-        if ay <= p[1]:
-            if by > p[1] and left > 0.0:
-                winding += 1
-                crossings += 1
-        elif by <= p[1] and left < 0.0:
-            winding -= 1
-            crossings += 1
-    inside = (crossings % 2 != 0) if even_odd else (winding != 0)
-    return -best if inside else best
-
-
 def _octree_py(
     mesh,
     root_cells,
@@ -253,10 +158,7 @@ def _octree_py(
 
     two_d = dimension == 2
     if dimension == 0:
-        types = [cb.type for cb in mesh.cells]
-        any_line = "line" in types
-        any_other = any(t not in ("line", "vertex") for t in types)
-        two_d = any_line and not any_other
+        two_d = _planar_skin.polyline_only(mesh)
     g.two_d = two_d
     if two_d:
         roots[2] = 1
@@ -276,9 +178,9 @@ def _octree_py(
     # ---- the skin -----------------------------------------------------------
     prims = []
     if two_d:
-        prims, seg_ids, has_lines = _collect_2d(mesh)
+        prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX)
         if (fill == "inside" or attach_distance) and has_lines:
-            _require_closed(seg_ids)
+            _planar_skin.require_closed(seg_ids, _PREFIX)
     else:
         _pts, _verts, corners, _source = _soup(mesh)
         prims = [(c[0], c[1], c[2]) for c in corners]
@@ -417,7 +319,7 @@ def _octree_py(
         if two_d:
             distance = np.array(
                 [
-                    _signed_distance_2d(prims, centres[n], even_odd)
+                    _planar_skin.signed_distance(prims, centres[n], even_odd)
                     for n in range(nleaves)
                 ]
             )

@@ -904,6 +904,29 @@ export type OpSpec =
     }
   | {
       /**
+       * An octree (quadtree for a planar `line` skin) around the mesh: leaves
+       * are fine only where the skin is. Like `voxelize` it replaces the
+       * geometry; the result carries `octree:level`/`octree:cut` cell data and
+       * `octree:hanging` point data.
+       */
+      op: 'octree';
+      rootCells?: number[];
+      minLevel?: number;
+      maxLevel?: number;
+      bounds?: number[];
+      padding?: number;
+      paddingRelative?: number;
+      dimension?: number;
+      sampleDistance?: number;
+      balance?: OctreeBalance;
+      fill?: VoxelFill;
+      attachDistance?: boolean;
+      evenOdd?: boolean;
+      maxCells?: number;
+      sign?: SdfSign;
+    }
+  | {
+      /**
        * A signed distance field: a grid over the mesh's surface, filled. Like
        * `voxelize` it replaces the geometry — what comes out is the grid,
        * carrying `sdf:distance`. `structure: 'octree'` refines only near the
@@ -970,6 +993,9 @@ export type GradientOperator = 'gradient' | 'divergence' | 'curl';
 
 /** Which cells `voxelize` keeps. See doc/voxelize.md. */
 export type VoxelFill = 'all' | 'surface' | 'inside';
+
+/** How strictly `octree` keeps neighbouring leaves the same size. See doc/octree.md. */
+export type OctreeBalance = 'none' | 'face' | 'full';
 
 /** How a signed distance decides which side of the surface a point is on. */
 export type SdfSign = 'unsigned' | 'pseudonormal' | 'winding-number';
@@ -2044,6 +2070,42 @@ export interface MeshioPlusPlusModule {
     origin: number[];
     spacing: number[];
     numOccupied: number;
+  };
+
+  /**
+   * Build an octree (a quadtree for a planar `line` skin) around a mesh: leaves
+   * are fine only where the skin is. `balance` keeps neighbours within 2:1;
+   * `fill` is as for `voxelize`. Pass `null` for `rootCells`/`bounds` to take the
+   * defaults.
+   * @throws {Error} on an empty or oversized level range, an unknown
+   *   `balance`/`fill`/`sign`, an open polyline with `fill: 'inside'`, or when
+   *   the tree exceeds `maxCells`.
+   */
+  octree(
+    mesh: Mesh,
+    rootCells?: number[] | null,
+    minLevel?: number,
+    maxLevel?: number,
+    bounds?: number[] | null,
+    padding?: number,
+    paddingRelative?: number,
+    dimension?: number,
+    sampleDistance?: number,
+    balance?: OctreeBalance,
+    fill?: VoxelFill,
+    sign?: SdfSign,
+    attachDistance?: boolean,
+    evenOdd?: boolean,
+    maxCells?: number,
+    watertightCheck?: SdfWatertightCheck,
+  ): {
+    mesh: Mesh;
+    dimension: number;
+    numLeaves: number;
+    numHanging: number;
+    finestLevel: number;
+    origin: number[];
+    rootSize: number;
   };
 
   /** What is wrong with a surface, in numbers rather than a bare flag. */

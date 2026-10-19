@@ -327,6 +327,41 @@ struct _CSdfOpts
 end
 
 """
+Mirror of C `mio_octree_opts`.
+"""
+struct _COctreeOpts
+    root_cells::Ptr{Int64}
+    bounds::Ptr{Cdouble}
+    padding::Cdouble
+    padding_relative::Cdouble
+    sample_distance::Cdouble
+    min_level::Int64
+    max_level::Int64
+    dimension::Int64
+    max_cells::Int64
+    balance::Int32
+    fill::Int32
+    attach_distance::Int32
+    even_odd::Int32
+    sign::Int32
+    watertight_check::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""
+Mirror of C `mio_octree_report`.
+"""
+struct _COctreeReport
+    dimension::Int64
+    num_leaves::Int64
+    num_hanging::Int64
+    finest_level::Int64
+    origin::NTuple{3,Cdouble}
+    root_size::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""
 Mirror of C `mio_voxel_opts`.
 
 Note it carries `sign`/`watertight_check` as its own fields rather than
@@ -948,6 +983,10 @@ function _check_abi_layout()
         error("meshio++: mio_sdf_opts layout mismatch ($(sizeof(_CSdfOpts)) bytes)")
     sizeof(_CVoxelOpts) == 112 ||
         error("meshio++: mio_voxel_opts layout mismatch ($(sizeof(_CVoxelOpts)) bytes)")
+    sizeof(_COctreeOpts) == 144 ||
+        error("meshio++: mio_octree_opts layout mismatch ($(sizeof(_COctreeOpts)) bytes)")
+    sizeof(_COctreeReport) == 96 ||
+        error("meshio++: mio_octree_report layout mismatch ($(sizeof(_COctreeReport)) bytes)")
     sizeof(_CComputeSdfOpts) == 232 ||
         error("meshio++: mio_compute_sdf_opts layout mismatch " *
               "($(sizeof(_CComputeSdfOpts)) bytes)")

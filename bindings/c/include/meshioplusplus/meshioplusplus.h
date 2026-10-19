@@ -2703,6 +2703,75 @@ MIO_API mio_mesh* mio_voxelize(const mio_mesh* mesh, const mio_voxel_opts* opts,
                                int64_t dims_out[3], double origin_out[3], double spacing_out[3],
                                int64_t* num_occupied);
 
+/** How strictly neighbouring octree leaves must agree in size. */
+typedef enum mio_octree_balance {
+    MIO_OCTREE_BALANCE_NONE = 0, /**< no balancing */
+    MIO_OCTREE_BALANCE_FACE = 1, /**< 2:1 across faces (edges in 2-D) */
+    MIO_OCTREE_BALANCE_FULL = 2  /**< 2:1 across faces, edges and corners */
+} mio_octree_balance;
+
+/**
+ * Options for mio_octree.
+ *
+ * ABI NOTE: the same append-only discipline as mio_voxel_opts. Always
+ * zero-initialize through mio_octree_opts_init().
+ */
+typedef struct mio_octree_opts {
+    /** Root cells per axis (three entries), or NULL for a single root cell. */
+    const int64_t* root_cells;
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the skin's own. */
+    const double* bounds;
+    /** Grow the box by this on every side, in world units. */
+    double padding;
+    /** Grow the box by this fraction of its diagonal on every side. */
+    double padding_relative;
+    /** Refine further within this distance of the skin; 0 for only where it cuts. */
+    double sample_distance;
+    /** Every leaf is split down to at least this level. */
+    int64_t min_level;
+    /** No leaf is split beyond this level (at most 20). */
+    int64_t max_level;
+    /** 2 for a planar skin (quadtree), 3 for a surface, 0 to decide from the cells. */
+    int64_t dimension;
+    /** Refuse above this many leaves; 0 or less lifts the limit. */
+    int64_t max_cells;
+    int32_t balance;          /**< a mio_octree_balance */
+    int32_t fill;             /**< a mio_voxel_fill */
+    int32_t attach_distance;  /**< nonzero to attach sdf:distance at leaf centres */
+    int32_t even_odd;         /**< nonzero: the 2-D even-odd rule instead of winding */
+    int32_t sign;             /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE in 3-D */
+    int32_t watertight_check; /**< a mio_sdf_watertight_check */
+    int64_t reserved[6];      /**< must be zero; room for additive growth */
+} mio_octree_opts;
+
+/** What mio_octree reports about the tree it built. */
+typedef struct mio_octree_report {
+    int64_t dimension;     /**< 2 (quadtree) or 3 (octree) */
+    int64_t num_leaves;    /**< leaves kept */
+    int64_t num_hanging;   /**< hanging nodes in the output */
+    int64_t finest_level;  /**< deepest level present */
+    double origin[3];      /**< lo corner of the root lattice */
+    double root_size;      /**< edge length of a root cell */
+    int64_t reserved[4];   /**< zeroed */
+} mio_octree_report;
+
+/** Zero-initialize octree options (every field its default). */
+MIO_API void mio_octree_opts_init(mio_octree_opts* opts);
+
+/**
+ * Build an octree (quadtree for a planar `line` skin) around a mesh: leaves are
+ * fine only where the skin is. The result is an ordinary mesh of hexahedra
+ * (quads) in Morton order with `octree:level` and `octree:cut` cell data and
+ * `octree:hanging` point data.
+ *
+ * @param mesh   the skin.
+ * @param opts   options, or NULL for the defaults.
+ * @param report receives the tree's summary, or NULL.
+ * @return the leaves (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_octree(const mio_mesh* mesh, const mio_octree_opts* opts,
+                             mio_octree_report* report);
+
 /**
  * Report what is wrong with a surface, without computing any distances.
  * @param surface a triangle (or triangulatable) surface mesh.

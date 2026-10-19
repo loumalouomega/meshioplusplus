@@ -1431,6 +1431,14 @@ end
     @test inside.num_occupied == 27
     close(inside.mesh)
 
+    tree = octree(cube; max_level=3, bounds=[-0.5, -0.5, -0.5, 1.5, 1.5, 1.5],
+                  fill=:inside, watertight_check=:off)
+    @test tree.dimension == 3
+    @test tree.num_leaves > 0
+    @test tree.finest_level == 3
+    close(tree.mesh)
+    @test_throws ArgumentError octree(cube; balance=:diagonal)
+
     # An unknown fill fails by name rather than silently defaulting.
     @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)
 
