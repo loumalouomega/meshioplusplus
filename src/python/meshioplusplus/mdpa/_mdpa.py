@@ -258,6 +258,19 @@ _kratos_conditions_to_meshio_type = {
     "SurfaceCondition3D9N": "quad9",
     "PrismCondition2D4N": "quad",
     "PrismCondition3D6N": "wedge",
+    # Load conditions (Kratos' application loads) share the geometry of the
+    # conditions above.
+    "PointLoadCondition2D1N": "vertex",
+    "PointLoadCondition3D1N": "vertex",
+    "LineLoadCondition2D2N": "line",
+    "LineLoadCondition2D3N": "line3",
+    "LineLoadCondition3D2N": "line",
+    "LineLoadCondition3D3N": "line3",
+    "SurfaceLoadCondition3D3N": "triangle",
+    "SurfaceLoadCondition3D6N": "triangle6",
+    "SurfaceLoadCondition3D4N": "quad",
+    "SurfaceLoadCondition3D8N": "quad8",
+    "SurfaceLoadCondition3D9N": "quad9",
 }
 
 _meshio_to_kratos_geometry_type = {
@@ -801,14 +814,16 @@ def _read_cells(
         if cell_ids_dict is not None:
             cell_ids_dict.setdefault(current_meshio_type, []).append(original_id)
     expected_end_statement = "End Elements" if is_element_block else "End Conditions"
-    if line_at_end.strip() != expected_end_statement:
+    # The end line may carry a comment (`End Elements // SmallDisplacementElement3D4N`).
+    end_text = line_at_end.split("//", 1)[0].strip()
+    if end_text != expected_end_statement:
         other_end_statement = "End Conditions" if is_element_block else "End Elements"
-        if line_at_end.strip() == other_end_statement:
+        if end_text == other_end_statement:
             raise ReadError(
-                f"Unexpected '{line_at_end.strip()}' found. Was expecting '{expected_end_statement}' for block {environ}"
+                f"Unexpected '{end_text}' found. Was expecting '{expected_end_statement}' for block {environ}"
             )
         raise ReadError(
-            f"Expected '{expected_end_statement}', got '{line_at_end.strip()}' for block {environ}"
+            f"Expected '{expected_end_statement}', got '{end_text}' for block {environ}"
         )
 
 
@@ -949,15 +964,16 @@ def _read_geometries(
         # geometry_tags_dict[current_meshio_type].append([]) # No property/tag ID for geometries
 
     expected_end_statement = "End Geometries"
-    if line_at_end.strip() != expected_end_statement:
+    end_text = line_at_end.split("//", 1)[0].strip()
+    if end_text != expected_end_statement:
         # Check if it's an unexpected end statement from another block type
-        if line_at_end.strip() in ["End Elements", "End Conditions"]:
+        if end_text in ["End Elements", "End Conditions"]:
             raise ReadError(
-                f"Unexpected '{line_at_end.strip()}' found. Was expecting '{expected_end_statement}' for block {environ}"
+                f"Unexpected '{end_text}' found. Was expecting '{expected_end_statement}' for block {environ}"
             )
         # General error for mismatch or premature EOF
         raise ReadError(
-            f"Expected '{expected_end_statement}', got '{line_at_end.strip() if line_at_end else 'EOF'}' for block {environ}"
+            f"Expected '{expected_end_statement}', got '{end_text if line_at_end else 'EOF'}' for block {environ}"
         )
 
 
@@ -1296,7 +1312,7 @@ def read_buffer(f):
                 if not line:
                     warn(f"Reached EOF while parsing Properties {prop_id}.")
                     break
-                if stripped_line == "End Properties":
+                if stripped_line.split("//", 1)[0].strip() == "End Properties":
                     break
                 if not stripped_line or stripped_line.startswith("//"):
                     continue

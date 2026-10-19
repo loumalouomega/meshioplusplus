@@ -2905,3 +2905,22 @@ def test_reference_geometries_keep_the_kratos_node_order(tmp_path):
     np.testing.assert_array_equal(
         info["geometries"][0]["conn"], first.geometries_block[0].data
     )
+
+
+def test_commented_block_ends_and_load_conditions(tmp_path):
+    # Kratos names the entity again after the end of a block (`End Elements //
+    # SmallDisplacementElement3D4N`), and a surface load is a condition on the
+    # same triangle geometry as a surface condition.
+    deck = (
+        "Begin Properties 0\nEnd Properties // 0\n"
+        "Begin Nodes\n1 0.0 0.0 0.0\n2 1.0 0.0 0.0\n3 0.0 1.0 0.0\n4 0.0 0.0 1.0\nEnd Nodes\n"
+        "Begin Elements SmallDisplacementElement3D4N\n1 0 1 2 3 4\n"
+        "End Elements // SmallDisplacementElement3D4N\n"
+        "Begin Conditions SurfaceLoadCondition3D3N\n1 0 1 2 3\n"
+        "End Conditions // SurfaceLoadCondition3D3N\n"
+    )
+    path = tmp_path / "loaded.mdpa"
+    path.write_text(deck)
+    mesh = meshioplusplus.read(path)
+    assert mesh.points.shape == (4, 3)
+    assert {c.type: len(c.data) for c in mesh.cells} == {"tetra": 1, "triangle": 1}

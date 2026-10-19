@@ -94,6 +94,19 @@ inline CellType cell_type_from_kratos_name(const std::string& rName) {
         {"SurfaceCondition3D9N", CellType::Quad9},
         {"PrismCondition2D4N", CellType::Quad},
         {"PrismCondition3D6N", CellType::Wedge},
+        // Load conditions (Kratos' application loads) share the geometry of the
+        // conditions above.
+        {"PointLoadCondition2D1N", CellType::Vertex},
+        {"PointLoadCondition3D1N", CellType::Vertex},
+        {"LineLoadCondition2D2N", CellType::Line},
+        {"LineLoadCondition2D3N", CellType::Line3},
+        {"LineLoadCondition3D2N", CellType::Line},
+        {"LineLoadCondition3D3N", CellType::Line3},
+        {"SurfaceLoadCondition3D3N", CellType::Triangle},
+        {"SurfaceLoadCondition3D6N", CellType::Triangle6},
+        {"SurfaceLoadCondition3D4N", CellType::Quad},
+        {"SurfaceLoadCondition3D8N", CellType::Quad8},
+        {"SurfaceLoadCondition3D9N", CellType::Quad9},
         // Geometries (ported from _kratos_geometries_to_meshio_type).
         {"Point2D", CellType::Vertex},
         {"Point3D", CellType::Vertex},

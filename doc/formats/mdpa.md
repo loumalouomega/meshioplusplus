@@ -211,6 +211,8 @@ The text fallback is not a gap to close later: it is what makes an unrecognized 
 
 The reader's block-splitting key includes the entity name, so two adjacent `SmallDisplacementElement3D4N` and `TotalLagrangianElement3D4N` blocks — both `tetra` — stay separate rather than collapsing onto one name.
 
+Kratos writes the entity name again after a block's end (`End Elements // SmallDisplacementElement3D4N`), and both readers accept the comment there. Surface, line and point *load* conditions (`SurfaceLoadCondition3D3N`, `LineLoadCondition3D2N`, `PointLoadCondition3D1N` and their other geometries) read as the same cells as the conditions they mirror, so a load surface is a `triangle` beside the `SurfaceCondition3D3N` triangles.
+
 ### `Properties` declarations on write
 
 The writer emitted a single hard-coded `Begin Properties 0` while the entity rows wrote their `gmsh:physical` value as the property id, so a tagged mesh produced a file referencing undeclared properties, which Kratos's own `ModelPartIO` rejects. Without an `MdpaInfo` the writer emits the mesh's own property sets when it has any (v9.2.0), plus one **empty** block per referenced id no set covers; with none at all, one empty block per distinct id the rows reference, ascending. A mesh whose ids are all 0 — every mesh with no `gmsh:physical` — still emits exactly the same two lines as before.
