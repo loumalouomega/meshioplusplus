@@ -3,7 +3,7 @@
 meshio++ itself is MIT ([LICENSE](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE)). The WebAssembly artifacts in `dist/` are statically linked with the libraries below. The package ships two pairs of artifacts, and which libraries an application carries depends on which pair it loads:
 
 - **Lean** (`meshioplusplus_wasm`, `meshioplusplus_wasm_mt`; `loadMeshioPlusPlus()`, the default): every component here is under a permissive licence, so an application that loads only the lean pair carries no copyleft obligation.
-- **Full** (`meshioplusplus_wasm_full`, `meshioplusplus_wasm_full_mt`; `loadMeshioPlusPlus({}, {full: true})`): everything in the lean pair, plus OpenCASCADE, zstd, lz4 and bzip2. **OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the full pair is not plain MIT. The package's licence expression, `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, says so.
+- **Full** (`meshioplusplus_wasm_full`, `meshioplusplus_wasm_full_mt`; `loadMeshioPlusPlus({}, {full: true})`): everything in the lean pair, plus OpenCASCADE, zstd, lz4, bzip2 and KaHIP. **OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the full pair is not plain MIT. The package's licence expression, `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, says so.
 
 | Component | Version | Licence | In the lean pair | In the full pair |
 | --- | --- | --- | --- | --- |
@@ -16,6 +16,7 @@ meshio++ itself is MIT ([LICENSE](https://github.com/loumalouomega/meshioplusplu
 | [Zstandard](https://github.com/facebook/zstd) | 1.5.7 | BSD-3-Clause (dual-licensed with GPL-2.0; used under BSD) | no | yes |
 | [LZ4](https://github.com/lz4/lz4) (the library) | 1.10.0 | BSD-2-Clause | no | yes |
 | [bzip2](https://sourceware.org/bzip2/) (Emscripten's port) | 1.0.6 | bzip2-1.0.6 | no | yes |
+| [KaHIP](https://github.com/KaHIP/KaHIP) (serial kaffpa only) | 3.25 | MIT | no | yes |
 
 ## OpenCASCADE and the LGPL
 

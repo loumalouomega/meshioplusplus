@@ -1,0 +1,30 @@
+diff --git a/lib/data_structure/priority_queues/maxNodeHeap.h b/lib/data_structure/priority_queues/maxNodeHeap.h
+index 97fedc3..e0173cb 100644
+--- a/lib/data_structure/priority_queues/maxNodeHeap.h
++++ b/lib/data_structure/priority_queues/maxNodeHeap.h
+@@ -12,8 +12,10 @@
+ #include <vector>
+ #include <unordered_map>
+ #ifndef _WIN32
++#ifndef __EMSCRIPTEN__
+ #include <execinfo.h>
+ #endif
++#endif
+ 
+ #include "data_structure/priority_queues/priority_queue_interface.h"
+ 
+diff --git a/lib/partition/uncoarsening/refinement/quotient_graph_refinement/complete_boundary.h b/lib/partition/uncoarsening/refinement/quotient_graph_refinement/complete_boundary.h
+index 84926b3..057863d 100644
+--- a/lib/partition/uncoarsening/refinement/quotient_graph_refinement/complete_boundary.h
++++ b/lib/partition/uncoarsening/refinement/quotient_graph_refinement/complete_boundary.h
+@@ -9,8 +9,10 @@
+ #define COMPLETE_BOUNDARY_URZZFDEI
+ 
+ #ifndef _WIN32
++#ifndef __EMSCRIPTEN__
+ #include <execinfo.h>
+ #endif
++#endif
+ #include <unordered_map>
+ #include <utility>
+ 

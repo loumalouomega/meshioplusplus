@@ -2223,8 +2223,27 @@ step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
     }
 });
 
-step('partition: kahip is compiled out of both WASM builds and says so', () => {
-    assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
+step('partition: kahip runs in the full artifact, stays compiled out of the lean pair', () => {
+    if (!full) {
+        assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
+        return;
+    }
+    assert.equal(m.hasKahip(), true, 'the full artifact links KaHIP');
+    const grid = m.refine(cube);  // 8 hexahedra, as in the SFC step above
+    const pieces = m.partition(grid, 2, 'kahip');
+    assert.equal(pieces.length, 2);
+    let total = 0;
+    for (const piece of pieces) {
+        assert.equal(piece.mesh.cells.length, grid.cells.length);
+        total += piece.mesh.cells[0].data.length / 8;
+    }
+    assert.equal(total, 8);
+    const labels = m.partitionLabels(grid, 2, 'kahip');
+    assert.equal(labels.length, 1);
+    assert.equal(labels[0].length, 8);
+    for (const p of labels[0]) {
+        assert.ok(p >= 0 && p < 2);
+    }
 });
 
 // The unit cube as a closed, outward-wound triangle surface: the distance
@@ -2631,12 +2650,13 @@ step('availableFormats reports what this build can read and write', () => {
 
 step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', () => {
     // One table per artifact: what each links, and what neither does. KaHIP
-    // (no port, and a partitioner in every bundle), ADIOS2 (vtx), TecIO
+    // (the full artifact only), ADIOS2 (vtx), TecIO
     // (szplt, redistribution terms), the Kokkos backend and memory mapping
-    // stay out of both; the full artifact adds OpenCASCADE and the codecs.
+    // stay out of the lean pair; the full artifact adds OpenCASCADE, the codecs
+    // and KaHIP.
     const expected = full
-        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true }
-        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false };
+        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true, hasKahip: true }
+        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false, hasKahip: false };
     for (const [name, value] of Object.entries(expected))
         assert.equal(m[name](), value, name);
     assert.equal(m.hasCgnslib(), true);
@@ -2644,7 +2664,6 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     const { readers, writers } = m.availableFormats();
     for (const fmt of ['vtx', 'szplt'])
         assert.ok(!readers.includes(fmt) && !writers.includes(fmt), fmt);
-    assert.throws(() => m.partition(cube, 2, 'kahip'), /MESHIOPLUSPLUS_WITH_KAHIP/);
     if (!full) {
         // The lean artifact names the full one rather than a CMake flag.
         m.FS.writeFile('/lean.step', 'ISO-10303-21;\nEND-ISO-10303-21;\n');

@@ -241,10 +241,12 @@ endif()
 # always-available fallback. Bring-your-own install located via the in-repo
 # cmake/FindKaHIP.cmake (KAHIP_ROOT prefix / pkg-config) -- never vendored,
 # never auto-downloaded. Only the serial kaffpa interface is linked (no ParHIP,
-# hence no MPI). Never probed under Emscripten -- no port exists, and a host
-# library must not be picked up for a wasm target.
+# hence no MPI). Under Emscripten the option only takes effect with an explicit
+# KAHIP_ROOT (the wasm full prefix, built by build-wasm-deps.sh --full): a host
+# library must not be picked up for a wasm target, and the Emscripten toolchain
+# re-roots every other lookup at the sysroot anyway.
 option(MESHIOPLUSPLUS_WITH_KAHIP "Build the KaHIP partition backend" OFF)
-if(MESHIOPLUSPLUS_WITH_KAHIP AND NOT EMSCRIPTEN)
+if(MESHIOPLUSPLUS_WITH_KAHIP AND (NOT EMSCRIPTEN OR KAHIP_ROOT OR DEFINED ENV{KAHIP_ROOT}))
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
   find_package(KaHIP QUIET)
 endif()
