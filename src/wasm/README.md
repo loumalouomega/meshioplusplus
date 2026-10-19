@@ -42,11 +42,12 @@ See [doc/wasm.md](https://loumalouomega.github.io/meshioplusplus/wasm) for the m
 object shape, the full list of supported formats, and format-selection rules
 for ambiguous extensions (`.msh`, `.inp`).
 
-## The full build: STEP, IGES, fitCad, zstd, lz4, bzip2
+## The full build: STEP, IGES, fitCad, zstd, lz4, bzip2, KaHIP
 
 The default artifact is lean and MIT. A second, larger artifact links
 OpenCASCADE (reading STEP and IGES, and `fitCad`, which turns a fitted skin
-into an analytic CAD solid), the zstd and lz4 VTK XML codecs and bzip2. Load
+into an analytic CAD solid), the zstd and lz4 VTK XML codecs, bzip2, and the
+serial KaHIP kaffpa partitioner (`partition` with `method: 'kahip'`). Load
 it with `{ full: true }`; the same `variant` choice applies, and only the
 artifact you load is fetched:
 

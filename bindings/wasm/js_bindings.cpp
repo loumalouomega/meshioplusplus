@@ -3571,6 +3571,15 @@ bool has_occt_js() {
     return meshioplusplus::cad_read_has_occt();
 }
 
+/**
+ * @brief Whether the KaHIP kaffpa partitioner is linked in: `partition` with
+ * `method: 'kahip'`. True only in the full artifact
+ * (`meshioplusplus_wasm_full[_mt]`).
+ */
+bool has_kahip_js() {
+    return meshioplusplus::partition_has_kahip();
+}
+
 /// Whether the VTK XML zstd block codec is linked in (the full artifact).
 bool has_zstd_js() {
     return meshioplusplus::detail::vtk_codec_available(meshioplusplus::detail::VtkCodec::ZSTD);
@@ -6910,6 +6919,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("parallelBackend", &parallel_backend_js);
     emscripten::function("hasCgnslib", &has_cgnslib_js);
     emscripten::function("hasOcct", &has_occt_js);
+    emscripten::function("hasKahip", &has_kahip_js);
     emscripten::function("hasZstd", &has_zstd_js);
     emscripten::function("hasLz4", &has_lz4_js);
     emscripten::function("hasBzip2", &has_bzip2_js);

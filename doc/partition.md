@@ -110,6 +110,8 @@ or install KaHIP to a system prefix. This is the ordinary cost of a bring-your-o
 
 The in-repo `cmake/FindKaHIP.cmake` honours `KAHIP_ROOT`/`KAHIP_DIR` (environment or cache), standard prefixes, and pkg-config; an in-source KaHIP build (`interface/` + `build/`) works as a prefix too. On macOS, `brew install KaHIP/kahip/kahip` provides an installable prefix. Package managers: Conan option `with_kahip`, vcpkg feature `kahip` (both map the flag only — you still supply the install; KaHIP is on neither registry).
 
+**WebAssembly**: the full artifact (`@meshioplusplus/wasm` with `{full: true}`) links the serial kaffpa interface — `build/build-wasm-deps.sh --full` source-builds KaHIP v3.25 for wasm32 (PARHIP off, no MPI, no OpenMP) into the full prefix and `build/configure-wasm.sh` points CMake at it — so `partition(..., 'kahip')` runs there. The lean pair keeps SFC with the compiled-out error. See [WASM](./wasm.md).
+
 - **Python-only** (no rebuild): `pip install meshioplusplus[kahip]` pulls the MIT [`kahip` wheel](https://pypi.org/project/kahip/); the pure-Python fallback builds the dual graph in numpy and calls `kahip.kaffpa` — same quality, Python-speed graph assembly.
 
 Only the **serial** `kaffpa` interface is ever linked — never ParHIP — so enabling KaHIP adds **no MPI dependency**. `_core.__has_kahip__` reports the C++ backend at runtime.
@@ -138,7 +140,7 @@ The [pure-Python KaHIP route](#kahip-optional-the-quality-path) (the `kahip` PyP
 
 ## Other language surfaces
 
-The operation exists on every binding surface: C (`mio_partition`/`mio_partition_labels`, see [the C API](/c_api)), Fortran (`m%partition`/`m%partition_labels`, see [Fortran](/fortran)), WebAssembly (`partition`/`partitionLabels`, SFC only — KaHIP is never part of the WASM build, see [WASM](/wasm); `partition`'s `returnMaps` option gives each piece a `pointMap`/`cellMaps`), and the `partition` verb in both [CLIs](/cli).
+The operation exists on every binding surface: C (`mio_partition`/`mio_partition_labels`, see [the C API](/c_api)), Fortran (`m%partition`/`m%partition_labels`, see [Fortran](/fortran)), WebAssembly (`partition`/`partitionLabels`; KaHIP only in the full artifact, SFC everywhere — see [WASM](/wasm); `partition`'s `returnMaps` option gives each piece a `pointMap`/`cellMaps`), and the `partition` verb in both [CLIs](/cli).
 
 ## meshio++ is serial
 

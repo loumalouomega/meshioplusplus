@@ -12,13 +12,14 @@
 #   ./build-wasm-deps.sh --print-full-prefix mt
 #
 # The full artifact (meshioplusplus_wasm_full, configure-wasm.sh --full) links
-# three more libraries: OpenCASCADE (STEP/IGES reading and fit_cad), zstd and
-# lz4 (VTK XML block compression). bzip2 is Emscripten's own port, like zlib,
-# and needs nothing here. They install into their own prefix, one per
-# threading flavour: OCCT's reference counts are std::atomic, and an object
-# compiled without -pthread has its atomics lowered to plain loads and stores
-# and is refused by the threaded (--shared-memory) link. The lean prefix and
-# its CI cache are untouched by --full.
+# four more libraries: OpenCASCADE (STEP/IGES reading and fit_cad), zstd and
+# lz4 (VTK XML block compression), and the serial KaHIP kaffpa partitioner.
+# bzip2 is Emscripten's own port, like zlib, and needs nothing here. They
+# install into their own prefix, one per threading flavour: OCCT's reference
+# counts are std::atomic, and an object compiled without -pthread has its
+# atomics lowered to plain loads and stores and is refused by the threaded
+# (--shared-memory) link. The lean prefix and its CI cache are untouched by
+# --full.
 #
 # Requires the Emscripten SDK (emsdk) on PATH -- the same one used for the
 # meshio++ build itself, since a static archive is only guaranteed to link
@@ -67,7 +68,9 @@ CGNS_COMMIT="3a972d92559787a49c5f9a54974ea1946ecb9d21"
 # already sets (Ubuntu 24.04's packages); it publishes no source tarball, so
 # it is always a shallow clone of the tag, verified against its commit. zstd
 # and lz4 are their release tarballs, whose checksums match the .sha256 files
-# published beside them.
+# published beside them. KaHIP is its release tarball, checksummed the same
+# way; the serial kaffpa interface only (PARHIP off, no MPI, no OpenMP under
+# Emscripten), matching the native KaHIP integration's link surface.
 OCCT_VERSION="7.6.3"
 OCCT_TAG="V7_6_3"
 OCCT_COMMIT="b079fb9877ef64d4a8158a60fa157f59b096debb"
@@ -75,6 +78,8 @@ ZSTD_VERSION="1.5.7"
 ZSTD_SHA256="eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
 LZ4_VERSION="1.10.0"
 LZ4_SHA256="537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
+KAHIP_VERSION="3.25"
+KAHIP_SHA256="3abad20158887b585b4d4792c35fa9023b7fd634b2bc4494334a3951b69f4842"
 
 WITH_HDF5="yes"
 WITH_NETCDF="yes"
@@ -98,7 +103,7 @@ Usage: $0 [options]
   --without-netcdf          skip netCDF
   --without-cgnslib         skip cgnslib (the CGNS MLL backend)
   --full                    also build the full artifact's libraries (OCCT,
-                            zstd, lz4) into their own prefix(es)
+                            zstd, lz4, KaHIP) into their own prefix(es)
   --full-only               build only those (skip HDF5/netCDF/cgnslib)
   --threads <seq|mt|both>   which flavours of the full libraries (default: both)
   --without-occt            leave OpenCASCADE out of the full prefix
@@ -109,7 +114,7 @@ Usage: $0 [options]
   -h, --help                this help
 
 Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION, cgnslib $CGNS_VERSION,
-                 OCCT $OCCT_VERSION, zstd $ZSTD_VERSION, lz4 $LZ4_VERSION (full only)
+                 OCCT $OCCT_VERSION, zstd $ZSTD_VERSION, lz4 $LZ4_VERSION, KaHIP $KAHIP_VERSION (full only)
 EOF
 }
 
@@ -143,7 +148,7 @@ DEPS_ROOT="$SCRIPT_DIR/wasm-deps"
 full_prefix() {  # full_prefix <seq|mt>
     name="full"
     [ "$WITH_OCCT" = "yes" ] && name="$name-occt-$OCCT_VERSION"
-    name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION"
+    name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION-kahip-$KAHIP_VERSION"
     [ "$1" = "mt" ] && name="$name-mt"
     echo "$DEPS_ROOT/$name"
 }
@@ -281,7 +286,7 @@ echo "  hdf5:     $([ "$WITH_HDF5" = yes ] && echo "$HDF5_VERSION" || echo "(ski
 echo "  netcdf:   $([ "$WITH_NETCDF" = yes ] && echo "$NETCDF_VERSION" || echo "(skipped)")"
 echo "  cgnslib:  $([ "$WITH_CGNS" = yes ] && echo "$CGNS_VERSION" || echo "(skipped)")"
 if [ "$WITH_FULL" = "yes" ]; then
-    echo "  full:     zstd $ZSTD_VERSION, lz4 $LZ4_VERSION$([ "$WITH_OCCT" = yes ] && echo ", OCCT $OCCT_VERSION") ($FULL_FLAVOURS)"
+    echo "  full:     zstd $ZSTD_VERSION, lz4 $LZ4_VERSION, KaHIP $KAHIP_VERSION$([ "$WITH_OCCT" = yes ] && echo ", OCCT $OCCT_VERSION") ($FULL_FLAVOURS)"
 fi
 echo "  emcc:     $(command -v emcc)"
 echo "  sysroot:  $SYSROOT"
@@ -569,7 +574,7 @@ for target_file in "$PREFIX/cmake/hdf5-targets.cmake" \
 done
 
 # --------------------------------------------------------------------------
-# The full artifact's libraries: OpenCASCADE, zstd, lz4 (--full)
+# The full artifact's libraries: OpenCASCADE, zstd, lz4, KaHIP (--full)
 #
 # One prefix per threading flavour (see the header). Each is built with
 # -fwasm-exceptions, the exception model the core compiles with: fit_cad and
@@ -627,6 +632,35 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
             -DBUILD_STATIC_LIBS=ON
         cmake --build "$WORK_DIR/build-lz4-$flavour" -j "$JOBS"
         cmake --install "$WORK_DIR/build-lz4-$flavour"
+    fi
+
+    # ------------------------------------------------------------------
+    # KaHIP (the serial kaffpa partitioner, full artifact only)
+    #
+    # Only the static `kahip_static` interface is linked (PARHIP off, no MPI
+    # -- the same link surface as the native KaHIP integration, which links
+    # no ParHIP either). OpenMP is off under Emscripten even for the mt
+    # flavour: the serial kaffpa path is what ships (deterministic under a
+    # fixed seed), and Emscripten's OpenMP needs -fopenmp on every unit,
+    # which the $pt-only mt flags do not provide.
+    # ------------------------------------------------------------------
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/libkahip_static.a" ]; then
+        echo "== KaHIP $KAHIP_VERSION ($flavour) already installed, skipping =="
+    else
+        echo "== KaHIP $KAHIP_VERSION ($flavour) =="
+        fetch "https://github.com/KaHIP/KaHIP/archive/refs/tags/v$KAHIP_VERSION.tar.gz" \
+              "kahip-$KAHIP_VERSION.tar.gz" "$KAHIP_SHA256" || exit 1
+        rm -rf "$WORK_DIR/KaHIP-$KAHIP_VERSION" "$WORK_DIR/build-kahip-$flavour"
+        tar -xzf "$DL_DIR/kahip-$KAHIP_VERSION.tar.gz" -C "$WORK_DIR"
+        apply_patches "kahip-$KAHIP_VERSION" "$WORK_DIR/KaHIP-$KAHIP_VERSION"
+        CFLAGS="-Oz $pt" CXXFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/KaHIP-$KAHIP_VERSION" \
+            -B "$WORK_DIR/build-kahip-$flavour" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$fprefix" \
+            -DPARHIP=OFF -DNOMPI=ON -DNONATIVEOPTIMIZATIONS=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_OpenMP=TRUE
+        cmake --build "$WORK_DIR/build-kahip-$flavour" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-kahip-$flavour"
     fi
 
     [ "$WITH_OCCT" = "yes" ] || return 0
