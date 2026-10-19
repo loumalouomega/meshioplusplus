@@ -62,6 +62,7 @@ _JS_ONLY = {
     "hasZstd": "build-capability introspection helper; the C API has no codec probe",
     "hasLz4": "build-capability introspection helper; the C API has no codec probe",
     "hasBzip2": "build-capability introspection helper; the C API has no codec probe",
+    "hasKahip": "build-capability introspection helper; the C API has no KaHIP probe",
     "buildFlavour": "the artifact's lean or full flavour; the native library has no such split",
     "numNodesPerCell": "bulk map; C exposes mio_cell_type_num_nodes per cell type",
     "parallelBackend": "build-capability introspection helper",

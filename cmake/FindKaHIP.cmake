@@ -50,8 +50,16 @@ find_path(KAHIP_INCLUDE_DIR
     DOC "KaHIP include directory (containing kaHIP_interface.h)")
 
 # ── Serial library ────────────────────────────────────────────────────────────
+# Emscripten links the static archive: the shared libkahip.so, which the same
+# install provides, does not link into the wasm main module (undefined
+# emscripten_longjmp). Elsewhere the shared library is still preferred.
+if(EMSCRIPTEN)
+    set(_kahip_library_names kahip_static)
+else()
+    set(_kahip_library_names kahip kahip_static)
+endif()
 find_library(KAHIP_LIBRARY
-    NAMES kahip kahip_static
+    NAMES ${_kahip_library_names}
     HINTS ${_kahip_search_hints}
     PATH_SUFFIXES lib lib64 build
     DOC "KaHIP serial library (libkahip.so / libkahip_static.a)")
