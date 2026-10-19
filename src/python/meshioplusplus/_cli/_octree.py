@@ -98,6 +98,51 @@ def add_args(parser):
         help="2-D: use the even-odd rule instead of the winding number",
     )
     parser.add_argument(
+        "--transition",
+        type=str,
+        default="hanging",
+        choices=["hanging", "polyhedra", "templates"],
+        help="output where a fine leaf meets a coarse one: hanging nodes, conforming "
+        "polyhedra, or conforming hexahedra/pyramids/tetrahedra",
+    )
+    parser.add_argument(
+        "--snap",
+        action="store_true",
+        help="move the outer nodes onto the skin without inverting a leaf "
+        "(needs --fill surface|inside)",
+    )
+    parser.add_argument(
+        "--surface-level",
+        type=int,
+        default=None,
+        help="split cut leaves down to this level; the criteria below refine further",
+    )
+    parser.add_argument(
+        "--curvature-threshold",
+        type=float,
+        default=0.0,
+        help="refine to --max-level where |mean curvature| exceeds this",
+    )
+    parser.add_argument(
+        "--feature-angle",
+        type=float,
+        default=0.0,
+        help="refine to --max-level along edges sharper than this many degrees",
+    )
+    parser.add_argument(
+        "--size-array",
+        type=str,
+        default=None,
+        help="point_data array of target edge lengths on the skin",
+    )
+    parser.add_argument(
+        "--plane",
+        type=str,
+        default="auto",
+        choices=["auto", "xy", "xz", "yz"],
+        help="plane of a 2-D skin",
+    )
+    parser.add_argument(
         "--max-cells",
         type=int,
         default=20000000,
@@ -137,6 +182,13 @@ def octree_cmd(args):
         even_odd=args.even_odd,
         max_cells=args.max_cells,
         sign=args.sign,
+        transition=args.transition,
+        snap=args.snap,
+        surface_level=args.surface_level,
+        curvature_threshold=args.curvature_threshold,
+        feature_angle=args.feature_angle,
+        size_array=args.size_array,
+        plane=args.plane,
         watertight_check="warn" if args.fill == "inside" else "off",
         return_report=True,
     )
@@ -148,6 +200,11 @@ def octree_cmd(args):
         print(f"  finest level:   {report['finest_level']}")
         print(f"  leaves kept:    {report['num_leaves']}")
         print(f"  hanging nodes:  {report['num_hanging']}")
+        if args.snap:
+            print(
+                f"  snapped nodes:  {report['num_snapped']} "
+                f"({report['num_refused']} refused)"
+            )
 
     write(args.outfile, out, file_format=args.output_format)
     return 0

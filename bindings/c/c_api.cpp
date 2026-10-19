@@ -5506,8 +5506,19 @@ static_assert(static_cast<int>(meshioplusplus::SdfWatertightCheck::Off) == MIO_S
 // that nesting across the ABI keeps the two independently extensible.
 static_assert(sizeof(mio_sdf_opts) == 104, "mio_sdf_opts grew outside its reserved tail");
 static_assert(sizeof(mio_voxel_opts) == 112, "mio_voxel_opts grew outside its reserved tail");
-static_assert(sizeof(mio_octree_opts) == 144, "mio_octree_opts grew outside its reserved tail");
+static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
+static_assert(static_cast<int>(meshioplusplus::OctreeTransition::Hanging) == MIO_OCTREE_HANGING &&
+                  static_cast<int>(meshioplusplus::OctreeTransition::Polyhedra) ==
+                      MIO_OCTREE_POLYHEDRA &&
+                  static_cast<int>(meshioplusplus::OctreeTransition::Templates) ==
+                      MIO_OCTREE_TEMPLATES,
+              "mio_octree_transition drifted from OctreeTransition");
+static_assert(static_cast<int>(meshioplusplus::detail::PlanarPlane::Auto) == MIO_PLANE_AUTO &&
+                  static_cast<int>(meshioplusplus::detail::PlanarPlane::XY) == MIO_PLANE_XY &&
+                  static_cast<int>(meshioplusplus::detail::PlanarPlane::XZ) == MIO_PLANE_XZ &&
+                  static_cast<int>(meshioplusplus::detail::PlanarPlane::YZ) == MIO_PLANE_YZ,
+              "mio_planar_plane drifted from PlanarPlane");
 static_assert(static_cast<int>(meshioplusplus::OctreeBalance::None) == MIO_OCTREE_BALANCE_NONE &&
                   static_cast<int>(meshioplusplus::OctreeBalance::Face) == MIO_OCTREE_BALANCE_FACE &&
                   static_cast<int>(meshioplusplus::OctreeBalance::Full) == MIO_OCTREE_BALANCE_FULL,
@@ -5615,6 +5626,20 @@ meshioplusplus::OctreeOptions capi_octree_options(const mio_octree_opts& rOpts) 
                                         std::to_string(rOpts.watertight_check));
     options.mDistance.mWatertightCheck =
         static_cast<meshioplusplus::SdfWatertightCheck>(rOpts.watertight_check);
+    if (rOpts.transition < 0 || rOpts.transition > MIO_OCTREE_TEMPLATES)
+        throw meshioplusplus::ReadError("meshio++: octree: unknown transition " +
+                                        std::to_string(rOpts.transition));
+    options.mTransition = static_cast<meshioplusplus::OctreeTransition>(rOpts.transition);
+    options.mSnap = rOpts.snap != 0;
+    options.mSurfaceLevel = rOpts.surface_level;
+    options.mCurvatureThreshold = rOpts.curvature_threshold;
+    options.mFeatureAngle = rOpts.feature_angle;
+    if (rOpts.size_array != nullptr)
+        options.mSizeArray = rOpts.size_array;
+    if (rOpts.plane < 0 || rOpts.plane > MIO_PLANE_YZ)
+        throw meshioplusplus::ReadError("meshio++: octree: unknown plane " +
+                                        std::to_string(rOpts.plane));
+    options.mPlane = static_cast<meshioplusplus::detail::PlanarPlane>(rOpts.plane);
     return options;
 }
 
@@ -5710,6 +5735,7 @@ void mio_octree_opts_init(mio_octree_opts* opts) {
     opts->max_level = 4;
     opts->max_cells = 20000000;
     opts->balance = MIO_OCTREE_BALANCE_FACE;
+    opts->surface_level = -1;
     opts->sign = MIO_SDF_PSEUDONORMAL;
     opts->watertight_check = MIO_SDF_WATERTIGHT_WARN;
 }
@@ -5858,6 +5884,8 @@ mio_mesh* mio_octree(const mio_mesh* mesh, const mio_octree_opts* opts,
             for (int k = 0; k < 3; ++k)
                 report->origin[k] = r.mOrigin[static_cast<std::size_t>(k)];
             report->root_size = r.mRootSize;
+            report->num_snapped = r.mNumSnapped;
+            report->num_refused = r.mNumRefused;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

@@ -39,9 +39,38 @@ Leaves are one `hexahedron` block (`quad` in 2-D), so every writer, viewer and o
 
 A mesh of `line` cells (a closed polyline) selects the 2-D variant automatically; `dimension=2` forces it for a mesh of `triangle`/`quad` cells, whose boundary edges become the skin. The skin lies in the plane of its points (`z`), the leaves are `quad` cells at that `z`, and padding applies to the two in-plane axes. `fill="inside"` uses the winding number of the polyline (`even_odd=True` selects the even-odd rule for self-overlapping input) and refuses a polyline that does not close, naming its open ends.
 
-## Hanging nodes
+## Transitions: `transition=`
 
-Where a fine leaf meets a coarse one the output has hanging nodes, flagged in `octree:hanging` and counted in the report (`num_hanging`). This is what adaptive-mesh-refinement, lattice-Boltzmann, immersed-boundary and cut-cell solvers and octree learning models consume. A node is flagged relative to the leaves actually kept, so a `surface` or `inside` fill does not report nodes that a dropped neighbour would have hung.
+Where a fine leaf meets a coarse one there are three outputs.
+
+- **`"hanging"`** (the default): plain hexahedra (quads in 2-D) with hanging nodes, flagged in `octree:hanging` and counted in the report (`num_hanging`). This is what adaptive-mesh-refinement, lattice-Boltzmann, immersed-boundary and cut-cell solvers and octree learning models consume. A node is flagged relative to the leaves actually kept, so a `surface` or `inside` fill does not report nodes that a dropped neighbour would have hung.
+- **`"polyhedra"`**: conforming with **no new points**. A leaf next to a finer one becomes a `polyhedron` (a `polygon` in 2-D) whose faces are split into the fine faces, the split-hex representation snappyHexMesh produces; every other leaf stays a `hexahedron`/`quad`. It is readable by every format and finite-volume solver that takes [polyhedra](polyhedra.md) (OpenFOAM, Fluent, CGNS `NGON_n`, EnSight `nfaced`, VTU). A face with a hanging node on an edge gets that node as an extra vertex, so two leaves sharing a face always see the same polygon.
+- **`"templates"`**: conforming and hex-dominant, for a finite-element code. A leaf with hanging nodes is coned to its centroid: plain quad faces give pyramids, and faces with hanging nodes are fanned from a new face-centre point into tetrahedra (triangles from the centroid in 2-D). New points (face centres, then leaf centroids) are appended after the lattice points; every other leaf stays a hexahedron/quad. Every cell has a positive volume and the volumes add up to the leaves' (the tests check this, and that each interior face is shared by exactly two cells, on random trees and on every neighbour pattern around a cell).
+
+![the same quadtree with hanging nodes, as polygons, and as triangles](/images/octree_transitions.png)
+
+Both conforming outputs need a balanced tree (`balance` `face` or `full`), carry `octree:leaf` (the leaf, in the `hanging` output's order, each cell was cut from) beside `octree:level`/`octree:cut` and `sdf:distance`, and have no `octree:hanging` array (`num_hanging` is 0). The cells are in blocks (the untouched leaves first, then the transition cells), in leaf order within a block.
+
+## Snapping: `snap=True`
+
+Moves the outer nodes of the kept leaves — the corners of faces with no kept leaf on the other side, except hanging nodes — onto the skin, for a body-fitted rather than stair-stepped boundary. In 3-D it is [`shrinkwrap`](shrinkwrap.md)'s projection; in 2-D the nearest point of the polyline. A leaf is never left inverted: any leaf with a non-positive corner Jacobian gets its moved nodes put back, repeatedly, and the report says how many were moved (`num_snapped`) and how many were put back (`num_refused`). It needs `fill` `surface` or `inside` (with `all` there is no outer boundary). ![a quadtree before and after snapping](/images/octree_snap.png)
+
+Boundary-layer inflation stays a [non-goal](roadmap.md#non-goals-and-decisions-taken).
+
+## Refinement criteria
+
+By default every leaf the skin cuts is split down to `max_level`. `surface_level` stops cut leaves earlier, and the criteria take them further, up to `max_level`:
+
+| option | refines where |
+|---|---|
+| `sample_distance` | the skin is within this distance of the leaf (also pulls in leaves it does not cut) |
+| `curvature_threshold` | a triangle has a vertex whose \|`curvature:mean`\| exceeds this (3-D) |
+| `feature_angle` | a sharp, open or non-manifold [feature edge](feature_edges.md) (dihedral above this many degrees) crosses the leaf (3-D) |
+| `size_array` | the leaf edge exceeds the smallest value of this `point_data` array over the skin primitives reaching it |
+
+## Planes: `plane=`
+
+A 2-D skin lies in the plane of zero extent by default (`z`, then `y`, then `x`); `plane` `"xy"`, `"xz"` or `"yz"` chooses it. Leaves are emitted in that plane. The report's `origin` is in the skin's frame (the two in-plane axes first, the normal last). 2-D [`voxelize`](voxelize.md#2-d-pixels) picks the plane the same way automatically.
 
 ## Determinism
 
@@ -51,11 +80,11 @@ Every point is an integer coordinate on the finest level's lattice (`2^max_level
 
 ## Report
 
-`return_report=True` returns `dimension`, `origin`, `root_size`, `num_leaves`, `num_hanging` and `finest_level`.
+`return_report=True` returns `dimension`, `origin`, `root_size`, `num_leaves`, `num_hanging`, `finest_level`, `num_snapped` and `num_refused`.
 
-## Not yet
+## Core only
 
-Conforming transitions (`transition="polyhedra"` and `"templates"`), snapping the outer nodes to the skin, and the curvature, feature-edge and size-field refinement criteria are tracked in the [roadmap](roadmap.md#3-operations).
+`transition` other than `"hanging"`, `snap`, `surface_level`, `curvature_threshold`, `feature_angle` and `size_array` run in the compiled core; the numpy reference implements the hanging-node octree (and `plane` in 2-D) and says so by name rather than answering differently.
 
 ## Bindings
 

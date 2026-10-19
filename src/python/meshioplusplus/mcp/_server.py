@@ -712,6 +712,13 @@ def _register_operations(server: FastMCP) -> None:
         even_odd: bool = False,
         max_cells: int = 20000000,
         sign: str = "pseudonormal",
+        transition: str = "hanging",
+        snap: bool = False,
+        surface_level: Optional[int] = None,
+        curvature_threshold: float = 0.0,
+        feature_angle: float = 0.0,
+        size_array: Optional[str] = None,
+        plane: str = "auto",
     ) -> dict:
         """Build an octree (3-D, hexahedra) or quadtree (2-D, quads) around a mesh
         skin: leaves are fine only where the skin is. A closed polyline of line
@@ -720,7 +727,12 @@ def _register_operations(server: FastMCP) -> None:
         sample_distance) down to max_level; balance 'none'/'face'/'full' enforces
         2:1 size ratios. fill='all'/'surface'/'inside' keeps as for voxelize.
         Writes octree:level and octree:cut cell data and octree:hanging point
-        data, and reports leaf counts, hanging nodes and the root lattice."""
+        data, and reports leaf counts, hanging nodes and the root lattice.
+        transition='polyhedra' or 'templates' makes the output conforming (no
+        hanging nodes); snap=True moves the outer nodes onto the skin (fill must
+        be 'surface' or 'inside') and reports num_snapped/num_refused;
+        surface_level, curvature_threshold, feature_angle and size_array refine
+        beyond the cut leaves; plane chooses the plane of a 2-D skin."""
         return _guard(
             _tools.tool_octree,
             input_path=input_path,
@@ -741,6 +753,13 @@ def _register_operations(server: FastMCP) -> None:
             even_odd=even_odd,
             max_cells=max_cells,
             sign=sign,
+            transition=transition,
+            snap=snap,
+            surface_level=surface_level,
+            curvature_threshold=curvature_threshold,
+            feature_angle=feature_angle,
+            size_array=size_array,
+            plane=plane,
         )
 
     @server.tool()

@@ -347,7 +347,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachOccupancy", "MaxCells", "Sign"}},
         {"Octree",
          {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
-          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign"}},
+          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
+          "Transition", "Snap", "SurfaceLevel", "CurvatureThreshold", "FeatureAngle", "SizeArray",
+          "Plane"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -1403,10 +1405,20 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mEvenOdd = pipe_flag(rStep, "EvenOdd", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mTransition = octree_transition_from_name(pipe_text(rStep, "Transition", "hanging"));
+        opts.mSnap = pipe_flag(rStep, "Snap", false);
+        opts.mSurfaceLevel =
+            static_cast<std::int64_t>(pipe_number(rStep, "SurfaceLevel", -1.0));
+        opts.mCurvatureThreshold = pipe_number(rStep, "CurvatureThreshold", 0.0);
+        opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 0.0);
+        opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         OctreeResult r = octree(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},
-                        {"NumHanging", static_cast<double>(r.mNumHanging)}});
+                        {"NumHanging", static_cast<double>(r.mNumHanging)},
+                        {"NumSnapped", static_cast<double>(r.mNumSnapped)},
+                        {"NumRefused", static_cast<double>(r.mNumRefused)}});
         return std::move(r.mMesh);
     }
 

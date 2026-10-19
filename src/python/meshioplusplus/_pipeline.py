@@ -344,6 +344,13 @@ _OP_TABLE = {
         "EvenOdd",
         "MaxCells",
         "Sign",
+        "Transition",
+        "Snap",
+        "SurfaceLevel",
+        "CurvatureThreshold",
+        "FeatureAngle",
+        "SizeArray",
+        "Plane",
     ),
     "ComputeSdf": (
         "Structure",
@@ -1382,9 +1389,22 @@ def _apply_step(mesh, step, steps, warnings):
             sign=_text(step, "Sign", "pseudonormal"),
             watertight_check="off",
             return_report=True,
+            transition=_text(step, "Transition", "hanging"),
+            snap=_flag(step, "Snap", False),
+            surface_level=(
+                int(_number(step, "SurfaceLevel", -1.0))
+                if "SurfaceLevel" in step
+                else None
+            ),
+            curvature_threshold=_number(step, "CurvatureThreshold", 0.0),
+            feature_angle=_number(step, "FeatureAngle", 0.0),
+            size_array=_text(step, "SizeArray", ""),
+            plane=_text(step, "Plane", "auto"),
         )
         entry["NumLeaves"] = float(rep["num_leaves"])
         entry["NumHanging"] = float(rep["num_hanging"])
+        entry["NumSnapped"] = float(rep["num_snapped"])
+        entry["NumRefused"] = float(rep["num_refused"])
 
     elif op == "ComputeSdf":
         # Voxelize's sibling: it likewise REPLACES the input's geometry, taking a

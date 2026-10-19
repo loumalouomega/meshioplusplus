@@ -4229,6 +4229,29 @@ TEST(CApi, OctreeAroundASurfaceRefinesOnlyWhereItCuts) {
     mio_mesh_free(cube);
 }
 
+TEST(CApi, OctreeConformingTransitionsHaveNoHangingNodes) {
+    mio_mesh* cube = capi_cube_surface();
+    for (int transition : {MIO_OCTREE_POLYHEDRA, MIO_OCTREE_TEMPLATES}) {
+        mio_octree_opts opts;
+        mio_octree_opts_init(&opts);
+        const double bounds[6] = {-0.5, -0.5, -0.5, 1.5, 1.5, 1.5};
+        opts.bounds = bounds;
+        opts.max_level = 3;
+        opts.transition = transition;
+        opts.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+        mio_octree_report report;
+        mio_mesh* tree = mio_octree(cube, &opts, &report);
+        ASSERT_NE(tree, nullptr);
+        EXPECT_EQ(report.num_hanging, 0);
+        mio_mesh_free(tree);
+    }
+    mio_octree_opts bad;
+    mio_octree_opts_init(&bad);
+    bad.transition = 99;
+    EXPECT_EQ(mio_octree(cube, &bad, nullptr), nullptr);
+    mio_mesh_free(cube);
+}
+
 TEST(CApi, OctreeRejectsAnUnknownBalance) {
     mio_mesh* cube = capi_cube_surface();
     mio_octree_opts opts;

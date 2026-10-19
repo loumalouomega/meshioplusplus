@@ -2087,6 +2087,16 @@ def test_octree_tool(tmp_path):
     with pytest.raises(ValueError, match="balance"):
         _tools.tool_octree(str(skin), str(out), balance="bogus")
 
+    conforming = tmp_path / "conforming.vtu"
+    report = _tools.tool_octree(
+        str(skin), str(conforming), max_level=3, transition="templates"
+    )
+    assert report["num_hanging"] == 0
+    snapped = _tools.tool_octree(
+        str(skin), str(out), max_level=3, fill="inside", snap=True
+    )
+    assert "num_snapped" in snapped and "num_refused" in snapped
+
 
 def test_compute_sdf_tool(tmp_path):
     # A *surface*: distance is measured to a skin, not to a volume.

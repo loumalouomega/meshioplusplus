@@ -794,6 +794,14 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
 #' @param balance `"none"`, `"face"` or `"full"` 2:1 neighbour balance.
 #' @param attach_distance Attach the signed distance at leaf centres.
 #' @param even_odd Use the even-odd rule instead of the winding number (2-D).
+#' @param transition `"hanging"`, `"polyhedra"` or `"templates"`: the octree
+#'   output where a fine leaf meets a coarse one.
+#' @param snap Move the outer octree nodes onto the skin without inverting a leaf.
+#' @param surface_level Split cut leaves down to this level; negative is
+#'   `max_level`. `curvature_threshold`, `feature_angle` and `size_array` then
+#'   refine further.
+#' @param curvature_threshold,feature_angle,size_array Refinement criteria.
+#' @param plane `"auto"`, `"xy"`, `"xz"` or `"yz"` for a 2-D skin.
 #' @param watertight_check `"off"`, `"warn"` or `"error"`.
 #' @param points A `3 x n` matrix of query coordinates.
 #' @param band Clamp distances beyond this; `0` is the full field.
@@ -2793,7 +2801,13 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
                        dimension = 0, sample_distance = 0, balance = "face",
                        fill = "all", sign = "pseudonormal", attach_distance = FALSE,
                        even_odd = FALSE, max_cells = 20000000,
-                       watertight_check = "warn") {
+                       watertight_check = "warn", transition = "hanging",
+                       snap = FALSE, surface_level = -1, curvature_threshold = 0,
+                       feature_angle = 0, size_array = "", plane = "auto") {
+  transitions <- c(hanging = 0L, polyhedra = 1L, templates = 2L)
+  planes <- c(auto = 0L, xy = 1L, xz = 2L, yz = 3L)
+  if (!transition %in% names(transitions)) stop("unknown transition '", transition, "'")
+  if (!plane %in% names(planes)) stop("unknown plane '", plane, "'")
   balances <- c(none = 0L, face = 1L, full = 2L)
   fills <- c(all = 0L, surface = 1L, inside = 2L)
   signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
@@ -2812,7 +2826,10 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
     as.numeric(padding), as.numeric(padding_relative), as.numeric(dimension),
     as.numeric(sample_distance), balances[[balance]], fills[[fill]],
     signs[[sign]], isTRUE(attach_distance), isTRUE(even_odd),
-    as.numeric(max_cells), checks[[watertight_check]]
+    as.numeric(max_cells), checks[[watertight_check]],
+    transitions[[transition]], isTRUE(snap), as.numeric(surface_level),
+    as.numeric(curvature_threshold), as.numeric(feature_angle),
+    as.character(size_array), planes[[plane]]
   )
 }
 

@@ -43,12 +43,16 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/detail/planar_skin.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 
 namespace meshioplusplus {
 
+/// Per-cell Int64 cell data under a conforming transition: the index of the leaf
+/// (in the order of the `Hanging` output) a cell was cut from.
+inline constexpr const char* kOctreeLeafName = "octree:leaf";
 /// Per-leaf Int64 level (0 = a root cell) cell data.
 inline constexpr const char* kOctreeLevelName = "octree:level";
 /// Per-leaf Int64 0/1 cell data: 1 when the skin passes through the leaf.
@@ -69,6 +73,23 @@ enum class OctreeBalance {
 
 /// Parse an `OctreeBalance` name (`none`, `face`, `full`).
 MESHIOPLUSPLUS_API OctreeBalance octree_balance_from_name(const std::string& rName);
+
+/// What the output looks like where a fine leaf meets a coarse one.
+enum class OctreeTransition {
+    /// Plain hexahedra (quads) with hanging nodes, flagged in `octree:hanging`.
+    Hanging = 0,
+    /// Conforming split-hex cells: a leaf next to a finer one becomes a
+    /// `polyhedron` (a `polygon` in 2-D) with its faces split into the fine
+    /// faces. No new points. Needs a balanced tree.
+    Polyhedra = 1,
+    /// Conforming hex-dominant cells: a leaf with hanging nodes is coned to its
+    /// centroid into pyramids and tetrahedra (triangles in 2-D). New points are
+    /// added at the centroids and at the centres of faces with hanging nodes.
+    Templates = 2,
+};
+
+/// Parse an `OctreeTransition` name (`hanging`, `polyhedra`, `templates`).
+MESHIOPLUSPLUS_API OctreeTransition octree_transition_from_name(const std::string& rName);
 
 /// Options for `octree`.
 struct OctreeOptions {
@@ -104,6 +125,26 @@ struct OctreeOptions {
     std::int64_t mMaxCells = 20000000;
     /// How 3-D `VoxelFill::Inside` decides what is inside.
     SurfaceDistanceOptions mDistance;
+    /// Output at coarse/fine interfaces.
+    OctreeTransition mTransition = OctreeTransition::Hanging;
+    /// Move the outer nodes of the kept leaves onto the skin, never inverting a
+    /// leaf. Needs a `fill` other than `All`.
+    bool mSnap = false;
+    /// Cut leaves are split down to this level; the refinement criteria below
+    /// then take them as far as `mMaxLevel`. Negative: `mMaxLevel`.
+    std::int64_t mSurfaceLevel = -1;
+    /// Refine to `mMaxLevel` where the skin's |mean curvature| exceeds this
+    /// (3-D); 0 disables.
+    double mCurvatureThreshold = 0.0;
+    /// Refine to `mMaxLevel` along feature edges sharper than this many degrees
+    /// (3-D); 0 disables.
+    double mFeatureAngle = 0.0;
+    /// Name of a `point_data` array of target edge lengths on the skin; a leaf
+    /// is split while its edge exceeds the smallest size of the skin primitives
+    /// reaching it. Empty disables.
+    std::string mSizeArray;
+    /// The plane of a 2-D skin.
+    detail::PlanarPlane mPlane = detail::PlanarPlane::Auto;
 };
 
 /// The result of `octree`.
@@ -115,6 +156,8 @@ struct OctreeResult {
     std::int64_t mNumLeaves = 0;                      ///< Leaves kept.
     std::int64_t mNumHanging = 0;                     ///< Hanging nodes in the output.
     std::int64_t mFinestLevel = 0;                    ///< Deepest level present.
+    std::int64_t mNumSnapped = 0;                     ///< Outer nodes moved onto the skin.
+    std::int64_t mNumRefused = 0;                     ///< Outer nodes left in place to keep a leaf valid.
 };
 
 /**

@@ -345,7 +345,15 @@ struct _COctreeOpts
     even_odd::Int32
     sign::Int32
     watertight_check::Int32
-    reserved::NTuple{6,Int64}
+    size_array::Cstring
+    curvature_threshold::Cdouble
+    feature_angle::Cdouble
+    surface_level::Int64
+    transition::Int32
+    snap::Int32
+    plane::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
 end
 
 """
@@ -358,7 +366,9 @@ struct _COctreeReport
     finest_level::Int64
     origin::NTuple{3,Cdouble}
     root_size::Cdouble
-    reserved::NTuple{4,Int64}
+    num_snapped::Int64
+    num_refused::Int64
+    reserved::NTuple{2,Int64}
 end
 
 """
@@ -983,7 +993,7 @@ function _check_abi_layout()
         error("meshio++: mio_sdf_opts layout mismatch ($(sizeof(_CSdfOpts)) bytes)")
     sizeof(_CVoxelOpts) == 112 ||
         error("meshio++: mio_voxel_opts layout mismatch ($(sizeof(_CVoxelOpts)) bytes)")
-    sizeof(_COctreeOpts) == 144 ||
+    sizeof(_COctreeOpts) == 176 ||
         error("meshio++: mio_octree_opts layout mismatch ($(sizeof(_COctreeOpts)) bytes)")
     sizeof(_COctreeReport) == 96 ||
         error("meshio++: mio_octree_report layout mismatch ($(sizeof(_COctreeReport)) bytes)")

@@ -924,6 +924,13 @@ export type OpSpec =
       evenOdd?: boolean;
       maxCells?: number;
       sign?: SdfSign;
+      transition?: OctreeTransition;
+      snap?: boolean;
+      surfaceLevel?: number;
+      curvatureThreshold?: number;
+      featureAngle?: number;
+      sizeArray?: string;
+      plane?: PlanarPlane;
     }
   | {
       /**
@@ -996,6 +1003,12 @@ export type VoxelFill = 'all' | 'surface' | 'inside';
 
 /** How strictly `octree` keeps neighbouring leaves the same size. See doc/octree.md. */
 export type OctreeBalance = 'none' | 'face' | 'full';
+
+/** What `octree` emits where a fine leaf meets a coarse one. See doc/octree.md. */
+export type OctreeTransition = 'hanging' | 'polyhedra' | 'templates';
+
+/** The plane of a 2-D skin. */
+export type PlanarPlane = 'auto' | 'xy' | 'xz' | 'yz';
 
 /** How a signed distance decides which side of the surface a point is on. */
 export type SdfSign = 'unsigned' | 'pseudonormal' | 'winding-number';
@@ -2098,6 +2111,13 @@ export interface MeshioPlusPlusModule {
     evenOdd?: boolean,
     maxCells?: number,
     watertightCheck?: SdfWatertightCheck,
+    transition?: OctreeTransition,
+    snap?: boolean,
+    surfaceLevel?: number,
+    curvatureThreshold?: number,
+    featureAngle?: number,
+    sizeArray?: string,
+    plane?: PlanarPlane,
   ): {
     mesh: Mesh;
     dimension: number;
@@ -2106,6 +2126,8 @@ export interface MeshioPlusPlusModule {
     finestLevel: number;
     origin: number[];
     rootSize: number;
+    numSnapped: number;
+    numRefused: number;
   };
 
   /** What is wrong with a surface, in numbers rather than a bare flag. */

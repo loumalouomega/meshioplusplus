@@ -215,3 +215,91 @@ TEST(Octree, BudgetIsEnforced) {
     o.mMaxCells = 100;
     EXPECT_THROW(octree(uv_sphere(1.0, 24, 12), o), std::invalid_argument);
 }
+
+namespace {
+
+// Total volume of the cells of a mesh made only of hexahedra, pyramids and
+// tetrahedra (every polyhedron is skipped), by tetrahedral decomposition.
+double sum_cell_volume(const Mesh& M, bool& rAllPositive) {
+    const double* p = M.Points().As<double>();
+    const auto tet = [&](std::int64_t a, std::int64_t b, std::int64_t c, std::int64_t d) {
+        double e[3][3];
+        const std::int64_t ids[3] = {b, c, d};
+        for (int j = 0; j < 3; ++j)
+            for (int k = 0; k < 3; ++k)
+                e[j][k] = p[ids[j] * 3 + k] - p[a * 3 + k];
+        return (e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) -
+                e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0]) +
+                e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0])) /
+               6.0;
+    };
+    double total = 0.0;
+    rAllPositive = true;
+    for (std::size_t b = 0; b < M.NumCellBlocks(); ++b) {
+        const auto cb = M.Cells(b);
+        const std::string type(cb.Type());
+        if (type != "hexahedron" && type != "pyramid" && type != "tetra")
+            continue;
+        const std::int64_t* c = cb.Conn().As<std::int64_t>();
+        const std::size_t n = cb.NodesPerCell();
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            const std::int64_t* r = c + i * n;
+            double v = 0.0;
+            if (type == "hexahedron")
+                v = 6.0 * tet(r[0], r[1], r[3], r[4]);
+            else if (type == "pyramid")
+                v = tet(r[0], r[1], r[2], r[4]) + tet(r[0], r[2], r[3], r[4]);
+            else
+                v = tet(r[0], r[1], r[2], r[3]);
+            if (!(v > 0.0))
+                rAllPositive = false;
+            total += v;
+        }
+    }
+    return total;
+}
+
+}  // namespace
+
+TEST(Octree, TemplatesConserveVolumeAndStayPositive) {
+    OctreeOptions o;
+    o.mBounds = std::array<double, 6>{{-1.2, -1.2, -1.2, 1.2, 1.2, 1.2}};
+    o.mMaxLevel = 4;
+    o.mTransition = meshioplusplus::OctreeTransition::Templates;
+    const OctreeResult r = octree(uv_sphere(1.0, 24, 12), o);
+    EXPECT_EQ(r.mNumHanging, 0);
+    bool positive = false;
+    EXPECT_NEAR(sum_cell_volume(r.mMesh, positive), 2.4 * 2.4 * 2.4, 1e-9);
+    EXPECT_TRUE(positive);
+}
+
+TEST(Octree, PolyhedraNeedABalancedTree) {
+    OctreeOptions o;
+    o.mMaxLevel = 3;
+    o.mBalance = OctreeBalance::None;
+    o.mTransition = meshioplusplus::OctreeTransition::Polyhedra;
+    EXPECT_THROW(octree(uv_sphere(1.0, 24, 12), o), std::invalid_argument);
+}
+
+TEST(Octree, SnapNeedsAFillAndMovesTheOuterNodes) {
+    OctreeOptions o;
+    o.mBounds = std::array<double, 6>{{-1.2, -1.2, -1.2, 1.2, 1.2, 1.2}};
+    o.mMaxLevel = 4;
+    o.mSnap = true;
+    EXPECT_THROW(octree(uv_sphere(1.0, 48, 24), o), std::invalid_argument);
+    o.mFill = VoxelFill::Inside;
+    const OctreeResult r = octree(uv_sphere(1.0, 48, 24), o);
+    EXPECT_GT(r.mNumSnapped, 0);
+}
+
+TEST(Octree, SurfaceLevelStopsCutLeavesEarly) {
+    OctreeOptions o;
+    o.mBounds = std::array<double, 6>{{-1.2, -1.2, -1.2, 1.2, 1.2, 1.2}};
+    o.mMaxLevel = 5;
+    const OctreeResult full = octree(uv_sphere(1.0, 48, 24), o);
+    o.mSurfaceLevel = 3;
+    const OctreeResult shallow = octree(uv_sphere(1.0, 48, 24), o);
+    EXPECT_LT(shallow.mNumLeaves, full.mNumLeaves);
+    o.mCurvatureThreshold = 0.1;
+    EXPECT_EQ(octree(uv_sphere(1.0, 48, 24), o).mNumLeaves, full.mNumLeaves);
+}

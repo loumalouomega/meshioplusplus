@@ -194,11 +194,16 @@ def _pixels_py(
     max_cells,
 ):
     """The numpy twin of ``vox_voxelize_pixels``: ``quad`` pixels around a planar skin."""
-    prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX)
+    axes = _planar_skin.frame(mesh, "auto")
+    prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX, axes)
     if fill == "inside" and has_lines:
         _planar_skin.require_closed(seg_ids, _PREFIX)
 
     lo0, hi0 = _resolve_bounds(mesh, bounds, 0.0, 0.0)
+    lo0, hi0 = (
+        _planar_skin.permute(lo0, axes).copy(),
+        _planar_skin.permute(hi0, axes).copy(),
+    )
     diag = float(np.sqrt(np.sum((hi0 - lo0) ** 2)))
     pad = padding + padding_relative * diag
     if pad < 0.0:
@@ -306,6 +311,7 @@ def _pixels_py(
     pts[:, 0] = origin[0] + (used % px).astype(np.float64) * spacing[0]
     pts[:, 1] = origin[1] + (used // px).astype(np.float64) * spacing[1]
     pts[:, 2] = origin[2]
+    pts = _planar_skin.unpermute(pts, axes)
     out = Mesh(pts, [("quad", remap[nodes])] if kept else [])
     if attach_occupancy and kept > 0:
         out.cell_data["voxel:occupancy"] = [np.ones(kept, dtype=np.int64)]

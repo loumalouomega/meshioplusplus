@@ -1755,20 +1755,32 @@ function voxelize(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing
 end
 
 const _OCTREE_BALANCES = Dict("none" => Int32(0), "face" => Int32(1), "full" => Int32(2))
+const _OCTREE_TRANSITIONS = Dict("hanging" => Int32(0), "polyhedra" => Int32(1),
+                                 "templates" => Int32(2))
+const _PLANAR_PLANES = Dict("auto" => Int32(0), "xy" => Int32(1), "xz" => Int32(2),
+                            "yz" => Int32(3))
 
 """
     octree(m; root_cells=(1, 1, 1), min_level=0, max_level=4, bounds=nothing,
            padding=0.0, padding_relative=0.0, dimension=0, sample_distance=0.0,
            balance=:face, fill=:all, sign=:pseudonormal, watertight_check=:warn,
-           attach_distance=false, even_odd=false, max_cells=20_000_000) -> NamedTuple
+           attach_distance=false, even_odd=false, max_cells=20_000_000,
+           transition=:hanging, snap=false, surface_level=-1, curvature_threshold=0.0,
+           feature_angle=0.0, size_array="", plane=:auto) -> NamedTuple
 
 Build an octree (a quadtree for a planar `line` skin) around `m`: leaves are
 fine only where the skin is. `balance` is `:none`, `:face` or `:full`; `fill`
 is `:all`, `:surface` or `:inside` as for [`voxelize`](@ref). The mesh carries
 `octree:level` and `octree:cut` cell data and `octree:hanging` point data.
 
+`transition` is `:hanging`, `:polyhedra` or `:templates` (conforming output; see
+`doc/octree.md`). `snap=true` moves the outer nodes onto the skin without
+inverting a leaf. `surface_level`, `curvature_threshold`, `feature_angle` and
+`size_array` choose how far cut leaves refine. `plane` is `:auto`, `:xy`, `:xz`
+or `:yz` for a 2-D skin.
+
 Returns `(; mesh, dimension, num_leaves, num_hanging, finest_level, origin,
-root_size)`.
+root_size, num_snapped, num_refused)`.
 """
 function octree(m::Mesh; root_cells=(1, 1, 1), min_level::Integer=0,
                 max_level::Integer=4, bounds=nothing, padding::Real=0.0,
@@ -1776,7 +1788,9 @@ function octree(m::Mesh; root_cells=(1, 1, 1), min_level::Integer=0,
                 sample_distance::Real=0.0, balance=:face, fill=:all,
                 sign=:pseudonormal, watertight_check=:warn,
                 attach_distance::Bool=false, even_odd::Bool=false,
-                max_cells::Integer=20_000_000)
+                max_cells::Integer=20_000_000, transition=:hanging, snap::Bool=false,
+                surface_level::Integer=-1, curvature_threshold::Real=0.0,
+                feature_angle::Real=0.0, size_array::AbstractString="", plane=:auto)
     roots = Int64[Int64(v) for v in root_cells]
     length(roots) == 3 || throw(ArgumentError("root_cells must have three entries"))
     bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
@@ -1784,7 +1798,8 @@ function octree(m::Mesh; root_cells=(1, 1, 1), min_level::Integer=0,
         throw(ArgumentError("bounds must have six entries"))
 
     report = Ref{_COctreeReport}()
-    ptr = GC.@preserve roots bnd begin
+    size_name = String(size_array)
+    ptr = GC.@preserve roots bnd size_name begin
         opts = _COctreeOpts(pointer(roots),
                             isempty(bnd) ? Ptr{Cdouble}(C_NULL) : pointer(bnd),
                             Cdouble(padding), Cdouble(padding_relative),
@@ -1796,7 +1811,13 @@ function octree(m::Mesh; root_cells=(1, 1, 1), min_level::Integer=0,
                             even_odd ? Int32(1) : Int32(0),
                             _code(_SDF_SIGNS, sign, "sign"),
                             _code(_SDF_CHECKS, watertight_check, "watertight check"),
-                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+                            isempty(size_name) ? Cstring(C_NULL) : Base.unsafe_convert(Cstring, size_name),
+                            Cdouble(curvature_threshold), Cdouble(feature_angle),
+                            Int64(surface_level),
+                            _code(_OCTREE_TRANSITIONS, transition, "transition"),
+                            snap ? Int32(1) : Int32(0),
+                            _code(_PLANAR_PLANES, plane, "plane"), Int32(0),
+                            (Int64(0), Int64(0), Int64(0), Int64(0)))
         ccall(_sym(:mio_octree), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_COctreeOpts}, Ref{_COctreeReport}),
               _handle(m), Ref(opts), report)
@@ -1805,7 +1826,8 @@ function octree(m::Mesh; root_cells=(1, 1, 1), min_level::Integer=0,
     r = report[]
     (mesh=mesh, dimension=Int(r.dimension), num_leaves=Int(r.num_leaves),
      num_hanging=Int(r.num_hanging), finest_level=Int(r.finest_level),
-     origin=Tuple(Float64.(r.origin)), root_size=Float64(r.root_size))
+     origin=Tuple(Float64.(r.origin)), root_size=Float64(r.root_size),
+     num_snapped=Int(r.num_snapped), num_refused=Int(r.num_refused))
 end
 
 const _CURVATURE_DUAL_AREAS = Dict(:mixed_voronoi => Int32(0), :barycentric => Int32(1))

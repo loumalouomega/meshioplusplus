@@ -4005,9 +4005,18 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
               const val& rBounds, double padding, double paddingRelative, double dimension,
               double sampleDistance, const std::string& rBalance, const std::string& rFill,
               const std::string& rSign, bool attachDistance, bool evenOdd, double maxCells,
-              const std::string& rWatertightCheck) {
+              const std::string& rWatertightCheck, const std::string& rTransition, bool snap,
+              double surfaceLevel, double curvatureThreshold, double featureAngle,
+              const std::string& rSizeArray, const std::string& rPlane) {
     return with_js_errors([&]() -> val {
         meshioplusplus::OctreeOptions options;
+        options.mTransition = meshioplusplus::octree_transition_from_name(rTransition);
+        options.mSnap = snap;
+        options.mSurfaceLevel = static_cast<std::int64_t>(surfaceLevel);
+        options.mCurvatureThreshold = curvatureThreshold;
+        options.mFeatureAngle = featureAngle;
+        options.mSizeArray = rSizeArray;
+        options.mPlane = meshioplusplus::detail::planar_plane_from_name(rPlane);
         if (!rRootCells.isUndefined() && !rRootCells.isNull() &&
             rRootCells["length"].as<unsigned>() == 3)
             options.mRootCells = std::array<std::int64_t, 3>{
@@ -4047,6 +4056,8 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
         out.set("finestLevel", static_cast<double>(r.mFinestLevel));
         out.set("origin", origin);
         out.set("rootSize", r.mRootSize);
+        out.set("numSnapped", static_cast<double>(r.mNumSnapped));
+        out.set("numRefused", static_cast<double>(r.mNumRefused));
         return out;
     });
 }

@@ -269,7 +269,7 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
 
 Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
                       const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
-                      std::int64_t Kept) {
+                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
     Mesh out;
     const std::int64_t nx = rDims[0];
     const std::int64_t ny = rDims[1];
@@ -303,9 +303,12 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
         if (slot < 0)
             return;
         const std::int64_t g = static_cast<std::int64_t>(p);
-        pdst[slot * 3 + 0] = rOrigin[0] + static_cast<double>(g % px) * rSpacing[0];
-        pdst[slot * 3 + 1] = rOrigin[1] + static_cast<double>(g / px) * rSpacing[1];
-        pdst[slot * 3 + 2] = rOrigin[2];
+        const detail::Vec3 world = rFrame.Unpermute(
+            detail::Vec3{{rOrigin[0] + static_cast<double>(g % px) * rSpacing[0],
+                          rOrigin[1] + static_cast<double>(g / px) * rSpacing[1], rOrigin[2]}});
+        pdst[slot * 3 + 0] = world[0];
+        pdst[slot * 3 + 1] = world[1];
+        pdst[slot * 3 + 2] = world[2];
     });
     out.AssignPoints(std::move(points));
 
@@ -326,7 +329,11 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
 }
 
 VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix);
+    // The skin's plane: the axis with zero extent, else z (so an xz or yz
+    // polyline voxelizes in its own plane). Everything below runs in the frame
+    // where that plane is xy, and the points are mapped back on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
     if (rOptions.mFill == VoxelFill::Inside)
         detail::require_closed_polyline(skin, kVoxPrefix);
 
@@ -343,6 +350,12 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
         throw std::invalid_argument(std::string(kVoxPrefix) +
                                     "the mesh has no points, so it has no bounding box to cover "
                                     "(pass explicit bounds)");
+    }
+    {  // world -> frame
+        const detail::Vec3 flo = frame.Permute(detail::Vec3{{lo[0], lo[1], lo[2]}});
+        const detail::Vec3 fhi = frame.Permute(detail::Vec3{{hi[0], hi[1], hi[2]}});
+        lo = {flo[0], flo[1], flo[2]};
+        hi = {fhi[0], fhi[1], fhi[2]};
     }
     double diag2 = 0.0;
     for (std::size_t k = 0; k < 3; ++k)
@@ -451,7 +464,7 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
     result.mOrigin = origin;
     result.mSpacing = spacing;
     result.mNumOccupied = kept;
-    result.mMesh = vox_build_pixels(dims, origin, spacing, occupied, kept);
+    result.mMesh = vox_build_pixels(dims, origin, spacing, occupied, kept, frame);
     if (rOptions.mAttachOccupancy && kept > 0) {
         NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(kept)});
         std::int64_t* dst = occ.As<std::int64_t>();

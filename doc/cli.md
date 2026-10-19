@@ -1933,6 +1933,12 @@ meshioplusplus octree circle.vtu quadtree.vtu --max-level 7 --fill inside
 | `--sign pseudonormal\|winding-number` | how `--fill=inside` decides what is inside (3-D) |
 | `--attach-distance` | attach the signed distance at leaf centres as `sdf:distance` |
 | `--even-odd` | 2-D: even-odd rule instead of the winding number |
+| `--transition hanging\|polyhedra\|templates` | output where a fine leaf meets a coarse one (the last two are conforming) |
+| `--snap` | move the outer nodes onto the skin without inverting a leaf (needs `--fill surface\|inside`) |
+| `--surface-level N` | split cut leaves down to `N` only; the criteria below refine further |
+| `--curvature-threshold K` / `--feature-angle D` | refine to `--max-level` where \|mean curvature\| exceeds `K` / along edges sharper than `D` degrees |
+| `--size-array NAME` | `point_data` array of target edge lengths on the skin |
+| `--plane auto\|xy\|xz\|yz` | plane of a 2-D skin |
 | `--max-cells N` | refuse above this many leaves |
 
 See [`doc/octree.md`](octree.md).

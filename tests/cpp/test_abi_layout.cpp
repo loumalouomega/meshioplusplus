@@ -324,7 +324,7 @@ MIO_ABI_LAYOUT(meshioplusplus::SurfaceQuality, 40, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SurfaceDistanceOptions, 80, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
 MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
-MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 232, 8);
+MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 
 // RefineOptions is passed by const-ref through the exported `refine()`,

@@ -1438,6 +1438,11 @@ end
     @test tree.finest_level == 3
     close(tree.mesh)
     @test_throws ArgumentError octree(cube; balance=:diagonal)
+    @test_throws ArgumentError octree(cube; transition=:wedges)
+    templ = octree(cube; max_level=3, bounds=[-0.5, -0.5, -0.5, 1.5, 1.5, 1.5],
+                   transition=:templates)
+    @test templ.num_hanging == 0
+    close(templ.mesh)
 
     # An unknown fill fails by name rather than silently defaulting.
     @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)

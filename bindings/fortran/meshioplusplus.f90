@@ -574,7 +574,15 @@ module meshioplusplus
         integer(c_int32_t) :: even_odd = 0
         integer(c_int32_t) :: sign = 1
         integer(c_int32_t) :: watertight_check = 1
-        integer(c_int64_t) :: reserved(6) = 0
+        type(c_ptr) :: size_array = c_null_ptr
+        real(c_double) :: curvature_threshold = 0.0_c_double
+        real(c_double) :: feature_angle = 0.0_c_double
+        integer(c_int64_t) :: surface_level = -1
+        integer(c_int32_t) :: transition = 0
+        integer(c_int32_t) :: snap = 0
+        integer(c_int32_t) :: plane = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_octree_report`.
@@ -585,7 +593,9 @@ module meshioplusplus
         integer(c_int64_t) :: finest_level = 0
         real(c_double) :: origin(3) = 0.0_c_double
         real(c_double) :: root_size = 0.0_c_double
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int64_t) :: num_snapped = 0
+        integer(c_int64_t) :: num_refused = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For
@@ -7306,16 +7316,22 @@ contains
     function mesh_octree(self, root_cells, min_level, max_level, bounds, padding, &
                          padding_relative, dimension, sample_distance, balance, fill, &
                          sign, watertight_check, attach_distance, even_odd, max_cells, &
+                         transition, snap, surface_level, curvature_threshold, &
+                         feature_angle, size_array, plane, &
                          num_leaves, num_hanging, finest_level, root_size, &
-                         stat, errmsg) result(out)
+                         num_snapped, num_refused, stat, errmsg) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: root_cells(3)
         integer(int64), intent(in), optional :: min_level, max_level, dimension, max_cells
         real(real64), intent(in), optional :: bounds(6)
         real(real64), intent(in), optional :: padding, padding_relative, sample_distance
         character(*), intent(in), optional :: balance, fill, sign, watertight_check
-        logical, intent(in), optional :: attach_distance, even_odd
+        character(*), intent(in), optional :: transition, size_array, plane
+        logical, intent(in), optional :: attach_distance, even_odd, snap
+        integer(int64), intent(in), optional :: surface_level
+        real(real64), intent(in), optional :: curvature_threshold, feature_angle
         integer(int64), intent(out), optional :: num_leaves, num_hanging, finest_level
+        integer(int64), intent(out), optional :: num_snapped, num_refused
         real(real64), intent(out), optional :: root_size
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
@@ -7324,9 +7340,49 @@ contains
         type(mio_octree_report_t) :: report
         integer(c_int64_t), target :: roots_buf(3)
         real(c_double), target :: bounds_buf(6)
+        character(kind=c_char), allocatable, target :: size_buf(:)
         integer(c_int32_t) :: code
+        integer :: i
 
         call c_mio_octree_opts_init(opts)
+        if (present(transition)) then
+            select case (trim(transition))
+            case ('', 'hanging'); opts%transition = 0
+            case ('polyhedra'); opts%transition = 1
+            case ('templates'); opts%transition = 2
+            case default
+                call handle_failure('octree', 'unknown transition '//trim(transition), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(plane)) then
+            select case (trim(plane))
+            case ('', 'auto'); opts%plane = 0
+            case ('xy'); opts%plane = 1
+            case ('xz'); opts%plane = 2
+            case ('yz'); opts%plane = 3
+            case default
+                call handle_failure('octree', 'unknown plane '//trim(plane), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(snap)) then
+            if (snap) opts%snap = 1
+        end if
+        if (present(surface_level)) opts%surface_level = int(surface_level, c_int64_t)
+        if (present(curvature_threshold)) &
+            opts%curvature_threshold = real(curvature_threshold, c_double)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(size_array)) then
+            if (len_trim(size_array) > 0) then
+                allocate (size_buf(len_trim(size_array) + 1))
+                do i = 1, len_trim(size_array)
+                    size_buf(i) = size_array(i:i)
+                end do
+                size_buf(len_trim(size_array) + 1) = c_null_char
+                opts%size_array = c_loc(size_buf(1))
+            end if
+        end if
         if (present(root_cells)) then
             roots_buf = int(root_cells, c_int64_t)
             opts%root_cells = c_loc(roots_buf(1))
@@ -7396,6 +7452,8 @@ contains
         if (present(num_hanging)) num_hanging = int(report%num_hanging, int64)
         if (present(finest_level)) finest_level = int(report%finest_level, int64)
         if (present(root_size)) root_size = real(report%root_size, real64)
+        if (present(num_snapped)) num_snapped = int(report%num_snapped, int64)
+        if (present(num_refused)) num_refused = int(report%num_refused, int64)
         call clear_status(stat, errmsg)
     end function
 

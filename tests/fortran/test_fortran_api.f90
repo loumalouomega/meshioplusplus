@@ -1886,6 +1886,13 @@ contains
         call vox%free()
         vox = cube%octree(balance='diagonal', stat=ierr)
         call check(ierr /= 0, 'an unknown balance is refused')
+        vox = cube%octree(max_level=3_int64, transition='templates', &
+                          bounds=[-0.5d0, -0.5d0, -0.5d0, 1.5d0, 1.5d0, 1.5d0], &
+                          num_leaves=occupied, stat=ierr)
+        call check(ierr == 0, 'octree with the templates transition ran')
+        call vox%free()
+        vox = cube%octree(transition='wedges', stat=ierr)
+        call check(ierr /= 0, 'an unknown transition is refused')
 
         ! An unknown fill fails by name rather than silently defaulting.
         vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)

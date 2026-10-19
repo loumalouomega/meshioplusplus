@@ -2267,6 +2267,12 @@ step('octree is fine only where the skin is', () => {
     assert.equal(tree.finestLevel, 3);
     assert.equal(tree.mesh.cells[0].type, 'hexahedron');
     assert.throws(() => m.octree(cubeSurface, null, 0, 3, null, 0, 0, 0, 0, 'diagonal'));
+    const conforming = m.octree(cubeSurface, null, 0, 3,
+        [-0.5, -0.5, -0.5, 1.5, 1.5, 1.5], 0, 0, 0, 0, 'face', 'all', 'pseudonormal',
+        false, false, 20000000, 'off', 'templates');
+    assert.equal(conforming.numHanging, 0);
+    assert.throws(() => m.octree(cubeSurface, null, 0, 3, null, 0, 0, 0, 0, 'face', 'all',
+        'pseudonormal', false, false, 20000000, 'off', 'wedges'));
 });
 
 step('voxelize keeps the whole box, the shell, or the interior', () => {

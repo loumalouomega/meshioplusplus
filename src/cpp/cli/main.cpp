@@ -3364,6 +3364,13 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
                                   {"attach-distance", {}, false},
                                   {"even-odd", {}, false},
                                   {"max-cells", {}, true},
+                                  {"transition", {}, true},
+                                  {"snap", {}, false},
+                                  {"surface-level", {}, true},
+                                  {"curvature-threshold", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"size-array", {}, true},
+                                  {"plane", {}, true},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -3409,6 +3416,18 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
     options.mEvenOdd = has_flag(p, "even-odd");
     if (p.values.count("max-cells"))
         options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    options.mTransition =
+        meshioplusplus::octree_transition_from_name(opt_value(p, "transition", "hanging"));
+    options.mSnap = has_flag(p, "snap");
+    if (p.values.count("surface-level"))
+        options.mSurfaceLevel = std::stoll(opt_value(p, "surface-level"));
+    if (p.values.count("curvature-threshold"))
+        options.mCurvatureThreshold =
+            meshioplusplus::detail::stod_c(opt_value(p, "curvature-threshold"));
+    if (p.values.count("feature-angle"))
+        options.mFeatureAngle = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
+    options.mSizeArray = opt_value(p, "size-array", "");
+    options.mPlane = meshioplusplus::detail::planar_plane_from_name(opt_value(p, "plane", "auto"));
     options.mDistance.mWatertightCheck = options.mFill == meshioplusplus::VoxelFill::Inside
                                              ? meshioplusplus::SdfWatertightCheck::Warn
                                              : meshioplusplus::SdfWatertightCheck::Off;
@@ -3423,6 +3442,9 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
         std::cout << "  finest level:   " << r.mFinestLevel << "\n";
         std::cout << "  leaves kept:    " << r.mNumLeaves << "\n";
         std::cout << "  hanging nodes:  " << r.mNumHanging << "\n";
+        if (options.mSnap)
+            std::cout << "  snapped nodes:  " << r.mNumSnapped << " (" << r.mNumRefused
+                      << " refused)\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;

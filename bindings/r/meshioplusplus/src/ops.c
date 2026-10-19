@@ -2115,7 +2115,9 @@ SEXP R_mio_voxelize(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds, SEX
 SEXP R_mio_octree(SEXP mesh, SEXP root_cells, SEXP min_level, SEXP max_level, SEXP bounds,
                   SEXP padding, SEXP padding_relative, SEXP dimension, SEXP sample_distance,
                   SEXP balance, SEXP fill, SEXP sign, SEXP attach_distance, SEXP even_odd,
-                  SEXP max_cells, SEXP watertight_check) {
+                  SEXP max_cells, SEXP watertight_check, SEXP transition, SEXP snap,
+                  SEXP surface_level, SEXP curvature_threshold, SEXP feature_angle,
+                  SEXP size_array, SEXP plane) {
     mio_octree_opts opts;
     mio_octree_opts_init(&opts);
 
@@ -2155,6 +2157,15 @@ SEXP R_mio_octree(SEXP mesh, SEXP root_cells, SEXP min_level, SEXP max_level, SE
     opts.even_odd = mio_r_bool(even_odd, "even_odd");
     opts.max_cells = mio_r_int64(max_cells, "max_cells");
     opts.watertight_check = (int32_t)mio_r_int(watertight_check, "watertight_check");
+    opts.transition = (int32_t)mio_r_int(transition, "transition");
+    opts.snap = mio_r_bool(snap, "snap");
+    opts.surface_level = mio_r_int64(surface_level, "surface_level");
+    opts.curvature_threshold = mio_r_double(curvature_threshold, "curvature_threshold");
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.plane = (int32_t)mio_r_int(plane, "plane");
+    if (TYPEOF(size_array) == STRSXP && Rf_xlength(size_array) == 1 &&
+        CHAR(STRING_ELT(size_array, 0))[0] != '\0')
+        opts.size_array = CHAR(STRING_ELT(size_array, 0));
 
     mio_octree_report report;
     mio_mesh *out = mio_octree(mio_r_mesh(mesh), &opts, &report);
@@ -2168,11 +2179,14 @@ SEXP R_mio_octree(SEXP mesh, SEXP root_cells, SEXP min_level, SEXP max_level, SE
     SEXP so = PROTECT(Rf_allocVector(REALSXP, 3));
     memcpy(REAL(so), report.origin, 3 * sizeof(double));
     SEXP sroot = PROTECT(Rf_ScalarReal(report.root_size));
+    SEXP ssnap = PROTECT(Rf_ScalarReal((double)report.num_snapped));
+    SEXP srefused = PROTECT(Rf_ScalarReal((double)report.num_refused));
     const char *names[] = {"mesh", "dimension", "num_leaves", "num_hanging",
-                           "finest_level", "origin", "root_size"};
-    SEXP values[] = {mo, sdim, sleaves, shang, sfine, so, sroot};
-    SEXP res_list = PROTECT(mio_r_named_list(7, names, values));
-    UNPROTECT(8);
+                           "finest_level", "origin", "root_size", "num_snapped",
+                           "num_refused"};
+    SEXP values[] = {mo, sdim, sleaves, shang, sfine, so, sroot, ssnap, srefused};
+    SEXP res_list = PROTECT(mio_r_named_list(9, names, values));
+    UNPROTECT(10);
     return res_list;
 }
 

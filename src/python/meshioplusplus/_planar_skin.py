@@ -24,10 +24,52 @@ def seg_box(centre, half, a, b):
     return abs(proj) <= abs(nx) * half[0] + abs(ny) * half[1]
 
 
-def collect(mesh, prefix):
+_PLANES = {"xy": (0, 1, 2), "xz": (0, 2, 1), "yz": (1, 2, 0)}
+PLANES = ("auto",) + tuple(_PLANES)
+
+
+def frame(mesh, plane="auto"):
+    """The axis permutation that maps the skin's plane to xy (in-plane axes first).
+
+    ``auto`` picks the axis along which the points have zero extent (z, then y,
+    then x), else z. The numpy twin of ``detail::planar_frame``.
+    """
+    if plane not in PLANES:
+        raise ValueError(
+            f"meshio++: unknown plane '{plane}' (expected one of: {', '.join(PLANES)})"
+        )
+    if plane == "auto":
+        pts = np.asarray(mesh.points, dtype=np.float64)
+        plane = "xy"
+        if len(pts):
+            if pts.shape[1] == 2:
+                pts = np.column_stack([pts, np.zeros(len(pts))])
+            lo, hi = pts.min(axis=0), pts.max(axis=0)
+            for k, name in ((2, "xy"), (1, "xz"), (0, "yz")):
+                if hi[k] == lo[k]:
+                    plane = name
+                    break
+    return _PLANES[plane]
+
+
+def permute(arr, axes):
+    """World -> frame coordinates of an ``(..., 3)`` array."""
+    return np.asarray(arr)[..., list(axes)]
+
+
+def unpermute(arr, axes):
+    """Frame -> world coordinates of an ``(..., 3)`` array."""
+    arr = np.asarray(arr)
+    out = np.empty_like(arr)
+    out[..., list(axes)] = arr
+    return out
+
+
+def collect(mesh, prefix, axes=(0, 1, 2)):
     points = np.asarray(mesh.points, dtype=np.float64)
     if points.shape[1] == 2:
         points = np.column_stack([points, np.zeros(len(points))])
+    points = permute(points, axes)
     ids = []
     boundary = {}
     order = []

@@ -27,13 +27,50 @@
 #include <utility>
 
 // Project includes
+#include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/detail/planar_skin.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
-PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix) {
+PlanarPlane planar_plane_from_name(const std::string& rName) {
+    if (rName == "auto" || rName.empty())
+        return PlanarPlane::Auto;
+    if (rName == "xy")
+        return PlanarPlane::XY;
+    if (rName == "xz")
+        return PlanarPlane::XZ;
+    if (rName == "yz")
+        return PlanarPlane::YZ;
+    throw std::invalid_argument("meshio++: unknown plane '" + rName +
+                                "' (expected one of: auto, xy, xz, yz)");
+}
+
+PlanarFrame planar_frame(const Mesh& rMesh, PlanarPlane Plane) {
+    PlanarFrame frame;
+    if (Plane == PlanarPlane::Auto) {
+        std::array<double, 3> lo{}, hi{};
+        if (point_bbox(rMesh, lo, hi)) {
+            for (int k : {2, 1, 0}) {
+                const std::size_t kk = static_cast<std::size_t>(k);
+                if (hi[kk] == lo[kk]) {
+                    Plane = k == 2 ? PlanarPlane::XY : (k == 1 ? PlanarPlane::XZ : PlanarPlane::YZ);
+                    break;
+                }
+            }
+        }
+        if (Plane == PlanarPlane::Auto)
+            Plane = PlanarPlane::XY;
+    }
+    if (Plane == PlanarPlane::XZ)
+        frame.mAxis = {{0, 2, 1}};
+    else if (Plane == PlanarPlane::YZ)
+        frame.mAxis = {{1, 2, 0}};
+    return frame;
+}
+
+PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const PlanarFrame& rFrame) {
     PlanarSkin skin;
     const std::size_t dim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
@@ -82,7 +119,8 @@ PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix) {
     }
     for (const auto& id : skin.mIds)
         skin.mSegments.push_back(
-            {read_point(points, dim, id[0]), read_point(points, dim, id[1])});
+            {rFrame.Permute(read_point(points, dim, id[0])),
+             rFrame.Permute(read_point(points, dim, id[1]))});
     return skin;
 }
 
@@ -133,6 +171,25 @@ bool segment_box_overlap_2d(const Vec3& rCentre, const Vec3& rHalf, const Vec3& 
     const double nx = -dy, ny = dx;
     const double proj = nx * ax + ny * ay;
     return std::fabs(proj) <= std::fabs(nx) * rHalf[0] + std::fabs(ny) * rHalf[1];
+}
+
+Vec3 polyline_closest_point_2d(const PlanarSkin& rSkin, const Vec3& rP) {
+    Vec3 best = rP;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (const auto& s : rSkin.mSegments) {
+        const double ax = s[0][0], ay = s[0][1];
+        const double dx = s[1][0] - ax, dy = s[1][1] - ay;
+        const double len2 = dx * dx + dy * dy;
+        double t = len2 > 0.0 ? ((rP[0] - ax) * dx + (rP[1] - ay) * dy) / len2 : 0.0;
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        const double qx = ax + t * dx, qy = ay + t * dy;
+        const double d2 = (qx - rP[0]) * (qx - rP[0]) + (qy - rP[1]) * (qy - rP[1]);
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = Vec3{{qx, qy, rP[2]}};
+        }
+    }
+    return best;
 }
 
 double polyline_signed_distance_2d(const PlanarSkin& rSkin, const Vec3& rP, bool EvenOdd) {

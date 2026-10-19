@@ -12024,12 +12024,46 @@ inline std::size_t file_bytes(const std::string& rPath) {
 // System includes
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 namespace detail {
+
+/// Which coordinate plane a planar skin lies in.
+enum class PlanarPlane {
+    /// The axis along which the points have zero extent (z, then y, then x), else z.
+    Auto = 0,
+    XY = 1,
+    XZ = 2,
+    YZ = 3,
+};
+
+/// Parse a plane name (`auto`, `xy`, `xz`, `yz`).
+MESHIOPLUSPLUS_API PlanarPlane planar_plane_from_name(const std::string& rName);
+
+/// An axis permutation that maps a planar skin's plane to xy: frame axis `k`
+/// is world axis `mAxis[k]`, so the in-plane axes come first and the normal
+/// last. `Permute`/`Unpermute` convert between the two.
+struct PlanarFrame {
+    std::array<int, 3> mAxis{{0, 1, 2}};
+    Vec3 Permute(const Vec3& rWorld) const {
+        return Vec3{{rWorld[static_cast<std::size_t>(mAxis[0])],
+                     rWorld[static_cast<std::size_t>(mAxis[1])],
+                     rWorld[static_cast<std::size_t>(mAxis[2])]}};
+    }
+    Vec3 Unpermute(const Vec3& rFrame) const {
+        Vec3 out{};
+        for (std::size_t k = 0; k < 3; ++k)
+            out[static_cast<std::size_t>(mAxis[k])] = rFrame[k];
+        return out;
+    }
+};
+
+/// The frame for @p Plane, deciding `Auto` from @p rMesh's point extents.
+MESHIOPLUSPLUS_API PlanarFrame planar_frame(const Mesh& rMesh, PlanarPlane Plane);
 
 /// A planar skin: segments, and the mesh point ids of their endpoints.
 struct PlanarSkin {
@@ -12045,9 +12079,11 @@ struct PlanarSkin {
  * exactly once by `triangle`/`quad` cells (in first-occurrence order, after the
  * lines). Other blocks are ignored.
  * @param rPrefix error-message prefix, e.g. `"meshio++: octree: "`.
+ * @param rFrame permutation applied to every segment point (identity: xy).
  * @throws std::invalid_argument when a cell references a missing point.
  */
-MESHIOPLUSPLUS_API PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix);
+MESHIOPLUSPLUS_API PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix,
+                                                  const PlanarFrame& rFrame = {});
 
 /// True when the mesh has `line` cells and nothing but `line`/`vertex` blocks.
 MESHIOPLUSPLUS_API bool mesh_is_polyline_only(const Mesh& rMesh);
@@ -12060,6 +12096,10 @@ MESHIOPLUSPLUS_API void require_closed_polyline(const PlanarSkin& rSkin, const c
 /// centred at @p rCentre with half-extents @p rHalf; touching counts.
 MESHIOPLUSPLUS_API bool segment_box_overlap_2d(const Vec3& rCentre, const Vec3& rHalf,
                                                const Vec3& rA, const Vec3& rB);
+
+/// The point of the polyline nearest to @p rP, in the skin's xy plane (z is
+/// copied from @p rP). An empty skin returns @p rP.
+MESHIOPLUSPLUS_API Vec3 polyline_closest_point_2d(const PlanarSkin& rSkin, const Vec3& rP);
 
 /// Signed distance from @p rP to the polyline, negative inside (winding number
 /// nonzero, or odd crossing count with @p EvenOdd).
@@ -29572,6 +29612,9 @@ MESHIOPLUSPLUS_API VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& r
 
 namespace meshioplusplus {
 
+/// Per-cell Int64 cell data under a conforming transition: the index of the leaf
+/// (in the order of the `Hanging` output) a cell was cut from.
+inline constexpr const char* kOctreeLeafName = "octree:leaf";
 /// Per-leaf Int64 level (0 = a root cell) cell data.
 inline constexpr const char* kOctreeLevelName = "octree:level";
 /// Per-leaf Int64 0/1 cell data: 1 when the skin passes through the leaf.
@@ -29592,6 +29635,23 @@ enum class OctreeBalance {
 
 /// Parse an `OctreeBalance` name (`none`, `face`, `full`).
 MESHIOPLUSPLUS_API OctreeBalance octree_balance_from_name(const std::string& rName);
+
+/// What the output looks like where a fine leaf meets a coarse one.
+enum class OctreeTransition {
+    /// Plain hexahedra (quads) with hanging nodes, flagged in `octree:hanging`.
+    Hanging = 0,
+    /// Conforming split-hex cells: a leaf next to a finer one becomes a
+    /// `polyhedron` (a `polygon` in 2-D) with its faces split into the fine
+    /// faces. No new points. Needs a balanced tree.
+    Polyhedra = 1,
+    /// Conforming hex-dominant cells: a leaf with hanging nodes is coned to its
+    /// centroid into pyramids and tetrahedra (triangles in 2-D). New points are
+    /// added at the centroids and at the centres of faces with hanging nodes.
+    Templates = 2,
+};
+
+/// Parse an `OctreeTransition` name (`hanging`, `polyhedra`, `templates`).
+MESHIOPLUSPLUS_API OctreeTransition octree_transition_from_name(const std::string& rName);
 
 /// Options for `octree`.
 struct OctreeOptions {
@@ -29627,6 +29687,26 @@ struct OctreeOptions {
     std::int64_t mMaxCells = 20000000;
     /// How 3-D `VoxelFill::Inside` decides what is inside.
     SurfaceDistanceOptions mDistance;
+    /// Output at coarse/fine interfaces.
+    OctreeTransition mTransition = OctreeTransition::Hanging;
+    /// Move the outer nodes of the kept leaves onto the skin, never inverting a
+    /// leaf. Needs a `fill` other than `All`.
+    bool mSnap = false;
+    /// Cut leaves are split down to this level; the refinement criteria below
+    /// then take them as far as `mMaxLevel`. Negative: `mMaxLevel`.
+    std::int64_t mSurfaceLevel = -1;
+    /// Refine to `mMaxLevel` where the skin's |mean curvature| exceeds this
+    /// (3-D); 0 disables.
+    double mCurvatureThreshold = 0.0;
+    /// Refine to `mMaxLevel` along feature edges sharper than this many degrees
+    /// (3-D); 0 disables.
+    double mFeatureAngle = 0.0;
+    /// Name of a `point_data` array of target edge lengths on the skin; a leaf
+    /// is split while its edge exceeds the smallest size of the skin primitives
+    /// reaching it. Empty disables.
+    std::string mSizeArray;
+    /// The plane of a 2-D skin.
+    detail::PlanarPlane mPlane = detail::PlanarPlane::Auto;
 };
 
 /// The result of `octree`.
@@ -29638,6 +29718,8 @@ struct OctreeResult {
     std::int64_t mNumLeaves = 0;                      ///< Leaves kept.
     std::int64_t mNumHanging = 0;                     ///< Hanging nodes in the output.
     std::int64_t mFinestLevel = 0;                    ///< Deepest level present.
+    std::int64_t mNumSnapped = 0;                     ///< Outer nodes moved onto the skin.
+    std::int64_t mNumRefused = 0;                     ///< Outer nodes left in place to keep a leaf valid.
 };
 
 /**
@@ -67613,7 +67695,43 @@ std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rP
 namespace meshioplusplus {
 namespace detail {
 
-PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix) {
+PlanarPlane planar_plane_from_name(const std::string& rName) {
+    if (rName == "auto" || rName.empty())
+        return PlanarPlane::Auto;
+    if (rName == "xy")
+        return PlanarPlane::XY;
+    if (rName == "xz")
+        return PlanarPlane::XZ;
+    if (rName == "yz")
+        return PlanarPlane::YZ;
+    throw std::invalid_argument("meshio++: unknown plane '" + rName +
+                                "' (expected one of: auto, xy, xz, yz)");
+}
+
+PlanarFrame planar_frame(const Mesh& rMesh, PlanarPlane Plane) {
+    PlanarFrame frame;
+    if (Plane == PlanarPlane::Auto) {
+        std::array<double, 3> lo{}, hi{};
+        if (point_bbox(rMesh, lo, hi)) {
+            for (int k : {2, 1, 0}) {
+                const std::size_t kk = static_cast<std::size_t>(k);
+                if (hi[kk] == lo[kk]) {
+                    Plane = k == 2 ? PlanarPlane::XY : (k == 1 ? PlanarPlane::XZ : PlanarPlane::YZ);
+                    break;
+                }
+            }
+        }
+        if (Plane == PlanarPlane::Auto)
+            Plane = PlanarPlane::XY;
+    }
+    if (Plane == PlanarPlane::XZ)
+        frame.mAxis = {{0, 2, 1}};
+    else if (Plane == PlanarPlane::YZ)
+        frame.mAxis = {{1, 2, 0}};
+    return frame;
+}
+
+PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const PlanarFrame& rFrame) {
     PlanarSkin skin;
     const std::size_t dim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
@@ -67662,7 +67780,8 @@ PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix) {
     }
     for (const auto& id : skin.mIds)
         skin.mSegments.push_back(
-            {read_point(points, dim, id[0]), read_point(points, dim, id[1])});
+            {rFrame.Permute(read_point(points, dim, id[0])),
+             rFrame.Permute(read_point(points, dim, id[1]))});
     return skin;
 }
 
@@ -67713,6 +67832,25 @@ bool segment_box_overlap_2d(const Vec3& rCentre, const Vec3& rHalf, const Vec3& 
     const double nx = -dy, ny = dx;
     const double proj = nx * ax + ny * ay;
     return std::fabs(proj) <= std::fabs(nx) * rHalf[0] + std::fabs(ny) * rHalf[1];
+}
+
+Vec3 polyline_closest_point_2d(const PlanarSkin& rSkin, const Vec3& rP) {
+    Vec3 best = rP;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (const auto& s : rSkin.mSegments) {
+        const double ax = s[0][0], ay = s[0][1];
+        const double dx = s[1][0] - ax, dy = s[1][1] - ay;
+        const double len2 = dx * dx + dy * dy;
+        double t = len2 > 0.0 ? ((rP[0] - ax) * dx + (rP[1] - ay) * dy) / len2 : 0.0;
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        const double qx = ax + t * dx, qy = ay + t * dy;
+        const double d2 = (qx - rP[0]) * (qx - rP[0]) + (qy - rP[1]) * (qy - rP[1]);
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = Vec3{{qx, qy, rP[2]}};
+        }
+    }
+    return best;
 }
 
 double polyline_signed_distance_2d(const PlanarSkin& rSkin, const Vec3& rP, bool EvenOdd) {
@@ -193427,6 +193565,10 @@ NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions)
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <limits>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -193445,6 +193587,10 @@ constexpr std::int64_t kOctMaxLevel = 20;
 // A skin primitive: a triangle in 3-D, a segment (a, b) in 2-D.
 struct OctPrim {
     detail::Vec3 mA, mB, mC;
+    /// A refinement criterion (curvature, feature edge) asks for `max_level` here.
+    bool mRefine = false;
+    /// The smallest target edge length of the primitive's vertices (infinity: none).
+    double mSize = std::numeric_limits<double>::infinity();
 };
 
 // One leaf: its lo corner on the finest lattice, its level, and the primitives
@@ -193567,6 +193713,17 @@ OctreeBalance octree_balance_from_name(const std::string& rName) {
                                 "' (expected one of: none, face, full)");
 }
 
+OctreeTransition octree_transition_from_name(const std::string& rName) {
+    if (rName == "hanging")
+        return OctreeTransition::Hanging;
+    if (rName == "polyhedra")
+        return OctreeTransition::Polyhedra;
+    if (rName == "templates")
+        return OctreeTransition::Templates;
+    throw std::invalid_argument(std::string(kOctPrefix) + "unknown transition '" + rName +
+                                "' (expected one of: hanging, polyhedra, templates)");
+}
+
 OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
     // ---- options --------------------------------------------------------------
     if (rOptions.mMinLevel < 0 || rOptions.mMaxLevel < rOptions.mMinLevel ||
@@ -193579,6 +193736,27 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
         throw std::invalid_argument(std::string(kOctPrefix) + "sample_distance must not be negative");
     if (rOptions.mDimension != 0 && rOptions.mDimension != 2 && rOptions.mDimension != 3)
         throw std::invalid_argument(std::string(kOctPrefix) + "dimension must be 2, 3, or 0 (auto)");
+    const std::int64_t surface_level =
+        rOptions.mSurfaceLevel < 0 ? rOptions.mMaxLevel : rOptions.mSurfaceLevel;
+    if (surface_level > rOptions.mMaxLevel)
+        throw std::invalid_argument(std::string(kOctPrefix) + "surface_level " +
+                                    std::to_string(surface_level) + " is above max_level " +
+                                    std::to_string(rOptions.mMaxLevel));
+    if (rOptions.mCurvatureThreshold < 0.0)
+        throw std::invalid_argument(std::string(kOctPrefix) +
+                                    "curvature_threshold must not be negative");
+    if (rOptions.mFeatureAngle < 0.0 || rOptions.mFeatureAngle > 180.0)
+        throw std::invalid_argument(std::string(kOctPrefix) +
+                                    "feature_angle must lie in [0, 180]");
+    if (rOptions.mSnap && rOptions.mFill == VoxelFill::All)
+        throw std::invalid_argument(
+            std::string(kOctPrefix) +
+            "snap needs fill 'surface' or 'inside': with fill 'all' there is no outer boundary "
+            "to move onto the skin");
+    if (rOptions.mTransition != OctreeTransition::Hanging && rOptions.mBalance == OctreeBalance::None)
+        throw std::invalid_argument(std::string(kOctPrefix) +
+                                    "a conforming transition needs a balanced tree "
+                                    "(balance 'face' or 'full')");
 
     OctGrid grid;
     grid.mFinest = rOptions.mMaxLevel;
@@ -193606,11 +193784,19 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
                                         "must stay below 2^21 on every axis");
 
     // ---- the skin -------------------------------------------------------------
+    // 2-D runs in the frame where the skin's plane is xy; 3-D has the identity.
+    detail::PlanarFrame frame;
+    if (two_d)
+        frame = detail::planar_frame(rMesh, rOptions.mPlane);
     std::vector<OctPrim> prims;
     detail::PlanarSkin skin;
     detail::TriangleSoup soup;
     if (two_d) {
-        skin = detail::collect_planar_skin(rMesh, kOctPrefix);
+        if (rOptions.mCurvatureThreshold > 0.0 || rOptions.mFeatureAngle > 0.0)
+            throw std::invalid_argument(std::string(kOctPrefix) +
+                                        "curvature_threshold and feature_angle need a surface "
+                                        "skin, but the skin is a polyline");
+        skin = detail::collect_planar_skin(rMesh, kOctPrefix, frame);
         if (rOptions.mFill == VoxelFill::Inside || rOptions.mAttachDistance)
             detail::require_closed_polyline(skin, kOctPrefix);
         prims.reserve(skin.mSegments.size());
@@ -193622,6 +193808,72 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
         for (std::size_t t = 0; t < soup.NumTriangles(); ++t)
             prims.push_back(
                 OctPrim{soup.mCorners[t * 3], soup.mCorners[t * 3 + 1], soup.mCorners[t * 3 + 2]});
+    }
+
+    // Refinement criteria beyond "the skin cuts the leaf".
+    std::vector<std::array<std::int64_t, 2>> feature_segments;
+    if (rOptions.mCurvatureThreshold > 0.0) {
+        CurvatureOptions copts;
+        copts.mGaussian = false;
+        copts.mRegion = rOptions.mDistance.mSurfaceRegion;
+        const CurvatureResult cres = compute_curvature(rMesh, copts);
+        const NDArray& h = cres.mMesh.PointData("curvature:mean");
+        for (std::size_t t = 0; t < soup.NumTriangles(); ++t)
+            for (std::size_t i = 0; i < 3; ++i) {
+                const double v = std::fabs(
+                    detail::read_double(h, static_cast<std::size_t>(soup.mVertices[t][i])));
+                if (v > rOptions.mCurvatureThreshold)  // NaN compares false
+                    prims[t].mRefine = true;
+            }
+    }
+    if (rOptions.mFeatureAngle > 0.0) {
+        FeatureEdgeOptions fopts;
+        fopts.mFeatureAngleDeg = rOptions.mFeatureAngle;
+        fopts.mInconsistent = false;
+        fopts.mRegion = rOptions.mDistance.mSurfaceRegion;
+        const FeatureEdgeResult fres = feature_edges(rMesh, fopts);
+        // The edges themselves become refining primitives: flagging whole
+        // triangles would refine the middle of a big flat face whose boundary is
+        // sharp. A degenerate triangle (a, b, b) is the segment a-b for the SAT.
+        std::set<std::array<std::int64_t, 2>> sharp;
+        for (const auto fb : fres.mMesh.CellRange()) {
+            if (fb.NodesPerCell() != 2)
+                continue;
+            for (std::size_t c = 0; c < fb.NumCells(); ++c) {
+                const std::int64_t a = detail::read_int(fb.Conn(), c * 2);
+                const std::int64_t b = detail::read_int(fb.Conn(), c * 2 + 1);
+                sharp.insert({std::min(a, b), std::max(a, b)});
+            }
+        }
+        feature_segments.assign(sharp.begin(), sharp.end());
+    }
+    if (!rOptions.mSizeArray.empty()) {
+        if (!rMesh.HasPointData(rOptions.mSizeArray))
+            throw std::invalid_argument(std::string(kOctPrefix) + "size_array '" +
+                                        rOptions.mSizeArray + "' is not a point_data array");
+        const NDArray& sz = rMesh.PointData(rOptions.mSizeArray);
+        if (sz.Size() != rMesh.NumPoints())
+            throw std::invalid_argument(std::string(kOctPrefix) + "size_array '" +
+                                        rOptions.mSizeArray + "' must have one value per point");
+        for (std::size_t t = 0; t < prims.size(); ++t) {
+            double smallest = std::numeric_limits<double>::infinity();
+            const std::size_t nv = two_d ? 2 : 3;
+            for (std::size_t i = 0; i < nv; ++i) {
+                const std::int64_t id = two_d ? skin.mIds[t][i] : soup.mVertices[t][i];
+                const double v = detail::read_double(sz, static_cast<std::size_t>(id));
+                if (v > 0.0 && v < smallest)
+                    smallest = v;
+            }
+            prims[t].mSize = smallest;
+        }
+    }
+
+    for (const auto& seg : feature_segments) {
+        OctPrim e{soup.mPoints[static_cast<std::size_t>(seg[0])],
+                  soup.mPoints[static_cast<std::size_t>(seg[1])],
+                  soup.mPoints[static_cast<std::size_t>(seg[1])]};
+        e.mRefine = true;
+        prims.push_back(e);
     }
 
     // ---- the root lattice -----------------------------------------------------
@@ -193638,6 +193890,12 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
         throw std::invalid_argument(std::string(kOctPrefix) +
                                     "the mesh has no points, so it has no bounding box to cover "
                                     "(pass explicit bounds)");
+    }
+    if (two_d) {  // world -> the skin's frame
+        const detail::Vec3 flo = frame.Permute(detail::Vec3{{lo[0], lo[1], lo[2]}});
+        const detail::Vec3 fhi = frame.Permute(detail::Vec3{{hi[0], hi[1], hi[2]}});
+        lo = {flo[0], flo[1], flo[2]};
+        hi = {fhi[0], fhi[1], fhi[2]};
     }
     {
         double diag2 = 0.0;
@@ -193687,7 +193945,22 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
         std::vector<std::vector<OctLeaf>> kids(current.size());
         parallel_for(current.size(), [&](std::size_t n) {
             const OctLeaf& leaf = current[n];
-            if (level < rOptions.mMinLevel || !leaf.mCand.empty())
+            bool split = level < rOptions.mMinLevel;
+            if (!split && !leaf.mCand.empty()) {
+                if (level < surface_level) {
+                    split = true;
+                } else {
+                    const double edge = grid.mRootSize / static_cast<double>(std::int64_t{1} << level);
+                    for (std::int32_t p : leaf.mCand) {
+                        const OctPrim& prim = prims[static_cast<std::size_t>(p)];
+                        if (prim.mRefine || edge > prim.mSize) {
+                            split = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (split)
                 oct_split(grid, prims, leaf, kids[n]);
         });
         std::vector<OctLeaf> next;
@@ -193851,34 +194124,49 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
     uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
     const std::size_t npoints = uniq.size();
 
-    NDArray points = NDArray::Uninit(DType::Float64, {npoints, std::size_t{3}});
-    double* pdst = points.As<double>();
+    // Coordinates are held in the skin's frame until the end.
+    std::vector<double> coords(npoints * 3);
     parallel_for(npoints, [&](std::size_t p) {
         const std::int64_t key = uniq[p];
         const std::int64_t x = key % px;
         const std::int64_t y = (key / px) % py;
         const std::int64_t z = key / (px * py);
-        pdst[p * 3 + 0] = grid.mOrigin[0] + static_cast<double>(x) * grid.mFine;
-        pdst[p * 3 + 1] = grid.mOrigin[1] + static_cast<double>(y) * grid.mFine;
-        pdst[p * 3 + 2] = two_d ? grid.mOrigin[2] : grid.mOrigin[2] + static_cast<double>(z) * grid.mFine;
+        coords[p * 3 + 0] = grid.mOrigin[0] + static_cast<double>(x) * grid.mFine;
+        coords[p * 3 + 1] = grid.mOrigin[1] + static_cast<double>(y) * grid.mFine;
+        coords[p * 3 + 2] =
+            two_d ? grid.mOrigin[2] : grid.mOrigin[2] + static_cast<double>(z) * grid.mFine;
     });
 
-    NDArray conn = NDArray::Uninit(DType::Int64, {kept.size(), nc});
-    std::int64_t* cdst = conn.As<std::int64_t>();
+    std::vector<std::int64_t> connv(kept.size() * nc);
     parallel_for(kept.size() * nc, [&](std::size_t i) {
-        cdst[i] = static_cast<std::int64_t>(
+        connv[i] = static_cast<std::int64_t>(
             std::lower_bound(uniq.begin(), uniq.end(), keys[i]) - uniq.begin());
     });
 
-    // ---- hanging nodes: relative to the kept leaves ----------------------------
+    // ---- leaf lookup over the kept leaves ----------------------------------------
     std::vector<std::unordered_map<std::uint64_t, std::size_t>> kept_maps(
         static_cast<std::size_t>(grid.mFinest + 1));
     for (std::size_t n = 0; n < kept.size(); ++n) {
         const OctLeaf& leaf = leaves[kept[n]];
         kept_maps[static_cast<std::size_t>(leaf.mLevel)][oct_morton(leaf.mX, leaf.mY, leaf.mZ)] = n;
     }
-    NDArray hanging = NDArray::Uninit(DType::Int64, {npoints});
-    std::int64_t* hdst = hanging.As<std::int64_t>();
+    // The kept leaf containing the finest cell @p rC, or -1.
+    const auto leaf_containing = [&](const std::array<std::int64_t, 3>& rC) -> std::int64_t {
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rC[k] < 0 || rC[k] >= grid.Extent(k))
+                return -1;
+        for (std::int64_t lev = grid.mFinest; lev >= 0; --lev) {
+            const std::int64_t sh = grid.mFinest - lev;
+            const auto it = kept_maps[static_cast<std::size_t>(lev)].find(
+                oct_morton((rC[0] >> sh) << sh, (rC[1] >> sh) << sh, (rC[2] >> sh) << sh));
+            if (it != kept_maps[static_cast<std::size_t>(lev)].end())
+                return static_cast<std::int64_t>(it->second);
+        }
+        return -1;
+    };
+
+    // ---- hanging nodes: relative to the kept leaves ----------------------------
+    std::vector<std::int64_t> hang(npoints, 0);
     parallel_for(npoints, [&](std::size_t p) {
         const std::int64_t key = uniq[p];
         const std::int64_t pt[3] = {key % px, (key / px) % py, key / (px * py)};
@@ -193887,15 +194175,15 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
         for (int oz = 0; oz < nzo && !flag; ++oz)
             for (int oy = 0; oy < 2 && !flag; ++oy)
                 for (int ox = 0; ox < 2 && !flag; ++ox) {
-                    const std::int64_t c[3] = {pt[0] - 1 + ox, pt[1] - 1 + oy,
-                                               two_d ? 0 : pt[2] - 1 + oz};
-                    bool inside = true;
-                    for (std::size_t k = 0; k < 3; ++k)
-                        if (c[k] < 0 || c[k] >= grid.Extent(k))
-                            inside = false;
-                    if (!inside)
-                        continue;
+                    const std::array<std::int64_t, 3> c{pt[0] - 1 + ox, pt[1] - 1 + oy,
+                                                        two_d ? 0 : pt[2] - 1 + oz};
                     for (std::int64_t lev = grid.mFinest; lev >= 0; --lev) {
+                        bool inside = true;
+                        for (std::size_t k = 0; k < 3; ++k)
+                            if (c[k] < 0 || c[k] >= grid.Extent(k))
+                                inside = false;
+                        if (!inside)
+                            break;
                         const std::int64_t sh = grid.mFinest - lev;
                         const std::int64_t ax = (c[0] >> sh) << sh, ay = (c[1] >> sh) << sh,
                                            az = (c[2] >> sh) << sh;
@@ -193911,39 +194199,452 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
                         break;
                     }
                 }
-        hdst[p] = flag;
+        hang[p] = flag;
     });
-    for (std::size_t p = 0; p < npoints; ++p)
-        result.mNumHanging += hdst[p];
 
-    // ---- assemble ------------------------------------------------------------
-    result.mMesh.AssignPoints(std::move(points));
-    result.mMesh.AddCellBlock(two_d ? "quad" : "hexahedron", std::move(conn));
-    NDArray level = NDArray::Uninit(DType::Int64, {kept.size()});
-    NDArray cut = NDArray::Uninit(DType::Int64, {kept.size()});
+    // ---- snap: move the outer nodes onto the skin -------------------------------
+    if (rOptions.mSnap) {
+        // Corner indices of the face (edge, in 2-D) on [axis][side] of a leaf.
+        static const int kFace3[3][2][4] = {{{0, 4, 7, 3}, {1, 2, 6, 5}},
+                                            {{0, 1, 5, 4}, {3, 7, 6, 2}},
+                                            {{0, 3, 2, 1}, {4, 5, 6, 7}}};
+        static const int kEdge2[2][2][2] = {{{3, 0}, {1, 2}}, {{0, 1}, {2, 3}}};
+        std::vector<char> outer(npoints, 0);
+        const std::size_t naxes = static_cast<std::size_t>(grid.NumAxes());
+        for (std::size_t n = 0; n < kept.size(); ++n) {
+            const OctLeaf& leaf = leaves[kept[n]];
+            const std::int64_t s = std::int64_t{1} << (grid.mFinest - leaf.mLevel);
+            const std::int64_t lo3[3] = {leaf.mX, leaf.mY, leaf.mZ};
+            for (std::size_t a = 0; a < naxes; ++a)
+                for (std::int64_t sd = 0; sd < 2; ++sd) {
+                    // Probe the finest cells on the outside of the face around its
+                    // centre: any kept leaf there means the face is shared.
+                    bool covered = false;
+                    const std::size_t u = two_d ? 1 - a : (a + 1) % 3, v = (a + 2) % 3;
+                    const std::int64_t offs[2] = {s / 2 - 1 < 0 ? 0 : s / 2 - 1, s / 2};
+                    for (std::int64_t ou : offs)
+                        for (std::int64_t ov : offs) {
+                            std::array<std::int64_t, 3> c{lo3[0], lo3[1], lo3[2]};
+                            c[a] = sd ? lo3[a] + s : lo3[a] - 1;
+                            c[u] = lo3[u] + ou;
+                            if (!two_d)
+                                c[v] = lo3[v] + ov;
+                            if (two_d)
+                                c[2] = 0;
+                            if (leaf_containing(c) >= 0)
+                                covered = true;
+                        }
+                    if (covered)
+                        continue;
+                    if (two_d) {
+                        for (int e = 0; e < 2; ++e)
+                            outer[static_cast<std::size_t>(
+                                connv[n * 4 + static_cast<std::size_t>(kEdge2[a][sd][e])])] = 1;
+                    } else {
+                        for (int e = 0; e < 4; ++e)
+                            outer[static_cast<std::size_t>(
+                                connv[n * 8 + static_cast<std::size_t>(kFace3[a][sd][e])])] = 1;
+                    }
+                }
+        }
+        for (std::size_t p = 0; p < npoints; ++p)
+            if (hang[p])
+                outer[p] = 0;  // a hanging node must stay on its parent edge/face
+
+        std::vector<double> target = coords;
+        if (two_d) {
+            parallel_for(npoints, [&](std::size_t p) {
+                if (!outer[p])
+                    return;
+                const detail::Vec3 q = detail::polyline_closest_point_2d(
+                    skin, detail::Vec3{{coords[p * 3], coords[p * 3 + 1], coords[p * 3 + 2]}});
+                for (std::size_t k = 0; k < 3; ++k)
+                    target[p * 3 + k] = q[k];
+            });
+        } else {
+            Mesh work;
+            NDArray wpts = NDArray::Uninit(DType::Float64, {npoints, std::size_t{3}});
+            std::memcpy(wpts.Data(), coords.data(), coords.size() * sizeof(double));
+            work.AssignPoints(std::move(wpts));
+            NDArray wflag = NDArray::Uninit(DType::Int64, {npoints});
+            for (std::size_t p = 0; p < npoints; ++p)
+                wflag.As<std::int64_t>()[p] = outer[p];
+            work.AddPointData("octree:snap", std::move(wflag));
+            ShrinkwrapOptions sopts;
+            sopts.mWeights = "octree:snap";
+            sopts.mTargetRegion = rOptions.mDistance.mSurfaceRegion;
+            const ShrinkwrapResult sres = shrinkwrap(work, rMesh, sopts);
+            const double* moved = sres.mMesh.Points().As<double>();
+            for (std::size_t p = 0; p < npoints; ++p)
+                if (outer[p])
+                    for (std::size_t k = 0; k < 3; ++k)
+                        target[p * 3 + k] = moved[p * 3 + k];
+        }
+
+        // Guard: a leaf with a non-positive corner Jacobian gets every node it
+        // owns put back; repeat until none is left. Reverting only ever restores
+        // the lattice, whose leaves are valid, so this terminates.
+        static const int kAdj3[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
+                                        {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
+        std::vector<double> cur = target;
+        std::vector<char> moved_flag(npoints, 0), refused(npoints, 0);
+        for (std::size_t p = 0; p < npoints; ++p)
+            for (std::size_t k = 0; k < 3; ++k)
+                if (cur[p * 3 + k] != coords[p * 3 + k])
+                    moved_flag[p] = 1;
+        const auto bad_cell = [&](std::size_t n) {
+            for (std::size_t c = 0; c < nc; ++c) {
+                const double* p0 = &cur[static_cast<std::size_t>(connv[n * nc + c]) * 3];
+                if (two_d) {
+                    const double* pn = &cur[static_cast<std::size_t>(connv[n * 4 + (c + 1) % 4]) * 3];
+                    const double* pp = &cur[static_cast<std::size_t>(connv[n * 4 + (c + 3) % 4]) * 3];
+                    const double det = (pn[0] - p0[0]) * (pp[1] - p0[1]) -
+                                       (pn[1] - p0[1]) * (pp[0] - p0[0]);
+                    if (!(det > 0.0))
+                        return true;
+                } else {
+                    double e[3][3];
+                    for (int j = 0; j < 3; ++j) {
+                        const double* pj =
+                            &cur[static_cast<std::size_t>(connv[n * 8 + static_cast<std::size_t>(kAdj3[c][j])]) * 3];
+                        for (std::size_t k = 0; k < 3; ++k)
+                            e[j][k] = pj[k] - p0[k];
+                    }
+                    const double det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) -
+                                       e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0]) +
+                                       e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+                    if (!(det > 0.0))
+                        return true;
+                }
+            }
+            return false;
+        };
+        for (std::size_t round = 0; round <= npoints; ++round) {
+            bool any = false;
+            for (std::size_t n = 0; n < kept.size(); ++n) {
+                if (!bad_cell(n))
+                    continue;
+                for (std::size_t c = 0; c < nc; ++c) {
+                    const std::size_t p = static_cast<std::size_t>(connv[n * nc + c]);
+                    if (!moved_flag[p])
+                        continue;
+                    for (std::size_t k = 0; k < 3; ++k)
+                        cur[p * 3 + k] = coords[p * 3 + k];
+                    moved_flag[p] = 0;
+                    refused[p] = 1;
+                    any = true;
+                }
+            }
+            if (!any)
+                break;
+        }
+        coords = cur;
+        for (std::size_t p = 0; p < npoints; ++p) {
+            result.mNumSnapped += moved_flag[p] ? 1 : 0;
+            result.mNumRefused += refused[p] ? 1 : 0;
+        }
+    }
+
+    // ---- cell data every output carries ----------------------------------------
+    // One value per kept leaf; a conforming transition repeats a leaf's value on
+    // each cell cut from it.
+    const auto leaf_values = [&](const std::vector<std::size_t>& rParents) {
+        struct Out {
+            NDArray mLevel, mCut, mDist, mLeaf;
+        } out;
+        out.mLevel = NDArray::Uninit(DType::Int64, {rParents.size()});
+        out.mCut = NDArray::Uninit(DType::Int64, {rParents.size()});
+        out.mLeaf = NDArray::Uninit(DType::Int64, {rParents.size()});
+        if (rOptions.mAttachDistance)
+            out.mDist = NDArray::Uninit(DType::Float64, {rParents.size()});
+        for (std::size_t i = 0; i < rParents.size(); ++i) {
+            const std::size_t n = rParents[i];
+            out.mLevel.As<std::int64_t>()[i] = leaves[kept[n]].mLevel;
+            out.mCut.As<std::int64_t>()[i] = leaves[kept[n]].mCut ? 1 : 0;
+            out.mLeaf.As<std::int64_t>()[i] = static_cast<std::int64_t>(n);
+            if (rOptions.mAttachDistance)
+                out.mDist.As<double>()[i] = distance[kept[n]];
+        }
+        return out;
+    };
+    std::vector<std::vector<std::size_t>> block_parents;  // per cell block, in order
+    const auto finish_cell_data = [&]() {
+        std::vector<NDArray> lv, ct, ds, lf;
+        for (const auto& parents : block_parents) {
+            auto vals = leaf_values(parents);
+            lv.push_back(std::move(vals.mLevel));
+            ct.push_back(std::move(vals.mCut));
+            lf.push_back(std::move(vals.mLeaf));
+            if (rOptions.mAttachDistance)
+                ds.push_back(std::move(vals.mDist));
+        }
+        result.mMesh.AddCellData(kOctreeLevelName, std::move(lv));
+        result.mMesh.AddCellData(kOctreeCutName, std::move(ct));
+        if (rOptions.mAttachDistance)
+            result.mMesh.AddCellData(kSdfDistanceName, std::move(ds));
+        if (rOptions.mTransition != OctreeTransition::Hanging)
+            result.mMesh.AddCellData(kOctreeLeafName, std::move(lf));
+    };
+    // Frame -> world, applied to the final point array.
+    const auto emit_points = [&](std::vector<double>& rC) {
+        const std::size_t np = rC.size() / 3;
+        NDArray out = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        double* dst = out.As<double>();
+        for (std::size_t p = 0; p < np; ++p) {
+            const detail::Vec3 w =
+                frame.Unpermute(detail::Vec3{{rC[p * 3], rC[p * 3 + 1], rC[p * 3 + 2]}});
+            dst[p * 3 + 0] = w[0];
+            dst[p * 3 + 1] = w[1];
+            dst[p * 3 + 2] = w[2];
+        }
+        result.mMesh.AssignPoints(std::move(out));
+    };
+    const auto matrix = [&](DType Type, std::size_t Rows, std::size_t Cols,
+                            const std::vector<std::int64_t>& rValues) {
+        NDArray out = NDArray::Uninit(Type, {Rows, Cols});
+        if (!rValues.empty())
+            std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
+        return out;
+    };
+
+    if (rOptions.mTransition == OctreeTransition::Hanging) {
+        for (std::size_t p = 0; p < npoints; ++p)
+            result.mNumHanging += hang[p];
+        emit_points(coords);
+        result.mMesh.AddCellBlock(two_d ? "quad" : "hexahedron",
+                                  matrix(DType::Int64, kept.size(), nc, connv));
+        std::vector<std::size_t> all(kept.size());
+        for (std::size_t n = 0; n < all.size(); ++n)
+            all[n] = n;
+        block_parents.push_back(std::move(all));
+        finish_cell_data();
+        NDArray hanging = NDArray::Uninit(DType::Int64, {npoints});
+        for (std::size_t p = 0; p < npoints; ++p)
+            hanging.As<std::int64_t>()[p] = hang[p];
+        result.mMesh.AddPointData(kOctreeHangingName, std::move(hanging));
+        return result;
+    }
+
+    // ---- conforming transitions ---------------------------------------------------
+    // Everything below works from the integer lattice: which nodes exist on a leaf's
+    // boundary decides its faces, and both cells sharing a boundary look at the same
+    // global node set, so they agree by construction.
+    std::unordered_map<std::int64_t, std::int64_t> index_of;
+    index_of.reserve(npoints * 2);
+    for (std::size_t p = 0; p < npoints; ++p)
+        index_of[uniq[p]] = static_cast<std::int64_t>(p);
+    using Lat = std::array<std::int64_t, 3>;
+    const auto node_at = [&](const Lat& rL) -> std::int64_t {
+        const auto it = index_of.find((rL[2] * py + rL[1]) * px + rL[0]);
+        return it == index_of.end() ? -1 : it->second;
+    };
+    // Interior nodes of the lattice segment a -> b, in order (bisecting while the
+    // midpoint exists).
+    const std::function<void(const Lat&, const Lat&, std::vector<std::int64_t>&)> edge_nodes =
+        [&](const Lat& rA, const Lat& rB, std::vector<std::int64_t>& rOut) {
+            Lat mid{};
+            std::int64_t len = 0;
+            for (std::size_t k = 0; k < 3; ++k) {
+                len = std::max<std::int64_t>(len, std::llabs(rB[k] - rA[k]));
+                mid[k] = (rA[k] + rB[k]) / 2;
+            }
+            if (len < 2)
+                return;
+            const std::int64_t id = node_at(mid);
+            if (id < 0)
+                return;
+            edge_nodes(rA, mid, rOut);
+            rOut.push_back(id);
+            edge_nodes(mid, rB, rOut);
+        };
+    // One face polygon: the nodes around a lattice square, plus its four corners.
+    struct FacePoly {
+        std::vector<std::int64_t> mNodes;
+        std::array<std::int64_t, 4> mCorner{};
+        std::array<std::int64_t, 3> mCentre2{};  // doubled lattice coordinates
+    };
+    const auto square_poly = [&](const std::array<Lat, 4>& rCorners) {
+        FacePoly poly;
+        for (std::size_t i = 0; i < 4; ++i) {
+            const std::int64_t id = node_at(rCorners[i]);
+            poly.mCorner[i] = id;
+            poly.mNodes.push_back(id);
+            edge_nodes(rCorners[i], rCorners[(i + 1) % 4], poly.mNodes);
+        }
+        for (std::size_t k = 0; k < 3; ++k)
+            poly.mCentre2[k] = rCorners[0][k] + rCorners[2][k];
+        return poly;
+    };
+    // Faces of the square of side @p Size at (u0, v0) on the plane of leaf face
+    // (@p A, @p Sd): the square itself, or its four quarters if its centre exists.
+    const std::function<void(const Lat&, std::size_t, std::int64_t, std::int64_t, std::int64_t,
+                             std::int64_t, std::vector<FacePoly>&)>
+        face_squares = [&](const Lat& rLo, std::size_t A, std::int64_t Sd, std::int64_t U0,
+                           std::int64_t V0, std::int64_t Size, std::vector<FacePoly>& rOut) {
+            const std::size_t u = (A + 1) % 3, v = (A + 2) % 3;
+            const auto at = [&](std::int64_t du, std::int64_t dv) {
+                Lat l = rLo;
+                l[u] = U0 + du;
+                l[v] = V0 + dv;
+                return l;
+            };
+            // `rLo[A]` already holds the plane's coordinate.
+            if (Size >= 2) {
+                const Lat centre = at(Size / 2, Size / 2);
+                if (node_at(centre) >= 0) {
+                    const std::int64_t h = Size / 2;
+                    for (std::int64_t qv = 0; qv < 2; ++qv)
+                        for (std::int64_t qu = 0; qu < 2; ++qu)
+                            face_squares(rLo, A, Sd, U0 + qu * h, V0 + qv * h, h, rOut);
+                    return;
+                }
+            }
+            std::array<Lat, 4> c = {at(0, 0), at(Size, 0), at(Size, Size), at(0, Size)};
+            if (Sd == 0)
+                std::swap(c[1], c[3]);  // outward is -axis: reverse the winding
+            rOut.push_back(square_poly(c));
+        };
+
+    std::vector<std::int64_t> hex_conn;                  // untouched leaves
+    std::vector<std::size_t> hex_parent;
+    // polyhedra
+    std::vector<std::int64_t> poly_flat, poly_rows{0}, poly_faces{0};
+    std::vector<std::size_t> poly_parent;
+    // templates
+    std::vector<std::int64_t> pyr_conn, tet_conn, tri_conn;
+    std::vector<std::size_t> pyr_parent, tet_parent, tri_parent;
+    std::vector<std::array<std::int64_t, 4>> fan_corners;     // per face-centre point
+    std::map<std::array<std::int64_t, 3>, std::size_t> fan_slot;  // centre2 -> fan_corners
+    struct Pending {
+        std::size_t mLeaf;
+        std::vector<FacePoly> mFaces;
+    };
+    std::vector<Pending> pending;  // transition leaves of the templates path
+    const bool templates = rOptions.mTransition == OctreeTransition::Templates;
+
     for (std::size_t n = 0; n < kept.size(); ++n) {
-        level.As<std::int64_t>()[n] = leaves[kept[n]].mLevel;
-        cut.As<std::int64_t>()[n] = leaves[kept[n]].mCut ? 1 : 0;
+        const OctLeaf& leaf = leaves[kept[n]];
+        const std::int64_t s = std::int64_t{1} << (grid.mFinest - leaf.mLevel);
+        const Lat lo{leaf.mX, leaf.mY, leaf.mZ};
+        std::vector<FacePoly> faces;
+        if (two_d) {
+            const std::array<Lat, 4> c = {Lat{lo[0], lo[1], 0}, Lat{lo[0] + s, lo[1], 0},
+                                          Lat{lo[0] + s, lo[1] + s, 0}, Lat{lo[0], lo[1] + s, 0}};
+            faces.push_back(square_poly(c));
+        } else {
+            for (std::size_t a = 0; a < 3; ++a)
+                for (std::int64_t sd = 0; sd < 2; ++sd) {
+                    Lat plane = lo;
+                    plane[a] = lo[a] + sd * s;
+                    face_squares(plane, a, sd, lo[(a + 1) % 3], lo[(a + 2) % 3], s, faces);
+                }
+        }
+        bool plain = faces.size() == (two_d ? 1u : 6u);
+        for (const FacePoly& f : faces)
+            if (f.mNodes.size() != 4)
+                plain = false;
+        if (plain) {
+            for (std::size_t c = 0; c < nc; ++c)
+                hex_conn.push_back(connv[n * nc + c]);
+            hex_parent.push_back(n);
+            continue;
+        }
+        if (!templates) {
+            if (two_d) {
+                poly_flat.insert(poly_flat.end(), faces[0].mNodes.begin(), faces[0].mNodes.end());
+                poly_rows.push_back(static_cast<std::int64_t>(poly_flat.size()));
+            } else {
+                for (const FacePoly& f : faces) {
+                    poly_flat.insert(poly_flat.end(), f.mNodes.begin(), f.mNodes.end());
+                    poly_rows.push_back(static_cast<std::int64_t>(poly_flat.size()));
+                }
+                poly_faces.push_back(static_cast<std::int64_t>(poly_rows.size()) - 1);
+            }
+            poly_parent.push_back(n);
+        } else {
+            for (const FacePoly& f : faces)
+                if (f.mNodes.size() != 4 && !two_d) {
+                    const auto ins = fan_slot.emplace(f.mCentre2, fan_corners.size());
+                    if (ins.second)
+                        fan_corners.push_back(f.mCorner);
+                }
+            pending.push_back(Pending{n, std::move(faces)});
+        }
     }
-    {
-        std::vector<NDArray> b;
-        b.push_back(std::move(level));
-        result.mMesh.AddCellData(kOctreeLevelName, std::move(b));
+
+    if (templates) {
+        // New points: face centres (in key order), then leaf centroids (in leaf order).
+        const std::size_t nfan = fan_slot.size();
+        std::size_t next_id = npoints;
+        std::map<std::array<std::int64_t, 3>, std::int64_t> fan_id;
+        coords.resize((npoints + nfan + pending.size()) * 3);
+        const auto mean = [&](const std::int64_t* pIds, std::size_t N, std::size_t Dest) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                double sum = 0.0;
+                for (std::size_t i = 0; i < N; ++i)
+                    sum += coords[static_cast<std::size_t>(pIds[i]) * 3 + k];
+                coords[Dest * 3 + k] = sum / static_cast<double>(N);
+            }
+        };
+        for (const auto& kv : fan_slot) {
+            fan_id[kv.first] = static_cast<std::int64_t>(next_id);
+            mean(fan_corners[kv.second].data(), 4, next_id++);
+        }
+        for (const Pending& pl : pending) {
+            mean(&connv[pl.mLeaf * nc], nc, next_id);
+            const std::int64_t apex = static_cast<std::int64_t>(next_id++);
+            if (two_d) {
+                const auto& ring = pl.mFaces[0].mNodes;
+                for (std::size_t i = 0; i < ring.size(); ++i) {
+                    tri_conn.push_back(ring[i]);
+                    tri_conn.push_back(ring[(i + 1) % ring.size()]);
+                    tri_conn.push_back(apex);
+                    tri_parent.push_back(pl.mLeaf);
+                }
+                continue;
+            }
+            for (const FacePoly& f : pl.mFaces) {
+                if (f.mNodes.size() == 4) {
+                    pyr_conn.insert(pyr_conn.end(), {f.mNodes[0], f.mNodes[3], f.mNodes[2],
+                                                     f.mNodes[1], apex});
+                    pyr_parent.push_back(pl.mLeaf);
+                    continue;
+                }
+                const std::int64_t centre = fan_id.at(f.mCentre2);
+                for (std::size_t i = 0; i < f.mNodes.size(); ++i) {
+                    tet_conn.insert(tet_conn.end(), {centre, f.mNodes[(i + 1) % f.mNodes.size()],
+                                                     f.mNodes[i], apex});
+                    tet_parent.push_back(pl.mLeaf);
+                }
+            }
+        }
     }
-    {
-        std::vector<NDArray> b;
-        b.push_back(std::move(cut));
-        result.mMesh.AddCellData(kOctreeCutName, std::move(b));
+
+    emit_points(coords);
+    const auto add_block = [&](const char* pType, std::size_t Width, std::vector<std::int64_t>& rConn,
+                               std::vector<std::size_t>& rParents) {
+        if (rParents.empty())
+            return;
+        result.mMesh.AddCellBlock(pType, matrix(DType::Int64, rParents.size(), Width, rConn));
+        block_parents.push_back(std::move(rParents));
+    };
+    add_block(two_d ? "quad" : "hexahedron", nc, hex_conn, hex_parent);
+    if (!templates) {
+        if (!poly_parent.empty()) {
+            if (two_d)
+                result.mMesh.AddPolygonBlock("polygon", std::move(poly_flat), std::move(poly_rows));
+            else
+                result.mMesh.AddPolyhedronBlock("polyhedron", std::move(poly_flat),
+                                                std::move(poly_rows), std::move(poly_faces));
+            block_parents.push_back(std::move(poly_parent));
+        }
+    } else if (two_d) {
+        add_block("triangle", 3, tri_conn, tri_parent);
+    } else {
+        add_block("pyramid", 5, pyr_conn, pyr_parent);
+        add_block("tetra", 4, tet_conn, tet_parent);
     }
-    if (rOptions.mAttachDistance) {
-        NDArray d = NDArray::Uninit(DType::Float64, {kept.size()});
-        for (std::size_t n = 0; n < kept.size(); ++n)
-            d.As<double>()[n] = distance[kept[n]];
-        std::vector<NDArray> b;
-        b.push_back(std::move(d));
-        result.mMesh.AddCellData(kSdfDistanceName, std::move(b));
-    }
-    result.mMesh.AddPointData(kOctreeHangingName, std::move(hanging));
+    finish_cell_data();
     return result;
 }
 
@@ -195752,7 +196453,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachOccupancy", "MaxCells", "Sign"}},
         {"Octree",
          {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
-          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign"}},
+          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
+          "Transition", "Snap", "SurfaceLevel", "CurvatureThreshold", "FeatureAngle", "SizeArray",
+          "Plane"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -196808,10 +197511,20 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mEvenOdd = pipe_flag(rStep, "EvenOdd", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mTransition = octree_transition_from_name(pipe_text(rStep, "Transition", "hanging"));
+        opts.mSnap = pipe_flag(rStep, "Snap", false);
+        opts.mSurfaceLevel =
+            static_cast<std::int64_t>(pipe_number(rStep, "SurfaceLevel", -1.0));
+        opts.mCurvatureThreshold = pipe_number(rStep, "CurvatureThreshold", 0.0);
+        opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 0.0);
+        opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         OctreeResult r = octree(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},
-                        {"NumHanging", static_cast<double>(r.mNumHanging)}});
+                        {"NumHanging", static_cast<double>(r.mNumHanging)},
+                        {"NumSnapped", static_cast<double>(r.mNumSnapped)},
+                        {"NumRefused", static_cast<double>(r.mNumRefused)}});
         return std::move(r.mMesh);
     }
 
@@ -216176,7 +216889,7 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
 
 Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
                       const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
-                      std::int64_t Kept) {
+                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
     Mesh out;
     const std::int64_t nx = rDims[0];
     const std::int64_t ny = rDims[1];
@@ -216210,9 +216923,12 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
         if (slot < 0)
             return;
         const std::int64_t g = static_cast<std::int64_t>(p);
-        pdst[slot * 3 + 0] = rOrigin[0] + static_cast<double>(g % px) * rSpacing[0];
-        pdst[slot * 3 + 1] = rOrigin[1] + static_cast<double>(g / px) * rSpacing[1];
-        pdst[slot * 3 + 2] = rOrigin[2];
+        const detail::Vec3 world = rFrame.Unpermute(
+            detail::Vec3{{rOrigin[0] + static_cast<double>(g % px) * rSpacing[0],
+                          rOrigin[1] + static_cast<double>(g / px) * rSpacing[1], rOrigin[2]}});
+        pdst[slot * 3 + 0] = world[0];
+        pdst[slot * 3 + 1] = world[1];
+        pdst[slot * 3 + 2] = world[2];
     });
     out.AssignPoints(std::move(points));
 
@@ -216233,7 +216949,11 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
 }
 
 VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix);
+    // The skin's plane: the axis with zero extent, else z (so an xz or yz
+    // polyline voxelizes in its own plane). Everything below runs in the frame
+    // where that plane is xy, and the points are mapped back on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
     if (rOptions.mFill == VoxelFill::Inside)
         detail::require_closed_polyline(skin, kVoxPrefix);
 
@@ -216250,6 +216970,12 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
         throw std::invalid_argument(std::string(kVoxPrefix) +
                                     "the mesh has no points, so it has no bounding box to cover "
                                     "(pass explicit bounds)");
+    }
+    {  // world -> frame
+        const detail::Vec3 flo = frame.Permute(detail::Vec3{{lo[0], lo[1], lo[2]}});
+        const detail::Vec3 fhi = frame.Permute(detail::Vec3{{hi[0], hi[1], hi[2]}});
+        lo = {flo[0], flo[1], flo[2]};
+        hi = {fhi[0], fhi[1], fhi[2]};
     }
     double diag2 = 0.0;
     for (std::size_t k = 0; k < 3; ++k)
@@ -216358,7 +217084,7 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
     result.mOrigin = origin;
     result.mSpacing = spacing;
     result.mNumOccupied = kept;
-    result.mMesh = vox_build_pixels(dims, origin, spacing, occupied, kept);
+    result.mMesh = vox_build_pixels(dims, origin, spacing, occupied, kept, frame);
     if (rOptions.mAttachOccupancy && kept > 0) {
         NDArray occ = NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(kept)});
         std::int64_t* dst = occ.As<std::int64_t>();

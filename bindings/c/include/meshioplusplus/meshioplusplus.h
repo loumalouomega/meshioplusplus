@@ -2710,6 +2710,21 @@ typedef enum mio_octree_balance {
     MIO_OCTREE_BALANCE_FULL = 2  /**< 2:1 across faces, edges and corners */
 } mio_octree_balance;
 
+/** What the octree looks like where a fine leaf meets a coarse one. */
+typedef enum mio_octree_transition {
+    MIO_OCTREE_HANGING = 0,   /**< plain cells with hanging nodes (octree:hanging) */
+    MIO_OCTREE_POLYHEDRA = 1, /**< conforming split-hex polyhedra (polygons in 2-D) */
+    MIO_OCTREE_TEMPLATES = 2  /**< conforming hexahedra, pyramids and tetrahedra */
+} mio_octree_transition;
+
+/** The plane of a 2-D skin. */
+typedef enum mio_planar_plane {
+    MIO_PLANE_AUTO = 0, /**< the axis with zero extent, else z */
+    MIO_PLANE_XY = 1,
+    MIO_PLANE_XZ = 2,
+    MIO_PLANE_YZ = 3
+} mio_planar_plane;
+
 /**
  * Options for mio_octree.
  *
@@ -2741,7 +2756,19 @@ typedef struct mio_octree_opts {
     int32_t even_odd;         /**< nonzero: the 2-D even-odd rule instead of winding */
     int32_t sign;             /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE in 3-D */
     int32_t watertight_check; /**< a mio_sdf_watertight_check */
-    int64_t reserved[6];      /**< must be zero; room for additive growth */
+    /** Name of a point_data array of target edge lengths, or NULL. */
+    const char* size_array;
+    /** Refine to max_level where |mean curvature| exceeds this (3-D); 0 disables. */
+    double curvature_threshold;
+    /** Refine to max_level along edges sharper than this many degrees (3-D); 0 disables. */
+    double feature_angle;
+    /** Cut leaves are split down to this level; negative means max_level. */
+    int64_t surface_level;
+    int32_t transition; /**< a mio_octree_transition */
+    int32_t snap;       /**< nonzero to move the outer nodes onto the skin */
+    int32_t plane;      /**< a mio_planar_plane (2-D skins) */
+    int32_t reserved32; /**< must be zero */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_octree_opts;
 
 /** What mio_octree reports about the tree it built. */
@@ -2752,7 +2779,9 @@ typedef struct mio_octree_report {
     int64_t finest_level;  /**< deepest level present */
     double origin[3];      /**< lo corner of the root lattice */
     double root_size;      /**< edge length of a root cell */
-    int64_t reserved[4];   /**< zeroed */
+    int64_t num_snapped;   /**< outer nodes moved onto the skin */
+    int64_t num_refused;   /**< outer nodes left in place to keep a leaf valid */
+    int64_t reserved[2];   /**< zeroed */
 } mio_octree_report;
 
 /** Zero-initialize octree options (every field its default). */

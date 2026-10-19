@@ -140,7 +140,27 @@ def _octree_py(
     even_odd,
     max_cells,
     sign,
+    transition="hanging",
+    snap=False,
+    surface_level=None,
+    curvature_threshold=0.0,
+    feature_angle=0.0,
+    size_array="",
+    plane="auto",
 ):
+    if (
+        transition != "hanging"
+        or snap
+        or (surface_level is not None and surface_level >= 0)
+        or curvature_threshold
+        or feature_angle
+        or size_array
+    ):
+        raise NotImplementedError(
+            f"{_PREFIX}transition other than 'hanging', snap, surface_level, "
+            "curvature_threshold, feature_angle and size_array need the compiled "
+            "core; the numpy reference implements the hanging-node octree only"
+        )
     if min_level < 0 or max_level < min_level or max_level > _MAX_LEVEL:
         raise ValueError(
             f"{_PREFIX}need 0 <= min_level <= max_level <= {_MAX_LEVEL}, got "
@@ -177,8 +197,10 @@ def _octree_py(
 
     # ---- the skin -----------------------------------------------------------
     prims = []
+    axes = (0, 1, 2)
     if two_d:
-        prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX)
+        axes = _planar_skin.frame(mesh, plane)
+        prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX, axes)
         if (fill == "inside" or attach_distance) and has_lines:
             _planar_skin.require_closed(seg_ids, _PREFIX)
     else:
@@ -204,6 +226,11 @@ def _octree_py(
         if pts.shape[1] == 2:
             pts = np.column_stack([pts, np.zeros(len(pts))])
         lo, hi = pts.min(axis=0), pts.max(axis=0)
+    if two_d:  # world -> the skin's frame
+        lo, hi = (
+            _planar_skin.permute(lo, axes).copy(),
+            _planar_skin.permute(hi, axes).copy(),
+        )
     diag = float(np.sqrt(np.sum((hi - lo) ** 2)))
     pad = padding + padding_relative * diag
     if pad < 0.0:
@@ -348,6 +375,8 @@ def _octree_py(
         "num_leaves": len(kept),
         "num_hanging": 0,
         "finest_level": max((leaves[n][3] for n in kept), default=0),
+        "num_snapped": 0,
+        "num_refused": 0,
     }
     if not kept:
         return Mesh(np.zeros((0, 3)), []), report
@@ -412,6 +441,8 @@ def _octree_py(
         hanging[p] = flag
     report["num_hanging"] = int(hanging.sum())
 
+    if two_d:
+        points = _planar_skin.unpermute(points, axes)
     out = Mesh(points, [("quad" if two_d else "hexahedron", conn)])
     out.cell_data["octree:level"] = [
         np.array([leaves[n][3] for n in kept], dtype=np.int64)
@@ -445,6 +476,13 @@ def octree(
     sign="pseudonormal",
     watertight_check="warn",
     return_report=False,
+    transition="hanging",
+    snap=False,
+    surface_level=None,
+    curvature_threshold=0.0,
+    feature_angle=0.0,
+    size_array=None,
+    plane="auto",
 ):
     """Build an octree (quadtree in 2-D) around the skin ``mesh``.
 
@@ -452,6 +490,17 @@ def octree(
     of them) and their level is below ``max_level``; every leaf is split down to
     ``min_level``. A 2:1 ``balance`` ("none", "face" or "full") follows. ``fill``
     keeps ``voxelize``'s meaning ("all", "surface", "inside").
+
+    ``transition`` is ``"hanging"`` (plain cells with hanging nodes, the default),
+    ``"polyhedra"`` (conforming split-hex ``polyhedron``/``polygon`` cells) or
+    ``"templates"`` (conforming hex/pyramid/tetra, quad/triangle in 2-D). ``snap``
+    moves the outer nodes onto the skin without inverting a leaf (needs ``fill``
+    ``"surface"`` or ``"inside"``). ``surface_level`` stops cut leaves early;
+    ``curvature_threshold`` (|mean curvature|), ``feature_angle`` (degrees) and
+    ``size_array`` (a ``point_data`` array of target edge lengths) refine further,
+    up to ``max_level``. ``plane`` (``"auto"``, ``"xy"``, ``"xz"``, ``"yz"``)
+    chooses the plane of a 2-D skin. These options, and 3-D ``plane``, need the
+    compiled core; the report adds ``num_snapped`` and ``num_refused``.
 
     The result carries ``octree:level`` and ``octree:cut`` cell data and the
     ``octree:hanging`` point data; ``attach_distance`` adds ``sdf:distance``.
@@ -496,6 +545,13 @@ def octree(
             int(max_cells),
             sign,
             watertight_check,
+            transition,
+            bool(snap),
+            -1 if surface_level is None else int(surface_level),
+            float(curvature_threshold),
+            float(feature_angle),
+            size_array or "",
+            plane,
         )
         out = res["mesh"]
         report = {
@@ -505,6 +561,8 @@ def octree(
             "num_leaves": res["num_leaves"],
             "num_hanging": res["num_hanging"],
             "finest_level": res["finest_level"],
+            "num_snapped": res["num_snapped"],
+            "num_refused": res["num_refused"],
         }
     except Exception as exc:
         if not core_op_declined(exc, "octree"):
@@ -528,6 +586,13 @@ def octree(
             bool(even_odd),
             int(max_cells),
             sign,
+            transition,
+            bool(snap),
+            surface_level,
+            float(curvature_threshold),
+            float(feature_angle),
+            size_array or "",
+            plane,
         )
 
     return (out, report) if return_report else out

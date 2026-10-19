@@ -1446,6 +1446,13 @@ def tool_octree(
     even_odd=False,
     max_cells=20000000,
     sign="pseudonormal",
+    transition="hanging",
+    snap=False,
+    surface_level=None,
+    curvature_threshold=0.0,
+    feature_angle=0.0,
+    size_array=None,
+    plane="auto",
 ):
     """Build an octree (quadtree) around a mesh skin, fine only where the skin is."""
     mesh = _load(input_path, input_format)
@@ -1467,6 +1474,13 @@ def tool_octree(
         sign=sign,
         watertight_check="off",
         return_report=True,
+        transition=transition,
+        snap=snap,
+        surface_level=surface_level,
+        curvature_threshold=curvature_threshold,
+        feature_angle=feature_angle,
+        size_array=size_array,
+        plane=plane,
     )
     return _result(_store(out, output_path, output_format), out, **report)
 
