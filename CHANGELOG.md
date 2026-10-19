@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v17.7.0 (2026-10-19)
+
+- Release housekeeping; no functional change. The v17.6.0 `vtx` mesh-policy work (`VtxMeshPolicy`, the `VtxSeriesWriter` constructor taking it, the multi-block writer and the `meshio.shared_points` attribute) shipped without the additive review row its own release required, so `tools/check-abi-version.sh` failed the lint job on the v17.6.0 release commit; this release records that review (`doc/abi_reviews.md`, ABI 30 / v17.6.0, `formats/vtx.hpp` and `version.hpp`) and performs the routine version bump, `MESHIOPLUSPLUS_ABI_VERSION` staying 30. Every reader and writer behaves as in v17.6.0; the only difference in written files is the provenance line's version string (`Written by meshio++ v17.7.0`).
+
 ## v17.6.0 (2026-10-19)
 
 - `lsdyna_d3plot` writes airbag particles and rigid roads (the cells of the `Airbag <id>` and `Rigid road <id>` regions the reader returns go to their own sections instead of the nodes, SPH particles and shells their points would suggest), thick shells (the reader marks them with `cell_data["lsdyna:thick_shell"]`; marked brick blocks are written as the thick-shell family, `NELT`/`NUMMATT`/`NV3DT`) and `d3part` (the name `d3part` writes file type 5; `d3partNN` members are recognised like `d3plotNN`), in both engines with identical bytes; lasso-python reads the thick shells. With rigid roads a rigid body keeps its coordinates and rotation only (`NDIM` 9).
