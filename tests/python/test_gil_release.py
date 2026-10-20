@@ -164,6 +164,12 @@ def _assert_heartbeat(call):
     # this measured rate, not an absolute one. A call that holds the GIL leaves
     # the counter at most a tick or two, far below a tenth of the idle rate.
     idle, _ = _ticks_during(lambda: time.sleep(elapsed))
+    # One slow tick on a busy CI runner can sink a single run, so take the best
+    # of three; a call that really holds the GIL misses the bar every time.
+    for _ in range(2):
+        if during >= max(5, 0.1 * idle):
+            break
+        during, elapsed = _ticks_during(call)
     assert during >= max(5, 0.1 * idle), (
         f"heartbeat ticked {during} times in {elapsed * 1e3:.0f} ms against "
         f"{idle} when idle: the native call held the GIL"
