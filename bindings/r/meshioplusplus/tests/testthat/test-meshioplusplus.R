@@ -1090,6 +1090,21 @@ test_that("the parametric generators build meshes and refuse bad requests", {
   on.exit(mio_release(ref), add = TRUE)
   expect_equal(mio_num_cell_blocks(ref), 2)
 
+  # The planar domains: closed-form point counts, and an annulus sector keeps its
+  # seam apart where a full ring welds it.
+  expect_point_count <- function(m, n) {
+    on.exit(mio_release(m), add = TRUE)
+    expect_equal(mio_num_points(m), n)
+  }
+  expect_point_count(mio_reference_triangle(n = 3), 10)
+  expect_point_count(mio_ngon(sides = 5, rings = 2), 16)
+  expect_point_count(mio_annulus(ntheta = 12, nr = 3), 48)
+  expect_point_count(mio_annulus(ntheta = 6, nr = 2, angle = pi / 2), 21)
+  expect_point_count(mio_lshape(n = 3), 40)
+  expect_point_count(mio_plate_with_hole(nt = 3, nr = 2), 36)
+  expect_point_count(mio_honeycomb(dims = c(3, 2)), 22)
+  expect_error(mio_plate_with_hole(radius = 0.9))
+
   expect_error(mio_box(cell_type = "blob"))
   expect_error(mio_box(dims = c(100, 100, 100), max_cells = 1000))
 })

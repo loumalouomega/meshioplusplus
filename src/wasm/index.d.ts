@@ -2103,6 +2103,41 @@ export interface MeshioPlusPlusModule {
            center?: number[] | null, cellType?: string, order?: number,
            maxCells?: number): Mesh;
 
+  /** The reference triangle `(0,0) (1,0) (0,1)`, scaled by `size` and refined into
+   * `n * n` triangles in barycentric lattice order. Side regions `ymin`, `xmin`,
+   * `hypotenuse`. */
+  referenceTriangle(n?: number, size?: number[] | null, origin?: number[] | null,
+                    order?: number, maxCells?: number): Mesh;
+
+  /** A regular polygon fanned from its centre (`rings: 1`), or refined into
+   * `rings` rings of triangles. Side region `rim`. */
+  ngon(sides?: number, radius?: number, rings?: number, center?: number[] | null,
+       order?: number, maxCells?: number): Mesh;
+
+  /** An annulus, or a sector of `angle` radians whose two end rays stay separate
+   * node chains (the seam pair `periodic` links). Side regions `inner`, `outer`
+   * and, for a sector, `start` and `end`. */
+  annulus(innerRadius?: number, outerRadius?: number, ntheta?: number, nr?: number,
+          angle?: number, center?: number[] | null, cellType?: string, order?: number,
+          maxCells?: number): Mesh;
+
+  /** The square of side `size` minus its fourth quadrant (`x > 0`, `y < 0`), the
+   * re-entrant corner at `center`. Side regions `xmin`, `xmax`, `ymin`, `ymax`,
+   * `notch_x`, `notch_y`. */
+  lshape(n?: number, size?: number, center?: number[] | null, cellType?: string,
+         order?: number, maxCells?: number): Mesh;
+
+  /** A square plate of side `size` around a circular hole, in four quad blocks of
+   * `nt x nr` cells. Side regions `hole`, `xmin`, `xmax`, `ymin`, `ymax`. */
+  plateWithHole(radius?: number, size?: number, nt?: number, nr?: number,
+                center?: number[] | null, cellType?: string, order?: number,
+                maxCells?: number): Mesh;
+
+  /** A tiling of pointy-top hexagons as one ragged `polygon` block. Side region
+   * `boundary`. */
+  honeycomb(dims?: number[] | null, edge?: number, origin?: number[] | null,
+            maxCells?: number): Mesh;
+
   /** One cell of each requested meshio type in its reference coordinates, side
    * by side (every supported type when `types` is omitted); `pairs` gives two
    * cells sharing a facet, for linear types. */

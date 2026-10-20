@@ -2103,7 +2103,8 @@ static int32_t mio_r_gen_split(const char *name) {
 }
 
 SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius, SEXP height,
-                    SEXP cell_type, SEXP split, SEXP order, SEXP max_cells) {
+                    SEXP cell_type, SEXP split, SEXP order, SEXP max_cells, SEXP radius2,
+                    SEXP angle) {
     mio_gen_opts opts;
     mio_gen_opts_init(&opts);
     SEXP c = PROTECT(Rf_coerceVector(counts, REALSXP));
@@ -2118,6 +2119,8 @@ SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius
     mio_r_vec3(origin, opts.origin, "origin");
     opts.radius = mio_r_double(radius, "radius");
     opts.height = mio_r_double(height, "height");
+    opts.radius2 = mio_r_double(radius2, "radius2");
+    opts.angle = mio_r_double(angle, "angle");
     opts.cell_type = mio_r_gen_cell(mio_r_string(cell_type, "cell_type"));
     opts.split = mio_r_gen_split(mio_r_string(split, "split"));
     opts.order = (int32_t)mio_r_int(order, "order");
@@ -2131,6 +2134,12 @@ SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius
     else if (strcmp(name, "uv_sphere") == 0) out = mio_uv_sphere(&opts);
     else if (strcmp(name, "icosa_sphere") == 0) out = mio_icosa_sphere(&opts);
     else if (strcmp(name, "cylinder") == 0) out = mio_cylinder(&opts);
+    else if (strcmp(name, "reference_triangle") == 0) out = mio_reference_triangle(&opts);
+    else if (strcmp(name, "ngon") == 0) out = mio_ngon(&opts);
+    else if (strcmp(name, "annulus") == 0) out = mio_annulus(&opts);
+    else if (strcmp(name, "lshape") == 0) out = mio_lshape(&opts);
+    else if (strcmp(name, "plate_with_hole") == 0) out = mio_plate_with_hole(&opts);
+    else if (strcmp(name, "honeycomb") == 0) out = mio_honeycomb(&opts);
     else Rf_error("unknown shape '%s'", name);
     if (out == NULL) mio_r_fail(name);
     return mio_r_wrap_mesh(out);

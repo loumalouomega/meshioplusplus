@@ -65,6 +65,8 @@ module meshioplusplus
     public :: mio_grid
     public :: mio_rectangle, mio_box, mio_disk, mio_uv_sphere, mio_icosa_sphere
     public :: mio_cylinder, mio_reference_cells
+    public :: mio_reference_triangle, mio_ngon, mio_annulus, mio_lshape
+    public :: mio_plate_with_hole, mio_honeycomb
     public :: mio_frame, mio_render_settings, mio_text_settings, mio_rgba
     public :: mio_detect_color_depth
     public :: mio_data_array_info
@@ -579,7 +581,9 @@ module meshioplusplus
         integer(c_int32_t) :: split = 0
         integer(c_int32_t) :: order = 1
         integer(c_int32_t) :: pad = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        real(c_double) :: radius2 = 0.5_c_double
+        real(c_double) :: angle = 6.283185307179586_c_double
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_octree_opts`. Same ABI rules as above.
@@ -2824,6 +2828,42 @@ module meshioplusplus
         end function
 
         function c_mio_cylinder(opts) bind(c, name="mio_cylinder") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_reference_triangle(opts) bind(c, name="mio_reference_triangle") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_ngon(opts) bind(c, name="mio_ngon") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_annulus(opts) bind(c, name="mio_annulus") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_lshape(opts) bind(c, name="mio_lshape") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_plate_with_hole(opts) bind(c, name="mio_plate_with_hole") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_honeycomb(opts) bind(c, name="mio_honeycomb") result(r)
             import :: c_ptr, mio_gen_opts_t
             type(mio_gen_opts_t), intent(in) :: opts
             type(c_ptr) :: r
@@ -7398,6 +7438,12 @@ contains
         case ('disk'); out%handle = c_mio_disk(opts)
         case ('uv_sphere'); out%handle = c_mio_uv_sphere(opts)
         case ('icosa_sphere'); out%handle = c_mio_icosa_sphere(opts)
+        case ('reference_triangle'); out%handle = c_mio_reference_triangle(opts)
+        case ('ngon'); out%handle = c_mio_ngon(opts)
+        case ('annulus'); out%handle = c_mio_annulus(opts)
+        case ('lshape'); out%handle = c_mio_lshape(opts)
+        case ('plate_with_hole'); out%handle = c_mio_plate_with_hole(opts)
+        case ('honeycomb'); out%handle = c_mio_honeycomb(opts)
         case default; out%handle = c_mio_cylinder(opts)
         end select
         if (.not. c_associated(out%handle)) then
@@ -7533,6 +7579,139 @@ contains
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('cylinder', opts, cell_type, order=order, max_cells=max_cells, &
                       stat=stat, errmsg=errmsg)
+    end function
+
+    !> The reference triangle (0,0) (1,0) (0,1) scaled by `lengths` (default 1, 1)
+    !> and refined into `n` * `n` triangles at z = origin(3). Side regions ymin,
+    !> xmin, hypotenuse.
+    function mio_reference_triangle(n, lengths, origin, order, max_cells, stat, errmsg) &
+        result(out)
+        integer, intent(in), optional :: n
+        real(real64), intent(in), optional :: lengths(2), origin(3)
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(lengths)) opts%lengths(1:2) = real(lengths, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        out = gen_run('reference_triangle', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> A regular polygon of `sides` sides fanned from its centre (`rings` = 1) or
+    !> refined into `rings` rings of triangles; side region rim.
+    function mio_ngon(sides, radius, rings, center, order, max_cells, stat, errmsg) &
+        result(out)
+        integer, intent(in), optional :: sides, rings
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 6
+        opts%counts(2) = 1
+        if (present(sides)) opts%counts(1) = int(sides, c_int64_t)
+        if (present(rings)) opts%counts(2) = int(rings, c_int64_t)
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('ngon', opts, order=order, max_cells=max_cells, stat=stat, errmsg=errmsg)
+    end function
+
+    !> An annulus (or a sector of `angle` radians) of `ntheta` x `nr` quads
+    !> (default) or triangles. Side regions inner, outer and, for a sector, start
+    !> and end.
+    function mio_annulus(inner_radius, outer_radius, ntheta, nr, angle, center, &
+                         cell_type, order, max_cells, stat, errmsg) result(out)
+        real(real64), intent(in), optional :: inner_radius, outer_radius, angle, center(3)
+        integer, intent(in), optional :: ntheta, nr
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 16
+        opts%counts(2) = 4
+        if (present(inner_radius)) opts%radius2 = real(inner_radius, c_double)
+        if (present(outer_radius)) opts%radius = real(outer_radius, c_double)
+        if (present(ntheta)) opts%counts(1) = int(ntheta, c_int64_t)
+        if (present(nr)) opts%counts(2) = int(nr, c_int64_t)
+        if (present(angle)) opts%angle = real(angle, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('annulus', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> The square of side `size` (default 2) around `center` minus its fourth
+    !> quadrant (x > 0, y < 0); `n` cells along half a side. Side regions xmin,
+    !> xmax, ymin, ymax, notch_x, notch_y.
+    function mio_lshape(n, size, center, cell_type, order, max_cells, stat, errmsg) &
+        result(out)
+        integer, intent(in), optional :: n
+        real(real64), intent(in), optional :: size, center(3)
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        opts%lengths(1) = 2.0_c_double
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(size)) opts%lengths(1) = real(size, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('lshape', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> A square plate of side `size` around a circular hole of `radius`, in four
+    !> quad blocks of `nt` x `nr` cells. Side regions hole, xmin, xmax, ymin, ymax.
+    function mio_plate_with_hole(radius, size, nt, nr, center, cell_type, order, &
+                                 max_cells, stat, errmsg) result(out)
+        real(real64), intent(in), optional :: radius, size, center(3)
+        integer, intent(in), optional :: nt, nr
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 8
+        opts%counts(2) = 4
+        opts%radius = 0.25_c_double
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(size)) opts%lengths(1) = real(size, c_double)
+        if (present(nt)) opts%counts(1) = int(nt, c_int64_t)
+        if (present(nr)) opts%counts(2) = int(nr, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('plate_with_hole', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> A tiling of `dims` = (nx, ny) pointy-top hexagons of side `edge` as one
+    !> ragged polygon block; side region boundary.
+    function mio_honeycomb(dims, edge, origin, max_cells, stat, errmsg) result(out)
+        integer, intent(in), optional :: dims(2)
+        real(real64), intent(in), optional :: edge, origin(3)
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1:2) = 4
+        if (present(dims)) opts%counts(1:2) = int(dims, c_int64_t)
+        if (present(edge)) opts%lengths(1) = real(edge, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        out = gen_run('honeycomb', opts, max_cells=max_cells, stat=stat, errmsg=errmsg)
     end function
 
     !> One cell of each type named in `types` (comma-separated meshio names; every

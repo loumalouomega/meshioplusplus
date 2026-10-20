@@ -5738,6 +5738,8 @@ void mio_gen_opts_init(mio_gen_opts* opts) {
     opts->size[0] = opts->size[1] = opts->size[2] = 1.0;
     opts->radius = 1.0;
     opts->height = 1.0;
+    opts->radius2 = 0.5;
+    opts->angle = 6.283185307179586;
     opts->max_cells = 20000000;
     opts->order = 1;
 }
@@ -5961,6 +5963,78 @@ mio_mesh* mio_cylinder(const mio_gen_opts* opts) {
         return new mio_mesh{meshioplusplus::cylinder(
             o.radius, o.height, o.counts[0], o.counts[1],
             {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_reference_triangle(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            throw meshioplusplus::ReadError(
+                "meshio++: reference_triangle: cell_type is not built by this shape");
+        return new mio_mesh{meshioplusplus::reference_triangle(
+            o.counts[0], {{o.size[0], o.size[1]}}, {{o.origin[0], o.origin[1], o.origin[2]}},
+            o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_ngon(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            throw meshioplusplus::ReadError("meshio++: ngon: cell_type is not built by this shape");
+        return new mio_mesh{meshioplusplus::ngon(o.counts[0], o.radius, o.counts[1],
+                                                 {{o.origin[0], o.origin[1], o.origin[2]}}, o.order,
+                                                 o.max_cells)};
+    });
+}
+
+mio_mesh* mio_annulus(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "annulus", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::annulus(
+            o.radius2 == 0.0 ? 0.5 : o.radius2, o.radius, o.counts[0], o.counts[1],
+            o.angle == 0.0 ? 6.283185307179586 : o.angle, {{o.origin[0], o.origin[1], o.origin[2]}},
+            type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_lshape(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "lshape", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::lshape(o.counts[0], o.size[0],
+                                                   {{o.origin[0], o.origin[1], o.origin[2]}}, type,
+                                                   o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "plate_with_hole", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::plate_with_hole(
+            o.radius, o.size[0], o.counts[0], o.counts[1],
+            {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_honeycomb(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT)
+            throw meshioplusplus::ReadError(
+                "meshio++: honeycomb: cell_type is not built by this shape");
+        if (o.order != 1)
+            throw meshioplusplus::ReadError(
+                "meshio++: honeycomb: order must be 1, a hexagon has no quadratic form");
+        return new mio_mesh{meshioplusplus::honeycomb({{o.counts[0], o.counts[1]}}, o.size[0],
+                                                      {{o.origin[0], o.origin[1], o.origin[2]}},
+                                                      o.max_cells)};
     });
 }
 

@@ -132,7 +132,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           name="meshioplusplus-cli-${version}-linux-x86_64"
           mkdir -p "dist/$name"
-          cp build/meshioplusplus LICENSE THIRD_PARTY_NOTICES.md build/occt/share/licenses/opencascade/* "dist/$name/"
+          cp build/meshioplusplus LICENSE LICENSE-BINARIES.md THIRD_PARTY_NOTICES.md build/occt/share/licenses/opencascade/* "dist/$name/"
           tar czf "$name.tar.gz" -C dist "$name"
 
       - name: Upload artifact (release only)
@@ -206,7 +206,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           name="meshioplusplus-cli-${version}-linux-aarch64"
           mkdir -p "dist/$name"
-          cp build/meshioplusplus LICENSE THIRD_PARTY_NOTICES.md build/occt/share/licenses/opencascade/* "dist/$name/"
+          cp build/meshioplusplus LICENSE LICENSE-BINARIES.md THIRD_PARTY_NOTICES.md build/occt/share/licenses/opencascade/* "dist/$name/"
           tar czf "$name.tar.gz" -C dist "$name"
 
       - name: Upload artifact (release only)
@@ -270,7 +270,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           name="meshioplusplus-cli-${version}-macos-universal"
           mkdir -p "dist/$name"
-          cp build/meshioplusplus LICENSE THIRD_PARTY_NOTICES.md build/occt/share/licenses/opencascade/* "dist/$name/"
+          cp build/meshioplusplus LICENSE LICENSE-BINARIES.md THIRD_PARTY_NOTICES.md build/occt/share/licenses/opencascade/* "dist/$name/"
           tar czf "$name.tar.gz" -C dist "$name"
 
       - name: Upload artifact (release only)
@@ -345,7 +345,7 @@ jobs:
           $name = "meshioplusplus-cli-$version-windows-x86_64"
           New-Item -ItemType Directory -Path "dist/$name" | Out-Null
           Copy-Item build/Release/meshioplusplus.exe "dist/$name/"
-          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md "dist/$name/"
+          Copy-Item LICENSE, LICENSE-BINARIES.md, THIRD_PARTY_NOTICES.md "dist/$name/"
           Copy-Item build/occt/share/licenses/opencascade/* "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
 

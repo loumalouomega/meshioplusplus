@@ -30,7 +30,7 @@ npm install @meshioplusplus/wasm
 
 ## Lean and full builds
 
-The package ships two pairs of artifacts behind one loader (v17.2.0, roadmap 6.2). The **lean** pair, `meshioplusplus_wasm` and its threaded flavour `meshioplusplus_wasm_mt`, is the default: MIT, every library in it permissively licensed. The **full** pair, `meshioplusplus_wasm_full` and `meshioplusplus_wasm_full_mt`, has the same core and the same JS API, linked with every optional library the Emscripten toolchain cross-compiles: [OpenCASCADE](https://github.com/Open-Cascade-SAS/OCCT) 7.6.3 (reading [STEP](./formats/step.md#reading) and [IGES](./formats/iges.md), and [`fitCad`](#fitcad)), [zstd](./codecs.md) and lz4 (VTK XML block compression), bzip2 (libMesh `.xda.bz2`/`.xdr.bz2`), and the serial KaHIP kaffpa partitioner (`partition` with `method: 'kahip'`).
+The package ships two pairs of artifacts behind one loader (v17.2.0, roadmap 6.2). The **lean** pair, `meshioplusplus_wasm` and its threaded flavour `meshioplusplus_wasm_mt`, is the default: MIT, with every library in it permissively licensed except Eigen (MPL-2.0, the MED transpose; see [Licence](#licence)). The **full** pair, `meshioplusplus_wasm_full` and `meshioplusplus_wasm_full_mt`, has the same core and the same JS API, linked with every optional library the Emscripten toolchain cross-compiles: [OpenCASCADE](https://github.com/Open-Cascade-SAS/OCCT) 7.6.3 (reading [STEP](./formats/step.md#reading) and [IGES](./formats/iges.md), and [`fitCad`](#fitcad)), [zstd](./codecs.md) and lz4 (VTK XML block compression), bzip2 (libMesh `.xda.bz2`/`.xdr.bz2`), and the serial KaHIP kaffpa partitioner (`partition` with `method: 'kahip'`).
 
 ```js
 const lean = await loadMeshioPlusPlus();                    // the default, MIT
@@ -43,9 +43,9 @@ full.hasOcct();        // true; hasZstd(), hasLz4(), hasBzip2() too
 
 | Artifact | `.wasm` | `.mjs` | Carries |
 | --- | --- | --- | --- |
-| `meshioplusplus_wasm` (lean) | 13.5 MB (4.5 MB gzipped) | 94 kB | HDF5, netCDF, CGNS, zlib |
+| `meshioplusplus_wasm` (lean) | 13.5 MB (4.5 MB gzipped) | 94 kB | HDF5, netCDF, CGNS, zlib, gidpost, Eigen (MED transpose, MPL-2.0) |
 | `meshioplusplus_wasm_mt` (lean, threaded) | 14.2 MB (4.7 MB gzipped) | 113 kB | the same, with OpenMP over pthreads |
-| `meshioplusplus_wasm_full` | 26.2 MB (8.8 MB gzipped) | 98 kB | the lean libraries, plus OpenCASCADE, zstd, lz4 and bzip2 |
+| `meshioplusplus_wasm_full` | 26.2 MB (8.8 MB gzipped) | 98 kB | the lean libraries, plus OpenCASCADE, zstd, lz4, bzip2 and KaHIP (serial kaffpa) |
 | `meshioplusplus_wasm_full_mt` (threaded) | 26.6 MB (9.0 MB gzipped) | 118 kB | the same, with OpenMP over pthreads |
 
 Measured for v17.2.0 with Emscripten 6.0.3 (`gzip -9` in parentheses; a server's Brotli does better). OpenCASCADE's modelling, healing, meshing and STEP/IGES toolkits about double the binary, which is why the full pair is opt-in.
@@ -54,7 +54,7 @@ Measured for v17.2.0 with Emscripten 6.0.3 (`gzip -9` in parentheses; a server's
 
 ### Licence
 
-The lean pair is MIT, its bundled libraries (zlib, HDF5, netCDF, CGNS, the vendored gidpost) all permissively licensed. The full pair also links **OpenCASCADE, licensed under the LGPL 2.1 with the OCCT exception**, statically, so it is not plain MIT; the package's licence expression says so (`MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`). An application that ships the full artifact takes on the LGPL's obligations for OpenCASCADE (not for meshio++), the central one being that a recipient can relink against a modified OpenCASCADE: the artifact is rebuilt from source by `build/build-wasm-deps.sh --full` (OpenCASCADE at the pinned tag `V7_6_3`, commit `b079fb98…`, unpatched) and `build/configure-wasm.sh --full-only --build`. The package's `THIRD_PARTY_NOTICES.md` lists every bundled component with its version and licence; natively the PyPI wheels and the release CLI binaries link the same commit statically too, and a source build links a system OpenCASCADE when it finds one ([fit CAD](./fit_cad.md#getting-opencascade)).
+The lean pair is MIT, and its bundled libraries (zlib, HDF5, netCDF, CGNS, the vendored gidpost) are all permissively licensed; the one exception is Eigen (MPL-2.0, file-level copyleft), which the lean build compiles in for the MED transpose. The full pair also links **OpenCASCADE, licensed under the LGPL 2.1 with the OCCT exception**, statically, so it is not plain MIT; the package's licence expression says so (`MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`). An application that ships the full artifact takes on the LGPL's obligations for OpenCASCADE (not for meshio++), the central one being that a recipient can relink against a modified OpenCASCADE: the artifact is rebuilt from source by `build/build-wasm-deps.sh --full` (OpenCASCADE at the pinned tag `V7_6_3`, commit `b079fb98…`, unpatched) and `build/configure-wasm.sh --full-only --build`. The package's `THIRD_PARTY_NOTICES.md` lists every bundled component with its version and licence; natively the PyPI wheels and the release CLI binaries link the same commit statically too, and a source build links a system OpenCASCADE when it finds one ([fit CAD](./fit_cad.md#getting-opencascade)).
 
 ### What stays out
 
@@ -469,7 +469,7 @@ node tests/wasm/smoke.mjs
 `--full` adds the [full pair](#lean-and-full-builds) (`--full-only` builds only it; `--without-occt` leaves OpenCASCADE out of it, for a codecs-only full build that stays MIT), configured with `-DMESHIOPLUSPLUS_WASM_FULL=ON` in its own trees (`build/wasm-<type>-full[-mt]`). Only under that option does CMake look for OpenCASCADE, zstd, lz4 and KaHIP on a wasm target, in the prefixes `build/build-wasm-deps.sh --full` builds, one per threading flavour (OpenCASCADE's reference counts are `std::atomic`, and an object built without `-pthread` cannot join the threaded link); bzip2 is Emscripten's port, like zlib. A full build never drops a library it was asked for: one not found is a configure error, not a smaller artifact. OpenCASCADE is a long build, most of an hour per flavour on four cores; CI caches its prefix apart from the lean one, and the release job assembles the package from both builds' artifacts.
 
 ```sh
-./build/build-wasm-deps.sh --full                       # lean deps + OpenCASCADE, zstd, lz4 (seq and mt)
+./build/build-wasm-deps.sh --full                       # lean deps + OpenCASCADE, zstd, lz4 and KaHIP (seq and mt)
 ./build/configure-wasm.sh --full --build                # all four artifacts
 MESHIOPLUSPLUS_WASM_VARIANT=full node tests/wasm/smoke.mjs
 ```
@@ -594,7 +594,7 @@ seq.close();                  // release the handle; safe to call twice / from a
 
 ## Parametric generators
 
-`rectangle(dims, size, origin, cellType, split, order, maxCells)`, `box(dims, size, origin, cellType, order, maxCells)`, `disk(radius, n, center, cellType, order, maxCells)`, `uvSphere(radius, nu, nv, center, cellType, order, maxCells)`, `icosaSphere(radius, subdivisions, center, order, maxCells)`, `cylinder(radius, height, nxy, nz, center, cellType, order, maxCells)` and `referenceCells(types, pairs)` build a mesh from parameters and, like `grid`, take no input mesh. Every argument is optional (`null` takes the default), a bad request throws a catchable `Error` naming the shape, and the meshes carry their named side regions. The `Generate` pipeline step is described in [pipeline](pipeline.md#generate). See [`doc/primitives.md`](primitives.md).
+`rectangle(dims, size, origin, cellType, split, order, maxCells)`, `box(dims, size, origin, cellType, order, maxCells)`, `disk(radius, n, center, cellType, order, maxCells)`, `uvSphere(radius, nu, nv, center, cellType, order, maxCells)`, `icosaSphere(radius, subdivisions, center, order, maxCells)`, `cylinder(radius, height, nxy, nz, center, cellType, order, maxCells)`, the planar domains `referenceTriangle(n, size, origin, order, maxCells)`, `ngon(sides, radius, rings, center, order, maxCells)`, `annulus(innerRadius, outerRadius, ntheta, nr, angle, center, cellType, order, maxCells)`, `lshape(n, size, center, cellType, order, maxCells)`, `plateWithHole(radius, size, nt, nr, center, cellType, order, maxCells)` and `honeycomb(dims, edge, origin, maxCells)`, and `referenceCells(types, pairs)` build a mesh from parameters and, like `grid`, take no input mesh. Every argument is optional (`null` takes the default), a bad request throws a catchable `Error` naming the shape, and the meshes carry their named side regions. The `Generate` pipeline step is described in [pipeline](pipeline.md#generate). See [`doc/primitives.md`](primitives.md).
 
 ## Regular grids and signed distance (v9.24.0, `computeSdf` v9.25.0)
 

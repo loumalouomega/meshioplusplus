@@ -57,12 +57,18 @@ from ._octree import octree
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._primitives import (
+    annulus,
     box,
     cylinder,
     disk,
+    honeycomb,
     icosa_sphere,
+    lshape,
+    ngon,
+    plate_with_hole,
     rectangle,
     reference_cells,
+    reference_triangle,
     uv_sphere,
 )
 from ._provenance import add_operation as _prov_add_operation
@@ -357,6 +363,15 @@ _OP_TABLE = {
         "Nxy",
         "Nz",
         "Subdivisions",
+        "Sides",
+        "Rings",
+        "InnerRadius",
+        "OuterRadius",
+        "Ntheta",
+        "Nr",
+        "Nt",
+        "Angle",
+        "Edge",
         "CellType",
         "Split",
         "Order",
@@ -853,6 +868,12 @@ _GENERATE_SHAPES = (
     "uv_sphere",
     "icosa_sphere",
     "cylinder",
+    "reference_triangle",
+    "ngon",
+    "annulus",
+    "lshape",
+    "plate_with_hole",
+    "honeycomb",
     "reference_cells",
 )
 
@@ -944,6 +965,65 @@ def _generate(step):
             center=triple("Center", zero),
             cell_type=_text(step, "CellType", "hexahedron"),
             order=order,
+            max_cells=max_cells,
+        )
+    if shape == "reference_triangle":
+        size = _dvec(step, "Size")
+        if size and len(size) != 2:
+            raise _err("Generate", "'Size' expects two values")
+        return reference_triangle(
+            n=count("N", 4),
+            size=list(size) if size else [1.0, 1.0],
+            origin=triple("Origin", zero, True),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "ngon":
+        return ngon(
+            sides=count("Sides", 6),
+            radius=_number(step, "Radius", 1.0),
+            rings=count("Rings", 1),
+            center=triple("Center", zero),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "annulus":
+        return annulus(
+            inner_radius=_number(step, "InnerRadius", 0.5),
+            outer_radius=_number(step, "OuterRadius", 1.0),
+            ntheta=count("Ntheta", 16),
+            nr=count("Nr", 4),
+            angle=_number(step, "Angle", 6.283185307179586),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "lshape":
+        return lshape(
+            n=count("N", 4),
+            size=_number(step, "Size", 2.0),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "plate_with_hole":
+        return plate_with_hole(
+            radius=_number(step, "Radius", 0.25),
+            size=_number(step, "Size", 1.0),
+            nt=count("Nt", 8),
+            nr=count("Nr", 4),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "honeycomb":
+        return honeycomb(
+            dims=dims_of(2, 4),
+            edge=_number(step, "Edge", 1.0),
+            origin=triple("Origin", zero, True),
             max_cells=max_cells,
         )
     if shape == "reference_cells":

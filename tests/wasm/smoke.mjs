@@ -2289,6 +2289,16 @@ step('the parametric generators build meshes and refuse bad requests', () => {
     assert.deepEqual(m.referenceCells(['tetra', 'wedge']).cells.map((c) => c.type),
         ['tetra', 'wedge']);
     assert.equal(m.referenceCells(null, true).cells.length, 7);
+    // The planar domains: closed-form point counts, and an annulus sector keeps
+    // its seam apart where a full ring welds it.
+    assert.equal(m.referenceTriangle(3).points.length, 10 * 3);
+    assert.equal(m.ngon(5, 1, 2).points.length, 16 * 3);
+    assert.equal(m.annulus(0.5, 1, 12, 3).points.length, 48 * 3);
+    assert.equal(m.annulus(0.5, 1, 6, 2, Math.PI / 2).points.length, 21 * 3);
+    assert.equal(m.lshape(3).points.length, 40 * 3);
+    assert.equal(m.plateWithHole(0.25, 1, 3, 2).points.length, 36 * 3);
+    assert.equal(m.honeycomb([3, 2]).points.length, 22 * 3);
+    assert.throws(() => m.plateWithHole(0.9));
     assert.throws(() => m.box([2, 2, 2], null, null, 'blob'));
     assert.throws(() => m.box([100, 100, 100], null, null, 'hexahedron', 1, 1000));
 });

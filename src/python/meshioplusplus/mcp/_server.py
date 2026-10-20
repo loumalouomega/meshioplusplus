@@ -859,6 +859,173 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def reference_triangle(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 4,
+        size: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate the reference triangle (0,0) (1,0) (0,1), scaled by size and
+        refined into n*n triangles in barycentric lattice order. The mesh carries
+        side regions ymin, xmin and hypotenuse. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_reference_triangle,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            size=size,
+            origin=origin,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def ngon(
+        output_path: str,
+        output_format: Optional[str] = None,
+        sides: int = 6,
+        radius: float = 1.0,
+        rings: int = 1,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a regular polygon of `sides` sides fanned from its centre
+        (rings=1), or refined into `rings` rings of triangles. The mesh carries a
+        side region rim. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_ngon,
+            output_path=output_path,
+            output_format=output_format,
+            sides=sides,
+            radius=radius,
+            rings=rings,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def annulus(
+        output_path: str,
+        output_format: Optional[str] = None,
+        inner_radius: float = 0.5,
+        outer_radius: float = 1.0,
+        ntheta: int = 16,
+        nr: int = 4,
+        angle: float = 6.283185307179586,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate an annulus of ntheta x nr quads or triangles, or a sector of
+        `angle` radians whose two end rays stay separate node chains (the seam
+        pair periodic links). order=2 curves the rims. The mesh carries side
+        regions inner, outer and, for a sector, start and end. Reads no input
+        mesh: it creates one."""
+        return _guard(
+            _tools.tool_annulus,
+            output_path=output_path,
+            output_format=output_format,
+            inner_radius=inner_radius,
+            outer_radius=outer_radius,
+            ntheta=ntheta,
+            nr=nr,
+            angle=angle,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def lshape(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 4,
+        size: float = 2.0,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate the L-shaped domain: the square of side `size` minus its
+        fourth quadrant, with the re-entrant corner at the centre (a singular
+        solution for refine and error estimation). The mesh carries side regions
+        xmin, xmax, ymin, ymax, notch_x and notch_y. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_lshape,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            size=size,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def plate_with_hole(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 0.25,
+        size: float = 1.0,
+        nt: int = 8,
+        nr: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a square plate of side `size` around a circular hole of
+        `radius`, in four quad blocks (the stress-concentration benchmark).
+        order=2 makes the hole circular. The mesh carries side regions hole, xmin,
+        xmax, ymin and ymax. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_plate_with_hole,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            size=size,
+            nt=nt,
+            nr=nr,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def honeycomb(
+        output_path: str,
+        output_format: Optional[str] = None,
+        dims: Optional[List[int]] = None,
+        edge: float = 1.0,
+        origin: Optional[List[float]] = None,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a tiling of pointy-top hexagons (dims = nx, ny) as one
+        polygon block, a parametric fixture for the ragged polygon paths. The
+        mesh carries a side region boundary. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_honeycomb,
+            output_path=output_path,
+            output_format=output_format,
+            dims=dims,
+            edge=edge,
+            origin=origin,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
     def reference_cells(
         output_path: str,
         output_format: Optional[str] = None,

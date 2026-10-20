@@ -1,18 +1,21 @@
 # Third-party components in the meshio++ binaries
 
-meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes — the PyPI wheels (the `meshioplusplus._core` extension) and the release command-line executables — are statically linked with the libraries below. A build from source links whichever of the optional native libraries it finds (see [installation](doc/installation.md)); the WebAssembly package lists its own in [`src/wasm/THIRD_PARTY_NOTICES.md`](src/wasm/THIRD_PARTY_NOTICES.md).
+meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes — the PyPI wheels (the `meshioplusplus._core` extension), the release command-line executables, the Blender extension and the Conan and vcpkg packages built with OpenCASCADE — link the libraries below statically, except libomp on macOS, which the macOS wheels are expected to bundle as a shared library (to be confirmed). [What the wheels contain](doc/installation.md#what-the-pypi-wheels-contain) lists what they leave out. A build from source links whichever of the optional native libraries it finds (see [installation](doc/installation.md)); the WebAssembly package lists its own in [`src/wasm/THIRD_PARTY_NOTICES.md`](src/wasm/THIRD_PARTY_NOTICES.md).
 
 | Component | Version | Licence | Wheels | CLI binaries |
 | --- | --- | --- | --- | --- |
 | [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | 7.6.3 | LGPL-2.1-only WITH OCCT-exception-1.0 | yes | yes |
 | [zlib](https://zlib.net/) | 1.3.1 | Zlib | yes | yes |
-| [gidpost](https://www.gidsimulation.com/) (vendored) | 2.14 | BSD-2-Clause | yes | yes |
+| [gidpost](https://www.gidsimulation.com/) (vendored) | 2.14 | BSD-2-Clause-Views | yes | yes |
+| [pugixml](https://pugixml.org/) (vendored) | 1.14 | MIT | yes | yes |
+| [nlohmann/json](https://github.com/nlohmann/json) (submodule) | 3.12.0 | MIT | yes | yes |
+| [libomp](https://openmp.llvm.org/) (macOS wheels; expected as a shared library, to confirm) | the Homebrew release at build time | to confirm | yes (macOS) | no |
 
-**OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the published binaries are not plain MIT: their licence is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`. The meshio++ sources, and a build from source that does not link OpenCASCADE (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`, or no OpenCASCADE found), are MIT.
+**OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the published binaries are not plain MIT: their licence is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) states in every artifact. The meshio++ sources, and a build from source that does not link OpenCASCADE (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`, or no OpenCASCADE found), are MIT.
 
 ## OpenCASCADE and the LGPL
 
-OpenCASCADE's licence is the GNU Lesser General Public License 2.1 (`LICENSE_LGPL_21.txt`) with the additional exception in `OCCT_LGPL_EXCEPTION.txt`, which permits using its headers' inline code and templates without the resulting object code becoming a "work based on the library". Both texts ship beside this notice in every wheel (its `.dist-info/licenses`) and every CLI archive.
+OpenCASCADE's licence is the GNU Lesser General Public License 2.1 (`LICENSE_LGPL_21.txt`) with the additional exception in `OCCT_LGPL_EXCEPTION.txt`, which permits using its headers' inline code and templates without the resulting object code becoming a "work based on the library". Both texts ship beside this notice in every wheel (its `.dist-info/licenses`), every CLI archive and the Blender extension, which carries the wheel.
 
 The binaries link OpenCASCADE statically, as the CAD kernel of `fit_cad` and of STEP and IGES reading. To let a recipient exercise the LGPL's right to relink against a modified OpenCASCADE, every binary is reproducible from source:
 
@@ -22,4 +25,4 @@ The binaries link OpenCASCADE statically, as the CAD kernel of `fit_cad` and of 
 
 ## Licence texts
 
-OpenCASCADE's are named above. zlib's is in the header of its source distribution at the version above (the pin is in `CMakeLists.txt`, `MESHIOPLUSPLUS_ZLIB_STATIC`); the vendored gidpost's is `src/cpp/third_party/gidpost/LICENSE` in the meshio++ repository.
+OpenCASCADE's are named above. zlib's is in the header of its source distribution at the version above (the pin is in `CMakeLists.txt`, `MESHIOPLUSPLUS_ZLIB_STATIC`); the vendored gidpost's is `src/cpp/third_party/gidpost/LICENSE` in the meshio++ repository. pugixml's MIT notice is in the header of `src/cpp/third_party/pugixml/pugixml.hpp`, nlohmann/json's is in its own header, and libomp's is in its own distribution (to be confirmed for the macOS wheels).

@@ -1045,6 +1045,12 @@ _GENERATE_STEPS = [
     {"Op": "Generate", "Shape": "uv_sphere", "Nu": 8, "Nv": 4, "CellType": "quad"},
     {"Op": "Generate", "Shape": "icosa_sphere", "Subdivisions": 1, "Order": 2},
     {"Op": "Generate", "Shape": "cylinder", "Nxy": 2, "Nz": 2, "CellType": "wedge"},
+    {"Op": "Generate", "Shape": "reference_triangle", "N": 3, "Order": 2},
+    {"Op": "Generate", "Shape": "ngon", "Sides": 5, "Rings": 2},
+    {"Op": "Generate", "Shape": "annulus", "Ntheta": 8, "Nr": 2, "Angle": 2.0},
+    {"Op": "Generate", "Shape": "lshape", "N": 2, "CellType": "triangle"},
+    {"Op": "Generate", "Shape": "plate_with_hole", "Nt": 3, "Nr": 2, "Order": 2},
+    {"Op": "Generate", "Shape": "honeycomb", "Dims": [3, 2], "Edge": 1.5},
     {"Op": "Generate", "Shape": "reference_cells", "Types": ["tetra", "wedge"]},
 ]
 

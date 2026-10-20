@@ -2825,7 +2825,14 @@ mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
 #' @param nu,nv Points per ring and latitude bands of `mio_uv_sphere()`.
 #' @param nxy,nz Cells across and layers of `mio_cylinder()`.
 #' @param subdivisions 1-to-4 splits of `mio_icosa_sphere()`.
-#' @param center Centre of a disk, sphere or cylinder.
+#' @param center Centre of a disk, sphere, cylinder or planar domain.
+#' @param sides,rings Sides and radial rings of `mio_ngon()`.
+#' @param inner_radius,outer_radius,ntheta,nr,angle Radii, cells around, cells
+#'   across the gap and opening angle (radians) of `mio_annulus()`; `ntheta`
+#'   and `nr` are also the divisions of `mio_plate_with_hole()` (as `nt`, `nr`).
+#' @param nt Cells around the hole per 90 degree block of
+#'   `mio_plate_with_hole()`.
+#' @param edge Side length of a `mio_honeycomb()` hexagon.
 #' @param cell_type `"quad"`, `"triangle"`, `"hexahedron"`, `"tetra"` or
 #'   `"wedge"`, as the shape allows; `""` is the shape's default.
 #' @param split Triangle layout of `mio_rectangle()`: `"zigzag"`, `"up"`,
@@ -2841,12 +2848,13 @@ NULL
 
 mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
                           radius = 1, height = 1, cell_type = "", split = "zigzag",
-                          order = 1, max_cells = 20000000) {
+                          order = 1, max_cells = 20000000, radius2 = 0.5,
+                          angle = 2 * pi) {
   .Call(
     R_mio_generate, as.character(shape), as.numeric(counts), as.numeric(size),
     as.numeric(origin), as.numeric(radius), as.numeric(height),
     as.character(cell_type), as.character(split), as.integer(order),
-    as.numeric(max_cells)
+    as.numeric(max_cells), as.numeric(radius2), as.numeric(angle)
   )
 }
 
@@ -2899,6 +2907,56 @@ mio_cylinder <- function(radius = 1, height = 1, nxy = 8, nz = 8,
   mio_generate_("cylinder", c(nxy, nz), origin = center, radius = radius,
                 height = height, cell_type = cell_type, order = order,
                 max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_reference_triangle <- function(n = 4, size = c(1, 1), origin = c(0, 0, 0),
+                                   order = 1, max_cells = 20000000) {
+  mio_generate_("reference_triangle", n, c(size, 1)[1:3], origin, order = order,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_ngon <- function(sides = 6, radius = 1, rings = 1, center = c(0, 0, 0),
+                     order = 1, max_cells = 20000000) {
+  mio_generate_("ngon", c(sides, rings), origin = center, radius = radius,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_annulus <- function(inner_radius = 0.5, outer_radius = 1, ntheta = 16, nr = 4,
+                        angle = 2 * pi, center = c(0, 0, 0), cell_type = "quad",
+                        order = 1, max_cells = 20000000) {
+  mio_generate_("annulus", c(ntheta, nr), origin = center, radius = outer_radius,
+                radius2 = inner_radius, angle = angle, cell_type = cell_type,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_lshape <- function(n = 4, size = 2, center = c(0, 0, 0), cell_type = "quad",
+                       order = 1, max_cells = 20000000) {
+  mio_generate_("lshape", n, rep(size, 3), center, cell_type = cell_type,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_plate_with_hole <- function(radius = 0.25, size = 1, nt = 8, nr = 4,
+                                center = c(0, 0, 0), cell_type = "quad", order = 1,
+                                max_cells = 20000000) {
+  mio_generate_("plate_with_hole", c(nt, nr), rep(size, 3), center, radius = radius,
+                cell_type = cell_type, order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_honeycomb <- function(dims = c(4, 4), edge = 1, origin = c(0, 0, 0),
+                          max_cells = 20000000) {
+  mio_generate_("honeycomb", dims, rep(edge, 3), origin, max_cells = max_cells)
 }
 
 #' @rdname mio_generators

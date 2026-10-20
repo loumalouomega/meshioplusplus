@@ -1716,8 +1716,8 @@ const _GEN_SPLITS = Dict("zigzag" => Int32(0), "up" => Int32(1), "down" => Int32
                          "center" => Int32(3))
 
 function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
-                   radius=1.0, height=1.0, max_cells=20_000_000, cell_type="", split="zigzag",
-                   order=1)
+                   radius=1.0, height=1.0, radius2=0.5, angle=2pi, max_cells=20_000_000,
+                   cell_type="", split="zigzag", order=1)
     c = Int64[Int64(v) for v in counts]
     length(c) <= 3 || throw(ArgumentError("meshio++: at most three counts"))
     append!(c, fill(Int64(1), 3 - length(c)))
@@ -1730,7 +1730,8 @@ function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0
     _CGenOpts((c[1], c[2], c[3]), (sz[1], sz[2], sz[3]), (o[1], o[2], o[3]),
               Cdouble(radius), Cdouble(height), Int64(max_cells),
               _code(_GEN_CELLS, cell_type, "cell type"), _code(_GEN_SPLITS, split, "split"),
-              Int32(order), Int32(0), ntuple(_ -> Int64(0), 6))
+              Int32(order), Int32(0), Cdouble(radius2), Cdouble(angle),
+              ntuple(_ -> Int64(0), 4))
 end
 
 function _generate(sym::Symbol; kwargs...)
@@ -1808,6 +1809,79 @@ cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
          cell_type="hexahedron", order=1, max_cells=20_000_000) =
     _generate(:mio_cylinder; radius=radius, height=height, counts=(nxy, nz), origin=center,
               cell_type=cell_type, order=order, max_cells=max_cells)
+
+"""
+    reference_triangle(; n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1,
+                       max_cells=20_000_000) -> Mesh
+
+The reference triangle `(0,0) (1,0) (0,1)`, scaled by `size` and refined into `n^2`
+triangles in barycentric lattice order. Side regions `ymin`, `xmin`, `hypotenuse`.
+"""
+reference_triangle(; n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1,
+                   max_cells=20_000_000) =
+    _generate(:mio_reference_triangle; counts=(n,), size=size, origin=origin, order=order,
+              max_cells=max_cells)
+
+"""
+    ngon(; sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1,
+         max_cells=20_000_000) -> Mesh
+
+A regular polygon fanned from its centre (`rings=1`), or refined into `rings` rings of
+triangles. Side region `rim`.
+"""
+ngon(; sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1,
+     max_cells=20_000_000) =
+    _generate(:mio_ngon; radius=radius, counts=(sides, rings), origin=center, order=order,
+              max_cells=max_cells)
+
+"""
+    annulus(; inner_radius=0.5, outer_radius=1.0, ntheta=16, nr=4, angle=2pi,
+            center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+            max_cells=20_000_000) -> Mesh
+
+An annulus, or a sector of `angle` radians whose two end rays stay separate node chains
+(the seam pair `match_periodic_nodes` links). Side regions `inner`, `outer` and, for a
+sector, `start` and `end`.
+"""
+annulus(; inner_radius=0.5, outer_radius=1.0, ntheta=16, nr=4, angle=2pi,
+        center=(0.0, 0.0, 0.0), cell_type="quad", order=1, max_cells=20_000_000) =
+    _generate(:mio_annulus; radius=outer_radius, radius2=inner_radius,
+              counts=(ntheta, nr), angle=angle, origin=center, cell_type=cell_type,
+              order=order, max_cells=max_cells)
+
+"""
+    lshape(; n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+           max_cells=20_000_000) -> Mesh
+
+The square of side `size` minus its fourth quadrant (`x > 0`, `y < 0`), the re-entrant
+corner at `center`. Side regions `xmin`, `xmax`, `ymin`, `ymax`, `notch_x`, `notch_y`.
+"""
+lshape(; n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+       max_cells=20_000_000) =
+    _generate(:mio_lshape; counts=(n,), size=(size, size, size), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells)
+
+"""
+    plate_with_hole(; radius=0.25, size=1.0, nt=8, nr=4, center=(0.0, 0.0, 0.0),
+                    cell_type="quad", order=1, max_cells=20_000_000) -> Mesh
+
+A square plate of side `size` around a circular hole, in four quad blocks of `nt x nr`
+cells. Side regions `hole`, `xmin`, `xmax`, `ymin`, `ymax`.
+"""
+plate_with_hole(; radius=0.25, size=1.0, nt=8, nr=4, center=(0.0, 0.0, 0.0),
+                cell_type="quad", order=1, max_cells=20_000_000) =
+    _generate(:mio_plate_with_hole; radius=radius, size=(size, size, size),
+              counts=(nt, nr), origin=center, cell_type=cell_type, order=order,
+              max_cells=max_cells)
+
+"""
+    honeycomb(; dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=20_000_000) -> Mesh
+
+A tiling of pointy-top hexagons as one ragged `polygon` block. Side region `boundary`.
+"""
+honeycomb(; dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=20_000_000) =
+    _generate(:mio_honeycomb; counts=dims, size=(edge, edge, edge), origin=origin,
+              max_cells=max_cells)
 
 """
     reference_cells(types=String[]; pairs=false) -> Mesh

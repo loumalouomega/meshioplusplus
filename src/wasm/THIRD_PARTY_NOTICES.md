@@ -2,7 +2,7 @@
 
 meshio++ itself is MIT ([LICENSE](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE)). The WebAssembly artifacts in `dist/` are statically linked with the libraries below. The package ships two pairs of artifacts, and which libraries an application carries depends on which pair it loads:
 
-- **Lean** (`meshioplusplus_wasm`, `meshioplusplus_wasm_mt`; `loadMeshioPlusPlus()`, the default): every component here is under a permissive licence, so an application that loads only the lean pair carries no copyleft obligation.
+- **Lean** (`meshioplusplus_wasm`, `meshioplusplus_wasm_mt`; `loadMeshioPlusPlus()`, the default): every component here is under a permissive licence except Eigen (MPL-2.0), which the lean pair compiles in for the MED transpose; an application that loads only the lean pair takes on the MPL-2.0 file-level obligations for Eigen's own source.
 - **Full** (`meshioplusplus_wasm_full`, `meshioplusplus_wasm_full_mt`; `loadMeshioPlusPlus({}, {full: true})`): everything in the lean pair, plus OpenCASCADE, zstd, lz4, bzip2 and KaHIP. **OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the full pair is not plain MIT. The package's licence expression, `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, says so.
 
 | Component | Version | Licence | In the lean pair | In the full pair |
@@ -11,7 +11,8 @@ meshio++ itself is MIT ([LICENSE](https://github.com/loumalouomega/meshioplusplu
 | [HDF5](https://www.hdfgroup.org/solutions/hdf5/) | 1.14.6 | BSD-3-Clause-style (HDF5) | yes | yes |
 | [netCDF-C](https://github.com/Unidata/netcdf-c) | 4.9.3 | BSD-3-Clause | yes | yes |
 | [CGNS](https://github.com/CGNS/CGNS) | 4.5.2 | Zlib | yes | yes |
-| [gidpost](https://www.gidsimulation.com/) (vendored) | 2.14 | BSD-2-Clause | yes | yes |
+| [gidpost](https://www.gidsimulation.com/) (vendored) | 2.14 | BSD-2-Clause-Views | yes | yes |
+| [Eigen](https://eigen.tuxfamily.org/) (submodule) | the submodule's pinned commit | MPL-2.0 | yes | yes |
 | [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | 7.6.3 | LGPL-2.1-only WITH OCCT-exception-1.0 | no | yes |
 | [Zstandard](https://github.com/facebook/zstd) | 1.5.7 | BSD-3-Clause (dual-licensed with GPL-2.0; used under BSD) | no | yes |
 | [LZ4](https://github.com/lz4/lz4) (the library) | 1.10.0 | BSD-2-Clause | no | yes |

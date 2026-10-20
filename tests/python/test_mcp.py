@@ -2083,7 +2083,7 @@ def test_every_tool_function_is_callable():
 
 
 def test_generator_tools(tmp_path):
-    """The seven parametric generators read no input and write a mesh."""
+    """The thirteen parametric generators read no input and write a mesh."""
     cases = [
         ("rectangle", dict(dims=[3, 2], cell_type="triangle", split="center"), 24),
         ("box", dict(dims=[2, 2, 2], cell_type="tetra", order=2), 48),
@@ -2091,6 +2091,12 @@ def test_generator_tools(tmp_path):
         ("uv_sphere", dict(nu=8, nv=4, cell_type="quad"), 16 + 16),
         ("icosa_sphere", dict(subdivisions=1, order=2), 80),
         ("cylinder", dict(nxy=2, nz=2, cell_type="wedge"), 48),
+        ("reference_triangle", dict(n=3, order=2), 9),
+        ("ngon", dict(sides=5, rings=2), 20),
+        ("annulus", dict(ntheta=12, nr=3, cell_type="triangle"), 72),
+        ("lshape", dict(n=2), 12),
+        ("plate_with_hole", dict(nt=3, nr=2), 24),
+        ("honeycomb", dict(dims=[3, 2]), 6),
         ("reference_cells", dict(types=["tetra", "wedge"]), 2),
     ]
     for name, kwargs, num_cells in cases:
@@ -2104,6 +2110,8 @@ def test_generator_tools(tmp_path):
         _tools.tool_box(str(tmp_path / "bad.vtu"), cell_type="quad")
     with pytest.raises(ValueError, match="above the limit"):
         _tools.tool_box(str(tmp_path / "big.vtu"), dims=[10, 10, 10], max_cells=50)
+    with pytest.raises(ValueError, match="less than half the size"):
+        _tools.tool_plate_with_hole(str(tmp_path / "hole.vtu"), radius=0.9)
 
 
 def test_octree_tool(tmp_path):

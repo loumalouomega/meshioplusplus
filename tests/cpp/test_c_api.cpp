@@ -4069,6 +4069,8 @@ TEST(CApi, GenOptsInitDefaultsAndLayout) {
     EXPECT_EQ(opts.order, 1);
     EXPECT_EQ(opts.max_cells, 20000000);
     EXPECT_EQ(opts.pad, 0);
+    EXPECT_EQ(opts.radius2, 0.5);
+    EXPECT_EQ(opts.angle, 6.283185307179586);
     for (int64_t r : opts.reserved)
         EXPECT_EQ(r, 0);
     mio_gen_opts_init(nullptr);  // a NULL options pointer is a no-op, not a crash
@@ -4126,6 +4128,74 @@ TEST(CApi, GeneratorsBuildMeshesAndRefuseBadRequests) {
         ASSERT_NE(m, nullptr);
         mio_mesh_free(m);
     }
+
+    // The planar domains. A struct filled by an older caller (radius2 and angle
+    // both zero) reads as the defaults.
+    mio_gen_opts_init(&o);
+    o.counts[0] = 3;
+    mio_mesh* tri = mio_reference_triangle(&o);
+    ASSERT_NE(tri, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(tri), 10);
+    mio_mesh_free(tri);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 5;
+    o.counts[1] = 2;
+    mio_mesh* ng = mio_ngon(&o);
+    ASSERT_NE(ng, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(ng), 16);
+    mio_mesh_free(ng);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 12;
+    o.counts[1] = 3;
+    mio_mesh* ring = mio_annulus(&o);
+    ASSERT_NE(ring, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(ring), 48);  // a full ring welds its seam
+    mio_mesh_free(ring);
+    o.radius2 = 0.0;  // zeros from an older caller: the defaults
+    o.angle = 0.0;
+    ring = mio_annulus(&o);
+    ASSERT_NE(ring, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(ring), 48);
+    mio_mesh_free(ring);
+    mio_gen_opts_init(&o);
+    o.counts[0] = 6;
+    o.counts[1] = 2;
+    o.angle = 1.5707963267948966;
+    ring = mio_annulus(&o);
+    ASSERT_NE(ring, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(ring), 21);  // a sector keeps both end rays
+    mio_mesh_free(ring);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 3;
+    o.size[0] = 2.0;
+    mio_mesh* ls = mio_lshape(&o);
+    ASSERT_NE(ls, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(ls), 40);
+    mio_mesh_free(ls);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 3;
+    o.counts[1] = 2;
+    o.radius = 0.25;
+    mio_mesh* plate = mio_plate_with_hole(&o);
+    ASSERT_NE(plate, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(plate), 36);
+    mio_mesh_free(plate);
+    mio_gen_opts_init(&o);  // radius 1 is not below half of the unit size
+    EXPECT_EQ(mio_plate_with_hole(&o), nullptr);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 3;
+    o.counts[1] = 2;
+    mio_mesh* hc = mio_honeycomb(&o);
+    ASSERT_NE(hc, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(hc), 22);
+    mio_mesh_free(hc);
+    o.order = 2;  // a hexagon has no quadratic form
+    EXPECT_EQ(mio_honeycomb(&o), nullptr);
 
     mio_mesh* ref = mio_reference_cells("tetra,wedge", 0);
     ASSERT_NE(ref, nullptr);

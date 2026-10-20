@@ -435,7 +435,9 @@ void print_usage(std::ostream& os) {
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
           "  generate                Build a mesh from parameters: SHAPE OUTFILE with\n"
           "                            rectangle | box | disk | uv-sphere | icosa-sphere |\n"
-          "                            cylinder | reference-cells; --order 2 for curved\n"
+          "                            cylinder | reference-triangle | ngon | annulus |\n"
+          "                            lshape | plate-with-hole | honeycomb |\n"
+          "                            reference-cells; --order 2 for curved\n"
           "                            quadratic cells\n"
           "  voxelize                Regular hexahedron grid around a mesh\n"
           "                            exactly one of --resolution/--cell-size;\n"
@@ -3430,6 +3432,15 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
                                   {"nxy", {}, true},
                                   {"nz", {}, true},
                                   {"subdivisions", {}, true},
+                                  {"sides", {}, true},
+                                  {"rings", {}, true},
+                                  {"inner-radius", {}, true},
+                                  {"outer-radius", {}, true},
+                                  {"ntheta", {}, true},
+                                  {"nr", {}, true},
+                                  {"nt", {}, true},
+                                  {"angle", {}, true},
+                                  {"edge", {}, true},
                                   {"cell-type", {}, true},
                                   {"split", {}, true},
                                   {"order", {}, true},
@@ -3452,13 +3463,24 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
         {"icosa-sphere", {"radius", "subdivisions", "center", "order", "max-cells"}},
         {"cylinder",
          {"radius", "height", "nxy", "nz", "center", "cell-type", "order", "max-cells"}},
+        {"reference-triangle", {"n", "size", "origin", "order", "max-cells"}},
+        {"ngon", {"sides", "radius", "rings", "center", "order", "max-cells"}},
+        {"annulus",
+         {"inner-radius", "outer-radius", "ntheta", "nr", "angle", "center", "cell-type", "order",
+          "max-cells"}},
+        {"lshape", {"n", "size", "center", "cell-type", "order", "max-cells"}},
+        {"plate-with-hole",
+         {"radius", "size", "nt", "nr", "center", "cell-type", "order", "max-cells"}},
+        {"honeycomb", {"dims", "edge", "origin", "max-cells"}},
         {"reference-cells", {"types", "pairs"}},
     };
     const auto allowed = kAllowed.find(shape);
     if (allowed == kAllowed.end())
-        throw std::runtime_error("generate: unknown shape '" + shape +
-                                 "' (expected one of: rectangle, box, disk, uv-sphere, "
-                                 "icosa-sphere, cylinder, reference-cells)");
+        throw std::runtime_error(
+            "generate: unknown shape '" + shape +
+            "' (expected one of: rectangle, box, disk, uv-sphere, icosa-sphere, cylinder, "
+            "reference-triangle, ngon, annulus, lshape, plate-with-hole, honeycomb, "
+            "reference-cells)");
     for (const auto& kv : p.values)
         if (kv.first != "output-format" && kv.first != "quiet" && !allowed->second.count(kv.first))
             throw std::runtime_error("generate " + shape + ": --" + kv.first + " does not apply");
@@ -3536,6 +3558,29 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
                                         count("nxy", 8), count("nz", 8),
                                         vec3("center", zero, false),
                                         opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+    } else if (shape == "reference-triangle") {
+        mesh = meshioplusplus::reference_triangle(count("n", 4), vec2("size", {{1.0, 1.0}}),
+                                                  vec3("origin", zero, true), order, max_cells);
+    } else if (shape == "ngon") {
+        mesh = meshioplusplus::ngon(count("sides", 6), number("radius", 1.0), count("rings", 1),
+                                    vec3("center", zero, false), order, max_cells);
+    } else if (shape == "annulus") {
+        mesh = meshioplusplus::annulus(
+            number("inner-radius", 0.5), number("outer-radius", 1.0), count("ntheta", 16),
+            count("nr", 4), number("angle", 6.283185307179586), vec3("center", zero, false),
+            opt_value(p, "cell-type", "quad"), order, max_cells);
+    } else if (shape == "lshape") {
+        mesh =
+            meshioplusplus::lshape(count("n", 4), number("size", 2.0), vec3("center", zero, false),
+                                   opt_value(p, "cell-type", "quad"), order, max_cells);
+    } else if (shape == "plate-with-hole") {
+        mesh = meshioplusplus::plate_with_hole(
+            number("radius", 0.25), number("size", 1.0), count("nt", 8), count("nr", 4),
+            vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order, max_cells);
+    } else if (shape == "honeycomb") {
+        const auto d = dims(2, 4);
+        mesh = meshioplusplus::honeycomb({{d[0], d[1]}}, number("edge", 1.0),
+                                         vec3("origin", zero, true), max_cells);
     } else {
         std::vector<std::string> types;
         if (p.values.count("types")) {

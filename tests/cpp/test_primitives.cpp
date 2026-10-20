@@ -33,13 +33,19 @@
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 
+using meshioplusplus::annulus;
 using meshioplusplus::box;
 using meshioplusplus::cylinder;
 using meshioplusplus::disk;
+using meshioplusplus::honeycomb;
 using meshioplusplus::icosa_sphere;
+using meshioplusplus::lshape;
 using meshioplusplus::Mesh;
+using meshioplusplus::ngon;
+using meshioplusplus::plate_with_hole;
 using meshioplusplus::rectangle;
 using meshioplusplus::reference_cells;
+using meshioplusplus::reference_triangle;
 using meshioplusplus::uv_sphere;
 
 namespace {
@@ -192,8 +198,11 @@ bool same_bytes(const Mesh& rA, const Mesh& rB) {
 // --- the shared contract ---------------------------------------------------
 
 TEST(Primitives, ZeroCountsGiveAnEmptyMesh) {
-    for (const Mesh& m : {rectangle({{0, 3}}), box({{2, 0, 2}}), disk(1.0, 0), uv_sphere(1.0, 0, 4),
-                          cylinder(1.0, 1.0, 4, 0)}) {
+    for (const Mesh& m :
+         {rectangle({{0, 3}}), box({{2, 0, 2}}), disk(1.0, 0), uv_sphere(1.0, 0, 4),
+          cylinder(1.0, 1.0, 4, 0), reference_triangle(0), ngon(0), ngon(5, 1.0, 0),
+          annulus(0.5, 1.0, 0), annulus(0.5, 1.0, 8, 0), lshape(0), plate_with_hole(0.25, 1.0, 0),
+          plate_with_hole(0.25, 1.0, 4, 0), honeycomb({{0, 3}}), honeycomb({{3, 0}})}) {
         EXPECT_EQ(m.NumPoints(), 0u);
         EXPECT_EQ(m.NumCellBlocks(), 0u);
     }
@@ -212,6 +221,22 @@ TEST(Primitives, BadArgumentsRaiseByName) {
     EXPECT_THROW(uv_sphere(1.0, 8, 1), std::invalid_argument);
     EXPECT_THROW(icosa_sphere(1.0, -1), std::invalid_argument);
     EXPECT_THROW(cylinder(1.0, 0.0), std::invalid_argument);
+    EXPECT_THROW(reference_triangle(-1), std::invalid_argument);
+    EXPECT_THROW(reference_triangle(3, {{1.0, 0.0}}), std::invalid_argument);
+    EXPECT_THROW(ngon(2), std::invalid_argument);
+    EXPECT_THROW(ngon(5, -1.0), std::invalid_argument);
+    EXPECT_THROW(annulus(1.0, 0.5), std::invalid_argument);
+    EXPECT_THROW(annulus(0.0, 1.0), std::invalid_argument);
+    EXPECT_THROW(annulus(0.5, 1.0, 2), std::invalid_argument);
+    EXPECT_THROW(annulus(0.5, 1.0, 8, 2, 7.0), std::invalid_argument);
+    EXPECT_THROW(annulus(0.5, 1.0, 1, 2, 4.0), std::invalid_argument);
+    EXPECT_THROW(annulus(0.5, 1.0, 8, 2, 1.0, {{0, 0, 0}}, "hexahedron"), std::invalid_argument);
+    EXPECT_THROW(lshape(2, 0.0), std::invalid_argument);
+    EXPECT_THROW(lshape(2, 2.0, {{0, 0, 0}}, "wedge"), std::invalid_argument);
+    EXPECT_THROW(plate_with_hole(0.6, 1.0), std::invalid_argument);
+    EXPECT_THROW(plate_with_hole(0.25, 1.0, 4, 2, {{0, 0, 0}}, "quad", 3), std::invalid_argument);
+    EXPECT_THROW(honeycomb({{2, -1}}), std::invalid_argument);
+    EXPECT_THROW(honeycomb({{2, 2}}, 0.0), std::invalid_argument);
     EXPECT_THROW(reference_cells({"blob"}), std::invalid_argument);
     EXPECT_THROW(reference_cells({"quad", "quad"}), std::invalid_argument);
     EXPECT_THROW(reference_cells({"tetra10"}, true), std::invalid_argument);
@@ -234,6 +259,14 @@ TEST(Primitives, MaxCellsRefusesByName) {
     EXPECT_THROW(icosa_sphere(1.0, 6, {{0, 0, 0}}, 1, 50), std::invalid_argument);
     EXPECT_THROW(cylinder(1.0, 1.0, 10, 10, {{0, 0, 0}}, "hexahedron", 1, 50),
                  std::invalid_argument);
+    EXPECT_THROW(reference_triangle(20, {{1, 1}}, {{0, 0, 0}}, 1, 50), std::invalid_argument);
+    EXPECT_THROW(ngon(6, 1.0, 10, {{0, 0, 0}}, 1, 50), std::invalid_argument);
+    EXPECT_THROW(annulus(0.5, 1.0, 20, 20, 6.283185307179586, {{0, 0, 0}}, "quad", 1, 50),
+                 std::invalid_argument);
+    EXPECT_THROW(lshape(10, 2.0, {{0, 0, 0}}, "quad", 1, 50), std::invalid_argument);
+    EXPECT_THROW(plate_with_hole(0.25, 1.0, 8, 8, {{0, 0, 0}}, "quad", 1, 50),
+                 std::invalid_argument);
+    EXPECT_THROW(honeycomb({{10, 10}}, 1.0, {{0, 0, 0}}, 50), std::invalid_argument);
     EXPECT_NO_THROW(rectangle({{8, 8}}, {{1, 1}}, {{0, 0, 0}}, "quad", "zigzag", 1, 0));
 }
 
@@ -553,4 +586,312 @@ TEST(Primitives, ReferenceQuadraticMidpointsAreExact) {
         for (int k = 0; k < 3; ++k)
             EXPECT_EQ(mid[k], (pa[k] + pb[k]) * 0.5);
     }
+}
+
+// --- planar domains --------------------------------------------------------
+
+namespace {
+
+// Distinct undirected edges of every cell of the mesh (corner nodes only).
+std::size_t distinct_edges(const Mesh& rMesh) {
+    std::set<std::pair<std::int64_t, std::int64_t>> edges;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto view = rMesh.Cells(b);
+        for (std::size_t c = 0; c < view.NumCells(); ++c) {
+            std::vector<std::int64_t> nodes;
+            if (view.IsRagged()) {
+                const std::int64_t* row = view.Row(c);
+                nodes.assign(row, row + view.RowSize(c));
+            } else {
+                const std::int64_t* conn = view.Conn().As<std::int64_t>();
+                const std::size_t w = view.NodesPerCell();
+                const std::size_t corners = view.Type().rfind("triangle", 0) == 0 ? 3 : 4;
+                nodes.assign(conn + c * w, conn + c * w + corners);
+            }
+            for (std::size_t k = 0; k < nodes.size(); ++k) {
+                std::int64_t a = nodes[k], e = nodes[(k + 1) % nodes.size()];
+                if (a > e)
+                    std::swap(a, e);
+                edges.insert({a, e});
+            }
+        }
+    }
+    return edges.size();
+}
+
+std::size_t total_cells(const Mesh& rMesh) {
+    std::size_t n = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        n += rMesh.Cells(b).NumCells();
+    return n;
+}
+
+// Euler characteristic V - E + F of the corner graph.
+long long euler(const Mesh& rMesh) {
+    return static_cast<long long>(rMesh.NumPoints()) -
+           static_cast<long long>(distinct_edges(rMesh)) +
+           static_cast<long long>(total_cells(rMesh));
+}
+
+double total_area(const Mesh& rMesh) {
+    double total = 0.0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        for (double a : areas(rMesh, b))
+            total += a / 2;  // areas() returns twice the signed area
+    return total;
+}
+
+}  // namespace
+
+TEST(PrimitivesPlanar, TriangleCountsAreaAndRegions) {
+    for (std::int64_t n = 1; n <= 5; ++n) {
+        const Mesh m = reference_triangle(n, {{2.0, 3.0}}, {{1.0, -1.0, 4.0}});
+        EXPECT_EQ(m.Cells(0).NumCells(), static_cast<std::size_t>(n * n));
+        EXPECT_EQ(m.NumPoints(), static_cast<std::size_t>((n + 1) * (n + 2) / 2));
+        for (double a : areas(m, 0))
+            EXPECT_GT(a, 0.0);
+        EXPECT_NEAR(total_area(m), 3.0, 1e-12);
+        for (const char* name : {"ymin", "xmin", "hypotenuse"})
+            EXPECT_EQ(region(m, name).NumEntries(), static_cast<std::size_t>(n)) << name;
+        EXPECT_EQ(euler(m), 1);
+        EXPECT_EQ(point(m, 0), (Vec{1.0, -1.0, 4.0}));
+    }
+    // Barycentric order: row j holds the nodes with i = 0 .. n - j, x fastest.
+    const Mesh m = reference_triangle(2);
+    EXPECT_EQ(point(m, 1), (Vec{0.5, 0.0, 0.0}));
+    EXPECT_EQ(point(m, 3), (Vec{0.0, 0.5, 0.0}));
+    EXPECT_EQ(point(m, 5), (Vec{0.0, 1.0, 0.0}));
+}
+
+TEST(PrimitivesPlanar, TriangleQuadraticMidpointsAreChordMidpoints) {
+    const Mesh m = reference_triangle(3, {{1.0, 1.0}}, {{0, 0, 0}}, 2);
+    ASSERT_EQ(m.Cells(0).Type(), "triangle6");
+    const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+    for (std::size_t i = 0; i < m.Cells(0).NumCells(); ++i)
+        for (int e = 0; e < 3; ++e) {
+            const Vec a = point(m, c[6 * i + e]), b = point(m, c[6 * i + (e + 1) % 3]);
+            const Vec mid = point(m, c[6 * i + 3 + e]);
+            for (int k = 0; k < 3; ++k)
+                EXPECT_EQ(mid[k], (a[k] + b[k]) * 0.5);
+        }
+}
+
+TEST(PrimitivesPlanar, NgonFansFromTheCentre) {
+    for (const std::int64_t sides : {3, 5, 8}) {
+        for (const std::int64_t rings : {1, 3}) {
+            const Mesh m = ngon(sides, 2.0, rings, {{1.0, 1.0, 0.0}});
+            EXPECT_EQ(m.Cells(0).NumCells(), static_cast<std::size_t>(sides * rings * rings));
+            EXPECT_EQ(m.NumPoints(), static_cast<std::size_t>(1 + sides * rings * (rings + 1) / 2));
+            for (double a : areas(m, 0))
+                EXPECT_GT(a, 0.0);
+            const double want = 0.5 * static_cast<double>(sides) * 4.0 *
+                                std::sin(2.0 * M_PI / static_cast<double>(sides));
+            EXPECT_NEAR(total_area(m), want, 1e-12);
+            EXPECT_EQ(region(m, "rim").NumEntries(), static_cast<std::size_t>(sides * rings));
+            EXPECT_EQ(distinct_points(m), m.NumPoints());
+            EXPECT_EQ(euler(m), 1);
+            EXPECT_EQ(point(m, 0), (Vec{1.0, 1.0, 0.0}));
+        }
+    }
+    // The plain fan: the centre, then the vertices.
+    const Mesh m = ngon(4, 1.0, 1);
+    EXPECT_EQ(m.NumPoints(), 5u);
+    EXPECT_NEAR(point(m, 1)[0], 1.0, 1e-15);
+    EXPECT_NEAR(point(m, 2)[1], 1.0, 1e-15);
+    // order 2: a side's midpoint is on the straight side.
+    const Mesh q = ngon(6, 1.0, 2, {{0, 0, 0}}, 2);
+    ASSERT_EQ(q.Cells(0).Type(), "triangle6");
+}
+
+TEST(PrimitivesPlanar, AnnulusFullRingIsWeldedAndOnItsCircles) {
+    for (const std::string type : {"quad", "triangle"}) {
+        const Mesh m = annulus(0.5, 1.5, 12, 3, 6.283185307179586, {{1.0, 2.0, 3.0}}, type);
+        const std::size_t cells = type == "quad" ? 36u : 72u;
+        EXPECT_EQ(m.Cells(0).NumCells(), cells);
+        EXPECT_EQ(m.NumPoints(), 12u * 4u);
+        EXPECT_EQ(distinct_points(m), m.NumPoints());
+        for (double a : areas(m, 0))
+            EXPECT_GT(a, 0.0);
+        EXPECT_EQ(euler(m), 0);
+        EXPECT_EQ(region(m, "inner").NumEntries(), 12u);
+        EXPECT_EQ(region(m, "outer").NumEntries(), 12u);
+        EXPECT_EQ(m.FindRegion("start", meshioplusplus::RegionKind::Side), Mesh::npos);
+        EXPECT_EQ(m.FindRegion("end", meshioplusplus::RegionKind::Side), Mesh::npos);
+        // 12-gon areas: 12 * 0.5 * r0 * r1 * sin(2 pi / 12) summed over the rings.
+        double want = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            const double r0 = 0.5 + k / 3.0, r1 = 0.5 + (k + 1) / 3.0;
+            want += 6.0 * (r1 * r1 - r0 * r0) * std::sin(M_PI / 6.0) * 2.0 / 2.0;
+        }
+        EXPECT_NEAR(total_area(m), want, 1e-12) << type;
+        for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+            const Vec p = point(m, static_cast<std::int64_t>(i));
+            const double r = std::hypot(p[0] - 1.0, p[1] - 2.0);
+            EXPECT_GE(r, 0.5 - 1e-12);
+            EXPECT_LE(r, 1.5 + 1e-12);
+            EXPECT_EQ(p[2], 3.0);
+        }
+    }
+}
+
+TEST(PrimitivesPlanar, AnnulusSectorKeepsItsSeamApart) {
+    const Mesh m = annulus(1.0, 2.0, 6, 2, M_PI / 2.0);
+    EXPECT_EQ(m.NumPoints(), 7u * 3u);
+    EXPECT_EQ(m.Cells(0).NumCells(), 12u);
+    EXPECT_EQ(region(m, "start").NumEntries(), 2u);
+    EXPECT_EQ(region(m, "end").NumEntries(), 2u);
+    EXPECT_EQ(region(m, "inner").NumEntries(), 6u);
+    EXPECT_EQ(region(m, "outer").NumEntries(), 6u);
+    EXPECT_EQ(euler(m), 1);
+    for (double a : areas(m, 0))
+        EXPECT_GT(a, 0.0);
+    // The start ray is on +x, the end ray on +y.
+    EXPECT_NEAR(point(m, 0)[0], 1.0, 1e-15);
+    EXPECT_NEAR(point(m, 0)[1], 0.0, 1e-15);
+    EXPECT_NEAR(point(m, 6)[0], 0.0, 1e-15);
+    EXPECT_NEAR(point(m, 6)[1], 1.0, 1e-15);
+}
+
+TEST(PrimitivesPlanar, AnnulusQuadraticRimsAreOnTheCircles) {
+    for (const double angle : {6.283185307179586, 4.0}) {
+        const Mesh m = annulus(1.0, 3.0, 7, 2, angle, {{0.5, -0.5, 0}}, "quad", 2);
+        ASSERT_EQ(m.Cells(0).Type(), "quad8");
+        const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+        for (const char* name : {"inner", "outer"}) {
+            const auto& r = region(m, name);
+            const double want = std::string(name) == "inner" ? 1.0 : 3.0;
+            for (std::size_t i = 0; i < r.NumEntries(); ++i) {
+                const std::int64_t cell = r.mEntries.As<std::int64_t>()[2 * i];
+                const std::int64_t f = r.mEntries.As<std::int64_t>()[2 * i + 1];
+                for (std::int64_t node : {c[8 * cell + f], c[8 * cell + 4 + f]}) {
+                    const Vec p = point(m, node);
+                    EXPECT_NEAR(std::hypot(p[0] - 0.5, p[1] + 0.5), want, 1e-12) << name;
+                }
+            }
+        }
+    }
+}
+
+TEST(PrimitivesPlanar, LshapeLosesAQuadrantAndKeepsTheNotch) {
+    for (const std::string type : {"quad", "triangle"}) {
+        const Mesh m = lshape(3, 2.0, {{0, 0, 1.0}}, type);
+        EXPECT_EQ(m.Cells(0).NumCells(), type == "quad" ? 27u : 54u);
+        EXPECT_EQ(m.NumPoints(), 7u * 7u - 9u);
+        for (double a : areas(m, 0))
+            EXPECT_GT(a, 0.0);
+        EXPECT_NEAR(total_area(m), 3.0, 1e-12);
+        for (const char* name : {"notch_x", "notch_y"})
+            EXPECT_EQ(region(m, name).NumEntries(), 3u) << name;
+        EXPECT_EQ(region(m, "xmin").NumEntries(), 6u);
+        EXPECT_EQ(region(m, "ymax").NumEntries(), 6u);
+        EXPECT_EQ(region(m, "xmax").NumEntries(), 3u);
+        EXPECT_EQ(region(m, "ymin").NumEntries(), 3u);
+        EXPECT_EQ(euler(m), 1);
+        for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+            const Vec p = point(m, static_cast<std::int64_t>(i));
+            EXPECT_FALSE(p[0] > 1e-12 && p[1] < -1e-12);
+            EXPECT_EQ(p[2], 1.0);
+        }
+    }
+    // The re-entrant corner is a node at the centre.
+    const Mesh m = lshape(2);
+    bool found = false;
+    for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+        const Vec p = point(m, static_cast<std::int64_t>(i));
+        found = found || (p[0] == 0.0 && p[1] == 0.0);
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(PrimitivesPlanar, PlateWithHoleSurroundsTheHole) {
+    for (const std::string type : {"quad", "triangle"}) {
+        const Mesh m = plate_with_hole(0.25, 2.0, 3, 2, {{1.0, 1.0, 0.0}}, type);
+        EXPECT_EQ(m.Cells(0).NumCells(), type == "quad" ? 24u : 48u);
+        EXPECT_EQ(m.NumPoints(), 3u * 12u);
+        EXPECT_EQ(distinct_points(m), m.NumPoints());
+        for (double a : areas(m, 0))
+            EXPECT_GT(a, 0.0);
+        EXPECT_EQ(euler(m), 0);
+        EXPECT_EQ(region(m, "hole").NumEntries(), 12u);
+        for (const char* name : {"xmin", "xmax", "ymin", "ymax"})
+            EXPECT_EQ(region(m, name).NumEntries(), 3u) << name;
+        // The area is the square minus a 12-gon hole of circumradius 0.25 (the
+        // hole boundary is a polygon in the linear mesh).
+        const double hole = 0.5 * 12.0 * 0.0625 * std::sin(2.0 * M_PI / 12.0);
+        EXPECT_NEAR(total_area(m), 4.0 - hole, 1e-12) << type;
+        for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+            const Vec p = point(m, static_cast<std::int64_t>(i));
+            EXPECT_LE(std::fabs(p[0] - 1.0), 1.0 + 1e-12);
+            EXPECT_LE(std::fabs(p[1] - 1.0), 1.0 + 1e-12);
+        }
+    }
+}
+
+TEST(PrimitivesPlanar, PlateWithHoleQuadraticHoleIsCircular) {
+    const Mesh m = plate_with_hole(0.5, 2.0, 2, 3, {{0, 0, 0}}, "quad", 2);
+    ASSERT_EQ(m.Cells(0).Type(), "quad8");
+    const std::int64_t* c = m.Cells(0).Conn().As<std::int64_t>();
+    const auto& hole = region(m, "hole");
+    ASSERT_EQ(hole.NumEntries(), 8u);
+    for (std::size_t i = 0; i < hole.NumEntries(); ++i) {
+        const std::int64_t cell = hole.mEntries.As<std::int64_t>()[2 * i];
+        const std::int64_t f = hole.mEntries.As<std::int64_t>()[2 * i + 1];
+        for (std::int64_t node : {c[8 * cell + f], c[8 * cell + 4 + f]}) {
+            const Vec p = point(m, node);
+            EXPECT_NEAR(std::hypot(p[0], p[1]), 0.5, 1e-12);
+        }
+    }
+    // The outer side's midpoints stay on the straight side.
+    const auto& east = region(m, "xmax");
+    for (std::size_t i = 0; i < east.NumEntries(); ++i) {
+        const std::int64_t cell = east.mEntries.As<std::int64_t>()[2 * i];
+        const std::int64_t f = east.mEntries.As<std::int64_t>()[2 * i + 1];
+        EXPECT_EQ(point(m, c[8 * cell + 4 + f])[0], 1.0);
+    }
+}
+
+TEST(PrimitivesPlanar, HoneycombIsARaggedPolygonBlock) {
+    for (const auto& dims :
+         std::vector<std::array<std::int64_t, 2>>{{{1, 1}}, {{3, 2}}, {{4, 5}}}) {
+        const Mesh m = honeycomb(dims, 2.0, {{1.0, 2.0, 0.0}});
+        ASSERT_EQ(m.NumCellBlocks(), 1u);
+        const auto view = m.Cells(0);
+        EXPECT_TRUE(view.IsRagged());
+        EXPECT_EQ(view.Type().rfind("polygon", 0), 0u);
+        const std::size_t cells = static_cast<std::size_t>(dims[0] * dims[1]);
+        EXPECT_EQ(view.NumCells(), cells);
+        double area = 0.0;
+        for (std::size_t c = 0; c < cells; ++c) {
+            const std::int64_t* row = view.Row(c);
+            ASSERT_EQ(view.RowSize(c), 6u);
+            double a2 = 0.0;
+            for (std::size_t k = 0; k < 6; ++k) {
+                const Vec p = point(m, row[k]), q = point(m, row[(k + 1) % 6]);
+                a2 += p[0] * q[1] - q[0] * p[1];
+                EXPECT_NEAR(std::hypot(q[0] - p[0], q[1] - p[1]), 2.0, 1e-12);
+            }
+            EXPECT_GT(a2, 0.0);
+            area += a2 / 2;
+        }
+        EXPECT_NEAR(area, static_cast<double>(cells) * 1.5 * std::sqrt(3.0) * 4.0, 1e-9);
+        EXPECT_EQ(euler(m), 1);
+        EXPECT_EQ(distinct_points(m), m.NumPoints());
+        // The boundary is the edges counted once: 6 F - 2 (E - boundary) edge uses.
+        const auto& b = region(m, "boundary");
+        EXPECT_EQ(b.mDim, 1);
+        EXPECT_EQ(b.NumEntries(), 2 * distinct_edges(m) - 6 * cells);
+        double xmin = 1e300;
+        for (std::size_t i = 0; i < m.NumPoints(); ++i)
+            xmin = std::min(xmin, point(m, static_cast<std::int64_t>(i))[0]);
+        EXPECT_EQ(xmin, 1.0);
+    }
+}
+
+TEST(PrimitivesPlanar, HoneycombNodesAreNumberedByFirstAppearance) {
+    const Mesh m = honeycomb({{2, 2}});
+    const std::int64_t* row = m.Cells(0).Row(0);
+    for (std::size_t k = 0; k < 6; ++k)
+        EXPECT_EQ(row[k], static_cast<std::int64_t>(k));
+    // 2 x 2 hexagons share 7 vertices per row of pairs: 16 nodes in all.
+    EXPECT_EQ(m.NumPoints(), 16u);
 }
