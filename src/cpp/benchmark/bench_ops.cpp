@@ -103,6 +103,7 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "mesh_digest.hpp"
@@ -916,6 +917,29 @@ int main(int argc, char** argv) {
             mio::VoxelOptions o;
             o.mResolution = std::array<std::int64_t, 3>{48, 48, 48};
             of(pD, mio::voxelize(volume, o).mMesh);
+        });
+        // The parametric generators read no input mesh, so each row measures
+        // construction alone, sized by the tier's lattice resolution. The budget
+        // is lifted: the XL tier is far above the default limit by design.
+        row("box", [&](MeshDigest* pD) {
+            const auto m = static_cast<std::int64_t>(n);
+            of(pD, mio::box({{m, m, m}}, {{1.0, 1.0, 1.0}}, {{0.0, 0.0, 0.0}}, "hexahedron", 1, 0));
+        });
+        row("rectangle", [&](MeshDigest* pD) {
+            const auto m = static_cast<std::int64_t>(4 * n);
+            of(pD, mio::rectangle({{m, m}}, {{1.0, 1.0}}, {{0.0, 0.0, 0.0}}, "triangle", "zigzag",
+                                  1, 0));
+        });
+        row("uv_sphere", [&](MeshDigest* pD) {
+            const auto m = static_cast<std::int64_t>(4 * n);
+            of(pD, mio::uv_sphere(1.0, 2 * m, m, {{0.0, 0.0, 0.0}}, "triangle", 1, 0));
+        });
+        row("icosa_sphere", [&](MeshDigest* pD) {
+            of(pD, mio::icosa_sphere(1.0, 6, {{0.0, 0.0, 0.0}}, 1, 0));
+        });
+        row("cylinder", [&](MeshDigest* pD) {
+            const auto m = static_cast<std::int64_t>(n);
+            of(pD, mio::cylinder(1.0, 1.0, m, m, {{0.0, 0.0, 0.0}}, "hexahedron", 1, 0));
         });
         // Rows for roadmap §3's remaining operation items (v16.19.0).
         row("remesh", [&](MeshDigest* pD) {

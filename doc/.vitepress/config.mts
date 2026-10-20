@@ -174,6 +174,7 @@ export default defineConfig({
               { text: "Slicing / cross-sections", link: "/slice" },
               { text: "Isosurfaces / contours", link: "/isosurface" },
               { text: "Regular grids / voxelize", link: "/voxelize" },
+              { text: "Parametric primitives", link: "/primitives" },
               { text: "Octrees / quadtrees from a skin", link: "/octree" },
               { text: "Signed distance", link: "/sdf" },
             ],

@@ -48,6 +48,7 @@ from .. import (
     GridSpec,
     agglomerate,
     attach_quality,
+    box,
     cell_data_to_point_data,
     check_quality,
     clean,
@@ -61,6 +62,7 @@ from .. import (
     contact_pairs,
     convert_cells,
     crop,
+    cylinder,
     data_calc,
     data_condition,
     data_info,
@@ -69,6 +71,7 @@ from .. import (
     decimate,
     decimate_volume,
     diff,
+    disk,
     distance_to_surface,
     edit_regions,
     estimate_error,
@@ -83,6 +86,7 @@ from .. import (
     grid,
     hausdorff_distance,
     hessian,
+    icosa_sphere,
     iga_evaluate,
     iga_refine,
     iga_sample,
@@ -98,6 +102,8 @@ from .. import (
     proximity_graph,
     read,
     read_metadata,
+    rectangle,
+    reference_cells,
     refine,
     region_adjacency,
     remesh,
@@ -128,6 +134,7 @@ from .. import (
     tessellate,
     transform,
     undo_green,
+    uv_sphere,
     voxelize,
     write,
 )
@@ -1390,6 +1397,150 @@ def tool_grid(
         spacing=(1.0, 1.0, 1.0) if spacing is None else spacing,
         max_cells=max_cells,
     )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_rectangle(
+    output_path,
+    output_format=None,
+    dims=None,
+    size=None,
+    origin=None,
+    cell_type="quad",
+    split="zigzag",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a regular 2-D grid of quads or triangles; reads no input."""
+    out = rectangle(
+        dims=(1, 1) if dims is None else dims,
+        size=(1.0, 1.0) if size is None else size,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        cell_type=cell_type,
+        split=split,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_box(
+    output_path,
+    output_format=None,
+    dims=None,
+    size=None,
+    origin=None,
+    cell_type="hexahedron",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a regular 3-D grid of hexahedra, tetrahedra or wedges; reads no input."""
+    out = box(
+        dims=(1, 1, 1) if dims is None else dims,
+        size=(1.0, 1.0, 1.0) if size is None else size,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_disk(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    n=8,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a disk of quads or triangles; reads no input."""
+    out = disk(
+        radius=radius,
+        n=n,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_uv_sphere(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    nu=16,
+    nv=8,
+    center=None,
+    cell_type="triangle",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a latitude/longitude sphere surface, oriented outward; reads no input."""
+    out = uv_sphere(
+        radius=radius,
+        nu=nu,
+        nv=nv,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_icosa_sphere(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    subdivisions=2,
+    center=None,
+    order=1,
+    max_cells=20000000,
+):
+    """Generate an icosahedron-based sphere surface; reads no input."""
+    out = icosa_sphere(
+        radius=radius,
+        subdivisions=subdivisions,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_cylinder(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    height=1.0,
+    nxy=8,
+    nz=8,
+    center=None,
+    cell_type="hexahedron",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a solid cylinder along z with side/top/bottom regions; reads no input."""
+    out = cylinder(
+        radius=radius,
+        height=height,
+        nxy=nxy,
+        nz=nz,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_reference_cells(output_path, output_format=None, types=None, pairs=False):
+    """Generate one cell of each requested type in reference coordinates; reads no input."""
+    out = reference_cells(types=types, pairs=pairs)
     return _result(_store(out, output_path, output_format), out)
 
 
@@ -4781,6 +4932,19 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},
         ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
+        ("rectangle", {"fn": tool_rectangle, "wraps": ("rectangle",), "gated": None}),
+        ("box", {"fn": tool_box, "wraps": ("box",), "gated": None}),
+        ("disk", {"fn": tool_disk, "wraps": ("disk",), "gated": None}),
+        ("uv_sphere", {"fn": tool_uv_sphere, "wraps": ("uv_sphere",), "gated": None}),
+        (
+            "icosa_sphere",
+            {"fn": tool_icosa_sphere, "wraps": ("icosa_sphere",), "gated": None},
+        ),
+        ("cylinder", {"fn": tool_cylinder, "wraps": ("cylinder",), "gated": None}),
+        (
+            "reference_cells",
+            {"fn": tool_reference_cells, "wraps": ("reference_cells",), "gated": None},
+        ),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
         ("octree", {"fn": tool_octree, "wraps": ("octree",), "gated": None}),
         (

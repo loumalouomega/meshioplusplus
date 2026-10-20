@@ -37,6 +37,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
+#include <map>
+#include <set>
 #include <cstring>
 #include <utility>
 #include <exception>
@@ -89,6 +91,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
@@ -430,6 +433,10 @@ void print_usage(std::ostream& os) {
           "  crop                    Subset by bounding box, half-space or a data\n"
           "                            predicate: --bbox / --plane / --where 'N < V'\n"
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
+          "  generate                Build a mesh from parameters: SHAPE OUTFILE with\n"
+          "                            rectangle | box | disk | uv-sphere | icosa-sphere |\n"
+          "                            cylinder | reference-cells; --order 2 for curved\n"
+          "                            quadratic cells\n"
           "  voxelize                Regular hexahedron grid around a mesh\n"
           "                            exactly one of --resolution/--cell-size;\n"
           "                            --fill all|surface|inside\n"
@@ -3408,6 +3415,157 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_generate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"output-format", {"-o"}, true},
+                                  {"dims", {}, true},
+                                  {"size", {}, true},
+                                  {"origin", {}, true},
+                                  {"center", {}, true},
+                                  {"radius", {}, true},
+                                  {"height", {}, true},
+                                  {"n", {}, true},
+                                  {"nu", {}, true},
+                                  {"nv", {}, true},
+                                  {"nxy", {}, true},
+                                  {"nz", {}, true},
+                                  {"subdivisions", {}, true},
+                                  {"cell-type", {}, true},
+                                  {"split", {}, true},
+                                  {"order", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"types", {}, true},
+                                  {"pairs", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("generate requires exactly SHAPE and OUTFILE");
+    const std::string& shape = p.positionals[0];
+
+    // Which options each shape reads: an option a shape ignores is an error
+    // rather than a silently dropped request.
+    static const std::map<std::string, std::set<std::string>> kAllowed = {
+        {"rectangle", {"dims", "size", "origin", "cell-type", "split", "order", "max-cells"}},
+        {"box", {"dims", "size", "origin", "cell-type", "order", "max-cells"}},
+        {"disk", {"radius", "n", "center", "cell-type", "order", "max-cells"}},
+        {"uv-sphere", {"radius", "nu", "nv", "center", "cell-type", "order", "max-cells"}},
+        {"icosa-sphere", {"radius", "subdivisions", "center", "order", "max-cells"}},
+        {"cylinder",
+         {"radius", "height", "nxy", "nz", "center", "cell-type", "order", "max-cells"}},
+        {"reference-cells", {"types", "pairs"}},
+    };
+    const auto allowed = kAllowed.find(shape);
+    if (allowed == kAllowed.end())
+        throw std::runtime_error("generate: unknown shape '" + shape +
+                                 "' (expected one of: rectangle, box, disk, uv-sphere, "
+                                 "icosa-sphere, cylinder, reference-cells)");
+    for (const auto& kv : p.values)
+        if (kv.first != "output-format" && kv.first != "quiet" && !allowed->second.count(kv.first))
+            throw std::runtime_error("generate " + shape + ": --" + kv.first + " does not apply");
+    if (p.flags.count("pairs") && shape != "reference-cells")
+        throw std::runtime_error("generate " + shape + ": --pairs does not apply");
+
+    auto number = [&](const char* pName, double Default) {
+        return p.values.count(pName) ? meshioplusplus::detail::stod_c(opt_value(p, pName))
+                                     : Default;
+    };
+    auto count = [&](const char* pName, std::int64_t Default) {
+        return p.values.count(pName) ? static_cast<std::int64_t>(std::stoll(opt_value(p, pName)))
+                                     : Default;
+    };
+    auto vec3 = [&](const char* pName, std::array<double, 3> Default, bool PadZero) {
+        if (!p.values.count(pName))
+            return Default;
+        auto v = parse_doubles(opt_value(p, pName));
+        if (v.size() == 2 && PadZero)
+            v.push_back(0.0);
+        if (v.size() != 3)
+            throw std::runtime_error(std::string("generate: --") + pName +
+                                     " expects three comma-separated values");
+        return std::array<double, 3>{{v[0], v[1], v[2]}};
+    };
+    auto vec2 = [&](const char* pName, std::array<double, 2> Default) {
+        if (!p.values.count(pName))
+            return Default;
+        auto v = parse_doubles(opt_value(p, pName));
+        if (v.size() != 2)
+            throw std::runtime_error(std::string("generate: --") + pName +
+                                     " expects two comma-separated values");
+        return std::array<double, 2>{{v[0], v[1]}};
+    };
+    auto dims = [&](std::size_t N, std::int64_t Default) {
+        std::vector<std::int64_t> out(N, Default);
+        if (p.values.count("dims")) {
+            const auto v = parse_doubles(opt_value(p, "dims"));
+            if (v.size() != N)
+                throw std::runtime_error("generate: --dims expects " + std::to_string(N) +
+                                         " comma-separated counts");
+            for (std::size_t k = 0; k < N; ++k)
+                out[k] = static_cast<std::int64_t>(v[k]);
+        }
+        return out;
+    };
+    const int order = static_cast<int>(count("order", 1));
+    const std::int64_t max_cells = count("max-cells", 20000000);
+    const std::array<double, 3> zero = {{0.0, 0.0, 0.0}};
+
+    Mesh mesh;
+    if (shape == "rectangle") {
+        const auto d = dims(2, 1);
+        mesh = meshioplusplus::rectangle({{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}),
+                                         vec3("origin", zero, true),
+                                         opt_value(p, "cell-type", "quad"),
+                                         opt_value(p, "split", "zigzag"), order, max_cells);
+    } else if (shape == "box") {
+        const auto d = dims(3, 1);
+        mesh = meshioplusplus::box({{d[0], d[1], d[2]}}, vec3("size", {{1.0, 1.0, 1.0}}, false),
+                                   vec3("origin", zero, false),
+                                   opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+    } else if (shape == "disk") {
+        mesh = meshioplusplus::disk(number("radius", 1.0), count("n", 8), vec3("center", zero, false),
+                                    opt_value(p, "cell-type", "quad"), order, max_cells);
+    } else if (shape == "uv-sphere") {
+        mesh = meshioplusplus::uv_sphere(number("radius", 1.0), count("nu", 16), count("nv", 8),
+                                         vec3("center", zero, false),
+                                         opt_value(p, "cell-type", "triangle"), order, max_cells);
+    } else if (shape == "icosa-sphere") {
+        mesh = meshioplusplus::icosa_sphere(number("radius", 1.0), count("subdivisions", 2),
+                                            vec3("center", zero, false), order, max_cells);
+    } else if (shape == "cylinder") {
+        mesh = meshioplusplus::cylinder(number("radius", 1.0), number("height", 1.0),
+                                        count("nxy", 8), count("nz", 8),
+                                        vec3("center", zero, false),
+                                        opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+    } else {
+        std::vector<std::string> types;
+        if (p.values.count("types")) {
+            std::string current;
+            for (char c : opt_value(p, "types") + ",") {
+                if (c == ',') {
+                    if (!current.empty())
+                        types.push_back(current);
+                    current.clear();
+                } else {
+                    current.push_back(c);
+                }
+            }
+        }
+        mesh = meshioplusplus::reference_cells(types, has_flag(p, "pairs"));
+    }
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "generated " << shape << "\n";
+        std::cout << "  points: " << mesh.NumPoints() << "\n";
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
+            std::cout << "  " << mesh.Cells(b).Type() << ": " << mesh.Cells(b).NumCells() << "\n";
+        for (std::size_t r = 0; r < mesh.NumRegions(); ++r)
+            std::cout << "  region " << mesh.Region(r).mName << ": " << mesh.Region(r).NumEntries()
+                      << "\n";
+    }
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_octree(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -6136,6 +6294,8 @@ int main(int argc, char** argv) {
             return cmd_isosurface(rest);
         if (cmd == "voxelize")
             return cmd_voxelize(rest);
+        if (cmd == "generate")
+            return cmd_generate(rest);
         if (cmd == "octree")
             return cmd_octree(rest);
         if (cmd == "sdf")

@@ -276,6 +276,13 @@ export class MeshioPlusPlusLoadError extends Error {
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
+ *   rectangle: (dims?: number[], size?: number[], origin?: number[], cellType?: string, split?: string, order?: number, maxCells?: number) => Mesh,
+ *   box: (dims?: number[], size?: number[], origin?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   disk: (radius?: number, n?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   uvSphere: (radius?: number, nu?: number, nv?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   icosaSphere: (radius?: number, subdivisions?: number, center?: number[], order?: number, maxCells?: number) => Mesh,
+ *   cylinder: (radius?: number, height?: number, nxy?: number, nz?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   referenceCells: (types?: string[], pairs?: boolean) => Mesh,
  *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
  *   octree: (mesh: Mesh, rootCells?: number[], minLevel?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, dimension?: number, sampleDistance?: number, balance?: string, fill?: string, sign?: string, attachDistance?: boolean, evenOdd?: boolean, maxCells?: number, watertightCheck?: string, transition?: string, snap?: boolean, surfaceLevel?: number, curvatureThreshold?: number, featureAngle?: number, sizeArray?: string, plane?: string) => {mesh: Mesh, dimension: number, numLeaves: number, numHanging: number, finestLevel: number, origin: number[], rootSize: number, numSnapped: number, numRefused: number},
  *   surfaceWatertightCheck: (mesh: Mesh) => {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean},
@@ -743,6 +750,28 @@ export async function loadMeshioPlusPlus(
             Module.slice(mesh, origin, normal, recordParentIds),
         grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
             Module.grid(dims, origin, spacing, maxCells),
+        rectangle: (
+            dims = null, size = null, origin = null, cellType = 'quad', split = 'zigzag',
+            order = 1, maxCells = 20000000,
+        ) => Module.rectangle(dims, size, origin, cellType, split, order, maxCells),
+        box: (
+            dims = null, size = null, origin = null, cellType = 'hexahedron', order = 1,
+            maxCells = 20000000,
+        ) => Module.box(dims, size, origin, cellType, order, maxCells),
+        disk: (
+            radius = 1, n = 8, center = null, cellType = 'quad', order = 1, maxCells = 20000000,
+        ) => Module.disk(radius, n, center, cellType, order, maxCells),
+        uvSphere: (
+            radius = 1, nu = 16, nv = 8, center = null, cellType = 'triangle', order = 1,
+            maxCells = 20000000,
+        ) => Module.uvSphere(radius, nu, nv, center, cellType, order, maxCells),
+        icosaSphere: (radius = 1, subdivisions = 2, center = null, order = 1, maxCells = 20000000) =>
+            Module.icosaSphere(radius, subdivisions, center, order, maxCells),
+        cylinder: (
+            radius = 1, height = 1, nxy = 8, nz = 8, center = null, cellType = 'hexahedron',
+            order = 1, maxCells = 20000000,
+        ) => Module.cylinder(radius, height, nxy, nz, center, cellType, order, maxCells),
+        referenceCells: (types = null, pairs = false) => Module.referenceCells(types, pairs),
         voxelize: (
             mesh,
             resolution = null,

@@ -394,6 +394,23 @@ struct _CVoxelOpts
 end
 
 """
+Mirror of C `mio_gen_opts`, the options of the parametric generators.
+"""
+struct _CGenOpts
+    counts::NTuple{3,Int64}
+    size::NTuple{3,Cdouble}
+    origin::NTuple{3,Cdouble}
+    radius::Cdouble
+    height::Cdouble
+    max_cells::Int64
+    cell_type::Int32
+    split::Int32
+    order::Int32
+    pad::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""
 Mirror of C `mio_compute_sdf_opts`.
 
 Unlike `_CVoxelOpts` this one DOES embed a `_CSdfOpts` by value, because the C
@@ -999,6 +1016,8 @@ function _check_abi_layout()
         error("meshio++: mio_sdf_opts layout mismatch ($(sizeof(_CSdfOpts)) bytes)")
     sizeof(_CVoxelOpts) == 112 ||
         error("meshio++: mio_voxel_opts layout mismatch ($(sizeof(_CVoxelOpts)) bytes)")
+    sizeof(_CGenOpts) == 160 ||
+        error("meshio++: mio_gen_opts layout mismatch ($(sizeof(_CGenOpts)) bytes)")
     sizeof(_COctreeOpts) == 176 ||
         error("meshio++: mio_octree_opts layout mismatch ($(sizeof(_COctreeOpts)) bytes)")
     sizeof(_COctreeReport) == 96 ||

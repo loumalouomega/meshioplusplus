@@ -1024,3 +1024,81 @@ def test_snapshot_step_theme_matches_between_engines(settings_env):
                 settings_env, [dict(op, Path=str(tmp / "x.png"), Theme="vapor")]
             )
         )
+
+
+_GENERATE_STEPS = [
+    {"Op": "Generate", "Shape": "rectangle", "Dims": [3, 2], "CellType": "triangle"},
+    {
+        "Op": "Generate",
+        "Shape": "box",
+        "Dims": [2, 2, 2],
+        "CellType": "tetra",
+        "Order": 2,
+    },
+    {
+        "Op": "Generate",
+        "Shape": "disk",
+        "N": 3,
+        "Radius": 2.0,
+        "Center": [1.0, 0.0, 0.0],
+    },
+    {"Op": "Generate", "Shape": "uv_sphere", "Nu": 8, "Nv": 4, "CellType": "quad"},
+    {"Op": "Generate", "Shape": "icosa_sphere", "Subdivisions": 1, "Order": 2},
+    {"Op": "Generate", "Shape": "cylinder", "Nxy": 2, "Nz": 2, "CellType": "wedge"},
+    {"Op": "Generate", "Shape": "reference_cells", "Types": ["tetra", "wedge"]},
+]
+
+
+@pytest.mark.parametrize("step", _GENERATE_STEPS, ids=lambda s: s["Shape"])
+def test_generate_step_builds_a_mesh_without_an_input(tmp_path, step):
+    """``Generate`` as the first step needs no ``Input``, in both engines."""
+    py_out, cpp_out = tmp_path / "py.vtu", tmp_path / "cpp.vtu"
+    settings = {"Version": 1, "Operations": [step], "Output": {"Path": str(py_out)}}
+    py_report = meshioplusplus.run_pipeline(settings)
+    assert py_report["steps"][0]["op"] == "Generate"
+    built = meshioplusplus.read(py_out)
+    assert py_report["steps"][0]["NumPoints"] == float(len(built.points))
+
+    settings["Output"]["Path"] = str(cpp_out)
+    cpp_report = _core.run_pipeline_json(json.dumps(settings))
+    assert cpp_report["steps"][0]["NumPoints"] == py_report["steps"][0]["NumPoints"]
+    assert cpp_report["steps"][0]["NumCells"] == py_report["steps"][0]["NumCells"]
+    assert meshioplusplus.meshes_equal(built, meshioplusplus.read(cpp_out), atol=1e-12)
+
+
+def test_generate_step_replaces_the_geometry_of_an_input(settings_env):
+    settings = make_settings(
+        settings_env,
+        [{"Op": "Generate", "Shape": "box", "Dims": [2, 1, 1]}, {"Op": "Quality"}],
+    )
+    meshioplusplus.run_pipeline(settings)
+    out = meshioplusplus.read(settings_env["out"])
+    assert out.cells[0].type == "hexahedron" and len(out.cells[0].data) == 2
+
+
+def test_generate_step_errors_by_name(tmp_path):
+    out = {"Path": str(tmp_path / "out.vtu")}
+    bad = {
+        "Version": 1,
+        "Operations": [{"Op": "Generate", "Shape": "blob"}],
+        "Output": out,
+    }
+    for run in (
+        meshioplusplus.run_pipeline,
+        lambda s: _core.run_pipeline_json(json.dumps(s)),
+    ):
+        with pytest.raises(ValueError, match="Shape"):
+            run(bad)
+        with pytest.raises(ValueError, match="unknown parameter|Generate"):
+            run(
+                {
+                    "Version": 1,
+                    "Operations": [{"Op": "Generate", "Shape": "box", "Bogus": 1}],
+                    "Output": out,
+                }
+            )
+    # Input stays required unless Generate comes first.
+    with pytest.raises(ValueError, match="Input"):
+        meshioplusplus.run_pipeline(
+            {"Version": 1, "Operations": [{"Op": "Quality"}], "Output": out}
+        )

@@ -203,6 +203,10 @@ call mesh%write_snapshot('part.png', set)    ! .png .txt .ansi .html .cast
 
 `frame%get_cell_ids(ids)` gives the input cell at each pixel (`ids(width, height)`, -1 for none), `frame%num_notes()` and `frame%note(i)` the colour range, ticks and keys, and `frame%text(tset)` encodes a frame whose size fits the encoding's cell grid. `mio_detect_color_depth(no_color=, color_term=, term=)` returns a `MIO_COLOR_*` constant. The `MIO_SHADING_*`, `MIO_EDGES_*`, `MIO_SCALE_*`, `MIO_DIAGNOSTIC_*`, `MIO_ENCODING_*`, `MIO_COLOR_*` and `MIO_TEXT_*` constants name the enum values. Without `stat=` a failure stops the program with the library's message, as everywhere in this module.
 
+## Parametric generators
+
+`mio_rectangle`, `mio_box`, `mio_disk`, `mio_uv_sphere`, `mio_icosa_sphere`, `mio_cylinder` and `mio_reference_cells` are module functions returning a `mio_mesh`, like `mio_grid`, with every argument optional: `dims`, `lengths` (a rectangle's or box's side lengths), `origin`, `radius`, `height`, `n`, `nu`, `nv`, `subdivisions`, `nxy`, `nz`, `center`, `cell_type`, `split` (`'zigzag'`, `'up'`, `'down'`, `'center'`), `order`, `max_cells`, and for `mio_reference_cells` a comma-separated `types` string and `pairs`. They fill a `mio_gen_opts_t`, whose 160-byte layout is checked once per process. An unknown `cell_type` or `split` is reported through `stat`/`errmsg`. See [parametric primitives](primitives.md).
+
 ## v9.1.0 additions
 
 - `m%read(..., lenient=.true.)` — see [`doc/selective_read.md`](selective_read.md).

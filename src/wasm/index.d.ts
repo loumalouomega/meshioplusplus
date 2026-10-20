@@ -2068,6 +2068,47 @@ export interface MeshioPlusPlusModule {
        maxCells?: number): Mesh;
 
   /**
+   * A regular 2-D grid of quads or triangles at `z = origin[2]`, points x
+   * fastest. `split` (`'zigzag'`, `'up'`, `'down'`, `'center'`) lays out the
+   * triangles; `order: 2` gives `quad8` / `triangle6` cells on the exact
+   * geometry. Side regions `xmin`, `xmax`, `ymin`, `ymax`.
+   * @throws {Error} on a bad count, size, cell type, split or order, or a mesh
+   *   above `maxCells`.
+   */
+  rectangle(dims?: number[] | null, size?: number[] | null, origin?: number[] | null,
+            cellType?: string, split?: string, order?: number, maxCells?: number): Mesh;
+
+  /** A regular 3-D grid of `'hexahedron'`, `'tetra'` (six Kuhn tetrahedra per
+   * cell) or `'wedge'` cells. Side regions `xmin` ... `zmax`. */
+  box(dims?: number[] | null, size?: number[] | null, origin?: number[] | null,
+      cellType?: string, order?: number, maxCells?: number): Mesh;
+
+  /** A disk of `n x n` quads (squircle map) or `n` rings of triangles. Side
+   * region `rim`. */
+  disk(radius?: number, n?: number, center?: number[] | null, cellType?: string,
+       order?: number, maxCells?: number): Mesh;
+
+  /** A latitude / longitude sphere surface, oriented outward; `cellType: 'quad'`
+   * gives quads between the rings and triangle caps. */
+  uvSphere(radius?: number, nu?: number, nv?: number, center?: number[] | null,
+           cellType?: string, order?: number, maxCells?: number): Mesh;
+
+  /** A sphere surface of `20 * 4^subdivisions` triangles, oriented outward. */
+  icosaSphere(radius?: number, subdivisions?: number, center?: number[] | null,
+              order?: number, maxCells?: number): Mesh;
+
+  /** A solid cylinder along z, `'hexahedron'` or `'wedge'` cells. Side regions
+   * `side`, `top`, `bottom`. */
+  cylinder(radius?: number, height?: number, nxy?: number, nz?: number,
+           center?: number[] | null, cellType?: string, order?: number,
+           maxCells?: number): Mesh;
+
+  /** One cell of each requested meshio type in its reference coordinates, side
+   * by side (every supported type when `types` is omitted); `pairs` gives two
+   * cells sharing a facet, for linear types. */
+  referenceCells(types?: string[] | null, pairs?: boolean): Mesh;
+
+  /**
    * Build a regular grid around a mesh. Give exactly one of `resolution` and
    * `cellSize`; `fill` selects the whole bounding box, only the cells a triangle
    * passes through, or only the cells inside the surface.

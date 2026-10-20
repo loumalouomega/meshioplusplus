@@ -192,6 +192,15 @@ if TYPE_CHECKING:
     from ._periodic import match_periodic_nodes
     from ._pipeline import run_pipeline
     from ._point_budget import PointBudget, select_points, subsample_points
+    from ._primitives import (
+        box,
+        cylinder,
+        disk,
+        icosa_sphere,
+        rectangle,
+        reference_cells,
+        uv_sphere,
+    )
     from ._proximity import (
         BistrideHierarchy,
         bistride_hierarchy,
@@ -291,6 +300,13 @@ _LAZY_ATTRS = {
     "to_torch": "_gpu",
     "gradient": "_gradient",
     "grid": "_grid",
+    "rectangle": "_primitives",
+    "box": "_primitives",
+    "disk": "_primitives",
+    "uv_sphere": "_primitives",
+    "icosa_sphere": "_primitives",
+    "cylinder": "_primitives",
+    "reference_cells": "_primitives",
     "GridArray": "_grid_transfer",
     "GridSpec": "_grid_transfer",
     "PowerSpectrum": "_grid_transfer",
@@ -544,6 +560,13 @@ __all__ = [
     "remesh_volume",
     "optimize_volume",
     "grid",
+    "rectangle",
+    "box",
+    "disk",
+    "uv_sphere",
+    "icosa_sphere",
+    "cylinder",
+    "reference_cells",
     "voxelize",
     "octree",
     "sample_distance",

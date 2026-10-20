@@ -586,6 +586,31 @@ TEST(PipelineJson, MissingSettingsFileFailsByPath) {
     }
 }
 
+TEST(PipelineJson, GenerateNeedsNoInput) {
+    const std::string out_path = mt::temp_path("_pipe_generate.vtk");
+    const std::string text = R"({
+        "Version": 1,
+        "Operations": [{"Op": "Generate", "Shape": "box", "Dims": [2, 2, 2],
+                        "CellType": "tetra", "Order": 2}],
+        "Output": {"Path": ")" + out_path + R"("}
+    })";
+    const PipelineReport report = meshioplusplus::run_pipeline_json(text);
+    ASSERT_EQ(report.mSteps.size(), 1u);
+    EXPECT_EQ(report.mSteps[0].mOp, "Generate");
+    ASSERT_FALSE(report.mSteps[0].mCounters.empty());
+    EXPECT_EQ(report.mSteps[0].mCounters[0].first, "NumPoints");
+    EXPECT_TRUE(std::filesystem::exists(out_path));
+    std::filesystem::remove(out_path);
+
+    // Input stays required unless the first step generates the mesh.
+    EXPECT_THROW(meshioplusplus::run_pipeline_json(R"({"Version": 1,
+        "Operations": [{"Op": "Quality"}], "Output": {"Path": "x.vtk"}})"),
+                 std::exception);
+    EXPECT_THROW(meshioplusplus::run_pipeline_json(R"({"Version": 1,
+        "Operations": [{"Op": "Generate", "Shape": "blob"}], "Output": {"Path": "x.vtk"}})"),
+                 std::invalid_argument);
+}
+
 #else  // !MESHIOPLUSPLUS_HAS_JSON
 
 TEST(PipelineJson, ReportsNoParser) {

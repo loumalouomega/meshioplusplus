@@ -51,10 +51,20 @@ from ._interfaces import find_interface, region_adjacency, split_interface
 from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
+from ._mesh import Mesh
 from ._normals import compute_normals
 from ._octree import octree
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
+from ._primitives import (
+    box,
+    cylinder,
+    disk,
+    icosa_sphere,
+    rectangle,
+    reference_cells,
+    uv_sphere,
+)
 from ._provenance import add_operation as _prov_add_operation
 from ._provenance import set_source as _prov_set_source
 from ._provenance import set_target as _prov_set_target
@@ -332,6 +342,27 @@ _OP_TABLE = {
         "AttachOccupancy",
         "MaxCells",
         "Sign",
+    ),
+    "Generate": (
+        "Shape",
+        "Dims",
+        "Size",
+        "Origin",
+        "Center",
+        "Radius",
+        "Height",
+        "N",
+        "Nu",
+        "Nv",
+        "Nxy",
+        "Nz",
+        "Subdivisions",
+        "CellType",
+        "Split",
+        "Order",
+        "MaxCells",
+        "Types",
+        "Pairs",
     ),
     "Octree": (
         "RootCells",
@@ -812,6 +843,116 @@ def _apply_transform(mesh, step):
         )
     return transform(
         mesh, rotate_vector_data=_flag(step, "RotateData", False), **kwargs
+    )
+
+
+_GENERATE_SHAPES = (
+    "rectangle",
+    "box",
+    "disk",
+    "uv_sphere",
+    "icosa_sphere",
+    "cylinder",
+    "reference_cells",
+)
+
+
+def _generate(step):
+    """The mesh a ``Generate`` step builds (the engine twin of the C++ branch)."""
+    shape = _text(step, "Shape", "")
+    max_cells = int(_number(step, "MaxCells", 20000000.0))
+    order = int(_number(step, "Order", 1.0))
+
+    def triple(key, default, pad_zero=False):
+        v = _dvec(step, key)
+        if not v:
+            return default
+        v = list(v)
+        if len(v) == 2 and pad_zero:
+            v.append(0.0)
+        if len(v) != 3:
+            raise _err("Generate", f"'{key}' expects three values")
+        return v
+
+    def count(key, default):
+        return int(_number(step, key, float(default)))
+
+    def dims_of(n, default):
+        v = _dvec(step, "Dims")
+        if not v:
+            return [default] * n
+        if len(v) != n:
+            raise _err("Generate", f"'Dims' expects {n} counts")
+        return [int(x) for x in v]
+
+    zero = [0.0, 0.0, 0.0]
+    if shape == "rectangle":
+        size = _dvec(step, "Size")
+        if size and len(size) != 2:
+            raise _err("Generate", "'Size' expects two values")
+        return rectangle(
+            dims=dims_of(2, 1),
+            size=list(size) if size else [1.0, 1.0],
+            origin=triple("Origin", zero, True),
+            cell_type=_text(step, "CellType", "quad"),
+            split=_text(step, "Split", "zigzag"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "box":
+        return box(
+            dims=dims_of(3, 1),
+            size=triple("Size", [1.0, 1.0, 1.0]),
+            origin=triple("Origin", zero),
+            cell_type=_text(step, "CellType", "hexahedron"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "disk":
+        return disk(
+            radius=_number(step, "Radius", 1.0),
+            n=count("N", 8),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "uv_sphere":
+        return uv_sphere(
+            radius=_number(step, "Radius", 1.0),
+            nu=count("Nu", 16),
+            nv=count("Nv", 8),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "triangle"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "icosa_sphere":
+        return icosa_sphere(
+            radius=_number(step, "Radius", 1.0),
+            subdivisions=count("Subdivisions", 2),
+            center=triple("Center", zero),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "cylinder":
+        return cylinder(
+            radius=_number(step, "Radius", 1.0),
+            height=_number(step, "Height", 1.0),
+            nxy=count("Nxy", 8),
+            nz=count("Nz", 8),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "hexahedron"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "reference_cells":
+        return reference_cells(
+            types=_svec(step, "Types") or None, pairs=_flag(step, "Pairs", False)
+        )
+    raise _err(
+        "Generate",
+        f"'Shape' must be one of {', '.join(_GENERATE_SHAPES)}, not '{shape}'",
     )
 
 
@@ -1371,6 +1512,14 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumTets"] = float(report["num_tets"])
         entry["MinQualityBefore"] = float(report["min_quality_before"])
         entry["MinQualityAfter"] = float(report["min_quality_after"])
+    elif op == "Generate":
+        # A mesh from parameters; like Voxelize it REPLACES the geometry, and it
+        # never reads the incoming mesh, so a document may omit Input when this
+        # is its first step.
+        mesh = _generate(step)
+        entry["NumPoints"] = float(len(mesh.points))
+        entry["NumCells"] = float(_total_cells(mesh))
+
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")
         bounds = _dvec(step, "Bounds")
@@ -1875,6 +2024,17 @@ def run_pipeline(settings, input_path=None, output_path=None):
             f"meshio++: pipeline: unsupported Version {version!r} (this build knows 1 and 2)"
         )
 
+    ops_spec = doc.get("Operations")
+    generated = (
+        "Input" not in doc
+        and isinstance(ops_spec, list)
+        and bool(ops_spec)
+        and isinstance(ops_spec[0], dict)
+        and ops_spec[0].get("Op") == "Generate"
+    )
+    if generated:
+        # The first step builds the mesh from parameters: nothing to read.
+        doc = {**doc, "Input": {}}
     if "Input" not in doc or not isinstance(doc["Input"], dict):
         raise ValueError("meshio++: pipeline: Input is required and must be an object")
     if "Output" not in doc or not isinstance(doc["Output"], dict):
@@ -1898,7 +2058,7 @@ def run_pipeline(settings, input_path=None, output_path=None):
     out_path = (
         output_path if output_path is not None else out.get("Pattern", out.get("Path"))
     )
-    if not in_path:
+    if not in_path and not generated:
         raise ValueError("meshio++: pipeline: Input.Path is required")
     if not out_path:
         raise ValueError("meshio++: pipeline: Output.Path is required")
@@ -1949,13 +2109,16 @@ def run_pipeline(settings, input_path=None, output_path=None):
     # A no-op unless the caller opened a provenance scope around this call
     # (see meshioplusplus._provenance) -- the pipeline never opens one
     # itself, matching the C++ engine's own posture (opt-in everywhere).
-    in_fmt = (
-        inp.get("Format")
-        or (_filetypes_from_path(pathlib.Path(str(in_path))) or [""])[0]
-    )
-    _prov_set_source(str(in_path), in_fmt)
+    if generated:
+        mesh = Mesh(np.zeros((0, 3)), [])
+    else:
+        in_fmt = (
+            inp.get("Format")
+            or (_filetypes_from_path(pathlib.Path(str(in_path))) or [""])[0]
+        )
+        _prov_set_source(str(in_path), in_fmt)
 
-    mesh = read(in_path, file_format=inp.get("Format") or None, **read_kwargs)
+        mesh = read(in_path, file_format=inp.get("Format") or None, **read_kwargs)
 
     steps = []
     for i, step in enumerate(steps_spec):

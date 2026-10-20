@@ -2686,6 +2686,97 @@ MIO_API void mio_voxel_opts_init(mio_voxel_opts* opts);
 MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3], const double spacing[3],
                            int64_t max_cells);
 
+/* ------------------------------------------------------------------------- */
+/* Parametric generators                                                     */
+/*                                                                           */
+/* mio_rectangle, mio_box, mio_disk, mio_uv_sphere, mio_icosa_sphere and      */
+/* mio_cylinder build a shape from parameters, like mio_grid, and              */
+/* mio_reference_cells builds one cell of each type in reference coordinates. */
+/* They share one options struct; each shape reads the fields its name        */
+/* suggests and ignores the rest. Boundaries come back as named side regions  */
+/* (xmin..zmax on a box, rim on a disk, side/top/bottom on a cylinder) and    */
+/* order 2 places the mid-edge nodes on the exact geometry. See               */
+/* doc/primitives.md for the point and cell order of every shape.             */
+/* ------------------------------------------------------------------------- */
+
+/** Which cell type a generator builds (MIO_GEN_DEFAULT is the shape's own default). */
+typedef enum mio_gen_cell {
+    MIO_GEN_DEFAULT = 0,    /**< the shape's default */
+    MIO_GEN_QUAD = 1,       /**< quad (rectangle, disk) or the quad body of a uv_sphere */
+    MIO_GEN_TRIANGLE = 2,   /**< triangle (rectangle, disk, uv_sphere) */
+    MIO_GEN_HEXAHEDRON = 3, /**< hexahedron (box, cylinder) */
+    MIO_GEN_TETRA = 4,      /**< tetra: six Kuhn tetrahedra per box cell */
+    MIO_GEN_WEDGE = 5       /**< wedge (box, cylinder) */
+} mio_gen_cell;
+
+/** How mio_rectangle splits a quad into triangles (MIO_GEN_TRIANGLE only). */
+typedef enum mio_gen_split {
+    MIO_GEN_SPLIT_ZIGZAG = 0, /**< alternating diagonals (the default) */
+    MIO_GEN_SPLIT_UP = 1,     /**< the diagonal from the lo corner */
+    MIO_GEN_SPLIT_DOWN = 2,   /**< the other diagonal */
+    MIO_GEN_SPLIT_CENTER = 3  /**< four triangles around a cell-centre node */
+} mio_gen_split;
+
+/**
+ * Options for the parametric generators.
+ *
+ * ABI NOTE: append-only, with a zeroed reserved tail. Always initialize
+ * through mio_gen_opts_init().
+ *
+ * Which fields each shape reads:
+ *  - mio_rectangle:   counts[0..1] (nx, ny), size[0..1], origin (lo corner);
+ *                     cell_type QUAD or TRIANGLE; split.
+ *  - mio_box:         counts[0..2], size[0..2], origin (lo corner); cell_type
+ *                     HEXAHEDRON, TETRA or WEDGE.
+ *  - mio_disk:        radius, counts[0] (n), origin (centre); cell_type QUAD or
+ *                     TRIANGLE.
+ *  - mio_uv_sphere:   radius, counts[0..1] (nu, nv), origin (centre); cell_type
+ *                     TRIANGLE or QUAD.
+ *  - mio_icosa_sphere: radius, counts[0] (subdivisions), origin (centre).
+ *  - mio_cylinder:    radius, height, counts[0..1] (nxy, nz), origin (centre);
+ *                     cell_type HEXAHEDRON or WEDGE.
+ * Every shape reads order and max_cells.
+ */
+typedef struct mio_gen_opts {
+    int64_t counts[3];   /**< cell or division counts; see the table above */
+    double size[3];      /**< side lengths of a rectangle or box */
+    double origin[3];    /**< lo corner of a rectangle or box, centre of the round shapes */
+    double radius;       /**< radius of a disk, sphere or cylinder */
+    double height;       /**< height of a cylinder */
+    int64_t max_cells;   /**< refuse above this many cells; 0 or less lifts the limit */
+    int32_t cell_type;   /**< a mio_gen_cell */
+    int32_t split;       /**< a mio_gen_split */
+    int32_t order;       /**< 1 (or 0) for linear cells, 2 for quadratic ones */
+    int32_t pad;         /**< must be zero */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_gen_opts;
+
+/** Zero-initialize generator options: counts 8, unit size and radius, order 1. */
+MIO_API void mio_gen_opts_init(mio_gen_opts* opts);
+
+/** A regular 2-D grid of quads or triangles at z = origin[2]. @p opts NULL means defaults. */
+MIO_API mio_mesh* mio_rectangle(const mio_gen_opts* opts);
+/** A regular 3-D grid of hexahedra, tetrahedra or wedges. @p opts NULL means defaults. */
+MIO_API mio_mesh* mio_box(const mio_gen_opts* opts);
+/** A disk of quads (squircle map) or triangles (hexagonal rings). */
+MIO_API mio_mesh* mio_disk(const mio_gen_opts* opts);
+/** A latitude / longitude sphere surface, oriented outward. */
+MIO_API mio_mesh* mio_uv_sphere(const mio_gen_opts* opts);
+/** An icosahedron-based sphere surface, 20 * 4^subdivisions triangles. */
+MIO_API mio_mesh* mio_icosa_sphere(const mio_gen_opts* opts);
+/** A solid cylinder along z. */
+MIO_API mio_mesh* mio_cylinder(const mio_gen_opts* opts);
+/**
+ * One cell of each requested type in reference coordinates, side by side.
+ *
+ * @param types comma-separated meshio type names (for example
+ *              "tetra,hexahedron20,polyhedron"), or NULL or "" for every
+ *              supported type.
+ * @param pairs nonzero for two cells sharing a facet instead of one (linear
+ *              types only).
+ */
+MIO_API mio_mesh* mio_reference_cells(const char* types, int32_t pairs);
+
 /**
  * Build a regular grid around a mesh and keep the cells its fill rule selects.
  *

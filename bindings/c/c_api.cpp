@@ -113,6 +113,7 @@
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
@@ -5506,6 +5507,7 @@ static_assert(static_cast<int>(meshioplusplus::SdfWatertightCheck::Off) == MIO_S
 // that nesting across the ABI keeps the two independently extensible.
 static_assert(sizeof(mio_sdf_opts) == 104, "mio_sdf_opts grew outside its reserved tail");
 static_assert(sizeof(mio_voxel_opts) == 112, "mio_voxel_opts grew outside its reserved tail");
+static_assert(sizeof(mio_gen_opts) == 160, "mio_gen_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
 static_assert(static_cast<int>(meshioplusplus::OctreeTransition::Hanging) == MIO_OCTREE_HANGING &&
@@ -5728,6 +5730,18 @@ void mio_voxel_opts_init(mio_voxel_opts* opts) {
     opts->watertight_check = MIO_SDF_WATERTIGHT_WARN;
 }
 
+void mio_gen_opts_init(mio_gen_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_gen_opts{};
+    opts->counts[0] = opts->counts[1] = opts->counts[2] = 8;
+    opts->size[0] = opts->size[1] = opts->size[2] = 1.0;
+    opts->radius = 1.0;
+    opts->height = 1.0;
+    opts->max_cells = 20000000;
+    opts->order = 1;
+}
+
 void mio_octree_opts_init(mio_octree_opts* opts) {
     if (!opts)
         return;
@@ -5835,6 +5849,139 @@ mio_mesh* mio_grid(const int64_t dims[3], const double origin[3], const double s
             spacing ? std::array<double, 3>{{spacing[0], spacing[1], spacing[2]}}
                     : std::array<double, 3>{{1.0, 1.0, 1.0}};
         return new mio_mesh{meshioplusplus::grid(d, o, s, max_cells)};
+    });
+}
+
+namespace {
+
+// The spelling of a generator's cell type, or its default when the options leave
+// it unset. A value the shape does not build is an error by name, not a silent
+// default.
+std::string capi_gen_cell(const mio_gen_opts& rOpts, const char* pShape, const char* pDefault,
+                          std::initializer_list<std::pair<int, const char*>> Allowed) {
+    if (rOpts.cell_type == MIO_GEN_DEFAULT)
+        return pDefault;
+    for (const auto& [value, name] : Allowed)
+        if (rOpts.cell_type == value)
+            return name;
+    throw meshioplusplus::ReadError(std::string("meshio++: ") + pShape +
+                                    ": cell_type " + std::to_string(rOpts.cell_type) +
+                                    " is not built by this shape");
+}
+
+mio_gen_opts capi_gen_defaults(const mio_gen_opts* pOpts) {
+    mio_gen_opts out;
+    if (pOpts) {
+        out = *pOpts;
+        if (out.pad != 0)
+            throw meshioplusplus::ReadError("meshio++: mio_gen_opts: pad must be zero");
+        for (int64_t r : out.reserved)
+            if (r != 0)
+                throw meshioplusplus::ReadError(
+                    "meshio++: mio_gen_opts: reserved fields must be zero");
+    } else {
+        mio_gen_opts_init(&out);
+    }
+    if (out.order == 0)
+        out.order = 1;
+    return out;
+}
+
+}  // namespace
+
+mio_mesh* mio_rectangle(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "rectangle", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        static const char* const splits[] = {"zigzag", "up", "down", "center"};
+        if (o.split < 0 || o.split > 3)
+            throw meshioplusplus::ReadError("meshio++: rectangle: split is not a mio_gen_split");
+        return new mio_mesh{meshioplusplus::rectangle(
+            {{o.counts[0], o.counts[1]}}, {{o.size[0], o.size[1]}},
+            {{o.origin[0], o.origin[1], o.origin[2]}}, type, splits[o.split], o.order,
+            o.max_cells)};
+    });
+}
+
+mio_mesh* mio_box(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type =
+            capi_gen_cell(o, "box", "hexahedron",
+                          {{MIO_GEN_HEXAHEDRON, "hexahedron"},
+                           {MIO_GEN_TETRA, "tetra"},
+                           {MIO_GEN_WEDGE, "wedge"}});
+        return new mio_mesh{meshioplusplus::box(
+            {{o.counts[0], o.counts[1], o.counts[2]}}, {{o.size[0], o.size[1], o.size[2]}},
+            {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_disk(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "disk", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::disk(
+            o.radius, o.counts[0], {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order,
+            o.max_cells)};
+    });
+}
+
+mio_mesh* mio_uv_sphere(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "uv_sphere", "triangle", {{MIO_GEN_TRIANGLE, "triangle"}, {MIO_GEN_QUAD, "quad"}});
+        return new mio_mesh{meshioplusplus::uv_sphere(
+            o.radius, o.counts[0], o.counts[1], {{o.origin[0], o.origin[1], o.origin[2]}}, type,
+            o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_icosa_sphere(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            throw meshioplusplus::ReadError(
+                "meshio++: icosa_sphere: cell_type is not built by this shape");
+        return new mio_mesh{meshioplusplus::icosa_sphere(
+            o.radius, o.counts[0], {{o.origin[0], o.origin[1], o.origin[2]}}, o.order,
+            o.max_cells)};
+    });
+}
+
+mio_mesh* mio_cylinder(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "cylinder", "hexahedron",
+            {{MIO_GEN_HEXAHEDRON, "hexahedron"}, {MIO_GEN_WEDGE, "wedge"}});
+        return new mio_mesh{meshioplusplus::cylinder(
+            o.radius, o.height, o.counts[0], o.counts[1],
+            {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_reference_cells(const char* types, int32_t pairs) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        std::vector<std::string> names;
+        if (types) {
+            std::string current;
+            for (const char* p = types;; ++p) {
+                if (*p == ',' || *p == '\0') {
+                    if (!current.empty())
+                        names.push_back(current);
+                    current.clear();
+                    if (*p == '\0')
+                        break;
+                } else {
+                    current.push_back(*p);
+                }
+            }
+        }
+        return new mio_mesh{meshioplusplus::reference_cells(names, pairs != 0)};
     });
 }
 

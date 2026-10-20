@@ -158,6 +158,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
@@ -3948,6 +3949,110 @@ val grid_js(const val& rDims, const val& rOrigin, const val& rSpacing, double ma
     });
 }
 
+// The parametric generators (operations/primitives.hpp): `grid`'s siblings, and
+// like it bindings that take no input mesh. An absent (undefined / null) array
+// takes the C++ default.
+std::array<double, 3> prim_js_vec3(const val& rV, const std::array<double, 3>& rDefault,
+                                   bool PadZero) {
+    if (rV.isUndefined() || rV.isNull())
+        return rDefault;
+    const unsigned n = rV["length"].as<unsigned>();
+    if (n == 2 && PadZero)
+        return {{rV[0].as<double>(), rV[1].as<double>(), 0.0}};
+    if (n != 3)
+        throw std::invalid_argument("meshio++: expected an array of three numbers");
+    return {{rV[0].as<double>(), rV[1].as<double>(), rV[2].as<double>()}};
+}
+
+std::vector<std::int64_t> prim_js_counts(const val& rV, std::size_t N, std::int64_t Default) {
+    std::vector<std::int64_t> out(N, Default);
+    if (rV.isUndefined() || rV.isNull())
+        return out;
+    if (rV["length"].as<unsigned>() != N)
+        throw std::invalid_argument("meshio++: expected an array of " + std::to_string(N) +
+                                    " counts");
+    for (unsigned i = 0; i < N; ++i)
+        out[i] = static_cast<std::int64_t>(rV[i].as<double>());
+    return out;
+}
+
+val rectangle_js(const val& rDims, const val& rSize, const val& rOrigin,
+                 const std::string& rCellType, const std::string& rSplit, int order,
+                 double maxCells) {
+    return with_js_errors([&]() -> val {
+        const auto d = prim_js_counts(rDims, 2, 1);
+        std::array<double, 2> size{{1.0, 1.0}};
+        if (!rSize.isUndefined() && !rSize.isNull()) {
+            if (rSize["length"].as<unsigned>() != 2)
+                throw std::invalid_argument("meshio++: size expects two numbers");
+            size = {{rSize[0].as<double>(), rSize[1].as<double>()}};
+        }
+        return mesh_to_val(meshioplusplus::rectangle(
+            {{d[0], d[1]}}, size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true), rCellType,
+            rSplit, order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val box_js(const val& rDims, const val& rSize, const val& rOrigin, const std::string& rCellType,
+           int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        const auto d = prim_js_counts(rDims, 3, 1);
+        return mesh_to_val(meshioplusplus::box(
+            {{d[0], d[1], d[2]}}, prim_js_vec3(rSize, {{1.0, 1.0, 1.0}}, false),
+            prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false), rCellType, order,
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val disk_js(double radius, double n, const val& rCenter, const std::string& rCellType, int order,
+            double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::disk(
+            radius, static_cast<std::int64_t>(n), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            rCellType, order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val uv_sphere_js(double radius, double nu, double nv, const val& rCenter,
+                 const std::string& rCellType, int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::uv_sphere(
+            radius, static_cast<std::int64_t>(nu), static_cast<std::int64_t>(nv),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val icosa_sphere_js(double radius, double subdivisions, const val& rCenter, int order,
+                    double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::icosa_sphere(
+            radius, static_cast<std::int64_t>(subdivisions),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val cylinder_js(double radius, double height, double nxy, double nz, const val& rCenter,
+                const std::string& rCellType, int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::cylinder(
+            radius, height, static_cast<std::int64_t>(nxy), static_cast<std::int64_t>(nz),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val reference_cells_js(const val& rTypes, bool pairs) {
+    return with_js_errors([&]() -> val {
+        std::vector<std::string> types;
+        if (!rTypes.isUndefined() && !rTypes.isNull())
+            for (unsigned i = 0, n = rTypes["length"].as<unsigned>(); i < n; ++i)
+                types.push_back(rTypes[i].as<std::string>());
+        return mesh_to_val(meshioplusplus::reference_cells(types, pairs));
+    });
+}
+
 /**
  * @brief Build a regular grid around a mesh. Returns
  * `{mesh, dims, origin, spacing, numOccupied}`. Exactly one of `resolution` and
@@ -6970,6 +7075,13 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
+    emscripten::function("rectangle", &rectangle_js);
+    emscripten::function("box", &box_js);
+    emscripten::function("disk", &disk_js);
+    emscripten::function("uvSphere", &uv_sphere_js);
+    emscripten::function("icosaSphere", &icosa_sphere_js);
+    emscripten::function("cylinder", &cylinder_js);
+    emscripten::function("referenceCells", &reference_cells_js);
     emscripten::function("voxelize", &voxelize_js);
     emscripten::function("octree", &octree_js);
     emscripten::function("surfaceWatertightCheck", &surface_watertight_check_js);

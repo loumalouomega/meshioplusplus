@@ -1708,6 +1708,121 @@ function grid(dims; origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 1.0),
     Mesh(_check_ptr(ptr))
 end
 
+# --- parametric generators ----------------------------------------------------
+
+const _GEN_CELLS = Dict("" => Int32(0), "quad" => Int32(1), "triangle" => Int32(2),
+                        "hexahedron" => Int32(3), "tetra" => Int32(4), "wedge" => Int32(5))
+const _GEN_SPLITS = Dict("zigzag" => Int32(0), "up" => Int32(1), "down" => Int32(2),
+                         "center" => Int32(3))
+
+function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
+                   radius=1.0, height=1.0, max_cells=20_000_000, cell_type="", split="zigzag",
+                   order=1)
+    c = Int64[Int64(v) for v in counts]
+    length(c) <= 3 || throw(ArgumentError("meshio++: at most three counts"))
+    append!(c, fill(Int64(1), 3 - length(c)))
+    sz = Cdouble[Cdouble(v) for v in size]
+    append!(sz, fill(1.0, 3 - length(sz)))
+    o = Cdouble[Cdouble(v) for v in origin]
+    append!(o, fill(0.0, 3 - length(o)))
+    (length(sz) == 3 && length(o) == 3) ||
+        throw(ArgumentError("meshio++: size and origin take two or three entries"))
+    _CGenOpts((c[1], c[2], c[3]), (sz[1], sz[2], sz[3]), (o[1], o[2], o[3]),
+              Cdouble(radius), Cdouble(height), Int64(max_cells),
+              _code(_GEN_CELLS, cell_type, "cell type"), _code(_GEN_SPLITS, split, "split"),
+              Int32(order), Int32(0), ntuple(_ -> Int64(0), 6))
+end
+
+function _generate(sym::Symbol; kwargs...)
+    opts = _gen_opts(; kwargs...)
+    ptr = ccall(_sym(sym), Ptr{Cvoid}, (Ref{_CGenOpts},), opts)
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    rectangle(; dims=(1, 1), size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="quad",
+              split="zigzag", order=1, max_cells=20_000_000) -> Mesh
+
+A regular 2-D grid of quads or triangles at `z = origin[3]`, points x fastest. `split`
+(`"zigzag"`, `"up"`, `"down"`, `"center"`) lays out the triangles; `order=2` gives
+`quad8` / `triangle6` cells. Side regions `xmin`, `xmax`, `ymin`, `ymax`.
+"""
+rectangle(; dims=(1, 1), size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="quad",
+          split="zigzag", order=1, max_cells=20_000_000) =
+    _generate(:mio_rectangle; counts=dims, size=size, origin=origin, cell_type=cell_type,
+              split=split, order=order, max_cells=max_cells)
+
+"""
+    box(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
+        cell_type="hexahedron", order=1, max_cells=20_000_000) -> Mesh
+
+A regular 3-D grid of hexahedra, tetrahedra (six Kuhn tetrahedra per cell) or wedges.
+Side regions `xmin` ... `zmax`.
+"""
+box(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="hexahedron",
+    order=1, max_cells=20_000_000) =
+    _generate(:mio_box; counts=dims, size=size, origin=origin, cell_type=cell_type,
+              order=order, max_cells=max_cells)
+
+"""
+    disk(; radius=1.0, n=8, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+         max_cells=20_000_000) -> Mesh
+
+A disk of `n x n` quads (squircle map) or `n` rings of triangles. Side region `rim`.
+"""
+disk(; radius=1.0, n=8, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+     max_cells=20_000_000) =
+    _generate(:mio_disk; radius=radius, counts=(n,), origin=center, cell_type=cell_type,
+              order=order, max_cells=max_cells)
+
+"""
+    uv_sphere(; radius=1.0, nu=16, nv=8, center=(0.0, 0.0, 0.0), cell_type="triangle",
+              order=1, max_cells=20_000_000) -> Mesh
+
+A latitude / longitude sphere surface, oriented outward; `cell_type="quad"` gives quads
+between the rings and triangle caps.
+"""
+uv_sphere(; radius=1.0, nu=16, nv=8, center=(0.0, 0.0, 0.0), cell_type="triangle", order=1,
+          max_cells=20_000_000) =
+    _generate(:mio_uv_sphere; radius=radius, counts=(nu, nv), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells)
+
+"""
+    icosa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
+                 max_cells=20_000_000) -> Mesh
+
+A sphere surface of `20 * 4^subdivisions` triangles, oriented outward.
+"""
+icosa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
+             max_cells=20_000_000) =
+    _generate(:mio_icosa_sphere; radius=radius, counts=(subdivisions,), origin=center,
+              order=order, max_cells=max_cells)
+
+"""
+    cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
+             cell_type="hexahedron", order=1, max_cells=20_000_000) -> Mesh
+
+A solid cylinder along z, hexahedra or wedges. Side regions `side`, `top`, `bottom`.
+"""
+cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
+         cell_type="hexahedron", order=1, max_cells=20_000_000) =
+    _generate(:mio_cylinder; radius=radius, height=height, counts=(nxy, nz), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells)
+
+"""
+    reference_cells(types=String[]; pairs=false) -> Mesh
+
+One cell of each requested meshio type in its reference coordinates, side by side
+(every supported type when `types` is empty). `pairs=true` gives two cells sharing a
+facet, for linear types.
+"""
+function reference_cells(types=String[]; pairs::Bool=false)
+    names = join(String.(types), ",")
+    ptr = ccall(_sym(:mio_reference_cells), Ptr{Cvoid}, (Cstring, Int32), names,
+                Int32(pairs))
+    Mesh(_check_ptr(ptr))
+end
+
 """
     voxelize(m; resolution=nothing, cell_size=nothing, bounds=nothing, padding=0.0,
              padding_relative=0.0, fill=:all, sign=:pseudonormal,

@@ -2079,6 +2079,69 @@ SEXP R_mio_grid(SEXP dims, SEXP origin, SEXP spacing, SEXP max_cells) {
     return mio_r_wrap_mesh(out);
 }
 
+/* The parametric generators share one options struct; `shape` picks the entry
+ * point. cell_type and split arrive as names and are mapped here so the R layer
+ * and the other language bindings refuse the same spellings. */
+static int32_t mio_r_gen_cell(const char *name) {
+    if (name[0] == '\0') return MIO_GEN_DEFAULT;
+    if (strcmp(name, "quad") == 0) return MIO_GEN_QUAD;
+    if (strcmp(name, "triangle") == 0) return MIO_GEN_TRIANGLE;
+    if (strcmp(name, "hexahedron") == 0) return MIO_GEN_HEXAHEDRON;
+    if (strcmp(name, "tetra") == 0) return MIO_GEN_TETRA;
+    if (strcmp(name, "wedge") == 0) return MIO_GEN_WEDGE;
+    Rf_error("unknown cell_type '%s'", name);
+    return 0;
+}
+
+static int32_t mio_r_gen_split(const char *name) {
+    if (strcmp(name, "zigzag") == 0) return MIO_GEN_SPLIT_ZIGZAG;
+    if (strcmp(name, "up") == 0) return MIO_GEN_SPLIT_UP;
+    if (strcmp(name, "down") == 0) return MIO_GEN_SPLIT_DOWN;
+    if (strcmp(name, "center") == 0) return MIO_GEN_SPLIT_CENTER;
+    Rf_error("unknown split '%s'", name);
+    return 0;
+}
+
+SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius, SEXP height,
+                    SEXP cell_type, SEXP split, SEXP order, SEXP max_cells) {
+    mio_gen_opts opts;
+    mio_gen_opts_init(&opts);
+    SEXP c = PROTECT(Rf_coerceVector(counts, REALSXP));
+    if (Rf_xlength(c) < 1 || Rf_xlength(c) > 3) {
+        UNPROTECT(1);
+        Rf_error("`counts` must have 1 to 3 elements");
+    }
+    for (R_xlen_t i = 0; i < Rf_xlength(c); ++i) opts.counts[i] = (int64_t)REAL(c)[i];
+    for (R_xlen_t i = Rf_xlength(c); i < 3; ++i) opts.counts[i] = 1;
+    UNPROTECT(1);
+    mio_r_vec3(size, opts.size, "size");
+    mio_r_vec3(origin, opts.origin, "origin");
+    opts.radius = mio_r_double(radius, "radius");
+    opts.height = mio_r_double(height, "height");
+    opts.cell_type = mio_r_gen_cell(mio_r_string(cell_type, "cell_type"));
+    opts.split = mio_r_gen_split(mio_r_string(split, "split"));
+    opts.order = (int32_t)mio_r_int(order, "order");
+    opts.max_cells = mio_r_int64(max_cells, "max_cells");
+
+    const char *name = mio_r_string(shape, "shape");
+    mio_mesh *out = NULL;
+    if (strcmp(name, "rectangle") == 0) out = mio_rectangle(&opts);
+    else if (strcmp(name, "box") == 0) out = mio_box(&opts);
+    else if (strcmp(name, "disk") == 0) out = mio_disk(&opts);
+    else if (strcmp(name, "uv_sphere") == 0) out = mio_uv_sphere(&opts);
+    else if (strcmp(name, "icosa_sphere") == 0) out = mio_icosa_sphere(&opts);
+    else if (strcmp(name, "cylinder") == 0) out = mio_cylinder(&opts);
+    else Rf_error("unknown shape '%s'", name);
+    if (out == NULL) mio_r_fail(name);
+    return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_reference_cells(SEXP types, SEXP pairs) {
+    mio_mesh *out = mio_reference_cells(mio_r_string(types, "types"), mio_r_bool(pairs, "pairs"));
+    if (out == NULL) mio_r_fail("reference_cells");
+    return mio_r_wrap_mesh(out);
+}
+
 SEXP R_mio_voxelize(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds, SEXP padding,
                     SEXP padding_relative, SEXP fill, SEXP sign, SEXP attach_occupancy,
                     SEXP max_cells, SEXP watertight_check) {

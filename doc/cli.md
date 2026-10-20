@@ -1900,6 +1900,32 @@ build/configure.sh --cli --with-polyscope --build
 
 They are listed in `--help` in every build; without the flag `view` reports it (and points at [`snapshot`](#meshioplusplus-snapshot), which draws in a terminal with no viewer), and `screenshot` draws its PNG with the same software rasterizer instead of failing, noting that on stderr. The **prebuilt release binaries do not include the viewer** — they are deliberately dependency-free single files, and Polyscope needs OpenGL, GLFW and X11 — so they use `snapshot`. Use the Python CLI (`pip install meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you want an interactive window without building from source.
 
+## `generate`
+
+```bash
+meshioplusplus generate box block.vtu --dims 8,8,8 --cell-type tetra --order 2
+meshioplusplus generate uv-sphere ball.vtu --radius 2 --nu 32 --nv 16 --cell-type quad
+meshioplusplus generate reference-cells cells.vtu --types tetra,hexahedron20,polyhedron
+```
+
+Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder` or `reference-cells`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
+
+| flag | shapes | meaning |
+|---|---|---|
+| `--dims nx,ny[,nz]` | `rectangle`, `box` | cell counts |
+| `--size lx,ly[,lz]` | `rectangle`, `box` | side lengths |
+| `--origin x,y[,z]` | `rectangle`, `box` | lo corner |
+| `--center x,y,z` | `disk`, `uv-sphere`, `icosa-sphere`, `cylinder` | centre |
+| `--radius R` / `--height H` | round shapes / `cylinder` | radius and height |
+| `--n N` / `--nu N --nv N` / `--subdivisions N` / `--nxy N --nz N` | `disk` / `uv-sphere` / `icosa-sphere` / `cylinder` | the counts of each shape |
+| `--cell-type T` | all but `icosa-sphere`, `reference-cells` | `quad`, `triangle`, `hexahedron`, `tetra` or `wedge`, as the shape allows |
+| `--split S` | `rectangle` | `zigzag`, `up`, `down` or `center` triangle layout |
+| `--order 2` | all but `reference-cells` | quadratic cells with mid-edge nodes on the exact geometry |
+| `--max-cells N` | all but `reference-cells` | refuse above this many cells (default 20 000 000, 0 lifts it) |
+| `--types a,b` / `--pairs` | `reference-cells` | the cell types (all by default) / two cells sharing a facet |
+
+The summary lists the points, each cell block and each side region; `--quiet` suppresses it. See [`doc/primitives.md`](primitives.md).
+
 ## `voxelize`
 
 ```bash
