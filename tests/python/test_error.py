@@ -15,31 +15,7 @@ from meshioplusplus._error import _estimate_error_py
 
 def _hex_grid(n=3):
     """An ``n x n x n`` unit-cube hexahedron grid over ``[0, n]^3``."""
-    m = n + 1
-    pts = np.array(
-        [[i, j, k] for k in range(m) for j in range(m) for i in range(m)], dtype=float
-    )
-
-    def idx(i, j, k):
-        return (k * m + j) * m + i
-
-    conn = []
-    for k in range(n):
-        for j in range(n):
-            for i in range(n):
-                conn.append(
-                    [
-                        idx(i, j, k),
-                        idx(i + 1, j, k),
-                        idx(i + 1, j + 1, k),
-                        idx(i, j + 1, k),
-                        idx(i, j, k + 1),
-                        idx(i + 1, j, k + 1),
-                        idx(i + 1, j + 1, k + 1),
-                        idx(i, j + 1, k + 1),
-                    ]
-                )
-    return mp.Mesh(pts, [("hexahedron", np.array(conn, dtype=np.int64))])
+    return mp.box((n, n, n), (n, n, n))
 
 
 def _linear_mesh():

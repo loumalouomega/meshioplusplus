@@ -9,10 +9,7 @@ from meshioplusplus import crop
 
 def _quad_grid():
     # 2x1 grid of quads (3x2 points), x in [0,2], y in [0,1]
-    pts = np.array(
-        [[0, 0, 0], [1, 0, 0], [2, 0, 0], [0, 1, 0], [1, 1, 0], [2, 1, 0]], float
-    )
-    return meshioplusplus.Mesh(pts, [("quad", np.array([[0, 1, 4, 3], [1, 2, 5, 4]]))])
+    return meshioplusplus.rectangle((2, 1), (2, 1))
 
 
 def test_bbox_keeps_cells_inside():

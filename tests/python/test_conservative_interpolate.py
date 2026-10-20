@@ -19,54 +19,7 @@ needs_core = pytest.mark.skipif(
 
 def _quad_grid(n, scale):
     """An n x n grid of quads over [0, n*scale]^2."""
-    m = n + 1
-    pts = np.array(
-        [[i * scale, j * scale, 0.0] for j in range(m) for i in range(m)], float
-    )
-
-    def pid(i, j):
-        return j * m + i
-
-    cells = np.array(
-        [
-            [pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)]
-            for j in range(n)
-            for i in range(n)
-        ]
-    )
-    return meshioplusplus.Mesh(pts, [("quad", cells)])
-
-
-def _hex_grid(n, scale):
-    """An n x n x n grid of hexahedra over [0, n*scale]^3."""
-    m = n + 1
-    pts = []
-    for k in range(m):
-        for j in range(m):
-            for i in range(m):
-                pts.append([i * scale, j * scale, k * scale])
-    pts = np.array(pts, float)
-
-    def pid(i, j, k):
-        return (k * m + j) * m + i
-
-    cells = []
-    for k in range(n):
-        for j in range(n):
-            for i in range(n):
-                cells.append(
-                    [
-                        pid(i, j, k),
-                        pid(i + 1, j, k),
-                        pid(i + 1, j + 1, k),
-                        pid(i, j + 1, k),
-                        pid(i, j, k + 1),
-                        pid(i + 1, j, k + 1),
-                        pid(i + 1, j + 1, k + 1),
-                        pid(i, j + 1, k + 1),
-                    ]
-                )
-    return meshioplusplus.Mesh(pts, [("hexahedron", np.array(cells))])
+    return meshioplusplus.rectangle((n, n), (n * scale, n * scale))
 
 
 def _quad_weighted_sum(mesh, name):

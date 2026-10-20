@@ -35,17 +35,7 @@ _RESERVED = (
 
 def _tri_grid(n):
     """Two triangles per cell of an ``n x n`` grid over the unit square."""
-    pts = [[float(i), float(j), 0.0] for j in range(n + 1) for i in range(n + 1)]
-    cells = []
-    for j in range(n):
-        for i in range(n):
-            a = j * (n + 1) + i
-            b = a + 1
-            cc = a + n + 2
-            dd = a + n + 1
-            cells.append([a, b, cc])
-            cells.append([a, cc, dd])
-    return mp.Mesh(np.array(pts), [("triangle", np.array(cells, dtype=np.int64))])
+    return mp.rectangle((n, n), (n, n), cell_type="triangle", split="up")
 
 
 def _refine_center(coarse, levels=1):

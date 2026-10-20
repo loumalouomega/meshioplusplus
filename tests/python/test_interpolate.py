@@ -11,33 +11,7 @@ from . import helpers_data
 
 def _hex_grid(n, shift=0.0):
     """An n x n x n block of unit-cube hexahedra over [shift, n + shift]^3."""
-    m = n + 1
-    # Point id (k * m + j) * m + i carries coordinates (i, j, k).
-    points = np.array(
-        [[i, j, k] for k in range(m) for j in range(m) for i in range(m)], dtype=float
-    )
-    points += shift
-
-    def pid(i, j, k):
-        return (k * m + j) * m + i
-
-    cells = []
-    for k in range(n):
-        for j in range(n):
-            for i in range(n):
-                cells.append(
-                    [
-                        pid(i, j, k),
-                        pid(i + 1, j, k),
-                        pid(i + 1, j + 1, k),
-                        pid(i, j + 1, k),
-                        pid(i, j, k + 1),
-                        pid(i + 1, j, k + 1),
-                        pid(i + 1, j + 1, k + 1),
-                        pid(i, j + 1, k + 1),
-                    ]
-                )
-    return mp.Mesh(points, [("hexahedron", np.array(cells, dtype=np.int64))])
+    return mp.box((n, n, n), (n, n, n), origin=(shift, shift, shift))
 
 
 def _quad_grid_2d(n):
