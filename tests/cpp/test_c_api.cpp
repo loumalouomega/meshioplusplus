@@ -4058,6 +4058,102 @@ TEST(CApi, GridDefaultsOriginAndSpacingWhenNull) {
     mio_mesh_free(g);
 }
 
+TEST(CApi, GenOptsInitDefaultsAndLayout) {
+    mio_gen_opts opts;
+    std::memset(&opts, 0xAB, sizeof opts);
+    mio_gen_opts_init(&opts);
+    EXPECT_EQ(sizeof(mio_gen_opts), 160u);
+    EXPECT_EQ(opts.counts[0], 8);
+    EXPECT_EQ(opts.size[2], 1.0);
+    EXPECT_EQ(opts.radius, 1.0);
+    EXPECT_EQ(opts.order, 1);
+    EXPECT_EQ(opts.max_cells, 20000000);
+    EXPECT_EQ(opts.pad, 0);
+    for (int64_t r : opts.reserved)
+        EXPECT_EQ(r, 0);
+    mio_gen_opts_init(nullptr);  // a NULL options pointer is a no-op, not a crash
+}
+
+TEST(CApi, GeneratorsBuildMeshesAndRefuseBadRequests) {
+    // NULL options mean mio_gen_opts_init's defaults: 8 x 8 x 8 hexahedra.
+    mio_mesh* b = mio_box(nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(b), 9 * 9 * 9);
+    EXPECT_EQ(block_type(b, 0), "hexahedron");
+    mio_mesh_free(b);
+
+    mio_gen_opts o;
+    mio_gen_opts_init(&o);
+    o.counts[0] = o.counts[1] = o.counts[2] = 2;
+    o.cell_type = MIO_GEN_TETRA;
+    o.order = 2;
+    b = mio_box(&o);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(block_type(b, 0), "tetra10");
+    mio_mesh_free(b);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 3;
+    o.counts[1] = 2;
+    o.cell_type = MIO_GEN_TRIANGLE;
+    o.split = MIO_GEN_SPLIT_CENTER;
+    mio_mesh* r = mio_rectangle(&o);
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(r), 12 + 6);
+    mio_mesh_free(r);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 8;
+    o.counts[1] = 4;
+    o.cell_type = MIO_GEN_QUAD;
+    mio_mesh* s = mio_uv_sphere(&o);
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(s), 2);
+    mio_mesh_free(s);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 1;
+    mio_mesh* ico = mio_icosa_sphere(&o);
+    ASSERT_NE(ico, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(ico), 42);
+    mio_mesh_free(ico);
+
+    for (auto fn : {mio_disk, mio_cylinder}) {
+        mio_gen_opts_init(&o);
+        o.counts[0] = 2;
+        o.counts[1] = 2;
+        mio_mesh* m = fn(&o);
+        ASSERT_NE(m, nullptr);
+        mio_mesh_free(m);
+    }
+
+    mio_mesh* ref = mio_reference_cells("tetra,wedge", 0);
+    ASSERT_NE(ref, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(ref), 2);
+    mio_mesh_free(ref);
+    ref = mio_reference_cells(nullptr, 1);
+    ASSERT_NE(ref, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(ref), 7);
+    mio_mesh_free(ref);
+
+    // A cell type the shape does not build, a nonzero reserved tail, a bad
+    // count, an exceeded budget and an unknown type all fail rather than crash.
+    mio_gen_opts_init(&o);
+    o.cell_type = MIO_GEN_WEDGE;
+    EXPECT_EQ(mio_disk(&o), nullptr);
+    mio_gen_opts_init(&o);
+    o.reserved[2] = 1;
+    EXPECT_EQ(mio_box(&o), nullptr);
+    mio_gen_opts_init(&o);
+    o.counts[0] = -1;
+    EXPECT_EQ(mio_box(&o), nullptr);
+    mio_gen_opts_init(&o);
+    o.counts[0] = o.counts[1] = o.counts[2] = 100;
+    o.max_cells = 1000;
+    EXPECT_EQ(mio_box(&o), nullptr);
+    EXPECT_EQ(mio_reference_cells("blob", 0), nullptr);
+}
+
 TEST(CApi, VoxelOptsInitDefaultsAndVoxelize) {
     mio_voxel_opts opts;
     mio_voxel_opts_init(&opts);
