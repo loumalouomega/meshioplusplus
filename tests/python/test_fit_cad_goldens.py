@@ -6,8 +6,8 @@ The STEP bytes, the returned mesh and the report of each fixture are pinned in
 keyed ``"native"``; the OpenCASCADE backend's by the kernel version the core
 links (``_core.__occt_version__``), since its bytes depend on it.
 
-The digests rest on the fixtures' floating-point bits (NumPy's ``sin``/``cos``
-included) and on the kernel's build, so the check is opt-in:
+The digests rest on the kernel's build and on the C library, so the check is
+opt-in:
 ``MESHIOPLUSPLUS_FIT_CAD_GOLDENS=1``, which the CI OpenCASCADE legs set.
 ``MESHIOPLUSPLUS_RECORD_GOLDENS=1`` prints the table to paste instead.
 """
@@ -24,14 +24,7 @@ import pytest
 import meshioplusplus as mio
 from meshioplusplus import _fit_cad
 
-from .analytic_surfaces import (
-    box_skin,
-    filleted_plate,
-    rounded_box,
-    threaded_rod,
-    turned_part,
-    wavy_capped,
-)
+from .analytic_surfaces import box_skin, jitter
 
 GOLDENS = Path(__file__).with_name("fit_cad_goldens.json")
 CHECK = os.environ.get("MESHIOPLUSPLUS_FIT_CAD_GOLDENS", "0") not in ("", "0")
@@ -68,15 +61,13 @@ def _saddle_box(n):
     return box
 
 
+# Trig-free skins only: NumPy dispatches float64 sin/cos to SIMD kernels by
+# CPU, so a fixture built with them can differ in its last bits between
+# machines. The C++ table (test_fit_cad_goldens.cpp) covers the curved ones.
 FIXTURES = {
     "box": lambda: _fitted(box_skin(3)),
-    "turned_part": lambda: _fitted(turned_part(), 1.0, 2e-3),
-    "filleted_plate": filleted_plate,
     "saddle_box": lambda: _fitted(_saddle_box(24)),
-    "wavy_capped": lambda: _fitted(wavy_capped()),
-    "threaded_rod": lambda: _fitted(threaded_rod()),
-    "rounded_box": lambda: mio.fit_primitives(rounded_box()),
-    "noisy_turned_part": lambda: _fitted(turned_part(noise=1e-3), 1.0, 2e-3, 20),
+    "noisy_box": lambda: _fitted(jitter(box_skin(6), 1e-4), tolerance=2e-3),
 }
 
 
