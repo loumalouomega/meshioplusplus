@@ -225,7 +225,11 @@ class MeshioplusplusConan(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
-        for license_file in ("LICENSE", "LICENSE-BINARIES.md", "THIRD_PARTY_NOTICES.md"):
+        for license_file in (
+            "LICENSE",
+            "LICENSE-BINARIES.md",
+            "THIRD_PARTY_NOTICES.md",
+        ):
             copy(
                 self,
                 license_file,
