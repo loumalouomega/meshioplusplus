@@ -31,6 +31,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -59,37 +60,14 @@ Mesh one_tetra(const std::vector<double>& p0, const std::vector<double>& p1,
 // An n x n grid of unit quads in the z = 0 plane, scaled to cover
 // [0, n * scale] x [0, n * scale].
 Mesh quad_grid(int n, double scale) {
-    const int m = n + 1;
-    std::vector<std::vector<double>> pts;
-    for (int j = 0; j < m; ++j)
-        for (int i = 0; i < m; ++i)
-            pts.push_back({static_cast<double>(i) * scale, static_cast<double>(j) * scale, 0.0});
-    auto pid = [m](int i, int j) { return static_cast<std::int64_t>(j * m + i); };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < n; ++i)
-            cells.push_back({pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)});
-    return mt::make_mesh(std::move(pts), "quad", std::move(cells));
+    const double side = static_cast<double>(n) * scale;
+    return meshioplusplus::rectangle({{n, n}}, {{side, side}});
 }
 
 // An n x n x n grid of unit hexahedra, scaled to cover [0, n*scale]^3.
 Mesh hex_grid(int n, double scale) {
-    const int m = n + 1;
-    std::vector<std::vector<double>> pts;
-    for (int k = 0; k < m; ++k)
-        for (int j = 0; j < m; ++j)
-            for (int i = 0; i < m; ++i)
-                pts.push_back({static_cast<double>(i) * scale, static_cast<double>(j) * scale,
-                               static_cast<double>(k) * scale});
-    auto pid = [m](int i, int j, int k) { return static_cast<std::int64_t>((k * m + j) * m + i); };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (int k = 0; k < n; ++k)
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i < n; ++i)
-                cells.push_back({pid(i, j, k), pid(i + 1, j, k), pid(i + 1, j + 1, k),
-                                 pid(i, j + 1, k), pid(i, j, k + 1), pid(i + 1, j, k + 1),
-                                 pid(i + 1, j + 1, k + 1), pid(i, j + 1, k + 1)});
-    return mt::make_mesh(std::move(pts), "hexahedron", std::move(cells));
+    const double side = static_cast<double>(n) * scale;
+    return meshioplusplus::box({{n, n, n}}, {{side, side, side}});
 }
 
 // Total sum(value * measure) over a mesh's cell_data array `name`, weighting

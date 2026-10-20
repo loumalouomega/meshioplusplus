@@ -46,6 +46,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -121,24 +122,11 @@ NDArray linear_vector(const std::vector<std::vector<double>>& rPts, const double
 // A structured nx x ny x nz hexahedron grid on [0,nx]x[0,ny]x[0,nz], shifted by
 // `off` so the same builder serves the translation-invariance test.
 Mesh hex_grid(std::size_t nx, std::size_t ny, std::size_t nz, double off = 0.0) {
-    std::vector<std::vector<double>> pts;
-    for (std::size_t k = 0; k <= nz; ++k)
-        for (std::size_t j = 0; j <= ny; ++j)
-            for (std::size_t i = 0; i <= nx; ++i)
-                pts.push_back({static_cast<double>(i) + off, static_cast<double>(j) + off,
-                               static_cast<double>(k) + off});
-    auto vid = [&](std::size_t i, std::size_t j, std::size_t k) {
-        return static_cast<std::int64_t>((k * (ny + 1) + j) * (nx + 1) + i);
-    };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (std::size_t k = 0; k < nz; ++k)
-        for (std::size_t j = 0; j < ny; ++j)
-            for (std::size_t i = 0; i < nx; ++i)
-                cells.push_back({vid(i, j, k), vid(i + 1, j, k), vid(i + 1, j + 1, k),
-                                 vid(i, j + 1, k), vid(i, j, k + 1), vid(i + 1, j, k + 1),
-                                 vid(i + 1, j + 1, k + 1), vid(i, j + 1, k + 1)});
-    Mesh m = mt::make_mesh(std::move(pts), "hexahedron", std::move(cells));
-    return m;
+    return meshioplusplus::box(
+        {{static_cast<std::int64_t>(nx), static_cast<std::int64_t>(ny),
+          static_cast<std::int64_t>(nz)}},
+        {{static_cast<double>(nx), static_cast<double>(ny), static_cast<double>(nz)}},
+        {{off, off, off}});
 }
 
 // Asserts a cell's 3-component gradient equals (a, b, c).

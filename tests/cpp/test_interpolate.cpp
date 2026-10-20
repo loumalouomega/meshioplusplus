@@ -30,6 +30,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -47,37 +48,14 @@ namespace md = meshioplusplus::detail;
 
 // An n x n x n block of unit-cube hexahedra over [shift, n + shift]^3.
 Mesh hex_grid(int n, double shift = 0.0) {
-    const int m = n + 1;
-    std::vector<std::vector<double>> pts;
-    for (int k = 0; k < m; ++k)
-        for (int j = 0; j < m; ++j)
-            for (int i = 0; i < m; ++i)
-                pts.push_back({static_cast<double>(i) + shift, static_cast<double>(j) + shift,
-                               static_cast<double>(k) + shift});
-    auto pid = [m](int i, int j, int k) { return static_cast<std::int64_t>((k * m + j) * m + i); };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (int k = 0; k < n; ++k)
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i < n; ++i)
-                cells.push_back({pid(i, j, k), pid(i + 1, j, k), pid(i + 1, j + 1, k),
-                                 pid(i, j + 1, k), pid(i, j, k + 1), pid(i + 1, j, k + 1),
-                                 pid(i + 1, j + 1, k + 1), pid(i, j + 1, k + 1)});
-    return mt::make_mesh(std::move(pts), "hexahedron", std::move(cells));
+    return meshioplusplus::box(
+        {{n, n, n}}, {{static_cast<double>(n), static_cast<double>(n), static_cast<double>(n)}},
+        {{shift, shift, shift}});
 }
 
 // An n x n grid of unit quads in the z = 0 plane over [0, n]^2.
 Mesh quad_grid_2d(int n) {
-    const int m = n + 1;
-    std::vector<std::vector<double>> pts;
-    for (int j = 0; j < m; ++j)
-        for (int i = 0; i < m; ++i)
-            pts.push_back({static_cast<double>(i), static_cast<double>(j), 0.0});
-    auto pid = [m](int i, int j) { return static_cast<std::int64_t>(j * m + i); };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < n; ++i)
-            cells.push_back({pid(i, j), pid(i + 1, j), pid(i + 1, j + 1), pid(i, j + 1)});
-    return mt::make_mesh(std::move(pts), "quad", std::move(cells));
+    return meshioplusplus::rectangle({{n, n}}, {{static_cast<double>(n), static_cast<double>(n)}});
 }
 
 // A point-cloud target (points only, no cell blocks).

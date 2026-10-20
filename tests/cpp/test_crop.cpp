@@ -28,6 +28,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -42,8 +43,7 @@ using meshioplusplus::RefineCompare;
 
 // 2x1 grid of quads (points x in [0,2], y in [0,1]).
 Mesh quad_grid() {
-    return mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}}, "quad",
-                         {{0, 1, 4, 3}, {1, 2, 5, 4}});
+    return meshioplusplus::rectangle({{2, 1}}, {{2.0, 1.0}});
 }
 
 std::size_t count_used(const Mesh& m) {

@@ -43,6 +43,7 @@
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 using meshioplusplus::agglomerate;
 using meshioplusplus::AgglomerateOptions;
@@ -226,26 +227,10 @@ namespace {
 
 // An nx x ny x nz grid of unit hexahedra, x fastest.
 Mesh hex_grid(std::size_t nx, std::size_t ny, std::size_t nz) {
-    std::vector<std::vector<double>> pts;
-    const auto id = [&](std::size_t i, std::size_t j, std::size_t k) {
-        return static_cast<std::int64_t>((k * (ny + 1) + j) * (nx + 1) + i);
-    };
-    for (std::size_t k = 0; k <= nz; ++k)
-        for (std::size_t j = 0; j <= ny; ++j)
-            for (std::size_t i = 0; i <= nx; ++i)
-                pts.push_back(
-                    {static_cast<double>(i), static_cast<double>(j), static_cast<double>(k)});
-    std::vector<std::vector<std::int64_t>> cells;
-    for (std::size_t k = 0; k < nz; ++k)
-        for (std::size_t j = 0; j < ny; ++j)
-            for (std::size_t i = 0; i < nx; ++i)
-                cells.push_back({id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
-                                 id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
-                                 id(i, j + 1, k + 1)});
-    Mesh m;
-    m.AssignPoints(mt::points_from(pts));
-    m.AddCellBlock("hexahedron", mt::conn_from(cells));
-    return m;
+    return meshioplusplus::box(
+        {{static_cast<std::int64_t>(nx), static_cast<std::int64_t>(ny),
+          static_cast<std::int64_t>(nz)}},
+        {{static_cast<double>(nx), static_cast<double>(ny), static_cast<double>(nz)}});
 }
 
 // FNV-1a over a polyhedron block read back through `CellView`: the cell count,

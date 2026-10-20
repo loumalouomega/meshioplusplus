@@ -38,6 +38,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "mesh_fixtures.hpp"
 
 using namespace meshioplusplus;
@@ -63,22 +64,8 @@ Mesh tri_with(double U) {
 
 // An nx x ny x nz grid of unit hexahedra.
 Mesh hex_grid(int Nx, int Ny, int Nz) {
-    auto id = [&](int i, int j, int k) {
-        return static_cast<std::int64_t>((k * (Ny + 1) + j) * (Nx + 1) + i);
-    };
-    std::vector<std::vector<double>> pts;
-    for (int k = 0; k <= Nz; ++k)
-        for (int j = 0; j <= Ny; ++j)
-            for (int i = 0; i <= Nx; ++i)
-                pts.push_back({double(i), double(j), double(k)});
-    std::vector<std::vector<std::int64_t>> hexes;
-    for (int k = 0; k < Nz; ++k)
-        for (int j = 0; j < Ny; ++j)
-            for (int i = 0; i < Nx; ++i)
-                hexes.push_back({id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
-                                 id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
-                                 id(i, j + 1, k + 1)});
-    return mt::make_mesh(pts, "hexahedron", hexes);
+    return meshioplusplus::box({{Nx, Ny, Nz}}, {{static_cast<double>(Nx), static_cast<double>(Ny),
+                                                 static_cast<double>(Nz)}});
 }
 
 // Every face (as a sorted node set) of every polyhedron; a conforming mesh
