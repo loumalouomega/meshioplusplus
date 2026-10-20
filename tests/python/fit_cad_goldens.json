@@ -16,6 +16,23 @@
       "step": "8513b9e0fe35ca792754276270f0622d11041c86eac854e214529306461cc50c"
     }
   },
+  "7.9.3": {
+    "box": {
+      "mesh": "da1dd521fd981bccb70d07bafa3b309f8898d5b57d7c5e29ae68a8160a27ea2e",
+      "report": "7059e3a613bf8011dba7599bf8a811ad7059c7fa37248ab267cc9f7194dfe03d",
+      "step": "2cec83c7fbd6148a87a7a486923e370e19f38a126d971e8869e429bd62b598fd"
+    },
+    "noisy_box": {
+      "mesh": "deb8e66a18b12d034a95e70b12d927004d9d34672e20537a7b6c6f4bf05937ab",
+      "report": "1f3b5563bf23a5bd517de884b40e2f3d3283821871b32e65694ec8b5a982bfe5",
+      "step": "62e4ee880ac88d4411399aa22f529882f628440fb7dc952073f1835746a459fc"
+    },
+    "saddle_box": {
+      "mesh": "8fca43103ec815a6001c70873df2d7300d2a6615ea23cb77332a3de5224ec356",
+      "report": "d9fde50db884a66afcd0c1536a1c13af8a9ad733256ee59196901e47eb54e6dd",
+      "step": "e0b89a60011b793a262bf63f8d2c0daa8753d08330ef6ebf778c8326fd4631aa"
+    }
+  },
   "native": {
     "box": {
       "mesh": "2a64864e53233420a3bd03f28af3eeaff2c422ae8017f26f5e9046f1fe2362bf",

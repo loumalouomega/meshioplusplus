@@ -83,6 +83,15 @@ const std::vector<FcgRow> kFcgOcct = {
     {"7.6.3", "threaded_rod", 0x22435a2b7dacfebcull, 0xe1bdaeea9124bbc7ull, 0xb9cd0dfb82c69aeeull},
     {"7.6.3", "rounded_box", 0x8d27c21191658323ull, 0x99d00ac337bfa4dcull, 0x9ea826ae8fb9ae2full},
     {"7.6.3", "noisy_turned_part", 0x18df6a7b3bd131b5ull, 0x6bac3ed931f55ea7ull, 0x61cc8c40a6897004ull},
+    {"7.9.3", "box", 0xc83eed5f7e37ebc6ull, 0xe073b156cc1154ecull, 0x73c6e572e1989b8full},
+    {"7.9.3", "capped_cylinder", 0x8abacb628e6e6e76ull, 0xb9e9056abf4d1125ull, 0xacf88b6ee280f77cull},
+    {"7.9.3", "turned_part", 0xb693bb93eeceb1a1ull, 0x9ce1738499348461ull, 0xe44910bdd1dc1d25ull},
+    {"7.9.3", "filleted_plate", 0xe3dd58b0603d52dfull, 0xf07fbce0db843999ull, 0x31113b57e28ad516ull},
+    {"7.9.3", "saddle_box", 0x599c75f73e419a43ull, 0x1bc93b2174b358beull, 0xe85f3073487172aeull},
+    {"7.9.3", "wavy_capped", 0x3f08dd859f6cc7aeull, 0x95dd65e32746a786ull, 0x9868991cd0ab0304ull},
+    {"7.9.3", "threaded_rod", 0xa7aff9a64cf50849ull, 0x32b791b5e27de7daull, 0xb9cd0dfb82c69aeeull},
+    {"7.9.3", "rounded_box", 0x9efd222ffa06b308ull, 0x9aff1debc503a57cull, 0x9ea826ae8fb9ae2full},
+    {"7.9.3", "noisy_turned_part", 0x61d58d03515e9c54ull, 0x2aac06dc4866d59eull, 0x61cc8c40a6897004ull},
     // clang-format on
 };
 
