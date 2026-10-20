@@ -233,7 +233,7 @@ Open work only; what shipped is in `CHANGELOG.md`.
 
 1. **Format reach ([§1](#_1-format-reach))** — the checks against the vendor tools, as licences or files the tools wrote appear; they are what is left of reader and writer parity.
 2. **The OSS-Fuzz submission ([§2](#_2-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
-3. **Primitive constructors ([§3](#_3-operations))** — tier 1 and the reference cells have shipped, and most of the test fixtures they replace are retired; what remains is the other tiers (planar domains, surfaces, solids, lines and points), as tests and notebooks ask for them, since they are prerequisites of `extrude`/`revolve`, the 2-D `voxelize` and the octree's fixtures.
+3. **Primitive constructors ([§3](#_3-operations))** — tier 1 and the reference cells have shipped, and most of the test fixtures they replace are retired; what remains is the other tiers (planar domains, surfaces, solids, lines and points), as tests and notebooks ask for them, since they are prerequisites of `extrude`/`revolve` and of the octree's fixtures (the 2-D `voxelize` they were once listed under has shipped).
 4. **Octree leftovers ([§3](#_3-operations))** — `plane=` on `voxelize` with the next ABI bump, and the `check_conformity` probes once 3.2.1 lands.
 5. **The MMG backend ([§3](#_3-operations))** — Medit `.sol` first, since it needs no link and opens the file route; then `adapt`, `discretize_levelset`, `mesh_domain` and, with ELAS, `move`.
 6. **Registration ([§4](#_4-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else; the viewer's look (4.5) and the dataset manager's thumbnails (4.6) need no decision first and can run beside them.
