@@ -120,6 +120,14 @@ absolute ones.
   collided with `namespace fs = std::filesystem;`, which the amalgamation
   itself declares. When in doubt, scope scratch variables in `{ }` or give
   them a distinctive name.
+- **Call the notebook helper as `mio_nb::render(mesh)`, not `render(mesh)`.**
+  With `using namespace meshioplusplus;` and `using namespace mio_nb;` both in
+  scope, a one-argument `render(mesh)` is ambiguous: the core has its own
+  software rasterizer, `meshioplusplus::render(const Mesh&, const RenderOptions&)`
+  (see `07_terminal_rendering.ipynb`), whose options argument has a default.
+  Calls with more arguments (`render(mesh, "z", "coolwarm", true)`) and the
+  rasterizer's `render(mesh, options)` resolve fine, so only the one-argument
+  form needs the qualifier.
 - **No auto-print of a cell's trailing expression** (unlike classic
   xeus-cling notebooks) -- this build of xeus-cpp (0.10.0) does not evaluate
   and display a bare trailing value. Use `std::cout` for text and
