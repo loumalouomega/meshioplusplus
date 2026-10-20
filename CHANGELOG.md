@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.9.0 (2026-10-20)
 
 - **Clean skin to CAD: one face per surface, not per triangle.** A CAD-exported STL now comes out as the solid it was tessellated from — each flat region one planar face with its holes as inner loops, each bore, rounded end, cone, sphere or torus one analytic face, the edges between them lines and circles — in the spirit of stlToSolid and stl2curves, and without a CAD kernel. See `doc/cad_fit.md`.
 - `segment(method="primitive", tolerance=1e-3)` ends a patch where the plane, sphere, cylinder, cone or torus its facets lie on ends, so a fillet comes apart from the planes it is tangent to and a finely tessellated bore stays whole: a smooth area one primitive explains is one patch, any other is grown from seeds at 2% of the tolerance, and what no primitive explains is grown by angles. Core only; `method="angle"` stays the default. See `doc/segment.md#primitive-method`.
