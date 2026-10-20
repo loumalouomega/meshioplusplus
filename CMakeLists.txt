@@ -1800,6 +1800,14 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
       get_filename_component(_fmt ${_d} NAME)
       add_test(NAME fuzz_regression_${_fmt}
                COMMAND meshioplusplus_fuzz_replay -format=${_fmt} ${_d})
+      # The h5m input is a huge metadata allocation that HDF5 reports as an
+      # error only when null allocations are allowed, as the instrumented
+      # HDF5 campaign runs (fuzz.yml). Keep the sanitizer policy of the leg
+      # and allow null allocations for this one replay.
+      if(_fmt STREQUAL "h5m")
+        set_tests_properties(fuzz_regression_h5m PROPERTIES
+          ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1:strict_string_checks=1:allocator_may_return_null=1")
+      endif()
     endif()
   endforeach()
 endif()
