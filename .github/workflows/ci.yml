@@ -650,12 +650,13 @@ jobs:
           python -m pytest tests/python/test_partition.py -v
 
   # The OpenCASCADE backend of fit_cad (roadmap 6.3). Its own job, like
-  # KaHIP's: OCCT is LGPL-2.1 and bring-your-own, so no default leg, wheel,
-  # lean WASM build or release CLI binary carries it, and those legs exercise
-  # the named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead (the
-  # full WASM artifact links it, and wasm.yml tests that). Ubuntu
-  # 24.04's packages are OCCT 7.6, the supported floor; they export toolkit
-  # targets that link TBB, hence libtbb-dev.
+  # KaHIP's: OCCT is LGPL-2.1 and bring-your-own for source builds, so no
+  # default leg and no lean WASM build carries it, and those legs exercise
+  # the named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead. The
+  # PyPI wheels, the release CLI binaries and the full WASM artifact link a
+  # static OpenCASCADE (wheels.yml, cli.yml, wasm.yml); this job tests the
+  # system-package route. Ubuntu 24.04's packages are OCCT 7.6, the supported
+  # floor; they export toolkit targets that link TBB, hence libtbb-dev.
   occt:
     name: OpenCASCADE fit_cad backend
     needs: [lint]

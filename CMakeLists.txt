@@ -108,8 +108,9 @@ option(MESHIOPLUSPLUS_WASM_THREADS
 # cross-compiles -- OpenCASCADE, zstd, lz4 and the bzip2 port -- and named
 # meshioplusplus_wasm_full[_mt]. Only under it are those libraries probed for
 # a wasm target, and only in the prefix build/build-wasm-deps.sh --full built
-# (on CMAKE_FIND_ROOT_PATH); the lean build never picks them up. KaHIP, ADIOS2
-# and TecIO stay out of both artifacts (doc/wasm.md#what-stays-out).
+# (on CMAKE_FIND_ROOT_PATH); the lean build never picks them up. KaHIP is in
+# the full artifact only; ADIOS2 and TecIO stay out of both
+# (doc/wasm.md#what-stays-out).
 option(MESHIOPLUSPLUS_WASM_FULL
   "Emscripten only: build the full wasm artifact (OpenCASCADE, zstd, lz4, bzip2)" OFF)
 if(MESHIOPLUSPLUS_WASM_FULL AND NOT EMSCRIPTEN)

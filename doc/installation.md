@@ -6,9 +6,9 @@
 pip install meshioplusplus
 ```
 
-The base install only requires NumPy. Most text-based formats work without any additional dependencies.
+The base install requires NumPy and Rich (the CLI's output library). Most text-based formats work without any additional dependencies.
 
-## Full install (all optional dependencies)
+## The `[all]` extra
 
 ```
 pip install meshioplusplus[all]
@@ -20,6 +20,27 @@ This pulls in:
 |---------|-------------|
 | `h5py` | CGNS, H5M, HMF, MED, XDMF (HDF data format) |
 | `netCDF4` | Exodus |
+| `polyscope` | the desktop viewer backend of `view()` and `screenshot()` |
+
+The PyPI wheels are built without HDF5 and netCDF, so these two extras are how the HDF5 and netCDF formats work there. Features that only the native HDF5 build has, such as polyhedral CGNS sections, need a source build with HDF5 (see [CGNS](formats/cgns.md)).
+
+## What the PyPI wheels contain
+
+The wheels link these libraries statically into `meshioplusplus._core`:
+
+| Component | Licence |
+|---|---|
+| OpenCASCADE 7.6.3 (`fit_cad`, STEP and IGES reading) | LGPL-2.1 with the OCCT exception |
+| zlib 1.3.1 (vendored; VTU compression and the GiD writer) | Zlib |
+| gidpost 2.14 (vendored; the GiD writer) | BSD-2-Clause-Views |
+| pugixml 1.14 (vendored; XML parsing) | MIT |
+| nlohmann/json 3.12.0 (the JSON pipeline parser) | MIT |
+
+They leave out HDF5 and netCDF (the `[all]` extra provides h5py and netCDF4), zstd, lz4 and bzip2 (the `[codecs]` extra, or a source build), ADIOS2, TecIO and KaHIP (a source build; KaHIP also has the `[kahip]` extra), Polyscope (the `[viewer]` extra) and Eigen, which is not compiled without HDF5.
+
+Linux wheels are built with the SEQ parallel backend. macOS and Windows wheels use OpenMP; the macOS build uses Homebrew's libomp, which delocate is expected to bundle into the wheel (to be confirmed in a wheel listing).
+
+The wheels are licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE-BINARIES.md) states. Each wheel ships `LICENSE`, `LICENSE-BINARIES.md`, `THIRD_PARTY_NOTICES.md` and the OpenCASCADE licence texts in its `.dist-info/licenses` directory.
 
 ## Spack
 
@@ -53,7 +74,7 @@ tox
 
 ## Building from source (C++ core)
 
-meshio++'s core is C++20, built through scikit-build-core + CMake when you `pip install` from source. The optional native paths (HDF5, netCDF, zlib) are auto-detected; the CMake options can be passed through `CMAKE_ARGS`:
+meshio++'s core is C++20, built through scikit-build-core + CMake when you `pip install` from source. The optional native paths (HDF5, netCDF, and zlib, which the wheels vendor instead) are auto-detected; the CMake options can be passed through `CMAKE_ARGS`:
 
 ```
 CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON" \
@@ -109,7 +130,7 @@ The C++ core parallelizes its hot loops through a compile-time-selected backend 
 
 Notes:
 
-- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp on manylinux, built into MSVC, libomp on macOS — and needs no TBB. It falls back to the STL backend, then to sequential.
+- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp on manylinux (the Linux wheels are built SEQ instead), built into MSVC, libomp on macOS — and needs no TBB. It falls back to the STL backend, then to sequential.
 - With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`); when TBB is unusable, CMake warns and falls back to the sequential backend. This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
 - `_core.__parallel_backend__` reports the backend actually compiled in.
 - MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL (use OpenMP via `brew install libomp`, or SEQ).

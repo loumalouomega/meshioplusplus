@@ -92,7 +92,7 @@ KaHIP is **MIT-licensed, like meshio++ itself**, so unlike GPL-licensed partitio
 `-DNOMPI=ON` is required, not just `-DPARHIP=OFF`: KaHIP's own CMakeLists.txt does an unconditional `find_package(MPI REQUIRED)` unless `NOMPI` is set, since `kaffpaE` (not only ParHIP) also depends on MPI — meshio++ only ever links the serial `kaffpa` interface, so this build has no MPI dependency at all despite what KaHIP's own default configure implies.
 
   ::: warning KaHIP must be findable at *runtime* too
-KaHIP is a shared library, and the wheel build strips the RPATH from `_core` so the wheel stays relocatable. If the prefix is not on the default loader path, importing meshio++ then fails with
+KaHIP is a shared library, and a wheel you build from source strips the build-tree RPATH from `_core` so the wheel stays relocatable; the release wheels do not include KaHIP. If the prefix is not on the default loader path, importing meshio++ then fails with
 
   ```
   ImportError: libkahip.so: cannot open shared object file: No such file or directory

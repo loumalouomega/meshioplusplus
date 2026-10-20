@@ -149,6 +149,7 @@ def build(platform, outdir, python_tag, local_wheel=None):
         for name in wheels:
             add(wheel_dir / name, f"wheels/{name}")
         add(REPO / "LICENSE", "LICENSE")
+        add(REPO / "LICENSE-BINARIES.md", "LICENSE-BINARIES.md")
     return target
 
 
