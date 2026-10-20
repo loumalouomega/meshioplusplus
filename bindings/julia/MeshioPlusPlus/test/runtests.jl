@@ -1417,6 +1417,17 @@ end
     @test num_cell_blocks(reference_cells(["tetra", "wedge"])) == 2
     @test num_cell_blocks(reference_cells(pairs=true)) == 7
 
+    # The planar domains: closed-form point counts, and an annulus sector keeps its
+    # seam apart where a full ring welds it.
+    @test num_points(reference_triangle(n=3)) == 10
+    @test num_points(ngon(sides=5, rings=2)) == 16
+    @test num_points(annulus(ntheta=12, nr=3)) == 48
+    @test num_points(annulus(ntheta=6, nr=2, angle=pi / 2)) == 21
+    @test num_points(lshape(n=3)) == 40
+    @test num_points(plate_with_hole(nt=3, nr=2)) == 36
+    @test num_points(honeycomb(dims=(3, 2))) == 22
+    @test_throws Exception plate_with_hole(radius=0.9)
+
     # An unknown cell type is refused by name, a bad count by the core.
     @test_throws ArgumentError box(cell_type="blob")
     @test_throws Exception box(dims=(-1, 2, 2))

@@ -407,7 +407,9 @@ struct _CGenOpts
     split::Int32
     order::Int32
     pad::Int32
-    reserved::NTuple{6,Int64}
+    radius2::Cdouble
+    angle::Cdouble
+    reserved::NTuple{4,Int64}
 end
 
 """

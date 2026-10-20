@@ -282,6 +282,12 @@ export class MeshioPlusPlusLoadError extends Error {
  *   uvSphere: (radius?: number, nu?: number, nv?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
  *   icosaSphere: (radius?: number, subdivisions?: number, center?: number[], order?: number, maxCells?: number) => Mesh,
  *   cylinder: (radius?: number, height?: number, nxy?: number, nz?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   referenceTriangle: (n?: number, size?: number[], origin?: number[], order?: number, maxCells?: number) => Mesh,
+ *   ngon: (sides?: number, radius?: number, rings?: number, center?: number[], order?: number, maxCells?: number) => Mesh,
+ *   annulus: (innerRadius?: number, outerRadius?: number, ntheta?: number, nr?: number, angle?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   lshape: (n?: number, size?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   plateWithHole: (radius?: number, size?: number, nt?: number, nr?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   honeycomb: (dims?: number[], edge?: number, origin?: number[], maxCells?: number) => Mesh,
  *   referenceCells: (types?: string[], pairs?: boolean) => Mesh,
  *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
  *   octree: (mesh: Mesh, rootCells?: number[], minLevel?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, dimension?: number, sampleDistance?: number, balance?: string, fill?: string, sign?: string, attachDistance?: boolean, evenOdd?: boolean, maxCells?: number, watertightCheck?: string, transition?: string, snap?: boolean, surfaceLevel?: number, curvatureThreshold?: number, featureAngle?: number, sizeArray?: string, plane?: string) => {mesh: Mesh, dimension: number, numLeaves: number, numHanging: number, finestLevel: number, origin: number[], rootSize: number, numSnapped: number, numRefused: number},
@@ -771,6 +777,26 @@ export async function loadMeshioPlusPlus(
             radius = 1, height = 1, nxy = 8, nz = 8, center = null, cellType = 'hexahedron',
             order = 1, maxCells = 20000000,
         ) => Module.cylinder(radius, height, nxy, nz, center, cellType, order, maxCells),
+        referenceTriangle: (
+            n = 4, size = null, origin = null, order = 1, maxCells = 20000000,
+        ) => Module.referenceTriangle(n, size, origin, order, maxCells),
+        ngon: (
+            sides = 6, radius = 1, rings = 1, center = null, order = 1, maxCells = 20000000,
+        ) => Module.ngon(sides, radius, rings, center, order, maxCells),
+        annulus: (
+            innerRadius = 0.5, outerRadius = 1, ntheta = 16, nr = 4, angle = 2 * Math.PI,
+            center = null, cellType = 'quad', order = 1, maxCells = 20000000,
+        ) => Module.annulus(innerRadius, outerRadius, ntheta, nr, angle, center, cellType,
+            order, maxCells),
+        lshape: (
+            n = 4, size = 2, center = null, cellType = 'quad', order = 1, maxCells = 20000000,
+        ) => Module.lshape(n, size, center, cellType, order, maxCells),
+        plateWithHole: (
+            radius = 0.25, size = 1, nt = 8, nr = 4, center = null, cellType = 'quad', order = 1,
+            maxCells = 20000000,
+        ) => Module.plateWithHole(radius, size, nt, nr, center, cellType, order, maxCells),
+        honeycomb: (dims = null, edge = 1, origin = null, maxCells = 20000000) =>
+            Module.honeycomb(dims, edge, origin, maxCells),
         referenceCells: (types = null, pairs = false) => Module.referenceCells(types, pairs),
         voxelize: (
             mesh,

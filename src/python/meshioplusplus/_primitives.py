@@ -12,21 +12,26 @@ already keeps:
 * surfaces are oriented outward, planar cells counter-clockwise seen from +z, and
   volumes positively;
 * boundaries come back as named ``side`` regions (``xmin`` ... ``zmax`` on a box,
-  ``rim`` on a disk, ``side``/``top``/``bottom`` on a cylinder);
+  ``rim`` on a disk, ``side``/``top``/``bottom`` on a cylinder, ``inner``/``outer``
+  on an annulus, ``hole`` on a plate);
 * ``order=2`` places the mid-edge nodes on the exact geometry, appended after the
   corners in first-appearance order over the cell-major edge list.
 
 This is the numpy twin of ``operations/primitives.cpp``. It is byte-identical to
-the core for :func:`rectangle`, :func:`box`, :func:`icosa_sphere` and
+the core for :func:`rectangle`, :func:`box`, :func:`icosa_sphere`,
+:func:`reference_triangle`, :func:`lshape`, :func:`honeycomb` and
 :func:`reference_cells` (index arithmetic and ``sqrt`` only); :func:`disk`,
-:func:`uv_sphere` and :func:`cylinder` use ``sin``/``cos``, which differ between
-libms and numpy's SIMD kernels, so they agree with the core on topology and to a
-few ulps on coordinates. The twin is pinned by ``tests/python/test_primitives.py``.
+:func:`uv_sphere`, :func:`cylinder`, :func:`ngon`, :func:`annulus` and
+:func:`plate_with_hole` use ``sin``/``cos``, which differ between libms and
+numpy's SIMD kernels, so they agree with the core on topology and to a few ulps
+on coordinates. The twin is pinned by ``tests/python/test_primitives.py``.
 
 Public API:
 
 * :func:`rectangle`, :func:`box`, :func:`disk`, :func:`uv_sphere`,
-  :func:`icosa_sphere`, :func:`cylinder`, :func:`reference_cells`.
+  :func:`icosa_sphere`, :func:`cylinder`, the planar domains
+  :func:`reference_triangle`, :func:`ngon`, :func:`annulus`, :func:`lshape`,
+  :func:`plate_with_hole` and :func:`honeycomb`, and :func:`reference_cells`.
 """
 
 from __future__ import annotations
@@ -44,6 +49,12 @@ __all__ = [
     "uv_sphere",
     "icosa_sphere",
     "cylinder",
+    "reference_triangle",
+    "ngon",
+    "annulus",
+    "lshape",
+    "plate_with_hole",
+    "honeycomb",
     "reference_cells",
 ]
 
@@ -151,9 +162,14 @@ class _Soup:
     """Nodes in a parameter space where the mid-edge average is exact."""
 
     def __init__(self, kind, radius=1.0, center=(0.0, 0.0, 0.0)):
-        self.kind = kind  # identity | squircle | polar | sphere | unit
+        self.kind = kind  # identity | squircle | polar | sphere | unit | plate
         self.radius = float(radius)
         self.center = np.asarray(center, dtype=np.float64)
+        # kind == "plate": the half side, the angular positions around the hole
+        # and the cells per 90 degree block (the hole radius is ``radius``).
+        self.half = 1.0
+        self.period = 1.0
+        self.nt = 1.0
         self.param = np.zeros((0, 3))
         self.mask = np.zeros(0, dtype=np.uint16)
         self.blocks = []  # [type, conn (m, w)]
@@ -192,6 +208,23 @@ def _positions(soup):
         out[pole, 0] = cx
         out[pole, 1] = cy
         out[pole, 2] = np.where(p[pole, 0] == 0.0, cz + r, cz - r)
+    elif soup.kind == "plate":
+        q = np.where(p[:, 1] >= soup.period, p[:, 1] - soup.period, p[:, 1])
+        nt = soup.nt
+        b = np.clip(np.floor(q / nt), 0.0, 3.0)
+        m = q - b * nt
+        ang = -_PI / 4.0 + ((_PI / 2.0) * q) / nt
+        hx = r * np.cos(ang)
+        hy = r * np.sin(ang)
+        ex = np.full_like(q, soup.half)
+        ey = soup.half * ((2.0 * m) / nt - 1.0)
+        bi = b.astype(np.int64)
+        ox = np.where(bi == 1, -ey, np.where(bi == 2, -ex, np.where(bi == 3, ey, ex)))
+        oy = np.where(bi == 1, ex, np.where(bi == 2, -ey, np.where(bi == 3, -ex, ey)))
+        s = p[:, 0]
+        out[:, 0] = cx + ((1.0 - s) * hx + s * ox)
+        out[:, 1] = cy + ((1.0 - s) * hy + s * oy)
+        out[:, 2] = cz + p[:, 2]
     else:  # unit
         out[:, 0] = cx + r * p[:, 0]
         out[:, 1] = cy + r * p[:, 1]
@@ -219,6 +252,14 @@ def _mid(soup, lo, hi):
         out[:, 0] = (a[:, 0] + b[:, 0]) * 0.5
         out[:, 1] = _mid_angle(a[:, 1], da, b[:, 1], db)
         out[:, 2] = (a[:, 2] + b[:, 2]) * 0.5 if soup.kind == "polar" else 0.0
+    elif soup.kind == "plate":
+        per = soup.period
+        d = b[:, 1] - a[:, 1]
+        d = np.where(d > 0.5 * per, d - per, np.where(d < -0.5 * per, d + per, d))
+        q = a[:, 1] + 0.5 * d
+        out[:, 0] = (a[:, 0] + b[:, 0]) * 0.5
+        out[:, 1] = np.where(q < 0.0, q + per, q)
+        out[:, 2] = (a[:, 2] + b[:, 2]) * 0.5
     else:
         x = a[:, 0] + b[:, 0]
         y = a[:, 1] + b[:, 1]
@@ -620,22 +661,22 @@ def _polar_nodes(n):
     return 1 + 3 * n * (n + 1)
 
 
-def _polar_triangles(n, base):
+def _polar_triangles(n, base, sectors=6):
     """Triangles of a polar layer: ring by ring, sector by sector."""
     rows = []
     for k in range(1, n + 1):
-        ring0 = base + 1 + 3 * k * (k - 1)
+        ring0 = base + 1 + (sectors * k * (k - 1)) // 2
         t = np.arange(k, dtype=np.int64)
-        for s in range(6):
-            outer = ring0 + ((s * k + t) % (6 * k))
-            outer1 = ring0 + ((s * k + t + 1) % (6 * k))
+        for s in range(sectors):
+            outer = ring0 + ((s * k + t) % (sectors * k))
+            outer1 = ring0 + ((s * k + t + 1) % (sectors * k))
             if k == 1:
                 inner = np.full(k, base, dtype=np.int64)
                 inner1 = inner
             else:
-                ring1 = base + 1 + 3 * (k - 1) * (k - 2)
-                inner = ring1 + ((s * (k - 1) + t) % (6 * (k - 1)))
-                inner1 = ring1 + ((s * (k - 1) + t + 1) % (6 * (k - 1)))
+                ring1 = base + 1 + (sectors * (k - 1) * (k - 2)) // 2
+                inner = ring1 + ((s * (k - 1) + t) % (sectors * (k - 1)))
+                inner1 = ring1 + ((s * (k - 1) + t + 1) % (sectors * (k - 1)))
             a = np.stack([inner, outer, outer1], axis=1)
             b = np.stack([inner[:-1], outer1[:-1], inner1[:-1]], axis=1)
             out = np.empty((2 * k - 1, 3), dtype=np.int64)
@@ -1041,6 +1082,703 @@ def cylinder(
         return _cylinder_py(
             float(radius), float(height), int(nxy), int(nz), center, cell_type, order
         )
+
+
+# --------------------------------------------------------------------------- #
+# planar domains                                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _quad_block(soup, tri, a, b, c, d):
+    """A quad block, or each quad as the triangles (a b c) and (a c d)."""
+    if not tri:
+        soup.block("quad", np.stack([a, b, c, d], axis=1))
+        return
+    first = np.stack([a, b, c], axis=1)
+    second = np.stack([a, c, d], axis=1)
+    soup.block("triangle", np.stack([first, second], axis=1).reshape(-1, 3))
+
+
+# --------------------------------------------------------------------------- #
+# reference_triangle                                                          #
+# --------------------------------------------------------------------------- #
+
+
+def _reference_triangle_py(n, size, origin, order):
+    rows_i = [np.arange(n + 1 - j, dtype=np.int64) for j in range(n + 1)]
+    i = np.concatenate(rows_i)
+    j = np.concatenate([np.full(n + 1 - jj, jj, dtype=np.int64) for jj in range(n + 1)])
+    mask = ((j == 0) * 1 + (i == 0) * 2 + (i + j == n) * 4).astype(np.uint16)
+    soup = _Soup("identity")
+    soup.add(
+        np.stack(
+            [
+                origin[0] + (size[0] * i.astype(np.float64)) / float(n),
+                origin[1] + (size[1] * j.astype(np.float64)) / float(n),
+                np.full(i.size, origin[2]),
+            ],
+            axis=1,
+        ),
+        mask,
+    )
+
+    def ident(ii, jj):
+        return jj * (n + 1) - (jj * (jj - 1)) // 2 + ii
+
+    rows = []
+    for jj in range(n):
+        ii = np.arange(n - jj, dtype=np.int64)
+        up = np.stack([ident(ii, jj), ident(ii + 1, jj), ident(ii, jj + 1)], axis=1)
+        down = np.stack(
+            [
+                ident(ii[:-1] + 1, jj),
+                ident(ii[:-1] + 1, jj + 1),
+                ident(ii[:-1], jj + 1),
+            ],
+            axis=1,
+        )
+        out = np.empty((2 * ii.size - 1, 3), dtype=np.int64)
+        out[0::2] = up
+        out[1::2] = down
+        rows.append(out)
+    soup.block("triangle", np.concatenate(rows))
+    return _finish(soup, order, [("ymin", 1), ("xmin", 2), ("hypotenuse", 4)], 1)
+
+
+def reference_triangle(
+    n=4,
+    size=(1.0, 1.0),
+    origin=(0.0, 0.0, 0.0),
+    order=1,
+    max_cells=DEFAULT_MAX_CELLS,
+):
+    """The reference triangle ``(0,0) (1,0) (0,1)``, scaled and refined into ``n**2`` triangles.
+
+    Nodes run in barycentric lattice order: row ``j`` (y) holds the nodes
+    ``i = 0 .. n - j`` (x fastest). Cells run row by row, each lattice triangle
+    followed by the inverted one to its right.
+
+    Parameters
+    ----------
+    n :
+        Divisions per edge; zero yields an empty mesh.
+    size :
+        The leg lengths ``(lx, ly)``, positive.
+    origin :
+        The right-angle corner.
+    order :
+        1, or 2 for ``triangle6`` cells.
+    max_cells :
+        Refuse by name above this many cells; non-positive disables the check.
+
+    Returns
+    -------
+    Mesh
+        Side regions ``ymin``, ``xmin`` and ``hypotenuse``.
+    """
+    shape = "reference_triangle"
+    size = _vec(shape, "size", size, 2)
+    origin = _vec(shape, "origin", origin, 3)
+    _check_count(shape, "n", int(n))
+    _check_order(shape, order)
+    if n == 0:
+        return _empty()
+    for k in range(2):
+        _check_positive(shape, "size", float(size[k]))
+    _budget(shape, int(n) * int(n), max_cells)
+    try:
+        return _core_call(
+            "reference_triangle",
+            int(n),
+            [float(v) for v in size],
+            [float(v) for v in origin],
+            int(order),
+            int(max_cells),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "reference_triangle"):
+            raise
+        return _reference_triangle_py(int(n), size, origin, order)
+
+
+# --------------------------------------------------------------------------- #
+# ngon                                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _ngon_py(sides, radius, rings, center, order):
+    ang = (2.0 * _PI * np.arange(sides, dtype=np.float64)) / float(sides)
+    vx = radius * np.cos(ang)
+    vy = radius * np.sin(ang)
+    px = [np.zeros(1)]
+    py = [np.zeros(1)]
+    mask = [np.zeros(1)]
+    for k in range(1, rings + 1):
+        s = np.repeat(np.arange(sides), k)
+        t = np.tile(np.arange(k), sides)
+        w0 = (k - t).astype(np.float64)
+        w1 = t.astype(np.float64)
+        nxt = (s + 1) % sides
+        px.append((w0 * vx[s] + w1 * vx[nxt]) / float(rings))
+        py.append((w0 * vy[s] + w1 * vy[nxt]) / float(rings))
+        mask.append(np.full(sides * k, 1 if k == rings else 0))
+    px = np.concatenate(px)
+    py = np.concatenate(py)
+    soup = _Soup("identity")
+    soup.add(
+        np.stack([center[0] + px, center[1] + py, np.full(px.size, center[2])], axis=1),
+        np.concatenate(mask),
+    )
+    soup.block("triangle", _polar_triangles(rings, 0, sides))
+    return _finish(soup, order, [("rim", 1)], 1)
+
+
+def ngon(
+    sides=6,
+    radius=1.0,
+    rings=1,
+    center=(0.0, 0.0, 0.0),
+    order=1,
+    max_cells=DEFAULT_MAX_CELLS,
+):
+    """A regular polygon fanned from its centre, or refined into rings.
+
+    ``rings=1`` is the plain fan of ``sides`` triangles. More rings give ring
+    ``k`` of ``sides * k`` nodes on the straight chords between the vertices,
+    with the triangles of :func:`disk`.
+
+    Parameters
+    ----------
+    sides :
+        The number of sides, at least 3; zero yields an empty mesh.
+    radius :
+        The circumradius, positive.
+    rings :
+        Radial divisions; zero yields an empty mesh.
+    center :
+        The centre.
+    order :
+        1, or 2 for ``triangle6`` cells (the sides are straight).
+    max_cells :
+        Refuse by name above this many cells; non-positive disables the check.
+
+    Returns
+    -------
+    Mesh
+        One side region, ``rim``.
+    """
+    shape = "ngon"
+    center = _vec(shape, "center", center, 3)
+    _check_count(shape, "sides", int(sides))
+    _check_count(shape, "rings", int(rings))
+    _check_order(shape, order)
+    if sides == 0 or rings == 0:
+        return _empty()
+    if sides < 3:
+        _fail(shape, f"sides must be at least 3, got {int(sides)}")
+    _check_positive(shape, "radius", float(radius))
+    _budget(shape, int(sides) * int(rings) * int(rings), max_cells)
+    try:
+        return _core_call(
+            "ngon",
+            int(sides),
+            float(radius),
+            int(rings),
+            [float(v) for v in center],
+            int(order),
+            int(max_cells),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "ngon"):
+            raise
+        return _ngon_py(int(sides), float(radius), int(rings), center, order)
+
+
+# --------------------------------------------------------------------------- #
+# annulus                                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _annulus_py(inner, outer, ntheta, nr, angle, center, cell_type, order):
+    full = angle >= 2.0 * _PI - 1e-12
+    np_ = ntheta if full else ntheta + 1
+    k = np.repeat(np.arange(nr + 1, dtype=np.int64), np_)
+    i = np.tile(np.arange(np_, dtype=np.int64), nr + 1)
+    rho = np.where(
+        k == nr,
+        outer,
+        inner + ((outer - inner) * k.astype(np.float64)) / float(nr),
+    )
+    theta = (angle * i.astype(np.float64)) / float(ntheta)
+    mask = (k == 0) * 1 + (k == nr) * 2
+    if not full:
+        mask = mask + (i == 0) * 4 + (i == ntheta) * 8
+    soup = _Soup("polar", 1.0, center)
+    soup.add(np.stack([rho, theta, np.zeros(rho.size)], axis=1), mask.astype(np.uint16))
+    ck, ci = np.divmod(np.arange(nr * ntheta, dtype=np.int64), ntheta)
+    i1 = (ci + 1) % np_
+    _quad_block(
+        soup,
+        cell_type == "triangle",
+        ck * np_ + ci,
+        (ck + 1) * np_ + ci,
+        (ck + 1) * np_ + i1,
+        ck * np_ + i1,
+    )
+    specs = [("inner", 1), ("outer", 2)]
+    if not full:
+        specs += [("start", 4), ("end", 8)]
+    return _finish(soup, order, specs, 1)
+
+
+def annulus(
+    inner_radius=0.5,
+    outer_radius=1.0,
+    ntheta=16,
+    nr=4,
+    angle=2.0 * _PI,
+    center=(0.0, 0.0, 0.0),
+    cell_type="quad",
+    order=1,
+    max_cells=DEFAULT_MAX_CELLS,
+):
+    """An annulus, or a sector of one, in the ``z = center[2]`` plane.
+
+    Nodes run ring by ring from the inner radius out, each ring counter-clockwise
+    from angle 0. A full ring (``angle = 2 pi``) welds its last node onto its
+    first; a sector keeps both end rays as distinct node chains, the seam pair
+    that :func:`meshioplusplus.match_periodic_nodes` links.
+
+    Parameters
+    ----------
+    inner_radius, outer_radius :
+        The radii, ``0 < inner_radius < outer_radius``.
+    ntheta :
+        Cells around; at least 3 for a full ring.
+    nr :
+        Cells across the radial gap.
+    angle :
+        The opening angle in ``(0, 2 pi]``; each cell must span less than ``pi``.
+    center :
+        The centre.
+    cell_type :
+        ``"quad"`` or ``"triangle"`` (each quad cut along its first diagonal).
+    order :
+        1, or 2 for ``quad8`` / ``triangle6`` cells with curved rims.
+    max_cells :
+        Refuse by name above this many cells; non-positive disables the check.
+
+    Returns
+    -------
+    Mesh
+        Side regions ``inner`` and ``outer``, plus ``start`` and ``end`` for a
+        sector.
+    """
+    shape = "annulus"
+    center = _vec(shape, "center", center, 3)
+    _check_count(shape, "ntheta", int(ntheta))
+    _check_count(shape, "nr", int(nr))
+    _check_order(shape, order)
+    _choice(shape, "cell_type", cell_type, ("quad", "triangle"))
+    if ntheta == 0 or nr == 0:
+        return _empty()
+    inner_radius = float(inner_radius)
+    outer_radius = float(outer_radius)
+    angle = float(angle)
+    _check_positive(shape, "inner_radius", inner_radius)
+    if not outer_radius > inner_radius:
+        _fail(
+            shape,
+            f"outer_radius must exceed inner_radius, got {_fmt(outer_radius)} "
+            f"and {_fmt(inner_radius)}",
+        )
+    two_pi = 2.0 * _PI
+    if not angle > 0.0 or angle > two_pi + 1e-12:
+        _fail(shape, f"angle must be in (0, 2*pi], got {_fmt(angle)}")
+    full = angle >= two_pi - 1e-12
+    if full and ntheta < 3:
+        _fail(shape, f"ntheta must be at least 3 for a full ring, got {int(ntheta)}")
+    if not full and angle / float(ntheta) >= _PI:
+        _fail(
+            shape,
+            "ntheta is too small: each cell must span less than pi, got angle "
+            f"{_fmt(angle)} over {int(ntheta)} cells",
+        )
+    _budget(
+        shape,
+        int(ntheta) * int(nr) * (2 if cell_type == "triangle" else 1),
+        max_cells,
+    )
+    try:
+        return _core_call(
+            "annulus",
+            inner_radius,
+            outer_radius,
+            int(ntheta),
+            int(nr),
+            angle,
+            [float(v) for v in center],
+            cell_type,
+            int(order),
+            int(max_cells),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "annulus"):
+            raise
+        return _annulus_py(
+            inner_radius,
+            outer_radius,
+            int(ntheta),
+            int(nr),
+            angle,
+            center,
+            cell_type,
+            order,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# lshape                                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def _lshape_py(n, size, center, cell_type, order):
+    w = 2 * n + 1
+    j, i = np.divmod(np.arange(w * w, dtype=np.int64), w)
+    keep = ~((i > n) & (j < n))
+    i, j = i[keep], j[keep]
+    mask = (
+        (i == 0) * 1
+        + ((i == 2 * n) & (j >= n)) * 2
+        + ((j == 0) & (i <= n)) * 4
+        + (j == 2 * n) * 8
+        + ((i == n) & (j <= n)) * 16
+        + ((j == n) & (i >= n)) * 32
+    ).astype(np.uint16)
+    ids = np.full(w * w, -1, dtype=np.int64)
+    ids[j * w + i] = np.arange(i.size, dtype=np.int64)
+    soup = _Soup("identity")
+    soup.add(
+        np.stack(
+            [
+                center[0] + (size * (i - n).astype(np.float64)) / float(2 * n),
+                center[1] + (size * (j - n).astype(np.float64)) / float(2 * n),
+                np.full(i.size, center[2]),
+            ],
+            axis=1,
+        ),
+        mask,
+    )
+    cj, ci = np.divmod(np.arange(4 * n * n, dtype=np.int64), 2 * n)
+    live = ~((ci >= n) & (cj < n))
+    ci, cj = ci[live], cj[live]
+    _quad_block(
+        soup,
+        cell_type == "triangle",
+        ids[cj * w + ci],
+        ids[cj * w + ci + 1],
+        ids[(cj + 1) * w + ci + 1],
+        ids[(cj + 1) * w + ci],
+    )
+    return _finish(
+        soup,
+        order,
+        [
+            ("xmin", 1),
+            ("xmax", 2),
+            ("ymin", 4),
+            ("ymax", 8),
+            ("notch_x", 16),
+            ("notch_y", 32),
+        ],
+        1,
+    )
+
+
+def lshape(
+    n=4,
+    size=2.0,
+    center=(0.0, 0.0, 0.0),
+    cell_type="quad",
+    order=1,
+    max_cells=DEFAULT_MAX_CELLS,
+):
+    """The square ``[-size/2, size/2]**2`` minus its fourth quadrant.
+
+    The removed quadrant is ``x > 0``, ``y < 0``; the re-entrant corner is a node
+    at ``center``, the singular point that refinement and error estimators probe.
+
+    Parameters
+    ----------
+    n :
+        Cells along half a side; the mesh has ``3 n**2`` quads.
+    size :
+        The side of the bounding square, positive.
+    center :
+        The centre of the bounding square.
+    cell_type :
+        ``"quad"`` or ``"triangle"`` (each quad cut along its first diagonal).
+    order :
+        1, or 2 for ``quad8`` / ``triangle6`` cells.
+    max_cells :
+        Refuse by name above this many cells; non-positive disables the check.
+
+    Returns
+    -------
+    Mesh
+        Side regions ``xmin``, ``xmax``, ``ymin``, ``ymax``, ``notch_x`` (the notch
+        wall on ``x = 0``) and ``notch_y`` (the one on ``y = 0``).
+    """
+    shape = "lshape"
+    center = _vec(shape, "center", center, 3)
+    _check_count(shape, "n", int(n))
+    _check_order(shape, order)
+    _choice(shape, "cell_type", cell_type, ("quad", "triangle"))
+    if n == 0:
+        return _empty()
+    _check_positive(shape, "size", float(size))
+    _budget(
+        shape, 3 * int(n) * int(n) * (2 if cell_type == "triangle" else 1), max_cells
+    )
+    try:
+        return _core_call(
+            "lshape",
+            int(n),
+            float(size),
+            [float(v) for v in center],
+            cell_type,
+            int(order),
+            int(max_cells),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "lshape"):
+            raise
+        return _lshape_py(int(n), float(size), center, cell_type, order)
+
+
+# --------------------------------------------------------------------------- #
+# plate_with_hole                                                             #
+# --------------------------------------------------------------------------- #
+
+_PLATE_SIDE_BIT = np.array([4, 16, 2, 8], dtype=np.int64)  # xmax, ymax, xmin, ymin
+
+
+def _plate_py(radius, size, nt, nr, center, cell_type, order):
+    m = 4 * nt
+    k = np.repeat(np.arange(nr + 1, dtype=np.int64), m)
+    p = np.tile(np.arange(m, dtype=np.int64), nr + 1)
+    b = p // nt
+    mask = (k == 0) * 1
+    outer = k == nr
+    mask = mask + outer * _PLATE_SIDE_BIT[b]
+    mask = mask + (outer & (p % nt == 0)) * _PLATE_SIDE_BIT[(b + 3) % 4]
+    soup = _Soup("plate", radius, center)
+    soup.half = size / 2.0
+    soup.period = float(m)
+    soup.nt = float(nt)
+    soup.add(
+        np.stack(
+            [k.astype(np.float64) / float(nr), p.astype(np.float64), np.zeros(k.size)],
+            axis=1,
+        ),
+        mask.astype(np.uint16),
+    )
+    ck, cp = np.divmod(np.arange(nr * m, dtype=np.int64), m)
+    p1 = (cp + 1) % m
+    _quad_block(
+        soup,
+        cell_type == "triangle",
+        ck * m + cp,
+        (ck + 1) * m + cp,
+        (ck + 1) * m + p1,
+        ck * m + p1,
+    )
+    return _finish(
+        soup,
+        order,
+        [("hole", 1), ("xmin", 2), ("xmax", 4), ("ymin", 8), ("ymax", 16)],
+        1,
+    )
+
+
+def plate_with_hole(
+    radius=0.25,
+    size=1.0,
+    nt=8,
+    nr=4,
+    center=(0.0, 0.0, 0.0),
+    cell_type="quad",
+    order=1,
+    max_cells=DEFAULT_MAX_CELLS,
+):
+    """A square plate around a circular hole, in four quad blocks.
+
+    Nodes run ring by ring from the hole out (index ``k``), ``4 nt`` positions
+    around each (index ``p``, counter-clockwise from the south-east corner). A
+    node blends the hole circle into the square linearly in ``k``.
+
+    Parameters
+    ----------
+    radius :
+        The hole radius, positive and below half of ``size``.
+    size :
+        The side of the plate.
+    nt :
+        Cells around the hole per 90 degree block.
+    nr :
+        Cells from the hole to the outer square.
+    center :
+        The centre of the hole.
+    cell_type :
+        ``"quad"`` or ``"triangle"`` (each quad cut along its first diagonal).
+    order :
+        1, or 2 for ``quad8`` / ``triangle6`` cells with a circular hole.
+    max_cells :
+        Refuse by name above this many cells; non-positive disables the check.
+
+    Returns
+    -------
+    Mesh
+        Side regions ``hole``, ``xmin``, ``xmax``, ``ymin`` and ``ymax``.
+    """
+    shape = "plate_with_hole"
+    center = _vec(shape, "center", center, 3)
+    _check_count(shape, "nt", int(nt))
+    _check_count(shape, "nr", int(nr))
+    _check_order(shape, order)
+    _choice(shape, "cell_type", cell_type, ("quad", "triangle"))
+    if nt == 0 or nr == 0:
+        return _empty()
+    radius = float(radius)
+    size = float(size)
+    _check_positive(shape, "radius", radius)
+    _check_positive(shape, "size", size)
+    if not radius < size / 2.0:
+        _fail(
+            shape,
+            "radius must be less than half the size, got radius "
+            f"{_fmt(radius)} and size {_fmt(size)}",
+        )
+    _budget(
+        shape,
+        4 * int(nt) * int(nr) * (2 if cell_type == "triangle" else 1),
+        max_cells,
+    )
+    try:
+        return _core_call(
+            "plate_with_hole",
+            radius,
+            size,
+            int(nt),
+            int(nr),
+            [float(v) for v in center],
+            cell_type,
+            int(order),
+            int(max_cells),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "plate_with_hole"):
+            raise
+        return _plate_py(radius, size, int(nt), int(nr), center, cell_type, order)
+
+
+# --------------------------------------------------------------------------- #
+# honeycomb                                                                   #
+# --------------------------------------------------------------------------- #
+
+_HEX_CORNERS = np.array(
+    [[0, -2], [1, -1], [1, 1], [0, 2], [-1, 1], [-1, -1]], dtype=np.int64
+)
+
+
+def _honeycomb_py(dims, edge, origin):
+    nx, ny = int(dims[0]), int(dims[1])
+    wu = 2 * nx + 2
+    cj, ci = np.divmod(np.arange(nx * ny, dtype=np.int64), nx)
+    cu = 2 * ci + 1 + (cj & 1)
+    cv = 3 * cj + 2
+    u = cu[:, None] + _HEX_CORNERS[None, :, 0]
+    v = cv[:, None] + _HEX_CORNERS[None, :, 1]
+    key = (v * wu + u).reshape(-1)
+    uniq, first, inverse = np.unique(key, return_index=True, return_inverse=True)
+    order = np.argsort(first, kind="stable")
+    rank = np.empty_like(order)
+    rank[order] = np.arange(order.size)
+    conn = rank[inverse.reshape(-1)].reshape(-1, 6).astype(np.int64)
+    kept = uniq[order]
+    dx = (np.sqrt(3.0) * edge) / 2.0
+    dy = edge / 2.0
+    points = np.stack(
+        [
+            origin[0] + dx * (kept % wu).astype(np.float64),
+            origin[1] + dy * (kept // wu).astype(np.float64),
+            np.full(kept.size, origin[2]),
+        ],
+        axis=1,
+    )
+    # Facet f of a polygon is its edge from node f to node f + 1.
+    a = conn
+    b = np.roll(conn, -1, axis=1)
+    pairs = np.stack([np.minimum(a, b), np.maximum(a, b)], axis=-1).reshape(-1, 2)
+    _, inv, counts = np.unique(pairs, axis=0, return_inverse=True, return_counts=True)
+    once = (counts[inv.reshape(-1)] == 1).reshape(conn.shape)
+    cell, facet = np.nonzero(once)
+    entries = np.stack([cell, facet], axis=1).astype(np.int64)
+    return Mesh(
+        points,
+        [("polygon", conn)],
+        regions=[Region("boundary", "side", entries, dim=1)],
+    )
+
+
+def honeycomb(
+    dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=DEFAULT_MAX_CELLS
+):
+    """A tiling of pointy-top hexagons, as one ``polygon`` cell block.
+
+    Hexagons run row by row (x fastest), odd rows shifted half a hexagon to the
+    right. Nodes are numbered by first appearance over the cells, each hexagon's
+    corners counter-clockwise from the bottom one. The block is ragged in the
+    core (``polygon`` rows of six), so the ragged-polygon paths have a parametric
+    fixture.
+
+    Parameters
+    ----------
+    dims :
+        Hexagons per row and rows ``(nx, ny)``; a zero yields an empty mesh.
+    edge :
+        The side length, positive.
+    origin :
+        The lower-left corner of the bounding box.
+    max_cells :
+        Refuse by name above this many cells; non-positive disables the check.
+
+    Returns
+    -------
+    Mesh
+        One side region, ``boundary``: the hexagon edges seen once.
+    """
+    shape = "honeycomb"
+    dims = _ivec(shape, "dims", dims, 2)
+    origin = _vec(shape, "origin", origin, 3)
+    for k in range(2):
+        _check_count(shape, "cell counts", int(dims[k]))
+    if dims[0] == 0 or dims[1] == 0:
+        return _empty()
+    _check_positive(shape, "edge", float(edge))
+    _budget(shape, int(dims[0]) * int(dims[1]), max_cells)
+    try:
+        return _core_call(
+            "honeycomb",
+            [int(v) for v in dims],
+            float(edge),
+            [float(v) for v in origin],
+            int(max_cells),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "honeycomb"):
+            raise
+        return _honeycomb_py(dims, float(edge), origin)
 
 
 # --------------------------------------------------------------------------- #

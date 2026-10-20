@@ -36,12 +36,71 @@ _SHAPES = {
         {"radius": None, "height": None, "nxy": None, "nz": None, "center": "x,y,z"},
         {"cell_type": ("hexahedron", ["hexahedron", "wedge"])},
     ),
+    "reference-triangle": (
+        _primitives.reference_triangle,
+        {"n": None, "size": "lx,ly", "origin": "x,y[,z]"},
+        {},
+    ),
+    "ngon": (
+        _primitives.ngon,
+        {"sides": None, "radius": None, "rings": None, "center": "x,y,z"},
+        {},
+    ),
+    "annulus": (
+        _primitives.annulus,
+        {
+            "inner_radius": None,
+            "outer_radius": None,
+            "ntheta": None,
+            "nr": None,
+            "angle": None,
+            "center": "x,y,z",
+        },
+        {"cell_type": ("quad", ["quad", "triangle"])},
+    ),
+    "lshape": (
+        _primitives.lshape,
+        {"n": None, "size": None, "center": "x,y,z"},
+        {"cell_type": ("quad", ["quad", "triangle"])},
+    ),
+    "plate-with-hole": (
+        _primitives.plate_with_hole,
+        {
+            "radius": None,
+            "size": None,
+            "nt": None,
+            "nr": None,
+            "center": "x,y,z",
+        },
+        {"cell_type": ("quad", ["quad", "triangle"])},
+    ),
+    "honeycomb": (
+        _primitives.honeycomb,
+        {"dims": "nx,ny", "edge": None, "origin": "x,y[,z]"},
+        {},
+    ),
     "reference-cells": (_primitives.reference_cells, {}, {}),
 }
 
-_INTEGERS = {"n", "nu", "nv", "nxy", "nz", "subdivisions"}
-_FLOATS = {"radius", "height"}
+_INTEGERS = {
+    "n",
+    "nu",
+    "nv",
+    "nxy",
+    "nz",
+    "subdivisions",
+    "sides",
+    "rings",
+    "ntheta",
+    "nr",
+    "nt",
+}
+_FLOATS = {"radius", "height", "inner_radius", "outer_radius", "angle", "edge"}
 _VECTOR_KINDS = {"dims": int, "size": float, "origin": float, "center": float}
+#: shapes whose ``size`` is one number (a side), not a vector
+_SCALAR_SIZE = {"lshape", "plate-with-hole"}
+#: shapes with no ``order`` option (a hexagon has no quadratic form)
+_NO_ORDER = {"reference-cells", "honeycomb"}
 
 
 def add_args(parser):
@@ -87,13 +146,15 @@ def add_args(parser):
                 help="two cells sharing a facet instead of one (linear types only)",
             )
         else:
-            p.add_argument(
-                "--order",
-                type=int,
-                default=1,
-                choices=[1, 2],
-                help="2 for quadratic cells with mid-edge nodes on the exact geometry",
-            )
+            if name not in _NO_ORDER:
+                p.add_argument(
+                    "--order",
+                    type=int,
+                    default=1,
+                    choices=[1, 2],
+                    help="2 for quadratic cells with mid-edge nodes on the exact "
+                    "geometry",
+                )
             p.add_argument(
                 "--max-cells",
                 type=int,
@@ -110,7 +171,9 @@ def _doc_line(name):
     return (fn.__doc__ or "").strip().splitlines()[0]
 
 
-def _parse(key, text):
+def _parse(key, text, shape=None):
+    if key == "size" and shape in _SCALAR_SIZE:
+        return float(text)
     if key in _VECTOR_KINDS:
         return [_VECTOR_KINDS[key](x) for x in text.split(",")]
     if key in _INTEGERS:
@@ -124,14 +187,15 @@ def generate_cmd(args):
     for key in values:
         text = getattr(args, key)
         if text is not None:
-            kwargs[key] = _parse(key, text)
+            kwargs[key] = _parse(key, text, args.shape)
     for key in choices:
         kwargs[key] = getattr(args, key)
     if args.shape == "reference-cells":
         kwargs["types"] = args.types
         kwargs["pairs"] = args.pairs
     else:
-        kwargs["order"] = args.order
+        if args.shape not in _NO_ORDER:
+            kwargs["order"] = args.order
         kwargs["max_cells"] = args.max_cells
     mesh = fn(**kwargs)
 

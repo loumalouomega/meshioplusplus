@@ -112,6 +112,7 @@ export remesh
 export remesh_volume
 export grid, voxelize, octree
 export rectangle, box, disk, uv_sphere, icosa_sphere, cylinder, reference_cells
+export reference_triangle, ngon, annulus, lshape, plate_with_hole, honeycomb
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, fit_primitives, fit_cad, has_occt

@@ -4043,6 +4043,69 @@ val cylinder_js(double radius, double height, double nxy, double nz, const val& 
     });
 }
 
+val reference_triangle_js(double n, const val& rSize, const val& rOrigin, int order,
+                          double maxCells) {
+    return with_js_errors([&]() -> val {
+        std::array<double, 2> size{{1.0, 1.0}};
+        if (!rSize.isUndefined() && !rSize.isNull()) {
+            if (rSize["length"].as<unsigned>() != 2)
+                throw std::invalid_argument("meshio++: size expects two numbers");
+            size = {{rSize[0].as<double>(), rSize[1].as<double>()}};
+        }
+        return mesh_to_val(meshioplusplus::reference_triangle(
+            static_cast<std::int64_t>(n), size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true),
+            order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val ngon_js(double sides, double radius, double rings, const val& rCenter, int order,
+            double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::ngon(static_cast<std::int64_t>(sides), radius,
+                                                static_cast<std::int64_t>(rings),
+                                                prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+                                                order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val annulus_js(double innerRadius, double outerRadius, double ntheta, double nr, double angle,
+               const val& rCenter, const std::string& rCellType, int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::annulus(
+            innerRadius, outerRadius, static_cast<std::int64_t>(ntheta),
+            static_cast<std::int64_t>(nr), angle, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            rCellType, order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val lshape_js(double n, double size, const val& rCenter, const std::string& rCellType, int order,
+              double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::lshape(
+            static_cast<std::int64_t>(n), size, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            rCellType, order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val plate_with_hole_js(double radius, double size, double nt, double nr, const val& rCenter,
+                       const std::string& rCellType, int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::plate_with_hole(
+            radius, size, static_cast<std::int64_t>(nt), static_cast<std::int64_t>(nr),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val honeycomb_js(const val& rDims, double edge, const val& rOrigin, double maxCells) {
+    return with_js_errors([&]() -> val {
+        const auto d = prim_js_counts(rDims, 2, 4);
+        return mesh_to_val(meshioplusplus::honeycomb({{d[0], d[1]}}, edge,
+                                                     prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true),
+                                                     static_cast<std::int64_t>(maxCells)));
+    });
+}
+
 val reference_cells_js(const val& rTypes, bool pairs) {
     return with_js_errors([&]() -> val {
         std::vector<std::string> types;
@@ -7081,6 +7144,12 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("uvSphere", &uv_sphere_js);
     emscripten::function("icosaSphere", &icosa_sphere_js);
     emscripten::function("cylinder", &cylinder_js);
+    emscripten::function("referenceTriangle", &reference_triangle_js);
+    emscripten::function("ngon", &ngon_js);
+    emscripten::function("annulus", &annulus_js);
+    emscripten::function("lshape", &lshape_js);
+    emscripten::function("plateWithHole", &plate_with_hole_js);
+    emscripten::function("honeycomb", &honeycomb_js);
     emscripten::function("referenceCells", &reference_cells_js);
     emscripten::function("voxelize", &voxelize_js);
     emscripten::function("octree", &octree_js);

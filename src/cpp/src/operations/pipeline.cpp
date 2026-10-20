@@ -305,8 +305,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
-          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
-          "Threads", "MergeFaces", "Backend"}},
+          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
+          "MergeFaces", "Backend"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -315,18 +315,18 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"Snapshot",
-         {"Path",           "Width",       "Height",       "Supersample",   "Cols",
-          "Rows",           "Encoding",    "ColorDepth",   "PngCompress",   "View",
-          "Azimuth",        "Elevation",   "Roll",         "Perspective",   "Fov",
-          "Zoom",           "Shading",     "Edges",        "FeatureAngle",  "Background",
-          "FillColor",      "ColorBy",     "Component",    "Cmap",          "VMin",
-          "VMax",           "Colorbar",    "Axes",         "ScaleBar",      "Reduce",
-          "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
-          "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
-          "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
-          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor",
-          "Theme",          "Scanlines",   "Bloom",         "Fringe",       "GridFloor"}},
+         {"Path",           "Width",       "Height",        "Supersample",   "Cols",
+          "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
+          "Azimuth",        "Elevation",   "Roll",          "Perspective",   "Fov",
+          "Zoom",           "Shading",     "Edges",         "FeatureAngle",  "Background",
+          "FillColor",      "ColorBy",     "Component",     "Cmap",          "VMin",
+          "VMax",           "Colorbar",    "Axes",          "ScaleBar",      "Reduce",
+          "Expr",           "ClipLow",     "ClipHigh",      "Symmetric",     "Scale",
+          "ScaleThreshold", "Categorical", "ColorRegions",  "CategoryEdges", "Isolines",
+          "IsoLevels",      "Vectors",     "VectorCount",   "Warp",          "WarpScale",
+          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",       "CutawayTint",
+          "Streamlines",    "StreamSeeds", "StreamLength",  "StreamColor",   "Theme",
+          "Scanlines",      "Bloom",       "Fringe",        "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -347,13 +347,17 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
           "AttachOccupancy", "MaxCells", "Sign"}},
         {"Generate",
-         {"Shape", "Dims", "Size", "Origin", "Center", "Radius", "Height", "N", "Nu", "Nv", "Nxy",
-          "Nz", "Subdivisions", "CellType", "Split", "Order", "MaxCells", "Types", "Pairs"}},
-        {"Octree",
-         {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
-          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
-          "Transition", "Snap", "SurfaceLevel", "CurvatureThreshold", "FeatureAngle", "SizeArray",
-          "Plane"}},
+         {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
+          "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
+          "Rings", "InnerRadius", "OuterRadius", "Ntheta", "Nr",       "Nt",           "Angle",
+          "Edge",  "CellType",    "Split",       "Order",  "MaxCells", "Types",        "Pairs"}},
+        {"Octree", {"RootCells",    "MinLevel",       "MaxLevel",
+                    "Bounds",       "Padding",        "PaddingRelative",
+                    "Dimension",    "SampleDistance", "Balance",
+                    "Fill",         "AttachDistance", "EvenOdd",
+                    "MaxCells",     "Sign",           "Transition",
+                    "Snap",         "SurfaceLevel",   "CurvatureThreshold",
+                    "FeatureAngle", "SizeArray",      "Plane"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -1438,13 +1442,45 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             out = cylinder(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
                            count("Nxy", 8), count("Nz", 8), triple("Center", zero, false),
                            pipe_text(rStep, "CellType", "hexahedron"), order, max_cells);
+        } else if (shape == "reference_triangle") {
+            const std::vector<double> size = pipe_dvec(rStep, "Size");
+            if (!size.empty() && size.size() != 2)
+                throw std::invalid_argument(pipe_err(rStep, "'Size' expects two values"));
+            out = reference_triangle(count("N", 4),
+                                     size.empty() ? std::array<double, 2>{{1.0, 1.0}}
+                                                  : std::array<double, 2>{{size[0], size[1]}},
+                                     triple("Origin", zero, true), order, max_cells);
+        } else if (shape == "ngon") {
+            out = ngon(count("Sides", 6), pipe_number(rStep, "Radius", 1.0), count("Rings", 1),
+                       triple("Center", zero, false), order, max_cells);
+        } else if (shape == "annulus") {
+            out = annulus(pipe_number(rStep, "InnerRadius", 0.5),
+                          pipe_number(rStep, "OuterRadius", 1.0), count("Ntheta", 16),
+                          count("Nr", 4), pipe_number(rStep, "Angle", 6.283185307179586),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells);
+        } else if (shape == "lshape") {
+            out = lshape(count("N", 4), pipe_number(rStep, "Size", 2.0),
+                         triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
+                         max_cells);
+        } else if (shape == "plate_with_hole") {
+            out =
+                plate_with_hole(pipe_number(rStep, "Radius", 0.25), pipe_number(rStep, "Size", 1.0),
+                                count("Nt", 8), count("Nr", 4), triple("Center", zero, false),
+                                pipe_text(rStep, "CellType", "quad"), order, max_cells);
+        } else if (shape == "honeycomb") {
+            const auto d = dims_of(2, 4);
+            out = honeycomb({{d[0], d[1]}}, pipe_number(rStep, "Edge", 1.0),
+                            triple("Origin", zero, true), max_cells);
         } else if (shape == "reference_cells") {
             out = reference_cells(pipe_svec(rStep, "Types"), pipe_flag(rStep, "Pairs", false));
         } else {
-            throw std::invalid_argument(pipe_err(
-                rStep, "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
-                       "cylinder, reference_cells, not '" +
-                           shape + "'"));
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
+                         "cylinder, reference_triangle, ngon, annulus, lshape, plate_with_hole, "
+                         "honeycomb, reference_cells, not '" +
+                             shape + "'"));
         }
         std::size_t cells = 0;
         for (std::size_t b = 0; b < out.NumCellBlocks(); ++b)

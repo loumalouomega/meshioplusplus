@@ -54,7 +54,7 @@ constexpr std::uint16_t kPrimDegenerate = 0x8000;
 // coordinate, an angle, a unit vector); the map is applied once, at the end, to
 // corners and mid-edge nodes alike, so a quadratic cell lands on the true
 // geometry rather than on a chord.
-enum class PrimMap { Identity, Squircle, Polar, Sphere, Unit };
+enum class PrimMap { Identity, Squircle, Polar, Sphere, Unit, Plate };
 
 struct PrimBlock {
     CellType mType = CellType::Vertex;
@@ -66,6 +66,11 @@ struct PrimSoup {
     PrimMap mMap = PrimMap::Identity;
     double mRadius = 1.0;
     std::array<double, 3> mCenter = {{0.0, 0.0, 0.0}};
+    // PrimMap::Plate: the hole radius is mRadius; the half side, the number of
+    // angular positions around the hole and the cells per 90 degree block.
+    double mHalf = 1.0;
+    double mPeriod = 1.0;
+    double mNt = 1.0;
     std::vector<double> mParam;
     std::vector<std::uint16_t> mMask;
     std::vector<PrimBlock> mBlocks;
@@ -182,6 +187,43 @@ void prim_position(const PrimSoup& rSoup, std::size_t Node, double* pOut) {
             pOut[1] = cy + r * p[1];
             pOut[2] = cz + r * p[2];
             break;
+        case PrimMap::Plate: {
+            // p[0] blends the hole circle (0) into the square (1) at the angular
+            // position p[1] in [0, period]; p[2] is the height.
+            double q = p[1];
+            if (q >= rSoup.mPeriod)
+                q -= rSoup.mPeriod;
+            const double nt = rSoup.mNt;
+            double b = std::floor(q / nt);
+            b = b < 0.0 ? 0.0 : (b > 3.0 ? 3.0 : b);
+            const double m = q - b * nt;
+            const double ang = -kPrimPi / 4.0 + ((kPrimPi / 2.0) * q) / nt;
+            const double hx = r * std::cos(ang), hy = r * std::sin(ang);
+            // The east block's outer point, turned by b quarter turns (exact).
+            const double ex = rSoup.mHalf;
+            const double ey = rSoup.mHalf * ((2.0 * m) / nt - 1.0);
+            double ox = ex, oy = ey;
+            switch (static_cast<int>(b)) {
+                case 1:
+                    ox = -ey;
+                    oy = ex;
+                    break;
+                case 2:
+                    ox = -ex;
+                    oy = -ey;
+                    break;
+                case 3:
+                    ox = ey;
+                    oy = -ex;
+                    break;
+                default:
+                    break;
+            }
+            pOut[0] = cx + ((1.0 - p[0]) * hx + p[0] * ox);
+            pOut[1] = cy + ((1.0 - p[0]) * hy + p[0] * oy);
+            pOut[2] = cz + p[2];
+            break;
+        }
     }
 }
 
@@ -227,6 +269,22 @@ void prim_mid(const PrimSoup& rSoup, std::size_t A, std::size_t B, double* pOut)
             pOut[0] = x / len;
             pOut[1] = y / len;
             pOut[2] = z / len;
+            break;
+        }
+        case PrimMap::Plate: {
+            // The angular position is periodic: average along the shorter way.
+            const double per = rSoup.mPeriod;
+            double d = b[1] - a[1];
+            if (d > 0.5 * per)
+                d -= per;
+            else if (d < -0.5 * per)
+                d += per;
+            double q = a[1] + 0.5 * d;
+            if (q < 0.0)
+                q += per;
+            pOut[0] = (a[0] + b[0]) * 0.5;
+            pOut[1] = q;
+            pOut[2] = (a[2] + b[2]) * 0.5;
             break;
         }
     }
@@ -403,6 +461,17 @@ void prim_push(PrimBlock& rBlock, std::initializer_list<std::int64_t> Row) {
     rBlock.mConn.insert(rBlock.mConn.end(), Row.begin(), Row.end());
 }
 
+// A quad as itself, or as the triangles (a b c) and (a c d).
+void prim_push_quad(PrimBlock& rBlock, bool Tri, std::int64_t A, std::int64_t B, std::int64_t C,
+                    std::int64_t D) {
+    if (Tri) {
+        prim_push(rBlock, {A, B, C});
+        prim_push(rBlock, {A, C, D});
+    } else {
+        prim_push(rBlock, {A, B, C, D});
+    }
+}
+
 // The squircle disk lattice: (n + 1)^2 nodes, x fastest, at layer height z.
 // Returns the id of the first node it added.
 std::int64_t prim_add_squircle_layer(PrimSoup& rSoup, std::int64_t N, double Z,
@@ -440,14 +509,16 @@ std::int64_t prim_polar_nodes(std::int64_t N) {
 }
 
 // Triangles of a polar layer whose first node id is Base, in the cell order
-// documented in doc/primitives.md: ring by ring, sector by sector.
+// documented in doc/primitives.md: ring by ring, sector by sector. Ring k holds
+// Sectors * k nodes (6 for the disk, the polygon's side count for an ngon).
 template <typename Emit>
-void prim_polar_triangles(std::int64_t N, std::int64_t Base, Emit&& rEmit) {
+void prim_polar_triangles(std::int64_t N, std::int64_t Base, Emit&& rEmit,
+                          std::int64_t Sectors = 6) {
     auto ring = [&](std::int64_t k, std::int64_t m) {
-        return Base + 1 + 3 * k * (k - 1) + (m % (6 * k));
+        return Base + 1 + (Sectors * k * (k - 1)) / 2 + (m % (Sectors * k));
     };
     for (std::int64_t k = 1; k <= N; ++k)
-        for (std::int64_t s = 0; s < 6; ++s) {
+        for (std::int64_t s = 0; s < Sectors; ++s) {
             auto outer = [&](std::int64_t t) { return ring(k, s * k + t); };
             auto inner = [&](std::int64_t t) { return k == 1 ? Base : ring(k - 1, s * (k - 1) + t); };
             for (std::int64_t t = 0; t < k; ++t) {
@@ -837,6 +908,352 @@ Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
         }
     }
     return prim_finish(shape, soup, Order, {{"side", 4}, {"top", 1}, {"bottom", 2}}, 2);
+}
+
+// ===========================================================================
+// triangle
+// ===========================================================================
+
+Mesh reference_triangle(std::int64_t N, const std::array<double, 2>& rSize,
+                        const std::array<double, 3>& rOrigin, int Order, std::int64_t MaxCells) {
+    constexpr const char* shape = "reference_triangle";
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    if (N == 0)
+        return prim_empty();
+    for (std::size_t k = 0; k < 2; ++k)
+        prim_check_positive(shape, "size", rSize[k]);
+    prim_check_budget(shape, prim_mul(N, N), MaxCells);
+
+    PrimSoup soup;
+    // Row j holds N + 1 - j nodes; id(i, j) = j (N + 1) - j (j - 1) / 2 + i.
+    auto id = [&](std::int64_t I, std::int64_t J) { return J * (N + 1) - (J * (J - 1)) / 2 + I; };
+    for (std::int64_t j = 0; j <= N; ++j)
+        for (std::int64_t i = 0; i <= N - j; ++i) {
+            std::uint16_t mask = 0;
+            if (j == 0)
+                mask |= 1;
+            if (i == 0)
+                mask |= 2;
+            if (i + j == N)
+                mask |= 4;
+            soup.AddNode(rOrigin[0] + (rSize[0] * static_cast<double>(i)) / static_cast<double>(N),
+                         rOrigin[1] + (rSize[1] * static_cast<double>(j)) / static_cast<double>(N),
+                         rOrigin[2], mask);
+        }
+    PrimBlock& blk = soup.Block(CellType::Triangle, 3);
+    blk.mConn.reserve(static_cast<std::size_t>(N * N) * 3);
+    for (std::int64_t j = 0; j < N; ++j)
+        for (std::int64_t i = 0; i < N - j; ++i) {
+            prim_push(blk, {id(i, j), id(i + 1, j), id(i, j + 1)});
+            if (i < N - 1 - j)
+                prim_push(blk, {id(i + 1, j), id(i + 1, j + 1), id(i, j + 1)});
+        }
+    return prim_finish(shape, soup, Order, {{"ymin", 1}, {"xmin", 2}, {"hypotenuse", 4}}, 1);
+}
+
+// ===========================================================================
+// ngon
+// ===========================================================================
+
+Mesh ngon(std::int64_t Sides, double Radius, std::int64_t Rings,
+          const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells) {
+    constexpr const char* shape = "ngon";
+    prim_check_count(shape, "sides", Sides);
+    prim_check_count(shape, "rings", Rings);
+    prim_check_order(shape, Order);
+    if (Sides == 0 || Rings == 0)
+        return prim_empty();
+    if (Sides < 3)
+        prim_fail(shape, "sides must be at least 3, got " + std::to_string(Sides));
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_budget(shape, prim_mul(Sides, prim_mul(Rings, Rings)), MaxCells);
+
+    PrimSoup soup;
+    std::vector<double> vx(static_cast<std::size_t>(Sides)), vy(static_cast<std::size_t>(Sides));
+    for (std::int64_t s = 0; s < Sides; ++s) {
+        const double ang = (2.0 * kPrimPi * static_cast<double>(s)) / static_cast<double>(Sides);
+        vx[static_cast<std::size_t>(s)] = Radius * std::cos(ang);
+        vy[static_cast<std::size_t>(s)] = Radius * std::sin(ang);
+    }
+    const double rings = static_cast<double>(Rings);
+    soup.AddNode(rCenter[0], rCenter[1], rCenter[2], 0);
+    for (std::int64_t k = 1; k <= Rings; ++k)
+        for (std::int64_t s = 0; s < Sides; ++s)
+            for (std::int64_t t = 0; t < k; ++t) {
+                const std::size_t a = static_cast<std::size_t>(s);
+                const std::size_t b = static_cast<std::size_t>((s + 1) % Sides);
+                const double w0 = static_cast<double>(k - t), w1 = static_cast<double>(t);
+                soup.AddNode(rCenter[0] + (w0 * vx[a] + w1 * vx[b]) / rings,
+                             rCenter[1] + (w0 * vy[a] + w1 * vy[b]) / rings, rCenter[2],
+                             k == Rings ? 1 : 0);
+            }
+    PrimBlock& blk = soup.Block(CellType::Triangle, 3);
+    prim_polar_triangles(
+        Rings, 0,
+        [&](std::int64_t A, std::int64_t B, std::int64_t C) { prim_push(blk, {A, B, C}); }, Sides);
+    return prim_finish(shape, soup, Order, {{"rim", 1}}, 1);
+}
+
+// ===========================================================================
+// annulus
+// ===========================================================================
+
+Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::int64_t Nr,
+             double Angle, const std::array<double, 3>& rCenter, const std::string& rCellType,
+             int Order, std::int64_t MaxCells) {
+    constexpr const char* shape = "annulus";
+    prim_check_count(shape, "ntheta", Ntheta);
+    prim_check_count(shape, "nr", Nr);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Ntheta == 0 || Nr == 0)
+        return prim_empty();
+    prim_check_positive(shape, "inner_radius", InnerRadius);
+    if (!(OuterRadius > InnerRadius))
+        prim_fail(shape, "outer_radius must exceed inner_radius, got " +
+                             std::to_string(OuterRadius) + " and " + std::to_string(InnerRadius));
+    const double two_pi = 2.0 * kPrimPi;
+    if (!(Angle > 0.0) || Angle > two_pi + 1e-12)
+        prim_fail(shape, "angle must be in (0, 2*pi], got " + std::to_string(Angle));
+    const bool full = Angle >= two_pi - 1e-12;
+    if (full && Ntheta < 3)
+        prim_fail(shape,
+                  "ntheta must be at least 3 for a full ring, got " + std::to_string(Ntheta));
+    if (!full && Angle / static_cast<double>(Ntheta) >= kPrimPi)
+        prim_fail(shape, "ntheta is too small: each cell must span less than pi, got angle " +
+                             std::to_string(Angle) + " over " + std::to_string(Ntheta) + " cells");
+    prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nr), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Polar;
+    soup.mRadius = 1.0;
+    soup.mCenter = rCenter;
+    const std::int64_t np = full ? Ntheta : Ntheta + 1;
+    for (std::int64_t k = 0; k <= Nr; ++k) {
+        const double rho =
+            k == Nr ? OuterRadius
+                    : InnerRadius + ((OuterRadius - InnerRadius) * static_cast<double>(k)) /
+                                        static_cast<double>(Nr);
+        for (std::int64_t i = 0; i < np; ++i) {
+            std::uint16_t mask = 0;
+            if (k == 0)
+                mask |= 1;
+            if (k == Nr)
+                mask |= 2;
+            if (!full && i == 0)
+                mask |= 4;
+            if (!full && i == Ntheta)
+                mask |= 8;
+            soup.AddNode(rho, (Angle * static_cast<double>(i)) / static_cast<double>(Ntheta), 0.0,
+                         mask);
+        }
+    }
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    for (std::int64_t k = 0; k < Nr; ++k)
+        for (std::int64_t i = 0; i < Ntheta; ++i) {
+            const std::int64_t i1 = (i + 1) % np;
+            prim_push_quad(blk, tri, k * np + i, (k + 1) * np + i, (k + 1) * np + i1, k * np + i1);
+        }
+    std::vector<PrimRegionSpec> specs = {{"inner", 1}, {"outer", 2}};
+    if (!full) {
+        specs.push_back({"start", 4});
+        specs.push_back({"end", 8});
+    }
+    return prim_finish(shape, soup, Order, specs, 1);
+}
+
+// ===========================================================================
+// lshape
+// ===========================================================================
+
+Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
+            const std::string& rCellType, int Order, std::int64_t MaxCells) {
+    constexpr const char* shape = "lshape";
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (N == 0)
+        return prim_empty();
+    prim_check_positive(shape, "size", Size);
+    prim_check_budget(shape, prim_mul(prim_mul(3, prim_mul(N, N)), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    const std::int64_t w = 2 * N + 1;
+    // The corner of the square in the removed quadrant (x > 0, y < 0) has no nodes
+    // strictly inside it; the lattice keeps its boundary.
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(w * w), -1);
+    for (std::int64_t j = 0; j < w; ++j)
+        for (std::int64_t i = 0; i < w; ++i) {
+            if (i > N && j < N)
+                continue;
+            std::uint16_t mask = 0;
+            if (i == 0)
+                mask |= 1;
+            if (i == 2 * N && j >= N)
+                mask |= 2;
+            if (j == 0 && i <= N)
+                mask |= 4;
+            if (j == 2 * N)
+                mask |= 8;
+            if (i == N && j <= N)
+                mask |= 16;
+            if (j == N && i >= N)
+                mask |= 32;
+            ids[static_cast<std::size_t>(j * w + i)] = soup.AddNode(
+                rCenter[0] + (Size * static_cast<double>(i - N)) / static_cast<double>(2 * N),
+                rCenter[1] + (Size * static_cast<double>(j - N)) / static_cast<double>(2 * N),
+                rCenter[2], mask);
+        }
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    auto at = [&](std::int64_t I, std::int64_t J) {
+        return ids[static_cast<std::size_t>(J * w + I)];
+    };
+    for (std::int64_t j = 0; j < 2 * N; ++j)
+        for (std::int64_t i = 0; i < 2 * N; ++i) {
+            if (i >= N && j < N)
+                continue;
+            prim_push_quad(blk, tri, at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+        }
+    return prim_finish(
+        shape, soup, Order,
+        {{"xmin", 1}, {"xmax", 2}, {"ymin", 4}, {"ymax", 8}, {"notch_x", 16}, {"notch_y", 32}}, 1);
+}
+
+// ===========================================================================
+// plate_with_hole
+// ===========================================================================
+
+Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t Nr,
+                     const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+                     std::int64_t MaxCells) {
+    constexpr const char* shape = "plate_with_hole";
+    prim_check_count(shape, "nt", Nt);
+    prim_check_count(shape, "nr", Nr);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Nt == 0 || Nr == 0)
+        return prim_empty();
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_positive(shape, "size", Size);
+    if (!(Radius < Size / 2.0))
+        prim_fail(shape, "radius must be less than half the size, got radius " +
+                             std::to_string(Radius) + " and size " + std::to_string(Size));
+    const std::int64_t m = prim_mul(4, Nt);
+    prim_check_budget(shape, prim_mul(prim_mul(m, Nr), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Plate;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    soup.mHalf = Size / 2.0;
+    soup.mPeriod = static_cast<double>(m);
+    soup.mNt = static_cast<double>(Nt);
+    // The block a position belongs to decides its outer side: east, north, west,
+    // south. A block corner carries the side before it too.
+    const std::uint16_t side_bit[4] = {4, 16, 2, 8};  // xmax, ymax, xmin, ymin
+    for (std::int64_t k = 0; k <= Nr; ++k)
+        for (std::int64_t p = 0; p < m; ++p) {
+            std::uint16_t mask = 0;
+            if (k == 0)
+                mask |= 1;
+            if (k == Nr) {
+                const std::int64_t b = p / Nt;
+                mask |= side_bit[b];
+                if (p % Nt == 0)
+                    mask |= side_bit[(b + 3) % 4];
+            }
+            soup.AddNode(static_cast<double>(k) / static_cast<double>(Nr), static_cast<double>(p),
+                         0.0, mask);
+        }
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    for (std::int64_t k = 0; k < Nr; ++k)
+        for (std::int64_t p = 0; p < m; ++p) {
+            const std::int64_t p1 = (p + 1) % m;
+            prim_push_quad(blk, tri, k * m + p, (k + 1) * m + p, (k + 1) * m + p1, k * m + p1);
+        }
+    return prim_finish(shape, soup, Order,
+                       {{"hole", 1}, {"xmin", 2}, {"xmax", 4}, {"ymin", 8}, {"ymax", 16}}, 1);
+}
+
+// ===========================================================================
+// honeycomb
+// ===========================================================================
+
+Mesh honeycomb(const std::array<std::int64_t, 2>& rDims, double Edge,
+               const std::array<double, 3>& rOrigin, std::int64_t MaxCells) {
+    constexpr const char* shape = "honeycomb";
+    prim_check_count(shape, "cell counts", rDims[0]);
+    prim_check_count(shape, "cell counts", rDims[1]);
+    const std::int64_t nx = rDims[0], ny = rDims[1];
+    if (nx == 0 || ny == 0)
+        return prim_empty();
+    prim_check_positive(shape, "edge", Edge);
+    prim_check_budget(shape, prim_mul(nx, ny), MaxCells);
+
+    // Pointy-top hexagons on the vertex lattice x = (sqrt(3) / 2) edge u,
+    // y = (edge / 2) v: the centre of hexagon (i, j) is (2 i + 1 + (j & 1), 3 j + 2).
+    const std::int64_t wu = 2 * nx + 2, wv = 3 * ny + 2;
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(wu * wv), -1);
+    std::vector<double> coords;
+    std::vector<std::int64_t> flat;
+    flat.reserve(static_cast<std::size_t>(nx * ny) * 6);
+    std::vector<std::int64_t> offsets{0};
+    const double dx = (std::sqrt(3.0) * Edge) / 2.0, dy = Edge / 2.0;
+    static const std::int64_t kCorner[6][2] = {{0, -2}, {1, -1}, {1, 1}, {0, 2}, {-1, 1}, {-1, -1}};
+    for (std::int64_t j = 0; j < ny; ++j)
+        for (std::int64_t i = 0; i < nx; ++i) {
+            const std::int64_t cu = 2 * i + 1 + (j & 1), cv = 3 * j + 2;
+            for (const auto& corner : kCorner) {
+                const std::int64_t u = cu + corner[0], v = cv + corner[1];
+                std::int64_t& slot = ids[static_cast<std::size_t>(v * wu + u)];
+                if (slot < 0) {
+                    slot = static_cast<std::int64_t>(coords.size() / 3);
+                    coords.push_back(rOrigin[0] + dx * static_cast<double>(u));
+                    coords.push_back(rOrigin[1] + dy * static_cast<double>(v));
+                    coords.push_back(rOrigin[2]);
+                }
+                flat.push_back(slot);
+            }
+            offsets.push_back(static_cast<std::int64_t>(flat.size()));
+        }
+
+    Mesh out;
+    NDArray points = NDArray::Uninit(DType::Float64, {coords.size() / 3, std::size_t{3}});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    out.AssignPoints(std::move(points));
+
+    // Facet f of a polygon is its edge from node f to node f + 1; an edge seen
+    // once is on the boundary.
+    std::unordered_map<std::uint64_t, int> seen;
+    const std::size_t ncells = static_cast<std::size_t>(nx * ny);
+    auto key = [&](std::size_t C, std::size_t F) {
+        std::int64_t a = flat[C * 6 + F], b = flat[C * 6 + (F + 1) % 6];
+        if (a > b)
+            std::swap(a, b);
+        return prim_edge_key(a, b);
+    };
+    for (std::size_t c = 0; c < ncells; ++c)
+        for (std::size_t f = 0; f < 6; ++f)
+            ++seen[key(c, f)];
+    std::vector<std::int64_t> boundary;
+    for (std::size_t c = 0; c < ncells; ++c)
+        for (std::size_t f = 0; f < 6; ++f)
+            if (seen[key(c, f)] == 1) {
+                boundary.push_back(static_cast<std::int64_t>(c));
+                boundary.push_back(static_cast<std::int64_t>(f));
+            }
+    out.AddPolygonBlock("polygon", std::move(flat), std::move(offsets));
+    NDArray ids2 = NDArray::Uninit(DType::Int64, {boundary.size() / 2, std::size_t{2}});
+    std::copy(boundary.begin(), boundary.end(), ids2.As<std::int64_t>());
+    out.AddRegion(Region("boundary", RegionKind::Side, 1, -1, std::move(ids2)));
+    return out;
 }
 
 // ===========================================================================

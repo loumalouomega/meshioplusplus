@@ -2816,6 +2816,76 @@ PYBIND11_MODULE(_core, m) {
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "hexahedron", py::arg("order") = 1, py::arg("max_cells") = 20000000);
     m.def(
+        "reference_triangle",
+        [](std::int64_t n, const std::array<double, 2>& size, const std::array<double, 3>& origin,
+           int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::reference_triangle(n, size, origin, order, max_cells);
+            }));
+        },
+        py::arg("n") = 4, py::arg("size") = std::array<double, 2>{{1.0, 1.0}},
+        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
+        py::arg("max_cells") = 20000000);
+    m.def(
+        "ngon",
+        [](std::int64_t sides, double radius, std::int64_t rings,
+           const std::array<double, 3>& center, int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::ngon(sides, radius, rings, center, order, max_cells);
+            }));
+        },
+        py::arg("sides") = 6, py::arg("radius") = 1.0, py::arg("rings") = 1,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
+        py::arg("max_cells") = 20000000);
+    m.def(
+        "annulus",
+        [](double inner_radius, double outer_radius, std::int64_t ntheta, std::int64_t nr,
+           double angle, const std::array<double, 3>& center, const std::string& cell_type,
+           int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::annulus(inner_radius, outer_radius, ntheta, nr, angle,
+                                               center, cell_type, order, max_cells);
+            }));
+        },
+        py::arg("inner_radius") = 0.5, py::arg("outer_radius") = 1.0, py::arg("ntheta") = 16,
+        py::arg("nr") = 4, py::arg("angle") = 6.283185307179586,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
+        py::arg("order") = 1, py::arg("max_cells") = 20000000);
+    m.def(
+        "lshape",
+        [](std::int64_t n, double size, const std::array<double, 3>& center,
+           const std::string& cell_type, int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::lshape(n, size, center, cell_type, order, max_cells);
+            }));
+        },
+        py::arg("n") = 4, py::arg("size") = 2.0,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
+        py::arg("order") = 1, py::arg("max_cells") = 20000000);
+    m.def(
+        "plate_with_hole",
+        [](double radius, double size, std::int64_t nt, std::int64_t nr,
+           const std::array<double, 3>& center, const std::string& cell_type, int order,
+           std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::plate_with_hole(radius, size, nt, nr, center, cell_type,
+                                                       order, max_cells);
+            }));
+        },
+        py::arg("radius") = 0.25, py::arg("size") = 1.0, py::arg("nt") = 8, py::arg("nr") = 4,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
+        py::arg("order") = 1, py::arg("max_cells") = 20000000);
+    m.def(
+        "honeycomb",
+        [](const std::array<std::int64_t, 2>& dims, double edge,
+           const std::array<double, 3>& origin, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil(
+                [&] { return meshioplusplus::honeycomb(dims, edge, origin, max_cells); }));
+        },
+        py::arg("dims") = std::array<std::int64_t, 2>{{4, 4}}, py::arg("edge") = 1.0,
+        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+        py::arg("max_cells") = 20000000);
+    m.def(
         "reference_cells",
         [](const std::vector<std::string>& types, bool pairs) {
             return meshioplusplus_py::mesh_to_py(

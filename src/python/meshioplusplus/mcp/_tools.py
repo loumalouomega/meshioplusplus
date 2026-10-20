@@ -47,6 +47,7 @@ from .. import (
     GridArray,
     GridSpec,
     agglomerate,
+    annulus,
     attach_quality,
     box,
     cell_data_to_point_data,
@@ -86,17 +87,21 @@ from .. import (
     grid,
     hausdorff_distance,
     hessian,
+    honeycomb,
     icosa_sphere,
     iga_evaluate,
     iga_refine,
     iga_sample,
     interpolate,
     isosurface,
+    lshape,
     match_periodic_nodes,
     merge,
+    ngon,
     octree,
     optimize_volume,
     partition,
+    plate_with_hole,
     point_data_to_cell_data,
     power_spectrum,
     proximity_graph,
@@ -104,6 +109,7 @@ from .. import (
     read_metadata,
     rectangle,
     reference_cells,
+    reference_triangle,
     refine,
     region_adjacency,
     remesh,
@@ -1533,6 +1539,142 @@ def tool_cylinder(
         center=(0.0, 0.0, 0.0) if center is None else center,
         cell_type=cell_type,
         order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_reference_triangle(
+    output_path,
+    output_format=None,
+    n=4,
+    size=None,
+    origin=None,
+    order=1,
+    max_cells=20000000,
+):
+    """Generate the reference triangle refined into n*n triangles; reads no input."""
+    out = reference_triangle(
+        n=n,
+        size=(1.0, 1.0) if size is None else size,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_ngon(
+    output_path,
+    output_format=None,
+    sides=6,
+    radius=1.0,
+    rings=1,
+    center=None,
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a regular polygon fanned from its centre; reads no input."""
+    out = ngon(
+        sides=sides,
+        radius=radius,
+        rings=rings,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_annulus(
+    output_path,
+    output_format=None,
+    inner_radius=0.5,
+    outer_radius=1.0,
+    ntheta=16,
+    nr=4,
+    angle=2.0 * np.pi,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate an annulus, or a sector of one with a seam pair; reads no input."""
+    out = annulus(
+        inner_radius=inner_radius,
+        outer_radius=outer_radius,
+        ntheta=ntheta,
+        nr=nr,
+        angle=angle,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_lshape(
+    output_path,
+    output_format=None,
+    n=4,
+    size=2.0,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate the L-shaped domain (a square minus a quadrant); reads no input."""
+    out = lshape(
+        n=n,
+        size=size,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_plate_with_hole(
+    output_path,
+    output_format=None,
+    radius=0.25,
+    size=1.0,
+    nt=8,
+    nr=4,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a square plate around a circular hole; reads no input."""
+    out = plate_with_hole(
+        radius=radius,
+        size=size,
+        nt=nt,
+        nr=nr,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_honeycomb(
+    output_path,
+    output_format=None,
+    dims=None,
+    edge=1.0,
+    origin=None,
+    max_cells=20000000,
+):
+    """Generate a tiling of hexagons as one polygon block; reads no input."""
+    out = honeycomb(
+        dims=(4, 4) if dims is None else dims,
+        edge=edge,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
         max_cells=max_cells,
     )
     return _result(_store(out, output_path, output_format), out)
@@ -4941,6 +5083,26 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_icosa_sphere, "wraps": ("icosa_sphere",), "gated": None},
         ),
         ("cylinder", {"fn": tool_cylinder, "wraps": ("cylinder",), "gated": None}),
+        (
+            "reference_triangle",
+            {
+                "fn": tool_reference_triangle,
+                "wraps": ("reference_triangle",),
+                "gated": None,
+            },
+        ),
+        ("ngon", {"fn": tool_ngon, "wraps": ("ngon",), "gated": None}),
+        ("annulus", {"fn": tool_annulus, "wraps": ("annulus",), "gated": None}),
+        ("lshape", {"fn": tool_lshape, "wraps": ("lshape",), "gated": None}),
+        (
+            "plate_with_hole",
+            {
+                "fn": tool_plate_with_hole,
+                "wraps": ("plate_with_hole",),
+                "gated": None,
+            },
+        ),
+        ("honeycomb", {"fn": tool_honeycomb, "wraps": ("honeycomb",), "gated": None}),
         (
             "reference_cells",
             {"fn": tool_reference_cells, "wraps": ("reference_cells",), "gated": None},

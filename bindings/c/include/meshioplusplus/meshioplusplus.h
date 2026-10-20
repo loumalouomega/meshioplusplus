@@ -2690,13 +2690,16 @@ MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3], const 
 /* Parametric generators                                                     */
 /*                                                                           */
 /* mio_rectangle, mio_box, mio_disk, mio_uv_sphere, mio_icosa_sphere and      */
-/* mio_cylinder build a shape from parameters, like mio_grid, and              */
+/* mio_cylinder build a shape from parameters, like mio_grid, and the planar  */
+/* domains mio_reference_triangle, mio_ngon, mio_annulus, mio_lshape,         */
+/* mio_plate_with_hole and mio_honeycomb do the same at z = origin[2];       */
 /* mio_reference_cells builds one cell of each type in reference coordinates. */
 /* They share one options struct; each shape reads the fields its name        */
 /* suggests and ignores the rest. Boundaries come back as named side regions  */
-/* (xmin..zmax on a box, rim on a disk, side/top/bottom on a cylinder) and    */
-/* order 2 places the mid-edge nodes on the exact geometry. See               */
-/* doc/primitives.md for the point and cell order of every shape.             */
+/* (xmin..zmax on a box, rim on a disk, side/top/bottom on a cylinder,        */
+/* inner/outer on an annulus, hole on a plate) and order 2 places the         */
+/* mid-edge nodes on the exact geometry. See doc/primitives.md for the point  */
+/* and cell order of every shape.                                             */
 /* ------------------------------------------------------------------------- */
 
 /** Which cell type a generator builds (MIO_GEN_DEFAULT is the shape's own default). */
@@ -2735,7 +2738,26 @@ typedef enum mio_gen_split {
  *  - mio_icosa_sphere: radius, counts[0] (subdivisions), origin (centre).
  *  - mio_cylinder:    radius, height, counts[0..1] (nxy, nz), origin (centre);
  *                     cell_type HEXAHEDRON or WEDGE.
+ *  - mio_reference_triangle: counts[0] (n), size[0..1] (legs), origin (the
+ *                     right-angle corner).
+ *  - mio_ngon:        counts[0..1] (sides, rings), radius (circumradius),
+ *                     origin (centre).
+ *  - mio_annulus:     radius (OUTER radius), radius2 (inner radius), counts[0..1]
+ *                     (ntheta, nr), angle, origin (centre); cell_type QUAD or
+ *                     TRIANGLE.
+ *  - mio_lshape:      counts[0] (n), size[0] (side of the bounding square),
+ *                     origin (its centre); cell_type QUAD or TRIANGLE.
+ *  - mio_plate_with_hole: radius (hole radius), size[0] (plate side; the hole
+ *                     must be smaller than half of it, so the init defaults of 1
+ *                     must be changed), counts[0..1] (nt, nr), origin (hole
+ *                     centre); cell_type QUAD or TRIANGLE.
+ *  - mio_honeycomb:   counts[0..1] (nx, ny), size[0] (edge length), origin (lower-
+ *                     left corner of the bounding box); order must be 1.
  * Every shape reads order and max_cells.
+ *
+ * radius2 and angle were carved out of the reserved tail, so a struct filled by
+ * an older caller (both zero) reads as "use the default": radius2 = 0.5 and
+ * angle = 2 pi.
  */
 typedef struct mio_gen_opts {
     int64_t counts[3];   /**< cell or division counts; see the table above */
@@ -2748,10 +2770,15 @@ typedef struct mio_gen_opts {
     int32_t split;       /**< a mio_gen_split */
     int32_t order;       /**< 1 (or 0) for linear cells, 2 for quadratic ones */
     int32_t pad;         /**< must be zero */
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    double radius2;      /**< inner radius of an annulus; 0 means 0.5 */
+    double angle;        /**< opening angle of an annulus in radians; 0 means 2 pi */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_gen_opts;
 
-/** Zero-initialize generator options: counts 8, unit size and radius, order 1. */
+/**
+ * Zero-initialize generator options: counts 8, unit size and radius, order 1,
+ * annulus inner radius 0.5 and opening angle 2 pi.
+ */
 MIO_API void mio_gen_opts_init(mio_gen_opts* opts);
 
 /** A regular 2-D grid of quads or triangles at z = origin[2]. @p opts NULL means defaults. */
@@ -2766,6 +2793,18 @@ MIO_API mio_mesh* mio_uv_sphere(const mio_gen_opts* opts);
 MIO_API mio_mesh* mio_icosa_sphere(const mio_gen_opts* opts);
 /** A solid cylinder along z. */
 MIO_API mio_mesh* mio_cylinder(const mio_gen_opts* opts);
+/** The reference triangle, scaled and refined into n * n triangles. */
+MIO_API mio_mesh* mio_reference_triangle(const mio_gen_opts* opts);
+/** A regular polygon fanned from its centre, or refined into rings. */
+MIO_API mio_mesh* mio_ngon(const mio_gen_opts* opts);
+/** An annulus or a sector of one, with the seam pair of a sector kept apart. */
+MIO_API mio_mesh* mio_annulus(const mio_gen_opts* opts);
+/** The square minus its fourth quadrant, the re-entrant corner at the centre. */
+MIO_API mio_mesh* mio_lshape(const mio_gen_opts* opts);
+/** A square plate around a circular hole, in four quad blocks. */
+MIO_API mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts);
+/** A tiling of pointy-top hexagons as one ragged polygon block. */
+MIO_API mio_mesh* mio_honeycomb(const mio_gen_opts* opts);
 /**
  * One cell of each requested type in reference coordinates, side by side.
  *
