@@ -8,16 +8,38 @@
 # `occt` leg). It publishes no source tarball, so the source is always a
 # shallow clone of the tag, refused unless it checks out exactly OCCT_COMMIT.
 
-OCCT_VERSION="7.6.3"
-OCCT_TAG="V7_6_3"
-OCCT_COMMIT="b079fb9877ef64d4a8158a60fa157f59b096debb"
+#
+# MIO_OCCT_PIN selects the pin: 7.6 (the default, what every artifact ships)
+# or 7.9 (the CI `occt-79` leg, which checks fit_cad on the newest 7.x the
+# backend supports). Each pin is a version, its tag and the commit the tag
+# must check out.
+case "${MIO_OCCT_PIN:-7.6}" in
+    7.6)
+        OCCT_VERSION="7.6.3"
+        OCCT_TAG="V7_6_3"
+        OCCT_COMMIT="b079fb9877ef64d4a8158a60fa157f59b096debb"
+        ;;
+    7.9)
+        OCCT_VERSION="7.9.3"
+        OCCT_TAG="V7_9_3"
+        OCCT_COMMIT="a016080bf6738d6aeae020badee4e888ad1540a5"
+        ;;
+    *)
+        echo "error: MIO_OCCT_PIN=${MIO_OCCT_PIN} is not a pinned OpenCASCADE (7.6 or 7.9)" >&2
+        exit 2
+        ;;
+esac
 OCCT_URL="https://github.com/Open-Cascade-SAS/OCCT.git"
 
 # Only the toolkits the core links (CMakeLists.txt's _mio_occt_libs): every
 # module is off and these are named, which pulls in their dependency closure
 # (modelling data and algorithms, shape healing, booleans, primitives) and
-# nothing else -- no visualisation, OCAF, Draw, or third-party library.
-OCCT_TOOLKITS="TKSTEP TKIGES TKMesh TKBool TKPrim"
+# nothing else -- no visualisation, OCAF, Draw, or third-party library. From
+# 7.8 the STEP and IGES toolkits are TKDESTEP and TKDEIGES.
+case "$OCCT_VERSION" in
+    7.6.*) OCCT_TOOLKITS="TKSTEP TKIGES TKMesh TKBool TKPrim" ;;
+    *) OCCT_TOOLKITS="TKDESTEP TKDEIGES TKMesh TKBool TKPrim" ;;
+esac
 
 # occt_source <download-dir> <source-dir>: the commit-verified clone of the
 # tag (cached in <download-dir>) exported into <source-dir>, patched with

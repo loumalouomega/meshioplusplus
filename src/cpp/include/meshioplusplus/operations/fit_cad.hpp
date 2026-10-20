@@ -327,4 +327,11 @@ MESHIOPLUSPLUS_API FitCadResult fit_cad(const Mesh& rMesh, const std::string& rS
 /// Whether this build carries the OpenCASCADE backend `fit_cad` needs.
 MESHIOPLUSPLUS_API bool fit_cad_has_occt() noexcept;
 
+/**
+ * @brief The OpenCASCADE version this build links (`"7.6.3"`, its
+ * `OCC_VERSION_COMPLETE`), or `""` in a build without it. The backend's STEP
+ * bytes depend on it, so golden digests are keyed by it (v17.11.0).
+ */
+MESHIOPLUSPLUS_API const char* fit_cad_occt_version() noexcept;
+
 }  // namespace meshioplusplus

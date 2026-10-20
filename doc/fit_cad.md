@@ -131,7 +131,7 @@ build/build-occt.sh ~/occt && export OpenCASCADE_ROOT=~/occt
 pip install --no-binary meshioplusplus meshioplusplus                       # finds it
 ```
 
-Debian's packages export toolkit targets that link TBB, hence `libtbb-dev`. OpenCASCADE 7.6 or later is supported (7.6 is Ubuntu 24.04's package; the CI leg tests it, and the binaries carry 7.6.3).
+Debian's packages export toolkit targets that link TBB, hence `libtbb-dev`. OpenCASCADE 7.6 or later is supported (7.6 is Ubuntu 24.04's package and the binaries carry 7.6.3); CI runs the `fit_cad` suites on Ubuntu's 7.6 and on 7.9.3, which `MIO_OCCT_PIN=7.9 build/build-occt.sh PREFIX` builds from the same recipe. The STEP bytes depend on the kernel's version, so the golden digests that pin `fit_cad`'s output (`tests/cpp/test_fit_cad_goldens.cpp`) are kept per version; `fit_cad_occt_version()` in C++ and `_core.__occt_version__` in Python name the version a build links (`""` without one).
 
 Without the kernel, `fit_cad` falls back to the [native backend](#the-native-backend) and says so once (a warning naming what is lost); `backend="occt"` raises `NotImplementedError` (C++ `Unsupported`) naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON`. There is no pure-Python fallback of either: without the compiled core `fit_cad` raises. `meshioplusplus._fit_cad.has_occt()`, `fit_cad_has_occt()` in C++, `mio_has_occt()` in C and the language surfaces below say in advance whether a build has it.
 

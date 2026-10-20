@@ -35,6 +35,7 @@
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "analytic_surfaces.hpp"
+#include "fit_cad_fixtures.hpp"
 #include "mesh_fixtures.hpp"
 
 #include "../../src/cpp/src/detail/nurbs_eval.hpp"
@@ -43,15 +44,8 @@ using namespace meshioplusplus;
 
 namespace {
 
-Mesh fitted(const Mesh& rSkin, double CurvatureTolerance = 0.0, double Tolerance = 1e-3,
-            std::int64_t MinPatchCells = 1) {
-    SegmentOptions so;
-    so.mCurvatureTolerance = CurvatureTolerance;
-    so.mMinPatchCells = MinPatchCells;
-    FitPrimitivesOptions fo;
-    fo.mTolerance = Tolerance;
-    return fit_primitives(segment(rSkin, so).mMesh, fo).mMesh;
-}
+using fcfix::fitted;
+using fcfix::saddle_box;
 
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 // The NURBS side channel holds every face of the solid, each trimmed, and every
@@ -95,24 +89,6 @@ void expect_brep_consistent(const FitCadResult& rR) {
 std::string read_bytes(const std::string& rPath) {
     std::ifstream in(rPath, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
-// A closed box whose top is the saddle z = 1 + 0.2 (x - 1/2)(y - 1/2) * 4: no
-// primitive explains the top, so it must come back faceted.
-Mesh saddle_box(int n) {
-    Mesh box = analytic::box_skin(n);
-    const NDArray& p = box.Points();
-    NDArray q = NDArray::Uninit(DType::Float64, {box.NumPoints(), 3});
-    for (std::size_t i = 0; i < box.NumPoints(); ++i) {
-        const double x = p.As<double>()[i * 3], y = p.As<double>()[i * 3 + 1];
-        double z = p.As<double>()[i * 3 + 2];
-        z *= 1.0 + 0.8 * (x - 0.5) * (y - 0.5);
-        q.As<double>()[i * 3] = x;
-        q.As<double>()[i * 3 + 1] = y;
-        q.As<double>()[i * 3 + 2] = z;
-    }
-    box.AssignPoints(std::move(q));
-    return box;
 }
 
 }  // namespace

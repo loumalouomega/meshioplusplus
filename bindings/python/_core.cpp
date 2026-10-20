@@ -1435,6 +1435,8 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_occt__") = false;
 #endif
+    // The kernel version fit_cad's STEP bytes depend on ("" without it).
+    m.attr("__occt_version__") = std::string(fit_cad_occt_version());
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
     m.attr("__has_gidpost__") = true;
 #else

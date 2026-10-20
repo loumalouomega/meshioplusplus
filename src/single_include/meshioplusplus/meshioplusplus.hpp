@@ -28155,6 +28155,13 @@ MESHIOPLUSPLUS_API FitCadResult fit_cad(const Mesh& rMesh, const std::string& rS
 /// Whether this build carries the OpenCASCADE backend `fit_cad` needs.
 MESHIOPLUSPLUS_API bool fit_cad_has_occt() noexcept;
 
+/**
+ * @brief The OpenCASCADE version this build links (`"7.6.3"`, its
+ * `OCC_VERSION_COMPLETE`), or `""` in a build without it. The backend's STEP
+ * bytes depend on it, so golden digests are keyed by it (v17.11.0).
+ */
+MESHIOPLUSPLUS_API const char* fit_cad_occt_version() noexcept;
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/fit_cad.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/gradient.hpp =====
@@ -35925,6 +35932,257 @@ inline bool brep_inside(const std::vector<std::vector<std::array<double, 2>>>& r
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/brep_trim.hpp =====
+// ===== begin src/cpp/src/detail/dense_chol.hpp =====
+/**
+ * @file detail/dense_chol.hpp
+ * @brief Symmetric factorisations for the skin-to-CAD fits: a dense Cholesky
+ * and LDLᵀ (with a diagonal shift, for Levenberg-Marquardt damping), and a
+ * skyline (envelope) LDLᵀ for the banded normal equations of a tensor-product
+ * B-spline least-squares fit, whose `n` poles couple only within about
+ * `(p + 1) * nu` of each other.
+ *
+ * A **core-private** header (the `lsq_fit.hpp` precedent): nothing installed
+ * names it. Every routine is serial with a fixed operation order, so the
+ * result is the same on every backend and at every thread count. No pivoting:
+ * the matrices these factor are symmetric positive (semi)definite by
+ * construction, and a non-positive pivot is reported, not repaired.
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Factor a dense symmetric positive definite `N x N` matrix as `L Lᵀ`.
+ * @param rA row-major; only the lower triangle is read, and it is
+ *        overwritten by `L` (the strict upper triangle is left as it was).
+ * @return false when a pivot is not positive or not finite.
+ */
+bool chol_factor(std::vector<double>& rA, std::size_t N);
+
+/// Solve `L Lᵀ x = b` in place (`pB` holds `b`, then `x`).
+void chol_solve(const std::vector<double>& rL, std::size_t N, double* pB);
+
+/**
+ * @brief Factor `A + Shift I` (dense, symmetric) as `L D Lᵀ`, unit `L` in the
+ * strict lower triangle and `D` on the diagonal of `rA`.
+ * @return false when a pivot is zero or not finite (an indefinite matrix with
+ *         non-zero pivots factors: the caller decides what that means).
+ */
+bool ldlt_factor(std::vector<double>& rA, std::size_t N, double Shift = 0.0);
+
+/// Solve `L D Lᵀ x = b` in place.
+void ldlt_solve(const std::vector<double>& rLd, std::size_t N, double* pB);
+
+/**
+ * @brief A symmetric matrix stored by rows of its lower triangle, row `i`
+ * from column `mFirst[i]` to the diagonal (`mFirst[i] <= i`): the envelope.
+ * Fill-in of an LDLᵀ factorisation stays inside the envelope, so the factor
+ * overwrites it in place.
+ */
+struct SkylineMatrix {
+    std::size_t mN = 0;
+    std::vector<std::size_t> mFirst;
+    /// Row `i`'s entries start at `mStart[i]`; the diagonal is at `mStart[i + 1] - 1`.
+    std::vector<std::size_t> mStart;
+    std::vector<double> mValues;
+
+    /// Whether `(i, j)` (either triangle) lies inside the envelope.
+    bool Contains(std::size_t I, std::size_t J) const {
+        if (I < J) {
+            const std::size_t t = I;
+            I = J;
+            J = t;
+        }
+        return J >= mFirst[I];
+    }
+    /// The entry `(i, j)` (either triangle), which must lie inside the envelope.
+    double& At(std::size_t I, std::size_t J) {
+        if (I < J) {
+            const std::size_t t = I;
+            I = J;
+            J = t;
+        }
+        return mValues[mStart[I] + (J - mFirst[I])];
+    }
+    double At(std::size_t I, std::size_t J) const {
+        if (I < J) {
+            const std::size_t t = I;
+            I = J;
+            J = t;
+        }
+        return mValues[mStart[I] + (J - mFirst[I])];
+    }
+};
+
+/**
+ * @brief A zero matrix with the given envelope.
+ * @param rFirst per row, its first stored column (`<=` the row); clamped so
+ *        the envelope is monotone (`mFirst[i] >= mFirst[i - 1]` is not
+ *        required, but a row never starts after its diagonal).
+ */
+SkylineMatrix skyline_zero(const std::vector<std::size_t>& rFirst);
+
+/**
+ * @brief Factor a skyline matrix plus `Shift I` as `L D Lᵀ` in place: unit `L`
+ * below the diagonal, `D` on it.
+ * @return false when a pivot is not positive or not finite (the matrices this
+ *         factors are positive definite; a regularised least-squares system
+ *         with too little data shows up here).
+ */
+bool skyline_ldlt(SkylineMatrix& rA, double Shift = 0.0);
+
+/// Solve `L D Lᵀ x = b` in place with the factor `skyline_ldlt` left.
+void skyline_solve(const SkylineMatrix& rLd, double* pB);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/dense_chol.hpp =====
+// ===== begin src/cpp/src/detail/bspline_lsq.hpp =====
+/**
+ * @file detail/bspline_lsq.hpp
+ * @brief The OpenCASCADE-free pieces of a tensor-product B-spline surface
+ * least-squares fit: clamped knot vectors, basis functions with derivatives,
+ * point evaluation with first and second derivatives, the collocation row of
+ * a sample, a thin-plate smoothing term integrated by Gauss-Legendre
+ * quadrature, the regularised least-squares solve of the poles, and the
+ * Newton projection of a point onto the surface (parameter correction).
+ *
+ * The surface is polynomial (no weights), `mNu x mNv` poles listed `u`
+ * fastest (pole `(i, j)` at index `i + mNu * j`), three coordinates each, with
+ * full clamped knot vectors (`n + p + 1` knots for `n` poles). It reuses
+ * `nurbs_find_span` from `nurbs_eval.hpp`; the derivatives are The NURBS
+ * Book's A2.3 to any order (`iga_kernels.hpp` stops at the first).
+ *
+ * A **core-private** header (the `lsq_fit.hpp` precedent): nothing installed
+ * names it. Serial and deterministic: fixed loop orders, fixed iteration caps.
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A polynomial tensor-product B-spline surface in 3D.
+struct BsplineSurface {
+    int mDegreeU = 3;
+    int mDegreeV = 3;
+    std::vector<double> mKnotsU;
+    std::vector<double> mKnotsV;
+    std::size_t mNu = 0;
+    std::size_t mNv = 0;
+    /// `mNu * mNv * 3` coordinates, pole `(i, j)` at `3 * (i + mNu * j)`.
+    std::vector<double> mPoles;
+
+    std::size_t NumPoles() const { return mNu * mNv; }
+    /// The parameter domain `[U0, U1] x [V0, V1]`.
+    double U0() const { return mKnotsU[static_cast<std::size_t>(mDegreeU)]; }
+    double U1() const { return mKnotsU[mNu]; }
+    double V0() const { return mKnotsV[static_cast<std::size_t>(mDegreeV)]; }
+    double V1() const { return mKnotsV[mNv]; }
+};
+
+/**
+ * @brief A clamped knot vector for `N` poles of degree `P` on `[Lo, Hi]`:
+ * `P + 1` copies of each end and `N - P - 1` interior knots evenly spaced.
+ * @throws std::invalid_argument unless `P >= 1`, `N >= P + 1` and `Lo < Hi`.
+ */
+std::vector<double> bspline_clamped_knots(int P, std::size_t N, double Lo, double Hi);
+
+/**
+ * @brief A surface shape with clamped uniform knots on the given domain and
+ * zero poles.
+ */
+BsplineSurface bspline_shape(int P, int Q, std::size_t Nu, std::size_t Nv, double U0, double U1,
+                             double V0, double V1);
+
+/**
+ * @brief The basis functions of span `Span` at `U` and their derivatives up to
+ * order `NDer` (A2.3): `pDers` is `(NDer + 1)` rows of `P + 1` values, row `k`
+ * the `k`-th derivatives (zero for `k > P`).
+ */
+void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
+                        const std::vector<double>& rKnots, double* pDers);
+
+/// A surface point and its partial derivatives.
+struct BsplineEval {
+    double mS[3] = {0.0, 0.0, 0.0};
+    double mSu[3] = {0.0, 0.0, 0.0};
+    double mSv[3] = {0.0, 0.0, 0.0};
+    double mSuu[3] = {0.0, 0.0, 0.0};
+    double mSuv[3] = {0.0, 0.0, 0.0};
+    double mSvv[3] = {0.0, 0.0, 0.0};
+};
+
+/**
+ * @brief Evaluate the surface at `(U, V)` (clamped to the domain) with
+ * derivatives up to order `NDer` (0, 1 or 2; higher ones stay zero).
+ */
+void bspline_eval(const BsplineSurface& rS, double U, double V, int NDer, BsplineEval& rOut);
+
+/**
+ * @brief The collocation row of a sample at `(U, V)`: the `(p + 1)(q + 1)`
+ * pole indices whose basis functions are non-zero there, and those values.
+ */
+void bspline_row(const BsplineSurface& rS, double U, double V, std::vector<std::size_t>& rCols,
+                 std::vector<double>& rValues);
+
+/**
+ * @brief The envelope of the normal matrix: pole `(i, j)` couples with every
+ * pole within `p` columns and `q` rows of it, so row `i + Nu j` starts at
+ * `max(0, i - p) + Nu max(0, j - q)`.
+ */
+SkylineMatrix bspline_normal_envelope(const BsplineSurface& rS);
+
+/**
+ * @brief Add `Weight` times the thin-plate energy
+ * `∫∫ |S_uu|² + 2 |S_uv|² + |S_vv|² du dv` (a quadratic form in each
+ * coordinate of the poles, the same for all three) to `rA`, integrated
+ * exactly by Gauss-Legendre quadrature over every knot span.
+ */
+void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA);
+
+/**
+ * @brief Fit the poles of `rS` (its degrees, knots and pole counts given) to
+ * scattered samples by regularised least squares:
+ * `min Σ w_k |S(u_k, v_k) - x_k|² + Smoothing · thin-plate energy`.
+ * @param rU, rV the sample parameters (clamped to the domain).
+ * @param rXyz `3 * rU.size()` coordinates.
+ * @param pWeights per sample, or null for all ones.
+ * @return false (poles left as they were) when the normal matrix is singular:
+ *         poles no sample touches and no smoothing to hold them.
+ */
+bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
+                     const std::vector<double>& rV, const std::vector<double>& rXyz,
+                     const std::vector<double>* pWeights, double Smoothing);
+
+/**
+ * @brief Project `pP` onto the surface by Newton's method on the
+ * closest-point conditions `(S - P)·S_u = (S - P)·S_v = 0`, falling back to
+ * a Gauss-Newton step where the Hessian is not positive definite, the
+ * parameters clamped to the domain.
+ * @param rU, rV the start on entry, the foot point's parameters on exit.
+ * @return the distance from `pP` to the surface point at the final `(U, V)`.
+ */
+double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
+                       int MaxIterations = 20);
+
+/**
+ * @brief The `N` Gauss-Legendre nodes and weights on `[-1, 1]` (Newton on the
+ * Legendre polynomial), exact for polynomials of degree `2N - 1`.
+ */
+void gauss_legendre(int N, std::vector<double>& rNodes, std::vector<double>& rWeights);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/bspline_lsq.hpp =====
 // ===== begin src/cpp/src/detail/closed_facets.hpp =====
 /**
  * @file detail/closed_facets.hpp
@@ -39469,6 +39727,105 @@ inline std::vector<std::uint32_t> slot_multiplicity(const SlotRuns& rRuns, std::
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/slot_runs.hpp =====
+// ===== begin src/cpp/src/detail/sparse_solve.hpp =====
+/**
+ * @file detail/sparse_solve.hpp
+ * @brief Sparse linear algebra for the skin-to-CAD fits: a compressed-row
+ * matrix assembled from triplets, its product with a vector, and Jacobi-
+ * preconditioned conjugate gradients (symmetric positive definite systems,
+ * such as least-squares conformal maps) and BiCGSTAB (the non-symmetric
+ * mean-value parametrisation).
+ *
+ * A **core-private** header (the `lsq_fit.hpp` precedent): no installed header
+ * names it, and it adds nothing to the API or the ABI. Every result is the
+ * same on every backend and at every thread count: the rows of a product are
+ * independent, and every dot product sums fixed chunks of `kSparseChunk`
+ * entries in parallel and then the chunk sums serially in index order
+ * (`parallel_reduce`), so no floating-point sum depends on the scheduling.
+ * Iteration caps are fixed, there is no randomness, and triplets with the same
+ * row and column are summed in the order they were given.
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The entries every chunk of a deterministic dot product sums.
+inline constexpr std::size_t kSparseChunk = 4096;
+
+/// One `(row, column, value)` entry of a matrix being assembled.
+struct SparseTriplet {
+    std::size_t mRow = 0;
+    std::size_t mCol = 0;
+    double mValue = 0.0;
+};
+
+/// A compressed-row matrix: row `r`'s entries are `mCol` / `mValue` in
+/// `[mStart[r], mStart[r + 1])`, columns ascending and unique.
+struct SparseCsr {
+    std::size_t mRows = 0;
+    std::size_t mCols = 0;
+    std::vector<std::size_t> mStart;
+    std::vector<std::size_t> mCol;
+    std::vector<double> mValue;
+
+    /// The stored entries.
+    std::size_t NumNonzeros() const { return mValue.size(); }
+};
+
+/**
+ * @brief Assemble a compressed-row matrix.
+ * @param Rows, Cols the shape; every triplet must lie inside it.
+ * @param rTriplets the entries, in any order; duplicates are summed in the
+ *        order given (a stable sort by row, then column).
+ * @throws std::invalid_argument on a triplet outside the shape.
+ */
+SparseCsr csr_from_triplets(std::size_t Rows, std::size_t Cols,
+                            std::vector<SparseTriplet> rTriplets);
+
+/// `pY = A pX`, rows in parallel (each row serial, so deterministic).
+void csr_multiply(const SparseCsr& rA, const double* pX, double* pY);
+
+/// The diagonal of a square matrix (zero where none is stored).
+std::vector<double> csr_diagonal(const SparseCsr& rA);
+
+/// `sum(pA[i] * pB[i])` over fixed chunks (see the file comment).
+double sparse_dot(const double* pA, const double* pB, std::size_t N);
+
+/// How an iterative solve ended.
+struct SparseSolveReport {
+    bool mConverged = false;
+    std::size_t mIterations = 0;
+    /// The final `||b - A x|| / ||b||` (0 when `b` is zero).
+    double mRelativeResidual = 0.0;
+};
+
+/**
+ * @brief Solve a symmetric positive definite system by conjugate gradients
+ * with a Jacobi (diagonal) preconditioner.
+ * @param rA square, symmetric positive definite.
+ * @param pB the right-hand side, `rA.mRows` entries.
+ * @param pX the start on entry (zeros is fine), the solution on exit.
+ * @param RelativeTolerance stop once `||b - A x|| <= RelativeTolerance ||b||`.
+ * @param MaxIterations the cap; 0 takes `2 * rA.mRows + 10`.
+ */
+SparseSolveReport csr_pcg(const SparseCsr& rA, const double* pB, double* pX,
+                          double RelativeTolerance = 1e-12, std::size_t MaxIterations = 0);
+
+/**
+ * @brief Solve a general square system by Jacobi-preconditioned BiCGSTAB (van
+ * der Vorst, 1992). Arguments as `csr_pcg`; a breakdown (a vanishing inner
+ * product) ends the solve unconverged with the best iterate so far.
+ */
+SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX,
+                               double RelativeTolerance = 1e-12, std::size_t MaxIterations = 0);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/sparse_solve.hpp =====
 // ===== begin src/cpp/src/detail/step_brep.hpp =====
 /**
  * @file detail/step_brep.hpp
@@ -57894,6 +58251,364 @@ AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/ansys_model.cpp =====
+// ===== begin src/cpp/src/detail/bspline_lsq.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kBslPi = 3.14159265358979323846;
+
+double bsl_clamp(double X, double Lo, double Hi) {
+    return std::min(std::max(X, Lo), Hi);
+}
+
+}  // namespace
+
+std::vector<double> bspline_clamped_knots(int P, std::size_t N, double Lo, double Hi) {
+    if (P < 1 || N < static_cast<std::size_t>(P) + 1 || !(Lo < Hi))
+        throw std::invalid_argument(
+            "meshio++: bspline_clamped_knots: needs degree >= 1, poles > degree and Lo < Hi");
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> k(N + p + 1);
+    const std::size_t spans = N - p;
+    for (std::size_t i = 0; i <= p; ++i) {
+        k[i] = Lo;
+        k[N + i] = Hi;
+    }
+    for (std::size_t i = 1; i < spans; ++i)
+        k[p + i] = Lo + (Hi - Lo) * static_cast<double>(i) / static_cast<double>(spans);
+    return k;
+}
+
+BsplineSurface bspline_shape(int P, int Q, std::size_t Nu, std::size_t Nv, double U0, double U1,
+                             double V0, double V1) {
+    BsplineSurface s;
+    s.mDegreeU = P;
+    s.mDegreeV = Q;
+    s.mNu = Nu;
+    s.mNv = Nv;
+    s.mKnotsU = bspline_clamped_knots(P, Nu, U0, U1);
+    s.mKnotsV = bspline_clamped_knots(Q, Nv, V0, V1);
+    s.mPoles.assign(Nu * Nv * 3, 0.0);
+    return s;
+}
+
+void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
+                        const std::vector<double>& rKnots, double* pDers) {
+    const auto p = static_cast<std::size_t>(P);
+    const auto nd = static_cast<std::size_t>(std::max(NDer, 0));
+    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    const auto at = [p](std::size_t R, std::size_t C) { return R * (p + 1) + C; };
+    ndu[at(0, 0)] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            ndu[at(j, r)] = right[r + 1] + left[j - r];
+            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
+            ndu[at(r, j)] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[at(j, j)] = saved;
+    }
+    for (std::size_t k = 0; k <= nd; ++k)
+        for (std::size_t j = 0; j <= p; ++j)
+            pDers[k * (p + 1) + j] = 0.0;
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[j] = ndu[at(j, p)];
+    const std::size_t n = std::min(nd, p);
+    std::vector<double> a(2 * (p + 1), 0.0);
+    for (std::size_t r = 0; r <= p; ++r) {
+        double* a0 = a.data();
+        double* a1 = a.data() + (p + 1);
+        a0[0] = 1.0;
+        for (std::size_t k = 1; k <= n; ++k) {
+            double d = 0.0;
+            const auto rk = static_cast<long>(r) - static_cast<long>(k);
+            const long pk = static_cast<long>(p) - static_cast<long>(k);
+            if (rk >= 0) {
+                a1[0] =
+                    a0[0] / ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(rk))];
+                d = a1[0] * ndu[at(static_cast<std::size_t>(rk), static_cast<std::size_t>(pk))];
+            }
+            const long j1 = rk >= -1 ? 1 : -rk;
+            const long j2 = (static_cast<long>(r) - 1 <= pk)
+                                ? static_cast<long>(k) - 1
+                                : static_cast<long>(p) - static_cast<long>(r);
+            for (long j = j1; j <= j2; ++j) {
+                const auto ju = static_cast<std::size_t>(j);
+                a1[ju] =
+                    (a0[ju] - a0[ju - 1]) /
+                    ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(rk + j))];
+                d += a1[ju] *
+                     ndu[at(static_cast<std::size_t>(rk + j), static_cast<std::size_t>(pk))];
+            }
+            if (static_cast<long>(r) <= pk) {
+                a1[k] = -a0[k - 1] / ndu[at(static_cast<std::size_t>(pk + 1), r)];
+                d += a1[k] * ndu[at(r, static_cast<std::size_t>(pk))];
+            }
+            pDers[k * (p + 1) + r] = d;
+            std::swap(a0, a1);
+        }
+    }
+    double factor = static_cast<double>(P);
+    for (std::size_t k = 1; k <= n; ++k) {
+        for (std::size_t j = 0; j <= p; ++j)
+            pDers[k * (p + 1) + j] *= factor;
+        factor *= static_cast<double>(P - static_cast<int>(k));
+    }
+}
+
+void bspline_eval(const BsplineSurface& rS, double U, double V, int NDer, BsplineEval& rOut) {
+    rOut = BsplineEval{};
+    const auto p = static_cast<std::size_t>(rS.mDegreeU);
+    const auto q = static_cast<std::size_t>(rS.mDegreeV);
+    U = bsl_clamp(U, rS.U0(), rS.U1());
+    V = bsl_clamp(V, rS.V0(), rS.V1());
+    const std::size_t su = nurbs_find_span(rS.mDegreeU, rS.mKnotsU, rS.mNu, U);
+    const std::size_t sv = nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, V);
+    const int nd = std::min(std::max(NDer, 0), 2);
+    const auto ndz = static_cast<std::size_t>(nd);
+    std::vector<double> bu((ndz + 1) * (p + 1)), bv((ndz + 1) * (q + 1));
+    bspline_basis_ders(su, U, rS.mDegreeU, nd, rS.mKnotsU, bu.data());
+    bspline_basis_ders(sv, V, rS.mDegreeV, nd, rS.mKnotsV, bv.data());
+    double* outs[6] = {rOut.mS, rOut.mSu, rOut.mSv, rOut.mSuu, rOut.mSuv, rOut.mSvv};
+    // (du order, dv order) of each output.
+    static const std::size_t kOrd[6][2] = {{0, 0}, {1, 0}, {0, 1}, {2, 0}, {1, 1}, {0, 2}};
+    for (std::size_t l = 0; l <= q; ++l) {
+        const std::size_t j = sv - q + l;
+        for (std::size_t k = 0; k <= p; ++k) {
+            const std::size_t i = su - p + k;
+            const double* pole = rS.mPoles.data() + 3 * (i + rS.mNu * j);
+            for (std::size_t o = 0; o < 6; ++o) {
+                if (kOrd[o][0] + kOrd[o][1] > ndz)
+                    continue;
+                const double w = bu[kOrd[o][0] * (p + 1) + k] * bv[kOrd[o][1] * (q + 1) + l];
+                for (std::size_t c = 0; c < 3; ++c)
+                    outs[o][c] += w * pole[c];
+            }
+        }
+    }
+}
+
+void bspline_row(const BsplineSurface& rS, double U, double V, std::vector<std::size_t>& rCols,
+                 std::vector<double>& rValues) {
+    const auto p = static_cast<std::size_t>(rS.mDegreeU);
+    const auto q = static_cast<std::size_t>(rS.mDegreeV);
+    U = bsl_clamp(U, rS.U0(), rS.U1());
+    V = bsl_clamp(V, rS.V0(), rS.V1());
+    const std::size_t su = nurbs_find_span(rS.mDegreeU, rS.mKnotsU, rS.mNu, U);
+    const std::size_t sv = nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, V);
+    std::vector<double> bu(p + 1), bv(q + 1);
+    nurbs_basis(su, U, rS.mDegreeU, rS.mKnotsU, bu.data());
+    nurbs_basis(sv, V, rS.mDegreeV, rS.mKnotsV, bv.data());
+    rCols.clear();
+    rValues.clear();
+    for (std::size_t l = 0; l <= q; ++l)
+        for (std::size_t k = 0; k <= p; ++k) {
+            rCols.push_back((su - p + k) + rS.mNu * (sv - q + l));
+            rValues.push_back(bu[k] * bv[l]);
+        }
+}
+
+SkylineMatrix bspline_normal_envelope(const BsplineSurface& rS) {
+    const auto p = static_cast<std::size_t>(rS.mDegreeU);
+    const auto q = static_cast<std::size_t>(rS.mDegreeV);
+    std::vector<std::size_t> first(rS.NumPoles());
+    for (std::size_t j = 0; j < rS.mNv; ++j)
+        for (std::size_t i = 0; i < rS.mNu; ++i)
+            first[i + rS.mNu * j] = (i > p ? i - p : 0) + rS.mNu * (j > q ? j - q : 0);
+    return skyline_zero(first);
+}
+
+void gauss_legendre(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
+    const auto n = static_cast<std::size_t>(std::max(N, 1));
+    rNodes.assign(n, 0.0);
+    rWeights.assign(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        double x =
+            std::cos(kBslPi * (static_cast<double>(i) + 0.75) / (static_cast<double>(n) + 0.5));
+        double dp = 1.0;
+        for (int it = 0; it < 100; ++it) {
+            double p0 = 1.0, p1 = x;
+            for (std::size_t k = 2; k <= n; ++k) {
+                const double kk = static_cast<double>(k);
+                const double p2 = ((2.0 * kk - 1.0) * x * p1 - (kk - 1.0) * p0) / kk;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = static_cast<double>(n) * (x * p1 - p0) / (x * x - 1.0);
+            const double dx = p1 / dp;
+            x -= dx;
+            if (std::abs(dx) < 1e-16)
+                break;
+        }
+        rNodes[n - 1 - i] = x;
+        rWeights[n - 1 - i] = 2.0 / ((1.0 - x * x) * dp * dp);
+    }
+}
+
+void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA) {
+    if (Weight == 0.0)
+        return;
+    const auto p = static_cast<std::size_t>(rS.mDegreeU);
+    const auto q = static_cast<std::size_t>(rS.mDegreeV);
+    // The integrand is a polynomial of degree 2p in u per span: p + 1 points are exact.
+    std::vector<double> xu, wu, xv, wv;
+    gauss_legendre(rS.mDegreeU + 1, xu, wu);
+    gauss_legendre(rS.mDegreeV + 1, xv, wv);
+    const std::vector<std::size_t> spans_u = nurbs_spans(rS.mDegreeU, rS.mKnotsU, rS.mNu);
+    const std::vector<std::size_t> spans_v = nurbs_spans(rS.mDegreeV, rS.mKnotsV, rS.mNv);
+    std::vector<double> bu(3 * (p + 1)), bv(3 * (q + 1));
+    const std::size_t nloc = (p + 1) * (q + 1);
+    std::vector<std::size_t> idx(nloc);
+    std::vector<double> duu(nloc), duv(nloc), dvv(nloc);
+    for (std::size_t sv : spans_v) {
+        const double v0 = rS.mKnotsV[sv], v1 = rS.mKnotsV[sv + 1];
+        for (std::size_t su : spans_u) {
+            const double u0 = rS.mKnotsU[su], u1 = rS.mKnotsU[su + 1];
+            const double jac = 0.25 * (u1 - u0) * (v1 - v0);
+            for (std::size_t gv = 0; gv < xv.size(); ++gv) {
+                const double v = 0.5 * (v0 + v1) + 0.5 * (v1 - v0) * xv[gv];
+                bspline_basis_ders(sv, v, rS.mDegreeV, 2, rS.mKnotsV, bv.data());
+                for (std::size_t gu = 0; gu < xu.size(); ++gu) {
+                    const double u = 0.5 * (u0 + u1) + 0.5 * (u1 - u0) * xu[gu];
+                    bspline_basis_ders(su, u, rS.mDegreeU, 2, rS.mKnotsU, bu.data());
+                    const double w = Weight * jac * wu[gu] * wv[gv];
+                    std::size_t m = 0;
+                    for (std::size_t l = 0; l <= q; ++l)
+                        for (std::size_t k = 0; k <= p; ++k, ++m) {
+                            idx[m] = (su - p + k) + rS.mNu * (sv - q + l);
+                            duu[m] = bu[2 * (p + 1) + k] * bv[l];
+                            duv[m] = bu[(p + 1) + k] * bv[(q + 1) + l];
+                            dvv[m] = bu[k] * bv[2 * (q + 1) + l];
+                        }
+                    for (std::size_t a = 0; a < nloc; ++a)
+                        for (std::size_t b = 0; b <= a; ++b) {
+                            const double e =
+                                w * (duu[a] * duu[b] + 2.0 * duv[a] * duv[b] + dvv[a] * dvv[b]);
+                            rA.At(idx[a], idx[b]) += e;
+                        }
+                }
+            }
+        }
+    }
+}
+
+bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
+                     const std::vector<double>& rV, const std::vector<double>& rXyz,
+                     const std::vector<double>* pWeights, double Smoothing) {
+    const std::size_t n = rS.NumPoles();
+    SkylineMatrix a = bspline_normal_envelope(rS);
+    std::vector<double> rhs(3 * n, 0.0);
+    std::vector<std::size_t> cols;
+    std::vector<double> vals;
+    for (std::size_t s = 0; s < rU.size(); ++s) {
+        const double w = pWeights ? (*pWeights)[s] : 1.0;
+        if (w == 0.0)
+            continue;
+        bspline_row(rS, rU[s], rV[s], cols, vals);
+        for (std::size_t a1 = 0; a1 < cols.size(); ++a1) {
+            for (std::size_t b1 = 0; b1 < cols.size(); ++b1)
+                if (cols[b1] <= cols[a1])
+                    a.At(cols[a1], cols[b1]) += w * vals[a1] * vals[b1];
+            for (std::size_t c = 0; c < 3; ++c)
+                rhs[c * n + cols[a1]] += w * vals[a1] * rXyz[3 * s + c];
+        }
+    }
+    bspline_add_thin_plate(rS, Smoothing, a);
+    if (!skyline_ldlt(a))
+        return false;
+    for (std::size_t c = 0; c < 3; ++c)
+        skyline_solve(a, rhs.data() + c * n);
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t c = 0; c < 3; ++c) {
+            const double x = rhs[c * n + i];
+            if (!std::isfinite(x))
+                return false;
+        }
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            rS.mPoles[3 * i + c] = rhs[c * n + i];
+    return true;
+}
+
+double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
+                       int MaxIterations) {
+    const double u0 = rS.U0(), u1 = rS.U1(), v0 = rS.V0(), v1 = rS.V1();
+    const double eps_u = 1e-14 * std::max(1.0, u1 - u0), eps_v = 1e-14 * std::max(1.0, v1 - v0);
+    rU = bsl_clamp(rU, u0, u1);
+    rV = bsl_clamp(rV, v0, v1);
+    BsplineEval e;
+    const auto dist = [&](double U, double V) {
+        BsplineEval f;
+        bspline_eval(rS, U, V, 0, f);
+        double d2 = 0.0;
+        for (int c = 0; c < 3; ++c)
+            d2 += (f.mS[c] - pP[c]) * (f.mS[c] - pP[c]);
+        return std::sqrt(d2);
+    };
+    double best = dist(rU, rV);
+    for (int it = 0; it < MaxIterations; ++it) {
+        bspline_eval(rS, rU, rV, 2, e);
+        double r[3];
+        for (int c = 0; c < 3; ++c)
+            r[c] = e.mS[c] - pP[c];
+        const auto dot = [](const double* pA, const double* pB) {
+            return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+        };
+        const double g0 = dot(r, e.mSu), g1 = dot(r, e.mSv);
+        double h00 = dot(e.mSu, e.mSu) + dot(r, e.mSuu);
+        double h01 = dot(e.mSu, e.mSv) + dot(r, e.mSuv);
+        double h11 = dot(e.mSv, e.mSv) + dot(r, e.mSvv);
+        double det = h00 * h11 - h01 * h01;
+        if (!(h00 > 0.0) || !(det > 0.0)) {
+            // Gauss-Newton: the first fundamental form, positive definite on a
+            // regular surface.
+            h00 = dot(e.mSu, e.mSu);
+            h01 = dot(e.mSu, e.mSv);
+            h11 = dot(e.mSv, e.mSv);
+            det = h00 * h11 - h01 * h01;
+            if (!(det > 0.0))
+                break;
+        }
+        double du = -(h11 * g0 - h01 * g1) / det;
+        double dv = -(h00 * g1 - h01 * g0) / det;
+        // Halve the step until the distance does not grow (at most 30 times).
+        double nu = bsl_clamp(rU + du, u0, u1), nv = bsl_clamp(rV + dv, v0, v1);
+        double d = dist(nu, nv);
+        for (int h = 0; h < 30 && d > best; ++h) {
+            du *= 0.5;
+            dv *= 0.5;
+            nu = bsl_clamp(rU + du, u0, u1);
+            nv = bsl_clamp(rV + dv, v0, v1);
+            d = dist(nu, nv);
+        }
+        if (d > best)
+            break;
+        const double step_u = std::abs(nu - rU), step_v = std::abs(nv - rV);
+        rU = nu;
+        rV = nv;
+        best = d;
+        if (step_u <= eps_u && step_v <= eps_v)
+            break;
+    }
+    return best;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/bspline_lsq.cpp =====
 // ===== begin src/cpp/src/detail/cell_adjacency.cpp =====
 #include <algorithm>
 
@@ -60156,6 +60871,158 @@ std::array<std::int64_t, 8> expand_brick(std::string_view Type, const std::int64
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/degenerate_solid.cpp =====
+// ===== begin src/cpp/src/detail/dense_chol.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+bool chol_factor(std::vector<double>& rA, std::size_t N) {
+    for (std::size_t j = 0; j < N; ++j) {
+        double d = rA[j * N + j];
+        for (std::size_t k = 0; k < j; ++k)
+            d -= rA[j * N + k] * rA[j * N + k];
+        if (!(d > 0.0) || !std::isfinite(d))
+            return false;
+        const double ljj = std::sqrt(d);
+        rA[j * N + j] = ljj;
+        for (std::size_t i = j + 1; i < N; ++i) {
+            double s = rA[i * N + j];
+            for (std::size_t k = 0; k < j; ++k)
+                s -= rA[i * N + k] * rA[j * N + k];
+            rA[i * N + j] = s / ljj;
+        }
+    }
+    return true;
+}
+
+void chol_solve(const std::vector<double>& rL, std::size_t N, double* pB) {
+    for (std::size_t i = 0; i < N; ++i) {
+        double s = pB[i];
+        for (std::size_t k = 0; k < i; ++k)
+            s -= rL[i * N + k] * pB[k];
+        pB[i] = s / rL[i * N + i];
+    }
+    for (std::size_t ii = N; ii-- > 0;) {
+        double s = pB[ii];
+        for (std::size_t k = ii + 1; k < N; ++k)
+            s -= rL[k * N + ii] * pB[k];
+        pB[ii] = s / rL[ii * N + ii];
+    }
+}
+
+bool ldlt_factor(std::vector<double>& rA, std::size_t N, double Shift) {
+    std::vector<double> g(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        // g[j] = L_ij D_j for j < i, built row by row.
+        for (std::size_t j = 0; j < i; ++j) {
+            double s = rA[i * N + j];
+            for (std::size_t k = 0; k < j; ++k)
+                s -= g[k] * rA[j * N + k];
+            g[j] = s;
+        }
+        double d = rA[i * N + i] + Shift;
+        for (std::size_t j = 0; j < i; ++j) {
+            const double lij = g[j] / rA[j * N + j];
+            d -= g[j] * lij;
+            rA[i * N + j] = lij;
+        }
+        if (d == 0.0 || !std::isfinite(d))
+            return false;
+        rA[i * N + i] = d;
+    }
+    return true;
+}
+
+void ldlt_solve(const std::vector<double>& rLd, std::size_t N, double* pB) {
+    for (std::size_t i = 0; i < N; ++i) {
+        double s = pB[i];
+        for (std::size_t k = 0; k < i; ++k)
+            s -= rLd[i * N + k] * pB[k];
+        pB[i] = s;
+    }
+    for (std::size_t i = 0; i < N; ++i)
+        pB[i] /= rLd[i * N + i];
+    for (std::size_t ii = N; ii-- > 0;) {
+        double s = pB[ii];
+        for (std::size_t k = ii + 1; k < N; ++k)
+            s -= rLd[k * N + ii] * pB[k];
+        pB[ii] = s;
+    }
+}
+
+SkylineMatrix skyline_zero(const std::vector<std::size_t>& rFirst) {
+    SkylineMatrix a;
+    a.mN = rFirst.size();
+    a.mFirst.resize(a.mN);
+    a.mStart.assign(a.mN + 1, 0);
+    for (std::size_t i = 0; i < a.mN; ++i) {
+        a.mFirst[i] = std::min(rFirst[i], i);
+        a.mStart[i + 1] = a.mStart[i] + (i - a.mFirst[i] + 1);
+    }
+    a.mValues.assign(a.mStart[a.mN], 0.0);
+    return a;
+}
+
+bool skyline_ldlt(SkylineMatrix& rA, double Shift) {
+    const std::size_t n = rA.mN;
+    std::vector<double> g(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t fi = rA.mFirst[i];
+        double* row_i = rA.mValues.data() + rA.mStart[i];
+        // g[j] = L_ij D_j for fi <= j < i; L_ik = 0 for k < fi.
+        for (std::size_t j = fi; j < i; ++j) {
+            const std::size_t fj = rA.mFirst[j];
+            const double* row_j = rA.mValues.data() + rA.mStart[j];
+            double s = row_i[j - fi];
+            for (std::size_t k = std::max(fi, fj); k < j; ++k)
+                s -= g[k] * row_j[k - fj];
+            g[j] = s;
+        }
+        double d = row_i[i - fi] + Shift;
+        for (std::size_t j = fi; j < i; ++j) {
+            const double dj = rA.mValues[rA.mStart[j + 1] - 1];
+            const double lij = g[j] / dj;
+            d -= g[j] * lij;
+            row_i[j - fi] = lij;
+        }
+        if (!(d > 0.0) || !std::isfinite(d))
+            return false;
+        row_i[i - fi] = d;
+    }
+    return true;
+}
+
+void skyline_solve(const SkylineMatrix& rLd, double* pB) {
+    const std::size_t n = rLd.mN;
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t fi = rLd.mFirst[i];
+        const double* row = rLd.mValues.data() + rLd.mStart[i];
+        double s = pB[i];
+        for (std::size_t k = fi; k < i; ++k)
+            s -= row[k - fi] * pB[k];
+        pB[i] = s;
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        pB[i] /= rLd.mValues[rLd.mStart[i + 1] - 1];
+    // Back substitution by columns of Lᵀ: row i of L scatters into earlier unknowns.
+    for (std::size_t ii = n; ii-- > 0;) {
+        const std::size_t fi = rLd.mFirst[ii];
+        const double* row = rLd.mValues.data() + rLd.mStart[ii];
+        const double xi = pB[ii];
+        for (std::size_t k = fi; k < ii; ++k)
+            pB[k] -= row[k - fi] * xi;
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/dense_chol.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -71774,6 +72641,257 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/render_field.cpp =====
+// ===== begin src/cpp/src/detail/sparse_solve.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// Vector loops this short run serially: a parallel region costs more than
+// they do, and far more on a loaded machine.
+constexpr std::size_t kSpsGrain = std::size_t{1} << 15;
+
+// y = a x + y, element-wise in parallel (independent entries).
+void sps_axpy(double A, const double* pX, double* pY, std::size_t N) {
+    parallel_for(N, [&](std::size_t i) { pY[i] += A * pX[i]; }, kSpsGrain);
+}
+
+// The relative residual ||b - A x|| / ||b|| (0 for a zero b), into rR.
+double sps_residual(const SparseCsr& rA, const double* pB, const double* pX,
+                    std::vector<double>& rR, double BNorm) {
+    const std::size_t n = rA.mRows;
+    csr_multiply(rA, pX, rR.data());
+    parallel_for(n, [&](std::size_t i) { rR[i] = pB[i] - rR[i]; }, kSpsGrain);
+    const double rn = std::sqrt(sparse_dot(rR.data(), rR.data(), n));
+    return BNorm > 0.0 ? rn / BNorm : rn;
+}
+
+// The inverse diagonal, 1 where the diagonal is zero or not finite.
+std::vector<double> sps_jacobi(const SparseCsr& rA) {
+    std::vector<double> d = csr_diagonal(rA);
+    for (double& v : d)
+        v = (v != 0.0 && std::isfinite(v)) ? 1.0 / v : 1.0;
+    return d;
+}
+
+void sps_check_square(const SparseCsr& rA, const char* pWho) {
+    if (rA.mRows != rA.mCols)
+        throw std::invalid_argument(std::string("meshio++: ") + pWho +
+                                    ": the matrix is not square");
+}
+
+}  // namespace
+
+SparseCsr csr_from_triplets(std::size_t Rows, std::size_t Cols,
+                            std::vector<SparseTriplet> rTriplets) {
+    for (const SparseTriplet& t : rTriplets)
+        if (t.mRow >= Rows || t.mCol >= Cols)
+            throw std::invalid_argument(
+                "meshio++: csr_from_triplets: an entry lies outside the matrix");
+    std::stable_sort(rTriplets.begin(), rTriplets.end(),
+                     [](const SparseTriplet& rL, const SparseTriplet& rR) {
+                         return rL.mRow != rR.mRow ? rL.mRow < rR.mRow : rL.mCol < rR.mCol;
+                     });
+    SparseCsr a;
+    a.mRows = Rows;
+    a.mCols = Cols;
+    a.mStart.assign(Rows + 1, 0);
+    a.mCol.reserve(rTriplets.size());
+    a.mValue.reserve(rTriplets.size());
+    for (std::size_t k = 0; k < rTriplets.size(); ++k) {
+        const SparseTriplet& t = rTriplets[k];
+        if (k && t.mRow == rTriplets[k - 1].mRow && t.mCol == rTriplets[k - 1].mCol) {
+            a.mValue.back() += t.mValue;
+            continue;
+        }
+        a.mCol.push_back(t.mCol);
+        a.mValue.push_back(t.mValue);
+        ++a.mStart[t.mRow + 1];
+    }
+    for (std::size_t r = 0; r < Rows; ++r)
+        a.mStart[r + 1] += a.mStart[r];
+    return a;
+}
+
+void csr_multiply(const SparseCsr& rA, const double* pX, double* pY) {
+    parallel_for(
+        rA.mRows,
+        [&](std::size_t r) {
+            double s = 0.0;
+            for (std::size_t k = rA.mStart[r]; k < rA.mStart[r + 1]; ++k)
+                s += rA.mValue[k] * pX[rA.mCol[k]];
+            pY[r] = s;
+        },
+        kSpsGrain);
+}
+
+std::vector<double> csr_diagonal(const SparseCsr& rA) {
+    std::vector<double> d(std::min(rA.mRows, rA.mCols), 0.0);
+    for (std::size_t r = 0; r < d.size(); ++r)
+        for (std::size_t k = rA.mStart[r]; k < rA.mStart[r + 1]; ++k)
+            if (rA.mCol[k] == r)
+                d[r] = rA.mValue[k];
+    return d;
+}
+
+double sparse_dot(const double* pA, const double* pB, std::size_t N) {
+    const auto chunk = [&](std::size_t Begin, std::size_t End) {
+        double s = 0.0;
+        for (std::size_t i = Begin; i < End; ++i)
+            s += pA[i] * pB[i];
+        return s;
+    };
+    if (N <= kSpsGrain) {
+        // The same chunks, summed the same way, without a parallel region.
+        double acc = 0.0;
+        for (std::size_t b = 0; b < N; b += kSparseChunk)
+            acc = acc + chunk(b, std::min(N, b + kSparseChunk));
+        return acc;
+    }
+    return parallel_reduce(N, kSparseChunk, 0.0, chunk, [](double L, double R) { return L + R; });
+}
+
+SparseSolveReport csr_pcg(const SparseCsr& rA, const double* pB, double* pX,
+                          double RelativeTolerance, std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_pcg");
+    const std::size_t n = rA.mRows;
+    SparseSolveReport rep;
+    if (n == 0) {
+        rep.mConverged = true;
+        return rep;
+    }
+    if (MaxIterations == 0)
+        MaxIterations = 2 * n + 10;
+    const std::vector<double> minv = sps_jacobi(rA);
+    const double bnorm = std::sqrt(sparse_dot(pB, pB, n));
+    std::vector<double> r(n), z(n), p(n), ap(n);
+    rep.mRelativeResidual = sps_residual(rA, pB, pX, r, bnorm);
+    if (bnorm == 0.0) {
+        // b = 0: the solution of an SPD system is x = 0.
+        std::fill(pX, pX + n, 0.0);
+        rep.mConverged = true;
+        rep.mRelativeResidual = 0.0;
+        return rep;
+    }
+    if (rep.mRelativeResidual <= RelativeTolerance) {
+        rep.mConverged = true;
+        return rep;
+    }
+    parallel_for(n, [&](std::size_t i) { z[i] = minv[i] * r[i]; }, kSpsGrain);
+    p = z;
+    double rz = sparse_dot(r.data(), z.data(), n);
+    for (std::size_t it = 1; it <= MaxIterations; ++it) {
+        csr_multiply(rA, p.data(), ap.data());
+        const double pap = sparse_dot(p.data(), ap.data(), n);
+        if (!(pap > 0.0) || !std::isfinite(pap))
+            break;
+        const double alpha = rz / pap;
+        sps_axpy(alpha, p.data(), pX, n);
+        sps_axpy(-alpha, ap.data(), r.data(), n);
+        rep.mIterations = it;
+        rep.mRelativeResidual = std::sqrt(sparse_dot(r.data(), r.data(), n)) / bnorm;
+        if (rep.mRelativeResidual <= RelativeTolerance) {
+            rep.mConverged = true;
+            break;
+        }
+        parallel_for(n, [&](std::size_t i) { z[i] = minv[i] * r[i]; }, kSpsGrain);
+        const double rz_new = sparse_dot(r.data(), z.data(), n);
+        const double beta = rz_new / rz;
+        rz = rz_new;
+        parallel_for(n, [&](std::size_t i) { p[i] = z[i] + beta * p[i]; }, kSpsGrain);
+    }
+    // The recurrence's residual drifts from the true one; report the true one.
+    rep.mRelativeResidual = sps_residual(rA, pB, pX, r, bnorm);
+    rep.mConverged = rep.mRelativeResidual <= 10.0 * RelativeTolerance;
+    return rep;
+}
+
+SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX,
+                               double RelativeTolerance, std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_bicgstab");
+    const std::size_t n = rA.mRows;
+    SparseSolveReport rep;
+    if (n == 0) {
+        rep.mConverged = true;
+        return rep;
+    }
+    if (MaxIterations == 0)
+        MaxIterations = 2 * n + 10;
+    const std::vector<double> minv = sps_jacobi(rA);
+    const double bnorm = std::sqrt(sparse_dot(pB, pB, n));
+    std::vector<double> r(n), r0(n), p(n, 0.0), v(n, 0.0), s(n), t(n), ph(n), sh(n);
+    rep.mRelativeResidual = sps_residual(rA, pB, pX, r, bnorm);
+    if (rep.mRelativeResidual <= RelativeTolerance) {
+        rep.mConverged = true;
+        return rep;
+    }
+    r0 = r;
+    double rho = 1.0, alpha = 1.0, omega = 1.0;
+    std::vector<double> best(pX, pX + n);
+    double best_res = rep.mRelativeResidual;
+    for (std::size_t it = 1; it <= MaxIterations; ++it) {
+        const double rho_new = sparse_dot(r0.data(), r.data(), n);
+        if (rho_new == 0.0 || !std::isfinite(rho_new) || omega == 0.0)
+            break;
+        const double beta = (rho_new / rho) * (alpha / omega);
+        rho = rho_new;
+        parallel_for(
+            n, [&](std::size_t i) { p[i] = r[i] + beta * (p[i] - omega * v[i]); }, kSpsGrain);
+        parallel_for(n, [&](std::size_t i) { ph[i] = minv[i] * p[i]; }, kSpsGrain);
+        csr_multiply(rA, ph.data(), v.data());
+        const double r0v = sparse_dot(r0.data(), v.data(), n);
+        if (r0v == 0.0 || !std::isfinite(r0v))
+            break;
+        alpha = rho / r0v;
+        parallel_for(n, [&](std::size_t i) { s[i] = r[i] - alpha * v[i]; }, kSpsGrain);
+        rep.mIterations = it;
+        const double snorm = std::sqrt(sparse_dot(s.data(), s.data(), n));
+        if (snorm / bnorm <= RelativeTolerance) {
+            sps_axpy(alpha, ph.data(), pX, n);
+            break;
+        }
+        parallel_for(n, [&](std::size_t i) { sh[i] = minv[i] * s[i]; }, kSpsGrain);
+        csr_multiply(rA, sh.data(), t.data());
+        const double tt = sparse_dot(t.data(), t.data(), n);
+        if (!(tt > 0.0) || !std::isfinite(tt))
+            break;
+        omega = sparse_dot(t.data(), s.data(), n) / tt;
+        parallel_for(n, [&](std::size_t i) { pX[i] += alpha * ph[i] + omega * sh[i]; }, kSpsGrain);
+        parallel_for(n, [&](std::size_t i) { r[i] = s[i] - omega * t[i]; }, kSpsGrain);
+        const double res = std::sqrt(sparse_dot(r.data(), r.data(), n)) / bnorm;
+        if (res < best_res) {
+            best_res = res;
+            std::copy(pX, pX + n, best.begin());
+        }
+        if (res <= RelativeTolerance)
+            break;
+    }
+    std::vector<double> tmp(n);
+    double res = sps_residual(rA, pB, pX, tmp, bnorm);
+    if (best_res < res) {
+        std::copy(best.begin(), best.end(), pX);
+        res = sps_residual(rA, pB, pX, tmp, bnorm);
+    }
+    rep.mRelativeResidual = res;
+    rep.mConverged = res <= 10.0 * RelativeTolerance;
+    return rep;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/sparse_solve.cpp =====
 // ===== begin src/cpp/src/detail/step_brep.cpp =====
 #include <algorithm>
 #include <array>
@@ -186314,6 +187432,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
+#include <Standard_Version.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TopExp.hxx>
@@ -186345,6 +187464,14 @@ bool fit_cad_has_occt() noexcept {
     return true;
 #else
     return false;
+#endif
+}
+
+const char* fit_cad_occt_version() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return OCC_VERSION_COMPLETE;
+#else
+    return "";
 #endif
 }
 

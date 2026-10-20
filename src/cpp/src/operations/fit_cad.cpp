@@ -139,6 +139,7 @@
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
+#include <Standard_Version.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TopExp.hxx>
@@ -170,6 +171,14 @@ bool fit_cad_has_occt() noexcept {
     return true;
 #else
     return false;
+#endif
+}
+
+const char* fit_cad_occt_version() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+    return OCC_VERSION_COMPLETE;
+#else
+    return "";
 #endif
 }
 
