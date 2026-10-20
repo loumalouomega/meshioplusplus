@@ -38,6 +38,7 @@
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 
 // Project includes (private, not installed)
@@ -230,6 +231,46 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
     return &rOwned;
 }
 
+// What the refinement did, for the report.
+struct FcnRefined {
+    bool mRan = false;
+    RefinePatchesResult mResult;
+};
+
+// The annotated skin, refined by `refine_patches` when asked.
+const Mesh* fcn_prepare(const Mesh& rMesh, Mesh& rOwned, const FitCadOptions& rOptions,
+                        FcnRefined& rRefined) {
+    const Mesh* work = fcn_annotate(rMesh, rOwned);
+    if (!rOptions.mRefineSegmentation)
+        return work;
+    rRefined.mResult = refine_patches(*work, rOptions.mRefine);
+    rRefined.mRan = true;
+    log::info("fit_cad: refined the patches: {} -> {} of the area explained by primitives",
+              rRefined.mResult.mInitialExplainedAreaFraction,
+              rRefined.mResult.mExplainedAreaFraction);
+    rOwned = std::move(rRefined.mResult.mMesh);
+    return &rOwned;
+}
+
+// The refinement's report and its `refine:*` field data on the result.
+void fcn_report_refined(const FcnRefined& rRefined, const Mesh& rWork, FitCadResult& rResult) {
+    if (!rRefined.mRan)
+        return;
+    const RefinePatchesResult& r = rRefined.mResult;
+    rResult.mRefined = true;
+    rResult.mRefineIterations = r.mNumIterations;
+    rResult.mNumRefineSplits = r.mNumSplits;
+    rResult.mNumRefineMerges = r.mNumMerges;
+    rResult.mInitialExplainedAreaFraction = r.mInitialExplainedAreaFraction;
+    rResult.mExplainedAreaFraction = r.mExplainedAreaFraction;
+    for (const char* name :
+         {kRefinePatchIdName, kRefinePatchProxyName, kRefinePatchIterationsName,
+          kRefinePatchRmsName, kRefinePatchMaxName, kRefinePatchCellsName,
+          kRefinePatchDemotionName, kRefineExplainedAreaName, kRefineHausdorffName})
+        if (rWork.HasFieldData(name))
+            rResult.mMesh.AddFieldData(name, rWork.FieldData(name));
+}
+
 // The kernel-free backend: the fitted patches as analytic faces and the rest
 // as coplanar polygons, written by the B-rep `step` writer.
 FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
@@ -239,7 +280,8 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // earlier, unrelated operation on this thread left behind.
     detail::provenance_begin_write();
     Mesh owned;
-    const Mesh& work = *fcn_annotate(rMesh, owned);
+    FcnRefined refined;
+    const Mesh& work = *fcn_prepare(rMesh, owned, rOptions, refined);
     const detail::ClosedFacets fc = detail::closed_facets(work, kFcnPrefix);
     if (fc.NumFacets() == 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "no surface facets");
@@ -323,6 +365,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mMesh.AddCellData(kFitCadPatchName, std::move(pb));
     if (result.mNumDemoted > 0)
         log::info("fit_cad: {} fitted patch(es) written as coplanar facets", result.mNumDemoted);
+    fcn_report_refined(refined, work, result);
     return result;
 }
 
@@ -2346,7 +2389,8 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 
     // The annotated skin: segment and fit first when the labels are missing.
     Mesh owned;
-    const Mesh& work = *fcn_annotate(rMesh, owned);
+    FcnRefined refined;
+    const Mesh& work = *fcn_prepare(rMesh, owned, rOptions, refined);
 
     FcSkin skin;
     skin.mFacets = detail::closed_facets(work, kFcPrefix);
@@ -3451,6 +3495,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     }
     if (!rStepPath.empty())
         fc_write_step(build.mShape, rStepPath);
+    fcn_report_refined(refined, work, result);
     return result;
 }
 

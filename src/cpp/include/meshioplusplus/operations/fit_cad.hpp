@@ -158,6 +158,7 @@
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 
 namespace meshioplusplus {
 
@@ -241,6 +242,13 @@ struct FitCadOptions {
     bool mMergeFaces = true;
     /// The engine (since v17.9.0).
     FitCadBackend mBackend = FitCadBackend::Auto;
+    /// Whether the patches are first refined by `refine_patches` (variational
+    /// shape approximation), with `mRefine`, after any segmentation and fit
+    /// `fit_cad` runs itself (v17.11.0). Off by default, so the output is
+    /// what it was before the option existed.
+    bool mRefineSegmentation = false;
+    /// The refinement's options, used when `mRefineSegmentation` is set.
+    RefinePatchesOptions mRefine;
 };
 
 /// The re-meshed solid and what was built.
@@ -307,6 +315,16 @@ struct FitCadResult {
     BrepInfo mBrep;
     /// The engine that built the solid: `Occt` or `Native` (since v17.9.0).
     FitCadBackend mBackend = FitCadBackend::Occt;
+    /// Whether `mRefineSegmentation` refined the patches (v17.11.0); the
+    /// counts below are zero when it did not.
+    bool mRefined = false;
+    /// The refinement's Lloyd steps kept, splits and merges.
+    std::int64_t mRefineIterations = 0;
+    std::int64_t mNumRefineSplits = 0;
+    std::int64_t mNumRefineMerges = 0;
+    /// The area share primitives explain before and after the refinement.
+    double mInitialExplainedAreaFraction = 0.0;
+    double mExplainedAreaFraction = 0.0;
 };
 
 /**

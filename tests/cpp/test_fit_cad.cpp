@@ -152,6 +152,28 @@ TEST(FitCad, NativeStepIgnoresEarlierProvenanceNotes) {
     EXPECT_EQ(clean, after);
 }
 
+// Refinement before building: an angle segmentation of the filleted plate
+// leaves the fillet in one patch with a side it is tangent to, which no
+// primitive explains; refined, both are analytic faces (v17.11.0).
+TEST(FitCad, NativeBackendRefines) {
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    const Mesh skin = fitted(analytic::filleted_plate());
+    const FitCadResult before = fit_cad(skin, "", o);
+    o.mRefineSegmentation = true;
+    const FitCadResult after = fit_cad(skin, "", o);
+    EXPECT_FALSE(before.mRefined);
+    EXPECT_TRUE(after.mRefined);
+    EXPECT_GT(after.mNumRefineSplits, 0);
+    EXPECT_GT(after.mExplainedAreaFraction, after.mInitialExplainedAreaFraction);
+    EXPECT_NEAR(after.mExplainedAreaFraction, 1.0, 1e-12);
+    EXPECT_GT(after.mNumPlane + after.mNumCylinder, before.mNumPlane + before.mNumCylinder);
+    EXPECT_EQ(after.mNumCylinder, 2);
+    EXPECT_TRUE(after.mValid);
+    EXPECT_TRUE(after.mMesh.HasFieldData(kRefinePatchProxyName));
+    EXPECT_FALSE(before.mMesh.HasFieldData(kRefinePatchProxyName));
+}
+
 TEST(FitCad, NativeBackendLeavesTypesOutAsPolygons) {
     FitCadOptions o;
     o.mBackend = FitCadBackend::Native;
@@ -621,6 +643,28 @@ TEST(FitCad, RunsSegmentAndFitWhenMissing) {
     const FitCadResult r = fit_cad(analytic::box_skin(2));
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumPlane, 6);
+}
+
+// The same with OpenCASCADE: the turned part segmented by angles alone keeps
+// smooth junctions inside patches; refined, every surface is an analytic face
+// of a valid solid (v17.11.0).
+TEST(FitCad, RefinementExplainsTangentJunctions) {
+    const Mesh skin = fitted(analytic::turned_part());
+    const FitCadResult before = fit_cad(skin);
+    FitCadOptions o;
+    o.mRefineSegmentation = true;
+    const FitCadResult after = fit_cad(skin, "", o);
+    EXPECT_TRUE(after.mValid);
+    EXPECT_TRUE(after.mRefined);
+    EXPECT_NEAR(after.mExplainedAreaFraction, 1.0, 1e-12);
+    const auto analytic_faces = [](const FitCadResult& rR) {
+        return rR.mNumPlane + rR.mNumSphere + rR.mNumCylinder + rR.mNumCone + rR.mNumTorus;
+    };
+    EXPECT_GT(analytic_faces(after), analytic_faces(before));
+    EXPECT_EQ(after.mNumFacetedFaces, 0);
+    EXPECT_EQ(after.mNumDemoted, 0);
+    EXPECT_NEAR(after.mVolumeRatio, 1.0, 1e-2);
+    EXPECT_LE(after.mMaxDeviation, after.mTolerance);
 }
 
 TEST(FitCad, WritesReproducibleStep) {
