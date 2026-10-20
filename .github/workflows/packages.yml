@@ -175,8 +175,15 @@ jobs:
       # The default `occt` feature builds vcpkg's opencascade port, which needs
       # gperf, and vcpkg's gperf port is an autotools build that refuses to start
       # without these from the system (the runner image no longer ships them).
-      - name: Install the autotools vcpkg's gperf port needs
-        run: sudo apt-get update && sudo apt-get install -y autoconf autoconf-archive automake libtool
+      # The port (8.0.1) also builds OpenCASCADE's visualization toolkits, whose
+      # TKService includes <X11/Xlib.h>, and its `opengl` dependency only checks
+      # for the GL headers, so the X11 and GL development packages come from the
+      # system too.
+      - name: Install the system packages vcpkg's gperf and opencascade ports need
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf autoconf-archive automake libtool \
+            libx11-dev libxext-dev libxi-dev libxmu-dev libgl-dev libglu1-mesa-dev
       - name: vcpkg install
         run: "\"$VCPKG_INSTALLATION_ROOT/vcpkg\" install meshioplusplus --overlay-ports=\"$PWD/packages/vcpkg\""
       - name: Package overlay port
