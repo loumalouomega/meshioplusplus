@@ -35,7 +35,9 @@ OCCT_URL="https://github.com/Open-Cascade-SAS/OCCT.git"
 # module is off and these are named, which pulls in their dependency closure
 # (modelling data and algorithms, shape healing, booleans, primitives) and
 # nothing else -- no visualisation, OCAF, Draw, or third-party library. From
-# 7.8 the STEP and IGES toolkits are TKDESTEP and TKDEIGES.
+# 7.8 the STEP and IGES toolkits are TKDESTEP and TKDEIGES, which sit on XCAF:
+# their closure reaches TKService, which needs the X11 headers on Linux
+# (libx11-dev), though nothing opens a display.
 case "$OCCT_VERSION" in
     7.6.*) OCCT_TOOLKITS="TKSTEP TKIGES TKMesh TKBool TKPrim" ;;
     *) OCCT_TOOLKITS="TKDESTEP TKDEIGES TKMesh TKBool TKPrim" ;;

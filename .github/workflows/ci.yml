@@ -742,7 +742,9 @@ jobs:
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
-          sudo apt-get install -y zlib1g-dev pkg-config
+          # From 7.8 the STEP and IGES toolkits sit on XCAF, whose closure
+          # reaches TKService, which includes X11 headers on Linux.
+          sudo apt-get install -y zlib1g-dev pkg-config libx11-dev
           python -m pip install --upgrade pip pybind11 cmake ninja pytest
       - name: Cache OpenCASCADE 7.9
         id: occt79-cache
