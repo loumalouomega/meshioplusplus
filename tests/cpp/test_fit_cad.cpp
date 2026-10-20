@@ -29,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
@@ -131,6 +132,24 @@ TEST(FitCad, NativeBackendWritesAnalyticFaces) {
     const std::string text = read_bytes(path);
     std::remove(path.c_str());
     EXPECT_NE(text.find("CYLINDRICAL_SURFACE"), std::string::npos);
+}
+
+// The native backend is a write entry point: a provenance note an earlier,
+// unrelated operation left on this thread must not reach its STEP header.
+TEST(FitCad, NativeStepIgnoresEarlierProvenanceNotes) {
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    const Mesh skin = fitted(analytic::box_skin(3));
+    const std::string path = ::testing::TempDir() + "native_provenance.step";
+    detail::provenance_begin_write();
+    fit_cad(skin, path, o);
+    const std::string clean = read_bytes(path);
+    detail::provenance_note("left-behind", "a note from an earlier operation");
+    fit_cad(skin, path, o);
+    const std::string after = read_bytes(path);
+    std::remove(path.c_str());
+    EXPECT_EQ(after.find("left-behind"), std::string::npos);
+    EXPECT_EQ(clean, after);
 }
 
 TEST(FitCad, NativeBackendLeavesTypesOutAsPolygons) {

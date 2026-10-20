@@ -187526,6 +187526,10 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
 // as coplanar polygons, written by the B-rep `step` writer.
 FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                                 const FitCadOptions& rOptions) {
+    // A write entry point: the STEP header's provenance block holds the notes
+    // this call raises (its own segmentation and fit included), never ones an
+    // earlier, unrelated operation on this thread left behind.
+    detail::provenance_begin_write();
     Mesh owned;
     const Mesh& work = *fcn_annotate(rMesh, owned);
     const detail::ClosedFacets fc = detail::closed_facets(work, kFcnPrefix);

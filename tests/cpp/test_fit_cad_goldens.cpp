@@ -40,6 +40,12 @@
 
 using namespace meshioplusplus;
 
+// The fixtures call libm (sin, cos) and the fits much more, so the digests are
+// pinned where golden_fixtures.hpp pins and the C library is glibc too.
+#if defined(GOLDEN_PINNED) && defined(__linux__) && defined(__GLIBC__)
+#define FCG_PINNED 1
+#endif
+
 namespace {
 
 struct FcgRow {
@@ -53,12 +59,30 @@ struct FcgRow {
 // Native backend (every build), recorded with MESHIOPLUSPLUS_RECORD_GOLDENS=1.
 const std::vector<FcgRow> kFcgNative = {
     // clang-format off
+    {"native", "box", 0x9346d778b32d5216ull, 0x041bc38bff060516ull, 0x4d89933e194a3081ull},
+    {"native", "capped_cylinder", 0xa9454db4bca48ae3ull, 0xc85679404821d2c9ull, 0xa1416e12e3b60778ull},
+    {"native", "turned_part", 0x2359426b872ec0a3ull, 0x5b6613001c187538ull, 0x6394f6a1719495f7ull},
+    {"native", "filleted_plate", 0x849bb3c24e5b4a44ull, 0xa1fbfd1fb6894ee9ull, 0x84bca80af59d7a4aull},
+    {"native", "saddle_box", 0xfa3779917f24eef2ull, 0x28b7caf6375d5072ull, 0x6bf83615b0b506acull},
+    {"native", "wavy_capped", 0xb5809cb85134f681ull, 0x5f9aa9b2e7379ba8ull, 0x1b2f18e6d0fdbc57ull},
+    {"native", "threaded_rod", 0xa6be820e8fa116f3ull, 0x7180517275d1fd5bull, 0xc2bfba07afac00b2ull},
+    {"native", "rounded_box", 0x703ac68722528c61ull, 0xb9bb8a6bf508af15ull, 0xef43d32d4d262246ull},
+    {"native", "noisy_turned_part", 0x3480b7daa7ee3609ull, 0xe4ae427a6fc0e40bull, 0xdf51b734edfe0278ull},
     // clang-format on
 };
 
 // OpenCASCADE backend, keyed by fit_cad_occt_version().
 const std::vector<FcgRow> kFcgOcct = {
     // clang-format off
+    {"7.6.3", "box", 0xed8bdb22b4ce64f1ull, 0xe073b156cc1154ecull, 0x73c6e572e1989b8full},
+    {"7.6.3", "capped_cylinder", 0xe33194378779ddb7ull, 0xb9e9056abf4d1125ull, 0xacf88b6ee280f77cull},
+    {"7.6.3", "turned_part", 0x79562744dbecd568ull, 0xbfb8c1cfaffd675eull, 0xe44910bdd1dc1d25ull},
+    {"7.6.3", "filleted_plate", 0xa2295aae6f4930e5ull, 0x61ccc19d6b87f045ull, 0x31113b57e28ad516ull},
+    {"7.6.3", "saddle_box", 0x6eafb487a5e02434ull, 0xb70e5093a40e3605ull, 0x9e4088243820e858ull},
+    {"7.6.3", "wavy_capped", 0x5929da73cd7f7e69ull, 0x95dd65e32746a786ull, 0x9868991cd0ab0304ull},
+    {"7.6.3", "threaded_rod", 0x22435a2b7dacfebcull, 0xe1bdaeea9124bbc7ull, 0xb9cd0dfb82c69aeeull},
+    {"7.6.3", "rounded_box", 0x8d27c21191658323ull, 0x99d00ac337bfa4dcull, 0x9ea826ae8fb9ae2full},
+    {"7.6.3", "noisy_turned_part", 0x18df6a7b3bd131b5ull, 0x6bac3ed931f55ea7ull, 0x61cc8c40a6897004ull},
     // clang-format on
 };
 
@@ -162,10 +186,10 @@ TEST(FitCadGoldens, RepeatRunsAgree) {
 }
 
 TEST(FitCadGoldens, NativeBackendMatches) {
-#ifdef GOLDEN_PINNED
+#ifdef FCG_PINNED
     fcg_check("native", FitCadBackend::Native, kFcgNative);
 #else
-    GTEST_SKIP() << "golden digests are pinned on x86-64 GCC/Clang only";
+    GTEST_SKIP() << "fit_cad digests are pinned on x86-64 Linux (glibc) only";
 #endif
 }
 
@@ -175,9 +199,9 @@ TEST(FitCadGoldens, OcctMatchesForThisVersion) {
         GTEST_SKIP() << "built without OpenCASCADE";
     }
     EXPECT_NE(std::string(fit_cad_occt_version()), "");
-#ifdef GOLDEN_PINNED
+#ifdef FCG_PINNED
     fcg_check(fit_cad_occt_version(), FitCadBackend::Occt, kFcgOcct);
 #else
-    GTEST_SKIP() << "golden digests are pinned on x86-64 GCC/Clang only";
+    GTEST_SKIP() << "fit_cad digests are pinned on x86-64 Linux (glibc) only";
 #endif
 }
