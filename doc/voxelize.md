@@ -110,6 +110,8 @@ mp.grid([4, 4, 4], origin=(-1.0, -1.0, -1.0), spacing=(0.5, 0.5, 0.5))
 
 A zero cell count on any axis yields an empty mesh — a legal, if useless, request rather than an error.
 
+For shapes other than a box lattice — a rectangle, a disk, a sphere, a cylinder, one cell of each type — see the [parametric primitives](primitives.md), which keep the same contract.
+
 ## Determinism
 
 Output is byte-identical across the three mesh backends, across thread counts, and across the C++/numpy boundary (`tests/python/test_voxelize.py::test_cpp_matches_python`). The lattice is index arithmetic, and the fill rules are a totally ordered search; neither has an ordering question to answer.

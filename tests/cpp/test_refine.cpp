@@ -41,6 +41,7 @@
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -517,61 +518,23 @@ void expect_conforming(const Mesh& rIn, const Mesh& rOut) {
 
 // An n x n grid of quadrilaterals over the unit square.
 Mesh quad_grid(std::size_t n) {
-    std::vector<std::vector<double>> pts;
-    for (std::size_t j = 0; j <= n; ++j)
-        for (std::size_t i = 0; i <= n; ++i)
-            pts.push_back({static_cast<double>(i), static_cast<double>(j), 0.0});
-    std::vector<std::vector<std::int64_t>> cells;
-    for (std::size_t j = 0; j < n; ++j) {
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::int64_t a = static_cast<std::int64_t>(j * (n + 1) + i);
-            cells.push_back({a, a + 1, a + static_cast<std::int64_t>(n) + 2,
-                             a + static_cast<std::int64_t>(n) + 1});
-        }
-    }
-    return mt::make_mesh(std::move(pts), "quad", std::move(cells));
+    return meshioplusplus::rectangle({{static_cast<std::int64_t>(n), static_cast<std::int64_t>(n)}},
+                                     {{static_cast<double>(n), static_cast<double>(n)}});
 }
 
 // Two triangles per cell of an n x n grid.
 Mesh tri_grid(std::size_t n) {
-    std::vector<std::vector<double>> pts;
-    for (std::size_t j = 0; j <= n; ++j)
-        for (std::size_t i = 0; i <= n; ++i)
-            pts.push_back({static_cast<double>(i), static_cast<double>(j), 0.0});
-    std::vector<std::vector<std::int64_t>> cells;
-    for (std::size_t j = 0; j < n; ++j) {
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::int64_t a = static_cast<std::int64_t>(j * (n + 1) + i);
-            const std::int64_t b = a + 1;
-            const std::int64_t cc = a + static_cast<std::int64_t>(n) + 2;
-            const std::int64_t dd = a + static_cast<std::int64_t>(n) + 1;
-            cells.push_back({a, b, cc});
-            cells.push_back({a, cc, dd});
-        }
-    }
-    return mt::make_mesh(std::move(pts), "triangle", std::move(cells));
+    return meshioplusplus::rectangle({{static_cast<std::int64_t>(n), static_cast<std::int64_t>(n)}},
+                                     {{static_cast<double>(n), static_cast<double>(n)}},
+                                     {{0.0, 0.0, 0.0}}, "triangle", "up");
 }
 
 // An n x n x n grid of hexahedra.
 Mesh hex_grid(std::size_t n) {
-    const std::size_t s = n + 1;
-    std::vector<std::vector<double>> pts;
-    for (std::size_t k = 0; k < s; ++k)
-        for (std::size_t j = 0; j < s; ++j)
-            for (std::size_t i = 0; i < s; ++i)
-                pts.push_back(
-                    {static_cast<double>(i), static_cast<double>(j), static_cast<double>(k)});
-    const auto id = [s](std::size_t i, std::size_t j, std::size_t k) {
-        return static_cast<std::int64_t>((k * s + j) * s + i);
-    };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (std::size_t k = 0; k < n; ++k)
-        for (std::size_t j = 0; j < n; ++j)
-            for (std::size_t i = 0; i < n; ++i)
-                cells.push_back({id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
-                                 id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
-                                 id(i, j + 1, k + 1)});
-    return mt::make_mesh(std::move(pts), "hexahedron", std::move(cells));
+    return meshioplusplus::box(
+        {{static_cast<std::int64_t>(n), static_cast<std::int64_t>(n),
+          static_cast<std::int64_t>(n)}},
+        {{static_cast<double>(n), static_cast<double>(n), static_cast<double>(n)}});
 }
 
 // A conformity oracle that cannot fail proves nothing, so build the two failure

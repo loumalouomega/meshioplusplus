@@ -63,6 +63,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -170,6 +171,21 @@ std::uint64_t og_shrinkwrap() {
     std::memcpy(conn.Data(), surface.Cells(0).Conn().Data(), conn.Nbytes());
     inflated.AddCellBlock(surface.Cells(0).Type(), std::move(conn));
     return ft_mesh(mio::shrinkwrap(inflated, surface).mMesh);
+}
+
+// The parametric generators read no input, so one digest pins every shape's
+// points, cells and regions, linear and quadratic.
+std::uint64_t og_primitives() {
+    MeshDigest d;
+    d.Of(mio::rectangle({{5, 4}}, {{2.0, 1.5}}, {{0.1, 0.2, 0.3}}, "triangle", "zigzag", 2));
+    d.Of(mio::box({{3, 2, 2}}, {{1.5, 1.0, 1.0}}, {{0, 0, 0}}, "tetra", 2));
+    d.Of(mio::box({{2, 2, 2}}, {{1, 1, 1}}, {{0, 0, 0}}, "wedge", 1));
+    d.Of(mio::disk(1.5, 4, {{0, 0, 0}}, "quad", 2));
+    d.Of(mio::uv_sphere(2.0, 9, 5, {{0, 0, 0}}, "quad", 2));
+    d.Of(mio::icosa_sphere(1.0, 2, {{0, 0, 0}}, 2));
+    d.Of(mio::cylinder(1.0, 2.0, 3, 3, {{0, 0, 0}}, "wedge", 2));
+    d.Of(mio::reference_cells());
+    return d.Value();
 }
 
 std::uint64_t og_voxelize() {
@@ -547,6 +563,7 @@ const OgCase kOgCases[] = {
     {"sdf", og_sdf, 0x175cf3b488dec5f1ull},
     {"shrinkwrap", og_shrinkwrap, 0xb0848f2913e6c5c1ull},
     {"voxelize", og_voxelize, 0x6ba9809e780fc0adull},
+    {"primitives", og_primitives, 0xb25c3db914f56668ull},
     {"curvature", og_curvature, 0x57e791c665c3c096ull},
     {"normals", og_normals, 0xdd92696ea89a5ad9ull},
     {"segment", og_segment, 0x5ea31eda31330c87ull},

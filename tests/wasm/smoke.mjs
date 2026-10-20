@@ -2277,6 +2277,22 @@ step('grid builds a lattice from nothing', () => {
     assert.equal(m.grid([0, 0, 0]).points.length, 0);
 });
 
+step('the parametric generators build meshes and refuse bad requests', () => {
+    const box = m.box([2, 2, 2], null, null, 'tetra', 2);
+    assert.equal(box.cells[0].type, 'tetra10');
+    const sphere = m.uvSphere(1, 8, 4, null, 'quad');
+    assert.deepEqual(sphere.cells.map((c) => c.type), ['quad', 'triangle']);
+    assert.equal(m.rectangle([3, 2], null, null, 'triangle', 'center').points.length, 18 * 3);
+    assert.equal(m.icosaSphere(1, 1).points.length, 42 * 3);
+    assert.equal(m.disk(1, 3, null, 'triangle').cells[0].type, 'triangle');
+    assert.equal(m.cylinder(1, 1, 2, 2, null, 'wedge').cells[0].type, 'wedge');
+    assert.deepEqual(m.referenceCells(['tetra', 'wedge']).cells.map((c) => c.type),
+        ['tetra', 'wedge']);
+    assert.equal(m.referenceCells(null, true).cells.length, 7);
+    assert.throws(() => m.box([2, 2, 2], null, null, 'blob'));
+    assert.throws(() => m.box([100, 100, 100], null, null, 'hexahedron', 1, 1000));
+});
+
 step('octree is fine only where the skin is', () => {
     const tree = m.octree(cubeSurface, null, 0, 3,
         [-0.5, -0.5, -0.5, 1.5, 1.5, 1.5], 0, 0, 0, 0, 'face', 'inside', 'pseudonormal',

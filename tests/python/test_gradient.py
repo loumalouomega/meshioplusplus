@@ -82,31 +82,7 @@ def _warped_hex():
 
 def _hex_grid(n=3, off=0.0):
     """A structured n x n x n hexahedron grid, optionally translated by ``off``."""
-    pts = []
-    for k in range(n + 1):
-        for j in range(n + 1):
-            for i in range(n + 1):
-                pts.append([i + off, j + off, k + off])
-
-    def vid(i, j, k):
-        return (k * (n + 1) + j) * (n + 1) + i
-
-    cells = [
-        [
-            vid(i, j, k),
-            vid(i + 1, j, k),
-            vid(i + 1, j + 1, k),
-            vid(i, j + 1, k),
-            vid(i, j, k + 1),
-            vid(i + 1, j, k + 1),
-            vid(i + 1, j + 1, k + 1),
-            vid(i, j + 1, k + 1),
-        ]
-        for k in range(n)
-        for j in range(n)
-        for i in range(n)
-    ]
-    return mp.Mesh(np.array(pts, dtype=float), [("hexahedron", np.array(cells))])
+    return mp.box((n, n, n), (n, n, n), origin=(off, off, off))
 
 
 def _quad_sheet():

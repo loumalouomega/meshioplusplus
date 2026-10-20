@@ -293,59 +293,15 @@ def test_roundtrip_write_read(tmp_path):
 # selective / adaptive refinement                                              #
 # --------------------------------------------------------------------------- #
 def _tri_grid(n):
-    pts = [[float(i), float(j), 0.0] for j in range(n + 1) for i in range(n + 1)]
-    cells = []
-    for j in range(n):
-        for i in range(n):
-            a = j * (n + 1) + i
-            cells.append([a, a + 1, a + n + 2])
-            cells.append([a, a + n + 2, a + n + 1])
-    return meshioplusplus.Mesh(np.array(pts), [("triangle", np.array(cells))])
+    return meshioplusplus.rectangle((n, n), (n, n), cell_type="triangle", split="up")
 
 
 def _quad_grid(n):
-    pts = [[float(i), float(j), 0.0] for j in range(n + 1) for i in range(n + 1)]
-    cells = [
-        [
-            j * (n + 1) + i,
-            j * (n + 1) + i + 1,
-            j * (n + 1) + i + n + 2,
-            j * (n + 1) + i + n + 1,
-        ]
-        for j in range(n)
-        for i in range(n)
-    ]
-    return meshioplusplus.Mesh(np.array(pts), [("quad", np.array(cells))])
+    return meshioplusplus.rectangle((n, n), (n, n))
 
 
 def _hex_grid(n):
-    s = n + 1
-    pts = [
-        [float(i), float(j), float(k)]
-        for k in range(s)
-        for j in range(s)
-        for i in range(s)
-    ]
-
-    def idx(i, j, k):
-        return (k * s + j) * s + i
-
-    cells = [
-        [
-            idx(i, j, k),
-            idx(i + 1, j, k),
-            idx(i + 1, j + 1, k),
-            idx(i, j + 1, k),
-            idx(i, j, k + 1),
-            idx(i + 1, j, k + 1),
-            idx(i + 1, j + 1, k + 1),
-            idx(i, j + 1, k + 1),
-        ]
-        for k in range(n)
-        for j in range(n)
-        for i in range(n)
-    ]
-    return meshioplusplus.Mesh(np.array(pts), [("hexahedron", np.array(cells))])
+    return meshioplusplus.box((n, n, n), (n, n, n))
 
 
 def _count_hanging_nodes(mesh):

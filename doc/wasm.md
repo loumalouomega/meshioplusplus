@@ -592,6 +592,10 @@ seq.close();                  // release the handle; safe to call twice / from a
 
 `read`'s options are `readMeshSelective`'s (`pointsOnly`/`arrays`/`lenient`); the entry's own step index is always used, so there is no separate `timeStep` option. Every method after `close()` throws a catchable `Error` naming the handle, not a use-after-free. `sequenceEntries` (a single call, the whole plan at once) is still the right choice when you want every entry's metadata up front without reading any mesh at all — `openSequence` is for when you also intend to read some or all of the meshes, one at a time.
 
+## Parametric generators
+
+`rectangle(dims, size, origin, cellType, split, order, maxCells)`, `box(dims, size, origin, cellType, order, maxCells)`, `disk(radius, n, center, cellType, order, maxCells)`, `uvSphere(radius, nu, nv, center, cellType, order, maxCells)`, `icosaSphere(radius, subdivisions, center, order, maxCells)`, `cylinder(radius, height, nxy, nz, center, cellType, order, maxCells)` and `referenceCells(types, pairs)` build a mesh from parameters and, like `grid`, take no input mesh. Every argument is optional (`null` takes the default), a bad request throws a catchable `Error` naming the shape, and the meshes carry their named side regions. The `Generate` pipeline step is described in [pipeline](pipeline.md#generate). See [`doc/primitives.md`](primitives.md).
+
 ## Regular grids and signed distance (v9.24.0, `computeSdf` v9.25.0)
 
 `grid(dims, origin, spacing)`, `voxelize(mesh, resolution, ...)`, `surfaceWatertightCheck(mesh)`, `sampleDistance(surface, points)` and `distanceToSurface(query, surface)`. `grid` is the only binding in the package that takes no input mesh — it creates one. `sampleDistance` takes a **flat** `[x0,y0,z0, x1,y1,z1, …]` array and returns a `Float64Array`.

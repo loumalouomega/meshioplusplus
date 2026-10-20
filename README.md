@@ -756,6 +756,15 @@ report[0]["regions"]                         # the same, independently, per name
 
 Six operations built for the physics-ML surface, each with its own CLI verb, MCP tool, and Python-API and doc page: **`meshioplusplus.compute_curvature`** (per-vertex mean/Gaussian curvature by the angle defect and cotangent Laplace-Beltrami operator — `doc/curvature.md`), **`meshioplusplus.compute_normals`** (point/cell normals with an optional crease split — `doc/normals.md`), **`meshioplusplus.repair`** (fixes a surface's orientation, holes and pinched vertices, the defects `clean` does not touch — `doc/repair.md`), **`meshioplusplus.shrinkwrap`** (projects a mesh's points onto a target surface in one pass — `doc/shrinkwrap.md`), and **`meshioplusplus.sobolev_deform`** (moves points by a raw displacement field filtered through the mesh's own P1 operators — `doc/sobolev_deform.md`). **`meshioplusplus.voxelize`**/**`compute_sdf`** build a regular grid around or over a surface, filled by occupancy or signed distance — `doc/grids.md` and `doc/sdf.md`.
 
+#### Parametric primitives (rectangle, box, disk, spheres, cylinder, reference cells)
+
+Seven generators build a shape from parameters, so a test, a notebook or a demo needs no fixture file: `meshioplusplus.rectangle`, `box`, `disk`, `uv_sphere`, `icosa_sphere`, `cylinder` and `reference_cells` (one cell of each type in its reference coordinates). Surfaces come out oriented outward, volumes positive, the boundary as named side regions (`xmin` … `zmax`, `rim`, `side`/`top`/`bottom`), and `order=2` places the mid-edge nodes on the exact geometry, so a quadratic sphere or cylinder is genuinely curved. The same generators are on every surface — C, Fortran, Julia, R, WASM, both CLIs (`meshioplusplus generate box block.vtu --dims 8,8,8 --cell-type tetra`), MCP and the pipeline (`{"Op": "Generate", ...}`, which needs no `Input`). See [parametric primitives](doc/primitives.md).
+
+```python
+block = meshioplusplus.box(dims=(4, 4, 4), cell_type="tetra", order=2)   # tetra10, six side regions
+ball = meshioplusplus.uv_sphere(radius=2.0, nu=24, nv=12, order=2)      # triangle6 on the exact sphere
+```
+
 #### Data operations (rename / average / calc / condition / invariants / summarize)
 
 A second bundle operates on the **data arrays** a mesh carries (`point_data` / `cell_data` / `field_data`) rather than on its geometry, which none of them ever modifies:

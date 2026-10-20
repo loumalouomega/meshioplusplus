@@ -8,18 +8,7 @@ import meshioplusplus
 
 
 def _quad_grid(nx=6, ny=4):
-    pts = []
-    for j in range(ny + 1):
-        for i in range(nx + 1):
-            pts.append([float(i), float(j), 0.0])
-    cells = []
-    for j in range(ny):
-        for i in range(nx):
-            v = j * (nx + 1) + i
-            cells.append([v, v + 1, v + nx + 2, v + nx + 1])
-    return meshioplusplus.Mesh(
-        np.array(pts, dtype=float), [("quad", np.array(cells, dtype=np.int64))]
-    )
+    return meshioplusplus.rectangle((nx, ny), (nx, ny))
 
 
 def _mixed_tri_quad():

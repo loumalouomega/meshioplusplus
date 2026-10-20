@@ -185,6 +185,16 @@ Python, native C++, both CLIs, C/Fortran/Julia/R status/report entry points and 
 Spatial Version 2 is deliberately separate from transient sequence documents (`Mode`, `Input.Paths`/`Pattern`, `{step}` outputs, resampling): combining that vocabulary is rejected, never an implicit cross-product of branches. A multi-step `Input.Path` materializes one state, by default the first; use `Input.Options.TimeStep` to select another, including `-1` for the last. Use a v1 sequence pipeline and standalone v2 pipelines for the spatial stages.
 - conan/vcpkg packages shipping the parser via a registry `nlohmann_json/3.12.0` dependency instead of the submodule.
 
+## `Generate`
+
+```json
+{ "Version": 1, "Operations": [ { "Op": "Generate", "Shape": "box", "Dims": [8, 8, 8], "CellType": "tetra", "Order": 2 } ], "Output": { "Path": "block.vtu" } }
+```
+
+Builds a mesh from parameters ([`doc/primitives.md`](primitives.md)) and **replaces** the incoming geometry; it never reads the incoming mesh. When `Generate` is the first step of a single-mesh document, `Input` may be omitted. A document with any other first step still requires `Input`, and sequence documents (`Mode`, `Input.Pattern`, `Input.Paths`) always do.
+
+`Shape` is one of `rectangle`, `box`, `disk`, `uv_sphere`, `icosa_sphere`, `cylinder` or `reference_cells`. The other parameters are the shape's arguments in PascalCase, with the defaults of the Python function: `Dims`, `Size`, `Origin` (rectangle, box), `Center`, `Radius`, `Height`, `N` (disk), `Nu`, `Nv` (uv_sphere), `Subdivisions` (icosa_sphere), `Nxy`, `Nz` (cylinder), `CellType`, `Split`, `Order`, `MaxCells`, and `Types`, `Pairs` (reference_cells). The step reports `NumPoints` and `NumCells`.
+
 ## `Voxelize`
 
 ```json

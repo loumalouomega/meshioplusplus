@@ -1838,6 +1838,25 @@ contains
         call check(g%num_points() == 0_int64, 'an empty grid has no points')
         call g%free()
 
+        ! The parametric generators: a quadratic tetrahedral box, a sphere with a
+        ! quad body and triangle caps, and an unknown cell type refused by name.
+        g = mio_box(dims=[2, 2, 2], cell_type='tetra', order=2, stat=ierr)
+        call check(ierr == 0, 'box built')
+        call check(g%num_cell_blocks() == 1_int64, 'box has one block')
+        call g%free()
+        g = mio_uv_sphere(nu=8, nv=4, cell_type='quad', stat=ierr)
+        call check(ierr == 0, 'uv sphere built')
+        call check(g%num_cell_blocks() == 2_int64, 'quad sphere has a body and caps')
+        call g%free()
+        g = mio_icosa_sphere(subdivisions=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 42_int64, 'icosa sphere has 42 points')
+        call g%free()
+        g = mio_reference_cells(types='tetra,wedge', stat=ierr)
+        call check(ierr == 0 .and. g%num_cell_blocks() == 2_int64, 'two reference cells')
+        call g%free()
+        g = mio_box(cell_type='blob', stat=ierr)
+        call check(ierr /= 0, 'an unknown cell type is an error')
+
         ! The unit cube as a closed, outward-wound triangle surface.
         pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
                        0d0, 0d0, 1d0, 1d0, 0d0, 1d0, 1d0, 1d0, 1d0, 0d0, 1d0, 1d0], [3, 8])

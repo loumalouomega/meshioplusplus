@@ -172,6 +172,11 @@ jobs:
           sha="$(sha512sum src.tar.gz | cut -d' ' -f1)"
           sed -i "s/SHA512 0$/SHA512 ${sha}/" packages/vcpkg/meshioplusplus/portfile.cmake
           grep "SHA512" packages/vcpkg/meshioplusplus/portfile.cmake
+      # The default `occt` feature builds vcpkg's opencascade port, which needs
+      # gperf, and vcpkg's gperf port is an autotools build that refuses to start
+      # without these from the system (the runner image no longer ships them).
+      - name: Install the autotools vcpkg's gperf port needs
+        run: sudo apt-get update && sudo apt-get install -y autoconf autoconf-archive automake libtool
       - name: vcpkg install
         run: "\"$VCPKG_INSTALLATION_ROOT/vcpkg\" install meshioplusplus --overlay-ports=\"$PWD/packages/vcpkg\""
       - name: Package overlay port

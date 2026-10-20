@@ -8,6 +8,13 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **Parametric primitives** (roadmap §3.1.1, the first tiers). Seven generators build a shape from parameters, so tests, notebooks and demos need no fixture file: `rectangle` (quads, or triangles split `zigzag`, `up`, `down` or `center`), `box` (hexahedra, six Kuhn tetrahedra per cell that conform across cells, or wedges), `disk` (quads by the squircle map, or triangles in hexagonal rings), `uv_sphere`, `icosa_sphere` (`20 * 4^n` triangles), `cylinder` (hexahedra or wedges) and `reference_cells` (one cell of each type in its reference coordinates, `pairs=True` for two cells sharing a facet). They keep `grid`'s contract (coordinates from indices, a documented order, a `max_cells` budget, an empty mesh for a zero count) and add outward surfaces, positive volumes, welded seams and poles, and named `Side` regions (`xmin` … `zmax`, `rim`, `side`/`top`/`bottom`). `order=2` returns serendipity cells (`quad8`, `triangle6`, `hexahedron20`, `tetra10`, `wedge15`) whose mid-edge nodes are evaluated on the exact geometry, so a sphere or a cylinder is genuinely curved. `rectangle`, `box`, `icosa_sphere` and `reference_cells` are byte-identical between the numpy twin and the C++ core; `disk`, `uv_sphere` and `cylinder` use `sin`/`cos` and agree on topology and to a few ulps. See `doc/primitives.md`.
+- The generators reach every surface: Python (`mp.rectangle` … `mp.reference_cells`), C++ (`operations/primitives.hpp`), the C API (`mio_rectangle` … `mio_cylinder` over one `mio_gen_opts`, 160 bytes with a reserved tail, and `mio_reference_cells`), Fortran, Julia, R and WASM, a `generate SHAPE OUTFILE` verb in both CLIs, seven MCP tools (115 in all), and a pipeline `Generate` step. A single-mesh pipeline document whose first step is `Generate` may omit `Input`.
+- `example/python/40_primitives.ipynb` shows every generator, the side regions and the curved quadratic cells.
+- ABI: `operations/primitives.hpp` is a new header of free functions; no existing declaration changes (see `doc/abi_reviews.md`).
+
 ## v17.9.0 (2026-10-20)
 
 - **Clean skin to CAD: one face per surface, not per triangle.** A CAD-exported STL now comes out as the solid it was tessellated from — each flat region one planar face with its holes as inner loops, each bore, rounded end, cone, sphere or torus one analytic face, the edges between them lines and circles — in the spirit of stlToSolid and stl2curves, and without a CAD kernel. See `doc/cad_fit.md`.

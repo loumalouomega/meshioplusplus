@@ -25,6 +25,7 @@ from . import (
     _feature_edges,
     _find_interface,
     _fit_primitives,
+    _generate,
     _grid_transfer,
     _guard,
     _hausdorff,
@@ -312,6 +313,14 @@ def main(argv=None):
     )
     _isosurface.add_args(parser)
     parser.set_defaults(func=_isosurface.isosurface_cmd)
+
+    parser = subparsers.add_parser(
+        "generate",
+        help="Build a mesh from parameters: rectangle, box, disk, spheres, cylinder, "
+        "reference cells",
+    )
+    _generate.add_args(parser)
+    parser.set_defaults(func=_generate.generate_cmd)
 
     parser = subparsers.add_parser(
         "voxelize",

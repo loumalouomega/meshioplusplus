@@ -31,7 +31,12 @@ jobs:
       # mounted checkout, so the prefix lands on the host (and in the cache);
       # cibuildwheel then copies it into its container with the project
       # (/project/build/occt). The wheels find it through OpenCASCADE_ROOT and
-      # MESHIOPLUSPLUS_REQUIRE_OCCT refuses to build one without it. LGPL-2.1
+      # MESHIOPLUSPLUS_REQUIRE_OCCT refuses to build one without it. The
+      # non-Linux prefix reaches CIBW_ENVIRONMENT as OCCT_PREFIX, a path with
+      # forward slashes written by the "Locate the OpenCASCADE prefix" step:
+      # cibuildwheel evaluates CIBW_ENVIRONMENT like a shell, which drops the
+      # backslashes of a Windows ${{ github.workspace }} (D:\a\x -> D:ax), so
+      # CMake looked for the install in a directory that does not exist. LGPL-2.1
       # with the OCCT exception: THIRD_PARTY_NOTICES.md and OCCT's licence
       # texts ship in each wheel's .dist-info/licenses.
       - name: Cache OpenCASCADE
@@ -58,6 +63,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: sh build/build-occt.sh build/occt
+
+      - name: Locate the OpenCASCADE prefix
+        shell: bash
+        run: |
+          # Git Bash's `pwd -W` is the Windows path with forward slashes; elsewhere
+          # plain `pwd` already is one.
+          echo "OCCT_PREFIX=$( (pwd -W 2>/dev/null || pwd) )/build/occt" >> "$GITHUB_ENV"
 
       - name: Build wheels
         # v2.21's manylinux alias table predates _2_34, and it hardcodes cp38 for its
@@ -126,7 +138,7 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT: >-
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_REQUIRE_OCCT=ON"
-            OpenCASCADE_ROOT="${{ github.workspace }}/build/occt"
+            OpenCASCADE_ROOT="${{ env.OCCT_PREFIX }}"
             MACOSX_DEPLOYMENT_TARGET="13.3"
           CIBW_TEST_REQUIRES: "pytest h5py"
           # The gid round trip proves the vendored static zlib actually reached

@@ -1061,6 +1061,39 @@ test_that("grid builds a lattice from nothing", {
   expect_error(mio_grid(c(100, 100, 100), max_cells = 1000))
 })
 
+test_that("the parametric generators build meshes and refuse bad requests", {
+  b <- mio_box(dims = c(2, 2, 2), cell_type = "tetra", order = 2)
+  on.exit(mio_release(b), add = TRUE)
+  expect_equal(mio_num_cell_blocks(b), 1)
+
+  s <- mio_uv_sphere(nu = 8, nv = 4, cell_type = "quad")
+  on.exit(mio_release(s), add = TRUE)
+  expect_equal(mio_num_cell_blocks(s), 2)
+
+  r <- mio_rectangle(dims = c(3, 2), cell_type = "triangle", split = "center")
+  on.exit(mio_release(r), add = TRUE)
+  expect_equal(mio_num_points(r), 18)
+
+  ico <- mio_icosa_sphere(subdivisions = 1)
+  on.exit(mio_release(ico), add = TRUE)
+  expect_equal(mio_num_points(ico), 42)
+
+  d <- mio_disk(n = 3, cell_type = "triangle")
+  on.exit(mio_release(d), add = TRUE)
+  expect_equal(mio_num_cell_blocks(d), 1)
+
+  cyl <- mio_cylinder(nxy = 2, nz = 2, cell_type = "wedge")
+  on.exit(mio_release(cyl), add = TRUE)
+  expect_equal(mio_num_cell_blocks(cyl), 1)
+
+  ref <- mio_reference_cells(c("tetra", "wedge"))
+  on.exit(mio_release(ref), add = TRUE)
+  expect_equal(mio_num_cell_blocks(ref), 2)
+
+  expect_error(mio_box(cell_type = "blob"))
+  expect_error(mio_box(dims = c(100, 100, 100), max_cells = 1000))
+})
+
 test_that("voxelize builds a grid around a surface", {
   cube <- cube_surface()
   on.exit(mio_release(cube))

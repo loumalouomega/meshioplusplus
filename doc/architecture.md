@@ -25,7 +25,7 @@ An operation is a computation *on* a mesh rather than a file format: it is writt
 | Refinement and coarsening | [refine](./refine.md), [undo_green](./undo_green.md), [subdivide](./subdivide.md), [agglomerate](./agglomerate.md), [decimate](./decimate.md), [decimate_volume](./decimate_volume.md) |
 | Remeshing and smoothing | [remesh](./remesh.md), [remesh_volume](./remesh_volume.md), [optimize_volume](./optimize_volume.md), [smooth](./smooth.md) |
 | Fields | [interpolate](./interpolate.md), [conservative_interpolate](./conservative_interpolate.md), [gradient](./gradient.md), [hessian](./hessian.md), [estimate_error](./error.md), [data_integrate](./field_integration.md) |
-| Cutting, grids and distance | [slice](./slice.md), [isosurface](./isosurface.md), [grid and voxelize](./voxelize.md), [signed distance](./sdf.md) |
+| Cutting, grids and distance | [slice](./slice.md), [isosurface](./isosurface.md), [grid and voxelize](./voxelize.md), [parametric primitives](./primitives.md), [signed distance](./sdf.md) |
 | Geometry helpers (physics-ML) | [curvature](./curvature.md), [normals](./normals.md), [repair](./repair.md), [shrinkwrap](./shrinkwrap.md), [sobolev_deform](./sobolev_deform.md), [tessellation](./tessellation.md) |
 | Data operations | [manage, average, calc, condition, info, tensor_invariants](./data_operations.md) — the six that never touch geometry |
 

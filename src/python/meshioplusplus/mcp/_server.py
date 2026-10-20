@@ -693,6 +693,191 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def rectangle(
+        output_path: str,
+        output_format: Optional[str] = None,
+        dims: Optional[List[int]] = None,
+        size: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        split: str = "zigzag",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a regular 2-D grid of dims=(nx, ny) quads or triangles at
+        z = origin[2]. split (triangles) is zigzag, up, down or center; order=2
+        gives quad8/triangle6 cells. The mesh carries side regions xmin, xmax,
+        ymin, ymax. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_rectangle,
+            output_path=output_path,
+            output_format=output_format,
+            dims=dims,
+            size=size,
+            origin=origin,
+            cell_type=cell_type,
+            split=split,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def box(
+        output_path: str,
+        output_format: Optional[str] = None,
+        dims: Optional[List[int]] = None,
+        size: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        cell_type: str = "hexahedron",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a regular 3-D grid of dims=(nx, ny, nz) hexahedra, tetrahedra
+        (six Kuhn tetrahedra per cell) or wedges. order=2 gives hexahedron20,
+        tetra10 or wedge15 cells. The mesh carries side regions xmin, xmax, ymin,
+        ymax, zmin, zmax. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_box,
+            output_path=output_path,
+            output_format=output_format,
+            dims=dims,
+            size=size,
+            origin=origin,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def disk(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        n: int = 8,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a disk of quads (an n x n grid pushed onto the disk) or
+        triangles (n rings, 6 n^2 triangles). order=2 curves the rim. The mesh
+        carries a side region rim. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_disk,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            n=n,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def uv_sphere(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        nu: int = 16,
+        nv: int = 8,
+        center: Optional[List[float]] = None,
+        cell_type: str = "triangle",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a latitude/longitude sphere surface with nu points per ring and
+        nv bands, oriented outward. cell_type is triangle, or quad with triangle
+        caps. order=2 puts the mid-edge nodes on the sphere. Reads no input mesh:
+        it creates one."""
+        return _guard(
+            _tools.tool_uv_sphere,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            nu=nu,
+            nv=nv,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def icosa_sphere(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        subdivisions: int = 2,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a sphere surface from an icosahedron split in four
+        `subdivisions` times (20 * 4^subdivisions triangles), oriented outward.
+        order=2 puts the mid-edge nodes on the sphere. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_icosa_sphere,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            subdivisions=subdivisions,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def cylinder(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        height: float = 1.0,
+        nxy: int = 8,
+        nz: int = 8,
+        center: Optional[List[float]] = None,
+        cell_type: str = "hexahedron",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a solid cylinder along z: hexahedra (the disk grid, extruded)
+        or wedges. order=2 curves the side. The mesh carries side regions side,
+        top and bottom. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_cylinder,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            height=height,
+            nxy=nxy,
+            nz=nz,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def reference_cells(
+        output_path: str,
+        output_format: Optional[str] = None,
+        types: Optional[List[str]] = None,
+        pairs: bool = False,
+    ) -> dict:
+        """Generate one cell of each requested type in reference coordinates, side
+        by side (every supported type when types is omitted). pairs=True gives two
+        cells sharing a facet, for linear types. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_reference_cells,
+            output_path=output_path,
+            output_format=output_format,
+            types=types,
+            pairs=pairs,
+        )
+
+    @server.tool()
     def octree(
         input_path: str,
         output_path: str,

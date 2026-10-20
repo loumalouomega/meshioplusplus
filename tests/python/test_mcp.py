@@ -2082,6 +2082,30 @@ def test_every_tool_function_is_callable():
         assert inspect.signature(fn) is not None
 
 
+def test_generator_tools(tmp_path):
+    """The seven parametric generators read no input and write a mesh."""
+    cases = [
+        ("rectangle", dict(dims=[3, 2], cell_type="triangle", split="center"), 24),
+        ("box", dict(dims=[2, 2, 2], cell_type="tetra", order=2), 48),
+        ("disk", dict(n=3, cell_type="triangle"), 54),
+        ("uv_sphere", dict(nu=8, nv=4, cell_type="quad"), 16 + 16),
+        ("icosa_sphere", dict(subdivisions=1, order=2), 80),
+        ("cylinder", dict(nxy=2, nz=2, cell_type="wedge"), 48),
+        ("reference_cells", dict(types=["tetra", "wedge"]), 2),
+    ]
+    for name, kwargs, num_cells in cases:
+        out = tmp_path / f"{name}.vtu"
+        report = getattr(_tools, f"tool_{name}")(str(out), **kwargs)
+        assert out.exists(), name
+        assert meshioplusplus.read(out).points.shape[0] == report["num_points"], name
+        assert report["num_cells"] == num_cells, name
+
+    with pytest.raises(ValueError, match="unknown cell_type"):
+        _tools.tool_box(str(tmp_path / "bad.vtu"), cell_type="quad")
+    with pytest.raises(ValueError, match="above the limit"):
+        _tools.tool_box(str(tmp_path / "big.vtu"), dims=[10, 10, 10], max_cells=50)
+
+
 def test_octree_tool(tmp_path):
     skin = tmp_path / "skin.vtu"
     meshioplusplus.write(

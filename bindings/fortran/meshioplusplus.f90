@@ -63,6 +63,8 @@ module meshioplusplus
     public :: mio_surface_quality
     public :: mio_find_interface_result, mio_contact_pairs_result
     public :: mio_grid
+    public :: mio_rectangle, mio_box, mio_disk, mio_uv_sphere, mio_icosa_sphere
+    public :: mio_cylinder, mio_reference_cells
     public :: mio_frame, mio_render_settings, mio_text_settings, mio_rgba
     public :: mio_detect_color_depth
     public :: mio_data_array_info
@@ -560,6 +562,23 @@ module meshioplusplus
         integer(c_int32_t) :: attach_occupancy = 0
         integer(c_int32_t) :: sign = 1
         integer(c_int32_t) :: watertight_check = 1
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_gen_opts`, the options of the parametric
+    !> generators. Same ABI rules as above: 160 bytes, checked once per process
+    !> (`check_gen_opts_layout`).
+    type, bind(c) :: mio_gen_opts_t
+        integer(c_int64_t) :: counts(3) = 8
+        real(c_double) :: lengths(3) = 1.0_c_double
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: radius = 1.0_c_double
+        real(c_double) :: height = 1.0_c_double
+        integer(c_int64_t) :: max_cells = 20000000
+        integer(c_int32_t) :: cell_type = 0
+        integer(c_int32_t) :: split = 0
+        integer(c_int32_t) :: order = 1
+        integer(c_int32_t) :: pad = 0
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
@@ -2771,6 +2790,49 @@ module meshioplusplus
             integer(c_int64_t), intent(in) :: dims(*)
             real(c_double), intent(in) :: origin(*), spacing(*)
             integer(c_int64_t), value :: max_cells
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_rectangle(opts) bind(c, name="mio_rectangle") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_box(opts) bind(c, name="mio_box") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_disk(opts) bind(c, name="mio_disk") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_uv_sphere(opts) bind(c, name="mio_uv_sphere") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_icosa_sphere(opts) bind(c, name="mio_icosa_sphere") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_cylinder(opts) bind(c, name="mio_cylinder") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_reference_cells(types, pairs) bind(c, name="mio_reference_cells") result(r)
+            import :: c_ptr, c_char, c_int32_t
+            character(kind=c_char), intent(in) :: types(*)
+            integer(c_int32_t), value :: pairs
             type(c_ptr) :: r
         end function
 
@@ -7262,6 +7324,238 @@ contains
         out%handle = c_mio_grid(cdims, corigin, cspacing, cmax)
         if (.not. c_associated(out%handle)) then
             call handle_failure('grid', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The layout of `mio_gen_opts_t` against the C struct (160 bytes), checked
+    !> once per process.
+    subroutine check_gen_opts_layout()
+        logical, save :: checked = .false.
+        type(mio_gen_opts_t) :: probe
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(probe) /= 160_c_size_t) then
+            write (error_unit, '(a,i0,a)') &
+                'meshio++: mio_gen_opts_t layout mismatch (', c_sizeof(probe), ' bytes)'
+            error stop 1
+        end if
+    end subroutine
+
+    !> The `mio_gen_cell` code of a cell type name, or -1 for an unknown name.
+    !> An empty name is the shape's default.
+    pure function gen_cell_code(name) result(code)
+        character(*), intent(in) :: name
+        integer(c_int32_t) :: code
+        select case (trim(name))
+        case (''); code = 0
+        case ('quad'); code = 1
+        case ('triangle'); code = 2
+        case ('hexahedron'); code = 3
+        case ('tetra'); code = 4
+        case ('wedge'); code = 5
+        case default; code = -1
+        end select
+    end function
+
+    !> Fill the options shared by the generators and run the one named by `which`.
+    function gen_run(which, opts, cell_type, split, order, max_cells, stat, errmsg) result(out)
+        character(*), intent(in) :: which
+        type(mio_gen_opts_t), intent(inout) :: opts
+        character(*), intent(in), optional :: cell_type, split
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int32_t) :: code
+        call check_gen_opts_layout()
+        if (present(order)) opts%order = int(order, c_int32_t)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(cell_type)) then
+            code = gen_cell_code(cell_type)
+            if (code < 0) then
+                call handle_failure(which, 'unknown cell type '//trim(cell_type), stat, errmsg)
+                return
+            end if
+            opts%cell_type = code
+        end if
+        if (present(split)) then
+            select case (trim(split))
+            case ('', 'zigzag'); opts%split = 0
+            case ('up'); opts%split = 1
+            case ('down'); opts%split = 2
+            case ('center'); opts%split = 3
+            case default
+                call handle_failure(which, 'unknown split '//trim(split), stat, errmsg)
+                return
+            end select
+        end if
+        select case (which)
+        case ('rectangle'); out%handle = c_mio_rectangle(opts)
+        case ('box'); out%handle = c_mio_box(opts)
+        case ('disk'); out%handle = c_mio_disk(opts)
+        case ('uv_sphere'); out%handle = c_mio_uv_sphere(opts)
+        case ('icosa_sphere'); out%handle = c_mio_icosa_sphere(opts)
+        case default; out%handle = c_mio_cylinder(opts)
+        end select
+        if (.not. c_associated(out%handle)) then
+            call handle_failure(which, mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A regular 2-D grid of `dims` = (nx, ny) quads or triangles at
+    !> z = origin(3). `cell_type` is 'quad' (default) or 'triangle'; `split`
+    !> ('zigzag', 'up', 'down', 'center') picks the triangle layout; `order` 2
+    !> gives quadratic cells. Side regions xmin, xmax, ymin, ymax.
+    function mio_rectangle(dims, lengths, origin, cell_type, split, order, max_cells, &
+                           stat, errmsg) result(out)
+        integer, intent(in), optional :: dims(2)
+        real(real64), intent(in), optional :: lengths(2), origin(3)
+        character(*), intent(in), optional :: cell_type, split
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts = 1
+        if (present(dims)) opts%counts(1:2) = int(dims, c_int64_t)
+        if (present(lengths)) opts%lengths(1:2) = real(lengths, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        out = gen_run('rectangle', opts, cell_type, split, order, max_cells, stat, errmsg)
+    end function
+
+    !> A regular 3-D grid of `dims` = (nx, ny, nz) hexahedra (default), 'tetra'
+    !> (six per cell) or 'wedge' cells. Side regions xmin ... zmax.
+    function mio_box(dims, lengths, origin, cell_type, order, max_cells, stat, errmsg) &
+        result(out)
+        integer, intent(in), optional :: dims(3)
+        real(real64), intent(in), optional :: lengths(3), origin(3)
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts = 1
+        if (present(dims)) opts%counts = int(dims, c_int64_t)
+        if (present(lengths)) opts%lengths = real(lengths, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        out = gen_run('box', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> A disk of `n` x `n` quads (default) or `n` rings of triangles; side
+    !> region rim. `center` places it.
+    function mio_disk(radius, n, center, cell_type, order, max_cells, stat, errmsg) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: n
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('disk', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> A latitude / longitude sphere surface with `nu` points per ring and `nv`
+    !> bands, oriented outward. `cell_type` is 'triangle' (default) or 'quad'.
+    function mio_uv_sphere(radius, nu, nv, center, cell_type, order, max_cells, stat, errmsg) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: nu, nv
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 16
+        opts%counts(2) = 8
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(nu)) opts%counts(1) = int(nu, c_int64_t)
+        if (present(nv)) opts%counts(2) = int(nv, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('uv_sphere', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> An icosahedron-based sphere surface: 20 * 4**subdivisions triangles,
+    !> oriented outward.
+    function mio_icosa_sphere(radius, subdivisions, center, order, max_cells, stat, errmsg) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: subdivisions
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 2
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(subdivisions)) opts%counts(1) = int(subdivisions, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('icosa_sphere', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> A solid cylinder along z of `nxy` cells across and `nz` layers:
+    !> 'hexahedron' (default) or 'wedge' cells; side regions side, top, bottom.
+    function mio_cylinder(radius, height, nxy, nz, center, cell_type, order, max_cells, &
+                          stat, errmsg) result(out)
+        real(real64), intent(in), optional :: radius, height, center(3)
+        integer, intent(in), optional :: nxy, nz
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(height)) opts%height = real(height, c_double)
+        if (present(nxy)) opts%counts(1) = int(nxy, c_int64_t)
+        if (present(nz)) opts%counts(2) = int(nz, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('cylinder', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg)
+    end function
+
+    !> One cell of each type named in `types` (comma-separated meshio names; every
+    !> supported type when omitted) in its reference coordinates, side by side.
+    !> `pairs` gives two cells sharing a facet (linear types only).
+    function mio_reference_cells(types, pairs, stat, errmsg) result(out)
+        character(*), intent(in), optional :: types
+        logical, intent(in), optional :: pairs
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int32_t) :: cpairs
+        cpairs = 0
+        if (present(pairs)) then
+            if (pairs) cpairs = 1
+        end if
+        if (present(types)) then
+            out%handle = c_mio_reference_cells(trim(types)//c_null_char, cpairs)
+        else
+            out%handle = c_mio_reference_cells(c_null_char, cpairs)
+        end if
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('reference_cells', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

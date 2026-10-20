@@ -2808,6 +2808,106 @@ mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
   )
 }
 
+#' Parametric mesh generators
+#'
+#' Build a shape from parameters, like `mio_grid()`, with named side regions
+#' and exact mid-edge nodes for `order = 2`. See `doc/primitives.md` for the
+#' point and cell order of every shape.
+#'
+#' @param dims Cell counts: `c(nx, ny)` for `mio_rectangle()`, `c(nx, ny, nz)`
+#'   for `mio_box()`.
+#' @param size Side lengths of a rectangle or box.
+#' @param origin Lo corner of a rectangle or box.
+#' @param radius Radius of a disk, sphere or cylinder.
+#' @param height Height of a cylinder.
+#' @param n Cells across a disk's diameter (quads) or its number of rings
+#'   (triangles).
+#' @param nu,nv Points per ring and latitude bands of `mio_uv_sphere()`.
+#' @param nxy,nz Cells across and layers of `mio_cylinder()`.
+#' @param subdivisions 1-to-4 splits of `mio_icosa_sphere()`.
+#' @param center Centre of a disk, sphere or cylinder.
+#' @param cell_type `"quad"`, `"triangle"`, `"hexahedron"`, `"tetra"` or
+#'   `"wedge"`, as the shape allows; `""` is the shape's default.
+#' @param split Triangle layout of `mio_rectangle()`: `"zigzag"`, `"up"`,
+#'   `"down"` or `"center"`.
+#' @param order 1, or 2 for quadratic cells on the exact geometry.
+#' @param max_cells Refuse a mesh larger than this, by name.
+#' @param types Comma-separated meshio cell type names for
+#'   `mio_reference_cells()`; `""` means every supported type.
+#' @param pairs Two cells sharing a facet instead of one (linear types).
+#' @return A `mio_mesh` handle.
+#' @name mio_generators
+NULL
+
+mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
+                          radius = 1, height = 1, cell_type = "", split = "zigzag",
+                          order = 1, max_cells = 20000000) {
+  .Call(
+    R_mio_generate, as.character(shape), as.numeric(counts), as.numeric(size),
+    as.numeric(origin), as.numeric(radius), as.numeric(height),
+    as.character(cell_type), as.character(split), as.integer(order),
+    as.numeric(max_cells)
+  )
+}
+
+#' @rdname mio_generators
+#' @export
+mio_rectangle <- function(dims = c(1, 1), size = c(1, 1), origin = c(0, 0, 0),
+                          cell_type = "quad", split = "zigzag", order = 1,
+                          max_cells = 20000000) {
+  mio_generate_("rectangle", dims, c(size, 1)[1:3], origin, cell_type = cell_type,
+                split = split, order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_box <- function(dims = c(1, 1, 1), size = c(1, 1, 1), origin = c(0, 0, 0),
+                    cell_type = "hexahedron", order = 1, max_cells = 20000000) {
+  mio_generate_("box", dims, size, origin, cell_type = cell_type, order = order,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_disk <- function(radius = 1, n = 8, center = c(0, 0, 0), cell_type = "quad",
+                     order = 1, max_cells = 20000000) {
+  mio_generate_("disk", n, origin = center, radius = radius, cell_type = cell_type,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_uv_sphere <- function(radius = 1, nu = 16, nv = 8, center = c(0, 0, 0),
+                          cell_type = "triangle", order = 1, max_cells = 20000000) {
+  mio_generate_("uv_sphere", c(nu, nv), origin = center, radius = radius,
+                cell_type = cell_type, order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_icosa_sphere <- function(radius = 1, subdivisions = 2, center = c(0, 0, 0),
+                             order = 1, max_cells = 20000000) {
+  mio_generate_("icosa_sphere", subdivisions, origin = center, radius = radius,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_cylinder <- function(radius = 1, height = 1, nxy = 8, nz = 8,
+                         center = c(0, 0, 0), cell_type = "hexahedron", order = 1,
+                         max_cells = 20000000) {
+  mio_generate_("cylinder", c(nxy, nz), origin = center, radius = radius,
+                height = height, cell_type = cell_type, order = order,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_reference_cells <- function(types = "", pairs = FALSE) {
+  .Call(R_mio_reference_cells, as.character(paste(types, collapse = ",")),
+        as.logical(pairs))
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,

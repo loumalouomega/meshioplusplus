@@ -1395,6 +1395,33 @@ end
     @test !isopen(m)
 end
 
+@testset "parametric generators" begin
+    # A quadratic tetrahedral box: one tetra10 block, positive point count.
+    b = box(dims=(2, 2, 2), cell_type="tetra", order=2)
+    @test num_cell_blocks(b) == 1
+    @test num_points(b) > 27
+    close(b)
+
+    # A sphere with a quad body and triangle caps is two blocks.
+    s = uv_sphere(nu=8, nv=4, cell_type="quad")
+    @test num_cell_blocks(s) == 2
+    close(s)
+
+    r = rectangle(dims=(3, 2), cell_type="triangle", split="center")
+    @test num_points(r) == 12 + 6
+    close(r)
+
+    @test num_points(icosa_sphere(subdivisions=1)) == 42
+    @test num_cell_blocks(disk(n=3, cell_type="triangle")) == 1
+    @test num_cell_blocks(cylinder(nxy=2, nz=2, cell_type="wedge")) == 1
+    @test num_cell_blocks(reference_cells(["tetra", "wedge"])) == 2
+    @test num_cell_blocks(reference_cells(pairs=true)) == 7
+
+    # An unknown cell type is refused by name, a bad count by the core.
+    @test_throws ArgumentError box(cell_type="blob")
+    @test_throws Exception box(dims=(-1, 2, 2))
+end
+
 @testset "grids and signed distance" begin
     # A lattice from nothing: the one constructor that takes no input mesh.
     g = grid([2, 2, 2])

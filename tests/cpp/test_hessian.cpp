@@ -49,6 +49,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
@@ -72,23 +73,10 @@ HessianOptions opts(const std::string& rArray, GradientMethod method = GradientM
 
 // A structured nx x ny x nz hexahedron grid on [0,nx]x[0,ny]x[0,nz].
 Mesh hex_grid(std::size_t nx, std::size_t ny, std::size_t nz) {
-    std::vector<std::vector<double>> pts;
-    for (std::size_t k = 0; k <= nz; ++k)
-        for (std::size_t j = 0; j <= ny; ++j)
-            for (std::size_t i = 0; i <= nx; ++i)
-                pts.push_back(
-                    {static_cast<double>(i), static_cast<double>(j), static_cast<double>(k)});
-    auto vid = [&](std::size_t i, std::size_t j, std::size_t k) {
-        return static_cast<std::int64_t>((k * (ny + 1) + j) * (nx + 1) + i);
-    };
-    std::vector<std::vector<std::int64_t>> cells;
-    for (std::size_t k = 0; k < nz; ++k)
-        for (std::size_t j = 0; j < ny; ++j)
-            for (std::size_t i = 0; i < nx; ++i)
-                cells.push_back({vid(i, j, k), vid(i + 1, j, k), vid(i + 1, j + 1, k),
-                                 vid(i, j + 1, k), vid(i, j, k + 1), vid(i + 1, j, k + 1),
-                                 vid(i + 1, j + 1, k + 1), vid(i, j + 1, k + 1)});
-    return mt::make_mesh(std::move(pts), "hexahedron", std::move(cells));
+    return meshioplusplus::box(
+        {{static_cast<std::int64_t>(nx), static_cast<std::int64_t>(ny),
+          static_cast<std::int64_t>(nz)}},
+        {{static_cast<double>(nx), static_cast<double>(ny), static_cast<double>(nz)}});
 }
 
 // A frustum: a 2x2 base at z=0 tapering to a 1x1 top at z=1 -- an irregular
@@ -323,7 +311,7 @@ TEST(Hessian, GeometryAndExistingDataPassThroughUnchanged) {
     const NDArray& after = r.mMesh.CellData("mat", 0);
     for (std::size_t i = 0; i < 8; ++i)
         EXPECT_EQ(meshioplusplus::detail::read_double(before, i),
-                 meshioplusplus::detail::read_double(after, i));
+                  meshioplusplus::detail::read_double(after, i));
 }
 
 // --- determinism -----------------------------------------------------------
@@ -339,7 +327,7 @@ TEST(Hessian, RepeatRunsByteIdentical) {
     const std::size_t n = h1.Size();
     for (std::size_t i = 0; i < n; ++i)
         EXPECT_EQ(meshioplusplus::detail::read_double(h1, i),
-                 meshioplusplus::detail::read_double(h2, i));
+                  meshioplusplus::detail::read_double(h2, i));
 }
 
 TEST(Hessian, LeastSquaresMethodRuns) {
