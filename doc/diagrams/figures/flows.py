@@ -1031,7 +1031,7 @@ def roadmap_map():
         (
             "§3 operations",
             [
-                ("box · sphere · cylinder · disk", "S"),
+                ("primitives: fixtures · catalog", "S"),
                 ("extrude · revolve", "M"),
                 ("2-D voxelize · octree/quadtree", "M"),
                 ("conformity · intersections", "M"),
