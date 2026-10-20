@@ -27882,7 +27882,11 @@ MESHIOPLUSPLUS_API FitPrimitivesResult fit_primitives(const Mesh& rMesh,
  *    direction its normals spread along most, up to four times -- and each
  *    piece becomes its own freeform face under a new patch label, numbered
  *    after the largest existing one; a piece under 16 triangles, or still
- *    folding, is left to facets. Its offset from that plane or cylinder is
+ *    folding, is left to facets. A patch that flattens but that no single
+ *    B-spline follows within the tolerance (a large organic surface, say a
+ *    topology-optimised part's) is likewise halved across its longest
+ *    extent, each half tried in turn, up to nine times: a tile under 24
+ *    triangles, or still unfitted at the last halving, stays facets. Its offset from that plane or cylinder is
  *    resampled on a grid (inside the patch by interpolation over its facets,
  *    outside it from the nearest boundary point), approximated by a C2
  *    B-spline of degree `mFreeformDegree` (`GeomAPI_PointsToBSplineSurface`)
@@ -37076,6 +37080,27 @@ std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rP
                                                  const std::vector<PatchTri>& rTris,
                                                  const PatchSplitOptions& rOptions,
                                                  std::size_t& rNumPieces);
+
+/**
+ * @brief Halve a patch across its longest extent: a tile, for a patch that
+ * flattens but that no single B-spline surface follows within the tolerance.
+ *
+ * The triangles are cut at the area-weighted median of their centroids along
+ * the principal axis of the centroid cloud (the direction the patch is
+ * longest in), so the halves stay compact however the patch curves. Each half
+ * is split into its edge-connected components. Deterministic: ties go by
+ * triangle index, and pieces are numbered in the order of their lowest
+ * triangle.
+ *
+ * @param rMinTriangles a piece with fewer triangles is left to the caller as
+ *        facets (-1).
+ * @param rNumPieces set to the number of pieces numbered from 0.
+ * @return per triangle, its piece, or -1; empty when the patch is too small to
+ *         halve (under twice @p MinTriangles) or does not separate.
+ */
+std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
+                                       const std::vector<PatchTri>& rTris,
+                                       std::size_t MinTriangles, std::size_t& rNumPieces);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -68244,6 +68269,74 @@ std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rP
     std::sort(pieces.begin(), pieces.end(),
               [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
     std::vector<std::int64_t> out(rTris.size(), -1);
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+        for (std::size_t t : pieces[p])
+            out[t] = static_cast<std::int64_t>(p);
+    rNumPieces = pieces.size();
+    return out;
+}
+
+std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
+                                       const std::vector<PatchTri>& rTris,
+                                       std::size_t MinTriangles, std::size_t& rNumPieces) {
+    rNumPieces = 0;
+    const std::size_t nt = rTris.size();
+    if (nt < 2 || nt < 2 * MinTriangles)
+        return {};
+    std::vector<PatchVec> normals, centroids(nt);
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    PatchVec mean{0.0, 0.0, 0.0};
+    double total = 0.0;
+    for (std::size_t t = 0; t < nt; ++t) {
+        for (int j = 0; j < 3; ++j) {
+            double c = 0.0;
+            for (std::size_t v : rTris[t])
+                c += rPts[v][static_cast<std::size_t>(j)];
+            centroids[t][static_cast<std::size_t>(j)] = c / 3.0;
+            mean[static_cast<std::size_t>(j)] += areas[t] * c / 3.0;
+        }
+        total += areas[t];
+    }
+    if (!(total > 0.0))
+        return {};
+    for (double& x : mean)
+        x /= total;
+    // The direction the centroids spread along most.
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    for (std::size_t t = 0; t < nt; ++t) {
+        const PatchVec d = pf_sub(centroids[t], mean);
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += areas[t] * d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
+    }
+    lsq_sym3_eigen(m, w, v);
+    const PatchVec e{v[6], v[7], v[8]};
+    std::vector<std::pair<double, std::size_t>> keyed;
+    keyed.reserve(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        keyed.emplace_back(pf_dot(pf_sub(centroids[t], mean), e), t);
+    std::sort(keyed.begin(), keyed.end());
+    std::size_t k = 0;
+    double acc = 0.0;
+    while (k + 1 < keyed.size() && acc + areas[keyed[k].second] <= 0.5 * total) {
+        acc += areas[keyed[k].second];
+        ++k;
+    }
+    k = std::max<std::size_t>(k, 1);
+    std::vector<std::size_t> lo, hi;
+    for (std::size_t i = 0; i < keyed.size(); ++i)
+        (i < k ? lo : hi).push_back(keyed[i].second);
+    std::vector<std::vector<std::size_t>> pieces;
+    for (std::vector<std::size_t>* half : {&lo, &hi}) {
+        std::sort(half->begin(), half->end());
+        for (auto& comp : pf_components(rTris, *half))
+            if (comp.size() >= MinTriangles)
+                pieces.push_back(std::move(comp));
+    }
+    std::sort(pieces.begin(), pieces.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    std::vector<std::int64_t> out(nt, -1);
     for (std::size_t p = 0; p < pieces.size(); ++p)
         for (std::size_t t : pieces[p])
             out[t] = static_cast<std::int64_t>(p);
@@ -186370,6 +186463,10 @@ namespace {
 constexpr const char* kFcPrefix = "fit_cad: ";
 constexpr std::size_t kFcParams = 10;
 constexpr double kFcPi = 3.14159265358979323846;
+// Freeform tiles: a patch no single B-spline follows is halved up to this many
+// times (at most 2^depth tiles), and a tile with fewer triangles stays facets.
+constexpr int kFcTileMaxDepth = 9;
+constexpr std::size_t kFcTileMinTriangles = 24;
 
 template <class T>
 using FcHandle = opencascade::handle<T>;
@@ -188950,7 +189047,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     std::int64_t next_label = 0;
     for (const FcPatch& p : skin.mPatches)
         next_label = std::max(next_label, p.mLabel + 1);
-    std::vector<std::uint8_t> is_piece(m, 0);
+    std::vector<std::uint8_t> is_piece(m, 0), tile_depth(m, 0);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
         bool finite = true;
         for (double x : skin.mPatches[r].mParams)
@@ -188982,16 +189079,26 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             FcHandle<Geom_Surface> s =
                 fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
             if (s.IsNull()) {
-                if (!rOptions.mFreeformSplit || is_piece[r])
+                if (!rOptions.mFreeformSplit)
                     continue;
                 std::vector<detail::PatchVec> flat_pts(pts.size());
                 for (std::size_t i = 0; i < pts.size(); ++i)
                     flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
-                if (detail::patch_flattenable(flat_pts, tris))
-                    continue;  // it flattens; the fit itself fell short
+                // A patch that folds over both flattenings is split into
+                // pieces one of them parametrises; one that flattens, or a
+                // piece, but that no single B-spline follows within the
+                // tolerance is halved across its longest extent, and each half
+                // is tried in turn, to a depth: a tile.
                 std::size_t num_pieces = 0;
-                const std::vector<std::int64_t> piece =
-                    detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
+                std::vector<std::int64_t> piece;
+                std::uint8_t piece_depth = tile_depth[r];
+                const bool folds = !is_piece[r] && !detail::patch_flattenable(flat_pts, tris);
+                if (folds) {
+                    piece = detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
+                } else if (tile_depth[r] < kFcTileMaxDepth) {
+                    piece = detail::patch_bisect(flat_pts, tris, kFcTileMinTriangles, num_pieces);
+                    piece_depth = static_cast<std::uint8_t>(tile_depth[r] + 1);
+                }
                 if (num_pieces == 0)
                     continue;
                 // A facet goes with its first triangle's piece.
@@ -189005,9 +189112,11 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     else
                         kept.push_back(tri_facet[t]);
                 }
-                log::debug("fit_cad: patch {} folds over every flattening; split into {} "
-                           "piece(s), {} facet(s) left",
-                           skin.mPatches[r].mLabel, num_pieces, kept.size());
+                log::debug("fit_cad: patch {} {}; split into {} piece(s), {} facet(s) left",
+                           skin.mPatches[r].mLabel,
+                           folds ? "folds over every flattening"
+                                 : "has no single B-spline within the tolerance",
+                           num_pieces, kept.size());
                 facets_of[r] = std::move(kept);
                 for (std::vector<std::size_t>& pf : piece_facets) {
                     FcPatch np;
@@ -189023,6 +189132,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     surface.emplace_back();
                     analytic.push_back(0);
                     is_piece.push_back(1);
+                    tile_depth.push_back(piece_depth);
                 }
                 result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
                 continue;

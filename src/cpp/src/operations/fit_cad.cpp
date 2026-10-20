@@ -321,6 +321,10 @@ namespace {
 constexpr const char* kFcPrefix = "fit_cad: ";
 constexpr std::size_t kFcParams = 10;
 constexpr double kFcPi = 3.14159265358979323846;
+// Freeform tiles: a patch no single B-spline follows is halved up to this many
+// times (at most 2^depth tiles), and a tile with fewer triangles stays facets.
+constexpr int kFcTileMaxDepth = 9;
+constexpr std::size_t kFcTileMinTriangles = 24;
 
 template <class T>
 using FcHandle = opencascade::handle<T>;
@@ -2901,7 +2905,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     std::int64_t next_label = 0;
     for (const FcPatch& p : skin.mPatches)
         next_label = std::max(next_label, p.mLabel + 1);
-    std::vector<std::uint8_t> is_piece(m, 0);
+    std::vector<std::uint8_t> is_piece(m, 0), tile_depth(m, 0);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
         bool finite = true;
         for (double x : skin.mPatches[r].mParams)
@@ -2933,16 +2937,26 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             FcHandle<Geom_Surface> s =
                 fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
             if (s.IsNull()) {
-                if (!rOptions.mFreeformSplit || is_piece[r])
+                if (!rOptions.mFreeformSplit)
                     continue;
                 std::vector<detail::PatchVec> flat_pts(pts.size());
                 for (std::size_t i = 0; i < pts.size(); ++i)
                     flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
-                if (detail::patch_flattenable(flat_pts, tris))
-                    continue;  // it flattens; the fit itself fell short
+                // A patch that folds over both flattenings is split into
+                // pieces one of them parametrises; one that flattens, or a
+                // piece, but that no single B-spline follows within the
+                // tolerance is halved across its longest extent, and each half
+                // is tried in turn, to a depth: a tile.
                 std::size_t num_pieces = 0;
-                const std::vector<std::int64_t> piece =
-                    detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
+                std::vector<std::int64_t> piece;
+                std::uint8_t piece_depth = tile_depth[r];
+                const bool folds = !is_piece[r] && !detail::patch_flattenable(flat_pts, tris);
+                if (folds) {
+                    piece = detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
+                } else if (tile_depth[r] < kFcTileMaxDepth) {
+                    piece = detail::patch_bisect(flat_pts, tris, kFcTileMinTriangles, num_pieces);
+                    piece_depth = static_cast<std::uint8_t>(tile_depth[r] + 1);
+                }
                 if (num_pieces == 0)
                     continue;
                 // A facet goes with its first triangle's piece.
@@ -2956,9 +2970,11 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     else
                         kept.push_back(tri_facet[t]);
                 }
-                log::debug("fit_cad: patch {} folds over every flattening; split into {} "
-                           "piece(s), {} facet(s) left",
-                           skin.mPatches[r].mLabel, num_pieces, kept.size());
+                log::debug("fit_cad: patch {} {}; split into {} piece(s), {} facet(s) left",
+                           skin.mPatches[r].mLabel,
+                           folds ? "folds over every flattening"
+                                 : "has no single B-spline within the tolerance",
+                           num_pieces, kept.size());
                 facets_of[r] = std::move(kept);
                 for (std::vector<std::size_t>& pf : piece_facets) {
                     FcPatch np;
@@ -2974,6 +2990,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     surface.emplace_back();
                     analytic.push_back(0);
                     is_piece.push_back(1);
+                    tile_depth.push_back(piece_depth);
                 }
                 result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
                 continue;
