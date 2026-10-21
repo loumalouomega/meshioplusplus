@@ -31,6 +31,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -55,6 +56,24 @@ struct FcgRow {
     std::uint64_t mStep;
     std::uint64_t mMesh;
     std::uint64_t mReport;
+};
+
+// The fixtures themselves, as golden::ft_mesh digests (gcc, glibc). A fixture
+// built from libm calls can come out in other bits under another compiler
+// (clang rounds the rounded box's corners differently): its rows are then
+// skipped with a note, since they pin fit_cad and not the generator.
+const std::vector<std::pair<const char*, std::uint64_t>> kFcgInputs = {
+    // clang-format off
+    {"box", 0x6275968d717718fcull},
+    {"capped_cylinder", 0xf0977bfa91cf5b29ull},
+    {"turned_part", 0x0f960d340fc274ddull},
+    {"filleted_plate", 0xe67eb44a33284280ull},
+    {"saddle_box", 0x36476b6cbb93e463ull},
+    {"wavy_capped", 0xd9fdf0cace82383bull},
+    {"threaded_rod", 0xc1b588ca9b8e1519ull},
+    {"rounded_box", 0x2c285c2d8152cb7full},
+    {"noisy_turned_part", 0xf4578cd2374eddb2ull},
+    // clang-format on
 };
 
 // Native backend (every build), recorded with MESHIOPLUSPLUS_RECORD_GOLDENS=1.
@@ -165,6 +184,18 @@ void fcg_check(const char* pKey, FitCadBackend Backend, const std::vector<FcgRow
     std::size_t matched = 0;
     for (const fcfix::Fixture& f : fcfix::golden_fixtures()) {
         SCOPED_TRACE(f.mName);
+        const std::uint64_t input = golden::ft_mesh(f.mMesh);
+        bool same_input = true;
+        for (const auto& in : kFcgInputs)
+            if (f.mName == in.first)
+                same_input = input == in.second;
+        if (!same_input && !record) {
+            std::printf(
+                "fit_cad goldens: fixture %s is built in other bits by this compiler "
+                "(0x%016llx); its rows are not compared\n",
+                f.mName.c_str(), static_cast<unsigned long long>(input));
+            continue;
+        }
         const FcgDigest g = fcg_run(f.mMesh, Backend);
         if (record)
             std::printf("    {\"%s\", \"%s\", 0x%016llxull, 0x%016llxull, 0x%016llxull},\n", pKey,
