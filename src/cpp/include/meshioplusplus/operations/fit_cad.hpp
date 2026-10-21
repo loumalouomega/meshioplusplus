@@ -151,6 +151,7 @@
 
 // System includes
 #include <cstdint>
+#include <limits>
 #include <string>
 
 // Project includes
@@ -158,6 +159,7 @@
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 
 namespace meshioplusplus {
 
@@ -167,6 +169,13 @@ inline constexpr const char* kFitCadFaceName = "fit_cad:face";
 inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 /// Cell data (Int64): the `segment:patch` label the face was built from, or -1.
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
+/// Field data, with `FitCadOptions::mFaceDeviation`: per face (`fit_cad:face`
+/// order) the largest distance from the face's re-mesh to the skin and from
+/// the skin it stands for to the solid, an `(n, 2)` float64 array (v17.11.0).
+inline constexpr const char* kFitCadFaceHausdorffName = "fit_cad:face_hausdorff";
+/// Field data, with `FitCadOptions::mFaceDeviation`: per face, the root mean
+/// square of both sides' distances.
+inline constexpr const char* kFitCadFaceRmsName = "fit_cad:face_rms";
 /// `fit_cad:type` of a freeform B-spline face.
 inline constexpr std::int64_t kFitCadBsplineType = 6;
 /// `fit_cad:type` of a rolling-ball fillet or blend face, of constant or
@@ -241,6 +250,56 @@ struct FitCadOptions {
     bool mMergeFaces = true;
     /// The engine (since v17.9.0).
     FitCadBackend mBackend = FitCadBackend::Auto;
+    /// Whether the patches are first refined by `refine_patches` (variational
+    /// shape approximation), with `mRefine`, after any segmentation and fit
+    /// `fit_cad` runs itself (v17.11.0). Off by default, so the output is
+    /// what it was before the option existed.
+    bool mRefineSegmentation = false;
+    /// The refinement's options, used when `mRefineSegmentation` is set.
+    RefinePatchesOptions mRefine;
+    /// Whether a patch the plane and unrolled-cylinder freeform fit leaves
+    /// unexplained is tried as a general freeform B-spline face: a disc
+    /// parametrisation (least-squares conformal or mean-value) and an
+    /// iterative least-squares fit with parameter correction and knot
+    /// insertion, the patch halved up to `mMaxFreeformSplits` times when that
+    /// fails (v17.11.0). Off by default.
+    bool mFreeformGeneral = false;
+    /// The general fit's target at the vertices (a facet centre is held to the
+    /// larger of the tolerance and twice it); at most 0 takes a quarter of the
+    /// tolerance, room for the face's edges and its re-mesh. The face is then
+    /// accepted by the same test as any freeform face, half the tolerance at a
+    /// vertex and the tolerance at a facet centre, so a larger target never
+    /// loosens it.
+    double mFreeformTolerance = 0.0;
+    /// The thin-plate weight of the general fit, relative to the sample count
+    /// on a unit parameter square; >= 0. It only holds poles no sample reaches.
+    double mFreeformSmoothing = 1e-12;
+    /// The most poles per direction of a general freeform face, 4 to 1024.
+    std::int64_t mMaxFreeformPoles = 40;
+    /// The general fit's iteration budget, >= 1.
+    std::int64_t mMaxFreeformIterations = 30;
+    /// How many times a patch the general fit cannot explain is halved, >= 0.
+    std::int64_t mMaxFreeformSplits = 2;
+    /// The tolerance the faces are sewn at; 0 sews at the tolerance itself,
+    /// as before the option existed (v17.11.0). OpenCASCADE backend only.
+    double mSewTolerance = 0.0;
+    /// Whether a freeform B-spline face's surface, extended past its patch on
+    /// every open side (`GeomLib::ExtendSurfByLength`, by a tenth of the
+    /// patch's size), is intersected with a neighbour where the surfaces
+    /// themselves give no branch along their shared chain, so an edge that runs
+    /// just outside the fitted area is still exact. The face keeps its own
+    /// surface. OpenCASCADE backend only; off by default (v17.11.0).
+    bool mExtendSurfaces = false;
+    /// Whether the B-rep vertices where analytic faces meet are placed by a
+    /// least-squares solve on the surfaces' tangent planes (Gauss-Newton,
+    /// OpenCASCADE-free) before the averaged alternating projection; the same
+    /// acceptance applies. OpenCASCADE backend only; off by default (v17.11.0).
+    bool mSnapJunctions = false;
+    /// Whether the two-sided distance between each face and the skin is
+    /// measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
+    /// data and `FitCadResult::mHausdorffMax`/`mHausdorffRms` (v17.11.0).
+    /// OpenCASCADE backend only; off by default.
+    bool mFaceDeviation = false;
 };
 
 /// The re-meshed solid and what was built.
@@ -307,6 +366,42 @@ struct FitCadResult {
     BrepInfo mBrep;
     /// The engine that built the solid: `Occt` or `Native` (since v17.9.0).
     FitCadBackend mBackend = FitCadBackend::Occt;
+    /// Whether `mRefineSegmentation` refined the patches (v17.11.0); the
+    /// counts below are zero when it did not.
+    bool mRefined = false;
+    /// Whether the solid was built from the refined patches (v17.11.0). The
+    /// OpenCASCADE backend also builds it from the patches as given and keeps
+    /// that one when it is better (valid where the other is not, then fewer
+    /// facet faces, demotions and faces); the refinement's counts still
+    /// describe what it did. False without `mRefineSegmentation`.
+    bool mRefinementKept = false;
+    /// The refinement's Lloyd steps kept, splits and merges.
+    std::int64_t mRefineIterations = 0;
+    std::int64_t mNumRefineSplits = 0;
+    std::int64_t mNumRefineMerges = 0;
+    /// The area share primitives explain before and after the refinement.
+    double mInitialExplainedAreaFraction = 0.0;
+    double mExplainedAreaFraction = 0.0;
+    /// Of the B-spline faces, those the general freeform fit built (v17.11.0).
+    std::int64_t mNumFreeformGeneral = 0;
+    /// Their knot insertion rounds, summed.
+    std::int64_t mNumFreeformRefinements = 0;
+    /// Their mean pole count (0 without any).
+    double mAvgFreeformPoles = 0.0;
+    /// Exact edges found by intersecting the surfaces `mExtendSurfaces`
+    /// extended, where the surfaces themselves gave no branch (v17.11.0).
+    std::int64_t mNumExtendedEdges = 0;
+    /// B-rep vertices `mSnapJunctions` placed by its least-squares solve.
+    std::int64_t mNumSnappedJunctions = 0;
+    /// With `mFaceDeviation`: the two-sided Hausdorff distance between the
+    /// re-meshed solid and the skin, over the re-mesh's vertices and triangle
+    /// centres and the skin's vertices and facet centres, and the root mean
+    /// square of those distances; NaN when it was not measured.
+    double mHausdorffMax = std::numeric_limits<double>::quiet_NaN();
+    double mHausdorffRms = std::numeric_limits<double>::quiet_NaN();
+    /// Whether every shell is closed: every edge borders two faces
+    /// (v17.11.0). The native backend reports its writer's closed-loop check.
+    bool mClosed = false;
 };
 
 /**
@@ -326,5 +421,12 @@ MESHIOPLUSPLUS_API FitCadResult fit_cad(const Mesh& rMesh, const std::string& rS
 
 /// Whether this build carries the OpenCASCADE backend `fit_cad` needs.
 MESHIOPLUSPLUS_API bool fit_cad_has_occt() noexcept;
+
+/**
+ * @brief The OpenCASCADE version this build links (`"7.6.3"`, its
+ * `OCC_VERSION_COMPLETE`), or `""` in a build without it. The backend's STEP
+ * bytes depend on it, so golden digests are keyed by it (v17.11.0).
+ */
+MESHIOPLUSPLUS_API const char* fit_cad_occt_version() noexcept;
 
 }  // namespace meshioplusplus

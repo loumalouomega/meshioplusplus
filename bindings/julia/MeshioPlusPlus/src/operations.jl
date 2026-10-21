@@ -2208,6 +2208,26 @@ end
 
 const _FIT_TYPES = ("plane", "sphere", "cylinder", "cone", "torus")
 
+# Every primitive, `(1 << 1) | ... | (1 << 5)` (C `MIO_FIT_ALL_TYPES`).
+const _FIT_ALL_TYPES = UInt32(0x3E)
+
+# The default RANSAC seed of `refine_patches`: the bytes of "meshio++".
+const _REFINE_DEFAULT_SEED = 0x6d657368696f2b2b
+
+# `mio_refine_stop` codes, in order.
+const _REFINE_STOPS = (:unchanged, :small_gain, :iteration_cap, :energy_rose)
+
+# The `1 << type` bit mask of a collection of `_FIT_TYPES` names.
+function _fit_type_mask(types, op::AbstractString)
+    mask = UInt32(0)
+    for t in types
+        k = findfirst(==(String(t)), _FIT_TYPES)
+        k === nothing && throw(ArgumentError("meshio++: $(op): unknown type $(t)"))
+        mask |= UInt32(1) << k
+    end
+    mask
+end
+
 """
     fit_primitives(m; patch_data="segment:patch", tolerance=1e-3, relative=true,
                    min_inlier_fraction=0.9,
@@ -2263,14 +2283,25 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             types=("plane", "sphere", "cylinder", "cone", "torus"),
             mesh_deflection=0.0, max_demotion_rounds=8, freeform=true,
             freeform_degree=3, freeform_max_control=64, freeform_split=true,
-            fillets=true, threads=true, merge_faces=true, backend="auto")
-        -> (; mesh, backend, valid, tolerance, volume, skin_volume, volume_ratio,
+            fillets=true, threads=true, merge_faces=true, backend="auto",
+            refine_segmentation=false, max_refine_iterations=10, refine_epsilon=1e-3,
+            normal_weight=1.0, allow_merge=true, allow_split=true,
+            ransac_seed=0x6d657368696f2b2b, refine_tolerance=1e-3,
+            relative_tolerance=true, freeform_general=false, freeform_tolerance=0.0,
+            freeform_smoothing=1e-12, max_freeform_poles=40, max_freeform_iterations=30,
+            max_freeform_splits=2, sew_tolerance=0.0, extend_surfaces=false,
+            snap_junctions=false, face_deviation=false)
+        -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
              num_exact_edges, num_approx_edges, num_solids, num_bspline,
              num_split_patches, num_fillet, num_helical, num_variable_fillet,
              num_blend, num_rounded_thread, num_vertex_blend, num_chamfer,
-             num_conic_blend, num_tapered_thread, num_variable_pitch_thread)
+             num_conic_blend, num_tapered_thread, num_variable_pitch_thread,
+             refined, refinement_kept, refine_iterations, num_refine_splits,
+             num_refine_merges, initial_explained_area_fraction, explained_area_fraction,
+             num_freeform_general, num_freeform_refinements, avg_freeform_poles,
+             num_extended_edges, num_snapped_junctions, hausdorff_max, hausdorff_rms)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -2293,7 +2324,28 @@ solid re-meshed with cell data `fit_cad:face`, `fit_cad:type` and
 or `"native"`) picks the engine: `"native"` needs no CAD kernel and writes the
 fitted patches as analytic STEP faces, returning the skin itself; `"auto"` is
 `"occt"` when the library carries it ([`has_occt`](@ref)), and `"occt"` throws
-a `MeshioError` naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
+a `MeshioError` naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. Since
+v17.11.0, `refine_segmentation=true` first refines the patches as
+[`refine_patches`](@ref) does, with `refine_tolerance` (a fraction of the
+diagonal when `relative_tolerance`), `normal_weight`, `refine_epsilon`,
+`max_refine_iterations`, `allow_split`, `allow_merge` and `ransac_seed`;
+`refined` says whether it ran and the `refine_*`, `num_refine_*` and
+`*explained_area_fraction` fields report it (zero when it did not);
+`refinement_kept` says whether the solid was built from the refined patches (the
+OpenCASCADE backend also builds it from the patches as given and keeps the
+better). Also since
+v17.11.0, `freeform_general=true` tries a patch the plane and cylinder freeform
+fit leaves unexplained as a general B-spline face (`freeform_tolerance`, 0 a
+quarter of the tolerance; `freeform_smoothing`; `max_freeform_poles`,
+`max_freeform_iterations`, `max_freeform_splits`), reported by
+`num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`;
+and, OpenCASCADE only, `sew_tolerance` (0: the tolerance) sets the sewing
+tolerance, `extend_surfaces` extends freeform surfaces past their patches
+(`num_extended_edges`), `snap_junctions` places the corners where analytic
+faces meet by least squares (`num_snapped_junctions`), and `face_deviation`
+measures each face against the skin, as the `fit_cad:face_hausdorff` and
+`fit_cad:face_rms` field data and `hausdorff_max` / `hausdorff_rms` (`NaN` when
+not measured). `closed` says whether every shell is closed. See
 `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
@@ -2303,7 +2355,16 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  freeform::Bool=true, freeform_degree::Integer=3,
                  freeform_max_control::Integer=64, freeform_split::Bool=true,
                  fillets::Bool=true, threads::Bool=true, merge_faces::Bool=true,
-                 backend::AbstractString="auto")
+                 backend::AbstractString="auto", refine_segmentation::Bool=false,
+                 max_refine_iterations::Integer=10, refine_epsilon::Real=1e-3,
+                 normal_weight::Real=1.0, allow_merge::Bool=true, allow_split::Bool=true,
+                 ransac_seed::Integer=_REFINE_DEFAULT_SEED, refine_tolerance::Real=1e-3,
+                 relative_tolerance::Bool=true, freeform_general::Bool=false,
+                 freeform_tolerance::Real=0.0, freeform_smoothing::Real=1e-12,
+                 max_freeform_poles::Integer=40, max_freeform_iterations::Integer=30,
+                 max_freeform_splits::Integer=2, sew_tolerance::Real=0.0,
+                 extend_surfaces::Bool=false, snap_junctions::Bool=false,
+                 face_deviation::Bool=false)
     backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
                 backend == "native" ? Int32(2) :
                 throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
@@ -2315,20 +2376,35 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     end
     report = Ref{_CFitCadReport}()
     report_ex = Ref{_CFitCadReportEx}()
+    report_ex2 = Ref{_CFitCadReportEx2}()
     opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
                         Int64(max_demotion_rounds), Int32(exact_edges), mask,
                         Int32(freeform), Int32(freeform_degree), Int64(freeform_max_control),
                         Int32(freeform_split), Int32(fillets), Int32(threads),
                         Int32(merge_faces), backend_c, Int32(0), ntuple(_ -> Int64(0), 1))
-    ptr = ccall(_sym(:mio_fit_cad_ex), Ptr{Cvoid},
-                (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ptr{_CFitCadReport},
-                 Ptr{_CFitCadReportEx}),
-                _handle(m), String(step_path), Ref(opts), report, report_ex)
+    # The refinement's other options keep their C defaults; a NULL prefix is "patch".
+    refine = _CRefinePatchesOpts(Float64(refine_tolerance), Float64(normal_weight),
+                                 Float64(refine_epsilon), 30.0, Int64(max_refine_iterations),
+                                 Int64(3), UInt64(ransac_seed), _FIT_ALL_TYPES,
+                                 Int32(relative_tolerance), Int32(allow_split),
+                                 Int32(allow_merge), Cstring(C_NULL), ntuple(_ -> Int64(0), 8))
+    opts_ex = _CFitCadOptsEx(Int32(refine_segmentation), Int32(freeform_general), refine,
+                             Float64(freeform_tolerance), Float64(freeform_smoothing),
+                             Int64(max_freeform_poles), Int64(max_freeform_iterations),
+                             Int64(max_freeform_splits), Float64(sew_tolerance),
+                             Int32(extend_surfaces), Int32(snap_junctions),
+                             Int32(face_deviation), Int32(0), ntuple(_ -> Int64(0), 8))
+    ptr = ccall(_sym(:mio_fit_cad2), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
+                 Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx}, Ptr{_CFitCadReportEx2}),
+                _handle(m), String(step_path), Ref(opts), Ref(opts_ex), report, report_ex,
+                report_ex2)
     r = _check_ptr(ptr)
     rep = report[]
     ex = report_ex[]
+    ex2 = report_ex2[]
     (mesh=Mesh(r), backend=ex.backend == 2 ? "native" : "occt", valid=rep.valid != 0,
-     tolerance=rep.tolerance, volume=rep.volume,
+     closed=ex2.closed != 0, tolerance=rep.tolerance, volume=rep.volume,
      skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
      max_deviation=rep.max_deviation, num_faces=Int(rep.num_faces),
      num_plane=Int(rep.num_plane), num_sphere=Int(rep.num_sphere),
@@ -2342,7 +2418,78 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      num_blend=Int(rep.num_blend), num_rounded_thread=Int(rep.num_rounded_thread),
      num_vertex_blend=Int(ex.num_vertex_blend), num_chamfer=Int(ex.num_chamfer),
      num_conic_blend=Int(ex.num_conic_blend), num_tapered_thread=Int(ex.num_tapered_thread),
-     num_variable_pitch_thread=Int(ex.num_variable_pitch_thread))
+     num_variable_pitch_thread=Int(ex.num_variable_pitch_thread),
+     refined=ex2.refined != 0, refinement_kept=ex2.refinement_kept != 0,
+     refine_iterations=Int(ex2.refine_iterations),
+     num_refine_splits=Int(ex2.num_refine_splits),
+     num_refine_merges=Int(ex2.num_refine_merges),
+     initial_explained_area_fraction=ex2.initial_explained_area_fraction,
+     explained_area_fraction=ex2.explained_area_fraction,
+     num_freeform_general=Int(ex2.num_freeform_general),
+     num_freeform_refinements=Int(ex2.num_freeform_refinements),
+     avg_freeform_poles=ex2.avg_freeform_poles,
+     num_extended_edges=Int(ex2.num_extended_edges),
+     num_snapped_junctions=Int(ex2.num_snapped_junctions),
+     hausdorff_max=ex2.hausdorff_max, hausdorff_rms=ex2.hausdorff_rms)
+end
+
+"""
+    refine_patches(m; tolerance=1e-3, relative=true, normal_weight=1.0, epsilon=1e-3,
+                   feature_angle=30.0, max_iterations=10, min_patch_cells=3,
+                   ransac_seed=0x6d657368696f2b2b, types=nothing, allow_split=true,
+                   allow_merge=true, prefix="patch")
+        -> (; mesh, num_patches, num_iterations, num_splits, num_merges, num_absorbed,
+             num_primitive, num_freeform, num_facets, tolerance, explained_area_fraction,
+             initial_explained_area_fraction, hausdorff_max, hausdorff_rms,
+             initial_energy, energy, stop)
+
+Refine the `segment:patch` labels of a surface (from [`segment`](@ref)) by
+variational shape approximation (v17.11.0): patch boundaries move, a freeform
+patch is split where seeded RANSAC finds a primitive inside it, and two
+neighbouring patches one primitive explains are merged, until each patch is
+one plane, sphere, cylinder, cone or torus, or a freeform proxy. `tolerance` is
+a fraction of the bounding-box diagonal when `relative`; `types` (a collection
+of `"plane"`, `"sphere"`, `"cylinder"`, `"cone"`, `"torus"`; `nothing` for
+all) limits the proxies; `ransac_seed` is a `UInt64`, exact over its whole
+range. The mesh comes back with `segment:patch`, `segment:adjacency` and the
+`<prefix>:<k>` regions rewritten, the `fit:*` data of
+[`fit_primitives`](@ref) on the refined patches and per-patch `refine:*`
+field data; `stop` is `:unchanged`, `:small_gain`, `:iteration_cap` or
+`:energy_rose`. Throws a `MeshioError` without `segment:patch` or on an
+option out of range. See `doc/refine_patches.md`.
+"""
+function refine_patches(m::Mesh; tolerance::Real=1e-3, relative::Bool=true,
+                        normal_weight::Real=1.0, epsilon::Real=1e-3,
+                        feature_angle::Real=30.0, max_iterations::Integer=10,
+                        min_patch_cells::Integer=3,
+                        ransac_seed::Integer=_REFINE_DEFAULT_SEED, types=nothing,
+                        allow_split::Bool=true, allow_merge::Bool=true,
+                        prefix::AbstractString="patch")
+    mask = types === nothing ? _FIT_ALL_TYPES : _fit_type_mask(types, "refine_patches")
+    report = Ref{_CRefinePatchesReport}()
+    prefix_c = Vector{UInt8}(codeunits(String(prefix) * "\0"))
+    ptr = GC.@preserve prefix_c begin
+        opts = _CRefinePatchesOpts(Float64(tolerance), Float64(normal_weight),
+                                   Float64(epsilon), Float64(feature_angle),
+                                   Int64(max_iterations), Int64(min_patch_cells),
+                                   UInt64(ransac_seed), mask, Int32(relative),
+                                   Int32(allow_split), Int32(allow_merge),
+                                   Cstring(pointer(prefix_c)), ntuple(_ -> Int64(0), 8))
+        ccall(_sym(:mio_refine_patches), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRefinePatchesOpts}, Ptr{_CRefinePatchesReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    stop = 0 <= rep.stop < length(_REFINE_STOPS) ? _REFINE_STOPS[rep.stop + 1] : :unknown
+    (mesh=Mesh(r), num_patches=Int(rep.num_patches), num_iterations=Int(rep.num_iterations),
+     num_splits=Int(rep.num_splits), num_merges=Int(rep.num_merges),
+     num_absorbed=Int(rep.num_absorbed), num_primitive=Int(rep.num_primitive),
+     num_freeform=Int(rep.num_freeform), num_facets=Int(rep.num_facets),
+     tolerance=rep.tolerance, explained_area_fraction=rep.explained_area_fraction,
+     initial_explained_area_fraction=rep.initial_explained_area_fraction,
+     hausdorff_max=rep.hausdorff_max, hausdorff_rms=rep.hausdorff_rms,
+     initial_energy=rep.initial_energy, energy=rep.energy, stop=stop)
 end
 
 """

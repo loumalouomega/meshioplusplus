@@ -310,7 +310,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1, trimSamples?: number}) => object,
  *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
- *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean, mergeFaces?: boolean, backend?: 'auto' | 'occt' | 'native'}) => object,
+ *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean, mergeFaces?: boolean, backend?: 'auto' | 'occt' | 'native', refineSegmentation?: boolean, maxRefineIterations?: number, refineEpsilon?: number, normalWeight?: number, allowMerge?: boolean, allowSplit?: boolean, ransacSeed?: number, refineTolerance?: number, relativeTolerance?: boolean, freeformGeneral?: boolean, freeformTolerance?: number, freeformSmoothing?: number, maxFreeformPoles?: number, maxFreeformIterations?: number, maxFreeformSplits?: number, sewTolerance?: number, extendSurfaces?: boolean, snapJunctions?: boolean, faceDeviation?: boolean}) => object,
+ *   refinePatches: (mesh: Mesh, options?: {tolerance?: number, relative?: boolean, normalWeight?: number, epsilon?: number, featureAngle?: number, maxIterations?: number, minPatchCells?: number, ransacSeed?: number, types?: string[], allowSplit?: boolean, allowMerge?: boolean, prefix?: string}) => object,
  *   tessellate: (mesh: Mesh, levels?: number, curved?: boolean, fields?: boolean, recordStencil?: boolean) => {mesh: Mesh, numSourcePoints: number, numSourceCells: number, numCurvedSourceCells: number, numPassThroughSourceCells: number, numPoints: number, numCells: number, numBoundaryFacets: number, numInteriorFacets: number, numFacetsWithBadCount: number},
  *   render: (mesh: Mesh, options?: RenderOptions) => RenderedFrame,
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
@@ -1037,6 +1038,8 @@ export async function loadMeshioPlusPlus(
                 Array.isArray(types) ? types : [types], maxIterations),
         // OpenCASCADE: the full artifact only; the lean one throws by name.
         fitCad: (mesh, options = {}) => Module.fitCad(mesh, options),
+        // No OpenCASCADE: both artifacts.
+        refinePatches: (mesh, options = {}) => Module.refinePatches(mesh, options),
         igaRefine: (info, options = {}) => Module.igaRefine(info, options),
         igaSample: (info, options = {}) => Module.igaSample(info, options),
         igaEvaluate: (info, patch, params, options = {}) =>

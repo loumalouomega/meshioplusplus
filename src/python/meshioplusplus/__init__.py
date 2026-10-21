@@ -216,6 +216,7 @@ if TYPE_CHECKING:
     from ._quality import attach_quality, compute_quality
     from ._quality_gate import check_quality
     from ._refine import refine
+    from ._refine_patches import refine_patches
     from ._region_ops import edit_regions
     from ._remesh import remesh
     from ._remesh_volume import remesh_volume
@@ -295,6 +296,7 @@ _LAZY_ATTRS = {
     "iga_refine": "_iga",
     "iga_sample": "_iga",
     "segment": "_segment",
+    "refine_patches": "_refine_patches",
     "from_cupy": "_gpu",
     "has_cuda_device": "_gpu",
     "has_cupy": "_gpu",
@@ -531,6 +533,7 @@ __all__ = [
     "iga_refine",
     "iga_sample",
     "segment",
+    "refine_patches",
     "hausdorff_distance",
     "match_periodic_nodes",
     "edit_regions",

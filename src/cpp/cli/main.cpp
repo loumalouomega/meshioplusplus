@@ -111,6 +111,7 @@
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -406,6 +407,9 @@ void print_usage(std::ostream& os) {
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
           "  segment                 Split a surface into smooth patches (regions)\n"
           "  fit-primitives          Fit a plane/sphere/cylinder/cone/torus to each patch\n"
+          "  refine-patches          Refine a segmentation until one surface explains each\n"
+          "                            patch (variational shape approximation; segments\n"
+          "                            first without segment:patch)\n"
           "  iga-refine              Refine a NURBS model exactly (knot insertion, degree\n"
           "                            elevation); MFEM NURBS, CAD JSON, STEP, IGES\n"
           "  iga-sample              Sample a NURBS model into Lagrange cells\n"
@@ -413,7 +417,7 @@ void print_usage(std::ostream& os) {
           "  to-cad                  Fitted patches as a STEP solid with analytic and\n"
           "                            freeform B-spline, fillet and thread faces (--cad-json: as\n"
           "                            Kratos CAD JSON too; without OpenCASCADE, analytic\n"
-          "                            faces only)\n"
+          "                            faces only; --refine refines the patches first)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
           "  contact-pairs          Project slave Point regions onto master facets\n"
@@ -2163,6 +2167,123 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// A RANSAC seed: a decimal or `0x` hexadecimal integer in [0, 2^64).
+std::uint64_t cli_ransac_seed(const std::string& rText, const char* pCommand) {
+    const bool hex = rText.size() > 2 && rText[0] == '0' && (rText[1] == 'x' || rText[1] == 'X');
+    const std::string digits = hex ? rText.substr(2) : rText;
+    const char* valid = hex ? "0123456789abcdefABCDEF" : "0123456789";
+    if (digits.empty() || digits.find_first_not_of(valid) != std::string::npos)
+        throw std::runtime_error(std::string(pCommand) +
+                                 ": --ransac-seed must be a non-negative integer, got '" + rText +
+                                 "'");
+    try {
+        return static_cast<std::uint64_t>(std::stoull(digits, nullptr, hex ? 16 : 10));
+    } catch (const std::out_of_range&) {
+        throw std::runtime_error(std::string(pCommand) + ": --ransac-seed must lie in [0, 2^64)");
+    }
+}
+
+// Why refinement stopped, as the reports name it.
+const char* cli_refine_stop_name(meshioplusplus::RefineStop Stop) {
+    switch (Stop) {
+        case meshioplusplus::RefineStop::Unchanged:
+            return "unchanged";
+        case meshioplusplus::RefineStop::SmallGain:
+            return "small_gain";
+        case meshioplusplus::RefineStop::IterationCap:
+            return "iteration_cap";
+        case meshioplusplus::RefineStop::EnergyRose:
+            return "energy_rose";
+    }
+    return "unchanged";
+}
+
+int cmd_refine_patches(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"tolerance", {}, true},
+                                  {"absolute", {}, false},
+                                  {"normal-weight", {}, true},
+                                  {"epsilon", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"min-patch-cells", {}, true},
+                                  {"ransac-seed", {}, true},
+                                  {"types", {}, true},
+                                  {"no-split", {}, false},
+                                  {"no-merge", {}, false},
+                                  {"prefix", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("refine-patches requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::RefinePatchesOptions options;
+    if (has_opt(p, "tolerance"))
+        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    options.mRelative = !has_flag(p, "absolute");
+    if (has_opt(p, "normal-weight"))
+        options.mNormalWeight = meshioplusplus::detail::stod_c(opt_value(p, "normal-weight"));
+    if (has_opt(p, "epsilon"))
+        options.mEpsilon = meshioplusplus::detail::stod_c(opt_value(p, "epsilon"));
+    if (has_opt(p, "feature-angle"))
+        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
+    if (has_opt(p, "max-iterations"))
+        options.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    if (has_opt(p, "min-patch-cells"))
+        options.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
+    if (has_opt(p, "ransac-seed"))
+        options.mRansacSeed = cli_ransac_seed(opt_value(p, "ransac-seed"), "refine-patches");
+    if (has_opt(p, "types"))
+        options.mTypes = cli_fit_types(opt_value(p, "types"), "refine-patches");
+    options.mAllowSplit = !has_flag(p, "no-split");
+    options.mAllowMerge = !has_flag(p, "no-merge");
+    if (has_opt(p, "prefix"))
+        options.mPrefix = opt_value(p, "prefix");
+    // An unsegmented surface is segmented first, at the same feature angle.
+    if (!mesh.HasCellData("segment:patch")) {
+        meshioplusplus::SegmentOptions so;
+        so.mFeatureAngleDeg = options.mFeatureAngleDeg;
+        mesh = meshioplusplus::segment(mesh, so).mMesh;
+    }
+    meshioplusplus::RefinePatchesResult r = meshioplusplus::refine_patches(mesh, options);
+    write_mesh_cli(p.positionals[1], r.mMesh, "");
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_patches", r.mNumPatches);
+        json.Field("num_iterations", r.mNumIterations);
+        json.Field("num_splits", r.mNumSplits);
+        json.Field("num_merges", r.mNumMerges);
+        json.Field("num_absorbed", r.mNumAbsorbed);
+        json.Field("num_primitive", r.mNumPrimitive);
+        json.Field("num_freeform", r.mNumFreeform);
+        json.Field("num_facets", r.mNumFacets);
+        json.Field("tolerance", r.mTolerance);
+        json.Field("explained_area_fraction", r.mExplainedAreaFraction);
+        json.Field("initial_explained_area_fraction", r.mInitialExplainedAreaFraction);
+        json.Field("hausdorff_max", r.mHausdorffMax);
+        json.Field("hausdorff_rms", r.mHausdorffRms);
+        json.Field("initial_energy", r.mInitialEnergy);
+        json.Field("energy", r.mEnergy);
+        json.Field("stop", cli_refine_stop_name(r.mStop));
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "refine_patches: " << r.mNumPatches << " patch(es) after " << r.mNumIterations
+                  << " iteration(s) (" << cli_refine_stop_name(r.mStop) << ")\n";
+        std::cout << "  primitive: " << r.mNumPrimitive << "\n";
+        std::cout << "  freeform:  " << r.mNumFreeform << "\n";
+        std::cout << "  facets:    " << r.mNumFacets << "\n";
+        std::cout << "  splits " << r.mNumSplits << ", merges " << r.mNumMerges << ", absorbed "
+                  << r.mNumAbsorbed << "\n";
+        std::cout << "  explained area " << r.mInitialExplainedAreaFraction << " -> "
+                  << r.mExplainedAreaFraction << ", Hausdorff " << r.mHausdorffMax << " (tolerance "
+                  << r.mTolerance << ")\n";
+    }
+    return 0;
+}
+
 int cmd_to_cad(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -2184,6 +2305,24 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"no-threads", {}, false},
                                   {"no-merge-faces", {}, false},
                                   {"backend", {}, true},
+                                  {"refine", {}, false},
+                                  {"max-refine-iterations", {}, true},
+                                  {"refine-epsilon", {}, true},
+                                  {"normal-weight", {}, true},
+                                  {"no-refine-merge", {}, false},
+                                  {"no-refine-split", {}, false},
+                                  {"ransac-seed", {}, true},
+                                  {"refine-tolerance", {}, true},
+                                  {"freeform-general", {}, false},
+                                  {"freeform-tolerance", {}, true},
+                                  {"freeform-smoothing", {}, true},
+                                  {"max-freeform-poles", {}, true},
+                                  {"max-freeform-iterations", {}, true},
+                                  {"max-freeform-splits", {}, true},
+                                  {"sew-tolerance", {}, true},
+                                  {"extend-surfaces", {}, false},
+                                  {"snap-junctions", {}, false},
+                                  {"face-deviation", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -2264,6 +2403,39 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         else
             throw std::runtime_error("to-cad: the backend must be 'auto', 'occt' or 'native'");
     }
+    options.mRefineSegmentation = has_flag(p, "refine");
+    if (has_opt(p, "max-refine-iterations"))
+        options.mRefine.mMaxIterations = std::stoll(opt_value(p, "max-refine-iterations"));
+    if (has_opt(p, "refine-epsilon"))
+        options.mRefine.mEpsilon = meshioplusplus::detail::stod_c(opt_value(p, "refine-epsilon"));
+    if (has_opt(p, "normal-weight"))
+        options.mRefine.mNormalWeight =
+            meshioplusplus::detail::stod_c(opt_value(p, "normal-weight"));
+    options.mRefine.mAllowMerge = !has_flag(p, "no-refine-merge");
+    options.mRefine.mAllowSplit = !has_flag(p, "no-refine-split");
+    if (has_opt(p, "ransac-seed"))
+        options.mRefine.mRansacSeed = cli_ransac_seed(opt_value(p, "ransac-seed"), "to-cad");
+    if (has_opt(p, "refine-tolerance"))
+        options.mRefine.mTolerance =
+            meshioplusplus::detail::stod_c(opt_value(p, "refine-tolerance"));
+    options.mFreeformGeneral = has_flag(p, "freeform-general");
+    if (has_opt(p, "freeform-tolerance"))
+        options.mFreeformTolerance =
+            meshioplusplus::detail::stod_c(opt_value(p, "freeform-tolerance"));
+    if (has_opt(p, "freeform-smoothing"))
+        options.mFreeformSmoothing =
+            meshioplusplus::detail::stod_c(opt_value(p, "freeform-smoothing"));
+    if (has_opt(p, "max-freeform-poles"))
+        options.mMaxFreeformPoles = std::stoll(opt_value(p, "max-freeform-poles"));
+    if (has_opt(p, "max-freeform-iterations"))
+        options.mMaxFreeformIterations = std::stoll(opt_value(p, "max-freeform-iterations"));
+    if (has_opt(p, "max-freeform-splits"))
+        options.mMaxFreeformSplits = std::stoll(opt_value(p, "max-freeform-splits"));
+    if (has_opt(p, "sew-tolerance"))
+        options.mSewTolerance = meshioplusplus::detail::stod_c(opt_value(p, "sew-tolerance"));
+    options.mExtendSurfaces = has_flag(p, "extend-surfaces");
+    options.mSnapJunctions = has_flag(p, "snap-junctions");
+    options.mFaceDeviation = has_flag(p, "face-deviation");
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
     const char* engine = r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
     if (has_opt(p, "mesh-out"))
@@ -2275,6 +2447,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.BeginObject();
         json.Field("valid", r.mValid);
         json.Field("backend", std::string(engine));
+        json.Field("closed", r.mClosed);
         json.Field("tolerance", r.mTolerance);
         json.Field("volume", r.mVolume);
         json.Field("skin_volume", r.mSkinVolume);
@@ -2304,10 +2477,35 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("num_conic_blend", r.mNumConicBlend);
         json.Field("num_tapered_thread", r.mNumTaperedThread);
         json.Field("num_variable_pitch_thread", r.mNumVariablePitchThread);
+        // Only a run that refined reports it, so the shape is otherwise unchanged.
+        if (r.mRefined) {
+            json.Field("refined", true);
+            json.Field("refine_iterations", r.mRefineIterations);
+            json.Field("num_refine_splits", r.mNumRefineSplits);
+            json.Field("num_refine_merges", r.mNumRefineMerges);
+            json.Field("initial_explained_area_fraction", r.mInitialExplainedAreaFraction);
+            json.Field("explained_area_fraction", r.mExplainedAreaFraction);
+            json.Field("refinement_kept", r.mRefinementKept);
+        }
+        // Likewise each Phase 3 option reports only when it is set.
+        if (options.mFreeformGeneral) {
+            json.Field("num_freeform_general", r.mNumFreeformGeneral);
+            json.Field("num_freeform_refinements", r.mNumFreeformRefinements);
+            json.Field("avg_freeform_poles", r.mAvgFreeformPoles);
+        }
+        if (options.mExtendSurfaces)
+            json.Field("num_extended_edges", r.mNumExtendedEdges);
+        if (options.mSnapJunctions)
+            json.Field("num_snapped_junctions", r.mNumSnappedJunctions);
+        if (options.mFaceDeviation) {
+            json.Field("hausdorff_max", r.mHausdorffMax);
+            json.Field("hausdorff_rms", r.mHausdorffRms);
+        }
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
-        std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in "
-                  << r.mNumSolids << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << "\n";
+        std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in " << r.mNumSolids
+                  << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << ", "
+                  << (r.mClosed ? "closed" : "NOT closed") << "\n";
         std::cout << "  plane:     " << r.mNumPlane << "\n";
         std::cout << "  sphere:    " << r.mNumSphere << "\n";
         std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
@@ -2335,6 +2533,23 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         std::cout << "  vertex:    " << r.mNumVertexBlend << " vertex blend(s)\n";
         std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
         std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
+        if (r.mRefined)
+            std::cout << "  refined: " << r.mNumRefineSplits << " split(s), " << r.mNumRefineMerges
+                      << " merge(s) in " << r.mRefineIterations << " iteration(s); explained area "
+                      << r.mInitialExplainedAreaFraction << " -> " << r.mExplainedAreaFraction
+                      << (r.mRefinementKept ? "; refined patches kept" : "; original patches kept")
+                      << "\n";
+        if (options.mFreeformGeneral)
+            std::cout << "  general freeform: " << r.mNumFreeformGeneral << " face(s), "
+                      << r.mNumFreeformRefinements << " knot insertion round(s), "
+                      << r.mAvgFreeformPoles << " pole(s) on average\n";
+        if (options.mExtendSurfaces)
+            std::cout << "  extended: " << r.mNumExtendedEdges << " surface(s)\n";
+        if (options.mSnapJunctions)
+            std::cout << "  snapped:  " << r.mNumSnappedJunctions << " junction(s)\n";
+        if (options.mFaceDeviation)
+            std::cout << "  face deviation: Hausdorff " << r.mHausdorffMax << ", RMS "
+                      << r.mHausdorffRms << "\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation
                   << " (tolerance " << r.mTolerance << ")\n";
     }
@@ -6297,6 +6512,8 @@ int main(int argc, char** argv) {
             return cmd_feature_edges(rest);
         if (cmd == "segment")
             return cmd_segment(rest);
+        if (cmd == "refine-patches")
+            return cmd_refine_patches(rest);
         if (cmd == "fit-primitives")
             return cmd_fit_primitives(rest);
         if (cmd == "iga-refine")

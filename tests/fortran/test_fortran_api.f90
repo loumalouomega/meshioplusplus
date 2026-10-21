@@ -2163,8 +2163,13 @@ contains
     end subroutine
 
     subroutine check_analysis_editing()
-        type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted, solid
+        type(mio_mesh) :: sq, other, edges, edited, bad, seg, fitted, solid, refined_mesh
         integer(int64) :: nfeat, nbound, nfixed, npatch, nplane, nfaces
+        integer(int64) :: nrsplit, nrmerge
+        real(real64) :: explained
+        logical :: was_refined, was_closed, was_kept
+        integer(int64) :: nsnapped
+        real(real64) :: hmax, hrms
         integer(int64) :: nsplit, nfillet, nhelical, nvarfillet, nblend, nrounded
         integer(int64) :: nvertex, nchamfer, nconic, ntapered, nvarpitch
         logical :: cad_valid, used_native
@@ -2213,7 +2218,48 @@ contains
         call check(ierr == 0, 'fit_primitives succeeded')
         call check(nplane == 6_int64, 'every cube face fits a plane')
         call fitted%free()
+
+        ! refine_patches (v17.11.0): six planes are already one patch each.
+        refined_mesh = seg%refine_patches(num_patches=npatch, num_splits=nrsplit, &
+                                          num_merges=nrmerge, explained_area_fraction=explained, &
+                                          ransac_seed=42_int64, stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'refine_patches succeeded')
+        call check(npatch == 6_int64, 'refine_patches keeps the 6 faces')
+        call check(nrsplit == 0_int64 .and. nrmerge == 0_int64, 'nothing to split or merge')
+        call check(abs(explained - 1.0_real64) < 1.0e-12_real64, 'planes explain the whole cube')
+        call refined_mesh%free()
+        refined_mesh = sq%refine_patches(stat=ierr, errmsg=msg)
+        call check(ierr /= 0, 'refine_patches needs segment:patch')
+        call check(index(msg, 'segment') > 0, 'the error names segment:patch')
+        refined_mesh = seg%refine_patches(tolerance=0.0_real64, stat=ierr)
+        call check(ierr /= 0, 'refine_patches rejects a zero tolerance')
         call seg%free()
+
+        ! fit_cad refines the segmentation on request, on every backend.
+        solid = sq%fit_cad(backend='native', refine_segmentation=.true., refined=was_refined, &
+                           max_refine_iterations=5_int64, num_refine_splits=nrsplit, &
+                           num_refine_merges=nrmerge, explained_area_fraction=explained, &
+                           num_faces=nfaces, stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'fit_cad with refine_segmentation succeeded')
+        call check(was_refined, 'fit_cad reports the refinement')
+        call check(nfaces == 6_int64, 'the refined cube still has six faces')
+        call check(explained > 0.999_real64, 'the refined cube is explained by planes')
+        call solid%free()
+        solid = sq%fit_cad(backend='native', refined=was_refined, refinement_kept=was_kept, &
+                           stat=ierr)
+        call check(ierr == 0 .and. .not. was_refined, 'fit_cad does not refine by default')
+        call check(.not. was_kept, 'nothing refined is kept without refinement')
+        call solid%free()
+        ! The Phase 3 options (v17.11.0): closed on every backend, nothing
+        ! measured is NaN, and an option out of range is refused.
+        solid = sq%fit_cad(backend='native', closed=was_closed, hausdorff_max=hmax, &
+                           freeform_general=.true., max_freeform_splits=0_int64, stat=ierr)
+        call check(ierr == 0 .and. was_closed, 'the native cube solid is closed')
+        call check(hmax /= hmax, 'no deviation is measured unless asked')
+        call solid%free()
+        solid = sq%fit_cad(backend='native', max_freeform_poles=3_int64, stat=ierr, errmsg=msg)
+        call check(ierr /= 0, 'fit_cad rejects max_freeform_poles below 4')
+        call check(index(msg, 'max_freeform_poles') > 0, 'the error names max_freeform_poles')
 
         ! fit_cad: six exact planes with OpenCASCADE. Without it the automatic
         ! backend is the native one, and backend='occt' names the flag.
@@ -2224,6 +2270,13 @@ contains
             call check(cad_valid, 'the cube solid is valid')
             call check(nfaces == 6_int64, 'the cube solid has 6 faces')
             call check(.not. used_native, 'the automatic backend is OCCT')
+            call solid%free()
+            solid = sq%fit_cad(snap_junctions=.true., face_deviation=.true., closed=was_closed, &
+                               num_snapped_junctions=nsnapped, hausdorff_max=hmax, &
+                               hausdorff_rms=hrms, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. was_closed, 'the snapped cube solid is closed')
+            call check(nsnapped > 0_int64, 'the cube corners are snapped')
+            call check(hmax == hmax .and. hrms <= hmax, 'the face deviation is measured')
             call solid%free()
             solid = sq%fit_cad(freeform_split=.false., fillets=.false., threads=.false., &
                                num_faces=nfaces, num_split_patches=nsplit, &
